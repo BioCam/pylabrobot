@@ -849,28 +849,35 @@ def Cos_6_MWP_16800ul_Fb_P(name: str, with_lid: bool = True) -> Plate:
 
 # # # # # # # # # # Cos_96_DWP_2mL_Vb # # # # # # # # # #
 
-def _compute_volume_from_height_Cos_96_DWP_2mL_Vb(h: float) -> float:
+def _compute_volume_from_height_Cos_96_wellplate_2mL_Vb(h: float) -> float:
   if h > 44.1: # 5% tolerance
-    raise ValueError(f"Height {h} is too large for Cos_96_DWP_2mL_Vb")
+    raise ValueError(f"Height {h} is too large for Cos_96_wellplate_2mL_Vb")
   return calculate_liquid_volume_container_2segments_square_vbottom(
-    x=7.8,
-    y=7.8,
-    h_pyramid=4.0,
-    h_cube=38.0,
+    x=7.731,
+    y=7.717,
+    h_pyramid=3.75,
+    h_cube=38.25,
     liquid_height=h)
 
-def _compute_height_from_volume_Cos_96_DWP_2mL_Vb(liquid_volume: float):
+def _compute_height_from_volume_Cos_96_wellplate_2mL_Vb(liquid_volume: float):
   if liquid_volume > 2_100: # 5% tolerance
-    raise ValueError(f"Volume {liquid_volume} is too large for Cos_96_DWP_2mL_Vb")
+    raise ValueError(f"Volume {liquid_volume} is too large for Cos_96_wellplate_2mL_Vb")
   return round(calculate_liquid_height_in_container_2segments_square_vbottom(
-    x=7.8,
-    y=7.8,
-    h_pyramid=4.0,
-    h_cube=38.0,
+    x=7.731,
+    y=7.717,
+    h_pyramid=3.75,
+    h_cube=38.25,
     liquid_volume=liquid_volume),3)
 
+# input_volumes = [5, 10, 15, 20, 25, 50, 75, 100, 125, 150, 200, 250, 300, 350, 400,
+# 500, 600, 800, 1_000, 1_200, 1_500, 1_800, 2_000, 2_200]
+# target_heights = [1.15, 1.55, 2.15, 2.45, 2.65, 3.55, 3.95, 4.25, 4.55, 4.95, 5.75,
+# 6.55, 7.45, 8.35, 9.35, 11.05, 12.55, 16.15, 19.75, 22.9, 27.65, 32.65, 35.85, 39.05]
+# calculated_heights = [1.445, 1.821, 2.084, 2.294, 2.471, 3.114, 3.568, 3.991, 4.414, 4.836,
+# 5.682, 6.527, 7.373,8.218,9.064,10.754,12.445,15.827,19.209,22.591,27.663,32.736,36.118,39.5]
 
-def Cos_96_DWP_2mL_Vb(name: str, with_lid: bool = False) -> Plate:
+
+def Cos_96_wellplate_2mL_Vb(name: str, with_lid: bool = False) -> Plate:
   """ Corning 96 deep-well 2 mL PCR plate. Corning cat. no.: 3960
   - Material: Polypropylene
   - Resistant to many common organic solvents (e.g., DMSO, ethanol, methanol)
@@ -884,14 +891,14 @@ def Cos_96_DWP_2mL_Vb(name: str, with_lid: bool = False) -> Plate:
     size_y=86.0,
     size_z=43.5,
     with_lid=with_lid,
-    model="Cos_96_DWP_2mL_Vb",
+    model="Cos_96_wellplate_2mL_Vb",
     lid_height=10,
     items=create_equally_spaced_2d(Well,
       num_items_x=12,
       num_items_y=8,
       dx=10.5,
       dy=7.5,
-      dz=1.4,
+      dz=1.2,
       item_dx=9.0,
       item_dy=9.0,
       size_x=8.0,
@@ -899,15 +906,15 @@ def Cos_96_DWP_2mL_Vb(name: str, with_lid: bool = False) -> Plate:
       size_z=42.0,
       bottom_type=WellBottomType.V,
       cross_section_type=CrossSectionType.RECTANGLE,
-      compute_volume_from_height=_compute_volume_from_height_Cos_96_DWP_2mL_Vb,
-      compute_height_from_volume=_compute_height_from_volume_Cos_96_DWP_2mL_Vb
+      compute_volume_from_height=_compute_volume_from_height_Cos_96_wellplate_2mL_Vb,
+      compute_height_from_volume=_compute_height_from_volume_Cos_96_wellplate_2mL_Vb
     ),
   )
 
-def Cos_96_DWP_2mL_Vb_L(name: str, with_lid: bool = False) -> Plate:
-  """ Cos_96_DWP_2mL_Vb """
-  return Cos_96_DWP_2mL_Vb(name=name, with_lid=with_lid)
+def Cos_96_wellplate_2mL_Vb_L(name: str, with_lid: bool = False) -> Plate:
+  """ Cos_96_wellplate_2mL_Vb Landscape """
+  return Cos_96_wellplate_2mL_Vb(name=name, with_lid=with_lid)
 
-def Cos_96_DWP_2mL_Vb_P(name: str, with_lid: bool = False) -> Plate:
-  """ Cos_96_DWP_2mL_Vb """
-  return Cos_96_DWP_2mL_Vb(name=name, with_lid=with_lid).rotated(90)
+def Cos_96_wellplate_2mL_Vb_P(name: str, with_lid: bool = False) -> Plate:
+  """ Cos_96_wellplate_2mL_Vb Portrait """
+  return Cos_96_wellplate_2mL_Vb(name=name, with_lid=with_lid).rotated(90)
