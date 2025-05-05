@@ -8,8 +8,8 @@ from sensirion_shdlc_sensorbridge import (
 from sensirion_i2c_driver import I2cConnection
 from sensirion_i2c_sht.sht3x import Sht3xI2cDevice
 
-from .temperature_backend import TemperatureSensorBackend
-from .humidity_backend import HumiditySensorBackend
+from pylabrobot.sensors.temperature_backend import TemperatureSensorBackend
+from pylabrobot.sensors.humidity_backend import HumiditySensorBackend
 
 class SensirionSCC30Backend(TemperatureSensorBackend, HumiditySensorBackend):
   """
