@@ -1,7 +1,8 @@
 Sensors
 =======
 
-Sim
+Simple sensors that can be used to measure various physical quantities, such as temperature, humidity, air composition, pressure, and more.
+These sensors can be used in various applications, including workcell monitoring, or novel automation setup designs.
 
 
 
@@ -10,4 +11,4 @@ Sim
    :maxdepth: 1
    :hidden:
 
-   sensirion-scc30
+   hw_sensirion_scc30
