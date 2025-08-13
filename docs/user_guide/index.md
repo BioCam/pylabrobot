@@ -7,6 +7,7 @@
 :caption: Getting started
 :hidden:
 
+_getting-started/why-use-plr
 _getting-started/installation
 How PLR Works <_getting-started/plr-architecture>
 _getting-started/rpi
