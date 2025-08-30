@@ -1161,6 +1161,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     self._unsafe = UnSafe(self)
 
     self._iswap_version: Optional[str] = None  # loaded lazily
+    self._iswap_RotationDriveOrientation: Optional[str] = None
+    self._iswap_WristOrientation: Optional[str] = None
 
   @property
   def unsafe(self) -> "UnSafe":
@@ -6556,6 +6558,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     # Once the command has completed successfully, set _iswap_parked to True
     self._iswap_parked = True
+    self._iswap_RotationDriveOrientation = "RIGHT"
+    self._iswap_WristOrientation = "RIGHT"
     return command_output
 
   async def iswap_get_plate(
