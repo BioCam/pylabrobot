@@ -7168,6 +7168,91 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     resp = await self.send_command(module="C0", command="QP", fmt="ph#")
     return resp is not None and resp["ph"] == 1
 
+  from pylabrobot.resources import Coordinate
+
+# Mechanical constants (TODO: measure real values where indicated)
+_rotation_to_wrist_distance = 138  # mm — distance from rotation axis to wrist joint
+_wrist_to_gripper_distance = 138   # mm — distance from wrist joint to gripper center
+
+_channel_to_wrist_z_distance = 39  # mm — vertical from channel to wrist (TODO)
+_wrist_to_gripper_center_z_distance = 11.2  # mm — vertical from wrist to gripper center (TODO)
+
+
+async def request_iswap_rotation_drive_position(self) -> Coordinate:
+    """
+    Convenience method to query the position of the iSWAP rotation drive,
+    which is identical to the iSWAP channel position in XY.
+    The Z-coordinate is reconstructed using mechanical offsets from the gripper center.
+    """
+    pos_x = await self.request_y_pos_channel_n(pipetting_channel_index=0)
+    pos_y = await self.request_y_pos_iswap_channel()
+
+    gripper_center_pos = await self.request_iswap_position()
+    pos_z = gripper_center_pos.z + (
+        STARBackend._channel_to_wrist_z_distance +
+        STARBackend._wrist_to_gripper_center_z_distance
+    )
+
+    return Coordinate(pos_x, pos_y, pos_z)
+
+async def request_iswap_wrist_drive_position(self) -> Coordinate:
+    """
+    Return the position of the iSWAP wrist drive center in deck coordinates,
+    inferred based on the current rotation and wrist orientation.
+    """
+    rotation_drive_orientation: STARBackend.RotationDriveOrientation = (
+        await self.request_iswap_rotation_drive_orientation()
+    )
+    wrist_drive_orientation: STARBackend.WristDriveOrientation = (
+        await self.request_iswap_wrist_drive_orientation()
+    )
+
+    rotation_drive_coordinate = await self.request_iswap_rotation_drive_position()
+    gripper_center_coordinate = await self.request_iswap_position()
+
+    # Each entry: ("ref": "rotation" or "gripper", offset in mm)
+    wrist_position_map = {
+        STARBackend.RotationDriveOrientation.RIGHT: {
+            STARBackend.WristDriveOrientation.RIGHT:    (("gripper", 0), ("rotation", 0)),
+            STARBackend.WristDriveOrientation.STRAIGHT: (("gripper", -self._wrist_to_gripper_distance),
+                                                         ("rotation", 0)),
+            STARBackend.WristDriveOrientation.LEFT:     (("gripper", 0), ("rotation", 0)),
+            STARBackend.WristDriveOrientation.REVERSE:  (("gripper", +self._wrist_to_gripper_distance),
+                                                         ("rotation", 0)),
+        },
+        STARBackend.RotationDriveOrientation.FRONT: {
+            STARBackend.WristDriveOrientation.RIGHT:    (("rotation", 0), ("gripper", 0)),
+            STARBackend.WristDriveOrientation.STRAIGHT: (("rotation", 0),
+                                                         ("gripper", +self._wrist_to_gripper_distance)),
+            STARBackend.WristDriveOrientation.LEFT:     (("rotation", 0), ("gripper", 0)),
+            STARBackend.WristDriveOrientation.REVERSE:  (("rotation", 0),
+                                                         ("gripper", -self._wrist_to_gripper_distance)),
+        },
+        STARBackend.RotationDriveOrientation.LEFT: {
+            STARBackend.WristDriveOrientation.RIGHT:    (("gripper", 0), ("rotation", 0)),
+            STARBackend.WristDriveOrientation.STRAIGHT: (("gripper", +self._wrist_to_gripper_distance),
+                                                         ("rotation", 0)),
+            STARBackend.WristDriveOrientation.LEFT:     (("gripper", 0), ("rotation", 0)),
+            STARBackend.WristDriveOrientation.REVERSE:  (("gripper", -self._wrist_to_gripper_distance),
+                                                         ("rotation", 0)),
+        },
+    }
+
+    (x_ref, x_off), (y_ref, y_off) = wrist_position_map[rotation_drive_orientation][
+        wrist_drive_orientation
+    ]
+
+    # Resolve X coordinate based on reference
+    x = (rotation_drive_coordinate.x if x_ref == "rotation" else gripper_center_coordinate.x) + x_off
+    # Resolve Y coordinate based on reference
+    y = (rotation_drive_coordinate.y if y_ref == "rotation" else gripper_center_coordinate.y) + y_off
+
+    # Z is always offset upward from rotation drive to wrist
+    z = rotation_drive_coordinate.z + STARBackend._wrist_to_gripper_center_z_distance
+
+    return Coordinate(x, y, z)
+
+
   async def request_iswap_position(self) -> Coordinate:
     """Request iSWAP position ( grip center )
 
