@@ -5093,6 +5093,14 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   # TODO:(command:RY): Request Y-Positions of all pipetting channels
 
+  async def request_x_pos_channel_n(self, pipetting_channel_index: int = 0) -> float:
+    """ Request X-Position of Pipetting channel n """
+
+    resp_dmm = await self.request_left_x_arm_position()
+    # TODO: check validity for 2 X-arm system 
+
+    return resp_dmm["rx"] / 10
+
   async def request_y_pos_channel_n(self, pipetting_channel_index: int) -> float:
     """Request Y-Position of Pipetting channel n
 
@@ -7185,7 +7193,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     which is identical to the iSWAP channel position in XY.
     The Z-coordinate is reconstructed using mechanical offsets from the gripper center.
     """
-    pos_x = await self.request_y_pos_channel_n(pipetting_channel_index=0)
+    pos_x = await self.request_x_pos_channel_n(pipetting_channel_index=0)
     pos_y = await self.request_y_pos_iswap_channel()
 
     gripper_center_pos = await self.request_iswap_position()
@@ -7213,6 +7221,18 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # Each entry: ("ref": "rotation" or "gripper", offset in mm)
     wrist_position_map = {
       STARBackend.RotationDriveOrientation.RIGHT: {
+        STARBackend.WristDriveOrientation.RIGHT: (("gripper", 0), ("rotation", 0)),
+        STARBackend.WristDriveOrientation.STRAIGHT: (
+          ("gripper", -self._wrist_to_gripper_distance),
+          ("rotation", 0),
+        ),
+        STARBackend.WristDriveOrientation.LEFT: (("gripper", 0), ("rotation", 0)),
+        STARBackend.WristDriveOrientation.REVERSE: (
+          ("gripper", +self._wrist_to_gripper_distance),
+          ("rotation", 0),
+        ),
+      },
+      STARBackend.RotationDriveOrientation.PARKED_RIGHT: {
         STARBackend.WristDriveOrientation.RIGHT: (("gripper", 0), ("rotation", 0)),
         STARBackend.WristDriveOrientation.STRAIGHT: (
           ("gripper", -self._wrist_to_gripper_distance),
