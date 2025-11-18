@@ -6785,7 +6785,34 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   # -------------- 3.13.2 Carrier handling --------------
 
-  # TODO:(command:CI) Identify carrier (determine carrier type)
+  def _rail_for_carrier(self, carrier: Carrier) -> int:
+    """Calculate the rail identifier for the right side of a carrier."""
+    track_width = 22.5
+    carrier_width = carrier.get_location_wrt(self.deck).x - 100 + carrier.get_absolute_size_x()
+    carrier_end_rail = int(carrier_width / track_width)
+
+    assert 1 <= carrier_end_rail <= 54, "carrier loading rail must be between 1 and 54"
+
+    return carrier_end_rail
+
+  async def identify_carrier_type(self, carrier_position: int):
+    """Identify carrier type
+    Args:
+      carrier_position: Carrier position (rail number)
+    """
+
+    assert 1 <= carrier_position <= 54, "carrier_position must be between 1 and 54"
+
+    carrier_position_str = str(carrier_position).zfill(2)
+
+    resp = await self.send_command(
+      module="C0",
+      command="CI",
+      # fmt="ct#",
+      cp=carrier_position_str,
+    )
+
+    return resp
 
   async def request_single_carrier_presence(self, carrier_position: int):
     """Request single carrier presence
