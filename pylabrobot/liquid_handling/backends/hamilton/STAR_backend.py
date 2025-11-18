@@ -6814,25 +6814,29 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     return resp
 
-  async def request_single_carrier_presence(self, carrier_position: int):
-    """Request single carrier presence
+  async def request_carrier_presence_on_loading_tray(self, rail_number: int):
+    """ Request whether carrier exists on the loading tray at the defined rail number.
 
     Args:
-      carrier_position: Carrier position (slot number)
+      rail_number: rail number of the right carrier slider
 
     Returns:
       True if present, False otherwise
     """
 
-    assert 1 <= carrier_position <= 54, "carrier_position must be between 1 and 54"
-    carrier_position_str = str(carrier_position).zfill(2)
+    assert 1 <= rail_number <= 54, "carrier_position must be between 1 and 54"
+    
+    rail_number_str = str(rail_number).zfill(2)
+
     resp = await self.send_command(
       module="C0",
       command="CT",
       fmt="ct#",
-      cp=carrier_position_str,
+      cp=rail_number_str,
     )
+
     assert resp is not None
+
     return resp["ct"] == 1
 
   # Move autoload/scanner X-drive into slot number
@@ -6934,7 +6938,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     assert 1 <= carrier_end_rail <= 54, "carrier loading rail must be between 1 and 54"
 
     # Determine presence of carrier at defined position
-    presence_check = await self.request_single_carrier_presence(carrier_end_rail)
+    presence_check = await self.request_carrier_presence_on_loading_tray(carrier_end_rail)
     carrier_end_rail_str = str(carrier_end_rail).zfill(2)
 
     if presence_check != 1:
