@@ -14,6 +14,7 @@ from .carrier import (
   create_homogeneous_resources,
   create_resources,
 )
+from .container_rack import ContainerRack
 from .celltreat import *
 from .cellvis import *
 from .container import Container
