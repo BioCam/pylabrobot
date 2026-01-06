@@ -1,29 +1,15 @@
-"""
-ContainerRack: Corrected - Remove unnecessary _assign_to_holder helper
-=======================================================================
-
-PROBLEM:
-The _assign_to_holder() helper was:
-1. Duplicating ResourceHolder.assign_child_resource() logic
-2. Silently removing existing containers (hiding errors)
-3. Adding implicit behavior that should be explicit
-
-SOLUTION:
-Just use ResourceHolder.assign_child_resource() directly with reassign parameter.
-"""
+"""A movable rack for containers (with SLAS-compatible footprint)."""
 
 from string import ascii_uppercase as LETTERS
-from typing import Dict, List, Optional, Sequence, Union, cast
+from typing import Dict, List, Optional, Sequence, Union
 
-from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.itemized_resource import ItemizedResource
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.resource_holder import ResourceHolder
-from pylabrobot.resources.utils import create_ordered_items_2d
 
 
 class ContainerRack(ItemizedResource[ResourceHolder]):
-  """A movable rack for containers with SLAS-compatible footprint.
+  """A movable rack for containers (with SLAS-compatible footprint).
 
   Examples:
       >>> # Create rack
@@ -35,9 +21,12 @@ class ContainerRack(ItemizedResource[ResourceHolder]):
       >>> rack["A1"] = my_tube
       >>> rack["A1:A3"] = [tube1, tube2, tube3]
       >>>
-      >>> # Access
+      >>> # Access (raises error if empty)
       >>> tube = rack.get_container("A1")
-      >>> has_tube = rack.has_container("A1")
+      >>>
+      >>> # Check first
+      >>> if rack.has_container("A1"):
+      ...     tube = rack.get_container("A1")
   """
 
   def __init__(
@@ -83,48 +72,147 @@ class ContainerRack(ItemizedResource[ResourceHolder]):
   # CONTAINER ACCESS
   # =========================================================================
 
-  def get_container(self, identifier: Union[str, int]) -> Optional[Resource]:
-    """Get the container at a position, or None if empty."""
-    holder = self.get_item(identifier)
-    return holder.resource if hasattr(holder, "resource") else None
+  def get_container(self, identifier: Union[str, int]) -> Resource:
+    """Get the container at a position.
 
-  def get_containers(
-    self, identifiers: Union[str, Sequence[int], Sequence[str]]
-  ) -> List[Optional[Resource]]:
-    """Get containers at multiple positions."""
+    Raises error if position is empty. Use has_container() to check first.
+
+    Args:
+        identifier: Position identifier ("A1" or 0).
+
+    Returns:
+        The container at that position.
+
+    Raises:
+        ValueError: If position is empty.
+
+    Examples:
+        >>> # Check first
+        >>> if rack.has_container("A1"):
+        ...     tube = rack.get_container("A1")
+        >>>
+        >>> # Or handle the error
+        >>> try:
+        ...     tube = rack.get_container("A1")
+        ... except ValueError:
+        ...     print("Position A1 is empty")
+    """
+    holder = self.get_item(identifier)
+    if holder.resource is None:
+      raise ValueError(
+        f"No container at position {identifier} in rack '{self.name}'. "
+        f"Use has_container() to check first."
+      )
+    return holder.resource
+
+  def get_containers(self, identifiers: Union[str, Sequence[int], Sequence[str]]) -> List[Resource]:
+    """Get containers at multiple positions.
+
+    All positions must have containers, otherwise raises error.
+
+    Args:
+        identifiers: Position identifiers.
+
+    Returns:
+        List of containers.
+
+    Raises:
+        ValueError: If any position is empty.
+
+    Examples:
+        >>> tubes = rack.get_containers("A1:A4")
+        >>> tubes = rack.get_containers([0, 1, 2, 3])
+    """
     holders = self.get_items(identifiers)
-    return [holder.resource if hasattr(holder, "resource") else None for holder in holders]
+    containers = []
+    for i, holder in enumerate(holders):
+      if holder.resource is None:
+        # Try to get identifier for better error message
+        try:
+          ident = self.get_child_identifier(holder)
+        except (ValueError, AttributeError):
+          ident = f"index {i}"
+        raise ValueError(f"No container at position {ident} in rack '{self.name}'. ")
+      containers.append(holder.resource)
+    return containers
 
   def has_container(self, identifier: Union[str, int]) -> bool:
-    """Check if a position has a container."""
-    return self.get_container(identifier) is not None
+    """Check if a position has a container.
 
-  def row_containers(self, row: Union[int, str]) -> List[Optional[Resource]]:
-    """Get all containers in a row."""
+    Args:
+        identifier: Position identifier ("A1" or 0).
+
+    Returns:
+        True if position has a container, False if empty.
+
+    Examples:
+        >>> if rack.has_container("A1"):
+        ...     tube = rack.get_container("A1")
+    """
+    holder = self.get_item(identifier)
+    return holder.resource is not None
+
+  def row_containers(self, row: Union[int, str]) -> List[Resource]:
+    """Get all containers in a row.
+
+    All positions in the row must have containers.
+
+    Raises:
+        ValueError: If any position in the row is empty.
+    """
     holders = self.row(row)
-    return [holder.resource if hasattr(holder, "resource") else None for holder in holders]
+    containers = []
+    for holder in holders:
+      if holder.resource is None:
+        ident = self.get_child_identifier(holder)
+        raise ValueError(f"No container at position {ident} in rack '{self.name}'. ")
+      containers.append(holder.resource)
+    return containers
 
-  def column_containers(self, col: int) -> List[Optional[Resource]]:
-    """Get all containers in a column."""
+  def column_containers(self, col: int) -> List[Resource]:
+    """Get all containers in a column.
+
+    All positions in the column must have containers.
+
+    Raises:
+        ValueError: If any position in the column is empty.
+    """
     holders = self.column(col)
-    return [holder.resource if hasattr(holder, "resource") else None for holder in holders]
+    containers = []
+    for holder in holders:
+      if holder.resource is None:
+        ident = self.get_child_identifier(holder)
+        raise ValueError(f"No container at position {ident} in rack '{self.name}'. ")
+      containers.append(holder.resource)
+    return containers
 
-  def get_all_containers(self) -> List[Optional[Resource]]:
-    """Get all containers in order."""
+  def get_all_containers(self) -> List[Resource]:
+    """Get all containers in order.
+
+    All positions must have containers.
+
+    Raises:
+        ValueError: If any position is empty.
+    """
     all_items = self.get_all_items()
-    return [holder.resource if hasattr(holder, "resource") else None for holder in all_items]
+    containers = []
+    for holder in all_items:
+      if holder.resource is None:
+        ident = self.get_child_identifier(holder)
+        raise ValueError(
+          f"No container at position {ident} in rack '{self.name}'. "
+          f"Use get_all_containers_if_present() for optional access."
+        )
+      containers.append(holder.resource)
+    return containers
 
   def get_occupied_containers(self) -> List[Resource]:
-    """Get all non-empty containers."""
+    """Get all non-empty containers (only occupied positions)."""
     all_items = self.get_all_items()
-    return [
-      holder.resource
-      for holder in all_items
-      if hasattr(holder, "resource") and holder.resource is not None
-    ]
+    return [holder.resource for holder in all_items if holder.resource is not None]
 
   # =========================================================================
-  # ASSIGNMENT - CORRECTED (no helper method, use ResourceHolder API directly)
+  # ASSIGNMENT
   # =========================================================================
 
   def __setitem__(
@@ -135,7 +223,6 @@ class ContainerRack(ItemizedResource[ResourceHolder]):
     """Assign container(s) to position(s).
 
     By default, replaces existing containers (reassign=True).
-    If you want to fail when position is occupied, use holder.assign_child_resource() directly.
 
     Args:
         identifier: Position(s) to assign to.
@@ -157,7 +244,7 @@ class ContainerRack(ItemizedResource[ResourceHolder]):
 
       if len(holders) != len(value):
         raise ValueError(
-          f"Number of containers ({len(value)}) must match " f"number of positions ({len(holders)})"
+          f"Number of containers ({len(value)}) must match number of positions ({len(holders)})"
         )
 
       # Assign each container using ResourceHolder's API
@@ -173,26 +260,7 @@ class ContainerRack(ItemizedResource[ResourceHolder]):
         )
 
       holder = self.get_item(identifier)
-      # Use ResourceHolder's assign_child_resource directly
-      # reassign=True means it will replace existing container
       holder.assign_child_resource(value, reassign=True)
-
-  def __delitem__(self, identifier: Union[str, int, slice]) -> None:
-    """Remove container(s) from position(s).
-
-    Examples:
-        >>> del rack["A1"]
-        >>> del rack["A1:A3"]
-    """
-    if isinstance(identifier, slice) or (isinstance(identifier, str) and ":" in identifier):
-      holders = self[identifier]
-      for holder in holders:
-        if holder.resource is not None:
-          holder.unassign_child_resource(holder.resource)
-    else:
-      holder = self.get_item(identifier)
-      if holder.resource is not None:
-        holder.unassign_child_resource(holder.resource)
 
   # =========================================================================
   # STATE MANAGEMENT
@@ -207,4 +275,4 @@ class ContainerRack(ItemizedResource[ResourceHolder]):
   @staticmethod
   def _occupied_func(item: ResourceHolder) -> str:
     """Get occupation status for summary display."""
-    return "O" if hasattr(item, "resource") and item.resource is not None else "-"
+    return "O" if item.resource is not None else "-"

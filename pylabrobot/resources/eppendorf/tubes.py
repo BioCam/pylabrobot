@@ -78,7 +78,7 @@ def eppendorf_tube_1500uL_Vb(name: str) -> Tube:
     size_z=38.9,  # measured
     model=eppendorf_tube_1500uL_Vb.__name__,
     max_volume=1_500,  # units: ul
-    material_z_thickness=1.3,
+    material_z_thickness=1.1,
     bottom_type=TubeBottomType.V,
     # compute_volume_from_height=_compute_volume_from_height_eppendorf_tube_1500uL_Vb, TODO
     # compute_height_from_volume=_compute_height_from_volume_eppendorf_tube_1500uL_Vb, TODO

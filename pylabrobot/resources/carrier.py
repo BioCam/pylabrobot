@@ -5,8 +5,8 @@ from typing import Dict, Generic, List, Optional, Type, TypeVar, Union, cast
 
 from pylabrobot.resources.resource_holder import ResourceHolder, get_child_location
 
-from .coordinate import Coordinate
 from .container_rack import ContainerRack
+from .coordinate import Coordinate
 from .plate import Lid, Plate
 from .plate_adapter import PlateAdapter
 from .resource import Resource
