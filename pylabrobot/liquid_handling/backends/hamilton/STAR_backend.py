@@ -1197,6 +1197,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     self._extended_conf: Optional[dict] = None
     self._channel_traversal_height: float = 245.0
     self._iswap_traversal_height: float = 280.0
+    self._head96_traversal_height: float = 245.0
     self.core_adjustment = Coordinate.zero()
     self._unsafe = UnSafe(self)
 
@@ -1220,8 +1221,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   def set_minimum_traversal_height(self, traversal_height: float):
     raise NotImplementedError(
-      "set_minimum_traversal_height is deprecated. use set_minimum_channel_traversal_height or "
-      "set_minimum_iswap_traversal_height instead."
+      "set_minimum_traversal_height is deprecated. use set_minimum_channel_traversal_height, "
+      "set_minimum_iswap_traversal_height, or set_minimum_head96_traversal_height instead."
     )
 
   def set_minimum_channel_traversal_height(self, traversal_height: float):
@@ -1244,6 +1245,13 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     self._iswap_traversal_height = traversal_height
 
+  def set_minimum_head96_traversal_height(self, traversal_height: float):
+    """Set the minimum traversal height for the 96-head."""
+
+    assert 0 < traversal_height < 285, "Traversal height must be between 0 and 285 mm"
+
+    self._head96_traversal_height = traversal_height
+
   @contextmanager
   def iswap_minimum_traversal_height(self, traversal_height: float):
     orig = self._iswap_traversal_height
@@ -1257,6 +1265,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   @property
   def iswap_traversal_height(self) -> float:
     return self._iswap_traversal_height
+
+  @property
+  def head96_traversal_height(self) -> float:
+    return self._head96_traversal_height
 
   @property
   def module_id_length(self):
@@ -3018,10 +3030,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         }[tip_pickup_method],
         z_deposit_position=round(pickup_position.z * 10),
         minimum_traverse_height_at_beginning_of_a_command=round(
-          (minimum_traverse_height_at_beginning_of_a_command or self._channel_traversal_height) * 10
+          (minimum_traverse_height_at_beginning_of_a_command or self._head96_traversal_height) * 10
         ),
         minimum_height_command_end=round(
-          (minimum_height_command_end or self._channel_traversal_height) * 10
+          (minimum_height_command_end or self._head96_traversal_height) * 10
         ),
       )
     except STARFirmwareError as e:
@@ -3061,10 +3073,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       y_position=round(position.y * 10),
       z_deposit_position=round(position.z * 10),
       minimum_traverse_height_at_beginning_of_a_command=round(
-        (minimum_traverse_height_at_beginning_of_a_command or self._channel_traversal_height) * 10
+        (minimum_traverse_height_at_beginning_of_a_command or self._head96_traversal_height) * 10
       ),
       minimum_height_command_end=round(
-        (minimum_height_command_end or self._channel_traversal_height) * 10
+        (minimum_height_command_end or self._head96_traversal_height) * 10
       ),
     )
 
@@ -3294,9 +3306,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       y_positions=round(position.y * 10),
       aspiration_type=aspiration_type,
       minimum_traverse_height_at_beginning_of_a_command=round(
-        (minimum_traverse_height_at_beginning_of_a_command or self._channel_traversal_height) * 10
+        (minimum_traverse_height_at_beginning_of_a_command or self._head96_traversal_height) * 10
       ),
-      min_z_endpos=round((min_z_endpos or self._channel_traversal_height) * 10),
+      min_z_endpos=round((min_z_endpos or self._head96_traversal_height) * 10),
       lld_search_height=round(lld_search_height * 10),
       liquid_surface_no_lld=round(liquid_height * 10),
       pull_out_distance_transport_air=round(pull_out_distance_transport_air * 10),
@@ -3568,9 +3580,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       x_direction=0 if position.x >= 0 else 1,
       y_position=round(position.y * 10),
       minimum_traverse_height_at_beginning_of_a_command=round(
-        (minimum_traverse_height_at_beginning_of_a_command or self._channel_traversal_height) * 10
+        (minimum_traverse_height_at_beginning_of_a_command or self._head96_traversal_height) * 10
       ),
-      min_z_endpos=round((min_z_endpos or self._channel_traversal_height) * 10),
+      min_z_endpos=round((min_z_endpos or self._head96_traversal_height) * 10),
       lld_search_height=round(lld_search_height * 10),
       liquid_surface_no_lld=round(liquid_height * 10),
       pull_out_distance_transport_air=round(pull_out_distance_transport_air * 10),
