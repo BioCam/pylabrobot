@@ -11,7 +11,7 @@ from pylabrobot.resources.errors import NoLocationError
 from pylabrobot.resources.hamilton.tip_creators import hamilton_tip_300uL_filter
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip_rack import TipRack, TipSpot
-from pylabrobot.resources.trash import Trash
+from pylabrobot.resources.trash import Trash, TrashHalo
 
 logger = logging.getLogger("pylabrobot")
 
@@ -466,6 +466,12 @@ class HamiltonSTARDeck(HamiltonDeck):
         resource=Trash("trash", size_x=0, size_y=241.2, size_z=0),
         location=Coordinate(x=trash_x, y=190.6, z=137.1),
       )  # z I am not sure about
+
+      # halo around the trash area, left-center-top aligned with the trash's right-center-top
+      self.assign_child_resource(
+        resource=TrashHalo("trash_halo", size_x=160, size_y=302),
+        location=Coordinate(x=trash_x, y=160.2, z=137.1),
+      )
 
     self._trash96: Optional[Trash] = None
     if with_trash96:

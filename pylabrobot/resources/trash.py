@@ -1,4 +1,12 @@
 from .container import Container
+from .resource import Resource
+
+
+class TrashHalo(Resource):
+  """Visual frame around the trash area."""
+
+  def __init__(self, name: str, size_x: float, size_y: float, size_z: float = 0):
+    super().__init__(name=name, size_x=size_x, size_y=size_y, size_z=size_z, category="trash_halo")
 
 
 class Trash(Container):

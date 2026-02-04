@@ -939,6 +939,19 @@ class Trash extends Resource {
   }
 }
 
+class TrashHalo extends Resource {
+  drawMainShape() {
+    return new Konva.Rect({
+      width: this.size_x,
+      height: this.size_y,
+      fill: null,
+      stroke: "#888888",
+      strokeWidth: 2,
+      cornerRadius: 4,
+    });
+  }
+}
+
 class Carrier extends Resource {}
 class MFXCarrier extends Carrier {}
 class PlateCarrier extends Carrier {}
@@ -1027,6 +1040,8 @@ function classForResourceType(type) {
       return HamiltonSTARDeck;
     case "Trash":
       return Trash;
+    case "TrashHalo":
+      return TrashHalo;
     case "OTDeck":
       return OTDeck;
     case "Plate":

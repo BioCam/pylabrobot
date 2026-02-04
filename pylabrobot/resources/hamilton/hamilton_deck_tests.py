@@ -67,6 +67,8 @@ class HamiltonDeckTests(unittest.TestCase):
           │   ├── core_grippers         HamiltonCoreGrippers (797.500, 125.000, 205.000)
           │
     (32)  ├── trash                     Trash                (800.000, 190.600, 137.100)
+          │
+    (32)  ├── trash_halo                TrashHalo            (800.000, 160.200, 137.100)
     """[1:]
       ),
     )
