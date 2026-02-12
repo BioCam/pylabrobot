@@ -349,20 +349,56 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   async def _run_absorbance(
     self,
-    wavelength: float,
+    wavelengths: List[int],
     plate: Plate,
     wells: Optional[List[Well]] = None,
+    flashes: int = 22,
+    settling_time: int = 0,
+    pause_time: int = 0,
   ):
-    """Run a plate reader absorbance run."""
-    wavelength_data = int(wavelength * 10).to_bytes(2, byteorder="big")
+    """Run a plate reader absorbance run.
+
+    Args:
+      wavelengths: List of wavelengths in nm (1-8 wavelengths, 200-1000 nm each).
+      flashes: Number of flashes per well (0-200).
+      settling_time: Settling time in deciseconds (0-10).
+    """
+    if not 1 <= len(wavelengths) <= 8:
+      raise ValueError("Must specify 1-8 wavelengths")
+    if settling_time > 10:
+      raise ValueError("Settling time must be 0-10 deciseconds")
+    for w in wavelengths:
+      if not 200 <= w <= 1000:
+        raise ValueError(f"Wavelength {w} nm out of range (200-1000)")
+
     plate_and_wells = self._plate_bytes(plate, wells)
 
-    payload = (
-      plate_and_wells + b"\x82\x02\x00\x00\x00\x00\x00\x00\x00\x20\x04\x00\x1e\x27\x0f\x27"
-      b"\x0f\x19\x01" + wavelength_data + b"\x00\x00\x00\x64\x00\x00\x00\x00\x00\x00\x00\x64\x00"
-      b"\x00\x00\x00\x00\x02\x00\x00\x00\x00\x01\x00\x00\x00\x01\x00\x16\x00\x01\x00\x00"
-    )
-    run_response = await self.send(payload)
+    # Payload structure preserved from working capture + Go reference for wavelength encoding:
+    payload = bytearray()
+    payload += plate_and_wells
+    # Absorbance optic mode + zeros
+    payload += b"\x82\x02\x00\x00"
+    # Shaker placeholder (no shaking)
+    payload += b"\x00\x00\x00\x00"
+    payload += b"\x00\x20\x04\x00\x1e\x27\x0f\x27\x0f"
+    # Settling + wavelength count + wavelength data (per Go absDiscreteBytes)
+    payload += bytes([0x19, len(wavelengths)])
+    for w in wavelengths:
+      payload += (w * 10).to_bytes(2, "big")
+    # Fixed bytes
+    payload += b"\x00\x00\x00\x64\x00\x00\x00\x00\x00\x00\x00\x64\x00"
+    # Pause time
+    if pause_time != 0:
+      payload += b"\x01"
+    else:
+      payload += b"\x00"
+    payload += pause_time.to_bytes(2, "big")
+    # Fixed trailer
+    payload += b"\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"
+    payload += flashes.to_bytes(2, "big")
+    payload += b"\x00\x01\x00\x00"
+
+    run_response = await self.send(bytes(payload))
     return await self._wait_for_ready_and_return(run_response)
 
   async def _run_fluorescence(
@@ -477,6 +513,71 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   async def _get_measurement_values(self):
     return await self.send(b"\x05\x02\x00\x00\x00\x00\x00\x00")
+
+  @staticmethod
+  def _parse_absorbance_response(
+    resp: bytes, num_wavelengths: int
+  ) -> Tuple[List[List[float]], float]:
+    """Parse an absorbance measurement response using fixed offsets per the Go reference.
+
+    Returns (transmission_per_well_per_wavelength, temperature_celsius).
+    transmission[well_idx][wavelength_idx] = percent transmission.
+    """
+    try:
+      payload = _unframe(resp)
+    except FrameError:
+      payload = resp
+
+    if len(payload) < 36:
+      raise ValueError(f"Absorbance response too short ({len(payload)} bytes)")
+
+    if payload[6] != 0x29:
+      raise ValueError(f"Incorrect schema byte for abs data: 0x{payload[6]:02x}, expected 0x29")
+
+    wavelengths_in_resp = int.from_bytes(payload[16:18], "big")
+    wells = int.from_bytes(payload[20:22], "big")
+    temp_raw = int.from_bytes(payload[23:25], "big")
+    temperature = temp_raw / 10.0
+
+    # Raw sample values: wells * wavelengths uint32s starting at byte 36
+    offset = 36
+    vals = []
+    for _ in range(wells * wavelengths_in_resp):
+      vals.append(float(struct.unpack(">I", payload[offset : offset + 4])[0]))
+      offset += 4
+
+    # Reference values: wells uint32s
+    ref = []
+    for _ in range(wells):
+      ref.append(float(struct.unpack(">I", payload[offset : offset + 4])[0]))
+      offset += 4
+
+    # Chromatic reference hi/lo pairs: wavelengths pairs of uint32
+    chromats = []
+    for _ in range(wavelengths_in_resp):
+      hi = float(struct.unpack(">I", payload[offset : offset + 4])[0])
+      lo = float(struct.unpack(">I", payload[offset + 4 : offset + 8])[0])
+      chromats.append((hi, lo))
+      offset += 8
+
+    # Reference channel hi/lo
+    ref_chan_hi = float(struct.unpack(">I", payload[offset : offset + 4])[0])
+    ref_chan_lo = float(struct.unpack(">I", payload[offset + 4 : offset + 8])[0])
+
+    # Calculate transmission per well per wavelength (matching Go formula)
+    transmission: List[List[float]] = []
+    for i in range(wells):
+      wref = (
+        (ref[i] - ref_chan_lo) / (ref_chan_hi - ref_chan_lo) if ref_chan_hi != ref_chan_lo else 0
+      )
+      well_trans = []
+      for j in range(wavelengths_in_resp):
+        c_hi, c_lo = chromats[j]
+        value = (vals[i + j * wells] - c_lo) / (c_hi - c_lo) if c_hi != c_lo else 0
+        well_trans.append(value / wref * 100 if wref != 0 else 0)
+      transmission.append(well_trans)
+
+    return transmission, temperature
 
   @staticmethod
   def _parse_fluorescence_response(resp: bytes) -> Tuple[List[int], float, int]:
@@ -594,21 +695,26 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Args:
       wavelength: wavelength to read absorbance at, in nanometers.
-      report: whether to report absorbance as optical depth (OD) or transmittance. Transmittance is
-        used interchangeably with "transmission" in the CLARIOStar software and documentation.
-
-    Returns:
-      A list containing a single dictionary, where the key is (wavelength, 0) and the value is
-      another dictionary containing the data, temperature, and time.
+      report: whether to report absorbance as optical depth (OD) or transmittance.
+      **backend_kwargs: Additional keyword arguments:
+        wavelengths: List[int] - multiple wavelengths (overrides `wavelength`).
+        flashes: int - number of flashes per well.
+        settling_time: int - settling time in deciseconds.
     """
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
+
+    # Support multi-wavelength via backend_kwargs
+    wavelengths = backend_kwargs.pop("wavelengths", [wavelength])
+    if isinstance(wavelengths, int):
+      wavelengths = [wavelengths]
 
     await self._mp_and_focus_height_value()
 
     await self._run_absorbance(
-      wavelength=wavelength,
+      wavelengths=wavelengths,
       plate=plate,
       wells=None if all_wells else wells,
+      **backend_kwargs,
     )
 
     await self._read_order_values()
@@ -616,70 +722,62 @@ class CLARIOstarBackend(PlateReaderBackend):
     await self._status_hw()
 
     vals = await self._get_measurement_values()
+
     num_wells = len(wells)
-    div = b"\x00" * 6
-    start_idx = vals.index(div) + len(div)
-    chromatic_data = vals[start_idx : start_idx + num_wells * 4]
-    ref_data = vals[start_idx + num_wells * 4 : start_idx + (num_wells * 2) * 4]
-    chromatic_bytes = [bytes(chromatic_data[i : i + 4]) for i in range(0, len(chromatic_data), 4)]
-    ref_bytes = [bytes(ref_data[i : i + 4]) for i in range(0, len(ref_data), 4)]
-    chromatic_reading = [struct.unpack(">i", x)[0] for x in chromatic_bytes]
-    reference_reading = [struct.unpack(">i", x)[0] for x in ref_bytes]
 
-    # c100 is the value of the chromatic at 100% intensity
-    # c0 is the value of the chromatic at 0% intensity (black reading)
-    # r100 is the value of the reference at 100% intensity
-    # r0 is the value of the reference at 0% intensity (black reading)
-    after_values_idx = start_idx + (num_wells * 2) * 4
-    c100, c0, r100, r0 = struct.unpack(">iiii", vals[after_values_idx : after_values_idx + 4 * 4])
+    transmission_data, temperature = self._parse_absorbance_response(vals, len(wavelengths))
 
-    # a bit much, but numpy should not be a dependency
-    real_chromatic_reading = []
-    for cr in chromatic_reading:
-      real_chromatic_reading.append((cr - c0) / c100)
-    real_reference_reading = []
-    for rr in reference_reading:
-      real_reference_reading.append((rr - r0) / r100)
+    # Build result for each wavelength
+    results = []
+    for wl_idx, wl in enumerate(wavelengths):
+      # Extract transmission for this wavelength across all wells
+      trans_for_wl: List[Optional[float]] = []
+      for well_idx in range(num_wells):
+        if well_idx < len(transmission_data):
+          t = (
+            transmission_data[well_idx][wl_idx]
+            if wl_idx < len(transmission_data[well_idx])
+            else None
+          )
+        else:
+          t = None
+        trans_for_wl.append(t)
 
-    transmittance: List[Optional[float]] = []
-    for rcr, rrr in zip(real_chromatic_reading, real_reference_reading):
-      transmittance.append(rcr / rrr * 100)
-
-    data: List[List[Optional[float]]]
-    if report == "OD":
-      od: List[Optional[float]] = []
-      for t in transmittance:
-        od.append(math.log10(100 / t) if t is not None and t > 0 else None)
+      # Map to plate grid
       if all_wells:
-        data = utils.reshape_2d(od, (plate.num_items_y, plate.num_items_x))
+        if report == "OD":
+          od_vals: List[Optional[float]] = []
+          for t in trans_for_wl:
+            od_vals.append(math.log10(100 / t) if t is not None and t > 0 else None)
+          data_2d: List[List[Optional[float]]] = utils.reshape_2d(
+            od_vals, (plate.num_items_y, plate.num_items_x)
+          )
+        elif report == "transmittance":
+          data_2d = utils.reshape_2d(trans_for_wl, (plate.num_items_y, plate.num_items_x))
+        else:
+          raise ValueError(f"Invalid report type: {report}")
       else:
         grid: List[Optional[float]] = [None] * plate.num_items
         all_items = plate.get_all_items()
         for i, well in enumerate(wells):
           idx = all_items.index(well)
-          grid[idx] = od[i]
-        data = utils.reshape_2d(grid, (plate.num_items_y, plate.num_items_x))
-    elif report == "transmittance":
-      if all_wells:
-        data = utils.reshape_2d(transmittance, (plate.num_items_y, plate.num_items_x))
-      else:
-        grid2: List[Optional[float]] = [None] * plate.num_items
-        all_items2 = plate.get_all_items()
-        for i, well in enumerate(wells):
-          idx = all_items2.index(well)
-          grid2[idx] = transmittance[i]
-        data = utils.reshape_2d(grid2, (plate.num_items_y, plate.num_items_x))
-    else:
-      raise ValueError(f"Invalid report type: {report}")
+          t = trans_for_wl[i]
+          if report == "OD":
+            grid[idx] = math.log10(100 / t) if t is not None and t > 0 else None
+          else:
+            grid[idx] = t
+        data_2d = utils.reshape_2d(grid, (plate.num_items_y, plate.num_items_x))
 
-    return [
-      {
-        "wavelength": wavelength,
-        "data": data,
-        "temperature": float("nan"),  # Temperature not available
-        "time": time.time(),
-      }
-    ]
+      results.append(
+        {
+          "wavelength": wl,
+          "data": data_2d,
+          "temperature": temperature,
+          "time": time.time(),
+        }
+      )
+
+    return results
 
   async def read_fluorescence(
     self,
