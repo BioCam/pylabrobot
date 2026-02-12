@@ -115,8 +115,11 @@ def _unframe(data: bytes) -> bytes:
 
 
 class CLARIOstarBackend(PlateReaderBackend):
-  """A plate reader backend for the Clario star. Note that this is not a complete implementation
-  and many commands and parameters are not implemented yet."""
+  """A plate reader backend for the CLARIOstar.
+
+  Implements luminescence and absorbance reads with structured protocol framing,
+  status flag parsing, and partial well selection.
+  """
 
   def __init__(self, device_id: Optional[str] = None):
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
@@ -259,11 +262,15 @@ class CLARIOstarBackend(PlateReaderBackend):
     mp_and_focus_height_value_response = await self.send(b"\x05\x0f\x00\x00\x00\x00\x00\x00")
     return await self._wait_for_ready_and_return(mp_and_focus_height_value_response)
 
-  def _plate_bytes(self, plate: Plate) -> bytes:
-    """Encode the plate geometry into the binary format the CLARIOstar expects.
+  def _plate_bytes(self, plate: Plate, wells: Optional[List[Well]] = None) -> bytes:
+    """Encode the plate geometry and well selection into the binary format the CLARIOstar expects.
 
-    Returns a 62-byte sequence: plate dimensions (12 bytes), column/row counts (2 bytes),
-    and a 384-bit well mask (48 bytes).
+    The 0x04 command prefix is included. Returns a 63-byte sequence:
+    command(1) + plate dimensions(12) + col/row counts(2) + 384-bit well mask(48).
+
+    Args:
+      plate: The plate resource.
+      wells: Optional list of wells to read. If None, all wells are read.
     """
 
     def float_to_bytes(f: float) -> bytes:
@@ -282,13 +289,22 @@ class CLARIOstarBackend(PlateReaderBackend):
     plate_cols = plate.num_items_x
     plate_rows = plate.num_items_y
 
-    # 384-bit mask: first num_items bits set, rest zero
-    wells = ([1] * plate.num_items) + ([0] * (384 - plate.num_items))
-    well_mask: int = sum(b << i for i, b in enumerate(wells[::-1]))
-    wells_bytes = well_mask.to_bytes(48, "big")
+    if wells is None or set(wells) == set(plate.get_all_items()):
+      # All wells: set first num_items bits
+      all_bits = ([1] * plate.num_items) + ([0] * (384 - plate.num_items))
+      well_mask_int: int = sum(b << i for i, b in enumerate(all_bits[::-1]))
+      wells_bytes = well_mask_int.to_bytes(48, "big")
+    else:
+      # Selective wells: encode specific well indices into the bitmask
+      mask = bytearray(48)
+      for well in wells:
+        idx = self._well_to_index(plate, well)
+        mask[idx // 8] |= 1 << (7 - idx % 8)
+      wells_bytes = bytes(mask)
 
     return (
-      float_to_bytes(plate_length)
+      b"\x04"
+      + float_to_bytes(plate_length)
       + float_to_bytes(plate_width)
       + float_to_bytes(plate_x1)
       + float_to_bytes(plate_y1)
@@ -299,16 +315,31 @@ class CLARIOstarBackend(PlateReaderBackend):
       + wells_bytes
     )
 
-  async def _run_luminescence(self, focal_height: float, plate: Plate):
+  @staticmethod
+  def _well_to_index(plate: Plate, well: Well) -> int:
+    """Convert a well to its row-major index in the plate."""
+    for idx, w in enumerate(plate.get_all_items()):
+      if w is well:
+        return idx
+    raise ValueError(f"Well {well.name} not found in plate {plate.name}")
+
+  # --- Run commands ---
+
+  async def _run_luminescence(
+    self,
+    focal_height: float,
+    plate: Plate,
+    wells: Optional[List[Well]] = None,
+  ):
     """Run a plate reader luminescence run."""
 
     assert 0 <= focal_height <= 25, "focal height must be between 0 and 25 mm"
 
     focal_height_data = int(focal_height * 100).to_bytes(2, byteorder="big")
-    plate_bytes = self._plate_bytes(plate)
+    plate_and_wells = self._plate_bytes(plate, wells)
 
     payload = (
-      b"\x04" + plate_bytes + b"\x02\x01\x00\x00\x00\x00\x00\x00\x00\x20\x04\x00\x1e\x27"
+      plate_and_wells + b"\x02\x01\x00\x00\x00\x00\x00\x00\x00\x20\x04\x00\x1e\x27"
       b"\x0f\x27\x0f\x01" + focal_height_data + b"\x00\x00\x01\x00\x00\x0e\x10\x00\x01\x00\x01\x00"
       b"\x01\x00\x01\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x01"
       b"\x00\x00\x00\x01\x00\x64\x00\x20\x00\x00"
@@ -316,13 +347,18 @@ class CLARIOstarBackend(PlateReaderBackend):
     run_response = await self.send(payload)
     return await self._wait_for_ready_and_return(run_response)
 
-  async def _run_absorbance(self, wavelength: float, plate: Plate):
+  async def _run_absorbance(
+    self,
+    wavelength: float,
+    plate: Plate,
+    wells: Optional[List[Well]] = None,
+  ):
     """Run a plate reader absorbance run."""
     wavelength_data = int(wavelength * 10).to_bytes(2, byteorder="big")
-    plate_bytes = self._plate_bytes(plate)
+    plate_and_wells = self._plate_bytes(plate, wells)
 
     payload = (
-      b"\x04" + plate_bytes + b"\x82\x02\x00\x00\x00\x00\x00\x00\x00\x20\x04\x00\x1e\x27\x0f\x27"
+      plate_and_wells + b"\x82\x02\x00\x00\x00\x00\x00\x00\x00\x20\x04\x00\x1e\x27\x0f\x27"
       b"\x0f\x19\x01" + wavelength_data + b"\x00\x00\x00\x64\x00\x00\x00\x00\x00\x00\x00\x64\x00"
       b"\x00\x00\x00\x00\x02\x00\x00\x00\x00\x01\x00\x00\x00\x01\x00\x16\x00\x01\x00\x00"
     )
@@ -340,15 +376,21 @@ class CLARIOstarBackend(PlateReaderBackend):
     return await self.send(b"\x05\x02\x00\x00\x00\x00\x00\x00")
 
   async def read_luminescence(
-    self, plate: Plate, wells: List[Well], focal_height: float = 13
+    self, plate: Plate, wells: List[Well], focal_height: float = 13, **backend_kwargs
   ) -> List[Dict]:
-    """Read luminescence values from the plate reader."""
-    if wells != plate.get_all_items():
-      raise NotImplementedError("Only full plate reads are supported for now.")
+    """Read luminescence values from the plate reader.
+
+    Supports partial well selection. Unread wells are filled with None.
+    """
+    all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
     await self._mp_and_focus_height_value()
 
-    await self._run_luminescence(focal_height=focal_height, plate=plate)
+    await self._run_luminescence(
+      focal_height=focal_height,
+      plate=plate,
+      wells=None if all_wells else wells,
+    )
 
     await self._read_order_values()
 
@@ -359,9 +401,9 @@ class CLARIOstarBackend(PlateReaderBackend):
     # All values are 32 bit integers. The header is variable length, so we need to find the
     # start of the data. In the future, when we understand the protocol better, this can be
     # replaced with a more robust solution.
-    num_wells = plate.num_items
+    num_read = len(wells)
     start_idx = vals.index(b"\x00\x00\x00\x00\x00\x00") + len(b"\x00\x00\x00\x00\x00\x00")
-    data = list(vals)[start_idx : start_idx + num_wells * 4]
+    data = list(vals)[start_idx : start_idx + num_read * 4]
 
     # group bytes by 4
     int_bytes = [data[i : i + 4] for i in range(0, len(data), 4)]
@@ -369,10 +411,20 @@ class CLARIOstarBackend(PlateReaderBackend):
     # convert to int
     ints = [struct.unpack(">i", bytes(int_data))[0] for int_data in int_bytes]
 
-    # for backend conformity, convert to float, and reshape to 2d array
-    floats: List[List[Optional[float]]] = utils.reshape_2d(
-      [float(i) for i in ints], (plate.num_items_y, plate.num_items_x)
-    )
+    readings = [float(i) for i in ints]
+
+    # Map readings back to plate grid
+    if all_wells:
+      floats: List[List[Optional[float]]] = utils.reshape_2d(
+        readings, (plate.num_items_y, plate.num_items_x)
+      )
+    else:
+      grid: List[Optional[float]] = [None] * plate.num_items
+      all_items = plate.get_all_items()
+      for reading, well in zip(readings, wells):
+        idx = all_items.index(well)
+        grid[idx] = reading
+      floats = utils.reshape_2d(grid, (plate.num_items_y, plate.num_items_x))
 
     return [
       {
@@ -388,6 +440,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     wells: List[Well],
     wavelength: int,
     report: Literal["OD", "transmittance"] = "OD",
+    **backend_kwargs,
   ) -> List[Dict]:
     """Read absorbance values from the device.
 
@@ -400,20 +453,22 @@ class CLARIOstarBackend(PlateReaderBackend):
       A list containing a single dictionary, where the key is (wavelength, 0) and the value is
       another dictionary containing the data, temperature, and time.
     """
-
-    if wells != plate.get_all_items():
-      raise NotImplementedError("Only full plate reads are supported for now.")
+    all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
     await self._mp_and_focus_height_value()
 
-    await self._run_absorbance(wavelength=wavelength, plate=plate)
+    await self._run_absorbance(
+      wavelength=wavelength,
+      plate=plate,
+      wells=None if all_wells else wells,
+    )
 
     await self._read_order_values()
 
     await self._status_hw()
 
     vals = await self._get_measurement_values()
-    num_wells = plate.num_items
+    num_wells = len(wells)
     div = b"\x00" * 6
     start_idx = vals.index(div) + len(div)
     chromatic_data = vals[start_idx : start_idx + num_wells * 4]
@@ -447,9 +502,25 @@ class CLARIOstarBackend(PlateReaderBackend):
       od: List[Optional[float]] = []
       for t in transmittance:
         od.append(math.log10(100 / t) if t is not None and t > 0 else None)
-      data = utils.reshape_2d(od, (plate.num_items_y, plate.num_items_x))
+      if all_wells:
+        data = utils.reshape_2d(od, (plate.num_items_y, plate.num_items_x))
+      else:
+        grid: List[Optional[float]] = [None] * plate.num_items
+        all_items = plate.get_all_items()
+        for i, well in enumerate(wells):
+          idx = all_items.index(well)
+          grid[idx] = od[i]
+        data = utils.reshape_2d(grid, (plate.num_items_y, plate.num_items_x))
     elif report == "transmittance":
-      data = utils.reshape_2d(transmittance, (plate.num_items_y, plate.num_items_x))
+      if all_wells:
+        data = utils.reshape_2d(transmittance, (plate.num_items_y, plate.num_items_x))
+      else:
+        grid2: List[Optional[float]] = [None] * plate.num_items
+        all_items2 = plate.get_all_items()
+        for i, well in enumerate(wells):
+          idx = all_items2.index(well)
+          grid2[idx] = transmittance[i]
+        data = utils.reshape_2d(grid2, (plate.num_items_y, plate.num_items_x))
     else:
       raise ValueError(f"Invalid report type: {report}")
 
