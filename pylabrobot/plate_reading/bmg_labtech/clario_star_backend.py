@@ -69,6 +69,51 @@ def _parse_status(status_bytes: bytes) -> Set[StatusFlag]:
   return flags
 
 
+class FrameError(Exception):
+  """Raised when a response frame is malformed."""
+
+
+class ChecksumError(FrameError):
+  """Raised when a response frame checksum is invalid."""
+
+
+def _frame(payload: bytes) -> bytes:
+  """Frame a payload according to the BMG serial protocol.
+
+  Format: STX(0x02) | size(uint16 BE) | NP(0x0c) | payload | checksum(uint16 BE) | CR(0x0d)
+
+  The size field is len(payload) + 7 (accounts for STX + size + NP + checksum + CR).
+  """
+  size = len(payload) + 7
+  buf = bytearray([0x02]) + size.to_bytes(2, "big") + b"\x0c" + payload
+  checksum = sum(buf) & 0xFFFF
+  buf += checksum.to_bytes(2, "big")
+  buf += b"\x0d"
+  return bytes(buf)
+
+
+def _unframe(data: bytes) -> bytes:
+  """Validate and strip framing from a response, returning the payload.
+
+  Raises FrameError/ChecksumError on malformed responses.
+  """
+  if len(data) < 7:
+    raise FrameError(f"Response too short ({len(data)} bytes)")
+  if data[0] != 0x02:
+    raise FrameError(f"Expected STX (0x02), got 0x{data[0]:02x}")
+  if data[-1] != 0x0D:
+    raise FrameError(f"Expected CR (0x0d), got 0x{data[-1]:02x}")
+
+  # Validate checksum: sum of all bytes except the last 3 (checksum + CR)
+  expected_cs = sum(data[:-3]) & 0xFFFF
+  actual_cs = int.from_bytes(data[-3:-1], "big")
+  if expected_cs != actual_cs:
+    raise ChecksumError(f"Checksum mismatch: expected 0x{expected_cs:04x}, got 0x{actual_cs:04x}")
+
+  # Return payload (strip STX + size + NP header and checksum + CR trailer)
+  return data[4:-3]
+
+
 class CLARIOstarBackend(PlateReaderBackend):
   """A plate reader backend for the Clario star. Note that this is not a complete implementation
   and many commands and parameters are not implemented yet."""
@@ -115,7 +160,7 @@ class CLARIOstarBackend(PlateReaderBackend):
         ):  # if we read less than 25 bytes, we're at the end
           break
       else:
-        # If we didn't read any data, check if the last read ended in an end byte. If so, we're done
+        # If we didn't read any data, check if the last read ended in an end byte. If so, done
         if end_byte_found:
           break
 
@@ -131,11 +176,10 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     return d
 
-  async def send(self, cmd: Union[bytearray, bytes], read_timeout=20):
-    """Send a command to the plate reader and return the response."""
+  async def send(self, payload: Union[bytearray, bytes], read_timeout=20) -> bytes:
+    """Frame a payload and send it to the plate reader, returning the raw response."""
 
-    checksum = (sum(cmd) & 0xFFFF).to_bytes(2, byteorder="big")
-    cmd = cmd + checksum + b"\x0d"
+    cmd = _frame(payload)
 
     logger.debug("sending %s", cmd.hex())
 
@@ -151,12 +195,22 @@ class CLARIOstarBackend(PlateReaderBackend):
   # --- Status ---
 
   def _parse_status_response(self, response: bytes) -> Set[StatusFlag]:
-    """Extract and parse status flags from a raw status response.
+    """Extract and parse status flags from a framed status response.
 
-    The response has a 4-byte header (STX + size + NP), then 5 status bytes at positions 4-8.
+    The unframed payload starts with a schema byte, then 5 status bytes at positions 0-4.
+    For the status command, the unframed payload is the status data itself.
     """
-    if len(response) >= 9:
-      return _parse_status(response[4:9])
+    try:
+      payload = _unframe(response)
+    except FrameError:
+      logger.warning("Could not unframe status response: %s", response.hex())
+      # Fall back to extracting bytes 4-9 from the raw framed response
+      if len(response) >= 9:
+        return _parse_status(response[4:9])
+      return set()
+    # The first byte of the payload is a schema/command byte, then status bytes follow
+    if len(payload) >= 5:
+      return _parse_status(payload[:5])
     return set()
 
   async def _wait_for_ready_and_return(self, ret, timeout=150):
@@ -182,30 +236,27 @@ class CLARIOstarBackend(PlateReaderBackend):
     response = await self.read_command_status()
     return self._parse_status_response(response)
 
-  async def read_command_status(self):
-    status = await self.send(b"\x02\x00\x09\x0c\x80\x00")
-    return status
+  async def read_command_status(self) -> bytes:
+    return await self.send(b"\x80\x00")
 
   async def initialize(self):
-    command_response = await self.send(b"\x02\x00\x0d\x0c\x01\x00\x00\x10\x02\x00")
+    command_response = await self.send(b"\x01\x00\x00\x10\x02\x00")
     return await self._wait_for_ready_and_return(command_response)
 
   async def request_eeprom_data(self):
-    eeprom_response = await self.send(b"\x02\x00\x0f\x0c\x05\x07\x00\x00\x00\x00\x00\x00")
+    eeprom_response = await self.send(b"\x05\x07\x00\x00\x00\x00\x00\x00")
     return await self._wait_for_ready_and_return(eeprom_response)
 
   async def open(self):
-    open_response = await self.send(b"\x02\x00\x0e\x0c\x03\x01\x00\x00\x00\x00\x00")
+    open_response = await self.send(b"\x03\x01\x00\x00\x00\x00\x00")
     return await self._wait_for_ready_and_return(open_response)
 
   async def close(self, plate: Optional[Plate] = None):
-    close_response = await self.send(b"\x02\x00\x0e\x0c\x03\x00\x00\x00\x00\x00\x00")
+    close_response = await self.send(b"\x03\x00\x00\x00\x00\x00\x00")
     return await self._wait_for_ready_and_return(close_response)
 
   async def _mp_and_focus_height_value(self):
-    mp_and_focus_height_value_response = await self.send(
-      b"\x02\x00\x0f\x0c\x05\17\x00\x00\x00\x00" + b"\x00\x00"
-    )
+    mp_and_focus_height_value_response = await self.send(b"\x05\x0f\x00\x00\x00\x00\x00\x00")
     return await self._wait_for_ready_and_return(mp_and_focus_height_value_response)
 
   def _plate_bytes(self, plate: Plate) -> bytes:
@@ -262,9 +313,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       b"\x01\x00\x01\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x01"
       b"\x00\x00\x00\x01\x00\x64\x00\x20\x00\x00"
     )
-    message_size = (len(payload) + 7).to_bytes(2, byteorder="big")
-    cmd = b"\x02" + message_size + b"\x0c" + payload
-    run_response = await self.send(cmd)
+    run_response = await self.send(payload)
     return await self._wait_for_ready_and_return(run_response)
 
   async def _run_absorbance(self, wavelength: float, plate: Plate):
@@ -277,20 +326,18 @@ class CLARIOstarBackend(PlateReaderBackend):
       b"\x0f\x19\x01" + wavelength_data + b"\x00\x00\x00\x64\x00\x00\x00\x00\x00\x00\x00\x64\x00"
       b"\x00\x00\x00\x00\x02\x00\x00\x00\x00\x01\x00\x00\x00\x01\x00\x16\x00\x01\x00\x00"
     )
-    message_size = (len(payload) + 7).to_bytes(2, byteorder="big")
-    cmd = b"\x02" + message_size + b"\x0c" + payload
-    run_response = await self.send(cmd)
+    run_response = await self.send(payload)
     return await self._wait_for_ready_and_return(run_response)
 
   async def _read_order_values(self):
-    return await self.send(b"\x02\x00\x0f\x0c\x05\x1d\x00\x00\x00\x00\x00\x00")
+    return await self.send(b"\x05\x1d\x00\x00\x00\x00\x00\x00")
 
   async def _status_hw(self):
-    status_hw_response = await self.send(b"\x02\x00\x09\x0c\x81\x00")
+    status_hw_response = await self.send(b"\x81\x00")
     return await self._wait_for_ready_and_return(status_hw_response)
 
   async def _get_measurement_values(self):
-    return await self.send(b"\x02\x00\x0f\x0c\x05\x02\x00\x00\x00\x00\x00\x00")
+    return await self.send(b"\x05\x02\x00\x00\x00\x00\x00\x00")
 
   async def read_luminescence(
     self, plate: Plate, wells: List[Well], focal_height: float = 13
