@@ -1,10 +1,11 @@
 import asyncio
+import enum
 import logging
 import math
 import struct
 import sys
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Set, Tuple, Union
 
 from pylabrobot import utils
 from pylabrobot.io.ftdi import FTDI
@@ -19,6 +20,53 @@ else:
   from typing_extensions import Literal
 
 logger = logging.getLogger("pylabrobot")
+
+
+class StatusFlag(enum.Enum):
+  """Named status flags parsed from the CLARIOstar 5-byte status field."""
+
+  STANDBY = "STANDBY"
+  VALID = "VALID"
+  BUSY = "BUSY"
+  RUNNING = "RUNNING"
+  UNREAD_DATA = "UNREAD_DATA"
+  INITIALIZED = "INITIALIZED"
+  LID_OPEN = "LID_OPEN"
+  OPEN = "OPEN"
+  PLATE_DETECTED = "PLATE_DETECTED"
+  Z_PROBED = "Z_PROBED"
+  ACTIVE = "ACTIVE"
+  FILTER_COVER_OPEN = "FILTER_COVER_OPEN"
+
+
+# (byte_index_in_status, bitmask) — status field is bytes 0-4 of the unframed payload
+_STATUS_DEFS: List[Tuple[StatusFlag, int, int]] = [
+  (StatusFlag.STANDBY, 0, 1 << 1),
+  (StatusFlag.VALID, 1, 1 << 0),
+  (StatusFlag.BUSY, 1, 1 << 5),
+  (StatusFlag.RUNNING, 1, 1 << 4),
+  (StatusFlag.UNREAD_DATA, 2, 1),
+  (StatusFlag.INITIALIZED, 3, 1 << 5),
+  (StatusFlag.LID_OPEN, 3, 1 << 6),
+  (StatusFlag.OPEN, 3, 1),
+  (StatusFlag.PLATE_DETECTED, 3, 1 << 1),
+  (StatusFlag.Z_PROBED, 3, 1 << 2),
+  (StatusFlag.ACTIVE, 3, 1 << 3),
+  (StatusFlag.FILTER_COVER_OPEN, 4, 1 << 6),
+]
+
+
+def _parse_status(status_bytes: bytes) -> Set[StatusFlag]:
+  """Parse 5 status bytes into a set of raised flags.
+
+  Args:
+    status_bytes: The 5-byte status field from the unframed response payload.
+  """
+  flags: Set[StatusFlag] = set()
+  for flag, byte_idx, mask in _STATUS_DEFS:
+    if byte_idx < len(status_bytes) and status_bytes[byte_idx] & mask:
+      flags.add(flag)
+  return flags
 
 
 class CLARIOstarBackend(PlateReaderBackend):
@@ -100,43 +148,39 @@ class CLARIOstarBackend(PlateReaderBackend):
     resp = await self.read_resp(timeout=read_timeout)
     return resp
 
+  # --- Status ---
+
+  def _parse_status_response(self, response: bytes) -> Set[StatusFlag]:
+    """Extract and parse status flags from a raw status response.
+
+    The response has a 4-byte header (STX + size + NP), then 5 status bytes at positions 4-8.
+    """
+    if len(response) >= 9:
+      return _parse_status(response[4:9])
+    return set()
+
   async def _wait_for_ready_and_return(self, ret, timeout=150):
-    """Wait for the plate reader to be ready and return the response."""
-    last_status = None
+    """Wait for the plate reader to be ready (BUSY flag cleared) and return the response."""
+    last_status_hex = None
     t = time.time()
     while time.time() - t < timeout:
       await asyncio.sleep(0.1)
 
       command_status = await self.read_command_status()
 
-      if len(command_status) != 24:
-        logger.warning(
-          "unexpected response %s. I think a command status response is always 24 bytes",
-          command_status,
-        )
-        continue
+      status_hex = command_status.hex()
+      if status_hex != last_status_hex:
+        last_status_hex = status_hex
+        flags = self._parse_status_response(command_status)
+        logger.info("status changed: %s flags=%s", status_hex, flags)
+        if StatusFlag.BUSY not in flags:
+          logger.debug("status is ready (BUSY flag cleared)")
+          return ret
 
-      if command_status != last_status:
-        logger.info("status changed %s", command_status.hex())
-        last_status = command_status
-      else:
-        continue
-
-      if command_status[2] != 0x18 or command_status[3] != 0x0C or command_status[4] != 0x01:
-        logger.warning(
-          "unexpected response %s. I think 18 0c 01 indicates a command status response",
-          command_status,
-        )
-
-      if command_status[5] not in {
-        0x25,
-        0x05,
-      }:  # 25 is busy, 05 is ready. probably.
-        logger.warning("unexpected response %s.", command_status)
-
-      if command_status[5] == 0x05:
-        logger.debug("status is ready")
-        return ret
+  async def get_status(self) -> Set[StatusFlag]:
+    """Request the current status flags from the plate reader."""
+    response = await self.read_command_status()
+    return self._parse_status_response(response)
 
   async def read_command_status(self):
     status = await self.send(b"\x02\x00\x09\x0c\x80\x00")
@@ -221,24 +265,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     message_size = (len(payload) + 7).to_bytes(2, byteorder="big")
     cmd = b"\x02" + message_size + b"\x0c" + payload
     run_response = await self.send(cmd)
-
-    # TODO: find a prettier way to do this. It's essentially copied from _wait_for_ready_and_return.
-    last_status = None
-    while True:
-      await asyncio.sleep(0.1)
-
-      command_status = await self.read_command_status()
-
-      if command_status != last_status:
-        last_status = command_status
-        logger.info("status changed %s", command_status)
-        continue
-
-      if command_status == bytes(
-        b"\x02\x00\x18\x0c\x01\x25\x04\x2e\x00\x00\x04\x01\x00\x00\x03\x00"
-        b"\x00\x00\x00\xc0\x00\x01\x46\x0d"
-      ):
-        return run_response
+    return await self._wait_for_ready_and_return(run_response)
 
   async def _run_absorbance(self, wavelength: float, plate: Plate):
     """Run a plate reader absorbance run."""
@@ -253,24 +280,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     message_size = (len(payload) + 7).to_bytes(2, byteorder="big")
     cmd = b"\x02" + message_size + b"\x0c" + payload
     run_response = await self.send(cmd)
-
-    # TODO: find a prettier way to do this. It's essentially copied from _wait_for_ready_and_return.
-    last_status = None
-    while True:
-      await asyncio.sleep(0.1)
-
-      command_status = await self.read_command_status()
-
-      if command_status != last_status:
-        last_status = command_status
-        logger.info("status changed %s", command_status)
-        continue
-
-      if command_status == bytes(
-        b"\x02\x00\x18\x0c\x01\x25\x04\x2e\x00\x00\x04\x01\x00\x00\x03\x00"
-        b"\x00\x00\x00\xc0\x00\x01\x46\x0d"
-      ):
-        return run_response
+    return await self._wait_for_ready_and_return(run_response)
 
   async def _read_order_values(self):
     return await self.send(b"\x02\x00\x0f\x0c\x05\x1d\x00\x00\x00\x00\x00\x00")
