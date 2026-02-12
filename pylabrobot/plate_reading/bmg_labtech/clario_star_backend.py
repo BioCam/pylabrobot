@@ -117,8 +117,8 @@ def _unframe(data: bytes) -> bytes:
 class CLARIOstarBackend(PlateReaderBackend):
   """A plate reader backend for the CLARIOstar.
 
-  Implements luminescence and absorbance reads with structured protocol framing,
-  status flag parsing, and partial well selection.
+  Implements luminescence, absorbance, and fluorescence reads with structured
+  protocol framing, status flag parsing, and partial well selection.
   """
 
   def __init__(self, device_id: Optional[str] = None):
@@ -365,6 +365,109 @@ class CLARIOstarBackend(PlateReaderBackend):
     run_response = await self.send(payload)
     return await self._wait_for_ready_and_return(run_response)
 
+  async def _run_fluorescence(
+    self,
+    plate: Plate,
+    excitation_wavelength: int,
+    emission_wavelength: int,
+    focal_height: float,
+    wells: Optional[List[Well]] = None,
+    gain: int = 1000,
+    ex_bandwidth: int = 20,
+    em_bandwidth: int = 40,
+    dichroic: Optional[int] = None,
+    flashes: int = 100,
+    settling_time: int = 0,
+    bottom_optic: bool = False,
+  ):
+    """Run a plate reader fluorescence run.
+
+    Args:
+      excitation_wavelength: Excitation center wavelength in nm.
+      emission_wavelength: Emission center wavelength in nm.
+      focal_height: Focal height in mm (0-25).
+      gain: Detector gain.
+      ex_bandwidth: Excitation bandwidth in nm.
+      em_bandwidth: Emission bandwidth in nm.
+      dichroic: Dichroic wavelength * 10. Auto-calculated if not provided.
+      flashes: Number of flashes per well (0-200).
+      settling_time: Settling time in deciseconds (0-10).
+      bottom_optic: Use bottom optic instead of top.
+    """
+    if flashes > 200:
+      raise ValueError("Flashes per well must be <= 200")
+
+    if dichroic is None:
+      dichroic = (excitation_wavelength + emission_wavelength) * 5
+
+    focal_height_encoded = int(focal_height * 100)
+
+    plate_and_wells = self._plate_bytes(plate, wells)
+
+    payload = bytearray()
+    payload += plate_and_wells
+
+    # Optic/mode byte
+    d = 0
+    if bottom_optic:
+      d |= 1 << 6
+    payload += bytes([d])
+
+    # Always-zero bytes
+    payload += b"\x00\x00\x00"
+
+    # Shaker placeholder (no shaking)
+    payload += b"\x00\x00\x00\x00"
+
+    # Unknown separator
+    payload += b"\x27\x0f\x27\x0f"
+
+    # Settling time
+    if settling_time == 0:
+      payload += bytes([1])
+    else:
+      payload += bytes([(settling_time * 10) // 2])
+
+    # Focal height
+    payload += focal_height_encoded.to_bytes(2, "big")
+
+    # Multichromatic config (single chromat)
+    payload += b"\x00\x00\x01\x00\x00\x00\x00\x00\x0c"
+
+    # Gain
+    payload += gain.to_bytes(2, "big")
+
+    # Excitation high/low (center * 10 +/- bandwidth)
+    ex_high = excitation_wavelength * 10 + ex_bandwidth
+    ex_low = excitation_wavelength * 10 - ex_bandwidth
+    payload += ex_high.to_bytes(2, "big")
+    payload += ex_low.to_bytes(2, "big")
+
+    # Dichroic
+    payload += dichroic.to_bytes(2, "big")
+
+    # Emission high/low
+    em_high = emission_wavelength * 10 + em_bandwidth
+    em_low = emission_wavelength * 10 - em_bandwidth
+    payload += em_high.to_bytes(2, "big")
+    payload += em_low.to_bytes(2, "big")
+
+    # Unknown fixed bytes (slit config?)
+    payload += b"\x00\x04\x00\x03\x00"
+
+    # Pause time placeholder
+    payload += b"\x00\x00\x00"
+
+    # Fixed trailer
+    payload += b"\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"
+
+    # Flashes
+    payload += flashes.to_bytes(2, "big")
+    payload += b"\x00\x4b\x00\x00"
+
+    run_response = await self.send(bytes(payload))
+    return await self._wait_for_ready_and_return(run_response)
+
   async def _read_order_values(self):
     return await self.send(b"\x05\x1d\x00\x00\x00\x00\x00\x00")
 
@@ -374,6 +477,40 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   async def _get_measurement_values(self):
     return await self.send(b"\x05\x02\x00\x00\x00\x00\x00\x00")
+
+  @staticmethod
+  def _parse_fluorescence_response(resp: bytes) -> Tuple[List[int], float, int]:
+    """Parse a fluorescence measurement response using fixed offsets per the Go reference.
+
+    Returns (values, temperature_celsius, overflow_value).
+    """
+    try:
+      payload = _unframe(resp)
+    except FrameError:
+      payload = resp
+
+    if len(payload) < 34:
+      raise ValueError(f"Fluorescence response too short ({len(payload)} bytes)")
+
+    if payload[6] != 0x21:
+      raise ValueError(f"Incorrect schema byte for fl data: 0x{payload[6]:02x}, expected 0x21")
+
+    complete = int.from_bytes(payload[9:11], "big")
+    overflow = struct.unpack(">I", payload[11:15])[0]
+    temp_raw = int.from_bytes(payload[25:27], "big")
+    temperature = temp_raw / 10.0
+
+    values = []
+    offset = 34
+    for _ in range(complete):
+      if offset + 4 > len(payload):
+        raise ValueError("Expected fluorescence data, but response truncated")
+      values.append(struct.unpack(">I", payload[offset : offset + 4])[0])
+      offset += 4
+
+    return values, temperature, overflow
+
+  # --- Public read methods ---
 
   async def read_luminescence(
     self, plate: Plate, wells: List[Well], focal_height: float = 13, **backend_kwargs
@@ -398,20 +535,31 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     vals = await self._get_measurement_values()
 
-    # All values are 32 bit integers. The header is variable length, so we need to find the
-    # start of the data. In the future, when we understand the protocol better, this can be
-    # replaced with a more robust solution.
+    # Parse response — luminescence uses schema 0x21 like fluorescence but simpler
+    # For now, keep the existing heuristic parsing for luminescence
+    # (luminescence response format differs from fl/abs)
+    try:
+      payload = _unframe(vals)
+    except FrameError:
+      payload = vals
+
     num_read = len(wells)
-    start_idx = vals.index(b"\x00\x00\x00\x00\x00\x00") + len(b"\x00\x00\x00\x00\x00\x00")
-    data = list(vals)[start_idx : start_idx + num_read * 4]
 
-    # group bytes by 4
-    int_bytes = [data[i : i + 4] for i in range(0, len(data), 4)]
-
-    # convert to int
-    ints = [struct.unpack(">i", bytes(int_data))[0] for int_data in int_bytes]
-
-    readings = [float(i) for i in ints]
+    # Try fixed-offset parsing first (schema byte at offset 6)
+    if len(payload) > 34 and payload[6] == 0x21:
+      fl_vals, temperature, _ = self._parse_fluorescence_response(vals)
+      readings = [float(v) for v in fl_vals[:num_read]]
+    else:
+      # Fallback: find data start via zero-byte pattern
+      start_idx = payload.find(b"\x00\x00\x00\x00\x00\x00")
+      if start_idx >= 0:
+        start_idx += 6
+      else:
+        start_idx = 36  # best guess
+      data_bytes = payload[start_idx : start_idx + num_read * 4]
+      int_bytes = [data_bytes[i : i + 4] for i in range(0, len(data_bytes), 4)]
+      readings = [float(struct.unpack(">i", bytes(ib))[0]) for ib in int_bytes]
+      temperature = float("nan")
 
     # Map readings back to plate grid
     if all_wells:
@@ -429,7 +577,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     return [
       {
         "data": floats,
-        "temperature": float("nan"),  # Temperature not available
+        "temperature": temperature,
         "time": time.time(),
       }
     ]
@@ -540,8 +688,69 @@ class CLARIOstarBackend(PlateReaderBackend):
     excitation_wavelength: int,
     emission_wavelength: int,
     focal_height: float,
-  ) -> List[Dict[Tuple[int, int], Dict]]:
-    raise NotImplementedError("Not implemented yet")
+    **backend_kwargs,
+  ) -> List[Dict]:
+    """Read fluorescence values from the plate reader.
+
+    Args:
+      excitation_wavelength: Excitation center wavelength in nm.
+      emission_wavelength: Emission center wavelength in nm.
+      focal_height: Focal height in mm.
+      **backend_kwargs: Additional keyword arguments:
+        gain: int - detector gain.
+        ex_bandwidth: int - excitation bandwidth in nm.
+        em_bandwidth: int - emission bandwidth in nm.
+        dichroic: int - dichroic wavelength * 10.
+        flashes: int - number of flashes per well.
+        settling_time: int - settling time in deciseconds.
+        bottom_optic: bool - use bottom optic.
+    """
+    all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
+
+    await self._mp_and_focus_height_value()
+
+    await self._run_fluorescence(
+      plate=plate,
+      excitation_wavelength=excitation_wavelength,
+      emission_wavelength=emission_wavelength,
+      focal_height=focal_height,
+      wells=None if all_wells else wells,
+      **backend_kwargs,
+    )
+
+    await self._read_order_values()
+
+    await self._status_hw()
+
+    vals = await self._get_measurement_values()
+
+    num_read = len(wells)
+    fl_values, temperature, overflow = self._parse_fluorescence_response(vals)
+
+    readings = [float(v) for v in fl_values[:num_read]]
+
+    # Map readings back to plate grid
+    if all_wells:
+      floats: List[List[Optional[float]]] = utils.reshape_2d(
+        readings, (plate.num_items_y, plate.num_items_x)
+      )
+    else:
+      grid: List[Optional[float]] = [None] * plate.num_items
+      all_items = plate.get_all_items()
+      for reading, well in zip(readings, wells):
+        idx = all_items.index(well)
+        grid[idx] = reading
+      floats = utils.reshape_2d(grid, (plate.num_items_y, plate.num_items_x))
+
+    return [
+      {
+        "ex_wavelength": excitation_wavelength,
+        "em_wavelength": emission_wavelength,
+        "data": floats,
+        "temperature": temperature,
+        "time": time.time(),
+      }
+    ]
 
 
 # Deprecated alias with warning # TODO: remove mid May 2025 (giving people 1 month to update)
