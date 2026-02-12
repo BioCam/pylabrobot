@@ -100,6 +100,37 @@ def _shaker_bytes(
   return bytes([(1 << 4) | int(shake_type), speed_idx]) + duration_s.to_bytes(2, "big")
 
 
+class StartCorner(enum.IntEnum):
+  """Which corner to begin measurements from."""
+
+  TOP_LEFT = 0b0001
+  TOP_RIGHT = 0b0011
+  BOTTOM_LEFT = 0b0101
+  BOTTOM_RIGHT = 0b0111
+
+
+def _scan_mode_byte(
+  start_corner: StartCorner = StartCorner.TOP_LEFT,
+  unidirectional: bool = False,
+  vertical: bool = False,
+  flying_mode: bool = False,
+) -> int:
+  """Encode the scan mode into a single byte.
+
+  Bit layout: | uni(7) | corner(6:4) | vert(3) | flying(2) | always_set(1) | 0 |
+  """
+  d = 0
+  if unidirectional:
+    d |= 1 << 7
+  d |= (int(start_corner) << 4) & 0x70
+  if vertical:
+    d |= 1 << 3
+  if flying_mode:
+    d |= 1 << 2
+  d |= 1 << 1  # always set
+  return d
+
+
 class FrameError(Exception):
   """Raised when a response frame is malformed."""
 
@@ -149,7 +180,8 @@ class CLARIOstarBackend(PlateReaderBackend):
   """A plate reader backend for the CLARIOstar.
 
   Implements luminescence, absorbance, and fluorescence reads with structured
-  protocol framing, status flag parsing, partial well selection, and shaker control.
+  protocol framing, status flag parsing, partial well selection, shaker control,
+  and configurable scan modes.
   """
 
   def __init__(self, device_id: Optional[str] = None):
@@ -354,6 +386,24 @@ class CLARIOstarBackend(PlateReaderBackend):
         return idx
     raise ValueError(f"Well {well.name} not found in plate {plate.name}")
 
+  def _plate_bytes_with_scan(
+    self,
+    plate: Plate,
+    wells: Optional[List[Well]] = None,
+    start_corner: StartCorner = StartCorner.TOP_LEFT,
+    unidirectional: bool = False,
+    vertical: bool = False,
+    flying_mode: bool = False,
+  ) -> bytes:
+    """Encode plate geometry + well selection + scan mode byte.
+
+    This corresponds to Go `plateBytes()` which includes the 0x04 prefix, geometry, wells,
+    and scan mode byte. Returns 64 bytes total.
+    """
+    pb = self._plate_bytes(plate, wells)
+    scan = _scan_mode_byte(start_corner, unidirectional, vertical, flying_mode)
+    return pb + bytes([scan])
+
   # --- Run commands ---
 
   async def _run_luminescence(
@@ -364,6 +414,9 @@ class CLARIOstarBackend(PlateReaderBackend):
     shake_type: ShakerType = ShakerType.ORBITAL,
     shake_speed_rpm: int = 0,
     shake_duration_s: int = 0,
+    start_corner: StartCorner = StartCorner.TOP_LEFT,
+    unidirectional: bool = False,
+    vertical: bool = False,
   ):
     """Run a plate reader luminescence run."""
 
@@ -371,6 +424,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     focal_height_data = int(focal_height * 100).to_bytes(2, byteorder="big")
     plate_and_wells = self._plate_bytes(plate, wells)
+    scan = _scan_mode_byte(start_corner, unidirectional, vertical, flying_mode=False)
 
     shaker = (
       _shaker_bytes(shake_type, shake_speed_rpm, shake_duration_s)
@@ -382,7 +436,8 @@ class CLARIOstarBackend(PlateReaderBackend):
     # plate(63) + scan(1) + optic_etc(3) + shaker(4) + fixed(5) + separator(4) + ...
     payload = (
       plate_and_wells
-      + b"\x02\x01\x00\x00"
+      + bytes([scan])
+      + b"\x01\x00\x00"
       + shaker
       + b"\x00\x20\x04\x00\x1e\x27\x0f\x27\x0f\x01"
       + focal_height_data
@@ -404,6 +459,9 @@ class CLARIOstarBackend(PlateReaderBackend):
     shake_speed_rpm: int = 0,
     shake_duration_s: int = 0,
     pause_time: int = 0,
+    start_corner: StartCorner = StartCorner.TOP_LEFT,
+    unidirectional: bool = True,
+    vertical: bool = False,
   ):
     """Run a plate reader absorbance run.
 
@@ -421,6 +479,7 @@ class CLARIOstarBackend(PlateReaderBackend):
         raise ValueError(f"Wavelength {w} nm out of range (200-1000)")
 
     plate_and_wells = self._plate_bytes(plate, wells)
+    scan = _scan_mode_byte(start_corner, unidirectional, vertical, flying_mode=False)
 
     shaker = (
       _shaker_bytes(shake_type, shake_speed_rpm, shake_duration_s)
@@ -429,11 +488,12 @@ class CLARIOstarBackend(PlateReaderBackend):
     )
 
     # Payload structure preserved from working capture + Go reference for wavelength encoding:
-    # plate(63) + optic_etc(3) + shaker(4) + fixed(5) + separator(4) + ...
+    # plate(63) + scan(1) + optic_etc(3) + shaker(4) + fixed(5) + separator(4) + ...
     payload = bytearray()
     payload += plate_and_wells
+    payload += bytes([scan])
     # Absorbance optic mode + zeros
-    payload += b"\x82\x02\x00\x00"
+    payload += b"\x02\x00\x00"
     payload += shaker
     payload += b"\x00\x20\x04\x00\x1e\x27\x0f\x27\x0f"
     # Settling + wavelength count + wavelength data (per Go absDiscreteBytes)
@@ -474,6 +534,10 @@ class CLARIOstarBackend(PlateReaderBackend):
     shake_speed_rpm: int = 0,
     shake_duration_s: int = 0,
     pause_time: int = 0,
+    start_corner: StartCorner = StartCorner.TOP_LEFT,
+    unidirectional: bool = False,
+    vertical: bool = False,
+    flying_mode: bool = False,
   ):
     """Run a plate reader fluorescence run.
 
@@ -491,6 +555,8 @@ class CLARIOstarBackend(PlateReaderBackend):
     """
     if flashes > 200:
       raise ValueError("Flashes per well must be <= 200")
+    if flying_mode and flashes > 3:
+      raise ValueError("Cannot do more than 3 flashes in flying mode")
 
     if dichroic is None:
       dichroic = (excitation_wavelength + emission_wavelength) * 5
@@ -498,6 +564,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     focal_height_encoded = int(focal_height * 100)
 
     plate_and_wells = self._plate_bytes(plate, wells)
+    scan = _scan_mode_byte(start_corner, unidirectional, vertical, flying_mode)
 
     shaker = (
       _shaker_bytes(shake_type, shake_speed_rpm, shake_duration_s)
@@ -507,6 +574,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     payload = bytearray()
     payload += plate_and_wells
+    payload += bytes([scan])
 
     # Optic/mode byte
     d = 0
@@ -770,6 +838,7 @@ class CLARIOstarBackend(PlateReaderBackend):
         flashes: int - number of flashes per well.
         settling_time: int - settling time in deciseconds.
         shake_type, shake_speed_rpm, shake_duration_s: shaker config.
+        start_corner, unidirectional, vertical: scan config.
     """
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
@@ -873,6 +942,7 @@ class CLARIOstarBackend(PlateReaderBackend):
         settling_time: int - settling time in deciseconds.
         bottom_optic: bool - use bottom optic.
         shake_type, shake_speed_rpm, shake_duration_s: shaker config.
+        start_corner, unidirectional, vertical, flying_mode: scan config.
     """
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
