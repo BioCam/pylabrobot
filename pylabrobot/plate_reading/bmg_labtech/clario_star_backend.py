@@ -186,6 +186,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   def __init__(self, device_id: Optional[str] = None):
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
+    self._eeprom_data: Optional[bytes] = None
 
   async def setup(self):
     await self.io.setup()
@@ -311,7 +312,12 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   async def request_eeprom_data(self):
     eeprom_response = await self.send(b"\x05\x07\x00\x00\x00\x00\x00\x00")
+    self._eeprom_data = eeprom_response
     return await self._wait_for_ready_and_return(eeprom_response)
+
+  def get_eeprom_data(self) -> Optional[bytes]:
+    """Return the raw EEPROM response captured during setup, or None if not yet read."""
+    return self._eeprom_data
 
   async def open(self):
     open_response = await self.send(b"\x03\x01\x00\x00\x00\x00\x00")

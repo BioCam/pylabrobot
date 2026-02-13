@@ -1,1 +1,2 @@
 from .clario_star_backend import CLARIOstarBackend
+from .clario_star_simulator import CLARIOstarSimulatorBackend
