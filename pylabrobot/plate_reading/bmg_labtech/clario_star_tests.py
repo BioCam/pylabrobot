@@ -609,15 +609,15 @@ class TestCLARIOstarSend(unittest.IsolatedAsyncioTestCase):
     written = self.backend.io.write.call_args[0][0]
     self.assertEqual(written, _frame(b"\x80\x00"))
 
-  async def test_request_status_parses_flags(self):
-    """request_status() should return parsed status flags."""
+  async def test_request_machine_status_parses_flags(self):
+    """request_machine_status() should return parsed status flags."""
     # Build a response where byte 1 of unframed payload has VALID (bit 0) set
     status_payload = b"\x00\x01\x00\x00\x00"  # only VALID flag
     response = _frame(status_payload)
     self.backend.io.write.return_value = len(_frame(b"\x80\x00"))
     self.backend.io.read.side_effect = [response, b""]
 
-    flags = await self.backend.request_status()
+    flags = await self.backend.request_machine_status()
     self.assertTrue(flags["valid"])
     self.assertFalse(flags["busy"])
 

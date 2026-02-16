@@ -36,7 +36,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     self.temperature = temperature
     self._rng = random.Random(seed)
     self._is_open = False
-    self._plate_on_tray = False
+    self._plate_in_drawer = False
 
   async def setup(self) -> None:
     pass
@@ -50,9 +50,9 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
   async def close(self, plate: Optional[Plate] = None) -> None:
     self._is_open = False
     if plate is not None:
-      self._plate_on_tray = True
+      self._plate_in_drawer = True
 
-  async def request_status(self) -> Dict[str, bool]:
+  async def request_machine_status(self) -> Dict[str, bool]:
     """Return simulated status flags reflecting current simulator state."""
     return {
       "standby": False,
@@ -63,11 +63,27 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       "initialized": True,
       "lid_open": False,
       "open": self._is_open,
-      "plate_detected": self._plate_on_tray,
+      "plate_detected": self._plate_in_drawer,
       "z_probed": False,
       "active": False,
       "filter_cover_open": False,
     }
+
+  async def request_drawer_open(self) -> bool:
+    """Request whether the drawer is currently open."""
+    return (await self.request_machine_status())["open"]
+
+  async def request_plate_detected(self) -> bool:
+    """Request whether a plate is detected in the drawer."""
+    return (await self.request_machine_status())["plate_detected"]
+
+  async def request_busy(self) -> bool:
+    """Request whether the machine is currently executing a command."""
+    return (await self.request_machine_status())["busy"]
+
+  async def request_initialization_status(self) -> bool:
+    """Request whether the firmware has been initialized."""
+    return (await self.request_machine_status())["initialized"]
 
   def get_eeprom_data(self) -> Optional[bytes]:
     """Return None (no physical EEPROM in simulation)."""

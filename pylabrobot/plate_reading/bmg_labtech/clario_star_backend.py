@@ -299,10 +299,26 @@ class CLARIOstarBackend(PlateReaderBackend):
         if not flags["busy"]:
           return ret
 
-  async def request_status(self) -> Dict[str, bool]:
+  async def request_machine_status(self) -> Dict[str, bool]:
     """Request the current status flags from the plate reader."""
     response = await self._request_command_status()
     return self._parse_status_response(response)
+
+  async def request_drawer_open(self) -> bool:
+    """Request whether the drawer is currently open."""
+    return (await self.request_machine_status())["open"]
+
+  async def request_plate_detected(self) -> bool:
+    """Request whether a plate is detected in the drawer."""
+    return (await self.request_machine_status())["plate_detected"]
+
+  async def request_busy(self) -> bool:
+    """Request whether the machine is currently executing a command."""
+    return (await self.request_machine_status())["busy"]
+
+  async def request_initialization_status(self) -> bool:
+    """Request whether the firmware has been initialized."""
+    return (await self.request_machine_status())["initialized"]
 
   async def _request_command_status(self) -> bytes:
     return await self.send(b"\x80\x00")
