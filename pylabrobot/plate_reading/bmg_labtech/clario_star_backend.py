@@ -881,8 +881,7 @@ class CLARIOstarBackend(PlateReaderBackend):
   ) -> List[Dict]:
     """Retrieve and parse luminescence data after a measurement has completed.
 
-    Call this after ``read_luminescence(..., wait=False)`` once ``request_busy()`` returns False
-    (or ``unread_data`` is True in ``request_machine_status()``).
+    Call this after ``read_luminescence(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
     await self._read_order_values()
     await self._status_hw()
@@ -976,8 +975,7 @@ class CLARIOstarBackend(PlateReaderBackend):
   ) -> List[Dict]:
     """Retrieve and parse absorbance data after a measurement has completed.
 
-    Call this after ``read_absorbance(..., wait=False)`` once ``request_busy()`` returns False
-    (or ``unread_data`` is True in ``request_machine_status()``).
+    Call this after ``read_absorbance(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
     await self._read_order_values()
     await self._status_hw()
@@ -1105,8 +1103,7 @@ class CLARIOstarBackend(PlateReaderBackend):
   ) -> List[Dict]:
     """Retrieve and parse fluorescence data after a measurement has completed.
 
-    Call this after ``read_fluorescence(..., wait=False)`` once ``request_busy()`` returns False
-    (or ``unread_data`` is True in ``request_machine_status()``).
+    Call this after ``read_fluorescence(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
     await self._read_order_values()
     await self._status_hw()
