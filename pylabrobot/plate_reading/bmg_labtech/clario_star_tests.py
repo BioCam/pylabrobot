@@ -627,6 +627,7 @@ class TestCLARIOstarInitialize(unittest.IsolatedAsyncioTestCase):
 
   async def asyncSetUp(self):
     self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend.timeout = 150
     self.backend.io = unittest.mock.MagicMock()
     self.backend.io.write = unittest.mock.AsyncMock()
     self.backend.io.read = unittest.mock.AsyncMock()

@@ -285,6 +285,8 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   async def _wait_for_ready_and_return(self, ret, timeout=None):
     """Wait for the plate reader to be ready (BUSY flag cleared) and return the response."""
+    if timeout is None:
+      timeout = self.timeout
     last_status_hex = None
     t = time.time()
     while time.time() - t < timeout:
