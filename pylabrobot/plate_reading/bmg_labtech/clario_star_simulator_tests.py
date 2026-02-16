@@ -168,7 +168,7 @@ class TestTemperature(CLARIOstarSimulatorTestBase):
 
   async def test_set_and_get_temperature(self):
     await self.backend.set_temperature(37.0)
-    self.assertEqual(await self.backend.get_temperature(), 37.0)
+    self.assertEqual(await self.backend.get_temperature(), (37.0, 37.0))
     # Temperature change is reflected in subsequent reads
     results = await self.backend.read_absorbance(
       plate=self.plate, wells=self.all_wells, wavelength=450,
@@ -177,7 +177,13 @@ class TestTemperature(CLARIOstarSimulatorTestBase):
 
   async def test_set_temperature_zero_switches_off(self):
     await self.backend.set_temperature(0.0)
-    self.assertEqual(await self.backend.get_temperature(), 0.0)
+    self.assertEqual(await self.backend.get_temperature(), (0.0, 0.0))
+
+  async def test_measure_temperature(self):
+    await self.backend.set_temperature(25.0)
+    t1, t2 = await self.backend.measure_temperature()
+    self.assertEqual(t1, 25.0)
+    self.assertEqual(t2, 25.0)
 
 
 class TestStatus(CLARIOstarSimulatorTestBase):

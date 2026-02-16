@@ -313,6 +313,29 @@ class CLARIOstarBackend(PlateReaderBackend):
     response = await self._request_command_status()
     return self._parse_status_response(response)
 
+  def _parse_temperature_from_status(self, response: bytes) -> Tuple[float, float]:
+    """Extract two temperature sensor readings from a status response.
+
+    The status response payload contains temperature at bytes 11-14:
+      - Bytes 11-12: sensor 1 (plate area), uint16 BE, ÷10 for °C
+      - Bytes 13-14: sensor 2 (heater/lid area), uint16 BE, ÷10 for °C
+
+    Both read 0 when temperature monitoring is inactive. You must send the
+    temperature command (monitor or incubate) before these fields are populated.
+
+    Returns:
+      (sensor1_celsius, sensor2_celsius)
+    """
+    try:
+      payload = _unframe(response)
+    except FrameError:
+      payload = response[4:] if len(response) > 4 else response
+    if len(payload) >= 15:
+      t1 = int.from_bytes(payload[11:13], "big") / 10.0
+      t2 = int.from_bytes(payload[13:15], "big") / 10.0
+      return (t1, t2)
+    return (0.0, 0.0)
+
   async def request_drawer_open(self) -> bool:
     """Request whether the drawer is currently open."""
     return (await self.request_machine_status())["drawer_open"]
@@ -331,6 +354,48 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   async def _request_command_status(self) -> bytes:
     return await self.send(b"\x80\x00")
+
+  # --- Temperature ---
+
+  async def set_temperature(self, temperature: float) -> None:
+    """Set the incubator target temperature.
+
+    Args:
+      temperature: Target temperature in °C. Pass 0 to switch off the incubator
+        and temperature monitoring.
+    """
+    temp_raw = round(temperature * 10)
+    payload = b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00"
+    await self.send(payload)
+
+  async def measure_temperature(self) -> Tuple[float, float]:
+    """Activate temperature monitoring and return the current plate temperature.
+
+    Sends the "monitor only" command (no heating) and reads the two on-board
+    temperature sensors from the status response.
+
+    Returns:
+      (sensor1_celsius, sensor2_celsius) where sensor 1 is the plate area
+      and sensor 2 is the heater/lid area.
+    """
+    # Send monitor-only command (temp_raw = 1)
+    await self.send(b"\x06\x00\x01\x00\x00")
+    # Give the reader a moment to populate the temperature fields
+    await asyncio.sleep(0.5)
+    response = await self._request_command_status()
+    return self._parse_temperature_from_status(response)
+
+  async def get_temperature(self) -> Tuple[float, float]:
+    """Read the current temperature from the status response without changing monitoring state.
+
+    If temperature monitoring or incubation has not been activated (via
+    ``set_temperature()`` or ``measure_temperature()``), both values will be 0.0.
+
+    Returns:
+      (sensor1_celsius, sensor2_celsius)
+    """
+    response = await self._request_command_status()
+    return self._parse_temperature_from_status(response)
 
   async def initialize(self):
     command_response = await self.send(b"\x01\x00\x00\x10\x02\x00")
@@ -887,29 +952,9 @@ class CLARIOstarBackend(PlateReaderBackend):
     await self._status_hw()
     vals = await self._get_measurement_values()
 
-    # Parse response — luminescence uses schema 0x21 like fluorescence but simpler
-    try:
-      payload = _unframe(vals)
-    except FrameError:
-      payload = vals
-
     num_read = len(wells)
-
-    # Try fixed-offset parsing first (schema byte at offset 6)
-    if len(payload) > 34 and payload[6] == 0x21:
-      fl_vals, temperature, _ = self._parse_fluorescence_response(vals)
-      readings = [float(v) for v in fl_vals[:num_read]]
-    else:
-      # Fallback: find data start via zero-byte pattern
-      start_idx = payload.find(b"\x00\x00\x00\x00\x00\x00")
-      if start_idx >= 0:
-        start_idx += 6
-      else:
-        start_idx = 36  # best guess
-      data_bytes = payload[start_idx : start_idx + num_read * 4]
-      int_bytes = [data_bytes[i : i + 4] for i in range(0, len(data_bytes), 4)]
-      readings = [float(struct.unpack(">i", bytes(ib))[0]) for ib in int_bytes]
-      temperature = float("nan")
+    fl_values, temperature, overflow = self._parse_fluorescence_response(vals)
+    readings = [float(v) for v in fl_values[:num_read]]
 
     return [
       {
