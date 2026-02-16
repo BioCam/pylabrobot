@@ -317,7 +317,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     return (await self.request_machine_status())["busy"]
 
   async def request_initialization_status(self) -> bool:
-    """Request whether the firmware has been initialized."""
+    """Request whether the instrument has been initialized."""
     return (await self.request_machine_status())["initialized"]
 
   async def _request_command_status(self) -> bytes:
