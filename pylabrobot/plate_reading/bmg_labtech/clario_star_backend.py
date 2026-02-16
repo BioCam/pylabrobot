@@ -302,6 +302,12 @@ class CLARIOstarBackend(PlateReaderBackend):
         if not flags["busy"]:
           return ret
 
+    elapsed = time.time() - t
+    raise TimeoutError(
+      f"Plate reader still busy after {elapsed:.1f}s (timeout={timeout}s). "
+      f"Increase timeout via CLARIOstarBackend(timeout=...) for long-running operations."
+    )
+
   async def request_machine_status(self) -> Dict[str, bool]:
     """Request the current status flags from the plate reader."""
     response = await self._request_command_status()
@@ -443,6 +449,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     start_corner: StartCorner = StartCorner.TOP_LEFT,
     unidirectional: bool = False,
     vertical: bool = False,
+    wait: bool = True,
   ):
     """Run a plate reader luminescence run."""
 
@@ -472,7 +479,9 @@ class CLARIOstarBackend(PlateReaderBackend):
       + b"\x00\x00\x00\x01\x00\x64\x00\x20\x00\x00"
     )
     run_response = await self.send(payload)
-    return await self._wait_for_ready_and_return(run_response)
+    if wait:
+      return await self._wait_for_ready_and_return(run_response)
+    return run_response
 
   async def _run_absorbance(
     self,
@@ -488,6 +497,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     start_corner: StartCorner = StartCorner.TOP_LEFT,
     unidirectional: bool = True,
     vertical: bool = False,
+    wait: bool = True,
   ):
     """Run a plate reader absorbance run.
 
@@ -540,7 +550,9 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload += b"\x00\x01\x00\x00"
 
     run_response = await self.send(bytes(payload))
-    return await self._wait_for_ready_and_return(run_response)
+    if wait:
+      return await self._wait_for_ready_and_return(run_response)
+    return run_response
 
   async def _run_fluorescence(
     self,
@@ -564,6 +576,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     unidirectional: bool = False,
     vertical: bool = False,
     flying_mode: bool = False,
+    wait: bool = True,
   ):
     """Run a plate reader fluorescence run.
 
@@ -664,7 +677,9 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload += b"\x00\x4b\x00\x00"
 
     run_response = await self.send(bytes(payload))
-    return await self._wait_for_ready_and_return(run_response)
+    if wait:
+      return await self._wait_for_ready_and_return(run_response)
+    return run_response
 
   async def _read_order_values(self):
     return await self.send(b"\x05\x1d\x00\x00\x00\x00\x00\x00")
@@ -798,15 +813,50 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     return values, temperature, overflow
 
+  # --- Grid mapping ---
+
+  @staticmethod
+  def _readings_to_grid(
+    readings: List[Optional[float]],
+    plate: Plate,
+    wells: List[Well],
+  ) -> List[List[Optional[float]]]:
+    """Map a flat list of per-well readings onto a 2D plate grid.
+
+    Readings must be in the same order as ``wells``. Wells not in the
+    selection are filled with None.
+    """
+    all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
+    if all_wells:
+      return utils.reshape_2d(readings, (plate.num_items_y, plate.num_items_x))
+
+    grid: List[Optional[float]] = [None] * plate.num_items
+    all_items = plate.get_all_items()
+    for reading, well in zip(readings, wells):
+      idx = all_items.index(well)
+      grid[idx] = reading
+    return utils.reshape_2d(grid, (plate.num_items_y, plate.num_items_x))
+
   # --- Public read methods ---
 
   async def read_luminescence(
     self, plate: Plate, wells: List[Well], focal_height: float = 13, **backend_kwargs
-  ) -> List[Dict]:
+  ) -> Optional[List[Dict]]:
     """Read luminescence values from the plate reader.
 
     Supports partial well selection. Unread wells are filled with None.
+
+    Args:
+      plate: The plate resource.
+      wells: List of wells to read.
+      focal_height: Focal height in mm.
+      **backend_kwargs: Additional keyword arguments:
+        shake_type, shake_speed_rpm, shake_duration_s: shaker config.
+        start_corner, unidirectional, vertical: scan config.
+        wait: bool - if False, start measurement and return None immediately.
+          Use ``collect_luminescence_measurement`` to retrieve results later.
     """
+    wait = backend_kwargs.pop("wait", True)
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
     await self._mp_and_focus_height_value()
@@ -815,18 +865,30 @@ class CLARIOstarBackend(PlateReaderBackend):
       focal_height=focal_height,
       plate=plate,
       wells=None if all_wells else wells,
+      wait=wait,
       **backend_kwargs,
     )
 
+    if not wait:
+      return None
+
+    return await self.collect_luminescence_measurement(plate=plate, wells=wells)
+
+  async def collect_luminescence_measurement(
+    self,
+    plate: Plate,
+    wells: List[Well],
+  ) -> List[Dict]:
+    """Retrieve and parse luminescence data after a measurement has completed.
+
+    Call this after ``read_luminescence(..., wait=False)`` once ``request_busy()`` returns False
+    (or ``unread_data`` is True in ``request_machine_status()``).
+    """
     await self._read_order_values()
-
     await self._status_hw()
-
     vals = await self._get_measurement_values()
 
     # Parse response — luminescence uses schema 0x21 like fluorescence but simpler
-    # For now, keep the existing heuristic parsing for luminescence
-    # (luminescence response format differs from fl/abs)
     try:
       payload = _unframe(vals)
     except FrameError:
@@ -850,22 +912,9 @@ class CLARIOstarBackend(PlateReaderBackend):
       readings = [float(struct.unpack(">i", bytes(ib))[0]) for ib in int_bytes]
       temperature = float("nan")
 
-    # Map readings back to plate grid
-    if all_wells:
-      floats: List[List[Optional[float]]] = utils.reshape_2d(
-        readings, (plate.num_items_y, plate.num_items_x)
-      )
-    else:
-      grid: List[Optional[float]] = [None] * plate.num_items
-      all_items = plate.get_all_items()
-      for reading, well in zip(readings, wells):
-        idx = all_items.index(well)
-        grid[idx] = reading
-      floats = utils.reshape_2d(grid, (plate.num_items_y, plate.num_items_x))
-
     return [
       {
-        "data": floats,
+        "data": self._readings_to_grid(readings, plate, wells),
         "temperature": temperature,
         "time": time.time(),
       }
@@ -878,7 +927,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     wavelength: int,
     report: Literal["OD", "transmittance", "raw"] = "OD",
     **backend_kwargs,
-  ) -> List[Dict]:
+  ) -> Optional[List[Dict]]:
     """Read absorbance values from the device.
 
     Args:
@@ -890,7 +939,10 @@ class CLARIOstarBackend(PlateReaderBackend):
         settling_time: int - settling time in deciseconds.
         shake_type, shake_speed_rpm, shake_duration_s: shaker config.
         start_corner, unidirectional, vertical: scan config.
+        wait: bool - if False, start measurement and return None immediately.
+          Use ``collect_absorbance_measurement`` to retrieve results later.
     """
+    wait = backend_kwargs.pop("wait", True)
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
     # Support multi-wavelength via backend_kwargs
@@ -904,24 +956,40 @@ class CLARIOstarBackend(PlateReaderBackend):
       wavelengths=wavelengths,
       plate=plate,
       wells=None if all_wells else wells,
+      wait=wait,
       **backend_kwargs,
     )
 
+    if not wait:
+      return None
+
+    return await self.collect_absorbance_measurement(
+      plate=plate, wells=wells, wavelengths=wavelengths, report=report,
+    )
+
+  async def collect_absorbance_measurement(
+    self,
+    plate: Plate,
+    wells: List[Well],
+    wavelengths: List[int],
+    report: Literal["OD", "transmittance", "raw"] = "OD",
+  ) -> List[Dict]:
+    """Retrieve and parse absorbance data after a measurement has completed.
+
+    Call this after ``read_absorbance(..., wait=False)`` once ``request_busy()`` returns False
+    (or ``unread_data`` is True in ``request_machine_status()``).
+    """
     await self._read_order_values()
-
     await self._status_hw()
-
     vals = await self._get_measurement_values()
 
     num_wells = len(wells)
-
     transmission_data, temperature, raw = self._parse_absorbance_response(vals, len(wavelengths))
 
     # --- raw mode: return detector counts + calibration directly ---
     if report == "raw":
       results = []
       for wl_idx, wl in enumerate(wavelengths):
-        # Extract raw sample counts for this wavelength and map to plate grid
         raw_for_wl: List[Optional[float]] = []
         for well_idx in range(num_wells):
           flat_idx = well_idx + wl_idx * num_wells
@@ -929,21 +997,9 @@ class CLARIOstarBackend(PlateReaderBackend):
             raw["samples"][flat_idx] if flat_idx < len(raw["samples"]) else None
           )
 
-        if all_wells:
-          data_2d: List[List[Optional[float]]] = utils.reshape_2d(
-            raw_for_wl, (plate.num_items_y, plate.num_items_x)
-          )
-        else:
-          grid: List[Optional[float]] = [None] * plate.num_items
-          all_items = plate.get_all_items()
-          for i, well in enumerate(wells):
-            idx = all_items.index(well)
-            grid[idx] = raw_for_wl[i]
-          data_2d = utils.reshape_2d(grid, (plate.num_items_y, plate.num_items_x))
-
         results.append({
           "wavelength": wl,
-          "data": data_2d,
+          "data": self._readings_to_grid(raw_for_wl, plate, wells),
           "references": raw["references"],
           "chromatic_cal": raw["chromatic_cal"][wl_idx],
           "reference_cal": raw["reference_cal"],
@@ -955,7 +1011,6 @@ class CLARIOstarBackend(PlateReaderBackend):
     # --- OD / transmittance modes ---
     results = []
     for wl_idx, wl in enumerate(wavelengths):
-      # Extract transmission for this wavelength across all wells
       trans_for_wl: List[Optional[float]] = []
       for well_idx in range(num_wells):
         if well_idx < len(transmission_data):
@@ -968,35 +1023,20 @@ class CLARIOstarBackend(PlateReaderBackend):
           t = None
         trans_for_wl.append(t)
 
-      # Map to plate grid
-      if all_wells:
-        if report == "OD":
-          od_vals: List[Optional[float]] = []
-          for t in trans_for_wl:
-            od_vals.append(math.log10(100 / t) if t is not None and t > 0 else None)
-          data_2d = utils.reshape_2d(
-            od_vals, (plate.num_items_y, plate.num_items_x)
-          )
-        elif report == "transmittance":
-          data_2d = utils.reshape_2d(trans_for_wl, (plate.num_items_y, plate.num_items_x))
-        else:
-          raise ValueError(f"Invalid report type: {report}")
+      if report == "OD":
+        final_vals: List[Optional[float]] = [
+          math.log10(100 / t) if t is not None and t > 0 else None
+          for t in trans_for_wl
+        ]
+      elif report == "transmittance":
+        final_vals = trans_for_wl
       else:
-        grid = [None] * plate.num_items
-        all_items = plate.get_all_items()
-        for i, well in enumerate(wells):
-          idx = all_items.index(well)
-          t = trans_for_wl[i]
-          if report == "OD":
-            grid[idx] = math.log10(100 / t) if t is not None and t > 0 else None
-          else:
-            grid[idx] = t
-        data_2d = utils.reshape_2d(grid, (plate.num_items_y, plate.num_items_x))
+        raise ValueError(f"Invalid report type: {report}")
 
       results.append(
         {
           "wavelength": wl,
-          "data": data_2d,
+          "data": self._readings_to_grid(final_vals, plate, wells),
           "temperature": temperature,
           "time": time.time(),
         }
@@ -1012,7 +1052,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     emission_wavelength: int,
     focal_height: float,
     **backend_kwargs,
-  ) -> List[Dict]:
+  ) -> Optional[List[Dict]]:
     """Read fluorescence values from the plate reader.
 
     Args:
@@ -1029,7 +1069,10 @@ class CLARIOstarBackend(PlateReaderBackend):
         bottom_optic: bool - use bottom optic.
         shake_type, shake_speed_rpm, shake_duration_s: shaker config.
         start_corner, unidirectional, vertical, flying_mode: scan config.
+        wait: bool - if False, start measurement and return None immediately.
+          Use ``collect_fluorescence_measurement`` to retrieve results later.
     """
+    wait = backend_kwargs.pop("wait", True)
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
     await self._mp_and_focus_height_value()
@@ -1040,13 +1083,33 @@ class CLARIOstarBackend(PlateReaderBackend):
       emission_wavelength=emission_wavelength,
       focal_height=focal_height,
       wells=None if all_wells else wells,
+      wait=wait,
       **backend_kwargs,
     )
 
+    if not wait:
+      return None
+
+    return await self.collect_fluorescence_measurement(
+      plate=plate, wells=wells,
+      excitation_wavelength=excitation_wavelength,
+      emission_wavelength=emission_wavelength,
+    )
+
+  async def collect_fluorescence_measurement(
+    self,
+    plate: Plate,
+    wells: List[Well],
+    excitation_wavelength: int,
+    emission_wavelength: int,
+  ) -> List[Dict]:
+    """Retrieve and parse fluorescence data after a measurement has completed.
+
+    Call this after ``read_fluorescence(..., wait=False)`` once ``request_busy()`` returns False
+    (or ``unread_data`` is True in ``request_machine_status()``).
+    """
     await self._read_order_values()
-
     await self._status_hw()
-
     vals = await self._get_measurement_values()
 
     num_read = len(wells)
@@ -1054,24 +1117,11 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     readings = [float(v) for v in fl_values[:num_read]]
 
-    # Map readings back to plate grid
-    if all_wells:
-      floats: List[List[Optional[float]]] = utils.reshape_2d(
-        readings, (plate.num_items_y, plate.num_items_x)
-      )
-    else:
-      grid: List[Optional[float]] = [None] * plate.num_items
-      all_items = plate.get_all_items()
-      for reading, well in zip(readings, wells):
-        idx = all_items.index(well)
-        grid[idx] = reading
-      floats = utils.reshape_2d(grid, (plate.num_items_y, plate.num_items_x))
-
     return [
       {
         "ex_wavelength": excitation_wavelength,
         "em_wavelength": emission_wavelength,
-        "data": floats,
+        "data": self._readings_to_grid(readings, plate, wells),
         "temperature": temperature,
         "time": time.time(),
       }

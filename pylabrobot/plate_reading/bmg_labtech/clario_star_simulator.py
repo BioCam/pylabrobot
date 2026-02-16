@@ -14,6 +14,9 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
   or accepts explicit mock data passed via ``**backend_kwargs``.
 
   Return formats match the real ``CLARIOstarBackend`` exactly.
+
+  Supports ``wait=False`` in read methods (returns None immediately) and
+  ``collect_*_measurement()`` for deferred retrieval, mirroring the real backend.
   """
 
   def __init__(
@@ -127,7 +130,8 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     wells: List[Well],
     wavelength: int,
     **backend_kwargs,
-  ) -> List[Dict]:
+  ) -> Optional[List[Dict]]:
+    wait = backend_kwargs.pop("wait", True)
     wavelengths = backend_kwargs.pop("wavelengths", [wavelength])
     if isinstance(wavelengths, int):
       wavelengths = [wavelengths]
@@ -136,6 +140,19 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     mean = backend_kwargs.pop("mean", self.absorbance_mean)
     cv = backend_kwargs.pop("cv", self.absorbance_cv)
 
+    if not wait:
+      # Stash params for deferred collection
+      self._pending_absorbance = {
+        "plate": plate, "wells": wells, "wavelengths": wavelengths,
+        "report": report, "mock_data": mock_data, "mean": mean, "cv": cv,
+      }
+      return None
+
+    return self._generate_absorbance(plate, wells, wavelengths, report, mock_data, mean, cv)
+
+  def _generate_absorbance(
+    self, plate, wells, wavelengths, report, mock_data, mean, cv,
+  ) -> List[Dict]:
     rows, cols = plate.num_items_y, plate.num_items_x
     results = []
     for wl in wavelengths:
@@ -158,6 +175,23 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       results.append(entry)
     return results
 
+  async def collect_absorbance_measurement(
+    self,
+    plate: Plate,
+    wells: List[Well],
+    wavelengths: List[int],
+    report: str = "OD",
+  ) -> List[Dict]:
+    """Retrieve absorbance data after a ``wait=False`` read."""
+    pending = getattr(self, "_pending_absorbance", None)
+    if pending is not None:
+      result = self._generate_absorbance(**pending)
+      self._pending_absorbance = None
+      return result
+    return self._generate_absorbance(
+      plate, wells, wavelengths, report, None, self.absorbance_mean, self.absorbance_cv,
+    )
+
   async def read_fluorescence(
     self,
     plate: Plate,
@@ -166,11 +200,28 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     emission_wavelength: int,
     focal_height: float,
     **backend_kwargs,
-  ) -> List[Dict]:
+  ) -> Optional[List[Dict]]:
+    wait = backend_kwargs.pop("wait", True)
     mock_data = backend_kwargs.pop("mock_data", None)
     mean = backend_kwargs.pop("mean", self.fluorescence_mean)
     cv = backend_kwargs.pop("cv", self.fluorescence_cv)
 
+    if not wait:
+      self._pending_fluorescence = {
+        "plate": plate, "wells": wells,
+        "excitation_wavelength": excitation_wavelength,
+        "emission_wavelength": emission_wavelength,
+        "mock_data": mock_data, "mean": mean, "cv": cv,
+      }
+      return None
+
+    return self._generate_fluorescence(
+      plate, wells, excitation_wavelength, emission_wavelength, mock_data, mean, cv,
+    )
+
+  def _generate_fluorescence(
+    self, plate, wells, excitation_wavelength, emission_wavelength, mock_data, mean, cv,
+  ) -> List[Dict]:
     rows, cols = plate.num_items_y, plate.num_items_x
     if mock_data is not None:
       data = mock_data
@@ -186,17 +237,46 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }]
 
+  async def collect_fluorescence_measurement(
+    self,
+    plate: Plate,
+    wells: List[Well],
+    excitation_wavelength: int,
+    emission_wavelength: int,
+  ) -> List[Dict]:
+    """Retrieve fluorescence data after a ``wait=False`` read."""
+    pending = getattr(self, "_pending_fluorescence", None)
+    if pending is not None:
+      result = self._generate_fluorescence(**pending)
+      self._pending_fluorescence = None
+      return result
+    return self._generate_fluorescence(
+      plate, wells, excitation_wavelength, emission_wavelength,
+      None, self.fluorescence_mean, self.fluorescence_cv,
+    )
+
   async def read_luminescence(
     self,
     plate: Plate,
     wells: List[Well],
     focal_height: float,
     **backend_kwargs,
-  ) -> List[Dict]:
+  ) -> Optional[List[Dict]]:
+    wait = backend_kwargs.pop("wait", True)
     mock_data = backend_kwargs.pop("mock_data", None)
     mean = backend_kwargs.pop("mean", self.luminescence_mean)
     cv = backend_kwargs.pop("cv", self.luminescence_cv)
 
+    if not wait:
+      self._pending_luminescence = {
+        "plate": plate, "wells": wells,
+        "mock_data": mock_data, "mean": mean, "cv": cv,
+      }
+      return None
+
+    return self._generate_luminescence(plate, wells, mock_data, mean, cv)
+
+  def _generate_luminescence(self, plate, wells, mock_data, mean, cv) -> List[Dict]:
     rows, cols = plate.num_items_y, plate.num_items_x
     if mock_data is not None:
       data = mock_data
@@ -209,3 +289,18 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       "temperature": self.temperature,
       "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }]
+
+  async def collect_luminescence_measurement(
+    self,
+    plate: Plate,
+    wells: List[Well],
+  ) -> List[Dict]:
+    """Retrieve luminescence data after a ``wait=False`` read."""
+    pending = getattr(self, "_pending_luminescence", None)
+    if pending is not None:
+      result = self._generate_luminescence(**pending)
+      self._pending_luminescence = None
+      return result
+    return self._generate_luminescence(
+      plate, wells, None, self.luminescence_mean, self.luminescence_cv,
+    )

@@ -230,5 +230,63 @@ class TestExtraKwargsIgnored(CLARIOstarSimulatorTestBase):
     self.assertEqual(len(results), 1)
 
 
+class TestWaitFalse(CLARIOstarSimulatorTestBase):
+  async def test_absorbance_wait_false_returns_none(self):
+    result = await self.backend.read_absorbance(
+      plate=self.plate, wells=self.all_wells, wavelength=450, wait=False,
+    )
+    self.assertIsNone(result)
+
+  async def test_absorbance_collect_after_wait_false(self):
+    await self.backend.read_absorbance(
+      plate=self.plate, wells=self.all_wells, wavelength=450, wait=False,
+    )
+    results = await self.backend.collect_absorbance_measurement(
+      plate=self.plate, wells=self.all_wells, wavelengths=[450],
+    )
+    self.assertEqual(len(results), 1)
+    self.assertEqual(results[0]["wavelength"], 450)
+    self.assertEqual(len(results[0]["data"]), 8)
+
+  async def test_fluorescence_wait_false_returns_none(self):
+    result = await self.backend.read_fluorescence(
+      plate=self.plate, wells=self.all_wells,
+      excitation_wavelength=485, emission_wavelength=520, focal_height=13.0,
+      wait=False,
+    )
+    self.assertIsNone(result)
+
+  async def test_fluorescence_collect_after_wait_false(self):
+    await self.backend.read_fluorescence(
+      plate=self.plate, wells=self.all_wells,
+      excitation_wavelength=485, emission_wavelength=520, focal_height=13.0,
+      wait=False,
+    )
+    results = await self.backend.collect_fluorescence_measurement(
+      plate=self.plate, wells=self.all_wells,
+      excitation_wavelength=485, emission_wavelength=520,
+    )
+    self.assertEqual(len(results), 1)
+    self.assertEqual(results[0]["ex_wavelength"], 485)
+    self.assertEqual(results[0]["em_wavelength"], 520)
+
+  async def test_luminescence_wait_false_returns_none(self):
+    result = await self.backend.read_luminescence(
+      plate=self.plate, wells=self.all_wells, focal_height=13.0, wait=False,
+    )
+    self.assertIsNone(result)
+
+  async def test_luminescence_collect_after_wait_false(self):
+    await self.backend.read_luminescence(
+      plate=self.plate, wells=self.all_wells, focal_height=13.0, wait=False,
+    )
+    results = await self.backend.collect_luminescence_measurement(
+      plate=self.plate, wells=self.all_wells,
+    )
+    self.assertEqual(len(results), 1)
+    self.assertIn("data", results[0])
+    self.assertEqual(len(results[0]["data"]), 8)
+
+
 if __name__ == "__main__":
   unittest.main()
