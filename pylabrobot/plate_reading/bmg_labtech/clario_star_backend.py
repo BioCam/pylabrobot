@@ -190,6 +190,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
     self.timeout = timeout
     self._eeprom_data: Optional[bytes] = None
+    self._incubation_target: float = 0.0
 
   async def setup(self):
     await self.io.setup()
@@ -357,13 +358,16 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   # --- Temperature ---
 
-  async def set_temperature(self, temperature: float) -> None:
-    """Set the incubator target temperature.
+  async def start_temperature_control(self, temperature: float) -> None:
+    """Start active temperature control (incubation).
+
+    This immediately activates the heater and begins regulating to the target.
 
     Args:
       temperature: Target temperature in °C. Pass 0 to switch off the incubator
         and temperature monitoring.
     """
+    self._incubation_target = temperature
     temp_raw = round(temperature * 10)
     payload = b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00"
     await self.send(payload)
@@ -371,16 +375,21 @@ class CLARIOstarBackend(PlateReaderBackend):
   async def measure_temperature(self) -> Tuple[float, float]:
     """Activate temperature monitoring and return the current plate temperature.
 
-    Sends the "monitor only" command (no heating) and reads the two on-board
-    temperature sensors from the status response.
+    If incubation is active (target > 0), re-sends the incubation command to
+    keep heating while refreshing the sensor readings. Otherwise sends the
+    "monitor only" command (no heating).
 
     Returns:
       (sensor1_celsius, sensor2_celsius) where sensor 1 is the plate area
       and sensor 2 is the heater/lid area.
     """
-    # Send monitor-only command (temp_raw = 1)
-    await self.send(b"\x06\x00\x01\x00\x00")
-    # Give the reader a moment to populate the temperature fields
+    if self._incubation_target > 0:
+      # Re-send the current incubation command so we don't cancel heating
+      temp_raw = round(self._incubation_target * 10)
+      await self.send(b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00")
+    else:
+      # Activate monitoring without incubation
+      await self.send(b"\x06\x00\x01\x00\x00")
     await asyncio.sleep(0.5)
     response = await self._request_command_status()
     return self._parse_temperature_from_status(response)
@@ -389,7 +398,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     """Read the current temperature from the status response without changing monitoring state.
 
     If temperature monitoring or incubation has not been activated (via
-    ``set_temperature()`` or ``measure_temperature()``), both values will be 0.0.
+    ``start_temperature_control()`` or ``measure_temperature()``), both values will be 0.0.
 
     Returns:
       (sensor1_celsius, sensor2_celsius)

@@ -92,8 +92,8 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     """Return None (no physical EEPROM in simulation)."""
     return None
 
-  async def set_temperature(self, temperature: float) -> None:
-    """Set the simulated incubator target temperature in degrees Celsius.
+  async def start_temperature_control(self, temperature: float) -> None:
+    """Start active temperature control (simulated incubation).
 
     Pass 0.0 to switch off the incubator and temperature monitoring.
     """
