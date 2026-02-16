@@ -52,7 +52,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     if plate is not None:
       self._plate_on_tray = True
 
-  async def get_status(self) -> Dict[str, bool]:
+  async def request_status(self) -> Dict[str, bool]:
     """Return simulated status flags reflecting current simulator state."""
     return {
       "standby": False,

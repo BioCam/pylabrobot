@@ -35,7 +35,7 @@ class TestFrame(unittest.TestCase):
     self.assertEqual(_frame(payload), expected)
 
   def test_frame_status_command(self):
-    """Verify _frame() of the read_command_status payload."""
+    """Verify _frame() of the status command payload."""
     payload = b"\x80\x00"
     framed = _frame(payload)
     self.assertEqual(framed[0], 0x02)  # STX
@@ -599,25 +599,25 @@ class TestCLARIOstarSend(unittest.IsolatedAsyncioTestCase):
     written = self.backend.io.write.call_args[0][0]
     self.assertEqual(written, _frame(b"\x80\x00"))
 
-  async def test_read_command_status_payload(self):
-    """read_command_status sends the correct payload."""
+  async def test_request_command_status_payload(self):
+    """_request_command_status sends the correct payload."""
     response = _frame(b"\x80\x00\x05\x00\x00")
     self.backend.io.write.return_value = len(_frame(b"\x80\x00"))
     self.backend.io.read.side_effect = [response, b""]
 
-    await self.backend.read_command_status()
+    await self.backend._request_command_status()
     written = self.backend.io.write.call_args[0][0]
     self.assertEqual(written, _frame(b"\x80\x00"))
 
-  async def test_get_status_parses_flags(self):
-    """get_status() should return parsed status flags."""
+  async def test_request_status_parses_flags(self):
+    """request_status() should return parsed status flags."""
     # Build a response where byte 1 of unframed payload has VALID (bit 0) set
     status_payload = b"\x00\x01\x00\x00\x00"  # only VALID flag
     response = _frame(status_payload)
     self.backend.io.write.return_value = len(_frame(b"\x80\x00"))
     self.backend.io.read.side_effect = [response, b""]
 
-    flags = await self.backend.get_status()
+    flags = await self.backend.request_status()
     self.assertTrue(flags["valid"])
     self.assertFalse(flags["busy"])
 

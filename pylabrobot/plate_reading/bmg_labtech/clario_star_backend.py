@@ -289,7 +289,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     while time.time() - t < timeout:
       await asyncio.sleep(0.1)
 
-      command_status = await self.read_command_status()
+      command_status = await self._request_command_status()
 
       status_hex = command_status.hex()
       if status_hex != last_status_hex:
@@ -299,12 +299,12 @@ class CLARIOstarBackend(PlateReaderBackend):
         if not flags["busy"]:
           return ret
 
-  async def get_status(self) -> Dict[str, bool]:
+  async def request_status(self) -> Dict[str, bool]:
     """Request the current status flags from the plate reader."""
-    response = await self.read_command_status()
+    response = await self._request_command_status()
     return self._parse_status_response(response)
 
-  async def read_command_status(self) -> bytes:
+  async def _request_command_status(self) -> bytes:
     return await self.send(b"\x80\x00")
 
   async def initialize(self):
