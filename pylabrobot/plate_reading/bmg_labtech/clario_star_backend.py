@@ -32,7 +32,7 @@ class StatusFlag(enum.Enum):
   UNREAD_DATA = "unread_data"
   INITIALIZED = "initialized"
   LID_OPEN = "lid_open"
-  OPEN = "open"
+  OPEN = "drawer_open"
   PLATE_DETECTED = "plate_detected"
   Z_PROBED = "z_probed"
   ACTIVE = "active"
@@ -186,8 +186,9 @@ class CLARIOstarBackend(PlateReaderBackend):
   and configurable scan modes.
   """
 
-  def __init__(self, device_id: Optional[str] = None):
+  def __init__(self, device_id: Optional[str] = None, timeout: int = 150):
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
+    self.timeout = timeout
     self._eeprom_data: Optional[bytes] = None
 
   async def setup(self):
@@ -282,7 +283,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       return _parse_status(payload[:5])
     return {flag.value: False for flag in StatusFlag}
 
-  async def _wait_for_ready_and_return(self, ret, timeout=150):
+  async def _wait_for_ready_and_return(self, ret, timeout=None):
     """Wait for the plate reader to be ready (BUSY flag cleared) and return the response."""
     last_status_hex = None
     t = time.time()
@@ -306,7 +307,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   async def request_drawer_open(self) -> bool:
     """Request whether the drawer is currently open."""
-    return (await self.request_machine_status())["open"]
+    return (await self.request_machine_status())["drawer_open"]
 
   async def request_plate_detected(self) -> bool:
     """Request whether a plate is detected in the drawer."""

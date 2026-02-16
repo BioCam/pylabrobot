@@ -186,7 +186,7 @@ class TestStatus(CLARIOstarSimulatorTestBase):
     self.assertTrue(status["valid"])
     self.assertTrue(status["initialized"])
     self.assertFalse(status["busy"])
-    self.assertFalse(status["open"])
+    self.assertFalse(status["drawer_open"])
     self.assertEqual(len(status), 12)
 
   async def test_open_sets_flag(self):

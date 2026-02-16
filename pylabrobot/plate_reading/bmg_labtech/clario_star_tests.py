@@ -95,7 +95,7 @@ class TestParseStatus(unittest.TestCase):
     self.assertTrue(flags["valid"])
     self.assertTrue(flags["busy"])
     self.assertTrue(flags["initialized"])
-    self.assertTrue(flags["open"])
+    self.assertTrue(flags["drawer_open"])
     self.assertTrue(flags["plate_detected"])
     self.assertTrue(flags["z_probed"])
     self.assertFalse(flags["standby"])

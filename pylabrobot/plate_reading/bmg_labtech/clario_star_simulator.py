@@ -62,7 +62,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       "unread_data": False,
       "initialized": True,
       "lid_open": False,
-      "open": self._is_open,
+      "drawer_open": self._is_open,
       "plate_detected": self._plate_in_drawer,
       "z_probed": False,
       "active": False,
@@ -71,7 +71,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
 
   async def request_drawer_open(self) -> bool:
     """Request whether the drawer is currently open."""
-    return (await self.request_machine_status())["open"]
+    return (await self.request_machine_status())["drawer_open"]
 
   async def request_plate_detected(self) -> bool:
     """Request whether a plate is detected in the drawer."""
