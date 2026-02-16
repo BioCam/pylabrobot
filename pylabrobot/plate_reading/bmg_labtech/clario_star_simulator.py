@@ -108,6 +108,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     wavelengths = backend_kwargs.pop("wavelengths", [wavelength])
     if isinstance(wavelengths, int):
       wavelengths = [wavelengths]
+    report = backend_kwargs.pop("report", "OD")
     mock_data = backend_kwargs.pop("mock_data", None)
     mean = backend_kwargs.pop("mean", self.absorbance_mean)
     cv = backend_kwargs.pop("cv", self.absorbance_cv)
@@ -120,12 +121,18 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       else:
         full = self._generate_grid(rows, cols, mean, cv)
         data = self._mask_grid(full, wells, plate)
-      results.append({
+      entry: Dict = {
         "wavelength": wl,
         "data": data,
         "temperature": self.temperature,
         "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-      })
+      }
+      if report == "raw":
+        num_wells = len(wells)
+        entry["references"] = [self._rng.gauss(100000, 1000) for _ in range(num_wells)]
+        entry["chromatic_cal"] = (100000.0, 0.0)
+        entry["reference_cal"] = (200000.0, 0.0)
+      results.append(entry)
     return results
 
   async def read_fluorescence(

@@ -462,7 +462,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       ref_chan_hi=200000,
       ref_chan_lo=0,
     )
-    transmission, temp = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
+    transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
 
     self.assertAlmostEqual(temp, 25.0)
     self.assertEqual(len(transmission), 2)
@@ -485,7 +485,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       ref_chan_hi=200000,
       ref_chan_lo=0,
     )
-    transmission, temp = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=2)
+    transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=2)
 
     self.assertEqual(len(transmission), 2)
     self.assertEqual(len(transmission[0]), 2)
@@ -510,7 +510,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       ref_chan_lo=0,
       temperature_raw=372,
     )
-    _, temp = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
+    _, temp, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
     self.assertAlmostEqual(temp, 37.2)
 
   def test_bad_schema_byte(self):
@@ -534,8 +534,26 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       ref_chan_hi=0,  # hi == lo → wref = 0
       ref_chan_lo=0,
     )
-    transmission, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
+    transmission, _, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
     self.assertEqual(transmission[0][0], 0)
+
+  def test_raw_values_returned(self):
+    """Raw dict contains the unprocessed detector counts and calibration data."""
+    resp = self._build_abs_response(
+      num_wells=2,
+      num_wavelengths=1,
+      samples=[50000, 60000],
+      refs=[100000, 110000],
+      chromats=[(100000, 5000)],
+      ref_chan_hi=200000,
+      ref_chan_lo=1000,
+    )
+    _, _, raw = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
+
+    self.assertEqual(raw["samples"], [50000.0, 60000.0])
+    self.assertEqual(raw["references"], [100000.0, 110000.0])
+    self.assertEqual(raw["chromatic_cal"], [(100000.0, 5000.0)])
+    self.assertEqual(raw["reference_cal"], (200000.0, 1000.0))
 
 
 # ---------------------------------------------------------------------------

@@ -481,8 +481,8 @@ class CLARIOstarBackend(PlateReaderBackend):
     if settling_time > 10:
       raise ValueError("Settling time must be 0-10 deciseconds")
     for w in wavelengths:
-      if not 200 <= w <= 1000:
-        raise ValueError(f"Wavelength {w} nm out of range (200-1000)")
+      if not 220 <= w <= 1000:
+        raise ValueError(f"Wavelength {w} nm out of range (220-1000)")
 
     plate_and_wells = self._plate_bytes(plate, wells)
     scan = _scan_mode_byte(start_corner, unidirectional, vertical, flying_mode=False)
@@ -659,11 +659,29 @@ class CLARIOstarBackend(PlateReaderBackend):
   @staticmethod
   def _parse_absorbance_response(
     resp: bytes, num_wavelengths: int
-  ) -> Tuple[List[List[float]], float]:
+  ) -> Tuple[List[List[float]], float, Dict]:
     """Parse an absorbance measurement response using fixed offsets per the Go reference.
 
-    Returns (transmission_per_well_per_wavelength, temperature_celsius).
-    transmission[well_idx][wavelength_idx] = percent transmission.
+    Returns (transmission_per_well_per_wavelength, temperature_celsius, raw).
+
+    ``transmission[well_idx][wavelength_idx]`` = percent transmission.
+
+    ``raw`` is a dict with the unprocessed detector counts::
+
+        {
+          "samples": [float, ...],        # wells*wavelengths raw counts
+          "references": [float, ...],      # per-well reference counts
+          "chromatic_cal": [(hi, lo), ...], # per-wavelength calibration bounds
+          "reference_cal": (hi, lo),        # reference channel calibration bounds
+        }
+
+    **Why the subtraction ``ref[well] - ref_cal_lo``?**  The ``lo`` value is
+    subtracted as a baseline offset before normalization — this is a standard
+    pattern in spectrophotometry (often the detector dark current or electronic
+    zero, but the exact physical meaning on the CLARIOstar has not been confirmed).
+    ``ref_cal_hi`` is the upper bound, so dividing by ``(hi - lo)`` maps the
+    signal onto a 0–1 scale.  The same logic applies to ``chromat_lo``/
+    ``chromat_hi`` on the sample channel.
     """
     try:
       payload = _unframe(resp)
@@ -706,6 +724,13 @@ class CLARIOstarBackend(PlateReaderBackend):
     ref_chan_hi = float(struct.unpack(">I", payload[offset : offset + 4])[0])
     ref_chan_lo = float(struct.unpack(">I", payload[offset + 4 : offset + 8])[0])
 
+    raw: Dict = {
+      "samples": list(vals),
+      "references": list(ref),
+      "chromatic_cal": list(chromats),
+      "reference_cal": (ref_chan_hi, ref_chan_lo),
+    }
+
     # Calculate transmission per well per wavelength (matching Go formula)
     transmission: List[List[float]] = []
     for i in range(wells):
@@ -719,7 +744,7 @@ class CLARIOstarBackend(PlateReaderBackend):
         well_trans.append(value / wref * 100 if wref != 0 else 0)
       transmission.append(well_trans)
 
-    return transmission, temperature
+    return transmission, temperature, raw
 
   @staticmethod
   def _parse_fluorescence_response(resp: bytes) -> Tuple[List[int], float, int]:
@@ -831,7 +856,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     plate: Plate,
     wells: List[Well],
     wavelength: int,
-    report: Literal["OD", "transmittance"] = "OD",
+    report: Literal["OD", "transmittance", "raw"] = "OD",
     **backend_kwargs,
   ) -> List[Dict]:
     """Read absorbance values from the device.
@@ -870,9 +895,44 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     num_wells = len(wells)
 
-    transmission_data, temperature = self._parse_absorbance_response(vals, len(wavelengths))
+    transmission_data, temperature, raw = self._parse_absorbance_response(vals, len(wavelengths))
 
-    # Build result for each wavelength
+    # --- raw mode: return detector counts + calibration directly ---
+    if report == "raw":
+      results = []
+      for wl_idx, wl in enumerate(wavelengths):
+        # Extract raw sample counts for this wavelength and map to plate grid
+        raw_for_wl: List[Optional[float]] = []
+        for well_idx in range(num_wells):
+          flat_idx = well_idx + wl_idx * num_wells
+          raw_for_wl.append(
+            raw["samples"][flat_idx] if flat_idx < len(raw["samples"]) else None
+          )
+
+        if all_wells:
+          data_2d: List[List[Optional[float]]] = utils.reshape_2d(
+            raw_for_wl, (plate.num_items_y, plate.num_items_x)
+          )
+        else:
+          grid: List[Optional[float]] = [None] * plate.num_items
+          all_items = plate.get_all_items()
+          for i, well in enumerate(wells):
+            idx = all_items.index(well)
+            grid[idx] = raw_for_wl[i]
+          data_2d = utils.reshape_2d(grid, (plate.num_items_y, plate.num_items_x))
+
+        results.append({
+          "wavelength": wl,
+          "data": data_2d,
+          "references": raw["references"],
+          "chromatic_cal": raw["chromatic_cal"][wl_idx],
+          "reference_cal": raw["reference_cal"],
+          "temperature": temperature,
+          "time": time.time(),
+        })
+      return results
+
+    # --- OD / transmittance modes ---
     results = []
     for wl_idx, wl in enumerate(wavelengths):
       # Extract transmission for this wavelength across all wells
@@ -894,7 +954,7 @@ class CLARIOstarBackend(PlateReaderBackend):
           od_vals: List[Optional[float]] = []
           for t in trans_for_wl:
             od_vals.append(math.log10(100 / t) if t is not None and t > 0 else None)
-          data_2d: List[List[Optional[float]]] = utils.reshape_2d(
+          data_2d = utils.reshape_2d(
             od_vals, (plate.num_items_y, plate.num_items_x)
           )
         elif report == "transmittance":
@@ -902,7 +962,7 @@ class CLARIOstarBackend(PlateReaderBackend):
         else:
           raise ValueError(f"Invalid report type: {report}")
       else:
-        grid: List[Optional[float]] = [None] * plate.num_items
+        grid = [None] * plate.num_items
         all_items = plate.get_all_items()
         for i, well in enumerate(wells):
           idx = all_items.index(well)
