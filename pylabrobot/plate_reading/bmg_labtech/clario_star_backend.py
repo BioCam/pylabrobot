@@ -5,7 +5,7 @@ import math
 import struct
 import sys
 import time
-from typing import Dict, List, Optional, Set, Tuple, Union
+from typing import Dict, List, Optional, Tuple, Union
 
 from pylabrobot import utils
 from pylabrobot.io.ftdi import FTDI
@@ -25,18 +25,18 @@ logger = logging.getLogger("pylabrobot")
 class StatusFlag(enum.Enum):
   """Named status flags parsed from the CLARIOstar 5-byte status field."""
 
-  STANDBY = "STANDBY"
-  VALID = "VALID"
-  BUSY = "BUSY"
-  RUNNING = "RUNNING"
-  UNREAD_DATA = "UNREAD_DATA"
-  INITIALIZED = "INITIALIZED"
-  LID_OPEN = "LID_OPEN"
-  OPEN = "OPEN"
-  PLATE_DETECTED = "PLATE_DETECTED"
-  Z_PROBED = "Z_PROBED"
-  ACTIVE = "ACTIVE"
-  FILTER_COVER_OPEN = "FILTER_COVER_OPEN"
+  STANDBY = "standby"
+  VALID = "valid"
+  BUSY = "busy"
+  RUNNING = "running"
+  UNREAD_DATA = "unread_data"
+  INITIALIZED = "initialized"
+  LID_OPEN = "lid_open"
+  OPEN = "open"
+  PLATE_DETECTED = "plate_detected"
+  Z_PROBED = "z_probed"
+  ACTIVE = "active"
+  FILTER_COVER_OPEN = "filter_cover_open"
 
 
 # (byte_index_in_status, bitmask) — status field is bytes 0-4 of the unframed payload
@@ -56,16 +56,18 @@ _STATUS_DEFS: List[Tuple[StatusFlag, int, int]] = [
 ]
 
 
-def _parse_status(status_bytes: bytes) -> Set[StatusFlag]:
-  """Parse 5 status bytes into a set of raised flags.
+def _parse_status(status_bytes: bytes) -> Dict[str, bool]:
+  """Parse 5 status bytes into a dict mapping every flag name to True/False.
 
   Args:
     status_bytes: The 5-byte status field from the unframed response payload.
   """
-  flags: Set[StatusFlag] = set()
+  flags: Dict[str, bool] = {}
   for flag, byte_idx, mask in _STATUS_DEFS:
-    if byte_idx < len(status_bytes) and status_bytes[byte_idx] & mask:
-      flags.add(flag)
+    if byte_idx < len(status_bytes):
+      flags[flag.value] = bool(status_bytes[byte_idx] & mask)
+    else:
+      flags[flag.value] = False
   return flags
 
 
@@ -261,7 +263,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   # --- Status ---
 
-  def _parse_status_response(self, response: bytes) -> Set[StatusFlag]:
+  def _parse_status_response(self, response: bytes) -> Dict[str, bool]:
     """Extract and parse status flags from a framed status response.
 
     The unframed payload starts with a schema byte, then 5 status bytes at positions 0-4.
@@ -274,11 +276,11 @@ class CLARIOstarBackend(PlateReaderBackend):
       # Fall back to extracting bytes 4-9 from the raw framed response
       if len(response) >= 9:
         return _parse_status(response[4:9])
-      return set()
+      return {flag.value: False for flag in StatusFlag}
     # The first byte of the payload is a schema/command byte, then status bytes follow
     if len(payload) >= 5:
       return _parse_status(payload[:5])
-    return set()
+    return {flag.value: False for flag in StatusFlag}
 
   async def _wait_for_ready_and_return(self, ret, timeout=150):
     """Wait for the plate reader to be ready (BUSY flag cleared) and return the response."""
@@ -293,12 +295,11 @@ class CLARIOstarBackend(PlateReaderBackend):
       if status_hex != last_status_hex:
         last_status_hex = status_hex
         flags = self._parse_status_response(command_status)
-        logger.info("status changed: %s flags=%s", status_hex, flags)
-        if StatusFlag.BUSY not in flags:
-          logger.debug("status is ready (BUSY flag cleared)")
+        logger.debug("status changed: %s flags=%s", status_hex, flags)
+        if not flags["busy"]:
           return ret
 
-  async def get_status(self) -> Set[StatusFlag]:
+  async def get_status(self) -> Dict[str, bool]:
     """Request the current status flags from the plate reader."""
     response = await self.read_command_status()
     return self._parse_status_response(response)

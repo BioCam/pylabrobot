@@ -1,9 +1,8 @@
 import datetime
 import random
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional
 
 from pylabrobot.plate_reading.backend import PlateReaderBackend
-from pylabrobot.plate_reading.bmg_labtech.clario_star_backend import StatusFlag
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well
 
@@ -53,14 +52,22 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     if plate is not None:
       self._plate_on_tray = True
 
-  async def get_status(self) -> Set[StatusFlag]:
+  async def get_status(self) -> Dict[str, bool]:
     """Return simulated status flags reflecting current simulator state."""
-    flags: Set[StatusFlag] = {StatusFlag.VALID, StatusFlag.INITIALIZED}
-    if self._is_open:
-      flags.add(StatusFlag.OPEN)
-    if self._plate_on_tray:
-      flags.add(StatusFlag.PLATE_DETECTED)
-    return flags
+    return {
+      "standby": False,
+      "valid": True,
+      "busy": False,
+      "running": False,
+      "unread_data": False,
+      "initialized": True,
+      "lid_open": False,
+      "open": self._is_open,
+      "plate_detected": self._plate_on_tray,
+      "z_probed": False,
+      "active": False,
+      "filter_cover_open": False,
+    }
 
   def get_eeprom_data(self) -> Optional[bytes]:
     """Return None (no physical EEPROM in simulation)."""

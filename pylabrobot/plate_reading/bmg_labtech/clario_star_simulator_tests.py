@@ -1,7 +1,6 @@
 import statistics
 import unittest
 
-from pylabrobot.plate_reading.bmg_labtech.clario_star_backend import StatusFlag
 from pylabrobot.plate_reading.bmg_labtech.clario_star_simulator import CLARIOstarSimulatorBackend
 from pylabrobot.resources import Cor_96_wellplate_360ul_Fb
 
@@ -184,22 +183,23 @@ class TestTemperature(CLARIOstarSimulatorTestBase):
 class TestStatus(CLARIOstarSimulatorTestBase):
   async def test_initial_status(self):
     status = await self.backend.get_status()
-    self.assertIn(StatusFlag.VALID, status)
-    self.assertIn(StatusFlag.INITIALIZED, status)
-    self.assertNotIn(StatusFlag.BUSY, status)
-    self.assertNotIn(StatusFlag.OPEN, status)
+    self.assertTrue(status["valid"])
+    self.assertTrue(status["initialized"])
+    self.assertFalse(status["busy"])
+    self.assertFalse(status["open"])
+    self.assertEqual(len(status), 12)
 
   async def test_open_sets_flag(self):
     await self.backend.open()
     status = await self.backend.get_status()
-    self.assertIn(StatusFlag.OPEN, status)
+    self.assertTrue(status["open"])
 
   async def test_close_clears_open_sets_plate_detected(self):
     await self.backend.open()
     await self.backend.close(plate=self.plate)
     status = await self.backend.get_status()
-    self.assertNotIn(StatusFlag.OPEN, status)
-    self.assertIn(StatusFlag.PLATE_DETECTED, status)
+    self.assertFalse(status["open"])
+    self.assertTrue(status["plate_detected"])
 
 
 class TestEepromData(CLARIOstarSimulatorTestBase):

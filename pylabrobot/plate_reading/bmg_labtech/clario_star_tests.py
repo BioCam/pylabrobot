@@ -92,43 +92,50 @@ class TestParseStatus(unittest.TestCase):
     """Byte 1 = 0x25 means BUSY (bit 5) + VALID (bit 0)."""
     # From Go TestInit response: status bytes [0x01, 0x25, 0x00, 0x27, 0x00]
     flags = _parse_status(bytes([0x01, 0x25, 0x00, 0x27, 0x00]))
-    self.assertIn(StatusFlag.VALID, flags)
-    self.assertIn(StatusFlag.BUSY, flags)
-    self.assertIn(StatusFlag.INITIALIZED, flags)
-    self.assertIn(StatusFlag.OPEN, flags)
-    self.assertIn(StatusFlag.PLATE_DETECTED, flags)
-    self.assertIn(StatusFlag.Z_PROBED, flags)
-    self.assertNotIn(StatusFlag.STANDBY, flags)
-    self.assertNotIn(StatusFlag.RUNNING, flags)
-    self.assertNotIn(StatusFlag.UNREAD_DATA, flags)
-    self.assertNotIn(StatusFlag.LID_OPEN, flags)
+    self.assertTrue(flags["valid"])
+    self.assertTrue(flags["busy"])
+    self.assertTrue(flags["initialized"])
+    self.assertTrue(flags["open"])
+    self.assertTrue(flags["plate_detected"])
+    self.assertTrue(flags["z_probed"])
+    self.assertFalse(flags["standby"])
+    self.assertFalse(flags["running"])
+    self.assertFalse(flags["unread_data"])
+    self.assertFalse(flags["lid_open"])
 
   def test_valid_not_busy(self):
     """Byte 1 = 0x05 means VALID (bit 0) only, not BUSY."""
     flags = _parse_status(bytes([0x00, 0x05, 0x00, 0x00, 0x00]))
-    self.assertIn(StatusFlag.VALID, flags)
-    self.assertNotIn(StatusFlag.BUSY, flags)
+    self.assertTrue(flags["valid"])
+    self.assertFalse(flags["busy"])
 
   def test_empty(self):
-    """All zero bytes → no flags."""
+    """All zero bytes → all flags False."""
     flags = _parse_status(bytes([0x00, 0x00, 0x00, 0x00, 0x00]))
-    self.assertEqual(flags, set())
+    self.assertTrue(all(v is False for v in flags.values()))
+    self.assertEqual(len(flags), len(StatusFlag))
 
   def test_all_flags(self):
-    """Set all bits to verify all flags are detected."""
+    """Set all bits to verify all flags are True."""
     flags = _parse_status(bytes([0xFF, 0xFF, 0xFF, 0xFF, 0xFF]))
-    self.assertEqual(flags, set(StatusFlag))
+    self.assertTrue(all(v is True for v in flags.values()))
+    self.assertEqual(len(flags), len(StatusFlag))
 
   def test_filter_cover(self):
     """Byte 4 bit 6 → FILTER_COVER_OPEN."""
     flags = _parse_status(bytes([0x00, 0x00, 0x00, 0x00, 0x40]))
-    self.assertEqual(flags, {StatusFlag.FILTER_COVER_OPEN})
+    self.assertTrue(flags["filter_cover_open"])
+    # All other flags should be False
+    self.assertEqual(sum(v for v in flags.values()), 1)
 
   def test_short_bytes(self):
-    """Fewer than 5 bytes should not crash; only parse available bytes."""
+    """Fewer than 5 bytes should not crash; missing bytes default to False."""
     flags = _parse_status(bytes([0x00, 0x21]))
-    self.assertIn(StatusFlag.VALID, flags)
-    self.assertIn(StatusFlag.BUSY, flags)
+    self.assertTrue(flags["valid"])
+    self.assertTrue(flags["busy"])
+    # Flags from missing bytes should be False, not absent
+    self.assertFalse(flags["initialized"])
+    self.assertEqual(len(flags), len(StatusFlag))
 
 
 # ---------------------------------------------------------------------------
@@ -611,8 +618,8 @@ class TestCLARIOstarSend(unittest.IsolatedAsyncioTestCase):
     self.backend.io.read.side_effect = [response, b""]
 
     flags = await self.backend.get_status()
-    self.assertIn(StatusFlag.VALID, flags)
-    self.assertNotIn(StatusFlag.BUSY, flags)
+    self.assertTrue(flags["valid"])
+    self.assertFalse(flags["busy"])
 
 
 class TestCLARIOstarInitialize(unittest.IsolatedAsyncioTestCase):
