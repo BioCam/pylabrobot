@@ -1131,6 +1131,11 @@ class CLARIOstarBackend(PlateReaderBackend):
     temp_at_23 = int.from_bytes(payload[23:25], "big")
     temp_at_34 = int.from_bytes(payload[34:36], "big")
 
+    logger.info("ABS TEMP DEBUG: schema=0x%02x  off23=%d (%.1f°C)  off34=%d (%.1f°C)  "
+                "header=%s",
+                schema, temp_at_23, temp_at_23/10, temp_at_34, temp_at_34/10,
+                payload[:36].hex(" "))
+
     if schema & 0x80:
       temp_raw = temp_at_34 if temp_at_34 > 0 else temp_at_23
     else:
