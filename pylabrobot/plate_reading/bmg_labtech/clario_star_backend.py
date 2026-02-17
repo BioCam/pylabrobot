@@ -623,9 +623,29 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload = b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00"
     await self.send(payload, single_byte_checksum=True)
 
+  async def enable_temperature_monitoring(self) -> None:
+    """Enable temperature sensor monitoring without heating.
+
+    Sends the "monitor only" command (``\\x06\\x00\\x01\\x00\\x00``) which keeps
+    the temperature sensors active so that subsequent measurement responses
+    include an embedded pre-measurement temperature reading.
+
+    This is called automatically by ``stop_temperature_control`` to prevent the
+    firmware from dropping embedded temperature data after incubation is turned
+    off. It can also be called standalone if temperature monitoring was never
+    activated and you want embedded temperatures in measurement responses.
+    """
+    await self.send(b"\x06\x00\x01\x00\x00", single_byte_checksum=True)
+
   async def stop_temperature_control(self) -> None:
-    """Switch off the incubator and temperature monitoring."""
+    """Switch off the incubator and re-enable passive temperature monitoring.
+
+    Turns the heater off, then sends the "monitor only" command so that the
+    firmware continues to embed pre-measurement temperature readings in
+    subsequent measurement responses.
+    """
     await self.start_temperature_control(0.0)
+    await self.enable_temperature_monitoring()
 
   async def measure_temperature(
     self,
@@ -654,8 +674,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       await self.send(b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00",
                       single_byte_checksum=True)
     else:
-      # Activate monitoring without incubation
-      await self.send(b"\x06\x00\x01\x00\x00", single_byte_checksum=True)
+      await self.enable_temperature_monitoring()
     await asyncio.sleep(0.5)
     response = await self._request_command_status()
     bottom, top = self._parse_temperature_from_status(response)

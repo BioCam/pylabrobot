@@ -157,9 +157,14 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
 
     self._incubation_target = temperature
 
+  async def enable_temperature_monitoring(self) -> None:
+    """Enable temperature sensor monitoring without heating (no-op in simulation)."""
+    pass
+
   async def stop_temperature_control(self) -> None:
-    """Switch off the incubator and temperature monitoring."""
+    """Switch off the incubator and re-enable passive temperature monitoring."""
     self._incubation_target = 0.0
+    await self.enable_temperature_monitoring()
 
   async def measure_temperature(
     self,
