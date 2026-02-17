@@ -1084,7 +1084,7 @@ class CLARIOstarBackend(PlateReaderBackend):
   @staticmethod
   def _parse_absorbance_response(
     resp: bytes, num_wavelengths: int
-  ) -> Tuple[List[List[float]], float, Dict]:
+  ) -> Tuple[List[List[float]], Optional[float], Dict]:
     """Parse an absorbance measurement response using fixed offsets per the Go reference.
 
     Returns (transmission_per_well_per_wavelength, temperature_celsius, raw).
@@ -1123,25 +1123,23 @@ class CLARIOstarBackend(PlateReaderBackend):
     wavelengths_in_resp = int.from_bytes(payload[16:18], "big")
     wells = int.from_bytes(payload[20:22], "big")
 
-    # Temperature is at one of two known offsets in the 36-byte header:
-    #   bytes 23-24: used when incubation is inactive (schema 0x29)
-    #   bytes 34-35: used when incubation is active (schema 0xa9, high bit set)
-    # After incubation is turned off the schema may stay 0xa9 while offset 34
-    # drops to 0.  Pick whichever offset holds a plausible value (>0).
+    # The firmware embeds a pre-measurement temperature (sampled at the start of
+    # the read) at one of two offsets in the 36-byte header:
+    #   bytes 23-24: used when incubation has never been active (schema 0x29)
+    #   bytes 34-35: used when incubation is/was active (schema 0xa9, high bit set)
+    # After incubation is turned off the schema stays 0xa9 but both offsets drop
+    # to ~0 — the firmware simply stops embedding temperature. Return None so the
+    # caller can fall back to a post-measurement dedicated sensor query.
+    min_plausible_raw = 50  # 5.0 °C — below any realistic lab ambient
     temp_at_23 = int.from_bytes(payload[23:25], "big")
     temp_at_34 = int.from_bytes(payload[34:36], "big")
 
-    logger.info("ABS TEMP DEBUG: schema=0x%02x  off23=%d (%.1f°C)  off34=%d (%.1f°C)  "
-                "header=%s",
-                schema, temp_at_23, temp_at_23/10, temp_at_34, temp_at_34/10,
-                payload[:36].hex(" "))
-
     if schema & 0x80:
-      temp_raw = temp_at_34 if temp_at_34 > 0 else temp_at_23
+      temp_raw = temp_at_34 if temp_at_34 >= min_plausible_raw else temp_at_23
     else:
-      temp_raw = temp_at_23 if temp_at_23 > 0 else temp_at_34
+      temp_raw = temp_at_23 if temp_at_23 >= min_plausible_raw else temp_at_34
 
-    temperature = temp_raw / 10.0
+    temperature: Optional[float] = temp_raw / 10.0 if temp_raw >= min_plausible_raw else None
 
     # Raw sample values: wells * wavelengths uint32s starting at byte 36
     offset = 36
@@ -1191,7 +1189,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     return transmission, temperature, raw
 
   @staticmethod
-  def _parse_fluorescence_response(resp: bytes) -> Tuple[List[int], float, int]:
+  def _parse_fluorescence_response(resp: bytes) -> Tuple[List[int], Optional[float], int]:
     """Parse a fluorescence measurement response using fixed offsets per the Go reference.
 
     Returns (values, temperature_celsius, overflow_value).
@@ -1212,7 +1210,8 @@ class CLARIOstarBackend(PlateReaderBackend):
     complete = int.from_bytes(payload[9:11], "big")
     overflow = struct.unpack(">I", payload[11:15])[0]
     temp_raw = int.from_bytes(payload[25:27], "big")
-    temperature = temp_raw / 10.0
+    min_plausible_raw = 50  # 5.0 °C — below any realistic lab ambient
+    temperature: Optional[float] = temp_raw / 10.0 if temp_raw >= min_plausible_raw else None
 
     values = []
     offset = 34
@@ -1300,6 +1299,18 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     num_read = len(wells)
     fl_values, temperature, overflow = self._parse_fluorescence_response(vals)
+
+    # POST-measurement fallback: see comment in collect_absorbance_measurement.
+    if temperature is None:
+      warnings.warn(
+        "The measurement response did not contain an embedded temperature "
+        "(this happens after incubation is turned off). Falling back to a "
+        "post-measurement sensor query — the reported temperature was read "
+        "after the measurement finished, not at the start.",
+        stacklevel=2,
+      )
+      temperature = await self.measure_temperature()
+
     readings = [float(v) for v in fl_values[:num_read]]
 
     return [
@@ -1374,6 +1385,24 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     num_wells = len(wells)
     transmission_data, temperature, raw = self._parse_absorbance_response(vals, len(wavelengths))
+
+    # Normally the firmware embeds a temperature in the measurement response,
+    # sampled at the start of the measurement (pre-measurement). When
+    # incubation has been used and then turned off, the firmware keeps the
+    # 0xa9 schema but writes ~0 to both temperature offsets — the embedded
+    # temperature is simply unavailable. In that case, query the sensor
+    # directly. Note: this is a POST-measurement reading (taken now, after the
+    # measurement has finished) and may differ slightly from the actual plate
+    # temperature during the read.
+    if temperature is None:
+      warnings.warn(
+        "The measurement response did not contain an embedded temperature "
+        "(this happens after incubation is turned off). Falling back to a "
+        "post-measurement sensor query — the reported temperature was read "
+        "after the measurement finished, not at the start.",
+        stacklevel=2,
+      )
+      temperature = await self.measure_temperature()
 
     # --- raw mode: return detector counts + calibration directly ---
     if report == "raw":
@@ -1502,6 +1531,17 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     num_read = len(wells)
     fl_values, temperature, overflow = self._parse_fluorescence_response(vals)
+
+    # POST-measurement fallback: see comment in collect_absorbance_measurement.
+    if temperature is None:
+      warnings.warn(
+        "The measurement response did not contain an embedded temperature "
+        "(this happens after incubation is turned off). Falling back to a "
+        "post-measurement sensor query — the reported temperature was read "
+        "after the measurement finished, not at the start.",
+        stacklevel=2,
+      )
+      temperature = await self.measure_temperature()
 
     readings = [float(v) for v in fl_values[:num_read]]
 

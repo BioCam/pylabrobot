@@ -581,6 +581,20 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
     self.assertAlmostEqual(temp, 26.0)
 
+  def test_schema_high_bit_both_offsets_implausible(self):
+    """0xa9 with both offsets ~0 (post-incubation) returns None for temperature."""
+    resp = self._build_abs_response(
+      num_wells=1, num_wavelengths=1,
+      samples=[50000], refs=[100000],
+      chromats=[(100000, 0)], ref_chan_hi=200000, ref_chan_lo=0,
+      temperature_raw=1,  # 0.1 °C at offset 23 — firmware noise
+    )
+    resp = bytearray(resp)
+    resp[6] = 0xA9
+    # offset 34 stays 0 — firmware noise
+    transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
+    self.assertIsNone(temp)
+
   def test_bad_schema_byte(self):
     resp = bytearray(40)
     resp[6] = 0x21  # wrong schema
