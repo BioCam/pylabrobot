@@ -124,6 +124,14 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     """Return None (no physical EEPROM in simulation)."""
     return None
 
+  async def request_usage_counters(self) -> Dict[str, int]:
+    """Return synthetic usage counters for the simulated instrument."""
+    return {
+      "flashes": 0, "testruns": 0, "wells": 0, "well_movements": 0,
+      "active_time_s": 0, "shake_time_s": 0,
+      "pump1_usage": 0, "pump2_usage": 0, "alpha_time": 0,
+    }
+
   async def start_temperature_control(self, temperature: float) -> None:
     """Start active temperature control (simulated incubation)."""
     self._incubation_target = temperature

@@ -9,6 +9,7 @@ from pylabrobot.plate_reading.bmg_labtech.clario_star_backend import (
   CLARIOstarBackend,
   CLARIOstarConfig,
   FrameError,
+  _parse_usage_counters,
   ShakerType,
   StartCorner,
   StatusFlag,
@@ -835,6 +836,52 @@ class TestParseFirmwareInfo(unittest.TestCase):
     self.assertEqual(cfg.firmware_version, "2.00")
 
 
+# Real usage counter payload captured from the same unit (command 0x05 0x21).
+_REAL_COUNTER_PAYLOAD = bytes([
+  0x21, 0x05, 0x00, 0x24, 0x00, 0x00,  # header
+  0x00, 0x1b, 0xa5, 0x20,  # flashes = 1,811,744
+  0x00, 0x00, 0x06, 0x44,  # testruns = 1,604
+  0x00, 0x00, 0x04, 0x7c,  # wells_raw = 1,148  (×100 = 114,800)
+  0x00, 0x00, 0x03, 0x6e,  # well_movements_raw = 878  (×100 = 87,800)
+  0x00, 0x02, 0x4c, 0xbf,  # active_time_s = 150,719
+  0x00, 0x00, 0x12, 0xb0,  # shake_time_s = 4,784
+  0x00, 0x00, 0x00, 0x0a,  # pump1_usage = 10
+  0x00, 0x00, 0x00, 0x0a,  # pump2_usage = 10
+  0x00, 0x00, 0x00, 0x0a,  # alpha_time = 10
+  0x00,                     # trailing byte
+])
+
+
+class TestParseUsageCounters(unittest.TestCase):
+  """Test _parse_usage_counters against real hardware capture."""
+
+  def test_parse_real_counters(self):
+    """Parse the real counter capture from 430-2621."""
+    framed = _make_response_frame(_REAL_COUNTER_PAYLOAD)
+    c = _parse_usage_counters(framed)
+
+    self.assertEqual(c["flashes"], 1_811_744)
+    self.assertEqual(c["testruns"], 1_604)
+    self.assertEqual(c["wells"], 114_800)
+    self.assertEqual(c["well_movements"], 87_800)
+    self.assertEqual(c["active_time_s"], 150_719)
+    self.assertEqual(c["shake_time_s"], 4_784)
+    self.assertEqual(c["pump1_usage"], 10)
+    self.assertEqual(c["pump2_usage"], 10)
+    self.assertEqual(c["alpha_time"], 10)
+
+  def test_parse_unframed(self):
+    """Unframed payload also works."""
+    c = _parse_usage_counters(_REAL_COUNTER_PAYLOAD)
+    self.assertEqual(c["flashes"], 1_811_744)
+    self.assertEqual(c["shake_time_s"], 4_784)
+
+  def test_parse_too_short(self):
+    """Short payload returns empty dict."""
+    c = _parse_usage_counters(b"\x21\x05\x00\x24\x00\x00")
+    self.assertEqual(c, {})
+
+
 class TestDumpEeprom(unittest.TestCase):
   """Test the dump_eeprom() pretty-printer."""
 
@@ -941,6 +988,18 @@ class TestSimulatorConfig(unittest.TestCase):
     """Simulator returns None for raw EEPROM data."""
     sim = CLARIOstarSimulatorBackend()
     self.assertIsNone(sim.get_eeprom_data())
+
+
+class TestSimulatorUsageCounters(unittest.IsolatedAsyncioTestCase):
+  """Test CLARIOstarSimulatorBackend usage counter methods."""
+
+  async def test_request_usage_counters(self):
+    """Simulator returns zeroed usage counters."""
+    sim = CLARIOstarSimulatorBackend()
+    c = await sim.request_usage_counters()
+    self.assertIsInstance(c, dict)
+    self.assertEqual(c["flashes"], 0)
+    self.assertEqual(c["wells"], 0)
 
 
 if __name__ == "__main__":

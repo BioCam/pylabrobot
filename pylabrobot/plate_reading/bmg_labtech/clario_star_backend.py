@@ -324,6 +324,32 @@ class CLARIOstarConfig:
     return config
 
 
+def _parse_usage_counters(raw: bytes) -> Dict[str, int]:
+  """Parse a counter response (``0x05 0x21``, 43-byte payload) into a dict.
+
+  Wells and well movements are stored ÷100 in firmware; returned ×100 here.
+  """
+  try:
+    payload = _unframe(raw)
+  except FrameError:
+    payload = raw
+
+  if len(payload) < 42:
+    return {}
+
+  return {
+    "flashes": int.from_bytes(payload[6:10], "big"),
+    "testruns": int.from_bytes(payload[10:14], "big"),
+    "wells": int.from_bytes(payload[14:18], "big") * 100,
+    "well_movements": int.from_bytes(payload[18:22], "big") * 100,
+    "active_time_s": int.from_bytes(payload[22:26], "big"),
+    "shake_time_s": int.from_bytes(payload[26:30], "big"),
+    "pump1_usage": int.from_bytes(payload[30:34], "big"),
+    "pump2_usage": int.from_bytes(payload[34:38], "big"),
+    "alpha_time": int.from_bytes(payload[38:42], "big"),
+  }
+
+
 def _extract_cstring(data: bytes, start: int, max_len: int) -> str:
   """Extract a null-terminated ASCII string from a byte buffer."""
   end = start
@@ -605,6 +631,15 @@ class CLARIOstarBackend(PlateReaderBackend):
     resp = await self.send(b"\x05\x09\x00\x00\x00\x00\x00\x00")
     self._firmware_data = resp
     return await self._wait_for_ready_and_return(resp)
+
+  async def request_usage_counters(self) -> Dict[str, int]:
+    """Request lifetime usage counters (command ``0x05 0x21``).
+
+    Each call queries the instrument for current values (not cached).
+    """
+    resp = await self.send(b"\x05\x21\x00\x00\x00\x00\x00\x00")
+    await self._wait_for_ready_and_return(resp)
+    return _parse_usage_counters(resp)
 
   def get_eeprom_data(self) -> Optional[bytes]:
     """Return the raw EEPROM response captured during setup, or None if not yet read."""
