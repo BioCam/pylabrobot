@@ -696,6 +696,36 @@ class TestCLARIOstarInitialize(unittest.IsolatedAsyncioTestCase):
 # EEPROM parsing and CLARIOstarConfig
 # ---------------------------------------------------------------------------
 
+# Real EEPROM payload captured from CLARIOstar Plus (serial 430-2621).
+# This is the unframed 264-byte payload from command 0x05 0x07.
+_REAL_EEPROM_PAYLOAD = bytes([
+  0x07, 0x05, 0x00, 0x24, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x0a, 0x01, 0x01, 0x01, 0x01, 0x00,
+  0x00, 0x01, 0x00, 0xee, 0x02, 0x00, 0x00, 0x0f, 0x00, 0xb0, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x03, 0x04, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x74, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x65, 0x00, 0x00, 0x00, 0xdc, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0xf4, 0x01, 0x08, 0x03, 0xa7, 0x04, 0x08, 0x07, 0x60, 0x09, 0xda, 0x08, 0xac, 0x0d, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00,
+  0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x02, 0x98,
+  0x06, 0xae, 0x01, 0x3d, 0x0a, 0x46, 0x05, 0xee, 0x01, 0xfb, 0xff, 0x70, 0x0c, 0x00, 0x00, 0x00,
+  0x00, 0xa4, 0x00, 0x58, 0xff, 0x8e, 0x03, 0xf2, 0x04, 0x60, 0xff, 0x55, 0x11, 0xfe, 0x0b, 0x55,
+  0x11, 0x8f, 0x1a, 0x17, 0x02, 0x98, 0x06, 0x5a, 0xff, 0x97, 0x06, 0x68, 0x04, 0x26, 0x03, 0xbc,
+  0x14, 0xb8, 0x04, 0x08, 0x07, 0x91, 0x00, 0x90, 0x01, 0x46, 0x32, 0x28, 0x46, 0x0a, 0x00, 0x46,
+  0x07, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x03, 0xd4, 0x06, 0x28,
+  0x00, 0x2c, 0x01, 0x90, 0x01, 0x46, 0x00, 0x1e, 0x00, 0x00, 0x14, 0x11, 0x00, 0x12, 0x09, 0xac,
+  0x0d, 0x60, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00,
+])
+
+# Real firmware info payload captured from the same unit (command 0x05 0x09).
+_REAL_FIRMWARE_PAYLOAD = bytes([
+  0x0a, 0x05, 0x00, 0x24, 0x00, 0x00, 0x05, 0x46,
+  0x4e, 0x6f, 0x76, 0x20, 0x32, 0x30, 0x20, 0x32,
+  0x30, 0x32, 0x30, 0x00, 0x31, 0x31, 0x3a, 0x35,
+  0x31, 0x3a, 0x32, 0x31, 0x00, 0x00, 0x01, 0x00,
+])
+
 
 class TestCLARIOstarConfig(unittest.TestCase):
   """Test CLARIOstarConfig dataclass and parse_eeprom."""
@@ -704,35 +734,105 @@ class TestCLARIOstarConfig(unittest.TestCase):
     """Default config should have empty/false values."""
     cfg = CLARIOstarConfig()
     self.assertEqual(cfg.serial_number, "")
+    self.assertEqual(cfg.firmware_version, "")
     self.assertFalse(cfg.has_pump1)
     self.assertEqual(cfg.monochromator_range, (0, 0))
+    self.assertEqual(cfg.machine_type_code, 0)
 
   def test_parse_eeprom_empty_payload(self):
     """Parsing a minimal framed response returns defaults without crashing."""
     framed = _make_response_frame(b"\x00" * 20)
     cfg = CLARIOstarConfig.parse_eeprom(framed)
     self.assertIsInstance(cfg, CLARIOstarConfig)
-    self.assertEqual(cfg.model_name, "")
+    self.assertEqual(cfg.machine_type_code, 0)
 
-  def test_parse_eeprom_with_model_name(self):
-    """If 'CLARIOstar' appears as ASCII in the payload, model_name is set."""
-    payload = b"\x00" * 10 + b"CLARIOstar Plus" + b"\x00" * 10
-    framed = _make_response_frame(payload)
+  def test_parse_eeprom_too_short(self):
+    """Payload shorter than 15 bytes returns defaults."""
+    cfg = CLARIOstarConfig.parse_eeprom(b"\x07\x05\x00\x24")
+    self.assertEqual(cfg.machine_type_code, 0)
+    self.assertFalse(cfg.has_absorbance)
+
+  def test_parse_real_eeprom(self):
+    """Parse the real EEPROM capture from CLARIOstar Plus 430-2621."""
+    framed = _make_response_frame(_REAL_EEPROM_PAYLOAD)
     cfg = CLARIOstarConfig.parse_eeprom(framed)
+
+    self.assertEqual(cfg.machine_type_code, 0x0024)
     self.assertEqual(cfg.model_name, "CLARIOstar Plus")
-
-  def test_parse_eeprom_with_short_model_name(self):
-    """'CLARIOstar' (without 'Plus') is detected."""
-    payload = b"\x00" * 5 + b"CLARIOstar" + b"\x00" * 5
-    framed = _make_response_frame(payload)
-    cfg = CLARIOstarConfig.parse_eeprom(framed)
-    self.assertEqual(cfg.model_name, "CLARIOstar")
+    self.assertTrue(cfg.has_absorbance)
+    self.assertTrue(cfg.has_fluorescence)
+    self.assertTrue(cfg.has_luminescence)
+    self.assertTrue(cfg.has_alpha_technology)
+    self.assertEqual(cfg.monochromator_range, (220, 1000))
+    self.assertEqual(cfg.num_filter_slots, 11)
 
   def test_parse_eeprom_unframed_fallback(self):
     """If the input is not a valid frame, parse_eeprom treats it as raw payload."""
-    raw = b"\xff" * 5 + b"CLARIOstar" + b"\x00" * 5
-    cfg = CLARIOstarConfig.parse_eeprom(raw)
-    self.assertEqual(cfg.model_name, "CLARIOstar")
+    cfg = CLARIOstarConfig.parse_eeprom(_REAL_EEPROM_PAYLOAD)
+    self.assertEqual(cfg.machine_type_code, 0x0024)
+    self.assertTrue(cfg.has_absorbance)
+
+  def test_parse_eeprom_unknown_type_code(self):
+    """Unknown machine type code produces a descriptive model name."""
+    payload = bytearray(_REAL_EEPROM_PAYLOAD)
+    payload[2] = 0x00
+    payload[3] = 0xFF  # type 0x00FF — unknown
+    cfg = CLARIOstarConfig.parse_eeprom(bytes(payload))
+    self.assertEqual(cfg.machine_type_code, 0x00FF)
+    self.assertIn("Unknown", cfg.model_name)
+    self.assertEqual(cfg.monochromator_range, (0, 0))
+
+  def test_parse_eeprom_capability_flags_false(self):
+    """Zeroed capability bytes should produce False."""
+    payload = bytearray(_REAL_EEPROM_PAYLOAD)
+    payload[11] = 0
+    payload[12] = 0
+    payload[13] = 0
+    payload[14] = 0
+    cfg = CLARIOstarConfig.parse_eeprom(bytes(payload))
+    self.assertFalse(cfg.has_absorbance)
+    self.assertFalse(cfg.has_fluorescence)
+    self.assertFalse(cfg.has_luminescence)
+    self.assertFalse(cfg.has_alpha_technology)
+
+
+class TestParseFirmwareInfo(unittest.TestCase):
+  """Test CLARIOstarConfig.parse_firmware_info against real hardware capture."""
+
+  def test_parse_real_firmware(self):
+    """Parse the real firmware info capture from 430-2621."""
+    framed = _make_response_frame(_REAL_FIRMWARE_PAYLOAD)
+    cfg = CLARIOstarConfig.parse_firmware_info(framed)
+
+    self.assertEqual(cfg.firmware_version, "1.35")
+    self.assertEqual(cfg.firmware_build_timestamp, "Nov 20 2020 11:51:21")
+
+  def test_parse_firmware_unframed(self):
+    """Unframed payload also works."""
+    cfg = CLARIOstarConfig.parse_firmware_info(_REAL_FIRMWARE_PAYLOAD)
+    self.assertEqual(cfg.firmware_version, "1.35")
+    self.assertIn("Nov 20 2020", cfg.firmware_build_timestamp)
+
+  def test_parse_firmware_too_short(self):
+    """Short payload returns defaults."""
+    cfg = CLARIOstarConfig.parse_firmware_info(b"\x0a\x05\x00\x24\x00\x00")
+    self.assertEqual(cfg.firmware_version, "")
+    self.assertEqual(cfg.firmware_build_timestamp, "")
+
+  def test_firmware_version_encoding(self):
+    """Verify the version × 1000 encoding: 0x0546 = 1350 → '1.35'."""
+    payload = bytearray(_REAL_FIRMWARE_PAYLOAD)
+    # Change version to 0x0514 = 1300 → should give "1.30"
+    payload[6] = 0x05
+    payload[7] = 0x14
+    cfg = CLARIOstarConfig.parse_firmware_info(bytes(payload))
+    self.assertEqual(cfg.firmware_version, "1.30")
+
+    # Change to 0x07D0 = 2000 → "2.00"
+    payload[6] = 0x07
+    payload[7] = 0xD0
+    cfg = CLARIOstarConfig.parse_firmware_info(bytes(payload))
+    self.assertEqual(cfg.firmware_version, "2.00")
 
 
 class TestDumpEeprom(unittest.TestCase):
@@ -761,6 +861,12 @@ class TestDumpEeprom(unittest.TestCase):
     # Bytes 0-31 are non-printable, should be dots
     self.assertIn(".", output)
 
+  def test_dump_real_eeprom(self):
+    """dump_eeprom produces the expected length annotation for real data."""
+    framed = _make_response_frame(_REAL_EEPROM_PAYLOAD)
+    output = dump_eeprom(framed)
+    self.assertIn("Payload length: 264", output)
+
 
 class TestCLARIOstarBackendEepromMethods(unittest.TestCase):
   """Test get_machine_config and dump_eeprom_str on the real backend class."""
@@ -768,16 +874,34 @@ class TestCLARIOstarBackendEepromMethods(unittest.TestCase):
   def setUp(self):
     self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
     self.backend._eeprom_data = None
+    self.backend._firmware_data = None
+    self.backend.io = unittest.mock.MagicMock()
+    self.backend.io.serial = None
+    self.backend.io.device_id = None
 
   def test_get_machine_config_none_before_setup(self):
     """get_machine_config returns None if EEPROM data hasn't been read."""
     self.assertIsNone(self.backend.get_machine_config())
 
-  def test_get_machine_config_returns_config(self):
-    """get_machine_config returns a CLARIOstarConfig when EEPROM data is present."""
-    self.backend._eeprom_data = _make_response_frame(b"\x00" * 20)
+  def test_get_machine_config_eeprom_only(self):
+    """get_machine_config works with only EEPROM data (no firmware info)."""
+    self.backend._eeprom_data = _make_response_frame(_REAL_EEPROM_PAYLOAD)
     cfg = self.backend.get_machine_config()
     self.assertIsInstance(cfg, CLARIOstarConfig)
+    self.assertEqual(cfg.machine_type_code, 0x0024)
+    self.assertTrue(cfg.has_absorbance)
+    # Firmware fields should be empty without firmware data
+    self.assertEqual(cfg.firmware_version, "")
+
+  def test_get_machine_config_with_firmware(self):
+    """get_machine_config merges EEPROM and firmware data."""
+    self.backend._eeprom_data = _make_response_frame(_REAL_EEPROM_PAYLOAD)
+    self.backend._firmware_data = _make_response_frame(_REAL_FIRMWARE_PAYLOAD)
+    cfg = self.backend.get_machine_config()
+    self.assertEqual(cfg.model_name, "CLARIOstar Plus")
+    self.assertEqual(cfg.firmware_version, "1.35")
+    self.assertIn("Nov 20 2020", cfg.firmware_build_timestamp)
+    self.assertTrue(cfg.has_luminescence)
 
   def test_dump_eeprom_str_none_before_setup(self):
     """dump_eeprom_str returns None if EEPROM data hasn't been read."""
@@ -800,11 +924,13 @@ class TestSimulatorConfig(unittest.TestCase):
     cfg = sim.get_machine_config()
     self.assertIsInstance(cfg, CLARIOstarConfig)
     self.assertEqual(cfg.serial_number, "SIM-0000")
+    self.assertEqual(cfg.firmware_version, "1.35")
     self.assertTrue(cfg.has_absorbance)
     self.assertTrue(cfg.has_fluorescence)
     self.assertTrue(cfg.has_luminescence)
     self.assertFalse(cfg.has_pump1)
-    self.assertEqual(cfg.monochromator_range, (320, 840))
+    self.assertEqual(cfg.monochromator_range, (220, 1000))
+    self.assertEqual(cfg.machine_type_code, 0x0024)
 
   def test_dump_eeprom_str_is_none(self):
     """Simulator has no EEPROM data to dump."""

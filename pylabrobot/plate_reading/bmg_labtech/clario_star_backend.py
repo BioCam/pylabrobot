@@ -188,22 +188,66 @@ def _unframe(data: bytes) -> bytes:
   return data[4:-3]
 
 
+# Model type code → (name, monochromator_range, num_filter_slots)
+# Only one model confirmed so far; others will be added as hardware data is captured.
+_MODEL_LOOKUP: Dict[int, Tuple[str, Tuple[int, int], int]] = {
+  0x0024: ("CLARIOstar Plus", (220, 1000), 11),  # UV/Vis 220-1000nm, 11 filter slots
+}
+
+
 @dataclasses.dataclass
 class CLARIOstarConfig:
-  """Machine configuration parsed from the CLARIOstar EEPROM response.
+  """Machine configuration parsed from CLARIOstar EEPROM (``0x05 0x07``)
+  and firmware info (``0x05 0x09``) responses.
 
-  Field offsets are not yet known — all fields are populated with placeholder
-  defaults until real hardware captures allow reverse-engineering the EEPROM
-  layout.  Once the byte map is established, ``parse_eeprom()`` will extract
-  actual values from the raw response.
+  Byte map (confirmed via hardware capture on CLARIOstar Plus, serial 430-2621):
+
+  **EEPROM response (``0x05 0x07``, 264-byte payload):**
+
+  ======  ======  ===================================================
+  Offset  Size    Field
+  ======  ======  ===================================================
+  0       1       Subcommand echo (``0x07``)
+  1       1       Command family echo (``0x05``)
+  2-3     2       Machine type code (uint16 BE, ``0x0024`` = CLARIOstar Plus)
+  4-5     2       Unknown (always ``0x0000``)
+  6-10    5       Unknown
+  11      1       has_absorbance (bool)
+  12      1       has_fluorescence (bool)
+  13      1       has_luminescence (bool)
+  14      1       has_alpha_technology (bool)
+  15-16   2       Unknown
+  17      1       Unknown flag (``0x01`` on test unit)
+  18-19   2       Unknown (``0x00EE = 238``)
+  20-95   76      Unknown (sparse — contains ``0x32`` at offset 0x34)
+  96-107  12      Dense 16-bit values (0x60-0x6B), likely usage counters
+  108+    ...     Calibration / config data (not yet mapped)
+  ======  ======  ===================================================
+
+  **Firmware info response (``0x05 0x09``, 32-byte payload):**
+
+  ======  ======  ===================================================
+  Offset  Size    Field
+  ======  ======  ===================================================
+  0-5     6       Header (schema + family + type code)
+  6-7     2       Firmware version × 1000 (uint16 BE, e.g. ``0x0546`` = 1.35)
+  8-19    12      Build date, null-terminated (e.g. ``"Nov 20 2020"``)
+  20-27   8       Build time, null-terminated (e.g. ``"11:51:21"``)
+  28-31   4       Unknown
+
+  Date and time are merged into ``firmware_build_timestamp``.
+  ======  ======  ===================================================
   """
 
   serial_number: str = ""
   firmware_version: str = ""
+  firmware_build_timestamp: str = ""
   model_name: str = ""
+  machine_type_code: int = 0
   has_absorbance: bool = False
   has_fluorescence: bool = False
   has_luminescence: bool = False
+  has_alpha_technology: bool = False
   has_pump1: bool = False
   has_pump2: bool = False
   has_stacker: bool = False
@@ -212,26 +256,80 @@ class CLARIOstarConfig:
 
   @staticmethod
   def parse_eeprom(raw: bytes) -> "CLARIOstarConfig":
-    """Parse a raw framed EEPROM response into a CLARIOstarConfig.
+    """Parse a raw framed EEPROM response (``0x05 0x07``) into a CLARIOstarConfig.
 
-    Currently returns defaults — real field extraction will be added once
-    the EEPROM byte layout is reverse-engineered from hardware captures.
+    Extracts confirmed fields from the 264-byte payload. Fields whose offsets
+    are not yet known (pump/stacker presence) remain at their defaults.
     """
     try:
       payload = _unframe(raw)
     except FrameError:
       payload = raw
 
-    # --- placeholder: scan for ASCII strings as a heuristic ---
-    ascii_chars = "".join(chr(b) if 32 <= b < 127 else "" for b in payload)
+    config = CLARIOstarConfig()
+
+    if len(payload) < 15:
+      return config
+
+    # Bytes 2-3: machine type code (uint16 BE)
+    config.machine_type_code = int.from_bytes(payload[2:4], "big")
+
+    # Look up model-dependent defaults from the type code
+    model_info = _MODEL_LOOKUP.get(config.machine_type_code)
+    if model_info is not None:
+      config.model_name, config.monochromator_range, config.num_filter_slots = model_info
+    else:
+      config.model_name = f"Unknown BMG reader (type 0x{config.machine_type_code:04x})"
+
+    # Bytes 11-14: reading technology capability flags
+    config.has_absorbance = bool(payload[11])
+    config.has_fluorescence = bool(payload[12])
+    config.has_luminescence = bool(payload[13])
+    config.has_alpha_technology = bool(payload[14])
+
+    # Pump/stacker offsets are NOT yet identified — they are False on the only
+    # test unit (430-2621) so every non-zero byte in the EEPROM represents
+    # something that IS present. A second unit with pumps/stacker is needed
+    # to identify those offsets.
+
+    return config
+
+  @staticmethod
+  def parse_firmware_info(raw: bytes) -> "CLARIOstarConfig":
+    """Parse a raw framed firmware info response (``0x05 0x09``) and return
+    a CLARIOstarConfig populated with firmware fields only.
+
+    Typically merged into an existing config via ``_merge_firmware_info()``.
+    """
+    try:
+      payload = _unframe(raw)
+    except FrameError:
+      payload = raw
 
     config = CLARIOstarConfig()
-    # Attempt to detect the model name if present as ASCII
-    for name in ("CLARIOstar Plus", "CLARIOstar"):
-      if name in ascii_chars:
-        config.model_name = name
-        break
+
+    if len(payload) < 28:
+      return config
+
+    # Bytes 6-7: firmware version encoded as version × 1000 (uint16 BE)
+    # Example: 0x0546 = 1350 → version "1.35"
+    version_raw = int.from_bytes(payload[6:8], "big")
+    config.firmware_version = f"{version_raw / 1000:.2f}"
+
+    # Bytes 8-19: null-terminated build date, bytes 20-27: null-terminated build time
+    build_date = _extract_cstring(payload, 8, 12)
+    build_time = _extract_cstring(payload, 20, 8)
+    config.firmware_build_timestamp = f"{build_date} {build_time}".strip()
+
     return config
+
+
+def _extract_cstring(data: bytes, start: int, max_len: int) -> str:
+  """Extract a null-terminated ASCII string from a byte buffer."""
+  end = start
+  while end < start + max_len and end < len(data) and data[end] != 0:
+    end += 1
+  return data[start:end].decode("ascii", errors="replace")
 
 
 def dump_eeprom(raw: bytes) -> str:
@@ -277,6 +375,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
     self.timeout = timeout
     self._eeprom_data: Optional[bytes] = None
+    self._firmware_data: Optional[bytes] = None
     self._incubation_target: float = 0.0
 
   async def setup(self):
@@ -287,6 +386,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     await self.initialize()
     await self.request_eeprom_data()
+    await self.request_firmware_info()
 
   async def stop(self):
     await self.io.stop()
@@ -500,18 +600,45 @@ class CLARIOstarBackend(PlateReaderBackend):
     self._eeprom_data = eeprom_response
     return await self._wait_for_ready_and_return(eeprom_response)
 
+  async def request_firmware_info(self):
+    """Request firmware version and build date/time (command ``0x05 0x09``)."""
+    resp = await self.send(b"\x05\x09\x00\x00\x00\x00\x00\x00")
+    self._firmware_data = resp
+    return await self._wait_for_ready_and_return(resp)
+
   def get_eeprom_data(self) -> Optional[bytes]:
     """Return the raw EEPROM response captured during setup, or None if not yet read."""
     return self._eeprom_data
 
+  def get_firmware_data(self) -> Optional[bytes]:
+    """Return the raw firmware info response captured during setup, or None if not yet read."""
+    return self._firmware_data
+
   def get_machine_config(self) -> Optional[CLARIOstarConfig]:
-    """Parse and return the machine configuration from the stored EEPROM data.
+    """Parse and return the machine configuration from stored EEPROM and firmware data.
+
+    Combines fields from the EEPROM response (``0x05 0x07``) and firmware info
+    response (``0x05 0x09``). The serial number is read from the FTDI chip.
 
     Returns None if EEPROM data has not been read yet (i.e. setup() not called).
     """
     if self._eeprom_data is None:
       return None
-    return CLARIOstarConfig.parse_eeprom(self._eeprom_data)
+    config = CLARIOstarConfig.parse_eeprom(self._eeprom_data)
+
+    # Merge firmware info if available
+    if self._firmware_data is not None:
+      fw = CLARIOstarConfig.parse_firmware_info(self._firmware_data)
+      config.firmware_version = fw.firmware_version
+      config.firmware_build_timestamp = fw.firmware_build_timestamp
+
+    # Serial number comes from the FTDI chip, not the EEPROM
+    if hasattr(self.io, "serial") and self.io.serial:
+      config.serial_number = self.io.serial
+    elif hasattr(self.io, "device_id") and self.io.device_id:
+      config.serial_number = self.io.device_id
+
+    return config
 
   def dump_eeprom_str(self) -> Optional[str]:
     """Pretty-print the stored EEPROM data for reverse-engineering.

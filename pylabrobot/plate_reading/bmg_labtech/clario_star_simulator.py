@@ -105,15 +105,18 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     """Return a synthetic CLARIOstarConfig for the simulated instrument."""
     return CLARIOstarConfig(
       serial_number="SIM-0000",
-      firmware_version="1.00-sim",
+      firmware_version="1.35",
+      firmware_build_timestamp="Jan 01 2025 00:00:00",
       model_name="CLARIOstar Plus (Simulator)",
+      machine_type_code=0x0024,
       has_absorbance=True,
       has_fluorescence=True,
       has_luminescence=True,
+      has_alpha_technology=False,
       has_pump1=False,
       has_pump2=False,
       has_stacker=False,
-      monochromator_range=(320, 840),
+      monochromator_range=(220, 1000),
       num_filter_slots=11,
     )
 
