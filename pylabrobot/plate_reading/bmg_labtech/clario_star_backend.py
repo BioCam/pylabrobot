@@ -1108,8 +1108,11 @@ class CLARIOstarBackend(PlateReaderBackend):
     if len(payload) < 36:
       raise ValueError(f"Absorbance response too short ({len(payload)} bytes)")
 
-    if payload[6] != 0x29:
-      raise ValueError(f"Incorrect schema byte for abs data: 0x{payload[6]:02x}, expected 0x29")
+    schema = payload[6]
+    if schema & 0x7F != 0x29:
+      raise ValueError(f"Incorrect schema byte for abs data: 0x{schema:02x}, expected 0x29")
+    if schema & 0x80:
+      logger.debug("Absorbance schema byte has high bit set (0x%02x)", schema)
 
     wavelengths_in_resp = int.from_bytes(payload[16:18], "big")
     wells = int.from_bytes(payload[20:22], "big")
@@ -1177,8 +1180,11 @@ class CLARIOstarBackend(PlateReaderBackend):
     if len(payload) < 34:
       raise ValueError(f"Fluorescence response too short ({len(payload)} bytes)")
 
-    if payload[6] != 0x21:
-      raise ValueError(f"Incorrect schema byte for fl data: 0x{payload[6]:02x}, expected 0x21")
+    schema = payload[6]
+    if schema & 0x7F != 0x21:
+      raise ValueError(f"Incorrect schema byte for fl data: 0x{schema:02x}, expected 0x21")
+    if schema & 0x80:
+      logger.debug("Fluorescence schema byte has high bit set (0x%02x)", schema)
 
     complete = int.from_bytes(payload[9:11], "big")
     overflow = struct.unpack(">I", payload[11:15])[0]
