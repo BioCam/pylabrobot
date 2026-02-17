@@ -567,6 +567,20 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     self.assertEqual(len(transmission), 1)
     self.assertAlmostEqual(temp, 36.3)
 
+  def test_schema_high_bit_incubation_off_fallback(self):
+    """0xa9 with offset 34 = 0 (incubation just turned off) should fall back to offset 23."""
+    resp = self._build_abs_response(
+      num_wells=1, num_wavelengths=1,
+      samples=[50000], refs=[100000],
+      chromats=[(100000, 0)], ref_chan_hi=200000, ref_chan_lo=0,
+      temperature_raw=260,  # 26.0 °C at offset 23
+    )
+    resp = bytearray(resp)
+    resp[6] = 0xA9
+    # offset 34 stays 0 (default from bytearray) — incubation off
+    transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
+    self.assertAlmostEqual(temp, 26.0)
+
   def test_bad_schema_byte(self):
     resp = bytearray(40)
     resp[6] = 0x21  # wrong schema

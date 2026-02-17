@@ -1123,12 +1123,19 @@ class CLARIOstarBackend(PlateReaderBackend):
     wavelengths_in_resp = int.from_bytes(payload[16:18], "big")
     wells = int.from_bytes(payload[20:22], "big")
 
-    # Temperature offset differs by schema variant (confirmed on real hardware):
-    #   0x29: bytes 23-24 (no incubation active)
-    #   0xa9: bytes 34-35 (incubation active, high bit 0x80 set)
-    # At equilibrium the embedded value matches the bottom heating plate sensor.
-    temp_offset = 34 if schema & 0x80 else 23
-    temp_raw = int.from_bytes(payload[temp_offset : temp_offset + 2], "big")
+    # Temperature is at one of two known offsets in the 36-byte header:
+    #   bytes 23-24: used when incubation is inactive (schema 0x29)
+    #   bytes 34-35: used when incubation is active (schema 0xa9, high bit set)
+    # After incubation is turned off the schema may stay 0xa9 while offset 34
+    # drops to 0.  Pick whichever offset holds a plausible value (>0).
+    temp_at_23 = int.from_bytes(payload[23:25], "big")
+    temp_at_34 = int.from_bytes(payload[34:36], "big")
+
+    if schema & 0x80:
+      temp_raw = temp_at_34 if temp_at_34 > 0 else temp_at_23
+    else:
+      temp_raw = temp_at_23 if temp_at_23 > 0 else temp_at_34
+
     temperature = temp_raw / 10.0
 
     # Raw sample values: wells * wavelengths uint32s starting at byte 36
