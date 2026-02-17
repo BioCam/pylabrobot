@@ -1112,7 +1112,10 @@ class CLARIOstarBackend(PlateReaderBackend):
     if schema & 0x7F != 0x29:
       raise ValueError(f"Incorrect schema byte for abs data: 0x{schema:02x}, expected 0x29")
     if schema & 0x80:
-      logger.debug("Absorbance schema byte has high bit set (0x%02x)", schema)
+      logger.info(
+        "Absorbance schema 0x%02x (high bit set). Header bytes 0-35: %s",
+        schema, payload[:36].hex(" "),
+      )
 
     wavelengths_in_resp = int.from_bytes(payload[16:18], "big")
     wells = int.from_bytes(payload[20:22], "big")
