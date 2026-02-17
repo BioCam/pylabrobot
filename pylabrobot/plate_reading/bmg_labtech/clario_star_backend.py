@@ -427,26 +427,27 @@ class CLARIOstarBackend(PlateReaderBackend):
     been read so far."""
 
     d = b""
-    last_read = b""
-    end_byte_found = False
+    expected_size = None
     t = time.time()
 
-    # Commands are terminated with 0x0d, but this value may also occur as a part of the response.
-    # Therefore, we read until we read a 0x0d, but if that's the last byte we read in a full packet,
-    # we keep reading for at least one more cycle. We only check the timeout if the last read was
-    # unsuccessful (i.e. keep reading if we are still getting data).
+    # All CLARIOstar frames start with [0x02, SIZE_HI, SIZE_LO, 0x0C, ...] where
+    # the 2-byte size field gives the total frame length. Once we have ≥3 bytes we
+    # can extract the expected size and read until we have exactly that many bytes.
+    # This avoids stopping early on embedded 0x0D bytes inside the payload.
     while True:
       last_read = await self.io.read(25)  # 25 is max length observed in pcap
       if len(last_read) > 0:
         d += last_read
-        end_byte_found = d[-1] == 0x0D
-        if (
-          len(last_read) < 25 and end_byte_found
-        ):  # if we read less than 25 bytes, we're at the end
+
+        # Extract expected frame size once we have the header
+        if expected_size is None and len(d) >= 3 and d[0] == 0x02:
+          expected_size = int.from_bytes(d[1:3], "big")
+
+        if expected_size is not None and len(d) >= expected_size:
           break
       else:
-        # If we didn't read any data, check if the last read ended in an end byte. If so, done
-        if end_byte_found:
+        # No data received — check if we already have a complete frame
+        if expected_size is not None and len(d) >= expected_size:
           break
 
         # Check if we've timed out.
@@ -454,7 +455,6 @@ class CLARIOstarBackend(PlateReaderBackend):
           logger.warning("timed out reading response")
           break
 
-        # If we read data, we don't wait and immediately try to read more.
         await asyncio.sleep(0.0001)
 
     logger.debug("read %s", d.hex())
@@ -602,7 +602,8 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     if temperature > 0:
       current = await self.measure_temperature(sensor="bottom")
-      if temperature < current:
+      heater_overshoot_tolerance = 0.5
+      if temperature < current - heater_overshoot_tolerance:
         warnings.warn(
           f"Target {temperature} °C is below the current bottom plate temperature "
           f"({current} °C). The CLARIOstar has no active cooling and will not reach "
@@ -1115,30 +1116,13 @@ class CLARIOstarBackend(PlateReaderBackend):
     wavelengths_in_resp = int.from_bytes(payload[16:18], "big")
     wells = int.from_bytes(payload[20:22], "big")
 
-    # Diagnostic: dump header and search for plausible temperature values.
-    # Uses logger.info so it appears with verbose(True) (default level=INFO).
-    hdr_len = min(60, len(payload))
-    logger.info("ABS schema=0x%02x  payload_len=%d  wls=%d  wells=%d",
-                schema, len(payload), wavelengths_in_resp, wells)
-    logger.info("ABS header[0:%d]: %s", hdr_len, payload[:hdr_len].hex(" "))
-    # Search for plausible temperature uint16 BE values (200..500 → 20.0..50.0 °C)
-    candidates = []
-    for i in range(min(60, len(payload) - 1)):
-      v = int.from_bytes(payload[i : i + 2], "big")
-      if 200 <= v <= 500:
-        candidates.append(f"  off={i}: {v} ({v/10.0:.1f}°C)")
-    if candidates:
-      logger.info("ABS temp candidates (20-50°C range):\n%s", "\n".join(candidates))
-    else:
-      logger.info("ABS no temp candidates in 200..500 range in first 60 bytes")
-
-    # Temperature offset differs by schema variant:
+    # Temperature offset differs by schema variant (confirmed on real hardware):
     #   0x29: bytes 23-24 (no incubation active)
-    #   0xa9: bytes 34-35 (incubation active, high bit set)
+    #   0xa9: bytes 34-35 (incubation active, high bit 0x80 set)
+    # At equilibrium the embedded value matches the bottom heating plate sensor.
     temp_offset = 34 if schema & 0x80 else 23
     temp_raw = int.from_bytes(payload[temp_offset : temp_offset + 2], "big")
     temperature = temp_raw / 10.0
-    logger.info("ABS using temp_offset=%d → raw=%d → %.1f°C", temp_offset, temp_raw, temperature)
 
     # Raw sample values: wells * wavelengths uint32s starting at byte 36
     offset = 36
@@ -1204,8 +1188,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     schema = payload[6]
     if schema & 0x7F != 0x21:
       raise ValueError(f"Incorrect schema byte for fl data: 0x{schema:02x}, expected 0x21")
-    if schema & 0x80:
-      logger.debug("Fluorescence schema byte has high bit set (0x%02x)", schema)
+
 
     complete = int.from_bytes(payload[9:11], "big")
     overflow = struct.unpack(">I", payload[11:15])[0]

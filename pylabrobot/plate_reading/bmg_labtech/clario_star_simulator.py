@@ -146,7 +146,8 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
         f"Temperature must be between 0 and {self._MAX_TEMPERATURE} °C, got {temperature}."
       )
 
-    if temperature > 0 and temperature < self._current_temperature:
+    heater_overshoot_tolerance = 0.5
+    if temperature > 0 and temperature < self._current_temperature - heater_overshoot_tolerance:
       warnings.warn(
         f"Target {temperature} °C is below the current temperature "
         f"({self._current_temperature} °C). The CLARIOstar has no active cooling "
