@@ -1263,12 +1263,11 @@ class CLARIOstarBackend(PlateReaderBackend):
     if all_wells:
       return utils.reshape_2d(readings, (plate.num_items_y, plate.num_items_x))
 
-    grid: List[Optional[float]] = [None] * plate.num_items
-    all_items = plate.get_all_items()
+    rows, cols = plate.num_items_y, plate.num_items_x
+    grid: List[List[Optional[float]]] = [[None] * cols for _ in range(rows)]
     for reading, well in zip(readings, wells):
-      idx = all_items.index(well)
-      grid[idx] = reading
-    return utils.reshape_2d(grid, (plate.num_items_y, plate.num_items_x))
+      grid[well.get_row()][well.get_column()] = reading
+    return grid
 
   # --- Public read methods ---
 
