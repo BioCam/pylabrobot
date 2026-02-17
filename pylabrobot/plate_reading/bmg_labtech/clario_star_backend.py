@@ -144,14 +144,18 @@ class ChecksumError(FrameError):
 def _frame(payload: bytes) -> bytes:
   """Frame a payload according to the BMG serial protocol.
 
-  Format: STX(0x02) | size(uint16 BE) | NP(0x0c) | payload | checksum(uint16 BE) | CR(0x0d)
+  Format: STX(0x02) | size(uint16 BE) | NP(0x0c) | payload | checksum(1 byte) | CR(0x0d)
 
-  The size field is len(payload) + 7 (accounts for STX + size + NP + checksum + CR).
+  The size field is len(payload) + 6 (accounts for STX + size + NP + checksum + CR).
+
+  Note: outgoing commands use a 1-byte checksum (low byte of the sum of all preceding
+  bytes). Responses from the instrument use a 2-byte checksum — see ``_unframe``.
+  This asymmetry matches the MARS software's serial traffic.
   """
-  size = len(payload) + 7
+  size = len(payload) + 6
   buf = bytearray([0x02]) + size.to_bytes(2, "big") + b"\x0c" + payload
-  checksum = sum(buf) & 0xFFFF
-  buf += checksum.to_bytes(2, "big")
+  checksum = sum(buf) & 0xFF
+  buf += bytes([checksum])
   buf += b"\x0d"
   return bytes(buf)
 
@@ -372,6 +376,10 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload = b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00"
     await self.send(payload)
 
+  async def stop_temperature_control(self) -> None:
+    """Switch off the incubator and temperature monitoring."""
+    await self.start_temperature_control(0.0)
+
   async def measure_temperature(self) -> Tuple[float, float]:
     """Activate temperature monitoring and return the current plate temperature.
 
@@ -391,18 +399,6 @@ class CLARIOstarBackend(PlateReaderBackend):
       # Activate monitoring without incubation
       await self.send(b"\x06\x00\x01\x00\x00")
     await asyncio.sleep(0.5)
-    response = await self._request_command_status()
-    return self._parse_temperature_from_status(response)
-
-  async def get_temperature(self) -> Tuple[float, float]:
-    """Read the current temperature from the status response without changing monitoring state.
-
-    If temperature monitoring or incubation has not been activated (via
-    ``start_temperature_control()`` or ``measure_temperature()``), both values will be 0.0.
-
-    Returns:
-      (sensor1_celsius, sensor2_celsius)
-    """
     response = await self._request_command_status()
     return self._parse_temperature_from_status(response)
 

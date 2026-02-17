@@ -25,13 +25,24 @@ from pylabrobot.resources import Cor_96_wellplate_360ul_Fb
 # ---------------------------------------------------------------------------
 
 
+def _make_response_frame(payload: bytes) -> bytes:
+  """Build a 2-byte-checksum frame (response format) for _unframe tests."""
+  size = len(payload) + 7
+  buf = bytearray([0x02]) + size.to_bytes(2, "big") + b"\x0c" + payload
+  cs = sum(buf) & 0xFFFF
+  buf += cs.to_bytes(2, "big")
+  buf += b"\x0d"
+  return bytes(buf)
+
+
 class TestFrame(unittest.TestCase):
-  """Test _frame() and _unframe() against the Go TestInit vector."""
+  """Test _frame() (1-byte CS) and _unframe() (2-byte CS) against MARS vectors."""
 
   def test_frame_init_command(self):
-    """Verify _frame() of the init payload produces the Go TestInit expected bytes."""
+    """Verify _frame() of the init payload matches MARS 1-byte-checksum format."""
     payload = b"\x01\x00\x00\x10\x02\x00"
-    expected = bytes([0x02, 0x00, 0x0D, 0x0C, 0x01, 0x00, 0x00, 0x10, 0x02, 0x00, 0x00, 0x2E, 0x0D])
+    # size = 6+6 = 12, CS = sum(02 00 0C 0C 01 00 00 10 02 00) & 0xFF = 0x2D
+    expected = bytes([0x02, 0x00, 0x0C, 0x0C, 0x01, 0x00, 0x00, 0x10, 0x02, 0x00, 0x2D, 0x0D])
     self.assertEqual(_frame(payload), expected)
 
   def test_frame_status_command(self):
@@ -41,36 +52,49 @@ class TestFrame(unittest.TestCase):
     self.assertEqual(framed[0], 0x02)  # STX
     self.assertEqual(framed[-1], 0x0D)  # CR
     size = int.from_bytes(framed[1:3], "big")
-    self.assertEqual(size, len(payload) + 7)
+    self.assertEqual(size, len(payload) + 6)
     self.assertEqual(framed[3], 0x0C)  # NP
 
-  def test_unframe_round_trip(self):
-    """Frame then unframe recovers original payload."""
-    payload = b"\x01\x02\x03\x04\x05"
-    self.assertEqual(_unframe(_frame(payload)), payload)
+  def test_frame_temperature_37c(self):
+    """Verify _frame() of the temperature 37°C command matches MARS capture exactly."""
+    payload = b"\x06\x01\x72\x00\x00"
+    # MARS: 02 00 0B 0C 06 01 72 00 00 92 0D
+    expected = bytes([0x02, 0x00, 0x0B, 0x0C, 0x06, 0x01, 0x72, 0x00, 0x00, 0x92, 0x0D])
+    self.assertEqual(_frame(payload), expected)
+
+  def test_frame_temperature_monitor(self):
+    """Verify _frame() of the temperature monitor-only command matches MARS capture."""
+    payload = b"\x06\x00\x01\x00\x00"
+    # MARS: 02 00 0B 0C 06 00 01 00 00 20 0D
+    expected = bytes([0x02, 0x00, 0x0B, 0x0C, 0x06, 0x00, 0x01, 0x00, 0x00, 0x20, 0x0D])
+    self.assertEqual(_frame(payload), expected)
+
+  def test_frame_temperature_off(self):
+    """Verify _frame() of the temperature off command matches MARS capture."""
+    payload = b"\x06\x00\x00\x00\x00"
+    # MARS: 02 00 0B 0C 06 00 00 00 00 1F 0D
+    expected = bytes([0x02, 0x00, 0x0B, 0x0C, 0x06, 0x00, 0x00, 0x00, 0x00, 0x1F, 0x0D])
+    self.assertEqual(_frame(payload), expected)
 
   def test_unframe_init_response(self):
-    """Unframe the Go TestInit expected frame."""
-    framed = bytes([0x02, 0x00, 0x0D, 0x0C, 0x01, 0x00, 0x00, 0x10, 0x02, 0x00, 0x00, 0x2E, 0x0D])
+    """Unframe a response with 2-byte checksum (instrument response format)."""
+    framed = _make_response_frame(b"\x01\x00\x00\x10\x02\x00")
     self.assertEqual(_unframe(framed), b"\x01\x00\x00\x10\x02\x00")
 
   def test_unframe_bad_stx(self):
-    payload = b"\x01\x02\x03"
-    framed = bytearray(_frame(payload))
+    framed = bytearray(_make_response_frame(b"\x01\x02\x03"))
     framed[0] = 0xFF
     with self.assertRaises(FrameError):
       _unframe(bytes(framed))
 
   def test_unframe_bad_cr(self):
-    payload = b"\x01\x02\x03"
-    framed = bytearray(_frame(payload))
+    framed = bytearray(_make_response_frame(b"\x01\x02\x03"))
     framed[-1] = 0xFF
     with self.assertRaises(FrameError):
       _unframe(bytes(framed))
 
   def test_unframe_bad_checksum(self):
-    payload = b"\x01\x02\x03"
-    framed = bytearray(_frame(payload))
+    framed = bytearray(_make_response_frame(b"\x01\x02\x03"))
     framed[-2] ^= 0xFF  # corrupt checksum
     with self.assertRaises(ChecksumError):
       _unframe(bytes(framed))
@@ -585,23 +609,22 @@ class TestCLARIOstarSend(unittest.IsolatedAsyncioTestCase):
 
   async def test_send_frames_and_writes(self):
     """send() should frame the payload and write it."""
-    # Build a valid response for read_resp to return
-    response_payload = b"\x80\x00\x05\x00\x00"
-    response = _frame(response_payload)
+    # Build a valid response (2-byte CS, instrument format)
+    response = _make_response_frame(b"\x80\x00\x05\x00\x00")
 
-    self.backend.io.write.return_value = 9  # len(_frame(b"\x80\x00"))
+    self.backend.io.write.return_value = len(_frame(b"\x80\x00"))
     self.backend.io.read.side_effect = [response, b""]
 
     result = await self.backend.send(b"\x80\x00")
     self.assertEqual(result, response)
 
-    # Verify the written data is the framed payload
+    # Verify the written data is the framed payload (1-byte CS, outgoing format)
     written = self.backend.io.write.call_args[0][0]
     self.assertEqual(written, _frame(b"\x80\x00"))
 
   async def test_request_command_status_payload(self):
     """_request_command_status sends the correct payload."""
-    response = _frame(b"\x80\x00\x05\x00\x00")
+    response = _make_response_frame(b"\x80\x00\x05\x00\x00")
     self.backend.io.write.return_value = len(_frame(b"\x80\x00"))
     self.backend.io.read.side_effect = [response, b""]
 
@@ -613,7 +636,7 @@ class TestCLARIOstarSend(unittest.IsolatedAsyncioTestCase):
     """request_machine_status() should return parsed status flags."""
     # Build a response where byte 1 of unframed payload has VALID (bit 0) set
     status_payload = b"\x00\x01\x00\x00\x00"  # only VALID flag
-    response = _frame(status_payload)
+    response = _make_response_frame(status_payload)
     self.backend.io.write.return_value = len(_frame(b"\x80\x00"))
     self.backend.io.read.side_effect = [response, b""]
 
@@ -634,9 +657,9 @@ class TestCLARIOstarInitialize(unittest.IsolatedAsyncioTestCase):
 
   async def test_initialize_payload(self):
     """initialize() sends the init payload and polls for ready."""
-    init_response = _frame(b"\x01\x00\x00\x10\x02\x00")
+    init_response = _make_response_frame(b"\x01\x00\x00\x10\x02\x00")
     # Status response: VALID only (not BUSY) → ready
-    ready_response = _frame(b"\x00\x01\x00\x00\x00")
+    ready_response = _make_response_frame(b"\x00\x01\x00\x00\x00")
 
     call_count = 0
 

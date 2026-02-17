@@ -159,31 +159,36 @@ class TestSeedReproducibility(CLARIOstarSimulatorTestBase):
 
 
 class TestTemperature(CLARIOstarSimulatorTestBase):
-  async def test_temperature_value(self):
-    backend = CLARIOstarSimulatorBackend(temperature=37.0)
-    results = await backend.read_absorbance(
-      plate=self.plate, wells=self.plate.get_all_items(), wavelength=450,
+  async def test_ambient_temperature_in_results(self):
+    results = await self.backend.read_absorbance(
+      plate=self.plate, wells=self.all_wells, wavelength=450,
     )
-    self.assertEqual(results[0]["temperature"], 37.0)
+    self.assertEqual(results[0]["temperature"], 21.0)
 
-  async def test_set_and_get_temperature(self):
+  async def test_incubation_reflected_in_results(self):
     await self.backend.start_temperature_control(37.0)
-    self.assertEqual(await self.backend.get_temperature(), (37.0, 37.0))
-    # Temperature change is reflected in subsequent reads
     results = await self.backend.read_absorbance(
       plate=self.plate, wells=self.all_wells, wavelength=450,
     )
     self.assertEqual(results[0]["temperature"], 37.0)
 
-  async def test_set_temperature_zero_switches_off(self):
-    await self.backend.start_temperature_control(0.0)
-    self.assertEqual(await self.backend.get_temperature(), (0.0, 0.0))
+  async def test_measure_temperature_ambient(self):
+    t1, t2 = await self.backend.measure_temperature()
+    self.assertEqual(t1, 21.0)
+    self.assertEqual(t2, 21.0)
 
-  async def test_measure_temperature(self):
+  async def test_measure_temperature_incubating(self):
     await self.backend.start_temperature_control(25.0)
     t1, t2 = await self.backend.measure_temperature()
     self.assertEqual(t1, 25.0)
     self.assertEqual(t2, 25.0)
+
+  async def test_stop_returns_to_ambient(self):
+    await self.backend.start_temperature_control(37.0)
+    await self.backend.stop_temperature_control()
+    t1, t2 = await self.backend.measure_temperature()
+    self.assertEqual(t1, 21.0)
+    self.assertEqual(t2, 21.0)
 
 
 class TestStatus(CLARIOstarSimulatorTestBase):

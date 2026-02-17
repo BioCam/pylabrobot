@@ -19,6 +19,8 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
   ``collect_*_measurement()`` for deferred retrieval, mirroring the real backend.
   """
 
+  _AMBIENT_TEMP: float = 21.0
+
   def __init__(
     self,
     absorbance_mean: float = 0.5,
@@ -27,7 +29,6 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     fluorescence_cv: float = 0.10,
     luminescence_mean: float = 5000.0,
     luminescence_cv: float = 0.10,
-    temperature: float = 26.0,
     seed: Optional[int] = None,
   ):
     self.absorbance_mean = absorbance_mean
@@ -36,10 +37,17 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     self.fluorescence_cv = fluorescence_cv
     self.luminescence_mean = luminescence_mean
     self.luminescence_cv = luminescence_cv
-    self.temperature = temperature
+    self._incubation_target: float = 0.0
     self._rng = random.Random(seed)
     self._is_open = False
     self._plate_in_drawer = False
+
+  @property
+  def _current_temperature(self) -> float:
+    """The simulated temperature: incubation target if heating, else ambient."""
+    if self._incubation_target > 0:
+      return self._incubation_target
+    return self._AMBIENT_TEMP
 
   async def setup(self) -> None:
     pass
@@ -93,11 +101,12 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     return None
 
   async def start_temperature_control(self, temperature: float) -> None:
-    """Start active temperature control (simulated incubation).
+    """Start active temperature control (simulated incubation)."""
+    self._incubation_target = temperature
 
-    Pass 0.0 to switch off the incubator and temperature monitoring.
-    """
-    self.temperature = temperature
+  async def stop_temperature_control(self) -> None:
+    """Switch off the incubator and temperature monitoring."""
+    self._incubation_target = 0.0
 
   async def measure_temperature(self) -> Tuple[float, float]:
     """Activate temperature monitoring and return the current simulated temperature.
@@ -105,15 +114,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     Returns:
       (sensor1_celsius, sensor2_celsius) — in simulation both sensors return the same value.
     """
-    return (self.temperature, self.temperature)
-
-  async def get_temperature(self) -> Tuple[float, float]:
-    """Return the current simulated temperature without changing monitoring state.
-
-    Returns:
-      (sensor1_celsius, sensor2_celsius)
-    """
-    return (self.temperature, self.temperature)
+    return (self._current_temperature, self._current_temperature)
 
   def _generate_grid(self, rows: int, cols: int, mean: float, cv: float) -> List[List[float]]:
     """Generate a rows x cols grid of random values drawn from N(mean, mean*cv)."""
@@ -176,7 +177,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       entry: Dict = {
         "wavelength": wl,
         "data": data,
-        "temperature": self.temperature,
+        "temperature": self._current_temperature,
         "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
       }
       if report == "raw":
@@ -245,7 +246,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       "ex_wavelength": excitation_wavelength,
       "em_wavelength": emission_wavelength,
       "data": data,
-      "temperature": self.temperature,
+      "temperature": self._current_temperature,
       "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }]
 
@@ -298,7 +299,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
 
     return [{
       "data": data,
-      "temperature": self.temperature,
+      "temperature": self._current_temperature,
       "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
     }]
 
