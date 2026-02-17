@@ -1,5 +1,6 @@
 import statistics
 import unittest
+import warnings
 
 from pylabrobot.plate_reading.bmg_labtech.clario_star_simulator import CLARIOstarSimulatorBackend
 from pylabrobot.resources import Cor_96_wellplate_360ul_Fb
@@ -192,6 +193,27 @@ class TestTemperature(CLARIOstarSimulatorTestBase):
     await self.backend.stop_temperature_control()
     temp = await self.backend.measure_temperature()
     self.assertEqual(temp, 21.0)
+
+  async def test_temperature_too_high_raises(self):
+    with self.assertRaises(ValueError):
+      await self.backend.start_temperature_control(50.0)
+
+  async def test_temperature_negative_raises(self):
+    with self.assertRaises(ValueError):
+      await self.backend.start_temperature_control(-1.0)
+
+  async def test_temperature_below_current_warns(self):
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      await self.backend.start_temperature_control(10.0)  # below ambient 21.0
+      self.assertEqual(len(w), 1)
+      self.assertIn("no active cooling", str(w[0].message))
+
+  async def test_temperature_above_current_no_warning(self):
+    with warnings.catch_warnings(record=True) as w:
+      warnings.simplefilter("always")
+      await self.backend.start_temperature_control(37.0)
+      self.assertEqual(len(w), 0)
 
 
 class TestStatus(CLARIOstarSimulatorTestBase):

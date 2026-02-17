@@ -6,6 +6,7 @@ import math
 import struct
 import sys
 import time
+import warnings
 from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from pylabrobot import utils
@@ -579,15 +580,36 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   # --- Temperature ---
 
+  _MAX_TEMPERATURE: float = 45.0
+
   async def start_temperature_control(self, temperature: float) -> None:
     """Start active temperature control (incubation).
 
     This immediately activates the heater and begins regulating to the target.
+    The CLARIOstar has no active cooling — it can only heat above ambient.
 
     Args:
-      temperature: Target temperature in °C. Pass 0 to switch off the incubator
-        and temperature monitoring.
+      temperature: Target temperature in °C (0–45). Pass 0 to switch off the
+        incubator and temperature monitoring.
+
+    Raises:
+      ValueError: If temperature is outside the 0–45 °C range.
     """
+    if not 0 <= temperature <= self._MAX_TEMPERATURE:
+      raise ValueError(
+        f"Temperature must be between 0 and {self._MAX_TEMPERATURE} °C, got {temperature}."
+      )
+
+    if temperature > 0:
+      current = await self.measure_temperature(sensor="bottom")
+      if temperature < current:
+        warnings.warn(
+          f"Target {temperature} °C is below the current bottom plate temperature "
+          f"({current} °C). The CLARIOstar has no active cooling and will not reach "
+          f"this target unless the ambient temperature drops.",
+          stacklevel=2,
+        )
+
     self._incubation_target = temperature
     temp_raw = round(temperature * 10)
     payload = b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00"
@@ -603,15 +625,17 @@ class CLARIOstarBackend(PlateReaderBackend):
   ) -> float:
     """Activate temperature monitoring and return the current incubator temperature.
 
-    The incubator heats from both below and above the microplate.
+    The incubator heats from both below and above the microplate. The top plate
+    targets setpoint + 0.5 °C to prevent condensation on the plate seal.
 
     If incubation is active (target > 0), re-sends the incubation command to
     keep heating while refreshing the sensor readings. Otherwise sends the
     "monitor only" command (no heating).
 
     Args:
-      sensor: Which heating plate sensor to read. "bottom" (below the microplate),
-        "top" (above the microplate), or "mean" (average of both).
+      sensor: Which heating plate sensor to read. "bottom" (below the microplate,
+        tracks the setpoint), "top" (above the microplate, ~0.5 °C above setpoint),
+        or "mean" (average of both).
 
     Returns:
       Temperature in °C.

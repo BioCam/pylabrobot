@@ -1,5 +1,6 @@
 import datetime
 import random
+import warnings
 from typing import Dict, List, Literal, Optional, Tuple
 
 from pylabrobot.plate_reading.backend import PlateReaderBackend
@@ -132,8 +133,27 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       "pump1_usage": 0, "pump2_usage": 0, "alpha_time": 0,
     }
 
+  _MAX_TEMPERATURE: float = 45.0
+
   async def start_temperature_control(self, temperature: float) -> None:
-    """Start active temperature control (simulated incubation)."""
+    """Start active temperature control (simulated incubation).
+
+    Raises:
+      ValueError: If temperature is outside the 0–45 °C range.
+    """
+    if not 0 <= temperature <= self._MAX_TEMPERATURE:
+      raise ValueError(
+        f"Temperature must be between 0 and {self._MAX_TEMPERATURE} °C, got {temperature}."
+      )
+
+    if temperature > 0 and temperature < self._current_temperature:
+      warnings.warn(
+        f"Target {temperature} °C is below the current temperature "
+        f"({self._current_temperature} °C). The CLARIOstar has no active cooling "
+        f"and will not reach this target unless the ambient temperature drops.",
+        stacklevel=2,
+      )
+
     self._incubation_target = temperature
 
   async def stop_temperature_control(self) -> None:
