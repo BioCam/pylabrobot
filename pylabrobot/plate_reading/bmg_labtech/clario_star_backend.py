@@ -1,4 +1,5 @@
 import asyncio
+import dataclasses
 import enum
 import logging
 import math
@@ -185,6 +186,83 @@ def _unframe(data: bytes) -> bytes:
 
   # Return payload (strip STX + size + NP header and checksum + CR trailer)
   return data[4:-3]
+
+
+@dataclasses.dataclass
+class CLARIOstarConfig:
+  """Machine configuration parsed from the CLARIOstar EEPROM response.
+
+  Field offsets are not yet known — all fields are populated with placeholder
+  defaults until real hardware captures allow reverse-engineering the EEPROM
+  layout.  Once the byte map is established, ``parse_eeprom()`` will extract
+  actual values from the raw response.
+  """
+
+  serial_number: str = ""
+  firmware_version: str = ""
+  model_name: str = ""
+  has_absorbance: bool = False
+  has_fluorescence: bool = False
+  has_luminescence: bool = False
+  has_pump1: bool = False
+  has_pump2: bool = False
+  has_stacker: bool = False
+  monochromator_range: Tuple[int, int] = (0, 0)  # (min_nm, max_nm)
+  num_filter_slots: int = 0
+
+  @staticmethod
+  def parse_eeprom(raw: bytes) -> "CLARIOstarConfig":
+    """Parse a raw framed EEPROM response into a CLARIOstarConfig.
+
+    Currently returns defaults — real field extraction will be added once
+    the EEPROM byte layout is reverse-engineered from hardware captures.
+    """
+    try:
+      payload = _unframe(raw)
+    except FrameError:
+      payload = raw
+
+    # --- placeholder: scan for ASCII strings as a heuristic ---
+    ascii_chars = "".join(chr(b) if 32 <= b < 127 else "" for b in payload)
+
+    config = CLARIOstarConfig()
+    # Attempt to detect the model name if present as ASCII
+    for name in ("CLARIOstar Plus", "CLARIOstar"):
+      if name in ascii_chars:
+        config.model_name = name
+        break
+    return config
+
+
+def dump_eeprom(raw: bytes) -> str:
+  """Pretty-print an EEPROM response in hex + ASCII for reverse-engineering.
+
+  Works on both framed (raw from the wire) and unframed payloads.
+
+  Returns a multi-line string with:
+    - Raw and payload lengths
+    - Hex dump (16 bytes per line with offset)
+    - ASCII interpretation (non-printable bytes shown as '.')
+  """
+  try:
+    payload = _unframe(raw)
+  except FrameError:
+    payload = raw
+
+  lines = []
+  lines.append(f"Raw length: {len(raw)}, Payload length: {len(payload)}")
+  lines.append("")
+
+  # Hex + ASCII dump of the unframed payload
+  lines.append("Offset  | Hex                                              | ASCII")
+  lines.append("--------+--------------------------------------------------+-----------------")
+  for i in range(0, len(payload), 16):
+    chunk = payload[i : i + 16]
+    hex_part = " ".join(f"{b:02x}" for b in chunk)
+    ascii_part = "".join(chr(b) if 32 <= b < 127 else "." for b in chunk)
+    lines.append(f"{i:06x}  | {hex_part:<48s} | {ascii_part}")
+
+  return "\n".join(lines)
 
 
 class CLARIOstarBackend(PlateReaderBackend):
@@ -425,6 +503,24 @@ class CLARIOstarBackend(PlateReaderBackend):
   def get_eeprom_data(self) -> Optional[bytes]:
     """Return the raw EEPROM response captured during setup, or None if not yet read."""
     return self._eeprom_data
+
+  def get_machine_config(self) -> Optional[CLARIOstarConfig]:
+    """Parse and return the machine configuration from the stored EEPROM data.
+
+    Returns None if EEPROM data has not been read yet (i.e. setup() not called).
+    """
+    if self._eeprom_data is None:
+      return None
+    return CLARIOstarConfig.parse_eeprom(self._eeprom_data)
+
+  def dump_eeprom_str(self) -> Optional[str]:
+    """Pretty-print the stored EEPROM data for reverse-engineering.
+
+    Returns None if EEPROM data has not been read yet.
+    """
+    if self._eeprom_data is None:
+      return None
+    return dump_eeprom(self._eeprom_data)
 
   async def open(self):
     open_response = await self.send(b"\x03\x01\x00\x00\x00\x00\x00")

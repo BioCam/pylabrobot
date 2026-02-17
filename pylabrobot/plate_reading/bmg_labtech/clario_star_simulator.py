@@ -3,6 +3,7 @@ import random
 from typing import Dict, List, Optional, Tuple
 
 from pylabrobot.plate_reading.backend import PlateReaderBackend
+from pylabrobot.plate_reading.bmg_labtech.clario_star_backend import CLARIOstarConfig
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well
 
@@ -97,6 +98,26 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     return (await self.request_machine_status())["initialized"]
 
   def get_eeprom_data(self) -> Optional[bytes]:
+    """Return None (no physical EEPROM in simulation)."""
+    return None
+
+  def get_machine_config(self) -> CLARIOstarConfig:
+    """Return a synthetic CLARIOstarConfig for the simulated instrument."""
+    return CLARIOstarConfig(
+      serial_number="SIM-0000",
+      firmware_version="1.00-sim",
+      model_name="CLARIOstar Plus (Simulator)",
+      has_absorbance=True,
+      has_fluorescence=True,
+      has_luminescence=True,
+      has_pump1=False,
+      has_pump2=False,
+      has_stacker=False,
+      monochromator_range=(320, 840),
+      num_filter_slots=11,
+    )
+
+  def dump_eeprom_str(self) -> Optional[str]:
     """Return None (no physical EEPROM in simulation)."""
     return None
 

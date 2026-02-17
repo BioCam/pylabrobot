@@ -7,6 +7,7 @@ import unittest.mock
 from pylabrobot.plate_reading.bmg_labtech.clario_star_backend import (
   ChecksumError,
   CLARIOstarBackend,
+  CLARIOstarConfig,
   FrameError,
   ShakerType,
   StartCorner,
@@ -16,7 +17,9 @@ from pylabrobot.plate_reading.bmg_labtech.clario_star_backend import (
   _scan_mode_byte,
   _shaker_bytes,
   _unframe,
+  dump_eeprom,
 )
+from pylabrobot.plate_reading.bmg_labtech.clario_star_simulator import CLARIOstarSimulatorBackend
 from pylabrobot.resources import Cor_96_wellplate_360ul_Fb
 
 
@@ -687,6 +690,131 @@ class TestCLARIOstarInitialize(unittest.IsolatedAsyncioTestCase):
     first_write = self.backend.io.write.call_args_list[0][0][0]
     expected_init = _frame(b"\x01\x00\x00\x10\x02\x00")
     self.assertEqual(first_write, expected_init)
+
+
+# ---------------------------------------------------------------------------
+# EEPROM parsing and CLARIOstarConfig
+# ---------------------------------------------------------------------------
+
+
+class TestCLARIOstarConfig(unittest.TestCase):
+  """Test CLARIOstarConfig dataclass and parse_eeprom."""
+
+  def test_defaults(self):
+    """Default config should have empty/false values."""
+    cfg = CLARIOstarConfig()
+    self.assertEqual(cfg.serial_number, "")
+    self.assertFalse(cfg.has_pump1)
+    self.assertEqual(cfg.monochromator_range, (0, 0))
+
+  def test_parse_eeprom_empty_payload(self):
+    """Parsing a minimal framed response returns defaults without crashing."""
+    framed = _make_response_frame(b"\x00" * 20)
+    cfg = CLARIOstarConfig.parse_eeprom(framed)
+    self.assertIsInstance(cfg, CLARIOstarConfig)
+    self.assertEqual(cfg.model_name, "")
+
+  def test_parse_eeprom_with_model_name(self):
+    """If 'CLARIOstar' appears as ASCII in the payload, model_name is set."""
+    payload = b"\x00" * 10 + b"CLARIOstar Plus" + b"\x00" * 10
+    framed = _make_response_frame(payload)
+    cfg = CLARIOstarConfig.parse_eeprom(framed)
+    self.assertEqual(cfg.model_name, "CLARIOstar Plus")
+
+  def test_parse_eeprom_with_short_model_name(self):
+    """'CLARIOstar' (without 'Plus') is detected."""
+    payload = b"\x00" * 5 + b"CLARIOstar" + b"\x00" * 5
+    framed = _make_response_frame(payload)
+    cfg = CLARIOstarConfig.parse_eeprom(framed)
+    self.assertEqual(cfg.model_name, "CLARIOstar")
+
+  def test_parse_eeprom_unframed_fallback(self):
+    """If the input is not a valid frame, parse_eeprom treats it as raw payload."""
+    raw = b"\xff" * 5 + b"CLARIOstar" + b"\x00" * 5
+    cfg = CLARIOstarConfig.parse_eeprom(raw)
+    self.assertEqual(cfg.model_name, "CLARIOstar")
+
+
+class TestDumpEeprom(unittest.TestCase):
+  """Test the dump_eeprom() pretty-printer."""
+
+  def test_dump_framed(self):
+    """dump_eeprom on a framed response produces hex + ASCII output."""
+    payload = b"\x48\x65\x6c\x6c\x6f"  # "Hello"
+    framed = _make_response_frame(payload)
+    output = dump_eeprom(framed)
+    self.assertIn("Raw length:", output)
+    self.assertIn("Payload length: 5", output)
+    self.assertIn("Hello", output)
+
+  def test_dump_unframed(self):
+    """dump_eeprom on unframed data falls back gracefully."""
+    raw = b"\x01\x02\x03\x41\x42\x43"  # last 3 = "ABC"
+    output = dump_eeprom(raw)
+    self.assertIn("ABC", output)
+
+  def test_dump_nonprintable_replaced(self):
+    """Non-printable bytes show as '.' in ASCII column."""
+    payload = bytes(range(16))
+    framed = _make_response_frame(payload)
+    output = dump_eeprom(framed)
+    # Bytes 0-31 are non-printable, should be dots
+    self.assertIn(".", output)
+
+
+class TestCLARIOstarBackendEepromMethods(unittest.TestCase):
+  """Test get_machine_config and dump_eeprom_str on the real backend class."""
+
+  def setUp(self):
+    self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend._eeprom_data = None
+
+  def test_get_machine_config_none_before_setup(self):
+    """get_machine_config returns None if EEPROM data hasn't been read."""
+    self.assertIsNone(self.backend.get_machine_config())
+
+  def test_get_machine_config_returns_config(self):
+    """get_machine_config returns a CLARIOstarConfig when EEPROM data is present."""
+    self.backend._eeprom_data = _make_response_frame(b"\x00" * 20)
+    cfg = self.backend.get_machine_config()
+    self.assertIsInstance(cfg, CLARIOstarConfig)
+
+  def test_dump_eeprom_str_none_before_setup(self):
+    """dump_eeprom_str returns None if EEPROM data hasn't been read."""
+    self.assertIsNone(self.backend.dump_eeprom_str())
+
+  def test_dump_eeprom_str_returns_string(self):
+    """dump_eeprom_str returns a formatted string when EEPROM data is present."""
+    self.backend._eeprom_data = _make_response_frame(b"test_payload")
+    result = self.backend.dump_eeprom_str()
+    self.assertIsInstance(result, str)
+    self.assertIn("Raw length:", result)
+
+
+class TestSimulatorConfig(unittest.TestCase):
+  """Test CLARIOstarSimulatorBackend config methods."""
+
+  def test_get_machine_config(self):
+    """Simulator returns a populated CLARIOstarConfig."""
+    sim = CLARIOstarSimulatorBackend()
+    cfg = sim.get_machine_config()
+    self.assertIsInstance(cfg, CLARIOstarConfig)
+    self.assertEqual(cfg.serial_number, "SIM-0000")
+    self.assertTrue(cfg.has_absorbance)
+    self.assertTrue(cfg.has_fluorescence)
+    self.assertTrue(cfg.has_luminescence)
+    self.assertFalse(cfg.has_pump1)
+    self.assertEqual(cfg.monochromator_range, (320, 840))
+
+  def test_dump_eeprom_str_is_none(self):
+    """Simulator has no EEPROM data to dump."""
+    sim = CLARIOstarSimulatorBackend()
+    self.assertIsNone(sim.dump_eeprom_str())
+
+  def test_get_eeprom_data_is_none(self):
+    """Simulator returns None for raw EEPROM data."""
+    sim = CLARIOstarSimulatorBackend()
+    self.assertIsNone(sim.get_eeprom_data())
 
 
 if __name__ == "__main__":
