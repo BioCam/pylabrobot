@@ -453,8 +453,12 @@ class CLARIOstarBackend(PlateReaderBackend):
         if expected_size is not None and len(d) >= expected_size:
           break
 
-        # Fallback: if data stream stalled and last byte is 0x0D, treat as complete
-        if len(d) > 0 and d[-1] == 0x0D:
+        # Fallback: if data stream stalled and last byte is 0x0D, treat as
+        # complete — but ONLY when we don't have a known expected_size that
+        # we haven't reached yet.  When expected_size is known, an embedded
+        # 0x0D is just a payload byte; the FTDI chip may need a few ms to
+        # flush the remaining bytes (latency timer = 2 ms).
+        if expected_size is None and len(d) > 0 and d[-1] == 0x0D:
           break
 
         # Check if we've timed out.
