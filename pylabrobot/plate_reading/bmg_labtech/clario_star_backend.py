@@ -1112,10 +1112,16 @@ class CLARIOstarBackend(PlateReaderBackend):
     if schema & 0x7F != 0x29:
       raise ValueError(f"Incorrect schema byte for abs data: 0x{schema:02x}, expected 0x29")
     if schema & 0x80:
+      preview = min(60, len(payload))
       logger.info(
-        "Absorbance schema 0x%02x (high bit set). Header bytes 0-35: %s",
-        schema, payload[:36].hex(" "),
+        "Absorbance schema 0x%02x. First %d/%d bytes: %s",
+        schema, preview, len(payload), payload[:preview].hex(" "),
       )
+      # Search for plausible temperature values (250-450 = 25.0-45.0 °C) as uint16 BE
+      for i in range(len(payload) - 1):
+        val = int.from_bytes(payload[i : i + 2], "big")
+        if 250 <= val <= 450:
+          logger.info("  Candidate temp %d (%.1f °C) at offset %d", val, val / 10.0, i)
 
     wavelengths_in_resp = int.from_bytes(payload[16:18], "big")
     wells = int.from_bytes(payload[20:22], "big")
