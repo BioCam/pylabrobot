@@ -6,7 +6,7 @@ import math
 import struct
 import sys
 import time
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from pylabrobot import utils
 from pylabrobot.io.ftdi import FTDI
@@ -148,7 +148,7 @@ def _frame(payload: bytes, single_byte_checksum: bool = False) -> bytes:
   Args:
     payload: The command payload bytes.
     single_byte_checksum: If True, use 1-byte checksum (size = payload + 6).
-      Required for temperature commands (0x06) per MARS captures. If False
+      Required for temperature commands (0x06) per OEM software captures. If False
       (default), use 2-byte checksum (size = payload + 7), which works for
       all other commands (init, status, open, close, measurements).
   """
@@ -533,17 +533,20 @@ class CLARIOstarBackend(PlateReaderBackend):
     return self._parse_status_response(response)
 
   def _parse_temperature_from_status(self, response: bytes) -> Tuple[float, float]:
-    """Extract two temperature sensor readings from a status response.
+    """Extract two incubator heating plate temperatures from a status response.
+
+    The incubator heats from both below and above the microplate.
 
     The status response payload contains temperature at bytes 11-14:
-      - Bytes 11-12: sensor 1 (plate area), uint16 BE, ÷10 for °C
-      - Bytes 13-14: sensor 2 (heater/lid area), uint16 BE, ÷10 for °C
+      - Bytes 11-12: bottom heating plate (below the microplate), uint16 BE, ÷10 for °C
+      - Bytes 13-14: top heating plate (above the microplate), uint16 BE, ÷10 for °C
 
-    Both read 0 when temperature monitoring is inactive. You must send the
-    temperature command (monitor or incubate) before these fields are populated.
+    Both read 0 when temperature monitoring is inactive.
+
+    Reference: CLARIOstar ActiveX/DDE Manual (0430N0003I), Section 2, Temp1/Temp2.
 
     Returns:
-      (sensor1_celsius, sensor2_celsius)
+      (bottom_plate_celsius, top_plate_celsius)
     """
     try:
       payload = _unframe(response)
@@ -594,16 +597,24 @@ class CLARIOstarBackend(PlateReaderBackend):
     """Switch off the incubator and temperature monitoring."""
     await self.start_temperature_control(0.0)
 
-  async def measure_temperature(self) -> Tuple[float, float]:
-    """Activate temperature monitoring and return the current plate temperature.
+  async def measure_temperature(
+    self,
+    sensor: Literal["mean", "bottom", "top"] = "bottom",
+  ) -> float:
+    """Activate temperature monitoring and return the current incubator temperature.
+
+    The incubator heats from both below and above the microplate.
 
     If incubation is active (target > 0), re-sends the incubation command to
     keep heating while refreshing the sensor readings. Otherwise sends the
     "monitor only" command (no heating).
 
+    Args:
+      sensor: Which heating plate sensor to read. "bottom" (below the microplate),
+        "top" (above the microplate), or "mean" (average of both).
+
     Returns:
-      (sensor1_celsius, sensor2_celsius) where sensor 1 is the plate area
-      and sensor 2 is the heater/lid area.
+      Temperature in °C.
     """
     if self._incubation_target > 0:
       # Re-send the current incubation command so we don't cancel heating
@@ -615,7 +626,15 @@ class CLARIOstarBackend(PlateReaderBackend):
       await self.send(b"\x06\x00\x01\x00\x00", single_byte_checksum=True)
     await asyncio.sleep(0.5)
     response = await self._request_command_status()
-    return self._parse_temperature_from_status(response)
+    bottom, top = self._parse_temperature_from_status(response)
+
+    sensor_mapping = {
+      "bottom": [bottom],
+      "top": [top],
+      "mean": [bottom, top],
+    }
+    vals = sensor_mapping[sensor]
+    return round(sum(vals) / len(vals), 2)
 
   async def initialize(self):
     command_response = await self.send(b"\x01\x00\x00\x10\x02\x00")

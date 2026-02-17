@@ -173,22 +173,25 @@ class TestTemperature(CLARIOstarSimulatorTestBase):
     self.assertEqual(results[0]["temperature"], 37.0)
 
   async def test_measure_temperature_ambient(self):
-    t1, t2 = await self.backend.measure_temperature()
-    self.assertEqual(t1, 21.0)
-    self.assertEqual(t2, 21.0)
+    temp = await self.backend.measure_temperature()
+    self.assertEqual(temp, 21.0)
 
   async def test_measure_temperature_incubating(self):
     await self.backend.start_temperature_control(25.0)
-    t1, t2 = await self.backend.measure_temperature()
-    self.assertEqual(t1, 25.0)
-    self.assertEqual(t2, 25.0)
+    temp = await self.backend.measure_temperature()
+    self.assertEqual(temp, 25.0)
+
+  async def test_measure_temperature_sensor_selection(self):
+    await self.backend.start_temperature_control(37.0)
+    self.assertEqual(await self.backend.measure_temperature(sensor="bottom"), 37.0)
+    self.assertEqual(await self.backend.measure_temperature(sensor="top"), 37.0)
+    self.assertEqual(await self.backend.measure_temperature(sensor="mean"), 37.0)
 
   async def test_stop_returns_to_ambient(self):
     await self.backend.start_temperature_control(37.0)
     await self.backend.stop_temperature_control()
-    t1, t2 = await self.backend.measure_temperature()
-    self.assertEqual(t1, 21.0)
-    self.assertEqual(t2, 21.0)
+    temp = await self.backend.measure_temperature()
+    self.assertEqual(temp, 21.0)
 
 
 class TestStatus(CLARIOstarSimulatorTestBase):

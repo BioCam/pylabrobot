@@ -1,6 +1,6 @@
 import datetime
 import random
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Literal, Optional, Tuple
 
 from pylabrobot.plate_reading.backend import PlateReaderBackend
 from pylabrobot.plate_reading.bmg_labtech.clario_star_backend import CLARIOstarConfig
@@ -140,13 +140,20 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     """Switch off the incubator and temperature monitoring."""
     self._incubation_target = 0.0
 
-  async def measure_temperature(self) -> Tuple[float, float]:
-    """Activate temperature monitoring and return the current simulated temperature.
+  async def measure_temperature(
+    self,
+    sensor: Literal["mean", "bottom", "top"] = "bottom",
+  ) -> float:
+    """Return the current simulated incubator temperature.
+
+    Args:
+      sensor: Which heating plate sensor to read. "bottom", "top", or "mean".
+        In simulation all return the same value.
 
     Returns:
-      (sensor1_celsius, sensor2_celsius) — in simulation both sensors return the same value.
+      Temperature in °C.
     """
-    return (self._current_temperature, self._current_temperature)
+    return self._current_temperature
 
   def _generate_grid(self, rows: int, cols: int, mean: float, cv: float) -> List[List[float]]:
     """Generate a rows x cols grid of random values drawn from N(mean, mean*cv)."""

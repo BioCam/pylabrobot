@@ -64,23 +64,23 @@ class TestFrame(unittest.TestCase):
     self.assertEqual(_unframe(_frame(payload)), payload)
 
   def test_frame_temperature_37c(self):
-    """Verify 1-byte CS frame of the temperature 37°C command matches MARS capture."""
+    """Verify 1-byte CS frame of the temperature 37°C command matches OEM software capture."""
     payload = b"\x06\x01\x72\x00\x00"
-    # MARS: 02 00 0B 0C 06 01 72 00 00 92 0D
+    # OEM: 02 00 0B 0C 06 01 72 00 00 92 0D
     expected = bytes([0x02, 0x00, 0x0B, 0x0C, 0x06, 0x01, 0x72, 0x00, 0x00, 0x92, 0x0D])
     self.assertEqual(_frame(payload, single_byte_checksum=True), expected)
 
   def test_frame_temperature_monitor(self):
-    """Verify 1-byte CS frame of the temperature monitor-only command matches MARS capture."""
+    """Verify 1-byte CS frame of the temperature monitor-only command matches OEM software capture."""
     payload = b"\x06\x00\x01\x00\x00"
-    # MARS: 02 00 0B 0C 06 00 01 00 00 20 0D
+    # OEM: 02 00 0B 0C 06 00 01 00 00 20 0D
     expected = bytes([0x02, 0x00, 0x0B, 0x0C, 0x06, 0x00, 0x01, 0x00, 0x00, 0x20, 0x0D])
     self.assertEqual(_frame(payload, single_byte_checksum=True), expected)
 
   def test_frame_temperature_off(self):
-    """Verify 1-byte CS frame of the temperature off command matches MARS capture."""
+    """Verify 1-byte CS frame of the temperature off command matches OEM software capture."""
     payload = b"\x06\x00\x00\x00\x00"
-    # MARS: 02 00 0B 0C 06 00 00 00 00 1F 0D
+    # OEM: 02 00 0B 0C 06 00 00 00 00 1F 0D
     expected = bytes([0x02, 0x00, 0x0B, 0x0C, 0x06, 0x00, 0x00, 0x00, 0x00, 0x1F, 0x0D])
     self.assertEqual(_frame(payload, single_byte_checksum=True), expected)
 
