@@ -553,7 +553,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     self.assertAlmostEqual(temp, 37.2)
 
   def test_schema_high_bit_accepted(self):
-    """0xa9 (0x29 | 0x80) should be accepted as a valid absorbance schema byte."""
+    """0xa9 (0x29 | 0x80) should be accepted and read temperature from offset 34."""
     resp = self._build_abs_response(
       num_wells=1, num_wavelengths=1,
       samples=[50000], refs=[100000],
@@ -561,8 +561,11 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     )
     resp = bytearray(resp)
     resp[6] = 0xA9
-    transmission, _, _ = CLARIOstarBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
+    # Place temperature at offset 34 (the high-bit layout)
+    resp[34:36] = (363).to_bytes(2, "big")  # 36.3 °C
+    transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
     self.assertEqual(len(transmission), 1)
+    self.assertAlmostEqual(temp, 36.3)
 
   def test_bad_schema_byte(self):
     resp = bytearray(40)
