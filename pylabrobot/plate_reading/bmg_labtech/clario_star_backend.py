@@ -141,21 +141,26 @@ class ChecksumError(FrameError):
   """Raised when a response frame checksum is invalid."""
 
 
-def _frame(payload: bytes) -> bytes:
+def _frame(payload: bytes, single_byte_checksum: bool = False) -> bytes:
   """Frame a payload according to the BMG serial protocol.
 
-  Format: STX(0x02) | size(uint16 BE) | NP(0x0c) | payload | checksum(1 byte) | CR(0x0d)
-
-  The size field is len(payload) + 6 (accounts for STX + size + NP + checksum + CR).
-
-  Note: outgoing commands use a 1-byte checksum (low byte of the sum of all preceding
-  bytes). Responses from the instrument use a 2-byte checksum — see ``_unframe``.
-  This asymmetry matches the MARS software's serial traffic.
+  Args:
+    payload: The command payload bytes.
+    single_byte_checksum: If True, use 1-byte checksum (size = payload + 6).
+      Required for temperature commands (0x06) per MARS captures. If False
+      (default), use 2-byte checksum (size = payload + 7), which works for
+      all other commands (init, status, open, close, measurements).
   """
-  size = len(payload) + 6
-  buf = bytearray([0x02]) + size.to_bytes(2, "big") + b"\x0c" + payload
-  checksum = sum(buf) & 0xFF
-  buf += bytes([checksum])
+  if single_byte_checksum:
+    size = len(payload) + 6
+    buf = bytearray([0x02]) + size.to_bytes(2, "big") + b"\x0c" + payload
+    checksum = sum(buf) & 0xFF
+    buf += bytes([checksum])
+  else:
+    size = len(payload) + 7
+    buf = bytearray([0x02]) + size.to_bytes(2, "big") + b"\x0c" + payload
+    checksum = sum(buf) & 0xFFFF
+    buf += checksum.to_bytes(2, "big")
   buf += b"\x0d"
   return bytes(buf)
 
@@ -251,10 +256,15 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     return d
 
-  async def send(self, payload: Union[bytearray, bytes], read_timeout=20) -> bytes:
+  async def send(
+    self,
+    payload: Union[bytearray, bytes],
+    read_timeout=20,
+    single_byte_checksum: bool = False,
+  ) -> bytes:
     """Frame a payload and send it to the plate reader, returning the raw response."""
 
-    cmd = _frame(payload)
+    cmd = _frame(payload, single_byte_checksum=single_byte_checksum)
 
     logger.debug("sending %s", cmd.hex())
 
@@ -374,7 +384,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     self._incubation_target = temperature
     temp_raw = round(temperature * 10)
     payload = b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00"
-    await self.send(payload)
+    await self.send(payload, single_byte_checksum=True)
 
   async def stop_temperature_control(self) -> None:
     """Switch off the incubator and temperature monitoring."""
@@ -394,10 +404,11 @@ class CLARIOstarBackend(PlateReaderBackend):
     if self._incubation_target > 0:
       # Re-send the current incubation command so we don't cancel heating
       temp_raw = round(self._incubation_target * 10)
-      await self.send(b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00")
+      await self.send(b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00",
+                      single_byte_checksum=True)
     else:
       # Activate monitoring without incubation
-      await self.send(b"\x06\x00\x01\x00\x00")
+      await self.send(b"\x06\x00\x01\x00\x00", single_byte_checksum=True)
     await asyncio.sleep(0.5)
     response = await self._request_command_status()
     return self._parse_temperature_from_status(response)

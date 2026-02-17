@@ -36,13 +36,12 @@ def _make_response_frame(payload: bytes) -> bytes:
 
 
 class TestFrame(unittest.TestCase):
-  """Test _frame() (1-byte CS) and _unframe() (2-byte CS) against MARS vectors."""
+  """Test _frame() (2-byte CS default, 1-byte CS for temperature) and _unframe()."""
 
   def test_frame_init_command(self):
-    """Verify _frame() of the init payload matches MARS 1-byte-checksum format."""
+    """Verify _frame() of the init payload produces the Go reference expected bytes."""
     payload = b"\x01\x00\x00\x10\x02\x00"
-    # size = 6+6 = 12, CS = sum(02 00 0C 0C 01 00 00 10 02 00) & 0xFF = 0x2D
-    expected = bytes([0x02, 0x00, 0x0C, 0x0C, 0x01, 0x00, 0x00, 0x10, 0x02, 0x00, 0x2D, 0x0D])
+    expected = bytes([0x02, 0x00, 0x0D, 0x0C, 0x01, 0x00, 0x00, 0x10, 0x02, 0x00, 0x00, 0x2E, 0x0D])
     self.assertEqual(_frame(payload), expected)
 
   def test_frame_status_command(self):
@@ -52,29 +51,34 @@ class TestFrame(unittest.TestCase):
     self.assertEqual(framed[0], 0x02)  # STX
     self.assertEqual(framed[-1], 0x0D)  # CR
     size = int.from_bytes(framed[1:3], "big")
-    self.assertEqual(size, len(payload) + 6)
+    self.assertEqual(size, len(payload) + 7)
     self.assertEqual(framed[3], 0x0C)  # NP
 
+  def test_frame_round_trip(self):
+    """Frame (2-byte CS) then unframe recovers original payload."""
+    payload = b"\x01\x02\x03\x04\x05"
+    self.assertEqual(_unframe(_frame(payload)), payload)
+
   def test_frame_temperature_37c(self):
-    """Verify _frame() of the temperature 37°C command matches MARS capture exactly."""
+    """Verify 1-byte CS frame of the temperature 37°C command matches MARS capture."""
     payload = b"\x06\x01\x72\x00\x00"
     # MARS: 02 00 0B 0C 06 01 72 00 00 92 0D
     expected = bytes([0x02, 0x00, 0x0B, 0x0C, 0x06, 0x01, 0x72, 0x00, 0x00, 0x92, 0x0D])
-    self.assertEqual(_frame(payload), expected)
+    self.assertEqual(_frame(payload, single_byte_checksum=True), expected)
 
   def test_frame_temperature_monitor(self):
-    """Verify _frame() of the temperature monitor-only command matches MARS capture."""
+    """Verify 1-byte CS frame of the temperature monitor-only command matches MARS capture."""
     payload = b"\x06\x00\x01\x00\x00"
     # MARS: 02 00 0B 0C 06 00 01 00 00 20 0D
     expected = bytes([0x02, 0x00, 0x0B, 0x0C, 0x06, 0x00, 0x01, 0x00, 0x00, 0x20, 0x0D])
-    self.assertEqual(_frame(payload), expected)
+    self.assertEqual(_frame(payload, single_byte_checksum=True), expected)
 
   def test_frame_temperature_off(self):
-    """Verify _frame() of the temperature off command matches MARS capture."""
+    """Verify 1-byte CS frame of the temperature off command matches MARS capture."""
     payload = b"\x06\x00\x00\x00\x00"
     # MARS: 02 00 0B 0C 06 00 00 00 00 1F 0D
     expected = bytes([0x02, 0x00, 0x0B, 0x0C, 0x06, 0x00, 0x00, 0x00, 0x00, 0x1F, 0x0D])
-    self.assertEqual(_frame(payload), expected)
+    self.assertEqual(_frame(payload, single_byte_checksum=True), expected)
 
   def test_unframe_init_response(self):
     """Unframe a response with 2-byte checksum (instrument response format)."""
