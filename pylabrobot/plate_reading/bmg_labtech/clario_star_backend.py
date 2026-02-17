@@ -434,6 +434,9 @@ class CLARIOstarBackend(PlateReaderBackend):
     # the 2-byte size field gives the total frame length. Once we have ≥3 bytes we
     # can extract the expected size and read until we have exactly that many bytes.
     # This avoids stopping early on embedded 0x0D bytes inside the payload.
+    #
+    # Fallback: if the size field can't be extracted (e.g., non-standard response)
+    # or no more data arrives, stop when we see 0x0D at the end of a stalled read.
     while True:
       last_read = await self.io.read(25)  # 25 is max length observed in pcap
       if len(last_read) > 0:
@@ -448,6 +451,10 @@ class CLARIOstarBackend(PlateReaderBackend):
       else:
         # No data received — check if we already have a complete frame
         if expected_size is not None and len(d) >= expected_size:
+          break
+
+        # Fallback: if data stream stalled and last byte is 0x0D, treat as complete
+        if len(d) > 0 and d[-1] == 0x0D:
           break
 
         # Check if we've timed out.
