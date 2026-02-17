@@ -1115,12 +1115,30 @@ class CLARIOstarBackend(PlateReaderBackend):
     wavelengths_in_resp = int.from_bytes(payload[16:18], "big")
     wells = int.from_bytes(payload[20:22], "big")
 
+    # Diagnostic: dump header and search for plausible temperature values.
+    # Uses logger.info so it appears with verbose(True) (default level=INFO).
+    hdr_len = min(60, len(payload))
+    logger.info("ABS schema=0x%02x  payload_len=%d  wls=%d  wells=%d",
+                schema, len(payload), wavelengths_in_resp, wells)
+    logger.info("ABS header[0:%d]: %s", hdr_len, payload[:hdr_len].hex(" "))
+    # Search for plausible temperature uint16 BE values (200..500 → 20.0..50.0 °C)
+    candidates = []
+    for i in range(min(60, len(payload) - 1)):
+      v = int.from_bytes(payload[i : i + 2], "big")
+      if 200 <= v <= 500:
+        candidates.append(f"  off={i}: {v} ({v/10.0:.1f}°C)")
+    if candidates:
+      logger.info("ABS temp candidates (20-50°C range):\n%s", "\n".join(candidates))
+    else:
+      logger.info("ABS no temp candidates in 200..500 range in first 60 bytes")
+
     # Temperature offset differs by schema variant:
     #   0x29: bytes 23-24 (no incubation active)
     #   0xa9: bytes 34-35 (incubation active, high bit set)
     temp_offset = 34 if schema & 0x80 else 23
     temp_raw = int.from_bytes(payload[temp_offset : temp_offset + 2], "big")
     temperature = temp_raw / 10.0
+    logger.info("ABS using temp_offset=%d → raw=%d → %.1f°C", temp_offset, temp_raw, temperature)
 
     # Raw sample values: wells * wavelengths uint32s starting at byte 36
     offset = 36
