@@ -972,15 +972,15 @@ class TestCLARIOstarSend(unittest.IsolatedAsyncioTestCase):
     self.backend.io.set_latency_timer = unittest.mock.AsyncMock()
     self.backend.io.poll_modem_status = unittest.mock.AsyncMock()
 
-  async def test_send_frames_and_writes(self):
-    """send() should frame the payload and write it."""
+  async def test_send_command_frames_and_writes(self):
+    """send_command() should frame the payload and write it."""
     # Build a valid response (2-byte CS, instrument format)
     response = _make_response_frame(b"\x80\x00\x05\x00\x00")
 
     self.backend.io.write.return_value = len(_frame(b"\x80\x00"))
     self.backend.io.read.side_effect = [response, b""]
 
-    result = await self.backend.send(b"\x80\x00")
+    result = await self.backend.send_command(b"\x80\x00")
     self.assertEqual(result, response)
 
     # Verify the written data is the framed payload (1-byte CS, outgoing format)

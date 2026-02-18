@@ -525,12 +525,13 @@ class CLARIOstarBackend(PlateReaderBackend):
 
         await asyncio.sleep(0.0001)
 
-    logger.debug("read %s", d.hex())
+    if d:
+      logger.info("read complete response: %d bytes, %s", len(d), d.hex())
     self._trace("RECV", d)
 
     return d
 
-  async def send(
+  async def send_command(
     self,
     payload: Union[bytearray, bytes],
     read_timeout=20,
@@ -573,7 +574,7 @@ class CLARIOstarBackend(PlateReaderBackend):
   # # # Querying Machine State # # #
 
   async def _request_command_status(self) -> bytes:
-    return await self.send(b"\x80\x00")
+    return await self.send_command(b"\x80\x00")
 
   def _parse_status_response(self, response: bytes) -> Dict[str, bool]:
     """Extract and parse status flags from a framed status response.
@@ -643,13 +644,13 @@ class CLARIOstarBackend(PlateReaderBackend):
   # # # Device info # # #
 
   async def request_eeprom_data(self):
-    eeprom_response = await self.send(b"\x05\x07\x00\x00\x00\x00\x00\x00")
+    eeprom_response = await self.send_command(b"\x05\x07\x00\x00\x00\x00\x00\x00")
     self._eeprom_data = eeprom_response
     return await self._wait_for_ready_and_return(eeprom_response)
 
   async def request_firmware_info(self):
     """Request firmware version and build date/time (command ``0x05 0x09``)."""
-    resp = await self.send(b"\x05\x09\x00\x00\x00\x00\x00\x00")
+    resp = await self.send_command(b"\x05\x09\x00\x00\x00\x00\x00\x00")
     self._firmware_data = resp
     return await self._wait_for_ready_and_return(resp)
 
@@ -658,7 +659,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Each call queries the instrument for current values (not cached).
     """
-    resp = await self.send(b"\x05\x21\x00\x00\x00\x00\x00\x00")
+    resp = await self.send_command(b"\x05\x21\x00\x00\x00\x00\x00\x00")
     await self._wait_for_ready_and_return(resp)
     return _parse_usage_counters(resp)
 
@@ -708,7 +709,7 @@ class CLARIOstarBackend(PlateReaderBackend):
   # # # Setup Requirement # # #
 
   async def initialize(self):
-    command_response = await self.send(b"\x01\x00\x00\x10\x02\x00")
+    command_response = await self.send_command(b"\x01\x00\x00\x10\x02\x00")
     return await self._wait_for_ready_and_return(command_response)
 
   # # # Temperature Features # # #
@@ -773,7 +774,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     self._incubation_target = temperature
     temp_raw = round(temperature * 10)
     payload = b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00"
-    await self.send(payload, single_byte_checksum=True)
+    await self.send_command(payload, single_byte_checksum=True)
 
   async def enable_temperature_monitoring(self) -> None:
     """Enable temperature sensor monitoring without heating.
@@ -787,7 +788,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     off. It can also be called standalone if temperature monitoring was never
     activated and you want embedded temperatures in measurement responses.
     """
-    await self.send(b"\x06\x00\x01\x00\x00", single_byte_checksum=True)
+    await self.send_command(b"\x06\x00\x01\x00\x00", single_byte_checksum=True)
 
   async def stop_temperature_control(self) -> None:
     """Switch off the incubator and re-enable passive temperature monitoring.
@@ -823,7 +824,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     if self._incubation_target > 0:
       # Re-send the current incubation command so we don't cancel heating
       temp_raw = round(self._incubation_target * 10)
-      await self.send(b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00",
+      await self.send_command(b"\x06" + temp_raw.to_bytes(2, "big") + b"\x00\x00",
                       single_byte_checksum=True)
     else:
       await self.enable_temperature_monitoring()
@@ -842,17 +843,17 @@ class CLARIOstarBackend(PlateReaderBackend):
   # # #  Drawer Features # # #
 
   async def open(self):
-    open_response = await self.send(b"\x03\x01\x00\x00\x00\x00\x00")
+    open_response = await self.send_command(b"\x03\x01\x00\x00\x00\x00\x00")
     return await self._wait_for_ready_and_return(open_response)
 
   async def close(self, plate: Optional[Plate] = None):
-    close_response = await self.send(b"\x03\x00\x00\x00\x00\x00\x00")
+    close_response = await self.send_command(b"\x03\x00\x00\x00\x00\x00\x00")
     return await self._wait_for_ready_and_return(close_response)
 
   # # # Shared measurement infrastructure # # #
 
   async def _mp_and_focus_height_value(self):
-    mp_and_focus_height_value_response = await self.send(b"\x05\x0f\x00\x00\x00\x00\x00\x00")
+    mp_and_focus_height_value_response = await self.send_command(b"\x05\x0f\x00\x00\x00\x00\x00\x00")
     return await self._wait_for_ready_and_return(mp_and_focus_height_value_response)
 
   def _plate_bytes(self, plate: Plate, wells: Optional[List[Well]] = None) -> bytes:
@@ -983,7 +984,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Returns a list of (row, col) tuples (0-based), or None if parsing fails.
     """
-    resp = await self.send(b"\x05\x1d\x00\x00\x00\x00\x00\x00")
+    resp = await self.send_command(b"\x05\x1d\x00\x00\x00\x00\x00\x00")
 
     try:
       payload = _unframe(resp)
@@ -1079,11 +1080,11 @@ class CLARIOstarBackend(PlateReaderBackend):
     return order
 
   async def _status_hw(self):
-    status_hw_response = await self.send(b"\x81\x00")
+    status_hw_response = await self.send_command(b"\x81\x00")
     return await self._wait_for_ready_and_return(status_hw_response)
 
   async def _get_measurement_values(self):
-    return await self.send(b"\x05\x02\x00\x00\x00\x00\x00\x00")
+    return await self.send_command(b"\x05\x02\x00\x00\x00\x00\x00\x00")
 
   # # # Luminescence # # #
 
@@ -1133,7 +1134,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       + b"\x01\x00\x01\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x01"
       + b"\x00\x00\x00\x01\x00\x64\x00\x20\x00\x00"
     )
-    run_response = await self.send(payload)
+    run_response = await self.send_command(payload)
     if wait:
       return await self._wait_for_ready_and_return(run_response)
     return run_response
@@ -1327,7 +1328,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload += flashes.to_bytes(2, "big")
     payload += b"\x00\x01\x00\x00"
 
-    run_response = await self.send(bytes(payload))
+    run_response = await self.send_command(bytes(payload))
     if wait:
       return await self._wait_for_ready_and_return(run_response)
     return run_response
@@ -1812,7 +1813,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload += flashes.to_bytes(2, "big")
     payload += b"\x00\x4b\x00\x00"
 
-    run_response = await self.send(bytes(payload))
+    run_response = await self.send_command(bytes(payload))
     if wait:
       return await self._wait_for_ready_and_return(run_response)
     return run_response
@@ -1952,19 +1953,3 @@ class CLARIOstarBackend(PlateReaderBackend):
         "time": time.time(),
       }
     ]
-
-
-# Deprecated alias with warning # TODO: remove mid May 2025 (giving people 1 month to update)
-# https://github.com/PyLabRobot/pylabrobot/issues/466
-
-
-class CLARIOStar:
-  def __init__(self, *args, **kwargs):
-    raise RuntimeError("`CLARIOStar` is deprecated. Please use `CLARIOStarBackend` instead.")
-
-
-class CLARIOStarBackend:
-  def __init__(self, *args, **kwargs):
-    raise RuntimeError(
-      "`CLARIOStarBackend` (capital 'S') is deprecated. Please use `CLARIOstarBackend` instead."
-    )

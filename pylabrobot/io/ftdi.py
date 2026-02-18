@@ -301,7 +301,6 @@ class FTDI(IOBase):
 
   async def read(self, num_bytes: int = 1) -> bytes:
     data = self.dev.read(num_bytes)
-    logger.log(LOG_LEVEL_IO, "[%s] read %s", self._device_id, data)
     capturer.record(
       FTDICommand(
         device_id=self.device_id,
