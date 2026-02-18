@@ -1599,21 +1599,12 @@ class CLARIOstarBackend(PlateReaderBackend):
       len(vals),
     )
 
-    # NOTE: absorbance data is always returned in row-major plate order (A1-A12,
-    # B1-B12, ..., H1-H12) regardless of the physical scan pattern. Do NOT apply
-    # scan_order remapping — pass scan_order=None to _readings_to_grid so it
-    # falls back to row-major reshape.
+    # NOTE: for partial-well reads the firmware returns exactly N values for N
+    # selected wells, in the row-major scan order of those wells. The values are
+    # passed to _readings_to_grid which maps them 1:1 to the wells list.
 
     num_wells = len(wells)
     transmission_data, temperature, raw = self._parse_absorbance_response(vals, len(wavelengths))
-
-    # The firmware returns data for ALL plate wells in row-major order (A1-A12,
-    # B1-B12, ..., H1-H12). When only a subset of wells is selected, we must
-    # index into the response using each well's row-major plate position — NOT
-    # sequential indices 0..N-1, which would incorrectly read Row A values.
-    num_cols = plate.num_items_x
-    well_plate_indices = [w.get_row() * num_cols + w.get_column() for w in wells]
-    total_wells_in_response = len(transmission_data)
 
     # Normally the firmware embeds a temperature in the measurement response,
     # sampled at the start of the measurement (pre-measurement). When
@@ -1639,8 +1630,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       for wl_idx, wl in enumerate(wavelengths):
         raw_for_wl: List[Optional[float]] = []
         for well_idx in range(num_wells):
-          plate_idx = well_plate_indices[well_idx]
-          flat_idx = plate_idx + wl_idx * total_wells_in_response
+          flat_idx = well_idx + wl_idx * num_wells
           raw_for_wl.append(
             raw["samples"][flat_idx] if flat_idx < len(raw["samples"]) else None
           )
@@ -1661,11 +1651,10 @@ class CLARIOstarBackend(PlateReaderBackend):
     for wl_idx, wl in enumerate(wavelengths):
       trans_for_wl: List[Optional[float]] = []
       for well_idx in range(num_wells):
-        plate_idx = well_plate_indices[well_idx]
-        if plate_idx < len(transmission_data):
+        if well_idx < len(transmission_data):
           t = (
-            transmission_data[plate_idx][wl_idx]
-            if wl_idx < len(transmission_data[plate_idx])
+            transmission_data[well_idx][wl_idx]
+            if wl_idx < len(transmission_data[well_idx])
             else None
           )
         else:
