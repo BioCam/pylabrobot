@@ -1372,11 +1372,21 @@ class CLARIOstarBackend(PlateReaderBackend):
       ref.append(float(struct.unpack(">I", payload[offset : offset + 4])[0]))
       offset += 4
 
-    # Groups 2 and 3: diagnostic channels (wells entries each, skipped)
-    offset += wells * 4 * 2
+    # Groups 2 and 3: diagnostic channels. These are present in some firmware
+    # responses but not all. Detect by checking whether the remaining payload is
+    # large enough to hold 2 extra groups (wells entries each) plus calibration.
+    cal_size = (wavelengths_in_resp + 1) * 8  # (chromat pairs + ref pair) × 8
+    extra_groups_size = wells * 4 * 2
+    remaining = len(payload) - offset
+    if remaining >= extra_groups_size + cal_size:
+      offset += extra_groups_size
+    elif remaining < cal_size:
+      raise ValueError(
+        f"Payload too short for calibration: {remaining} bytes remaining, need {cal_size}"
+      )
 
     # --- Calibration ---
-    # 4 pairs of (hi, lo) uint32 BE. Actual value = raw / 256.
+    # (wavelengths + 1) pairs of (hi, lo) uint32 BE. Actual value = raw / 256.
     chromats = []
     for _ in range(wavelengths_in_resp):
       hi = float(struct.unpack(">I", payload[offset : offset + 4])[0] / 256)
