@@ -1607,6 +1607,14 @@ class CLARIOstarBackend(PlateReaderBackend):
     num_wells = len(wells)
     transmission_data, temperature, raw = self._parse_absorbance_response(vals, len(wavelengths))
 
+    # The firmware returns data for ALL plate wells in row-major order (A1-A12,
+    # B1-B12, ..., H1-H12). When only a subset of wells is selected, we must
+    # index into the response using each well's row-major plate position — NOT
+    # sequential indices 0..N-1, which would incorrectly read Row A values.
+    num_cols = plate.num_items_x
+    well_plate_indices = [w.get_row() * num_cols + w.get_column() for w in wells]
+    total_wells_in_response = len(transmission_data)
+
     # Normally the firmware embeds a temperature in the measurement response,
     # sampled at the start of the measurement (pre-measurement). When
     # incubation has been used and then turned off, the firmware keeps the
@@ -1631,7 +1639,8 @@ class CLARIOstarBackend(PlateReaderBackend):
       for wl_idx, wl in enumerate(wavelengths):
         raw_for_wl: List[Optional[float]] = []
         for well_idx in range(num_wells):
-          flat_idx = well_idx + wl_idx * num_wells
+          plate_idx = well_plate_indices[well_idx]
+          flat_idx = plate_idx + wl_idx * total_wells_in_response
           raw_for_wl.append(
             raw["samples"][flat_idx] if flat_idx < len(raw["samples"]) else None
           )
@@ -1652,10 +1661,11 @@ class CLARIOstarBackend(PlateReaderBackend):
     for wl_idx, wl in enumerate(wavelengths):
       trans_for_wl: List[Optional[float]] = []
       for well_idx in range(num_wells):
-        if well_idx < len(transmission_data):
+        plate_idx = well_plate_indices[well_idx]
+        if plate_idx < len(transmission_data):
           t = (
-            transmission_data[well_idx][wl_idx]
-            if wl_idx < len(transmission_data[well_idx])
+            transmission_data[plate_idx][wl_idx]
+            if wl_idx < len(transmission_data[plate_idx])
             else None
           )
         else:
