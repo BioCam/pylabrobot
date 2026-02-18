@@ -361,6 +361,116 @@ class TestWellToIndex(unittest.TestCase):
       CLARIOstarBackend._well_to_index(self.plate, well)
 
 
+class TestComputeScanOrder(unittest.TestCase):
+  def setUp(self):
+    self.plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    self.all_wells = self.plate.get_all_items()
+
+  def _well_at(self, row: int, col: int):
+    """Get the well at (row, col) from the plate."""
+    return self.plate.get_item(f"{chr(65 + row)}{col + 1}")
+
+  def test_full_plate_top_left_horizontal_unidirectional(self):
+    """Default absorbance settings: row-major A1→A12, B1→B12, ..., H1→H12."""
+    order = CLARIOstarBackend._compute_scan_order(
+      self.plate, self.all_wells,
+      start_corner=StartCorner.TOP_LEFT, unidirectional=True, vertical=False,
+    )
+    self.assertEqual(len(order), 96)
+    # First row: A1-A12
+    self.assertEqual(order[0], (0, 0))   # A1
+    self.assertEqual(order[11], (0, 11)) # A12
+    # Second row: B1-B12
+    self.assertEqual(order[12], (1, 0))  # B1
+    # Last: H12
+    self.assertEqual(order[95], (7, 11))
+
+  def test_full_plate_top_left_horizontal_bidirectional(self):
+    """Snake: A1→A12, B12→B1, C1→C12, ..."""
+    order = CLARIOstarBackend._compute_scan_order(
+      self.plate, self.all_wells,
+      start_corner=StartCorner.TOP_LEFT, unidirectional=False, vertical=False,
+    )
+    self.assertEqual(len(order), 96)
+    # Row 0 (even): left to right
+    self.assertEqual(order[0], (0, 0))
+    self.assertEqual(order[11], (0, 11))
+    # Row 1 (odd): right to left
+    self.assertEqual(order[12], (1, 11))
+    self.assertEqual(order[23], (1, 0))
+    # Row 2 (even): left to right again
+    self.assertEqual(order[24], (2, 0))
+
+  def test_full_plate_bottom_right_vertical_unidirectional(self):
+    """Start bottom-right, scan columns bottom-to-top, column-by-column right-to-left."""
+    order = CLARIOstarBackend._compute_scan_order(
+      self.plate, self.all_wells,
+      start_corner=StartCorner.BOTTOM_RIGHT, unidirectional=True, vertical=True,
+    )
+    self.assertEqual(len(order), 96)
+    # First column (rightmost=11), bottom-to-top: H12, G12, ..., A12
+    self.assertEqual(order[0], (7, 11))  # H12
+    self.assertEqual(order[1], (6, 11))  # G12
+    self.assertEqual(order[7], (0, 11))  # A12
+    # Second column (10): H11, G11, ..., A11
+    self.assertEqual(order[8], (7, 10))  # H11
+
+  def test_partial_wells_filtered_correctly(self):
+    """Only selected wells appear in scan order, in traversal sequence."""
+    # Select column 1 (all 8 rows)
+    col1_wells = [self._well_at(r, 0) for r in range(8)]
+    order = CLARIOstarBackend._compute_scan_order(
+      self.plate, col1_wells,
+      start_corner=StartCorner.TOP_LEFT, unidirectional=True, vertical=False,
+    )
+    # Row-major scan but only col 0 selected: A1, B1, C1, ..., H1
+    self.assertEqual(len(order), 8)
+    for i in range(8):
+      self.assertEqual(order[i], (i, 0))
+
+  def test_partial_wells_two_columns_row_major(self):
+    """Partial: columns 1-2, row-major scan → A1,A2,B1,B2,...,H1,H2."""
+    wells = []
+    for r in range(8):
+      for c in range(2):
+        wells.append(self._well_at(r, c))
+    order = CLARIOstarBackend._compute_scan_order(
+      self.plate, wells,
+      start_corner=StartCorner.TOP_LEFT, unidirectional=True, vertical=False,
+    )
+    self.assertEqual(len(order), 16)
+    # Row 0: A1, A2
+    self.assertEqual(order[0], (0, 0))
+    self.assertEqual(order[1], (0, 1))
+    # Row 1: B1, B2
+    self.assertEqual(order[2], (1, 0))
+    self.assertEqual(order[3], (1, 1))
+    # Last: H2
+    self.assertEqual(order[15], (7, 1))
+
+  def test_partial_wells_snake_reverses_correctly(self):
+    """Partial with bidirectional: even rows L→R, odd rows R→L."""
+    wells = []
+    for r in range(3):
+      for c in range(3):
+        wells.append(self._well_at(r, c))
+    order = CLARIOstarBackend._compute_scan_order(
+      self.plate, wells,
+      start_corner=StartCorner.TOP_LEFT, unidirectional=False, vertical=False,
+    )
+    self.assertEqual(len(order), 9)
+    # Row 0: (0,0), (0,1), (0,2)
+    self.assertEqual(order[0], (0, 0))
+    self.assertEqual(order[1], (0, 1))
+    self.assertEqual(order[2], (0, 2))
+    # Row 1 reversed: (1,2), (1,1), (1,0)
+    self.assertEqual(order[3], (1, 2))
+    self.assertEqual(order[4], (1, 1))
+    self.assertEqual(order[5], (1, 0))
+    # Row 2: (2,0), (2,1), (2,2)
+    self.assertEqual(order[6], (2, 0))
+
+
 # ---------------------------------------------------------------------------
 # PR 4: Fluorescence response parsing
 # ---------------------------------------------------------------------------
@@ -467,26 +577,33 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     ref_chan_lo: int,
     temperature_raw: int = 250,
   ) -> bytes:
-    """Build a synthetic unframed absorbance response payload."""
+    """Build a synthetic unframed absorbance response payload.
+
+    Calibration values (chromats hi/lo, ref_chan_hi/lo) are specified as actual
+    values; this helper encodes them as ``raw_uint32 = actual * 256`` to match
+    the firmware encoding that the parser reverses.
+    """
     payload = bytearray(36)
     payload[6] = 0x29  # schema
-    payload[16:18] = num_wavelengths.to_bytes(2, "big")
+    payload[18:20] = num_wavelengths.to_bytes(2, "big")
     payload[20:22] = num_wells.to_bytes(2, "big")
     payload[23:25] = temperature_raw.to_bytes(2, "big")
 
-    # Sample values: wells * wavelengths uint32s
+    # Group 0: Sample values (wells * wavelengths uint32s)
     for v in samples:
       payload += struct.pack(">I", v)
-    # Reference values: wells uint32s
+    # Group 1: Reference values (wells uint32s)
     for v in refs:
       payload += struct.pack(">I", v)
-    # Chromatic references: wavelengths pairs of (hi, lo) uint32s
+    # Groups 2 and 3: dummy zeros (wells uint32s each)
+    payload += b"\x00" * (num_wells * 4 * 2)
+    # Chromatic calibration: pairs of (hi, lo), encoded as actual * 256
     for hi, lo in chromats:
-      payload += struct.pack(">I", hi)
-      payload += struct.pack(">I", lo)
-    # Reference channel hi/lo
-    payload += struct.pack(">I", ref_chan_hi)
-    payload += struct.pack(">I", ref_chan_lo)
+      payload += struct.pack(">I", int(hi * 256))
+      payload += struct.pack(">I", int(lo * 256))
+    # Reference channel hi/lo, encoded as actual * 256
+    payload += struct.pack(">I", int(ref_chan_hi * 256))
+    payload += struct.pack(">I", int(ref_chan_lo * 256))
 
     return bytes(payload)
 
@@ -505,11 +622,11 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
 
     self.assertAlmostEqual(temp, 25.0)
     self.assertEqual(len(transmission), 2)
-    # wref = (100000 - 0) / (200000 - 0) = 0.5
-    # trans[0][0] = ((50000 - 0) / (100000 - 0)) / 0.5 * 100 = 100.0
-    # trans[1][0] = ((60000 - 0) / (100000 - 0)) / 0.5 * 100 = 120.0
-    self.assertAlmostEqual(transmission[0][0], 100.0)
-    self.assertAlmostEqual(transmission[1][0], 120.0)
+    # T% = sample / chromat_hi * 100
+    # trans[0][0] = 50000 / 100000 * 100 = 50.0
+    # trans[1][0] = 60000 / 100000 * 100 = 60.0
+    self.assertAlmostEqual(transmission[0][0], 50.0)
+    self.assertAlmostEqual(transmission[1][0], 60.0)
 
   def test_multi_wavelength(self):
     """2 wells, 2 wavelengths."""
@@ -528,15 +645,15 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
 
     self.assertEqual(len(transmission), 2)
     self.assertEqual(len(transmission[0]), 2)
-    # wref = 0.5 for both wells
-    # trans[0][0] = (40000/100000) / 0.5 * 100 = 80.0
-    # trans[0][1] = (60000/100000) / 0.5 * 100 = 120.0
-    # trans[1][0] = (50000/100000) / 0.5 * 100 = 100.0
-    # trans[1][1] = (70000/100000) / 0.5 * 100 = 140.0
-    self.assertAlmostEqual(transmission[0][0], 80.0)
-    self.assertAlmostEqual(transmission[0][1], 120.0)
-    self.assertAlmostEqual(transmission[1][0], 100.0)
-    self.assertAlmostEqual(transmission[1][1], 140.0)
+    # T% = sample / chromat_hi * 100
+    # trans[0][0] = 40000 / 100000 * 100 = 40.0
+    # trans[0][1] = 60000 / 100000 * 100 = 60.0
+    # trans[1][0] = 50000 / 100000 * 100 = 50.0
+    # trans[1][1] = 70000 / 100000 * 100 = 70.0
+    self.assertAlmostEqual(transmission[0][0], 40.0)
+    self.assertAlmostEqual(transmission[0][1], 60.0)
+    self.assertAlmostEqual(transmission[1][0], 50.0)
+    self.assertAlmostEqual(transmission[1][1], 70.0)
 
   def test_temperature(self):
     resp = self._build_abs_response(
@@ -605,15 +722,15 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     with self.assertRaises(ValueError):
       CLARIOstarBackend._parse_absorbance_response(b"\x00" * 10, num_wavelengths=1)
 
-  def test_zero_ref_no_crash(self):
-    """Division by zero in reference should produce 0, not crash."""
+  def test_zero_chromat_hi_no_crash(self):
+    """Division by zero in chromat_hi should produce 0, not crash."""
     resp = self._build_abs_response(
       num_wells=1,
       num_wavelengths=1,
       samples=[50000],
       refs=[100000],
-      chromats=[(100000, 0)],
-      ref_chan_hi=0,  # hi == lo → wref = 0
+      chromats=[(0, 0)],  # chromat_hi = 0 → T% = 0
+      ref_chan_hi=200000,
       ref_chan_lo=0,
     )
     transmission, _, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)

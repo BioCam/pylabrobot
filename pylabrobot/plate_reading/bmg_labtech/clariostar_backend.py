@@ -434,6 +434,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     self._eeprom_data: Optional[bytes] = None
     self._firmware_data: Optional[bytes] = None
     self._incubation_target: float = 0.0
+    self._last_scan_params: Dict = {}
 
   # === Life cycle ===
   
@@ -930,12 +931,17 @@ class CLARIOstarBackend(PlateReaderBackend):
   async def _read_order_values(self, plate: Plate) -> Optional[List[Tuple[int, int]]]:
     """Query the instrument for the read order of the last measurement.
 
-    Sends command ``0x05 0x1d`` and parses the response as a sequence of
-    uint16 big-endian well indices in column-major numbering (matching the
-    bitmask convention used by ``_plate_bytes``).
+    Sends command ``0x05 0x1d`` and parses the response. The response has a
+    19-byte header followed by N × 2-byte ``(col_1based, row_1based)`` pairs
+    and a trailing ``0x00``.
 
-    Returns a list of (row, col) tuples indicating the order in which
-    wells were read, or None if the response cannot be parsed.
+    .. note::
+
+       For partial-well reads, the firmware returns the first N positions of
+       the *general* scan pattern, not filtered to selected wells. Use
+       ``_compute_scan_order`` for actual grid placement.
+
+    Returns a list of (row, col) tuples (0-based), or None if parsing fails.
     """
     resp = await self.send(b"\x05\x1d\x00\x00\x00\x00\x00\x00")
 
@@ -947,34 +953,90 @@ class CLARIOstarBackend(PlateReaderBackend):
     rows = plate.num_items_y
     cols = plate.num_items_x
 
-    # Skip standard 6-byte header; remaining data is uint16 well indices.
-    data = payload[6:]
-    if len(data) < 2:
+    # Header layout (19 bytes):
+    #   byte 0: 0x1d (subcommand echo)
+    #   byte 1: 0x05 (command family echo)
+    #   bytes 6-7: num_cols, num_rows
+    #   bytes 17-18: uint16 BE well count
+    if len(payload) < 19:
       logger.warning(
-        "Read order response too short (%d payload bytes). "
-        "Falling back to default ordering.",
-        len(payload),
+        "Read order response too short (%d bytes). Raw: %s",
+        len(payload), payload.hex(),
       )
       return None
 
-    n_indices = len(data) // 2
+    n_entries = int.from_bytes(payload[17:19], "big")
+    data = payload[19:]
+
+    if len(data) < n_entries * 2:
+      logger.warning(
+        "Read order data too short: expected %d entries (%d bytes), got %d bytes. Raw: %s",
+        n_entries, n_entries * 2, len(data), payload.hex(),
+      )
+      return None
+
     positions: List[Tuple[int, int]] = []
-    for i in range(n_indices):
-      idx = int.from_bytes(data[i * 2 : (i + 1) * 2], "big")
-      # Column-major: well_index = col * num_rows + row
-      r = idx % rows
-      c = idx // rows
-      if r >= rows or c >= cols:
+    for i in range(n_entries):
+      col_1 = data[i * 2]      # 1-based column
+      row_1 = data[i * 2 + 1]  # 1-based row
+      r = row_1 - 1
+      c = col_1 - 1
+      if r < 0 or r >= rows or c < 0 or c >= cols:
         logger.warning(
-          "Read order index %d out of range for %dx%d plate. "
-          "Falling back to default ordering. Raw payload: %s",
-          idx, rows, cols, payload.hex(),
+          "Read order entry %d: col=%d row=%d out of range for %dx%d plate. Raw: %s",
+          i, col_1, row_1, rows, cols, payload.hex(),
         )
         return None
       positions.append((r, c))
 
     logger.debug("Read order: %d positions, first 10: %s", len(positions), positions[:10])
     return positions
+
+  @staticmethod
+  def _compute_scan_order(
+    plate: Plate,
+    wells: List[Well],
+    start_corner: StartCorner = StartCorner.TOP_LEFT,
+    unidirectional: bool = False,
+    vertical: bool = False,
+  ) -> List[Tuple[int, int]]:
+    """Compute the read order for a measurement from scan parameters.
+
+    The CLARIOstar scans wells according to ``start_corner``, ``vertical``,
+    and ``unidirectional`` settings. For partial-well reads the instrument
+    still traverses in the same pattern but only visits selected wells.
+
+    Returns (row, col) tuples (0-based) in the order readings are produced.
+    """
+    rows, cols = plate.num_items_y, plate.num_items_x
+
+    # Determine traversal directions from start corner.
+    row_forward = start_corner in (StartCorner.TOP_LEFT, StartCorner.TOP_RIGHT)
+    col_forward = start_corner in (StartCorner.TOP_LEFT, StartCorner.BOTTOM_LEFT)
+
+    row_seq = list(range(rows) if row_forward else range(rows - 1, -1, -1))
+    col_seq = list(range(cols) if col_forward else range(cols - 1, -1, -1))
+
+    selected = {(w.get_row(), w.get_column()) for w in wells}
+
+    order: List[Tuple[int, int]] = []
+
+    if vertical:
+      # Primary axis: columns, secondary axis: rows.
+      for i, c in enumerate(col_seq):
+        secondary = row_seq if (unidirectional or i % 2 == 0) else row_seq[::-1]
+        for r in secondary:
+          if (r, c) in selected:
+            order.append((r, c))
+    else:
+      # Primary axis: rows, secondary axis: columns.
+      for i, r in enumerate(row_seq):
+        secondary = col_seq if (unidirectional or i % 2 == 0) else col_seq[::-1]
+        for c in secondary:
+          if (r, c) in selected:
+            order.append((r, c))
+
+    return order
 
   async def _status_hw(self):
     status_hw_response = await self.send(b"\x81\x00")
@@ -1001,6 +1063,12 @@ class CLARIOstarBackend(PlateReaderBackend):
     """Run a plate reader luminescence run."""
 
     assert 0 <= focal_height <= 25, "focal height must be between 0 and 25 mm"
+
+    self._last_scan_params = {
+      "start_corner": start_corner,
+      "unidirectional": unidirectional,
+      "vertical": vertical,
+    }
 
     focal_height_data = int(focal_height * 100).to_bytes(2, byteorder="big")
     plate_and_wells = self._plate_bytes(plate, wells)
@@ -1074,9 +1142,16 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_luminescence(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
-    scan_order = await self._read_order_values(plate)
+    await self._read_order_values(plate)  # required by protocol; logged for diagnostics
     await self._status_hw()
     vals = await self._get_measurement_values()
+
+    scan_order = self._compute_scan_order(
+      plate, wells,
+      start_corner=self._last_scan_params.get("start_corner", StartCorner.TOP_LEFT),
+      unidirectional=self._last_scan_params.get("unidirectional", False),
+      vertical=self._last_scan_params.get("vertical", False),
+    )
 
     num_read = len(wells)
     fl_values, temperature, overflow = self._parse_fluorescence_response(vals)
@@ -1118,14 +1193,33 @@ class CLARIOstarBackend(PlateReaderBackend):
     start_corner: StartCorner = StartCorner.TOP_LEFT,
     unidirectional: bool = True,
     vertical: bool = False,
+    flying_mode: bool = False,
+    well_scan: Literal["point", "orbital", "spiral", "matrix"] = "point",
+    well_scan_width: Optional[float] = None,
+    matrix_size: Optional[int] = None,
+    optic: Literal["bottom", "top"] = "top",
+    flashes_per_well: int = 22,
     wait: bool = True,
   ):
     """Run a plate reader absorbance run.
 
     Args:
       wavelengths: List of wavelengths in nm (1-8 wavelengths, 200-1000 nm each).
-      flashes: Number of flashes per well (0-200).
+      flashes: Number of flashes per well (0-200). Deprecated, use ``flashes_per_well``.
       settling_time: Settling time in deciseconds (0-10).
+      flying_mode: If True, the plate moves continuously during measurement.
+      well_scan: Well scanning pattern. TODO: not yet wired into the command payload.
+      well_scan_width: Width in mm of the scan pattern. For orbital/spiral: 1-15 mm.
+        For matrix: 1-22 mm (side length of the square scan area).
+        Only used when ``well_scan`` is not ``"point"``.
+        TODO: not yet wired into the command payload.
+      matrix_size: Grid size for matrix well scan. The OEM software exposes
+        3, 7, 8, 9, 10, 15, 20, 25, 30 (i.e. 3x3 to 30x30), but direct firmware
+        control may accept other values.
+        Only used when ``well_scan`` is ``"matrix"``.
+        TODO: not yet wired into the command payload.
+      optic: Read from top or bottom optic. TODO: not yet wired into the command payload.
+      flashes_per_well: Number of flashes per well (0-200).
     """
     if not 1 <= len(wavelengths) <= 8:
       raise ValueError("Must specify 1-8 wavelengths")
@@ -1135,8 +1229,27 @@ class CLARIOstarBackend(PlateReaderBackend):
       if not 220 <= w <= 1000:
         raise ValueError(f"Wavelength {w} nm out of range (220-1000)")
 
+    # Validate well_scan parameters against well geometry.
+    if well_scan in ("orbital", "spiral", "matrix"):
+      if well_scan_width is None:
+        raise ValueError(f"well_scan_width is required when well_scan={well_scan!r}")
+      sample_well = plate.get_all_items()[0]
+      well_diameter = min(sample_well.size_x, sample_well.size_y)
+      if well_scan_width > well_diameter:
+        raise ValueError(
+          f"well_scan_width ({well_scan_width} mm) exceeds well diameter ({well_diameter} mm)"
+        )
+    if well_scan == "matrix" and matrix_size is None:
+      raise ValueError("matrix_size is required when well_scan='matrix'")
+
+    self._last_scan_params = {
+      "start_corner": start_corner,
+      "unidirectional": unidirectional,
+      "vertical": vertical,
+    }
+
     plate_and_wells = self._plate_bytes(plate, wells)
-    scan = _scan_mode_byte(start_corner, unidirectional, vertical, flying_mode=False)
+    scan = _scan_mode_byte(start_corner, unidirectional, vertical, flying_mode=flying_mode)
 
     shaker = (
       _shaker_bytes(shake_type, shake_speed_rpm, shake_duration_s)
@@ -1150,6 +1263,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload += plate_and_wells
     payload += bytes([scan])
     # Absorbance optic mode + zeros
+    # TODO: wire well_scan and optic into these bytes once the encoding is known
     payload += b"\x02\x00\x00"
     payload += shaker
     payload += b"\x00\x20\x04\x00\x1e\x27\x0f\x27\x0f"
@@ -1179,7 +1293,7 @@ class CLARIOstarBackend(PlateReaderBackend):
   def _parse_absorbance_response(
     resp: bytes, num_wavelengths: int
   ) -> Tuple[List[List[float]], Optional[float], Dict]:
-    """Parse an absorbance measurement response using fixed offsets per the Go reference.
+    """Parse an absorbance measurement response.
 
     Returns (transmission_per_well_per_wavelength, temperature_celsius, raw).
 
@@ -1194,13 +1308,21 @@ class CLARIOstarBackend(PlateReaderBackend):
           "reference_cal": (hi, lo),        # reference channel calibration bounds
         }
 
-    **Why the subtraction ``ref[well] - ref_cal_lo``?**  The ``lo`` value is
-    subtracted as a baseline offset before normalization — this is a standard
-    pattern in spectrophotometry (often the detector dark current or electronic
-    zero, but the exact physical meaning on the CLARIOstar has not been confirmed).
-    ``ref_cal_hi`` is the upper bound, so dividing by ``(hi - lo)`` maps the
-    signal onto a 0–1 scale.  The same logic applies to ``chromat_lo``/
-    ``chromat_hi`` on the sample channel.
+    The instrument response contains 4 groups of per-well uint32 BE data
+    followed by calibration values:
+
+    - Group 0: sample detector counts (wells × wavelengths entries)
+    - Group 1: reference detector counts (wells entries)
+    - Group 2: diagnostic channel (wells entries, not used for OD)
+    - Group 3: diagnostic channel (wells entries, not used for OD)
+    - Calibration: 4 pairs of (hi, lo) uint32s. Each raw uint32 stores the
+      actual value in its upper 24 bits (actual = raw_uint32 / 256).
+
+    Transmittance is ``T% = sample / chromat_hi × 100``, yielding
+    ``OD = log10(100 / T%) = log10(chromat_hi / sample)``.
+
+    Data is always in row-major plate order (A1–A12, B1–B12, …, H1–H12)
+    regardless of the physical scan pattern.
     """
     try:
       payload = _unframe(resp)
@@ -1214,7 +1336,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     if schema & 0x7F != 0x29:
       raise ValueError(f"Incorrect schema byte for abs data: 0x{schema:02x}, expected 0x29")
 
-    wavelengths_in_resp = int.from_bytes(payload[16:18], "big")
+    wavelengths_in_resp = int.from_bytes(payload[18:20], "big")
     wells = int.from_bytes(payload[20:22], "big")
 
     # The firmware embeds a pre-measurement temperature (sampled at the start of
@@ -1235,30 +1357,35 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     temperature: Optional[float] = temp_raw / 10.0 if temp_raw >= min_plausible_raw else None
 
-    # Raw sample values: wells * wavelengths uint32s starting at byte 36
+    # --- Data groups ---
     offset = 36
+
+    # Group 0: sample detector counts (wells * wavelengths uint32 BE)
     vals = []
     for _ in range(wells * wavelengths_in_resp):
       vals.append(float(struct.unpack(">I", payload[offset : offset + 4])[0]))
       offset += 4
 
-    # Reference values: wells uint32s
+    # Group 1: reference detector counts (wells uint32 BE)
     ref = []
     for _ in range(wells):
       ref.append(float(struct.unpack(">I", payload[offset : offset + 4])[0]))
       offset += 4
 
-    # Chromatic reference hi/lo pairs: wavelengths pairs of uint32
+    # Groups 2 and 3: diagnostic channels (wells entries each, skipped)
+    offset += wells * 4 * 2
+
+    # --- Calibration ---
+    # 4 pairs of (hi, lo) uint32 BE. Actual value = raw / 256.
     chromats = []
     for _ in range(wavelengths_in_resp):
-      hi = float(struct.unpack(">I", payload[offset : offset + 4])[0])
-      lo = float(struct.unpack(">I", payload[offset + 4 : offset + 8])[0])
+      hi = float(struct.unpack(">I", payload[offset : offset + 4])[0] / 256)
+      lo = float(struct.unpack(">I", payload[offset + 4 : offset + 8])[0] / 256)
       chromats.append((hi, lo))
       offset += 8
 
-    # Reference channel hi/lo
-    ref_chan_hi = float(struct.unpack(">I", payload[offset : offset + 4])[0])
-    ref_chan_lo = float(struct.unpack(">I", payload[offset + 4 : offset + 8])[0])
+    ref_chan_hi = float(struct.unpack(">I", payload[offset : offset + 4])[0] / 256)
+    ref_chan_lo = float(struct.unpack(">I", payload[offset + 4 : offset + 8])[0] / 256)
 
     raw: Dict = {
       "samples": list(vals),
@@ -1267,17 +1394,15 @@ class CLARIOstarBackend(PlateReaderBackend):
       "reference_cal": (ref_chan_hi, ref_chan_lo),
     }
 
-    # Calculate transmission per well per wavelength (matching Go formula)
+    # Transmittance: T% = (sample / chromat_hi) × 100
+    # OD = log10(100 / T%) = log10(chromat_hi / sample)
     transmission: List[List[float]] = []
     for i in range(wells):
-      wref = (
-        (ref[i] - ref_chan_lo) / (ref_chan_hi - ref_chan_lo) if ref_chan_hi != ref_chan_lo else 0
-      )
       well_trans = []
       for j in range(wavelengths_in_resp):
-        c_hi, c_lo = chromats[j]
-        value = (vals[i + j * wells] - c_lo) / (c_hi - c_lo) if c_hi != c_lo else 0
-        well_trans.append(value / wref * 100 if wref != 0 else 0)
+        c_hi, _ = chromats[j]
+        sample = vals[i + j * wells]
+        well_trans.append(sample / c_hi * 100 if c_hi > 0 else 0)
       transmission.append(well_trans)
 
     return transmission, temperature, raw
@@ -1296,11 +1421,15 @@ class CLARIOstarBackend(PlateReaderBackend):
       wavelength: wavelength to read absorbance at, in nanometers.
       report: whether to report absorbance as optical depth (OD) or transmittance.
       **backend_kwargs: Additional keyword arguments:
-        wavelengths: List[int] - multiple wavelengths (overrides `wavelength`).
-        flashes: int - number of flashes per well.
-        settling_time: int - settling time in deciseconds.
+        wavelengths: List[int] - multiple wavelengths (overrides ``wavelength``).
+        flashes_per_well: int - number of flashes per well (0-200).
+        settling_time: int - settling time in deciseconds (0-10).
         shake_type, shake_speed_rpm, shake_duration_s: shaker config.
-        start_corner, unidirectional, vertical: scan config.
+        start_corner, unidirectional, vertical, flying_mode: scan config.
+        well_scan: Literal["point", "orbital", "spiral", "matrix"] - well scan pattern.
+        well_scan_width: float - width in mm of scan pattern (orbital/spiral: 1-15, matrix: 1-22).
+        matrix_size: int - grid size for matrix well scan (3-30, meaning 3x3 to 30x30).
+        optic: Literal["bottom", "top"] - read from bottom or top optic.
         wait: bool - if False, start measurement and return None immediately.
           Use ``collect_absorbance_measurement`` to retrieve results later.
     """
@@ -1340,9 +1469,14 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_absorbance(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
-    scan_order = await self._read_order_values(plate)
+    await self._read_order_values(plate)  # required by protocol; logged for diagnostics
     await self._status_hw()
     vals = await self._get_measurement_values()
+
+    # NOTE: absorbance data is always returned in row-major plate order (A1-A12,
+    # B1-B12, ..., H1-H12) regardless of the physical scan pattern. Do NOT apply
+    # scan_order remapping — pass scan_order=None to _readings_to_grid so it
+    # falls back to row-major reshape.
 
     num_wells = len(wells)
     transmission_data, temperature, raw = self._parse_absorbance_response(vals, len(wavelengths))
@@ -1378,7 +1512,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
         results.append({
           "wavelength": wl,
-          "data": self._readings_to_grid(raw_for_wl, plate, wells, scan_order=scan_order),
+          "data": self._readings_to_grid(raw_for_wl, plate, wells),
           "references": raw["references"],
           "chromatic_cal": raw["chromatic_cal"][wl_idx],
           "reference_cal": raw["reference_cal"],
@@ -1415,7 +1549,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       results.append(
         {
           "wavelength": wl,
-          "data": self._readings_to_grid(final_vals, plate, wells, scan_order=scan_order),
+          "data": self._readings_to_grid(final_vals, plate, wells),
           "temperature": temperature,
           "time": time.time(),
         }
@@ -1467,6 +1601,12 @@ class CLARIOstarBackend(PlateReaderBackend):
       raise ValueError("Flashes per well must be <= 200")
     if flying_mode and flashes > 3:
       raise ValueError("Cannot do more than 3 flashes in flying mode")
+
+    self._last_scan_params = {
+      "start_corner": start_corner,
+      "unidirectional": unidirectional,
+      "vertical": vertical,
+    }
 
     if dichroic is None:
       dichroic = (excitation_wavelength + emission_wavelength) * 5
@@ -1650,9 +1790,16 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_fluorescence(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
-    scan_order = await self._read_order_values(plate)
+    await self._read_order_values(plate)  # required by protocol; logged for diagnostics
     await self._status_hw()
     vals = await self._get_measurement_values()
+
+    scan_order = self._compute_scan_order(
+      plate, wells,
+      start_corner=self._last_scan_params.get("start_corner", StartCorner.TOP_LEFT),
+      unidirectional=self._last_scan_params.get("unidirectional", False),
+      vertical=self._last_scan_params.get("vertical", False),
+    )
 
     num_read = len(wells)
     fl_values, temperature, overflow = self._parse_fluorescence_response(vals)
