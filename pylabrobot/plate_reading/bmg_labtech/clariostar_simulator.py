@@ -4,7 +4,7 @@ import warnings
 from typing import Dict, List, Literal, Optional, Tuple
 
 from pylabrobot.plate_reading.backend import PlateReaderBackend
-from pylabrobot.plate_reading.bmg_labtech.clario_star_backend import CLARIOstarConfig
+from pylabrobot.plate_reading.bmg_labtech.clariostar_backend import CLARIOstarConfig
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well
 

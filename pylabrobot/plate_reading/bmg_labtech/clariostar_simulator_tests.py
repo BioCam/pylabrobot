@@ -2,7 +2,7 @@ import statistics
 import unittest
 import warnings
 
-from pylabrobot.plate_reading.bmg_labtech.clario_star_simulator import CLARIOstarSimulatorBackend
+from pylabrobot.plate_reading.bmg_labtech.clariostar_simulator import CLARIOstarSimulatorBackend
 from pylabrobot.resources import Cor_96_wellplate_360ul_Fb
 
 
@@ -258,7 +258,7 @@ class TestExtraKwargsIgnored(CLARIOstarSimulatorTestBase):
     self.assertEqual(len(results), 1)
 
   async def test_luminescence_ignores_shaker_kwargs(self):
-    from pylabrobot.plate_reading.bmg_labtech.clario_star_backend import ShakerType
+    from pylabrobot.plate_reading.bmg_labtech.clariostar_backend import ShakerType
     results = await self.backend.read_luminescence(
       plate=self.plate, wells=self.all_wells, focal_height=13.0,
       shake_type=ShakerType.ORBITAL, shake_speed_rpm=300, shake_duration_s=5,

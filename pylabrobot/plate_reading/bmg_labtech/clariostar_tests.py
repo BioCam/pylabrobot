@@ -4,7 +4,7 @@ import struct
 import unittest
 import unittest.mock
 
-from pylabrobot.plate_reading.bmg_labtech.clario_star_backend import (
+from pylabrobot.plate_reading.bmg_labtech.clariostar_backend import (
   ChecksumError,
   CLARIOstarBackend,
   CLARIOstarConfig,
@@ -20,7 +20,7 @@ from pylabrobot.plate_reading.bmg_labtech.clario_star_backend import (
   _unframe,
   dump_eeprom,
 )
-from pylabrobot.plate_reading.bmg_labtech.clario_star_simulator import CLARIOstarSimulatorBackend
+from pylabrobot.plate_reading.bmg_labtech.clariostar_simulator import CLARIOstarSimulatorBackend
 from pylabrobot.resources import Cor_96_wellplate_360ul_Fb
 
 
