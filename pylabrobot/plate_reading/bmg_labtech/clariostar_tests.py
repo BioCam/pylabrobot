@@ -579,9 +579,9 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
   ) -> bytes:
     """Build a synthetic unframed absorbance response payload.
 
-    Calibration values (chromats hi/lo, ref_chan_hi/lo) are specified as actual
-    values; this helper encodes them as ``raw_uint32 = actual * 256`` to match
-    the firmware encoding that the parser reverses.
+    The firmware response has 4 data groups (chromatic 1, 2, 3, reference)
+    followed by 4 calibration pairs. Groups 1-2 (chromatic 2, 3) are filled
+    with zeros in tests. Calibration values are raw detector counts (no encoding).
     """
     payload = bytearray(36)
     payload[6] = 0x29  # schema
@@ -589,21 +589,27 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     payload[20:22] = num_wells.to_bytes(2, "big")
     payload[23:25] = temperature_raw.to_bytes(2, "big")
 
-    # Group 0: Sample values (wells * wavelengths uint32s)
+    # Group 0: chromatic 1 = sample detector counts (wells * wavelengths)
     for v in samples:
       payload += struct.pack(">I", v)
-    # Group 1: Reference values (wells uint32s)
+    # Group 1: chromatic 2 (dummy zeros in tests)
+    payload += b"\x00" * (num_wells * 4)
+    # Group 2: chromatic 3 (dummy zeros in tests)
+    payload += b"\x00" * (num_wells * 4)
+    # Group 3: reference detector counts
     for v in refs:
       payload += struct.pack(">I", v)
-    # Groups 2 and 3: dummy zeros (wells uint32s each)
-    payload += b"\x00" * (num_wells * 4 * 2)
-    # Chromatic calibration: pairs of (hi, lo), encoded as actual * 256
+    # Calibration: 4 pairs of (hi, lo) raw uint32 BE — chromat1, chromat2, chromat3, ref
     for hi, lo in chromats:
-      payload += struct.pack(">I", int(hi * 256))
-      payload += struct.pack(">I", int(lo * 256))
-    # Reference channel hi/lo, encoded as actual * 256
-    payload += struct.pack(">I", int(ref_chan_hi * 256))
-    payload += struct.pack(">I", int(ref_chan_lo * 256))
+      payload += struct.pack(">I", hi)
+      payload += struct.pack(">I", lo)
+    # Pad remaining chromatic pairs to always have 3 total
+    for _ in range(3 - len(chromats)):
+      payload += struct.pack(">I", 0)
+      payload += struct.pack(">I", 0)
+    # Reference calibration pair
+    payload += struct.pack(">I", ref_chan_hi)
+    payload += struct.pack(">I", ref_chan_lo)
 
     return bytes(payload)
 
@@ -615,14 +621,15 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       samples=[50000, 60000],  # well0/wl0, well1/wl0
       refs=[100000, 100000],
       chromats=[(100000, 0)],
-      ref_chan_hi=200000,
+      ref_chan_hi=100000,
       ref_chan_lo=0,
     )
     transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
 
     self.assertAlmostEqual(temp, 25.0)
     self.assertEqual(len(transmission), 2)
-    # T% = sample / chromat_hi * 100
+    # T = ((sample - c_lo) / (c_hi - c_lo)) * ((r_hi - r_lo) / (ref - r_lo)) * 100
+    # With c_lo=0, r_lo=0, r_hi=ref: T = (sample/c_hi) * 1.0 * 100
     # trans[0][0] = 50000 / 100000 * 100 = 50.0
     # trans[1][0] = 60000 / 100000 * 100 = 60.0
     self.assertAlmostEqual(transmission[0][0], 50.0)
@@ -638,14 +645,14 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       samples=[40000, 50000, 60000, 70000],
       refs=[100000, 100000],
       chromats=[(100000, 0), (100000, 0)],
-      ref_chan_hi=200000,
+      ref_chan_hi=100000,
       ref_chan_lo=0,
     )
     transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=2)
 
     self.assertEqual(len(transmission), 2)
     self.assertEqual(len(transmission[0]), 2)
-    # T% = sample / chromat_hi * 100
+    # T = (sample/c_hi) * (r_hi/ref) * 100, with c_lo=r_lo=0, r_hi=ref
     # trans[0][0] = 40000 / 100000 * 100 = 40.0
     # trans[0][1] = 60000 / 100000 * 100 = 60.0
     # trans[1][0] = 50000 / 100000 * 100 = 50.0
@@ -662,7 +669,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       samples=[50000],
       refs=[100000],
       chromats=[(100000, 0)],
-      ref_chan_hi=200000,
+      ref_chan_hi=100000,
       ref_chan_lo=0,
       temperature_raw=372,
     )
@@ -674,7 +681,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     resp = self._build_abs_response(
       num_wells=1, num_wavelengths=1,
       samples=[50000], refs=[100000],
-      chromats=[(100000, 0)], ref_chan_hi=200000, ref_chan_lo=0,
+      chromats=[(100000, 0)], ref_chan_hi=100000, ref_chan_lo=0,
     )
     resp = bytearray(resp)
     resp[6] = 0xA9
@@ -689,7 +696,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     resp = self._build_abs_response(
       num_wells=1, num_wavelengths=1,
       samples=[50000], refs=[100000],
-      chromats=[(100000, 0)], ref_chan_hi=200000, ref_chan_lo=0,
+      chromats=[(100000, 0)], ref_chan_hi=100000, ref_chan_lo=0,
       temperature_raw=260,  # 26.0 °C at offset 23
     )
     resp = bytearray(resp)
@@ -703,7 +710,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     resp = self._build_abs_response(
       num_wells=1, num_wavelengths=1,
       samples=[50000], refs=[100000],
-      chromats=[(100000, 0)], ref_chan_hi=200000, ref_chan_lo=0,
+      chromats=[(100000, 0)], ref_chan_hi=100000, ref_chan_lo=0,
       temperature_raw=1,  # 0.1 °C at offset 23 — firmware noise
     )
     resp = bytearray(resp)
@@ -730,7 +737,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       samples=[50000],
       refs=[100000],
       chromats=[(0, 0)],  # chromat_hi = 0 → T% = 0
-      ref_chan_hi=200000,
+      ref_chan_hi=100000,
       ref_chan_lo=0,
     )
     transmission, _, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
@@ -744,7 +751,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       samples=[50000, 60000],
       refs=[100000, 110000],
       chromats=[(100000, 5000)],
-      ref_chan_hi=200000,
+      ref_chan_hi=100000,
       ref_chan_lo=1000,
     )
     _, _, raw = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
@@ -752,7 +759,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     self.assertEqual(raw["samples"], [50000.0, 60000.0])
     self.assertEqual(raw["references"], [100000.0, 110000.0])
     self.assertEqual(raw["chromatic_cal"], [(100000.0, 5000.0)])
-    self.assertEqual(raw["reference_cal"], (200000.0, 1000.0))
+    self.assertEqual(raw["reference_cal"], (100000.0, 1000.0))
 
 
 # ---------------------------------------------------------------------------

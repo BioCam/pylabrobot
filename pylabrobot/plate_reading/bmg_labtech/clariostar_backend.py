@@ -1309,17 +1309,21 @@ class CLARIOstarBackend(PlateReaderBackend):
         }
 
     The instrument response contains 4 groups of per-well uint32 BE data
-    followed by calibration values:
+    (one per detector channel) followed by calibration values:
 
-    - Group 0: sample detector counts (wells × wavelengths entries)
-    - Group 1: reference detector counts (wells entries)
-    - Group 2: diagnostic channel (wells entries, not used for OD)
-    - Group 3: diagnostic channel (wells entries, not used for OD)
-    - Calibration: 4 pairs of (hi, lo) uint32s. Each raw uint32 stores the
-      actual value in its upper 24 bits (actual = raw_uint32 / 256).
+    - Group 0: chromatic 1 detector counts (wells × wavelengths entries)
+    - Group 1: chromatic 2 detector counts (wells entries)
+    - Group 2: chromatic 3 detector counts (wells entries)
+    - Group 3: reference detector counts (wells entries)
+    - Calibration: always 4 pairs of (hi, lo) uint32 BE values — one per
+      detector channel (chromatic 1, 2, 3, reference). Values are raw counts
+      on the same scale as the data groups (no /256 encoding).
 
-    Transmittance is ``T% = sample / chromat_hi × 100``, yielding
-    ``OD = log10(100 / T%) = log10(chromat_hi / sample)``.
+    Transmittance uses dark-subtracted reference-corrected formula::
+
+      T = ((sample - c_lo) / (c_hi - c_lo)) × ((r_hi - r_lo) / (ref - r_lo))
+      T% = T × 100
+      OD = -log10(T)
 
     Data is always in row-major plate order (A1–A12, B1–B12, …, H1–H12)
     regardless of the physical scan pattern.
@@ -1358,61 +1362,76 @@ class CLARIOstarBackend(PlateReaderBackend):
     temperature: Optional[float] = temp_raw / 10.0 if temp_raw >= min_plausible_raw else None
 
     # --- Data groups ---
+    # The firmware returns 4 groups of per-well uint32 BE data, one per detector
+    # channel: chromatic 1 (measurement), chromatic 2, chromatic 3, reference.
     offset = 36
 
-    # Group 0: sample detector counts (wells * wavelengths uint32 BE)
-    vals = []
-    for _ in range(wells * wavelengths_in_resp):
-      vals.append(float(struct.unpack(">I", payload[offset : offset + 4])[0]))
-      offset += 4
+    def _read_group(count):
+      nonlocal offset
+      group = []
+      for _ in range(count):
+        group.append(float(struct.unpack(">I", payload[offset : offset + 4])[0]))
+        offset += 4
+      return group
 
-    # Group 1: reference detector counts (wells uint32 BE)
-    ref = []
-    for _ in range(wells):
-      ref.append(float(struct.unpack(">I", payload[offset : offset + 4])[0]))
-      offset += 4
-
-    # Groups 2 and 3: diagnostic channels. These are present in some firmware
-    # responses but not all. Detect by checking whether the remaining payload is
-    # large enough to hold 2 extra groups (wells entries each) plus calibration.
-    cal_size = (wavelengths_in_resp + 1) * 8  # (chromat pairs + ref pair) × 8
-    extra_groups_size = wells * 4 * 2
-    remaining = len(payload) - offset
-    if remaining >= extra_groups_size + cal_size:
-      offset += extra_groups_size
-    elif remaining < cal_size:
-      raise ValueError(
-        f"Payload too short for calibration: {remaining} bytes remaining, need {cal_size}"
-      )
+    # Group 0: chromatic 1 = sample detector counts (wells * wavelengths)
+    vals = _read_group(wells * wavelengths_in_resp)
+    # Group 1: chromatic 2 (wells entries)
+    chromatic2 = _read_group(wells)
+    # Group 2: chromatic 3 (wells entries)
+    chromatic3 = _read_group(wells)
+    # Group 3: reference detector (wells entries)
+    ref = _read_group(wells)
 
     # --- Calibration ---
-    # (wavelengths + 1) pairs of (hi, lo) uint32 BE. Actual value = raw / 256.
-    chromats = []
-    for _ in range(wavelengths_in_resp):
-      hi = float(struct.unpack(">I", payload[offset : offset + 4])[0] / 256)
-      lo = float(struct.unpack(">I", payload[offset + 4 : offset + 8])[0] / 256)
-      chromats.append((hi, lo))
+    # Always 4 pairs of (hi, lo) uint32 BE — one per detector channel.
+    # Values are raw counts on the same scale as the data groups.
+    def _read_cal_pair():
+      nonlocal offset
+      hi = float(struct.unpack(">I", payload[offset : offset + 4])[0])
+      lo = float(struct.unpack(">I", payload[offset + 4 : offset + 8])[0])
       offset += 8
+      return (hi, lo)
 
-    ref_chan_hi = float(struct.unpack(">I", payload[offset : offset + 4])[0] / 256)
-    ref_chan_lo = float(struct.unpack(">I", payload[offset + 4 : offset + 8])[0] / 256)
+    chromat1_cal = _read_cal_pair()  # chromatic 1 (measurement wavelength)
+    chromat2_cal = _read_cal_pair()  # chromatic 2
+    chromat3_cal = _read_cal_pair()  # chromatic 3
+    ref_cal = _read_cal_pair()       # reference channel
+
+    # For multi-wavelength, chromat1_cal applies to all wavelengths measured on
+    # chromatic channel 1. Map wavelength index → calibration pair.
+    # TODO: verify multi-wavelength calibration mapping with real captures.
+    chromats = [chromat1_cal] * wavelengths_in_resp
 
     raw: Dict = {
       "samples": list(vals),
       "references": list(ref),
       "chromatic_cal": list(chromats),
-      "reference_cal": (ref_chan_hi, ref_chan_lo),
+      "reference_cal": ref_cal,
+      "chromatic2": list(chromatic2),
+      "chromatic3": list(chromatic3),
+      "chromatic2_cal": chromat2_cal,
+      "chromatic3_cal": chromat3_cal,
     }
 
-    # Transmittance: T% = (sample / chromat_hi) × 100
-    # OD = log10(100 / T%) = log10(chromat_hi / sample)
+    # Dark-subtracted, reference-corrected transmittance:
+    #   T = ((sample - c_lo) / (c_hi - c_lo)) * ((r_hi - r_lo) / (ref - r_lo))
+    r_hi, r_lo = ref_cal
+    r_span = r_hi - r_lo
     transmission: List[List[float]] = []
     for i in range(wells):
       well_trans = []
       for j in range(wavelengths_in_resp):
-        c_hi, _ = chromats[j]
+        c_hi, c_lo = chromats[j]
         sample = vals[i + j * wells]
-        well_trans.append(sample / c_hi * 100 if c_hi > 0 else 0)
+        c_span = c_hi - c_lo
+        if c_span <= 0 or r_span <= 0:
+          well_trans.append(0.0)
+          continue
+        signal = (sample - c_lo) / c_span
+        ref_well = ref[i]
+        ref_norm = r_span / (ref_well - r_lo) if ref_well > r_lo else 1.0
+        well_trans.append(signal * ref_norm * 100)
       transmission.append(well_trans)
 
     return transmission, temperature, raw
