@@ -295,7 +295,7 @@ class FTDI(IOBase):
 
   async def write(self, data: bytes) -> int:
     """Write data to the device. Returns the number of bytes written."""
-    logger.log(LOG_LEVEL_IO, "[%s] write %s", self._device_id, data)
+    logger.log(LOG_LEVEL_IO, "[%s] write %d bytes, %s", self._device_id, len(data), data.hex())
     capturer.record(FTDICommand(device_id=self.device_id, action="write", data=data.hex()))
     return cast(int, self.dev.write(data))
 

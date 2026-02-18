@@ -542,12 +542,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     cmd = _frame(payload, single_byte_checksum=single_byte_checksum)
     self._trace("SEND", cmd)
 
-    logger.debug("sending %s", cmd.hex())
-
     w = await self.io.write(cmd)
-
-    logger.debug("wrote %s bytes", w)
-
     assert w == len(cmd)
 
     resp = await self.read_resp(timeout=read_timeout)
