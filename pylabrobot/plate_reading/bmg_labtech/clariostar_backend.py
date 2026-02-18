@@ -230,6 +230,7 @@ def _scan_mode_byte(
 # Only one model confirmed so far; others will be added as hardware data is captured.
 _MODEL_LOOKUP: Dict[int, Tuple[str, Tuple[int, int], int]] = {
   0x0024: ("CLARIOstar Plus", (220, 1000), 11),  # UV/Vis 220-1000nm, 11 filter slots
+  0x0026: ("CLARIOstar Plus", (220, 1000), 11),  # Alternate type code (serial 430-2621)
 }
 
 
@@ -250,7 +251,7 @@ class CLARIOstarConfig:
   ======  ======  ===================================================
   0       1       Subcommand echo (``0x07``)
   1       1       Command family echo (``0x05``)
-  2-3     2       Machine type code (uint16 BE, ``0x0024`` = CLARIOstar Plus)
+  2-3     2       Machine type code (uint16 BE, ``0x0024``/``0x0026`` = CLARIOstar Plus)
   4-5     2       Unknown (always ``0x0000``)
   6-10    5       Unknown
   11      1       has_absorbance (bool)
@@ -531,6 +532,18 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     resp = await self.read_resp(timeout=read_timeout)
     return resp
+
+  async def _drain_buffer(self):
+    """Drain any stale data from the FTDI receive buffer.
+
+    The firmware sends unsolicited "confirmation" responses during and after
+    measurement runs.  These pile up in the FTDI receive buffer and, if not
+    cleared, cause subsequent ``read_resp`` calls to return the *wrong*
+    response (response desync).  Call this before a sequence of send/read
+    pairs that depend on getting the correct response for each command.
+    """
+    await self.io.usb_purge_rx_buffer()
+    logger.debug("Drained FTDI RX buffer")
 
   async def get_stat(self):
     stat = await self.io.poll_modem_status()
@@ -1150,6 +1163,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_luminescence(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
+    await self._drain_buffer()
     await self._read_order_values(plate)  # required by protocol; logged for diagnostics
     await self._status_hw()
     vals = await self._get_measurement_values()
@@ -1530,9 +1544,21 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_absorbance(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
+    # Drain any stale unsolicited responses (confirmation frames the firmware
+    # pushes during/after the measurement run) from the FTDI buffer. Without
+    # this, the first send/read pair below may pick up a stale frame instead
+    # of the actual reply, causing a response desync cascade that results in
+    # _get_measurement_values returning the wrong data (all-None output).
+    await self._drain_buffer()
+
     await self._read_order_values(plate)  # required by protocol; logged for diagnostics
     await self._status_hw()
     vals = await self._get_measurement_values()
+
+    logger.debug(
+      "Absorbance measurement values: %d bytes, first 40: %s, last 20: %s",
+      len(vals), vals[:40].hex(), vals[-20:].hex(),
+    )
 
     # NOTE: absorbance data is always returned in row-major plate order (A1-A12,
     # B1-B12, ..., H1-H12) regardless of the physical scan pattern. Do NOT apply
@@ -1851,6 +1877,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_fluorescence(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
+    await self._drain_buffer()
     await self._read_order_values(plate)  # required by protocol; logged for diagnostics
     await self._status_hw()
     vals = await self._get_measurement_values()
