@@ -1163,9 +1163,8 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_luminescence(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
-    # Match the Go/OEM flow: drain stale data, then getData directly.
-    # See collect_absorbance_measurement for why _read_order_values is skipped.
-    await self._drain_buffer()
+    # Match the Go/OEM flow: send getData directly.
+    # See collect_absorbance_measurement for why extra commands are skipped.
     vals = await self._get_measurement_values()
 
     scan_order = self._compute_scan_order(
@@ -1544,11 +1543,11 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_absorbance(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
-    # Match the Go/OEM collection flow: drain stale data, then send getData
-    # immediately. The firmware clears measurement data after ANY 0x05-family
-    # command, so sending _read_order_values (0x05 0x1d) or _status_hw (0x81)
-    # before getData (0x05 0x02) would invalidate the results (all-None).
-    await self._drain_buffer()
+    # Match the Go/OEM collection flow: send getData (0x05 0x02) immediately.
+    # Do NOT send _read_order_values (0x05 0x1d) or _status_hw (0x81) first —
+    # any 0x05-family command invalidates the measurement buffer (all-None).
+    # Do NOT drain the FTDI buffer — the measurement data response is already
+    # queued there after _wait_for_ready_and_return completes.
     vals = await self._get_measurement_values()
 
     logger.debug(
@@ -1873,9 +1872,8 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_fluorescence(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
-    # Match the Go/OEM flow: drain stale data, then getData directly.
-    # See collect_absorbance_measurement for why _read_order_values is skipped.
-    await self._drain_buffer()
+    # Match the Go/OEM flow: send getData directly.
+    # See collect_absorbance_measurement for why extra commands are skipped.
     vals = await self._get_measurement_values()
 
     scan_order = self._compute_scan_order(
