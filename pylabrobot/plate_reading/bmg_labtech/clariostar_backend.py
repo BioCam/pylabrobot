@@ -24,7 +24,7 @@ else:
 logger = logging.getLogger("pylabrobot")
 
 
-# # # Exceptions # # #
+# # # Error handling # # #
 
 
 class FrameError(Exception):
@@ -425,7 +425,8 @@ class CLARIOstarBackend(PlateReaderBackend):
   and configurable scan modes.
   """
 
-  # # # Lifecycle # # #
+
+  # === Constructor ===
 
   def __init__(self, device_id: Optional[str] = None, timeout: int = 150):
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
@@ -434,6 +435,8 @@ class CLARIOstarBackend(PlateReaderBackend):
     self._firmware_data: Optional[bytes] = None
     self._incubation_target: float = 0.0
 
+  # === Life cycle ===
+  
   async def setup(self):
     await self.io.setup()
     await self.io.set_baudrate(125000)
@@ -447,7 +450,7 @@ class CLARIOstarBackend(PlateReaderBackend):
   async def stop(self):
     await self.io.stop()
 
-  # # # I/O # # #
+  # === Low-level I/O ===
 
   async def read_resp(self, timeout=20) -> bytes:
     """Read a response from the plate reader. If the timeout is reached, return the data that has
@@ -465,7 +468,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     # Fallback: if the size field can't be extracted (e.g., non-standard response)
     # or no more data arrives, stop when we see 0x0D at the end of a stalled read.
     while True:
-      last_read = await self.io.read(25)  # 25 is max length observed in pcap
+      last_read = await self.io.read(25)  # 25 is max length observed so far
       if len(last_read) > 0:
         d += last_read
 
@@ -524,7 +527,9 @@ class CLARIOstarBackend(PlateReaderBackend):
     stat = await self.io.poll_modem_status()
     return hex(stat)
 
-  # # # Status # # #
+  # === Public high-level API ===
+
+  # # # Querying Machine State # # #
 
   async def _request_command_status(self) -> bytes:
     return await self.send(b"\x80\x00")
@@ -594,7 +599,78 @@ class CLARIOstarBackend(PlateReaderBackend):
     """Request whether the instrument has been initialized."""
     return (await self.request_machine_status())["initialized"]
 
-  # # # Temperature # # #
+  # # # Device info # # #
+
+  async def request_eeprom_data(self):
+    eeprom_response = await self.send(b"\x05\x07\x00\x00\x00\x00\x00\x00")
+    self._eeprom_data = eeprom_response
+    return await self._wait_for_ready_and_return(eeprom_response)
+
+  async def request_firmware_info(self):
+    """Request firmware version and build date/time (command ``0x05 0x09``)."""
+    resp = await self.send(b"\x05\x09\x00\x00\x00\x00\x00\x00")
+    self._firmware_data = resp
+    return await self._wait_for_ready_and_return(resp)
+
+  async def request_usage_counters(self) -> Dict[str, int]:
+    """Request lifetime usage counters (command ``0x05 0x21``).
+
+    Each call queries the instrument for current values (not cached).
+    """
+    resp = await self.send(b"\x05\x21\x00\x00\x00\x00\x00\x00")
+    await self._wait_for_ready_and_return(resp)
+    return _parse_usage_counters(resp)
+
+  def get_eeprom_data(self) -> Optional[bytes]:
+    """Return the raw EEPROM response captured during setup, or None if not yet read."""
+    return self._eeprom_data
+
+  def get_firmware_data(self) -> Optional[bytes]:
+    """Return the raw firmware info response captured during setup, or None if not yet read."""
+    return self._firmware_data
+
+  def get_machine_config(self) -> Optional[CLARIOstarConfig]:
+    """Parse and return the machine configuration from stored EEPROM and firmware data.
+
+    Combines fields from the EEPROM response (``0x05 0x07``) and firmware info
+    response (``0x05 0x09``). The serial number is read from the FTDI chip.
+
+    Returns None if EEPROM data has not been read yet (i.e. setup() not called).
+    """
+    if self._eeprom_data is None:
+      return None
+    config = CLARIOstarConfig.parse_eeprom(self._eeprom_data)
+
+    # Merge firmware info if available
+    if self._firmware_data is not None:
+      fw = CLARIOstarConfig.parse_firmware_info(self._firmware_data)
+      config.firmware_version = fw.firmware_version
+      config.firmware_build_timestamp = fw.firmware_build_timestamp
+
+    # Serial number comes from the FTDI chip, not the EEPROM
+    if hasattr(self.io, "serial") and self.io.serial:
+      config.serial_number = self.io.serial
+    elif hasattr(self.io, "device_id") and self.io.device_id:
+      config.serial_number = self.io.device_id
+
+    return config
+
+  def dump_eeprom_str(self) -> Optional[str]:
+    """Pretty-print the stored EEPROM data for reverse-engineering.
+
+    Returns None if EEPROM data has not been read yet.
+    """
+    if self._eeprom_data is None:
+      return None
+    return dump_eeprom(self._eeprom_data)
+
+  # # # Setup Requirement # # #
+
+  async def initialize(self):
+    command_response = await self.send(b"\x01\x00\x00\x10\x02\x00")
+    return await self._wait_for_ready_and_return(command_response)
+
+  # # # Temperature Features # # #
 
   _MAX_TEMPERATURE: float = 45.0
 
@@ -631,11 +707,11 @@ class CLARIOstarBackend(PlateReaderBackend):
     The CLARIOstar has no active cooling — it can only heat above ambient.
 
     Args:
-      temperature: Target temperature in °C (0–45). Pass 0 to switch off the
+      temperature: Target temperature in °C (0-45). Pass 0 to switch off the
         incubator and temperature monitoring.
 
     Raises:
-      ValueError: If temperature is outside the 0–45 °C range.
+      ValueError: If temperature is outside the 0-45 °C range.
     """
     if not 0 <= temperature <= self._MAX_TEMPERATURE:
       raise ValueError(
@@ -722,76 +798,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     vals = sensor_mapping[sensor]
     return round(sum(vals) / len(vals), 2)
 
-  # # # Device info # # #
-
-  async def initialize(self):
-    command_response = await self.send(b"\x01\x00\x00\x10\x02\x00")
-    return await self._wait_for_ready_and_return(command_response)
-
-  async def request_eeprom_data(self):
-    eeprom_response = await self.send(b"\x05\x07\x00\x00\x00\x00\x00\x00")
-    self._eeprom_data = eeprom_response
-    return await self._wait_for_ready_and_return(eeprom_response)
-
-  async def request_firmware_info(self):
-    """Request firmware version and build date/time (command ``0x05 0x09``)."""
-    resp = await self.send(b"\x05\x09\x00\x00\x00\x00\x00\x00")
-    self._firmware_data = resp
-    return await self._wait_for_ready_and_return(resp)
-
-  async def request_usage_counters(self) -> Dict[str, int]:
-    """Request lifetime usage counters (command ``0x05 0x21``).
-
-    Each call queries the instrument for current values (not cached).
-    """
-    resp = await self.send(b"\x05\x21\x00\x00\x00\x00\x00\x00")
-    await self._wait_for_ready_and_return(resp)
-    return _parse_usage_counters(resp)
-
-  def get_eeprom_data(self) -> Optional[bytes]:
-    """Return the raw EEPROM response captured during setup, or None if not yet read."""
-    return self._eeprom_data
-
-  def get_firmware_data(self) -> Optional[bytes]:
-    """Return the raw firmware info response captured during setup, or None if not yet read."""
-    return self._firmware_data
-
-  def get_machine_config(self) -> Optional[CLARIOstarConfig]:
-    """Parse and return the machine configuration from stored EEPROM and firmware data.
-
-    Combines fields from the EEPROM response (``0x05 0x07``) and firmware info
-    response (``0x05 0x09``). The serial number is read from the FTDI chip.
-
-    Returns None if EEPROM data has not been read yet (i.e. setup() not called).
-    """
-    if self._eeprom_data is None:
-      return None
-    config = CLARIOstarConfig.parse_eeprom(self._eeprom_data)
-
-    # Merge firmware info if available
-    if self._firmware_data is not None:
-      fw = CLARIOstarConfig.parse_firmware_info(self._firmware_data)
-      config.firmware_version = fw.firmware_version
-      config.firmware_build_timestamp = fw.firmware_build_timestamp
-
-    # Serial number comes from the FTDI chip, not the EEPROM
-    if hasattr(self.io, "serial") and self.io.serial:
-      config.serial_number = self.io.serial
-    elif hasattr(self.io, "device_id") and self.io.device_id:
-      config.serial_number = self.io.device_id
-
-    return config
-
-  def dump_eeprom_str(self) -> Optional[str]:
-    """Pretty-print the stored EEPROM data for reverse-engineering.
-
-    Returns None if EEPROM data has not been read yet.
-    """
-    if self._eeprom_data is None:
-      return None
-    return dump_eeprom(self._eeprom_data)
-
-  # # # Drawer # # #
+  # # #  Drawer Features # # #
 
   async def open(self):
     open_response = await self.send(b"\x03\x01\x00\x00\x00\x00\x00")
@@ -891,24 +898,83 @@ class CLARIOstarBackend(PlateReaderBackend):
     readings: List[Optional[float]],
     plate: Plate,
     wells: List[Well],
+    scan_order: Optional[List[Tuple[int, int]]] = None,
   ) -> List[List[Optional[float]]]:
     """Map a flat list of per-well readings onto a 2D plate grid.
 
-    Readings must be in the same order as ``wells``. Wells not in the
-    selection are filled with None.
+    Args:
+      readings: Flat list of measurement values in the instrument's read order.
+      plate: The plate that was measured.
+      wells: The wells that were selected for measurement.
+      scan_order: List of (row, col) tuples from ``_read_order_values``,
+        indicating the order in which readings were taken. When provided,
+        each reading is placed at the corresponding (row, col) position.
+        When None, falls back to assuming readings match ``wells`` order.
     """
-    all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
-    if all_wells:
-      return utils.reshape_2d(readings, (plate.num_items_y, plate.num_items_x))
-
     rows, cols = plate.num_items_y, plate.num_items_x
     grid: List[List[Optional[float]]] = [[None] * cols for _ in range(rows)]
+
+    if scan_order is not None:
+      for reading, (r, c) in zip(readings, scan_order):
+        grid[r][c] = reading
+      return grid
+
+    # Fallback: assume readings are in wells-list order
+    all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
+    if all_wells:
+      return utils.reshape_2d(readings, (rows, cols))
     for reading, well in zip(readings, wells):
       grid[well.get_row()][well.get_column()] = reading
     return grid
 
-  async def _read_order_values(self):
-    return await self.send(b"\x05\x1d\x00\x00\x00\x00\x00\x00")
+  async def _read_order_values(self, plate: Plate) -> Optional[List[Tuple[int, int]]]:
+    """Query the instrument for the read order of the last measurement.
+
+    Sends command ``0x05 0x1d`` and parses the response as a sequence of
+    uint16 big-endian well indices in column-major numbering (matching the
+    bitmask convention used by ``_plate_bytes``).
+
+    Returns a list of (row, col) tuples indicating the order in which
+    wells were read, or None if the response cannot be parsed.
+    """
+    resp = await self.send(b"\x05\x1d\x00\x00\x00\x00\x00\x00")
+
+    try:
+      payload = _unframe(resp)
+    except FrameError:
+      payload = resp
+
+    rows = plate.num_items_y
+    cols = plate.num_items_x
+
+    # Skip standard 6-byte header; remaining data is uint16 well indices.
+    data = payload[6:]
+    if len(data) < 2:
+      logger.warning(
+        "Read order response too short (%d payload bytes). "
+        "Falling back to default ordering.",
+        len(payload),
+      )
+      return None
+
+    n_indices = len(data) // 2
+    positions: List[Tuple[int, int]] = []
+    for i in range(n_indices):
+      idx = int.from_bytes(data[i * 2 : (i + 1) * 2], "big")
+      # Column-major: well_index = col * num_rows + row
+      r = idx % rows
+      c = idx // rows
+      if r >= rows or c >= cols:
+        logger.warning(
+          "Read order index %d out of range for %dx%d plate. "
+          "Falling back to default ordering. Raw payload: %s",
+          idx, rows, cols, payload.hex(),
+        )
+        return None
+      positions.append((r, c))
+
+    logger.debug("Read order: %d positions, first 10: %s", len(positions), positions[:10])
+    return positions
 
   async def _status_hw(self):
     status_hw_response = await self.send(b"\x81\x00")
@@ -1008,7 +1074,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_luminescence(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
-    await self._read_order_values()
+    scan_order = await self._read_order_values(plate)
     await self._status_hw()
     vals = await self._get_measurement_values()
 
@@ -1030,7 +1096,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     return [
       {
-        "data": self._readings_to_grid(readings, plate, wells),
+        "data": self._readings_to_grid(readings, plate, wells, scan_order=scan_order),
         "temperature": temperature,
         "time": time.time(),
       }
@@ -1274,7 +1340,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_absorbance(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
-    await self._read_order_values()
+    scan_order = await self._read_order_values(plate)
     await self._status_hw()
     vals = await self._get_measurement_values()
 
@@ -1312,7 +1378,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
         results.append({
           "wavelength": wl,
-          "data": self._readings_to_grid(raw_for_wl, plate, wells),
+          "data": self._readings_to_grid(raw_for_wl, plate, wells, scan_order=scan_order),
           "references": raw["references"],
           "chromatic_cal": raw["chromatic_cal"][wl_idx],
           "reference_cal": raw["reference_cal"],
@@ -1349,7 +1415,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       results.append(
         {
           "wavelength": wl,
-          "data": self._readings_to_grid(final_vals, plate, wells),
+          "data": self._readings_to_grid(final_vals, plate, wells, scan_order=scan_order),
           "temperature": temperature,
           "time": time.time(),
         }
@@ -1584,7 +1650,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_fluorescence(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
-    await self._read_order_values()
+    scan_order = await self._read_order_values(plate)
     await self._status_hw()
     vals = await self._get_measurement_values()
 
@@ -1608,7 +1674,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       {
         "ex_wavelength": excitation_wavelength,
         "em_wavelength": emission_wavelength,
-        "data": self._readings_to_grid(readings, plate, wells),
+        "data": self._readings_to_grid(readings, plate, wells, scan_order=scan_order),
         "temperature": temperature,
         "time": time.time(),
       }
