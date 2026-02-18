@@ -1163,9 +1163,9 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_luminescence(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
+    # Match the Go/OEM flow: drain stale data, then getData directly.
+    # See collect_absorbance_measurement for why _read_order_values is skipped.
     await self._drain_buffer()
-    await self._read_order_values(plate)  # required by protocol; logged for diagnostics
-    await self._status_hw()
     vals = await self._get_measurement_values()
 
     scan_order = self._compute_scan_order(
@@ -1279,16 +1279,16 @@ class CLARIOstarBackend(PlateReaderBackend):
       else b"\x00\x00\x00\x00"
     )
 
-    # Payload structure preserved from working capture + Go reference for wavelength encoding:
-    # plate(63) + scan(1) + optic_etc(3) + shaker(4) + fixed(5) + separator(4) + ...
+    # Payload structure per Go absDiscreteBytes (abs.go:73-115):
+    # plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4) + separator(4) + ...
     payload = bytearray()
     payload += plate_and_wells
     payload += bytes([scan])
-    # Absorbance optic mode + zeros
+    # Absorbance optic mode (0x02) + 3 zero bytes (per Go reference)
     # TODO: wire well_scan and optic into these bytes once the encoding is known
-    payload += b"\x02\x00\x00"
+    payload += b"\x02\x00\x00\x00"
     payload += shaker
-    payload += b"\x00\x20\x04\x00\x1e\x27\x0f\x27\x0f"
+    payload += b"\x27\x0f\x27\x0f"
     # Settling + wavelength count + wavelength data (per Go absDiscreteBytes)
     payload += bytes([0x19, len(wavelengths)])
     for w in wavelengths:
@@ -1544,15 +1544,11 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_absorbance(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
-    # Drain any stale unsolicited responses (confirmation frames the firmware
-    # pushes during/after the measurement run) from the FTDI buffer. Without
-    # this, the first send/read pair below may pick up a stale frame instead
-    # of the actual reply, causing a response desync cascade that results in
-    # _get_measurement_values returning the wrong data (all-None output).
+    # Match the Go/OEM collection flow: drain stale data, then send getData
+    # immediately. The firmware clears measurement data after ANY 0x05-family
+    # command, so sending _read_order_values (0x05 0x1d) or _status_hw (0x81)
+    # before getData (0x05 0x02) would invalidate the results (all-None).
     await self._drain_buffer()
-
-    await self._read_order_values(plate)  # required by protocol; logged for diagnostics
-    await self._status_hw()
     vals = await self._get_measurement_values()
 
     logger.debug(
@@ -1877,9 +1873,9 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Call this after ``read_fluorescence(..., wait=False)`` once ``unread_data`` is True in ``request_machine_status()``.
     """
+    # Match the Go/OEM flow: drain stale data, then getData directly.
+    # See collect_absorbance_measurement for why _read_order_values is skipped.
     await self._drain_buffer()
-    await self._read_order_values(plate)  # required by protocol; logged for diagnostics
-    await self._status_hw()
     vals = await self._get_measurement_values()
 
     scan_order = self._compute_scan_order(
