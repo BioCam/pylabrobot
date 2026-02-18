@@ -437,13 +437,15 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   # === Constructor ===
 
-  def __init__(self, device_id: Optional[str] = None, timeout: int = 150):
+  def __init__(self, device_id: Optional[str] = None, timeout: int = 150,
+               trace_io: Optional[str] = None):
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
     self.timeout = timeout
     self._eeprom_data: Optional[bytes] = None
     self._firmware_data: Optional[bytes] = None
     self._incubation_target: float = 0.0
     self._last_scan_params: Dict = {}
+    self._trace_io_path: Optional[str] = trace_io
 
   # === Life cycle ===
   
@@ -461,6 +463,15 @@ class CLARIOstarBackend(PlateReaderBackend):
     await self.io.stop()
 
   # === Low-level I/O ===
+
+  def _trace(self, direction: str, data: bytes):
+    """Append a timestamped hex trace line to the trace file (if enabled)."""
+    if getattr(self, "_trace_io_path", None) is None:
+      return
+    import datetime
+    ts = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+    with open(self._trace_io_path, "a") as f:
+      f.write(f"{ts} {direction} ({len(data):>5d} B): {data.hex(' ')}\n")
 
   async def read_resp(self, timeout=20) -> bytes:
     """Read a response from the plate reader. If the timeout is reached, return the data that has
@@ -509,6 +520,7 @@ class CLARIOstarBackend(PlateReaderBackend):
         await asyncio.sleep(0.0001)
 
     logger.debug("read %s", d.hex())
+    self._trace("RECV", d)
 
     return d
 
@@ -521,6 +533,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     """Frame a payload and send it to the plate reader, returning the raw response."""
 
     cmd = _frame(payload, single_byte_checksum=single_byte_checksum)
+    self._trace("SEND", cmd)
 
     logger.debug("sending %s", cmd.hex())
 
@@ -1278,16 +1291,18 @@ class CLARIOstarBackend(PlateReaderBackend):
       else b"\x00\x00\x00\x00"
     )
 
-    # Payload structure per Go absDiscreteBytes (abs.go:73-115):
-    # plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4) + separator(4) + ...
+    # Payload structure from working OEM capture (machine type 0x0026).
+    # Note: differs from Go reference (abs.go) which targets type 0x0024 —
+    # this machine requires 5 extra bytes between shaker and separator.
+    # plate(63) + scan(1) + optic_etc(3) + shaker(4) + fixed(5) + separator(4) + ...
     payload = bytearray()
     payload += plate_and_wells
     payload += bytes([scan])
-    # Absorbance optic mode (0x02) + 3 zero bytes (per Go reference)
+    # Absorbance optic mode + zeros
     # TODO: wire well_scan and optic into these bytes once the encoding is known
-    payload += b"\x02\x00\x00\x00"
+    payload += b"\x02\x00\x00"
     payload += shaker
-    payload += b"\x27\x0f\x27\x0f"
+    payload += b"\x00\x20\x04\x00\x1e\x27\x0f\x27\x0f"
     # Settling + wavelength count + wavelength data (per Go absDiscreteBytes)
     payload += bytes([0x19, len(wavelengths)])
     for w in wavelengths:
