@@ -74,11 +74,19 @@ def _unframe(data: bytes) -> bytes:
   if data[-1] != 0x0D:
     raise FrameError(f"Expected CR (0x0d), got 0x{data[-1]:02x}")
 
-  # Validate checksum: sum of all bytes except the last 3 (checksum + CR)
+  # Validate checksum: sum of all bytes except the last 3 (checksum + CR).
+  # Some firmware responses (e.g. measurement values) include a trailing status
+  # byte before the checksum that is NOT included in the checksum computation.
+  # Try the standard formula first, then fall back to excluding data[-4].
   expected_cs = sum(data[:-3]) & 0xFFFF
   actual_cs = int.from_bytes(data[-3:-1], "big")
   if expected_cs != actual_cs:
-    raise ChecksumError(f"Checksum mismatch: expected 0x{expected_cs:04x}, got 0x{actual_cs:04x}")
+    expected_cs_alt = sum(data[:-4]) & 0xFFFF
+    if expected_cs_alt != actual_cs:
+      raise ChecksumError(
+        f"Checksum mismatch: expected 0x{expected_cs:04x} (or 0x{expected_cs_alt:04x} "
+        f"excluding trailing byte), got 0x{actual_cs:04x}"
+      )
 
   # Return payload (strip STX + size + NP header and checksum + CR trailer)
   return data[4:-3]
@@ -1331,7 +1339,12 @@ class CLARIOstarBackend(PlateReaderBackend):
     try:
       payload = _unframe(resp)
     except FrameError:
-      payload = resp
+      # If checksum or framing validation fails but the response looks like a
+      # valid frame, strip framing manually so we can still parse the data.
+      if len(resp) >= 7 and resp[0] == 0x02 and resp[-1] == 0x0D:
+        payload = resp[4:-3]
+      else:
+        payload = resp
 
     if len(payload) < 36:
       raise ValueError(f"Absorbance response too short ({len(payload)} bytes)")

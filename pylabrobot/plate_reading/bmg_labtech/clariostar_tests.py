@@ -761,6 +761,31 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     self.assertEqual(raw["chromatic_cal"], [(100000.0, 5000.0)])
     self.assertEqual(raw["reference_cal"], (100000.0, 1000.0))
 
+  def test_unframe_with_trailing_status_byte(self):
+    """_unframe should handle responses where a trailing byte is excluded from the checksum.
+
+    Some firmware responses (e.g. final measurement values) include a status byte before the
+    checksum that is NOT included in the checksum computation. The standard checksum
+    (sum of all bytes before the last 3) would be off by the value of this trailing byte.
+    """
+    # Build a frame where the last payload byte is excluded from the checksum
+    payload = b"\x02\x05\x06\x26" + b"\x00" * 20 + b"\x01"  # trailing 0x01
+    size = len(payload) + 7
+    buf = bytearray([0x02]) + size.to_bytes(2, "big") + b"\x0c" + payload
+    # Compute checksum excluding the trailing byte (as firmware does)
+    cs = sum(buf[:-1]) & 0xFFFF
+    buf += cs.to_bytes(2, "big")
+    buf += b"\x0d"
+    frame = bytes(buf)
+
+    # Standard checksum would fail (off by 1)
+    standard_cs = sum(frame[:-3]) & 0xFFFF
+    self.assertNotEqual(standard_cs, cs)
+
+    # _unframe should still succeed via the alternate checksum path
+    result = _unframe(frame)
+    self.assertEqual(result, payload)
+
 
 # ---------------------------------------------------------------------------
 # Integration tests with mocked FTDI IO
