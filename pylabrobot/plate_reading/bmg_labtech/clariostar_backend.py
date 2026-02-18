@@ -1362,9 +1362,15 @@ class CLARIOstarBackend(PlateReaderBackend):
     temperature: Optional[float] = temp_raw / 10.0 if temp_raw >= min_plausible_raw else None
 
     # --- Data groups ---
-    # The firmware returns 4 groups of per-well uint32 BE data, one per detector
-    # channel: chromatic 1 (measurement), chromatic 2, chromatic 3, reference.
+    # The firmware returns up to 4 groups of per-well uint32 BE data, one per
+    # detector channel: chromatic 1, chromatic 2, chromatic 3, reference.
+    # Not all responses include all groups — determine the count from the
+    # payload size. Calibration (4 pairs = 32 bytes) is always at the end.
     offset = 36
+    cal_size = 32  # always 4 pairs × 8 bytes
+    group0_size = wells * wavelengths_in_resp * 4
+    extra_bytes = len(payload) - 36 - group0_size - cal_size
+    extra_groups = max(0, extra_bytes // (wells * 4)) if wells > 0 else 0
 
     def _read_group(count):
       nonlocal offset
@@ -1376,16 +1382,17 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     # Group 0: chromatic 1 = sample detector counts (wells * wavelengths)
     vals = _read_group(wells * wavelengths_in_resp)
-    # Group 1: chromatic 2 (wells entries)
-    chromatic2 = _read_group(wells)
-    # Group 2: chromatic 3 (wells entries)
-    chromatic3 = _read_group(wells)
-    # Group 3: reference detector (wells entries)
-    ref = _read_group(wells)
+    # Groups 1-3: chromatic 2, chromatic 3, reference (present if payload is large enough)
+    chromatic2 = _read_group(wells) if extra_groups >= 3 else [0.0] * wells
+    chromatic3 = _read_group(wells) if extra_groups >= 3 else [0.0] * wells
+    ref = _read_group(wells) if extra_groups >= 1 else [0.0] * wells
 
     # --- Calibration ---
     # Always 4 pairs of (hi, lo) uint32 BE — one per detector channel.
     # Values are raw counts on the same scale as the data groups.
+    # Read from the known end position to handle variable group counts.
+    offset = len(payload) - cal_size
+
     def _read_cal_pair():
       nonlocal offset
       hi = float(struct.unpack(">I", payload[offset : offset + 4])[0])
