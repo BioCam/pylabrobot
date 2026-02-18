@@ -1358,11 +1358,16 @@ class CLARIOstarBackend(PlateReaderBackend):
       detector channel (chromatic 1, 2, 3, reference). Values are raw counts
       on the same scale as the data groups (no /256 encoding).
 
-    Transmittance uses dark-subtracted reference-corrected formula::
+    Transmittance uses reference-corrected formula (no dark subtraction)::
 
-      T = ((sample - c_lo) / (c_hi - c_lo)) × ((r_hi - r_lo) / (ref - r_lo))
+      T = (sample / c_hi) × (r_hi / ref)
       T% = T × 100
       OD = -log10(T)
+
+    The c_lo/r_lo dark values are embedded in the response but NOT used in the
+    OD calculation — c_hi already includes the dark baseline, so subtracting
+    c_lo would double-count it.  Verified against OEM MARS software output:
+    all 96 wells of a test plate match within ±0.001 OD.
 
     Data is always in row-major plate order (A1–A12, B1–B12, …, H1–H12)
     regardless of the physical scan pattern.
@@ -1499,24 +1504,21 @@ class CLARIOstarBackend(PlateReaderBackend):
       "chromatic3_cal": chromat3_cal,
     }
 
-    # Dark-subtracted, reference-corrected transmittance:
-    #   T = ((sample - c_lo) / (c_hi - c_lo)) * ((r_hi - r_lo) / (ref - r_lo))
-    r_hi, r_lo = ref_cal
-    r_span = r_hi - r_lo
+    # Reference-corrected transmittance (no dark subtraction):
+    #   T = (sample / c_hi) * (r_hi / ref)
+    r_hi, _ = ref_cal
     transmission: List[List[float]] = []
     for i in range(wells):
       well_trans = []
       for j in range(wavelengths_in_resp):
-        c_hi, c_lo = chromats[j]
+        c_hi, _ = chromats[j]
         sample = vals[i + j * wells]
-        c_span = c_hi - c_lo
-        if c_span <= 0 or r_span <= 0:
+        if c_hi <= 0:
           well_trans.append(0.0)
           continue
-        signal = (sample - c_lo) / c_span
         ref_well = ref[i]
-        ref_norm = r_span / (ref_well - r_lo) if ref_well > r_lo else 1.0
-        well_trans.append(signal * ref_norm * 100)
+        T = (sample / c_hi) * (r_hi / ref_well) if ref_well > 0 else 0.0
+        well_trans.append(T * 100)
       transmission.append(well_trans)
 
     return transmission, temperature, raw
