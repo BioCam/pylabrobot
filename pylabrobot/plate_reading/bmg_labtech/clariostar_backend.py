@@ -439,13 +439,14 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   def __init__(self, device_id: Optional[str] = None, timeout: int = 150,
                trace_io: Optional[str] = "clariostar_io_trace.log"):
+    import os
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
     self.timeout = timeout
     self._eeprom_data: Optional[bytes] = None
     self._firmware_data: Optional[bytes] = None
     self._incubation_target: float = 0.0
     self._last_scan_params: Dict = {}
-    self._trace_io_path: Optional[str] = trace_io
+    self._trace_io_path: Optional[str] = os.path.abspath(trace_io) if trace_io else None
 
   # === Life cycle ===
   
@@ -608,7 +609,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       if status_hex != last_status_hex:
         last_status_hex = status_hex
         flags = self._parse_status_response(command_status)
-        logger.debug("status changed: %s flags=%s", status_hex, flags)
+        logger.info("status: %s", {k: v for k, v in flags.items() if v})
         if not flags["busy"]:
           return ret
 
@@ -1184,6 +1185,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     # Match the Go/OEM flow: send getData directly.
     # See collect_absorbance_measurement for why extra commands are skipped.
     vals = await self._get_measurement_values()
+    logger.info("Luminescence response: %d bytes", len(vals))
 
     scan_order = self._compute_scan_order(
       plate, wells,
@@ -1479,6 +1481,17 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     chromats = [chromat1_cal] * wavelengths_in_resp
 
+    logger.info(
+      "Abs parser: schema=0x%02x, wells=%d, wl=%d, groups=%d (1+%d), "
+      "payload=%d B, cal_pairs=%d, sample[0]=%.0f, ref[0]=%.0f, "
+      "c1_cal=(%.0f, %.0f), ref_cal=(%.0f, %.0f), temp=%s",
+      schema, wells, wavelengths_in_resp, 1 + extra_groups, extra_groups,
+      len(payload), num_cal_pairs,
+      vals[0] if vals else 0, ref[0] if ref else 0,
+      chromat1_cal[0], chromat1_cal[1], ref_cal[0], ref_cal[1],
+      f"{temperature:.1f}" if temperature is not None else "None",
+    )
+
     raw: Dict = {
       "samples": list(vals),
       "references": list(ref),
@@ -1581,9 +1594,9 @@ class CLARIOstarBackend(PlateReaderBackend):
     # queued there after _wait_for_ready_and_return completes.
     vals = await self._get_measurement_values()
 
-    logger.debug(
-      "Absorbance measurement values: %d bytes, first 40: %s, last 20: %s",
-      len(vals), vals[:40].hex(), vals[-20:].hex(),
+    logger.info(
+      "Absorbance response: %d bytes",
+      len(vals),
     )
 
     # NOTE: absorbance data is always returned in row-major plate order (A1-A12,
@@ -1906,6 +1919,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     # Match the Go/OEM flow: send getData directly.
     # See collect_absorbance_measurement for why extra commands are skipped.
     vals = await self._get_measurement_values()
+    logger.info("Fluorescence response: %d bytes", len(vals))
 
     scan_order = self._compute_scan_order(
       plate, wells,
