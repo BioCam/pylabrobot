@@ -438,7 +438,7 @@ class CLARIOstarBackend(PlateReaderBackend):
   # === Constructor ===
 
   def __init__(self, device_id: Optional[str] = None, timeout: int = 150,
-               trace_io: Optional[str] = None):
+               trace_io: Optional[str] = "clariostar_io_trace.log"):
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
     self.timeout = timeout
     self._eeprom_data: Optional[bytes] = None
@@ -450,6 +450,11 @@ class CLARIOstarBackend(PlateReaderBackend):
   # === Life cycle ===
   
   async def setup(self):
+    if self._trace_io_path:
+      import datetime
+      with open(self._trace_io_path, "a") as f:
+        f.write(f"\n{'='*80}\nSession started at {datetime.datetime.now()}\n{'='*80}\n")
+
     await self.io.setup()
     await self.io.set_baudrate(125000)
     await self.io.set_line_property(8, 0, 0)  # 8N1
@@ -1403,18 +1408,30 @@ class CLARIOstarBackend(PlateReaderBackend):
     temperature: Optional[float] = temp_raw / 10.0 if temp_raw >= min_plausible_raw else None
 
     # --- Data groups ---
-    # The firmware returns up to 4 groups of per-well uint32 BE data, one per
-    # detector channel: chromatic 1, chromatic 2, chromatic 3, reference.
-    # Not all responses include all groups — determine the count from payload
-    # size. Calibration (4 pairs = 32 bytes) follows the groups, with possible
-    # trailing bytes after calibration.
+    # The firmware returns 1 + N groups of per-well uint32 BE data:
+    #   group 0: chromatic 1 (sample) — wells × wavelengths entries
+    #   extra groups 1..N: secondary detectors + reference (wells entries each)
+    # After the groups: (1 + N) calibration pairs (hi, lo) uint32 BE — one per
+    # group — then 0 or 1 trailing bytes.
+    #
+    # Layout:  [header 36B] [group0] [N extra groups] [(1+N)×8B cal] [0-1 trail]
+    #
+    # Solve for N from the payload size:
+    #   bytes_after_group0 = N × (wells×4) + (1+N) × 8 + trailing
+    #                      = N × (wells×4 + 8) + 8 + trailing
+    #   N = (bytes_after_group0 - 8 - trailing) / (wells×4 + 8)
     offset = 36
-    cal_size = 32  # always 4 pairs × 8 bytes
     group0_size = wells * wavelengths_in_resp * 4
     bytes_after_group0 = len(payload) - 36 - group0_size
-    # Extra groups sit between group 0 and calibration (+ possible trailing bytes)
-    extra_group_bytes = bytes_after_group0 - cal_size
-    extra_groups = max(0, extra_group_bytes // (wells * 4)) if wells > 0 else 0
+    W4 = wells * 4
+    extra_groups = 0
+    if W4 > 0:
+      for trailing in (1, 0):
+        n_float = (bytes_after_group0 - 8 - trailing) / (W4 + 8)
+        if n_float >= 0 and abs(n_float - round(n_float)) < 0.01:
+          extra_groups = int(round(n_float))
+          break
+    cal_size = (1 + extra_groups) * 8
 
     def _read_group(count):
       nonlocal offset
@@ -1443,9 +1460,8 @@ class CLARIOstarBackend(PlateReaderBackend):
       chromatic2, chromatic3, ref = zeros, zeros, zeros
 
     # --- Calibration ---
-    # Always 4 pairs of (hi, lo) uint32 BE — one per detector channel.
-    # Values are raw counts on the same scale as the data groups.
-    # Read sequentially after groups (NOT from the end — trailing bytes exist).
+    # One (hi, lo) uint32 BE pair per data group: chromat1, [chromat2, chromat3,] ref.
+    # Number of pairs = 1 + extra_groups.
     def _read_cal_pair():
       nonlocal offset
       hi = float(struct.unpack(">I", payload[offset : offset + 4])[0])
@@ -1453,14 +1469,14 @@ class CLARIOstarBackend(PlateReaderBackend):
       offset += 8
       return (hi, lo)
 
-    chromat1_cal = _read_cal_pair()  # chromatic 1 (measurement wavelength)
-    chromat2_cal = _read_cal_pair()  # chromatic 2
-    chromat3_cal = _read_cal_pair()  # chromatic 3
-    ref_cal = _read_cal_pair()       # reference channel
+    num_cal_pairs = 1 + extra_groups
+    cal_pairs = [_read_cal_pair() for _ in range(num_cal_pairs)]
+    # First pair = chromat1 (sample), last pair = reference, middle = chromat2/3
+    chromat1_cal = cal_pairs[0]
+    ref_cal = cal_pairs[-1] if num_cal_pairs >= 2 else (0.0, 0.0)
+    chromat2_cal = cal_pairs[1] if num_cal_pairs >= 3 else (0.0, 0.0)
+    chromat3_cal = cal_pairs[2] if num_cal_pairs >= 4 else (0.0, 0.0)
 
-    # For multi-wavelength, chromat1_cal applies to all wavelengths measured on
-    # chromatic channel 1. Map wavelength index → calibration pair.
-    # TODO: verify multi-wavelength calibration mapping with real captures.
     chromats = [chromat1_cal] * wavelengths_in_resp
 
     raw: Dict = {
