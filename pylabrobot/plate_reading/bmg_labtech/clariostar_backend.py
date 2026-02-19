@@ -699,9 +699,14 @@ class CLARIOstarBackend(PlateReaderBackend):
       if len(last_read) > 0:
         d += last_read
 
-        # Extract expected frame size once we have the header
+        # Extract expected frame size once we have the header.
+        # Reset the timeout: the firmware is responding, so give it a fresh
+        # window to deliver the remaining bytes.  Without this, a long initial
+        # silence (transient firmware delay) eats the timeout budget and we
+        # return a truncated frame even though bytes are still arriving.
         if expected_size is None and len(d) >= 3 and d[0] == 0x02:
           expected_size = int.from_bytes(d[1:3], "big")
+          t = time.time()
 
         if expected_size is not None and len(d) >= expected_size:
           break
@@ -1551,12 +1556,13 @@ class CLARIOstarBackend(PlateReaderBackend):
       else b"\x00\x00\x00\x00"
     )
 
-    # Payload layout: plate(63) + scan(1) + optic(3) + shaker(4)
+    # Payload layout: plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4)
     # + [extended(5) if 0x0026] + separator(4) + mode(1) + ...
     payload = bytearray()
     payload += plate_and_wells
     payload += bytes([scan])
-    payload += b"\x01\x00\x00"
+    payload += b"\x01"
+    payload += b"\x00\x00\x00"
     payload += shaker
     if self._uses_extended_separator:
       payload += b"\x00\x20\x04\x00\x1e"
@@ -1750,8 +1756,8 @@ class CLARIOstarBackend(PlateReaderBackend):
       else b"\x00\x00\x00\x00"
     )
 
-    # Payload layout (OEM pcap verified):
-    # plate(63) + scan(1) + optic(1) + zeros(2) + shaker(4)
+    # Payload layout (Go reference verified):
+    # plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4)
     # + [extended(5) if 0x0026] + separator(4) + [orbital(5) if orbital] + ...
     payload = bytearray()
     payload += plate_and_wells
@@ -1760,7 +1766,8 @@ class CLARIOstarBackend(PlateReaderBackend):
     # Optic config byte — base 0x02 for absorbance top-optic, OR'd with
     # orbital averaging flags when well_scan != "point".
     optic_config = 0x02 | _well_scan_optic_flags(well_scan)
-    payload += bytes([optic_config, 0x00, 0x00])
+    payload += bytes([optic_config])
+    payload += b"\x00\x00\x00"
 
     payload += shaker
 

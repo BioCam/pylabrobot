@@ -2319,8 +2319,8 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     """No shaking → 4 zero bytes at shaker position."""
     backend = self._make_backend()
     payload = await self._capture_payload(backend)
-    # Shaker at offset 67-70 for type 0x0024 (plate(63) + scan(1) + optic(3))
-    self.assertEqual(payload[67:71], b"\x00\x00\x00\x00")
+    # Shaker at offset 68-71 for type 0x0024 (plate(63) + scan(1) + optic(1) + zeros(3))
+    self.assertEqual(payload[68:72], b"\x00\x00\x00\x00")
 
   async def test_shake_bytes_encoded(self):
     """Orbital 300rpm 10s → correct shaker encoding at shaker position."""
@@ -2329,7 +2329,7 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
       backend, shake_speed_rpm=300, shake_duration_s=10
     )
     expected = _shaker_bytes(ShakerType.ORBITAL, speed_rpm=300, duration_s=10)
-    self.assertEqual(payload[67:71], expected)
+    self.assertEqual(payload[68:72], expected)
 
   # --- combined parameters ---
 
