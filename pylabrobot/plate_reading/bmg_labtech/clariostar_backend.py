@@ -1588,25 +1588,14 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     optic_base = 0x01  # luminescence optic byte
 
+    # Luminescence is always point-like (no well_scan parameter).
+    # On 0x0026, use the compact format with extended separator — the
+    # 36-byte block causes firmware rejection for point-type scans.
+    # TODO: verify against OEM MARS pcap for luminescence.
+    payload += bytes([optic_base, 0x00, 0x00])
+    payload += shaker
     if self._uses_extended_separator:
-      # 0x0026 layout: 36-byte block between scan and separator.
-      # Same structure as absorbance (see _start_absorbance_measurement),
-      # but with luminescence optic_base = 0x01.
-      # TODO: verify against OEM MARS pcap for luminescence.
-      block = bytearray(36)
-      block[4] = optic_base
-      block[5] = optic_base
-      if shake_duration_s > 0:
-        block[17] = _SHAKE_TYPE_0026[shake_type]
-        block[23] = (shake_speed_rpm // 100) - 1
-        block[24] = (shake_duration_s >> 8) & 0xFF
-        block[25] = shake_duration_s & 0xFF
-      payload += bytes(block)
-    else:
-      # 0x0024 layout: optic(1) + zeros(3) + shaker(4)
-      payload += b"\x01"
-      payload += b"\x00\x00\x00"
-      payload += shaker
+      payload += b"\x00\x20\x04\x00\x1e"
 
     payload += b"\x27\x0f\x27\x0f\x01"
     payload += focal_height_data
@@ -1807,8 +1796,9 @@ class CLARIOstarBackend(PlateReaderBackend):
     optic_base = 0x02
     optic_config = optic_base | _well_scan_optic_flags(well_scan)
 
-    if self._uses_extended_separator:
-      # Machine type 0x0026: 36-byte block between scan byte and separator.
+    if self._uses_extended_separator and well_scan != "point":
+      # Machine type 0x0026, non-point scan: 36-byte block between scan byte
+      # and separator.
       # Verified against OEM MARS pcaps:
       #   - absorbance orbital 3mm w/ and w/o shake (300 RPM orbital 5s)
       #   - absorbance spiral 4mm 15 flashes
@@ -1816,7 +1806,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       #
       # Block layout (offsets within the 36-byte block):
       #   [0:4]   zeros(4)
-      #   [4]     optic_base | 0x08 (well-scan-enabled flag, for any non-point scan)
+      #   [4]     optic_base | 0x08 (well-scan-enabled flag)
       #   [5]     optic_config (base | scan-type flags: 0x30=orbital, 0x04=spiral)
       #   [6:17]  zeros(11)
       #   [17]    shake type (0x0026 encoding, see _SHAKE_TYPE_0026)
@@ -1825,7 +1815,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       #   [24:26] shake duration (uint16 BE seconds)
       #   [26:36] zeros(10)
       block = bytearray(36)
-      block[4] = optic_base | (0x08 if well_scan != "point" else 0x00)
+      block[4] = optic_base | 0x08
       block[5] = optic_config
       if shake_duration_s > 0:
         block[17] = _SHAKE_TYPE_0026[shake_type]
@@ -1833,6 +1823,13 @@ class CLARIOstarBackend(PlateReaderBackend):
         block[24] = (shake_duration_s >> 8) & 0xFF
         block[25] = shake_duration_s & 0xFF
       payload += bytes(block)
+    elif self._uses_extended_separator:
+      # Machine type 0x0026, point scan: compact format (verified on hardware).
+      # The 36-byte block is NOT used for point scan — firmware rejects it.
+      # Layout: optic(1) + zeros(2) + shaker(4) + extended(5)
+      payload += bytes([optic_config, 0x00, 0x00])
+      payload += shaker
+      payload += b"\x00\x20\x04\x00\x1e"
     else:
       # Machine type 0x0024 (Go reference): optic(1) + zeros(3) + shaker(4)
       payload += bytes([optic_config])
@@ -2429,24 +2426,13 @@ class CLARIOstarBackend(PlateReaderBackend):
     # Optic/mode byte
     optic_base = 0x40 if bottom_optic else 0x00
 
-    if self._uses_extended_separator:
-      # 0x0026 layout: 36-byte block between scan and separator.
-      # Same structure as absorbance (see _start_absorbance_measurement).
-      # TODO: verify against OEM MARS pcap for fluorescence.
-      block = bytearray(36)
-      block[4] = optic_base
-      block[5] = optic_base
-      if shake_duration_s > 0:
-        block[17] = _SHAKE_TYPE_0026[shake_type]
-        block[23] = (shake_speed_rpm // 100) - 1
-        block[24] = (shake_duration_s >> 8) & 0xFF
-        block[25] = shake_duration_s & 0xFF
-      payload += bytes(block)
-    else:
-      # 0x0024 layout: optic(1) + zeros(3) + shaker(4)
-      payload += bytes([optic_base])
-      payload += b"\x00\x00\x00"
-      payload += shaker
+    # Fluorescence is point-like (no well_scan parameter).
+    # The old code used the same optic(1)+zeros(3)+shaker(4) format for
+    # both 0x0024 and 0x0026, with NO extended separator. Keep that.
+    # TODO: verify against OEM MARS pcap for fluorescence on 0x0026.
+    payload += bytes([optic_base])
+    payload += b"\x00\x00\x00"
+    payload += shaker
 
     payload += b"\x27\x0f\x27\x0f"
 

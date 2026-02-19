@@ -2367,9 +2367,15 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
   # --- shaker encoding (0x0026) ---
 
   async def test_no_shake_0x0026(self):
-    """No shaking → block positions 17, 23, 24-25 are all zero for 0x0026."""
+    """No shaking → block positions 17, 23, 24-25 are all zero for 0x0026.
+
+    Uses orbital well_scan because the 36-byte block is only used for
+    non-point scans on 0x0026.
+    """
     backend = self._make_backend(machine_type=0x0026)
-    payload = await self._capture_payload(backend)
+    payload = await self._capture_payload(
+      backend, well_scan="orbital", well_scan_width=3.0
+    )
     # Block starts at offset 64 (plate(63) + scan(1))
     self.assertEqual(payload[64 + 17], 0x00)  # shake type
     self.assertEqual(payload[64 + 23], 0x00)  # speed
@@ -2380,7 +2386,8 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     """Orbital 300rpm 5s → correct 0x0026 encoding at scattered block positions."""
     backend = self._make_backend(machine_type=0x0026)
     payload = await self._capture_payload(
-      backend, shake_speed_rpm=300, shake_duration_s=5
+      backend, well_scan="orbital", well_scan_width=3.0,
+      shake_speed_rpm=300, shake_duration_s=5,
     )
     # Block starts at offset 64
     self.assertEqual(payload[64 + 17], 0x02)  # orbital → 0x02 in 0x0026 encoding
@@ -2389,9 +2396,11 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(payload[64 + 25], 0x05)  # duration lo = 5
 
   async def test_shake_0x0026_separator_at_100(self):
-    """0x0026 separator is at offset 100 (plate(63) + scan(1) + block(36))."""
+    """0x0026 non-point separator is at offset 100 (plate(63) + scan(1) + block(36))."""
     backend = self._make_backend(machine_type=0x0026)
-    payload = await self._capture_payload(backend)
+    payload = await self._capture_payload(
+      backend, well_scan="orbital", well_scan_width=3.0
+    )
     self.assertEqual(payload[100:104], b"\x27\x0f\x27\x0f")
 
   async def test_0x0026_optic_bytes_orbital(self):
@@ -2416,14 +2425,24 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(payload[64 + 4], 0x0a)
     self.assertEqual(payload[64 + 5], 0x06)
 
-  async def test_0x0026_optic_bytes_point(self):
-    """0x0026 block[4]=0x02, block[5]=0x02 for point scan (no well-scan flags)."""
+  async def test_0x0026_point_uses_compact_format(self):
+    """0x0026 point scan uses compact format, NOT the 36-byte block.
+
+    Layout: optic(1) + zeros(2) + shaker(4) + extended(5) + separator(4).
+    Optic byte at offset 64, separator at offset 76.
+    """
     backend = self._make_backend(machine_type=0x0026)
     payload = await self._capture_payload(backend)
-    # block[4] = 0x02 (no 0x08 flag for point)
-    # block[5] = 0x02 (base only)
-    self.assertEqual(payload[64 + 4], 0x02)
-    self.assertEqual(payload[64 + 5], 0x02)
+    # optic byte = 0x02 (point absorbance, no flags)
+    self.assertEqual(payload[64], 0x02)
+    # 2 zero bytes
+    self.assertEqual(payload[65:67], b"\x00\x00")
+    # 4 shaker bytes (no shake)
+    self.assertEqual(payload[67:71], b"\x00\x00\x00\x00")
+    # 5-byte extended separator
+    self.assertEqual(payload[71:76], b"\x00\x20\x04\x00\x1e")
+    # Then the standard separator
+    self.assertEqual(payload[76:80], b"\x27\x0f\x27\x0f")
 
   # --- combined parameters ---
 
