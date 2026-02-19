@@ -609,10 +609,13 @@ class CLARIOstarBackend(PlateReaderBackend):
   # === Constructor ===
 
   def __init__(self, device_id: Optional[str] = None, timeout: int = 150,
+               read_timeout: float = 20, write_timeout: float = 10,
                trace_io: Optional[str] = "clariostar_io_trace.log"):
     import os
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
     self.timeout = timeout
+    self.read_timeout = read_timeout
+    self.write_timeout = write_timeout
     self._eeprom_data: Optional[bytes] = None
     self._firmware_data: Optional[bytes] = None
     self._incubation_target: float = 0.0
@@ -673,9 +676,12 @@ class CLARIOstarBackend(PlateReaderBackend):
     with open(self._trace_io_path, "a") as f:
       f.write(f"{ts} {direction} ({len(data):>5d} B): {data.hex(' ')}\n")
 
-  async def read_resp(self, timeout=20) -> bytes:
+  async def read_resp(self, timeout=None) -> bytes:
     """Read a response from the plate reader. If the timeout is reached, return the data that has
     been read so far."""
+
+    if timeout is None:
+      timeout = self.read_timeout
 
     d = b""
     expected_size = None
@@ -728,10 +734,16 @@ class CLARIOstarBackend(PlateReaderBackend):
   async def send_command(
     self,
     payload: Union[bytearray, bytes],
-    read_timeout=20,
+    read_timeout=None,
     single_byte_checksum: bool = False,
   ) -> bytes:
-    """Frame a payload and send it to the plate reader, returning the raw response."""
+    """Frame a payload and send it to the plate reader, returning the raw response.
+
+    If the response is truncated (size field indicates a larger frame than received
+    and the checksum does not validate), retries once after draining the buffer.
+    This handles transient firmware delays where the first response of a session
+    arrives partially within the read timeout window.
+    """
 
     cmd = _frame(payload, single_byte_checksum=single_byte_checksum)
     self._trace("SEND", cmd)
@@ -740,6 +752,27 @@ class CLARIOstarBackend(PlateReaderBackend):
     assert w == len(cmd)
 
     resp = await self.read_resp(timeout=read_timeout)
+
+    # Detect truncated response: size field says N bytes but we got fewer,
+    # and the checksum doesn't validate (meaning the frame is incomplete).
+    if len(resp) >= 7 and resp[0] == 0x02:
+      expected_size = int.from_bytes(resp[1:3], "big")
+      if len(resp) < expected_size:
+        cs_ok = (
+          resp[-1] == 0x0D
+          and (sum(resp[:-3]) & 0xFFFF) == int.from_bytes(resp[-3:-1], "big")
+        )
+        if not cs_ok:
+          logger.warning(
+            "Truncated response (%d/%d bytes), retrying after drain...",
+            len(resp), expected_size,
+          )
+          await asyncio.sleep(1.0)
+          await self._drain_buffer()
+          w = await self.io.write(cmd)
+          assert w == len(cmd)
+          resp = await self.read_resp(timeout=read_timeout)
+
     return resp
 
   async def _drain_buffer(self):
@@ -1353,37 +1386,13 @@ class CLARIOstarBackend(PlateReaderBackend):
     status_hw_response = await self.send_command(b"\x81\x00")
     return await self._wait_for_ready_and_return(status_hw_response)
 
-  async def _get_measurement_values(self, read_timeout: float = 30):
+  async def _get_measurement_values(self):
     """Fetch final measurement data after a measurement has completed.
 
     Uses a 30-second read timeout because the firmware can take 20+ seconds to
-    respond to the first final-getData of a session (observed on 8-well partial
-    reads).  If the response is truncated (size field > actual length and checksum
-    fails), retries once with the same timeout.
+    respond to the first final-getData of a session.
     """
-    resp = await self.send_command(
-      b"\x05\x02\x00\x00\x00\x00\x00\x00", read_timeout=read_timeout,
-    )
-
-    # Detect truncated response: size field says N bytes but we got fewer,
-    # and the checksum doesn't validate (meaning the frame is incomplete).
-    if len(resp) >= 3:
-      expected_size = int.from_bytes(resp[1:3], "big")
-      if len(resp) < expected_size:
-        cs_ok = False
-        if len(resp) >= 7 and resp[-1] == 0x0D:
-          cs_ok = (sum(resp[:-3]) & 0xFFFF) == int.from_bytes(resp[-3:-1], "big")
-        if not cs_ok:
-          logger.warning(
-            "Truncated measurement response (%d/%d bytes), retrying after drain...",
-            len(resp), expected_size,
-          )
-          await asyncio.sleep(1.0)
-          await self._drain_buffer()
-          resp = await self.send_command(
-            b"\x05\x02\x00\x00\x00\x00\x00\x00", read_timeout=read_timeout,
-          )
-    return resp
+    return await self.send_command(b"\x05\x02\x00\x00\x00\x00\x00\x00", read_timeout=30)
 
   async def _get_progressive_measurement_values(self, read_timeout: float = 1):
     """Fetch partial measurement data during an active measurement.

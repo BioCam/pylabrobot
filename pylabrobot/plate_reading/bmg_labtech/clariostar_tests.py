@@ -1041,6 +1041,8 @@ class TestCLARIOstarSend(unittest.IsolatedAsyncioTestCase):
 
   async def asyncSetUp(self):
     self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend.read_timeout = 20
+    self.backend.write_timeout = 10
     self.backend.io = unittest.mock.MagicMock()
     self.backend.io.setup = unittest.mock.AsyncMock()
     self.backend.io.stop = unittest.mock.AsyncMock()
@@ -1095,6 +1097,8 @@ class TestCLARIOstarInitialize(unittest.IsolatedAsyncioTestCase):
   async def asyncSetUp(self):
     self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
     self.backend.timeout = 150
+    self.backend.read_timeout = 20
+    self.backend.write_timeout = 10
     self.backend.io = unittest.mock.MagicMock()
     self.backend.io.write = unittest.mock.AsyncMock()
     self.backend.io.read = unittest.mock.AsyncMock()
@@ -1739,6 +1743,8 @@ class TestWaitForReadyWithProgress(unittest.IsolatedAsyncioTestCase):
     """Create a backend with mocked I/O."""
     backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
     backend.timeout = 30
+    backend.read_timeout = 20
+    backend.write_timeout = 10
     backend.io = unittest.mock.MagicMock()
     backend._trace_io_path = None
     return backend
@@ -1885,6 +1891,8 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     """Create a backend with mocked I/O."""
     backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
     backend.timeout = 30
+    backend.read_timeout = 20
+    backend.write_timeout = 10
     backend.io = unittest.mock.MagicMock()
     backend.io.usb_purge_rx_buffer = unittest.mock.AsyncMock()
     backend._trace_io_path = None
@@ -2502,6 +2510,8 @@ class TestReadAbsorbanceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
   def _make_backend(self):
     backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
     backend.timeout = 30
+    backend.read_timeout = 20
+    backend.write_timeout = 10
     backend.io = unittest.mock.MagicMock()
     backend.io.usb_purge_rx_buffer = unittest.mock.AsyncMock()
     backend._trace_io_path = None
@@ -2579,6 +2589,8 @@ class TestReadFluorescenceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
   def _make_backend(self):
     backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
     backend.timeout = 30
+    backend.read_timeout = 20
+    backend.write_timeout = 10
     backend.io = unittest.mock.MagicMock()
     backend._trace_io_path = None
     backend._machine_type_code = 0x0024
