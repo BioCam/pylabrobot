@@ -310,7 +310,7 @@ class StartCorner(enum.IntEnum):
 def _scan_mode_byte(
   start_corner: StartCorner = StartCorner.TOP_LEFT,
   unidirectional: bool = False,
-  vertical: bool = False,
+  vertical: bool = True,
   flying_mode: bool = False,
 ) -> int:
   """Encode the scan mode into a single byte.
@@ -1189,7 +1189,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     wells: Optional[List[Well]] = None,
     start_corner: StartCorner = StartCorner.TOP_LEFT,
     unidirectional: bool = False,
-    vertical: bool = False,
+    vertical: bool = True,
     flying_mode: bool = False,
   ) -> bytes:
     """Encode plate geometry + well selection + scan mode byte.
@@ -1227,11 +1227,15 @@ class CLARIOstarBackend(PlateReaderBackend):
         grid[r][c] = reading
       return grid
 
-    # Fallback: assume readings are in wells-list order
+    # Fallback: firmware returns values in row-major order of the selected wells
+    # (A1, A2, ..., B1, B3, ...), NOT in the order of the `wells` list (which may
+    # be column-major from PLR's get_all_items()). Sort wells by (row, col) to
+    # match firmware ordering.
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
     if all_wells:
       return utils.reshape_2d(readings, (rows, cols))
-    for reading, well in zip(readings, wells):
+    sorted_wells = sorted(wells, key=lambda w: (w.get_row(), w.get_column()))
+    for reading, well in zip(readings, sorted_wells):
       grid[well.get_row()][well.get_column()] = reading
     return grid
 
@@ -1305,7 +1309,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     wells: List[Well],
     start_corner: StartCorner = StartCorner.TOP_LEFT,
     unidirectional: bool = False,
-    vertical: bool = False,
+    vertical: bool = True,
   ) -> List[Tuple[int, int]]:
     """Compute the read order for a measurement from scan parameters.
 
@@ -1486,7 +1490,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     shake_duration_s: int = 0,
     start_corner: StartCorner = StartCorner.TOP_LEFT,
     unidirectional: bool = False,
-    vertical: bool = False,
+    vertical: bool = True,
     wait: bool = True,
   ):
     """Run a plate reader luminescence run."""
@@ -1583,7 +1587,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       plate, wells,
       start_corner=self._last_scan_params.get("start_corner", StartCorner.TOP_LEFT),
       unidirectional=self._last_scan_params.get("unidirectional", False),
-      vertical=self._last_scan_params.get("vertical", False),
+      vertical=self._last_scan_params.get("vertical", True),
     )
 
     num_read = len(wells)
@@ -1626,7 +1630,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     # scan pattern
     start_corner: StartCorner = StartCorner.TOP_LEFT,
     unidirectional: bool = True,
-    vertical: bool = False,
+    vertical: bool = True,
     flying_mode: bool = False,
     well_scan: Literal["point", "orbital", "spiral", "matrix"] = "point",
     well_scan_width: Optional[float] = None,
@@ -1663,14 +1667,11 @@ class CLARIOstarBackend(PlateReaderBackend):
         (uint16 BE, 0-65535). Applied before the optics head starts reading —
         primarily useful when shaking is part of the measurement cycle, to let
         the liquid settle after shaking. When non-zero, a flag byte ``0x01`` is
-        set. Empirically adds ~1.2 s per unit for small values (1-2); non-linear
-        at higher values. No effect on OD accuracy.
+        set. Empirically adds ~1.1 s per unit (linear). No effect on OD accuracy.
       flashes_per_well: Number of xenon lamp flashes averaged per well (1-200).
         Encoded as uint16 BE. OEM defaults: 5 (point), 7 (orbital). Empirically,
         values >= 5 produce converged OD readings; additional flashes give
-        marginal precision gains at ~12 ms per flash per well. Avoid
-        flashes_per_well=1 which triggers a slow firmware mode (~20 s for 8 wells
-        vs ~7 s at flashes_per_well=5) and reduced accuracy.
+        marginal precision gains at ~12 ms per flash per well.
 
     Returns:
       The raw ~53-byte framed run response from the firmware.
@@ -2152,8 +2153,8 @@ class CLARIOstarBackend(PlateReaderBackend):
     )
 
     # NOTE: for partial-well reads the firmware returns exactly N values for N
-    # selected wells, in the row-major scan order of those wells. The values are
-    # passed to _readings_to_grid which maps them 1:1 to the wells list.
+    # selected wells, in the row-major scan order of those wells (A1, A2, ...,
+    # B1, B3, ...). _readings_to_grid sorts wells by (row, col) to match.
 
     num_wells = len(wells)
     transmission_data, temperature, raw = self._parse_absorbance_response(vals, len(wavelengths))
@@ -2256,7 +2257,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     settling_time_before_measurement: int = 0,
     start_corner: StartCorner = StartCorner.TOP_LEFT,
     unidirectional: bool = False,
-    vertical: bool = False,
+    vertical: bool = True,
     flying_mode: bool = False,
     wait: bool = True,
   ):
@@ -2486,7 +2487,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       plate, wells,
       start_corner=self._last_scan_params.get("start_corner", StartCorner.TOP_LEFT),
       unidirectional=self._last_scan_params.get("unidirectional", False),
-      vertical=self._last_scan_params.get("vertical", False),
+      vertical=self._last_scan_params.get("vertical", True),
     )
 
     num_read = len(wells)

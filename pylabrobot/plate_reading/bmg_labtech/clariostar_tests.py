@@ -217,26 +217,26 @@ class TestShakerBytes(unittest.TestCase):
 
 class TestScanModeByte(unittest.TestCase):
   def test_defaults_top_left(self):
-    """TOP_LEFT, bidirectional, horizontal, no flying → 0x12."""
-    # bit 1 always set (0x02), corner TOP_LEFT=1 shifted left 4 (0x10) → 0x12
-    self.assertEqual(_scan_mode_byte(), 0x12)
+    """TOP_LEFT, bidirectional, vertical, no flying → 0x1A."""
+    # bit 1 always set (0x02), corner TOP_LEFT=1 shifted left 4 (0x10), vertical bit 3 (0x08)
+    self.assertEqual(_scan_mode_byte(), 0x1A)
 
   def test_top_right(self):
     self.assertEqual(
       _scan_mode_byte(start_corner=StartCorner.TOP_RIGHT),
-      (0b0011 << 4) | 0x02,  # 0x32
+      (0b0011 << 4) | 0x08 | 0x02,  # 0x3A
     )
 
   def test_bottom_left(self):
     self.assertEqual(
       _scan_mode_byte(start_corner=StartCorner.BOTTOM_LEFT),
-      (0b0101 << 4) | 0x02,  # 0x52
+      (0b0101 << 4) | 0x08 | 0x02,  # 0x5A
     )
 
   def test_bottom_right(self):
     self.assertEqual(
       _scan_mode_byte(start_corner=StartCorner.BOTTOM_RIGHT),
-      (0b0111 << 4) | 0x02,  # 0x72
+      (0b0111 << 4) | 0x08 | 0x02,  # 0x7A
     )
 
   def test_unidirectional(self):
@@ -2620,6 +2620,84 @@ class TestReadFluorescenceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
     """Unlike absorbance, fluorescence forwards wait to _start_fluorescence_measurement."""
     call_kwargs = await self._run_with_kwargs(wait=False)
     self.assertFalse(call_kwargs["wait"])
+
+
+class TestReadingsToGridRowMajorOrder(unittest.TestCase):
+  """Test that _readings_to_grid maps firmware values correctly for partial well selections.
+
+  The firmware returns values in row-major order of the selected wells (A1, A2, ..., B1, B3, ...),
+  regardless of the order in which the wells list is constructed in Python. This test verifies
+  that column-major well lists (like PLR's get_all_items()) are handled correctly.
+  """
+
+  def test_column_major_wells_mapped_correctly(self):
+    """Wells passed in column-major order must still map values to correct grid positions."""
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    # Column-major well list: all col 1, then some col 2, then some col 3
+    wells = (
+      [plate.get_well(f"{r}1") for r in "ABCDEFGH"]
+      + [plate.get_well(f"{r}2") for r in "ACEG"]
+      + [plate.get_well(f"{r}3") for r in "BDFH"]
+    )
+    # Firmware returns 16 values in row-major order of selected wells:
+    # A1, A2, B1, B3, C1, C2, D1, D3, E1, E2, F1, F3, G1, G2, H1, H3
+    # Use distinctive values to detect any mis-mapping.
+    readings = [
+      1.0, 2.0,    # row A: A1, A2
+      3.0, 4.0,    # row B: B1, B3
+      5.0, 6.0,    # row C: C1, C2
+      7.0, 8.0,    # row D: D1, D3
+      9.0, 10.0,   # row E: E1, E2
+      11.0, 12.0,  # row F: F1, F3
+      13.0, 14.0,  # row G: G1, G2
+      15.0, 16.0,  # row H: H1, H3
+    ]
+    grid = CLARIOstarBackend._readings_to_grid(readings, plate, wells)
+
+    # Verify each value lands at the correct position
+    self.assertEqual(grid[0][0], 1.0)   # A1
+    self.assertEqual(grid[0][1], 2.0)   # A2
+    self.assertEqual(grid[1][0], 3.0)   # B1
+    self.assertEqual(grid[1][2], 4.0)   # B3
+    self.assertEqual(grid[2][0], 5.0)   # C1
+    self.assertEqual(grid[2][1], 6.0)   # C2
+    self.assertEqual(grid[3][0], 7.0)   # D1
+    self.assertEqual(grid[3][2], 8.0)   # D3
+    self.assertEqual(grid[4][0], 9.0)   # E1
+    self.assertEqual(grid[4][1], 10.0)  # E2
+    self.assertEqual(grid[5][0], 11.0)  # F1
+    self.assertEqual(grid[5][2], 12.0)  # F3
+    self.assertEqual(grid[6][0], 13.0)  # G1
+    self.assertEqual(grid[6][1], 14.0)  # G2
+    self.assertEqual(grid[7][0], 15.0)  # H1
+    self.assertEqual(grid[7][2], 16.0)  # H3
+    # Unselected wells should be None
+    self.assertIsNone(grid[0][2])  # A3 not selected
+    self.assertIsNone(grid[1][1])  # B2 not selected
+
+  def test_row_major_wells_still_work(self):
+    """Wells already in row-major order should still map correctly."""
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    # Row-major: A1, A2, B1, B3 (already sorted by row,col)
+    wells = [
+      plate.get_well("A1"), plate.get_well("A2"),
+      plate.get_well("B1"), plate.get_well("B3"),
+    ]
+    readings = [10.0, 20.0, 30.0, 40.0]
+    grid = CLARIOstarBackend._readings_to_grid(readings, plate, wells)
+    self.assertEqual(grid[0][0], 10.0)  # A1
+    self.assertEqual(grid[0][1], 20.0)  # A2
+    self.assertEqual(grid[1][0], 30.0)  # B1
+    self.assertEqual(grid[1][2], 40.0)  # B3
+
+  def test_single_column_order_unchanged(self):
+    """Single-column well lists (already row-major) should be unaffected by the fix."""
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    wells = [plate.get_well(f"{r}1") for r in "ABCDEFGH"]
+    readings = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
+    grid = CLARIOstarBackend._readings_to_grid(readings, plate, wells)
+    for i in range(8):
+      self.assertEqual(grid[i][0], float(i + 1))
 
 
 if __name__ == "__main__":
