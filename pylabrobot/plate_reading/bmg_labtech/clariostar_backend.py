@@ -420,6 +420,33 @@ def _well_scan_bytes(
 _well_scan_orbital_bytes = _well_scan_bytes
 
 
+# # # Shared payload constants and helpers # # #
+
+
+SEPARATOR = b"\x27\x0f\x27\x0f"
+TRAILER = b"\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"
+_EXTENDED_PADDING = b"\x00\x20\x04\x00\x1e"
+
+
+def _encode_pause_time(pause_time_per_well: int) -> int:
+  """Encode per-well pause time for absorbance/fluorescence payloads.
+
+  Returns 1 when pause_time_per_well is 0, otherwise ``(pause_time_per_well * 10) // 2``.
+  """
+  return 1 if pause_time_per_well == 0 else (pause_time_per_well * 10) // 2
+
+
+def _encode_settling_time(settling_time_before_measurement: int) -> bytes:
+  """Encode settling time as flag(1) + uint16 BE(2) = 3 bytes."""
+  flag = b"\x01" if settling_time_before_measurement != 0 else b"\x00"
+  return flag + settling_time_before_measurement.to_bytes(2, "big")
+
+
+def _encode_flashes(flashes: int) -> bytes:
+  """Encode flash count as uint16 BE (2 bytes)."""
+  return flashes.to_bytes(2, "big")
+
+
 # # # Model lookup # # #
 
 
@@ -1642,6 +1669,96 @@ class CLARIOstarBackend(PlateReaderBackend):
       "schema": schema,
     }
 
+  # # # Shared payload header builder # # #
+
+  def _build_payload_header(
+    self,
+    plate: Plate,
+    wells: Optional[List[Well]],
+    *,
+    optic_base: int,
+    well_scan: Literal["point", "orbital", "spiral", "matrix"] = "point",
+    start_corner: StartCorner = StartCorner.TOP_LEFT,
+    unidirectional: bool = False,
+    vertical: bool = True,
+    flying_mode: bool = False,
+    shake_type: ShakerType = ShakerType.ORBITAL,
+    shake_speed_rpm: int = 0,
+    shake_duration_s: int = 0,
+    num_zero_pad: int = 3,
+    force_compact: bool = False,
+  ) -> bytearray:
+    """Build the common payload prefix through the separator.
+
+    Every measurement payload starts with:
+      plate_bytes(63) + scan_byte(1) + pre_separator(varies) + SEPARATOR(4)
+
+    The pre-separator format depends on machine type and scan mode:
+
+    - **0x0026 non-point** (and not ``force_compact``): ``0x00`` scan override +
+      32-byte block with optic config, shaker at scattered offsets.
+    - **0x0026 point** (and not ``force_compact``): ``scan`` + compact optic(1) +
+      zeros(2) + shaker(4) + extended padding(5).
+    - **0x0024 / force_compact**: ``scan`` + optic(1) + zeros(N) + shaker(4),
+      where N = ``num_zero_pad``.
+
+    Args:
+      plate: Plate resource for well geometry.
+      wells: Selected wells, or None for all.
+      optic_base: Base optic byte (0x02=abs, 0x01=lum, 0x00/0x40=fl).
+      well_scan: Scan pattern type.
+      start_corner: Measurement start corner.
+      unidirectional: Unidirectional scan.
+      vertical: Vertical scan.
+      flying_mode: Flying mode (continuous plate movement).
+      shake_type: Shaker type.
+      shake_speed_rpm: Shaker speed in RPM.
+      shake_duration_s: Shaker duration in seconds.
+      num_zero_pad: Number of zero-padding bytes after optic byte in compact format.
+      force_compact: Force compact format even on 0x0026 (used by fluorescence).
+    """
+    plate_and_wells = self._plate_bytes(plate, wells)
+    scan = _scan_mode_byte(start_corner, unidirectional, vertical, flying_mode=flying_mode)
+
+    shaker = (
+      _shaker_bytes(shake_type, shake_speed_rpm, shake_duration_s)
+      if shake_duration_s > 0
+      else b"\x00\x00\x00\x00"
+    )
+
+    optic_config = optic_base | _well_scan_optic_flags(well_scan)
+
+    payload = bytearray()
+    payload += plate_and_wells
+
+    if self._uses_extended_separator and well_scan != "point" and not force_compact:
+      # 0x0026, non-point scan: 0x00 scan override + 32-byte block.
+      payload += b"\x00"
+      block = bytearray(32)
+      block[0] = optic_base | 0x08
+      block[1] = optic_config
+      if shake_duration_s > 0:
+        block[13] = _SHAKE_TYPE_0026[shake_type]
+        block[19] = (shake_speed_rpm // 100) - 1
+        block[20] = (shake_duration_s >> 8) & 0xFF
+        block[21] = shake_duration_s & 0xFF
+      payload += bytes(block)
+    elif self._uses_extended_separator and not force_compact:
+      # 0x0026, point scan: compact + extended padding.
+      payload += bytes([scan])
+      payload += bytes([optic_config, 0x00, 0x00])
+      payload += shaker
+      payload += _EXTENDED_PADDING
+    else:
+      # 0x0024 or force_compact: compact format.
+      payload += bytes([scan])
+      payload += bytes([optic_config])
+      payload += b"\x00" * num_zero_pad
+      payload += shaker
+
+    payload += SEPARATOR
+    return payload
+
   # # # Luminescence # # #
 
   async def _start_luminescence_measurement(
@@ -1668,31 +1785,16 @@ class CLARIOstarBackend(PlateReaderBackend):
     }
 
     focal_height_data = int(focal_height * 100).to_bytes(2, byteorder="big")
-    plate_and_wells = self._plate_bytes(plate, wells)
-    scan = _scan_mode_byte(start_corner, unidirectional, vertical, flying_mode=False)
 
-    shaker = (
-      _shaker_bytes(shake_type, shake_speed_rpm, shake_duration_s)
-      if shake_duration_s > 0
-      else b"\x00\x00\x00\x00"
+    payload = self._build_payload_header(
+      plate, wells, optic_base=0x01,
+      start_corner=start_corner, unidirectional=unidirectional,
+      vertical=vertical, flying_mode=False,
+      shake_type=shake_type, shake_speed_rpm=shake_speed_rpm,
+      shake_duration_s=shake_duration_s, num_zero_pad=2,
     )
 
-    payload = bytearray()
-    payload += plate_and_wells
-    payload += bytes([scan])
-
-    optic_base = 0x01  # luminescence optic byte
-
-    # Luminescence is always point-like (no well_scan parameter).
-    # On 0x0026, use the compact format with extended separator — the
-    # 36-byte block causes firmware rejection for point-type scans.
-    # TODO: verify against OEM MARS pcap for luminescence.
-    payload += bytes([optic_base, 0x00, 0x00])
-    payload += shaker
-    if self._uses_extended_separator:
-      payload += b"\x00\x20\x04\x00\x1e"
-
-    payload += b"\x27\x0f\x27\x0f\x01"
+    payload += b"\x01"
     payload += focal_height_data
     payload += b"\x00\x00\x01\x00\x00\x0e\x10\x00\x01\x00\x01\x00"
     payload += b"\x01\x00\x01\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x01"
@@ -1895,91 +1997,31 @@ class CLARIOstarBackend(PlateReaderBackend):
       "vertical": vertical,
     }
 
-    plate_and_wells = self._plate_bytes(plate, wells)
-    scan = _scan_mode_byte(start_corner, unidirectional, vertical, flying_mode=flying_mode)
-
-    shaker = (
-      _shaker_bytes(shake_type, shake_speed_rpm, shake_duration_s)
-      if shake_duration_s > 0
-      else b"\x00\x00\x00\x00"
+    payload = self._build_payload_header(
+      plate, wells, optic_base=0x02, well_scan=well_scan,
+      start_corner=start_corner, unidirectional=unidirectional,
+      vertical=vertical, flying_mode=flying_mode,
+      shake_type=shake_type, shake_speed_rpm=shake_speed_rpm,
+      shake_duration_s=shake_duration_s,
     )
-
-    payload = bytearray()
-    payload += plate_and_wells
-
-    if self._uses_extended_separator and well_scan != "point":
-      # Non-point scans on 0x0026: OEM sends 0x00 here, not the scan_mode_byte.
-      # The scan direction info is not used by the firmware for orbital/spiral/matrix.
-      payload += b"\x00"
-    else:
-      payload += bytes([scan])
-
-    # Optic config — base 0x02 for absorbance top-optic, OR'd with
-    # orbital averaging flags when well_scan != "point".
-    optic_base = 0x02
-    optic_config = optic_base | _well_scan_optic_flags(well_scan)
-
-    if self._uses_extended_separator and well_scan != "point":
-      # Machine type 0x0026, non-point scan: 32-byte block between scan byte
-      # and separator, matching OEM pcap byte-for-byte.
-      #
-      # Block layout (offsets within the 32-byte block):
-      #   [0]     optic_base | 0x08 (well-scan-enabled flag)
-      #   [1]     optic_config (base | scan-type flags: 0x30=orbital, 0x04=spiral)
-      #   [2:13]  zeros(11)
-      #   [13]    shake type (0x0026 encoding, see _SHAKE_TYPE_0026)
-      #   [14:19] zeros(5)
-      #   [19]    shake speed index ((rpm / 100) - 1)
-      #   [20:22] shake duration (uint16 BE seconds)
-      #   [22:32] zeros(10)
-      block = bytearray(32)
-      block[0] = optic_base | 0x08
-      block[1] = optic_config
-      if shake_duration_s > 0:
-        block[13] = _SHAKE_TYPE_0026[shake_type]
-        block[19] = (shake_speed_rpm // 100) - 1
-        block[20] = (shake_duration_s >> 8) & 0xFF
-        block[21] = shake_duration_s & 0xFF
-      payload += bytes(block)
-    elif self._uses_extended_separator:
-      # Machine type 0x0026, point scan: compact format (verified on hardware).
-      # The 32-byte block is NOT used for point scan — firmware rejects it.
-      # Layout: optic(1) + zeros(2) + shaker(4) + extended(5)
-      payload += bytes([optic_config, 0x00, 0x00])
-      payload += shaker
-      payload += b"\x00\x20\x04\x00\x1e"
-    else:
-      # Machine type 0x0024 (Go reference): optic(1) + zeros(3) + shaker(4)
-      payload += bytes([optic_config])
-      payload += b"\x00\x00\x00"
-      payload += shaker
-
-    payload += b"\x27\x0f\x27\x0f"
 
     # Well-scan parameters (5 bytes for orbital/spiral/matrix, 0 for point).
     payload += _well_scan_bytes(
       _WELL_SCAN_MEAS_CODE["absorbance"], well_scan, well_scan_width, plate,
     )
     # Per-well pause + wavelength count + wavelength data (per Go absDiscreteBytes)
-    # Encoding: 1 if pause_time_per_well==0, else (pause_time_per_well * 10) // 2.
-    # Default 0x19 (=25) in OEM captures corresponds to pause_time_per_well=5 (0.5s).
-    settling_byte = 1 if pause_time_per_well == 0 else (pause_time_per_well * 10) // 2
-    payload += bytes([settling_byte, len(wavelengths)])
+    payload += bytes([_encode_pause_time(pause_time_per_well), len(wavelengths)])
     for w in wavelengths:
       payload += (w * 10).to_bytes(2, "big")
     # Fixed bytes
     payload += b"\x00\x00\x00\x64\x00\x00\x00\x00\x00\x00\x00\x64\x00"
     # Settling time before measurement (once-per-run, post-shake delay)
-    if settling_time_before_measurement != 0:
-      payload += b"\x01"
-    else:
-      payload += b"\x00"
-    payload += settling_time_before_measurement.to_bytes(2, "big")
+    payload += _encode_settling_time(settling_time_before_measurement)
     # Fixed trailer
-    payload += b"\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"
+    payload += TRAILER
     # Flashes per well — uint16 BE. OEM uses 5 for point, 7 for orbital;
     # any value 1-200 is accepted by the firmware.
-    payload += flashes_per_well.to_bytes(2, "big")
+    payload += _encode_flashes(flashes_per_well)
     payload += b"\x00\x01\x00\x00"
 
     logger.info("Absorbance payload (%d bytes): %s", len(payload), payload.hex())
@@ -2550,37 +2592,17 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     focal_height_encoded = int(focal_height * 100)
 
-    plate_and_wells = self._plate_bytes(plate, wells)
-    scan = _scan_mode_byte(start_corner, unidirectional, vertical, flying_mode)
-
-    shaker = (
-      _shaker_bytes(shake_type, shake_speed_rpm, shake_duration_s)
-      if shake_duration_s > 0
-      else b"\x00\x00\x00\x00"
+    optic_base = 0x40 if bottom_optic else 0x00
+    payload = self._build_payload_header(
+      plate, wells, optic_base=optic_base,
+      start_corner=start_corner, unidirectional=unidirectional,
+      vertical=vertical, flying_mode=flying_mode,
+      shake_type=shake_type, shake_speed_rpm=shake_speed_rpm,
+      shake_duration_s=shake_duration_s, force_compact=True,
     )
 
-    payload = bytearray()
-    payload += plate_and_wells
-    payload += bytes([scan])
-
-    # Optic/mode byte
-    optic_base = 0x40 if bottom_optic else 0x00
-
-    # Fluorescence is point-like (no well_scan parameter).
-    # The old code used the same optic(1)+zeros(3)+shaker(4) format for
-    # both 0x0024 and 0x0026, with NO extended separator. Keep that.
-    # TODO: verify against OEM MARS pcap for fluorescence on 0x0026.
-    payload += bytes([optic_base])
-    payload += b"\x00\x00\x00"
-    payload += shaker
-
-    payload += b"\x27\x0f\x27\x0f"
-
     # Per-well pause time
-    if pause_time_per_well == 0:
-      payload += bytes([1])
-    else:
-      payload += bytes([(pause_time_per_well * 10) // 2])
+    payload += bytes([_encode_pause_time(pause_time_per_well)])
 
     # Focal height
     payload += focal_height_encoded.to_bytes(2, "big")
@@ -2610,17 +2632,13 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload += b"\x00\x04\x00\x03\x00"
 
     # Settling time before measurement (once-per-run, post-shake delay)
-    if settling_time_before_measurement != 0:
-      payload += b"\x01"
-    else:
-      payload += b"\x00"
-    payload += settling_time_before_measurement.to_bytes(2, "big")
+    payload += _encode_settling_time(settling_time_before_measurement)
 
     # Fixed trailer
-    payload += b"\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"
+    payload += TRAILER
 
     # Flashes
-    payload += flashes.to_bytes(2, "big")
+    payload += _encode_flashes(flashes)
     payload += b"\x00\x4b\x00\x00"
 
     run_response = await self.send_command(bytes(payload))
