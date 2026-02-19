@@ -1906,7 +1906,13 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     payload = bytearray()
     payload += plate_and_wells
-    payload += bytes([scan])
+
+    if self._uses_extended_separator and well_scan != "point":
+      # Non-point scans on 0x0026: OEM sends 0x00 here, not the scan_mode_byte.
+      # The scan direction info is not used by the firmware for orbital/spiral/matrix.
+      payload += b"\x00"
+    else:
+      payload += bytes([scan])
 
     # Optic config — base 0x02 for absorbance top-optic, OR'd with
     # orbital averaging flags when well_scan != "point".
@@ -1914,38 +1920,30 @@ class CLARIOstarBackend(PlateReaderBackend):
     optic_config = optic_base | _well_scan_optic_flags(well_scan)
 
     if self._uses_extended_separator and well_scan != "point":
-      # Machine type 0x0026, non-point scan: 36-byte block between scan byte
-      # and separator.
+      # Machine type 0x0026, non-point scan: 32-byte block between scan byte
+      # and separator, matching OEM pcap byte-for-byte.
       #
-      # NOTE: The OEM MARS pcap shows the separator at absolute payload offset
-      # 96, but the OEM plate encoding is ~4 bytes shorter than ours (59 vs 63
-      # bytes).  Firmware parses the plate section first (variable length),
-      # then reads the block.  Block-relative positions are identical:
-      #   OEM block starts at payload[60], ours at payload[64].
-      #   Both: block[4]=optic, block[17]=shake_type, etc.
-      #
-      # Block layout (offsets within the 36-byte block):
-      #   [0:4]   zeros(4)
-      #   [4]     optic_base | 0x08 (well-scan-enabled flag)
-      #   [5]     optic_config (base | scan-type flags: 0x30=orbital, 0x04=spiral)
-      #   [6:17]  zeros(11)
-      #   [17]    shake type (0x0026 encoding, see _SHAKE_TYPE_0026)
-      #   [18:23] zeros(5)
-      #   [23]    shake speed index ((rpm / 100) - 1)
-      #   [24:26] shake duration (uint16 BE seconds)
-      #   [26:36] zeros(10)
-      block = bytearray(36)
-      block[4] = optic_base | 0x08
-      block[5] = optic_config
+      # Block layout (offsets within the 32-byte block):
+      #   [0]     optic_base | 0x08 (well-scan-enabled flag)
+      #   [1]     optic_config (base | scan-type flags: 0x30=orbital, 0x04=spiral)
+      #   [2:13]  zeros(11)
+      #   [13]    shake type (0x0026 encoding, see _SHAKE_TYPE_0026)
+      #   [14:19] zeros(5)
+      #   [19]    shake speed index ((rpm / 100) - 1)
+      #   [20:22] shake duration (uint16 BE seconds)
+      #   [22:32] zeros(10)
+      block = bytearray(32)
+      block[0] = optic_base | 0x08
+      block[1] = optic_config
       if shake_duration_s > 0:
-        block[17] = _SHAKE_TYPE_0026[shake_type]
-        block[23] = (shake_speed_rpm // 100) - 1
-        block[24] = (shake_duration_s >> 8) & 0xFF
-        block[25] = shake_duration_s & 0xFF
+        block[13] = _SHAKE_TYPE_0026[shake_type]
+        block[19] = (shake_speed_rpm // 100) - 1
+        block[20] = (shake_duration_s >> 8) & 0xFF
+        block[21] = shake_duration_s & 0xFF
       payload += bytes(block)
     elif self._uses_extended_separator:
       # Machine type 0x0026, point scan: compact format (verified on hardware).
-      # The 36-byte block is NOT used for point scan — firmware rejects it.
+      # The 32-byte block is NOT used for point scan — firmware rejects it.
       # Layout: optic(1) + zeros(2) + shaker(4) + extended(5)
       payload += bytes([optic_config, 0x00, 0x00])
       payload += shaker
@@ -1984,6 +1982,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload += flashes_per_well.to_bytes(2, "big")
     payload += b"\x00\x01\x00\x00"
 
+    logger.info("Absorbance payload (%d bytes): %s", len(payload), payload.hex())
     run_response = await self.send_command(bytes(payload))
 
     # Verify the firmware accepted the command
