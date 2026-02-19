@@ -1,0 +1,31 @@
+
+## absorbance measurements
+
+### normal "discrete wavelength" measurements
+
+wavelengths between 220 - 1000 nm
+
+number of wavelengeght between 1 - 8
+
+well_scan_types: point, orbital, spiral, matrix
+
+well_scan_width: between 1 - 6 mm, always int
+
+settling time: between 0.0 - 1.0 s
+
+number of cycles: between 1 - 1000
+
+number of flashes: between 10 - 127
+
+
+
+read direction: between 1 (top_left, bidirectional/"snake_line") - 16 (bottom_right, unidirectional/"always up")
+
+
+shake options: before each cycle, before first cycle, before defined cycle, between readings
+
+shake_types: linear, orbital, double orbital
+
+shake_speed: 100 - 700 rpm (always in steps of 100)
+
+shake_duration: sec

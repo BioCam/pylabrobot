@@ -295,6 +295,18 @@ def _shaker_bytes(
   return bytes([(1 << 4) | int(shake_type), speed_idx]) + duration_s.to_bytes(2, "big")
 
 
+# Mapping from ShakerType to the byte value used in 0x0026 payloads.
+# Verified: ORBITAL → 0x02 (OEM MARS pcap, absorbance orbital 300 RPM 5 s).
+# Other values are best-guess based on likely 1-indexed ordering;
+# capture more pcaps to confirm.
+_SHAKE_TYPE_0026: Dict[ShakerType, int] = {
+  ShakerType.LINEAR: 0x01,
+  ShakerType.ORBITAL: 0x02,
+  ShakerType.DOUBLE_ORBITAL: 0x03,
+  ShakerType.MEANDER: 0x04,
+}
+
+
 # # # Scan mode # # #
 
 
@@ -654,14 +666,15 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   @property
   def _uses_extended_separator(self) -> bool:
-    """Whether this machine uses 5 extra bytes before the ``$27 $0F`` separator.
+    """Whether this machine uses the 0x0026-style extended pre-separator block.
 
-    Machine type 0x0026 requires ``$00 $20 $04 $00 $1E`` between the shaker bytes
-    and the ``$27 $0F $27 $0F`` separator in absorbance and luminescence payloads.
-    Type 0x0024 (Go reference) does not include these bytes.
+    Machine type 0x0026 has a 36-byte block between the scan-mode byte and
+    the ``$27 $0F $27 $0F`` separator (containing optic config, shaker data
+    at scattered offsets, and padding).  Type 0x0024 (Go reference) uses a
+    compact 8-byte layout (optic + zeros + shaker) before the separator.
 
-    Defaults to True (extended) when the machine type is unknown (not yet detected)
-    so that existing setups that haven't called ``setup()`` keep working.
+    Defaults to True (0x0026 layout) when the machine type is unknown so
+    that existing setups that haven't called ``setup()`` keep working.
     """
     return self._machine_type_code != 0x0024
 
@@ -1556,16 +1569,32 @@ class CLARIOstarBackend(PlateReaderBackend):
       else b"\x00\x00\x00\x00"
     )
 
-    # Payload layout: plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4)
-    # + [extended(5) if 0x0026] + separator(4) + mode(1) + ...
     payload = bytearray()
     payload += plate_and_wells
     payload += bytes([scan])
-    payload += b"\x01"
-    payload += b"\x00\x00\x00"
-    payload += shaker
+
+    optic_base = 0x01  # luminescence optic byte
+
     if self._uses_extended_separator:
-      payload += b"\x00\x20\x04\x00\x1e"
+      # 0x0026 layout: 36-byte block between scan and separator.
+      # Same structure as absorbance (see _start_absorbance_measurement),
+      # but with luminescence optic_base = 0x01.
+      # TODO: verify against OEM MARS pcap for luminescence.
+      block = bytearray(36)
+      block[4] = optic_base
+      block[5] = optic_base
+      if shake_duration_s > 0:
+        block[17] = _SHAKE_TYPE_0026[shake_type]
+        block[23] = (shake_speed_rpm // 100) - 1
+        block[24] = (shake_duration_s >> 8) & 0xFF
+        block[25] = shake_duration_s & 0xFF
+      payload += bytes(block)
+    else:
+      # 0x0024 layout: optic(1) + zeros(3) + shaker(4)
+      payload += b"\x01"
+      payload += b"\x00\x00\x00"
+      payload += shaker
+
     payload += b"\x27\x0f\x27\x0f\x01"
     payload += focal_height_data
     payload += b"\x00\x00\x01\x00\x00\x0e\x10\x00\x01\x00\x01\x00"
@@ -1756,25 +1785,44 @@ class CLARIOstarBackend(PlateReaderBackend):
       else b"\x00\x00\x00\x00"
     )
 
-    # Payload layout (Go reference verified):
-    # plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4)
-    # + [extended(5) if 0x0026] + separator(4) + [orbital(5) if orbital] + ...
     payload = bytearray()
     payload += plate_and_wells
     payload += bytes([scan])
 
-    # Optic config byte — base 0x02 for absorbance top-optic, OR'd with
+    # Optic config — base 0x02 for absorbance top-optic, OR'd with
     # orbital averaging flags when well_scan != "point".
-    optic_config = 0x02 | _well_scan_optic_flags(well_scan)
-    payload += bytes([optic_config])
-    payload += b"\x00\x00\x00"
+    optic_base = 0x02
+    optic_config = optic_base | _well_scan_optic_flags(well_scan)
 
-    payload += shaker
-
-    # Machine type 0x0026 has 5 extra bytes before the separator.
-    # Type 0x0024 (Go reference) omits them.
     if self._uses_extended_separator:
-      payload += b"\x00\x20\x04\x00\x1e"
+      # Machine type 0x0026: 36-byte block between scan byte and separator.
+      # Verified against OEM MARS pcap (absorbance orbital 3mm, w/ and w/o shake).
+      #
+      # Block layout (offsets within the 36-byte block):
+      #   [0:4]   zeros(4)
+      #   [4]     optic_base | 0x08 (orbital well-scan indicator)
+      #   [5]     optic_config (base | orbital-averaging flags)
+      #   [6:17]  zeros(11)
+      #   [17]    shake type (0x0026 encoding, see _SHAKE_TYPE_0026)
+      #   [18:23] zeros(5)
+      #   [23]    shake speed index
+      #   [24:26] shake duration (uint16 BE seconds)
+      #   [26:36] zeros(10)
+      block = bytearray(36)
+      block[4] = optic_base | (0x08 if well_scan != "point" else 0x00)
+      block[5] = optic_config
+      if shake_duration_s > 0:
+        block[17] = _SHAKE_TYPE_0026[shake_type]
+        block[23] = (shake_speed_rpm // 100) - 1
+        block[24] = (shake_duration_s >> 8) & 0xFF
+        block[25] = shake_duration_s & 0xFF
+      payload += bytes(block)
+    else:
+      # Machine type 0x0024 (Go reference): optic(1) + zeros(3) + shaker(4)
+      payload += bytes([optic_config])
+      payload += b"\x00\x00\x00"
+      payload += shaker
+
     payload += b"\x27\x0f\x27\x0f"
 
     # Orbital scan parameters (0 or 5 bytes after separator).
@@ -2363,17 +2411,27 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload += bytes([scan])
 
     # Optic/mode byte
-    d = 0
-    if bottom_optic:
-      d |= 1 << 6
-    payload += bytes([d])
+    optic_base = 0x40 if bottom_optic else 0x00
 
-    # Always-zero bytes
-    payload += b"\x00\x00\x00"
+    if self._uses_extended_separator:
+      # 0x0026 layout: 36-byte block between scan and separator.
+      # Same structure as absorbance (see _start_absorbance_measurement).
+      # TODO: verify against OEM MARS pcap for fluorescence.
+      block = bytearray(36)
+      block[4] = optic_base
+      block[5] = optic_base
+      if shake_duration_s > 0:
+        block[17] = _SHAKE_TYPE_0026[shake_type]
+        block[23] = (shake_speed_rpm // 100) - 1
+        block[24] = (shake_duration_s >> 8) & 0xFF
+        block[25] = shake_duration_s & 0xFF
+      payload += bytes(block)
+    else:
+      # 0x0024 layout: optic(1) + zeros(3) + shaker(4)
+      payload += bytes([optic_base])
+      payload += b"\x00\x00\x00"
+      payload += shaker
 
-    payload += shaker
-
-    # Unknown separator
     payload += b"\x27\x0f\x27\x0f"
 
     # Per-well pause time

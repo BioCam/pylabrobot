@@ -1446,19 +1446,26 @@ class TestAbsorbanceOrbitalPayload(unittest.TestCase):
     plate = self.plate
     plate_and_wells = self.backend._plate_bytes(plate, wells=None)
     scan = _scan_mode_byte()
-    shaker = b"\x00\x00\x00\x00"
 
     payload = bytearray()
     payload += plate_and_wells
     payload += bytes([scan])
 
-    optic_config = 0x02 | _well_scan_optic_flags(well_scan)
-    payload += bytes([optic_config, 0x00, 0x00])
-
-    payload += shaker
+    optic_base = 0x02
+    optic_config = optic_base | _well_scan_optic_flags(well_scan)
 
     if self.backend._uses_extended_separator:
-      payload += b"\x00\x20\x04\x00\x1e"
+      # 0x0026 layout: 36-byte block between scan and separator
+      block = bytearray(36)
+      block[4] = optic_base | (0x08 if well_scan != "point" else 0x00)
+      block[5] = optic_config
+      payload += bytes(block)
+    else:
+      # 0x0024 layout: optic(1) + zeros(3) + shaker(4)
+      payload += bytes([optic_config])
+      payload += b"\x00\x00\x00"
+      payload += b"\x00\x00\x00\x00"  # no-shake shaker bytes
+
     payload += b"\x27\x0f\x27\x0f"
 
     payload += _well_scan_orbital_bytes(
@@ -1491,9 +1498,9 @@ class TestAbsorbanceOrbitalPayload(unittest.TestCase):
   def test_orbital_params_encoding(self):
     """Orbital params: [0x02, diameter_mm, well_dia_hi, well_dia_lo, 0x00]."""
     payload = self._build_payload(well_scan="orbital", well_scan_width=3)
-    # For 0x0024 (no extended separator), separator at offset 71:
-    # plate(63) + scan(1) + optic(3) + shaker(4) = 71
-    sep_offset = 71
+    # For 0x0024 (no extended separator), separator at offset 72:
+    # plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4) = 72
+    sep_offset = 72
     self.assertEqual(payload[sep_offset:sep_offset + 4], b"\x27\x0f\x27\x0f")
     # Orbital params start right after separator
     orbital = payload[sep_offset + 4 : sep_offset + 9]
@@ -1505,22 +1512,32 @@ class TestAbsorbanceOrbitalPayload(unittest.TestCase):
     self.assertEqual(int.from_bytes(orbital[2:4], "big"), well_dia)
     self.assertEqual(orbital[4], 0x00)  # terminator
 
-  def test_extended_separator_adds_5_bytes(self):
-    """Machine type 0x0026 inserts 5 extra bytes before separator."""
+  def test_0x0026_uses_36_byte_block(self):
+    """Machine type 0x0026 uses a 36-byte block between scan and separator."""
     self.backend._machine_type_code = 0x0026
     extended_payload = self._build_payload(well_scan="point")
 
     self.backend._machine_type_code = 0x0024
     standard_payload = self._build_payload(well_scan="point")
 
-    self.assertEqual(len(extended_payload), len(standard_payload) + 5)
+    # 0x0026: 36-byte block; 0x0024: 8 bytes (optic + zeros + shaker)
+    self.assertEqual(len(extended_payload), len(standard_payload) + 28)
 
-    # Verify the extra bytes
-    sep_offset_std = 71  # no extended bytes
-    sep_offset_ext = 76  # with 5 extra bytes
+    # Separator positions
+    sep_offset_std = 72  # plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4)
+    sep_offset_ext = 100  # plate(63) + scan(1) + block(36)
     self.assertEqual(standard_payload[sep_offset_std:sep_offset_std + 4], b"\x27\x0f\x27\x0f")
     self.assertEqual(extended_payload[sep_offset_ext:sep_offset_ext + 4], b"\x27\x0f\x27\x0f")
-    self.assertEqual(extended_payload[71:76], b"\x00\x20\x04\x00\x1e")
+
+  def test_0x0026_optic_bytes_in_block(self):
+    """Machine type 0x0026 puts optic config at block positions 4 and 5."""
+    self.backend._machine_type_code = 0x0026
+    payload = self._build_payload(well_scan="orbital", well_scan_width=3)
+    # Block starts at offset 64 (after plate(63) + scan(1))
+    # block[4] = optic_base | 0x08 = 0x02 | 0x08 = 0x0a (orbital indicator)
+    # block[5] = optic_config = 0x02 | 0x30 = 0x32
+    self.assertEqual(payload[64 + 4], 0x0a)
+    self.assertEqual(payload[64 + 5], 0x32)
 
 
 class TestSimulatorConfig(unittest.TestCase):
@@ -2313,23 +2330,64 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     with self.assertRaises(ValueError):
       await self._capture_payload(backend, wavelengths=[])
 
-  # --- shaker encoding ---
+  # --- shaker encoding (0x0024) ---
 
-  async def test_no_shake_bytes(self):
-    """No shaking → 4 zero bytes at shaker position."""
+  async def test_no_shake_bytes_0x0024(self):
+    """No shaking → 4 zero bytes at shaker position for 0x0024."""
     backend = self._make_backend()
     payload = await self._capture_payload(backend)
     # Shaker at offset 68-71 for type 0x0024 (plate(63) + scan(1) + optic(1) + zeros(3))
     self.assertEqual(payload[68:72], b"\x00\x00\x00\x00")
 
-  async def test_shake_bytes_encoded(self):
-    """Orbital 300rpm 10s → correct shaker encoding at shaker position."""
+  async def test_shake_bytes_encoded_0x0024(self):
+    """Orbital 300rpm 10s → correct 0x0024 shaker encoding at offset 68."""
     backend = self._make_backend()
     payload = await self._capture_payload(
       backend, shake_speed_rpm=300, shake_duration_s=10
     )
     expected = _shaker_bytes(ShakerType.ORBITAL, speed_rpm=300, duration_s=10)
     self.assertEqual(payload[68:72], expected)
+
+  # --- shaker encoding (0x0026) ---
+
+  async def test_no_shake_0x0026(self):
+    """No shaking → block positions 17, 23, 24-25 are all zero for 0x0026."""
+    backend = self._make_backend(machine_type=0x0026)
+    payload = await self._capture_payload(backend)
+    # Block starts at offset 64 (plate(63) + scan(1))
+    self.assertEqual(payload[64 + 17], 0x00)  # shake type
+    self.assertEqual(payload[64 + 23], 0x00)  # speed
+    self.assertEqual(payload[64 + 24], 0x00)  # duration hi
+    self.assertEqual(payload[64 + 25], 0x00)  # duration lo
+
+  async def test_shake_bytes_0x0026_orbital(self):
+    """Orbital 300rpm 5s → correct 0x0026 encoding at scattered block positions."""
+    backend = self._make_backend(machine_type=0x0026)
+    payload = await self._capture_payload(
+      backend, shake_speed_rpm=300, shake_duration_s=5
+    )
+    # Block starts at offset 64
+    self.assertEqual(payload[64 + 17], 0x02)  # orbital → 0x02 in 0x0026 encoding
+    self.assertEqual(payload[64 + 23], 2)     # speed_idx = (300/100)-1 = 2
+    self.assertEqual(payload[64 + 24], 0x00)  # duration hi
+    self.assertEqual(payload[64 + 25], 0x05)  # duration lo = 5
+
+  async def test_shake_0x0026_separator_at_100(self):
+    """0x0026 separator is at offset 100 (plate(63) + scan(1) + block(36))."""
+    backend = self._make_backend(machine_type=0x0026)
+    payload = await self._capture_payload(backend)
+    self.assertEqual(payload[100:104], b"\x27\x0f\x27\x0f")
+
+  async def test_shake_0x0026_optic_bytes(self):
+    """0x0026 block[4] and block[5] hold optic config for orbital absorbance."""
+    backend = self._make_backend(machine_type=0x0026)
+    payload = await self._capture_payload(
+      backend, well_scan="orbital", well_scan_width=3.0
+    )
+    # block[4] = 0x02 | 0x08 = 0x0a (orbital indicator)
+    # block[5] = 0x02 | 0x30 = 0x32 (orbital averaging flags)
+    self.assertEqual(payload[64 + 4], 0x0a)
+    self.assertEqual(payload[64 + 5], 0x32)
 
   # --- combined parameters ---
 
@@ -2350,8 +2408,8 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
 
   # --- machine type differences ---
 
-  async def test_extended_separator_type_0x0026(self):
-    """Type 0x0026 includes 5 extra bytes before separator; params still encoded correctly."""
+  async def test_0x0026_params_via_separator_anchor(self):
+    """Type 0x0026 uses 36-byte block; post-separator params still encoded correctly."""
     backend = self._make_backend(machine_type=0x0026)
     payload = await self._capture_payload(
       backend, pause_time_per_well=5, settling_time_before_measurement=2, flashes_per_well=7,
