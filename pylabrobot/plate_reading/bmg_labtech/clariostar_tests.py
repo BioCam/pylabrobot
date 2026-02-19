@@ -277,9 +277,9 @@ class TestWellScanOpticFlags(unittest.TestCase):
   def test_orbital_returns_0x30(self):
     self.assertEqual(_well_scan_optic_flags("orbital"), 0x30)
 
-  def test_spiral_returns_zero_for_now(self):
-    """Spiral not yet wired — returns 0 until OEM capture confirms encoding."""
-    self.assertEqual(_well_scan_optic_flags("spiral"), 0x00)
+  def test_spiral_returns_0x04(self):
+    """Spiral: bit 2 set. Verified via OEM pcap (spiral 4mm, spiral 5mm)."""
+    self.assertEqual(_well_scan_optic_flags("spiral"), 0x04)
 
   def test_matrix_returns_zero_for_now(self):
     self.assertEqual(_well_scan_optic_flags("matrix"), 0x00)
@@ -321,6 +321,22 @@ class TestWellScanOrbitalBytes(unittest.TestCase):
   def test_orbital_terminator(self):
     result = _well_scan_orbital_bytes(0x02, "orbital", 3, self.plate)
     self.assertEqual(result[4], 0x00)
+
+  def test_spiral_returns_5_bytes(self):
+    """Spiral uses the same 5-byte structure as orbital (verified via OEM pcap)."""
+    result = _well_scan_orbital_bytes(0x02, "spiral", 4, self.plate)
+    self.assertEqual(len(result), 5)
+
+  def test_spiral_width_encoded(self):
+    """Spiral 4mm → width byte = 4 (verified via OEM pcap spiral 4mm)."""
+    result = _well_scan_orbital_bytes(0x02, "spiral", 4, self.plate)
+    self.assertEqual(result[0], 0x02)  # measurement code
+    self.assertEqual(result[1], 4)     # width = 4mm
+
+  def test_spiral_5mm(self):
+    """Spiral 5mm → width byte = 5 (verified via OEM pcap spiral 5mm)."""
+    result = _well_scan_orbital_bytes(0x02, "spiral", 5, self.plate)
+    self.assertEqual(result[1], 5)
 
   def test_orbital_meas_code_dict(self):
     """Verify the known measurement code constants."""
@@ -2378,16 +2394,36 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     payload = await self._capture_payload(backend)
     self.assertEqual(payload[100:104], b"\x27\x0f\x27\x0f")
 
-  async def test_shake_0x0026_optic_bytes(self):
-    """0x0026 block[4] and block[5] hold optic config for orbital absorbance."""
+  async def test_0x0026_optic_bytes_orbital(self):
+    """0x0026 block[4]=0x0a, block[5]=0x32 for orbital absorbance."""
     backend = self._make_backend(machine_type=0x0026)
     payload = await self._capture_payload(
       backend, well_scan="orbital", well_scan_width=3.0
     )
-    # block[4] = 0x02 | 0x08 = 0x0a (orbital indicator)
-    # block[5] = 0x02 | 0x30 = 0x32 (orbital averaging flags)
+    # block[4] = 0x02 | 0x08 = 0x0a (well-scan-enabled)
+    # block[5] = 0x02 | 0x30 = 0x32 (orbital flags)
     self.assertEqual(payload[64 + 4], 0x0a)
     self.assertEqual(payload[64 + 5], 0x32)
+
+  async def test_0x0026_optic_bytes_spiral(self):
+    """0x0026 block[4]=0x0a, block[5]=0x06 for spiral absorbance."""
+    backend = self._make_backend(machine_type=0x0026)
+    payload = await self._capture_payload(
+      backend, well_scan="spiral", well_scan_width=4.0
+    )
+    # block[4] = 0x02 | 0x08 = 0x0a (well-scan-enabled, same for any non-point)
+    # block[5] = 0x02 | 0x04 = 0x06 (spiral flag)
+    self.assertEqual(payload[64 + 4], 0x0a)
+    self.assertEqual(payload[64 + 5], 0x06)
+
+  async def test_0x0026_optic_bytes_point(self):
+    """0x0026 block[4]=0x02, block[5]=0x02 for point scan (no well-scan flags)."""
+    backend = self._make_backend(machine_type=0x0026)
+    payload = await self._capture_payload(backend)
+    # block[4] = 0x02 (no 0x08 flag for point)
+    # block[5] = 0x02 (base only)
+    self.assertEqual(payload[64 + 4], 0x02)
+    self.assertEqual(payload[64 + 5], 0x02)
 
   # --- combined parameters ---
 

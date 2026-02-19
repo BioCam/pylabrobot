@@ -29,3 +29,17 @@ shake_types: linear, orbital, double orbital
 shake_speed: 100 - 700 rpm (always in steps of 100)
 
 shake_duration: sec
+
+### spectral scan measurements
+
+everything as above except:
+
+wavelength has a start and end (min 220, max 1000 nm)
+scan_step_size is either: 1, 2, 5, 10
+
+spectral well_scan_types are: 
+- point (fwp 1 - 200)
+- orbital (fwp 1 - 44)
+- spiral (fwp 1 - 127)
+- but NOT matrix
+

@@ -344,57 +344,66 @@ def _scan_mode_byte(
 # # # Well scan mode # # #
 
 
-# Measurement-type codes for the first byte of the 5-byte orbital scan block.
+# Measurement-type codes for the first byte of the 5-byte well-scan block.
 # Absorbance confirmed via OEM pcap; fluorescence from Go fl.go.
-_ORBITAL_MEAS_CODE: Dict[str, int] = {
+_WELL_SCAN_MEAS_CODE: Dict[str, int] = {
   "absorbance": 0x02,
   "fluorescence": 0x03,
   # luminescence: not yet confirmed via OEM capture
 }
 
+# Keep the old name as an alias for backward compatibility in tests.
+_ORBITAL_MEAS_CODE = _WELL_SCAN_MEAS_CODE
+
 
 def _well_scan_optic_flags(well_scan: Literal["point", "orbital", "spiral", "matrix"]) -> int:
   """Return the optic-config flag bits for the given well scan mode.
 
-  Point scan returns ``0x00`` (no extra flags).
-  Orbital scan returns ``0x30`` (bits 4 and 5 = orbital averaging enable).
+  These bits are OR'd into the per-measurement optic config byte (block[5]
+  on 0x0026, or the single optic byte on 0x0024).
 
-  These bits are OR'd into the per-measurement optic config byte, which sits
-  right after the scan mode byte in the command payload.  The bit layout is
-  consistent across absorbance (Go ``abs.go:79``), fluorescence (Go ``fl.go:96-98``),
-  and presumably luminescence.
+  Verified via OEM MARS pcap (absorbance):
+
+  - Point:   ``0x00``
+  - Orbital: ``0x30`` (bits 4-5)  → optic byte = 0x02 | 0x30 = 0x32
+  - Spiral:  ``0x04`` (bit 2)    → optic byte = 0x02 | 0x04 = 0x06
+  - Matrix:  TBD (no pcap yet)
   """
   if well_scan == "orbital":
     return 0x30
-  # point / spiral / matrix: no orbital flags (spiral/matrix TBD)
+  if well_scan == "spiral":
+    return 0x04
+  # point / matrix: no flags (matrix TBD)
   return 0x00
 
 
-def _well_scan_orbital_bytes(
+def _well_scan_bytes(
   measurement_code: int,
   well_scan: Literal["point", "orbital", "spiral", "matrix"],
   well_scan_width: Optional[float],
   plate: "Plate",
 ) -> bytes:
-  """Build the orbital scan parameter block to insert after the ``$27 $0F`` separator.
+  """Build the well-scan parameter block to insert after the ``$27 $0F`` separator.
 
-  Returns 5 bytes for orbital mode, empty ``bytes`` for point mode.
+  Returns 5 bytes for orbital/spiral/matrix mode, empty ``bytes`` for point mode.
 
-  The 5-byte structure (verified via OEM pcap for absorbance, Go ``fl.go``
-  for fluorescence)::
+  The 5-byte structure (verified via OEM pcap for absorbance orbital 3 mm,
+  spiral 4 mm, spiral 5 mm)::
 
-    [measurement_code, diameter_mm, well_dia_hi, well_dia_lo, 0x00]
+    [measurement_code, width_mm, well_dia_hi, well_dia_lo, 0x00]
 
   - *measurement_code*: ``0x02`` for absorbance, ``0x03`` for fluorescence.
-  - *diameter_mm*: orbital diameter in integer mm (``well_scan_width``).
-  - *well_dia*: physical well diameter in 0.01 mm as uint16 BE
-    (matches Go ``Plate.WellDia`` which is "mm × 100").
+  - *width_mm*: scan diameter/width in integer mm (``well_scan_width``).
+  - *well_dia*: physical well diameter in 0.01 mm as uint16 BE.
   - ``0x00``: terminator.
+
+  The same structure is used for orbital, spiral, and matrix (the scan *type*
+  is encoded in the pre-separator block at block[5], not here).
 
   For point scan the firmware expects *no* extra bytes between the separator
   and the measurement-specific data (settling byte, wavelength list, etc.).
   """
-  if well_scan != "orbital" or well_scan_width is None:
+  if well_scan == "point" or well_scan_width is None:
     return b""
   sample_well = plate.get_all_items()[0]
   well_dia_mm = min(sample_well.get_size_x(), sample_well.get_size_y())
@@ -404,6 +413,10 @@ def _well_scan_orbital_bytes(
     + well_dia_hundredths.to_bytes(2, "big")
     + b"\x00"
   )
+
+
+# Keep old name as alias for backward compatibility in tests.
+_well_scan_orbital_bytes = _well_scan_bytes
 
 
 # # # Model lookup # # #
@@ -1796,12 +1809,15 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     if self._uses_extended_separator:
       # Machine type 0x0026: 36-byte block between scan byte and separator.
-      # Verified against OEM MARS pcap (absorbance orbital 3mm, w/ and w/o shake).
+      # Verified against OEM MARS pcaps:
+      #   - absorbance orbital 3mm w/ and w/o shake (300 RPM orbital 5s)
+      #   - absorbance spiral 4mm 15 flashes
+      #   - absorbance spiral 5mm 450+600nm 15 flashes
       #
       # Block layout (offsets within the 36-byte block):
       #   [0:4]   zeros(4)
-      #   [4]     optic_base | 0x08 (orbital well-scan indicator)
-      #   [5]     optic_config (base | orbital-averaging flags)
+      #   [4]     optic_base | 0x08 (well-scan-enabled flag, for any non-point scan)
+      #   [5]     optic_config (base | scan-type flags: 0x30=orbital, 0x04=spiral)
       #   [6:17]  zeros(11)
       #   [17]    shake type (0x0026 encoding, see _SHAKE_TYPE_0026)
       #   [18:23] zeros(5)
@@ -1825,9 +1841,9 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     payload += b"\x27\x0f\x27\x0f"
 
-    # Orbital scan parameters (0 or 5 bytes after separator).
-    payload += _well_scan_orbital_bytes(
-      _ORBITAL_MEAS_CODE["absorbance"], well_scan, well_scan_width, plate,
+    # Well-scan parameters (5 bytes for orbital/spiral/matrix, 0 for point).
+    payload += _well_scan_bytes(
+      _WELL_SCAN_MEAS_CODE["absorbance"], well_scan, well_scan_width, plate,
     )
     # Per-well pause + wavelength count + wavelength data (per Go absDiscreteBytes)
     # Encoding: 1 if pause_time_per_well==0, else (pause_time_per_well * 10) // 2.
