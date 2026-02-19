@@ -1610,6 +1610,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     shake_speed_rpm: int = 0,
     shake_duration_s: int = 0,
     pause_time: int = 0,
+    # scan pattern
     start_corner: StartCorner = StartCorner.TOP_LEFT,
     unidirectional: bool = True,
     vertical: bool = False,
@@ -1952,12 +1953,12 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Orchestrates the full OEM-style measurement sequence:
 
+    0. Enable temperature monitoring (ensures embedded temp in response).
     1. Send the absorbance run command (atomic ``_start_absorbance_measurement``).
-    2. Verify the run response was accepted.
-    3. Fetch first progressive data and time how long it takes.
-    4. If ``wait=False``, return ``None`` immediately.
-    5. If ``wait=True``, progressive polling loop at ``data_retrieval_rate``.
-    6. After BUSY clears, collect final measurement data.
+    2. Check if BUSY already cleared (fast measurements with few wells).
+    3. If ``wait=False``, return ``None`` immediately.
+    4. If ``wait=True``, progressive polling loop at ``data_retrieval_rate``.
+    5. After BUSY clears, collect final measurement data.
 
     Args:
       wavelength: wavelength to read absorbance at, in nanometers.
@@ -1974,12 +1975,12 @@ class CLARIOstarBackend(PlateReaderBackend):
         optic: Literal["bottom", "top"] - read from bottom or top optic.
         wait: bool - if False, start measurement and return None immediately.
           Use ``collect_absorbance_measurement`` to retrieve results later.
-        data_retrieval_rate: float - seconds between progressive data polls (default 1.5).
+        data_retrieval_rate: float - seconds between progressive data polls (default 0.5).
         on_progress: async callback ``(complete, total, raw_response)`` called
           each time progressive data is fetched during the polling loop.
     """
     wait = backend_kwargs.pop("wait", True)
-    data_retrieval_rate: float = backend_kwargs.pop("data_retrieval_rate", 1.5)
+    data_retrieval_rate: float = backend_kwargs.pop("data_retrieval_rate", 0.5)
     on_progress: Optional[Callable[[int, int, Optional[bytes]], Awaitable[None]]] = \
       backend_kwargs.pop("on_progress", None)
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
@@ -2013,28 +2014,23 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     if already_done:
       logger.info("Measurement already complete (BUSY cleared), skipping progressive polling")
-    else:
-      # Step 3: First progressive data retrieval + timing
-      # Drain any unsolicited firmware responses that accumulated since the
-      # run command (the firmware sends confirmations during/after measurement).
-      await self._drain_buffer()
-      t0 = time.time()
-      try:
-        first_data = await self._get_progressive_measurement_values()
-        first_progress = self._parse_progress_from_data_response(first_data)
-        logger.info(
-          "First data retrieval took %.2fs: %d/%d values (schema=0x%02x)",
-          time.time() - t0,
-          first_progress["complete"], first_progress["total"], first_progress["schema"],
-        )
-      except (ValueError, FrameError) as e:
-        logger.warning("First progressive data retrieval failed (%.2fs): %s", time.time() - t0, e)
 
-    # Step 4: Early exit if not waiting
+    # Step 3: Early exit if not waiting
     if not wait:
       return None
 
-    # Step 5: Progressive polling loop (skipped if already done)
+    # Step 4: Progressive polling loop (skipped if already done)
+    #
+    # Value accounting: the firmware reports progress as raw value counts.
+    # For each wavelength it measures: sample + reference per well, plus
+    # 4 calibration values. So:
+    #   total = n_wells * 2 * n_wl + n_wl * 4
+    #   wells_measured = (complete - n_wl * 4) / (2 * n_wl)
+    # Calibration values fill first, then wells fill in scan order.
+    n_wells = len(wells)
+    n_wl = len(wavelengths)
+    cal_overhead = n_wl * 4  # calibration values per wavelength
+
     if not already_done:
       timeout = self.timeout
       t_start = time.time()
@@ -2046,8 +2042,8 @@ class CLARIOstarBackend(PlateReaderBackend):
         # or may return stale data).
         command_status = await self._request_command_status()
         flags = self._parse_status_response(command_status)
-        logger.info("status: %s", {k: v for k, v in flags.items() if v})
         if not flags["busy"]:
+          logger.info("BUSY cleared, measurement complete")
           break
 
         # Fetch progressive data (only while still BUSY)
@@ -2055,9 +2051,10 @@ class CLARIOstarBackend(PlateReaderBackend):
         try:
           progressive_resp = await self._get_progressive_measurement_values()
           progress = self._parse_progress_from_data_response(progressive_resp)
+          wells_done = max(0, (progress["complete"] - cal_overhead)) // (2 * n_wl)
           logger.info(
-            "Progressive poll: %d/%d values (schema=0x%02x)",
-            progress["complete"], progress["total"], progress["schema"],
+            "Progressive: %d/%d wells measured (%d/%d values)",
+            wells_done, n_wells, progress["complete"], progress["total"],
           )
           if on_progress is not None:
             await on_progress(progress["complete"], progress["total"], progressive_resp)
@@ -2070,7 +2067,7 @@ class CLARIOstarBackend(PlateReaderBackend):
           f"Increase timeout via CLARIOstarBackend(timeout=...) for long-running operations."
         )
 
-    # Step 6: Collect final data
+    # Step 5: Collect final data
     return await self.collect_absorbance_measurement(
       plate=plate, wells=wells, wavelengths=wavelengths, report=report,
     )
