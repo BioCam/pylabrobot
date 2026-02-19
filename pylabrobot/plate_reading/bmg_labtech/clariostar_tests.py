@@ -1569,12 +1569,12 @@ def _make_run_response_payload(
   status_bytes: bytes = b"\x25\x04\x06",
   total_values: int = 392,
 ) -> bytes:
-  """Build a minimal run response payload (>= 11 bytes) for _parse_run_response tests."""
+  """Build a minimal run response payload (>= 14 bytes) for _parse_run_response tests."""
   # Byte 0: command echo
   # Bytes 1-3: status
-  # Bytes 4-8: padding (timing metadata in real firmware)
-  # Bytes 9-10: total values (uint16 BE)
-  payload = bytes([command_echo]) + status_bytes + b"\x00\x00\x00\x00\x00"
+  # Bytes 4-11: padding (timing/firmware metadata)
+  # Bytes 12-13: total values (uint16 BE)
+  payload = bytes([command_echo]) + status_bytes + b"\x00" * 8
   payload += total_values.to_bytes(2, "big")
   return payload
 
@@ -1614,7 +1614,7 @@ class TestParseRunResponse(unittest.TestCase):
     self.assertEqual(result["total_values"], 100)
 
   def test_too_short_response_raises(self):
-    """A response shorter than 11 payload bytes raises ValueError."""
+    """A response shorter than 14 payload bytes raises ValueError."""
     short_payload = b"\x03\x25\x04"  # only 3 bytes
     framed = _make_response_frame(short_payload)
     with self.assertRaises(ValueError):
@@ -1879,6 +1879,7 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     backend._trace_io_path = None
     backend._machine_type_code = 0x0026
     backend._last_scan_params = {}
+    backend.enable_temperature_monitoring = unittest.mock.AsyncMock()
     return backend
 
   def _make_status_response(self, busy: bool) -> bytes:

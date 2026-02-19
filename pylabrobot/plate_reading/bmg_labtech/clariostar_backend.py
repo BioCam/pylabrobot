@@ -1381,11 +1381,15 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     - Byte 0: ``$03`` — echo of the run command type
     - Bytes 1-3: status bytes (BUSY + accepted flags)
-    - Bytes 9-10: total expected measurement values (uint16 BE)
+    - Bytes 12-13: total measurement values (uint16 BE). This count is
+      consistently 4 higher than the ``total`` field in progressive getData
+      responses — the firmware likely includes 4 header/metadata slots that
+      the progressive response excludes. Used for logging only; the
+      authoritative total comes from ``_parse_progress_from_data_response``.
 
     Returns dict with:
       - ``accepted``: bool — True if the command was accepted (byte 0 == 0x03)
-      - ``total_values``: int — expected total measurement values
+      - ``total_values``: int — expected total measurement values (firmware count)
       - ``status_bytes``: bytes — raw status bytes for debugging
 
     Raises ValueError if the response is too short to parse.
@@ -1398,16 +1402,16 @@ class CLARIOstarBackend(PlateReaderBackend):
       else:
         payload = response
 
-    if len(payload) < 11:
+    if len(payload) < 14:
       raise ValueError(
-        f"Run response too short ({len(payload)} bytes, need >= 11). "
+        f"Run response too short ({len(payload)} bytes, need >= 14). "
         f"Raw: {response.hex()}"
       )
 
     command_echo = payload[0]
     accepted = command_echo == 0x03
     status_bytes = payload[1:4]
-    total_values = int.from_bytes(payload[9:11], "big")
+    total_values = int.from_bytes(payload[12:14], "big")
 
     return {
       "accepted": accepted,
@@ -1601,6 +1605,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     plate: Plate,
     wells: Optional[List[Well]] = None,
     settling_time: int = 0,
+    # shake during measurement
     shake_type: ShakerType = ShakerType.ORBITAL,
     shake_speed_rpm: int = 0,
     shake_duration_s: int = 0,
@@ -1986,6 +1991,10 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
+
+    # Step 0: Ensure temperature monitoring is active so the firmware embeds
+    # a pre-measurement temperature reading in the response.
+    await self.enable_temperature_monitoring()
 
     # Step 1: Send command, verify accepted, return run response
     run_response = await self._start_absorbance_measurement(
