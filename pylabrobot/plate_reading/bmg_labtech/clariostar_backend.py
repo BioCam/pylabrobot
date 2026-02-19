@@ -1352,7 +1352,7 @@ class CLARIOstarBackend(PlateReaderBackend):
   async def _get_measurement_values(self):
     return await self.send_command(b"\x05\x02\x00\x00\x00\x00\x00\x00")
 
-  async def _get_progressive_measurement_values(self, read_timeout: float = 5):
+  async def _get_progressive_measurement_values(self, read_timeout: float = 1):
     """Fetch partial measurement data during an active measurement.
 
     Uses the ``$FF $FF $FF $FF`` variant of getData which returns available
@@ -1363,10 +1363,10 @@ class CLARIOstarBackend(PlateReaderBackend):
     This can be called while the instrument is BUSY (measurement in progress).
 
     Args:
-      read_timeout: Seconds to wait for a response. Shorter than the default
-        ``send_command`` timeout (20s) because progressive polling should not
-        block the orchestration loop. If the firmware doesn't respond (e.g.
-        measurement completed too fast), the caller handles the empty response.
+      read_timeout: Seconds to wait for a response. Short (1s) because the
+        firmware doesn't respond to progressive getData during its initial
+        setup phase (~6s of optics homing / filter wheel rotation).  The
+        polling loop simply retries on the next iteration.
     """
     return await self.send_command(
       b"\x05\x02\xff\xff\xff\xff\x00\x00", read_timeout=read_timeout,
@@ -2046,10 +2046,35 @@ class CLARIOstarBackend(PlateReaderBackend):
           logger.info("BUSY cleared, measurement complete")
           break
 
-        # Fetch progressive data (only while still BUSY)
+        # Fetch progressive data (only while still BUSY).
+        # The firmware may send an unsolicited status notification (24 bytes,
+        # RUNNING + UNREAD_DATA) when the measurement finishes.  read_resp
+        # can pick this up instead of the real progressive data response.
+        # Detect it by size: data responses are >100 bytes; status
+        # notifications are exactly 24 bytes with payload[0] in the status
+        # command family (0x00 or 0x01).
         await self._drain_buffer()
         try:
           progressive_resp = await self._get_progressive_measurement_values()
+
+          # Check if we received an unsolicited status notification instead
+          # of progressive data.  These are ~24 bytes; real data responses
+          # for even the smallest plate (8 wells) are 124+ bytes.
+          try:
+            resp_payload = _unframe(progressive_resp)
+          except FrameError:
+            resp_payload = progressive_resp[4:-2] if len(progressive_resp) >= 7 else progressive_resp
+          if len(resp_payload) >= 5 and resp_payload[0] in (0x00, 0x01):
+            notif_flags = _parse_status(resp_payload[:5])
+            logger.info(
+              "Received unsolicited status notification: %s",
+              {k: v for k, v in notif_flags.items() if v},
+            )
+            if not notif_flags.get("busy", False):
+              logger.info("Firmware reports measurement complete via notification")
+              break
+            continue
+
           progress = self._parse_progress_from_data_response(progressive_resp)
           wells_done = max(0, (progress["complete"] - cal_overhead)) // (2 * n_wl)
           logger.info(
@@ -2059,7 +2084,7 @@ class CLARIOstarBackend(PlateReaderBackend):
           if on_progress is not None:
             await on_progress(progress["complete"], progress["total"], progressive_resp)
         except (ValueError, FrameError) as e:
-          logger.warning("Progressive poll failed: %s", e)
+          logger.debug("Progressive poll failed: %s", e)
       else:
         elapsed = time.time() - t_start
         raise TimeoutError(
