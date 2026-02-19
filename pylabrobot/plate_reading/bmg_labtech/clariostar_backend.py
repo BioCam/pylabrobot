@@ -1914,28 +1914,34 @@ class CLARIOstarBackend(PlateReaderBackend):
     optic_config = optic_base | _well_scan_optic_flags(well_scan)
 
     if self._uses_extended_separator and well_scan != "point":
-      # Machine type 0x0026, non-point scan: 32-byte block between scan byte
+      # Machine type 0x0026, non-point scan: 36-byte block between scan byte
       # and separator.
-      # Verified byte-for-byte against OEM MARS pcaps:
-      #   - absorbance orbital 3mm w/ and w/o shake (300 RPM orbital 5s)
       #
-      # Block layout (offsets within the 32-byte block):
-      #   [0]     optic_base | 0x08 (well-scan-enabled flag)
-      #   [1]     optic_config (base | scan-type flags: 0x30=orbital, 0x04=spiral)
-      #   [2:13]  zeros(11)
-      #   [13]    shake type (0x0026 encoding, see _SHAKE_TYPE_0026)
-      #   [14:19] zeros(5)
-      #   [19]    shake speed index ((rpm / 100) - 1)
-      #   [20:22] shake duration (uint16 BE seconds)
-      #   [22:32] zeros(10)
-      block = bytearray(32)
-      block[0] = optic_base | 0x08
-      block[1] = optic_config
+      # NOTE: The OEM MARS pcap shows the separator at absolute payload offset
+      # 96, but the OEM plate encoding is ~4 bytes shorter than ours (59 vs 63
+      # bytes).  Firmware parses the plate section first (variable length),
+      # then reads the block.  Block-relative positions are identical:
+      #   OEM block starts at payload[60], ours at payload[64].
+      #   Both: block[4]=optic, block[17]=shake_type, etc.
+      #
+      # Block layout (offsets within the 36-byte block):
+      #   [0:4]   zeros(4)
+      #   [4]     optic_base | 0x08 (well-scan-enabled flag)
+      #   [5]     optic_config (base | scan-type flags: 0x30=orbital, 0x04=spiral)
+      #   [6:17]  zeros(11)
+      #   [17]    shake type (0x0026 encoding, see _SHAKE_TYPE_0026)
+      #   [18:23] zeros(5)
+      #   [23]    shake speed index ((rpm / 100) - 1)
+      #   [24:26] shake duration (uint16 BE seconds)
+      #   [26:36] zeros(10)
+      block = bytearray(36)
+      block[4] = optic_base | 0x08
+      block[5] = optic_config
       if shake_duration_s > 0:
-        block[13] = _SHAKE_TYPE_0026[shake_type]
-        block[19] = (shake_speed_rpm // 100) - 1
-        block[20] = (shake_duration_s >> 8) & 0xFF
-        block[21] = shake_duration_s & 0xFF
+        block[17] = _SHAKE_TYPE_0026[shake_type]
+        block[23] = (shake_speed_rpm // 100) - 1
+        block[24] = (shake_duration_s >> 8) & 0xFF
+        block[25] = shake_duration_s & 0xFF
       payload += bytes(block)
     elif self._uses_extended_separator:
       # Machine type 0x0026, point scan: compact format (verified on hardware).
