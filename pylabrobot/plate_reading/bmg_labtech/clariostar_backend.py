@@ -1353,8 +1353,37 @@ class CLARIOstarBackend(PlateReaderBackend):
     status_hw_response = await self.send_command(b"\x81\x00")
     return await self._wait_for_ready_and_return(status_hw_response)
 
-  async def _get_measurement_values(self):
-    return await self.send_command(b"\x05\x02\x00\x00\x00\x00\x00\x00")
+  async def _get_measurement_values(self, read_timeout: float = 30):
+    """Fetch final measurement data after a measurement has completed.
+
+    Uses a 30-second read timeout because the firmware can take 20+ seconds to
+    respond to the first final-getData of a session (observed on 8-well partial
+    reads).  If the response is truncated (size field > actual length and checksum
+    fails), retries once with the same timeout.
+    """
+    resp = await self.send_command(
+      b"\x05\x02\x00\x00\x00\x00\x00\x00", read_timeout=read_timeout,
+    )
+
+    # Detect truncated response: size field says N bytes but we got fewer,
+    # and the checksum doesn't validate (meaning the frame is incomplete).
+    if len(resp) >= 3:
+      expected_size = int.from_bytes(resp[1:3], "big")
+      if len(resp) < expected_size:
+        cs_ok = False
+        if len(resp) >= 7 and resp[-1] == 0x0D:
+          cs_ok = (sum(resp[:-3]) & 0xFFFF) == int.from_bytes(resp[-3:-1], "big")
+        if not cs_ok:
+          logger.warning(
+            "Truncated measurement response (%d/%d bytes), retrying after drain...",
+            len(resp), expected_size,
+          )
+          await asyncio.sleep(1.0)
+          await self._drain_buffer()
+          resp = await self.send_command(
+            b"\x05\x02\x00\x00\x00\x00\x00\x00", read_timeout=read_timeout,
+          )
+    return resp
 
   async def _get_progressive_measurement_values(self, read_timeout: float = 1):
     """Fetch partial measurement data during an active measurement.
@@ -2124,7 +2153,12 @@ class CLARIOstarBackend(PlateReaderBackend):
           f"Increase timeout via CLARIOstarBackend(timeout=...) for long-running operations."
         )
 
-    # Step 5: Collect final data
+    # Step 5: Collect final data — drain any stale bytes from progressive
+    # polling and give the firmware a moment to prepare the final data buffer.
+    # The firmware can take 20+ seconds on the first measurement of a session;
+    # draining + sleeping here reduces the chance of a truncated read.
+    await self._drain_buffer()
+    await asyncio.sleep(0.5)
     return await self.collect_absorbance_measurement(
       plate=plate, wells=wells, wavelengths=wavelengths, report=report,
     )
