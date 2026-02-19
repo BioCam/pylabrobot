@@ -1389,10 +1389,13 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Returns dict with:
       - ``accepted``: bool — True if the command was accepted (byte 0 == 0x03)
-      - ``total_values``: int — expected total measurement values (firmware count)
+      - ``total_values``: int — expected total measurement values (firmware count),
+        or -1 if the response was truncated (serial timeout delivered a partial
+        frame).  Used for logging only.
       - ``status_bytes``: bytes — raw status bytes for debugging
 
-    Raises ValueError if the response is too short to parse.
+    Raises ValueError if the response is too short to extract even the
+    accepted flag (< 4 payload bytes).
     """
     try:
       payload = _unframe(response)
@@ -1402,16 +1405,26 @@ class CLARIOstarBackend(PlateReaderBackend):
       else:
         payload = response
 
-    if len(payload) < 14:
+    if len(payload) < 4:
       raise ValueError(
-        f"Run response too short ({len(payload)} bytes, need >= 14). "
+        f"Run response too short ({len(payload)} bytes, need >= 4). "
         f"Raw: {response.hex()}"
       )
 
     command_echo = payload[0]
     accepted = command_echo == 0x03
     status_bytes = payload[1:4]
-    total_values = int.from_bytes(payload[12:14], "big")
+
+    if len(payload) >= 14:
+      total_values = int.from_bytes(payload[12:14], "big")
+    else:
+      total_values = -1
+      logger.warning(
+        "Truncated run response (%d payload bytes, expected >= 14). "
+        "The firmware accepted the command but the serial link dropped bytes. "
+        "Raw: %s",
+        len(payload), response.hex(),
+      )
 
     return {
       "accepted": accepted,
@@ -1630,7 +1643,9 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Args:
       wavelengths: List of wavelengths in nm (1-8 wavelengths, 200-1000 nm each).
-      settling_time: Settling time in deciseconds (0-10).
+      settling_time: Settling time in deciseconds (0-10). Encoded as
+        ``(settling_time * 10) // 2`` (1 when 0). Controls how long the optics
+        head waits after moving to each well position before flashing.
       flying_mode: If True, the plate moves continuously during measurement.
       well_scan: Well scanning pattern. ``"orbital"`` is wired; ``"spiral"`` and
         ``"matrix"`` are validated but not yet encoded.
@@ -1642,6 +1657,12 @@ class CLARIOstarBackend(PlateReaderBackend):
         control may accept other values.
         Only used when ``well_scan`` is ``"matrix"``.
       optic: Read from top or bottom optic. TODO: not yet wired into the command payload.
+      pause_time: Pause time in seconds (uint16 BE). The firmware accepts 0-65535.
+        When non-zero, a flag byte ``0x01`` is set and the value is encoded as a
+        16-bit big-endian integer. The exact firmware behavior is undocumented —
+        this appears to insert an additional delay into the measurement cycle,
+        separate from ``settling_time``. Use the parameter-exploration cells in the
+        notebook to characterize its effect empirically.
       flashes_per_well: Number of flashes per well (1-200). Encoded as uint16 BE
         in the command payload.  OEM defaults: 5 for point, 7 for orbital.
 
@@ -1708,8 +1729,11 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload += _well_scan_orbital_bytes(
       _ORBITAL_MEAS_CODE["absorbance"], well_scan, well_scan_width, plate,
     )
-    # Settling + wavelength count + wavelength data (per Go absDiscreteBytes)
-    payload += bytes([0x19, len(wavelengths)])
+    # Settling time + wavelength count + wavelength data (per Go absDiscreteBytes)
+    # Encoding: 1 if settling_time==0, else (settling_time * 10) // 2.
+    # Default 0x19 (=25) in OEM captures corresponds to settling_time=5 (0.5s).
+    settling_byte = 1 if settling_time == 0 else (settling_time * 10) // 2
+    payload += bytes([settling_byte, len(wavelengths)])
     for w in wavelengths:
       payload += (w * 10).to_bytes(2, "big")
     # Fixed bytes
@@ -2240,8 +2264,14 @@ class CLARIOstarBackend(PlateReaderBackend):
       em_bandwidth: Emission bandwidth in nm.
       dichroic: Dichroic wavelength * 10. Auto-calculated if not provided.
       flashes: Number of flashes per well (0-200).
-      settling_time: Settling time in deciseconds (0-10).
+      settling_time: Settling time in deciseconds (0-10). Encoded as
+        ``(settling_time * 10) // 2`` (1 when 0). Controls how long the optics
+        head waits after moving to each well position before flashing.
       bottom_optic: Use bottom optic instead of top.
+      pause_time: Pause time in seconds (uint16 BE, 0-65535). When non-zero,
+        a flag byte ``0x01`` is set. The exact firmware behavior is undocumented —
+        this appears to insert an additional delay into the measurement cycle,
+        separate from ``settling_time``.
     """
     if flashes > 200:
       raise ValueError("Flashes per well must be <= 200")

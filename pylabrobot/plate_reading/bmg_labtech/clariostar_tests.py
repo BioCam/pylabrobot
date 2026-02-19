@@ -1614,11 +1614,22 @@ class TestParseRunResponse(unittest.TestCase):
     self.assertEqual(result["total_values"], 100)
 
   def test_too_short_response_raises(self):
-    """A response shorter than 14 payload bytes raises ValueError."""
+    """A response shorter than 4 payload bytes raises ValueError."""
     short_payload = b"\x03\x25\x04"  # only 3 bytes
     framed = _make_response_frame(short_payload)
     with self.assertRaises(ValueError):
       CLARIOstarBackend._parse_run_response(framed)
+
+  def test_truncated_response_returns_minus_one_total(self):
+    """A truncated response (4-13 payload bytes) parses accepted/status but
+    returns total_values=-1 instead of crashing. This handles the case where
+    the serial link drops bytes mid-frame (firmware sent 17 of 53 expected)."""
+    # 10-byte payload: accepted + status + padding, but no total_values field
+    truncated_payload = b"\x03\x25\x04\x26\x00\x00\x00\x00\x4e\x20"
+    result = CLARIOstarBackend._parse_run_response(truncated_payload)
+    self.assertTrue(result["accepted"])
+    self.assertEqual(result["status_bytes"], b"\x25\x04\x26")
+    self.assertEqual(result["total_values"], -1)
 
   def test_unframed_fallback(self):
     """When given raw (unframed) bytes, parse_run_response still works."""
