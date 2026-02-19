@@ -1617,12 +1617,12 @@ class CLARIOstarBackend(PlateReaderBackend):
     wavelengths: List[int],
     plate: Plate,
     wells: Optional[List[Well]] = None,
-    settling_time: int = 0,
+    pause_time_per_well: int = 0,
     # shake during measurement
     shake_type: ShakerType = ShakerType.ORBITAL,
     shake_speed_rpm: int = 0,
     shake_duration_s: int = 0,
-    pause_time: int = 0,
+    settling_time_before_measurement: int = 0,
     # scan pattern
     start_corner: StartCorner = StartCorner.TOP_LEFT,
     unidirectional: bool = True,
@@ -1632,7 +1632,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     well_scan_width: Optional[float] = None,
     matrix_size: Optional[int] = None,
     optic: Literal["bottom", "top"] = "top",
-    flashes_per_well: int = 22,
+    flashes_per_well: int = 5,
   ) -> bytes:
     """Send an absorbance measurement command and return the run response immediately.
 
@@ -1643,9 +1643,11 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     Args:
       wavelengths: List of wavelengths in nm (1-8 wavelengths, 200-1000 nm each).
-      settling_time: Settling time in deciseconds (0-10). Encoded as
-        ``(settling_time * 10) // 2`` (1 when 0). Controls how long the optics
-        head waits after moving to each well position before flashing.
+      pause_time_per_well: Per-well pause in deciseconds (0-10). Encoded as
+        ``(pause_time_per_well * 10) // 2`` (1 when 0). The optics head waits
+        this long after moving to each well position before firing the xenon
+        flash. Empirically adds ~0.1 s per well per decisecond. The OEM default
+        byte ``0x19`` corresponds to pause_time_per_well=5.
       flying_mode: If True, the plate moves continuously during measurement.
       well_scan: Well scanning pattern. ``"orbital"`` is wired; ``"spiral"`` and
         ``"matrix"`` are validated but not yet encoded.
@@ -1657,22 +1659,26 @@ class CLARIOstarBackend(PlateReaderBackend):
         control may accept other values.
         Only used when ``well_scan`` is ``"matrix"``.
       optic: Read from top or bottom optic. TODO: not yet wired into the command payload.
-      pause_time: Pause time in seconds (uint16 BE). The firmware accepts 0-65535.
-        When non-zero, a flag byte ``0x01`` is set and the value is encoded as a
-        16-bit big-endian integer. The exact firmware behavior is undocumented —
-        this appears to insert an additional delay into the measurement cycle,
-        separate from ``settling_time``. Use the parameter-exploration cells in the
-        notebook to characterize its effect empirically.
-      flashes_per_well: Number of flashes per well (1-200). Encoded as uint16 BE
-        in the command payload.  OEM defaults: 5 for point, 7 for orbital.
+      settling_time_before_measurement: Once-per-run settling delay in seconds
+        (uint16 BE, 0-65535). Applied before the optics head starts reading —
+        primarily useful when shaking is part of the measurement cycle, to let
+        the liquid settle after shaking. When non-zero, a flag byte ``0x01`` is
+        set. Empirically adds ~1.2 s per unit for small values (1-2); non-linear
+        at higher values. No effect on OD accuracy.
+      flashes_per_well: Number of xenon lamp flashes averaged per well (1-200).
+        Encoded as uint16 BE. OEM defaults: 5 (point), 7 (orbital). Empirically,
+        values >= 5 produce converged OD readings; additional flashes give
+        marginal precision gains at ~12 ms per flash per well. Avoid
+        flashes_per_well=1 which triggers a slow firmware mode (~20 s for 8 wells
+        vs ~7 s at flashes_per_well=5) and reduced accuracy.
 
     Returns:
       The raw ~53-byte framed run response from the firmware.
     """
     if not 1 <= len(wavelengths) <= 8:
       raise ValueError("Must specify 1-8 wavelengths")
-    if settling_time > 10:
-      raise ValueError("Settling time must be 0-10 deciseconds")
+    if pause_time_per_well > 10:
+      raise ValueError("pause_time_per_well must be 0-10 deciseconds")
     for w in wavelengths:
       if not 220 <= w <= 1000:
         raise ValueError(f"Wavelength {w} nm out of range (220-1000)")
@@ -1729,21 +1735,21 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload += _well_scan_orbital_bytes(
       _ORBITAL_MEAS_CODE["absorbance"], well_scan, well_scan_width, plate,
     )
-    # Settling time + wavelength count + wavelength data (per Go absDiscreteBytes)
-    # Encoding: 1 if settling_time==0, else (settling_time * 10) // 2.
-    # Default 0x19 (=25) in OEM captures corresponds to settling_time=5 (0.5s).
-    settling_byte = 1 if settling_time == 0 else (settling_time * 10) // 2
+    # Per-well pause + wavelength count + wavelength data (per Go absDiscreteBytes)
+    # Encoding: 1 if pause_time_per_well==0, else (pause_time_per_well * 10) // 2.
+    # Default 0x19 (=25) in OEM captures corresponds to pause_time_per_well=5 (0.5s).
+    settling_byte = 1 if pause_time_per_well == 0 else (pause_time_per_well * 10) // 2
     payload += bytes([settling_byte, len(wavelengths)])
     for w in wavelengths:
       payload += (w * 10).to_bytes(2, "big")
     # Fixed bytes
     payload += b"\x00\x00\x00\x64\x00\x00\x00\x00\x00\x00\x00\x64\x00"
-    # Pause time
-    if pause_time != 0:
+    # Settling time before measurement (once-per-run, post-shake delay)
+    if settling_time_before_measurement != 0:
       payload += b"\x01"
     else:
       payload += b"\x00"
-    payload += pause_time.to_bytes(2, "big")
+    payload += settling_time_before_measurement.to_bytes(2, "big")
     # Fixed trailer
     payload += b"\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"
     # Flashes per well — uint16 BE. OEM uses 5 for point, 7 for orbital;
@@ -1990,7 +1996,8 @@ class CLARIOstarBackend(PlateReaderBackend):
       **backend_kwargs: Additional keyword arguments:
         wavelengths: List[int] - multiple wavelengths (overrides ``wavelength``).
         flashes_per_well: int - number of flashes per well (0-200).
-        settling_time: int - settling time in deciseconds (0-10).
+        pause_time_per_well: int - per-well pause in deciseconds (0-10).
+        settling_time_before_measurement: int - once-per-run post-shake delay in seconds.
         shake_type, shake_speed_rpm, shake_duration_s: shaker config.
         start_corner, unidirectional, vertical, flying_mode: scan config.
         well_scan: Literal["point", "orbital", "spiral", "matrix"] - well scan pattern.
@@ -2241,12 +2248,12 @@ class CLARIOstarBackend(PlateReaderBackend):
     em_bandwidth: int = 40,
     dichroic: Optional[int] = None,
     flashes: int = 100,
-    settling_time: int = 0,
+    pause_time_per_well: int = 0,
     bottom_optic: bool = False,
     shake_type: ShakerType = ShakerType.ORBITAL,
     shake_speed_rpm: int = 0,
     shake_duration_s: int = 0,
-    pause_time: int = 0,
+    settling_time_before_measurement: int = 0,
     start_corner: StartCorner = StartCorner.TOP_LEFT,
     unidirectional: bool = False,
     vertical: bool = False,
@@ -2264,14 +2271,16 @@ class CLARIOstarBackend(PlateReaderBackend):
       em_bandwidth: Emission bandwidth in nm.
       dichroic: Dichroic wavelength * 10. Auto-calculated if not provided.
       flashes: Number of flashes per well (0-200).
-      settling_time: Settling time in deciseconds (0-10). Encoded as
-        ``(settling_time * 10) // 2`` (1 when 0). Controls how long the optics
-        head waits after moving to each well position before flashing.
+      pause_time_per_well: Per-well pause delay in deciseconds (0-10). Encoded as
+        ``(pause_time_per_well * 10) // 2`` (1 when 0). The optics head waits this
+        long after moving to each well position before firing. Adds ~0.1 s per well
+        per decisecond.
       bottom_optic: Use bottom optic instead of top.
-      pause_time: Pause time in seconds (uint16 BE, 0-65535). When non-zero,
-        a flag byte ``0x01`` is set. The exact firmware behavior is undocumented —
-        this appears to insert an additional delay into the measurement cycle,
-        separate from ``settling_time``.
+      settling_time_before_measurement: Once-per-run settling delay in seconds
+        (uint16 BE, 0-65535). Primarily useful as a post-shake settling delay when
+        shaking is part of the measurement cycle. When non-zero, a flag byte
+        ``0x01`` is set. Adds ~1.2 s per unit for small values; non-linear at
+        higher values. Not per-well. No effect on accuracy.
     """
     if flashes > 200:
       raise ValueError("Flashes per well must be <= 200")
@@ -2316,11 +2325,11 @@ class CLARIOstarBackend(PlateReaderBackend):
     # Unknown separator
     payload += b"\x27\x0f\x27\x0f"
 
-    # Settling time
-    if settling_time == 0:
+    # Per-well pause time
+    if pause_time_per_well == 0:
       payload += bytes([1])
     else:
-      payload += bytes([(settling_time * 10) // 2])
+      payload += bytes([(pause_time_per_well * 10) // 2])
 
     # Focal height
     payload += focal_height_encoded.to_bytes(2, "big")
@@ -2349,12 +2358,12 @@ class CLARIOstarBackend(PlateReaderBackend):
     # Unknown fixed bytes (slit config?)
     payload += b"\x00\x04\x00\x03\x00"
 
-    # Pause time
-    if pause_time != 0:
+    # Settling time before measurement (once-per-run, post-shake delay)
+    if settling_time_before_measurement != 0:
       payload += b"\x01"
     else:
       payload += b"\x00"
-    payload += pause_time.to_bytes(2, "big")
+    payload += settling_time_before_measurement.to_bytes(2, "big")
 
     # Fixed trailer
     payload += b"\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"
@@ -2424,7 +2433,8 @@ class CLARIOstarBackend(PlateReaderBackend):
         em_bandwidth: int - emission bandwidth in nm.
         dichroic: int - dichroic wavelength * 10.
         flashes: int - number of flashes per well.
-        settling_time: int - settling time in deciseconds.
+        pause_time_per_well: int - per-well pause in deciseconds (0-10).
+        settling_time_before_measurement: int - once-per-run post-shake delay in seconds.
         bottom_optic: bool - use bottom optic.
         shake_type, shake_speed_rpm, shake_duration_s: shaker config.
         start_corner, unidirectional, vertical, flying_mode: scan config.

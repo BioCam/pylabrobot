@@ -2114,5 +2114,513 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     self.assertIn("rejected", str(ctx.exception).lower())
 
 
+# ---------------------------------------------------------------------------
+# Payload encoding: _start_absorbance_measurement
+# ---------------------------------------------------------------------------
+
+
+class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
+  """Test that _start_absorbance_measurement encodes parameters correctly in the payload.
+
+  Uses the separator bytes (0x27 0x0F 0x27 0x0F) as an anchor to locate
+  parameter-dependent bytes regardless of machine type or plate size.
+  """
+
+  def _make_backend(self, machine_type=0x0024):
+    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    backend._machine_type_code = machine_type
+    backend._last_scan_params = {}
+    return backend
+
+  async def _capture_payload(self, backend, **kwargs):
+    """Call _start_absorbance_measurement and return the raw payload bytes sent."""
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    captured = []
+    run_payload = _make_run_response_payload(total_values=392)
+    run_response = _make_response_frame(run_payload)
+
+    async def mock_send(payload, **kw):
+      captured.append(payload)
+      return run_response
+
+    backend.send_command = mock_send
+
+    defaults = {"wavelengths": [600], "plate": plate}
+    defaults.update(kwargs)
+    await backend._start_absorbance_measurement(**defaults)
+    return captured[0]
+
+  def _find_params(self, payload, num_wavelengths=1):
+    """Find key parameter positions relative to the separator.
+
+    Layout after separator (for point scan, no orbital bytes):
+      +4: settling_byte (pause_time_per_well encoding)
+      +5: wavelength_count
+      +6: wavelength data (2 bytes each × N)
+      +6+2N: fixed bytes (13)
+      +6+2N+13: settling_time flag (1)
+      +6+2N+14: settling_time value (2)
+      +6+2N+16: fixed trailer (11)
+      +6+2N+27: flashes_per_well (2)
+    """
+    sep = b"\x27\x0f\x27\x0f"
+    idx = payload.index(sep)
+    N = num_wavelengths
+    base = idx + 6 + 2 * N
+    return {
+      "settling_byte": payload[idx + 4],
+      "wl_count": payload[idx + 5],
+      "wl_data_start": idx + 6,
+      "settling_time_flag": payload[base + 13],
+      "settling_time_value": int.from_bytes(payload[base + 14 : base + 16], "big"),
+      "flashes_per_well": int.from_bytes(payload[base + 27 : base + 29], "big"),
+    }
+
+  # --- pause_time_per_well encoding ---
+
+  async def test_pause_time_per_well_zero_encodes_as_1(self):
+    """pause_time_per_well=0 → settling_byte=1 (firmware convention: 0 means 'use 1')."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, pause_time_per_well=0)
+    self.assertEqual(self._find_params(payload)["settling_byte"], 1)
+
+  async def test_pause_time_per_well_1_encodes_as_5(self):
+    """pause_time_per_well=1 → (1 * 10) // 2 = 5."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, pause_time_per_well=1)
+    self.assertEqual(self._find_params(payload)["settling_byte"], 5)
+
+  async def test_pause_time_per_well_5_encodes_as_25(self):
+    """pause_time_per_well=5 → (5 * 10) // 2 = 25 = 0x19 (the OEM default byte)."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, pause_time_per_well=5)
+    self.assertEqual(self._find_params(payload)["settling_byte"], 25)
+
+  async def test_pause_time_per_well_10_encodes_as_50(self):
+    """pause_time_per_well=10 → (10 * 10) // 2 = 50."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, pause_time_per_well=10)
+    self.assertEqual(self._find_params(payload)["settling_byte"], 50)
+
+  async def test_pause_time_per_well_exceeds_max_raises(self):
+    """pause_time_per_well > 10 raises ValueError."""
+    backend = self._make_backend()
+    with self.assertRaises(ValueError):
+      await self._capture_payload(backend, pause_time_per_well=11)
+
+  # --- settling_time_before_measurement encoding ---
+
+  async def test_settling_time_zero_no_flag(self):
+    """settling_time_before_measurement=0 → flag=0x00, value=0x0000."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, settling_time_before_measurement=0)
+    params = self._find_params(payload)
+    self.assertEqual(params["settling_time_flag"], 0x00)
+    self.assertEqual(params["settling_time_value"], 0)
+
+  async def test_settling_time_nonzero_sets_flag(self):
+    """settling_time_before_measurement=5 → flag=0x01, value=5."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, settling_time_before_measurement=5)
+    params = self._find_params(payload)
+    self.assertEqual(params["settling_time_flag"], 0x01)
+    self.assertEqual(params["settling_time_value"], 5)
+
+  async def test_settling_time_large_value(self):
+    """settling_time_before_measurement=300 → flag=0x01, value=300 (uint16 BE)."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, settling_time_before_measurement=300)
+    params = self._find_params(payload)
+    self.assertEqual(params["settling_time_flag"], 0x01)
+    self.assertEqual(params["settling_time_value"], 300)
+
+  # --- flashes_per_well encoding ---
+
+  async def test_flashes_per_well_default_5(self):
+    """Default flashes_per_well=5 → 0x0005."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend)
+    self.assertEqual(self._find_params(payload)["flashes_per_well"], 5)
+
+  async def test_flashes_per_well_100(self):
+    """flashes_per_well=100 → 0x0064."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, flashes_per_well=100)
+    self.assertEqual(self._find_params(payload)["flashes_per_well"], 100)
+
+  async def test_flashes_per_well_200(self):
+    """flashes_per_well=200 → 0x00C8."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, flashes_per_well=200)
+    self.assertEqual(self._find_params(payload)["flashes_per_well"], 200)
+
+  # --- wavelength encoding ---
+
+  async def test_single_wavelength_600nm(self):
+    """600 nm → count=1, encoded as 6000 = 0x1770."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, wavelengths=[600])
+    params = self._find_params(payload)
+    self.assertEqual(params["wl_count"], 1)
+    start = params["wl_data_start"]
+    self.assertEqual(int.from_bytes(payload[start : start + 2], "big"), 6000)
+
+  async def test_multi_wavelength_encoding(self):
+    """[260, 280, 600] → count=3, values=[2600, 2800, 6000]."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, wavelengths=[260, 280, 600])
+    sep = b"\x27\x0f\x27\x0f"
+    idx = payload.index(sep)
+    self.assertEqual(payload[idx + 5], 3)  # count
+    start = idx + 6
+    self.assertEqual(int.from_bytes(payload[start : start + 2], "big"), 2600)
+    self.assertEqual(int.from_bytes(payload[start + 2 : start + 4], "big"), 2800)
+    self.assertEqual(int.from_bytes(payload[start + 4 : start + 6], "big"), 6000)
+    # Verify the downstream params are still at the right offsets for 3 wavelengths
+    params = self._find_params(payload, num_wavelengths=3)
+    self.assertEqual(params["settling_time_flag"], 0x00)
+    self.assertEqual(params["flashes_per_well"], 5)
+
+  async def test_wavelength_out_of_range_low_raises(self):
+    """Wavelength below 220 nm raises ValueError."""
+    backend = self._make_backend()
+    with self.assertRaises(ValueError):
+      await self._capture_payload(backend, wavelengths=[100])
+
+  async def test_wavelength_out_of_range_high_raises(self):
+    """Wavelength above 1000 nm raises ValueError."""
+    backend = self._make_backend()
+    with self.assertRaises(ValueError):
+      await self._capture_payload(backend, wavelengths=[1100])
+
+  async def test_too_many_wavelengths_raises(self):
+    """More than 8 wavelengths raises ValueError."""
+    backend = self._make_backend()
+    with self.assertRaises(ValueError):
+      await self._capture_payload(backend, wavelengths=list(range(220, 220 + 9 * 50, 50)))
+
+  async def test_zero_wavelengths_raises(self):
+    """Empty wavelength list raises ValueError."""
+    backend = self._make_backend()
+    with self.assertRaises(ValueError):
+      await self._capture_payload(backend, wavelengths=[])
+
+  # --- shaker encoding ---
+
+  async def test_no_shake_bytes(self):
+    """No shaking → 4 zero bytes at shaker position."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend)
+    # Shaker at offset 67-70 for type 0x0024 (plate(63) + scan(1) + optic(3))
+    self.assertEqual(payload[67:71], b"\x00\x00\x00\x00")
+
+  async def test_shake_bytes_encoded(self):
+    """Orbital 300rpm 10s → correct shaker encoding at shaker position."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(
+      backend, shake_speed_rpm=300, shake_duration_s=10
+    )
+    expected = _shaker_bytes(ShakerType.ORBITAL, speed_rpm=300, duration_s=10)
+    self.assertEqual(payload[67:71], expected)
+
+  # --- combined parameters ---
+
+  async def test_all_parameters_combined(self):
+    """All three renamed parameters together produce correct encoding."""
+    backend = self._make_backend()
+    payload = await self._capture_payload(
+      backend,
+      pause_time_per_well=3,
+      settling_time_before_measurement=10,
+      flashes_per_well=50,
+    )
+    params = self._find_params(payload)
+    self.assertEqual(params["settling_byte"], (3 * 10) // 2)  # 15
+    self.assertEqual(params["settling_time_flag"], 0x01)
+    self.assertEqual(params["settling_time_value"], 10)
+    self.assertEqual(params["flashes_per_well"], 50)
+
+  # --- machine type differences ---
+
+  async def test_extended_separator_type_0x0026(self):
+    """Type 0x0026 includes 5 extra bytes before separator; params still encoded correctly."""
+    backend = self._make_backend(machine_type=0x0026)
+    payload = await self._capture_payload(
+      backend, pause_time_per_well=5, settling_time_before_measurement=2, flashes_per_well=7,
+    )
+    params = self._find_params(payload)
+    self.assertEqual(params["settling_byte"], 25)
+    self.assertEqual(params["settling_time_flag"], 0x01)
+    self.assertEqual(params["settling_time_value"], 2)
+    self.assertEqual(params["flashes_per_well"], 7)
+
+
+# ---------------------------------------------------------------------------
+# Payload encoding: _start_fluorescence_measurement
+# ---------------------------------------------------------------------------
+
+
+class TestFluorescencePayloadEncoding(unittest.IsolatedAsyncioTestCase):
+  """Test that _start_fluorescence_measurement encodes parameters correctly.
+
+  Uses separator anchor and end-of-payload offsets to locate encoded bytes.
+  """
+
+  def _make_backend(self):
+    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    backend._machine_type_code = 0x0024
+    backend._last_scan_params = {}
+    return backend
+
+  async def _capture_payload(self, backend, **kwargs):
+    """Call _start_fluorescence_measurement(wait=False) and capture the payload."""
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    captured = []
+    run_payload = _make_run_response_payload(total_values=96)
+    run_response = _make_response_frame(run_payload)
+
+    async def mock_send(payload, **kw):
+      captured.append(payload)
+      return run_response
+
+    backend.send_command = mock_send
+
+    defaults = {
+      "plate": plate,
+      "excitation_wavelength": 485,
+      "emission_wavelength": 528,
+      "focal_height": 8.5,
+      "wait": False,
+    }
+    defaults.update(kwargs)
+    await backend._start_fluorescence_measurement(**defaults)
+    return captured[0]
+
+  def _find_fl_params(self, payload):
+    """Find fluorescence parameter positions.
+
+    Uses separator as anchor for pause_time_per_well, and end-of-payload
+    offsets for settling_time and flashes.
+
+    End layout: ... [flag(1)] [value(2)] [trailer(11)] [flashes(2)] [final(4)]
+    Total from flag to end: 1 + 2 + 11 + 2 + 4 = 20 bytes.
+    """
+    sep = b"\x27\x0f\x27\x0f"
+    idx = payload.index(sep)
+    return {
+      "pause_time_per_well_byte": payload[idx + 4],
+      "flashes": int.from_bytes(payload[-6:-4], "big"),
+      "settling_time_flag": payload[-20],
+      "settling_time_value": int.from_bytes(payload[-19:-17], "big"),
+    }
+
+  # --- pause_time_per_well ---
+
+  async def test_pause_time_per_well_zero_encodes_as_1(self):
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, pause_time_per_well=0)
+    self.assertEqual(self._find_fl_params(payload)["pause_time_per_well_byte"], 1)
+
+  async def test_pause_time_per_well_5_encodes_as_25(self):
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, pause_time_per_well=5)
+    self.assertEqual(self._find_fl_params(payload)["pause_time_per_well_byte"], 25)
+
+  async def test_pause_time_per_well_10_encodes_as_50(self):
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, pause_time_per_well=10)
+    self.assertEqual(self._find_fl_params(payload)["pause_time_per_well_byte"], 50)
+
+  # --- settling_time_before_measurement ---
+
+  async def test_settling_time_zero_no_flag(self):
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, settling_time_before_measurement=0)
+    params = self._find_fl_params(payload)
+    self.assertEqual(params["settling_time_flag"], 0x00)
+    self.assertEqual(params["settling_time_value"], 0)
+
+  async def test_settling_time_nonzero_sets_flag(self):
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, settling_time_before_measurement=10)
+    params = self._find_fl_params(payload)
+    self.assertEqual(params["settling_time_flag"], 0x01)
+    self.assertEqual(params["settling_time_value"], 10)
+
+  # --- flashes ---
+
+  async def test_flashes_default_100(self):
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend)
+    self.assertEqual(self._find_fl_params(payload)["flashes"], 100)
+
+  async def test_flashes_200(self):
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, flashes=200)
+    self.assertEqual(self._find_fl_params(payload)["flashes"], 200)
+
+  async def test_flashes_exceeds_200_raises(self):
+    backend = self._make_backend()
+    with self.assertRaises(ValueError):
+      await self._capture_payload(backend, flashes=201)
+
+  async def test_flying_mode_with_too_many_flashes_raises(self):
+    backend = self._make_backend()
+    with self.assertRaises(ValueError):
+      await self._capture_payload(backend, flying_mode=True, flashes=5)
+
+  async def test_flying_mode_with_3_flashes_ok(self):
+    backend = self._make_backend()
+    payload = await self._capture_payload(backend, flying_mode=True, flashes=3)
+    self.assertEqual(self._find_fl_params(payload)["flashes"], 3)
+
+  # --- combined ---
+
+  async def test_all_parameters_combined(self):
+    backend = self._make_backend()
+    payload = await self._capture_payload(
+      backend,
+      pause_time_per_well=7,
+      settling_time_before_measurement=15,
+      flashes=50,
+    )
+    params = self._find_fl_params(payload)
+    self.assertEqual(params["pause_time_per_well_byte"], (7 * 10) // 2)  # 35
+    self.assertEqual(params["settling_time_flag"], 0x01)
+    self.assertEqual(params["settling_time_value"], 15)
+    self.assertEqual(params["flashes"], 50)
+
+
+# ---------------------------------------------------------------------------
+# Kwargs forwarding: read_absorbance → _start_absorbance_measurement
+# ---------------------------------------------------------------------------
+
+
+class TestReadAbsorbanceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
+  """Test that read_absorbance forwards renamed parameters to _start_absorbance_measurement."""
+
+  def _make_backend(self):
+    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    backend.timeout = 30
+    backend.io = unittest.mock.MagicMock()
+    backend.io.usb_purge_rx_buffer = unittest.mock.AsyncMock()
+    backend._trace_io_path = None
+    backend._machine_type_code = 0x0026
+    backend._last_scan_params = {}
+    backend.enable_temperature_monitoring = unittest.mock.AsyncMock()
+    return backend
+
+  def _make_status_response(self, busy: bool) -> bytes:
+    byte1 = 0x25 if busy else 0x05
+    payload = bytes([0x00, byte1, 0x00, 0x00, 0x00])
+    return _make_response_frame(payload)
+
+  async def _run_with_kwargs(self, **kwargs):
+    """Call read_absorbance with the given kwargs and return the captured call_args."""
+    backend = self._make_backend()
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    all_wells = plate.get_all_items()
+
+    run_payload = _make_run_response_payload(total_values=24)
+    run_response = _make_response_frame(run_payload)
+
+    backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
+    backend._request_command_status = unittest.mock.AsyncMock(
+      return_value=self._make_status_response(busy=False)
+    )
+    backend.collect_absorbance_measurement = unittest.mock.AsyncMock(return_value=[{}])
+
+    await backend.read_absorbance(
+      plate=plate, wells=all_wells, wavelength=600, **kwargs,
+    )
+
+    return backend._start_absorbance_measurement.call_args.kwargs
+
+  async def test_pause_time_per_well_forwarded(self):
+    call_kwargs = await self._run_with_kwargs(pause_time_per_well=7)
+    self.assertEqual(call_kwargs["pause_time_per_well"], 7)
+
+  async def test_settling_time_before_measurement_forwarded(self):
+    call_kwargs = await self._run_with_kwargs(settling_time_before_measurement=3)
+    self.assertEqual(call_kwargs["settling_time_before_measurement"], 3)
+
+  async def test_flashes_per_well_forwarded(self):
+    call_kwargs = await self._run_with_kwargs(flashes_per_well=22)
+    self.assertEqual(call_kwargs["flashes_per_well"], 22)
+
+  async def test_all_params_forwarded_together(self):
+    call_kwargs = await self._run_with_kwargs(
+      pause_time_per_well=5,
+      settling_time_before_measurement=10,
+      flashes_per_well=50,
+    )
+    self.assertEqual(call_kwargs["pause_time_per_well"], 5)
+    self.assertEqual(call_kwargs["settling_time_before_measurement"], 10)
+    self.assertEqual(call_kwargs["flashes_per_well"], 50)
+
+  async def test_orchestration_kwargs_not_forwarded(self):
+    """wait, data_retrieval_rate, on_progress are consumed by read_absorbance, not forwarded."""
+    call_kwargs = await self._run_with_kwargs(
+      wait=True, data_retrieval_rate=2.0,
+    )
+    self.assertNotIn("wait", call_kwargs)
+    self.assertNotIn("data_retrieval_rate", call_kwargs)
+    self.assertNotIn("on_progress", call_kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Kwargs forwarding: read_fluorescence → _start_fluorescence_measurement
+# ---------------------------------------------------------------------------
+
+
+class TestReadFluorescenceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
+  """Test that read_fluorescence forwards renamed parameters to _start_fluorescence_measurement."""
+
+  def _make_backend(self):
+    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    backend.timeout = 30
+    backend.io = unittest.mock.MagicMock()
+    backend._trace_io_path = None
+    backend._machine_type_code = 0x0024
+    backend._last_scan_params = {}
+    return backend
+
+  async def _run_with_kwargs(self, **kwargs):
+    """Call read_fluorescence with the given kwargs and return the captured call_args."""
+    backend = self._make_backend()
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    all_wells = plate.get_all_items()
+
+    backend._start_fluorescence_measurement = unittest.mock.AsyncMock(return_value=b"")
+
+    # Mock collect to avoid needing a real response
+    backend.collect_fluorescence_measurement = unittest.mock.AsyncMock(return_value=[{}])
+
+    await backend.read_fluorescence(
+      plate=plate, wells=all_wells,
+      excitation_wavelength=485, emission_wavelength=528, focal_height=8.5,
+      **kwargs,
+    )
+
+    return backend._start_fluorescence_measurement.call_args.kwargs
+
+  async def test_pause_time_per_well_forwarded(self):
+    call_kwargs = await self._run_with_kwargs(pause_time_per_well=7)
+    self.assertEqual(call_kwargs["pause_time_per_well"], 7)
+
+  async def test_settling_time_before_measurement_forwarded(self):
+    call_kwargs = await self._run_with_kwargs(settling_time_before_measurement=3)
+    self.assertEqual(call_kwargs["settling_time_before_measurement"], 3)
+
+  async def test_flashes_forwarded(self):
+    call_kwargs = await self._run_with_kwargs(flashes=50)
+    self.assertEqual(call_kwargs["flashes"], 50)
+
+  async def test_wait_forwarded_to_start(self):
+    """Unlike absorbance, fluorescence forwards wait to _start_fluorescence_measurement."""
+    call_kwargs = await self._run_with_kwargs(wait=False)
+    self.assertFalse(call_kwargs["wait"])
+
+
 if __name__ == "__main__":
   unittest.main()

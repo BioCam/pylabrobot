@@ -245,7 +245,7 @@ class TestExtraKwargsIgnored(CLARIOstarSimulatorTestBase):
   async def test_absorbance_ignores_extra_kwargs(self):
     results = await self.backend.read_absorbance(
       plate=self.plate, wells=self.all_wells, wavelength=450,
-      report="transmittance", flashes=22, settling_time=0,
+      report="transmittance", flashes=22, pause_time_per_well=0,
     )
     self.assertEqual(len(results), 1)
 
