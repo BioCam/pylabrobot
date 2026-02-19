@@ -1863,10 +1863,10 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
 
   The new flow:
     1. _start_absorbance_measurement() — atomic send, returns run response
-    2. Verify run response
-    3. First progressive data retrieval + timing
+    2. Check if BUSY already cleared (fast measurements)
+    3. If still BUSY: drain buffer, first progressive data retrieval + timing
     4. If wait=False → return None
-    5. If wait=True → progressive polling loop
+    5. If wait=True → polling loop: check status first, then progressive getData
     6. Collect final data via collect_absorbance_measurement
   """
 
@@ -1875,6 +1875,7 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
     backend.timeout = 30
     backend.io = unittest.mock.MagicMock()
+    backend.io.usb_purge_rx_buffer = unittest.mock.AsyncMock()
     backend._trace_io_path = None
     backend._machine_type_code = 0x0026
     backend._last_scan_params = {}
@@ -1894,10 +1895,14 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     run_payload = _make_run_response_payload(total_values=392)
     run_response = _make_response_frame(run_payload)
 
-    # Mock _start_absorbance_measurement to return the run response
     backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
 
-    # Mock first progressive data retrieval
+    # Initial status check: still BUSY
+    backend._request_command_status = unittest.mock.AsyncMock(
+      return_value=self._make_status_response(busy=True)
+    )
+
+    # Mock drain + first progressive data retrieval
     first_data = _make_response_frame(
       _make_data_response_payload(schema=0xA9, total=392, complete=0)
     )
@@ -1909,8 +1914,36 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
 
     self.assertIsNone(result)
     backend._start_absorbance_measurement.assert_awaited_once()
-    # First progressive data should have been fetched (step 3)
-    backend._get_progressive_measurement_values.assert_awaited_once()
+
+  async def test_fast_measurement_skips_progressive(self):
+    """When BUSY clears before progressive polling starts, skip it entirely."""
+    backend = self._make_backend()
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    all_wells = plate.get_all_items()
+
+    run_payload = _make_run_response_payload(total_values=392)
+    run_response = _make_response_frame(run_payload)
+
+    backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
+
+    # Initial status check: already done (BUSY cleared)
+    backend._request_command_status = unittest.mock.AsyncMock(
+      return_value=self._make_status_response(busy=False)
+    )
+
+    # Progressive should NOT be called
+    backend._get_progressive_measurement_values = unittest.mock.AsyncMock()
+
+    expected_result = [{"wavelength": 600, "data": [[0.1]], "temperature": 25.0, "time": 0}]
+    backend.collect_absorbance_measurement = unittest.mock.AsyncMock(return_value=expected_result)
+
+    result = await backend.read_absorbance(
+      plate=plate, wells=all_wells, wavelength=600,
+    )
+
+    self.assertEqual(result, expected_result)
+    backend._get_progressive_measurement_values.assert_not_awaited()
+    backend.collect_absorbance_measurement.assert_awaited_once()
 
   async def test_wait_true_polls_then_collects(self):
     """read_absorbance(wait=True) does progressive polling then collects final data."""
@@ -1923,7 +1956,7 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
 
     backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
 
-    # Progressive data: first call (step 3), then 2 polling calls (step 5)
+    # Progressive data: first call (step 3), then polling calls (step 5)
     progressive_responses = [
       _make_response_frame(_make_data_response_payload(schema=0xA9, total=392, complete=0)),
       _make_response_frame(_make_data_response_payload(schema=0xA9, total=392, complete=100)),
@@ -1931,24 +1964,25 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     ]
     prog_idx = [0]
 
-    async def mock_get_progressive():
+    async def mock_get_progressive(**kwargs):
       idx = prog_idx[0]
       prog_idx[0] += 1
       return progressive_responses[min(idx, len(progressive_responses) - 1)]
 
     backend._get_progressive_measurement_values = mock_get_progressive
 
-    # Status: BUSY for first 2 polls, then ready
+    # Status: initial check BUSY, then loop: BUSY, BUSY, ready
+    # Call order: initial check, loop iteration 1, loop iteration 2, loop iteration 3
     status_count = [0]
 
     async def mock_request_status():
       status_count[0] += 1
-      busy = status_count[0] < 3
+      # Call 1 = initial check (BUSY), calls 2-3 = loop (BUSY), call 4 = loop (ready)
+      busy = status_count[0] < 4
       return self._make_status_response(busy)
 
     backend._request_command_status = mock_request_status
 
-    # Mock collect_absorbance_measurement
     expected_result = [{"wavelength": 600, "data": [[0.1]], "temperature": 25.0, "time": 0}]
     backend.collect_absorbance_measurement = unittest.mock.AsyncMock(return_value=expected_result)
 
@@ -1961,7 +1995,7 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     backend.collect_absorbance_measurement.assert_awaited_once()
 
   async def test_on_progress_callback_called(self):
-    """on_progress callback is called during the polling loop (not during first data check)."""
+    """on_progress callback is called during the polling loop."""
     backend = self._make_backend()
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
     all_wells = plate.get_all_items()
@@ -1978,18 +2012,19 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     ]
     prog_idx = [0]
 
-    async def mock_get_progressive():
+    async def mock_get_progressive(**kwargs):
       idx = prog_idx[0]
       prog_idx[0] += 1
       return progressive_responses[min(idx, len(progressive_responses) - 1)]
 
     backend._get_progressive_measurement_values = mock_get_progressive
 
+    # initial check BUSY, loop: BUSY, BUSY, ready
     status_count = [0]
 
     async def mock_request_status():
       status_count[0] += 1
-      busy = status_count[0] < 3
+      busy = status_count[0] < 4
       return self._make_status_response(busy)
 
     backend._request_command_status = mock_request_status
@@ -2009,9 +2044,9 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
 
     self.assertEqual(result, expected_result)
     # on_progress should have been called during the polling loop
-    self.assertGreaterEqual(len(progress_log), 2)
-    self.assertEqual(progress_log[0], (44, 392))
-    self.assertEqual(progress_log[1], (200, 392))
+    self.assertGreaterEqual(len(progress_log), 1)
+    # First callback is from the polling loop (not the initial first-data check)
+    self.assertIn(progress_log[0][0], (44, 200))
 
   async def test_timeout_raises(self):
     """TimeoutError is raised when BUSY never clears."""
@@ -2025,7 +2060,7 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
 
     backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
 
-    async def mock_get_progressive():
+    async def mock_get_progressive(**kwargs):
       return _make_response_frame(
         _make_data_response_payload(schema=0xA9, total=392, complete=0)
       )

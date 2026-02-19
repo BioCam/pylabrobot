@@ -1352,7 +1352,7 @@ class CLARIOstarBackend(PlateReaderBackend):
   async def _get_measurement_values(self):
     return await self.send_command(b"\x05\x02\x00\x00\x00\x00\x00\x00")
 
-  async def _get_progressive_measurement_values(self):
+  async def _get_progressive_measurement_values(self, read_timeout: float = 5):
     """Fetch partial measurement data during an active measurement.
 
     Uses the ``$FF $FF $FF $FF`` variant of getData which returns available
@@ -1361,8 +1361,16 @@ class CLARIOstarBackend(PlateReaderBackend):
     but unmeasured wells are zero-filled.
 
     This can be called while the instrument is BUSY (measurement in progress).
+
+    Args:
+      read_timeout: Seconds to wait for a response. Shorter than the default
+        ``send_command`` timeout (20s) because progressive polling should not
+        block the orchestration loop. If the firmware doesn't respond (e.g.
+        measurement completed too fast), the caller handles the empty response.
     """
-    return await self.send_command(b"\x05\x02\xff\xff\xff\xff\x00\x00")
+    return await self.send_command(
+      b"\x05\x02\xff\xff\xff\xff\x00\x00", read_timeout=read_timeout,
+    )
 
   @staticmethod
   def _parse_run_response(response: bytes) -> dict:
@@ -1987,54 +1995,71 @@ class CLARIOstarBackend(PlateReaderBackend):
       **backend_kwargs,
     )
 
-    # Step 2: First progressive data retrieval + timing
-    t0 = time.time()
-    try:
-      first_data = await self._get_progressive_measurement_values()
-      first_progress = self._parse_progress_from_data_response(first_data)
-      logger.info(
-        "First data retrieval took %.2fs: %d/%d values (schema=0x%02x)",
-        time.time() - t0,
-        first_progress["complete"], first_progress["total"], first_progress["schema"],
-      )
-    except (ValueError, FrameError) as e:
-      logger.warning("First progressive data retrieval failed (%.2fs): %s", time.time() - t0, e)
+    # Step 2: Check if measurement already completed (fast measurements
+    # with few wells finish before we even get to progressive polling).
+    await asyncio.sleep(0.1)
+    command_status = await self._request_command_status()
+    flags = self._parse_status_response(command_status)
+    already_done = not flags["busy"]
+
+    if already_done:
+      logger.info("Measurement already complete (BUSY cleared), skipping progressive polling")
+    else:
+      # Step 3: First progressive data retrieval + timing
+      # Drain any unsolicited firmware responses that accumulated since the
+      # run command (the firmware sends confirmations during/after measurement).
+      await self._drain_buffer()
+      t0 = time.time()
+      try:
+        first_data = await self._get_progressive_measurement_values()
+        first_progress = self._parse_progress_from_data_response(first_data)
+        logger.info(
+          "First data retrieval took %.2fs: %d/%d values (schema=0x%02x)",
+          time.time() - t0,
+          first_progress["complete"], first_progress["total"], first_progress["schema"],
+        )
+      except (ValueError, FrameError) as e:
+        logger.warning("First progressive data retrieval failed (%.2fs): %s", time.time() - t0, e)
 
     # Step 4: Early exit if not waiting
     if not wait:
       return None
 
-    # Step 5: Progressive polling loop
-    timeout = self.timeout
-    t_start = time.time()
-    while time.time() - t_start < timeout:
-      await asyncio.sleep(data_retrieval_rate)
+    # Step 5: Progressive polling loop (skipped if already done)
+    if not already_done:
+      timeout = self.timeout
+      t_start = time.time()
+      while time.time() - t_start < timeout:
+        await asyncio.sleep(data_retrieval_rate)
 
-      # Fetch progressive data
-      try:
-        progressive_resp = await self._get_progressive_measurement_values()
-        progress = self._parse_progress_from_data_response(progressive_resp)
-        logger.info(
-          "Progressive poll: %d/%d values (schema=0x%02x)",
-          progress["complete"], progress["total"], progress["schema"],
+        # Check if BUSY has cleared FIRST — avoids sending progressive
+        # getData to a firmware that's already idle (which may not respond
+        # or may return stale data).
+        command_status = await self._request_command_status()
+        flags = self._parse_status_response(command_status)
+        logger.info("status: %s", {k: v for k, v in flags.items() if v})
+        if not flags["busy"]:
+          break
+
+        # Fetch progressive data (only while still BUSY)
+        await self._drain_buffer()
+        try:
+          progressive_resp = await self._get_progressive_measurement_values()
+          progress = self._parse_progress_from_data_response(progressive_resp)
+          logger.info(
+            "Progressive poll: %d/%d values (schema=0x%02x)",
+            progress["complete"], progress["total"], progress["schema"],
+          )
+          if on_progress is not None:
+            await on_progress(progress["complete"], progress["total"], progressive_resp)
+        except (ValueError, FrameError) as e:
+          logger.warning("Progressive poll failed: %s", e)
+      else:
+        elapsed = time.time() - t_start
+        raise TimeoutError(
+          f"Plate reader still busy after {elapsed:.1f}s (timeout={timeout}s). "
+          f"Increase timeout via CLARIOstarBackend(timeout=...) for long-running operations."
         )
-        if on_progress is not None:
-          await on_progress(progress["complete"], progress["total"], progressive_resp)
-      except (ValueError, FrameError) as e:
-        logger.warning("Progressive poll failed: %s", e)
-
-      # Check if BUSY has cleared
-      command_status = await self._request_command_status()
-      flags = self._parse_status_response(command_status)
-      logger.info("status: %s", {k: v for k, v in flags.items() if v})
-      if not flags["busy"]:
-        break
-    else:
-      elapsed = time.time() - t_start
-      raise TimeoutError(
-        f"Plate reader still busy after {elapsed:.1f}s (timeout={timeout}s). "
-        f"Increase timeout via CLARIOstarBackend(timeout=...) for long-running operations."
-      )
 
     # Step 6: Collect final data
     return await self.collect_absorbance_measurement(
