@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import datetime
 import enum
 import logging
 import math
@@ -562,6 +563,26 @@ class CLARIOstarConfig:
     return config
 
 
+# # # Measurement cache # # #
+
+
+@dataclasses.dataclass
+class MeasurementRecord:
+  """Cached record of a single plate reader measurement."""
+
+  start_time: str                    # ISO 8601: "2026-02-19 14:30:05"
+  end_time: str                      # same format
+  measurement_duration_s: float      # end - start in seconds
+  detection_mode: str                # "absorbance" | "fluorescence" | "luminescence" | "spectral_absorbance_scan"
+  measurement_index: int             # auto-incrementing per session, 0-based
+  parameters: Dict                   # measurement-specific params
+  results: List[Dict]                # the return value from read_*/collect_*
+  temperature: Optional[float]
+  plate_name: str
+  num_wells_read: int
+  wells_read: List[str]              # e.g. ["A1", "A2", "B3"]
+
+
 # # # Diagnostic helpers # # #
 
 
@@ -647,6 +668,9 @@ class CLARIOstarBackend(PlateReaderBackend):
     self._last_scan_params: Dict = {}
     self._machine_type_code: int = 0
     self._trace_io_path: Optional[str] = os.path.abspath(trace_io) if trace_io else None
+    self._measurement_cache: List[MeasurementRecord] = []
+    self._measurement_counter: int = 0
+    self._pending_measurement: Optional[Dict] = None  # stash for wait=False flow
 
   # === Life cycle ===
   
@@ -1030,6 +1054,77 @@ class CLARIOstarBackend(PlateReaderBackend):
     if self._eeprom_data is None:
       return None
     return dump_eeprom(self._eeprom_data)
+
+  # # # Measurement cache # # #
+
+  def get_measurement_cache(self) -> List[MeasurementRecord]:
+    """Return all cached measurement records from this session."""
+    return list(self._measurement_cache)
+
+  def get_last_measurement(self) -> Optional[MeasurementRecord]:
+    """Return the most recent measurement record, or None."""
+    return self._measurement_cache[-1] if self._measurement_cache else None
+
+  def clear_measurement_cache(self) -> None:
+    """Clear all cached measurement records."""
+    self._measurement_cache.clear()
+
+  def _start_measurement_record(
+    self,
+    detection_mode: str,
+    plate: "Plate",
+    wells: List["Well"],
+    parameters: Dict,
+  ) -> Dict:
+    """Create a pending measurement record dict with start_time and params.
+
+    Returns a dict to be stashed on self._pending_measurement.
+    """
+    return {
+      "start_time": datetime.datetime.now(),
+      "detection_mode": detection_mode,
+      "plate_name": plate.name,
+      "wells_read": [w.name for w in wells],
+      "num_wells_read": len(wells),
+      "parameters": parameters,
+    }
+
+  def _finalize_measurement_record(
+    self,
+    pending: Dict,
+    results: List[Dict],
+  ) -> MeasurementRecord:
+    """Finalize a pending measurement into a MeasurementRecord and cache it."""
+    # Guard against __new__-constructed instances that bypassed __init__
+    if not hasattr(self, "_measurement_cache"):
+      self._measurement_cache = []
+      self._measurement_counter = 0
+
+    end_dt = datetime.datetime.now()
+    start_dt = pending["start_time"]
+    temperature = results[0].get("temperature") if results else None
+
+    record = MeasurementRecord(
+      start_time=start_dt.strftime("%Y-%m-%d %H:%M:%S"),
+      end_time=end_dt.strftime("%Y-%m-%d %H:%M:%S"),
+      measurement_duration_s=round((end_dt - start_dt).total_seconds(), 3),
+      detection_mode=pending["detection_mode"],
+      measurement_index=self._measurement_counter,
+      parameters=pending["parameters"],
+      results=results,
+      temperature=temperature,
+      plate_name=pending["plate_name"],
+      num_wells_read=pending["num_wells_read"],
+      wells_read=pending["wells_read"],
+    )
+    self._measurement_cache.append(record)
+    self._measurement_counter += 1
+    logger.info(
+      "Cached measurement #%d (%s): %d wells, %.1fs",
+      record.measurement_index, record.detection_mode,
+      record.num_wells_read, record.measurement_duration_s,
+    )
+    return record
 
   # # # Setup Requirement # # #
 
@@ -1628,6 +1723,17 @@ class CLARIOstarBackend(PlateReaderBackend):
     wait = backend_kwargs.pop("wait", True)
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
+    # Cache: record start time and parameters
+    pending = self._start_measurement_record(
+      detection_mode="luminescence",
+      plate=plate,
+      wells=wells,
+      parameters={
+        "focal_height": focal_height,
+        **backend_kwargs,
+      },
+    )
+
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
@@ -1640,9 +1746,13 @@ class CLARIOstarBackend(PlateReaderBackend):
     )
 
     if not wait:
+      self._pending_measurement = pending
       return None
 
-    return await self.collect_luminescence_measurement(plate=plate, wells=wells)
+    results = await self.collect_luminescence_measurement(plate=plate, wells=wells)
+    if results is not None:
+      self._finalize_measurement_record(pending, results)
+    return results
 
   async def collect_luminescence_measurement(
     self,
@@ -1681,13 +1791,20 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     readings = [float(v) for v in fl_values[:num_read]]
 
-    return [
+    results = [
       {
         "data": self._readings_to_grid(readings, plate, wells, scan_order=scan_order),
         "temperature": temperature,
         "time": time.time(),
       }
     ]
+
+    # Cache: finalize pending measurement from wait=False flow
+    if getattr(self, "_pending_measurement", None) is not None:
+      self._finalize_measurement_record(self._pending_measurement, results)
+      self._pending_measurement = None
+
+    return results
 
   # # # Absorbance # # #
 
@@ -1797,31 +1914,28 @@ class CLARIOstarBackend(PlateReaderBackend):
     optic_config = optic_base | _well_scan_optic_flags(well_scan)
 
     if self._uses_extended_separator and well_scan != "point":
-      # Machine type 0x0026, non-point scan: 36-byte block between scan byte
+      # Machine type 0x0026, non-point scan: 32-byte block between scan byte
       # and separator.
-      # Verified against OEM MARS pcaps:
+      # Verified byte-for-byte against OEM MARS pcaps:
       #   - absorbance orbital 3mm w/ and w/o shake (300 RPM orbital 5s)
-      #   - absorbance spiral 4mm 15 flashes
-      #   - absorbance spiral 5mm 450+600nm 15 flashes
       #
-      # Block layout (offsets within the 36-byte block):
-      #   [0:4]   zeros(4)
-      #   [4]     optic_base | 0x08 (well-scan-enabled flag)
-      #   [5]     optic_config (base | scan-type flags: 0x30=orbital, 0x04=spiral)
-      #   [6:17]  zeros(11)
-      #   [17]    shake type (0x0026 encoding, see _SHAKE_TYPE_0026)
-      #   [18:23] zeros(5)
-      #   [23]    shake speed index
-      #   [24:26] shake duration (uint16 BE seconds)
-      #   [26:36] zeros(10)
-      block = bytearray(36)
-      block[4] = optic_base | 0x08
-      block[5] = optic_config
+      # Block layout (offsets within the 32-byte block):
+      #   [0]     optic_base | 0x08 (well-scan-enabled flag)
+      #   [1]     optic_config (base | scan-type flags: 0x30=orbital, 0x04=spiral)
+      #   [2:13]  zeros(11)
+      #   [13]    shake type (0x0026 encoding, see _SHAKE_TYPE_0026)
+      #   [14:19] zeros(5)
+      #   [19]    shake speed index ((rpm / 100) - 1)
+      #   [20:22] shake duration (uint16 BE seconds)
+      #   [22:32] zeros(10)
+      block = bytearray(32)
+      block[0] = optic_base | 0x08
+      block[1] = optic_config
       if shake_duration_s > 0:
-        block[17] = _SHAKE_TYPE_0026[shake_type]
-        block[23] = (shake_speed_rpm // 100) - 1
-        block[24] = (shake_duration_s >> 8) & 0xFF
-        block[25] = shake_duration_s & 0xFF
+        block[13] = _SHAKE_TYPE_0026[shake_type]
+        block[19] = (shake_speed_rpm // 100) - 1
+        block[20] = (shake_duration_s >> 8) & 0xFF
+        block[21] = shake_duration_s & 0xFF
       payload += bytes(block)
     elif self._uses_extended_separator:
       # Machine type 0x0026, point scan: compact format (verified on hardware).
@@ -2128,6 +2242,19 @@ class CLARIOstarBackend(PlateReaderBackend):
     if isinstance(wavelengths, int):
       wavelengths = [wavelengths]
 
+    # Cache: record start time and parameters
+    pending = self._start_measurement_record(
+      detection_mode="absorbance",
+      plate=plate,
+      wells=wells,
+      parameters={
+        "wavelengths": wavelengths,
+        "report": report,
+        "data_retrieval_rate": data_retrieval_rate,
+        **backend_kwargs,
+      },
+    )
+
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
@@ -2155,6 +2282,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     # Step 3: Early exit if not waiting
     if not wait:
+      self._pending_measurement = pending
       return None
 
     # Step 4: Progressive polling loop (skipped if already done)
@@ -2236,9 +2364,12 @@ class CLARIOstarBackend(PlateReaderBackend):
     # draining + sleeping here reduces the chance of a truncated read.
     await self._drain_buffer()
     await asyncio.sleep(0.5)
-    return await self.collect_absorbance_measurement(
+    results = await self.collect_absorbance_measurement(
       plate=plate, wells=wells, wavelengths=wavelengths, report=report,
     )
+    if results is not None:
+      self._finalize_measurement_record(pending, results)
+    return results
 
   async def collect_absorbance_measurement(
     self,
@@ -2308,41 +2439,45 @@ class CLARIOstarBackend(PlateReaderBackend):
           "temperature": temperature,
           "time": time.time(),
         })
-      return results
+    else:
+      # --- OD / transmittance modes ---
+      results = []
+      for wl_idx, wl in enumerate(wavelengths):
+        trans_for_wl: List[Optional[float]] = []
+        for well_idx in range(num_wells):
+          if well_idx < len(transmission_data):
+            t = (
+              transmission_data[well_idx][wl_idx]
+              if wl_idx < len(transmission_data[well_idx])
+              else None
+            )
+          else:
+            t = None
+          trans_for_wl.append(t)
 
-    # --- OD / transmittance modes ---
-    results = []
-    for wl_idx, wl in enumerate(wavelengths):
-      trans_for_wl: List[Optional[float]] = []
-      for well_idx in range(num_wells):
-        if well_idx < len(transmission_data):
-          t = (
-            transmission_data[well_idx][wl_idx]
-            if wl_idx < len(transmission_data[well_idx])
-            else None
-          )
+        if report == "OD":
+          final_vals: List[Optional[float]] = [
+            math.log10(100 / t) if t is not None and t > 0 else None
+            for t in trans_for_wl
+          ]
+        elif report == "transmittance":
+          final_vals = trans_for_wl
         else:
-          t = None
-        trans_for_wl.append(t)
+          raise ValueError(f"Invalid report type: {report}")
 
-      if report == "OD":
-        final_vals: List[Optional[float]] = [
-          math.log10(100 / t) if t is not None and t > 0 else None
-          for t in trans_for_wl
-        ]
-      elif report == "transmittance":
-        final_vals = trans_for_wl
-      else:
-        raise ValueError(f"Invalid report type: {report}")
+        results.append(
+          {
+            "wavelength": wl,
+            "data": self._readings_to_grid(final_vals, plate, wells),
+            "temperature": temperature,
+            "time": time.time(),
+          }
+        )
 
-      results.append(
-        {
-          "wavelength": wl,
-          "data": self._readings_to_grid(final_vals, plate, wells),
-          "temperature": temperature,
-          "time": time.time(),
-        }
-      )
+    # Cache: finalize pending measurement from wait=False flow
+    if getattr(self, "_pending_measurement", None) is not None:
+      self._finalize_measurement_record(self._pending_measurement, results)
+      self._pending_measurement = None
 
     return results
 
@@ -2555,6 +2690,19 @@ class CLARIOstarBackend(PlateReaderBackend):
     wait = backend_kwargs.pop("wait", True)
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
+    # Cache: record start time and parameters
+    pending = self._start_measurement_record(
+      detection_mode="fluorescence",
+      plate=plate,
+      wells=wells,
+      parameters={
+        "excitation_wavelength": excitation_wavelength,
+        "emission_wavelength": emission_wavelength,
+        "focal_height": focal_height,
+        **backend_kwargs,
+      },
+    )
+
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
@@ -2569,13 +2717,17 @@ class CLARIOstarBackend(PlateReaderBackend):
     )
 
     if not wait:
+      self._pending_measurement = pending
       return None
 
-    return await self.collect_fluorescence_measurement(
+    results = await self.collect_fluorescence_measurement(
       plate=plate, wells=wells,
       excitation_wavelength=excitation_wavelength,
       emission_wavelength=emission_wavelength,
     )
+    if results is not None:
+      self._finalize_measurement_record(pending, results)
+    return results
 
   async def collect_fluorescence_measurement(
     self,
@@ -2616,7 +2768,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     readings = [float(v) for v in fl_values[:num_read]]
 
-    return [
+    results = [
       {
         "ex_wavelength": excitation_wavelength,
         "em_wavelength": emission_wavelength,
@@ -2625,3 +2777,10 @@ class CLARIOstarBackend(PlateReaderBackend):
         "time": time.time(),
       }
     ]
+
+    # Cache: finalize pending measurement from wait=False flow
+    if getattr(self, "_pending_measurement", None) is not None:
+      self._finalize_measurement_record(self._pending_measurement, results)
+      self._pending_measurement = None
+
+    return results
