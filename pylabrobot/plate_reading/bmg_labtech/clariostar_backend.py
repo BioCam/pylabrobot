@@ -7,7 +7,7 @@ import struct
 import sys
 import time
 import warnings
-from typing import Dict, List, Literal, Optional, Tuple, Union
+from typing import Awaitable, Callable, Dict, List, Literal, Optional, Tuple, Union
 
 from pylabrobot import utils
 from pylabrobot.io.ftdi import FTDI
@@ -90,6 +90,112 @@ def _unframe(data: bytes) -> bytes:
 
   # Return payload (strip STX + size + NP header and checksum + CR trailer)
   return data[4:-3]
+
+
+# # # Command families # # #
+#
+# All CLARIOstar commands are framed as [STX, size_hi, size_lo, 0x0C, payload, checksum, CR].
+# The first byte of the payload identifies the command family. The 0x05 family uses a
+# second byte as the subcommand. Measurement runs are the exception — their payload starts
+# with plate data (0x04 prefix from _plate_bytes) and the firmware distinguishes them by
+# structure/length rather than a family byte.
+#
+# Sources: Go reference implementation, OEM software USB pcap captures, ActiveX/DDE manual.
+
+
+@dataclasses.dataclass(frozen=True)
+class _CommandDef:
+  """Definition of a single CLARIOstar command or subcommand."""
+  name: str
+  payload: bytes
+  single_byte_checksum: bool = False
+  description: str = ""
+
+
+# Registry of known command families and their subcommands.
+# Keyed by (family_byte, subcommand_byte) — subcommand is 0x00 for families
+# that don't use subcommands.
+COMMAND_REGISTRY: Dict[Tuple[int, int], _CommandDef] = {
+  # 0x01 — Initialize
+  (0x01, 0x00): _CommandDef(
+    name="initialize",
+    payload=b"\x01\x00\x00\x10\x02\x00",
+    description="Instrument initialization",
+  ),
+
+  # 0x03 — Drawer
+  (0x03, 0x01): _CommandDef(
+    name="drawer_open",
+    payload=b"\x03\x01\x00\x00\x00\x00\x00",
+    description="Open the plate drawer",
+  ),
+  (0x03, 0x00): _CommandDef(
+    name="drawer_close",
+    payload=b"\x03\x00\x00\x00\x00\x00\x00",
+    description="Close the plate drawer",
+  ),
+
+  # 0x05 — Data / Query (second byte = subcommand)
+  (0x05, 0x02): _CommandDef(
+    name="get_data",
+    payload=b"\x05\x02\x00\x00\x00\x00\x00\x00",
+    description="Retrieve measurement data (final). Progressive variant uses FF FF FF FF at bytes 2-5.",
+  ),
+  (0x05, 0x07): _CommandDef(
+    name="eeprom_read",
+    payload=b"\x05\x07\x00\x00\x00\x00\x00\x00",
+    description="Read EEPROM / machine configuration",
+  ),
+  (0x05, 0x09): _CommandDef(
+    name="firmware_info",
+    payload=b"\x05\x09\x00\x00\x00\x00\x00\x00",
+    description="Read firmware version and build date",
+  ),
+  (0x05, 0x0F): _CommandDef(
+    name="focus_height",
+    payload=b"\x05\x0f\x00\x00\x00\x00\x00\x00",
+    description="Read/set microplate and focus height value",
+  ),
+  (0x05, 0x1D): _CommandDef(
+    name="read_order",
+    payload=b"\x05\x1d\x00\x00\x00\x00\x00\x00",
+    description="Read well measurement order",
+  ),
+  (0x05, 0x21): _CommandDef(
+    name="usage_counters",
+    payload=b"\x05\x21\x00\x00\x00\x00\x00\x00",
+    description="Read lifetime usage counters (flashes, wells, shake time, etc.)",
+  ),
+
+  # 0x06 — Temperature (1-byte checksum, unique among families)
+  (0x06, 0x00): _CommandDef(
+    name="temperature_off",
+    payload=b"\x06\x00\x00\x00\x00",
+    single_byte_checksum=True,
+    description="Turn off incubator and temperature monitoring",
+  ),
+  (0x06, 0x01): _CommandDef(
+    name="temperature_monitor",
+    payload=b"\x06\x00\x01\x00\x00",
+    single_byte_checksum=True,
+    description="Enable temperature sensor monitoring without heating",
+  ),
+  # Note: temperature_set is dynamic (target encoded in bytes 1-2), not a fixed payload.
+
+  # 0x80 — Status
+  (0x80, 0x00): _CommandDef(
+    name="command_status",
+    payload=b"\x80\x00",
+    description="Query command/machine status flags",
+  ),
+
+  # 0x81 — Hardware status
+  (0x81, 0x00): _CommandDef(
+    name="hardware_status",
+    payload=b"\x81\x00",
+    description="Query hardware status",
+  ),
+}
 
 
 # # # Byte utilities # # #
@@ -221,6 +327,71 @@ def _scan_mode_byte(
     d |= 1 << 2
   d |= 1 << 1  # always set
   return d
+
+
+# # # Well scan mode # # #
+
+
+# Measurement-type codes for the first byte of the 5-byte orbital scan block.
+# Absorbance confirmed via OEM pcap; fluorescence from Go fl.go.
+_ORBITAL_MEAS_CODE: Dict[str, int] = {
+  "absorbance": 0x02,
+  "fluorescence": 0x03,
+  # luminescence: not yet confirmed via OEM capture
+}
+
+
+def _well_scan_optic_flags(well_scan: Literal["point", "orbital", "spiral", "matrix"]) -> int:
+  """Return the optic-config flag bits for the given well scan mode.
+
+  Point scan returns ``0x00`` (no extra flags).
+  Orbital scan returns ``0x30`` (bits 4 and 5 = orbital averaging enable).
+
+  These bits are OR'd into the per-measurement optic config byte, which sits
+  right after the scan mode byte in the command payload.  The bit layout is
+  consistent across absorbance (Go ``abs.go:79``), fluorescence (Go ``fl.go:96-98``),
+  and presumably luminescence.
+  """
+  if well_scan == "orbital":
+    return 0x30
+  # point / spiral / matrix: no orbital flags (spiral/matrix TBD)
+  return 0x00
+
+
+def _well_scan_orbital_bytes(
+  measurement_code: int,
+  well_scan: Literal["point", "orbital", "spiral", "matrix"],
+  well_scan_width: Optional[float],
+  plate: "Plate",
+) -> bytes:
+  """Build the orbital scan parameter block to insert after the ``$27 $0F`` separator.
+
+  Returns 5 bytes for orbital mode, empty ``bytes`` for point mode.
+
+  The 5-byte structure (verified via OEM pcap for absorbance, Go ``fl.go``
+  for fluorescence)::
+
+    [measurement_code, diameter_mm, well_dia_hi, well_dia_lo, 0x00]
+
+  - *measurement_code*: ``0x02`` for absorbance, ``0x03`` for fluorescence.
+  - *diameter_mm*: orbital diameter in integer mm (``well_scan_width``).
+  - *well_dia*: physical well diameter in 0.01 mm as uint16 BE
+    (matches Go ``Plate.WellDia`` which is "mm × 100").
+  - ``0x00``: terminator.
+
+  For point scan the firmware expects *no* extra bytes between the separator
+  and the measurement-specific data (settling byte, wavelength list, etc.).
+  """
+  if well_scan != "orbital" or well_scan_width is None:
+    return b""
+  sample_well = plate.get_all_items()[0]
+  well_dia_mm = min(sample_well.get_size_x(), sample_well.get_size_y())
+  well_dia_hundredths = round(well_dia_mm * 100)
+  return (
+    bytes([measurement_code, round(well_scan_width)])
+    + well_dia_hundredths.to_bytes(2, "big")
+    + b"\x00"
+  )
 
 
 # # # Model lookup # # #
@@ -446,6 +617,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     self._firmware_data: Optional[bytes] = None
     self._incubation_target: float = 0.0
     self._last_scan_params: Dict = {}
+    self._machine_type_code: int = 0
     self._trace_io_path: Optional[str] = os.path.abspath(trace_io) if trace_io else None
 
   # === Life cycle ===
@@ -465,8 +637,30 @@ class CLARIOstarBackend(PlateReaderBackend):
     await self.request_eeprom_data()
     await self.request_firmware_info()
 
+    # Auto-detect machine type from EEPROM for payload format selection.
+    config = self.get_machine_config()
+    if config is not None:
+      self._machine_type_code = config.machine_type_code
+      logger.info(
+        "Detected machine type 0x%04x (%s), extended_separator=%s",
+        self._machine_type_code, config.model_name, self._uses_extended_separator,
+      )
+
   async def stop(self):
     await self.io.stop()
+
+  @property
+  def _uses_extended_separator(self) -> bool:
+    """Whether this machine uses 5 extra bytes before the ``$27 $0F`` separator.
+
+    Machine type 0x0026 requires ``$00 $20 $04 $00 $1E`` between the shaker bytes
+    and the ``$27 $0F $27 $0F`` separator in absorbance and luminescence payloads.
+    Type 0x0024 (Go reference) does not include these bytes.
+
+    Defaults to True (extended) when the machine type is unknown (not yet detected)
+    so that existing setups that haven't called ``setup()`` keep working.
+    """
+    return self._machine_type_code != 0x0024
 
   # === Low-level I/O ===
 
@@ -608,6 +802,78 @@ class CLARIOstarBackend(PlateReaderBackend):
         logger.info("status: %s", {k: v for k, v in flags.items() if v})
         if not flags["busy"]:
           return ret
+
+    elapsed = time.time() - t
+    raise TimeoutError(
+      f"Plate reader still busy after {elapsed:.1f}s (timeout={timeout}s). "
+      f"Increase timeout via CLARIOstarBackend(timeout=...) for long-running operations."
+    )
+
+  async def _wait_for_ready_with_progress(
+    self,
+    run_response: bytes,
+    on_progress: Optional[Callable[[int, int, Optional[bytes]], Awaitable[None]]] = None,
+    poll_interval: float = 3.0,
+    timeout: Optional[float] = None,
+  ) -> bytes:
+    """Wait for measurement to complete, optionally reporting progress.
+
+    This is the OEM-style progress-aware replacement for the blind status
+    polling in ``_wait_for_ready_and_return``.
+
+    Args:
+      run_response: The initial response from the run command.
+      on_progress: Async callback ``(complete, total, raw_response)`` called
+        each time progressive data is fetched. If None, falls back to
+        existing ``_wait_for_ready_and_return`` behavior (status polling
+        every 100ms with no progressive data).
+      poll_interval: Seconds between progressive data fetches (OEM uses ~3s).
+      timeout: Override default timeout in seconds.
+
+    Returns:
+      The run_response (for compatibility with existing callers).
+    """
+    # Validate the run response
+    try:
+      run_info = self._parse_run_response(run_response)
+      logger.info(
+        "Run command %s: total_values=%d, status=%s",
+        "accepted" if run_info["accepted"] else "REJECTED",
+        run_info["total_values"],
+        run_info["status_bytes"].hex(),
+      )
+    except ValueError as e:
+      logger.warning("Could not parse run response: %s", e)
+
+    # If no progress callback, fall back to the original blind polling
+    if on_progress is None:
+      return await self._wait_for_ready_and_return(run_response, timeout=timeout)
+
+    if timeout is None:
+      timeout = self.timeout
+
+    t = time.time()
+    while time.time() - t < timeout:
+      await asyncio.sleep(poll_interval)
+
+      # Fetch progressive data
+      try:
+        progressive_resp = await self._get_progressive_measurement_values()
+        progress = self._parse_progress_from_data_response(progressive_resp)
+        logger.info(
+          "Progressive poll: %d/%d values (schema=0x%02x)",
+          progress["complete"], progress["total"], progress["schema"],
+        )
+        await on_progress(progress["complete"], progress["total"], progressive_resp)
+      except (ValueError, FrameError) as e:
+        logger.warning("Progressive poll failed: %s", e)
+
+      # Check if BUSY has cleared
+      command_status = await self._request_command_status()
+      flags = self._parse_status_response(command_status)
+      logger.info("status: %s", {k: v for k, v in flags.items() if v})
+      if not flags["busy"]:
+        return run_response
 
     elapsed = time.time() - t
     raise TimeoutError(
@@ -884,10 +1150,15 @@ class CLARIOstarBackend(PlateReaderBackend):
       well_mask_int: int = sum(b << i for i, b in enumerate(all_bits[::-1]))
       wells_bytes = well_mask_int.to_bytes(48, "big")
     else:
-      # Selective wells: encode specific well indices into the bitmask
+      # Selective wells: encode specific well indices into the bitmask.
+      # The firmware uses row-major ordering (A1,A2,...,A12,B1,...) but PLR
+      # get_all_items() is column-major (A1,B1,...,H1,A2,...). Convert each
+      # well's (row, col) to a row-major index for the firmware.
       mask = bytearray(48)
       for well in wells:
-        idx = self._well_to_index(plate, well)
+        row = well.get_row()
+        col = well.get_column()
+        idx = row * plate_cols + col  # row-major index for firmware
         mask[idx // 8] |= 1 << (7 - idx % 8)
       wells_bytes = bytes(mask)
 
@@ -1081,9 +1352,106 @@ class CLARIOstarBackend(PlateReaderBackend):
   async def _get_measurement_values(self):
     return await self.send_command(b"\x05\x02\x00\x00\x00\x00\x00\x00")
 
+  async def _get_progressive_measurement_values(self):
+    """Fetch partial measurement data during an active measurement.
+
+    Uses the ``$FF $FF $FF $FF`` variant of getData which returns available
+    data with zeros for wells not yet measured. The response structure is
+    identical to the final getData (1612B frame for a full 96-well plate),
+    but unmeasured wells are zero-filled.
+
+    This can be called while the instrument is BUSY (measurement in progress).
+    """
+    return await self.send_command(b"\x05\x02\xff\xff\xff\xff\x00\x00")
+
+  @staticmethod
+  def _parse_run_response(response: bytes) -> dict:
+    """Parse the 'Time Values Response' returned immediately after a run command.
+
+    The firmware returns a ~53-byte framed response when a measurement command
+    is accepted. The unframed payload contains:
+
+    - Byte 0: ``$03`` — echo of the run command type
+    - Bytes 1-3: status bytes (BUSY + accepted flags)
+    - Bytes 9-10: total expected measurement values (uint16 BE)
+
+    Returns dict with:
+      - ``accepted``: bool — True if the command was accepted (byte 0 == 0x03)
+      - ``total_values``: int — expected total measurement values
+      - ``status_bytes``: bytes — raw status bytes for debugging
+
+    Raises ValueError if the response is too short to parse.
+    """
+    try:
+      payload = _unframe(response)
+    except FrameError:
+      if len(response) >= 7 and response[0] == 0x02 and response[-1] == 0x0D:
+        payload = response[4:-3]
+      else:
+        payload = response
+
+    if len(payload) < 11:
+      raise ValueError(
+        f"Run response too short ({len(payload)} bytes, need >= 11). "
+        f"Raw: {response.hex()}"
+      )
+
+    command_echo = payload[0]
+    accepted = command_echo == 0x03
+    status_bytes = payload[1:4]
+    total_values = int.from_bytes(payload[9:11], "big")
+
+    return {
+      "accepted": accepted,
+      "total_values": total_values,
+      "status_bytes": status_bytes,
+    }
+
+  @staticmethod
+  def _parse_progress_from_data_response(response: bytes) -> dict:
+    """Parse progress metadata from a progressive getData response.
+
+    The progressive getData response has the same structure as the final
+    response. Key fields in the unframed payload:
+
+    - Byte 6: schema (``$A9`` for absorbance, ``$21`` for fluorescence)
+    - Bytes 7-8: total values expected (uint16 BE)
+    - Bytes 9-10: complete count — number of values measured so far (uint16 BE)
+
+    Returns dict with:
+      - ``complete``: int — number of values measured so far
+      - ``total``: int — total values expected
+      - ``schema``: int — response schema byte
+
+    Raises ValueError if the response is too short to parse.
+    """
+    try:
+      payload = _unframe(response)
+    except FrameError:
+      if len(response) >= 7 and response[0] == 0x02 and response[-1] == 0x0D:
+        payload = response[4:-3]
+      else:
+        payload = response
+
+    if len(payload) < 11:
+      raise ValueError(
+        f"Data response too short ({len(payload)} bytes, need >= 11). "
+        f"Raw: {response.hex()}"
+      )
+
+    schema = payload[6]
+    total = int.from_bytes(payload[7:9], "big")
+    complete = int.from_bytes(payload[9:11], "big")
+
+    return {
+      "complete": complete,
+      "total": total,
+      "schema": schema,
+    }
+
   # # # Luminescence # # #
 
-  async def _run_luminescence(
+  async def _start_luminescence_measurement(
     self,
     focal_height: float,
     plate: Plate,
@@ -1116,20 +1484,22 @@ class CLARIOstarBackend(PlateReaderBackend):
       else b"\x00\x00\x00\x00"
     )
 
-    # Payload structure preserved from working capture:
-    # plate(63) + scan(1) + optic_etc(3) + shaker(4) + fixed(5) + separator(4) + ...
-    payload = (
-      plate_and_wells
-      + bytes([scan])
-      + b"\x01\x00\x00"
-      + shaker
-      + b"\x00\x20\x04\x00\x1e\x27\x0f\x27\x0f\x01"
-      + focal_height_data
-      + b"\x00\x00\x01\x00\x00\x0e\x10\x00\x01\x00\x01\x00"
-      + b"\x01\x00\x01\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x01"
-      + b"\x00\x00\x00\x01\x00\x64\x00\x20\x00\x00"
-    )
-    run_response = await self.send_command(payload)
+    # Payload layout: plate(63) + scan(1) + optic(3) + shaker(4)
+    # + [extended(5) if 0x0026] + separator(4) + mode(1) + ...
+    payload = bytearray()
+    payload += plate_and_wells
+    payload += bytes([scan])
+    payload += b"\x01\x00\x00"
+    payload += shaker
+    if self._uses_extended_separator:
+      payload += b"\x00\x20\x04\x00\x1e"
+    payload += b"\x27\x0f\x27\x0f\x01"
+    payload += focal_height_data
+    payload += b"\x00\x00\x01\x00\x00\x0e\x10\x00\x01\x00\x01\x00"
+    payload += b"\x01\x00\x01\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x01"
+    payload += b"\x00\x00\x00\x01\x00\x64\x00\x20\x00\x00"
+
+    run_response = await self.send_command(bytes(payload))
     if wait:
       return await self._wait_for_ready_and_return(run_response)
     return run_response
@@ -1154,9 +1524,10 @@ class CLARIOstarBackend(PlateReaderBackend):
     wait = backend_kwargs.pop("wait", True)
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
-    await self._mp_and_focus_height_value()
+    # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
+    # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
-    await self._run_luminescence(
+    await self._start_luminescence_measurement(
       focal_height=focal_height,
       plate=plate,
       wells=None if all_wells else wells,
@@ -1216,12 +1587,11 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   # # # Absorbance # # #
 
-  async def _run_absorbance(
+  async def _start_absorbance_measurement(
     self,
     wavelengths: List[int],
     plate: Plate,
     wells: Optional[List[Well]] = None,
-    flashes: int = 22,
     settling_time: int = 0,
     shake_type: ShakerType = ShakerType.ORBITAL,
     shake_speed_rpm: int = 0,
@@ -1236,27 +1606,33 @@ class CLARIOstarBackend(PlateReaderBackend):
     matrix_size: Optional[int] = None,
     optic: Literal["bottom", "top"] = "top",
     flashes_per_well: int = 22,
-    wait: bool = True,
-  ):
-    """Run a plate reader absorbance run.
+  ) -> bytes:
+    """Send an absorbance measurement command and return the run response immediately.
+
+    This is an atomic operation: it sends the command payload and returns the
+    firmware's ~53-byte run response without waiting for the measurement to complete.
+    The caller (``read_absorbance``) is responsible for orchestrating the wait/progress
+    polling loop.
 
     Args:
       wavelengths: List of wavelengths in nm (1-8 wavelengths, 200-1000 nm each).
-      flashes: Number of flashes per well (0-200). Deprecated, use ``flashes_per_well``.
       settling_time: Settling time in deciseconds (0-10).
       flying_mode: If True, the plate moves continuously during measurement.
-      well_scan: Well scanning pattern. TODO: not yet wired into the command payload.
+      well_scan: Well scanning pattern. ``"orbital"`` is wired; ``"spiral"`` and
+        ``"matrix"`` are validated but not yet encoded.
       well_scan_width: Width in mm of the scan pattern. For orbital/spiral: 1-15 mm.
         For matrix: 1-22 mm (side length of the square scan area).
         Only used when ``well_scan`` is not ``"point"``.
-        TODO: not yet wired into the command payload.
       matrix_size: Grid size for matrix well scan. The OEM software exposes
         3, 7, 8, 9, 10, 15, 20, 25, 30 (i.e. 3x3 to 30x30), but direct firmware
         control may accept other values.
         Only used when ``well_scan`` is ``"matrix"``.
-        TODO: not yet wired into the command payload.
       optic: Read from top or bottom optic. TODO: not yet wired into the command payload.
-      flashes_per_well: Number of flashes per well (0-200).
+      flashes_per_well: Number of flashes per well (1-200). Encoded as uint16 BE
+        in the command payload.  OEM defaults: 5 for point, 7 for orbital.
+
+    Returns:
+      The raw ~53-byte framed run response from the firmware.
     """
     if not 1 <= len(wavelengths) <= 8:
       raise ValueError("Must specify 1-8 wavelengths")
@@ -1271,7 +1647,7 @@ class CLARIOstarBackend(PlateReaderBackend):
       if well_scan_width is None:
         raise ValueError(f"well_scan_width is required when well_scan={well_scan!r}")
       sample_well = plate.get_all_items()[0]
-      well_diameter = min(sample_well.size_x, sample_well.size_y)
+      well_diameter = min(sample_well.get_size_x(), sample_well.get_size_y())
       if well_scan_width > well_diameter:
         raise ValueError(
           f"well_scan_width ({well_scan_width} mm) exceeds well diameter ({well_diameter} mm)"
@@ -1294,18 +1670,30 @@ class CLARIOstarBackend(PlateReaderBackend):
       else b"\x00\x00\x00\x00"
     )
 
-    # Payload structure from working OEM capture (machine type 0x0026).
-    # Note: differs from Go reference (abs.go) which targets type 0x0024 —
-    # this machine requires 5 extra bytes between shaker and separator.
-    # plate(63) + scan(1) + optic_etc(3) + shaker(4) + fixed(5) + separator(4) + ...
+    # Payload layout (OEM pcap verified):
+    # plate(63) + scan(1) + optic(1) + zeros(2) + shaker(4)
+    # + [extended(5) if 0x0026] + separator(4) + [orbital(5) if orbital] + ...
     payload = bytearray()
     payload += plate_and_wells
     payload += bytes([scan])
-    # Absorbance optic mode + zeros
-    # TODO: wire well_scan and optic into these bytes once the encoding is known
-    payload += b"\x02\x00\x00"
+
+    # Optic config byte — base 0x02 for absorbance top-optic, OR'd with
+    # orbital averaging flags when well_scan != "point".
+    optic_config = 0x02 | _well_scan_optic_flags(well_scan)
+    payload += bytes([optic_config, 0x00, 0x00])
+
     payload += shaker
-    payload += b"\x00\x20\x04\x00\x1e\x27\x0f\x27\x0f"
+
+    # Machine type 0x0026 has 5 extra bytes before the separator.
+    # Type 0x0024 (Go reference) omits them.
+    if self._uses_extended_separator:
+      payload += b"\x00\x20\x04\x00\x1e"
+    payload += b"\x27\x0f\x27\x0f"
+
+    # Orbital scan parameters (0 or 5 bytes after separator).
+    payload += _well_scan_orbital_bytes(
+      _ORBITAL_MEAS_CODE["absorbance"], well_scan, well_scan_width, plate,
+    )
     # Settling + wavelength count + wavelength data (per Go absDiscreteBytes)
     payload += bytes([0x19, len(wavelengths)])
     for w in wavelengths:
@@ -1320,12 +1708,28 @@ class CLARIOstarBackend(PlateReaderBackend):
     payload += pause_time.to_bytes(2, "big")
     # Fixed trailer
     payload += b"\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"
-    payload += flashes.to_bytes(2, "big")
+    # Flashes per well — uint16 BE. OEM uses 5 for point, 7 for orbital;
+    # any value 1-200 is accepted by the firmware.
+    payload += flashes_per_well.to_bytes(2, "big")
     payload += b"\x00\x01\x00\x00"
 
     run_response = await self.send_command(bytes(payload))
-    if wait:
-      return await self._wait_for_ready_and_return(run_response)
+
+    # Verify the firmware accepted the command
+    run_info = self._parse_run_response(run_response)
+    logger.info(
+      "Run command %s: total_values=%d, status=%s",
+      "accepted" if run_info["accepted"] else "REJECTED",
+      run_info["total_values"],
+      run_info["status_bytes"].hex(),
+    )
+    if not run_info["accepted"]:
+      raise RuntimeError(
+        f"Absorbance run command rejected by firmware. "
+        f"Status bytes: {run_info['status_bytes'].hex()}, "
+        f"raw response: {run_response.hex()}"
+      )
+
     return run_response
 
   @staticmethod
@@ -1533,6 +1937,15 @@ class CLARIOstarBackend(PlateReaderBackend):
   ) -> Optional[List[Dict]]:
     """Read absorbance values from the device.
 
+    Orchestrates the full OEM-style measurement sequence:
+
+    1. Send the absorbance run command (atomic ``_start_absorbance_measurement``).
+    2. Verify the run response was accepted.
+    3. Fetch first progressive data and time how long it takes.
+    4. If ``wait=False``, return ``None`` immediately.
+    5. If ``wait=True``, progressive polling loop at ``data_retrieval_rate``.
+    6. After BUSY clears, collect final measurement data.
+
     Args:
       wavelength: wavelength to read absorbance at, in nanometers.
       report: whether to report absorbance as optical depth (OD) or transmittance.
@@ -1548,8 +1961,14 @@ class CLARIOstarBackend(PlateReaderBackend):
         optic: Literal["bottom", "top"] - read from bottom or top optic.
         wait: bool - if False, start measurement and return None immediately.
           Use ``collect_absorbance_measurement`` to retrieve results later.
+        data_retrieval_rate: float - seconds between progressive data polls (default 1.5).
+        on_progress: async callback ``(complete, total, raw_response)`` called
+          each time progressive data is fetched during the polling loop.
     """
     wait = backend_kwargs.pop("wait", True)
+    data_retrieval_rate: float = backend_kwargs.pop("data_retrieval_rate", 1.5)
+    on_progress: Optional[Callable[[int, int, Optional[bytes]], Awaitable[None]]] = \
+      backend_kwargs.pop("on_progress", None)
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
     # Support multi-wavelength via backend_kwargs
@@ -1557,19 +1976,67 @@ class CLARIOstarBackend(PlateReaderBackend):
     if isinstance(wavelengths, int):
       wavelengths = [wavelengths]
 
-    await self._mp_and_focus_height_value()
+    # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
+    # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
-    await self._run_absorbance(
+    # Step 1: Send command, verify accepted, return run response
+    run_response = await self._start_absorbance_measurement(
       wavelengths=wavelengths,
       plate=plate,
       wells=None if all_wells else wells,
-      wait=wait,
       **backend_kwargs,
     )
 
+    # Step 2: First progressive data retrieval + timing
+    t0 = time.time()
+    try:
+      first_data = await self._get_progressive_measurement_values()
+      first_progress = self._parse_progress_from_data_response(first_data)
+      logger.info(
+        "First data retrieval took %.2fs: %d/%d values (schema=0x%02x)",
+        time.time() - t0,
+        first_progress["complete"], first_progress["total"], first_progress["schema"],
+      )
+    except (ValueError, FrameError) as e:
+      logger.warning("First progressive data retrieval failed (%.2fs): %s", time.time() - t0, e)
+
+    # Step 4: Early exit if not waiting
     if not wait:
       return None
 
+    # Step 5: Progressive polling loop
+    timeout = self.timeout
+    t_start = time.time()
+    while time.time() - t_start < timeout:
+      await asyncio.sleep(data_retrieval_rate)
+
+      # Fetch progressive data
+      try:
+        progressive_resp = await self._get_progressive_measurement_values()
+        progress = self._parse_progress_from_data_response(progressive_resp)
+        logger.info(
+          "Progressive poll: %d/%d values (schema=0x%02x)",
+          progress["complete"], progress["total"], progress["schema"],
+        )
+        if on_progress is not None:
+          await on_progress(progress["complete"], progress["total"], progressive_resp)
+      except (ValueError, FrameError) as e:
+        logger.warning("Progressive poll failed: %s", e)
+
+      # Check if BUSY has cleared
+      command_status = await self._request_command_status()
+      flags = self._parse_status_response(command_status)
+      logger.info("status: %s", {k: v for k, v in flags.items() if v})
+      if not flags["busy"]:
+        break
+    else:
+      elapsed = time.time() - t_start
+      raise TimeoutError(
+        f"Plate reader still busy after {elapsed:.1f}s (timeout={timeout}s). "
+        f"Increase timeout via CLARIOstarBackend(timeout=...) for long-running operations."
+      )
+
+    # Step 6: Collect final data
     return await self.collect_absorbance_measurement(
       plate=plate, wells=wells, wavelengths=wavelengths, report=report,
     )
@@ -1682,7 +2149,7 @@ class CLARIOstarBackend(PlateReaderBackend):
 
   # # # Fluorescence # # #
 
-  async def _run_fluorescence(
+  async def _start_fluorescence_measurement(
     self,
     plate: Plate,
     excitation_wavelength: int,
@@ -1881,9 +2348,10 @@ class CLARIOstarBackend(PlateReaderBackend):
     wait = backend_kwargs.pop("wait", True)
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
-    await self._mp_and_focus_height_value()
+    # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
+    # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
-    await self._run_fluorescence(
+    await self._start_fluorescence_measurement(
       plate=plate,
       excitation_wavelength=excitation_wavelength,
       emission_wavelength=emission_wavelength,

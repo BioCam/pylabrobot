@@ -9,7 +9,10 @@ from pylabrobot.plate_reading.bmg_labtech.clariostar_backend import (
   CLARIOstarBackend,
   CLARIOstarConfig,
   FrameError,
+  _ORBITAL_MEAS_CODE,
   _parse_usage_counters,
+  _well_scan_optic_flags,
+  _well_scan_orbital_bytes,
   ShakerType,
   StartCorner,
   StatusFlag,
@@ -259,6 +262,72 @@ class TestScanModeByte(unittest.TestCase):
     self.assertEqual(result, 0xFE)
 
 
+
+# ---------------------------------------------------------------------------
+# Well scan helpers
+# ---------------------------------------------------------------------------
+
+
+class TestWellScanOpticFlags(unittest.TestCase):
+  """Test _well_scan_optic_flags across all scan modes."""
+
+  def test_point_returns_zero(self):
+    self.assertEqual(_well_scan_optic_flags("point"), 0x00)
+
+  def test_orbital_returns_0x30(self):
+    self.assertEqual(_well_scan_optic_flags("orbital"), 0x30)
+
+  def test_spiral_returns_zero_for_now(self):
+    """Spiral not yet wired — returns 0 until OEM capture confirms encoding."""
+    self.assertEqual(_well_scan_optic_flags("spiral"), 0x00)
+
+  def test_matrix_returns_zero_for_now(self):
+    self.assertEqual(_well_scan_optic_flags("matrix"), 0x00)
+
+
+class TestWellScanOrbitalBytes(unittest.TestCase):
+  """Test _well_scan_orbital_bytes byte encoding."""
+
+  def setUp(self):
+    self.plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+
+  def test_point_returns_empty(self):
+    result = _well_scan_orbital_bytes(0x02, "point", None, self.plate)
+    self.assertEqual(result, b"")
+
+  def test_orbital_returns_5_bytes(self):
+    result = _well_scan_orbital_bytes(0x02, "orbital", 3, self.plate)
+    self.assertEqual(len(result), 5)
+
+  def test_orbital_abs_measurement_code(self):
+    result = _well_scan_orbital_bytes(0x02, "orbital", 3, self.plate)
+    self.assertEqual(result[0], 0x02)
+
+  def test_orbital_fl_measurement_code(self):
+    result = _well_scan_orbital_bytes(0x03, "orbital", 3, self.plate)
+    self.assertEqual(result[0], 0x03)
+
+  def test_orbital_diameter_encoded(self):
+    result = _well_scan_orbital_bytes(0x02, "orbital", 5, self.plate)
+    self.assertEqual(result[1], 5)
+
+  def test_orbital_well_diameter_from_plate(self):
+    """Well diameter is physical well size in 0.01mm as uint16 BE."""
+    result = _well_scan_orbital_bytes(0x02, "orbital", 3, self.plate)
+    w = self.plate.get_all_items()[0]
+    expected = round(min(w.get_size_x(), w.get_size_y()) * 100)
+    self.assertEqual(int.from_bytes(result[2:4], "big"), expected)
+
+  def test_orbital_terminator(self):
+    result = _well_scan_orbital_bytes(0x02, "orbital", 3, self.plate)
+    self.assertEqual(result[4], 0x00)
+
+  def test_orbital_meas_code_dict(self):
+    """Verify the known measurement code constants."""
+    self.assertEqual(_ORBITAL_MEAS_CODE["absorbance"], 0x02)
+    self.assertEqual(_ORBITAL_MEAS_CODE["fluorescence"], 0x03)
+
+
 # ---------------------------------------------------------------------------
 # PR 3: Plate bytes and well selection
 # ---------------------------------------------------------------------------
@@ -302,20 +371,30 @@ class TestPlateBytes(unittest.TestCase):
     self.assertEqual(mask[:12], b"\xff" * 12)
     self.assertEqual(mask[12:], b"\x00" * 36)
 
-  def test_partial_wells_mask_go_vector(self):
-    """Verify partial well mask matches Go TestSetWells: wells {0, 13, 26, 39}."""
+  def test_partial_wells_mask_row_major(self):
+    """Verify partial well mask uses row-major firmware indexing.
+
+    PLR all_items is column-major: indices {0,13,26,39} = wells A1,F2,C4,H5.
+    Firmware row-major indices: A1=0, F2=61, C4=27, H5=88.
+    """
     all_items = self.plate.get_all_items()
     selected = [all_items[0], all_items[13], all_items[26], all_items[39]]
     result = self.backend._plate_bytes(self.plate, wells=selected)
     mask = result[15:]
-    # Go TestSetWells expected first 5 bytes: [0x80, 0x04, 0x00, 0x20, 0x01]
+    # A1 → row-major 0 → byte[0] bit 7
     self.assertEqual(mask[0], 0x80)
-    self.assertEqual(mask[1], 0x04)
+    self.assertEqual(mask[1], 0x00)
     self.assertEqual(mask[2], 0x00)
-    self.assertEqual(mask[3], 0x20)
-    self.assertEqual(mask[4], 0x01)
+    # C4 → row-major 27 → byte[3] bit 4
+    self.assertEqual(mask[3], 0x10)
+    self.assertEqual(mask[4:7], b"\x00" * 3)
+    # F2 → row-major 61 → byte[7] bit 2
+    self.assertEqual(mask[7], 0x04)
+    self.assertEqual(mask[8:11], b"\x00" * 3)
+    # H5 → row-major 88 → byte[11] bit 7 (88%8=0, 7-0=7)
+    self.assertEqual(mask[11], 0x80)
     # Remaining bytes should be zero
-    self.assertEqual(mask[5:], b"\x00" * 43)
+    self.assertEqual(mask[12:], b"\x00" * 36)
 
   def test_single_well(self):
     """Selecting only well 0 → byte 0 = 0x80, rest zero."""
@@ -1319,6 +1398,127 @@ class TestCLARIOstarBackendEepromMethods(unittest.TestCase):
     self.assertIn("Raw length:", result)
 
 
+class TestMachineTypeAutoDetection(unittest.TestCase):
+  """Test machine type auto-detection and extended separator logic."""
+
+  def setUp(self):
+    self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend._machine_type_code = 0
+
+  def test_default_type_code_is_zero(self):
+    """Before setup, machine type code is 0."""
+    self.assertEqual(self.backend._machine_type_code, 0)
+
+  def test_extended_separator_unknown_type(self):
+    """Unknown type (0) defaults to extended separator (conservative)."""
+    self.backend._machine_type_code = 0
+    self.assertTrue(self.backend._uses_extended_separator)
+
+  def test_extended_separator_type_0x0026(self):
+    """Type 0x0026 uses extended separator."""
+    self.backend._machine_type_code = 0x0026
+    self.assertTrue(self.backend._uses_extended_separator)
+
+  def test_no_extended_separator_type_0x0024(self):
+    """Type 0x0024 does NOT use extended separator (matches Go reference)."""
+    self.backend._machine_type_code = 0x0024
+    self.assertFalse(self.backend._uses_extended_separator)
+
+
+class TestAbsorbanceOrbitalPayload(unittest.TestCase):
+  """Test orbital well_scan encoding in _start_absorbance_measurement payload."""
+
+  def setUp(self):
+    self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend._machine_type_code = 0x0024  # no extended separator
+    self.backend._last_scan_params = {}
+    self.plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+
+  def _build_payload(self, well_scan="point", well_scan_width=None):
+    """Build the absorbance payload synchronously for testing.
+
+    Replicates _start_absorbance_measurement's payload construction without the async send.
+    """
+    plate = self.plate
+    plate_and_wells = self.backend._plate_bytes(plate, wells=None)
+    scan = _scan_mode_byte()
+    shaker = b"\x00\x00\x00\x00"
+
+    payload = bytearray()
+    payload += plate_and_wells
+    payload += bytes([scan])
+
+    optic_config = 0x02 | _well_scan_optic_flags(well_scan)
+    payload += bytes([optic_config, 0x00, 0x00])
+
+    payload += shaker
+
+    if self.backend._uses_extended_separator:
+      payload += b"\x00\x20\x04\x00\x1e"
+    payload += b"\x27\x0f\x27\x0f"
+
+    payload += _well_scan_orbital_bytes(
+      _ORBITAL_MEAS_CODE["absorbance"], well_scan, well_scan_width, plate,
+    )
+
+    # Settling + 1 wavelength at 600nm
+    payload += bytes([0x19, 1])
+    payload += (600 * 10).to_bytes(2, "big")
+
+    return bytes(payload)
+
+  def test_point_scan_optic_byte(self):
+    """Point scan: optic config byte is 0x02 (no orbital bits)."""
+    payload = self._build_payload(well_scan="point")
+    # Optic byte is at offset 64 (63 plate + 1 scan = offset 64)
+    self.assertEqual(payload[64], 0x02)
+
+  def test_orbital_scan_optic_byte(self):
+    """Orbital scan: optic config byte is 0x32 (bits 4-5 set)."""
+    payload = self._build_payload(well_scan="orbital", well_scan_width=3)
+    self.assertEqual(payload[64], 0x32)
+
+  def test_orbital_inserts_5_bytes_after_separator(self):
+    """Orbital scan adds 5 bytes between separator and settling byte."""
+    point_payload = self._build_payload(well_scan="point")
+    orbital_payload = self._build_payload(well_scan="orbital", well_scan_width=3)
+    self.assertEqual(len(orbital_payload), len(point_payload) + 5)
+
+  def test_orbital_params_encoding(self):
+    """Orbital params: [0x02, diameter_mm, well_dia_hi, well_dia_lo, 0x00]."""
+    payload = self._build_payload(well_scan="orbital", well_scan_width=3)
+    # For 0x0024 (no extended separator), separator at offset 71:
+    # plate(63) + scan(1) + optic(3) + shaker(4) = 71
+    sep_offset = 71
+    self.assertEqual(payload[sep_offset:sep_offset + 4], b"\x27\x0f\x27\x0f")
+    # Orbital params start right after separator
+    orbital = payload[sep_offset + 4 : sep_offset + 9]
+    self.assertEqual(orbital[0], 0x02)  # scan type
+    self.assertEqual(orbital[1], 3)     # diameter = 3 mm
+    # Well diameter: Cor_96 well size_x = size_y = 6.35 mm → 635 = 0x027B
+    sample_well = self.plate.get_all_items()[0]
+    well_dia = round(min(sample_well.get_size_x(), sample_well.get_size_y()) * 100)
+    self.assertEqual(int.from_bytes(orbital[2:4], "big"), well_dia)
+    self.assertEqual(orbital[4], 0x00)  # terminator
+
+  def test_extended_separator_adds_5_bytes(self):
+    """Machine type 0x0026 inserts 5 extra bytes before separator."""
+    self.backend._machine_type_code = 0x0026
+    extended_payload = self._build_payload(well_scan="point")
+
+    self.backend._machine_type_code = 0x0024
+    standard_payload = self._build_payload(well_scan="point")
+
+    self.assertEqual(len(extended_payload), len(standard_payload) + 5)
+
+    # Verify the extra bytes
+    sep_offset_std = 71  # no extended bytes
+    sep_offset_ext = 76  # with 5 extra bytes
+    self.assertEqual(standard_payload[sep_offset_std:sep_offset_std + 4], b"\x27\x0f\x27\x0f")
+    self.assertEqual(extended_payload[sep_offset_ext:sep_offset_ext + 4], b"\x27\x0f\x27\x0f")
+    self.assertEqual(extended_payload[71:76], b"\x00\x20\x04\x00\x1e")
+
+
 class TestSimulatorConfig(unittest.TestCase):
   """Test CLARIOstarSimulatorBackend config methods."""
 
@@ -1357,6 +1557,523 @@ class TestSimulatorUsageCounters(unittest.IsolatedAsyncioTestCase):
     self.assertIsInstance(c, dict)
     self.assertEqual(c["flashes"], 0)
     self.assertEqual(c["wells"], 0)
+
+
+# ---------------------------------------------------------------------------
+# Progressive measurement monitoring
+# ---------------------------------------------------------------------------
+
+
+def _make_run_response_payload(
+  command_echo: int = 0x03,
+  status_bytes: bytes = b"\x25\x04\x06",
+  total_values: int = 392,
+) -> bytes:
+  """Build a minimal run response payload (>= 11 bytes) for _parse_run_response tests."""
+  # Byte 0: command echo
+  # Bytes 1-3: status
+  # Bytes 4-8: padding (timing metadata in real firmware)
+  # Bytes 9-10: total values (uint16 BE)
+  payload = bytes([command_echo]) + status_bytes + b"\x00\x00\x00\x00\x00"
+  payload += total_values.to_bytes(2, "big")
+  return payload
+
+
+def _make_data_response_payload(
+  schema: int = 0xA9,
+  total: int = 392,
+  complete: int = 0,
+) -> bytes:
+  """Build a minimal data response payload (>= 11 bytes) for _parse_progress_from_data_response tests.
+
+  Layout: 6 header bytes + schema(1) + total(2) + complete(2) + padding.
+  """
+  header = b"\x02\x05\x00\x26\x00\x00"  # 6 bytes
+  payload = header + bytes([schema]) + total.to_bytes(2, "big") + complete.to_bytes(2, "big")
+  return payload
+
+
+class TestParseRunResponse(unittest.TestCase):
+  """Test CLARIOstarBackend._parse_run_response()."""
+
+  def test_accepted_response(self):
+    """A valid run response with command echo 0x03 is accepted."""
+    payload = _make_run_response_payload(command_echo=0x03, total_values=392)
+    framed = _make_response_frame(payload)
+    result = CLARIOstarBackend._parse_run_response(framed)
+    self.assertTrue(result["accepted"])
+    self.assertEqual(result["total_values"], 392)
+    self.assertEqual(result["status_bytes"], b"\x25\x04\x06")
+
+  def test_rejected_response(self):
+    """A response with unexpected command echo is not accepted."""
+    payload = _make_run_response_payload(command_echo=0x01, total_values=100)
+    framed = _make_response_frame(payload)
+    result = CLARIOstarBackend._parse_run_response(framed)
+    self.assertFalse(result["accepted"])
+    self.assertEqual(result["total_values"], 100)
+
+  def test_too_short_response_raises(self):
+    """A response shorter than 11 payload bytes raises ValueError."""
+    short_payload = b"\x03\x25\x04"  # only 3 bytes
+    framed = _make_response_frame(short_payload)
+    with self.assertRaises(ValueError):
+      CLARIOstarBackend._parse_run_response(framed)
+
+  def test_unframed_fallback(self):
+    """When given raw (unframed) bytes, parse_run_response still works."""
+    payload = _make_run_response_payload(command_echo=0x03, total_values=288)
+    # Pass raw payload without framing
+    result = CLARIOstarBackend._parse_run_response(payload)
+    self.assertTrue(result["accepted"])
+    self.assertEqual(result["total_values"], 288)
+
+  def test_different_total_values(self):
+    """Verify various total_values are parsed correctly."""
+    for total in [0, 96, 288, 392, 1000]:
+      payload = _make_run_response_payload(total_values=total)
+      framed = _make_response_frame(payload)
+      result = CLARIOstarBackend._parse_run_response(framed)
+      self.assertEqual(result["total_values"], total)
+
+
+class TestParseProgressFromDataResponse(unittest.TestCase):
+  """Test CLARIOstarBackend._parse_progress_from_data_response()."""
+
+  def test_zero_complete(self):
+    """First progressive poll: 0 values complete."""
+    payload = _make_data_response_payload(schema=0xA9, total=392, complete=0)
+    framed = _make_response_frame(payload)
+    result = CLARIOstarBackend._parse_progress_from_data_response(framed)
+    self.assertEqual(result["complete"], 0)
+    self.assertEqual(result["total"], 392)
+    self.assertEqual(result["schema"], 0xA9)
+
+  def test_partial_complete(self):
+    """Progressive poll with partial data."""
+    for complete_val in [44, 88, 132, 200]:
+      payload = _make_data_response_payload(schema=0xA9, total=392, complete=complete_val)
+      framed = _make_response_frame(payload)
+      result = CLARIOstarBackend._parse_progress_from_data_response(framed)
+      self.assertEqual(result["complete"], complete_val)
+      self.assertEqual(result["total"], 392)
+
+  def test_all_complete(self):
+    """Progressive poll when measurement is fully done."""
+    payload = _make_data_response_payload(schema=0xA9, total=392, complete=392)
+    framed = _make_response_frame(payload)
+    result = CLARIOstarBackend._parse_progress_from_data_response(framed)
+    self.assertEqual(result["complete"], 392)
+    self.assertEqual(result["total"], 392)
+
+  def test_fluorescence_schema(self):
+    """Fluorescence schema byte (0x21) is parsed correctly."""
+    payload = _make_data_response_payload(schema=0x21, total=96, complete=48)
+    framed = _make_response_frame(payload)
+    result = CLARIOstarBackend._parse_progress_from_data_response(framed)
+    self.assertEqual(result["schema"], 0x21)
+    self.assertEqual(result["complete"], 48)
+    self.assertEqual(result["total"], 96)
+
+  def test_too_short_response_raises(self):
+    """A response shorter than 11 payload bytes raises ValueError."""
+    short_payload = b"\x02\x05\x00\x26"  # only 4 bytes
+    framed = _make_response_frame(short_payload)
+    with self.assertRaises(ValueError):
+      CLARIOstarBackend._parse_progress_from_data_response(framed)
+
+
+class TestProgressiveGetData(unittest.IsolatedAsyncioTestCase):
+  """Test that the progressive getData command uses the correct payload."""
+
+  async def test_progressive_payload(self):
+    """_get_progressive_measurement_values sends $05 $02 $FF $FF $FF $FF $00 $00."""
+    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    expected_payload = b"\x05\x02\xff\xff\xff\xff\x00\x00"
+
+    captured = []
+
+    async def mock_send_command(payload, **kwargs):
+      captured.append(payload)
+      return _make_response_frame(b"\x00" * 11)
+
+    backend.send_command = mock_send_command
+
+    await backend._get_progressive_measurement_values()
+    self.assertEqual(len(captured), 1)
+    self.assertEqual(captured[0], expected_payload)
+
+  async def test_final_getData_payload(self):
+    """_get_measurement_values sends $05 $02 $00 $00 $00 $00 $00 $00 (for comparison)."""
+    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    expected_payload = b"\x05\x02\x00\x00\x00\x00\x00\x00"
+
+    captured = []
+
+    async def mock_send_command(payload, **kwargs):
+      captured.append(payload)
+      return _make_response_frame(b"\x00" * 11)
+
+    backend.send_command = mock_send_command
+
+    await backend._get_measurement_values()
+    self.assertEqual(len(captured), 1)
+    self.assertEqual(captured[0], expected_payload)
+
+
+class TestWaitForReadyWithProgress(unittest.IsolatedAsyncioTestCase):
+  """Test CLARIOstarBackend._wait_for_ready_with_progress()."""
+
+  def _make_backend(self):
+    """Create a backend with mocked I/O."""
+    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    backend.timeout = 30
+    backend.io = unittest.mock.MagicMock()
+    backend._trace_io_path = None
+    return backend
+
+  def _make_status_response(self, busy: bool) -> bytes:
+    """Build a framed status response with the given BUSY state."""
+    # Byte 1 bit 5 = BUSY
+    byte1 = 0x25 if busy else 0x05  # 0x25 = VALID + BUSY, 0x05 = VALID
+    payload = bytes([0x00, byte1, 0x00, 0x00, 0x00])
+    return _make_response_frame(payload)
+
+  async def test_no_progress_callback_falls_back(self):
+    """When on_progress=None, _wait_for_ready_with_progress uses _wait_for_ready_and_return."""
+    backend = self._make_backend()
+    run_payload = _make_run_response_payload()
+    run_response = _make_response_frame(run_payload)
+
+    # Mock _wait_for_ready_and_return to verify fallback
+    backend._wait_for_ready_and_return = unittest.mock.AsyncMock(return_value=run_response)
+
+    result = await backend._wait_for_ready_with_progress(run_response, on_progress=None)
+    self.assertEqual(result, run_response)
+    backend._wait_for_ready_and_return.assert_awaited_once_with(run_response, timeout=None)
+
+  async def test_progress_callback_called_with_increasing_values(self):
+    """Progress callback receives increasing complete values."""
+    backend = self._make_backend()
+    run_payload = _make_run_response_payload(total_values=392)
+    run_response = _make_response_frame(run_payload)
+
+    # Simulate: 2 progressive polls, then BUSY clears
+    progressive_payloads = [
+      _make_data_response_payload(schema=0xA9, total=392, complete=44),
+      _make_data_response_payload(schema=0xA9, total=392, complete=200),
+    ]
+    progressive_responses = [_make_response_frame(p) for p in progressive_payloads]
+    progressive_idx = [0]
+
+    async def mock_get_progressive():
+      idx = progressive_idx[0]
+      progressive_idx[0] += 1
+      return progressive_responses[min(idx, len(progressive_responses) - 1)]
+
+    status_call_count = [0]
+
+    async def mock_request_status():
+      status_call_count[0] += 1
+      # BUSY on first two polls, then ready
+      busy = status_call_count[0] < 3
+      return self._make_status_response(busy)
+
+    backend._get_progressive_measurement_values = mock_get_progressive
+    backend._request_command_status = mock_request_status
+
+    progress_log = []
+
+    async def on_progress(complete, total, raw):
+      progress_log.append((complete, total))
+
+    result = await backend._wait_for_ready_with_progress(
+      run_response, on_progress=on_progress, poll_interval=0.01,
+    )
+
+    self.assertEqual(result, run_response)
+    self.assertGreaterEqual(len(progress_log), 2)
+    # Values should be increasing
+    self.assertEqual(progress_log[0], (44, 392))
+    self.assertEqual(progress_log[1], (200, 392))
+
+  async def test_timeout_raises(self):
+    """TimeoutError is raised when BUSY never clears."""
+    backend = self._make_backend()
+    run_payload = _make_run_response_payload()
+    run_response = _make_response_frame(run_payload)
+
+    async def mock_get_progressive():
+      return _make_response_frame(
+        _make_data_response_payload(schema=0xA9, total=392, complete=0)
+      )
+
+    async def mock_request_status():
+      return self._make_status_response(busy=True)
+
+    backend._get_progressive_measurement_values = mock_get_progressive
+    backend._request_command_status = mock_request_status
+
+    async def noop_progress(c, t, r):
+      pass
+
+    with self.assertRaises(TimeoutError):
+      await backend._wait_for_ready_with_progress(
+        run_response, on_progress=noop_progress, poll_interval=0.01, timeout=0.05,
+      )
+
+  async def test_immediate_ready(self):
+    """If BUSY clears on the first check, callback is called once and returns."""
+    backend = self._make_backend()
+    run_payload = _make_run_response_payload()
+    run_response = _make_response_frame(run_payload)
+
+    async def mock_get_progressive():
+      return _make_response_frame(
+        _make_data_response_payload(schema=0xA9, total=392, complete=392)
+      )
+
+    async def mock_request_status():
+      return self._make_status_response(busy=False)
+
+    backend._get_progressive_measurement_values = mock_get_progressive
+    backend._request_command_status = mock_request_status
+
+    progress_log = []
+
+    async def on_progress(complete, total, raw):
+      progress_log.append((complete, total))
+
+    result = await backend._wait_for_ready_with_progress(
+      run_response, on_progress=on_progress, poll_interval=0.01,
+    )
+
+    self.assertEqual(result, run_response)
+    self.assertEqual(len(progress_log), 1)
+    self.assertEqual(progress_log[0], (392, 392))
+
+
+# ---------------------------------------------------------------------------
+# read_absorbance orchestration integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
+  """Test the refactored read_absorbance orchestration flow.
+
+  The new flow:
+    1. _start_absorbance_measurement() — atomic send, returns run response
+    2. Verify run response
+    3. First progressive data retrieval + timing
+    4. If wait=False → return None
+    5. If wait=True → progressive polling loop
+    6. Collect final data via collect_absorbance_measurement
+  """
+
+  def _make_backend(self):
+    """Create a backend with mocked I/O."""
+    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    backend.timeout = 30
+    backend.io = unittest.mock.MagicMock()
+    backend._trace_io_path = None
+    backend._machine_type_code = 0x0026
+    backend._last_scan_params = {}
+    return backend
+
+  def _make_status_response(self, busy: bool) -> bytes:
+    byte1 = 0x25 if busy else 0x05
+    payload = bytes([0x00, byte1, 0x00, 0x00, 0x00])
+    return _make_response_frame(payload)
+
+  async def test_wait_false_returns_none_immediately(self):
+    """read_absorbance(wait=False) sends the run command and returns None."""
+    backend = self._make_backend()
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    all_wells = plate.get_all_items()
+
+    run_payload = _make_run_response_payload(total_values=392)
+    run_response = _make_response_frame(run_payload)
+
+    # Mock _start_absorbance_measurement to return the run response
+    backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
+
+    # Mock first progressive data retrieval
+    first_data = _make_response_frame(
+      _make_data_response_payload(schema=0xA9, total=392, complete=0)
+    )
+    backend._get_progressive_measurement_values = unittest.mock.AsyncMock(return_value=first_data)
+
+    result = await backend.read_absorbance(
+      plate=plate, wells=all_wells, wavelength=600, wait=False,
+    )
+
+    self.assertIsNone(result)
+    backend._start_absorbance_measurement.assert_awaited_once()
+    # First progressive data should have been fetched (step 3)
+    backend._get_progressive_measurement_values.assert_awaited_once()
+
+  async def test_wait_true_polls_then_collects(self):
+    """read_absorbance(wait=True) does progressive polling then collects final data."""
+    backend = self._make_backend()
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    all_wells = plate.get_all_items()
+
+    run_payload = _make_run_response_payload(total_values=392)
+    run_response = _make_response_frame(run_payload)
+
+    backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
+
+    # Progressive data: first call (step 3), then 2 polling calls (step 5)
+    progressive_responses = [
+      _make_response_frame(_make_data_response_payload(schema=0xA9, total=392, complete=0)),
+      _make_response_frame(_make_data_response_payload(schema=0xA9, total=392, complete=100)),
+      _make_response_frame(_make_data_response_payload(schema=0xA9, total=392, complete=300)),
+    ]
+    prog_idx = [0]
+
+    async def mock_get_progressive():
+      idx = prog_idx[0]
+      prog_idx[0] += 1
+      return progressive_responses[min(idx, len(progressive_responses) - 1)]
+
+    backend._get_progressive_measurement_values = mock_get_progressive
+
+    # Status: BUSY for first 2 polls, then ready
+    status_count = [0]
+
+    async def mock_request_status():
+      status_count[0] += 1
+      busy = status_count[0] < 3
+      return self._make_status_response(busy)
+
+    backend._request_command_status = mock_request_status
+
+    # Mock collect_absorbance_measurement
+    expected_result = [{"wavelength": 600, "data": [[0.1]], "temperature": 25.0, "time": 0}]
+    backend.collect_absorbance_measurement = unittest.mock.AsyncMock(return_value=expected_result)
+
+    result = await backend.read_absorbance(
+      plate=plate, wells=all_wells, wavelength=600, data_retrieval_rate=0.01,
+    )
+
+    self.assertEqual(result, expected_result)
+    backend._start_absorbance_measurement.assert_awaited_once()
+    backend.collect_absorbance_measurement.assert_awaited_once()
+
+  async def test_on_progress_callback_called(self):
+    """on_progress callback is called during the polling loop (not during first data check)."""
+    backend = self._make_backend()
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    all_wells = plate.get_all_items()
+
+    run_payload = _make_run_response_payload(total_values=392)
+    run_response = _make_response_frame(run_payload)
+
+    backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
+
+    progressive_responses = [
+      _make_response_frame(_make_data_response_payload(schema=0xA9, total=392, complete=0)),
+      _make_response_frame(_make_data_response_payload(schema=0xA9, total=392, complete=44)),
+      _make_response_frame(_make_data_response_payload(schema=0xA9, total=392, complete=200)),
+    ]
+    prog_idx = [0]
+
+    async def mock_get_progressive():
+      idx = prog_idx[0]
+      prog_idx[0] += 1
+      return progressive_responses[min(idx, len(progressive_responses) - 1)]
+
+    backend._get_progressive_measurement_values = mock_get_progressive
+
+    status_count = [0]
+
+    async def mock_request_status():
+      status_count[0] += 1
+      busy = status_count[0] < 3
+      return self._make_status_response(busy)
+
+    backend._request_command_status = mock_request_status
+
+    expected_result = [{"wavelength": 600, "data": [[0.1]], "temperature": 25.0, "time": 0}]
+    backend.collect_absorbance_measurement = unittest.mock.AsyncMock(return_value=expected_result)
+
+    progress_log = []
+
+    async def on_progress(complete, total, raw):
+      progress_log.append((complete, total))
+
+    result = await backend.read_absorbance(
+      plate=plate, wells=all_wells, wavelength=600,
+      data_retrieval_rate=0.01, on_progress=on_progress,
+    )
+
+    self.assertEqual(result, expected_result)
+    # on_progress should have been called during the polling loop
+    self.assertGreaterEqual(len(progress_log), 2)
+    self.assertEqual(progress_log[0], (44, 392))
+    self.assertEqual(progress_log[1], (200, 392))
+
+  async def test_timeout_raises(self):
+    """TimeoutError is raised when BUSY never clears."""
+    backend = self._make_backend()
+    backend.timeout = 0.05  # very short timeout
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+    all_wells = plate.get_all_items()
+
+    run_payload = _make_run_response_payload(total_values=392)
+    run_response = _make_response_frame(run_payload)
+
+    backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
+
+    async def mock_get_progressive():
+      return _make_response_frame(
+        _make_data_response_payload(schema=0xA9, total=392, complete=0)
+      )
+
+    backend._get_progressive_measurement_values = mock_get_progressive
+
+    async def mock_request_status():
+      return self._make_status_response(busy=True)
+
+    backend._request_command_status = mock_request_status
+
+    with self.assertRaises(TimeoutError):
+      await backend.read_absorbance(
+        plate=plate, wells=all_wells, wavelength=600, data_retrieval_rate=0.01,
+      )
+
+  async def test_start_absorbance_measurement_is_atomic(self):
+    """_start_absorbance_measurement sends, verifies, and returns the run response."""
+    backend = self._make_backend()
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+
+    # Mock send_command with an accepted response
+    run_payload = _make_run_response_payload(total_values=392)
+    run_response = _make_response_frame(run_payload)
+    backend.send_command = unittest.mock.AsyncMock(return_value=run_response)
+
+    result = await backend._start_absorbance_measurement(
+      wavelengths=[600], plate=plate,
+    )
+
+    # Should return the run response directly
+    self.assertEqual(result, run_response)
+    backend.send_command.assert_awaited_once()
+
+  async def test_start_absorbance_measurement_rejected_raises(self):
+    """_start_absorbance_measurement raises RuntimeError when the firmware rejects the command."""
+    backend = self._make_backend()
+    plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
+
+    # Mock send_command with a rejected response (command_echo != 0x03)
+    run_payload = _make_run_response_payload(command_echo=0x01, total_values=0)
+    run_response = _make_response_frame(run_payload)
+    backend.send_command = unittest.mock.AsyncMock(return_value=run_response)
+
+    with self.assertRaises(RuntimeError) as ctx:
+      await backend._start_absorbance_measurement(wavelengths=[600], plate=plate)
+
+    self.assertIn("rejected", str(ctx.exception).lower())
 
 
 if __name__ == "__main__":
