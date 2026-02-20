@@ -297,14 +297,18 @@ def _shaker_bytes(
 
 
 # Mapping from ShakerType to the byte value used in 0x0026 payloads.
-# Verified: ORBITAL → 0x02 (OEM MARS pcap, absorbance orbital 300 RPM 5 s).
-# Other values are best-guess based on likely 1-indexed ordering;
-# capture more pcaps to confirm.
-_SHAKE_TYPE_0026: Dict[ShakerType, int] = {
+# Mixer action constant: always 0x02 in block[12] when shaking is active.
+# Verified against OEM pcap (absorbance orbital 300 RPM 5 s).
+_SHAKE_MIXER_ACTION = 0x02
+
+# Shake-pattern index placed in block[17].
+# OEM captures confirm ORBITAL → 0x00 (300 RPM orbital pcaps).
+# LINEAR/DOUBLE_ORBITAL ordering inferred from firmware enum; no OEM pcap yet.
+_SHAKE_PATTERN_0026: Dict[ShakerType, int] = {
+  ShakerType.ORBITAL: 0x00,
   ShakerType.LINEAR: 0x01,
-  ShakerType.ORBITAL: 0x02,
-  ShakerType.DOUBLE_ORBITAL: 0x03,
-  ShakerType.MEANDER: 0x04,
+  ShakerType.DOUBLE_ORBITAL: 0x02,
+  ShakerType.MEANDER: 0x03,
 }
 
 
@@ -315,9 +319,9 @@ class StartCorner(enum.IntEnum):
   """Which corner to begin measurements from."""
 
   TOP_LEFT = 0b0000
-  TOP_RIGHT = 0b0011
-  BOTTOM_LEFT = 0b0101
-  BOTTOM_RIGHT = 0b0111
+  TOP_RIGHT = 0b0010
+  BOTTOM_LEFT = 0b0100
+  BOTTOM_RIGHT = 0b0110
 
 
 def _scan_mode_byte(
@@ -1743,8 +1747,9 @@ class CLARIOstarBackend(PlateReaderBackend):
       # Block layout (offsets within the 31-byte block, per OEM pcap):
       #   [0]     optic_config (optic_base | scan-type flags)
       #   [1:12]  zeros(11)
-      #   [12]    shake type (0x0026 encoding, see _SHAKE_TYPE_0026)
-      #   [13:18] zeros(5)
+      #   [12]    mixer action (always 0x02 when shaking)
+      #   [13:17] zeros(4)
+      #   [17]    shake pattern (0x00=orbital, 0x01=linear, 0x02=dbl_orbital)
       #   [18]    shake speed index ((rpm / 100) - 1)
       #   [19]    zero
       #   [20:22] shake duration (uint16 LE seconds)
@@ -1753,7 +1758,8 @@ class CLARIOstarBackend(PlateReaderBackend):
       block = bytearray(31)
       block[0] = optic_config
       if shake_duration_s > 0:
-        block[12] = _SHAKE_TYPE_0026[shake_type]
+        block[12] = _SHAKE_MIXER_ACTION
+        block[17] = _SHAKE_PATTERN_0026[shake_type]
         block[18] = (shake_speed_rpm // 100) - 1
         block[20] = shake_duration_s & 0xFF
         block[21] = (shake_duration_s >> 8) & 0xFF
@@ -1932,7 +1938,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     settling_time_before_measurement: int = 0,
     # scan pattern
     start_corner: StartCorner = StartCorner.TOP_LEFT,
-    unidirectional: bool = True,
+    unidirectional: bool = False,
     vertical: bool = True,
     flying_mode: bool = False,
     well_scan: Literal["point", "orbital", "spiral", "matrix"] = "point",

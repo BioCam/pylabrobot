@@ -234,19 +234,19 @@ class TestScanModeByte(unittest.TestCase):
   def test_top_right(self):
     self.assertEqual(
       _scan_mode_byte(start_corner=StartCorner.TOP_RIGHT),
-      (0b0011 << 4) | 0x08 | 0x02,  # 0x3A
+      (0b0010 << 4) | 0x08 | 0x02,  # 0x2A
     )
 
   def test_bottom_left(self):
     self.assertEqual(
       _scan_mode_byte(start_corner=StartCorner.BOTTOM_LEFT),
-      (0b0101 << 4) | 0x08 | 0x02,  # 0x5A
+      (0b0100 << 4) | 0x08 | 0x02,  # 0x4A
     )
 
   def test_bottom_right(self):
     self.assertEqual(
       _scan_mode_byte(start_corner=StartCorner.BOTTOM_RIGHT),
-      (0b0111 << 4) | 0x08 | 0x02,  # 0x7A
+      (0b0110 << 4) | 0x08 | 0x02,  # 0x6A
     )
 
   def test_unidirectional(self):
@@ -268,8 +268,8 @@ class TestScanModeByte(unittest.TestCase):
       vertical=True,
       flying_mode=True,
     )
-    # 0x80 | 0x70 | 0x08 | 0x04 | 0x02 = 0xFE
-    self.assertEqual(result, 0xFE)
+    # 0x80 | 0x60 | 0x08 | 0x04 | 0x02 = 0xEE
+    self.assertEqual(result, 0xEE)
 
 
 
@@ -1713,7 +1713,8 @@ class TestBuildPayloadHeader(unittest.TestCase):
     )
     # Block starts at offset 65 (after plate(63) + extra(1) + scan(1))
     block_start = 65
-    self.assertEqual(header[block_start + 12], 0x02)  # ORBITAL → 0x02
+    self.assertEqual(header[block_start + 12], 0x02)  # mixer action (always 0x02)
+    self.assertEqual(header[block_start + 17], 0x00)  # shake pattern (ORBITAL=0x00)
     self.assertEqual(header[block_start + 18], 2)      # 300/100 - 1 = 2
     self.assertEqual(int.from_bytes(header[block_start + 20:block_start + 22], "little"), 10)
 
@@ -2574,7 +2575,7 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     # Offset 64 = scan byte (after plate(63) + extra(1))
     # Offset 65 = block[0] = optic_config = 0x02 | 0x30 = 0x32
     self.assertEqual(payload[64], _scan_mode_byte(
-      StartCorner.TOP_LEFT, unidirectional=True, vertical=True))  # 0x8A
+      StartCorner.TOP_LEFT, unidirectional=False, vertical=True))  # 0x0A
     self.assertEqual(payload[65], 0x32)
 
   async def test_0x0026_optic_bytes_spiral(self):
@@ -2586,7 +2587,7 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     # Offset 64 = scan byte
     # Offset 65 = block[0] = optic_config = 0x02 | 0x04 = 0x06
     self.assertEqual(payload[64], _scan_mode_byte(
-      StartCorner.TOP_LEFT, unidirectional=True, vertical=True))  # 0x8A
+      StartCorner.TOP_LEFT, unidirectional=False, vertical=True))  # 0x0A
     self.assertEqual(payload[65], 0x06)
 
   async def test_0x0026_nonpoint_extra_plate_byte(self):
@@ -2602,16 +2603,16 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(payload[15], 0x00)  # extra plate byte after header
     # Scan byte at offset 64
     self.assertEqual(payload[64], _scan_mode_byte(
-      StartCorner.TOP_LEFT, unidirectional=True, vertical=True))
+      StartCorner.TOP_LEFT, unidirectional=False, vertical=True))
 
   async def test_0x0026_point_scan_mode_byte_at_offset_64(self):
     """Point scan on 0x0026 uses scan_mode_byte at offset 64 (after extra plate byte)."""
     backend = self._make_backend(machine_type=0x0026)
     payload = await self._capture_payload(backend)
     # Extra plate byte at offset 15 shifts scan byte to offset 64
-    # Default scan byte: uni(1)=0x80, corner(TOP_LEFT=0)=0x00, vert(1)=0x08, always=0x02 → 0x8A
+    # Default scan byte: uni(0)=0x00, corner(TOP_LEFT=0)=0x00, vert(1)=0x08, always=0x02 → 0x0A
     self.assertEqual(payload[15], 0x00)  # extra plate byte
-    self.assertEqual(payload[64], 0x8A)  # scan byte
+    self.assertEqual(payload[64], 0x0A)  # scan byte
 
   async def test_0x0026_point_uses_block_format(self):
     """0x0026 point scan uses the same 31-byte block format as non-point.
@@ -2624,7 +2625,7 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     # extra plate byte
     self.assertEqual(payload[15], 0x00)
     # scan byte at offset 64
-    self.assertEqual(payload[64], 0x8A)
+    self.assertEqual(payload[64], 0x0A)
     # block[0] = optic_config = 0x02 (point absorbance, no flags)
     self.assertEqual(payload[65], 0x02)
     # rest of 31-byte block is zeros (no shake)
@@ -3243,8 +3244,9 @@ class TestOEMGroundTruth(unittest.TestCase):
       "0a"                                           # scan mode byte
       "32"                                           # block[0] = optic (abs|orbital)
       "0000000000000000000000"                       # block[1:12] zeros (11 bytes)
-      "02"                                           # block[12] = ORBITAL shake type
-      "0000000000"                                   # block[13:18] zeros (5 bytes)
+      "02"                                           # block[12] = mixer action (always 0x02)
+      "00000000"                                     # block[13:17] zeros (4 bytes)
+      "00"                                           # block[17] = shake pattern (ORBITAL=0x00)
       "02"                                           # block[18] = speed_idx (300/100-1=2)
       "00"                                           # block[19] zero
       "0500"                                         # block[20:22] = duration 5s LE
@@ -3274,6 +3276,209 @@ class TestOEMGroundTruth(unittest.TestCase):
     )
     self.assertEqual(payload, expected,
       f"\nGot:      {payload.hex()}\nExpected: {expected.hex()}")
+
+
+class TestOEMResponseGroundTruth(unittest.TestCase):
+  """Parse OEM pcap response frames through _parse_absorbance_response and verify
+  structural correctness.
+
+  Each test feeds a real CLARIOstar 0x0026 response frame captured via USBPcap
+  through the response parser and checks:
+    - Correct number of wells and wavelengths parsed
+    - Temperature is plausible (~25°C room temp, schema 0xa9)
+    - Calibration values are non-zero
+    - Cross-capture calibration consistency (same instrument/plate)
+
+  Response hex is imported from tools/pcap_capture_plan._RAW_RESPONSE.
+  """
+
+  @classmethod
+  def setUpClass(cls):
+    # Import response hex from capture plan (single source of truth)
+    import importlib.util
+    spec = importlib.util.spec_from_file_location(
+      "pcap_capture_plan",
+      "tools/pcap_capture_plan.py",
+    )
+    plan = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(plan)
+    cls._responses = {}
+    for name, hex_str in plan._RAW_RESPONSE.items():
+      cls._responses[name] = bytes.fromhex(hex_str.replace(" ", ""))
+
+  def _parse(self, name, num_wavelengths=1):
+    """Parse a named OEM response frame."""
+    return CLARIOstarBackend._parse_absorbance_response(
+      self._responses[name], num_wavelengths
+    )
+
+  def test_a01_96well_point(self):
+    """A01: 96 wells, point, 600nm, 5 flashes."""
+    trans, temp, raw = self._parse("A01_all_none")
+    self.assertEqual(len(trans), 96)
+    self.assertEqual(len(trans[0]), 1)
+    # Temperature may be None if incubation was never active (firmware embeds 0)
+    self.assertGreater(raw["chromatic_cal"][0][0], 0)
+    self.assertGreater(raw["reference_cal"][0], 0)
+    self.assertEqual(len(raw["samples"]), 96)
+    self.assertEqual(len(raw["references"]), 96)
+
+  def test_a02_96well_orbital(self):
+    """A02: 96 wells, orbital 3mm, 600nm, 7 flashes."""
+    trans, temp, raw = self._parse("A02_all_orbital")
+    self.assertEqual(len(trans), 96)
+    self.assertEqual(len(raw["samples"]), 96)
+
+  def test_a03_8well_point(self):
+    """A03: 8 wells (col 1), point, 600nm."""
+    trans, temp, raw = self._parse("A03_col1_none")
+    self.assertEqual(len(trans), 8)
+    self.assertEqual(len(raw["samples"]), 8)
+    self.assertEqual(len(raw["references"]), 8)
+
+  def test_a04_8well_orbital(self):
+    """A04: 8 wells (col 1), orbital 3mm, 600nm."""
+    trans, temp, raw = self._parse("A04_col1_orbital")
+    self.assertEqual(len(trans), 8)
+    self.assertEqual(len(raw["samples"]), 8)
+
+  def test_a05_1well_point(self):
+    """A05: 1 well, point, 600nm."""
+    trans, temp, raw = self._parse("A05_A1_none")
+    self.assertEqual(len(trans), 1)
+    self.assertEqual(len(raw["samples"]), 1)
+    self.assertEqual(len(raw["references"]), 1)
+
+  def test_a06_1well_orbital(self):
+    """A06: 1 well, orbital, 600nm."""
+    trans, temp, raw = self._parse("A06_A1_orbital")
+    self.assertEqual(len(trans), 1)
+    self.assertEqual(len(raw["samples"]), 1)
+
+  def test_a07_48well_point(self):
+    """A07: 48 wells (rows A-D), point, 600nm."""
+    trans, temp, raw = self._parse("A07_half_none")
+    self.assertEqual(len(trans), 48)
+    self.assertEqual(len(raw["samples"]), 48)
+    self.assertEqual(len(raw["references"]), 48)
+
+  def test_b01_96well_spiral_4mm(self):
+    """B01: 96 wells, spiral 4mm, 600nm, 15 flashes."""
+    trans, temp, raw = self._parse("B01_spiral_4mm")
+    self.assertEqual(len(trans), 96)
+    self.assertEqual(len(raw["samples"]), 96)
+
+  def test_b02_96well_spiral_3mm(self):
+    """B02: 96 wells, spiral 3mm, 600nm, 15 flashes."""
+    trans, temp, raw = self._parse("B02_spiral_3mm")
+    self.assertEqual(len(trans), 96)
+    self.assertEqual(len(raw["samples"]), 96)
+
+  def test_a08_48well_orbital(self):
+    """A08: 48 wells (rows A-D), orbital 3mm, 600nm."""
+    trans, temp, raw = self._parse("A08_half_orbital")
+    self.assertEqual(len(trans), 48)
+    self.assertEqual(len(raw["samples"]), 48)
+
+  def test_d02_dual_wavelength(self):
+    """D02: 96 wells, point, 450nm+660nm dual wavelength.
+
+    Firmware always reports wavelengths_in_resp=1; second wavelength appears
+    as an extra data group (larger payload, more extra_groups).
+    """
+    trans, temp, raw = self._parse("D02_dual")
+    self.assertEqual(len(trans), 96)
+    # Payload is larger than single-wl (1997B vs 1609B for A01)
+    resp = self._responses["D02_dual"]
+    payload = resp[4:-3]
+    self.assertGreater(len(payload), 1800)
+
+  def test_d03_triple_wavelength(self):
+    """D03: 96 wells, point, 450nm+600nm+660nm triple wavelength."""
+    trans, temp, raw = self._parse("D03_triple")
+    self.assertEqual(len(trans), 96)
+    resp = self._responses["D03_triple"]
+    payload = resp[4:-3]
+    self.assertGreater(len(payload), 2200)  # larger than dual
+
+  def test_d04_dual_orbital(self):
+    """D04: 96 wells, orbital, 450nm+660nm dual wavelength."""
+    trans, temp, raw = self._parse("D04_dual_orbital")
+    self.assertEqual(len(trans), 96)
+
+  def test_f01_orbital_shake_300rpm(self):
+    """F01: 96 wells, orbital 3mm, 600nm, orbital shake 300RPM 5s."""
+    trans, temp, raw = self._parse("F01_orb_300_5")
+    self.assertEqual(len(trans), 96)
+    self.assertEqual(len(raw["samples"]), 96)
+
+  def test_i01_temperature_29C(self):
+    """I01: 96 wells, point, 600nm, temperature target 29°C."""
+    trans, temp, raw = self._parse("I01_temp_29C")
+    self.assertEqual(len(trans), 96)
+    # Temperature should be reported (incubation was active)
+    self.assertIsNotNone(temp, "Expected temperature with 29°C target")
+    self.assertAlmostEqual(temp, 29.0, delta=2.0)
+
+  def test_i02_temperature_29C_orbital(self):
+    """I02: 96 wells, orbital, 600nm, temperature target 29°C."""
+    trans, temp, raw = self._parse("I02_temp_29C_orbital")
+    self.assertEqual(len(trans), 96)
+    self.assertIsNotNone(temp, "Expected temperature with 29°C target")
+    self.assertAlmostEqual(temp, 29.0, delta=2.0)
+
+  def test_h01_spectrometer_scan(self):
+    """H01: spectrometer scan 300-700nm, 1nm step, 96 wells.
+
+    Spectrometer responses are much larger (~53KB) and report wavelengths_in_resp=1
+    with the multi-wavelength data in extra groups.
+    """
+    trans, temp, raw = self._parse("H01_spec_300_700_1")
+    self.assertEqual(len(trans), 96)
+    resp = self._responses["H01_spec_300_700_1"]
+    payload = resp[4:-3]
+    self.assertGreater(len(payload), 50000)  # spectrometer responses are huge
+
+  def test_h04_spectrometer_col1(self):
+    """H04: spectrometer scan 300-700nm, 1nm step, col 1 only."""
+    trans, temp, raw = self._parse("H04_spec_col1")
+    self.assertEqual(len(trans), 8)
+    resp = self._responses["H04_spec_col1"]
+    payload = resp[4:-3]
+    self.assertGreater(len(payload), 10000)
+
+  def test_all_responses_parse_without_error(self):
+    """Every response in _RAW_RESPONSE should parse without raising.
+
+    Firmware always reports wavelengths_in_resp=1 regardless of actual wavelengths.
+    Multi-wavelength data appears as extra groups, auto-discovered by parser.
+    """
+    for name in self._responses:
+      with self.subTest(capture=name):
+        trans, temp, raw = self._parse(name)
+        self.assertGreater(len(trans), 0)
+
+  def test_calibration_consistency_across_96well_captures(self):
+    """Calibration values should be similar across 96-well captures from same instrument."""
+    import math
+    names_96 = ["A01_all_none", "A02_all_orbital", "B01_spiral_4mm", "B02_spiral_3mm"]
+    refs = []
+    for name in names_96:
+      _, _, raw = self._parse(name)
+      refs.append(raw["reference_cal"][0])
+      self.assertGreater(raw["reference_cal"][0], 0)
+    # All within 1 order of magnitude
+    log_range = math.log10(max(refs)) - math.log10(min(refs))
+    self.assertLess(log_range, 1.0, f"Reference cal spread too large: {refs}")
+
+  def test_temperature_plausible(self):
+    """All captures done at room temperature — expect ~15-40°C."""
+    for name in self._responses:
+      with self.subTest(capture=name):
+        _, temp, _ = self._parse(name)
+        if temp is not None:
+          self.assertGreater(temp, 15.0, f"{name}: temp {temp} too low")
+          self.assertLess(temp, 40.0, f"{name}: temp {temp} too high")
 
 
 if __name__ == "__main__":
