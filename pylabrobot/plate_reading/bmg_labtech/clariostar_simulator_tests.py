@@ -324,5 +324,245 @@ class TestWaitFalse(CLARIOstarSimulatorTestBase):
     self.assertEqual(len(results[0]["data"]), 8)
 
 
+class TestBuildAbsorbanceResponse(unittest.TestCase):
+  """Round-trip tests: build_absorbance_response → _parse_absorbance_response."""
+
+  def test_round_trip_single_wavelength(self):
+    """Build a single-wavelength response and parse it back."""
+    from pylabrobot.plate_reading.bmg_labtech.clariostar_backend import CLARIOstarBackend
+
+    num_wells = 96
+    num_wl = 1
+    c_hi = 100000.0
+    r_hi = 200000.0
+    samples = [50000.0 + i * 100 for i in range(num_wells)]
+    refs = [100000.0 + i * 50 for i in range(num_wells)]
+
+    frame = CLARIOstarSimulatorBackend.build_absorbance_response(
+      num_wells=num_wells,
+      num_wavelengths=num_wl,
+      samples=samples,
+      references=refs,
+      chromatic_cal=[(c_hi, 0.0)],
+      reference_cal=(r_hi, 0.0),
+      temperature_raw=250,
+      schema=0x29,
+    )
+
+    transmission, temperature, raw = CLARIOstarBackend._parse_absorbance_response(frame, num_wl)
+
+    self.assertEqual(len(transmission), num_wells)
+    self.assertAlmostEqual(temperature, 25.0, places=1)
+    self.assertEqual(len(raw["samples"]), num_wells * num_wl)
+    self.assertEqual(len(raw["references"]), num_wells)
+    # Verify sample values round-trip
+    for i in range(num_wells):
+      self.assertAlmostEqual(raw["samples"][i], samples[i], places=0)
+      self.assertAlmostEqual(raw["references"][i], refs[i], places=0)
+    # Verify calibration round-trip
+    self.assertAlmostEqual(raw["chromatic_cal"][0][0], c_hi, places=0)
+    self.assertAlmostEqual(raw["reference_cal"][0], r_hi, places=0)
+
+  def test_round_trip_multi_wavelength(self):
+    """Build a 2-wavelength response and parse it back."""
+    from pylabrobot.plate_reading.bmg_labtech.clariostar_backend import CLARIOstarBackend
+
+    num_wells = 96
+    num_wl = 2
+    samples = [float(40000 + i) for i in range(num_wells * num_wl)]
+    refs = [float(100000 + i) for i in range(num_wells)]
+
+    frame = CLARIOstarSimulatorBackend.build_absorbance_response(
+      num_wells=num_wells,
+      num_wavelengths=num_wl,
+      samples=samples,
+      references=refs,
+      chromatic_cal=[(100000.0, 0.0), (100000.0, 0.0)],
+      reference_cal=(200000.0, 0.0),
+    )
+
+    transmission, temperature, raw = CLARIOstarBackend._parse_absorbance_response(frame, num_wl)
+
+    self.assertEqual(len(transmission), num_wells)
+    self.assertEqual(len(transmission[0]), num_wl)
+    self.assertEqual(len(raw["samples"]), num_wells * num_wl)
+
+  def test_incubation_schema_temperature(self):
+    """Schema 0xA9 puts temperature at offset 34-35."""
+    from pylabrobot.plate_reading.bmg_labtech.clariostar_backend import CLARIOstarBackend
+
+    num_wells = 8
+    num_wl = 1
+    samples = [50000.0] * num_wells
+    refs = [100000.0] * num_wells
+
+    frame = CLARIOstarSimulatorBackend.build_absorbance_response(
+      num_wells=num_wells,
+      num_wavelengths=num_wl,
+      samples=samples,
+      references=refs,
+      chromatic_cal=[(100000.0, 0.0)],
+      reference_cal=(200000.0, 0.0),
+      temperature_raw=370,
+      schema=0xA9,
+    )
+
+    _, temperature, _ = CLARIOstarBackend._parse_absorbance_response(frame, num_wl)
+    self.assertAlmostEqual(temperature, 37.0, places=1)
+
+  def test_transmittance_calculation(self):
+    """Verify T% = (sample / c_hi) * (r_hi / ref) * 100 round-trips correctly."""
+    from pylabrobot.plate_reading.bmg_labtech.clariostar_backend import CLARIOstarBackend
+
+    c_hi = 100000.0
+    r_hi = 200000.0
+    sample_val = 50000.0
+    ref_val = 200000.0
+    # Expected T% = (50000/100000) * (200000/200000) * 100 = 50.0
+
+    frame = CLARIOstarSimulatorBackend.build_absorbance_response(
+      num_wells=1,
+      num_wavelengths=1,
+      samples=[sample_val],
+      references=[ref_val],
+      chromatic_cal=[(c_hi, 0.0)],
+      reference_cal=(r_hi, 0.0),
+    )
+
+    transmission, _, _ = CLARIOstarBackend._parse_absorbance_response(frame, 1)
+    self.assertAlmostEqual(transmission[0][0], 50.0, places=1)
+
+
+class TestBinaryRoundTripPath(CLARIOstarSimulatorTestBase):
+  """Verify the simulator's read path goes through binary build→parse round-trip."""
+
+  async def test_absorbance_od_values_are_plausible(self):
+    """OD values from binary round-trip should be close to configured mean."""
+    results = await self.backend.read_absorbance(
+      plate=self.plate, wells=self.all_wells, wavelength=450,
+    )
+    self.assertEqual(len(results), 1)
+    r = results[0]
+    # All 96 wells should have non-None float values
+    for row in r["data"]:
+      for val in row:
+        self.assertIsNotNone(val)
+        self.assertIsInstance(val, float)
+    # Mean OD should be close to the configured absorbance_mean (0.5)
+    flat = [v for row in r["data"] for v in row]
+    mean_od = statistics.mean(flat)
+    self.assertAlmostEqual(mean_od, 0.5, delta=0.15)
+
+  async def test_absorbance_raw_report_has_detector_counts(self):
+    """report='raw' should return detector counts and calibration from the binary frame."""
+    results = await self.backend.read_absorbance(
+      plate=self.plate, wells=self.all_wells, wavelength=600,
+      report="raw",
+    )
+    r = results[0]
+    self.assertIn("references", r)
+    self.assertIn("chromatic_cal", r)
+    self.assertIn("reference_cal", r)
+    # references should be a list of floats (detector counts)
+    self.assertEqual(len(r["references"]), 96)
+    # chromatic_cal should be a (hi, lo) tuple
+    self.assertEqual(len(r["chromatic_cal"]), 2)
+    self.assertGreater(r["chromatic_cal"][0], 0)
+
+  async def test_absorbance_transmittance_report(self):
+    """report='transmittance' should return T% values (positive, typically 10-90%)."""
+    results = await self.backend.read_absorbance(
+      plate=self.plate, wells=self.all_wells, wavelength=450,
+      report="transmittance",
+    )
+    r = results[0]
+    flat = [v for row in r["data"] for v in row if v is not None]
+    self.assertEqual(len(flat), 96)
+    for val in flat:
+      self.assertGreater(val, 0)
+      self.assertLess(val, 200)  # T% should be reasonable
+
+  async def test_multi_wavelength_binary_round_trip(self):
+    """Multi-wavelength reads should produce separate results per wavelength."""
+    results = await self.backend.read_absorbance(
+      plate=self.plate, wells=self.all_wells, wavelength=450,
+      wavelengths=[450, 600],
+    )
+    self.assertEqual(len(results), 2)
+    self.assertEqual(results[0]["wavelength"], 450)
+    self.assertEqual(results[1]["wavelength"], 600)
+    # Each should have 8x12 grid
+    for r in results:
+      self.assertEqual(len(r["data"]), 8)
+      self.assertEqual(len(r["data"][0]), 12)
+
+  async def test_temperature_embedded_in_binary(self):
+    """Temperature should come from the binary frame, not just from _current_temperature."""
+    await self.backend.start_temperature_control(37.0)
+    results = await self.backend.read_absorbance(
+      plate=self.plate, wells=self.all_wells, wavelength=450,
+    )
+    self.assertAlmostEqual(results[0]["temperature"], 37.0, places=0)
+
+
+class TestVerboseMode(CLARIOstarSimulatorTestBase):
+  """Test verbose mode prints decoded binary frames."""
+
+  async def test_verbose_prints_frame_annotation(self):
+    """When verbose=True, the simulator should print decoded frame info."""
+    import io
+    import sys
+    self.backend.set_verbose(True)
+    captured = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = captured
+    try:
+      await self.backend.read_absorbance(
+        plate=self.plate, wells=self.all_wells, wavelength=450,
+      )
+    finally:
+      sys.stdout = old_stdout
+    output = captured.getvalue()
+    # Should contain the SIM label
+    self.assertIn("[SIM]", output)
+    self.assertIn("ABSORBANCE_RESPONSE", output)
+    # Should contain decoded annotation columns
+    self.assertIn("Offset", output)
+    self.assertIn("Hex", output)
+    self.assertIn("Decoded", output)
+
+  async def test_verbose_off_by_default(self):
+    """Default constructor should not print anything."""
+    import io
+    import sys
+    captured = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = captured
+    try:
+      await self.backend.read_absorbance(
+        plate=self.plate, wells=self.all_wells, wavelength=450,
+      )
+    finally:
+      sys.stdout = old_stdout
+    self.assertEqual(captured.getvalue(), "")
+
+  async def test_set_verbose_toggle(self):
+    """set_verbose can be toggled on and off."""
+    import io
+    import sys
+    self.backend.set_verbose(True)
+    self.backend.set_verbose(False)
+    captured = io.StringIO()
+    old_stdout = sys.stdout
+    sys.stdout = captured
+    try:
+      await self.backend.read_absorbance(
+        plate=self.plate, wells=self.all_wells, wavelength=450,
+      )
+    finally:
+      sys.stdout = old_stdout
+    self.assertEqual(captured.getvalue(), "")
+
+
 if __name__ == "__main__":
   unittest.main()

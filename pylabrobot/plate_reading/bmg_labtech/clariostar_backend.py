@@ -314,7 +314,7 @@ _SHAKE_TYPE_0026: Dict[ShakerType, int] = {
 class StartCorner(enum.IntEnum):
   """Which corner to begin measurements from."""
 
-  TOP_LEFT = 0b0001
+  TOP_LEFT = 0b0000
   TOP_RIGHT = 0b0011
   BOTTOM_LEFT = 0b0101
   BOTTOM_RIGHT = 0b0111
@@ -424,7 +424,7 @@ _well_scan_orbital_bytes = _well_scan_bytes
 
 
 SEPARATOR = b"\x27\x0f\x27\x0f"
-TRAILER = b"\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"
+TRAILER = b"\x02\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"
 _EXTENDED_PADDING = b"\x00\x20\x04\x00\x1e"
 
 
@@ -688,7 +688,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
     self.timeout = timeout
     self.read_timeout = read_timeout
-    self.write_timeout = write_timeout
+    self.write_timeout = write_timeout # TODO: is this needed?
     self._eeprom_data: Optional[bytes] = None
     self._firmware_data: Optional[bytes] = None
     self._incubation_target: float = 0.0
@@ -697,7 +697,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     self._trace_io_path: Optional[str] = os.path.abspath(trace_io) if trace_io else None
     self._measurement_cache: List[MeasurementRecord] = []
     self._measurement_counter: int = 0
-    self._pending_measurement: Optional[Dict] = None  # stash for wait=False flow
+    self._pending_measurement: Optional[Dict] = None
 
   # === Life cycle ===
   
@@ -1729,19 +1729,32 @@ class CLARIOstarBackend(PlateReaderBackend):
     optic_config = optic_base | _well_scan_optic_flags(well_scan)
 
     payload = bytearray()
-    payload += plate_and_wells
+    if self._uses_extended_separator:
+      # 0x0026: insert extra byte between plate header (15 bytes) and well mask (48 bytes)
+      payload += plate_and_wells[:15] + b"\x00" + plate_and_wells[15:]
+    else:
+      payload += plate_and_wells
 
     if self._uses_extended_separator and well_scan != "point" and not force_compact:
-      # 0x0026, non-point scan: 0x00 scan override + 32-byte block.
-      payload += b"\x00"
-      block = bytearray(32)
-      block[0] = optic_base | 0x08
-      block[1] = optic_config
+      # 0x0026, non-point scan: scan byte + 31-byte block.
+      #
+      # Block layout (offsets within the 31-byte block, per OEM pcap):
+      #   [0]     optic_config (optic_base | scan-type flags)
+      #   [1:12]  zeros(11)
+      #   [12]    shake type (0x0026 encoding, see _SHAKE_TYPE_0026)
+      #   [13:18] zeros(5)
+      #   [18]    shake speed index ((rpm / 100) - 1)
+      #   [19]    zero
+      #   [20:22] shake duration (uint16 LE seconds)
+      #   [22:31] zeros(9)
+      payload += bytes([scan])
+      block = bytearray(31)
+      block[0] = optic_config
       if shake_duration_s > 0:
-        block[13] = _SHAKE_TYPE_0026[shake_type]
-        block[19] = (shake_speed_rpm // 100) - 1
-        block[20] = (shake_duration_s >> 8) & 0xFF
-        block[21] = shake_duration_s & 0xFF
+        block[12] = _SHAKE_TYPE_0026[shake_type]
+        block[18] = (shake_speed_rpm // 100) - 1
+        block[20] = shake_duration_s & 0xFF
+        block[21] = (shake_duration_s >> 8) & 0xFF
       payload += bytes(block)
     elif self._uses_extended_separator and not force_compact:
       # 0x0026, point scan: compact + extended padding.
@@ -2014,7 +2027,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     for w in wavelengths:
       payload += (w * 10).to_bytes(2, "big")
     # Fixed bytes
-    payload += b"\x00\x00\x00\x64\x00\x00\x00\x00\x00\x00\x00\x64\x00"
+    payload += b"\x00\x00\x00\x64\x23\x28\x26\xca\x00\x00\x00\x64\x00"
     # Settling time before measurement (once-per-run, post-shake delay)
     payload += _encode_settling_time(settling_time_before_measurement)
     # Fixed trailer
@@ -2107,6 +2120,11 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     wavelengths_in_resp = int.from_bytes(payload[18:20], "big")
     wells = int.from_bytes(payload[20:22], "big")
+
+    if not 1 <= wells <= 384:
+      raise ValueError(f"num_wells out of range: {wells} (expected 1-384)")
+    if not 1 <= wavelengths_in_resp <= 8:
+      raise ValueError(f"num_wavelengths out of range: {wavelengths_in_resp} (expected 1-8)")
 
     # The firmware embeds a pre-measurement temperature (sampled at the start of
     # the read) at one of two offsets in the 36-byte header:
