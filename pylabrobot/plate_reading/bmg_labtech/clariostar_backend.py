@@ -1733,16 +1733,17 @@ class CLARIOstarBackend(PlateReaderBackend):
     optic_config = optic_base | _well_scan_optic_flags(well_scan)
 
     payload = bytearray()
-    if self._uses_extended_separator and not force_compact:
-      # 0x0026: insert extra byte between plate header (15 bytes) and well mask (48 bytes).
-      # Verified against OEM pcap for ALL scan types (point, orbital, spiral).
+    if self._uses_extended_separator and well_scan != "point" and not force_compact:
+      # 0x0026 non-point: insert extra byte between plate header (15 bytes) and well mask (48 bytes).
+      # Verified against OEM pcap for spiral and orbital scans.  Point scan does NOT use this
+      # extra byte — firmware rejects the measurement command when it's present for point scan.
       payload += plate_and_wells[:15] + b"\x00" + plate_and_wells[15:]
     else:
       payload += plate_and_wells
 
-    if self._uses_extended_separator and not force_compact:
-      # 0x0026, ALL scan types: scan byte + 31-byte block.
-      # Verified identical structure for point, orbital, and spiral via OEM pcap.
+    if self._uses_extended_separator and well_scan != "point" and not force_compact:
+      # 0x0026, non-point scan: scan byte + 31-byte block.
+      # Verified against OEM pcap for spiral and orbital scans.
       #
       # Block layout (offsets within the 31-byte block, per OEM pcap):
       #   [0]     optic_config (optic_base | scan-type flags)
@@ -1764,6 +1765,13 @@ class CLARIOstarBackend(PlateReaderBackend):
         block[20] = shake_duration_s & 0xFF
         block[21] = (shake_duration_s >> 8) & 0xFF
       payload += bytes(block)
+    elif self._uses_extended_separator and not force_compact:
+      # 0x0026, point scan: compact + extended padding.
+      # Point scan uses a different, shorter format than orbital/spiral on 0x0026.
+      payload += bytes([scan])
+      payload += bytes([optic_config, 0x00, 0x00])
+      payload += shaker
+      payload += _EXTENDED_PADDING
     else:
       # 0x0024 or force_compact: compact format.
       payload += bytes([scan])
@@ -1854,11 +1862,8 @@ class CLARIOstarBackend(PlateReaderBackend):
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
-    # Drain stale responses from the FTDI buffer, then re-initialize.
-    # The Go reference sends CMD 0x01 (init) + waitForReady before EVERY
-    # measurement.  Without this, firmware may reject the run command.
+    # Drain stale responses from the FTDI buffer to prevent response desync.
     await self._drain_buffer()
-    await self.initialize()
 
     await self._start_luminescence_measurement(
       focal_height=focal_height,
@@ -2331,12 +2336,10 @@ class CLARIOstarBackend(PlateReaderBackend):
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
-    # Drain stale responses from the FTDI buffer, then re-initialize the
-    # instrument.  The Go reference (bmg-clariostar-main) sends CMD 0x01
-    # (init) + waitForReady before EVERY measurement.  Without this, the
-    # firmware may reject the run command (status 0x15).
+    # Step 0: Ensure temperature monitoring is active so the firmware embeds
+    # a pre-measurement temperature reading in the response.
     await self._drain_buffer()
-    await self.initialize()
+    await self.enable_temperature_monitoring()
 
     # Step 1: Send command, verify accepted, return run response
     run_response = await self._start_absorbance_measurement(
@@ -2758,11 +2761,8 @@ class CLARIOstarBackend(PlateReaderBackend):
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
-    # Drain stale responses from the FTDI buffer, then re-initialize.
-    # The Go reference sends CMD 0x01 (init) + waitForReady before EVERY
-    # measurement.  Without this, firmware may reject the run command.
+    # Drain stale responses from the FTDI buffer to prevent response desync.
     await self._drain_buffer()
-    await self.initialize()
 
     await self._start_fluorescence_measurement(
       plate=plate,

@@ -1519,13 +1519,13 @@ class TestAbsorbanceOrbitalPayload(unittest.TestCase):
     self.assertEqual(int.from_bytes(orbital[2:4], "big"), well_dia)
     self.assertEqual(orbital[4], 0x00)  # terminator
 
-  def test_0x0026_point_uses_block_format(self):
-    """Machine type 0x0026 point scan uses same block format as non-point.
+  def test_0x0026_point_uses_compact_format(self):
+    """Machine type 0x0026 point scan uses compact + extended padding (NOT the 31-byte block).
 
-    0x0026 point: plate(63) + extra(1) + scan(1) + block(31) + sep(4) = 100
-    0x0024:       plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4) + sep(4) = 76
-    Difference = 24 (extra plate byte + 31-byte block vs compact 8-byte pre-sep).
-    Verified against OEM pcap: all scan types have identical pre-separator structure.
+    0x0026 point: plate(63) + scan(1) + optic(1) + zeros(2) + shaker(4) + ext_pad(5) + sep(4) = 80
+    0x0024 point: plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4) + sep(4) = 76
+    Difference = 4 (extended padding).  Point scan does NOT use the extra plate byte or
+    31-byte block — firmware rejects the measurement command when those are present.
     """
     self.backend._machine_type_code = 0x0026
     extended_payload = self._build_payload(well_scan="point")
@@ -1533,11 +1533,11 @@ class TestAbsorbanceOrbitalPayload(unittest.TestCase):
     self.backend._machine_type_code = 0x0024
     standard_payload = self._build_payload(well_scan="point")
 
-    self.assertEqual(len(extended_payload), len(standard_payload) + 24)
+    self.assertEqual(len(extended_payload), len(standard_payload) + 4)
 
     # Separator positions
     sep_offset_std = 72  # plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4)
-    sep_offset_ext = 96  # plate(63) + extra(1) + scan(1) + block(31)
+    sep_offset_ext = 76  # plate(63) + scan(1) + optic(1) + zeros(2) + shaker(4) + ext_pad(5)
     self.assertEqual(standard_payload[sep_offset_std:sep_offset_std + 4], SEPARATOR)
     self.assertEqual(extended_payload[sep_offset_ext:sep_offset_ext + 4], SEPARATOR)
 
@@ -1647,20 +1647,19 @@ class TestBuildPayloadHeader(unittest.TestCase):
     self.assertEqual(len(header), 76)
     self.assertEqual(header[-4:], SEPARATOR)
 
-  def test_0x0026_point_uses_block_format(self):
-    """0x0026 point: plate(63) + extra(1) + scan(1) + block(31) + sep(4) = 100.
+  def test_0x0026_point_uses_compact_format(self):
+    """0x0026 point: plate(63) + scan(1) + optic(1) + zeros(2) + shaker(4) + ext_pad(5) + sep(4) = 80.
 
-    Point scan on 0x0026 uses the same block format as non-point scans.
-    Verified against OEM pcap: all scan types have identical pre-separator structure.
+    Point scan on 0x0026 does NOT use the extra plate byte or 31-byte block.
+    Firmware rejects the measurement command when those are present for point scan.
     """
     header = self._header(machine_type=0x0026)
-    self.assertEqual(len(header), 100)
+    self.assertEqual(len(header), 80)
     self.assertEqual(header[-4:], SEPARATOR)
-    # Extra plate byte at offset 15, scan byte at offset 64
-    self.assertEqual(header[15], 0x00)
-    self.assertEqual(header[64], _scan_mode_byte())
-    # Block[0] = optic_config = 0x02 (point: no scan flags)
-    self.assertEqual(header[65], 0x02)
+    # No extra plate byte — scan byte at offset 63
+    self.assertEqual(header[63], _scan_mode_byte())
+    # Optic config = 0x02 (point absorbance, no scan flags) at offset 64
+    self.assertEqual(header[64], 0x02)
 
   def test_0x0026_nonpoint_block_size(self):
     """0x0026 non-point: header(15) + extra(1) + mask(48) + scan(1) + block(31) + sep(4) = 100."""
@@ -2075,7 +2074,7 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
   """Test the refactored read_absorbance orchestration flow.
 
   The new flow:
-    0. initialize() — re-init before every measurement (matches Go reference)
+    0. enable_temperature_monitoring() — ensure temperature sensors active
     1. _start_absorbance_measurement() — atomic send, returns run response
     2. Check if BUSY already cleared (fast measurements)
     3. If wait=False → return None
@@ -2094,7 +2093,7 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     backend._trace_io_path = None
     backend._machine_type_code = 0x0026
     backend._last_scan_params = {}
-    backend.initialize = unittest.mock.AsyncMock()
+    backend.enable_temperature_monitoring = unittest.mock.AsyncMock()
     return backend
 
   def _make_status_response(self, busy: bool) -> bytes:
@@ -2605,33 +2604,28 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(payload[64], _scan_mode_byte(
       StartCorner.TOP_LEFT, unidirectional=True, vertical=True))
 
-  async def test_0x0026_point_scan_mode_byte_at_offset_64(self):
-    """Point scan on 0x0026 uses scan_mode_byte at offset 64 (after extra plate byte)."""
+  async def test_0x0026_point_scan_mode_byte_at_offset_63(self):
+    """Point scan on 0x0026 has NO extra plate byte — scan byte at offset 63."""
     backend = self._make_backend(machine_type=0x0026)
     payload = await self._capture_payload(backend)
-    # Extra plate byte at offset 15 shifts scan byte to offset 64
+    # Point scan: no extra plate byte, scan byte directly after 63-byte plate data
     # Default scan byte: uni(1)=0x80, corner(TOP_LEFT=0)=0x00, vert(1)=0x08, always=0x02 → 0x8A
-    self.assertEqual(payload[15], 0x00)  # extra plate byte
-    self.assertEqual(payload[64], 0x8A)  # scan byte
+    self.assertEqual(payload[63], 0x8A)  # scan byte
 
-  async def test_0x0026_point_uses_block_format(self):
-    """0x0026 point scan uses the same 31-byte block format as non-point.
+  async def test_0x0026_point_uses_compact_format(self):
+    """0x0026 point scan uses compact + extended padding, NOT the 31-byte block.
 
-    Layout: header(15) + extra(1) + mask(48) + scan(1) + block(31) + separator(4) = 100.
-    Verified against OEM pcap: all scan types have identical pre-separator structure.
+    Layout: plate(63) + scan(1) + optic(1) + zeros(2) + shaker(4) + ext_pad(5) + sep(4) = 80.
+    Firmware rejects point scan when the extra plate byte / 31-byte block are present.
     """
     backend = self._make_backend(machine_type=0x0026)
     payload = await self._capture_payload(backend)
-    # extra plate byte
-    self.assertEqual(payload[15], 0x00)
-    # scan byte at offset 64
-    self.assertEqual(payload[64], 0x8A)
-    # block[0] = optic_config = 0x02 (point absorbance, no flags)
-    self.assertEqual(payload[65], 0x02)
-    # rest of 31-byte block is zeros (no shake)
-    self.assertEqual(payload[66:96], b"\x00" * 30)
-    # separator at offset 96
-    self.assertEqual(payload[96:100], b"\x27\x0f\x27\x0f")
+    # No extra plate byte — scan byte at offset 63
+    self.assertEqual(payload[63], 0x8A)
+    # optic_config = 0x02 (point absorbance) at offset 64
+    self.assertEqual(payload[64], 0x02)
+    # separator at offset 76
+    self.assertEqual(payload[76:80], b"\x27\x0f\x27\x0f")
 
   # --- combined parameters ---
 
@@ -2819,7 +2813,7 @@ class TestReadAbsorbanceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
     backend._trace_io_path = None
     backend._machine_type_code = 0x0026
     backend._last_scan_params = {}
-    backend.initialize = unittest.mock.AsyncMock()
+    backend.enable_temperature_monitoring = unittest.mock.AsyncMock()
     return backend
 
   def _make_status_response(self, busy: bool) -> bytes:
@@ -2898,7 +2892,7 @@ class TestReadFluorescenceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
     backend._trace_io_path = None
     backend._machine_type_code = 0x0024
     backend._last_scan_params = {}
-    backend.initialize = unittest.mock.AsyncMock()
+    backend.enable_temperature_monitoring = unittest.mock.AsyncMock()
     return backend
 
   async def _run_with_kwargs(self, **kwargs):
