@@ -1938,7 +1938,7 @@ class CLARIOstarBackend(PlateReaderBackend):
     settling_time_before_measurement: int = 0,
     # scan pattern
     start_corner: StartCorner = StartCorner.TOP_LEFT,
-    unidirectional: bool = False,
+    unidirectional: bool = True,
     vertical: bool = True,
     flying_mode: bool = False,
     well_scan: Literal["point", "orbital", "spiral", "matrix"] = "point",

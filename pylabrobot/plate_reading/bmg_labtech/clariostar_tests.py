@@ -2575,7 +2575,7 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     # Offset 64 = scan byte (after plate(63) + extra(1))
     # Offset 65 = block[0] = optic_config = 0x02 | 0x30 = 0x32
     self.assertEqual(payload[64], _scan_mode_byte(
-      StartCorner.TOP_LEFT, unidirectional=False, vertical=True))  # 0x0A
+      StartCorner.TOP_LEFT, unidirectional=True, vertical=True))  # 0x8A
     self.assertEqual(payload[65], 0x32)
 
   async def test_0x0026_optic_bytes_spiral(self):
@@ -2587,7 +2587,7 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     # Offset 64 = scan byte
     # Offset 65 = block[0] = optic_config = 0x02 | 0x04 = 0x06
     self.assertEqual(payload[64], _scan_mode_byte(
-      StartCorner.TOP_LEFT, unidirectional=False, vertical=True))  # 0x0A
+      StartCorner.TOP_LEFT, unidirectional=True, vertical=True))  # 0x8A
     self.assertEqual(payload[65], 0x06)
 
   async def test_0x0026_nonpoint_extra_plate_byte(self):
@@ -2603,16 +2603,16 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(payload[15], 0x00)  # extra plate byte after header
     # Scan byte at offset 64
     self.assertEqual(payload[64], _scan_mode_byte(
-      StartCorner.TOP_LEFT, unidirectional=False, vertical=True))
+      StartCorner.TOP_LEFT, unidirectional=True, vertical=True))
 
   async def test_0x0026_point_scan_mode_byte_at_offset_64(self):
     """Point scan on 0x0026 uses scan_mode_byte at offset 64 (after extra plate byte)."""
     backend = self._make_backend(machine_type=0x0026)
     payload = await self._capture_payload(backend)
     # Extra plate byte at offset 15 shifts scan byte to offset 64
-    # Default scan byte: uni(0)=0x00, corner(TOP_LEFT=0)=0x00, vert(1)=0x08, always=0x02 → 0x0A
+    # Default scan byte: uni(1)=0x80, corner(TOP_LEFT=0)=0x00, vert(1)=0x08, always=0x02 → 0x8A
     self.assertEqual(payload[15], 0x00)  # extra plate byte
-    self.assertEqual(payload[64], 0x0A)  # scan byte
+    self.assertEqual(payload[64], 0x8A)  # scan byte
 
   async def test_0x0026_point_uses_block_format(self):
     """0x0026 point scan uses the same 31-byte block format as non-point.
@@ -2625,7 +2625,7 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     # extra plate byte
     self.assertEqual(payload[15], 0x00)
     # scan byte at offset 64
-    self.assertEqual(payload[64], 0x0A)
+    self.assertEqual(payload[64], 0x8A)
     # block[0] = optic_config = 0x02 (point absorbance, no flags)
     self.assertEqual(payload[65], 0x02)
     # rest of 31-byte block is zeros (no shake)
