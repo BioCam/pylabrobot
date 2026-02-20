@@ -1729,8 +1729,10 @@ class CLARIOstarBackend(PlateReaderBackend):
     optic_config = optic_base | _well_scan_optic_flags(well_scan)
 
     payload = bytearray()
-    if self._uses_extended_separator:
-      # 0x0026: insert extra byte between plate header (15 bytes) and well mask (48 bytes)
+    if self._uses_extended_separator and well_scan != "point" and not force_compact:
+      # 0x0026 non-point: insert extra byte between plate header (15 bytes) and well mask (48 bytes).
+      # Verified against OEM pcap for spiral and orbital scans. Point scan OEM data not available;
+      # firmware rejects the extra byte for point scan.
       payload += plate_and_wells[:15] + b"\x00" + plate_and_wells[15:]
     else:
       payload += plate_and_wells

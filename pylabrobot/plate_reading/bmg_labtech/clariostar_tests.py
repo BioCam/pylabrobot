@@ -1523,9 +1523,9 @@ class TestAbsorbanceOrbitalPayload(unittest.TestCase):
   def test_0x0026_point_uses_compact_with_extended_padding(self):
     """Machine type 0x0026 point scan uses compact format with extended padding.
 
-    0x0026 point: plate(63) + extra(1) + scan(1) + optic(1) + zeros(2) + shaker(4) + extended(5) + sep(4) = 81
+    0x0026 point: plate(63) + scan(1) + optic(1) + zeros(2) + shaker(4) + extended(5) + sep(4) = 80
     0x0024:       plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4) + sep(4) = 76
-    Difference = 5 (extra plate byte + extended padding 5 bytes minus 1 extra zero pad).
+    Difference = 4 (extended padding 5 bytes minus 1 extra zero pad, no extra plate byte for point).
     """
     self.backend._machine_type_code = 0x0026
     extended_payload = self._build_payload(well_scan="point")
@@ -1533,11 +1533,11 @@ class TestAbsorbanceOrbitalPayload(unittest.TestCase):
     self.backend._machine_type_code = 0x0024
     standard_payload = self._build_payload(well_scan="point")
 
-    self.assertEqual(len(extended_payload), len(standard_payload) + 5)
+    self.assertEqual(len(extended_payload), len(standard_payload) + 4)
 
     # Separator positions
     sep_offset_std = 72  # plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4)
-    sep_offset_ext = 77  # plate(63) + extra(1) + scan(1) + optic(1) + zeros(2) + shaker(4) + extended(5)
+    sep_offset_ext = 76  # plate(63) + scan(1) + optic(1) + zeros(2) + shaker(4) + extended(5)
     self.assertEqual(standard_payload[sep_offset_std:sep_offset_std + 4], SEPARATOR)
     self.assertEqual(extended_payload[sep_offset_ext:sep_offset_ext + 4], SEPARATOR)
 
@@ -1648,9 +1648,12 @@ class TestBuildPayloadHeader(unittest.TestCase):
     self.assertEqual(header[-4:], SEPARATOR)
 
   def test_0x0026_point_compact_with_extended(self):
-    """0x0026 point: plate(63) + extra(1) + scan(1) + optic(1) + zeros(2) + shaker(4) + extended(5) + sep(4) = 81."""
+    """0x0026 point: plate(63) + scan(1) + optic(1) + zeros(2) + shaker(4) + extended(5) + sep(4) = 80.
+
+    Point scan on 0x0026 does NOT get the extra plate byte (only non-point scans do).
+    """
     header = self._header(machine_type=0x0026)
-    self.assertEqual(len(header), 81)
+    self.assertEqual(len(header), 80)
     self.assertEqual(header[-4:], SEPARATOR)
     # Extended padding present before separator
     self.assertEqual(header[-9:-4], _EXTENDED_PADDING)
@@ -1665,10 +1668,10 @@ class TestBuildPayloadHeader(unittest.TestCase):
     self.assertEqual(header[64], _scan_mode_byte())
 
   def test_force_compact_ignores_extended(self):
-    """force_compact=True on 0x0026 produces compact format with extra plate byte."""
+    """force_compact=True on 0x0026 produces compact format (no extra plate byte)."""
     header = self._header(machine_type=0x0026, force_compact=True)
-    # plate(63) + extra(1) + scan(1) + optic(1) + zeros(3) + shaker(4) + sep(4) = 77
-    self.assertEqual(len(header), 77)
+    # plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4) + sep(4) = 76
+    self.assertEqual(len(header), 76)
     self.assertEqual(header[-4:], SEPARATOR)
 
   def test_num_zero_pad(self):
@@ -2598,37 +2601,34 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
       StartCorner.TOP_LEFT, unidirectional=True, vertical=True))
 
   async def test_0x0026_point_scan_mode_byte_is_normal(self):
-    """Point scan on 0x0026 still uses the normal scan_mode_byte at offset 64."""
+    """Point scan on 0x0026 uses the normal scan_mode_byte at offset 63 (no extra plate byte)."""
     backend = self._make_backend(machine_type=0x0026)
     payload = await self._capture_payload(backend)
-    # Extra plate byte at 15, scan byte at 64
-    self.assertEqual(payload[15], 0x00)  # extra plate byte
+    # No extra plate byte for point scan; scan byte at offset 63
     # Default scan byte: uni(1)=0x80, corner(TOP_LEFT=0)=0x00, vert(1)=0x08, always=0x02 → 0x8A
-    self.assertEqual(payload[64], 0x8A)
+    self.assertEqual(payload[63], 0x8A)
 
   async def test_0x0026_point_uses_compact_format(self):
     """0x0026 point scan uses compact format, NOT the 31-byte block.
 
-    Layout: header(15) + extra(1) + mask(48) + scan(1) + optic(1) + zeros(2) + shaker(4) +
+    Layout: header(15) + mask(48) + scan(1) + optic(1) + zeros(2) + shaker(4) +
             extended(5) + separator(4).
-    Extra byte at offset 15, scan at 64, optic at 65, separator at 77.
+    No extra plate byte for point scan. Scan at 63, optic at 64, separator at 76.
     """
     backend = self._make_backend(machine_type=0x0026)
     payload = await self._capture_payload(backend)
-    # extra plate byte
-    self.assertEqual(payload[15], 0x00)
-    # scan byte
-    self.assertEqual(payload[64], 0x8A)
+    # scan byte (no extra plate byte for point)
+    self.assertEqual(payload[63], 0x8A)
     # optic byte = 0x02 (point absorbance, no flags)
-    self.assertEqual(payload[65], 0x02)
+    self.assertEqual(payload[64], 0x02)
     # 2 zero bytes
-    self.assertEqual(payload[66:68], b"\x00\x00")
+    self.assertEqual(payload[65:67], b"\x00\x00")
     # 4 shaker bytes (no shake)
-    self.assertEqual(payload[68:72], b"\x00\x00\x00\x00")
+    self.assertEqual(payload[67:71], b"\x00\x00\x00\x00")
     # 5-byte extended separator
-    self.assertEqual(payload[72:77], b"\x00\x20\x04\x00\x1e")
+    self.assertEqual(payload[71:76], b"\x00\x20\x04\x00\x1e")
     # Then the standard separator
-    self.assertEqual(payload[77:81], b"\x27\x0f\x27\x0f")
+    self.assertEqual(payload[76:80], b"\x27\x0f\x27\x0f")
 
   # --- combined parameters ---
 
