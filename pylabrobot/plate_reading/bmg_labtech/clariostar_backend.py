@@ -1854,8 +1854,11 @@ class CLARIOstarBackend(PlateReaderBackend):
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
-    # Drain stale responses from the FTDI buffer to prevent response desync.
+    # Drain stale responses from the FTDI buffer, then re-initialize.
+    # The Go reference sends CMD 0x01 (init) + waitForReady before EVERY
+    # measurement.  Without this, firmware may reject the run command.
     await self._drain_buffer()
+    await self.initialize()
 
     await self._start_luminescence_measurement(
       focal_height=focal_height,
@@ -2328,17 +2331,12 @@ class CLARIOstarBackend(PlateReaderBackend):
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
-    # Drain stale responses from the FTDI buffer.  The firmware may send
-    # unsolicited "confirmation" frames after setup commands (0x05 sub-commands)
-    # or prior measurement runs.  Without draining, read_resp() returns a stale
-    # response instead of the actual response to the next command, causing
-    # response desync (e.g. the measurement run response is read as a rejection
-    # because the stale frame doesn't have the expected CMD 0x09 format).
+    # Drain stale responses from the FTDI buffer, then re-initialize the
+    # instrument.  The Go reference (bmg-clariostar-main) sends CMD 0x01
+    # (init) + waitForReady before EVERY measurement.  Without this, the
+    # firmware may reject the run command (status 0x15).
     await self._drain_buffer()
-
-    # Step 0: Ensure temperature monitoring is active so the firmware embeds
-    # a pre-measurement temperature reading in the response.
-    await self.enable_temperature_monitoring()
+    await self.initialize()
 
     # Step 1: Send command, verify accepted, return run response
     run_response = await self._start_absorbance_measurement(
@@ -2760,8 +2758,11 @@ class CLARIOstarBackend(PlateReaderBackend):
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
-    # Drain stale responses from the FTDI buffer to prevent response desync.
+    # Drain stale responses from the FTDI buffer, then re-initialize.
+    # The Go reference sends CMD 0x01 (init) + waitForReady before EVERY
+    # measurement.  Without this, firmware may reject the run command.
     await self._drain_buffer()
+    await self.initialize()
 
     await self._start_fluorescence_measurement(
       plate=plate,

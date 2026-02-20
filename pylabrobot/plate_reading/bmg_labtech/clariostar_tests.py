@@ -2075,7 +2075,7 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
   """Test the refactored read_absorbance orchestration flow.
 
   The new flow:
-    0. enable_temperature_monitoring()
+    0. initialize() — re-init before every measurement (matches Go reference)
     1. _start_absorbance_measurement() — atomic send, returns run response
     2. Check if BUSY already cleared (fast measurements)
     3. If wait=False → return None
@@ -2094,7 +2094,7 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     backend._trace_io_path = None
     backend._machine_type_code = 0x0026
     backend._last_scan_params = {}
-    backend.enable_temperature_monitoring = unittest.mock.AsyncMock()
+    backend.initialize = unittest.mock.AsyncMock()
     return backend
 
   def _make_status_response(self, busy: bool) -> bytes:
@@ -2819,7 +2819,7 @@ class TestReadAbsorbanceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
     backend._trace_io_path = None
     backend._machine_type_code = 0x0026
     backend._last_scan_params = {}
-    backend.enable_temperature_monitoring = unittest.mock.AsyncMock()
+    backend.initialize = unittest.mock.AsyncMock()
     return backend
 
   def _make_status_response(self, busy: bool) -> bytes:
@@ -2898,6 +2898,7 @@ class TestReadFluorescenceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
     backend._trace_io_path = None
     backend._machine_type_code = 0x0024
     backend._last_scan_params = {}
+    backend.initialize = unittest.mock.AsyncMock()
     return backend
 
   async def _run_with_kwargs(self, **kwargs):
