@@ -1854,6 +1854,9 @@ class CLARIOstarBackend(PlateReaderBackend):
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
+    # Drain stale responses from the FTDI buffer to prevent response desync.
+    await self._drain_buffer()
+
     await self._start_luminescence_measurement(
       focal_height=focal_height,
       plate=plate,
@@ -2325,6 +2328,14 @@ class CLARIOstarBackend(PlateReaderBackend):
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
 
+    # Drain stale responses from the FTDI buffer.  The firmware may send
+    # unsolicited "confirmation" frames after setup commands (0x05 sub-commands)
+    # or prior measurement runs.  Without draining, read_resp() returns a stale
+    # response instead of the actual response to the next command, causing
+    # response desync (e.g. the measurement run response is read as a rejection
+    # because the stale frame doesn't have the expected CMD 0x09 format).
+    await self._drain_buffer()
+
     # Step 0: Ensure temperature monitoring is active so the firmware embeds
     # a pre-measurement temperature reading in the response.
     await self.enable_temperature_monitoring()
@@ -2748,6 +2759,9 @@ class CLARIOstarBackend(PlateReaderBackend):
 
     # OEM firmware never sends _mp_and_focus_height_value ($05 $0F) before
     # measurements — verified via USB pcap analysis.  Removed to match OEM flow.
+
+    # Drain stale responses from the FTDI buffer to prevent response desync.
+    await self._drain_buffer()
 
     await self._start_fluorescence_measurement(
       plate=plate,

@@ -2894,6 +2894,7 @@ class TestReadFluorescenceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
     backend.read_timeout = 20
     backend.write_timeout = 10
     backend.io = unittest.mock.MagicMock()
+    backend.io.usb_purge_rx_buffer = unittest.mock.AsyncMock()
     backend._trace_io_path = None
     backend._machine_type_code = 0x0024
     backend._last_scan_params = {}
