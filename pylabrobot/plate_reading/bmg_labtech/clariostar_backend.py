@@ -1729,16 +1729,16 @@ class CLARIOstarBackend(PlateReaderBackend):
     optic_config = optic_base | _well_scan_optic_flags(well_scan)
 
     payload = bytearray()
-    if self._uses_extended_separator and well_scan != "point" and not force_compact:
-      # 0x0026 non-point: insert extra byte between plate header (15 bytes) and well mask (48 bytes).
-      # Verified against OEM pcap for spiral and orbital scans. Point scan OEM data not available;
-      # firmware rejects the extra byte for point scan.
+    if self._uses_extended_separator and not force_compact:
+      # 0x0026: insert extra byte between plate header (15 bytes) and well mask (48 bytes).
+      # Verified against OEM pcap for ALL scan types (point, orbital, spiral).
       payload += plate_and_wells[:15] + b"\x00" + plate_and_wells[15:]
     else:
       payload += plate_and_wells
 
-    if self._uses_extended_separator and well_scan != "point" and not force_compact:
-      # 0x0026, non-point scan: scan byte + 31-byte block.
+    if self._uses_extended_separator and not force_compact:
+      # 0x0026, ALL scan types: scan byte + 31-byte block.
+      # Verified identical structure for point, orbital, and spiral via OEM pcap.
       #
       # Block layout (offsets within the 31-byte block, per OEM pcap):
       #   [0]     optic_config (optic_base | scan-type flags)
@@ -1758,12 +1758,6 @@ class CLARIOstarBackend(PlateReaderBackend):
         block[20] = shake_duration_s & 0xFF
         block[21] = (shake_duration_s >> 8) & 0xFF
       payload += bytes(block)
-    elif self._uses_extended_separator and not force_compact:
-      # 0x0026, point scan: compact + extended padding.
-      payload += bytes([scan])
-      payload += bytes([optic_config, 0x00, 0x00])
-      payload += shaker
-      payload += _EXTENDED_PADDING
     else:
       # 0x0024 or force_compact: compact format.
       payload += bytes([scan])
