@@ -234,8 +234,9 @@ class TestClose(unittest.TestCase):
 class TestStatusPollResilience(unittest.TestCase):
   """Verify that _poll_until_ready survives partial/corrupt frames."""
 
-  # Truncated status (17 of 24 bytes)
-  TRUNCATED = bytes.fromhex("0200180c011500000000c900000000000d")
+  # Corrupt status — correct size field (16 bytes) but bad checksum.
+  # _read_frame completes normally; _validate_frame raises ChecksumError.
+  CORRUPT = bytes.fromhex("0200100c0115000000c90000dead000d")
 
   # Valid status responses for recovery
   STATUS_INITIALIZED = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
@@ -246,7 +247,7 @@ class TestStatusPollResilience(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(ACK, self.TRUNCATED, self.STATUS_INITIALIZED)
+    mock.queue_response(ACK, self.CORRUPT, self.STATUS_INITIALIZED)
     asyncio.run(backend.initialize())
 
     # Should have written: init command, status poll (failed), status poll (success)

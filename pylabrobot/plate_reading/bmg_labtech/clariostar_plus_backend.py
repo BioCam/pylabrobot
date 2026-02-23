@@ -449,8 +449,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         if expected_size is not None and len(d) >= expected_size:
           break
       else:
-        # Empty read after we already saw CR → done.
-        if end_byte_found:
+        # Empty read after we already saw CR → done,
+        # but only if we have all bytes the size field promised.
+        # 0x0D can appear mid-frame (e.g. in checksum bytes),
+        # so end_byte_found alone is not sufficient.
+        if end_byte_found and (expected_size is None or len(d) >= expected_size):
           break
 
         if time.time() - t > timeout:
