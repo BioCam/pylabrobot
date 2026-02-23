@@ -601,7 +601,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.EEPROM,
       payload=b"\x00\x00\x00\x00\x00\x00",
-      wait=True,
     )
     logger.info(
       "EEPROM: %d bytes, head=%s",
@@ -621,7 +620,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.FIRMWARE_INFO,
       payload=b"\x00\x00\x00\x00\x00\x00",
-      wait=True,
     )
 
     version = ""

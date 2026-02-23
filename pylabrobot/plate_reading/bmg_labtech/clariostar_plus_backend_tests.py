@@ -424,9 +424,8 @@ class TestFirmwareInfoParsing(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # Queue firmware response + status-ready (send_command uses wait=True)
-    STATUS_READY = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
-    mock.queue_response(_wrap_payload(_REAL_FIRMWARE_PAYLOAD), STATUS_READY)
+    # Queue firmware data response (no status polling — REQUEST commands use wait=False)
+    mock.queue_response(_wrap_payload(_REAL_FIRMWARE_PAYLOAD))
 
     # request_firmware_info returns parsed values (no implicit caching)
     fw = asyncio.run(backend.request_firmware_info())
