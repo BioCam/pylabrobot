@@ -541,6 +541,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     _validate_frame(resp)
     ret = _extract_payload(resp)
 
+    # Some firmware versions (e.g. machine type 0x0024) reply to REQUEST
+    # commands with a status frame (payload byte 0 = 0x01) before sending
+    # the actual data frame. Others (e.g. 0x0026) return data directly.
+    # If we got a status frame for a REQUEST command, read again for data.
+    if command_family == self.CommandFamily.REQUEST and ret and ret[0] == 0x01:
+      logger.debug("REQUEST got status frame (%d bytes), reading data frame", len(ret))
+      resp = await self._read_frame(timeout=read_timeout)
+      _validate_frame(resp)
+      ret = _extract_payload(resp)
+
     if wait:
       await self._wait_until_machine_ready(poll_interval=poll_interval)
 

@@ -59,17 +59,21 @@ ACK = _wrap_payload(b"\x00")
 class MockFTDI:
   """Minimal FTDI mock that records writes and plays back queued responses.
 
-  Each entry in the response queue is returned as a single chunk on the
-  first ``read()`` call within a ``_read_frame`` invocation. Subsequent
-  ``read()`` calls (before the next ``write()``) return empty bytes so that
-  ``_read_frame`` sees the chunk as a complete (or truncated) frame and
-  returns it without mixing in the next queued response.
+  Delivers one queued frame per ``_read_frame`` invocation:
+    - First ``read()`` after a ``write()`` or after an empty-read boundary
+      delivers the next queued frame.
+    - Subsequent ``read()`` calls return empty bytes, signalling end-of-frame
+      to ``_read_frame`` and resetting the gate for the next frame.
+
+  This supports both the normal one-frame-per-write pattern and the
+  REQUEST status-then-data pattern where ``send_command`` calls
+  ``_read_frame`` twice without an intervening ``write()``.
   """
 
   def __init__(self) -> None:
     self.written: List[bytes] = []
     self._responses: List[bytes] = []
-    self._delivered_since_write = False
+    self._ready = False  # True = next read() may deliver a frame
 
   def queue_response(self, *frames: bytes) -> None:
     """Queue one or more complete frames to return on subsequent reads."""
@@ -94,13 +98,15 @@ class MockFTDI:
 
   async def write(self, data: bytes) -> int:
     self.written.append(bytes(data))
-    self._delivered_since_write = False
+    self._ready = True
     return len(data)
 
   async def read(self, n: int) -> bytes:
-    if not self._delivered_since_write and self._responses:
-      self._delivered_since_write = True
+    if self._ready and self._responses:
+      self._ready = False
       return self._responses.pop(0)
+    # Empty read = end-of-frame boundary. Re-arm for next _read_frame call.
+    self._ready = True
     return b""
 
 
