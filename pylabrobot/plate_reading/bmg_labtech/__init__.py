@@ -1,2 +1,1 @@
-from .clariostar_plus_backend import CLARIOstarPlusBackend, CLARIOstarPlusConfig, CommandGroup, Command, dump_eeprom
-from .clariostar_plus_simulator import CLARIOstarPlusSimulatorBackend
+from .clario_star_backend import CLARIOstarBackend

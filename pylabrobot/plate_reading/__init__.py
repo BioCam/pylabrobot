@@ -10,7 +10,7 @@ from .agilent import (
   CytationImagingConfig,
   SynergyH1Backend,
 )
-from .bmg_labtech import CLARIOstarPlusBackend
+from .bmg_labtech import CLARIOstarBackend
 from .byonoy import (
   ByonoyAbsorbance96AutomateBackend,
   ByonoyLuminescence96AutomateBackend,
