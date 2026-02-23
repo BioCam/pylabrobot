@@ -309,7 +309,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     self,
     device_id: Optional[str] = None,
     timeout: float = 150,
-    read_timeout: float = 20,
+    read_timeout: float = 2,
   ):
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
     self.timeout = timeout
@@ -368,32 +368,46 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   async def _read_frame(self, timeout: Optional[float] = None) -> bytes:
     """Read a complete frame from the serial port.
 
-    Reads bytes until the full frame indicated by the size field is received,
-    or until the timeout expires.
+    Uses the same fast-termination strategy as the Go reference implementation:
+    a short FTDI read (< 25 bytes) ending in 0x0D means the chip has delivered
+    everything it has and the frame is complete.  As an additional safeguard the
+    size field (bytes 1-2) is parsed and used as a secondary completion check
+    for frames that arrive in multiple chunks.
+
+    The timeout is purely a safety net — it should never be the normal exit path.
     """
     if timeout is None:
       timeout = self.read_timeout
 
     d = b""
     expected_size = None
+    end_byte_found = False
     t = time.time()
 
     while True:
       last_read = await self.io.read(25)
       if len(last_read) > 0:
         d += last_read
+        end_byte_found = d[-1] == 0x0D
 
+        # Parse size field once we have the header.
         if expected_size is None and len(d) >= 3 and d[0] == 0x02:
           expected_size = int.from_bytes(d[1:3], "big")
-          t = time.time()
 
+        # Fast path: short FTDI read ending in CR → frame complete,
+        # but only if we have enough bytes to satisfy the size field.
+        # 0x0D can appear inside payloads, so a short read ending in CR
+        # is not sufficient on its own when we know the frame is longer.
+        if len(last_read) < 25 and end_byte_found:
+          if expected_size is None or len(d) >= expected_size:
+            break
+
+        # Size-based completion: all expected bytes received.
         if expected_size is not None and len(d) >= expected_size:
           break
       else:
-        if expected_size is not None and len(d) >= expected_size:
-          break
-
-        if expected_size is None and len(d) > 0 and d[-1] == 0x0D:
+        # Empty read after we already saw CR → done.
+        if end_byte_found:
           break
 
         if time.time() - t > timeout:
@@ -403,7 +417,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         await asyncio.sleep(0.0001)
 
     if d:
-      logger.info("read complete response: %d bytes, %s", len(d), d.hex())
+      logger.debug("read %d bytes: %s", len(d), d.hex())
 
     return d
 
