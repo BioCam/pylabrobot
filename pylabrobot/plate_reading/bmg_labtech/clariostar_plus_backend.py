@@ -559,7 +559,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         logger.warning("status poll: bad frame (%s), retrying", e)
         continue
 
-      logger.info("status: %s", {k: v for k, v in flags.items() if v})
+      logger.info("status: %s", flags)
 
       if not flags["busy"]:
         return
