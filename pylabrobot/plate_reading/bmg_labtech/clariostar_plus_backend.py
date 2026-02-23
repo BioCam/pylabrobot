@@ -125,7 +125,7 @@ _frame = _wrap_payload
 #
 # Polling hot-path optimisations:
 #   - Pre-cached _STATUS_FRAME avoids per-poll frame construction
-#   - raw[5] == 0x05 checked directly on wire bytes (no unframing)
+#   - raw[5] checked against DeviceState enum (no unframing)
 #   - Full parse (validate + extract + flag decode) only when raw bytes change
 #   - .hex() guarded by isEnabledFor() to skip eager string allocation
 #   - No asyncio.sleep — the ~37 ms FTDI I/O roundtrip provides natural pacing
@@ -269,7 +269,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   # -- Command enums (CLARIOstar-specific) ----------------------------------
 
-  class CommandGroup(enum.IntEnum):
+  class CommandFamily(enum.IntEnum):
     """Command group byte (payload byte 0)."""
     INITIALIZE  = 0x01
     TRAY        = 0x03
@@ -280,29 +280,41 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     STATUS      = 0x80
     HW_STATUS   = 0x81
 
-  class Command(enum.IntEnum):
-    """Command byte (payload byte 1)."""
+  class Command:
+    """Command byte constants (payload byte 1).
+
+    Grouped by CommandFamily. Values are plain ints rather than IntEnum because
+    multiple groups reuse the same byte value (e.g. INIT, TRAY_CLOSE, and POLL
+    are all 0x00) and IntEnum would silently alias them.
+    """
     # INITIALIZE
-    INIT_DEFAULT          = 0x00
+    INIT               = 0x00
     # TRAY
-    TRAY_CLOSE            = 0x00
-    TRAY_OPEN             = 0x01
+    TRAY_CLOSE         = 0x00
+    TRAY_OPEN          = 0x01
     # RUN
-    RUN_MEASUREMENT       = 0x31
+    MEASUREMENT        = 0x31
     # REQUEST
-    REQUEST_MEASUREMENT   = 0x02
-    REQUEST_EEPROM        = 0x07
-    REQUEST_FIRMWARE_INFO = 0x09
-    REQUEST_FOCUS_HEIGHT  = 0x0F
-    REQUEST_READ_ORDER    = 0x1D
-    REQUEST_USAGE_COUNTERS = 0x21
+    DATA               = 0x02
+    EEPROM             = 0x07
+    FIRMWARE_INFO      = 0x09
+    FOCUS_HEIGHT       = 0x0F
+    READ_ORDER         = 0x1D
+    USAGE_COUNTERS     = 0x21
     # POLL
-    POLL_DEFAULT          = 0x00
+    POLL               = 0x00
 
   # Validation tables built after enum definitions are available.
   # Populated in _build_command_tables() below.
-  _VALID_COMMANDS: Dict  # CommandGroup -> set[Command]
-  _NO_COMMAND_GROUPS: set  # CommandGroups that take no command byte
+  _VALID_COMMANDS: Dict  # CommandFamily -> set[Command]
+  _NO_COMMAND_FAMILIES: set  # CommandFamilys that take no command byte
+
+  # -- Device readiness (raw wire byte 5 of 24-byte status response) -------
+
+  class DeviceState(enum.IntEnum):
+    """Byte 5 of the 24-byte status response indicates device readiness."""
+    READY = 0x05
+    BUSY  = 0x25
 
   # -- Status flags (CLARIOstar-specific bit positions) ---------------------
 
@@ -356,30 +368,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     await self.request_firmware_info()
 
     # Auto-detect machine type from EEPROM for payload format selection.
-    config = self.get_machine_config()
+    config = self.request_machine_config()
     if config is not None:
       self._machine_type_code = config.machine_type_code
       logger.info(
-        "Detected machine type 0x%04x (%s), extended_separator=%s",
-        self._machine_type_code, config.model_name, self._uses_extended_separator,
+        "Detected machine type 0x%04x (%s)",
+        self._machine_type_code, config.model_name,
       )
 
   async def stop(self):
     await self.io.stop()
-
-  @property
-  def _uses_extended_separator(self) -> bool:
-    """Whether this machine uses the 0x0026-style extended pre-separator block.
-
-    Machine type 0x0026 has a 36-byte block between the scan-mode byte and
-    the ``$27 $0F $27 $0F`` separator (containing optic config, shaker data
-    at scattered offsets, and padding).  Type 0x0024 uses a compact 8-byte
-    layout (optic + zeros + shaker) before the separator.
-
-    Defaults to True (0x0026 layout) when the machine type is unknown so
-    that existing setups that haven't called ``setup()`` keep working.
-    """
-    return self._machine_type_code != 0x0024
 
   # === Low-level I/O ===
 
@@ -454,35 +452,42 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   async def send_command(
     self,
-    command_group: "CLARIOstarPlusBackend.CommandGroup",
-    command: "Optional[CLARIOstarPlusBackend.Command]" = None,
+    command_family: "CLARIOstarPlusBackend.CommandFamily",
+    command: Optional[int] = None,
     *,
     payload: bytes = b"",
     read_timeout: Optional[float] = None,
     wait: bool = False,
+    poll_interval: float = 0.0,
   ) -> bytes:
     """Build a frame, send it, and return the validated response payload.
 
     Steps:
-      1. Validate command_group / command against _VALID_COMMANDS tables
+      1. Validate command_family / command against _VALID_COMMANDS tables
       2. Assemble payload bytes: ``[group, cmd] + payload``
       3. _wrap_payload  → full frame (STX + size + 0x0C + data + checksum + CR)
       4. _write_frame   → io.write
       5. _read_frame    → io.read (fast-path: short read ending in 0x0D + size check)
       6. _validate_frame → verify STX, CR, 0x0C, size field, 24-bit checksum
       7. _extract_payload → strip framing, return inner bytes
-      8. If wait=True   → _poll_until_ready (status loop until byte 5 == 0x05)
+      8. If wait=True   → _poll_until_ready (status loop until DeviceState.READY)
 
     Args:
-      command_group: Command group byte (payload byte 0).
+      command_family: Command group byte (payload byte 0).
       command: Command byte (payload byte 1). Required for all groups
         except STATUS and HW_STATUS.
-      payload: Additional parameter bytes after command_group and command.
+      payload: Additional parameter bytes after command_family and command.
       read_timeout: Seconds to wait for the response frame. Defaults to
         ``self.read_timeout``.
       wait: If True, poll status after the initial response until the device
         is no longer busy. Used by commands that trigger physical actions
         (initialize, open, close, etc.).
+      poll_interval: Seconds to sleep between status polls when *wait* is True.
+        Default 0.0 (no sleep — paced by I/O roundtrip alone, ~37 ms/poll).
+        OEM software uses ~0.25 s between polls (observed in pcap). We default
+        to 0 because the total wall time is dominated by physical motor speed
+        (~4.3 s open, ~8 s close) regardless of poll frequency, and faster
+        polling minimises detection latency when the motor finishes.
 
     Returns:
       Validated response payload (frame overhead stripped).
@@ -494,19 +499,19 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       TimeoutError: If no response is received within *read_timeout*, or if
         *wait* is True and the device stays busy beyond ``self.timeout``.
     """
-    CG = self.CommandGroup
-    if command_group in self._NO_COMMAND_GROUPS:
+    CG = self.CommandFamily
+    if command_family in self._NO_COMMAND_FAMILIES:
       if command is not None:
-        raise ValueError(f"{CG(command_group).name} does not accept a command")
-      data = bytes([command_group]) + payload
+        raise ValueError(f"{CG(command_family).name} does not accept a command")
+      data = bytes([command_family]) + payload
     else:
       if command is None:
-        raise ValueError(f"{CG(command_group).name} requires a command")
-      valid = self._VALID_COMMANDS.get(command_group, set())
+        raise ValueError(f"{CG(command_family).name} requires a command")
+      valid = self._VALID_COMMANDS.get(command_family, set())
       if command not in valid:
         raise ValueError(
-          f"{self.Command(command).name} is not valid for {CG(command_group).name}")
-      data = bytes([command_group, command]) + payload
+          f"command 0x{command:02x} is not valid for {CG(command_family).name}")
+      data = bytes([command_family, command]) + payload
 
     frame = _wrap_payload(data)
     await self._write_frame(frame)
@@ -515,7 +520,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     ret = _extract_payload(resp)
 
     if wait:
-      await self._poll_until_ready()
+      await self._poll_until_ready(poll_interval=poll_interval)
 
     return ret
 
@@ -548,12 +553,19 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     payload = _extract_payload(resp)
     return self._parse_status_response(payload)
 
-  async def _poll_until_ready(self, timeout=None):
+  async def _poll_until_ready(self, timeout=None, poll_interval: float = 0.0):
     """Poll status until the device is no longer busy.
 
-    Checks raw byte 5 directly (0x05 = ready, 0x25 = busy). Full flag
+    Checks raw byte 5 via DeviceState enum (READY/BUSY). Full flag
     parsing only runs when the raw bytes change, for logging. Malformed
     or partial frames are retried.
+
+    Args:
+      timeout: Max seconds to wait. Defaults to ``self.timeout``.
+      poll_interval: Seconds to sleep between polls. Default 0.0
+        (no sleep — paced by I/O roundtrip alone, ~37 ms/poll). OEM
+        software uses ~0.25 s (12 polls over 4.3 s for open). We default
+        to 0 for fastest detection when the motor finishes.
     """
     if timeout is None:
       timeout = self.timeout
@@ -580,9 +592,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
           logger.warning("status poll: bad frame (%s), retrying", e)
           continue
 
-      # Direct byte check: byte 5 is 0x05 (ready) or 0x25 (busy).
-      if raw[5] == 0x05:
+      if raw[5] == self.DeviceState.READY:
         return
+
+      if poll_interval > 0:
+        await asyncio.sleep(poll_interval)
 
     elapsed = time.time() - t
     raise TimeoutError(
@@ -594,8 +608,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   async def request_eeprom_data(self):
     self._eeprom_data = await self.send_command(
-      command_group=self.CommandGroup.REQUEST,
-      command=self.Command.REQUEST_EEPROM,
+      command_family=self.CommandFamily.REQUEST,
+      command=self.Command.EEPROM,
       payload=b"\x00\x00\x00\x00\x00\x00",
       wait=True,
     )
@@ -604,14 +618,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   async def request_firmware_info(self):
     """Request firmware version and build date/time (command ``0x05 0x09``)."""
     self._firmware_data = await self.send_command(
-      command_group=self.CommandGroup.REQUEST,
-      command=self.Command.REQUEST_FIRMWARE_INFO,
+      command_family=self.CommandFamily.REQUEST,
+      command=self.Command.FIRMWARE_INFO,
       payload=b"\x00\x00\x00\x00\x00\x00",
       wait=True,
     )
     return self._firmware_data
 
-  def get_machine_config(self) -> Optional[CLARIOstarPlusConfig]:
+  def request_machine_config(self) -> Optional[CLARIOstarPlusConfig]:
     """Parse and return the machine configuration from stored EEPROM and firmware data.
 
     Returns None if EEPROM data has not been read yet (i.e. setup() not called).
@@ -634,28 +648,33 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   # === Commands (Phase 1) ===
 
-  async def initialize(self):
+  async def initialize(self, wait: bool = True, poll_interval: float = 0.0):
     return await self.send_command(
-      command_group=self.CommandGroup.INITIALIZE,
-      command=self.Command.INIT_DEFAULT,
+      command_family=self.CommandFamily.INITIALIZE,
+      command=self.Command.INIT,
       payload=b"\x00\x10\x02\x00",
-      wait=True,
+      wait=wait,
+      poll_interval=poll_interval,
     )
 
-  async def open(self):
+  async def open(self, wait: bool = True, poll_interval: float = 0.0):
     return await self.send_command(
-      command_group=self.CommandGroup.TRAY,
+      command_family=self.CommandFamily.TRAY,
       command=self.Command.TRAY_OPEN,
       payload=b"\x00\x00\x00\x00",
-      wait=True,
+      wait=wait,
+      poll_interval=poll_interval,
     )
 
-  async def close(self, plate: Optional[Plate] = None):
+  async def close(
+    self, plate: Optional[Plate] = None, wait: bool = True, poll_interval: float = 0.0,
+  ):
     return await self.send_command(
-      command_group=self.CommandGroup.TRAY,
+      command_family=self.CommandFamily.TRAY,
       command=self.Command.TRAY_CLOSE,
       payload=b"\x00\x00\x00\x00",
-      wait=True,
+      wait=wait,
+      poll_interval=poll_interval,
     )
 
   # === Measurement stubs (Phase 4+) ===
@@ -681,17 +700,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     raise NotImplementedError("Luminescence not yet implemented for CLARIOstar Plus.")
 
 
-# Build command validation tables now that the nested enums exist.
-CG = CLARIOstarPlusBackend.CommandGroup
+# Build command validation tables now that the nested classes exist.
+CG = CLARIOstarPlusBackend.CommandFamily
 Cmd = CLARIOstarPlusBackend.Command
 CLARIOstarPlusBackend._VALID_COMMANDS = {
-  CG.INITIALIZE: {Cmd.INIT_DEFAULT},
+  CG.INITIALIZE: {Cmd.INIT},
   CG.TRAY:       {Cmd.TRAY_CLOSE, Cmd.TRAY_OPEN},
-  CG.RUN:        {Cmd.RUN_MEASUREMENT},
-  CG.REQUEST:    {Cmd.REQUEST_MEASUREMENT, Cmd.REQUEST_EEPROM,
-                  Cmd.REQUEST_FIRMWARE_INFO, Cmd.REQUEST_FOCUS_HEIGHT,
-                  Cmd.REQUEST_READ_ORDER, Cmd.REQUEST_USAGE_COUNTERS},
-  CG.POLL:       {Cmd.POLL_DEFAULT},
+  CG.RUN:        {Cmd.MEASUREMENT},
+  CG.REQUEST:    {Cmd.DATA, Cmd.EEPROM, Cmd.FIRMWARE_INFO,
+                  Cmd.FOCUS_HEIGHT, Cmd.READ_ORDER, Cmd.USAGE_COUNTERS},
+  CG.POLL:       {Cmd.POLL},
 }
-CLARIOstarPlusBackend._NO_COMMAND_GROUPS = {CG.STATUS, CG.HW_STATUS}
+CLARIOstarPlusBackend._NO_COMMAND_FAMILIES = {CG.STATUS, CG.HW_STATUS}
 del CG, Cmd

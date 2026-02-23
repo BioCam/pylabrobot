@@ -6,7 +6,7 @@ observed in pcap captures from real CLARIOstar Plus hardware.
 
 import asyncio
 import unittest
-from typing import List
+from typing import Dict, List
 
 from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
   CLARIOstarPlusBackend,
@@ -17,61 +17,38 @@ from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
 
 
 # ---------------------------------------------------------------------------
-# Ground truth frames (verified against pcap captures)
-# ---------------------------------------------------------------------------
-
-# initialize: CG.INITIALIZE(0x01) + Cmd.INIT_DEFAULT(0x00) + b"\x00\x10\x02\x00"
-GROUND_TRUTH_INITIALIZE = bytes.fromhex("02000e0c01000010020000002f0d")
-
-# open (drawer out): CG.TRAY(0x03) + Cmd.TRAY_OPEN(0x01) + b"\x00\x00\x00\x00"
-GROUND_TRUTH_OPEN = bytes.fromhex("02000e0c0301000000000000200d")
-
-# close (drawer in): CG.TRAY(0x03) + Cmd.TRAY_CLOSE(0x00) + b"\x00\x00\x00\x00"
-GROUND_TRUTH_CLOSE = bytes.fromhex("02000e0c03000000000000001f0d")
-
-# status query: CG.STATUS(0x80), no command byte
-GROUND_TRUTH_STATUS = bytes.fromhex("0200090c800000970d")
-
-
-# ---------------------------------------------------------------------------
-# Mock response frames (what the device sends back)
+# Pcap ground truth — commands (verified against pcap captures)
 #
-# Real device responses are always 24 bytes.  The polling loop checks
-# len == 24 and raw[5] directly (0x05 = ready, 0x25 = busy), so mock
-# frames must be realistic 24-byte wire frames.
-#
-# Layout (from pcap):
-#   [0]    02        STX
-#   [1-2]  00 18     size = 24
-#   [3]    0c        header
-#   [4]    01        command echo (INITIALIZE)
-#   [5]    05/25     05 = ready, 25 = busy
-#   [6]    00        unknown
-#   [7]    XX        status flags (bit 5 = initialized, bit 0 = drawer_open)
-#   [8-18] 00...     padding
-#   [19]   c0        unknown constant
-#   [20]   00        unknown
-#   [21-22] checksum (2 of 3 bytes)
-#   [23]   0d        CR
+# name → (payload bytes, expected wire frame).
+# Adding an entry here automatically generates a frame-match test AND
+# provides the single source of truth for all test classes via COMMANDS[name].
 # ---------------------------------------------------------------------------
 
-# Generic command acknowledgement (valid frame for send_command to accept)
-_ACK = _wrap_payload(b"\x00")
+COMMANDS: Dict[str, tuple] = {
+  # CF.INITIALIZE(0x01) + Cmd.INIT(0x00) + b"\x00\x10\x02\x00"
+  "initialize": (
+    b"\x01\x00\x00\x10\x02\x00",
+    bytes.fromhex("02000e0c01000010020000002f0d"),
+  ),
+  # CF.TRAY(0x03) + Cmd.TRAY_OPEN(0x01) + b"\x00\x00\x00\x00"
+  "open": (
+    b"\x03\x01\x00\x00\x00\x00",
+    bytes.fromhex("02000e0c0301000000000000200d"),
+  ),
+  # CF.TRAY(0x03) + Cmd.TRAY_CLOSE(0x00) + b"\x00\x00\x00\x00"
+  "close": (
+    b"\x03\x00\x00\x00\x00\x00",
+    bytes.fromhex("02000e0c03000000000000001f0d"),
+  ),
+  # CF.STATUS(0x80), no command byte
+  "status": (
+    b"\x80",
+    bytes.fromhex("0200090c800000970d"),
+  ),
+}
 
-# Ready, initialized (byte 5=0x05, byte 7=0x20)
-_STATUS_INITIALIZED = bytes.fromhex(
-  "0200180c010500200000000000000000000000c000010c0d")
-
-# Ready, initialized + drawer_open (byte 5=0x05, byte 7=0x21)
-_STATUS_DRAWER_OPEN = bytes.fromhex(
-  "0200180c010500210000000000000000000000c000010d0d")
-
-# Ready, initialized, drawer closed (byte 5=0x05, byte 7=0x20)
-_STATUS_DRAWER_CLOSED = _STATUS_INITIALIZED
-
-# Busy, initialized (byte 5=0x25, byte 7=0x24) — from pcap ground truth
-_STATUS_BUSY = bytes.fromhex(
-  "0200180c012500240000030000000000000000c00001330d")
+# Generic command acknowledgement — shared by all command tests.
+ACK = _wrap_payload(b"\x00")
 
 
 # ---------------------------------------------------------------------------
@@ -127,38 +104,6 @@ class MockFTDI:
     return b""
 
 
-# ---------------------------------------------------------------------------
-# Tests
-# ---------------------------------------------------------------------------
-
-
-class TestFrameUtilities(unittest.TestCase):
-  """Verify the frame wrap / validate / extract round-trip."""
-
-  def test_round_trip(self):
-    payload = b"\x01\x00\x00\x10\x02\x00"
-    frame = _wrap_payload(payload)
-    _validate_frame(frame)
-    self.assertEqual(_extract_payload(frame), payload)
-
-  def test_initialize_frame_matches_ground_truth(self):
-    """The raw frame for an initialize command must match the pcap ground truth."""
-    frame = _wrap_payload(b"\x01\x00\x00\x10\x02\x00")
-    self.assertEqual(frame, GROUND_TRUTH_INITIALIZE)
-
-  def test_open_frame_matches_ground_truth(self):
-    frame = _wrap_payload(b"\x03\x01\x00\x00\x00\x00")
-    self.assertEqual(frame, GROUND_TRUTH_OPEN)
-
-  def test_close_frame_matches_ground_truth(self):
-    frame = _wrap_payload(b"\x03\x00\x00\x00\x00\x00")
-    self.assertEqual(frame, GROUND_TRUTH_CLOSE)
-
-  def test_status_frame_matches_ground_truth(self):
-    frame = _wrap_payload(b"\x80")
-    self.assertEqual(frame, GROUND_TRUTH_STATUS)
-
-
 def _make_backend() -> CLARIOstarPlusBackend:
   """Create a backend with a MockFTDI injected (bypasses real USB)."""
   backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
@@ -171,114 +116,147 @@ def _make_backend() -> CLARIOstarPlusBackend:
   return backend
 
 
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+
+class TestFrameUtilities(unittest.TestCase):
+  """Verify the frame wrap / validate / extract round-trip."""
+
+  def test_round_trip(self):
+    payload = COMMANDS["initialize"][0]
+    frame = _wrap_payload(payload)
+    _validate_frame(frame)
+    self.assertEqual(_extract_payload(frame), payload)
+
+
+# Auto-generate a frame-match test for every COMMANDS entry.
+def _make_frame_test(name, payload, expected_frame):
+  def test(self):
+    frame = _wrap_payload(payload)
+    self.assertEqual(frame, expected_frame,
+      f"frame mismatch for {name!r}: got {frame.hex()}, expected {expected_frame.hex()}")
+  test.__doc__ = f"_wrap_payload must match pcap ground truth for {name!r}"
+  return test
+
+for _name, (_payload, _frame) in COMMANDS.items():
+  setattr(TestFrameUtilities, f"test_{_name}_frame_matches_ground_truth",
+          _make_frame_test(_name, _payload, _frame))
+del _name, _payload, _frame
+
+
 class TestInitialize(unittest.TestCase):
+  """Pcap ground truth for initialize command and its status response."""
+
+  # Pcap response: ready + initialized (byte 5=0x05, byte 7=0x20)
+  STATUS_READY = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
 
   def test_initialize_sends_correct_frame(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # Queue: command ack, then status response (initialized, not busy)
-    mock.queue_response(_ACK, _STATUS_INITIALIZED)
-
+    mock.queue_response(ACK, self.STATUS_READY)
     asyncio.run(backend.initialize())
 
-    # First write is the initialize command
-    self.assertEqual(mock.written[0], GROUND_TRUTH_INITIALIZE)
+    self.assertEqual(mock.written[0], COMMANDS["initialize"][1])
 
   def test_initialize_then_polls_status(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(_ACK, _STATUS_INITIALIZED)
-
+    mock.queue_response(ACK, self.STATUS_READY)
     asyncio.run(backend.initialize())
 
-    # Second write is the status poll
     self.assertEqual(len(mock.written), 2)
-    self.assertEqual(mock.written[1], GROUND_TRUTH_STATUS)
+    self.assertEqual(mock.written[1], COMMANDS["status"][1])
 
 
 class TestOpen(unittest.TestCase):
+  """Pcap ground truth for drawer-open command and its status response."""
+
+  # Pcap response: ready + initialized + drawer_open (byte 5=0x05, byte 7=0x21)
+  STATUS_READY = bytes.fromhex("0200180c010500210000000000000000000000c000010d0d")
 
   def test_open_sends_correct_frame(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(_ACK, _STATUS_DRAWER_OPEN)
-
+    mock.queue_response(ACK, self.STATUS_READY)
     asyncio.run(backend.open())
 
-    self.assertEqual(mock.written[0], GROUND_TRUTH_OPEN)
+    self.assertEqual(mock.written[0], COMMANDS["open"][1])
 
   def test_open_then_polls_status(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(_ACK, _STATUS_DRAWER_OPEN)
-
+    mock.queue_response(ACK, self.STATUS_READY)
     asyncio.run(backend.open())
 
     self.assertEqual(len(mock.written), 2)
-    self.assertEqual(mock.written[1], GROUND_TRUTH_STATUS)
+    self.assertEqual(mock.written[1], COMMANDS["status"][1])
 
 
 class TestClose(unittest.TestCase):
+  """Pcap ground truth for drawer-close command and its status response."""
+
+  # Pcap response: ready + initialized, drawer closed (byte 5=0x05, byte 7=0x20)
+  STATUS_READY = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
 
   def test_close_sends_correct_frame(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(_ACK, _STATUS_DRAWER_CLOSED)
-
+    mock.queue_response(ACK, self.STATUS_READY)
     asyncio.run(backend.close())
 
-    self.assertEqual(mock.written[0], GROUND_TRUTH_CLOSE)
+    self.assertEqual(mock.written[0], COMMANDS["close"][1])
 
   def test_close_then_polls_status(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(_ACK, _STATUS_DRAWER_CLOSED)
-
+    mock.queue_response(ACK, self.STATUS_READY)
     asyncio.run(backend.close())
 
     self.assertEqual(len(mock.written), 2)
-    self.assertEqual(mock.written[1], GROUND_TRUTH_STATUS)
+    self.assertEqual(mock.written[1], COMMANDS["status"][1])
 
 
 class TestStatusPollResilience(unittest.TestCase):
   """Verify that _poll_until_ready survives partial/corrupt frames."""
+
+  # Truncated status (17 of 24 bytes)
+  TRUNCATED = bytes.fromhex("0200180c011500000000c900000000000d")
+
+  # Valid status responses for recovery
+  STATUS_INITIALIZED = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
+  STATUS_DRAWER_OPEN = bytes.fromhex("0200180c010500210000000000000000000000c000010d0d")
 
   def test_recovers_from_partial_frame(self):
     """A truncated status response should be retried, not crash."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # Command ack, then a truncated frame (17 of 24 bytes — the real bug),
-    # then a valid status response on the retry.
-    truncated = bytes.fromhex("0200180c011500000000c900000000000d")
-    mock.queue_response(_ACK, truncated, _STATUS_INITIALIZED)
-
+    mock.queue_response(ACK, self.TRUNCATED, self.STATUS_INITIALIZED)
     asyncio.run(backend.initialize())
 
     # Should have written: init command, status poll (failed), status poll (success)
     self.assertEqual(len(mock.written), 3)
-    self.assertEqual(mock.written[0], GROUND_TRUTH_INITIALIZE)
-    self.assertEqual(mock.written[1], GROUND_TRUTH_STATUS)
-    self.assertEqual(mock.written[2], GROUND_TRUTH_STATUS)
+    self.assertEqual(mock.written[0], COMMANDS["initialize"][1])
+    self.assertEqual(mock.written[1], COMMANDS["status"][1])
+    self.assertEqual(mock.written[2], COMMANDS["status"][1])
 
   def test_recovers_from_empty_frame(self):
     """An empty response should be retried."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # Command ack, then empty bytes (simulating total read timeout),
-    # then valid status.
-    mock.queue_response(_ACK, b"", _STATUS_DRAWER_OPEN)
-
+    mock.queue_response(ACK, b"", self.STATUS_DRAWER_OPEN)
     asyncio.run(backend.open())
 
-    self.assertEqual(mock.written[0], GROUND_TRUTH_OPEN)
+    self.assertEqual(mock.written[0], COMMANDS["open"][1])
 
 
 class TestStatusParsing(unittest.TestCase):
