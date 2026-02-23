@@ -603,7 +603,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     self._eeprom_data = await self.send_command(
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.EEPROM,
-      payload=b"\x00\x00\x00\x00\x00\x00",
+      payload=b"\x00\x00\x00\x00\x00",
     )
     logger.info(
       "EEPROM: %d bytes, head=%s",
@@ -622,7 +622,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     payload = await self.send_command(
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.FIRMWARE_INFO,
-      payload=b"\x00\x00\x00\x00\x00\x00",
+      payload=b"\x00\x00\x00\x00\x00",
     )
 
     version = ""
@@ -699,7 +699,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     payload = await self.send_command(
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.USAGE_COUNTERS,
-      payload=b"\x00\x00\x00\x00\x00\x00",
+      payload=b"\x00\x00\x00\x00\x00",
     )
 
     def _u32(off: int) -> int:
