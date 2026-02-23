@@ -1,4 +1,4 @@
-"""CLARIOstar Plus plate reader backend — Phase 1 (core lifecycle).
+"""CLARIOstar Plus plate reader backend - Phase 1 (core lifecycle).
 
 Supports: initialize, open/close drawer, status polling, EEPROM/firmware
 identification, machine type auto-detection.
@@ -117,20 +117,16 @@ _frame = _wrap_payload
 #   Phase A (once): send_command → _wrap_payload → _write_frame → _read_frame
 #                   → _validate_frame → _extract_payload
 #
-#   Phase B (loop): _poll_until_ready → _poll_status_raw (write + read)
-#                   → length check → raw[5] byte check → return or retry
+#   Phase B (loop): _wait_until_machine_ready → request_machine_status
+#                   → flags["busy"] check → return or retry
 #
 # _read_frame terminates on: short FTDI read (<25 bytes) ending in 0x0D,
 # guarded by the size field to avoid false termination on mid-payload 0x0D.
 #
-# Polling hot-path optimisations:
-#   - Pre-cached _STATUS_FRAME avoids per-poll frame construction
-#   - raw[5] checked against DeviceState enum (no unframing)
-#   - Full parse (validate + extract + flag decode) only when raw bytes change
-#   - .hex() guarded by isEnabledFor() to skip eager string allocation
-#   - No asyncio.sleep — the ~37 ms FTDI I/O roundtrip provides natural pacing
+# Pre-cached _STATUS_FRAME avoids per-poll frame construction.
+# .hex() in I/O methods guarded by isEnabledFor() to skip eager string allocation.
 #
-# ~37 ms/poll. Open ≈ 4.3 s, close ≈ 8 s — dominated by physical motor speed.
+# ~37 ms/poll. Open ≈ 4.3 s, close ≈ 8 s, dominated by physical motor speed.
 #
 
 # ---------------------------------------------------------------------------
@@ -215,7 +211,7 @@ class CLARIOstarPlusConfig:
     # after 2024 and is NOT present on all CLARIOstar Plus units.
     #
     # 0x0024: verified on CLARIOstar Plus hardware (serial 430-2621, 220-1000 nm).
-    # 0x0026: from vibed code — unverified on real hardware.
+    # 0x0026: from vibed code, unverified on real hardware.
     model_lookup: Dict[int, Tuple[str, Tuple[int, int], int]] = {
       0x0024: ("CLARIOstar Plus", (220, 1000), 11),
       0x0026: ("CLARIOstar Plus", (220, 1000), 11),
@@ -319,13 +315,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   _VALID_COMMANDS: Dict  # CommandFamily -> set[Command]
   _NO_COMMAND_FAMILIES: set  # CommandFamilys that take no command byte
 
-  # -- Device readiness (raw wire byte 5 of 24-byte status response) -------
-
-  class DeviceState(enum.IntEnum):
-    """Byte 5 of the 24-byte status response indicates device readiness."""
-    READY = 0x05
-    BUSY  = 0x25
-
   # -- Status flags (CLARIOstar-specific bit positions) ---------------------
 
   # (flag_name, byte_index_in_5-byte_status, bitmask)
@@ -408,7 +397,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     everything it has and the frame is complete. The size field (bytes 1-2) is
     used as a safeguard against false termination on mid-payload 0x0D bytes.
 
-    The timeout is purely a fallback — it should never be the normal exit path.
+    The timeout is purely a fallback; it should never be the normal exit path.
     """
     if timeout is None:
       timeout = self.read_timeout
@@ -460,7 +449,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     """Backward-compat alias for ``_read_frame``."""
     return await self._read_frame(timeout=timeout)
 
-  # Pre-cached STATUS_QUERY frame — avoids rebuilding on every poll.
+  # Pre-cached STATUS_QUERY frame; avoids rebuilding on every poll.
   _STATUS_FRAME = _wrap_payload(b"\x80")
 
   async def send_command(
@@ -483,7 +472,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       5. _read_frame    → io.read (fast-path: short read ending in 0x0D + size check)
       6. _validate_frame → verify STX, CR, 0x0C, size field, 24-bit checksum
       7. _extract_payload → strip framing, return inner bytes
-      8. If wait=True   → _poll_until_ready (status loop until DeviceState.READY)
+      8. If wait=True   → _wait_until_machine_ready (status loop until not busy)
 
     Args:
       command_family: Command group byte (payload byte 0).
@@ -496,7 +485,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         is no longer busy. Used by commands that trigger physical actions
         (initialize, open, close, etc.).
       poll_interval: Seconds to sleep between status polls when *wait* is True.
-        Default 0.0 (no sleep — paced by I/O roundtrip alone, ~37 ms/poll).
+        Default 0.0 (no sleep, paced by I/O roundtrip alone, ~37 ms/poll).
         OEM software uses ~0.25 s between polls (observed in pcap). We default
         to 0 because the total wall time is dominated by physical motor speed
         (~4.3 s open, ~8 s close) regardless of poll frequency, and faster
@@ -533,79 +522,46 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     ret = _extract_payload(resp)
 
     if wait:
-      await self._poll_until_ready(poll_interval=poll_interval)
+      await self._wait_until_machine_ready(poll_interval=poll_interval)
 
     return ret
 
   # === Status ===
 
-  async def _poll_status_raw(self) -> bytes:
-    """Send the pre-cached STATUS_QUERY and return raw response bytes.
-
-    This is the lean path used by the polling loop — no frame construction,
-    no enum dispatch, no payload extraction. Returns raw wire bytes.
-    """
-    await self._write_frame(self._STATUS_FRAME)
-    return await self._read_frame()
-
-  def _parse_status_response(self, payload: bytes) -> Dict[str, bool]:
-    """Extract and parse status flags from an unframed status response payload."""
-    if len(payload) >= 5:
-      return self._parse_status(payload[:5])
-    return {name: False for name, _, _ in self._STATUS_FLAGS}
-
   async def request_machine_status(self) -> Dict[str, bool]:
-    """Request the current status flags from the plate reader.
+    """Query device status and return parsed flags.
 
-    This is the public API for callers that need parsed flags. Uses the full
-    validation path (unlike the internal polling loop).
+    Bypasses ``send_command`` because ``send_command(wait=True)`` calls
+    ``_wait_until_machine_ready``, which calls this method. Routing through
+    ``send_command`` would create infinite recursion.
     """
     await self._write_frame(self._STATUS_FRAME)
     resp = await self._read_frame()
     _validate_frame(resp)
     payload = _extract_payload(resp)
-    return self._parse_status_response(payload)
+    return self._parse_status(payload[:5])
 
-  async def _poll_until_ready(self, timeout=None, poll_interval: float = 0.0):
-    """Poll status until the device is no longer busy.
-
-    Checks raw byte 5 via DeviceState enum (READY/BUSY). Full flag
-    parsing only runs when the raw bytes change, for logging. Malformed
-    or partial frames are retried.
+  async def _wait_until_machine_ready(self, timeout=None, poll_interval: float = 0.05):
+    """Poll ``request_machine_status`` until the device is no longer busy.
 
     Args:
       timeout: Max seconds to wait. Defaults to ``self.timeout``.
-      poll_interval: Seconds to sleep between polls. Default 0.0
-        (no sleep — paced by I/O roundtrip alone, ~37 ms/poll). OEM
-        software uses ~0.25 s (12 polls over 4.3 s for open). We default
-        to 0 for fastest detection when the motor finishes.
+      poll_interval: Seconds to sleep between polls. Default 0.05 s.
+        OEM software uses ~0.25 s (12 polls over 4.3 s for open).
     """
     if timeout is None:
       timeout = self.timeout
-    last_raw: Optional[bytes] = None
     t = time.time()
     while time.time() - t < timeout:
-      raw = await self._poll_status_raw()
-
-      # Status response is always 24 bytes.
-      if len(raw) != 24:
-        logger.warning("status poll: expected 24 bytes, got %d, retrying", len(raw))
+      try:
+        flags = await self.request_machine_status()
+      except FrameError as e:
+        logger.warning("status poll: bad frame (%s), retrying", e)
         continue
 
-      # Only parse + log when the raw bytes change.
-      if raw != last_raw:
-        last_raw = raw
-        # Full parse for logging only.
-        try:
-          _validate_frame(raw)
-          payload = _extract_payload(raw)
-          flags = self._parse_status_response(payload)
-          logger.info("status: %s", {k: v for k, v in flags.items() if v})
-        except FrameError as e:
-          logger.warning("status poll: bad frame (%s), retrying", e)
-          continue
+      logger.info("status: %s", {k: v for k, v in flags.items() if v})
 
-      if raw[5] == self.DeviceState.READY:
+      if not flags["busy"]:
         return
 
       if poll_interval > 0:
@@ -663,7 +619,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # === Commands (Phase 1) ===
 
   async def initialize(self, wait: bool = True, poll_interval: float = 0.0):
-    """Send the hardware init sequence and poll until the ``initialized`` flag is set."""
+    """Send the hardware init sequence and poll until the device is no longer busy."""
     return await self.send_command(
       command_family=self.CommandFamily.INITIALIZE,
       command=self.Command.INIT,
