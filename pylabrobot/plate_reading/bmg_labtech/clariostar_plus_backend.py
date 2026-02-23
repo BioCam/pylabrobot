@@ -616,6 +616,47 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     return config
 
+  # === Convenience status queries ===
+
+  async def request_plate_detected(self) -> bool:
+    """Return True if a plate is currently detected in the drawer."""
+    return (await self.request_machine_status())["plate_detected"]
+
+  async def request_busy(self) -> bool:
+    """Return True if the device is currently busy."""
+    return (await self.request_machine_status())["busy"]
+
+  # === Usage counters ===
+
+  async def request_usage_counters(self) -> Dict[str, int]:
+    """Fetch lifetime usage counters (command ``0x05 0x21``).
+
+    Returns a dict with keys: flashes, testruns, wells, well_movements,
+    active_time_s, shake_time_s, pump1_usage, pump2_usage, alpha_time.
+    ``wells`` and ``well_movements`` are stored /100 in firmware and
+    multiplied back here.
+    """
+    payload = await self.send_command(
+      command_family=self.CommandFamily.REQUEST,
+      command=self.Command.USAGE_COUNTERS,
+      payload=b"\x00\x00\x00\x00\x00\x00",
+    )
+
+    def _u32(off: int) -> int:
+      return int.from_bytes(payload[off:off + 4], "big")
+
+    return {
+      "flashes": _u32(6),
+      "testruns": _u32(10),
+      "wells": _u32(14) * 100,
+      "well_movements": _u32(18) * 100,
+      "active_time_s": _u32(22),
+      "shake_time_s": _u32(26),
+      "pump1_usage": _u32(30),
+      "pump2_usage": _u32(34),
+      "alpha_time": _u32(38),
+    }
+
   # === Commands (Phase 1) ===
 
   async def initialize(self, wait: bool = True, poll_interval: float = 0.0):

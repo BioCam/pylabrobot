@@ -294,5 +294,81 @@ class TestStatusParsing(unittest.TestCase):
     self.assertFalse(flags["busy"])
 
 
+class TestUsageCounters(unittest.TestCase):
+  """Verify request_usage_counters parses a synthetic 43-byte response."""
+
+  def test_parses_usage_counters(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    # Build a 43-byte payload:
+    #   bytes 0-5: echo/header (don't care for parsing)
+    #   bytes 6-41: nine uint32 BE fields
+    #   byte 42: trailing padding
+    payload = bytearray(43)
+    # flashes = 1000 at offset 6
+    payload[6:10] = (1000).to_bytes(4, "big")
+    # testruns = 50 at offset 10
+    payload[10:14] = (50).to_bytes(4, "big")
+    # wells = 200 at offset 14 (firmware stores /100, so 200 → 20000)
+    payload[14:18] = (200).to_bytes(4, "big")
+    # well_movements = 300 at offset 18 (firmware stores /100, so 300 → 30000)
+    payload[18:22] = (300).to_bytes(4, "big")
+    # active_time_s = 86400 at offset 22
+    payload[22:26] = (86400).to_bytes(4, "big")
+    # shake_time_s = 3600 at offset 26
+    payload[26:30] = (3600).to_bytes(4, "big")
+    # pump1_usage = 42 at offset 30
+    payload[30:34] = (42).to_bytes(4, "big")
+    # pump2_usage = 7 at offset 34
+    payload[34:38] = (7).to_bytes(4, "big")
+    # alpha_time = 999 at offset 38
+    payload[38:42] = (999).to_bytes(4, "big")
+
+    response_frame = _wrap_payload(bytes(payload))
+    mock.queue_response(response_frame)
+
+    counters = asyncio.run(backend.request_usage_counters())
+
+    self.assertEqual(counters["flashes"], 1000)
+    self.assertEqual(counters["testruns"], 50)
+    self.assertEqual(counters["wells"], 20000)
+    self.assertEqual(counters["well_movements"], 30000)
+    self.assertEqual(counters["active_time_s"], 86400)
+    self.assertEqual(counters["shake_time_s"], 3600)
+    self.assertEqual(counters["pump1_usage"], 42)
+    self.assertEqual(counters["pump2_usage"], 7)
+    self.assertEqual(counters["alpha_time"], 999)
+
+
+class TestConvenienceStatusQueries(unittest.TestCase):
+  """Verify request_plate_detected and request_busy delegate to status."""
+
+  # initialized + plate_detected (byte 3: 0x22)
+  STATUS_PLATE = bytes.fromhex("0200180c010500220000000000000000000000c000010e0d")
+  # busy + initialized (payload byte 1: 0x25 = 0x05 | 0x20)
+  STATUS_BUSY = bytes.fromhex("0200180c012500200000000000000000000000c000012c0d")
+  # idle (all zero status bytes)
+  STATUS_IDLE = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
+
+  def test_request_plate_detected_true(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(self.STATUS_PLATE)
+    self.assertTrue(asyncio.run(backend.request_plate_detected()))
+
+  def test_request_busy_true(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(self.STATUS_BUSY)
+    self.assertTrue(asyncio.run(backend.request_busy()))
+
+  def test_request_busy_false(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(self.STATUS_IDLE)
+    self.assertFalse(asyncio.run(backend.request_busy()))
+
+
 if __name__ == "__main__":
   unittest.main()
