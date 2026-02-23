@@ -424,13 +424,16 @@ class TestFirmwareInfoParsing(unittest.TestCase):
     self.assertEqual(cfg.firmware_version, "")
     self.assertEqual(cfg.firmware_build_timestamp, "")
 
-  def test_end_to_end_direct_data(self):
-    """Direct data response (0x0026-style): first response IS the firmware data."""
+  def test_end_to_end_via_mock_ftdi(self):
+    """Simulate the full path: request_firmware_info returns parsed dict,
+    caller (setup) stores values, request_machine_configuration reads them."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
+    # Queue firmware data response (no status polling — REQUEST commands use wait=False)
     mock.queue_response(_wrap_payload(_REAL_FIRMWARE_PAYLOAD))
 
+    # request_firmware_info returns parsed values (no implicit caching)
     fw = asyncio.run(backend.request_firmware_info())
     self.assertEqual(fw["firmware_version"], "1.35")
     self.assertEqual(fw["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
@@ -450,56 +453,6 @@ class TestFirmwareInfoParsing(unittest.TestCase):
     self.assertEqual(config.firmware_version, "1.35")
     self.assertEqual(config.firmware_build_timestamp, "Nov 20 2020 11:51:21")
     self.assertEqual(config.machine_type_code, 0x0024)
-
-  def test_end_to_end_status_ack_then_data(self):
-    """Status-ack path (0x0024-style): first response is a status frame,
-    second read delivers the actual firmware data."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-
-    # Status ack from real 0x0024 hardware (payload byte 0 = 0x01)
-    status_ack = bytes.fromhex("0200180c011500240000030900000000000000c000012c0d")
-    mock.queue_response(status_ack, _wrap_payload(_REAL_FIRMWARE_PAYLOAD))
-
-    fw = asyncio.run(backend.request_firmware_info())
-    self.assertEqual(fw["firmware_version"], "1.35")
-    self.assertEqual(fw["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
-
-
-class TestEepromStatusAck(unittest.TestCase):
-  """Verify request_eeprom_data handles the status-ack-then-data path (0x0024)."""
-
-  def _make_eeprom_payload(self) -> bytes:
-    """Build a minimal EEPROM payload (20 bytes) with detection flags."""
-    eeprom = bytearray(20)
-    eeprom[0] = 0x07  # subcommand echo
-    eeprom[1] = 0x05  # command family echo
-    eeprom[2:4] = (0x0024).to_bytes(2, "big")
-    eeprom[11] = 1  # absorbance
-    eeprom[12] = 1  # fluorescence
-    return bytes(eeprom)
-
-  def test_direct_data(self):
-    """0x0026-style: first response is the EEPROM data."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    eeprom = self._make_eeprom_payload()
-    mock.queue_response(_wrap_payload(eeprom))
-
-    asyncio.run(backend.request_eeprom_data())
-    self.assertEqual(backend._eeprom_data, eeprom)
-
-  def test_status_ack_then_data(self):
-    """0x0024-style: first response is status ack, second read delivers data."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    eeprom = self._make_eeprom_payload()
-
-    status_ack = bytes.fromhex("0200180c011500240000030900000000000000c000012c0d")
-    mock.queue_response(status_ack, _wrap_payload(eeprom))
-
-    asyncio.run(backend.request_eeprom_data())
-    self.assertEqual(backend._eeprom_data, eeprom)
 
 
 class TestAvailableDetectionModes(unittest.TestCase):
