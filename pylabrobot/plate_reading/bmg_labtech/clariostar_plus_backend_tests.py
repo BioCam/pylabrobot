@@ -59,33 +59,21 @@ ACK = _wrap_payload(b"\x00")
 class MockFTDI:
   """Minimal FTDI mock that records writes and plays back queued responses.
 
-  Models two real FTDI behaviours:
-
-  1. **Solicited responses** — one per ``write()`` call. Each ``write()``
-     arms the next ``read()`` to deliver the next queued frame. Subsequent
-     reads (before the next ``write()``) return empty bytes so that
-     ``_read_frame`` sees the frame as complete and exits its loop.
-
-  2. **Unsolicited / async data** — frames the device pushes independently
-     of host writes (e.g. EEPROM or firmware data arriving after the device
-     finishes processing a REQUEST command). These are queued via
-     ``queue_async_data()`` and delivered on the first ``read()`` that finds
-     the solicited queue empty and no solicited frame pending.
+  Each entry in the response queue is returned as a single chunk on the
+  first ``read()`` call within a ``_read_frame`` invocation. Subsequent
+  ``read()`` calls (before the next ``write()``) return empty bytes so that
+  ``_read_frame`` sees the chunk as a complete (or truncated) frame and
+  returns it without mixing in the next queued response.
   """
 
   def __init__(self) -> None:
     self.written: List[bytes] = []
     self._responses: List[bytes] = []
-    self._async_data: List[bytes] = []
     self._delivered_since_write = False
 
   def queue_response(self, *frames: bytes) -> None:
-    """Queue one or more solicited response frames (one per write cycle)."""
+    """Queue one or more complete frames to return on subsequent reads."""
     self._responses.extend(frames)
-
-  def queue_async_data(self, *frames: bytes) -> None:
-    """Queue unsolicited data frames (delivered when no solicited frame is pending)."""
-    self._async_data.extend(frames)
 
   # -- FTDI interface methods used by the backend --
 
@@ -110,13 +98,9 @@ class MockFTDI:
     return len(data)
 
   async def read(self, n: int) -> bytes:
-    # Solicited: one frame per write cycle.
     if not self._delivered_since_write and self._responses:
       self._delivered_since_write = True
       return self._responses.pop(0)
-    # Async data: delivered when no solicited frame is pending.
-    if self._delivered_since_write and self._async_data:
-      return self._async_data.pop(0)
     return b""
 
 
@@ -343,11 +327,7 @@ class TestUsageCounters(unittest.TestCase):
     payload[38:42] = (999).to_bytes(4, "big")
 
     response_frame = _wrap_payload(bytes(payload))
-    # REQUEST flow: solicited status-ack + status-ready, then async data
-    STATUS_ACK = bytes.fromhex("0200180c011500240000030900000000000000c000012c0d")
-    STATUS_READY = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
-    mock.queue_response(STATUS_ACK, STATUS_READY)
-    mock.queue_async_data(response_frame)
+    mock.queue_response(response_frame)
 
     counters = asyncio.run(backend.request_usage_counters())
 
@@ -413,61 +393,6 @@ _REAL_FIRMWARE_PAYLOAD = bytes([
 ])
 
 
-class TestRequestDataAfterWait(unittest.TestCase):
-  """Verify send_command reads the data frame after status polling for REQUEST commands.
-
-  On real hardware, REQUEST commands (0x05) follow this sequence:
-    1. Host sends REQUEST frame
-    2. Device replies with a status frame (same as other commands)
-    3. Host polls status until not busy
-    4. Device pushes the actual data frame (EEPROM: 272 bytes, firmware: 40 bytes, etc.)
-    5. Host reads the data frame
-
-  The data frame arrives asynchronously — it is NOT a response to a write.
-  """
-
-  # Status frame from hardware (byte 1 = 0x15 means the device acknowledged the request)
-  STATUS_ACK = bytes.fromhex("0200180c011500240000030900000000000000c000012c0d")
-  STATUS_READY = bytes.fromhex("0200180c010500240000000000000000000000c00001100d")
-
-  def test_eeprom_reads_data_after_wait(self):
-    """request_eeprom_data should read the EEPROM data frame after status polling."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-
-    # Build a minimal EEPROM data payload (20 bytes, detection flags set)
-    eeprom_payload = bytearray(20)
-    eeprom_payload[0] = 0x07  # subcommand echo
-    eeprom_payload[1] = 0x05  # family echo
-    eeprom_payload[2:4] = (0x0024).to_bytes(2, "big")
-    eeprom_payload[11] = 1  # absorbance
-    eeprom_payload[12] = 1  # fluorescence
-    eeprom_payload[13] = 1  # luminescence
-
-    # Solicited: status-ack (response to REQUEST write), status-ready (response to poll write)
-    # Async: EEPROM data (pushed by device after processing completes)
-    mock.queue_response(self.STATUS_ACK, self.STATUS_READY)
-    mock.queue_async_data(_wrap_payload(bytes(eeprom_payload)))
-    asyncio.run(backend.request_eeprom_data())
-
-    config = backend.request_machine_configuration()
-    self.assertTrue(config.has_absorbance)
-    self.assertTrue(config.has_fluorescence)
-    self.assertTrue(config.has_luminescence)
-
-  def test_firmware_reads_data_after_wait(self):
-    """request_firmware_info should read firmware data after status polling."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-
-    mock.queue_response(self.STATUS_ACK, self.STATUS_READY)
-    mock.queue_async_data(_wrap_payload(_REAL_FIRMWARE_PAYLOAD))
-    fw = asyncio.run(backend.request_firmware_info())
-
-    self.assertEqual(fw["firmware_version"], "1.35")
-    self.assertEqual(fw["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
-
-
 class TestFirmwareInfoParsing(unittest.TestCase):
   """Verify firmware info parsing with real hardware capture data."""
 
@@ -499,11 +424,9 @@ class TestFirmwareInfoParsing(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # REQUEST flow: solicited status-ack + status-ready, then async firmware data
-    STATUS_ACK = bytes.fromhex("0200180c011500240000030900000000000000c000012c0d")
+    # Queue firmware response + status-ready (send_command uses wait=True)
     STATUS_READY = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
-    mock.queue_response(STATUS_ACK, STATUS_READY)
-    mock.queue_async_data(_wrap_payload(_REAL_FIRMWARE_PAYLOAD))
+    mock.queue_response(_wrap_payload(_REAL_FIRMWARE_PAYLOAD), STATUS_READY)
 
     # request_firmware_info returns parsed values (no implicit caching)
     fw = asyncio.run(backend.request_firmware_info())

@@ -544,14 +544,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if wait:
       await self._wait_until_machine_ready(poll_interval=poll_interval)
 
-      # REQUEST commands (0x05): the initial response is a status frame.
-      # The actual data frame arrives after the device finishes processing
-      # (i.e. after _wait_until_machine_ready returns). Read it now.
-      if command_family == self.CommandFamily.REQUEST:
-        resp = await self._read_frame(timeout=read_timeout)
-        _validate_frame(resp)
-        ret = _extract_payload(resp)
-
     return ret
 
   # === Status ===
@@ -707,7 +699,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.USAGE_COUNTERS,
       payload=b"\x00\x00\x00\x00\x00\x00",
-      wait=True,
     )
 
     def _u32(off: int) -> int:
