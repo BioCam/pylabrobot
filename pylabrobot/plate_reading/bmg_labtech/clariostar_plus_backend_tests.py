@@ -11,6 +11,8 @@ from typing import Dict, List
 from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
   CLARIOstarPlusBackend,
   _extract_payload,
+  _parse_eeprom,
+  _parse_firmware_info,
   _validate_frame,
   _wrap_payload,
 )
@@ -116,10 +118,19 @@ def _make_backend() -> CLARIOstarPlusBackend:
   backend.io = MockFTDI()
   backend.timeout = 5
   backend.read_timeout = 1
-  backend._eeprom_data = None
-  backend._firmware_version = ""
-  backend._firmware_build_timestamp = ""
-  backend._machine_type_code = 0
+  backend.configuration = {
+    "serial_number": "",
+    "firmware_version": "",
+    "firmware_build_timestamp": "",
+    "model_name": "",
+    "machine_type_code": 0,
+    "monochromator_range": (0, 0),
+    "num_filter_slots": 0,
+    "has_absorbance": False,
+    "has_fluorescence": False,
+    "has_luminescence": False,
+    "has_alpha_technology": False,
+  }
   return backend
 
 
@@ -405,83 +416,66 @@ class TestFirmwareInfoParsing(unittest.TestCase):
 
   def test_parse_real_firmware_unframed(self):
     """Parse the real 32-byte unframed firmware payload from 430-2621."""
-    from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import CLARIOstarPlusConfig
-    cfg = CLARIOstarPlusConfig.parse_firmware_info(_REAL_FIRMWARE_PAYLOAD)
-    self.assertEqual(cfg.firmware_version, "1.35")
-    self.assertEqual(cfg.firmware_build_timestamp, "Nov 20 2020 11:51:21")
+    result = _parse_firmware_info(_REAL_FIRMWARE_PAYLOAD)
+    self.assertEqual(result["firmware_version"], "1.35")
+    self.assertEqual(result["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
 
   def test_parse_real_firmware_framed(self):
     """Parse the real payload wrapped in a frame (as stored by request_firmware_info)."""
-    from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import CLARIOstarPlusConfig
     framed = _wrap_payload(_REAL_FIRMWARE_PAYLOAD)
-    cfg = CLARIOstarPlusConfig.parse_firmware_info(framed)
-    self.assertEqual(cfg.firmware_version, "1.35")
-    self.assertEqual(cfg.firmware_build_timestamp, "Nov 20 2020 11:51:21")
+    result = _parse_firmware_info(framed)
+    self.assertEqual(result["firmware_version"], "1.35")
+    self.assertEqual(result["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
 
   def test_parse_firmware_too_short(self):
     """Payload shorter than 28 bytes returns empty defaults."""
-    from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import CLARIOstarPlusConfig
-    cfg = CLARIOstarPlusConfig.parse_firmware_info(b"\x0a\x05\x00\x24\x00\x00")
-    self.assertEqual(cfg.firmware_version, "")
-    self.assertEqual(cfg.firmware_build_timestamp, "")
+    result = _parse_firmware_info(b"\x0a\x05\x00\x24\x00\x00")
+    self.assertEqual(result["firmware_version"], "")
+    self.assertEqual(result["firmware_build_timestamp"], "")
 
   def test_end_to_end_via_mock_ftdi(self):
     """Simulate the full path: request_firmware_info returns parsed dict,
-    caller (setup) stores values, request_machine_configuration reads them."""
+    caller (setup) stores into configuration."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
     # Queue firmware data response (no status polling — REQUEST commands use wait=False)
     mock.queue_response(_wrap_payload(_REAL_FIRMWARE_PAYLOAD))
 
-    # request_firmware_info returns parsed values (no implicit caching)
+    # request_firmware_info returns parsed values
     fw = asyncio.run(backend.request_firmware_info())
     self.assertEqual(fw["firmware_version"], "1.35")
     self.assertEqual(fw["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
 
-    # Caller stores — same as setup() does
-    backend._firmware_version = fw["firmware_version"]
-    backend._firmware_build_timestamp = fw["firmware_build_timestamp"]
+    # Caller stores into configuration — same as setup() does
+    backend.configuration.update(fw)
 
-    # Set up EEPROM and verify request_machine_configuration reads cached firmware info
-    eeprom_payload = bytearray(20)
-    eeprom_payload[2:4] = (0x0024).to_bytes(2, "big")
-    eeprom_payload[11] = 1  # absorbance
-    backend._eeprom_data = bytes(eeprom_payload)
-
-    config = backend.request_machine_configuration()
-    self.assertIsNotNone(config)
-    self.assertEqual(config.firmware_version, "1.35")
-    self.assertEqual(config.firmware_build_timestamp, "Nov 20 2020 11:51:21")
-    self.assertEqual(config.machine_type_code, 0x0024)
+    self.assertEqual(backend.configuration["firmware_version"], "1.35")
+    self.assertEqual(backend.configuration["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
 
 
 class TestAvailableDetectionModes(unittest.TestCase):
-  """Verify request_available_detection_modes derives modes from EEPROM config."""
+  """Verify request_available_detection_modes derives modes from configuration."""
 
   def test_all_modes(self):
     backend = _make_backend()
-    eeprom = bytearray(20)
-    eeprom[2:4] = (0x0024).to_bytes(2, "big")
-    eeprom[11] = 1  # absorbance
-    eeprom[12] = 1  # fluorescence
-    eeprom[13] = 1  # luminescence
-    eeprom[14] = 1  # alpha_technology
-    backend._eeprom_data = bytes(eeprom)
-
+    backend.configuration.update({
+      "has_absorbance": True,
+      "has_fluorescence": True,
+      "has_luminescence": True,
+      "has_alpha_technology": True,
+    })
     modes = backend.request_available_detection_modes()
     self.assertEqual(modes, ["absorbance", "fluorescence", "luminescence", "alpha_technology"])
 
   def test_partial_modes(self):
     backend = _make_backend()
-    eeprom = bytearray(20)
-    eeprom[2:4] = (0x0024).to_bytes(2, "big")
-    eeprom[11] = 1  # absorbance
-    eeprom[12] = 0  # no fluorescence
-    eeprom[13] = 1  # luminescence
-    eeprom[14] = 0  # no alpha
-    backend._eeprom_data = bytes(eeprom)
-
+    backend.configuration.update({
+      "has_absorbance": True,
+      "has_fluorescence": False,
+      "has_luminescence": True,
+      "has_alpha_technology": False,
+    })
     modes = backend.request_available_detection_modes()
     self.assertEqual(modes, ["absorbance", "luminescence"])
 
