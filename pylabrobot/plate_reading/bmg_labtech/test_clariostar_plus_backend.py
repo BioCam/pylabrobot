@@ -23,11 +23,11 @@ from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
 # initialize: CG.INITIALIZE(0x01) + Cmd.INIT_DEFAULT(0x00) + b"\x00\x10\x02\x00"
 GROUND_TRUTH_INITIALIZE = bytes.fromhex("02000e0c01000010020000002f0d")
 
-# open (drawer out): CG.TRAY(0x03) + Cmd.TRAY_OPEN(0x01) + b"\x00\x00\x00\x00\x00"
-GROUND_TRUTH_OPEN = bytes.fromhex("02000f0c030100000000000000210d")
+# open (drawer out): CG.TRAY(0x03) + Cmd.TRAY_OPEN(0x01) + b"\x00\x00\x00\x00"
+GROUND_TRUTH_OPEN = bytes.fromhex("02000e0c0301000000000000200d")
 
-# close (drawer in): CG.TRAY(0x03) + Cmd.TRAY_CLOSE(0x00) + b"\x00\x00\x00\x00\x00"
-GROUND_TRUTH_CLOSE = bytes.fromhex("02000f0c030000000000000000200d")
+# close (drawer in): CG.TRAY(0x03) + Cmd.TRAY_CLOSE(0x00) + b"\x00\x00\x00\x00"
+GROUND_TRUTH_CLOSE = bytes.fromhex("02000e0c03000000000000001f0d")
 
 # status query: CG.STATUS(0x80), no command byte
 GROUND_TRUTH_STATUS = bytes.fromhex("0200090c800000970d")
@@ -123,11 +123,11 @@ class TestFrameUtilities(unittest.TestCase):
     self.assertEqual(frame, GROUND_TRUTH_INITIALIZE)
 
   def test_open_frame_matches_ground_truth(self):
-    frame = _wrap_payload(b"\x03\x01\x00\x00\x00\x00\x00")
+    frame = _wrap_payload(b"\x03\x01\x00\x00\x00\x00")
     self.assertEqual(frame, GROUND_TRUTH_OPEN)
 
   def test_close_frame_matches_ground_truth(self):
-    frame = _wrap_payload(b"\x03\x00\x00\x00\x00\x00\x00")
+    frame = _wrap_payload(b"\x03\x00\x00\x00\x00\x00")
     self.assertEqual(frame, GROUND_TRUTH_CLOSE)
 
   def test_status_frame_matches_ground_truth(self):

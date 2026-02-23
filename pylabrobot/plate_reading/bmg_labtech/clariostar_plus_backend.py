@@ -557,13 +557,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   async def open(self):
     open_response = await self.send_command(
       self.CommandGroup.TRAY, self.Command.TRAY_OPEN,
-      payload=b"\x00\x00\x00\x00\x00")
+      payload=b"\x00\x00\x00\x00")
     return await self._wait_for_ready_and_return(open_response)
 
   async def close(self, plate: Optional[Plate] = None):
     close_response = await self.send_command(
       self.CommandGroup.TRAY, self.Command.TRAY_CLOSE,
-      payload=b"\x00\x00\x00\x00\x00")
+      payload=b"\x00\x00\x00\x00")
     return await self._wait_for_ready_and_return(close_response)
 
   # === Measurement stubs (Phase 4+) ===
