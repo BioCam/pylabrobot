@@ -4,13 +4,16 @@ import struct
 import unittest
 import unittest.mock
 
-from pylabrobot.plate_reading.bmg_labtech.clariostar_backend import (
+from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
   ChecksumError,
-  CLARIOstarBackend,
-  CLARIOstarConfig,
+  CLARIOstarPlusBackend,
+  CLARIOstarPlusConfig,
+  CommandGroup,
+  Command,
   FrameError,
   SEPARATOR,
   TRAILER,
+  _FRAME_OVERHEAD,
   _ORBITAL_MEAS_CODE,
   _WELL_SCAN_MEAS_CODE,
   _encode_flashes,
@@ -20,6 +23,8 @@ from pylabrobot.plate_reading.bmg_labtech.clariostar_backend import (
   _well_scan_bytes,
   _well_scan_optic_flags,
   _well_scan_orbital_bytes,
+  _wrap_payload,
+  _validate_packet_and_extract_payload,
   ShakerType,
   StartCorner,
   StatusFlag,
@@ -30,7 +35,7 @@ from pylabrobot.plate_reading.bmg_labtech.clariostar_backend import (
   _unframe,
   dump_eeprom,
 )
-from pylabrobot.plate_reading.bmg_labtech.clariostar_simulator import CLARIOstarSimulatorBackend
+from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_simulator import CLARIOstarPlusSimulatorBackend
 from pylabrobot.resources import Cor_96_wellplate_360ul_Fb
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well, WellBottomType, CrossSectionType
@@ -43,86 +48,95 @@ from pylabrobot.resources.utils import create_ordered_items_2d
 
 
 def _make_response_frame(payload: bytes) -> bytes:
-  """Build a 2-byte-checksum frame (response format) for _unframe tests."""
-  size = len(payload) + 7
+  """Build a 3-byte-checksum frame (response format) for _unframe tests."""
+  size = len(payload) + _FRAME_OVERHEAD
   buf = bytearray([0x02]) + size.to_bytes(2, "big") + b"\x0c" + payload
-  cs = sum(buf) & 0xFFFF
-  buf += cs.to_bytes(2, "big")
+  cs = sum(buf) & 0xFFFFFF
+  buf += cs.to_bytes(3, "big")
   buf += b"\x0d"
   return bytes(buf)
 
 
 class TestFrame(unittest.TestCase):
-  """Test _frame() (2-byte CS default, 1-byte CS for temperature) and _unframe()."""
+  """Test _wrap_payload() (3-byte CS) and _validate_packet_and_extract_payload()."""
 
   def test_frame_init_command(self):
-    """Verify _frame() of the init payload produces the Go reference expected bytes."""
+    """Verify _wrap_payload() of the init payload produces correct 3-byte checksum frame."""
     payload = b"\x01\x00\x00\x10\x02\x00"
-    expected = bytes([0x02, 0x00, 0x0D, 0x0C, 0x01, 0x00, 0x00, 0x10, 0x02, 0x00, 0x00, 0x2E, 0x0D])
-    self.assertEqual(_frame(payload), expected)
+    framed = _wrap_payload(payload)
+    # STX + size(2) + header + payload + checksum(3) + CR
+    self.assertEqual(framed[0], 0x02)  # STX
+    self.assertEqual(framed[-1], 0x0D)  # CR
+    self.assertEqual(framed[3], 0x0C)  # header
+    size = int.from_bytes(framed[1:3], "big")
+    self.assertEqual(size, len(payload) + _FRAME_OVERHEAD)
+    # Verify round-trip
+    self.assertEqual(_validate_packet_and_extract_payload(framed), payload)
 
   def test_frame_status_command(self):
-    """Verify _frame() of the status command payload."""
+    """Verify _wrap_payload() of the status command payload."""
     payload = b"\x80\x00"
-    framed = _frame(payload)
+    framed = _wrap_payload(payload)
     self.assertEqual(framed[0], 0x02)  # STX
     self.assertEqual(framed[-1], 0x0D)  # CR
     size = int.from_bytes(framed[1:3], "big")
-    self.assertEqual(size, len(payload) + 7)
-    self.assertEqual(framed[3], 0x0C)  # NP
+    self.assertEqual(size, len(payload) + _FRAME_OVERHEAD)
+    self.assertEqual(framed[3], 0x0C)  # header
 
   def test_frame_round_trip(self):
-    """Frame (2-byte CS) then unframe recovers original payload."""
+    """Frame (3-byte CS) then unframe recovers original payload."""
     payload = b"\x01\x02\x03\x04\x05"
-    self.assertEqual(_unframe(_frame(payload)), payload)
+    self.assertEqual(_validate_packet_and_extract_payload(_wrap_payload(payload)), payload)
 
   def test_frame_temperature_37c(self):
-    """Verify 1-byte CS frame of the temperature 37°C command matches OEM software capture."""
+    """Verify 3-byte CS frame of the temperature 37°C command."""
     payload = b"\x06\x01\x72\x00\x00"
-    # OEM: 02 00 0B 0C 06 01 72 00 00 92 0D
-    expected = bytes([0x02, 0x00, 0x0B, 0x0C, 0x06, 0x01, 0x72, 0x00, 0x00, 0x92, 0x0D])
-    self.assertEqual(_frame(payload, single_byte_checksum=True), expected)
+    framed = _wrap_payload(payload)
+    self.assertEqual(framed[0], 0x02)
+    self.assertEqual(framed[3], 0x0C)
+    self.assertEqual(framed[-1], 0x0D)
+    size = int.from_bytes(framed[1:3], "big")
+    self.assertEqual(size, len(payload) + _FRAME_OVERHEAD)
+    self.assertEqual(_validate_packet_and_extract_payload(framed), payload)
 
   def test_frame_temperature_monitor(self):
-    """Verify 1-byte CS frame of the temperature monitor-only command matches OEM software capture."""
+    """Verify 3-byte CS frame of the temperature monitor-only command."""
     payload = b"\x06\x00\x01\x00\x00"
-    # OEM: 02 00 0B 0C 06 00 01 00 00 20 0D
-    expected = bytes([0x02, 0x00, 0x0B, 0x0C, 0x06, 0x00, 0x01, 0x00, 0x00, 0x20, 0x0D])
-    self.assertEqual(_frame(payload, single_byte_checksum=True), expected)
+    framed = _wrap_payload(payload)
+    self.assertEqual(_validate_packet_and_extract_payload(framed), payload)
 
   def test_frame_temperature_off(self):
-    """Verify 1-byte CS frame of the temperature off command matches OEM software capture."""
+    """Verify 3-byte CS frame of the temperature off command."""
     payload = b"\x06\x00\x00\x00\x00"
-    # OEM: 02 00 0B 0C 06 00 00 00 00 1F 0D
-    expected = bytes([0x02, 0x00, 0x0B, 0x0C, 0x06, 0x00, 0x00, 0x00, 0x00, 0x1F, 0x0D])
-    self.assertEqual(_frame(payload, single_byte_checksum=True), expected)
+    framed = _wrap_payload(payload)
+    self.assertEqual(_validate_packet_and_extract_payload(framed), payload)
 
   def test_unframe_init_response(self):
-    """Unframe a response with 2-byte checksum (instrument response format)."""
+    """Unframe a response with 3-byte checksum."""
     framed = _make_response_frame(b"\x01\x00\x00\x10\x02\x00")
-    self.assertEqual(_unframe(framed), b"\x01\x00\x00\x10\x02\x00")
+    self.assertEqual(_validate_packet_and_extract_payload(framed), b"\x01\x00\x00\x10\x02\x00")
 
   def test_unframe_bad_stx(self):
     framed = bytearray(_make_response_frame(b"\x01\x02\x03"))
     framed[0] = 0xFF
     with self.assertRaises(FrameError):
-      _unframe(bytes(framed))
+      _validate_packet_and_extract_payload(bytes(framed))
 
   def test_unframe_bad_cr(self):
     framed = bytearray(_make_response_frame(b"\x01\x02\x03"))
     framed[-1] = 0xFF
     with self.assertRaises(FrameError):
-      _unframe(bytes(framed))
+      _validate_packet_and_extract_payload(bytes(framed))
 
   def test_unframe_bad_checksum(self):
     framed = bytearray(_make_response_frame(b"\x01\x02\x03"))
     framed[-2] ^= 0xFF  # corrupt checksum
     with self.assertRaises(ChecksumError):
-      _unframe(bytes(framed))
+      _validate_packet_and_extract_payload(bytes(framed))
 
   def test_unframe_too_short(self):
     with self.assertRaises(FrameError):
-      _unframe(b"\x02\x00\x07")
+      _validate_packet_and_extract_payload(b"\x02\x00\x07")
 
 
 # ---------------------------------------------------------------------------
@@ -361,7 +375,7 @@ class TestWellScanOrbitalBytes(unittest.TestCase):
 
 class TestPlateBytes(unittest.TestCase):
   def setUp(self):
-    self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     self.plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
 
   def test_plate_bytes_length(self):
@@ -433,7 +447,7 @@ class TestPlateBytes(unittest.TestCase):
 
 class TestPlateBytesWithScan(unittest.TestCase):
   def setUp(self):
-    self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     self.plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
 
   def test_length(self):
@@ -453,17 +467,17 @@ class TestWellToIndex(unittest.TestCase):
 
   def test_first_well(self):
     well = self.plate.get_all_items()[0]
-    self.assertEqual(CLARIOstarBackend._well_to_index(self.plate, well), 0)
+    self.assertEqual(CLARIOstarPlusBackend._well_to_index(self.plate, well), 0)
 
   def test_last_well(self):
     well = self.plate.get_all_items()[-1]
-    self.assertEqual(CLARIOstarBackend._well_to_index(self.plate, well), 95)
+    self.assertEqual(CLARIOstarPlusBackend._well_to_index(self.plate, well), 95)
 
   def test_unknown_well_raises(self):
     other_plate = Cor_96_wellplate_360ul_Fb(name="other")
     well = other_plate.get_all_items()[0]
     with self.assertRaises(ValueError):
-      CLARIOstarBackend._well_to_index(self.plate, well)
+      CLARIOstarPlusBackend._well_to_index(self.plate, well)
 
 
 class TestComputeScanOrder(unittest.TestCase):
@@ -477,7 +491,7 @@ class TestComputeScanOrder(unittest.TestCase):
 
   def test_full_plate_top_left_horizontal_unidirectional(self):
     """Default absorbance settings: row-major A1→A12, B1→B12, ..., H1→H12."""
-    order = CLARIOstarBackend._compute_scan_order(
+    order = CLARIOstarPlusBackend._compute_scan_order(
       self.plate, self.all_wells,
       start_corner=StartCorner.TOP_LEFT, unidirectional=True, vertical=False,
     )
@@ -492,7 +506,7 @@ class TestComputeScanOrder(unittest.TestCase):
 
   def test_full_plate_top_left_horizontal_bidirectional(self):
     """Snake: A1→A12, B12→B1, C1→C12, ..."""
-    order = CLARIOstarBackend._compute_scan_order(
+    order = CLARIOstarPlusBackend._compute_scan_order(
       self.plate, self.all_wells,
       start_corner=StartCorner.TOP_LEFT, unidirectional=False, vertical=False,
     )
@@ -508,7 +522,7 @@ class TestComputeScanOrder(unittest.TestCase):
 
   def test_full_plate_bottom_right_vertical_unidirectional(self):
     """Start bottom-right, scan columns bottom-to-top, column-by-column right-to-left."""
-    order = CLARIOstarBackend._compute_scan_order(
+    order = CLARIOstarPlusBackend._compute_scan_order(
       self.plate, self.all_wells,
       start_corner=StartCorner.BOTTOM_RIGHT, unidirectional=True, vertical=True,
     )
@@ -524,7 +538,7 @@ class TestComputeScanOrder(unittest.TestCase):
     """Only selected wells appear in scan order, in traversal sequence."""
     # Select column 1 (all 8 rows)
     col1_wells = [self._well_at(r, 0) for r in range(8)]
-    order = CLARIOstarBackend._compute_scan_order(
+    order = CLARIOstarPlusBackend._compute_scan_order(
       self.plate, col1_wells,
       start_corner=StartCorner.TOP_LEFT, unidirectional=True, vertical=False,
     )
@@ -539,7 +553,7 @@ class TestComputeScanOrder(unittest.TestCase):
     for r in range(8):
       for c in range(2):
         wells.append(self._well_at(r, c))
-    order = CLARIOstarBackend._compute_scan_order(
+    order = CLARIOstarPlusBackend._compute_scan_order(
       self.plate, wells,
       start_corner=StartCorner.TOP_LEFT, unidirectional=True, vertical=False,
     )
@@ -559,7 +573,7 @@ class TestComputeScanOrder(unittest.TestCase):
     for r in range(3):
       for c in range(3):
         wells.append(self._well_at(r, c))
-    order = CLARIOstarBackend._compute_scan_order(
+    order = CLARIOstarPlusBackend._compute_scan_order(
       self.plate, wells,
       start_corner=StartCorner.TOP_LEFT, unidirectional=False, vertical=False,
     )
@@ -638,17 +652,17 @@ class TestParseFluorescenceResponse(unittest.TestCase):
 
   def test_values(self):
     """Go test expects values [67697, 67490, 67935]."""
-    values, _, _ = CLARIOstarBackend._parse_fluorescence_response(self.FL_RESPONSE_PAYLOAD)
+    values, _, _ = CLARIOstarPlusBackend._parse_fluorescence_response(self.FL_RESPONSE_PAYLOAD)
     self.assertEqual(values, [67697, 67490, 67935])
 
   def test_overflow(self):
     """Go test expects overflow = 260000."""
-    _, _, overflow = CLARIOstarBackend._parse_fluorescence_response(self.FL_RESPONSE_PAYLOAD)
+    _, _, overflow = CLARIOstarPlusBackend._parse_fluorescence_response(self.FL_RESPONSE_PAYLOAD)
     self.assertEqual(overflow, 260000)
 
   def test_count(self):
     """3 wells → 3 values."""
-    values, _, _ = CLARIOstarBackend._parse_fluorescence_response(self.FL_RESPONSE_PAYLOAD)
+    values, _, _ = CLARIOstarPlusBackend._parse_fluorescence_response(self.FL_RESPONSE_PAYLOAD)
     self.assertEqual(len(values), 3)
 
   def test_bad_schema_byte(self):
@@ -656,11 +670,11 @@ class TestParseFluorescenceResponse(unittest.TestCase):
     bad = bytearray(self.FL_RESPONSE_PAYLOAD)
     bad[6] = 0x29  # abs schema, not fl
     with self.assertRaises(ValueError):
-      CLARIOstarBackend._parse_fluorescence_response(bytes(bad))
+      CLARIOstarPlusBackend._parse_fluorescence_response(bytes(bad))
 
   def test_too_short(self):
     with self.assertRaises(ValueError):
-      CLARIOstarBackend._parse_fluorescence_response(b"\x00" * 10)
+      CLARIOstarPlusBackend._parse_fluorescence_response(b"\x00" * 10)
 
 
 # ---------------------------------------------------------------------------
@@ -729,7 +743,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       ref_chan_hi=100000,
       ref_chan_lo=0,
     )
-    transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
+    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(resp, num_wavelengths=1)
 
     self.assertAlmostEqual(temp, 25.0)
     self.assertEqual(len(transmission), 2)
@@ -753,7 +767,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       ref_chan_hi=100000,
       ref_chan_lo=0,
     )
-    transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=2)
+    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(resp, num_wavelengths=2)
 
     self.assertEqual(len(transmission), 2)
     self.assertEqual(len(transmission[0]), 2)
@@ -778,7 +792,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       ref_chan_lo=0,
       temperature_raw=372,
     )
-    _, temp, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
+    _, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(resp, num_wavelengths=1)
     self.assertAlmostEqual(temp, 37.2)
 
   def test_schema_high_bit_accepted(self):
@@ -792,7 +806,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     resp[6] = 0xA9
     # Place temperature at offset 34 (the high-bit layout)
     resp[34:36] = (363).to_bytes(2, "big")  # 36.3 °C
-    transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
+    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
     self.assertEqual(len(transmission), 1)
     self.assertAlmostEqual(temp, 36.3)
 
@@ -807,7 +821,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     resp = bytearray(resp)
     resp[6] = 0xA9
     # offset 34 stays 0 (default from bytearray) — incubation off
-    transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
+    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
     self.assertAlmostEqual(temp, 26.0)
 
   def test_schema_high_bit_both_offsets_implausible(self):
@@ -821,18 +835,18 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
     resp = bytearray(resp)
     resp[6] = 0xA9
     # offset 34 stays 0 — firmware noise
-    transmission, temp, _ = CLARIOstarBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
+    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
     self.assertIsNone(temp)
 
   def test_bad_schema_byte(self):
     resp = bytearray(40)
     resp[6] = 0x21  # wrong schema
     with self.assertRaises(ValueError):
-      CLARIOstarBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
+      CLARIOstarPlusBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
 
   def test_too_short(self):
     with self.assertRaises(ValueError):
-      CLARIOstarBackend._parse_absorbance_response(b"\x00" * 10, num_wavelengths=1)
+      CLARIOstarPlusBackend._parse_absorbance_response(b"\x00" * 10, num_wavelengths=1)
 
   def test_zero_chromat_hi_no_crash(self):
     """Division by zero in chromat_hi should produce 0, not crash."""
@@ -845,7 +859,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       ref_chan_hi=100000,
       ref_chan_lo=0,
     )
-    transmission, _, _ = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
+    transmission, _, _ = CLARIOstarPlusBackend._parse_absorbance_response(resp, num_wavelengths=1)
     self.assertEqual(transmission[0][0], 0)
 
   def test_raw_values_returned(self):
@@ -859,37 +873,26 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       ref_chan_hi=100000,
       ref_chan_lo=1000,
     )
-    _, _, raw = CLARIOstarBackend._parse_absorbance_response(resp, num_wavelengths=1)
+    _, _, raw = CLARIOstarPlusBackend._parse_absorbance_response(resp, num_wavelengths=1)
 
     self.assertEqual(raw["samples"], [50000.0, 60000.0])
     self.assertEqual(raw["references"], [100000.0, 110000.0])
     self.assertEqual(raw["chromatic_cal"], [(100000.0, 5000.0)])
     self.assertEqual(raw["reference_cal"], (100000.0, 1000.0))
 
-  def test_unframe_with_trailing_status_byte(self):
-    """_unframe should handle responses where a trailing byte is excluded from the checksum.
-
-    Some firmware responses (e.g. final measurement values) include a status byte before the
-    checksum that is NOT included in the checksum computation. The standard checksum
-    (sum of all bytes before the last 3) would be off by the value of this trailing byte.
-    """
-    # Build a frame where the last payload byte is excluded from the checksum
-    payload = b"\x02\x05\x06\x26" + b"\x00" * 20 + b"\x01"  # trailing 0x01
-    size = len(payload) + 7
-    buf = bytearray([0x02]) + size.to_bytes(2, "big") + b"\x0c" + payload
-    # Compute checksum excluding the trailing byte (as firmware does)
-    cs = sum(buf[:-1]) & 0xFFFF
-    buf += cs.to_bytes(2, "big")
-    buf += b"\x0d"
-    frame = bytes(buf)
-
-    # Standard checksum would fail (off by 1)
-    standard_cs = sum(frame[:-3]) & 0xFFFF
-    self.assertNotEqual(standard_cs, cs)
-
-    # _unframe should still succeed via the alternate checksum path
-    result = _unframe(frame)
+  def test_unframe_valid_3byte_checksum(self):
+    """_validate_packet_and_extract_payload should handle 3-byte checksum frames correctly."""
+    payload = b"\x02\x05\x06\x26" + b"\x00" * 20 + b"\x01"
+    frame = _wrap_payload(payload)
+    result = _validate_packet_and_extract_payload(frame)
     self.assertEqual(result, payload)
+
+  def test_unframe_bad_size_field(self):
+    """_validate_packet_and_extract_payload should reject frames with mismatched size field."""
+    frame = bytearray(_wrap_payload(b"\x01\x02\x03"))
+    frame[1] = 0xFF  # corrupt size field
+    with self.assertRaises(FrameError):
+      _validate_packet_and_extract_payload(bytes(frame))
 
   def test_parse_oem_capture_orbital_well_scan(self):
     """Validate parser against real OEM capture (orbital well scan, 96 wells, 600 nm).
@@ -1017,7 +1020,8 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
 
     import math
 
-    trans, temperature, raw = CLARIOstarBackend._parse_absorbance_response(oem_resp, 1)
+    oem_payload = _validate_packet_and_extract_payload(oem_resp)
+    trans, temperature, raw = CLARIOstarPlusBackend._parse_absorbance_response(oem_payload, 1)
 
     # Check structure
     self.assertEqual(len(trans), 96)
@@ -1062,11 +1066,11 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
-class TestCLARIOstarSend(unittest.IsolatedAsyncioTestCase):
+class TestCLARIOstarPlusSend(unittest.IsolatedAsyncioTestCase):
   """Test send() and related methods with mocked FTDI."""
 
   async def asyncSetUp(self):
-    self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     self.backend.read_timeout = 20
     self.backend.write_timeout = 10
     self.backend.io = unittest.mock.MagicMock()
@@ -1080,36 +1084,39 @@ class TestCLARIOstarSend(unittest.IsolatedAsyncioTestCase):
     self.backend.io.poll_modem_status = unittest.mock.AsyncMock()
 
   async def test_send_command_frames_and_writes(self):
-    """send_command() should frame the payload and write it."""
-    # Build a valid response (2-byte CS, instrument format)
-    response = _make_response_frame(b"\x80\x00\x05\x00\x00")
+    """send_command() should frame the payload and write it, and return unframed response."""
+    # Build a valid response frame
+    resp_payload = b"\x80\x00\x05\x00\x00"
+    response = _make_response_frame(resp_payload)
 
-    self.backend.io.write.return_value = len(_frame(b"\x80\x00"))
+    self.backend.io.write.return_value = len(_wrap_payload(b"\x80"))
     self.backend.io.read.side_effect = [response, b""]
 
-    result = await self.backend.send_command(b"\x80\x00")
-    self.assertEqual(result, response)
+    result = await self.backend.send_command(CommandGroup.STATUS)
+    # send_command now returns the unframed payload
+    self.assertEqual(result, resp_payload)
 
-    # Verify the written data is the framed payload (1-byte CS, outgoing format)
+    # Verify the written data is the framed payload
     written = self.backend.io.write.call_args[0][0]
-    self.assertEqual(written, _frame(b"\x80\x00"))
+    self.assertEqual(written, _wrap_payload(b"\x80"))
 
   async def test_request_command_status_payload(self):
     """_request_command_status sends the correct payload."""
-    response = _make_response_frame(b"\x80\x00\x05\x00\x00")
-    self.backend.io.write.return_value = len(_frame(b"\x80\x00"))
+    resp_payload = b"\x80\x00\x05\x00\x00"
+    response = _make_response_frame(resp_payload)
+    self.backend.io.write.return_value = len(_wrap_payload(b"\x80"))
     self.backend.io.read.side_effect = [response, b""]
 
     await self.backend._request_command_status()
     written = self.backend.io.write.call_args[0][0]
-    self.assertEqual(written, _frame(b"\x80\x00"))
+    self.assertEqual(written, _wrap_payload(b"\x80"))
 
   async def test_request_machine_status_parses_flags(self):
     """request_machine_status() should return parsed status flags."""
     # Build a response where byte 1 of unframed payload has VALID (bit 0) set
     status_payload = b"\x00\x01\x00\x00\x00"  # only VALID flag
     response = _make_response_frame(status_payload)
-    self.backend.io.write.return_value = len(_frame(b"\x80\x00"))
+    self.backend.io.write.return_value = len(_wrap_payload(b"\x80"))
     self.backend.io.read.side_effect = [response, b""]
 
     flags = await self.backend.request_machine_status()
@@ -1117,11 +1124,11 @@ class TestCLARIOstarSend(unittest.IsolatedAsyncioTestCase):
     self.assertFalse(flags["busy"])
 
 
-class TestCLARIOstarInitialize(unittest.IsolatedAsyncioTestCase):
+class TestCLARIOstarPlusInitialize(unittest.IsolatedAsyncioTestCase):
   """Test initialize() sends the correct init payload."""
 
   async def asyncSetUp(self):
-    self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     self.backend.timeout = 150
     self.backend.read_timeout = 20
     self.backend.write_timeout = 10
@@ -1155,12 +1162,12 @@ class TestCLARIOstarInitialize(unittest.IsolatedAsyncioTestCase):
 
     # First write should be the framed init command
     first_write = self.backend.io.write.call_args_list[0][0][0]
-    expected_init = _frame(b"\x01\x00\x00\x10\x02\x00")
+    expected_init = _wrap_payload(b"\x01\x00\x00\x10\x02\x00")
     self.assertEqual(first_write, expected_init)
 
 
 # ---------------------------------------------------------------------------
-# EEPROM parsing and CLARIOstarConfig
+# EEPROM parsing and CLARIOstarPlusConfig
 # ---------------------------------------------------------------------------
 
 # Real EEPROM payload captured from CLARIOstar Plus (serial 430-2621).
@@ -1194,12 +1201,12 @@ _REAL_FIRMWARE_PAYLOAD = bytes([
 ])
 
 
-class TestCLARIOstarConfig(unittest.TestCase):
-  """Test CLARIOstarConfig dataclass and parse_eeprom."""
+class TestCLARIOstarPlusConfig(unittest.TestCase):
+  """Test CLARIOstarPlusConfig dataclass and parse_eeprom."""
 
   def test_defaults(self):
     """Default config should have empty/false values."""
-    cfg = CLARIOstarConfig()
+    cfg = CLARIOstarPlusConfig()
     self.assertEqual(cfg.serial_number, "")
     self.assertEqual(cfg.firmware_version, "")
     self.assertFalse(cfg.has_pump1)
@@ -1209,20 +1216,20 @@ class TestCLARIOstarConfig(unittest.TestCase):
   def test_parse_eeprom_empty_payload(self):
     """Parsing a minimal framed response returns defaults without crashing."""
     framed = _make_response_frame(b"\x00" * 20)
-    cfg = CLARIOstarConfig.parse_eeprom(framed)
-    self.assertIsInstance(cfg, CLARIOstarConfig)
+    cfg = CLARIOstarPlusConfig.parse_eeprom(framed)
+    self.assertIsInstance(cfg, CLARIOstarPlusConfig)
     self.assertEqual(cfg.machine_type_code, 0)
 
   def test_parse_eeprom_too_short(self):
     """Payload shorter than 15 bytes returns defaults."""
-    cfg = CLARIOstarConfig.parse_eeprom(b"\x07\x05\x00\x24")
+    cfg = CLARIOstarPlusConfig.parse_eeprom(b"\x07\x05\x00\x24")
     self.assertEqual(cfg.machine_type_code, 0)
     self.assertFalse(cfg.has_absorbance)
 
   def test_parse_real_eeprom(self):
     """Parse the real EEPROM capture from CLARIOstar Plus 430-2621."""
     framed = _make_response_frame(_REAL_EEPROM_PAYLOAD)
-    cfg = CLARIOstarConfig.parse_eeprom(framed)
+    cfg = CLARIOstarPlusConfig.parse_eeprom(framed)
 
     self.assertEqual(cfg.machine_type_code, 0x0024)
     self.assertEqual(cfg.model_name, "CLARIOstar Plus")
@@ -1235,7 +1242,7 @@ class TestCLARIOstarConfig(unittest.TestCase):
 
   def test_parse_eeprom_unframed_fallback(self):
     """If the input is not a valid frame, parse_eeprom treats it as raw payload."""
-    cfg = CLARIOstarConfig.parse_eeprom(_REAL_EEPROM_PAYLOAD)
+    cfg = CLARIOstarPlusConfig.parse_eeprom(_REAL_EEPROM_PAYLOAD)
     self.assertEqual(cfg.machine_type_code, 0x0024)
     self.assertTrue(cfg.has_absorbance)
 
@@ -1244,7 +1251,7 @@ class TestCLARIOstarConfig(unittest.TestCase):
     payload = bytearray(_REAL_EEPROM_PAYLOAD)
     payload[2] = 0x00
     payload[3] = 0xFF  # type 0x00FF — unknown
-    cfg = CLARIOstarConfig.parse_eeprom(bytes(payload))
+    cfg = CLARIOstarPlusConfig.parse_eeprom(bytes(payload))
     self.assertEqual(cfg.machine_type_code, 0x00FF)
     self.assertIn("Unknown", cfg.model_name)
     self.assertEqual(cfg.monochromator_range, (0, 0))
@@ -1256,7 +1263,7 @@ class TestCLARIOstarConfig(unittest.TestCase):
     payload[12] = 0
     payload[13] = 0
     payload[14] = 0
-    cfg = CLARIOstarConfig.parse_eeprom(bytes(payload))
+    cfg = CLARIOstarPlusConfig.parse_eeprom(bytes(payload))
     self.assertFalse(cfg.has_absorbance)
     self.assertFalse(cfg.has_fluorescence)
     self.assertFalse(cfg.has_luminescence)
@@ -1264,25 +1271,25 @@ class TestCLARIOstarConfig(unittest.TestCase):
 
 
 class TestParseFirmwareInfo(unittest.TestCase):
-  """Test CLARIOstarConfig.parse_firmware_info against real hardware capture."""
+  """Test CLARIOstarPlusConfig.parse_firmware_info against real hardware capture."""
 
   def test_parse_real_firmware(self):
     """Parse the real firmware info capture from 430-2621."""
     framed = _make_response_frame(_REAL_FIRMWARE_PAYLOAD)
-    cfg = CLARIOstarConfig.parse_firmware_info(framed)
+    cfg = CLARIOstarPlusConfig.parse_firmware_info(framed)
 
     self.assertEqual(cfg.firmware_version, "1.35")
     self.assertEqual(cfg.firmware_build_timestamp, "Nov 20 2020 11:51:21")
 
   def test_parse_firmware_unframed(self):
     """Unframed payload also works."""
-    cfg = CLARIOstarConfig.parse_firmware_info(_REAL_FIRMWARE_PAYLOAD)
+    cfg = CLARIOstarPlusConfig.parse_firmware_info(_REAL_FIRMWARE_PAYLOAD)
     self.assertEqual(cfg.firmware_version, "1.35")
     self.assertIn("Nov 20 2020", cfg.firmware_build_timestamp)
 
   def test_parse_firmware_too_short(self):
     """Short payload returns defaults."""
-    cfg = CLARIOstarConfig.parse_firmware_info(b"\x0a\x05\x00\x24\x00\x00")
+    cfg = CLARIOstarPlusConfig.parse_firmware_info(b"\x0a\x05\x00\x24\x00\x00")
     self.assertEqual(cfg.firmware_version, "")
     self.assertEqual(cfg.firmware_build_timestamp, "")
 
@@ -1292,13 +1299,13 @@ class TestParseFirmwareInfo(unittest.TestCase):
     # Change version to 0x0514 = 1300 → should give "1.30"
     payload[6] = 0x05
     payload[7] = 0x14
-    cfg = CLARIOstarConfig.parse_firmware_info(bytes(payload))
+    cfg = CLARIOstarPlusConfig.parse_firmware_info(bytes(payload))
     self.assertEqual(cfg.firmware_version, "1.30")
 
     # Change to 0x07D0 = 2000 → "2.00"
     payload[6] = 0x07
     payload[7] = 0xD0
-    cfg = CLARIOstarConfig.parse_firmware_info(bytes(payload))
+    cfg = CLARIOstarPlusConfig.parse_firmware_info(bytes(payload))
     self.assertEqual(cfg.firmware_version, "2.00")
 
 
@@ -1381,11 +1388,11 @@ class TestDumpEeprom(unittest.TestCase):
     self.assertIn("Payload length: 264", output)
 
 
-class TestCLARIOstarBackendEepromMethods(unittest.TestCase):
+class TestCLARIOstarPlusBackendEepromMethods(unittest.TestCase):
   """Test get_machine_config and dump_eeprom_str on the real backend class."""
 
   def setUp(self):
-    self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     self.backend._eeprom_data = None
     self.backend._firmware_data = None
     self.backend.io = unittest.mock.MagicMock()
@@ -1400,7 +1407,7 @@ class TestCLARIOstarBackendEepromMethods(unittest.TestCase):
     """get_machine_config works with only EEPROM data (no firmware info)."""
     self.backend._eeprom_data = _make_response_frame(_REAL_EEPROM_PAYLOAD)
     cfg = self.backend.get_machine_config()
-    self.assertIsInstance(cfg, CLARIOstarConfig)
+    self.assertIsInstance(cfg, CLARIOstarPlusConfig)
     self.assertEqual(cfg.machine_type_code, 0x0024)
     self.assertTrue(cfg.has_absorbance)
     # Firmware fields should be empty without firmware data
@@ -1432,7 +1439,7 @@ class TestMachineTypeAutoDetection(unittest.TestCase):
   """Test machine type auto-detection and extended separator logic."""
 
   def setUp(self):
-    self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     self.backend._machine_type_code = 0
 
   def test_default_type_code_is_zero(self):
@@ -1459,7 +1466,7 @@ class TestAbsorbanceOrbitalPayload(unittest.TestCase):
   """Test orbital well_scan encoding in _start_absorbance_measurement payload."""
 
   def setUp(self):
-    self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     self.backend._machine_type_code = 0x0024  # no extended separator
     self.backend._last_scan_params = {}
     self.plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
@@ -1619,10 +1626,10 @@ class TestEncodeFlashes(unittest.TestCase):
 
 
 class TestBuildPayloadHeader(unittest.TestCase):
-  """Test CLARIOstarBackend._build_payload_header for all pre-separator formats."""
+  """Test CLARIOstarPlusBackend._build_payload_header for all pre-separator formats."""
 
   def setUp(self):
-    self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     self.backend._last_scan_params = {}
     self.plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
 
@@ -1719,13 +1726,13 @@ class TestBuildPayloadHeader(unittest.TestCase):
 
 
 class TestSimulatorConfig(unittest.TestCase):
-  """Test CLARIOstarSimulatorBackend config methods."""
+  """Test CLARIOstarPlusSimulatorBackend config methods."""
 
   def test_get_machine_config(self):
-    """Simulator returns a populated CLARIOstarConfig."""
-    sim = CLARIOstarSimulatorBackend()
+    """Simulator returns a populated CLARIOstarPlusConfig."""
+    sim = CLARIOstarPlusSimulatorBackend()
     cfg = sim.get_machine_config()
-    self.assertIsInstance(cfg, CLARIOstarConfig)
+    self.assertIsInstance(cfg, CLARIOstarPlusConfig)
     self.assertEqual(cfg.serial_number, "SIM-0000")
     self.assertEqual(cfg.firmware_version, "1.35")
     self.assertTrue(cfg.has_absorbance)
@@ -1737,21 +1744,21 @@ class TestSimulatorConfig(unittest.TestCase):
 
   def test_dump_eeprom_str_is_none(self):
     """Simulator has no EEPROM data to dump."""
-    sim = CLARIOstarSimulatorBackend()
+    sim = CLARIOstarPlusSimulatorBackend()
     self.assertIsNone(sim.dump_eeprom_str())
 
   def test_get_eeprom_data_is_none(self):
     """Simulator returns None for raw EEPROM data."""
-    sim = CLARIOstarSimulatorBackend()
+    sim = CLARIOstarPlusSimulatorBackend()
     self.assertIsNone(sim.get_eeprom_data())
 
 
 class TestSimulatorUsageCounters(unittest.IsolatedAsyncioTestCase):
-  """Test CLARIOstarSimulatorBackend usage counter methods."""
+  """Test CLARIOstarPlusSimulatorBackend usage counter methods."""
 
   async def test_request_usage_counters(self):
     """Simulator returns zeroed usage counters."""
-    sim = CLARIOstarSimulatorBackend()
+    sim = CLARIOstarPlusSimulatorBackend()
     c = await sim.request_usage_counters()
     self.assertIsInstance(c, dict)
     self.assertEqual(c["flashes"], 0)
@@ -1793,13 +1800,12 @@ def _make_data_response_payload(
 
 
 class TestParseRunResponse(unittest.TestCase):
-  """Test CLARIOstarBackend._parse_run_response()."""
+  """Test CLARIOstarPlusBackend._parse_run_response()."""
 
   def test_accepted_response(self):
     """A valid run response with command echo 0x03 is accepted."""
     payload = _make_run_response_payload(command_echo=0x03, total_values=392)
-    framed = _make_response_frame(payload)
-    result = CLARIOstarBackend._parse_run_response(framed)
+    result = CLARIOstarPlusBackend._parse_run_response(payload)
     self.assertTrue(result["accepted"])
     self.assertEqual(result["total_values"], 392)
     self.assertEqual(result["status_bytes"], b"\x25\x04\x06")
@@ -1807,17 +1813,15 @@ class TestParseRunResponse(unittest.TestCase):
   def test_rejected_response(self):
     """A response with unexpected command echo is not accepted."""
     payload = _make_run_response_payload(command_echo=0x01, total_values=100)
-    framed = _make_response_frame(payload)
-    result = CLARIOstarBackend._parse_run_response(framed)
+    result = CLARIOstarPlusBackend._parse_run_response(payload)
     self.assertFalse(result["accepted"])
     self.assertEqual(result["total_values"], 100)
 
   def test_too_short_response_raises(self):
     """A response shorter than 4 payload bytes raises ValueError."""
     short_payload = b"\x03\x25\x04"  # only 3 bytes
-    framed = _make_response_frame(short_payload)
     with self.assertRaises(ValueError):
-      CLARIOstarBackend._parse_run_response(framed)
+      CLARIOstarPlusBackend._parse_run_response(short_payload)
 
   def test_truncated_response_returns_minus_one_total(self):
     """A truncated response (4-13 payload bytes) parses accepted/status but
@@ -1825,36 +1829,26 @@ class TestParseRunResponse(unittest.TestCase):
     the serial link drops bytes mid-frame (firmware sent 17 of 53 expected)."""
     # 10-byte payload: accepted + status + padding, but no total_values field
     truncated_payload = b"\x03\x25\x04\x26\x00\x00\x00\x00\x4e\x20"
-    result = CLARIOstarBackend._parse_run_response(truncated_payload)
+    result = CLARIOstarPlusBackend._parse_run_response(truncated_payload)
     self.assertTrue(result["accepted"])
     self.assertEqual(result["status_bytes"], b"\x25\x04\x26")
     self.assertEqual(result["total_values"], -1)
-
-  def test_unframed_fallback(self):
-    """When given raw (unframed) bytes, parse_run_response still works."""
-    payload = _make_run_response_payload(command_echo=0x03, total_values=288)
-    # Pass raw payload without framing
-    result = CLARIOstarBackend._parse_run_response(payload)
-    self.assertTrue(result["accepted"])
-    self.assertEqual(result["total_values"], 288)
 
   def test_different_total_values(self):
     """Verify various total_values are parsed correctly."""
     for total in [0, 96, 288, 392, 1000]:
       payload = _make_run_response_payload(total_values=total)
-      framed = _make_response_frame(payload)
-      result = CLARIOstarBackend._parse_run_response(framed)
+      result = CLARIOstarPlusBackend._parse_run_response(payload)
       self.assertEqual(result["total_values"], total)
 
 
 class TestParseProgressFromDataResponse(unittest.TestCase):
-  """Test CLARIOstarBackend._parse_progress_from_data_response()."""
+  """Test CLARIOstarPlusBackend._parse_progress_from_data_response()."""
 
   def test_zero_complete(self):
     """First progressive poll: 0 values complete."""
     payload = _make_data_response_payload(schema=0xA9, total=392, complete=0)
-    framed = _make_response_frame(payload)
-    result = CLARIOstarBackend._parse_progress_from_data_response(framed)
+    result = CLARIOstarPlusBackend._parse_progress_from_data_response(payload)
     self.assertEqual(result["complete"], 0)
     self.assertEqual(result["total"], 392)
     self.assertEqual(result["schema"], 0xA9)
@@ -1863,24 +1857,21 @@ class TestParseProgressFromDataResponse(unittest.TestCase):
     """Progressive poll with partial data."""
     for complete_val in [44, 88, 132, 200]:
       payload = _make_data_response_payload(schema=0xA9, total=392, complete=complete_val)
-      framed = _make_response_frame(payload)
-      result = CLARIOstarBackend._parse_progress_from_data_response(framed)
+      result = CLARIOstarPlusBackend._parse_progress_from_data_response(payload)
       self.assertEqual(result["complete"], complete_val)
       self.assertEqual(result["total"], 392)
 
   def test_all_complete(self):
     """Progressive poll when measurement is fully done."""
     payload = _make_data_response_payload(schema=0xA9, total=392, complete=392)
-    framed = _make_response_frame(payload)
-    result = CLARIOstarBackend._parse_progress_from_data_response(framed)
+    result = CLARIOstarPlusBackend._parse_progress_from_data_response(payload)
     self.assertEqual(result["complete"], 392)
     self.assertEqual(result["total"], 392)
 
   def test_fluorescence_schema(self):
     """Fluorescence schema byte (0x21) is parsed correctly."""
     payload = _make_data_response_payload(schema=0x21, total=96, complete=48)
-    framed = _make_response_frame(payload)
-    result = CLARIOstarBackend._parse_progress_from_data_response(framed)
+    result = CLARIOstarPlusBackend._parse_progress_from_data_response(payload)
     self.assertEqual(result["schema"], 0x21)
     self.assertEqual(result["complete"], 48)
     self.assertEqual(result["total"], 96)
@@ -1888,60 +1879,63 @@ class TestParseProgressFromDataResponse(unittest.TestCase):
   def test_too_short_response_raises(self):
     """A response shorter than 11 payload bytes raises ValueError."""
     short_payload = b"\x02\x05\x00\x26"  # only 4 bytes
-    framed = _make_response_frame(short_payload)
     with self.assertRaises(ValueError):
-      CLARIOstarBackend._parse_progress_from_data_response(framed)
+      CLARIOstarPlusBackend._parse_progress_from_data_response(short_payload)
 
 
 class TestProgressiveGetData(unittest.IsolatedAsyncioTestCase):
   """Test that the progressive getData command uses the correct payload."""
 
   async def test_progressive_payload(self):
-    """_get_progressive_measurement_values sends $05 $02 $FF $FF $FF $FF $00 $00."""
-    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
-    expected_payload = b"\x05\x02\xff\xff\xff\xff\x00\x00"
+    """_get_progressive_measurement_values sends REQUEST + REQUEST_MEASUREMENT + $FF$FF$FF$FF$00$00."""
+    backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
 
     captured = []
 
-    async def mock_send_command(payload, **kwargs):
-      captured.append(payload)
-      return _make_response_frame(b"\x00" * 11)
+    async def mock_send_command(command_group, command=None, *, payload=b"", read_timeout=None):
+      captured.append((command_group, command, payload))
+      return b"\x00" * 11  # unframed
 
     backend.send_command = mock_send_command
 
     await backend._get_progressive_measurement_values()
     self.assertEqual(len(captured), 1)
-    self.assertEqual(captured[0], expected_payload)
+    cg, cmd, pl = captured[0]
+    self.assertEqual(cg, CommandGroup.REQUEST)
+    self.assertEqual(cmd, Command.REQUEST_MEASUREMENT)
+    self.assertEqual(pl, b"\xff\xff\xff\xff\x00\x00")
 
   async def test_final_getData_payload(self):
-    """_get_measurement_values sends $05 $02 $00 $00 $00 $00 $00 $00 (for comparison)."""
-    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
-    expected_payload = b"\x05\x02\x00\x00\x00\x00\x00\x00"
+    """_get_measurement_values sends REQUEST + REQUEST_MEASUREMENT + $00$00$00$00$00$00."""
+    backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
 
     captured = []
 
-    async def mock_send_command(payload, **kwargs):
-      captured.append(payload)
-      return _make_response_frame(b"\x00" * 11)
+    async def mock_send_command(command_group, command=None, *, payload=b"", read_timeout=None):
+      captured.append((command_group, command, payload))
+      return b"\x00" * 11  # unframed
 
     backend.send_command = mock_send_command
 
     await backend._get_measurement_values()
     self.assertEqual(len(captured), 1)
-    self.assertEqual(captured[0], expected_payload)
+    cg, cmd, pl = captured[0]
+    self.assertEqual(cg, CommandGroup.REQUEST)
+    self.assertEqual(cmd, Command.REQUEST_MEASUREMENT)
+    self.assertEqual(pl, b"\x00\x00\x00\x00\x00\x00")
 
 
 class TestWaitForReadyWithProgress(unittest.IsolatedAsyncioTestCase):
-  """Test CLARIOstarBackend._wait_for_ready_with_progress()."""
+  """Test CLARIOstarPlusBackend._wait_for_ready_with_progress()."""
 
   def _make_backend(self):
     """Create a backend with mocked I/O."""
-    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     backend.timeout = 30
     backend.read_timeout = 20
     backend.write_timeout = 10
     backend.io = unittest.mock.MagicMock()
-    backend._trace_io_path = None
+
     return backend
 
   def _make_status_response(self, busy: bool) -> bytes:
@@ -1949,13 +1943,12 @@ class TestWaitForReadyWithProgress(unittest.IsolatedAsyncioTestCase):
     # Byte 1 bit 5 = BUSY
     byte1 = 0x25 if busy else 0x05  # 0x25 = VALID + BUSY, 0x05 = VALID
     payload = bytes([0x00, byte1, 0x00, 0x00, 0x00])
-    return _make_response_frame(payload)
+    return payload  # _request_command_status returns unframed payload
 
   async def test_no_progress_callback_falls_back(self):
     """When on_progress=None, _wait_for_ready_with_progress uses _wait_for_ready_and_return."""
     backend = self._make_backend()
-    run_payload = _make_run_response_payload()
-    run_response = _make_response_frame(run_payload)
+    run_response = _make_run_response_payload()  # unframed
 
     # Mock _wait_for_ready_and_return to verify fallback
     backend._wait_for_ready_and_return = unittest.mock.AsyncMock(return_value=run_response)
@@ -1967,15 +1960,14 @@ class TestWaitForReadyWithProgress(unittest.IsolatedAsyncioTestCase):
   async def test_progress_callback_called_with_increasing_values(self):
     """Progress callback receives increasing complete values."""
     backend = self._make_backend()
-    run_payload = _make_run_response_payload(total_values=392)
-    run_response = _make_response_frame(run_payload)
+    run_response = _make_run_response_payload(total_values=392)  # unframed
 
     # Simulate: 2 progressive polls, then BUSY clears
-    progressive_payloads = [
+    # _get_progressive_measurement_values returns unframed payloads (via send_command)
+    progressive_responses = [
       _make_data_response_payload(schema=0xA9, total=392, complete=44),
       _make_data_response_payload(schema=0xA9, total=392, complete=200),
     ]
-    progressive_responses = [_make_response_frame(p) for p in progressive_payloads]
     progressive_idx = [0]
 
     async def mock_get_progressive():
@@ -2012,13 +2004,10 @@ class TestWaitForReadyWithProgress(unittest.IsolatedAsyncioTestCase):
   async def test_timeout_raises(self):
     """TimeoutError is raised when BUSY never clears."""
     backend = self._make_backend()
-    run_payload = _make_run_response_payload()
-    run_response = _make_response_frame(run_payload)
+    run_response = _make_run_response_payload()  # unframed
 
     async def mock_get_progressive():
-      return _make_response_frame(
-        _make_data_response_payload(schema=0xA9, total=392, complete=0)
-      )
+      return _make_data_response_payload(schema=0xA9, total=392, complete=0)
 
     async def mock_request_status():
       return self._make_status_response(busy=True)
@@ -2037,13 +2026,10 @@ class TestWaitForReadyWithProgress(unittest.IsolatedAsyncioTestCase):
   async def test_immediate_ready(self):
     """If BUSY clears on the first check, callback is called once and returns."""
     backend = self._make_backend()
-    run_payload = _make_run_response_payload()
-    run_response = _make_response_frame(run_payload)
+    run_response = _make_run_response_payload()  # unframed
 
     async def mock_get_progressive():
-      return _make_response_frame(
-        _make_data_response_payload(schema=0xA9, total=392, complete=392)
-      )
+      return _make_data_response_payload(schema=0xA9, total=392, complete=392)
 
     async def mock_request_status():
       return self._make_status_response(busy=False)
@@ -2084,13 +2070,13 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
 
   def _make_backend(self):
     """Create a backend with mocked I/O."""
-    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     backend.timeout = 30
     backend.read_timeout = 20
     backend.write_timeout = 10
     backend.io = unittest.mock.MagicMock()
     backend.io.usb_purge_rx_buffer = unittest.mock.AsyncMock()
-    backend._trace_io_path = None
+
     backend._machine_type_code = 0x0026
     backend._last_scan_params = {}
     backend.enable_temperature_monitoring = unittest.mock.AsyncMock()
@@ -2098,8 +2084,7 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
 
   def _make_status_response(self, busy: bool) -> bytes:
     byte1 = 0x25 if busy else 0x05
-    payload = bytes([0x00, byte1, 0x00, 0x00, 0x00])
-    return _make_response_frame(payload)
+    return bytes([0x00, byte1, 0x00, 0x00, 0x00])  # unframed
 
   async def test_wait_false_returns_none_immediately(self):
     """read_absorbance(wait=False) sends the run command and returns None."""
@@ -2107,12 +2092,11 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
     all_wells = plate.get_all_items()
 
-    run_payload = _make_run_response_payload(total_values=392)
-    run_response = _make_response_frame(run_payload)
+    run_response = _make_run_response_payload(total_values=392)  # unframed
 
     backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
 
-    # Initial status check: still BUSY
+    # Post-measurement check: still BUSY
     backend._request_command_status = unittest.mock.AsyncMock(
       return_value=self._make_status_response(busy=True)
     )
@@ -2130,12 +2114,11 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
     all_wells = plate.get_all_items()
 
-    run_payload = _make_run_response_payload(total_values=392)
-    run_response = _make_response_frame(run_payload)
+    run_response = _make_run_response_payload(total_values=392)  # unframed
 
     backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
 
-    # Initial status check: already done (BUSY cleared)
+    # Post-measurement status check: already done (BUSY cleared)
     backend._request_command_status = unittest.mock.AsyncMock(
       return_value=self._make_status_response(busy=False)
     )
@@ -2160,15 +2143,14 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
     all_wells = plate.get_all_items()
 
-    run_payload = _make_run_response_payload(total_values=392)
-    run_response = _make_response_frame(run_payload)
+    run_response = _make_run_response_payload(total_values=392)  # unframed
 
     backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
 
-    # Progressive data for the polling loop (step 4)
+    # Progressive data for the polling loop (step 4) — unframed
     progressive_responses = [
-      _make_response_frame(_make_data_response_payload(schema=0xA9, total=392, complete=100)),
-      _make_response_frame(_make_data_response_payload(schema=0xA9, total=392, complete=300)),
+      _make_data_response_payload(schema=0xA9, total=392, complete=100),
+      _make_data_response_payload(schema=0xA9, total=392, complete=300),
     ]
     prog_idx = [0]
 
@@ -2180,12 +2162,10 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     backend._get_progressive_measurement_values = mock_get_progressive
 
     # Status: initial check BUSY, then loop: BUSY, BUSY, ready
-    # Call order: initial check, loop iteration 1, loop iteration 2, loop iteration 3
     status_count = [0]
 
     async def mock_request_status():
       status_count[0] += 1
-      # Call 1 = initial check (BUSY), calls 2-3 = loop (BUSY), call 4 = loop (ready)
       busy = status_count[0] < 4
       return self._make_status_response(busy)
 
@@ -2208,14 +2188,13 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
     all_wells = plate.get_all_items()
 
-    run_payload = _make_run_response_payload(total_values=392)
-    run_response = _make_response_frame(run_payload)
+    run_response = _make_run_response_payload(total_values=392)  # unframed
 
     backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
 
     progressive_responses = [
-      _make_response_frame(_make_data_response_payload(schema=0xA9, total=392, complete=44)),
-      _make_response_frame(_make_data_response_payload(schema=0xA9, total=392, complete=200)),
+      _make_data_response_payload(schema=0xA9, total=392, complete=44),
+      _make_data_response_payload(schema=0xA9, total=392, complete=200),
     ]
     prog_idx = [0]
 
@@ -2226,7 +2205,7 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
 
     backend._get_progressive_measurement_values = mock_get_progressive
 
-    # initial check BUSY, loop: BUSY, BUSY, ready
+    # BUSY, BUSY, BUSY, ready
     status_count = [0]
 
     async def mock_request_status():
@@ -2261,15 +2240,12 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
     all_wells = plate.get_all_items()
 
-    run_payload = _make_run_response_payload(total_values=392)
-    run_response = _make_response_frame(run_payload)
+    run_response = _make_run_response_payload(total_values=392)  # unframed
 
     backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
 
     async def mock_get_progressive(**kwargs):
-      return _make_response_frame(
-        _make_data_response_payload(schema=0xA9, total=392, complete=0)
-      )
+      return _make_data_response_payload(schema=0xA9, total=392, complete=0)
 
     backend._get_progressive_measurement_values = mock_get_progressive
 
@@ -2288,28 +2264,30 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     backend = self._make_backend()
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
 
-    # Mock send_command with an accepted response
+    # Mock _write_frame/_read_frame — _start_absorbance_measurement bypasses send_command
     run_payload = _make_run_response_payload(total_values=392)
-    run_response = _make_response_frame(run_payload)
-    backend.send_command = unittest.mock.AsyncMock(return_value=run_response)
+    run_response_frame = _make_response_frame(run_payload)
+    backend._write_frame = unittest.mock.AsyncMock()
+    backend._read_frame = unittest.mock.AsyncMock(return_value=run_response_frame)
 
     result = await backend._start_absorbance_measurement(
       wavelengths=[600], plate=plate,
     )
 
-    # Should return the run response directly
-    self.assertEqual(result, run_response)
-    backend.send_command.assert_awaited_once()
+    # Should return the unframed run response payload
+    self.assertEqual(result, run_payload)
+    backend._write_frame.assert_awaited_once()
 
   async def test_start_absorbance_measurement_rejected_raises(self):
     """_start_absorbance_measurement raises RuntimeError when the firmware rejects the command."""
     backend = self._make_backend()
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
 
-    # Mock send_command with a rejected response (command_echo != 0x03)
+    # Mock _write_frame/_read_frame with a rejected response (command_echo != 0x03)
     run_payload = _make_run_response_payload(command_echo=0x01, total_values=0)
-    run_response = _make_response_frame(run_payload)
-    backend.send_command = unittest.mock.AsyncMock(return_value=run_response)
+    run_response_frame = _make_response_frame(run_payload)
+    backend._write_frame = unittest.mock.AsyncMock()
+    backend._read_frame = unittest.mock.AsyncMock(return_value=run_response_frame)
 
     with self.assertRaises(RuntimeError) as ctx:
       await backend._start_absorbance_measurement(wavelengths=[600], plate=plate)
@@ -2330,7 +2308,7 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
   """
 
   def _make_backend(self, machine_type=0x0024):
-    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     backend._machine_type_code = machine_type
     backend._last_scan_params = {}
     return backend
@@ -2340,13 +2318,15 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
     captured = []
     run_payload = _make_run_response_payload(total_values=392)
-    run_response = _make_response_frame(run_payload)
+    run_response_frame = _make_response_frame(run_payload)
 
-    async def mock_send(payload, **kw):
-      captured.append(payload)
-      return run_response
+    async def mock_write_frame(frame):
+      # Extract the inner payload from the frame (strip STX, size, header, checksum, CR)
+      inner = _validate_packet_and_extract_payload(frame)
+      captured.append(inner)
 
-    backend.send_command = mock_send
+    backend._write_frame = mock_write_frame
+    backend._read_frame = unittest.mock.AsyncMock(return_value=run_response_frame)
 
     defaults = {"wavelengths": [600], "plate": plate}
     defaults.update(kwargs)
@@ -2573,8 +2553,9 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     )
     # Offset 64 = scan byte (after plate(63) + extra(1))
     # Offset 65 = block[0] = optic_config = 0x02 | 0x30 = 0x32
+    # OEM uses unidirectional=False for non-point scans → 0x0A
     self.assertEqual(payload[64], _scan_mode_byte(
-      StartCorner.TOP_LEFT, unidirectional=True, vertical=True))  # 0x8A
+      StartCorner.TOP_LEFT, unidirectional=False, vertical=True))  # 0x0A
     self.assertEqual(payload[65], 0x32)
 
   async def test_0x0026_optic_bytes_spiral(self):
@@ -2583,10 +2564,10 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     payload = await self._capture_payload(
       backend, well_scan="spiral", well_scan_width=4.0
     )
-    # Offset 64 = scan byte
+    # Offset 64 = scan byte; OEM uses unidirectional=False for non-point
     # Offset 65 = block[0] = optic_config = 0x02 | 0x04 = 0x06
     self.assertEqual(payload[64], _scan_mode_byte(
-      StartCorner.TOP_LEFT, unidirectional=True, vertical=True))  # 0x8A
+      StartCorner.TOP_LEFT, unidirectional=False, vertical=True))  # 0x0A
     self.assertEqual(payload[65], 0x06)
 
   async def test_0x0026_nonpoint_extra_plate_byte(self):
@@ -2600,9 +2581,9 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
       backend, well_scan="orbital", well_scan_width=3.0
     )
     self.assertEqual(payload[15], 0x00)  # extra plate byte after header
-    # Scan byte at offset 64
+    # Scan byte at offset 64; OEM uses unidirectional=False for non-point scans
     self.assertEqual(payload[64], _scan_mode_byte(
-      StartCorner.TOP_LEFT, unidirectional=True, vertical=True))
+      StartCorner.TOP_LEFT, unidirectional=False, vertical=True))
 
   async def test_0x0026_point_scan_mode_byte_at_offset_63(self):
     """Point scan on 0x0026 has NO extra plate byte — scan byte at offset 63."""
@@ -2671,7 +2652,7 @@ class TestFluorescencePayloadEncoding(unittest.IsolatedAsyncioTestCase):
   """
 
   def _make_backend(self):
-    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     backend._machine_type_code = 0x0024
     backend._last_scan_params = {}
     return backend
@@ -2681,13 +2662,14 @@ class TestFluorescencePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
     captured = []
     run_payload = _make_run_response_payload(total_values=96)
-    run_response = _make_response_frame(run_payload)
+    run_response_frame = _make_response_frame(run_payload)
 
-    async def mock_send(payload, **kw):
-      captured.append(payload)
-      return run_response
+    async def mock_write_frame(frame):
+      inner = _validate_packet_and_extract_payload(frame)
+      captured.append(inner)
 
-    backend.send_command = mock_send
+    backend._write_frame = mock_write_frame
+    backend._read_frame = unittest.mock.AsyncMock(return_value=run_response_frame)
 
     defaults = {
       "plate": plate,
@@ -2804,13 +2786,13 @@ class TestReadAbsorbanceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
   """Test that read_absorbance forwards renamed parameters to _start_absorbance_measurement."""
 
   def _make_backend(self):
-    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     backend.timeout = 30
     backend.read_timeout = 20
     backend.write_timeout = 10
     backend.io = unittest.mock.MagicMock()
     backend.io.usb_purge_rx_buffer = unittest.mock.AsyncMock()
-    backend._trace_io_path = None
+
     backend._machine_type_code = 0x0026
     backend._last_scan_params = {}
     backend.enable_temperature_monitoring = unittest.mock.AsyncMock()
@@ -2818,8 +2800,7 @@ class TestReadAbsorbanceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
 
   def _make_status_response(self, busy: bool) -> bytes:
     byte1 = 0x25 if busy else 0x05
-    payload = bytes([0x00, byte1, 0x00, 0x00, 0x00])
-    return _make_response_frame(payload)
+    return bytes([0x00, byte1, 0x00, 0x00, 0x00])  # unframed
 
   async def _run_with_kwargs(self, **kwargs):
     """Call read_absorbance with the given kwargs and return the captured call_args."""
@@ -2827,8 +2808,7 @@ class TestReadAbsorbanceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
     all_wells = plate.get_all_items()
 
-    run_payload = _make_run_response_payload(total_values=24)
-    run_response = _make_response_frame(run_payload)
+    run_response = _make_run_response_payload(total_values=24)  # unframed
 
     backend._start_absorbance_measurement = unittest.mock.AsyncMock(return_value=run_response)
     backend._request_command_status = unittest.mock.AsyncMock(
@@ -2883,13 +2863,13 @@ class TestReadFluorescenceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
   """Test that read_fluorescence forwards renamed parameters to _start_fluorescence_measurement."""
 
   def _make_backend(self):
-    backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     backend.timeout = 30
     backend.read_timeout = 20
     backend.write_timeout = 10
     backend.io = unittest.mock.MagicMock()
     backend.io.usb_purge_rx_buffer = unittest.mock.AsyncMock()
-    backend._trace_io_path = None
+
     backend._machine_type_code = 0x0024
     backend._last_scan_params = {}
     backend.enable_temperature_monitoring = unittest.mock.AsyncMock()
@@ -2962,7 +2942,7 @@ class TestReadingsToGridRowMajorOrder(unittest.TestCase):
       13.0, 14.0,  # row G: G1, G2
       15.0, 16.0,  # row H: H1, H3
     ]
-    grid = CLARIOstarBackend._readings_to_grid(readings, plate, wells)
+    grid = CLARIOstarPlusBackend._readings_to_grid(readings, plate, wells)
 
     # Verify each value lands at the correct position
     self.assertEqual(grid[0][0], 1.0)   # A1
@@ -2994,7 +2974,7 @@ class TestReadingsToGridRowMajorOrder(unittest.TestCase):
       plate.get_well("B1"), plate.get_well("B3"),
     ]
     readings = [10.0, 20.0, 30.0, 40.0]
-    grid = CLARIOstarBackend._readings_to_grid(readings, plate, wells)
+    grid = CLARIOstarPlusBackend._readings_to_grid(readings, plate, wells)
     self.assertEqual(grid[0][0], 10.0)  # A1
     self.assertEqual(grid[0][1], 20.0)  # A2
     self.assertEqual(grid[1][0], 30.0)  # B1
@@ -3005,7 +2985,7 @@ class TestReadingsToGridRowMajorOrder(unittest.TestCase):
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
     wells = [plate.get_well(f"{r}1") for r in "ABCDEFGH"]
     readings = [1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0]
-    grid = CLARIOstarBackend._readings_to_grid(readings, plate, wells)
+    grid = CLARIOstarPlusBackend._readings_to_grid(readings, plate, wells)
     for i in range(8):
       self.assertEqual(grid[i][0], float(i + 1))
 
@@ -3060,7 +3040,7 @@ class TestOEMGroundTruth(unittest.TestCase):
   """
 
   def setUp(self):
-    self.backend = CLARIOstarBackend.__new__(CLARIOstarBackend)
+    self.backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
     self.backend._machine_type_code = 0x0026
     self.backend._last_scan_params = {}
     self.plate = _oem_0026_plate()
@@ -3272,209 +3252,6 @@ class TestOEMGroundTruth(unittest.TestCase):
     )
     self.assertEqual(payload, expected,
       f"\nGot:      {payload.hex()}\nExpected: {expected.hex()}")
-
-
-class TestOEMResponseGroundTruth(unittest.TestCase):
-  """Parse OEM pcap response frames through _parse_absorbance_response and verify
-  structural correctness.
-
-  Each test feeds a real CLARIOstar 0x0026 response frame captured via USBPcap
-  through the response parser and checks:
-    - Correct number of wells and wavelengths parsed
-    - Temperature is plausible (~25°C room temp, schema 0xa9)
-    - Calibration values are non-zero
-    - Cross-capture calibration consistency (same instrument/plate)
-
-  Response hex is imported from tools/pcap_capture_plan._RAW_RESPONSE.
-  """
-
-  @classmethod
-  def setUpClass(cls):
-    # Import response hex from capture plan (single source of truth)
-    import importlib.util
-    spec = importlib.util.spec_from_file_location(
-      "pcap_capture_plan",
-      "tools/pcap_capture_plan.py",
-    )
-    plan = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(plan)
-    cls._responses = {}
-    for name, hex_str in plan._RAW_RESPONSE.items():
-      cls._responses[name] = bytes.fromhex(hex_str.replace(" ", ""))
-
-  def _parse(self, name, num_wavelengths=1):
-    """Parse a named OEM response frame."""
-    return CLARIOstarBackend._parse_absorbance_response(
-      self._responses[name], num_wavelengths
-    )
-
-  def test_a01_96well_point(self):
-    """A01: 96 wells, point, 600nm, 5 flashes."""
-    trans, temp, raw = self._parse("A01_all_none")
-    self.assertEqual(len(trans), 96)
-    self.assertEqual(len(trans[0]), 1)
-    # Temperature may be None if incubation was never active (firmware embeds 0)
-    self.assertGreater(raw["chromatic_cal"][0][0], 0)
-    self.assertGreater(raw["reference_cal"][0], 0)
-    self.assertEqual(len(raw["samples"]), 96)
-    self.assertEqual(len(raw["references"]), 96)
-
-  def test_a02_96well_orbital(self):
-    """A02: 96 wells, orbital 3mm, 600nm, 7 flashes."""
-    trans, temp, raw = self._parse("A02_all_orbital")
-    self.assertEqual(len(trans), 96)
-    self.assertEqual(len(raw["samples"]), 96)
-
-  def test_a03_8well_point(self):
-    """A03: 8 wells (col 1), point, 600nm."""
-    trans, temp, raw = self._parse("A03_col1_none")
-    self.assertEqual(len(trans), 8)
-    self.assertEqual(len(raw["samples"]), 8)
-    self.assertEqual(len(raw["references"]), 8)
-
-  def test_a04_8well_orbital(self):
-    """A04: 8 wells (col 1), orbital 3mm, 600nm."""
-    trans, temp, raw = self._parse("A04_col1_orbital")
-    self.assertEqual(len(trans), 8)
-    self.assertEqual(len(raw["samples"]), 8)
-
-  def test_a05_1well_point(self):
-    """A05: 1 well, point, 600nm."""
-    trans, temp, raw = self._parse("A05_A1_none")
-    self.assertEqual(len(trans), 1)
-    self.assertEqual(len(raw["samples"]), 1)
-    self.assertEqual(len(raw["references"]), 1)
-
-  def test_a06_1well_orbital(self):
-    """A06: 1 well, orbital, 600nm."""
-    trans, temp, raw = self._parse("A06_A1_orbital")
-    self.assertEqual(len(trans), 1)
-    self.assertEqual(len(raw["samples"]), 1)
-
-  def test_a07_48well_point(self):
-    """A07: 48 wells (rows A-D), point, 600nm."""
-    trans, temp, raw = self._parse("A07_half_none")
-    self.assertEqual(len(trans), 48)
-    self.assertEqual(len(raw["samples"]), 48)
-    self.assertEqual(len(raw["references"]), 48)
-
-  def test_b01_96well_spiral_4mm(self):
-    """B01: 96 wells, spiral 4mm, 600nm, 15 flashes."""
-    trans, temp, raw = self._parse("B01_spiral_4mm")
-    self.assertEqual(len(trans), 96)
-    self.assertEqual(len(raw["samples"]), 96)
-
-  def test_b02_96well_spiral_3mm(self):
-    """B02: 96 wells, spiral 3mm, 600nm, 15 flashes."""
-    trans, temp, raw = self._parse("B02_spiral_3mm")
-    self.assertEqual(len(trans), 96)
-    self.assertEqual(len(raw["samples"]), 96)
-
-  def test_a08_48well_orbital(self):
-    """A08: 48 wells (rows A-D), orbital 3mm, 600nm."""
-    trans, temp, raw = self._parse("A08_half_orbital")
-    self.assertEqual(len(trans), 48)
-    self.assertEqual(len(raw["samples"]), 48)
-
-  def test_d02_dual_wavelength(self):
-    """D02: 96 wells, point, 450nm+660nm dual wavelength.
-
-    Firmware always reports wavelengths_in_resp=1; second wavelength appears
-    as an extra data group (larger payload, more extra_groups).
-    """
-    trans, temp, raw = self._parse("D02_dual")
-    self.assertEqual(len(trans), 96)
-    # Payload is larger than single-wl (1997B vs 1609B for A01)
-    resp = self._responses["D02_dual"]
-    payload = resp[4:-3]
-    self.assertGreater(len(payload), 1800)
-
-  def test_d03_triple_wavelength(self):
-    """D03: 96 wells, point, 450nm+600nm+660nm triple wavelength."""
-    trans, temp, raw = self._parse("D03_triple")
-    self.assertEqual(len(trans), 96)
-    resp = self._responses["D03_triple"]
-    payload = resp[4:-3]
-    self.assertGreater(len(payload), 2200)  # larger than dual
-
-  def test_d04_dual_orbital(self):
-    """D04: 96 wells, orbital, 450nm+660nm dual wavelength."""
-    trans, temp, raw = self._parse("D04_dual_orbital")
-    self.assertEqual(len(trans), 96)
-
-  def test_f01_orbital_shake_300rpm(self):
-    """F01: 96 wells, orbital 3mm, 600nm, orbital shake 300RPM 5s."""
-    trans, temp, raw = self._parse("F01_orb_300_5")
-    self.assertEqual(len(trans), 96)
-    self.assertEqual(len(raw["samples"]), 96)
-
-  def test_i01_temperature_29C(self):
-    """I01: 96 wells, point, 600nm, temperature target 29°C."""
-    trans, temp, raw = self._parse("I01_temp_29C")
-    self.assertEqual(len(trans), 96)
-    # Temperature should be reported (incubation was active)
-    self.assertIsNotNone(temp, "Expected temperature with 29°C target")
-    self.assertAlmostEqual(temp, 29.0, delta=2.0)
-
-  def test_i02_temperature_29C_orbital(self):
-    """I02: 96 wells, orbital, 600nm, temperature target 29°C."""
-    trans, temp, raw = self._parse("I02_temp_29C_orbital")
-    self.assertEqual(len(trans), 96)
-    self.assertIsNotNone(temp, "Expected temperature with 29°C target")
-    self.assertAlmostEqual(temp, 29.0, delta=2.0)
-
-  def test_h01_spectrometer_scan(self):
-    """H01: spectrometer scan 300-700nm, 1nm step, 96 wells.
-
-    Spectrometer responses are much larger (~53KB) and report wavelengths_in_resp=1
-    with the multi-wavelength data in extra groups.
-    """
-    trans, temp, raw = self._parse("H01_spec_300_700_1")
-    self.assertEqual(len(trans), 96)
-    resp = self._responses["H01_spec_300_700_1"]
-    payload = resp[4:-3]
-    self.assertGreater(len(payload), 50000)  # spectrometer responses are huge
-
-  def test_h04_spectrometer_col1(self):
-    """H04: spectrometer scan 300-700nm, 1nm step, col 1 only."""
-    trans, temp, raw = self._parse("H04_spec_col1")
-    self.assertEqual(len(trans), 8)
-    resp = self._responses["H04_spec_col1"]
-    payload = resp[4:-3]
-    self.assertGreater(len(payload), 10000)
-
-  def test_all_responses_parse_without_error(self):
-    """Every response in _RAW_RESPONSE should parse without raising.
-
-    Firmware always reports wavelengths_in_resp=1 regardless of actual wavelengths.
-    Multi-wavelength data appears as extra groups, auto-discovered by parser.
-    """
-    for name in self._responses:
-      with self.subTest(capture=name):
-        trans, temp, raw = self._parse(name)
-        self.assertGreater(len(trans), 0)
-
-  def test_calibration_consistency_across_96well_captures(self):
-    """Calibration values should be similar across 96-well captures from same instrument."""
-    import math
-    names_96 = ["A01_all_none", "A02_all_orbital", "B01_spiral_4mm", "B02_spiral_3mm"]
-    refs = []
-    for name in names_96:
-      _, _, raw = self._parse(name)
-      refs.append(raw["reference_cal"][0])
-      self.assertGreater(raw["reference_cal"][0], 0)
-    # All within 1 order of magnitude
-    log_range = math.log10(max(refs)) - math.log10(min(refs))
-    self.assertLess(log_range, 1.0, f"Reference cal spread too large: {refs}")
-
-  def test_temperature_plausible(self):
-    """All captures done at room temperature — expect ~15-40°C."""
-    for name in self._responses:
-      with self.subTest(capture=name):
-        _, temp, _ = self._parse(name)
-        if temp is not None:
-          self.assertGreater(temp, 15.0, f"{name}: temp {temp} too low")
-          self.assertLess(temp, 40.0, f"{name}: temp {temp} too high")
 
 
 if __name__ == "__main__":

@@ -8,20 +8,20 @@ Pure stdlib — no external dependencies.
 
 Usage as a module::
 
-    from pylabrobot.plate_reading.bmg_labtech.clariostar_protocol import (
+    from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_protocol import (
         extract_frames, decode_frame,
     )
 
 Usage as a CLI::
 
     # Extract frames from pcap
-    python -m pylabrobot.plate_reading.bmg_labtech.clariostar_protocol extract <path>
+    python -m pylabrobot.plate_reading.bmg_labtech.clariostar_plus_protocol extract <path>
 
     # Decode extracted frames
-    python -m pylabrobot.plate_reading.bmg_labtech.clariostar_protocol decode <path>
+    python -m pylabrobot.plate_reading.bmg_labtech.clariostar_plus_protocol decode <path>
 
     # Both steps at once
-    python -m pylabrobot.plate_reading.bmg_labtech.clariostar_protocol both <path>
+    python -m pylabrobot.plate_reading.bmg_labtech.clariostar_plus_protocol both <path>
 """
 
 import os

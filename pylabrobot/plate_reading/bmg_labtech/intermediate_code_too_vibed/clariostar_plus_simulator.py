@@ -2,27 +2,38 @@ import datetime
 import math
 import random
 import struct
-import warnings
-from typing import Dict, List, Literal, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
-from pylabrobot.plate_reading.backend import PlateReaderBackend
-from pylabrobot.plate_reading.bmg_labtech.clariostar_backend import (
-  CLARIOstarBackend,
-  CLARIOstarConfig,
-  _frame,
+from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
+  CLARIOstarPlusBackend,
+  CLARIOstarPlusConfig,
+  CommandGroup,
+  Command,
+  _wrap_payload,
+  _validate_packet_and_extract_payload,
+  _wrap_payload as _frame,  # backward compat
 )
-from pylabrobot.plate_reading.bmg_labtech.clariostar_protocol import decode_frame
+from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_protocol import decode_frame
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well
 
 
-class CLARIOstarSimulatorBackend(PlateReaderBackend):
+class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
   """A simulator backend for the CLARIOstar plate reader.
+
+  Inherits from ``CLARIOstarPlusBackend`` so that all real command-building code
+  (plate geometry encoding, scan modes, wavelength configs, shaker parameters)
+  runs through the production path. The I/O layer (``send_command``) is
+  overridden to print the framed command bytes and return canned responses,
+  following the same pattern as ``STARChatterboxBackend``.
+
+  When ``verbose=True``, every command sent to the instrument is printed as
+  a hex dump with decoded byte-level annotations.
 
   Generates realistic random data from configurable mean/CV per modality,
   or accepts explicit mock data passed via ``**backend_kwargs``.
 
-  Return formats match the real ``CLARIOstarBackend`` exactly.
+  Return formats match the real ``CLARIOstarPlusBackend`` exactly.
 
   Supports ``wait=False`` in read methods (returns None immediately) and
   ``collect_*_measurement()`` for deferred retrieval, mirroring the real backend.
@@ -44,14 +55,29 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     luminescence_cv: float = 0.10,
     seed: Optional[int] = None,
     verbose: bool = False,
+    machine_type_code: int = 0x0024,
   ):
+    # Skip CLARIOstarPlusBackend.__init__() which creates an FTDI device.
+    # Initialize all state attributes that the parent expects.
+    self.timeout = 150
+    self.read_timeout = 20
+    self.write_timeout = 10
+    self._eeprom_data: Optional[bytes] = None
+    self._firmware_data: Optional[bytes] = None
+    self._incubation_target: float = 0.0
+    self._last_scan_params: Dict = {}
+    self._machine_type_code: int = machine_type_code
+    self._measurement_cache: list = []
+    self._measurement_counter: int = 0
+    self._pending_measurement = None
+
+    # Simulator-specific attributes
     self.absorbance_mean = absorbance_mean
     self.absorbance_cv = absorbance_cv
     self.fluorescence_mean = fluorescence_mean
     self.fluorescence_cv = fluorescence_cv
     self.luminescence_mean = luminescence_mean
     self.luminescence_cv = luminescence_cv
-    self._incubation_target: float = 0.0
     self._rng = random.Random(seed)
     self._is_open = False
     self._plate_in_drawer = False
@@ -60,8 +86,8 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
   def set_verbose(self, enabled: bool = True) -> None:
     """Enable or disable verbose mode.
 
-    When enabled, binary frames are printed with decoded byte-level annotations
-    for every simulated measurement response.
+    When enabled, every command frame is printed as a hex dump with decoded
+    byte-level annotations, and measurement response frames are also printed.
     """
     self._verbose = enabled
 
@@ -72,65 +98,209 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       return self._incubation_target
     return self._AMBIENT_TEMP
 
+  # === Life cycle ===
+
   async def setup(self) -> None:
-    pass
+    # Build synthetic EEPROM + firmware frames so get_machine_config() works.
+    self._eeprom_data = self._build_mock_eeprom_frame()
+    self._firmware_data = self._build_mock_firmware_frame()
 
   async def stop(self) -> None:
     pass
 
-  async def open(self) -> None:
-    self._is_open = True
+  # === I/O overrides (the chatterbox core) ===
 
-  async def close(self, plate: Optional[Plate] = None) -> None:
-    self._is_open = False
-    if plate is not None:
-      self._plate_in_drawer = True
+  async def send_command(
+    self,
+    command_group: "CommandGroup",
+    command: "Optional[Command]" = None,
+    *,
+    payload: bytes = b"",
+    read_timeout=None,
+  ) -> bytes:
+    """Print the framed command bytes and return a canned unframed response.
 
-  async def request_machine_status(self) -> Dict[str, bool]:
-    """Return simulated status flags reflecting current simulator state."""
-    return {
-      "standby": False,
-      "valid": True,
-      "busy": False,
-      "running": False,
-      "unread_data": False,
-      "initialized": True,
-      "lid_open": False,
-      "drawer_open": self._is_open,
-      "plate_detected": self._plate_in_drawer,
-      "z_probed": False,
-      "active": False,
-      "filter_cover_open": False,
-    }
+    Matches the new ``CLARIOstarPlusBackend.send_command()`` signature.
+    """
+    if command is not None:
+      data = bytes([command_group, command]) + payload
+    else:
+      data = bytes([command_group]) + payload
+    cmd = _wrap_payload(data)
+    print(f"\n[SIM] SEND ({len(cmd):>4d} B): {cmd.hex(' ')}")
+    if self._verbose:
+      try:
+        ann = decode_frame("SEND", cmd)
+        print(ann.render())
+      except Exception:
+        pass
+    return self._mock_response(data)
 
-  async def request_drawer_open(self) -> bool:
-    """Request whether the drawer is currently open."""
-    return (await self.request_machine_status())["drawer_open"]
+  async def _write_frame(self, frame: bytes) -> None:
+    """Capture written frames for temperature/measurement commands that bypass send_command."""
+    print(f"\n[SIM] WRITE ({len(frame):>4d} B): {frame.hex(' ')}")
+    if self._verbose:
+      try:
+        ann = decode_frame("SEND", frame)
+        print(ann.render())
+      except Exception:
+        pass
+    # Extract the payload from the frame for mock dispatch
+    try:
+      inner_payload = _validate_packet_and_extract_payload(frame)
+    except Exception:
+      inner_payload = frame[4:-4] if len(frame) >= 8 else frame
+    self._last_written_payload = inner_payload
 
-  async def request_plate_detected(self) -> bool:
-    """Request whether a plate is detected in the drawer."""
-    return (await self.request_machine_status())["plate_detected"]
+  async def _read_frame(self, timeout=None) -> bytes:
+    """Return a canned framed response for the last written payload."""
+    inner_payload = getattr(self, "_last_written_payload", b"")
+    response_payload = self._mock_response(inner_payload)
+    # Wrap the unframed response back into a frame for _validate_packet_and_extract_payload
+    return _wrap_payload(response_payload)
 
-  async def request_busy(self) -> bool:
-    """Request whether the machine is currently executing a command."""
-    return (await self.request_machine_status())["busy"]
+  async def read_resp(self, timeout=None) -> bytes:
+    return await self._read_frame(timeout=timeout)
 
-  async def request_initialization_status(self) -> bool:
-    """Request whether the instrument has been initialized."""
-    return (await self.request_machine_status())["initialized"]
+  async def _drain_buffer(self):
+    pass
 
-  def get_eeprom_data(self) -> Optional[bytes]:
-    """Return None (no physical EEPROM in simulation)."""
-    return None
+  async def get_stat(self):
+    return "0x0000"
 
-  def get_machine_config(self) -> CLARIOstarConfig:
-    """Return a synthetic CLARIOstarConfig for the simulated instrument."""
-    return CLARIOstarConfig(
+  async def _wait_for_ready_and_return(self, ret, timeout=None):
+    return ret
+
+  async def _wait_for_ready_with_progress(
+    self,
+    run_response,
+    on_progress=None,
+    poll_interval: float = 3.0,
+    timeout=None,
+  ):
+    return run_response
+
+  # === Canned response dispatch ===
+
+  def _mock_response(self, payload: bytes) -> bytes:
+    """Return a valid unframed response payload based on the command payload."""
+    if not payload:
+      return self._build_status_response()
+
+    family = payload[0]
+
+    if family == CommandGroup.STATUS:
+      return self._build_hw_status_response()
+    elif family == CommandGroup.HW_STATUS:
+      return self._build_hw_status_response()
+    elif family == CommandGroup.INITIALIZE:
+      return self._build_status_response()
+    elif family == CommandGroup.TRAY:
+      if len(payload) > 1 and payload[1] == Command.TRAY_OPEN:
+        self._is_open = True
+      else:
+        self._is_open = False
+      return self._build_status_response()
+    elif family == CommandGroup.REQUEST:
+      sub = payload[1] if len(payload) > 1 else 0
+      if sub == Command.REQUEST_EEPROM:
+        return self._eeprom_data or self._build_mock_eeprom_payload()
+      elif sub == Command.REQUEST_FIRMWARE_INFO:
+        return self._firmware_data or self._build_mock_firmware_payload()
+      elif sub == Command.REQUEST_MEASUREMENT:
+        return self._build_status_response()
+      elif sub == Command.REQUEST_USAGE_COUNTERS:
+        return self._build_mock_usage_payload()
+      else:
+        return self._build_status_response()
+    elif family == CommandGroup.TEMPERATURE:
+      return self._build_status_response()
+    elif family == 0x04 or len(payload) > 20:  # Measurement run
+      return self._build_run_accepted_response()
+    else:
+      return self._build_status_response()
+
+  def _build_status_response(self) -> bytes:
+    """Build a 5-byte unframed status response: valid=T, initialized=T, not busy."""
+    status = bytearray(5)
+    status[1] = 0x01  # VALID
+    status[3] = 0x20  # INITIALIZED
+    if self._is_open:
+      status[3] |= 0x01  # OPEN
+    if self._plate_in_drawer:
+      status[3] |= 0x02  # PLATE_DETECTED
+    return bytes(status)
+
+  def _build_hw_status_response(self) -> bytes:
+    """Build a 15-byte unframed status response with temperature and state flags."""
+    status = bytearray(15)
+    status[1] = 0x01  # VALID
+    status[3] = 0x20  # INITIALIZED
+    if self._is_open:
+      status[3] |= 0x01  # OPEN
+    if self._plate_in_drawer:
+      status[3] |= 0x02  # PLATE_DETECTED
+    temp_raw = round(self._current_temperature * 10)
+    status[11:13] = temp_raw.to_bytes(2, "big")  # bottom plate temp
+    status[13:15] = temp_raw.to_bytes(2, "big")  # top plate temp
+    return bytes(status)
+
+  def _build_run_accepted_response(self) -> bytes:
+    """Build a run-accepted unframed response (byte 0 = 0x03, 14 payload bytes)."""
+    payload = bytearray(14)
+    payload[0] = 0x03  # accepted echo
+    payload[12:14] = (100).to_bytes(2, "big")  # dummy total values
+    return bytes(payload)
+
+  def _build_mock_eeprom_payload(self) -> bytes:
+    """Build a synthetic 264-byte unframed EEPROM response payload."""
+    payload = bytearray(264)
+    payload[0] = 0x07  # subcommand echo
+    payload[1] = 0x05  # family echo
+    payload[2:4] = self._machine_type_code.to_bytes(2, "big")
+    payload[11] = 0x01  # has_absorbance
+    payload[12] = 0x01  # has_fluorescence
+    payload[13] = 0x01  # has_luminescence
+    return bytes(payload)
+
+  # Keep old name as alias
+  _build_mock_eeprom_frame = _build_mock_eeprom_payload
+
+  def _build_mock_firmware_payload(self) -> bytes:
+    """Build a synthetic 32-byte unframed firmware info response payload."""
+    payload = bytearray(32)
+    payload[0] = 0x09  # subcommand echo
+    payload[1] = 0x05  # family echo
+    payload[6:8] = (1350).to_bytes(2, "big")  # version 1.35
+    date_str = b"Jan 01 2025\x00"
+    payload[8:8 + len(date_str)] = date_str
+    time_str = b"00:00:00"
+    payload[20:20 + len(time_str)] = time_str
+    return bytes(payload)
+
+  # Keep old name as alias
+  _build_mock_firmware_frame = _build_mock_firmware_payload
+
+  def _build_mock_usage_payload(self) -> bytes:
+    """Build a synthetic 43-byte unframed usage counters response payload."""
+    payload = bytearray(43)
+    payload[0] = 0x21  # subcommand echo
+    payload[1] = 0x05  # family echo
+    return bytes(payload)
+
+  # Keep old name as alias
+  _build_mock_usage_response = _build_mock_usage_payload
+
+  # === Config / device info overrides ===
+
+  def get_machine_config(self) -> CLARIOstarPlusConfig:
+    """Return a synthetic CLARIOstarPlusConfig for the simulated instrument."""
+    return CLARIOstarPlusConfig(
       serial_number="SIM-0000",
       firmware_version="1.35",
       firmware_build_timestamp="Jan 01 2025 00:00:00",
       model_name="CLARIOstar Plus (Simulator)",
-      machine_type_code=0x0024,
+      machine_type_code=self._machine_type_code,
       has_absorbance=True,
       has_fluorescence=True,
       has_luminescence=True,
@@ -142,65 +312,22 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       num_filter_slots=11,
     )
 
+  def get_eeprom_data(self) -> Optional[bytes]:
+    """Return None (no physical EEPROM in simulation)."""
+    return None
+
   def dump_eeprom_str(self) -> Optional[str]:
     """Return None (no physical EEPROM in simulation)."""
     return None
 
-  async def request_usage_counters(self) -> Dict[str, int]:
-    """Return synthetic usage counters for the simulated instrument."""
-    return {
-      "flashes": 0, "testruns": 0, "wells": 0, "well_movements": 0,
-      "active_time_s": 0, "shake_time_s": 0,
-      "pump1_usage": 0, "pump2_usage": 0, "alpha_time": 0,
-    }
+  # === Status / drawer / temperature overrides ===
 
-  _MAX_TEMPERATURE: float = 45.0
+  async def close(self, plate: Optional[Plate] = None) -> None:
+    await super().close(plate)
+    if plate is not None:
+      self._plate_in_drawer = True
 
-  async def start_temperature_control(self, temperature: float) -> None:
-    """Start active temperature control (simulated incubation).
-
-    Raises:
-      ValueError: If temperature is outside the 0–45 °C range.
-    """
-    if not 0 <= temperature <= self._MAX_TEMPERATURE:
-      raise ValueError(
-        f"Temperature must be between 0 and {self._MAX_TEMPERATURE} °C, got {temperature}."
-      )
-
-    heater_overshoot_tolerance = 0.5
-    if temperature > 0 and temperature < self._current_temperature - heater_overshoot_tolerance:
-      warnings.warn(
-        f"Target {temperature} °C is below the current temperature "
-        f"({self._current_temperature} °C). The CLARIOstar has no active cooling "
-        f"and will not reach this target unless the ambient temperature drops.",
-        stacklevel=2,
-      )
-
-    self._incubation_target = temperature
-
-  async def enable_temperature_monitoring(self) -> None:
-    """Enable temperature sensor monitoring without heating (no-op in simulation)."""
-    pass
-
-  async def stop_temperature_control(self) -> None:
-    """Switch off the incubator and re-enable passive temperature monitoring."""
-    self._incubation_target = 0.0
-    await self.enable_temperature_monitoring()
-
-  async def measure_temperature(
-    self,
-    sensor: Literal["mean", "bottom", "top"] = "bottom",
-  ) -> float:
-    """Return the current simulated incubator temperature.
-
-    Args:
-      sensor: Which heating plate sensor to read. "bottom", "top", or "mean".
-        In simulation all return the same value.
-
-    Returns:
-      Temperature in °C.
-    """
-    return self._current_temperature
+  # === Mock data generation ===
 
   def _generate_grid(self, rows: int, cols: int, mean: float, cv: float) -> List[List[float]]:
     """Generate a rows x cols grid of random values drawn from N(mean, mean*cv)."""
@@ -213,7 +340,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     wells: List[Well],
     plate: Plate,
   ) -> List[List[Optional[float]]]:
-    """Mask unselected wells to None, matching CLARIOstarBackend behavior."""
+    """Mask unselected wells to None, matching CLARIOstarPlusBackend behavior."""
     rows = plate.num_items_y
     cols = plate.num_items_x
     masked: List[List[Optional[float]]] = [[None] * cols for _ in range(rows)]
@@ -222,6 +349,8 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       if r < rows and c < cols:
         masked[r][c] = grid[r][c]
     return masked
+
+  # === Absorbance ===
 
   async def read_absorbance(
     self,
@@ -238,6 +367,14 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     mock_data = backend_kwargs.pop("mock_data", None)
     mean = backend_kwargs.pop("mean", self.absorbance_mean)
     cv = backend_kwargs.pop("cv", self.absorbance_cv)
+
+    # Generate and print the command bytes the real backend would send.
+    try:
+      await self._start_absorbance_measurement(
+        wavelengths=wavelengths, plate=plate, wells=wells,
+      )
+    except Exception:
+      pass  # Don't let command generation errors affect mock flow
 
     if not wait:
       # Stash params for deferred collection
@@ -262,8 +399,8 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
        sample = T * c_hi * (ref / r_hi).
     3. Build a binary response frame via ``build_absorbance_response()``.
     4. If verbose, decode and print the frame.
-    5. Parse through ``CLARIOstarBackend._parse_absorbance_response()``.
-    6. Convert parsed transmittance → OD/transmittance/raw dicts.
+    5. Parse through ``CLARIOstarPlusBackend._parse_absorbance_response()``.
+    6. Convert parsed transmittance -> OD/transmittance/raw dicts.
     """
     # mock_data bypass: return the grid directly (no binary round-trip)
     if mock_data is not None:
@@ -280,7 +417,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     references = [self._rng.gauss(r_hi, r_hi * 0.01) for _ in range(num_wells)]
 
     # Generate target OD values and reverse-engineer sample detector counts
-    # Layout: wells × wavelengths in row-major order (well0_wl0, well1_wl0, ..., well0_wl1, ...)
+    # Layout: wells x wavelengths in row-major order (well0_wl0, well1_wl0, ..., well0_wl1, ...)
     samples: List[float] = []
     well_positions = sorted(
       [(w.get_row(), w.get_column()) for w in wells],
@@ -315,16 +452,20 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       schema=schema,
     )
 
-    # Verbose: decode and print the binary frame
+    # Verbose: decode and print the binary payload
     if self._verbose:
-      ann = decode_frame("RECV", frame)
-      label = f"ABSORBANCE_RESPONSE ({len(frame)} bytes, " \
-              f"{num_wl} wl × {num_wells} wells, report={report})"
-      print(f"\n[SIM] {label}")
-      print(ann.render())
+      framed = _wrap_payload(frame)
+      try:
+        ann = decode_frame("RECV", framed)
+        label = f"ABSORBANCE_RESPONSE ({len(frame)} bytes payload, " \
+                f"{num_wl} wl x {num_wells} wells, report={report})"
+        print(f"\n[SIM] {label}")
+        print(ann.render())
+      except Exception:
+        pass
 
-    # Parse through the real backend parser
-    transmission_data, temperature, raw = CLARIOstarBackend._parse_absorbance_response(
+    # Parse through the real backend parser (takes unframed payload)
+    transmission_data, temperature, raw = CLARIOstarPlusBackend._parse_absorbance_response(
       frame, num_wl,
     )
 
@@ -342,7 +483,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
           )
         results.append({
           "wavelength": wl,
-          "data": self._readings_to_grid(raw_for_wl, plate, wells),
+          "data": self._sim_readings_to_grid(raw_for_wl, plate, wells),
           "references": raw["references"],
           "chromatic_cal": raw["chromatic_cal"][wl_idx],
           "reference_cal": raw["reference_cal"],
@@ -375,7 +516,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
 
         results.append({
           "wavelength": wl,
-          "data": self._readings_to_grid(final_vals, plate, wells),
+          "data": self._sim_readings_to_grid(final_vals, plate, wells),
           "temperature": temperature if temperature is not None else self._current_temperature,
           "time": timestamp,
         })
@@ -403,7 +544,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     return results
 
   @staticmethod
-  def _readings_to_grid(
+  def _sim_readings_to_grid(
     readings: List[Optional[float]],
     plate: Plate,
     wells: List[Well],
@@ -437,6 +578,8 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       plate, wells, wavelengths, report, None, self.absorbance_mean, self.absorbance_cv,
     )
 
+  # === Fluorescence ===
+
   async def read_fluorescence(
     self,
     plate: Plate,
@@ -450,6 +593,17 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     mock_data = backend_kwargs.pop("mock_data", None)
     mean = backend_kwargs.pop("mean", self.fluorescence_mean)
     cv = backend_kwargs.pop("cv", self.fluorescence_cv)
+
+    # Generate and print the command bytes the real backend would send.
+    try:
+      await self._start_fluorescence_measurement(
+        excitation_wavelength=excitation_wavelength,
+        emission_wavelength=emission_wavelength,
+        focal_height=focal_height,
+        plate=plate, wells=wells,
+      )
+    except Exception:
+      pass
 
     if not wait:
       self._pending_fluorescence = {
@@ -500,6 +654,8 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       None, self.fluorescence_mean, self.fluorescence_cv,
     )
 
+  # === Luminescence ===
+
   async def read_luminescence(
     self,
     plate: Plate,
@@ -511,6 +667,14 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     mock_data = backend_kwargs.pop("mock_data", None)
     mean = backend_kwargs.pop("mean", self.luminescence_mean)
     cv = backend_kwargs.pop("cv", self.luminescence_cv)
+
+    # Generate and print the command bytes the real backend would send.
+    try:
+      await self._start_luminescence_measurement(
+        focal_height=focal_height, plate=plate, wells=wells,
+      )
+    except Exception:
+      pass
 
     if not wait:
       self._pending_luminescence = {
@@ -550,6 +714,8 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       plate, wells, None, self.luminescence_mean, self.luminescence_cv,
     )
 
+  # === Binary response builder ===
+
   @staticmethod
   def build_absorbance_response(
     num_wells: int,
@@ -563,7 +729,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
   ) -> bytes:
     """Build a binary absorbance response frame matching firmware format.
 
-    The returned bytes can be parsed by ``CLARIOstarBackend._parse_absorbance_response()``.
+    The returned bytes can be parsed by ``CLARIOstarPlusBackend._parse_absorbance_response()``.
 
     Args:
       num_wells: Number of wells in the measurement.
@@ -576,7 +742,7 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
       schema: Schema byte. 0x29 = normal, 0xA9 = incubation active/was active.
 
     Returns:
-      Framed binary response bytes.
+      Unframed binary response payload bytes.
     """
     # 36-byte header
     # Bytes 0-1: command echo (0x02 = GET_DATA, 0x05 = DATA/QUERY family)
@@ -618,4 +784,4 @@ class CLARIOstarSimulatorBackend(PlateReaderBackend):
     # Trailing byte
     payload += b"\x00"
 
-    return _frame(bytes(payload))
+    return bytes(payload)
