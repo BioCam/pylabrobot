@@ -111,7 +111,8 @@ def _make_backend() -> CLARIOstarPlusBackend:
   backend.timeout = 5
   backend.read_timeout = 1
   backend._eeprom_data = None
-  backend._firmware_data = None
+  backend._firmware_version = ""
+  backend._firmware_build_timestamp = ""
   backend._machine_type_code = 0
   return backend
 
@@ -368,6 +369,120 @@ class TestConvenienceStatusQueries(unittest.TestCase):
     mock: MockFTDI = backend.io  # type: ignore[assignment]
     mock.queue_response(self.STATUS_IDLE)
     self.assertFalse(asyncio.run(backend.request_busy()))
+
+
+# ---------------------------------------------------------------------------
+# Real hardware capture — firmware info (from CLARIOstar Plus 430-2621)
+# ---------------------------------------------------------------------------
+
+# 32-byte unframed payload for command 0x05 0x09.
+# Byte map:
+#   0:     subcommand echo (0x0a = 0x09 + 1)
+#   1:     command family echo (0x05)
+#   2-3:   machine type code (0x0024)
+#   4-5:   unknown (0x0000)
+#   6-7:   firmware version × 1000 (0x0546 = 1350 → "1.35")
+#   8-19:  build date "Nov 20 2020\0"
+#   20-27: build time "11:51:21\0"
+#   28-31: unknown
+_REAL_FIRMWARE_PAYLOAD = bytes([
+  0x0a, 0x05, 0x00, 0x24, 0x00, 0x00, 0x05, 0x46,
+  0x4e, 0x6f, 0x76, 0x20, 0x32, 0x30, 0x20, 0x32,
+  0x30, 0x32, 0x30, 0x00, 0x31, 0x31, 0x3a, 0x35,
+  0x31, 0x3a, 0x32, 0x31, 0x00, 0x00, 0x01, 0x00,
+])
+
+
+class TestFirmwareInfoParsing(unittest.TestCase):
+  """Verify firmware info parsing with real hardware capture data."""
+
+  def test_parse_real_firmware_unframed(self):
+    """Parse the real 32-byte unframed firmware payload from 430-2621."""
+    from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import CLARIOstarPlusConfig
+    cfg = CLARIOstarPlusConfig.parse_firmware_info(_REAL_FIRMWARE_PAYLOAD)
+    self.assertEqual(cfg.firmware_version, "1.35")
+    self.assertEqual(cfg.firmware_build_timestamp, "Nov 20 2020 11:51:21")
+
+  def test_parse_real_firmware_framed(self):
+    """Parse the real payload wrapped in a frame (as stored by request_firmware_info)."""
+    from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import CLARIOstarPlusConfig
+    framed = _wrap_payload(_REAL_FIRMWARE_PAYLOAD)
+    cfg = CLARIOstarPlusConfig.parse_firmware_info(framed)
+    self.assertEqual(cfg.firmware_version, "1.35")
+    self.assertEqual(cfg.firmware_build_timestamp, "Nov 20 2020 11:51:21")
+
+  def test_parse_firmware_too_short(self):
+    """Payload shorter than 28 bytes returns empty defaults."""
+    from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import CLARIOstarPlusConfig
+    cfg = CLARIOstarPlusConfig.parse_firmware_info(b"\x0a\x05\x00\x24\x00\x00")
+    self.assertEqual(cfg.firmware_version, "")
+    self.assertEqual(cfg.firmware_build_timestamp, "")
+
+  def test_end_to_end_via_mock_ftdi(self):
+    """Simulate the full path: request_firmware_info returns parsed dict,
+    caller (setup) stores values, request_machine_config reads them."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    # Queue firmware response + status-ready (send_command uses wait=True)
+    STATUS_READY = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
+    mock.queue_response(_wrap_payload(_REAL_FIRMWARE_PAYLOAD), STATUS_READY)
+
+    # request_firmware_info returns parsed values (no implicit caching)
+    fw = asyncio.run(backend.request_firmware_info())
+    self.assertEqual(fw["firmware_version"], "1.35")
+    self.assertEqual(fw["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
+
+    # Caller stores — same as setup() does
+    backend._firmware_version = fw["firmware_version"]
+    backend._firmware_build_timestamp = fw["firmware_build_timestamp"]
+
+    # Set up EEPROM and verify request_machine_config reads cached firmware info
+    eeprom_payload = bytearray(20)
+    eeprom_payload[2:4] = (0x0024).to_bytes(2, "big")
+    eeprom_payload[11] = 1  # absorbance
+    backend._eeprom_data = bytes(eeprom_payload)
+
+    config = backend.request_machine_config()
+    self.assertIsNotNone(config)
+    self.assertEqual(config.firmware_version, "1.35")
+    self.assertEqual(config.firmware_build_timestamp, "Nov 20 2020 11:51:21")
+    self.assertEqual(config.machine_type_code, 0x0024)
+
+
+class TestAvailableDetectionModes(unittest.TestCase):
+  """Verify request_available_detection_modes derives modes from EEPROM config."""
+
+  def test_all_modes(self):
+    backend = _make_backend()
+    eeprom = bytearray(20)
+    eeprom[2:4] = (0x0024).to_bytes(2, "big")
+    eeprom[11] = 1  # absorbance
+    eeprom[12] = 1  # fluorescence
+    eeprom[13] = 1  # luminescence
+    eeprom[14] = 1  # alpha_technology
+    backend._eeprom_data = bytes(eeprom)
+
+    modes = backend.request_available_detection_modes()
+    self.assertEqual(modes, ["absorbance", "fluorescence", "luminescence", "alpha_technology"])
+
+  def test_partial_modes(self):
+    backend = _make_backend()
+    eeprom = bytearray(20)
+    eeprom[2:4] = (0x0024).to_bytes(2, "big")
+    eeprom[11] = 1  # absorbance
+    eeprom[12] = 0  # no fluorescence
+    eeprom[13] = 1  # luminescence
+    eeprom[14] = 0  # no alpha
+    backend._eeprom_data = bytes(eeprom)
+
+    modes = backend.request_available_detection_modes()
+    self.assertEqual(modes, ["absorbance", "luminescence"])
+
+  def test_no_eeprom(self):
+    backend = _make_backend()
+    modes = backend.request_available_detection_modes()
+    self.assertEqual(modes, [])
 
 
 if __name__ == "__main__":

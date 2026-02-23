@@ -157,15 +157,22 @@ class CLARIOstarPlusConfig:
   14      1       has_alpha_technology (bool)
   ======  ======  ===================================================
 
-  **Firmware info response (``0x05 0x09``, 32-byte payload):**
+  **Firmware info response (``0x05 0x09``, 32-byte unframed payload):**
 
   ======  ======  ===================================================
   Offset  Size    Field
   ======  ======  ===================================================
-  6-7     2       Firmware version x1000 (uint16 BE)
-  8-19    12      Build date, null-terminated ASCII
-  20-27   8       Build time, null-terminated ASCII
+  0       1       Subcommand echo (``0x0a`` = cmd + 1)
+  1       1       Command family echo (``0x05``)
+  2-3     2       Machine type code (uint16 BE, same as EEPROM)
+  4-5     2       Unknown (always ``0x0000``)
+  6-7     2       Firmware version × 1000 (uint16 BE, e.g. ``0x0546`` = 1.35)
+  8-19    12      Build date, null-terminated ASCII (e.g. ``"Nov 20 2020"``)
+  20-27   8       Build time, null-terminated ASCII (e.g. ``"11:51:21"``)
+  28-31   4       Unknown
   ======  ======  ===================================================
+
+  Date and time are merged into ``firmware_build_timestamp``.
   """
 
   # Model type code -> (name, monochromator_range, num_filter_slots)
@@ -351,7 +358,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     self.timeout = timeout
     self.read_timeout = read_timeout
     self._eeprom_data: Optional[bytes] = None
-    self._firmware_data: Optional[bytes] = None
+    self._firmware_version: str = ""
+    self._firmware_build_timestamp: str = ""
     self._machine_type_code: int = 0
 
   # === Life cycle ===
@@ -365,15 +373,27 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     await self.initialize()
     await self.request_eeprom_data()
-    await self.request_firmware_info()
 
-    # Auto-detect machine type from EEPROM for payload format selection.
+    fw = await self.request_firmware_info()
+    self._firmware_version = fw["firmware_version"]
+    self._firmware_build_timestamp = fw["firmware_build_timestamp"]
+
+    # Auto-detect machine type and log device identity + detection capabilities.
     config = self.request_machine_config()
     if config is not None:
       self._machine_type_code = config.machine_type_code
+      modes = [m for m, flag in [
+        ("absorbance", config.has_absorbance),
+        ("fluorescence", config.has_fluorescence),
+        ("luminescence", config.has_luminescence),
+        ("alpha_technology", config.has_alpha_technology),
+      ] if flag]
       logger.info(
-        "Detected machine type 0x%04x (%s)",
-        self._machine_type_code, config.model_name,
+        "%s (0x%04x) fw %s (%s) — detection: %s",
+        config.model_name, self._machine_type_code,
+        config.firmware_version or "?",
+        config.firmware_build_timestamp or "unknown build",
+        ", ".join(modes) if modes else "none",
       )
 
   async def stop(self):
@@ -585,15 +605,31 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     )
     return self._eeprom_data
 
-  async def request_firmware_info(self):
-    """Request firmware version and build date/time (command ``0x05 0x09``)."""
-    self._firmware_data = await self.send_command(
+  async def request_firmware_info(self) -> Dict[str, str]:
+    """Request firmware version and build date/time (command ``0x05 0x09``).
+
+    Returns:
+      Dict with ``firmware_version`` (e.g. ``"1.35"``) and
+      ``firmware_build_timestamp`` (e.g. ``"Nov 20 2020 11:51:21"``).
+      Values are empty strings if the response is too short to parse.
+    """
+    payload = await self.send_command(
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.FIRMWARE_INFO,
       payload=b"\x00\x00\x00\x00\x00\x00",
       wait=True,
     )
-    return self._firmware_data
+
+    version = ""
+    timestamp = ""
+    if len(payload) >= 28:
+      version_raw = int.from_bytes(payload[6:8], "big")
+      version = f"{version_raw / 1000:.2f}"
+      build_date = CLARIOstarPlusConfig._extract_cstring(payload, 8, 12)
+      build_time = CLARIOstarPlusConfig._extract_cstring(payload, 20, 8)
+      timestamp = f"{build_date} {build_time}".strip()
+
+    return {"firmware_version": version, "firmware_build_timestamp": timestamp}
 
   def request_machine_config(self) -> Optional[CLARIOstarPlusConfig]:
     """Parse and return the machine configuration from stored EEPROM and firmware data.
@@ -604,10 +640,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       return None
     config = CLARIOstarPlusConfig.parse_eeprom(self._eeprom_data)
 
-    if self._firmware_data is not None:
-      fw = CLARIOstarPlusConfig.parse_firmware_info(self._firmware_data)
-      config.firmware_version = fw.firmware_version
-      config.firmware_build_timestamp = fw.firmware_build_timestamp
+    config.firmware_version = self._firmware_version
+    config.firmware_build_timestamp = self._firmware_build_timestamp
 
     if hasattr(self.io, "serial") and self.io.serial:
       config.serial_number = self.io.serial
@@ -615,6 +649,22 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       config.serial_number = self.io.device_id
 
     return config
+
+  def request_available_detection_modes(self) -> List[str]:
+    """Return the list of detection modes available on this device.
+
+    Derived from the EEPROM capability flags read during ``setup()``.
+    Returns an empty list if EEPROM data has not been read yet.
+    """
+    config = self.request_machine_config()
+    if config is None:
+      return []
+    return [mode for mode, flag in [
+      ("absorbance", config.has_absorbance),
+      ("fluorescence", config.has_fluorescence),
+      ("luminescence", config.has_luminescence),
+      ("alpha_technology", config.has_alpha_technology),
+    ] if flag]
 
   # === Convenience status queries ===
 
