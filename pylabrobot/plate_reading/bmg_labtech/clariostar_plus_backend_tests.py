@@ -60,16 +60,19 @@ class MockFTDI:
   """Minimal FTDI mock that records writes and plays back queued responses.
 
   Each entry in the response queue is returned as a single chunk on the
-  first ``read()`` call within a ``_read_frame`` invocation. Subsequent
-  ``read()`` calls (before the next ``write()``) return empty bytes so that
-  ``_read_frame`` sees the chunk as a complete (or truncated) frame and
-  returns it without mixing in the next queued response.
+  first ``read()`` call within a ``_read_frame`` invocation. A subsequent
+  ``read()`` returns empty bytes so that ``_read_frame`` sees the chunk as
+  a complete frame and exits its read loop. The next ``_read_frame`` call
+  then delivers the next queued response.
+
+  This supports the ACK-then-data pattern where ``send_command`` calls
+  ``_read_frame`` twice in a row for REQUEST commands.
   """
 
   def __init__(self) -> None:
     self.written: List[bytes] = []
     self._responses: List[bytes] = []
-    self._delivered_since_write = False
+    self._delivered_current = False  # True after delivering within one _read_frame call
 
   def queue_response(self, *frames: bytes) -> None:
     """Queue one or more complete frames to return on subsequent reads."""
@@ -94,13 +97,15 @@ class MockFTDI:
 
   async def write(self, data: bytes) -> int:
     self.written.append(bytes(data))
-    self._delivered_since_write = False
+    self._delivered_current = False
     return len(data)
 
   async def read(self, n: int) -> bytes:
-    if not self._delivered_since_write and self._responses:
-      self._delivered_since_write = True
+    if not self._delivered_current and self._responses:
+      self._delivered_current = True
       return self._responses.pop(0)
+    # Empty read resets the flag so the next _read_frame call can deliver.
+    self._delivered_current = False
     return b""
 
 
@@ -393,6 +398,52 @@ _REAL_FIRMWARE_PAYLOAD = bytes([
 ])
 
 
+class TestRequestAckThenData(unittest.TestCase):
+  """Verify send_command reads past the status/ACK for REQUEST commands.
+
+  On real hardware, REQUEST commands (0x05) produce a two-frame sequence:
+    1. Short status/ACK (24 bytes framed, byte 0 = 0x01 or 0x15)
+    2. Actual data response (EEPROM: 272 bytes, firmware: 40 bytes, etc.)
+  """
+
+  # Real ACK frame from hardware log (byte 0 of payload = 0x15)
+  ACK_FRAME = bytes.fromhex("0200180c011500240000030900000000000000c000012c0d")
+  STATUS_READY = bytes.fromhex("0200180c010500240000000000000000000000c00001100d")
+
+  def test_eeprom_skips_ack(self):
+    """request_eeprom_data should skip the ACK and capture the data frame."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    # Build a minimal EEPROM data payload (20 bytes, detection flags set)
+    eeprom_payload = bytearray(20)
+    eeprom_payload[0] = 0x07  # subcommand echo
+    eeprom_payload[1] = 0x05  # family echo
+    eeprom_payload[2:4] = (0x0024).to_bytes(2, "big")
+    eeprom_payload[11] = 1  # absorbance
+    eeprom_payload[12] = 1  # fluorescence
+    eeprom_payload[13] = 1  # luminescence
+
+    mock.queue_response(self.ACK_FRAME, _wrap_payload(bytes(eeprom_payload)), self.STATUS_READY)
+    asyncio.run(backend.request_eeprom_data())
+
+    config = backend.request_machine_configuration()
+    self.assertTrue(config.has_absorbance)
+    self.assertTrue(config.has_fluorescence)
+    self.assertTrue(config.has_luminescence)
+
+  def test_firmware_skips_ack(self):
+    """request_firmware_info should skip the ACK and capture the data frame."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    mock.queue_response(self.ACK_FRAME, _wrap_payload(_REAL_FIRMWARE_PAYLOAD), self.STATUS_READY)
+    fw = asyncio.run(backend.request_firmware_info())
+
+    self.assertEqual(fw["firmware_version"], "1.35")
+    self.assertEqual(fw["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
+
+
 class TestFirmwareInfoParsing(unittest.TestCase):
   """Verify firmware info parsing with real hardware capture data."""
 
@@ -420,7 +471,7 @@ class TestFirmwareInfoParsing(unittest.TestCase):
 
   def test_end_to_end_via_mock_ftdi(self):
     """Simulate the full path: request_firmware_info returns parsed dict,
-    caller (setup) stores values, request_machine_config reads them."""
+    caller (setup) stores values, request_machine_configuration reads them."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
@@ -437,13 +488,13 @@ class TestFirmwareInfoParsing(unittest.TestCase):
     backend._firmware_version = fw["firmware_version"]
     backend._firmware_build_timestamp = fw["firmware_build_timestamp"]
 
-    # Set up EEPROM and verify request_machine_config reads cached firmware info
+    # Set up EEPROM and verify request_machine_configuration reads cached firmware info
     eeprom_payload = bytearray(20)
     eeprom_payload[2:4] = (0x0024).to_bytes(2, "big")
     eeprom_payload[11] = 1  # absorbance
     backend._eeprom_data = bytes(eeprom_payload)
 
-    config = backend.request_machine_config()
+    config = backend.request_machine_configuration()
     self.assertIsNotNone(config)
     self.assertEqual(config.firmware_version, "1.35")
     self.assertEqual(config.firmware_build_timestamp, "Nov 20 2020 11:51:21")

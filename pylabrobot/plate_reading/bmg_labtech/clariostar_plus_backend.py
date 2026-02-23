@@ -379,7 +379,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     self._firmware_build_timestamp = fw["firmware_build_timestamp"]
 
     # Auto-detect machine type and log device identity + detection capabilities.
-    config = self.request_machine_config()
+    config = self.request_machine_configuration()
     if config is not None:
       self._machine_type_code = config.machine_type_code
       modes = [m for m, flag in [
@@ -541,6 +541,15 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     _validate_frame(resp)
     ret = _extract_payload(resp)
 
+    # REQUEST commands (0x05) produce a two-frame sequence: a short status/ACK
+    # frame first, then the actual data frame. The ACK has byte 0 in {0x01, 0x15}
+    # while the data response echoes the subcommand byte. Read past the ACK.
+    if command_family == self.CommandFamily.REQUEST and len(ret) < 20 and ret[0] in (0x01, 0x15):
+      logger.debug("REQUEST ACK (%d bytes), reading data frame", len(ret))
+      resp = await self._read_frame(timeout=read_timeout)
+      _validate_frame(resp)
+      ret = _extract_payload(resp)
+
     if wait:
       await self._wait_until_machine_ready(poll_interval=poll_interval)
 
@@ -596,7 +605,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # === Device info ===
 
   async def request_eeprom_data(self):
-    """Fetch the 264-byte EEPROM payload (command ``0x05 0x07``) and cache it for ``request_machine_config``."""
+    """Fetch the 264-byte EEPROM payload (command ``0x05 0x07``) and cache it for ``request_machine_configuration``."""
     self._eeprom_data = await self.send_command(
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.EEPROM,
@@ -640,7 +649,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     return {"firmware_version": version, "firmware_build_timestamp": timestamp}
 
-  def request_machine_config(self) -> Optional[CLARIOstarPlusConfig]:
+  def request_machine_configuration(self) -> Optional[CLARIOstarPlusConfig]:
     """Parse and return the machine configuration from stored EEPROM and firmware data.
 
     Returns None if EEPROM data has not been read yet (i.e. setup() not called).
@@ -665,7 +674,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     Derived from the EEPROM capability flags read during ``setup()``.
     Returns an empty list if EEPROM data has not been read yet.
     """
-    config = self.request_machine_config()
+    config = self.request_machine_configuration()
     if config is None:
       return []
     return [mode for mode, flag in [
