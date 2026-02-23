@@ -532,18 +532,29 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   # === Status ===
 
-  async def request_machine_status(self) -> Dict[str, bool]:
+  async def request_machine_status(self, retries: int = 3) -> Dict[str, bool]:
     """Query device status and return parsed flags.
 
     Bypasses ``send_command`` because ``send_command(wait=True)`` calls
     ``_wait_until_machine_ready``, which calls this method. Routing through
     ``send_command`` would create infinite recursion.
+
+    Retries on ``FrameError`` (e.g. truncated response from a transient serial
+    glitch) up to *retries* times before raising.
     """
-    await self._write_frame(self._STATUS_FRAME)
-    resp = await self._read_frame()
-    _validate_frame(resp)
-    payload = _extract_payload(resp)
-    return self._parse_status(payload[:5])
+    last_err: Optional[FrameError] = None
+    for attempt in range(retries):
+      await self._write_frame(self._STATUS_FRAME)
+      resp = await self._read_frame()
+      try:
+        _validate_frame(resp)
+      except FrameError as e:
+        last_err = e
+        logger.warning("status request: bad frame on attempt %d/%d (%s)", attempt + 1, retries, e)
+        continue
+      payload = _extract_payload(resp)
+      return self._parse_status(payload[:5])
+    raise last_err  # type: ignore[misc]
 
   async def _wait_until_machine_ready(self, timeout=None, poll_interval: float = 0.05):
     """Poll ``request_machine_status`` until the device is no longer busy.
