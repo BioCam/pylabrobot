@@ -14,3 +14,4 @@ myenv
 env/*
 .venv
 *.pcapng
+.plr_previous_ref

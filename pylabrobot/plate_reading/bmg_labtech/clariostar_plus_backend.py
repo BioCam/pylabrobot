@@ -10,7 +10,7 @@ import asyncio
 import enum
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 from pylabrobot.io.ftdi import FTDI
 from pylabrobot.resources.plate import Plate
@@ -129,11 +129,11 @@ _frame = _wrap_payload
 #
 
 
-# 0x0024: verified on CLARIOstar Plus hardware (serial 430-2621, 220-1000 nm).
+# 0x0024: verified on CLARIOstar Plus hardware (serial 430-2621).
 # 0x0026: from vibed code, unverified on real hardware.
-_MODEL_LOOKUP: Dict[int, Tuple[str, Tuple[int, int], int]] = {
-  0x0024: ("CLARIOstar Plus", (220, 1000), 11),
-  0x0026: ("CLARIOstar Plus", (220, 1000), 11),
+_MODEL_LOOKUP: Dict[int, str] = {
+  0x0024: "CLARIOstar Plus",
+  0x0026: "CLARIOstar Plus",
 }
 
 
@@ -243,12 +243,15 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "firmware_build_timestamp": "",
       "model_name": "",
       "machine_type_code": 0,
-      "monochromator_range": (0, 0),
-      "num_filter_slots": 0,
       "has_absorbance": False,
       "has_fluorescence": False,
       "has_luminescence": False,
       "has_alpha_technology": False,
+      "excitation_monochromator_max_nm": 0,
+      "emission_monochromator_max_nm": 0,
+      "excitation_filter_slots": 0,
+      "dichroic_filter_slots": 0,
+      "emission_filter_slots": 0,
     }
 
   # === Life cycle ===
@@ -510,8 +513,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   async def request_eeprom_data(self) -> Dict:
     """Fetch and parse the EEPROM payload (command ``0x05 0x07``).
 
-    Response payload is variable-length: 264 bytes observed, but only the
-    first 15 bytes are parsed.
+    Response payload is variable-length: 263 bytes observed on 430-2621.
 
     Payload byte map:
       [0] subcommand echo
@@ -523,12 +525,20 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       [12] has_fluorescence
       [13] has_luminescence
       [14] has_alpha_technology
+      [15:19] unknown
+      [19:21] excitation monochromator max nm (u16 LE)
+      [21:25] unknown
+      [25:27] emission monochromator max nm (u16 LE)
+      [27:33] unknown
+      [33] dichroic filter slots (u8)
+      [34] emission/excitation filter slots (u8, same for both sides)
+      [35:263] unknown (calibration / filter config data)
 
     Returns:
-      Dict with keys: machine_type_code (int), model_name (str),
-      monochromator_range (tuple), num_filter_slots (int),
-      has_absorbance (bool), has_fluorescence (bool),
-      has_luminescence (bool), has_alpha_technology (bool).
+      Dict with keys: machine_type_code, model_name, has_absorbance,
+      has_fluorescence, has_luminescence, has_alpha_technology,
+      excitation_mono_max_nm, emission_mono_max_nm,
+      dichroic_filter_slots, excitation_filter_slots.
     """
     payload = await self.send_command(
       command_family=self.CommandFamily.REQUEST,
@@ -544,29 +554,36 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     result: Dict = {
       "machine_type_code": 0,
       "model_name": "",
-      "monochromator_range": (0, 0),
-      "num_filter_slots": 0,
       "has_absorbance": False,
       "has_fluorescence": False,
       "has_luminescence": False,
       "has_alpha_technology": False,
+      "excitation_mono_max_nm": 0,
+      "emission_mono_max_nm": 0,
+      "dichroic_filter_slots": 0,
+      "excitation_filter_slots": 0,
+      "emission_filter_slots": 0,
     }
     if len(payload) < 15:
       return result
 
     machine_type = int.from_bytes(payload[2:4], "big")
     result["machine_type_code"] = machine_type
-
-    model_info = _MODEL_LOOKUP.get(machine_type)
-    if model_info is not None:
-      result["model_name"], result["monochromator_range"], result["num_filter_slots"] = model_info
-    else:
-      result["model_name"] = f"Unknown BMG reader (type 0x{machine_type:04x})"
+    result["model_name"] = _MODEL_LOOKUP.get(
+      machine_type, f"Unknown BMG reader (type 0x{machine_type:04x})")
 
     result["has_absorbance"] = bool(payload[11])
     result["has_fluorescence"] = bool(payload[12])
     result["has_luminescence"] = bool(payload[13])
     result["has_alpha_technology"] = bool(payload[14])
+
+    if len(payload) >= 35:
+      result["excitation_mono_max_nm"] = int.from_bytes(payload[19:21], "little")
+      result["emission_mono_max_nm"] = int.from_bytes(payload[25:27], "little")
+      result["dichroic_filter_slots"] = payload[33]
+      result["excitation_filter_slots"] = payload[34]
+      result["emission_filter_slots"] = payload[34]
+
     return result
 
   async def request_firmware_info(self) -> Dict[str, str]:

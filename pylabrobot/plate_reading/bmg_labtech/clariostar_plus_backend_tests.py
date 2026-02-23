@@ -121,12 +121,14 @@ def _make_backend() -> CLARIOstarPlusBackend:
     "firmware_build_timestamp": "",
     "model_name": "",
     "machine_type_code": 0,
-    "monochromator_range": (0, 0),
-    "num_filter_slots": 0,
     "has_absorbance": False,
     "has_fluorescence": False,
     "has_luminescence": False,
     "has_alpha_technology": False,
+    "excitation_mono_max_nm": 0,
+    "emission_mono_max_nm": 0,
+    "dichroic_filter_slots": 0,
+    "emission_excitation_filter_slots": 0,
   }
   return backend
 
