@@ -35,19 +35,43 @@ GROUND_TRUTH_STATUS = bytes.fromhex("0200090c800000970d")
 
 # ---------------------------------------------------------------------------
 # Mock response frames (what the device sends back)
+#
+# Real device responses are always 24 bytes.  The polling loop checks
+# len == 24 and raw[5] directly (0x05 = ready, 0x25 = busy), so mock
+# frames must be realistic 24-byte wire frames.
+#
+# Layout (from pcap):
+#   [0]    02        STX
+#   [1-2]  00 18     size = 24
+#   [3]    0c        header
+#   [4]    01        command echo (INITIALIZE)
+#   [5]    05/25     05 = ready, 25 = busy
+#   [6]    00        unknown
+#   [7]    XX        status flags (bit 5 = initialized, bit 0 = drawer_open)
+#   [8-18] 00...     padding
+#   [19]   c0        unknown constant
+#   [20]   00        unknown
+#   [21-22] checksum (2 of 3 bytes)
+#   [23]   0d        CR
 # ---------------------------------------------------------------------------
 
-# Generic command acknowledgement (minimal valid frame)
+# Generic command acknowledgement (valid frame for send_command to accept)
 _ACK = _wrap_payload(b"\x00")
 
-# Status: initialized=True (byte 3 bit 5), not busy
-_STATUS_INITIALIZED = _wrap_payload(b"\x00\x00\x00\x20\x00")
+# Ready, initialized (byte 5=0x05, byte 7=0x20)
+_STATUS_INITIALIZED = bytes.fromhex(
+  "0200180c010500200000000000000000000000c000010c0d")
 
-# Status: initialized + drawer_open (byte 3 = 0x21), not busy
-_STATUS_DRAWER_OPEN = _wrap_payload(b"\x00\x00\x00\x21\x00")
+# Ready, initialized + drawer_open (byte 5=0x05, byte 7=0x21)
+_STATUS_DRAWER_OPEN = bytes.fromhex(
+  "0200180c010500210000000000000000000000c000010d0d")
 
-# Status: initialized, drawer closed, not busy
-_STATUS_DRAWER_CLOSED = _wrap_payload(b"\x00\x00\x00\x20\x00")
+# Ready, initialized, drawer closed (byte 5=0x05, byte 7=0x20)
+_STATUS_DRAWER_CLOSED = _STATUS_INITIALIZED
+
+# Busy, initialized (byte 5=0x25, byte 7=0x24) — from pcap ground truth
+_STATUS_BUSY = bytes.fromhex(
+  "0200180c012500240000030000000000000000c00001330d")
 
 
 # ---------------------------------------------------------------------------
@@ -223,7 +247,7 @@ class TestClose(unittest.TestCase):
 
 
 class TestStatusPollResilience(unittest.TestCase):
-  """Verify that _wait_for_ready_and_return survives partial/corrupt frames."""
+  """Verify that _poll_until_ready survives partial/corrupt frames."""
 
   def test_recovers_from_partial_frame(self):
     """A truncated status response should be retried, not crash."""

@@ -417,13 +417,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         await asyncio.sleep(0.0001)
 
     if d:
-      logger.debug("read %d bytes: %s", len(d), d.hex())
+      logger.info("read %d bytes: %s", len(d), d.hex())
 
     return d
 
   # Keep old name as alias for backward compatibility
   async def read_resp(self, timeout=None) -> bytes:
     return await self._read_frame(timeout=timeout)
+
+  # Pre-cached STATUS_QUERY frame — avoids rebuilding on every poll.
+  _STATUS_FRAME = _wrap_payload(b"\x80")
 
   async def send_command(
     self,
@@ -432,6 +435,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     *,
     payload: bytes = b"",
     read_timeout: Optional[float] = None,
+    wait: bool = False,
   ) -> bytes:
     """Build a frame, send it, and return the validated response payload.
 
@@ -442,6 +446,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       payload: Additional parameter bytes after command_group and command.
       read_timeout: Seconds to wait for the response frame. Defaults to
         ``self.read_timeout``.
+      wait: If True, poll status after the initial response until the device
+        is no longer busy. Used by commands that trigger physical actions
+        (initialize, open, close, etc.).
 
     Returns:
       Validated response payload (frame overhead stripped).
@@ -450,7 +457,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       ValueError: If *command* is missing, unexpected, or not valid for the group.
       FrameError: If the response frame structure is invalid.
       ChecksumError: If the response checksum does not match.
-      TimeoutError: If no response is received within *read_timeout*.
+      TimeoutError: If no response is received within *read_timeout*, or if
+        *wait* is True and the device stays busy beyond ``self.timeout``.
     """
     CG = self.CommandGroup
     if command_group in self._NO_COMMAND_GROUPS:
@@ -470,12 +478,23 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     await self._write_frame(frame)
     resp = await self._read_frame(timeout=read_timeout)
     _validate_frame(resp)
-    return _extract_payload(resp)
+    ret = _extract_payload(resp)
+
+    if wait:
+      await self._poll_until_ready()
+
+    return ret
 
   # === Status ===
 
-  async def _request_command_status(self) -> bytes:
-    return await self.send_command(self.CommandGroup.STATUS)
+  async def _poll_status_raw(self) -> bytes:
+    """Send the pre-cached STATUS_QUERY and return raw response bytes.
+
+    This is the lean path used by the polling loop — no frame construction,
+    no enum dispatch, no payload extraction. Returns raw wire bytes.
+    """
+    await self._write_frame(self._STATUS_FRAME)
+    return await self._read_frame()
 
   def _parse_status_response(self, payload: bytes) -> Dict[str, bool]:
     """Extract and parse status flags from an unframed status response payload."""
@@ -484,37 +503,61 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     return {name: False for name, _, _ in self._STATUS_FLAGS}
 
   async def request_machine_status(self) -> Dict[str, bool]:
-    """Request the current status flags from the plate reader."""
-    response = await self._request_command_status()
-    return self._parse_status_response(response)
+    """Request the current status flags from the plate reader.
 
-  async def _wait_for_ready_and_return(self, ret, timeout=None):
-    """Wait for the plate reader to be ready (BUSY flag cleared) and return the response.
+    This is the public API for callers that need parsed flags. Uses the full
+    validation path (unlike the internal polling loop).
+    """
+    await self._write_frame(self._STATUS_FRAME)
+    resp = await self._read_frame()
+    _validate_frame(resp)
+    payload = _extract_payload(resp)
+    return self._parse_status_response(payload)
 
-    Status polls that return malformed or partial frames (e.g. due to FTDI
-    read timeouts or unsolicited firmware data) are logged and retried.
-    Only the outer timeout causes a hard failure.
+  async def _poll_until_ready(self, timeout=None):
+    """Poll status until the device is no longer busy.
+
+    Uses a lean polling path: writes the pre-cached STATUS_QUERY frame,
+    reads raw bytes, and checks byte 5 directly (0x05 = ready, 0x25 = busy)
+    like the Go reference implementation. Full flag parsing is only done
+    when the status changes, for logging.
+
+    Malformed or partial frames are logged and retried. Only the outer
+    timeout causes a hard failure.
     """
     if timeout is None:
       timeout = self.timeout
-    last_status_hex = None
+    last_raw: Optional[bytes] = None
     t = time.time()
+    first = True
     while time.time() - t < timeout:
-      await asyncio.sleep(0.1)
+      if not first:
+        await asyncio.sleep(0.1)
+      first = False
 
-      try:
-        command_status = await self._request_command_status()
-      except FrameError as e:
-        logger.warning("status poll: bad frame (%s), retrying", e)
+      raw = await self._poll_status_raw()
+
+      # Go-style length check: status response is always 24 bytes.
+      if len(raw) != 24:
+        logger.warning("status poll: expected 24 bytes, got %d, retrying", len(raw))
         continue
 
-      status_hex = command_status.hex()
-      if status_hex != last_status_hex:
-        last_status_hex = status_hex
-        flags = self._parse_status_response(command_status)
-        logger.info("status: %s", {k: v for k, v in flags.items() if v})
-        if not flags["busy"]:
-          return ret
+      # Only parse + log when the raw bytes change.
+      if raw != last_raw:
+        last_raw = raw
+        # Full parse for logging only.
+        try:
+          _validate_frame(raw)
+          payload = _extract_payload(raw)
+          flags = self._parse_status_response(payload)
+          logger.info("status: %s", {k: v for k, v in flags.items() if v})
+        except FrameError as e:
+          logger.warning("status poll: bad frame (%s), retrying", e)
+          continue
+
+      # Go-style direct byte check: byte 5 is 0x05 (ready) or 0x25 (busy).
+      if raw[5] == 0x05:
+        return
 
     elapsed = time.time() - t
     raise TimeoutError(
@@ -525,19 +568,23 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # === Device info ===
 
   async def request_eeprom_data(self):
-    eeprom_response = await self.send_command(
-      self.CommandGroup.REQUEST, self.Command.REQUEST_EEPROM,
-      payload=b"\x00\x00\x00\x00\x00\x00")
-    self._eeprom_data = eeprom_response
-    return await self._wait_for_ready_and_return(eeprom_response)
+    self._eeprom_data = await self.send_command(
+      command_group=self.CommandGroup.REQUEST,
+      command=self.Command.REQUEST_EEPROM,
+      payload=b"\x00\x00\x00\x00\x00\x00",
+      wait=True,
+    )
+    return self._eeprom_data
 
   async def request_firmware_info(self):
     """Request firmware version and build date/time (command ``0x05 0x09``)."""
-    resp = await self.send_command(
-      self.CommandGroup.REQUEST, self.Command.REQUEST_FIRMWARE_INFO,
-      payload=b"\x00\x00\x00\x00\x00\x00")
-    self._firmware_data = resp
-    return await self._wait_for_ready_and_return(resp)
+    self._firmware_data = await self.send_command(
+      command_group=self.CommandGroup.REQUEST,
+      command=self.Command.REQUEST_FIRMWARE_INFO,
+      payload=b"\x00\x00\x00\x00\x00\x00",
+      wait=True,
+    )
+    return self._firmware_data
 
   def get_machine_config(self) -> Optional[CLARIOstarPlusConfig]:
     """Parse and return the machine configuration from stored EEPROM and firmware data.
@@ -563,22 +610,28 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # === Commands (Phase 1) ===
 
   async def initialize(self):
-    command_response = await self.send_command(
-      self.CommandGroup.INITIALIZE, self.Command.INIT_DEFAULT,
-      payload=b"\x00\x10\x02\x00")
-    return await self._wait_for_ready_and_return(command_response)
+    return await self.send_command(
+      command_group=self.CommandGroup.INITIALIZE,
+      command=self.Command.INIT_DEFAULT,
+      payload=b"\x00\x10\x02\x00",
+      wait=True,
+    )
 
   async def open(self):
-    open_response = await self.send_command(
-      self.CommandGroup.TRAY, self.Command.TRAY_OPEN,
-      payload=b"\x00\x00\x00\x00")
-    return await self._wait_for_ready_and_return(open_response)
+    return await self.send_command(
+      command_group=self.CommandGroup.TRAY,
+      command=self.Command.TRAY_OPEN,
+      payload=b"\x00\x00\x00\x00",
+      wait=True,
+    )
 
   async def close(self, plate: Optional[Plate] = None):
-    close_response = await self.send_command(
-      self.CommandGroup.TRAY, self.Command.TRAY_CLOSE,
-      payload=b"\x00\x00\x00\x00")
-    return await self._wait_for_ready_and_return(close_response)
+    return await self.send_command(
+      command_group=self.CommandGroup.TRAY,
+      command=self.Command.TRAY_CLOSE,
+      payload=b"\x00\x00\x00\x00",
+      wait=True,
+    )
 
   # === Measurement stubs (Phase 4+) ===
 
