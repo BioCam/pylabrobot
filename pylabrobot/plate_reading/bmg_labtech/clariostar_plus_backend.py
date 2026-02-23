@@ -206,8 +206,18 @@ class CLARIOstarPlusConfig:
     except FrameError:
       payload = raw
 
+    # Known machine type codes.
+    #
+    # CLARIOstar Plus (post-2019) replaced the original CLARIOstar. Both share
+    # the dual LVF Monochromator + filter + UV/Vis spectrometer architecture.
+    # The Plus adds rapid full-plate autofocus, newer PMT options (far-red),
+    # and Voyager control software. EDR (Enhanced Dynamic Range) was introduced
+    # after 2024 and is NOT present on all CLARIOstar Plus units.
+    #
+    # 0x0024: verified on CLARIOstar Plus hardware (serial 430-2621, 220-1000 nm).
+    # 0x0026: from vibed code — unverified on real hardware.
     model_lookup: Dict[int, Tuple[str, Tuple[int, int], int]] = {
-      0x0024: ("CLARIOstar", (320, 900), 11),
+      0x0024: ("CLARIOstar Plus", (220, 1000), 11),
       0x0026: ("CLARIOstar Plus", (220, 1000), 11),
     }
 
@@ -358,6 +368,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # === Life cycle ===
 
   async def setup(self):
+    """Configure FTDI serial link (125 kBaud, 8N1), initialize the reader, and read EEPROM/firmware."""
     await self.io.setup()
     await self.io.set_baudrate(125000)
     await self.io.set_line_property(8, 0, 0)  # 8N1
@@ -377,6 +388,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       )
 
   async def stop(self):
+    """Close the FTDI connection. Requires a new ``setup()`` call to use the reader again."""
     await self.io.stop()
 
   # === Low-level I/O ===
@@ -445,6 +457,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   # Keep old name as alias for backward compatibility
   async def read_resp(self, timeout=None) -> bytes:
+    """Backward-compat alias for ``_read_frame``."""
     return await self._read_frame(timeout=timeout)
 
   # Pre-cached STATUS_QUERY frame — avoids rebuilding on every poll.
@@ -607,6 +620,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # === Device info ===
 
   async def request_eeprom_data(self):
+    """Fetch the 264-byte EEPROM payload (command ``0x05 0x07``) and cache it for ``request_machine_config``."""
     self._eeprom_data = await self.send_command(
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.EEPROM,
@@ -649,6 +663,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # === Commands (Phase 1) ===
 
   async def initialize(self, wait: bool = True, poll_interval: float = 0.0):
+    """Send the hardware init sequence and poll until the ``initialized`` flag is set."""
     return await self.send_command(
       command_family=self.CommandFamily.INITIALIZE,
       command=self.Command.INIT,
@@ -657,7 +672,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       poll_interval=poll_interval,
     )
 
-  async def open(self, wait: bool = True, poll_interval: float = 0.0):
+  async def open(self, wait: bool = True, poll_interval: float = 0.1):
+    """Extend the plate drawer. Motor takes ~4.3 s (from pcap)."""
     return await self.send_command(
       command_family=self.CommandFamily.TRAY,
       command=self.Command.TRAY_OPEN,
@@ -667,8 +683,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     )
 
   async def close(
-    self, plate: Optional[Plate] = None, wait: bool = True, poll_interval: float = 0.0,
+    self, plate: Optional[Plate] = None, wait: bool = True, poll_interval: float = 0.1,
   ):
+    """Retract the plate drawer. Motor takes ~8 s (from pcap)."""
     return await self.send_command(
       command_family=self.CommandFamily.TRAY,
       command=self.Command.TRAY_CLOSE,
