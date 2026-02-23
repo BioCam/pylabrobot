@@ -109,6 +109,31 @@ _frame = _wrap_payload
 
 
 # ---------------------------------------------------------------------------
+# Response-parsing flow
+# ---------------------------------------------------------------------------
+#
+# Commands with wait=True follow a two-phase path:
+#
+#   Phase A (once): send_command → _wrap_payload → _write_frame → _read_frame
+#                   → _validate_frame → _extract_payload
+#
+#   Phase B (loop): _poll_until_ready → _poll_status_raw (write + read)
+#                   → length check → raw[5] byte check → return or retry
+#
+# _read_frame terminates on: short FTDI read (<25 bytes) ending in 0x0D,
+# guarded by the size field to avoid false termination on mid-payload 0x0D.
+#
+# Polling hot-path optimisations:
+#   - Pre-cached _STATUS_FRAME avoids per-poll frame construction
+#   - raw[5] == 0x05 checked directly on wire bytes (no unframing)
+#   - Full parse (validate + extract + flag decode) only when raw bytes change
+#   - .hex() guarded by isEnabledFor() to skip eager string allocation
+#   - No asyncio.sleep — the ~37 ms FTDI I/O roundtrip provides natural pacing
+#
+# ~37 ms/poll. Open ≈ 4.3 s, close ≈ 8 s — dominated by physical motor speed.
+#
+
+# ---------------------------------------------------------------------------
 # Device configuration
 # ---------------------------------------------------------------------------
 
@@ -348,8 +373,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     Machine type 0x0026 has a 36-byte block between the scan-mode byte and
     the ``$27 $0F $27 $0F`` separator (containing optic config, shaker data
-    at scattered offsets, and padding).  Type 0x0024 (Go reference) uses a
-    compact 8-byte layout (optic + zeros + shaker) before the separator.
+    at scattered offsets, and padding).  Type 0x0024 uses a compact 8-byte
+    layout (optic + zeros + shaker) before the separator.
 
     Defaults to True (0x0026 layout) when the machine type is unknown so
     that existing setups that haven't called ``setup()`` keep working.
@@ -363,18 +388,17 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     n = await self.io.write(frame)
     if n != len(frame):
       raise IOError(f"Short write: sent {n} of {len(frame)} bytes")
-    logger.debug("sent %d bytes: %s", len(frame), frame.hex())
+    if logger.isEnabledFor(logging.DEBUG):
+      logger.debug("sent %d bytes: %s", len(frame), frame.hex())
 
   async def _read_frame(self, timeout: Optional[float] = None) -> bytes:
     """Read a complete frame from the serial port.
 
-    Uses the same fast-termination strategy as the Go reference implementation:
-    a short FTDI read (< 25 bytes) ending in 0x0D means the chip has delivered
-    everything it has and the frame is complete.  As an additional safeguard the
-    size field (bytes 1-2) is parsed and used as a secondary completion check
-    for frames that arrive in multiple chunks.
+    A short FTDI read (< 25 bytes) ending in 0x0D means the chip has delivered
+    everything it has and the frame is complete. The size field (bytes 1-2) is
+    used as a safeguard against false termination on mid-payload 0x0D bytes.
 
-    The timeout is purely a safety net — it should never be the normal exit path.
+    The timeout is purely a fallback — it should never be the normal exit path.
     """
     if timeout is None:
       timeout = self.read_timeout
@@ -416,7 +440,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
         await asyncio.sleep(0.0001)
 
-    if d:
+    if d and logger.isEnabledFor(logging.INFO):
       logger.info("read %d bytes: %s", len(d), d.hex())
 
     return d
@@ -438,6 +462,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     wait: bool = False,
   ) -> bytes:
     """Build a frame, send it, and return the validated response payload.
+
+    Steps:
+      1. Validate command_group / command against _VALID_COMMANDS tables
+      2. Assemble payload bytes: ``[group, cmd] + payload``
+      3. _wrap_payload  → full frame (STX + size + 0x0C + data + checksum + CR)
+      4. _write_frame   → io.write
+      5. _read_frame    → io.read (fast-path: short read ending in 0x0D + size check)
+      6. _validate_frame → verify STX, CR, 0x0C, size field, 24-bit checksum
+      7. _extract_payload → strip framing, return inner bytes
+      8. If wait=True   → _poll_until_ready (status loop until byte 5 == 0x05)
 
     Args:
       command_group: Command group byte (payload byte 0).
@@ -517,27 +551,18 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   async def _poll_until_ready(self, timeout=None):
     """Poll status until the device is no longer busy.
 
-    Uses a lean polling path: writes the pre-cached STATUS_QUERY frame,
-    reads raw bytes, and checks byte 5 directly (0x05 = ready, 0x25 = busy)
-    like the Go reference implementation. Full flag parsing is only done
-    when the status changes, for logging.
-
-    Malformed or partial frames are logged and retried. Only the outer
-    timeout causes a hard failure.
+    Checks raw byte 5 directly (0x05 = ready, 0x25 = busy). Full flag
+    parsing only runs when the raw bytes change, for logging. Malformed
+    or partial frames are retried.
     """
     if timeout is None:
       timeout = self.timeout
     last_raw: Optional[bytes] = None
     t = time.time()
-    first = True
     while time.time() - t < timeout:
-      if not first:
-        await asyncio.sleep(0.1)
-      first = False
-
       raw = await self._poll_status_raw()
 
-      # Go-style length check: status response is always 24 bytes.
+      # Status response is always 24 bytes.
       if len(raw) != 24:
         logger.warning("status poll: expected 24 bytes, got %d, retrying", len(raw))
         continue
@@ -555,7 +580,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
           logger.warning("status poll: bad frame (%s), retrying", e)
           continue
 
-      # Go-style direct byte check: byte 5 is 0x05 (ready) or 0x25 (busy).
+      # Direct byte check: byte 5 is 0x05 (ready) or 0x25 (busy).
       if raw[5] == 0x05:
         return
 
