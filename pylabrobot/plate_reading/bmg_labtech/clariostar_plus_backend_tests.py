@@ -59,24 +59,33 @@ ACK = _wrap_payload(b"\x00")
 class MockFTDI:
   """Minimal FTDI mock that records writes and plays back queued responses.
 
-  Each entry in the response queue is returned as a single chunk on the
-  first ``read()`` call within a ``_read_frame`` invocation. A subsequent
-  ``read()`` returns empty bytes so that ``_read_frame`` sees the chunk as
-  a complete frame and exits its read loop. The next ``_read_frame`` call
-  then delivers the next queued response.
+  Models two real FTDI behaviours:
 
-  This supports the ACK-then-data pattern where ``send_command`` calls
-  ``_read_frame`` twice in a row for REQUEST commands.
+  1. **Solicited responses** — one per ``write()`` call. Each ``write()``
+     arms the next ``read()`` to deliver the next queued frame. Subsequent
+     reads (before the next ``write()``) return empty bytes so that
+     ``_read_frame`` sees the frame as complete and exits its loop.
+
+  2. **Unsolicited / async data** — frames the device pushes independently
+     of host writes (e.g. EEPROM or firmware data arriving after the device
+     finishes processing a REQUEST command). These are queued via
+     ``queue_async_data()`` and delivered on the first ``read()`` that finds
+     the solicited queue empty and no solicited frame pending.
   """
 
   def __init__(self) -> None:
     self.written: List[bytes] = []
     self._responses: List[bytes] = []
-    self._delivered_current = False  # True after delivering within one _read_frame call
+    self._async_data: List[bytes] = []
+    self._delivered_since_write = False
 
   def queue_response(self, *frames: bytes) -> None:
-    """Queue one or more complete frames to return on subsequent reads."""
+    """Queue one or more solicited response frames (one per write cycle)."""
     self._responses.extend(frames)
+
+  def queue_async_data(self, *frames: bytes) -> None:
+    """Queue unsolicited data frames (delivered when no solicited frame is pending)."""
+    self._async_data.extend(frames)
 
   # -- FTDI interface methods used by the backend --
 
@@ -97,15 +106,17 @@ class MockFTDI:
 
   async def write(self, data: bytes) -> int:
     self.written.append(bytes(data))
-    self._delivered_current = False
+    self._delivered_since_write = False
     return len(data)
 
   async def read(self, n: int) -> bytes:
-    if not self._delivered_current and self._responses:
-      self._delivered_current = True
+    # Solicited: one frame per write cycle.
+    if not self._delivered_since_write and self._responses:
+      self._delivered_since_write = True
       return self._responses.pop(0)
-    # Empty read resets the flag so the next _read_frame call can deliver.
-    self._delivered_current = False
+    # Async data: delivered when no solicited frame is pending.
+    if self._delivered_since_write and self._async_data:
+      return self._async_data.pop(0)
     return b""
 
 
@@ -332,7 +343,11 @@ class TestUsageCounters(unittest.TestCase):
     payload[38:42] = (999).to_bytes(4, "big")
 
     response_frame = _wrap_payload(bytes(payload))
-    mock.queue_response(response_frame)
+    # REQUEST flow: solicited status-ack + status-ready, then async data
+    STATUS_ACK = bytes.fromhex("0200180c011500240000030900000000000000c000012c0d")
+    STATUS_READY = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
+    mock.queue_response(STATUS_ACK, STATUS_READY)
+    mock.queue_async_data(response_frame)
 
     counters = asyncio.run(backend.request_usage_counters())
 
@@ -398,20 +413,25 @@ _REAL_FIRMWARE_PAYLOAD = bytes([
 ])
 
 
-class TestRequestAckThenData(unittest.TestCase):
-  """Verify send_command reads past the status/ACK for REQUEST commands.
+class TestRequestDataAfterWait(unittest.TestCase):
+  """Verify send_command reads the data frame after status polling for REQUEST commands.
 
-  On real hardware, REQUEST commands (0x05) produce a two-frame sequence:
-    1. Short status/ACK (24 bytes framed, byte 0 = 0x01 or 0x15)
-    2. Actual data response (EEPROM: 272 bytes, firmware: 40 bytes, etc.)
+  On real hardware, REQUEST commands (0x05) follow this sequence:
+    1. Host sends REQUEST frame
+    2. Device replies with a status frame (same as other commands)
+    3. Host polls status until not busy
+    4. Device pushes the actual data frame (EEPROM: 272 bytes, firmware: 40 bytes, etc.)
+    5. Host reads the data frame
+
+  The data frame arrives asynchronously — it is NOT a response to a write.
   """
 
-  # Real ACK frame from hardware log (byte 0 of payload = 0x15)
-  ACK_FRAME = bytes.fromhex("0200180c011500240000030900000000000000c000012c0d")
+  # Status frame from hardware (byte 1 = 0x15 means the device acknowledged the request)
+  STATUS_ACK = bytes.fromhex("0200180c011500240000030900000000000000c000012c0d")
   STATUS_READY = bytes.fromhex("0200180c010500240000000000000000000000c00001100d")
 
-  def test_eeprom_skips_ack(self):
-    """request_eeprom_data should skip the ACK and capture the data frame."""
+  def test_eeprom_reads_data_after_wait(self):
+    """request_eeprom_data should read the EEPROM data frame after status polling."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
@@ -424,7 +444,10 @@ class TestRequestAckThenData(unittest.TestCase):
     eeprom_payload[12] = 1  # fluorescence
     eeprom_payload[13] = 1  # luminescence
 
-    mock.queue_response(self.ACK_FRAME, _wrap_payload(bytes(eeprom_payload)), self.STATUS_READY)
+    # Solicited: status-ack (response to REQUEST write), status-ready (response to poll write)
+    # Async: EEPROM data (pushed by device after processing completes)
+    mock.queue_response(self.STATUS_ACK, self.STATUS_READY)
+    mock.queue_async_data(_wrap_payload(bytes(eeprom_payload)))
     asyncio.run(backend.request_eeprom_data())
 
     config = backend.request_machine_configuration()
@@ -432,12 +455,13 @@ class TestRequestAckThenData(unittest.TestCase):
     self.assertTrue(config.has_fluorescence)
     self.assertTrue(config.has_luminescence)
 
-  def test_firmware_skips_ack(self):
-    """request_firmware_info should skip the ACK and capture the data frame."""
+  def test_firmware_reads_data_after_wait(self):
+    """request_firmware_info should read firmware data after status polling."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(self.ACK_FRAME, _wrap_payload(_REAL_FIRMWARE_PAYLOAD), self.STATUS_READY)
+    mock.queue_response(self.STATUS_ACK, self.STATUS_READY)
+    mock.queue_async_data(_wrap_payload(_REAL_FIRMWARE_PAYLOAD))
     fw = asyncio.run(backend.request_firmware_info())
 
     self.assertEqual(fw["firmware_version"], "1.35")
@@ -475,9 +499,11 @@ class TestFirmwareInfoParsing(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # Queue firmware response + status-ready (send_command uses wait=True)
+    # REQUEST flow: solicited status-ack + status-ready, then async firmware data
+    STATUS_ACK = bytes.fromhex("0200180c011500240000030900000000000000c000012c0d")
     STATUS_READY = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
-    mock.queue_response(_wrap_payload(_REAL_FIRMWARE_PAYLOAD), STATUS_READY)
+    mock.queue_response(STATUS_ACK, STATUS_READY)
+    mock.queue_async_data(_wrap_payload(_REAL_FIRMWARE_PAYLOAD))
 
     # request_firmware_info returns parsed values (no implicit caching)
     fw = asyncio.run(backend.request_firmware_info())
