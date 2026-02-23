@@ -1,9 +1,8 @@
-"""CLARIOstar Plus plate reader backend - Phase 1 (core lifecycle).
+"""BMG CLARIOstar Plus plate reader backend.
 
-Supports: initialize, open/close drawer, status polling, EEPROM/firmware
+Lifecycle: initialize, open/close drawer, status polling, EEPROM/firmware
 identification, machine type auto-detection.
-Measurement commands (absorbance, fluorescence, luminescence) are stubbed
-for later phases.
+Measurement: absorbance, fluorescence, luminescence (not yet implemented).
 """
 
 import asyncio
@@ -103,10 +102,6 @@ def _extract_payload(data: bytes) -> bytes:
   return data[4:-4]
 
 
-# Backward-compat alias
-_frame = _wrap_payload
-
-
 # ---------------------------------------------------------------------------
 # Response-parsing flow
 # ---------------------------------------------------------------------------
@@ -145,8 +140,8 @@ _MODEL_LOOKUP: Dict[int, str] = {
 class CLARIOstarPlusBackend(PlateReaderBackend):
   """BMG CLARIOstar Plus plate reader backend.
 
-  Phase 1: initialize, open/close drawer, status polling, device identification.
-  Measurement commands will be added in later phases after hardware validation.
+  Lifecycle: initialize, open/close drawer, status polling, device identification.
+  Measurement: absorbance, fluorescence, luminescence (not yet implemented).
   """
 
   # -- Command enums (CLARIOstar-specific) ----------------------------------
@@ -187,7 +182,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     POLL               = 0x00
 
   # Validation tables built after enum definitions are available.
-  # Populated in _build_command_tables() below.
+  # Populated at module scope below the class definition.
   _VALID_COMMANDS: Dict  # CommandFamily -> set[Command]
   _NO_COMMAND_FAMILIES: set  # CommandFamilys that take no command byte
 
@@ -256,7 +251,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   # === Life cycle ===
 
-  async def setup(self):
+  async def setup(self) -> None:
     """Configure FTDI serial link (125 kBaud, 8N1), initialize the reader, and read EEPROM/firmware."""
     await self.io.setup()
     await self.io.set_baudrate(125000)
@@ -273,9 +268,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     self.configuration.update(fw_info)
 
     # Serial number from FTDI descriptor.
-    if hasattr(self.io, "serial") and self.io.serial:
-      self.configuration["serial_number"] = self.io.serial
-    elif hasattr(self.io, "device_id") and self.io.device_id:
+    if self.io.device_id:
       self.configuration["serial_number"] = self.io.device_id
 
     modes = [m for m, key in [
@@ -293,7 +286,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       ", ".join(modes) if modes else "none",
     )
 
-  async def stop(self):
+  async def stop(self) -> None:
     """Close the FTDI connection. Requires a new ``setup()`` call to use the reader again."""
     await self.io.stop()
 
@@ -363,11 +356,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       logger.info("read %d bytes: %s", len(d), d.hex())
 
     return d
-
-  # Keep old name as alias for backward compatibility
-  async def read_resp(self, timeout=None) -> bytes:
-    """Backward-compat alias for ``_read_frame``."""
-    return await self._read_frame(timeout=timeout)
 
   # Pre-cached STATUS_QUERY frame; avoids rebuilding on every poll.
   _STATUS_FRAME = _wrap_payload(b"\x80")
@@ -476,13 +464,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       return self._parse_status(payload[:5])
     raise last_err  # type: ignore[misc]
 
-  async def _wait_until_machine_ready(self, read_timeout=None, poll_interval: float = 0.05):
+  async def _wait_until_machine_ready(self, read_timeout=None, poll_interval: float = 0.0):
     """Poll ``request_machine_status`` until the device is no longer busy.
 
     Args:
       read_timeout: Max seconds to wait. Defaults to ``self.read_timeout``.
-      poll_interval: Seconds to sleep between polls. Default 0.05 s.
-        OEM software uses ~0.25 s (12 polls over 4.3 s for open).
+      poll_interval: Seconds to sleep between polls. Default 0.0 (no sleep,
+        paced by I/O roundtrip alone, ~37 ms/poll).
     """
     if read_timeout is None:
       read_timeout = self.read_timeout
@@ -513,32 +501,111 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   async def request_eeprom_data(self) -> Dict:
     """Fetch and parse the EEPROM payload (command ``0x05 0x07``).
 
-    Response payload is variable-length: 263 bytes observed on 430-2621.
+    Response is 264 bytes (observed on serial 430-2621, type 0x0024).
 
-    Payload byte map:
-      [0] subcommand echo
-      [1] command family echo
-      [2:4] machine_type (u16 BE)
-      [4:6] unknown
-      [6:11] unknown
-      [11] has_absorbance
-      [12] has_fluorescence
-      [13] has_luminescence
-      [14] has_alpha_technology
-      [15:19] unknown
-      [19:21] excitation monochromator max nm (u16 LE)
-      [21:25] unknown
-      [25:27] emission monochromator max nm (u16 LE)
-      [27:33] unknown
-      [33] dichroic filter slots (u8)
-      [34] emission/excitation filter slots (u8, same for both sides)
-      [35:263] unknown (calibration / filter config data)
+    EEPROM Byte Map — Full 264-Byte Analysis
+    ==========================================
+    Source: real capture from CLARIOstar Plus serial 430-2621.
+    Reference hex (first 48 bytes):
+      07 05 00 24 00 00 00 01  00 00 0a 01 01 01 01 00
+      00 01 00 ee 02 00 00 0f  00 b0 03 00 00 00 00 00
+      00 03 04 00 00 01 00 00  01 02 00 00 00 00 00 00
+
+    Section 1 — Header & Command Echo (bytes 0-3) [CONFIRMED]
+      [0]     subcommand echo (0x07)
+      [1]     command family echo (0x05)
+      [2:4]   machine_type code (u16 BE). 0x0024/0x0026 = CLARIOstar Plus.
+
+    Section 2 — Board Info (bytes 4-10) [HYPOTHESES]
+      [4:6]   always 0x0000 — padding or reserved
+      [7]     0x01 — possibly BoardNum main board version (ActiveX: "1/3" format)
+      [10]    0x0a (10) — possibly BoardNum measurement board version or hw revision
+
+    Section 3 — Detection Mode Flags (bytes 11-17) [11-14 CONFIRMED]
+      [11]    has_absorbance (bool)     — ActiveX: AbsOptionIn
+      [12]    has_fluorescence (bool)   — standard on all CLARIOstar Plus
+      [13]    has_luminescence (bool)   — ActiveX: LumiOptionIn
+      [14]    has_alpha_technology (bool) — requires optional 680nm laser
+      [15]    0x00 — HYPOTHESIS: has_trf (ActiveX: TRFOptionIn) or has_dual_pmt
+      [16]    0x00 — unknown flag
+      [17]    0x01 — unknown flag (always 1 on test unit; maybe has_spectrometer
+              or microplate_sensor_enabled)
+
+    Section 4 — Monochromator & Optics (bytes 18-34) [19-20,25-26,33,34 CONFIRMED]
+      [18]    0x00 — padding
+      [19:21] excitation monochromator max nm (u16 LE). 0x02ee = 750 nm.
+      [21:22] 0x0000
+      [23]    0x0f (15) — unknown; possibly default bandwidth nm or step size
+      [24]    0x00
+      [25:27] emission monochromator max nm (u16 LE). 0x03b0 = 944 nm.
+              (Note: spec sheet says 840nm LVF range; 944 is physical slide limit)
+      [27:32] 0x00 × 5
+      [33]    dichroic filter slots (u8) = 3 (manual: positions A,B,C on 1 slide)
+      [34]    excitation/emission filter slots (u8) = 4 (manual: 4 per side, 2 slides × 2)
+              Note: min monochromator nm is NOT in EEPROM. 320nm is a hardware constant
+              of the LVF design per BMG spec sheets.
+
+    Section 5 — Hardware Options (bytes 35-52) [HYPOTHESES]
+      ActiveX EEPROM-derived items not yet mapped: Pump1In, Pump2In, IncubIn,
+      ExtIncubator, ApertureType. Test unit has no pumps, has standard incubator.
+      [35]    0x00 — HYPOTHESIS: Pump1In (no pump → 0)
+      [36]    0x00 — HYPOTHESIS: Pump2In (no pump → 0)
+      [37]    0x01 — HYPOTHESIS: IncubIn (standard incubator → 1)
+      [38]    0x00 — HYPOTHESIS: ExtIncubator (not extended → 0; extended = 10-65°C)
+      [40]    0x01 — unknown flag
+      [41]    0x02 — HYPOTHESIS: ApertureType (ActiveX: 'none'=0, '96/384'=1, '1536'=2)
+      [52]    0x32 (50) — unknown; maybe default shake speed or settling time
+
+    Section 6 — Sparse Region (bytes 53-95) [UNKNOWN]
+      Mostly zeros with isolated non-zero bytes:
+      [73]=0x74('t'), [75]=0x6f('o'), [83]=0x65('e') — fragment of old string?
+      [87]=0xdc(220) — tempting as UV spectrometer min nm, but unconfirmed
+      [88]=0x05 — could be filter slide count (5 slides per manual)
+
+    Section 7 — Calibration Block A (bytes 96-111) [UNKNOWN]
+      8 × u16 LE values: 500, 776, 1191, 1800, 2400, 2266, 3500
+      Mostly monotonically increasing. Likely LVF motor step positions or
+      wavelength calibration reference points. Could also be usage counters
+      (compare with cmd 0x05 0x21 response to distinguish).
+
+    Section 8 — Zero Region (bytes 112-134)
+      23 bytes of 0x00. Clear section boundary.
+
+    Section 9 — Boolean Flag Block (bytes 135-152) [UNKNOWN]
+      6 × 0x01 flags at offsets 135, 139, 140, 149, 150 + one more.
+      Possibly: has_barcode_reader (left/right), has_gas_control (O2/CO2 ACU),
+      has_stacker, microplate_sensor_enabled, etc.
+
+    Section 10 — Serial + Calibration Block B (bytes 153-263)
+      [161:163] serial number prefix (u16 LE) = 430   [CONFIRMED]
+      [163:165] serial number suffix (u16 LE) = 2621  [CONFIRMED]
+      [165:167] firmware version (u16 LE) = 1350 → v1.350  [CONFIRMED]
+      Remaining: signed int16 LE pairs (range -168 to +6799).
+      Mix of positive (100-6800) and small negative (-5, -160, -166, -168)
+      values = optical calibration data. Likely per-unit factory-calibrated
+      LVF monochromator slide motor positions + correction offsets for the
+      5 slides (2 Ex LVLP+LVSP, 2 Em LVLP+LVSP, 1 LVDM).
+      Repeated values (1688×2, 4437×2) suggest paired top/bottom calibration.
+      Bytes 217-224 contain repeated 0x46 ('F') — possibly filter ID codes.
+
+    Decode Summary: 20/264 bytes confirmed (7.6%), ~40/264 with hypotheses (15%).
+    To confirm more: need a second unit with different options (pumps, ext incubator),
+    or query ActiveX GetInfo("Pump1In") etc. while comparing raw EEPROM bytes.
+
+    ActiveX EEPROM-derived items (from BMG ActiveX/DDE Manual 0430N0003I):
+      AbsOptionIn, LumiOptionIn, TRFOptionIn, Pump1In, Pump2In, IncubIn,
+      ExtIncubator, ApertureType ('none'/'96/384'/'1536'), BoardNum, EPROMNum.
+
+    Hardware specs (from BMG Operating Manual 0430B0006B):
+      LVF Monochromator range: 320-840nm (bandwidth 8-100nm, 0.1nm steps)
+      LVDM (dichroic mirror): 340-760nm
+      Physical filters: 240-900nm (4 Ex + 4 Em + 3 dichroic = 11 positions, 5 slides)
+      UV/Vis spectrometer: 220-1000nm (bandwidth 3nm, 1-10nm steps)
+      Optional hardware: 1-2 reagent pumps, stacker (50 plates), ACU (O2/CO2),
+        AlphaScreen laser (680nm), Dual-PMT, extended incubator (10-65°C).
 
     Returns:
-      Dict with keys: machine_type_code, model_name, has_absorbance,
-      has_fluorescence, has_luminescence, has_alpha_technology,
-      excitation_mono_max_nm, emission_mono_max_nm,
-      dichroic_filter_slots, excitation_filter_slots.
+      Dict with parsed EEPROM fields.
     """
     payload = await self.send_command(
       command_family=self.CommandFamily.REQUEST,
@@ -558,8 +625,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "has_fluorescence": False,
       "has_luminescence": False,
       "has_alpha_technology": False,
-      "excitation_mono_max_nm": 0,
-      "emission_mono_max_nm": 0,
+      "excitation_monochromator_max_nm": 0,
+      "emission_monochromator_max_nm": 0,
       "dichroic_filter_slots": 0,
       "excitation_filter_slots": 0,
       "emission_filter_slots": 0,
@@ -578,8 +645,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     result["has_alpha_technology"] = bool(payload[14])
 
     if len(payload) >= 35:
-      result["excitation_mono_max_nm"] = int.from_bytes(payload[19:21], "little")
-      result["emission_mono_max_nm"] = int.from_bytes(payload[25:27], "little")
+      result["excitation_monochromator_max_nm"] = int.from_bytes(payload[19:21], "little")
+      result["emission_monochromator_max_nm"] = int.from_bytes(payload[25:27], "little")
       result["dichroic_filter_slots"] = payload[33]
       result["excitation_filter_slots"] = payload[34]
       result["emission_filter_slots"] = payload[34]
@@ -692,21 +759,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "alpha_time": _u32(38),
     }
 
-  # === Commands (Phase 1) ===
+  # === Commands ===
 
-  async def initialize(self, wait: bool = True, poll_interval: float = 0.0):
+  async def initialize(self, wait: bool = True, poll_interval: float = 0.0) -> None:
     """Send the hardware init sequence (command ``0x01 0x00``) and poll until ready.
-
-    Response payload is fixed-length: 16 bytes (status-ack).
 
     Args:
       wait: If True, block until the device is no longer busy.
       poll_interval: Seconds between status polls while waiting.
-
-    Returns:
-      Raw response payload bytes.
     """
-    return await self.send_command(
+    await self.send_command(
       command_family=self.CommandFamily.INITIALIZE,
       command=self.Command.INIT,
       payload=b"\x00\x10\x02\x00",
@@ -714,19 +776,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       poll_interval=poll_interval,
     )
 
-  async def open(self, wait: bool = True, poll_interval: float = 0.1):
+  async def open(self, wait: bool = True, poll_interval: float = 0.1) -> None:
     """Extend the plate drawer (command ``0x03 0x01``). Motor takes ~4.3 s.
-
-    Response payload is fixed-length: 16 bytes (status-ack).
 
     Args:
       wait: If True, block until the device is no longer busy.
       poll_interval: Seconds between status polls while waiting.
-
-    Returns:
-      Raw response payload bytes.
     """
-    return await self.send_command(
+    await self.send_command(
       command_family=self.CommandFamily.TRAY,
       command=self.Command.TRAY_OPEN,
       payload=b"\x00\x00\x00\x00",
@@ -735,21 +792,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     )
 
   async def close(
-    self, plate: Optional[Plate] = None, wait: bool = True, poll_interval: float = 0.1,
-  ):
+    self, plate: Optional[Plate] = None, *, wait: bool = True, poll_interval: float = 0.1,
+  ) -> None:
     """Retract the plate drawer (command ``0x03 0x00``). Motor takes ~8 s.
 
-    Response payload is fixed-length: 16 bytes (status-ack).
-
     Args:
-      plate: Ignored (present for PlateReaderBackend interface compatibility).
+      plate: Unused (present for PlateReaderBackend interface compatibility).
       wait: If True, block until the device is no longer busy.
       poll_interval: Seconds between status polls while waiting.
-
-    Returns:
-      Raw response payload bytes.
     """
-    return await self.send_command(
+    await self.send_command(
       command_family=self.CommandFamily.TRAY,
       command=self.Command.TRAY_CLOSE,
       payload=b"\x00\x00\x00\x00",
@@ -757,7 +809,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       poll_interval=poll_interval,
     )
 
-  # === Measurement stubs (Phase 4+) ===
+  # === Measurement (not yet implemented) ===
 
   async def read_absorbance(
     self, plate: Plate, wells: List[Well], wavelength: int

@@ -1,4 +1,4 @@
-"""Tests for CLARIOstarPlusBackend — Phase 1 commands.
+"""Tests for CLARIOstarPlusBackend.
 
 Verifies that initialize, open, and close produce exactly the byte sequences
 observed in pcap captures from real CLARIOstar Plus hardware.
@@ -125,10 +125,11 @@ def _make_backend() -> CLARIOstarPlusBackend:
     "has_fluorescence": False,
     "has_luminescence": False,
     "has_alpha_technology": False,
-    "excitation_mono_max_nm": 0,
-    "emission_mono_max_nm": 0,
+    "excitation_monochromator_max_nm": 0,
+    "emission_monochromator_max_nm": 0,
+    "excitation_filter_slots": 0,
     "dichroic_filter_slots": 0,
-    "emission_excitation_filter_slots": 0,
+    "emission_filter_slots": 0,
   }
   return backend
 
@@ -242,7 +243,7 @@ class TestClose(unittest.TestCase):
 
 
 class TestStatusPollResilience(unittest.TestCase):
-  """Verify that _poll_until_ready survives partial/corrupt frames."""
+  """Verify that _wait_until_machine_ready survives partial/corrupt frames."""
 
   # Corrupt status — correct size field (16 bytes) but bad checksum.
   # _read_frame completes normally; _validate_frame raises ChecksumError.
@@ -389,11 +390,27 @@ class TestConvenienceStatusQueries(unittest.TestCase):
 
 
 # ---------------------------------------------------------------------------
-# Real hardware capture — firmware info (from CLARIOstar Plus 430-2621)
+# Real hardware captures (from CLARIOstar Plus 430-2621)
+#
+# Stored as complete wire frames (STX | size | 0x0C | payload | checksum | CR)
+# so tests exercise _validate_frame + _extract_payload on fixed bytes rather
+# than re-wrapping payloads with _wrap_payload (which would mask framing bugs).
 # ---------------------------------------------------------------------------
 
-# 32-byte unframed payload for command 0x05 0x09.
-# Byte map:
+# 272-byte wire frame for EEPROM response (command 0x05 0x07, 264-byte payload).
+# Byte map: see request_eeprom_data() docstring in clariostar_plus_backend.py.
+_REAL_EEPROM_FRAME = bytes.fromhex(
+  "0201100c070500240000000100000a0101010100000100ee0200000f00b003000000000000030400"
+  "0001000001020000000000000000000032000000000000000000000000000000000000000074006f"
+  "0000000000000065000000dc050000000000000000f4010803a70408076009da08ac0d0000000000"
+  "000000000000000000000000000000000000000100000001010000000000000001010000000000000"
+  "012029806ae013d0a4605ee01fbff700c00000000a40058ff8e03f20460ff5511fe0b55118f1a1702"
+  "98065aff970668042603bc14b804080791009001463228460a0046071e0000000000000000002103d"
+  "40628002c01900146001e00001411001209ac0d60090000000000001ff50d"
+)
+
+# 40-byte wire frame for firmware info response (command 0x05 0x09, 32-byte payload).
+# Payload byte map:
 #   0:     subcommand echo (0x0a = 0x09 + 1)
 #   1:     command family echo (0x05)
 #   2-3:   machine type code (0x0024)
@@ -402,12 +419,10 @@ class TestConvenienceStatusQueries(unittest.TestCase):
 #   8-19:  build date "Nov 20 2020\0"
 #   20-27: build time "11:51:21\0"
 #   28-31: unknown
-_REAL_FIRMWARE_PAYLOAD = bytes([
-  0x0a, 0x05, 0x00, 0x24, 0x00, 0x00, 0x05, 0x46,
-  0x4e, 0x6f, 0x76, 0x20, 0x32, 0x30, 0x20, 0x32,
-  0x30, 0x32, 0x30, 0x00, 0x31, 0x31, 0x3a, 0x35,
-  0x31, 0x3a, 0x32, 0x31, 0x00, 0x00, 0x01, 0x00,
-])
+_REAL_FIRMWARE_FRAME = bytes.fromhex(
+  "0200280c0a050024000005464e6f762032302032303230003131"
+  "3a35313a3231000001000004ed0d"
+)
 
 
 class TestFirmwareInfoParsing(unittest.TestCase):
@@ -417,7 +432,7 @@ class TestFirmwareInfoParsing(unittest.TestCase):
     """Parse the real 32-byte firmware payload from 430-2621 via mock backend."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(_wrap_payload(_REAL_FIRMWARE_PAYLOAD))
+    mock.queue_response(_REAL_FIRMWARE_FRAME)
 
     fw = asyncio.run(backend.request_firmware_info())
     self.assertEqual(fw["firmware_version"], "1.35")
@@ -437,13 +452,91 @@ class TestFirmwareInfoParsing(unittest.TestCase):
     """request_firmware_info result merges into configuration via update()."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(_wrap_payload(_REAL_FIRMWARE_PAYLOAD))
+    mock.queue_response(_REAL_FIRMWARE_FRAME)
 
     fw = asyncio.run(backend.request_firmware_info())
     backend.configuration.update(fw)
 
     self.assertEqual(backend.configuration["firmware_version"], "1.35")
     self.assertEqual(backend.configuration["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
+
+
+class TestEepromParsing(unittest.TestCase):
+  """Verify EEPROM parsing with real hardware capture data."""
+
+  def test_parse_real_eeprom(self):
+    """Parse the real 264-byte EEPROM payload from 430-2621."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(_REAL_EEPROM_FRAME)
+
+    eeprom = asyncio.run(backend.request_eeprom_data())
+
+    self.assertEqual(eeprom["machine_type_code"], 0x0024)
+    self.assertEqual(eeprom["model_name"], "CLARIOstar Plus")
+    self.assertTrue(eeprom["has_absorbance"])
+    self.assertTrue(eeprom["has_fluorescence"])
+    self.assertTrue(eeprom["has_luminescence"])
+    self.assertTrue(eeprom["has_alpha_technology"])
+    self.assertEqual(eeprom["excitation_monochromator_max_nm"], 750)
+    self.assertEqual(eeprom["emission_monochromator_max_nm"], 944)
+    self.assertEqual(eeprom["dichroic_filter_slots"], 3)
+    self.assertEqual(eeprom["excitation_filter_slots"], 4)
+    self.assertEqual(eeprom["emission_filter_slots"], 4)
+
+  def test_parse_eeprom_too_short(self):
+    """Payload shorter than 15 bytes returns defaults."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(_wrap_payload(b"\x07\x05\x00\x24"))
+
+    eeprom = asyncio.run(backend.request_eeprom_data())
+
+    self.assertEqual(eeprom["machine_type_code"], 0)
+    self.assertFalse(eeprom["has_absorbance"])
+    self.assertEqual(eeprom["excitation_monochromator_max_nm"], 0)
+
+  def test_parse_eeprom_short_skips_optics(self):
+    """Payload with 15-34 bytes parses detection flags but not optics."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    # 20 bytes: enough for detection flags (bytes 11-14) but not optics (bytes 19+)
+    payload = _extract_payload(_REAL_EEPROM_FRAME)[:20]
+    mock.queue_response(_wrap_payload(payload))
+
+    eeprom = asyncio.run(backend.request_eeprom_data())
+
+    self.assertEqual(eeprom["machine_type_code"], 0x0024)
+    self.assertTrue(eeprom["has_absorbance"])
+    self.assertEqual(eeprom["excitation_monochromator_max_nm"], 0)
+    self.assertEqual(eeprom["dichroic_filter_slots"], 0)
+
+  def test_stores_into_configuration(self):
+    """request_eeprom_data result merges into configuration via update()."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(_REAL_EEPROM_FRAME)
+
+    eeprom = asyncio.run(backend.request_eeprom_data())
+    backend.configuration.update(eeprom)
+
+    self.assertEqual(backend.configuration["excitation_monochromator_max_nm"], 750)
+    self.assertEqual(backend.configuration["emission_monochromator_max_nm"], 944)
+    self.assertEqual(backend.configuration["model_name"], "CLARIOstar Plus")
+
+  def test_unknown_machine_type(self):
+    """Unknown machine type code produces a descriptive model name."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    # Change bytes 2-3 from 0x0024 to 0x00FF
+    payload = bytearray(_extract_payload(_REAL_EEPROM_FRAME))
+    payload[2:4] = b"\x00\xff"
+    mock.queue_response(_wrap_payload(bytes(payload)))
+
+    eeprom = asyncio.run(backend.request_eeprom_data())
+
+    self.assertEqual(eeprom["machine_type_code"], 0x00FF)
+    self.assertIn("0x00ff", eeprom["model_name"])
 
 
 class TestAvailableDetectionModes(unittest.TestCase):

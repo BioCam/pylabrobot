@@ -23,35 +23,35 @@ Verified against 6,780 pcap frames with zero failures.
 
 ### `open` (drawer out)
 - **Group/Cmd:** `0x03 0x01`
-- **Payload:** `03 01 00 00 00 00 00`
+- **Payload:** `03 01 00 00 00 00`
 - **Response:** Status frame — poll until `drawer_open` flag is set.
 
 ### `close` (drawer in)
 - **Group/Cmd:** `0x03 0x00`
-- **Payload:** `03 00 00 00 00 00 00`
+- **Payload:** `03 00 00 00 00 00`
 - **Response:** Status frame — poll until `drawer_open` flag clears.
 
-### `command_status`
-- **Group/Cmd:** `0x80 0x00`
-- **Payload:** `80 00`
+### `request_machine_status`
+- **Group/Cmd:** `0x80` (no command byte — STATUS is a single-byte family)
+- **Payload:** `80`
 - **Response:** 5+ status bytes. Bit layout:
   - Byte 0, bit 1: `standby`
   - Byte 1, bit 5: `busy`
   - Byte 1, bit 4: `running`
   - Byte 2, bit 0: `unread_data`
   - Byte 3, bit 5: `initialized`
-  - Byte 3, bit 6: `lid_open`
+  - Byte 3, bit 6: `lid_open` *(documented, not yet parsed)*
   - Byte 3, bit 0: `drawer_open`
   - Byte 3, bit 1: `plate_detected`
-  - Byte 3, bit 2: `z_probed`
-  - Byte 3, bit 3: `active`
-  - Byte 4, bit 6: `filter_cover_open`
+  - Byte 3, bit 2: `z_probed` *(documented, not yet parsed)*
+  - Byte 3, bit 3: `active` *(documented, not yet parsed)*
+  - Byte 4, bit 6: `filter_cover_open` *(documented, not yet parsed)*
 
 ---
 
 ## Phase 2 — Device Identification
 
-### `eeprom_read`
+### `request_eeprom_data`
 - **Group/Cmd:** `0x05 0x07`
 - **Payload:** `05 07 00 00 00 00 00 00`
 - **Response:** 264-byte payload. Key fields:
@@ -62,9 +62,9 @@ Verified against 6,780 pcap frames with zero failures.
   - Byte 14: `has_alpha_technology` (bool)
   - Bytes 96-107: dense 16-bit values, likely usage counters.
   - Remaining offsets (pump, stacker, serial) not yet confirmed.
-- **Use:** Populate `CLARIOstarPlusConfig`. Parse with `_parse_eeprom()`.
+- **Use:** Populate `self.configuration` dict. Parsed inline in `request_eeprom_data()`.
 
-### `firmware_info`
+### `request_firmware_info`
 - **Group/Cmd:** `0x05 0x09`
 - **Payload:** `05 09 00 00 00 00 00 00`
 - **Response:** 32-byte payload.
@@ -73,7 +73,7 @@ Verified against 6,780 pcap frames with zero failures.
   - Bytes 20-27: build time, null-terminated ASCII (e.g. `"11:51:21"`).
 - **Use:** Log firmware version during `setup()`.
 
-### `usage_counters`
+### `request_usage_counters`
 - **Group/Cmd:** `0x05 0x21`
 - **Payload:** `05 21 00 00 00 00 00 00`
 - **Response:** Contains lifetime usage stats (flashes, wells measured, shake time).
@@ -244,6 +244,26 @@ All dimensions in 0.01mm units (uint16 BE). Well mask is 384-bit big-endian.
 |-----------|-------|---------------|-------------|
 | `0x0024` | CLARIOstar Plus | 220-1000 nm | 11 |
 | `0x0026` | CLARIOstar Plus | 220-1000 nm | 11 |
+
+---
+
+## Backend Internal Organisation
+
+```
+CLARIOstarPlusBackend
+├── Constructor
+├── Lifecycle (setup, stop)
+├── Low-level I/O
+├── Command layer (send_command)
+├── Status & Polling
+├── Device Info (EEPROM, firmware, detection modes)
+├── Lifecycle (initialize, open, close)
+├── Measurement - Absorbance
+├── Measurement - Spectral Absorbance Scan
+├── Measurement - Fluorescence
+├── Measurement - Luminescence
+└── Usage Counters
+```
 
 ---
 
