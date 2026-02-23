@@ -56,11 +56,19 @@ _STATUS_DRAWER_CLOSED = _wrap_payload(b"\x00\x00\x00\x20\x00")
 
 
 class MockFTDI:
-  """Minimal FTDI mock that records writes and plays back queued responses."""
+  """Minimal FTDI mock that records writes and plays back queued responses.
+
+  Each entry in the response queue is returned as a single chunk on the
+  first ``read()`` call within a ``_read_frame`` invocation. Subsequent
+  ``read()`` calls (before the next ``write()``) return empty bytes so that
+  ``_read_frame`` sees the chunk as a complete (or truncated) frame and
+  returns it without mixing in the next queued response.
+  """
 
   def __init__(self) -> None:
     self.written: List[bytes] = []
     self._responses: List[bytes] = []
+    self._delivered_since_write = False
 
   def queue_response(self, *frames: bytes) -> None:
     """Queue one or more complete frames to return on subsequent reads."""
@@ -85,10 +93,12 @@ class MockFTDI:
 
   async def write(self, data: bytes) -> int:
     self.written.append(bytes(data))
+    self._delivered_since_write = False
     return len(data)
 
   async def read(self, n: int) -> bytes:
-    if self._responses:
+    if not self._delivered_since_write and self._responses:
+      self._delivered_since_write = True
       return self._responses.pop(0)
     return b""
 
@@ -210,6 +220,41 @@ class TestClose(unittest.TestCase):
 
     self.assertEqual(len(mock.written), 2)
     self.assertEqual(mock.written[1], GROUND_TRUTH_STATUS)
+
+
+class TestStatusPollResilience(unittest.TestCase):
+  """Verify that _wait_for_ready_and_return survives partial/corrupt frames."""
+
+  def test_recovers_from_partial_frame(self):
+    """A truncated status response should be retried, not crash."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    # Command ack, then a truncated frame (17 of 24 bytes — the real bug),
+    # then a valid status response on the retry.
+    truncated = bytes.fromhex("0200180c011500000000c900000000000d")
+    mock.queue_response(_ACK, truncated, _STATUS_INITIALIZED)
+
+    asyncio.run(backend.initialize())
+
+    # Should have written: init command, status poll (failed), status poll (success)
+    self.assertEqual(len(mock.written), 3)
+    self.assertEqual(mock.written[0], GROUND_TRUTH_INITIALIZE)
+    self.assertEqual(mock.written[1], GROUND_TRUTH_STATUS)
+    self.assertEqual(mock.written[2], GROUND_TRUTH_STATUS)
+
+  def test_recovers_from_empty_frame(self):
+    """An empty response should be retried."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    # Command ack, then empty bytes (simulating total read timeout),
+    # then valid status.
+    mock.queue_response(_ACK, b"", _STATUS_DRAWER_OPEN)
+
+    asyncio.run(backend.open())
+
+    self.assertEqual(mock.written[0], GROUND_TRUTH_OPEN)
 
 
 class TestStatusParsing(unittest.TestCase):

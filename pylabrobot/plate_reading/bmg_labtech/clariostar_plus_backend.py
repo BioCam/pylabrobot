@@ -475,7 +475,12 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     return self._parse_status_response(response)
 
   async def _wait_for_ready_and_return(self, ret, timeout=None):
-    """Wait for the plate reader to be ready (BUSY flag cleared) and return the response."""
+    """Wait for the plate reader to be ready (BUSY flag cleared) and return the response.
+
+    Status polls that return malformed or partial frames (e.g. due to FTDI
+    read timeouts or unsolicited firmware data) are logged and retried.
+    Only the outer timeout causes a hard failure.
+    """
     if timeout is None:
       timeout = self.timeout
     last_status_hex = None
@@ -483,7 +488,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     while time.time() - t < timeout:
       await asyncio.sleep(0.1)
 
-      command_status = await self._request_command_status()
+      try:
+        command_status = await self._request_command_status()
+      except FrameError as e:
+        logger.warning("status poll: bad frame (%s), retrying", e)
+        continue
 
       status_hex = command_status.hex()
       if status_hex != last_status_hex:
