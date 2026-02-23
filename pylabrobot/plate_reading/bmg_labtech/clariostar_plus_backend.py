@@ -541,16 +541,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     _validate_frame(resp)
     ret = _extract_payload(resp)
 
-    # Some firmware versions (e.g. machine type 0x0024) reply to REQUEST
-    # commands with a status frame (payload byte 0 = 0x01) before sending
-    # the actual data frame. Others (e.g. 0x0026) return data directly.
-    # If we got a status frame for a REQUEST command, read again for data.
-    if command_family == self.CommandFamily.REQUEST and ret and ret[0] == 0x01:
-      logger.debug("REQUEST got status frame (%d bytes), reading data frame", len(ret))
-      resp = await self._read_frame(timeout=read_timeout)
-      _validate_frame(resp)
-      ret = _extract_payload(resp)
-
     if wait:
       await self._wait_until_machine_ready(poll_interval=poll_interval)
 
@@ -605,13 +595,30 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   # === Device info ===
 
+  def _is_status_frame(self, payload: bytes) -> bool:
+    """Return True if *payload* is a status acknowledgment rather than request data.
+
+    On machine type 0x0024 the first response to a REQUEST command is a 16-byte
+    status frame (payload byte 0 = 0x01, the INITIALIZE/STATUS family echo).
+    Machine type 0x0026 returns data directly.
+    """
+    return len(payload) <= 20 and len(payload) >= 1 and payload[0] == 0x01
+
   async def request_eeprom_data(self):
     """Fetch the 264-byte EEPROM payload (command ``0x05 0x07``) and cache it for ``request_machine_configuration``."""
-    self._eeprom_data = await self.send_command(
+    payload = await self.send_command(
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.EEPROM,
       payload=b"\x00\x00\x00\x00\x00\x00",
     )
+
+    if self._is_status_frame(payload):
+      logger.info("EEPROM request got status ack, reading data frame...")
+      resp = await self._read_frame(timeout=20)
+      _validate_frame(resp)
+      payload = _extract_payload(resp)
+
+    self._eeprom_data = payload
     logger.info(
       "EEPROM: %d bytes, head=%s",
       len(self._eeprom_data), self._eeprom_data[:16].hex() if len(self._eeprom_data) >= 16 else self._eeprom_data.hex(),
@@ -631,6 +638,12 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command=self.Command.FIRMWARE_INFO,
       payload=b"\x00\x00\x00\x00\x00\x00",
     )
+
+    if self._is_status_frame(payload):
+      logger.info("Firmware request got status ack, reading data frame...")
+      resp = await self._read_frame(timeout=20)
+      _validate_frame(resp)
+      payload = _extract_payload(resp)
 
     version = ""
     timestamp = ""
