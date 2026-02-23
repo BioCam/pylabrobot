@@ -11,8 +11,6 @@ from typing import Dict, List
 from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
   CLARIOstarPlusBackend,
   _extract_payload,
-  _parse_eeprom,
-  _parse_firmware_info,
   _validate_frame,
   _wrap_payload,
 )
@@ -116,8 +114,7 @@ def _make_backend() -> CLARIOstarPlusBackend:
   """Create a backend with a MockFTDI injected (bypasses real USB)."""
   backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
   backend.io = MockFTDI()
-  backend.timeout = 5
-  backend.read_timeout = 1
+  backend.read_timeout = 5
   backend.configuration = {
     "serial_number": "",
     "firmware_version": "",
@@ -414,40 +411,33 @@ _REAL_FIRMWARE_PAYLOAD = bytes([
 class TestFirmwareInfoParsing(unittest.TestCase):
   """Verify firmware info parsing with real hardware capture data."""
 
-  def test_parse_real_firmware_unframed(self):
-    """Parse the real 32-byte unframed firmware payload from 430-2621."""
-    result = _parse_firmware_info(_REAL_FIRMWARE_PAYLOAD)
-    self.assertEqual(result["firmware_version"], "1.35")
-    self.assertEqual(result["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
-
-  def test_parse_real_firmware_framed(self):
-    """Parse the real payload wrapped in a frame (as stored by request_firmware_info)."""
-    framed = _wrap_payload(_REAL_FIRMWARE_PAYLOAD)
-    result = _parse_firmware_info(framed)
-    self.assertEqual(result["firmware_version"], "1.35")
-    self.assertEqual(result["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
-
-  def test_parse_firmware_too_short(self):
-    """Payload shorter than 28 bytes returns empty defaults."""
-    result = _parse_firmware_info(b"\x0a\x05\x00\x24\x00\x00")
-    self.assertEqual(result["firmware_version"], "")
-    self.assertEqual(result["firmware_build_timestamp"], "")
-
-  def test_end_to_end_via_mock_ftdi(self):
-    """Simulate the full path: request_firmware_info returns parsed dict,
-    caller (setup) stores into configuration."""
+  def test_parse_real_firmware(self):
+    """Parse the real 32-byte firmware payload from 430-2621 via mock backend."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
-
-    # Queue firmware data response (no status polling — REQUEST commands use wait=False)
     mock.queue_response(_wrap_payload(_REAL_FIRMWARE_PAYLOAD))
 
-    # request_firmware_info returns parsed values
     fw = asyncio.run(backend.request_firmware_info())
     self.assertEqual(fw["firmware_version"], "1.35")
     self.assertEqual(fw["firmware_build_timestamp"], "Nov 20 2020 11:51:21")
 
-    # Caller stores into configuration — same as setup() does
+  def test_parse_firmware_too_short(self):
+    """Payload shorter than 28 bytes returns empty defaults."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(_wrap_payload(b"\x0a\x05\x00\x24\x00\x00"))
+
+    fw = asyncio.run(backend.request_firmware_info())
+    self.assertEqual(fw["firmware_version"], "")
+    self.assertEqual(fw["firmware_build_timestamp"], "")
+
+  def test_stores_into_configuration(self):
+    """request_firmware_info result merges into configuration via update()."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(_wrap_payload(_REAL_FIRMWARE_PAYLOAD))
+
+    fw = asyncio.run(backend.request_firmware_info())
     backend.configuration.update(fw)
 
     self.assertEqual(backend.configuration["firmware_version"], "1.35")

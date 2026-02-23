@@ -128,110 +128,13 @@ _frame = _wrap_payload
 # ~37 ms/poll. Open ≈ 4.3 s, close ≈ 8 s, dominated by physical motor speed.
 #
 
-# ---------------------------------------------------------------------------
-# Device configuration helpers
-# ---------------------------------------------------------------------------
-#
-# Byte maps (confirmed via hardware capture on CLARIOstar Plus, serial 430-2621):
-#
-# **EEPROM response (0x05 0x07, 264-byte payload):**
-#   0:     subcommand echo (0x07)
-#   1:     command family echo (0x05)
-#   2-3:   machine type code (uint16 BE, 0x0024 / 0x0026)
-#   4-5:   unknown (always 0x0000)
-#   6-10:  unknown
-#   11:    has_absorbance (bool)
-#   12:    has_fluorescence (bool)
-#   13:    has_luminescence (bool)
-#   14:    has_alpha_technology (bool)
-#
-# **Firmware info response (0x05 0x09, 32-byte unframed payload):**
-#   0:     subcommand echo (0x0a = cmd + 1)
-#   1:     command family echo (0x05)
-#   2-3:   machine type code (uint16 BE)
-#   4-5:   unknown (always 0x0000)
-#   6-7:   firmware version x 1000 (uint16 BE, e.g. 0x0546 = 1.35)
-#   8-19:  build date, null-terminated ASCII (e.g. "Nov 20 2020")
-#   20-27: build time, null-terminated ASCII (e.g. "11:51:21")
-#   28-31: unknown
 
-# Known machine type codes.
 # 0x0024: verified on CLARIOstar Plus hardware (serial 430-2621, 220-1000 nm).
 # 0x0026: from vibed code, unverified on real hardware.
 _MODEL_LOOKUP: Dict[int, Tuple[str, Tuple[int, int], int]] = {
   0x0024: ("CLARIOstar Plus", (220, 1000), 11),
   0x0026: ("CLARIOstar Plus", (220, 1000), 11),
 }
-
-
-def _extract_cstring(data: bytes, start: int, max_len: int) -> str:
-  """Extract a null-terminated ASCII string from a byte buffer."""
-  end = start
-  while end < start + max_len and end < len(data) and data[end] != 0:
-    end += 1
-  return data[start:end].decode("ascii", errors="replace")
-
-
-def _parse_eeprom(raw: bytes) -> Dict:
-  """Parse an EEPROM response payload into a flat dict of configuration values."""
-  try:
-    _validate_frame(raw)
-    payload = _extract_payload(raw)
-  except FrameError:
-    payload = raw
-
-  result: Dict = {
-    "machine_type_code": 0,
-    "model_name": "",
-    "monochromator_range": (0, 0),
-    "num_filter_slots": 0,
-    "has_absorbance": False,
-    "has_fluorescence": False,
-    "has_luminescence": False,
-    "has_alpha_technology": False,
-  }
-
-  if len(payload) < 15:
-    return result
-
-  machine_type = int.from_bytes(payload[2:4], "big")
-  result["machine_type_code"] = machine_type
-
-  model_info = _MODEL_LOOKUP.get(machine_type)
-  if model_info is not None:
-    result["model_name"], result["monochromator_range"], result["num_filter_slots"] = model_info
-  else:
-    result["model_name"] = f"Unknown BMG reader (type 0x{machine_type:04x})"
-
-  result["has_absorbance"] = bool(payload[11])
-  result["has_fluorescence"] = bool(payload[12])
-  result["has_luminescence"] = bool(payload[13])
-  result["has_alpha_technology"] = bool(payload[14])
-
-  return result
-
-
-def _parse_firmware_info(raw: bytes) -> Dict:
-  """Parse a firmware info response payload into a flat dict."""
-  try:
-    _validate_frame(raw)
-    payload = _extract_payload(raw)
-  except FrameError:
-    payload = raw
-
-  result: Dict = {"firmware_version": "", "firmware_build_timestamp": ""}
-
-  if len(payload) < 28:
-    return result
-
-  version_raw = int.from_bytes(payload[6:8], "big")
-  result["firmware_version"] = f"{version_raw / 1000:.2f}"
-
-  build_date = _extract_cstring(payload, 8, 12)
-  build_time = _extract_cstring(payload, 20, 8)
-  result["firmware_build_timestamp"] = f"{build_date} {build_time}".strip()
-
-  return result
 
 
 # ---------------------------------------------------------------------------
@@ -312,16 +215,26 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         flags[name] = False
     return flags
 
+  _PACKET_READ_TIMEOUT: float = 2  # seconds; max wait for a single serial frame
+
   # === Constructor ===
 
   def __init__(
     self,
     device_id: Optional[str] = None,
-    timeout: float = 150,
-    read_timeout: float = 2,
+    read_timeout: float = 120,
   ):
+    """Create a new CLARIOstar Plus backend.
+
+    Args:
+      device_id: FTDI serial number / device ID. Only needed if multiple FTDI
+        devices are connected.
+      read_timeout: timeout in seconds for reading a full response. For commands
+        with ``wait=True`` (open, close, initialize) this bounds the total time
+        including busy-polling. Can be overridden per-command via
+        ``send_command(read_timeout=...)``.
+    """
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
-    self.timeout = timeout
     self.read_timeout = read_timeout
 
     self.configuration: Dict = {
@@ -353,8 +266,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     eeprom = await self.request_eeprom_data()
     self.configuration.update(eeprom)
 
-    fw = await self.request_firmware_info()
-    self.configuration.update(fw)
+    fw_info = await self.request_firmware_info()
+    self.configuration.update(fw_info)
 
     # Serial number from FTDI descriptor.
     if hasattr(self.io, "serial") and self.io.serial:
@@ -401,7 +314,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     The timeout is purely a fallback; it should never be the normal exit path.
     """
     if timeout is None:
-      timeout = self.read_timeout
+      timeout = self._PACKET_READ_TIMEOUT
 
     d = b""
     expected_size = None
@@ -483,17 +396,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command: Command byte (payload byte 1). Required for all groups
         except STATUS and HW_STATUS.
       payload: Additional parameter bytes after command_family and command.
-      read_timeout: Seconds to wait for the response frame. Defaults to
-        ``self.read_timeout``.
+      read_timeout: timeout in seconds for reading a full response. For
+        commands with ``wait=True`` this bounds the total time including
+        busy-polling. Defaults to ``self.read_timeout``.
       wait: If True, poll status after the initial response until the device
         is no longer busy. Used by commands that trigger physical actions
         (initialize, open, close, etc.).
       poll_interval: Seconds to sleep between status polls when *wait* is True.
         Default 0.0 (no sleep, paced by I/O roundtrip alone, ~37 ms/poll).
-        OEM software uses ~0.25 s between polls (observed in pcap). We default
-        to 0 because the total wall time is dominated by physical motor speed
-        (~4.3 s open, ~8 s close) regardless of poll frequency, and faster
-        polling minimises detection latency when the motor finishes.
 
     Returns:
       Validated response payload (frame overhead stripped).
@@ -502,8 +412,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       ValueError: If *command* is missing, unexpected, or not valid for the group.
       FrameError: If the response frame structure is invalid.
       ChecksumError: If the response checksum does not match.
-      TimeoutError: If no response is received within *read_timeout*, or if
-        *wait* is True and the device stays busy beyond ``self.timeout``.
+      TimeoutError: If *wait* is True and the device stays busy beyond
+        *read_timeout*.
     """
     CG = self.CommandFamily
     if command_family in self._NO_COMMAND_FAMILIES:
@@ -521,26 +431,33 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     frame = _wrap_payload(data)
     await self._write_frame(frame)
-    resp = await self._read_frame(timeout=read_timeout)
+    resp = await self._read_frame()
     _validate_frame(resp)
     ret = _extract_payload(resp)
 
     if wait:
-      await self._wait_until_machine_ready(poll_interval=poll_interval)
+      await self._wait_until_machine_ready(
+        read_timeout=read_timeout, poll_interval=poll_interval)
 
     return ret
 
   # === Status ===
 
   async def request_machine_status(self, retries: int = 3) -> Dict[str, bool]:
-    """Query device status and return parsed flags.
+    """Query device status and return parsed flags (command ``0x80``).
 
-    Bypasses ``send_command`` because ``send_command(wait=True)`` calls
-    ``_wait_until_machine_ready``, which calls this method. Routing through
-    ``send_command`` would create infinite recursion.
+    Bypasses ``send_command`` to avoid infinite recursion with
+    ``_wait_until_machine_ready``. Retries on transient ``FrameError``
+    up to *retries* times before raising.
 
-    Retries on ``FrameError`` (e.g. truncated response from a transient serial
-    glitch) up to *retries* times before raising.
+    Response payload is fixed-length: 16 bytes (status flags in first 5).
+
+    Args:
+      retries: Number of attempts before raising on repeated frame errors.
+
+    Returns:
+      Dict with bool flags: standby, busy, running, unread_data,
+      initialized, drawer_open, plate_detected.
     """
     last_err: Optional[FrameError] = None
     for attempt in range(retries):
@@ -556,18 +473,18 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       return self._parse_status(payload[:5])
     raise last_err  # type: ignore[misc]
 
-  async def _wait_until_machine_ready(self, timeout=None, poll_interval: float = 0.05):
+  async def _wait_until_machine_ready(self, read_timeout=None, poll_interval: float = 0.05):
     """Poll ``request_machine_status`` until the device is no longer busy.
 
     Args:
-      timeout: Max seconds to wait. Defaults to ``self.timeout``.
+      read_timeout: Max seconds to wait. Defaults to ``self.read_timeout``.
       poll_interval: Seconds to sleep between polls. Default 0.05 s.
         OEM software uses ~0.25 s (12 polls over 4.3 s for open).
     """
-    if timeout is None:
-      timeout = self.timeout
+    if read_timeout is None:
+      read_timeout = self.read_timeout
     t = time.time()
-    while time.time() - t < timeout:
+    while time.time() - t < read_timeout:
       try:
         flags = await self.request_machine_status()
       except FrameError as e:
@@ -584,21 +501,36 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     elapsed = time.time() - t
     raise TimeoutError(
-      f"Plate reader still busy after {elapsed:.1f}s (timeout={timeout}s). "
-      f"Increase timeout via CLARIOstarPlusBackend(timeout=...) for long-running operations."
+      f"Plate reader still busy after {elapsed:.1f}s (read_timeout={read_timeout}s). "
+      f"Increase timeout via CLARIOstarPlusBackend(read_timeout=...) or per-command read_timeout=."
     )
 
   # === Device info ===
 
   async def request_eeprom_data(self) -> Dict:
-    """Fetch the EEPROM payload (command ``0x05 0x07``) and parse it.
+    """Fetch and parse the EEPROM payload (command ``0x05 0x07``).
+
+    Response payload is variable-length: 264 bytes observed, but only the
+    first 15 bytes are parsed.
+
+    Payload byte map:
+      [0] subcommand echo
+      [1] command family echo
+      [2:4] machine_type (u16 BE)
+      [4:6] unknown
+      [6:11] unknown
+      [11] has_absorbance
+      [12] has_fluorescence
+      [13] has_luminescence
+      [14] has_alpha_technology
 
     Returns:
-      Dict with keys: machine_type_code, model_name, monochromator_range,
-      num_filter_slots, has_absorbance, has_fluorescence, has_luminescence,
-      has_alpha_technology.
+      Dict with keys: machine_type_code (int), model_name (str),
+      monochromator_range (tuple), num_filter_slots (int),
+      has_absorbance (bool), has_fluorescence (bool),
+      has_luminescence (bool), has_alpha_technology (bool).
     """
-    raw = await self.send_command(
+    payload = await self.send_command(
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.EEPROM,
       payload=b"\x00\x00\x00\x00\x00",
@@ -606,29 +538,77 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if logger.isEnabledFor(logging.INFO):
       logger.info(
         "EEPROM: %d bytes, head=%s",
-        len(raw), raw[:16].hex() if len(raw) >= 16 else raw.hex(),
+        len(payload), payload[:16].hex() if len(payload) >= 16 else payload.hex(),
       )
-    return _parse_eeprom(raw)
+
+    result: Dict = {
+      "machine_type_code": 0,
+      "model_name": "",
+      "monochromator_range": (0, 0),
+      "num_filter_slots": 0,
+      "has_absorbance": False,
+      "has_fluorescence": False,
+      "has_luminescence": False,
+      "has_alpha_technology": False,
+    }
+    if len(payload) < 15:
+      return result
+
+    machine_type = int.from_bytes(payload[2:4], "big")
+    result["machine_type_code"] = machine_type
+
+    model_info = _MODEL_LOOKUP.get(machine_type)
+    if model_info is not None:
+      result["model_name"], result["monochromator_range"], result["num_filter_slots"] = model_info
+    else:
+      result["model_name"] = f"Unknown BMG reader (type 0x{machine_type:04x})"
+
+    result["has_absorbance"] = bool(payload[11])
+    result["has_fluorescence"] = bool(payload[12])
+    result["has_luminescence"] = bool(payload[13])
+    result["has_alpha_technology"] = bool(payload[14])
+    return result
 
   async def request_firmware_info(self) -> Dict[str, str]:
     """Request firmware version and build date/time (command ``0x05 0x09``).
 
+    Response payload is fixed-length: 32 bytes.
+
+    Payload byte map:
+      [0] subcommand echo
+      [1] command family echo
+      [2:4] machine_type (u16 BE)
+      [4:6] unknown
+      [6:8] version x1000 (u16 BE)
+      [8:20] build date (cstring)
+      [20:28] build time (cstring)
+      [28:32] unknown
+
     Returns:
-      Dict with ``firmware_version`` (e.g. ``"1.35"``) and
-      ``firmware_build_timestamp`` (e.g. ``"Nov 20 2020 11:51:21"``).
+      Dict with ``firmware_version`` (str, e.g. ``"1.35"``) and
+      ``firmware_build_timestamp`` (str, e.g. ``"Nov 20 2020 11:51:21"``).
       Values are empty strings if the response is too short to parse.
     """
-    raw = await self.send_command(
+    payload = await self.send_command(
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.FIRMWARE_INFO,
       payload=b"\x00\x00\x00\x00\x00",
     )
-    result = _parse_firmware_info(raw)
-    if not result["firmware_version"]:
+
+    result: Dict[str, str] = {"firmware_version": "", "firmware_build_timestamp": ""}
+    if len(payload) < 28:
       logger.warning(
         "Firmware info payload too short (%d bytes, need 28): %s",
-        len(raw), raw.hex(),
+        len(payload), payload.hex(),
       )
+      return result
+
+    version_raw = int.from_bytes(payload[6:8], "big")
+    result["firmware_version"] = f"{version_raw / 1000:.2f}"
+
+    build_date = payload[8:20].split(b"\x00", 1)[0].decode("ascii", errors="replace")
+    build_time = payload[20:28].split(b"\x00", 1)[0].decode("ascii", errors="replace")
+    result["firmware_build_timestamp"] = f"{build_date} {build_time}".strip()
     return result
 
   def request_available_detection_modes(self) -> List[str]:
@@ -647,11 +627,17 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # === Convenience status queries ===
 
   async def request_plate_detected(self) -> bool:
-    """Return True if a plate is currently detected in the drawer."""
+    """Return True if a plate is currently detected in the drawer.
+
+    Delegates to ``request_machine_status()`` (fixed-length 16-byte response).
+    """
     return (await self.request_machine_status())["plate_detected"]
 
   async def request_busy(self) -> bool:
-    """Return True if the device is currently busy."""
+    """Return True if the device is currently busy.
+
+    Delegates to ``request_machine_status()`` (fixed-length 16-byte response).
+    """
     return (await self.request_machine_status())["busy"]
 
   # === Usage counters ===
@@ -659,10 +645,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   async def request_usage_counters(self) -> Dict[str, int]:
     """Fetch lifetime usage counters (command ``0x05 0x21``).
 
-    Returns a dict with keys: flashes, testruns, wells, well_movements,
-    active_time_s, shake_time_s, pump1_usage, pump2_usage, alpha_time.
-    ``wells`` and ``well_movements`` are stored /100 in firmware and
-    multiplied back here.
+    Response payload is fixed-length: 43 bytes (nine u32 BE fields at
+    offsets 6-41).
+
+    Returns:
+      Dict with int values: flashes, testruns, wells, well_movements,
+      active_time_s, shake_time_s, pump1_usage, pump2_usage, alpha_time.
+      ``wells`` and ``well_movements`` are stored /100 in firmware and
+      multiplied back here.
     """
     payload = await self.send_command(
       command_family=self.CommandFamily.REQUEST,
@@ -688,7 +678,17 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # === Commands (Phase 1) ===
 
   async def initialize(self, wait: bool = True, poll_interval: float = 0.0):
-    """Send the hardware init sequence and poll until the device is no longer busy."""
+    """Send the hardware init sequence (command ``0x01 0x00``) and poll until ready.
+
+    Response payload is fixed-length: 16 bytes (status-ack).
+
+    Args:
+      wait: If True, block until the device is no longer busy.
+      poll_interval: Seconds between status polls while waiting.
+
+    Returns:
+      Raw response payload bytes.
+    """
     return await self.send_command(
       command_family=self.CommandFamily.INITIALIZE,
       command=self.Command.INIT,
@@ -698,7 +698,17 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     )
 
   async def open(self, wait: bool = True, poll_interval: float = 0.1):
-    """Extend the plate drawer. Motor takes ~4.3 s (from pcap)."""
+    """Extend the plate drawer (command ``0x03 0x01``). Motor takes ~4.3 s.
+
+    Response payload is fixed-length: 16 bytes (status-ack).
+
+    Args:
+      wait: If True, block until the device is no longer busy.
+      poll_interval: Seconds between status polls while waiting.
+
+    Returns:
+      Raw response payload bytes.
+    """
     return await self.send_command(
       command_family=self.CommandFamily.TRAY,
       command=self.Command.TRAY_OPEN,
@@ -710,7 +720,18 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   async def close(
     self, plate: Optional[Plate] = None, wait: bool = True, poll_interval: float = 0.1,
   ):
-    """Retract the plate drawer. Motor takes ~8 s (from pcap)."""
+    """Retract the plate drawer (command ``0x03 0x00``). Motor takes ~8 s.
+
+    Response payload is fixed-length: 16 bytes (status-ack).
+
+    Args:
+      plate: Ignored (present for PlateReaderBackend interface compatibility).
+      wait: If True, block until the device is no longer busy.
+      poll_interval: Seconds between status polls while waiting.
+
+    Returns:
+      Raw response payload bytes.
+    """
     return await self.send_command(
       command_family=self.CommandFamily.TRAY,
       command=self.Command.TRAY_CLOSE,
