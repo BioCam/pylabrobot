@@ -603,6 +603,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       payload=b"\x00\x00\x00\x00\x00\x00",
       wait=True,
     )
+    logger.info(
+      "EEPROM: %d bytes, head=%s",
+      len(self._eeprom_data), self._eeprom_data[:16].hex() if len(self._eeprom_data) >= 16 else self._eeprom_data.hex(),
+    )
     return self._eeprom_data
 
   async def request_firmware_info(self) -> Dict[str, str]:
@@ -628,6 +632,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       build_date = CLARIOstarPlusConfig._extract_cstring(payload, 8, 12)
       build_time = CLARIOstarPlusConfig._extract_cstring(payload, 20, 8)
       timestamp = f"{build_date} {build_time}".strip()
+    else:
+      logger.warning(
+        "Firmware info payload too short (%d bytes, need 28): %s",
+        len(payload), payload.hex(),
+      )
 
     return {"firmware_version": version, "firmware_build_timestamp": timestamp}
 
