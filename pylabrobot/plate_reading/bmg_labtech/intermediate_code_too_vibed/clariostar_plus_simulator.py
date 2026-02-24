@@ -4,16 +4,19 @@ import random
 import struct
 from typing import Dict, List, Optional, Tuple, Union
 
+from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_protocol import decode_frame
+
 from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
   CLARIOstarPlusBackend,
   CLARIOstarPlusConfig,
-  CommandGroup,
   Command,
-  _wrap_payload,
+  CommandGroup,
   _validate_packet_and_extract_payload,
+  _wrap_payload,
+)
+from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
   _wrap_payload as _frame,  # backward compat
 )
-from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_protocol import decode_frame
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well
 
@@ -273,9 +276,9 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
     payload[1] = 0x05  # family echo
     payload[6:8] = (1350).to_bytes(2, "big")  # version 1.35
     date_str = b"Jan 01 2025\x00"
-    payload[8:8 + len(date_str)] = date_str
+    payload[8 : 8 + len(date_str)] = date_str
     time_str = b"00:00:00"
-    payload[20:20 + len(time_str)] = time_str
+    payload[20 : 20 + len(time_str)] = time_str
     return bytes(payload)
 
   # Keep old name as alias
@@ -371,7 +374,9 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
     # Generate and print the command bytes the real backend would send.
     try:
       await self._start_absorbance_measurement(
-        wavelengths=wavelengths, plate=plate, wells=wells,
+        wavelengths=wavelengths,
+        plate=plate,
+        wells=wells,
       )
     except Exception:
       pass  # Don't let command generation errors affect mock flow
@@ -379,15 +384,27 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
     if not wait:
       # Stash params for deferred collection
       self._pending_absorbance = {
-        "plate": plate, "wells": wells, "wavelengths": wavelengths,
-        "report": report, "mock_data": mock_data, "mean": mean, "cv": cv,
+        "plate": plate,
+        "wells": wells,
+        "wavelengths": wavelengths,
+        "report": report,
+        "mock_data": mock_data,
+        "mean": mean,
+        "cv": cv,
       }
       return None
 
     return self._generate_absorbance(plate, wells, wavelengths, report, mock_data, mean, cv)
 
   def _generate_absorbance(
-    self, plate, wells, wavelengths, report, mock_data, mean, cv,
+    self,
+    plate,
+    wells,
+    wavelengths,
+    report,
+    mock_data,
+    mean,
+    cv,
   ) -> List[Dict]:
     """Generate absorbance data via binary round-trip through the real parser.
 
@@ -457,8 +474,10 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
       framed = _wrap_payload(frame)
       try:
         ann = decode_frame("RECV", framed)
-        label = f"ABSORBANCE_RESPONSE ({len(frame)} bytes payload, " \
-                f"{num_wl} wl x {num_wells} wells, report={report})"
+        label = (
+          f"ABSORBANCE_RESPONSE ({len(frame)} bytes payload, "
+          f"{num_wl} wl x {num_wells} wells, report={report})"
+        )
         print(f"\n[SIM] {label}")
         print(ann.render())
       except Exception:
@@ -466,7 +485,8 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
 
     # Parse through the real backend parser (takes unframed payload)
     transmission_data, temperature, raw = CLARIOstarPlusBackend._parse_absorbance_response(
-      frame, num_wl,
+      frame,
+      num_wl,
     )
 
     # Convert parsed data to result dicts (same format as real backend)
@@ -478,18 +498,18 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
         raw_for_wl: List[Optional[float]] = []
         for well_idx in range(num_wells):
           flat_idx = well_idx + wl_idx * num_wells
-          raw_for_wl.append(
-            raw["samples"][flat_idx] if flat_idx < len(raw["samples"]) else None
-          )
-        results.append({
-          "wavelength": wl,
-          "data": self._sim_readings_to_grid(raw_for_wl, plate, wells),
-          "references": raw["references"],
-          "chromatic_cal": raw["chromatic_cal"][wl_idx],
-          "reference_cal": raw["reference_cal"],
-          "temperature": temperature if temperature is not None else self._current_temperature,
-          "time": timestamp,
-        })
+          raw_for_wl.append(raw["samples"][flat_idx] if flat_idx < len(raw["samples"]) else None)
+        results.append(
+          {
+            "wavelength": wl,
+            "data": self._sim_readings_to_grid(raw_for_wl, plate, wells),
+            "references": raw["references"],
+            "chromatic_cal": raw["chromatic_cal"][wl_idx],
+            "reference_cal": raw["reference_cal"],
+            "temperature": temperature if temperature is not None else self._current_temperature,
+            "time": timestamp,
+          }
+        )
     else:
       for wl_idx, wl in enumerate(wavelengths):
         trans_for_wl: List[Optional[float]] = []
@@ -506,25 +526,31 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
 
         if report == "OD":
           final_vals: List[Optional[float]] = [
-            math.log10(100.0 / t) if t is not None and t > 0 else None
-            for t in trans_for_wl
+            math.log10(100.0 / t) if t is not None and t > 0 else None for t in trans_for_wl
           ]
         elif report == "transmittance":
           final_vals = trans_for_wl
         else:
           raise ValueError(f"Invalid report type: {report}")
 
-        results.append({
-          "wavelength": wl,
-          "data": self._sim_readings_to_grid(final_vals, plate, wells),
-          "temperature": temperature if temperature is not None else self._current_temperature,
-          "time": timestamp,
-        })
+        results.append(
+          {
+            "wavelength": wl,
+            "data": self._sim_readings_to_grid(final_vals, plate, wells),
+            "temperature": temperature if temperature is not None else self._current_temperature,
+            "time": timestamp,
+          }
+        )
 
     return results
 
   def _generate_absorbance_mock(
-    self, plate, wells, wavelengths, report, mock_data,
+    self,
+    plate,
+    wells,
+    wavelengths,
+    report,
+    mock_data,
   ) -> List[Dict]:
     """Return mock_data directly without binary round-trip (testing convenience)."""
     results = []
@@ -575,7 +601,13 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
       self._pending_absorbance = None
       return result
     return self._generate_absorbance(
-      plate, wells, wavelengths, report, None, self.absorbance_mean, self.absorbance_cv,
+      plate,
+      wells,
+      wavelengths,
+      report,
+      None,
+      self.absorbance_mean,
+      self.absorbance_cv,
     )
 
   # === Fluorescence ===
@@ -600,26 +632,43 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
         excitation_wavelength=excitation_wavelength,
         emission_wavelength=emission_wavelength,
         focal_height=focal_height,
-        plate=plate, wells=wells,
+        plate=plate,
+        wells=wells,
       )
     except Exception:
       pass
 
     if not wait:
       self._pending_fluorescence = {
-        "plate": plate, "wells": wells,
+        "plate": plate,
+        "wells": wells,
         "excitation_wavelength": excitation_wavelength,
         "emission_wavelength": emission_wavelength,
-        "mock_data": mock_data, "mean": mean, "cv": cv,
+        "mock_data": mock_data,
+        "mean": mean,
+        "cv": cv,
       }
       return None
 
     return self._generate_fluorescence(
-      plate, wells, excitation_wavelength, emission_wavelength, mock_data, mean, cv,
+      plate,
+      wells,
+      excitation_wavelength,
+      emission_wavelength,
+      mock_data,
+      mean,
+      cv,
     )
 
   def _generate_fluorescence(
-    self, plate, wells, excitation_wavelength, emission_wavelength, mock_data, mean, cv,
+    self,
+    plate,
+    wells,
+    excitation_wavelength,
+    emission_wavelength,
+    mock_data,
+    mean,
+    cv,
   ) -> List[Dict]:
     rows, cols = plate.num_items_y, plate.num_items_x
     if mock_data is not None:
@@ -628,13 +677,15 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
       full = self._generate_grid(rows, cols, mean, cv)
       data = self._mask_grid(full, wells, plate)
 
-    return [{
-      "ex_wavelength": excitation_wavelength,
-      "em_wavelength": emission_wavelength,
-      "data": data,
-      "temperature": self._current_temperature,
-      "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }]
+    return [
+      {
+        "ex_wavelength": excitation_wavelength,
+        "em_wavelength": emission_wavelength,
+        "data": data,
+        "temperature": self._current_temperature,
+        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+      }
+    ]
 
   async def collect_fluorescence_measurement(
     self,
@@ -650,8 +701,13 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
       self._pending_fluorescence = None
       return result
     return self._generate_fluorescence(
-      plate, wells, excitation_wavelength, emission_wavelength,
-      None, self.fluorescence_mean, self.fluorescence_cv,
+      plate,
+      wells,
+      excitation_wavelength,
+      emission_wavelength,
+      None,
+      self.fluorescence_mean,
+      self.fluorescence_cv,
     )
 
   # === Luminescence ===
@@ -671,15 +727,20 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
     # Generate and print the command bytes the real backend would send.
     try:
       await self._start_luminescence_measurement(
-        focal_height=focal_height, plate=plate, wells=wells,
+        focal_height=focal_height,
+        plate=plate,
+        wells=wells,
       )
     except Exception:
       pass
 
     if not wait:
       self._pending_luminescence = {
-        "plate": plate, "wells": wells,
-        "mock_data": mock_data, "mean": mean, "cv": cv,
+        "plate": plate,
+        "wells": wells,
+        "mock_data": mock_data,
+        "mean": mean,
+        "cv": cv,
       }
       return None
 
@@ -693,11 +754,13 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
       full = self._generate_grid(rows, cols, mean, cv)
       data = self._mask_grid(full, wells, plate)
 
-    return [{
-      "data": data,
-      "temperature": self._current_temperature,
-      "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-    }]
+    return [
+      {
+        "data": data,
+        "temperature": self._current_temperature,
+        "time": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+      }
+    ]
 
   async def collect_luminescence_measurement(
     self,
@@ -711,7 +774,11 @@ class CLARIOstarPlusSimulatorBackend(CLARIOstarPlusBackend):
       self._pending_luminescence = None
       return result
     return self._generate_luminescence(
-      plate, wells, None, self.luminescence_mean, self.luminescence_cv,
+      plate,
+      wells,
+      None,
+      self.luminescence_mean,
+      self.luminescence_cv,
     )
 
   # === Binary response builder ===

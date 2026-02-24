@@ -4,43 +4,45 @@ import struct
 import unittest
 import unittest.mock
 
+from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_simulator import (
+  CLARIOstarPlusSimulatorBackend,
+)
+
 from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
-  ChecksumError,
-  CLARIOstarPlusBackend,
-  CLARIOstarPlusConfig,
-  CommandGroup,
-  Command,
-  FrameError,
-  SEPARATOR,
-  TRAILER,
   _FRAME_OVERHEAD,
   _ORBITAL_MEAS_CODE,
   _WELL_SCAN_MEAS_CODE,
+  SEPARATOR,
+  TRAILER,
+  ChecksumError,
+  CLARIOstarPlusBackend,
+  CLARIOstarPlusConfig,
+  Command,
+  CommandGroup,
+  FrameError,
+  ShakerType,
+  StartCorner,
+  StatusFlag,
   _encode_flashes,
   _encode_pause_time,
   _encode_settling_time,
+  _frame,
+  _parse_status,
   _parse_usage_counters,
+  _scan_mode_byte,
+  _shaker_bytes,
+  _unframe,
+  _validate_packet_and_extract_payload,
   _well_scan_bytes,
   _well_scan_optic_flags,
   _well_scan_orbital_bytes,
   _wrap_payload,
-  _validate_packet_and_extract_payload,
-  ShakerType,
-  StartCorner,
-  StatusFlag,
-  _frame,
-  _parse_status,
-  _scan_mode_byte,
-  _shaker_bytes,
-  _unframe,
   dump_eeprom,
 )
-from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_simulator import CLARIOstarPlusSimulatorBackend
 from pylabrobot.resources import Cor_96_wellplate_360ul_Fb
 from pylabrobot.resources.plate import Plate
-from pylabrobot.resources.well import Well, WellBottomType, CrossSectionType
 from pylabrobot.resources.utils import create_ordered_items_2d
-
+from pylabrobot.resources.well import CrossSectionType, Well, WellBottomType
 
 # ---------------------------------------------------------------------------
 # PR 2: Protocol framing
@@ -286,7 +288,6 @@ class TestScanModeByte(unittest.TestCase):
     self.assertEqual(result, 0xEE)
 
 
-
 # ---------------------------------------------------------------------------
 # Well scan helpers
 # ---------------------------------------------------------------------------
@@ -355,7 +356,7 @@ class TestWellScanOrbitalBytes(unittest.TestCase):
     """Spiral 4mm → width byte = 4 (verified via OEM pcap spiral 4mm)."""
     result = _well_scan_orbital_bytes(0x02, "spiral", 4, self.plate)
     self.assertEqual(result[0], 0x02)  # measurement code
-    self.assertEqual(result[1], 4)     # width = 4mm
+    self.assertEqual(result[1], 4)  # width = 4mm
 
   def test_spiral_5mm(self):
     """Spiral 5mm → width byte = 5 (verified via OEM pcap spiral 5mm)."""
@@ -492,13 +493,16 @@ class TestComputeScanOrder(unittest.TestCase):
   def test_full_plate_top_left_horizontal_unidirectional(self):
     """Default absorbance settings: row-major A1→A12, B1→B12, ..., H1→H12."""
     order = CLARIOstarPlusBackend._compute_scan_order(
-      self.plate, self.all_wells,
-      start_corner=StartCorner.TOP_LEFT, unidirectional=True, vertical=False,
+      self.plate,
+      self.all_wells,
+      start_corner=StartCorner.TOP_LEFT,
+      unidirectional=True,
+      vertical=False,
     )
     self.assertEqual(len(order), 96)
     # First row: A1-A12
-    self.assertEqual(order[0], (0, 0))   # A1
-    self.assertEqual(order[11], (0, 11)) # A12
+    self.assertEqual(order[0], (0, 0))  # A1
+    self.assertEqual(order[11], (0, 11))  # A12
     # Second row: B1-B12
     self.assertEqual(order[12], (1, 0))  # B1
     # Last: H12
@@ -507,8 +511,11 @@ class TestComputeScanOrder(unittest.TestCase):
   def test_full_plate_top_left_horizontal_bidirectional(self):
     """Snake: A1→A12, B12→B1, C1→C12, ..."""
     order = CLARIOstarPlusBackend._compute_scan_order(
-      self.plate, self.all_wells,
-      start_corner=StartCorner.TOP_LEFT, unidirectional=False, vertical=False,
+      self.plate,
+      self.all_wells,
+      start_corner=StartCorner.TOP_LEFT,
+      unidirectional=False,
+      vertical=False,
     )
     self.assertEqual(len(order), 96)
     # Row 0 (even): left to right
@@ -523,8 +530,11 @@ class TestComputeScanOrder(unittest.TestCase):
   def test_full_plate_bottom_right_vertical_unidirectional(self):
     """Start bottom-right, scan columns bottom-to-top, column-by-column right-to-left."""
     order = CLARIOstarPlusBackend._compute_scan_order(
-      self.plate, self.all_wells,
-      start_corner=StartCorner.BOTTOM_RIGHT, unidirectional=True, vertical=True,
+      self.plate,
+      self.all_wells,
+      start_corner=StartCorner.BOTTOM_RIGHT,
+      unidirectional=True,
+      vertical=True,
     )
     self.assertEqual(len(order), 96)
     # First column (rightmost=11), bottom-to-top: H12, G12, ..., A12
@@ -539,8 +549,11 @@ class TestComputeScanOrder(unittest.TestCase):
     # Select column 1 (all 8 rows)
     col1_wells = [self._well_at(r, 0) for r in range(8)]
     order = CLARIOstarPlusBackend._compute_scan_order(
-      self.plate, col1_wells,
-      start_corner=StartCorner.TOP_LEFT, unidirectional=True, vertical=False,
+      self.plate,
+      col1_wells,
+      start_corner=StartCorner.TOP_LEFT,
+      unidirectional=True,
+      vertical=False,
     )
     # Row-major scan but only col 0 selected: A1, B1, C1, ..., H1
     self.assertEqual(len(order), 8)
@@ -554,8 +567,11 @@ class TestComputeScanOrder(unittest.TestCase):
       for c in range(2):
         wells.append(self._well_at(r, c))
     order = CLARIOstarPlusBackend._compute_scan_order(
-      self.plate, wells,
-      start_corner=StartCorner.TOP_LEFT, unidirectional=True, vertical=False,
+      self.plate,
+      wells,
+      start_corner=StartCorner.TOP_LEFT,
+      unidirectional=True,
+      vertical=False,
     )
     self.assertEqual(len(order), 16)
     # Row 0: A1, A2
@@ -574,8 +590,11 @@ class TestComputeScanOrder(unittest.TestCase):
       for c in range(3):
         wells.append(self._well_at(r, c))
     order = CLARIOstarPlusBackend._compute_scan_order(
-      self.plate, wells,
-      start_corner=StartCorner.TOP_LEFT, unidirectional=False, vertical=False,
+      self.plate,
+      wells,
+      start_corner=StartCorner.TOP_LEFT,
+      unidirectional=False,
+      vertical=False,
     )
     self.assertEqual(len(order), 9)
     # Row 0: (0,0), (0,1), (0,2)
@@ -743,7 +762,9 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       ref_chan_hi=100000,
       ref_chan_lo=0,
     )
-    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(resp, num_wavelengths=1)
+    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(
+      resp, num_wavelengths=1
+    )
 
     self.assertAlmostEqual(temp, 25.0)
     self.assertEqual(len(transmission), 2)
@@ -767,7 +788,9 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
       ref_chan_hi=100000,
       ref_chan_lo=0,
     )
-    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(resp, num_wavelengths=2)
+    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(
+      resp, num_wavelengths=2
+    )
 
     self.assertEqual(len(transmission), 2)
     self.assertEqual(len(transmission[0]), 2)
@@ -798,44 +821,62 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
   def test_schema_high_bit_accepted(self):
     """0xa9 (0x29 | 0x80) should be accepted and read temperature from offset 34."""
     resp = self._build_abs_response(
-      num_wells=1, num_wavelengths=1,
-      samples=[50000], refs=[100000],
-      chromats=[(100000, 0)], ref_chan_hi=100000, ref_chan_lo=0,
+      num_wells=1,
+      num_wavelengths=1,
+      samples=[50000],
+      refs=[100000],
+      chromats=[(100000, 0)],
+      ref_chan_hi=100000,
+      ref_chan_lo=0,
     )
     resp = bytearray(resp)
     resp[6] = 0xA9
     # Place temperature at offset 34 (the high-bit layout)
     resp[34:36] = (363).to_bytes(2, "big")  # 36.3 °C
-    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
+    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(
+      bytes(resp), num_wavelengths=1
+    )
     self.assertEqual(len(transmission), 1)
     self.assertAlmostEqual(temp, 36.3)
 
   def test_schema_high_bit_incubation_off_fallback(self):
     """0xa9 with offset 34 = 0 (incubation just turned off) should fall back to offset 23."""
     resp = self._build_abs_response(
-      num_wells=1, num_wavelengths=1,
-      samples=[50000], refs=[100000],
-      chromats=[(100000, 0)], ref_chan_hi=100000, ref_chan_lo=0,
+      num_wells=1,
+      num_wavelengths=1,
+      samples=[50000],
+      refs=[100000],
+      chromats=[(100000, 0)],
+      ref_chan_hi=100000,
+      ref_chan_lo=0,
       temperature_raw=260,  # 26.0 °C at offset 23
     )
     resp = bytearray(resp)
     resp[6] = 0xA9
     # offset 34 stays 0 (default from bytearray) — incubation off
-    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
+    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(
+      bytes(resp), num_wavelengths=1
+    )
     self.assertAlmostEqual(temp, 26.0)
 
   def test_schema_high_bit_both_offsets_implausible(self):
     """0xa9 with both offsets ~0 (post-incubation) returns None for temperature."""
     resp = self._build_abs_response(
-      num_wells=1, num_wavelengths=1,
-      samples=[50000], refs=[100000],
-      chromats=[(100000, 0)], ref_chan_hi=100000, ref_chan_lo=0,
+      num_wells=1,
+      num_wavelengths=1,
+      samples=[50000],
+      refs=[100000],
+      chromats=[(100000, 0)],
+      ref_chan_hi=100000,
+      ref_chan_lo=0,
       temperature_raw=1,  # 0.1 °C at offset 23 — firmware noise
     )
     resp = bytearray(resp)
     resp[6] = 0xA9
     # offset 34 stays 0 — firmware noise
-    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(bytes(resp), num_wavelengths=1)
+    transmission, temp, _ = CLARIOstarPlusBackend._parse_absorbance_response(
+      bytes(resp), num_wavelengths=1
+    )
     self.assertIsNone(temp)
 
   def test_bad_schema_byte(self):
@@ -1008,14 +1049,14 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
 
     # OEM expected OD values (absorbance_test_1_well_scan_orbital.txt lines 264-271)
     oem_expected = [
-      [0.28,  0.085, 0.088, 0.086, 0.085, 0.084, 0.084, 0.083, 0.085, 0.086, 0.084, 0.086],
+      [0.28, 0.085, 0.088, 0.086, 0.085, 0.084, 0.084, 0.083, 0.085, 0.086, 0.084, 0.086],
       [0.194, 0.088, 0.087, 0.086, 0.086, 0.087, 0.086, 0.089, 0.087, 0.086, 0.085, 0.083],
       [0.253, 0.088, 0.087, 0.086, 0.088, 0.101, 0.088, 0.087, 0.087, 0.087, 0.086, 0.083],
       [0.261, 0.088, 0.092, 0.085, 0.084, 0.088, 0.085, 0.091, 0.087, 0.088, 0.085, 0.085],
       [0.219, 0.089, 0.087, 0.091, 0.086, 0.083, 0.084, 0.084, 0.087, 0.088, 0.086, 0.084],
-      [0.368, 0.085, 0.088, 0.084, 0.085, 0.084, 0.087, 0.087, 0.09,  0.086, 0.086, 0.086],
-      [0.81,  0.088, 0.085, 0.094, 0.085, 0.084, 0.092, 0.092, 0.089, 0.089, 0.09,  0.085],
-      [2.601, 0.084, 0.094, 0.091, 0.085, 0.085, 0.083, 0.09,  0.086, 0.085, 0.085, 0.09],
+      [0.368, 0.085, 0.088, 0.084, 0.085, 0.084, 0.087, 0.087, 0.09, 0.086, 0.086, 0.086],
+      [0.81, 0.088, 0.085, 0.094, 0.085, 0.084, 0.092, 0.092, 0.089, 0.089, 0.09, 0.085],
+      [2.601, 0.084, 0.094, 0.091, 0.085, 0.085, 0.083, 0.09, 0.086, 0.085, 0.085, 0.09],
     ]
 
     import math
@@ -1033,7 +1074,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
         well_idx = row * 12 + col
         t = trans[well_idx][0]
         expected = oem_expected[row][col]
-        self.assertIsNotNone(t, f"Well {chr(65+row)}{col+1} transmittance is None")
+        self.assertIsNotNone(t, f"Well {chr(65 + row)}{col + 1} transmittance is None")
 
         # Wells with OD > 2 are at the instrument's dynamic range limit.
         # The signal drops below the dark calibration baseline, producing
@@ -1041,7 +1082,7 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
         if expected > 2.0:
           continue
 
-        self.assertGreater(t, 0, f"Well {chr(65+row)}{col+1} transmittance <= 0: {t}")
+        self.assertGreater(t, 0, f"Well {chr(65 + row)}{col + 1} transmittance <= 0: {t}")
         od = math.log10(100 / t)
         # Tolerances: blank wells (~0.085 OD) match within 0.005 OD.
         # Sample wells (column 1, higher OD) need wider tolerance because
@@ -1053,8 +1094,9 @@ class TestParseAbsorbanceResponse(unittest.TestCase):
           tol = 0.01
         else:
           tol = 0.005
-        self.assertAlmostEqual(od, expected, delta=tol,
-          msg=f"Well {chr(65+row)}{col+1}: OD {od:.4f} != {expected}")
+        self.assertAlmostEqual(
+          od, expected, delta=tol, msg=f"Well {chr(65 + row)}{col + 1}: OD {od:.4f} != {expected}"
+        )
 
     # Verify calibration values are plausible (non-zero)
     self.assertGreater(raw["chromatic_cal"][0][0], 0, "chromatic1 hi should be > 0")
@@ -1172,33 +1214,312 @@ class TestCLARIOstarPlusInitialize(unittest.IsolatedAsyncioTestCase):
 
 # Real EEPROM payload captured from CLARIOstar Plus (serial 430-2621).
 # This is the unframed 264-byte payload from command 0x05 0x07.
-_REAL_EEPROM_PAYLOAD = bytes([
-  0x07, 0x05, 0x00, 0x24, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x0a, 0x01, 0x01, 0x01, 0x01, 0x00,
-  0x00, 0x01, 0x00, 0xee, 0x02, 0x00, 0x00, 0x0f, 0x00, 0xb0, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x03, 0x04, 0x00, 0x00, 0x01, 0x00, 0x00, 0x01, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x74, 0x00, 0x6f, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x65, 0x00, 0x00, 0x00, 0xdc, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0xf4, 0x01, 0x08, 0x03, 0xa7, 0x04, 0x08, 0x07, 0x60, 0x09, 0xda, 0x08, 0xac, 0x0d, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00,
-  0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x12, 0x02, 0x98,
-  0x06, 0xae, 0x01, 0x3d, 0x0a, 0x46, 0x05, 0xee, 0x01, 0xfb, 0xff, 0x70, 0x0c, 0x00, 0x00, 0x00,
-  0x00, 0xa4, 0x00, 0x58, 0xff, 0x8e, 0x03, 0xf2, 0x04, 0x60, 0xff, 0x55, 0x11, 0xfe, 0x0b, 0x55,
-  0x11, 0x8f, 0x1a, 0x17, 0x02, 0x98, 0x06, 0x5a, 0xff, 0x97, 0x06, 0x68, 0x04, 0x26, 0x03, 0xbc,
-  0x14, 0xb8, 0x04, 0x08, 0x07, 0x91, 0x00, 0x90, 0x01, 0x46, 0x32, 0x28, 0x46, 0x0a, 0x00, 0x46,
-  0x07, 0x1e, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x21, 0x03, 0xd4, 0x06, 0x28,
-  0x00, 0x2c, 0x01, 0x90, 0x01, 0x46, 0x00, 0x1e, 0x00, 0x00, 0x14, 0x11, 0x00, 0x12, 0x09, 0xac,
-  0x0d, 0x60, 0x09, 0x00, 0x00, 0x00, 0x00, 0x00,
-])
+_REAL_EEPROM_PAYLOAD = bytes(
+  [
+    0x07,
+    0x05,
+    0x00,
+    0x24,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x00,
+    0x00,
+    0x0A,
+    0x01,
+    0x01,
+    0x01,
+    0x01,
+    0x00,
+    0x00,
+    0x01,
+    0x00,
+    0xEE,
+    0x02,
+    0x00,
+    0x00,
+    0x0F,
+    0x00,
+    0xB0,
+    0x03,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x03,
+    0x04,
+    0x00,
+    0x00,
+    0x01,
+    0x00,
+    0x00,
+    0x01,
+    0x02,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x32,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x74,
+    0x00,
+    0x6F,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x65,
+    0x00,
+    0x00,
+    0x00,
+    0xDC,
+    0x05,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0xF4,
+    0x01,
+    0x08,
+    0x03,
+    0xA7,
+    0x04,
+    0x08,
+    0x07,
+    0x60,
+    0x09,
+    0xDA,
+    0x08,
+    0xAC,
+    0x0D,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x01,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x01,
+    0x01,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x12,
+    0x02,
+    0x98,
+    0x06,
+    0xAE,
+    0x01,
+    0x3D,
+    0x0A,
+    0x46,
+    0x05,
+    0xEE,
+    0x01,
+    0xFB,
+    0xFF,
+    0x70,
+    0x0C,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0xA4,
+    0x00,
+    0x58,
+    0xFF,
+    0x8E,
+    0x03,
+    0xF2,
+    0x04,
+    0x60,
+    0xFF,
+    0x55,
+    0x11,
+    0xFE,
+    0x0B,
+    0x55,
+    0x11,
+    0x8F,
+    0x1A,
+    0x17,
+    0x02,
+    0x98,
+    0x06,
+    0x5A,
+    0xFF,
+    0x97,
+    0x06,
+    0x68,
+    0x04,
+    0x26,
+    0x03,
+    0xBC,
+    0x14,
+    0xB8,
+    0x04,
+    0x08,
+    0x07,
+    0x91,
+    0x00,
+    0x90,
+    0x01,
+    0x46,
+    0x32,
+    0x28,
+    0x46,
+    0x0A,
+    0x00,
+    0x46,
+    0x07,
+    0x1E,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x21,
+    0x03,
+    0xD4,
+    0x06,
+    0x28,
+    0x00,
+    0x2C,
+    0x01,
+    0x90,
+    0x01,
+    0x46,
+    0x00,
+    0x1E,
+    0x00,
+    0x00,
+    0x14,
+    0x11,
+    0x00,
+    0x12,
+    0x09,
+    0xAC,
+    0x0D,
+    0x60,
+    0x09,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+    0x00,
+  ]
+)
 
 # Real firmware info payload captured from the same unit (command 0x05 0x09).
-_REAL_FIRMWARE_PAYLOAD = bytes([
-  0x0a, 0x05, 0x00, 0x24, 0x00, 0x00, 0x05, 0x46,
-  0x4e, 0x6f, 0x76, 0x20, 0x32, 0x30, 0x20, 0x32,
-  0x30, 0x32, 0x30, 0x00, 0x31, 0x31, 0x3a, 0x35,
-  0x31, 0x3a, 0x32, 0x31, 0x00, 0x00, 0x01, 0x00,
-])
+_REAL_FIRMWARE_PAYLOAD = bytes(
+  [
+    0x0A,
+    0x05,
+    0x00,
+    0x24,
+    0x00,
+    0x00,
+    0x05,
+    0x46,
+    0x4E,
+    0x6F,
+    0x76,
+    0x20,
+    0x32,
+    0x30,
+    0x20,
+    0x32,
+    0x30,
+    0x32,
+    0x30,
+    0x00,
+    0x31,
+    0x31,
+    0x3A,
+    0x35,
+    0x31,
+    0x3A,
+    0x32,
+    0x31,
+    0x00,
+    0x00,
+    0x01,
+    0x00,
+  ]
+)
 
 
 class TestCLARIOstarPlusConfig(unittest.TestCase):
@@ -1310,19 +1631,53 @@ class TestParseFirmwareInfo(unittest.TestCase):
 
 
 # Real usage counter payload captured from the same unit (command 0x05 0x21).
-_REAL_COUNTER_PAYLOAD = bytes([
-  0x21, 0x05, 0x00, 0x24, 0x00, 0x00,  # header
-  0x00, 0x1b, 0xa5, 0x20,  # flashes = 1,811,744
-  0x00, 0x00, 0x06, 0x44,  # testruns = 1,604
-  0x00, 0x00, 0x04, 0x7c,  # wells_raw = 1,148  (×100 = 114,800)
-  0x00, 0x00, 0x03, 0x6e,  # well_movements_raw = 878  (×100 = 87,800)
-  0x00, 0x02, 0x4c, 0xbf,  # active_time_s = 150,719
-  0x00, 0x00, 0x12, 0xb0,  # shake_time_s = 4,784
-  0x00, 0x00, 0x00, 0x0a,  # pump1_usage = 10
-  0x00, 0x00, 0x00, 0x0a,  # pump2_usage = 10
-  0x00, 0x00, 0x00, 0x0a,  # alpha_time = 10
-  0x00,                     # trailing byte
-])
+_REAL_COUNTER_PAYLOAD = bytes(
+  [
+    0x21,
+    0x05,
+    0x00,
+    0x24,
+    0x00,
+    0x00,  # header
+    0x00,
+    0x1B,
+    0xA5,
+    0x20,  # flashes = 1,811,744
+    0x00,
+    0x00,
+    0x06,
+    0x44,  # testruns = 1,604
+    0x00,
+    0x00,
+    0x04,
+    0x7C,  # wells_raw = 1,148  (×100 = 114,800)
+    0x00,
+    0x00,
+    0x03,
+    0x6E,  # well_movements_raw = 878  (×100 = 87,800)
+    0x00,
+    0x02,
+    0x4C,
+    0xBF,  # active_time_s = 150,719
+    0x00,
+    0x00,
+    0x12,
+    0xB0,  # shake_time_s = 4,784
+    0x00,
+    0x00,
+    0x00,
+    0x0A,  # pump1_usage = 10
+    0x00,
+    0x00,
+    0x00,
+    0x0A,  # pump2_usage = 10
+    0x00,
+    0x00,
+    0x00,
+    0x0A,  # alpha_time = 10
+    0x00,  # trailing byte
+  ]
+)
 
 
 class TestParseUsageCounters(unittest.TestCase):
@@ -1478,11 +1833,17 @@ class TestAbsorbanceOrbitalPayload(unittest.TestCase):
     """
     plate = self.plate
     payload = self.backend._build_payload_header(
-      plate, wells=None, optic_base=0x02, well_scan=well_scan,
+      plate,
+      wells=None,
+      optic_base=0x02,
+      well_scan=well_scan,
     )
 
     payload += _well_scan_orbital_bytes(
-      _ORBITAL_MEAS_CODE["absorbance"], well_scan, well_scan_width, plate,
+      _ORBITAL_MEAS_CODE["absorbance"],
+      well_scan,
+      well_scan_width,
+      plate,
     )
 
     # Settling + 1 wavelength at 600nm (pause_time_per_well=5 → 0x19)
@@ -1515,11 +1876,11 @@ class TestAbsorbanceOrbitalPayload(unittest.TestCase):
     # For 0x0024 (no extended separator), separator at offset 72:
     # plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4) = 72
     sep_offset = 72
-    self.assertEqual(payload[sep_offset:sep_offset + 4], b"\x27\x0f\x27\x0f")
+    self.assertEqual(payload[sep_offset : sep_offset + 4], b"\x27\x0f\x27\x0f")
     # Orbital params start right after separator
     orbital = payload[sep_offset + 4 : sep_offset + 9]
     self.assertEqual(orbital[0], 0x02)  # scan type
-    self.assertEqual(orbital[1], 3)     # diameter = 3 mm
+    self.assertEqual(orbital[1], 3)  # diameter = 3 mm
     # Well diameter: Cor_96 well size_x = size_y = 6.35 mm → 635 = 0x027B
     sample_well = self.plate.get_all_items()[0]
     well_dia = round(min(sample_well.get_size_x(), sample_well.get_size_y()) * 100)
@@ -1545,8 +1906,8 @@ class TestAbsorbanceOrbitalPayload(unittest.TestCase):
     # Separator positions
     sep_offset_std = 72  # plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4)
     sep_offset_ext = 76  # plate(63) + scan(1) + optic(1) + zeros(2) + shaker(4) + ext_pad(5)
-    self.assertEqual(standard_payload[sep_offset_std:sep_offset_std + 4], SEPARATOR)
-    self.assertEqual(extended_payload[sep_offset_ext:sep_offset_ext + 4], SEPARATOR)
+    self.assertEqual(standard_payload[sep_offset_std : sep_offset_std + 4], SEPARATOR)
+    self.assertEqual(extended_payload[sep_offset_ext : sep_offset_ext + 4], SEPARATOR)
 
   def test_0x0026_nonpoint_uses_32_byte_block(self):
     """Machine type 0x0026 non-point scan uses extra byte + scan + 31-byte block before separator."""
@@ -1560,8 +1921,8 @@ class TestAbsorbanceOrbitalPayload(unittest.TestCase):
     # 0x0024:           plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4) + sep(4) + orbital(5) = 81
     sep_offset_ext = 96  # plate(63) + extra(1) + scan(1) + block(31)
     sep_offset_std = 72  # plate(63) + scan(1) + optic(1) + zeros(3) + shaker(4)
-    self.assertEqual(extended_payload[sep_offset_ext:sep_offset_ext + 4], SEPARATOR)
-    self.assertEqual(standard_payload[sep_offset_std:sep_offset_std + 4], SEPARATOR)
+    self.assertEqual(extended_payload[sep_offset_ext : sep_offset_ext + 4], SEPARATOR)
+    self.assertEqual(standard_payload[sep_offset_std : sep_offset_std + 4], SEPARATOR)
 
   def test_0x0026_optic_bytes_in_block(self):
     """Machine type 0x0026 puts scan byte at offset 64, optic_config at block[0] (offset 65)."""
@@ -1721,8 +2082,8 @@ class TestBuildPayloadHeader(unittest.TestCase):
     block_start = 65
     self.assertEqual(header[block_start + 12], 0x02)  # mixer action (always 0x02)
     self.assertEqual(header[block_start + 17], 0x00)  # shake pattern (ORBITAL=0x00)
-    self.assertEqual(header[block_start + 18], 2)      # 300/100 - 1 = 2
-    self.assertEqual(int.from_bytes(header[block_start + 20:block_start + 22], "little"), 10)
+    self.assertEqual(header[block_start + 18], 2)  # 300/100 - 1 = 2
+    self.assertEqual(int.from_bytes(header[block_start + 20 : block_start + 22], "little"), 10)
 
 
 class TestSimulatorConfig(unittest.TestCase):
@@ -1992,7 +2353,9 @@ class TestWaitForReadyWithProgress(unittest.IsolatedAsyncioTestCase):
       progress_log.append((complete, total))
 
     result = await backend._wait_for_ready_with_progress(
-      run_response, on_progress=on_progress, poll_interval=0.01,
+      run_response,
+      on_progress=on_progress,
+      poll_interval=0.01,
     )
 
     self.assertEqual(result, run_response)
@@ -2020,7 +2383,10 @@ class TestWaitForReadyWithProgress(unittest.IsolatedAsyncioTestCase):
 
     with self.assertRaises(TimeoutError):
       await backend._wait_for_ready_with_progress(
-        run_response, on_progress=noop_progress, poll_interval=0.01, timeout=0.05,
+        run_response,
+        on_progress=noop_progress,
+        poll_interval=0.01,
+        timeout=0.05,
       )
 
   async def test_immediate_ready(self):
@@ -2043,7 +2409,9 @@ class TestWaitForReadyWithProgress(unittest.IsolatedAsyncioTestCase):
       progress_log.append((complete, total))
 
     result = await backend._wait_for_ready_with_progress(
-      run_response, on_progress=on_progress, poll_interval=0.01,
+      run_response,
+      on_progress=on_progress,
+      poll_interval=0.01,
     )
 
     self.assertEqual(result, run_response)
@@ -2102,7 +2470,10 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     )
 
     result = await backend.read_absorbance(
-      plate=plate, wells=all_wells, wavelength=600, wait=False,
+      plate=plate,
+      wells=all_wells,
+      wavelength=600,
+      wait=False,
     )
 
     self.assertIsNone(result)
@@ -2130,7 +2501,9 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     backend.collect_absorbance_measurement = unittest.mock.AsyncMock(return_value=expected_result)
 
     result = await backend.read_absorbance(
-      plate=plate, wells=all_wells, wavelength=600,
+      plate=plate,
+      wells=all_wells,
+      wavelength=600,
     )
 
     self.assertEqual(result, expected_result)
@@ -2175,7 +2548,10 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     backend.collect_absorbance_measurement = unittest.mock.AsyncMock(return_value=expected_result)
 
     result = await backend.read_absorbance(
-      plate=plate, wells=all_wells, wavelength=600, data_retrieval_rate=0.01,
+      plate=plate,
+      wells=all_wells,
+      wavelength=600,
+      data_retrieval_rate=0.01,
     )
 
     self.assertEqual(result, expected_result)
@@ -2224,8 +2600,11 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
       progress_log.append((complete, total))
 
     result = await backend.read_absorbance(
-      plate=plate, wells=all_wells, wavelength=600,
-      data_retrieval_rate=0.01, on_progress=on_progress,
+      plate=plate,
+      wells=all_wells,
+      wavelength=600,
+      data_retrieval_rate=0.01,
+      on_progress=on_progress,
     )
 
     self.assertEqual(result, expected_result)
@@ -2256,7 +2635,10 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
 
     with self.assertRaises(TimeoutError):
       await backend.read_absorbance(
-        plate=plate, wells=all_wells, wavelength=600, data_retrieval_rate=0.01,
+        plate=plate,
+        wells=all_wells,
+        wavelength=600,
+        data_retrieval_rate=0.01,
       )
 
   async def test_start_absorbance_measurement_is_atomic(self):
@@ -2271,7 +2653,8 @@ class TestReadAbsorbanceOrchestration(unittest.IsolatedAsyncioTestCase):
     backend._read_frame = unittest.mock.AsyncMock(return_value=run_response_frame)
 
     result = await backend._start_absorbance_measurement(
-      wavelengths=[600], plate=plate,
+      wavelengths=[600],
+      plate=plate,
     )
 
     # Should return the unframed run response payload
@@ -2500,9 +2883,7 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
   async def test_shake_bytes_encoded_0x0024(self):
     """Orbital 300rpm 10s → correct 0x0024 shaker encoding at offset 68."""
     backend = self._make_backend()
-    payload = await self._capture_payload(
-      backend, shake_speed_rpm=300, shake_duration_s=10
-    )
+    payload = await self._capture_payload(backend, shake_speed_rpm=300, shake_duration_s=10)
     expected = _shaker_bytes(ShakerType.ORBITAL, speed_rpm=300, duration_s=10)
     self.assertEqual(payload[68:72], expected)
 
@@ -2515,9 +2896,7 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     non-point scans on 0x0026.
     """
     backend = self._make_backend(machine_type=0x0026)
-    payload = await self._capture_payload(
-      backend, well_scan="orbital", well_scan_width=3.0
-    )
+    payload = await self._capture_payload(backend, well_scan="orbital", well_scan_width=3.0)
     # Block starts at offset 65 (plate(63) + extra(1) + scan(1))
     self.assertEqual(payload[65 + 12], 0x00)  # shake type
     self.assertEqual(payload[65 + 18], 0x00)  # speed
@@ -2528,46 +2907,45 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     """Orbital 300rpm 5s → correct 0x0026 encoding at scattered block positions."""
     backend = self._make_backend(machine_type=0x0026)
     payload = await self._capture_payload(
-      backend, well_scan="orbital", well_scan_width=3.0,
-      shake_speed_rpm=300, shake_duration_s=5,
+      backend,
+      well_scan="orbital",
+      well_scan_width=3.0,
+      shake_speed_rpm=300,
+      shake_duration_s=5,
     )
     # Block starts at offset 65 (plate(63) + extra(1) + scan(1))
     self.assertEqual(payload[65 + 12], 0x02)  # orbital → 0x02 in 0x0026 encoding
-    self.assertEqual(payload[65 + 18], 2)     # speed_idx = (300/100)-1 = 2
+    self.assertEqual(payload[65 + 18], 2)  # speed_idx = (300/100)-1 = 2
     self.assertEqual(payload[65 + 20], 0x05)  # duration lo = 5 (LE)
     self.assertEqual(payload[65 + 21], 0x00)  # duration hi (LE)
 
   async def test_shake_0x0026_separator_at_96(self):
     """0x0026 non-point separator is at offset 96 (plate(63) + extra(1) + scan(1) + block(31))."""
     backend = self._make_backend(machine_type=0x0026)
-    payload = await self._capture_payload(
-      backend, well_scan="orbital", well_scan_width=3.0
-    )
+    payload = await self._capture_payload(backend, well_scan="orbital", well_scan_width=3.0)
     self.assertEqual(payload[96:100], b"\x27\x0f\x27\x0f")
 
   async def test_0x0026_optic_bytes_orbital(self):
     """0x0026: scan byte at offset 64, block[0]=optic_config=0x32 at offset 65."""
     backend = self._make_backend(machine_type=0x0026)
-    payload = await self._capture_payload(
-      backend, well_scan="orbital", well_scan_width=3.0
-    )
+    payload = await self._capture_payload(backend, well_scan="orbital", well_scan_width=3.0)
     # Offset 64 = scan byte (after plate(63) + extra(1))
     # Offset 65 = block[0] = optic_config = 0x02 | 0x30 = 0x32
     # OEM uses unidirectional=False for non-point scans → 0x0A
-    self.assertEqual(payload[64], _scan_mode_byte(
-      StartCorner.TOP_LEFT, unidirectional=False, vertical=True))  # 0x0A
+    self.assertEqual(
+      payload[64], _scan_mode_byte(StartCorner.TOP_LEFT, unidirectional=False, vertical=True)
+    )  # 0x0A
     self.assertEqual(payload[65], 0x32)
 
   async def test_0x0026_optic_bytes_spiral(self):
     """0x0026: scan byte at offset 64, block[0]=optic_config=0x06 at offset 65."""
     backend = self._make_backend(machine_type=0x0026)
-    payload = await self._capture_payload(
-      backend, well_scan="spiral", well_scan_width=4.0
-    )
+    payload = await self._capture_payload(backend, well_scan="spiral", well_scan_width=4.0)
     # Offset 64 = scan byte; OEM uses unidirectional=False for non-point
     # Offset 65 = block[0] = optic_config = 0x02 | 0x04 = 0x06
-    self.assertEqual(payload[64], _scan_mode_byte(
-      StartCorner.TOP_LEFT, unidirectional=False, vertical=True))  # 0x0A
+    self.assertEqual(
+      payload[64], _scan_mode_byte(StartCorner.TOP_LEFT, unidirectional=False, vertical=True)
+    )  # 0x0A
     self.assertEqual(payload[65], 0x06)
 
   async def test_0x0026_nonpoint_extra_plate_byte(self):
@@ -2577,13 +2955,12 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     Scan byte is at offset 64, block at offset 65.
     """
     backend = self._make_backend(machine_type=0x0026)
-    payload = await self._capture_payload(
-      backend, well_scan="orbital", well_scan_width=3.0
-    )
+    payload = await self._capture_payload(backend, well_scan="orbital", well_scan_width=3.0)
     self.assertEqual(payload[15], 0x00)  # extra plate byte after header
     # Scan byte at offset 64; OEM uses unidirectional=False for non-point scans
-    self.assertEqual(payload[64], _scan_mode_byte(
-      StartCorner.TOP_LEFT, unidirectional=False, vertical=True))
+    self.assertEqual(
+      payload[64], _scan_mode_byte(StartCorner.TOP_LEFT, unidirectional=False, vertical=True)
+    )
 
   async def test_0x0026_point_scan_mode_byte_at_offset_63(self):
     """Point scan on 0x0026 has NO extra plate byte — scan byte at offset 63."""
@@ -2631,7 +3008,10 @@ class TestAbsorbancePayloadEncoding(unittest.IsolatedAsyncioTestCase):
     """Type 0x0026 uses 31-byte block; post-separator params still encoded correctly."""
     backend = self._make_backend(machine_type=0x0026)
     payload = await self._capture_payload(
-      backend, pause_time_per_well=5, settling_time_before_measurement=2, flashes_per_well=7,
+      backend,
+      pause_time_per_well=5,
+      settling_time_before_measurement=2,
+      flashes_per_well=7,
     )
     params = self._find_params(payload)
     self.assertEqual(params["settling_byte"], 25)
@@ -2817,7 +3197,10 @@ class TestReadAbsorbanceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
     backend.collect_absorbance_measurement = unittest.mock.AsyncMock(return_value=[{}])
 
     await backend.read_absorbance(
-      plate=plate, wells=all_wells, wavelength=600, **kwargs,
+      plate=plate,
+      wells=all_wells,
+      wavelength=600,
+      **kwargs,
     )
 
     return backend._start_absorbance_measurement.call_args.kwargs
@@ -2847,7 +3230,8 @@ class TestReadAbsorbanceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
   async def test_orchestration_kwargs_not_forwarded(self):
     """wait, data_retrieval_rate, on_progress are consumed by read_absorbance, not forwarded."""
     call_kwargs = await self._run_with_kwargs(
-      wait=True, data_retrieval_rate=2.0,
+      wait=True,
+      data_retrieval_rate=2.0,
     )
     self.assertNotIn("wait", call_kwargs)
     self.assertNotIn("data_retrieval_rate", call_kwargs)
@@ -2887,8 +3271,11 @@ class TestReadFluorescenceKwargsForwarding(unittest.IsolatedAsyncioTestCase):
     backend.collect_fluorescence_measurement = unittest.mock.AsyncMock(return_value=[{}])
 
     await backend.read_fluorescence(
-      plate=plate, wells=all_wells,
-      excitation_wavelength=485, emission_wavelength=528, focal_height=8.5,
+      plate=plate,
+      wells=all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=528,
+      focal_height=8.5,
       **kwargs,
     )
 
@@ -2933,27 +3320,35 @@ class TestReadingsToGridRowMajorOrder(unittest.TestCase):
     # A1, A2, B1, B3, C1, C2, D1, D3, E1, E2, F1, F3, G1, G2, H1, H3
     # Use distinctive values to detect any mis-mapping.
     readings = [
-      1.0, 2.0,    # row A: A1, A2
-      3.0, 4.0,    # row B: B1, B3
-      5.0, 6.0,    # row C: C1, C2
-      7.0, 8.0,    # row D: D1, D3
-      9.0, 10.0,   # row E: E1, E2
-      11.0, 12.0,  # row F: F1, F3
-      13.0, 14.0,  # row G: G1, G2
-      15.0, 16.0,  # row H: H1, H3
+      1.0,
+      2.0,  # row A: A1, A2
+      3.0,
+      4.0,  # row B: B1, B3
+      5.0,
+      6.0,  # row C: C1, C2
+      7.0,
+      8.0,  # row D: D1, D3
+      9.0,
+      10.0,  # row E: E1, E2
+      11.0,
+      12.0,  # row F: F1, F3
+      13.0,
+      14.0,  # row G: G1, G2
+      15.0,
+      16.0,  # row H: H1, H3
     ]
     grid = CLARIOstarPlusBackend._readings_to_grid(readings, plate, wells)
 
     # Verify each value lands at the correct position
-    self.assertEqual(grid[0][0], 1.0)   # A1
-    self.assertEqual(grid[0][1], 2.0)   # A2
-    self.assertEqual(grid[1][0], 3.0)   # B1
-    self.assertEqual(grid[1][2], 4.0)   # B3
-    self.assertEqual(grid[2][0], 5.0)   # C1
-    self.assertEqual(grid[2][1], 6.0)   # C2
-    self.assertEqual(grid[3][0], 7.0)   # D1
-    self.assertEqual(grid[3][2], 8.0)   # D3
-    self.assertEqual(grid[4][0], 9.0)   # E1
+    self.assertEqual(grid[0][0], 1.0)  # A1
+    self.assertEqual(grid[0][1], 2.0)  # A2
+    self.assertEqual(grid[1][0], 3.0)  # B1
+    self.assertEqual(grid[1][2], 4.0)  # B3
+    self.assertEqual(grid[2][0], 5.0)  # C1
+    self.assertEqual(grid[2][1], 6.0)  # C2
+    self.assertEqual(grid[3][0], 7.0)  # D1
+    self.assertEqual(grid[3][2], 8.0)  # D3
+    self.assertEqual(grid[4][0], 9.0)  # E1
     self.assertEqual(grid[4][1], 10.0)  # E2
     self.assertEqual(grid[5][0], 11.0)  # F1
     self.assertEqual(grid[5][2], 12.0)  # F3
@@ -2970,8 +3365,10 @@ class TestReadingsToGridRowMajorOrder(unittest.TestCase):
     plate = Cor_96_wellplate_360ul_Fb(name="test_plate")
     # Row-major: A1, A2, B1, B3 (already sorted by row,col)
     wells = [
-      plate.get_well("A1"), plate.get_well("A2"),
-      plate.get_well("B1"), plate.get_well("B3"),
+      plate.get_well("A1"),
+      plate.get_well("A2"),
+      plate.get_well("B1"),
+      plate.get_well("B3"),
     ]
     readings = [10.0, 20.0, 30.0, 40.0]
     grid = CLARIOstarPlusBackend._readings_to_grid(readings, plate, wells)
@@ -3014,8 +3411,8 @@ def _oem_0026_plate(name: str = "oem_plate") -> Plate:
       Well,
       num_items_x=12,
       num_items_y=8,
-      dx=11.09,   # 14.38 - 6.58/2
-      dy=7.95,    # 74.24 (PLR A1 y) - 7*9.0 - 6.58/2
+      dx=11.09,  # 14.38 - 6.58/2
+      dy=7.95,  # 74.24 (PLR A1 y) - 7*9.0 - 6.58/2
       dz=0.0,
       item_dx=9.0,
       item_dy=9.0,
@@ -3062,14 +3459,22 @@ class TestOEMGroundTruth(unittest.TestCase):
   ):
     """Build a complete absorbance measurement payload (same as _start_absorbance_measurement)."""
     payload = self.backend._build_payload_header(
-      self.plate, wells=None, optic_base=0x02, well_scan=well_scan,
-      start_corner=start_corner, unidirectional=unidirectional,
+      self.plate,
+      wells=None,
+      optic_base=0x02,
+      well_scan=well_scan,
+      start_corner=start_corner,
+      unidirectional=unidirectional,
       vertical=vertical,
-      shake_type=shake_type, shake_speed_rpm=shake_speed_rpm,
+      shake_type=shake_type,
+      shake_speed_rpm=shake_speed_rpm,
       shake_duration_s=shake_duration_s,
     )
     payload += _well_scan_bytes(
-      _WELL_SCAN_MEAS_CODE["absorbance"], well_scan, well_scan_width, self.plate,
+      _WELL_SCAN_MEAS_CODE["absorbance"],
+      well_scan,
+      well_scan_width,
+      self.plate,
     )
     payload += bytes([_encode_pause_time(pause_time_per_well), len(wavelengths)])
     for w in wavelengths:
@@ -3119,8 +3524,7 @@ class TestOEMGroundTruth(unittest.TestCase):
       flashes_per_well=15,
       pause_time_per_well=1,
     )
-    self.assertEqual(payload, expected,
-      f"\nGot:      {payload.hex()}\nExpected: {expected.hex()}")
+    self.assertEqual(payload, expected, f"\nGot:      {payload.hex()}\nExpected: {expected.hex()}")
 
   def test_450_660nm_spiral_5mm_15flashes(self):
     """OEM capture: 450+660nm, spiral 5mm, 15 flashes, no shake.
@@ -3160,8 +3564,7 @@ class TestOEMGroundTruth(unittest.TestCase):
       flashes_per_well=15,
       pause_time_per_well=1,
     )
-    self.assertEqual(payload, expected,
-      f"\nGot:      {payload.hex()}\nExpected: {expected.hex()}")
+    self.assertEqual(payload, expected, f"\nGot:      {payload.hex()}\nExpected: {expected.hex()}")
 
   def test_600nm_orbital_3mm_7flashes_no_shake(self):
     """OEM capture: 600nm, orbital 3mm, 7 flashes, no shake.
@@ -3200,8 +3603,7 @@ class TestOEMGroundTruth(unittest.TestCase):
       flashes_per_well=7,
       pause_time_per_well=1,
     )
-    self.assertEqual(payload, expected,
-      f"\nGot:      {payload.hex()}\nExpected: {expected.hex()}")
+    self.assertEqual(payload, expected, f"\nGot:      {payload.hex()}\nExpected: {expected.hex()}")
 
   def test_600nm_orbital_3mm_7flashes_shake_300rpm_5s(self):
     """OEM capture: 600nm, orbital 3mm, 7 flashes, orbital shake 300rpm 5s.
@@ -3250,8 +3652,7 @@ class TestOEMGroundTruth(unittest.TestCase):
       shake_speed_rpm=300,
       shake_duration_s=5,
     )
-    self.assertEqual(payload, expected,
-      f"\nGot:      {payload.hex()}\nExpected: {expected.hex()}")
+    self.assertEqual(payload, expected, f"\nGot:      {payload.hex()}\nExpected: {expected.hex()}")
 
 
 if __name__ == "__main__":

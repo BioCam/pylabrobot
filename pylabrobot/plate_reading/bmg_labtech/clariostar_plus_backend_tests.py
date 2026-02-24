@@ -8,13 +8,13 @@ import asyncio
 import unittest
 from typing import Dict, List
 
+from pylabrobot.io.io import IOBase
 from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
   CLARIOstarPlusBackend,
   _extract_payload,
   _validate_frame,
   _wrap_payload,
 )
-
 
 # ---------------------------------------------------------------------------
 # Pcap ground truth — commands (verified against pcap captures)
@@ -45,6 +45,19 @@ COMMANDS: Dict[str, tuple] = {
     b"\x80",
     bytes.fromhex("0200090c800000970d"),
   ),
+  # CF.TEMPERATURE(0x06), no command byte. K01 pcap ground truth.
+  "temp_off": (
+    b"\x06\x00\x00",
+    bytes.fromhex("02000b0c060000 00001f0d".replace(" ", "")),
+  ),
+  "temp_monitor": (
+    b"\x06\x00\x01",
+    bytes.fromhex("02000b0c060001 0000200d".replace(" ", "")),
+  ),
+  "temp_set_30c": (
+    b"\x06\x01\x2c",
+    bytes.fromhex("02000b0c06012c 00004c0d".replace(" ", "")),
+  ),
 }
 
 # Generic command acknowledgement — shared by all command tests.
@@ -56,7 +69,7 @@ ACK = _wrap_payload(b"\x00")
 # ---------------------------------------------------------------------------
 
 
-class MockFTDI:
+class MockFTDI(IOBase):
   """Minimal FTDI mock that records writes and plays back queued responses.
 
   Delivers one queued frame per ``_read_frame`` invocation:
@@ -113,7 +126,7 @@ class MockFTDI:
 def _make_backend() -> CLARIOstarPlusBackend:
   """Create a backend with a MockFTDI injected (bypasses real USB)."""
   backend = CLARIOstarPlusBackend.__new__(CLARIOstarPlusBackend)
-  backend.io = MockFTDI()
+  backend.io = MockFTDI()  # type: ignore[assignment]
   backend.read_timeout = 5
   backend.configuration = {
     "serial_number": "",
@@ -121,6 +134,7 @@ def _make_backend() -> CLARIOstarPlusBackend:
     "firmware_build_timestamp": "",
     "model_name": "",
     "machine_type_code": 0,
+    "max_temperature": 45,
     "has_absorbance": False,
     "has_fluorescence": False,
     "has_luminescence": False,
@@ -153,14 +167,22 @@ class TestFrameUtilities(unittest.TestCase):
 def _make_frame_test(name, payload, expected_frame):
   def test(self):
     frame = _wrap_payload(payload)
-    self.assertEqual(frame, expected_frame,
-      f"frame mismatch for {name!r}: got {frame.hex()}, expected {expected_frame.hex()}")
+    self.assertEqual(
+      frame,
+      expected_frame,
+      f"frame mismatch for {name!r}: got {frame.hex()}, expected {expected_frame.hex()}",
+    )
+
   test.__doc__ = f"_wrap_payload must match pcap ground truth for {name!r}"
   return test
 
+
 for _name, (_payload, _frame) in COMMANDS.items():
-  setattr(TestFrameUtilities, f"test_{_name}_frame_matches_ground_truth",
-          _make_frame_test(_name, _payload, _frame))
+  setattr(
+    TestFrameUtilities,
+    f"test_{_name}_frame_matches_ground_truth",
+    _make_frame_test(_name, _payload, _frame),
+  )
 del _name, _payload, _frame
 
 
@@ -279,7 +301,6 @@ class TestStatusPollResilience(unittest.TestCase):
 
 
 class TestStatusParsing(unittest.TestCase):
-
   def test_initialized_flag(self):
     # byte 3, bit 5 = 0x20
     flags = CLARIOstarPlusBackend._parse_status(b"\x00\x00\x00\x20\x00")
@@ -376,17 +397,17 @@ class TestConvenienceStatusQueries(unittest.TestCase):
     mock.queue_response(self.STATUS_PLATE)
     self.assertTrue(asyncio.run(backend.request_plate_detected()))
 
-  def test_request_busy_true(self):
+  def test_is_ready_false_when_busy(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
     mock.queue_response(self.STATUS_BUSY)
-    self.assertTrue(asyncio.run(backend.request_busy()))
+    self.assertFalse(asyncio.run(backend.is_ready()))
 
-  def test_request_busy_false(self):
+  def test_is_ready_true_when_idle(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
     mock.queue_response(self.STATUS_IDLE)
-    self.assertFalse(asyncio.run(backend.request_busy()))
+    self.assertTrue(asyncio.run(backend.is_ready()))
 
 
 # ---------------------------------------------------------------------------
@@ -420,8 +441,7 @@ _REAL_EEPROM_FRAME = bytes.fromhex(
 #   20-27: build time "11:51:21\0"
 #   28-31: unknown
 _REAL_FIRMWARE_FRAME = bytes.fromhex(
-  "0200280c0a050024000005464e6f762032302032303230003131"
-  "3a35313a3231000001000004ed0d"
+  "0200280c0a050024000005464e6f7620323020323032300031313a35313a3231000001000004ed0d"
 )
 
 
@@ -540,34 +560,149 @@ class TestEepromParsing(unittest.TestCase):
 
 
 class TestAvailableDetectionModes(unittest.TestCase):
-  """Verify request_available_detection_modes derives modes from configuration."""
+  """Verify request_available_detection_modes fetches EEPROM and derives modes."""
 
   def test_all_modes(self):
     backend = _make_backend()
-    backend.configuration.update({
-      "has_absorbance": True,
-      "has_fluorescence": True,
-      "has_luminescence": True,
-      "has_alpha_technology": True,
-    })
-    modes = backend.request_available_detection_modes()
-    self.assertEqual(modes, ["absorbance", "fluorescence", "luminescence", "alpha_technology"])
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(_REAL_EEPROM_FRAME)
+    modes = asyncio.run(backend.request_available_detection_modes())
+    self.assertEqual(
+      modes,
+      ["absorbance", "absorbance_spectrum", "fluorescence", "luminescence", "alpha_technology"],
+    )
 
   def test_partial_modes(self):
     backend = _make_backend()
-    backend.configuration.update({
-      "has_absorbance": True,
-      "has_fluorescence": False,
-      "has_luminescence": True,
-      "has_alpha_technology": False,
-    })
-    modes = backend.request_available_detection_modes()
-    self.assertEqual(modes, ["absorbance", "luminescence"])
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    # Build EEPROM payload with absorbance + luminescence but no fluorescence/alpha.
+    payload = bytearray(_extract_payload(_REAL_EEPROM_FRAME))
+    payload[12] = 0x00  # has_fluorescence = False
+    payload[14] = 0x00  # has_alpha_technology = False
+    mock.queue_response(_wrap_payload(bytes(payload)))
+    modes = asyncio.run(backend.request_available_detection_modes())
+    self.assertEqual(modes, ["absorbance", "absorbance_spectrum", "luminescence"])
 
   def test_no_eeprom(self):
     backend = _make_backend()
-    modes = backend.request_available_detection_modes()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    # Short payload → all detection flags default to False.
+    mock.queue_response(_wrap_payload(b"\x07\x05\x00\x24"))
+    modes = asyncio.run(backend.request_available_detection_modes())
     self.assertEqual(modes, [])
+
+
+class TestTemperature(unittest.TestCase):
+  """Verify temperature commands use standard framing (K01 pcap ground truth)."""
+
+  def test_stop_sends_correct_frame(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    mock.queue_response(ACK)
+    asyncio.run(backend.stop_temperature_control())
+
+    self.assertEqual(mock.written[0], COMMANDS["temp_off"][1])
+
+  def test_monitor_sends_correct_frame(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    mock.queue_response(ACK)
+    asyncio.run(backend.activate_temperature_monitoring())
+
+    self.assertEqual(mock.written[0], COMMANDS["temp_monitor"][1])
+
+  def test_start_set_30c(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    mock.queue_response(ACK)
+    asyncio.run(backend.start_temperature_control(target_celsius=30.0))
+
+    self.assertEqual(mock.written[0], COMMANDS["temp_set_30c"][1])
+
+  def test_start_set_37c(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    mock.queue_response(ACK)
+    asyncio.run(backend.start_temperature_control(target_celsius=37.0))
+
+    # 37.0°C = 370 = 0x0172
+    expected = _wrap_payload(b"\x06\x01\x72")
+    self.assertEqual(mock.written[0], expected)
+
+  def test_start_set_25c(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    mock.queue_response(ACK)
+    asyncio.run(backend.start_temperature_control(target_celsius=25.0))
+
+    # 25.0°C = 250 = 0x00FA
+    expected = _wrap_payload(b"\x06\x00\xfa")
+    self.assertEqual(mock.written[0], expected)
+
+  def test_start_rejects_above_max(self):
+    backend = _make_backend()
+    with self.assertRaises(ValueError):
+      asyncio.run(backend.start_temperature_control(target_celsius=50.0))
+
+  @staticmethod
+  def _make_temp_response(bottom_raw: int, top_raw: int) -> bytes:
+    """Build a standard framed response with temperature at payload bytes 11-14."""
+    payload = bytearray(16)
+    payload[11:13] = bottom_raw.to_bytes(2, "big")
+    payload[13:15] = top_raw.to_bytes(2, "big")
+    return _wrap_payload(bytes(payload))
+
+  def test_measure_temperature_bottom(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    # First response (monitor command ack), second response (status poll).
+    mock.queue_response(ACK, self._make_temp_response(370, 375))
+    temp = asyncio.run(backend.measure_temperature(sensor="bottom"))
+    self.assertAlmostEqual(temp, 37.0)
+    # Should have sent: monitor command + status poll.
+    self.assertEqual(mock.written[0], COMMANDS["temp_monitor"][1])
+    self.assertEqual(mock.written[1], COMMANDS["status"][1])
+
+  def test_measure_temperature_top(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    mock.queue_response(ACK, self._make_temp_response(370, 375))
+    temp = asyncio.run(backend.measure_temperature(sensor="top"))
+    self.assertAlmostEqual(temp, 37.5)
+
+  def test_measure_temperature_mean(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    mock.queue_response(ACK, self._make_temp_response(370, 375))
+    temp = asyncio.run(backend.measure_temperature(sensor="mean"))
+    self.assertAlmostEqual(temp, 37.2)  # round((37.0 + 37.5) / 2, 1)
+
+  def test_measure_temperature_retries_until_populated(self):
+    """First status poll returns zeros (sensor not ready), second has data."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    mock.queue_response(ACK, self._make_temp_response(0, 0), self._make_temp_response(291, 296))
+    temp = asyncio.run(backend.measure_temperature(sensor="bottom"))
+    self.assertAlmostEqual(temp, 29.1)
+
+  def test_status_temperature_none_when_inactive(self):
+    """request_machine_status returns None temperatures when monitoring is off."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    mock.queue_response(self._make_temp_response(0, 0))
+    status = asyncio.run(backend.request_machine_status())
+    self.assertIsNone(status["temperature_bottom"])
+    self.assertIsNone(status["temperature_top"])
 
 
 if __name__ == "__main__":

@@ -9,7 +9,7 @@ import asyncio
 import enum
 import logging
 import time
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pylabrobot.io.ftdi import FTDI
 from pylabrobot.resources.plate import Plate
@@ -50,13 +50,13 @@ def _wrap_payload(payload: bytes) -> bytes:
   """Build a complete frame from a payload."""
   frame_size = len(payload) + _FRAME_OVERHEAD
   frame = bytearray()
-  frame.append(0x02)                           # STX
-  frame.extend(frame_size.to_bytes(2, "big"))   # size
-  frame.append(0x0C)                            # header
-  frame.extend(payload)                         # payload
+  frame.append(0x02)  # STX
+  frame.extend(frame_size.to_bytes(2, "big"))  # size
+  frame.append(0x0C)  # header
+  frame.extend(payload)  # payload
   checksum = sum(frame) & 0xFFFFFF
-  frame.extend(checksum.to_bytes(3, "big"))     # checksum
-  frame.append(0x0D)                            # CR
+  frame.extend(checksum.to_bytes(3, "big"))  # checksum
+  frame.append(0x0D)  # CR
   return bytes(frame)
 
 
@@ -148,14 +148,15 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   class CommandFamily(enum.IntEnum):
     """Command group byte (payload byte 0)."""
-    INITIALIZE  = 0x01
-    TRAY        = 0x03
-    RUN         = 0x04
-    REQUEST     = 0x05
-    TEMPERATURE = 0x06
-    POLL        = 0x08
-    STATUS      = 0x80
-    HW_STATUS   = 0x81
+
+    INITIALIZE = 0x01
+    TRAY = 0x03
+    RUN = 0x04
+    REQUEST = 0x05
+    TEMPERATURE_CONTROLLER = 0x06
+    POLL = 0x08
+    STATUS = 0x80
+    HW_STATUS = 0x81
 
   class Command:
     """Command byte constants (payload byte 1).
@@ -164,38 +165,54 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     multiple groups reuse the same byte value (e.g. INIT, TRAY_CLOSE, and POLL
     are all 0x00) and IntEnum would silently alias them.
     """
-    # INITIALIZE
-    INIT               = 0x00
-    # TRAY
-    TRAY_CLOSE         = 0x00
-    TRAY_OPEN          = 0x01
-    # RUN
-    MEASUREMENT        = 0x31
-    # REQUEST
-    DATA               = 0x02
-    EEPROM             = 0x07
-    FIRMWARE_INFO      = 0x09
-    FOCUS_HEIGHT       = 0x0F
-    READ_ORDER         = 0x1D
-    USAGE_COUNTERS     = 0x21
-    # POLL
-    POLL               = 0x00
 
-  # Validation tables built after enum definitions are available.
-  # Populated at module scope below the class definition.
-  _VALID_COMMANDS: Dict  # CommandFamily -> set[Command]
-  _NO_COMMAND_FAMILIES: set  # CommandFamilys that take no command byte
+    # INITIALIZE
+    INIT = 0x00
+    # TRAY
+    TRAY_CLOSE = 0x00
+    TRAY_OPEN = 0x01
+    # RUN
+    MEASUREMENT = 0x31
+    # REQUEST
+    DATA = 0x02
+    EEPROM = 0x07
+    FIRMWARE_INFO = 0x09
+    FOCUS_HEIGHT = 0x0F
+    READ_ORDER = 0x1D
+    USAGE_COUNTERS = 0x21
+    # POLL
+    POLL = 0x00
+
+  _VALID_COMMANDS = {
+    CommandFamily.INITIALIZE: {Command.INIT},
+    CommandFamily.TRAY: {Command.TRAY_CLOSE, Command.TRAY_OPEN},
+    CommandFamily.RUN: {Command.MEASUREMENT},
+    CommandFamily.REQUEST: {
+      Command.DATA,
+      Command.EEPROM,
+      Command.FIRMWARE_INFO,
+      Command.FOCUS_HEIGHT,
+      Command.READ_ORDER,
+      Command.USAGE_COUNTERS,
+    },
+    CommandFamily.POLL: {Command.POLL},
+  }
+  _NO_COMMAND_FAMILIES = {
+    CommandFamily.STATUS,
+    CommandFamily.HW_STATUS,
+    CommandFamily.TEMPERATURE_CONTROLLER,
+  }
 
   # -- Status flags (CLARIOstar-specific bit positions) ---------------------
 
   # (flag_name, byte_index_in_5-byte_status, bitmask)
   _STATUS_FLAGS = [
-    ("standby",        0, 1 << 1),
-    ("busy",           1, 1 << 5),
-    ("running",        1, 1 << 4),
-    ("unread_data",    2, 1),
-    ("initialized",    3, 1 << 5),
-    ("drawer_open",    3, 1),
+    ("standby", 0, 1 << 1),
+    ("busy", 1, 1 << 5),
+    ("running", 1, 1 << 4),
+    ("unread_data", 2, 1),
+    ("initialized", 3, 1 << 5),
+    ("drawer_open", 3, 1),
     ("plate_detected", 3, 1 << 1),
   ]
 
@@ -210,14 +227,17 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         flags[name] = False
     return flags
 
-  _PACKET_READ_TIMEOUT: float = 2  # seconds; max wait for a single serial frame
+  _PACKET_READ_TIMEOUT: float = 3  # seconds; max wait for a single serial frame
 
-  # === Constructor ===
+  # --------------------------------------------------------------------------
+  # Constructor
+  # --------------------------------------------------------------------------
 
   def __init__(
     self,
     device_id: Optional[str] = None,
     read_timeout: float = 120,
+    max_temperature: float = 45,
   ):
     """Create a new CLARIOstar Plus backend.
 
@@ -228,6 +248,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         with ``wait=True`` (open, close, initialize) this bounds the total time
         including busy-polling. Can be overridden per-command via
         ``send_command(read_timeout=...)``.
+      max_temperature: Maximum allowed target temperature in °C. Standard
+        incubator range is 0-45°C; extended incubator supports 10-65°C.
     """
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
     self.read_timeout = read_timeout
@@ -238,6 +260,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "firmware_build_timestamp": "",
       "model_name": "",
       "machine_type_code": 0,
+      "max_temperature": max_temperature,
       "has_absorbance": False,
       "has_fluorescence": False,
       "has_luminescence": False,
@@ -249,7 +272,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "emission_filter_slots": 0,
     }
 
-  # === Life cycle ===
+  # --------------------------------------------------------------------------
+  # Life cycle
+  # --------------------------------------------------------------------------
 
   async def setup(self) -> None:
     """Configure FTDI serial link (125 kBaud, 8N1), initialize the reader, and read EEPROM/firmware."""
@@ -271,12 +296,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if self.io.device_id:
       self.configuration["serial_number"] = self.io.device_id
 
-    modes = [m for m, key in [
-      ("absorbance", "has_absorbance"),
-      ("fluorescence", "has_fluorescence"),
-      ("luminescence", "has_luminescence"),
-      ("alpha_technology", "has_alpha_technology"),
-    ] if self.configuration.get(key)]
+    modes = [
+      m
+      for m, key in [
+        ("absorbance", "has_absorbance"),
+        ("fluorescence", "has_fluorescence"),
+        ("luminescence", "has_luminescence"),
+        ("alpha_technology", "has_alpha_technology"),
+      ]
+      if self.configuration.get(key)
+    ]
     logger.info(
       "%s (0x%04x) fw %s (%s) — detection: %s",
       self.configuration["model_name"],
@@ -290,7 +319,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     """Close the FTDI connection. Requires a new ``setup()`` call to use the reader again."""
     await self.io.stop()
 
-  # === Low-level I/O ===
+  # --------------------------------------------------------------------------
+  # Low-level I/O
+  # --------------------------------------------------------------------------
 
   async def _write_frame(self, frame: bytes) -> None:
     """Write a complete frame to the serial port."""
@@ -406,18 +437,17 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       TimeoutError: If *wait* is True and the device stays busy beyond
         *read_timeout*.
     """
-    CG = self.CommandFamily
+    CF = self.CommandFamily
     if command_family in self._NO_COMMAND_FAMILIES:
       if command is not None:
-        raise ValueError(f"{CG(command_family).name} does not accept a command")
+        raise ValueError(f"{CF(command_family).name} does not accept a command")
       data = bytes([command_family]) + payload
     else:
       if command is None:
-        raise ValueError(f"{CG(command_family).name} requires a command")
+        raise ValueError(f"{CF(command_family).name} requires a command")
       valid = self._VALID_COMMANDS.get(command_family, set())
       if command not in valid:
-        raise ValueError(
-          f"command 0x{command:02x} is not valid for {CG(command_family).name}")
+        raise ValueError(f"command 0x{command:02x} is not valid for {CF(command_family).name}")
       data = bytes([command_family, command]) + payload
 
     frame = _wrap_payload(data)
@@ -427,28 +457,30 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     ret = _extract_payload(resp)
 
     if wait:
-      await self._wait_until_machine_ready(
-        read_timeout=read_timeout, poll_interval=poll_interval)
+      await self._wait_until_machine_ready(read_timeout=read_timeout, poll_interval=poll_interval)
 
     return ret
 
-  # === Status ===
+  # --------------------------------------------------------------------------
+  # Status
+  # --------------------------------------------------------------------------
 
-  async def request_machine_status(self, retries: int = 3) -> Dict[str, bool]:
+  async def request_machine_status(self, retries: int = 3) -> Dict:
     """Query device status and return parsed flags (command ``0x80``).
 
     Bypasses ``send_command`` to avoid infinite recursion with
     ``_wait_until_machine_ready``. Retries on transient ``FrameError``
     up to *retries* times before raising.
 
-    Response payload is fixed-length: 16 bytes (status flags in first 5).
-
     Args:
       retries: Number of attempts before raising on repeated frame errors.
 
     Returns:
-      Dict with bool flags: standby, busy, running, unread_data,
-      initialized, drawer_open, plate_detected.
+      Dict with bool flags (``standby``, ``busy``, ``running``, ``unread_data``,
+      ``initialized``, ``drawer_open``, ``plate_detected``) and
+      ``Optional[float]`` temperatures (``temperature_bottom``,
+      ``temperature_top``) in °C. Temperatures are ``None`` when monitoring
+      is inactive (raw value 0x0000).
     """
     last_err: Optional[FrameError] = None
     for attempt in range(retries):
@@ -461,19 +493,32 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         logger.warning("status request: bad frame on attempt %d/%d (%s)", attempt + 1, retries, e)
         continue
       payload = _extract_payload(resp)
-      return self._parse_status(payload[:5])
-    raise last_err  # type: ignore[misc]
+      status: Dict = self._parse_status(payload[:5])
+      if len(payload) >= 15:
+        raw_bottom = int.from_bytes(payload[11:13], "big")
+        raw_top = int.from_bytes(payload[13:15], "big")
+        status["temperature_bottom"] = raw_bottom / 10.0 if raw_bottom else None
+        status["temperature_top"] = raw_top / 10.0 if raw_top else None
+      else:
+        status["temperature_bottom"] = None
+        status["temperature_top"] = None
+      return status
+    assert last_err is not None
+    raise last_err
 
-  async def _wait_until_machine_ready(self, read_timeout=None, poll_interval: float = 0.0):
+  async def _wait_until_machine_ready(
+    self, read_timeout: Optional[float] = None, poll_interval: float = 0.0
+  ) -> None:
     """Poll ``request_machine_status`` until the device is no longer busy.
 
     Args:
-      read_timeout: Max seconds to wait. Defaults to ``self.read_timeout``.
+      read_timeout: Max seconds to wait. ``None`` waits indefinitely.
       poll_interval: Seconds to sleep between polls. Default 0.0 (no sleep,
         paced by I/O roundtrip alone, ~37 ms/poll).
     """
     if read_timeout is None:
-      read_timeout = self.read_timeout
+      logger.warning("_wait_until_machine_ready called without read_timeout, waiting indefinitely")
+      read_timeout = float("inf")
     t = time.time()
     while time.time() - t < read_timeout:
       try:
@@ -482,7 +527,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         logger.warning("status poll: bad frame (%s), retrying", e)
         continue
 
-      logger.info("status: %s", flags)
+      if logger.isEnabledFor(logging.INFO):
+        logger.info("status: %s", flags)
 
       if not flags["busy"]:
         return
@@ -496,16 +542,18 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       f"Increase timeout via CLARIOstarPlusBackend(read_timeout=...) or per-command read_timeout=."
     )
 
-  # === Device info ===
+  # --------------------------------------------------------------------------
+  # Device info
+  # --------------------------------------------------------------------------
 
   async def request_eeprom_data(self) -> Dict:
     """Fetch and parse the EEPROM payload (command ``0x05 0x07``).
 
-    Response is 264 bytes (observed on serial 430-2621, type 0x0024).
+    Response is 264 bytes (observed on CLARIOstar Plus, type 0x0024).
 
     EEPROM Byte Map — Full 264-Byte Analysis
     ==========================================
-    Source: real capture from CLARIOstar Plus serial 430-2621.
+    Source: real capture from CLARIOstar Plus.
     Reference hex (first 48 bytes):
       07 05 00 24 00 00 00 01  00 00 0a 01 01 01 01 00
       00 01 00 ee 02 00 00 0f  00 b0 03 00 00 00 00 00
@@ -552,6 +600,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       [36]    0x00 — HYPOTHESIS: Pump2In (no pump → 0)
       [37]    0x01 — HYPOTHESIS: IncubIn (standard incubator → 1)
       [38]    0x00 — HYPOTHESIS: ExtIncubator (not extended → 0; extended = 10-65°C)
+              If confirmed, this could drive max_temperature (45°C vs 65°C)
+              automatically. Needs a second unit with extended incubator to verify.
       [40]    0x01 — unknown flag
       [41]    0x02 — HYPOTHESIS: ApertureType (ActiveX: 'none'=0, '96/384'=1, '1536'=2)
       [52]    0x32 (50) — unknown; maybe default shake speed or settling time
@@ -615,7 +665,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if logger.isEnabledFor(logging.INFO):
       logger.info(
         "EEPROM: %d bytes, head=%s",
-        len(payload), payload[:16].hex() if len(payload) >= 16 else payload.hex(),
+        len(payload),
+        payload[:16].hex() if len(payload) >= 16 else payload.hex(),
       )
 
     result: Dict = {
@@ -637,7 +688,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     machine_type = int.from_bytes(payload[2:4], "big")
     result["machine_type_code"] = machine_type
     result["model_name"] = _MODEL_LOOKUP.get(
-      machine_type, f"Unknown BMG reader (type 0x{machine_type:04x})")
+      machine_type, f"Unknown BMG reader (type 0x{machine_type:04x})"
+    )
 
     result["has_absorbance"] = bool(payload[11])
     result["has_fluorescence"] = bool(payload[12])
@@ -648,6 +700,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       result["excitation_monochromator_max_nm"] = int.from_bytes(payload[19:21], "little")
       result["emission_monochromator_max_nm"] = int.from_bytes(payload[25:27], "little")
       result["dichroic_filter_slots"] = payload[33]
+      # Excitation and emission filter slides share the same slot count (4 per side,
+      # 2 slides x 2), both read from byte 34. Confirmed on unit 430-2621.
       result["excitation_filter_slots"] = payload[34]
       result["emission_filter_slots"] = payload[34]
 
@@ -683,7 +737,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if len(payload) < 28:
       logger.warning(
         "Firmware info payload too short (%d bytes, need 28): %s",
-        len(payload), payload.hex(),
+        len(payload),
+        payload.hex(),
       )
       return result
 
@@ -695,36 +750,42 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     result["firmware_build_timestamp"] = f"{build_date} {build_time}".strip()
     return result
 
-  def request_available_detection_modes(self) -> List[str]:
-    """Return the list of detection modes available on this device.
+  async def request_available_detection_modes(self) -> List[str]:
+    """Fetch EEPROM data and return the list of detection modes available on this device."""
+    eeprom = await self.request_eeprom_data()
+    return [
+      mode
+      for mode, key in [
+        ("absorbance", "has_absorbance"),
+        ("absorbance_spectrum", "has_absorbance"),
+        ("fluorescence", "has_fluorescence"),
+        ("luminescence", "has_luminescence"),
+        ("alpha_technology", "has_alpha_technology"),
+      ]
+      if eeprom.get(key)
+    ]
 
-    Derived from the EEPROM capability flags stored in ``configuration``
-    during ``setup()``. Returns an empty list before ``setup()`` is called.
-    """
-    return [mode for mode, key in [
-      ("absorbance", "has_absorbance"),
-      ("fluorescence", "has_fluorescence"),
-      ("luminescence", "has_luminescence"),
-      ("alpha_technology", "has_alpha_technology"),
-    ] if self.configuration.get(key)]
-
-  # === Convenience status queries ===
+  # --------------------------------------------------------------------------
+  # Convenience status queries
+  # --------------------------------------------------------------------------
 
   async def request_plate_detected(self) -> bool:
     """Return True if a plate is currently detected in the drawer.
 
     Delegates to ``request_machine_status()`` (fixed-length 16-byte response).
     """
-    return (await self.request_machine_status())["plate_detected"]
+    return bool((await self.request_machine_status())["plate_detected"])
 
-  async def request_busy(self) -> bool:
-    """Return True if the device is currently busy.
+  async def is_ready(self) -> bool:
+    """Return True if the device is ready to accept commands.
 
     Delegates to ``request_machine_status()`` (fixed-length 16-byte response).
     """
-    return (await self.request_machine_status())["busy"]
+    return not (await self.request_machine_status())["busy"]
 
-  # === Usage counters ===
+  # --------------------------------------------------------------------------
+  # Usage counters
+  # --------------------------------------------------------------------------
 
   async def request_usage_counters(self) -> Dict[str, int]:
     """Fetch lifetime usage counters (command ``0x05 0x21``).
@@ -745,7 +806,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     )
 
     def _u32(off: int) -> int:
-      return int.from_bytes(payload[off:off + 4], "big")
+      return int.from_bytes(payload[off : off + 4], "big")
 
     return {
       "flashes": _u32(6),
@@ -759,7 +820,105 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "alpha_time": _u32(38),
     }
 
-  # === Commands ===
+  # --------------------------------------------------------------------------
+  # Temperature
+  # --------------------------------------------------------------------------
+  #
+  # Temperature commands use standard framing with a 3-byte payload:
+  #   [0x06, temp_hi, temp_lo]
+  # where temp_raw = (temp_hi << 8) | temp_lo is the target in 0.1°C units.
+  #   OFF:     temp_raw = 0x0000
+  #   MONITOR: temp_raw = 0x0001
+  #   SET:     temp_raw = target_celsius * 10  (e.g. 30.0°C → 0x012C)
+  #
+  # The device does not send a dedicated temperature response; the regular
+  # status response (cmd 0x80, 24-byte frame / 16-byte payload) carries
+  # temperature readings at payload bytes 11-14.
+  #
+  # Wire format confirmed in K01 pcap (monitor → set 30°C → off → monitor → off).
+
+  async def activate_temperature_monitoring(self) -> None:
+    """Enable temperature readout without heating (command ``0x06``, value ``0x0001``)."""
+    await self.send_command(
+      command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
+      payload=b"\x00\x01",
+    )
+
+  async def start_temperature_control(self, target_celsius: float) -> None:
+    """Set target temperature and enable heating.
+
+    Args:
+      target_celsius: Target in degrees C (e.g. 37.0). Increments of 0.1°C.
+
+    Raises:
+      ValueError: If target exceeds ``max_temperature``.
+    """
+    if target_celsius > self.configuration["max_temperature"]:
+      raise ValueError(
+        f"Target {target_celsius}°C exceeds max {self.configuration['max_temperature']}°C"
+      )
+    raw = int(round(target_celsius * 10))
+    hi = (raw >> 8) & 0xFF
+    lo = raw & 0xFF
+    await self.send_command(
+      command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
+      payload=bytes([hi, lo]),
+    )
+
+  async def stop_temperature_control(self) -> None:
+    """Disable temperature control (command ``0x06``, value ``0x0000``)."""
+    await self.send_command(
+      command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
+      payload=b"\x00\x00",
+    )
+
+  async def measure_temperature(
+    self,
+    sensor: Literal["bottom", "top", "mean"] = "bottom",
+  ) -> float:
+    """Enable monitoring and return the current incubator temperature.
+
+    Sends the monitor command (``0x06 0x0001``), then polls status once
+    to get a fresh reading.  The immediate response to the monitor command
+    may still carry zeros if monitoring was not already active (~200 ms
+    sensor latency observed in K01 pcap), so the extra poll ensures the
+    sensor has populated.
+
+    Status payload bytes 11-14 carry bottom (uint16 BE /10 °C) and top
+    (uint16 BE /10 °C) plate temperatures.
+
+    Args:
+      sensor: Which heating plate to read. ``"bottom"`` (below microplate,
+        tracks setpoint), ``"top"`` (above microplate, ~0.5°C above setpoint
+        to prevent condensation), or ``"mean"`` (average of both).
+
+    Returns:
+      Temperature in °C.
+
+    Note:
+      Uses ``_PACKET_READ_TIMEOUT`` (3 s) rather than ``read_timeout`` because
+      sensor warm-up is bounded by hardware latency (~200 ms observed in K01
+      pcap), not by command processing time.
+    """
+    await self.activate_temperature_monitoring()
+    # Poll status until the sensor has populated (~200 ms from K01 pcap).
+    t = time.time()
+    timeout = self._PACKET_READ_TIMEOUT
+    while time.time() - t < timeout:
+      status = await self.request_machine_status()
+      bottom = status["temperature_bottom"]
+      top = status["temperature_top"]
+      if bottom is not None and top is not None:
+        if sensor == "bottom":
+          return float(bottom)
+        if sensor == "top":
+          return float(top)
+        return round((float(bottom) + float(top)) / 2, 1)
+    raise TimeoutError(f"Temperature sensor did not populate within {timeout}s")
+
+  # --------------------------------------------------------------------------
+  # Commands
+  # --------------------------------------------------------------------------
 
   async def initialize(self, wait: bool = True, poll_interval: float = 0.0) -> None:
     """Send the hardware init sequence (command ``0x01 0x00``) and poll until ready.
@@ -792,7 +951,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     )
 
   async def close(
-    self, plate: Optional[Plate] = None, *, wait: bool = True, poll_interval: float = 0.1,
+    self,
+    plate: Optional[Plate] = None,
+    *,
+    wait: bool = True,
+    poll_interval: float = 0.1,
   ) -> None:
     """Retract the plate drawer (command ``0x03 0x00``). Motor takes ~8 s.
 
@@ -809,11 +972,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       poll_interval=poll_interval,
     )
 
-  # === Measurement (not yet implemented) ===
+  # --------------------------------------------------------------------------
+  # Measurement (not yet implemented)
+  # --------------------------------------------------------------------------
 
-  async def read_absorbance(
-    self, plate: Plate, wells: List[Well], wavelength: int
-  ) -> List[Dict]:
+  async def read_absorbance(self, plate: Plate, wells: List[Well], wavelength: int) -> List[Dict]:
     raise NotImplementedError("Absorbance not yet implemented for CLARIOstar Plus.")
 
   async def read_fluorescence(
@@ -830,18 +993,3 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     self, plate: Plate, wells: List[Well], focal_height: float
   ) -> List[Dict]:
     raise NotImplementedError("Luminescence not yet implemented for CLARIOstar Plus.")
-
-
-# Build command validation tables now that the nested classes exist.
-CG = CLARIOstarPlusBackend.CommandFamily
-Cmd = CLARIOstarPlusBackend.Command
-CLARIOstarPlusBackend._VALID_COMMANDS = {
-  CG.INITIALIZE: {Cmd.INIT},
-  CG.TRAY:       {Cmd.TRAY_CLOSE, Cmd.TRAY_OPEN},
-  CG.RUN:        {Cmd.MEASUREMENT},
-  CG.REQUEST:    {Cmd.DATA, Cmd.EEPROM, Cmd.FIRMWARE_INFO,
-                  Cmd.FOCUS_HEIGHT, Cmd.READ_ORDER, Cmd.USAGE_COUNTERS},
-  CG.POLL:       {Cmd.POLL},
-}
-CLARIOstarPlusBackend._NO_COMMAND_FAMILIES = {CG.STATUS, CG.HW_STATUS}
-del CG, Cmd

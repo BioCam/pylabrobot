@@ -63,13 +63,13 @@ def _wrap_payload(payload: bytes) -> bytes:
   """
   frame_size = len(payload) + _FRAME_OVERHEAD
   frame = bytearray()
-  frame.append(0x02)                          # STX
-  frame.extend(frame_size.to_bytes(2, "big")) # size
-  frame.append(0x0C)                          # header
-  frame.extend(payload)                       # payload
+  frame.append(0x02)  # STX
+  frame.extend(frame_size.to_bytes(2, "big"))  # size
+  frame.append(0x0C)  # header
+  frame.extend(payload)  # payload
   checksum = sum(frame) & 0xFFFFFF
-  frame.extend(checksum.to_bytes(3, "big"))   # checksum
-  frame.append(0x0D)                          # CR
+  frame.extend(checksum.to_bytes(3, "big"))  # checksum
+  frame.append(0x0D)  # CR
   return bytes(frame)
 
 
@@ -99,9 +99,7 @@ def _validate_packet_and_extract_payload(data: bytes) -> bytes:
   received_frame_size = int.from_bytes(data[1:3], "big")
   computed_frame_size = len(data)
   if received_frame_size != computed_frame_size:
-    raise FrameError(
-      f"Size field says {received_frame_size} bytes, got {computed_frame_size}"
-    )
+    raise FrameError(f"Size field says {received_frame_size} bytes, got {computed_frame_size}")
 
   received_cs = int.from_bytes(data[-4:-1], "big")
   computed_cs = sum(data[:-4]) & 0xFFFFFF
@@ -128,14 +126,15 @@ class CommandGroup(enum.IntEnum):
   groups a second byte (the command) follows; STATUS and HW_STATUS are
   single-byte payloads with no command byte.
   """
+
   INITIALIZE = 0x01
-  TRAY       = 0x03
-  RUN        = 0x04
-  REQUEST    = 0x05
+  TRAY = 0x03
+  RUN = 0x04
+  REQUEST = 0x05
   TEMPERATURE = 0x06
-  POLL       = 0x08
-  STATUS     = 0x80
-  HW_STATUS  = 0x81
+  POLL = 0x08
+  STATUS = 0x80
+  HW_STATUS = 0x81
 
 
 class Command(enum.IntEnum):
@@ -144,36 +143,42 @@ class Command(enum.IntEnum):
   Prefixed by the command group they belong to. The valid combinations
   are enforced by ``_VALID_COMMANDS``.
   """
+
   # INITIALIZE
-  INIT_DEFAULT         = 0x00
+  INIT_DEFAULT = 0x00
 
   # TRAY
-  TRAY_CLOSE           = 0x00
-  TRAY_OPEN            = 0x01
+  TRAY_CLOSE = 0x00
+  TRAY_OPEN = 0x01
 
   # RUN
-  RUN_MEASUREMENT      = 0x31
+  RUN_MEASUREMENT = 0x31
 
   # REQUEST
-  REQUEST_MEASUREMENT  = 0x02
-  REQUEST_EEPROM       = 0x07
+  REQUEST_MEASUREMENT = 0x02
+  REQUEST_EEPROM = 0x07
   REQUEST_FIRMWARE_INFO = 0x09
   REQUEST_FOCUS_HEIGHT = 0x0F
-  REQUEST_READ_ORDER   = 0x1D
+  REQUEST_READ_ORDER = 0x1D
   REQUEST_USAGE_COUNTERS = 0x21
 
   # POLL
-  POLL_DEFAULT         = 0x00
+  POLL_DEFAULT = 0x00
 
 
 _VALID_COMMANDS: Dict[CommandGroup, set] = {
   CommandGroup.INITIALIZE: {Command.INIT_DEFAULT},
-  CommandGroup.TRAY:       {Command.TRAY_CLOSE, Command.TRAY_OPEN},
-  CommandGroup.RUN:        {Command.RUN_MEASUREMENT},
-  CommandGroup.REQUEST:    {Command.REQUEST_MEASUREMENT, Command.REQUEST_EEPROM,
-                            Command.REQUEST_FIRMWARE_INFO, Command.REQUEST_FOCUS_HEIGHT,
-                            Command.REQUEST_READ_ORDER, Command.REQUEST_USAGE_COUNTERS},
-  CommandGroup.POLL:       {Command.POLL_DEFAULT},
+  CommandGroup.TRAY: {Command.TRAY_CLOSE, Command.TRAY_OPEN},
+  CommandGroup.RUN: {Command.RUN_MEASUREMENT},
+  CommandGroup.REQUEST: {
+    Command.REQUEST_MEASUREMENT,
+    Command.REQUEST_EEPROM,
+    Command.REQUEST_FIRMWARE_INFO,
+    Command.REQUEST_FOCUS_HEIGHT,
+    Command.REQUEST_READ_ORDER,
+    Command.REQUEST_USAGE_COUNTERS,
+  },
+  CommandGroup.POLL: {Command.POLL_DEFAULT},
 }
 
 # Command groups whose payload is a single byte (no command byte).
@@ -194,6 +199,7 @@ _NO_COMMAND_GROUPS = {CommandGroup.STATUS, CommandGroup.HW_STATUS}
 @dataclasses.dataclass(frozen=True)
 class _CommandDef:
   """Definition of a single CLARIOstar command or subcommand."""
+
   name: str
   payload: bytes
   single_byte_checksum: bool = False
@@ -210,7 +216,6 @@ COMMAND_REGISTRY: Dict[Tuple[int, int], _CommandDef] = {
     payload=b"\x01\x00\x00\x10\x02\x00",
     description="Instrument initialization",
   ),
-
   # 0x03 — Drawer
   (0x03, 0x01): _CommandDef(
     name="drawer_open",
@@ -222,7 +227,6 @@ COMMAND_REGISTRY: Dict[Tuple[int, int], _CommandDef] = {
     payload=b"\x03\x00\x00\x00\x00\x00\x00",
     description="Close the plate drawer",
   ),
-
   # 0x05 — Data / Query (second byte = subcommand)
   (0x05, 0x02): _CommandDef(
     name="get_data",
@@ -254,7 +258,6 @@ COMMAND_REGISTRY: Dict[Tuple[int, int], _CommandDef] = {
     payload=b"\x05\x21\x00\x00\x00\x00\x00\x00",
     description="Read lifetime usage counters (flashes, wells, shake time, etc.)",
   ),
-
   # 0x06 — Temperature (1-byte checksum, unique among families)
   (0x06, 0x00): _CommandDef(
     name="temperature_off",
@@ -269,14 +272,12 @@ COMMAND_REGISTRY: Dict[Tuple[int, int], _CommandDef] = {
     description="Enable temperature sensor monitoring without heating",
   ),
   # Note: temperature_set is dynamic (target encoded in bytes 1-2), not a fixed payload.
-
   # 0x80 — Status
   (0x80, 0x00): _CommandDef(
     name="command_status",
     payload=b"\x80\x00",
     description="Query command/machine status flags",
   ),
-
   # 0x81 — Hardware status
   (0x81, 0x00): _CommandDef(
     name="hardware_status",
@@ -688,17 +689,17 @@ class CLARIOstarPlusConfig:
 class MeasurementRecord:
   """Cached record of a single plate reader measurement."""
 
-  start_time: str                    # ISO 8601: "2026-02-19 14:30:05"
-  end_time: str                      # same format
-  measurement_duration_s: float      # end - start in seconds
-  detection_mode: str                # "absorbance" | "fluorescence" | "luminescence" | "spectral_absorbance_scan"
-  measurement_index: int             # auto-incrementing per session, 0-based
-  parameters: Dict                   # measurement-specific params
-  results: List[Dict]                # the return value from read_*/collect_*
+  start_time: str  # ISO 8601: "2026-02-19 14:30:05"
+  end_time: str  # same format
+  measurement_duration_s: float  # end - start in seconds
+  detection_mode: str  # "absorbance" | "fluorescence" | "luminescence" | "spectral_absorbance_scan"
+  measurement_index: int  # auto-incrementing per session, 0-based
+  parameters: Dict  # measurement-specific params
+  results: List[Dict]  # the return value from read_*/collect_*
   temperature: Optional[float]
   plate_name: str
   num_wells_read: int
-  wells_read: List[str]              # e.g. ["A1", "A2", "B3"]
+  wells_read: List[str]  # e.g. ["A1", "A2", "B3"]
 
 
 # # # Diagnostic helpers # # #
@@ -769,15 +770,19 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   and configurable scan modes.
   """
 
-
   # === Constructor ===
 
-  def __init__(self, device_id: Optional[str] = None, timeout: int = 150,
-               read_timeout: float = 20, write_timeout: float = 10):
+  def __init__(
+    self,
+    device_id: Optional[str] = None,
+    timeout: int = 150,
+    read_timeout: float = 20,
+    write_timeout: float = 10,
+  ):
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
     self.timeout = timeout
     self.read_timeout = read_timeout
-    self.write_timeout = write_timeout # TODO: is this needed?
+    self.write_timeout = write_timeout  # TODO: is this needed?
     self._eeprom_data: Optional[bytes] = None
     self._firmware_data: Optional[bytes] = None
     self._incubation_target: float = 0.0
@@ -788,7 +793,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     self._pending_measurement: Optional[Dict] = None
 
   # === Life cycle ===
-  
+
   async def setup(self):
     await self.io.setup()
     await self.io.set_baudrate(125000)
@@ -805,7 +810,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       self._machine_type_code = config.machine_type_code
       logger.info(
         "Detected machine type 0x%04x (%s), extended_separator=%s",
-        self._machine_type_code, config.model_name, self._uses_extended_separator,
+        self._machine_type_code,
+        config.model_name,
+        self._uses_extended_separator,
       )
 
   async def stop(self):
@@ -1031,7 +1038,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         progress = self._parse_progress_from_data_response(progressive_resp)
         logger.info(
           "Progressive poll: %d/%d values (schema=0x%02x)",
-          progress["complete"], progress["total"], progress["schema"],
+          progress["complete"],
+          progress["total"],
+          progress["schema"],
         )
         await on_progress(progress["complete"], progress["total"], progressive_resp)
       except (ValueError, FrameError) as e:
@@ -1075,14 +1084,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   async def request_eeprom_data(self):
     eeprom_response = await self.send_command(
-      CommandGroup.REQUEST, Command.REQUEST_EEPROM, payload=b"\x00\x00\x00\x00\x00\x00")
+      CommandGroup.REQUEST, Command.REQUEST_EEPROM, payload=b"\x00\x00\x00\x00\x00\x00"
+    )
     self._eeprom_data = eeprom_response
     return await self._wait_for_ready_and_return(eeprom_response)
 
   async def request_firmware_info(self):
     """Request firmware version and build date/time (command ``0x05 0x09``)."""
     resp = await self.send_command(
-      CommandGroup.REQUEST, Command.REQUEST_FIRMWARE_INFO, payload=b"\x00\x00\x00\x00\x00\x00")
+      CommandGroup.REQUEST, Command.REQUEST_FIRMWARE_INFO, payload=b"\x00\x00\x00\x00\x00\x00"
+    )
     self._firmware_data = resp
     return await self._wait_for_ready_and_return(resp)
 
@@ -1092,7 +1103,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     Each call queries the instrument for current values (not cached).
     """
     resp = await self.send_command(
-      CommandGroup.REQUEST, Command.REQUEST_USAGE_COUNTERS, payload=b"\x00\x00\x00\x00\x00\x00")
+      CommandGroup.REQUEST, Command.REQUEST_USAGE_COUNTERS, payload=b"\x00\x00\x00\x00\x00\x00"
+    )
     await self._wait_for_ready_and_return(resp)
     return _parse_usage_counters(resp)
 
@@ -1205,8 +1217,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     self._measurement_counter += 1
     logger.info(
       "Cached measurement #%d (%s): %d wells, %.1fs",
-      record.measurement_index, record.detection_mode,
-      record.num_wells_read, record.measurement_duration_s,
+      record.measurement_index,
+      record.detection_mode,
+      record.num_wells_read,
+      record.measurement_duration_s,
     )
     return record
 
@@ -1214,7 +1228,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   async def initialize(self):
     command_response = await self.send_command(
-      CommandGroup.INITIALIZE, Command.INIT_DEFAULT, payload=b"\x00\x10\x02\x00")
+      CommandGroup.INITIALIZE, Command.INIT_DEFAULT, payload=b"\x00\x10\x02\x00"
+    )
     return await self._wait_for_ready_and_return(command_response)
 
   # # # Temperature Features # # #
@@ -1351,19 +1366,22 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   async def open(self):
     open_response = await self.send_command(
-      CommandGroup.TRAY, Command.TRAY_OPEN, payload=b"\x00\x00\x00\x00\x00")
+      CommandGroup.TRAY, Command.TRAY_OPEN, payload=b"\x00\x00\x00\x00\x00"
+    )
     return await self._wait_for_ready_and_return(open_response)
 
   async def close(self, plate: Optional[Plate] = None):
     close_response = await self.send_command(
-      CommandGroup.TRAY, Command.TRAY_CLOSE, payload=b"\x00\x00\x00\x00\x00")
+      CommandGroup.TRAY, Command.TRAY_CLOSE, payload=b"\x00\x00\x00\x00\x00"
+    )
     return await self._wait_for_ready_and_return(close_response)
 
   # # # Shared measurement infrastructure # # #
 
   async def _mp_and_focus_height_value(self):
     mp_and_focus_height_value_response = await self.send_command(
-      CommandGroup.REQUEST, Command.REQUEST_FOCUS_HEIGHT, payload=b"\x00\x00\x00\x00\x00\x00")
+      CommandGroup.REQUEST, Command.REQUEST_FOCUS_HEIGHT, payload=b"\x00\x00\x00\x00\x00\x00"
+    )
     return await self._wait_for_ready_and_return(mp_and_focus_height_value_response)
 
   def _plate_bytes(self, plate: Plate, wells: Optional[List[Well]] = None) -> bytes:
@@ -1504,7 +1522,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     Returns a list of (row, col) tuples (0-based), or None if parsing fails.
     """
     resp = await self.send_command(
-      CommandGroup.REQUEST, Command.REQUEST_READ_ORDER, payload=b"\x00\x00\x00\x00\x00\x00")
+      CommandGroup.REQUEST, Command.REQUEST_READ_ORDER, payload=b"\x00\x00\x00\x00\x00\x00"
+    )
 
     payload = resp
 
@@ -1519,7 +1538,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if len(payload) < 19:
       logger.warning(
         "Read order response too short (%d bytes). Raw: %s",
-        len(payload), payload.hex(),
+        len(payload),
+        payload.hex(),
       )
       return None
 
@@ -1529,20 +1549,28 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if len(data) < n_entries * 2:
       logger.warning(
         "Read order data too short: expected %d entries (%d bytes), got %d bytes. Raw: %s",
-        n_entries, n_entries * 2, len(data), payload.hex(),
+        n_entries,
+        n_entries * 2,
+        len(data),
+        payload.hex(),
       )
       return None
 
     positions: List[Tuple[int, int]] = []
     for i in range(n_entries):
-      col_1 = data[i * 2]      # 1-based column
+      col_1 = data[i * 2]  # 1-based column
       row_1 = data[i * 2 + 1]  # 1-based row
       r = row_1 - 1
       c = col_1 - 1
       if r < 0 or r >= rows or c < 0 or c >= cols:
         logger.warning(
           "Read order entry %d: col=%d row=%d out of range for %dx%d plate. Raw: %s",
-          i, col_1, row_1, rows, cols, payload.hex(),
+          i,
+          col_1,
+          row_1,
+          rows,
+          cols,
+          payload.hex(),
         )
         return None
       positions.append((r, c))
@@ -1607,8 +1635,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     respond to the first final-getData of a session.
     """
     return await self.send_command(
-      CommandGroup.REQUEST, Command.REQUEST_MEASUREMENT,
-      payload=b"\x00\x00\x00\x00\x00\x00", read_timeout=30)
+      CommandGroup.REQUEST,
+      Command.REQUEST_MEASUREMENT,
+      payload=b"\x00\x00\x00\x00\x00\x00",
+      read_timeout=30,
+    )
 
   async def _get_progressive_measurement_values(self, read_timeout: float = 1):
     """Fetch partial measurement data during an active measurement.
@@ -1627,8 +1658,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         polling loop simply retries on the next iteration.
     """
     return await self.send_command(
-      CommandGroup.REQUEST, Command.REQUEST_MEASUREMENT,
-      payload=b"\xff\xff\xff\xff\x00\x00", read_timeout=read_timeout,
+      CommandGroup.REQUEST,
+      Command.REQUEST_MEASUREMENT,
+      payload=b"\xff\xff\xff\xff\x00\x00",
+      read_timeout=read_timeout,
     )
 
   @staticmethod
@@ -1660,8 +1693,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     if len(payload) < 4:
       raise ValueError(
-        f"Run response too short ({len(payload)} bytes, need >= 4). "
-        f"Raw: {response.hex()}"
+        f"Run response too short ({len(payload)} bytes, need >= 4). Raw: {response.hex()}"
       )
 
     command_echo = payload[0]
@@ -1676,7 +1708,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         "Truncated run response (%d payload bytes, expected >= 14). "
         "The firmware accepted the command but the serial link dropped bytes. "
         "Raw: %s",
-        len(payload), response.hex(),
+        len(payload),
+        response.hex(),
       )
 
     return {
@@ -1707,8 +1740,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     if len(payload) < 11:
       raise ValueError(
-        f"Data response too short ({len(payload)} bytes, need >= 11). "
-        f"Raw: {response.hex()}"
+        f"Data response too short ({len(payload)} bytes, need >= 11). Raw: {response.hex()}"
       )
 
     schema = payload[6]
@@ -1858,17 +1890,25 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     focal_height_data = int(focal_height * 100).to_bytes(2, byteorder="big")
 
     payload = self._build_payload_header(
-      plate, wells, optic_base=0x01,
-      start_corner=start_corner, unidirectional=unidirectional,
-      vertical=vertical, flying_mode=False,
-      shake_type=shake_type, shake_speed_rpm=shake_speed_rpm,
-      shake_duration_s=shake_duration_s, num_zero_pad=2,
+      plate,
+      wells,
+      optic_base=0x01,
+      start_corner=start_corner,
+      unidirectional=unidirectional,
+      vertical=vertical,
+      flying_mode=False,
+      shake_type=shake_type,
+      shake_speed_rpm=shake_speed_rpm,
+      shake_duration_s=shake_duration_s,
+      num_zero_pad=2,
     )
 
     payload += b"\x01"
     payload += focal_height_data
     payload += b"\x00\x00\x01\x00\x00\x0e\x10\x00\x01\x00\x01\x00"
-    payload += b"\x01\x00\x01\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x01"
+    payload += (
+      b"\x01\x00\x01\x00\x01\x00\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x01"
+    )
     payload += b"\x00\x00\x00\x01\x00\x64\x00\x20\x00\x00"
 
     frame = _wrap_payload(bytes(payload))
@@ -1948,7 +1988,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     logger.info("Luminescence response: %d bytes", len(vals))
 
     scan_order = self._compute_scan_order(
-      plate, wells,
+      plate,
+      wells,
       start_corner=self._last_scan_params.get("start_corner", StartCorner.TOP_LEFT),
       unidirectional=self._last_scan_params.get("unidirectional", False),
       vertical=self._last_scan_params.get("vertical", True),
@@ -2081,16 +2122,25 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     }
 
     payload = self._build_payload_header(
-      plate, wells, optic_base=0x02, well_scan=well_scan,
-      start_corner=start_corner, unidirectional=unidirectional,
-      vertical=vertical, flying_mode=flying_mode,
-      shake_type=shake_type, shake_speed_rpm=shake_speed_rpm,
+      plate,
+      wells,
+      optic_base=0x02,
+      well_scan=well_scan,
+      start_corner=start_corner,
+      unidirectional=unidirectional,
+      vertical=vertical,
+      flying_mode=flying_mode,
+      shake_type=shake_type,
+      shake_speed_rpm=shake_speed_rpm,
       shake_duration_s=shake_duration_s,
     )
 
     # Well-scan parameters (5 bytes for orbital/spiral/matrix, 0 for point).
     payload += _well_scan_bytes(
-      _WELL_SCAN_MEAS_CODE["absorbance"], well_scan, well_scan_width, plate,
+      _WELL_SCAN_MEAS_CODE["absorbance"],
+      well_scan,
+      well_scan_width,
+      plate,
     )
     # Per-well pause + wavelength count + wavelength data (per Go absDiscreteBytes)
     payload += bytes([_encode_pause_time(pause_time_per_well), len(wavelengths)])
@@ -2285,10 +2335,19 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "Abs parser: schema=0x%02x, wells=%d, wl=%d, groups=%d (1+%d), "
       "payload=%d B, cal_pairs=%d, sample[0]=%.0f, ref[0]=%.0f, "
       "c1_cal=(%.0f, %.0f), ref_cal=(%.0f, %.0f), temp=%s",
-      schema, wells, wavelengths_in_resp, 1 + extra_groups, extra_groups,
-      len(payload), num_cal_pairs,
-      vals[0] if vals else 0, ref[0] if ref else 0,
-      chromat1_cal[0], chromat1_cal[1], ref_cal[0], ref_cal[1],
+      schema,
+      wells,
+      wavelengths_in_resp,
+      1 + extra_groups,
+      extra_groups,
+      len(payload),
+      num_cal_pairs,
+      vals[0] if vals else 0,
+      ref[0] if ref else 0,
+      chromat1_cal[0],
+      chromat1_cal[1],
+      ref_cal[0],
+      ref_cal[1],
       f"{temperature:.1f}" if temperature is not None else "None",
     )
 
@@ -2363,8 +2422,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     """
     wait = backend_kwargs.pop("wait", True)
     data_retrieval_rate: float = backend_kwargs.pop("data_retrieval_rate", 0.5)
-    on_progress: Optional[Callable[[int, int, Optional[bytes]], Awaitable[None]]] = \
+    on_progress: Optional[Callable[[int, int, Optional[bytes]], Awaitable[None]]] = (
       backend_kwargs.pop("on_progress", None)
+    )
     all_wells = wells == plate.get_all_items() or set(wells) == set(plate.get_all_items())
 
     # Support multi-wavelength via backend_kwargs
@@ -2473,7 +2533,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
           wells_done = max(0, (progress["complete"] - cal_overhead)) // (2 * n_wl)
           logger.info(
             "Progressive: %d/%d wells measured (%d/%d values)",
-            wells_done, n_wells, progress["complete"], progress["total"],
+            wells_done,
+            n_wells,
+            progress["complete"],
+            progress["total"],
           )
           if on_progress is not None:
             await on_progress(progress["complete"], progress["total"], progressive_resp)
@@ -2493,7 +2556,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     await self._drain_buffer()
     await asyncio.sleep(0.5)
     results = await self.collect_absorbance_measurement(
-      plate=plate, wells=wells, wavelengths=wavelengths, report=report,
+      plate=plate,
+      wells=wells,
+      wavelengths=wavelengths,
+      report=report,
     )
     if results is not None:
       self._finalize_measurement_record(pending, results)
@@ -2554,19 +2620,19 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         raw_for_wl: List[Optional[float]] = []
         for well_idx in range(num_wells):
           flat_idx = well_idx + wl_idx * num_wells
-          raw_for_wl.append(
-            raw["samples"][flat_idx] if flat_idx < len(raw["samples"]) else None
-          )
+          raw_for_wl.append(raw["samples"][flat_idx] if flat_idx < len(raw["samples"]) else None)
 
-        results.append({
-          "wavelength": wl,
-          "data": self._readings_to_grid(raw_for_wl, plate, wells),
-          "references": raw["references"],
-          "chromatic_cal": raw["chromatic_cal"][wl_idx],
-          "reference_cal": raw["reference_cal"],
-          "temperature": temperature,
-          "time": time.time(),
-        })
+        results.append(
+          {
+            "wavelength": wl,
+            "data": self._readings_to_grid(raw_for_wl, plate, wells),
+            "references": raw["references"],
+            "chromatic_cal": raw["chromatic_cal"][wl_idx],
+            "reference_cal": raw["reference_cal"],
+            "temperature": temperature,
+            "time": time.time(),
+          }
+        )
     else:
       # --- OD / transmittance modes ---
       results = []
@@ -2585,8 +2651,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
         if report == "OD":
           final_vals: List[Optional[float]] = [
-            math.log10(100 / t) if t is not None and t > 0 else None
-            for t in trans_for_wl
+            math.log10(100 / t) if t is not None and t > 0 else None for t in trans_for_wl
           ]
         elif report == "transmittance":
           final_vals = trans_for_wl
@@ -2675,11 +2740,17 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     optic_base = 0x40 if bottom_optic else 0x00
     payload = self._build_payload_header(
-      plate, wells, optic_base=optic_base,
-      start_corner=start_corner, unidirectional=unidirectional,
-      vertical=vertical, flying_mode=flying_mode,
-      shake_type=shake_type, shake_speed_rpm=shake_speed_rpm,
-      shake_duration_s=shake_duration_s, force_compact=True,
+      plate,
+      wells,
+      optic_base=optic_base,
+      start_corner=start_corner,
+      unidirectional=unidirectional,
+      vertical=vertical,
+      flying_mode=flying_mode,
+      shake_type=shake_type,
+      shake_speed_rpm=shake_speed_rpm,
+      shake_duration_s=shake_duration_s,
+      force_compact=True,
     )
 
     # Per-well pause time
@@ -2744,7 +2815,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     schema = payload[6]
     if schema & 0x7F != 0x21:
       raise ValueError(f"Incorrect schema byte for fl data: 0x{schema:02x}, expected 0x21")
-
 
     complete = int.from_bytes(payload[9:11], "big")
     overflow = struct.unpack(">I", payload[11:15])[0]
@@ -2828,7 +2898,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       return None
 
     results = await self.collect_fluorescence_measurement(
-      plate=plate, wells=wells,
+      plate=plate,
+      wells=wells,
       excitation_wavelength=excitation_wavelength,
       emission_wavelength=emission_wavelength,
     )
@@ -2853,7 +2924,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     logger.info("Fluorescence response: %d bytes", len(vals))
 
     scan_order = self._compute_scan_order(
-      plate, wells,
+      plate,
+      wells,
       start_corner=self._last_scan_params.get("start_corner", StartCorner.TOP_LEFT),
       unidirectional=self._last_scan_params.get("unidirectional", False),
       vertical=self._last_scan_params.get("vertical", True),

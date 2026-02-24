@@ -2,7 +2,10 @@ import statistics
 import unittest
 import warnings
 
-from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_simulator import CLARIOstarPlusSimulatorBackend
+from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_simulator import (
+  CLARIOstarPlusSimulatorBackend,
+)
+
 from pylabrobot.resources import Cor_96_wellplate_360ul_Fb
 
 
@@ -17,7 +20,9 @@ class CLARIOstarPlusSimulatorTestBase(unittest.IsolatedAsyncioTestCase):
 class TestAbsorbanceFormat(CLARIOstarPlusSimulatorTestBase):
   async def test_absorbance_returns_correct_format(self):
     results = await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=450,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=450,
     )
     self.assertEqual(len(results), 1)
     r = results[0]
@@ -31,7 +36,9 @@ class TestAbsorbanceFormat(CLARIOstarPlusSimulatorTestBase):
 
   async def test_multi_wavelength_absorbance(self):
     results = await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=450,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=450,
       wavelengths=[450, 600],
     )
     self.assertEqual(len(results), 2)
@@ -42,8 +49,11 @@ class TestAbsorbanceFormat(CLARIOstarPlusSimulatorTestBase):
 class TestFluorescenceFormat(CLARIOstarPlusSimulatorTestBase):
   async def test_fluorescence_returns_correct_format(self):
     results = await self.backend.read_fluorescence(
-      plate=self.plate, wells=self.all_wells,
-      excitation_wavelength=485, emission_wavelength=520, focal_height=13.0,
+      plate=self.plate,
+      wells=self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=520,
+      focal_height=13.0,
     )
     self.assertEqual(len(results), 1)
     r = results[0]
@@ -61,7 +71,9 @@ class TestFluorescenceFormat(CLARIOstarPlusSimulatorTestBase):
 class TestLuminescenceFormat(CLARIOstarPlusSimulatorTestBase):
   async def test_luminescence_returns_correct_format(self):
     results = await self.backend.read_luminescence(
-      plate=self.plate, wells=self.all_wells, focal_height=13.0,
+      plate=self.plate,
+      wells=self.all_wells,
+      focal_height=13.0,
     )
     self.assertEqual(len(results), 1)
     r = results[0]
@@ -77,15 +89,21 @@ class TestMockData(CLARIOstarPlusSimulatorTestBase):
   async def test_mock_data_used_directly(self):
     mock = [[float(r * 12 + c) for c in range(12)] for r in range(8)]
     results = await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=450, mock_data=mock,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=450,
+      mock_data=mock,
     )
     self.assertEqual(results[0]["data"], mock)
 
   async def test_mock_data_fluorescence(self):
     mock = [[100.0] * 12 for _ in range(8)]
     results = await self.backend.read_fluorescence(
-      plate=self.plate, wells=self.all_wells,
-      excitation_wavelength=485, emission_wavelength=520, focal_height=13.0,
+      plate=self.plate,
+      wells=self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=520,
+      focal_height=13.0,
       mock_data=mock,
     )
     self.assertEqual(results[0]["data"], mock)
@@ -93,7 +111,10 @@ class TestMockData(CLARIOstarPlusSimulatorTestBase):
   async def test_mock_data_luminescence(self):
     mock = [[999.0] * 12 for _ in range(8)]
     results = await self.backend.read_luminescence(
-      plate=self.plate, wells=self.all_wells, focal_height=13.0, mock_data=mock,
+      plate=self.plate,
+      wells=self.all_wells,
+      focal_height=13.0,
+      mock_data=mock,
     )
     self.assertEqual(results[0]["data"], mock)
 
@@ -104,7 +125,9 @@ class TestRandomGeneration(CLARIOstarPlusSimulatorTestBase):
     all_values = []
     for _ in range(10):
       results = await backend.read_absorbance(
-        plate=self.plate, wells=self.all_wells, wavelength=450,
+        plate=self.plate,
+        wells=self.all_wells,
+        wavelength=450,
       )
       for row in results[0]["data"]:
         all_values.extend(v for v in row if v is not None)
@@ -120,7 +143,9 @@ class TestPartialWellSelection(CLARIOstarPlusSimulatorTestBase):
   async def test_partial_well_selection(self):
     selected = [self.all_wells[0], self.all_wells[1]]  # A1, B1 (column-major)
     results = await self.backend.read_absorbance(
-      plate=self.plate, wells=selected, wavelength=450,
+      plate=self.plate,
+      wells=selected,
+      wavelength=450,
     )
     data = results[0]["data"]
     # A1 (0,0) and B1 (1,0) should have values
@@ -139,8 +164,11 @@ class TestPerCallOverride(CLARIOstarPlusSimulatorTestBase):
     all_values = []
     for _ in range(10):
       results = await backend.read_absorbance(
-        plate=self.plate, wells=self.all_wells, wavelength=450,
-        mean=2.0, cv=0.01,
+        plate=self.plate,
+        wells=self.all_wells,
+        wavelength=450,
+        mean=2.0,
+        cv=0.01,
       )
       for row in results[0]["data"]:
         all_values.extend(v for v in row if v is not None)
@@ -162,14 +190,18 @@ class TestSeedReproducibility(CLARIOstarPlusSimulatorTestBase):
 class TestTemperature(CLARIOstarPlusSimulatorTestBase):
   async def test_ambient_temperature_in_results(self):
     results = await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=450,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=450,
     )
     self.assertEqual(results[0]["temperature"], 21.0)
 
   async def test_incubation_reflected_in_results(self):
     await self.backend.start_temperature_control(37.0)
     results = await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=450,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=450,
     )
     self.assertEqual(results[0]["temperature"], 37.0)
 
@@ -244,24 +276,40 @@ class TestEepromData(CLARIOstarPlusSimulatorTestBase):
 class TestExtraKwargsIgnored(CLARIOstarPlusSimulatorTestBase):
   async def test_absorbance_ignores_extra_kwargs(self):
     results = await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=450,
-      report="transmittance", flashes=22, pause_time_per_well=0,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=450,
+      report="transmittance",
+      flashes=22,
+      pause_time_per_well=0,
     )
     self.assertEqual(len(results), 1)
 
   async def test_fluorescence_ignores_extra_kwargs(self):
     results = await self.backend.read_fluorescence(
-      plate=self.plate, wells=self.all_wells,
-      excitation_wavelength=485, emission_wavelength=520, focal_height=8.5,
-      gain=1500, ex_bandwidth=10, em_bandwidth=20, flashes=150, bottom_optic=True,
+      plate=self.plate,
+      wells=self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=520,
+      focal_height=8.5,
+      gain=1500,
+      ex_bandwidth=10,
+      em_bandwidth=20,
+      flashes=150,
+      bottom_optic=True,
     )
     self.assertEqual(len(results), 1)
 
   async def test_luminescence_ignores_shaker_kwargs(self):
     from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import ShakerType
+
     results = await self.backend.read_luminescence(
-      plate=self.plate, wells=self.all_wells, focal_height=13.0,
-      shake_type=ShakerType.ORBITAL, shake_speed_rpm=300, shake_duration_s=5,
+      plate=self.plate,
+      wells=self.all_wells,
+      focal_height=13.0,
+      shake_type=ShakerType.ORBITAL,
+      shake_speed_rpm=300,
+      shake_duration_s=5,
     )
     self.assertEqual(len(results), 1)
 
@@ -269,16 +317,24 @@ class TestExtraKwargsIgnored(CLARIOstarPlusSimulatorTestBase):
 class TestWaitFalse(CLARIOstarPlusSimulatorTestBase):
   async def test_absorbance_wait_false_returns_none(self):
     result = await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=450, wait=False,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=450,
+      wait=False,
     )
     self.assertIsNone(result)
 
   async def test_absorbance_collect_after_wait_false(self):
     await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=450, wait=False,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=450,
+      wait=False,
     )
     results = await self.backend.collect_absorbance_measurement(
-      plate=self.plate, wells=self.all_wells, wavelengths=[450],
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelengths=[450],
     )
     self.assertEqual(len(results), 1)
     self.assertEqual(results[0]["wavelength"], 450)
@@ -286,21 +342,29 @@ class TestWaitFalse(CLARIOstarPlusSimulatorTestBase):
 
   async def test_fluorescence_wait_false_returns_none(self):
     result = await self.backend.read_fluorescence(
-      plate=self.plate, wells=self.all_wells,
-      excitation_wavelength=485, emission_wavelength=520, focal_height=13.0,
+      plate=self.plate,
+      wells=self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=520,
+      focal_height=13.0,
       wait=False,
     )
     self.assertIsNone(result)
 
   async def test_fluorescence_collect_after_wait_false(self):
     await self.backend.read_fluorescence(
-      plate=self.plate, wells=self.all_wells,
-      excitation_wavelength=485, emission_wavelength=520, focal_height=13.0,
+      plate=self.plate,
+      wells=self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=520,
+      focal_height=13.0,
       wait=False,
     )
     results = await self.backend.collect_fluorescence_measurement(
-      plate=self.plate, wells=self.all_wells,
-      excitation_wavelength=485, emission_wavelength=520,
+      plate=self.plate,
+      wells=self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=520,
     )
     self.assertEqual(len(results), 1)
     self.assertEqual(results[0]["ex_wavelength"], 485)
@@ -308,16 +372,23 @@ class TestWaitFalse(CLARIOstarPlusSimulatorTestBase):
 
   async def test_luminescence_wait_false_returns_none(self):
     result = await self.backend.read_luminescence(
-      plate=self.plate, wells=self.all_wells, focal_height=13.0, wait=False,
+      plate=self.plate,
+      wells=self.all_wells,
+      focal_height=13.0,
+      wait=False,
     )
     self.assertIsNone(result)
 
   async def test_luminescence_collect_after_wait_false(self):
     await self.backend.read_luminescence(
-      plate=self.plate, wells=self.all_wells, focal_height=13.0, wait=False,
+      plate=self.plate,
+      wells=self.all_wells,
+      focal_height=13.0,
+      wait=False,
     )
     results = await self.backend.collect_luminescence_measurement(
-      plate=self.plate, wells=self.all_wells,
+      plate=self.plate,
+      wells=self.all_wells,
     )
     self.assertEqual(len(results), 1)
     self.assertIn("data", results[0])
@@ -439,7 +510,9 @@ class TestBinaryRoundTripPath(CLARIOstarPlusSimulatorTestBase):
   async def test_absorbance_od_values_are_plausible(self):
     """OD values from binary round-trip should be close to configured mean."""
     results = await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=450,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=450,
     )
     self.assertEqual(len(results), 1)
     r = results[0]
@@ -456,7 +529,9 @@ class TestBinaryRoundTripPath(CLARIOstarPlusSimulatorTestBase):
   async def test_absorbance_raw_report_has_detector_counts(self):
     """report='raw' should return detector counts and calibration from the binary frame."""
     results = await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=600,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=600,
       report="raw",
     )
     r = results[0]
@@ -472,7 +547,9 @@ class TestBinaryRoundTripPath(CLARIOstarPlusSimulatorTestBase):
   async def test_absorbance_transmittance_report(self):
     """report='transmittance' should return T% values (positive, typically 10-90%)."""
     results = await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=450,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=450,
       report="transmittance",
     )
     r = results[0]
@@ -485,7 +562,9 @@ class TestBinaryRoundTripPath(CLARIOstarPlusSimulatorTestBase):
   async def test_multi_wavelength_binary_round_trip(self):
     """Multi-wavelength reads should produce separate results per wavelength."""
     results = await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=450,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=450,
       wavelengths=[450, 600],
     )
     self.assertEqual(len(results), 2)
@@ -500,7 +579,9 @@ class TestBinaryRoundTripPath(CLARIOstarPlusSimulatorTestBase):
     """Temperature should come from the binary frame, not just from _current_temperature."""
     await self.backend.start_temperature_control(37.0)
     results = await self.backend.read_absorbance(
-      plate=self.plate, wells=self.all_wells, wavelength=450,
+      plate=self.plate,
+      wells=self.all_wells,
+      wavelength=450,
     )
     self.assertAlmostEqual(results[0]["temperature"], 37.0, places=0)
 
@@ -512,12 +593,15 @@ class TestVerboseMode(CLARIOstarPlusSimulatorTestBase):
     """The simulator always prints command hex dumps (like STARChatterboxBackend)."""
     import io
     import sys
+
     captured = io.StringIO()
     old_stdout = sys.stdout
     sys.stdout = captured
     try:
       await self.backend.read_absorbance(
-        plate=self.plate, wells=self.all_wells, wavelength=450,
+        plate=self.plate,
+        wells=self.all_wells,
+        wavelength=450,
       )
     finally:
       sys.stdout = old_stdout
@@ -529,13 +613,16 @@ class TestVerboseMode(CLARIOstarPlusSimulatorTestBase):
     """When verbose=True, the simulator also prints decoded byte-level annotations."""
     import io
     import sys
+
     self.backend.set_verbose(True)
     captured = io.StringIO()
     old_stdout = sys.stdout
     sys.stdout = captured
     try:
       await self.backend.read_absorbance(
-        plate=self.plate, wells=self.all_wells, wavelength=450,
+        plate=self.plate,
+        wells=self.all_wells,
+        wavelength=450,
       )
     finally:
       sys.stdout = old_stdout
@@ -551,12 +638,15 @@ class TestVerboseMode(CLARIOstarPlusSimulatorTestBase):
     """When verbose=False, decoded annotations are not printed."""
     import io
     import sys
+
     captured = io.StringIO()
     old_stdout = sys.stdout
     sys.stdout = captured
     try:
       await self.backend.read_absorbance(
-        plate=self.plate, wells=self.all_wells, wavelength=450,
+        plate=self.plate,
+        wells=self.all_wells,
+        wavelength=450,
       )
     finally:
       sys.stdout = old_stdout
