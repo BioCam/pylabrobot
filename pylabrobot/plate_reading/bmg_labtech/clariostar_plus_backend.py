@@ -270,7 +270,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "dichroic_filter_slots": 0,
       "emission_filter_slots": 0,
     }
-    self._heating_active: bool = False
+    self._target_temperature: Optional[float] = None
 
   # --------------------------------------------------------------------------
   # Life cycle
@@ -284,6 +284,23 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     await self.io.set_latency_timer(2)
 
     await self.initialize()
+
+    # Flush residual POLL (0x08) firmware state.  If the device was previously
+    # addressed with POLL -- by Voyager or a prior session -- byte 3 of ALL
+    # responses is set to 0x04, corrupting status flags (initialized, drawer_open,
+    # plate_detected) and machine_type detection.  Sending STATUS_QUERY (0x80)
+    # frames resets byte 3 to the real value.  In normal operation (no prior POLL)
+    # this exits on the first iteration (~37 ms).
+    for _ in range(50):
+      await self._write_frame(self._STATUS_FRAME)
+      resp = await self._read_frame()
+      try:
+        _validate_frame(resp)
+      except FrameError:
+        continue
+      payload = _extract_payload(resp)
+      if len(payload) >= 4 and payload[3] != 0x04:
+        break
 
     # Populate configuration from EEPROM + firmware info.
     eeprom_info = await self.request_eeprom_data()
@@ -329,7 +346,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     Raises:
       RuntimeError: If a plate is detected and *accept_plate_left_in_device* is False.
     """
-    self._heating_active = False
+    self._target_temperature = None
     if await self.request_temperature_monitoring_on():
       await self.stop_temperature_monitoring()
 
@@ -883,7 +900,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # POLL (0x08 0x00) byte 15 varies in K01 pcap captures from Voyager
   # but is also always 0xe0 when sent from this backend (likely requires
   # additional Voyager init commands to enable). Therefore, heating state
-  # is tracked in software via ``_heating_active``.
+  # is tracked in software via ``_target_temperature``.
   #
   # Wire format confirmed in K01 pcap (monitor -> set 30 degC -> off -> monitor -> off).
 
@@ -903,13 +920,17 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   async def request_temperature_control_on(self) -> bool:
     """Check whether the backend has an active heating setpoint.
 
-    Tracked in software: set to ``True`` by ``start_temperature_control``
-    and cleared by ``stop_temperature_control`` / ``stop_temperature_monitoring``.
+    Tracked in software: set by ``start_temperature_control`` and cleared
+    by ``stop_temperature_control`` / ``stop_temperature_monitoring``.
 
     Returns:
       ``True`` if heating was started and not yet stopped, ``False`` otherwise.
     """
-    return self._heating_active
+    return self._target_temperature is not None
+
+  def get_target_temperature(self) -> Optional[float]:
+    """Return the current heating target in °C, or ``None`` if not heating."""
+    return self._target_temperature
 
   async def start_temperature_monitoring(self) -> None:
     """Enable temperature readout without heating.
@@ -945,7 +966,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
       payload=bytes([hi, lo]),
     )
-    self._heating_active = True
+    self._target_temperature = target_celsius
     # Firmware needs ~200ms to populate temperature sensors after a SET command.
     # Without this, an immediate status poll sees zeros and
     # start_temperature_monitoring would send MONITOR, overwriting the setpoint.
@@ -961,7 +982,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
       payload=self._TEMP_MONITOR,
     )
-    self._heating_active = False
+    self._target_temperature = None
     # Firmware briefly zeros temperature readings during SET -> MONITOR transition.
     # Without this, an immediate status poll sees zeros and reports sensors as inactive.
     await asyncio.sleep(0.3)
@@ -973,7 +994,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
       payload=self._TEMP_OFF,
     )
-    self._heating_active = False
+    self._target_temperature = None
 
   async def measure_temperature(
     self,

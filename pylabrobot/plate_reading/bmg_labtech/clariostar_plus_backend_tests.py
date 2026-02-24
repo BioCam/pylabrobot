@@ -145,7 +145,7 @@ def _make_backend() -> CLARIOstarPlusBackend:
     "dichroic_filter_slots": 0,
     "emission_filter_slots": 0,
   }
-  backend._heating_active = False
+  backend._target_temperature = None
   return backend
 
 
@@ -824,6 +824,28 @@ class TestTemperature(unittest.TestCase):
     asyncio.run(backend.start_temperature_control(30.0))
     asyncio.run(backend.stop_temperature_monitoring())
     self.assertFalse(asyncio.run(backend.request_temperature_control_on()))
+
+  def test_get_target_temperature_none_at_boot(self):
+    """Before any temperature command, get_target_temperature returns None."""
+    backend = _make_backend()
+    self.assertIsNone(backend.get_target_temperature())
+
+  def test_get_target_temperature_after_set(self):
+    """After start_temperature_control(37.0), get_target_temperature returns 37.0."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK)  # SET command ack
+    asyncio.run(backend.start_temperature_control(37.0))
+    self.assertEqual(backend.get_target_temperature(), 37.0)
+
+  def test_get_target_temperature_none_after_stop_control(self):
+    """After stop_temperature_control, get_target_temperature returns None."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK, ACK)  # SET ack, MONITOR ack
+    asyncio.run(backend.start_temperature_control(37.0))
+    asyncio.run(backend.stop_temperature_control())
+    self.assertIsNone(backend.get_target_temperature())
 
 
 if __name__ == "__main__":
