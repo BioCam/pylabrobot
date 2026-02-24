@@ -17,7 +17,7 @@ from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
 )
 
 # ---------------------------------------------------------------------------
-# Pcap ground truth — commands (verified against pcap captures)
+# Pcap ground truth -- commands (verified against pcap captures)
 #
 # name → (payload bytes, expected wire frame).
 # Adding an entry here automatically generates a frame-match test AND
@@ -60,7 +60,7 @@ COMMANDS: Dict[str, tuple] = {
   ),
 }
 
-# Generic command acknowledgement — shared by all command tests.
+# Generic command acknowledgement -- shared by all command tests.
 ACK = _wrap_payload(b"\x00")
 
 
@@ -267,7 +267,7 @@ class TestClose(unittest.TestCase):
 class TestStatusPollResilience(unittest.TestCase):
   """Verify that _wait_until_machine_ready survives partial/corrupt frames."""
 
-  # Corrupt status — correct size field (16 bytes) but bad checksum.
+  # Corrupt status -- correct size field (16 bytes) but bad checksum.
   # _read_frame completes normally; _validate_frame raises ChecksumError.
   CORRUPT = bytes.fromhex("0200100c0115000000c90000dead000d")
 
@@ -382,7 +382,7 @@ class TestUsageCounters(unittest.TestCase):
 
 
 class TestConvenienceStatusQueries(unittest.TestCase):
-  """Verify request_plate_detected and request_busy delegate to status."""
+  """Verify sense_plate_present and request_busy delegate to status."""
 
   # initialized + plate_detected (byte 3: 0x22)
   STATUS_PLATE = bytes.fromhex("0200180c010500220000000000000000000000c000010e0d")
@@ -391,11 +391,28 @@ class TestConvenienceStatusQueries(unittest.TestCase):
   # idle (all zero status bytes)
   STATUS_IDLE = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
 
-  def test_request_plate_detected_true(self):
+  # initialized + drawer_open (byte 3: 0x21)
+  STATUS_DRAWER_OPEN = bytes.fromhex("0200180c010500210000000000000000000000c000010d0d")
+  # initialized, drawer closed (byte 3: 0x20)
+  STATUS_DRAWER_CLOSED = bytes.fromhex("0200180c010500200000000000000000000000c000010c0d")
+
+  def test_sense_drawer_open_true(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(self.STATUS_DRAWER_OPEN)
+    self.assertTrue(asyncio.run(backend.sense_drawer_open()))
+
+  def test_sense_drawer_open_false(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(self.STATUS_DRAWER_CLOSED)
+    self.assertFalse(asyncio.run(backend.sense_drawer_open()))
+
+  def test_sense_plate_present_true(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
     mock.queue_response(self.STATUS_PLATE)
-    self.assertTrue(asyncio.run(backend.request_plate_detected()))
+    self.assertTrue(asyncio.run(backend.sense_plate_present()))
 
   def test_is_ready_false_when_busy(self):
     backend = _make_backend()
@@ -436,7 +453,7 @@ _REAL_EEPROM_FRAME = bytes.fromhex(
 #   1:     command family echo (0x05)
 #   2-3:   machine type code (0x0024)
 #   4-5:   unknown (0x0000)
-#   6-7:   firmware version × 1000 (0x0546 = 1350 → "1.35")
+#   6-7:   firmware version x 1000 (0x0546 = 1350 → "1.35")
 #   8-19:  build date "Nov 20 2020\0"
 #   20-27: build time "11:51:21\0"
 #   28-31: unknown
@@ -608,10 +625,25 @@ class TestTemperature(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(ACK)
+    # Status poll (sensors inactive) -> monitor command ack.
+    mock.queue_response(TestTemperature._make_temp_response(0, 0), ACK)
     asyncio.run(backend.activate_temperature_monitoring())
 
-    self.assertEqual(mock.written[0], COMMANDS["temp_monitor"][1])
+    self.assertEqual(mock.written[0], COMMANDS["status"][1])
+    self.assertEqual(mock.written[1], COMMANDS["temp_monitor"][1])
+
+  def test_monitor_skips_when_heating_active(self):
+    """activate_temperature_monitoring must not overwrite an active heating setpoint."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    # Status poll returns temperatures (heating is active) -> no monitor cmd sent.
+    mock.queue_response(TestTemperature._make_temp_response(300, 305))
+    asyncio.run(backend.activate_temperature_monitoring())
+
+    # Only one status poll, no monitor command.
+    self.assertEqual(len(mock.written), 1)
+    self.assertEqual(mock.written[0], COMMANDS["status"][1])
 
   def test_start_set_30c(self):
     backend = _make_backend()
@@ -661,19 +693,31 @@ class TestTemperature(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # First response (monitor command ack), second response (status poll).
-    mock.queue_response(ACK, self._make_temp_response(370, 375))
+    # measure_temperature: status(zeros) -> activate_temperature_monitoring:
+    #   status(zeros) + monitor_ack -> measure_temperature: status(populated).
+    mock.queue_response(
+      self._make_temp_response(0, 0),  # measure_temperature initial poll
+      self._make_temp_response(0, 0),  # activate_temperature_monitoring poll
+      ACK,  # monitor command ack
+      self._make_temp_response(370, 375),  # measure_temperature retry poll
+    )
     temp = asyncio.run(backend.measure_temperature(sensor="bottom"))
     self.assertAlmostEqual(temp, 37.0)
-    # Should have sent: monitor command + status poll.
-    self.assertEqual(mock.written[0], COMMANDS["temp_monitor"][1])
+    self.assertEqual(mock.written[0], COMMANDS["status"][1])
     self.assertEqual(mock.written[1], COMMANDS["status"][1])
+    self.assertEqual(mock.written[2], COMMANDS["temp_monitor"][1])
+    self.assertEqual(mock.written[3], COMMANDS["status"][1])
 
   def test_measure_temperature_top(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(ACK, self._make_temp_response(370, 375))
+    mock.queue_response(
+      self._make_temp_response(0, 0),
+      self._make_temp_response(0, 0),
+      ACK,
+      self._make_temp_response(370, 375),
+    )
     temp = asyncio.run(backend.measure_temperature(sensor="top"))
     self.assertAlmostEqual(temp, 37.5)
 
@@ -681,16 +725,42 @@ class TestTemperature(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(ACK, self._make_temp_response(370, 375))
+    mock.queue_response(
+      self._make_temp_response(0, 0),
+      self._make_temp_response(0, 0),
+      ACK,
+      self._make_temp_response(370, 375),
+    )
     temp = asyncio.run(backend.measure_temperature(sensor="mean"))
     self.assertAlmostEqual(temp, 37.2)  # round((37.0 + 37.5) / 2, 1)
 
-  def test_measure_temperature_retries_until_populated(self):
-    """First status poll returns zeros (sensor not ready), second has data."""
+  def test_measure_temperature_sensors_already_active(self):
+    """When sensors are already reporting (e.g. heating active), no monitor cmd is sent."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(ACK, self._make_temp_response(0, 0), self._make_temp_response(291, 296))
+    # Status poll returns temps immediately -- no monitor command needed.
+    mock.queue_response(self._make_temp_response(300, 305))
+    temp = asyncio.run(backend.measure_temperature(sensor="bottom"))
+    self.assertAlmostEqual(temp, 30.0)
+    # Only one status poll, no monitor command sent.
+    self.assertEqual(len(mock.written), 1)
+    self.assertEqual(mock.written[0], COMMANDS["status"][1])
+
+  def test_measure_temperature_retries_until_populated(self):
+    """Sensor takes time to populate after monitor command."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    # measure_temp: status(zeros) -> activate: status(zeros) + ack
+    # -> measure_temp: status(zeros still) -> status(populated).
+    mock.queue_response(
+      self._make_temp_response(0, 0),  # measure_temperature initial
+      self._make_temp_response(0, 0),  # activate poll
+      ACK,  # monitor ack
+      self._make_temp_response(0, 0),  # still not ready
+      self._make_temp_response(291, 296),  # populated
+    )
     temp = asyncio.run(backend.measure_temperature(sensor="bottom"))
     self.assertAlmostEqual(temp, 29.1)
 

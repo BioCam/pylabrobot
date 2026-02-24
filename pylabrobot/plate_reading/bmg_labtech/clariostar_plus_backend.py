@@ -131,7 +131,6 @@ _MODEL_LOOKUP: Dict[int, str] = {
   0x0026: "CLARIOstar Plus",
 }
 
-
 # ---------------------------------------------------------------------------
 # Backend
 # ---------------------------------------------------------------------------
@@ -144,7 +143,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   Measurement: absorbance, fluorescence, luminescence (not yet implemented).
   """
 
-  # -- Command enums (CLARIOstar-specific) ----------------------------------
+  # -- Command enums (CLARIOstar-specific, to our knowledge)------------------
 
   class CommandFamily(enum.IntEnum):
     """Command group byte (payload byte 0)."""
@@ -286,8 +285,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     await self.initialize()
 
     # Populate configuration from EEPROM + firmware info.
-    eeprom = await self.request_eeprom_data()
-    self.configuration.update(eeprom)
+    eeprom_info = await self.request_eeprom_data()
+    self.configuration.update(eeprom_info)
 
     fw_info = await self.request_firmware_info()
     self.configuration.update(fw_info)
@@ -307,17 +306,57 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       if self.configuration.get(key)
     ]
     logger.info(
-      "%s (0x%04x) fw %s (%s) — detection: %s",
+      "%s (0x%04x) fw %s (%s) -- detection: %s",
       self.configuration["model_name"],
       self.configuration["machine_type_code"],
-      self.configuration["firmware_version"] or "?",
+      self.configuration["firmware_version"] or "firmware version ?",
       self.configuration["firmware_build_timestamp"] or "unknown build",
       ", ".join(modes) if modes else "none",
     )
 
-  async def stop(self) -> None:
-    """Close the FTDI connection. Requires a new ``setup()`` call to use the reader again."""
+  async def stop(self, accept_plate_left_in_device: bool = False) -> None:
+    """Close the FTDI connection. Requires a new ``setup()`` call to use the reader again.
+
+    Shuts down temperature control and closes the drawer before disconnecting.
+    If a plate is still detected inside the device, the drawer is reopened and
+    a ``RuntimeError`` is raised so the user can retrieve it.
+
+    Args:
+      accept_plate_left_in_device: If True, skip the plate-presence check and
+        disconnect even if a plate is still inside.
+
+    Raises:
+      RuntimeError: If a plate is detected and *accept_plate_left_in_device* is False.
+    """
+    if await self.request_temperature_control_enabled():
+      await self.stop_temperature_control()
+
+    if await self.sense_drawer_open():
+      await self.close()
+
+    if not accept_plate_left_in_device and await self.sense_plate_present():
+      await self.open()
+      raise RuntimeError(
+        "A plate is still present in the device. Remove it before stopping, "
+        "or set accept_plate_left_in_device=True to skip this check."
+      )
+
     await self.io.stop()
+
+  async def initialize(self, wait: bool = True, poll_interval: float = 0.0) -> None:
+    """Send the hardware init sequence (command ``0x01 0x00``) and poll until ready.
+
+    Args:
+      wait: If True, block until the device is no longer busy.
+      poll_interval: Seconds between status polls while waiting.
+    """
+    await self.send_command(
+      command_family=self.CommandFamily.INITIALIZE,
+      command=self.Command.INIT,
+      payload=b"\x00\x10\x02\x00",
+      wait=wait,
+      poll_interval=poll_interval,
+    )
 
   # --------------------------------------------------------------------------
   # Low-level I/O
@@ -477,7 +516,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     Returns:
       Dict with bool flags (``standby``, ``busy``, ``running``, ``unread_data``,
-      ``initialized``, ``drawer_open``, ``plate_detected``) and
+      ``initialized``, ``drawer_open``, ``plate_detected``),
       ``Optional[float]`` temperatures (``temperature_bottom``,
       ``temperature_top``) in °C. Temperatures are ``None`` when monitoring
       is inactive (raw value 0x0000).
@@ -506,10 +545,20 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     assert last_err is not None
     raise last_err
 
+  async def is_ready(self) -> bool:
+    """Return True if the device is ready to accept commands.
+
+    Delegates to ``request_machine_status()`` (fixed-length 16-byte response).
+    """
+    return not (await self.request_machine_status())["busy"]
+
   async def _wait_until_machine_ready(
     self, read_timeout: Optional[float] = None, poll_interval: float = 0.0
   ) -> None:
     """Poll ``request_machine_status`` until the device is no longer busy.
+
+    Checks the same ``busy`` flag as ``is_ready`` but adds timeout-bounded
+    polling, ``FrameError`` retry, and per-poll status logging.
 
     Args:
       read_timeout: Max seconds to wait. ``None`` waits indefinitely.
@@ -542,6 +591,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       f"Increase timeout via CLARIOstarPlusBackend(read_timeout=...) or per-command read_timeout=."
     )
 
+  async def sense_plate_present(self) -> bool:
+    """Return True if a plate is currently detected in the drawer.
+
+    Delegates to ``request_machine_status()`` (fixed-length 16-byte response).
+    """
+    return bool((await self.request_machine_status())["plate_detected"])
+
   # --------------------------------------------------------------------------
   # Device info
   # --------------------------------------------------------------------------
@@ -551,7 +607,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     Response is 264 bytes (observed on CLARIOstar Plus, type 0x0024).
 
-    EEPROM Byte Map — Full 264-Byte Analysis
+    EEPROM Byte Map -- Full 264-Byte Analysis
     ==========================================
     Source: real capture from CLARIOstar Plus.
     Reference hex (first 48 bytes):
@@ -559,74 +615,74 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       00 01 00 ee 02 00 00 0f  00 b0 03 00 00 00 00 00
       00 03 04 00 00 01 00 00  01 02 00 00 00 00 00 00
 
-    Section 1 — Header & Command Echo (bytes 0-3) [CONFIRMED]
+    Section 1 -- Header & Command Echo (bytes 0-3) [CONFIRMED]
       [0]     subcommand echo (0x07)
       [1]     command family echo (0x05)
       [2:4]   machine_type code (u16 BE). 0x0024/0x0026 = CLARIOstar Plus.
 
-    Section 2 — Board Info (bytes 4-10) [HYPOTHESES]
-      [4:6]   always 0x0000 — padding or reserved
-      [7]     0x01 — possibly BoardNum main board version (ActiveX: "1/3" format)
-      [10]    0x0a (10) — possibly BoardNum measurement board version or hw revision
+    Section 2 -- Board Info (bytes 4-10) [HYPOTHESES]
+      [4:6]   always 0x0000 -- padding or reserved
+      [7]     0x01 -- possibly BoardNum main board version (ActiveX: "1/3" format)
+      [10]    0x0a (10) -- possibly BoardNum measurement board version or hw revision
 
-    Section 3 — Detection Mode Flags (bytes 11-17) [11-14 CONFIRMED]
-      [11]    has_absorbance (bool)     — ActiveX: AbsOptionIn
-      [12]    has_fluorescence (bool)   — standard on all CLARIOstar Plus
-      [13]    has_luminescence (bool)   — ActiveX: LumiOptionIn
-      [14]    has_alpha_technology (bool) — requires optional 680nm laser
-      [15]    0x00 — HYPOTHESIS: has_trf (ActiveX: TRFOptionIn) or has_dual_pmt
-      [16]    0x00 — unknown flag
-      [17]    0x01 — unknown flag (always 1 on test unit; maybe has_spectrometer
+    Section 3 -- Detection Mode Flags (bytes 11-17) [11-14 CONFIRMED]
+      [11]    has_absorbance (bool)     -- ActiveX: AbsOptionIn
+      [12]    has_fluorescence (bool)   -- standard on all CLARIOstar Plus
+      [13]    has_luminescence (bool)   -- ActiveX: LumiOptionIn
+      [14]    has_alpha_technology (bool) -- requires optional 680nm laser
+      [15]    0x00 -- HYPOTHESIS: has_trf (ActiveX: TRFOptionIn) or has_dual_pmt
+      [16]    0x00 -- unknown flag
+      [17]    0x01 -- unknown flag (always 1 on test unit; maybe has_spectrometer
               or microplate_sensor_enabled)
 
-    Section 4 — Monochromator & Optics (bytes 18-34) [19-20,25-26,33,34 CONFIRMED]
-      [18]    0x00 — padding
+    Section 4 -- Monochromator & Optics (bytes 18-34) [19-20,25-26,33,34 CONFIRMED]
+      [18]    0x00 -- padding
       [19:21] excitation monochromator max nm (u16 LE). 0x02ee = 750 nm.
       [21:22] 0x0000
-      [23]    0x0f (15) — unknown; possibly default bandwidth nm or step size
+      [23]    0x0f (15) -- unknown; possibly default bandwidth nm or step size
       [24]    0x00
       [25:27] emission monochromator max nm (u16 LE). 0x03b0 = 944 nm.
               (Note: spec sheet says 840nm LVF range; 944 is physical slide limit)
-      [27:32] 0x00 × 5
+      [27:32] 0x00 x 5
       [33]    dichroic filter slots (u8) = 3 (manual: positions A,B,C on 1 slide)
-      [34]    excitation/emission filter slots (u8) = 4 (manual: 4 per side, 2 slides × 2)
+      [34]    excitation/emission filter slots (u8) = 4 (manual: 4 per side, 2 slides x 2)
               Note: min monochromator nm is NOT in EEPROM. 320nm is a hardware constant
               of the LVF design per BMG spec sheets.
 
-    Section 5 — Hardware Options (bytes 35-52) [HYPOTHESES]
+    Section 5 -- Hardware Options (bytes 35-52) [HYPOTHESES]
       ActiveX EEPROM-derived items not yet mapped: Pump1In, Pump2In, IncubIn,
       ExtIncubator, ApertureType. Test unit has no pumps, has standard incubator.
-      [35]    0x00 — HYPOTHESIS: Pump1In (no pump → 0)
-      [36]    0x00 — HYPOTHESIS: Pump2In (no pump → 0)
-      [37]    0x01 — HYPOTHESIS: IncubIn (standard incubator → 1)
-      [38]    0x00 — HYPOTHESIS: ExtIncubator (not extended → 0; extended = 10-65°C)
+      [35]    0x00 -- HYPOTHESIS: Pump1In (no pump → 0)
+      [36]    0x00 -- HYPOTHESIS: Pump2In (no pump → 0)
+      [37]    0x01 -- HYPOTHESIS: IncubIn (standard incubator → 1)
+      [38]    0x00 -- HYPOTHESIS: ExtIncubator (not extended → 0; extended = 10-65°C)
               If confirmed, this could drive max_temperature (45°C vs 65°C)
               automatically. Needs a second unit with extended incubator to verify.
-      [40]    0x01 — unknown flag
-      [41]    0x02 — HYPOTHESIS: ApertureType (ActiveX: 'none'=0, '96/384'=1, '1536'=2)
-      [52]    0x32 (50) — unknown; maybe default shake speed or settling time
+      [40]    0x01 -- unknown flag
+      [41]    0x02 -- HYPOTHESIS: ApertureType (ActiveX: 'none'=0, '96/384'=1, '1536'=2)
+      [52]    0x32 (50) -- unknown; maybe default shake speed or settling time
 
-    Section 6 — Sparse Region (bytes 53-95) [UNKNOWN]
+    Section 6 -- Sparse Region (bytes 53-95) [UNKNOWN]
       Mostly zeros with isolated non-zero bytes:
-      [73]=0x74('t'), [75]=0x6f('o'), [83]=0x65('e') — fragment of old string?
-      [87]=0xdc(220) — tempting as UV spectrometer min nm, but unconfirmed
-      [88]=0x05 — could be filter slide count (5 slides per manual)
+      [73]=0x74('t'), [75]=0x6f('o'), [83]=0x65('e') -- fragment of old string?
+      [87]=0xdc(220) -- tempting as UV spectrometer min nm, but unconfirmed
+      [88]=0x05 -- could be filter slide count (5 slides per manual)
 
-    Section 7 — Calibration Block A (bytes 96-111) [UNKNOWN]
-      8 × u16 LE values: 500, 776, 1191, 1800, 2400, 2266, 3500
+    Section 7 -- Calibration Block A (bytes 96-111) [UNKNOWN]
+      8 x u16 LE values: 500, 776, 1191, 1800, 2400, 2266, 3500
       Mostly monotonically increasing. Likely LVF motor step positions or
       wavelength calibration reference points. Could also be usage counters
       (compare with cmd 0x05 0x21 response to distinguish).
 
-    Section 8 — Zero Region (bytes 112-134)
+    Section 8 -- Zero Region (bytes 112-134)
       23 bytes of 0x00. Clear section boundary.
 
-    Section 9 — Boolean Flag Block (bytes 135-152) [UNKNOWN]
-      6 × 0x01 flags at offsets 135, 139, 140, 149, 150 + one more.
+    Section 9 -- Boolean Flag Block (bytes 135-152) [UNKNOWN]
+      6 x 0x01 flags at offsets 135, 139, 140, 149, 150 + one more.
       Possibly: has_barcode_reader (left/right), has_gas_control (O2/CO2 ACU),
       has_stacker, microplate_sensor_enabled, etc.
 
-    Section 10 — Serial + Calibration Block B (bytes 153-263)
+    Section 10 -- Serial + Calibration Block B (bytes 153-263)
       [161:163] serial number prefix (u16 LE) = 430   [CONFIRMED]
       [163:165] serial number suffix (u16 LE) = 2621  [CONFIRMED]
       [165:167] firmware version (u16 LE) = 1350 → v1.350  [CONFIRMED]
@@ -635,8 +691,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       values = optical calibration data. Likely per-unit factory-calibrated
       LVF monochromator slide motor positions + correction offsets for the
       5 slides (2 Ex LVLP+LVSP, 2 Em LVLP+LVSP, 1 LVDM).
-      Repeated values (1688×2, 4437×2) suggest paired top/bottom calibration.
-      Bytes 217-224 contain repeated 0x46 ('F') — possibly filter ID codes.
+      Repeated values (1688x2, 4437x2) suggest paired top/bottom calibration.
+      Bytes 217-224 contain repeated 0x46 ('F') -- possibly filter ID codes.
 
     Decode Summary: 20/264 bytes confirmed (7.6%), ~40/264 with hypotheses (15%).
     To confirm more: need a second unit with different options (pumps, ext incubator),
@@ -766,24 +822,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     ]
 
   # --------------------------------------------------------------------------
-  # Convenience status queries
-  # --------------------------------------------------------------------------
-
-  async def request_plate_detected(self) -> bool:
-    """Return True if a plate is currently detected in the drawer.
-
-    Delegates to ``request_machine_status()`` (fixed-length 16-byte response).
-    """
-    return bool((await self.request_machine_status())["plate_detected"])
-
-  async def is_ready(self) -> bool:
-    """Return True if the device is ready to accept commands.
-
-    Delegates to ``request_machine_status()`` (fixed-length 16-byte response).
-    """
-    return not (await self.request_machine_status())["busy"]
-
-  # --------------------------------------------------------------------------
   # Usage counters
   # --------------------------------------------------------------------------
 
@@ -835,10 +873,39 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # status response (cmd 0x80, 24-byte frame / 16-byte payload) carries
   # temperature readings at payload bytes 11-14.
   #
+  # The set target temperature is fire-and-forget -- it is NOT echoed back
+  # in the status response. The host must track it locally.
+  #
+  # HYPOTHESIS (unverified, K01 pcap): payload byte 15 may encode heating
+  # state as a bitmask. Observed values during a 30°C ramp:
+  #   0xC0 (1100_0000) -- idle / monitor-only
+  #   0xE0 (1110_0000) -- actively heating (ramp)
+  #   0x40 (0100_0000) -- near target
+  #   0x00 (0000_0000) -- at target / stable
+  # Needs hardware verification before use -- the bit pattern is not obviously
+  # logical and could be a reassembly artefact from fragmented USB reads.
+  #
   # Wire format confirmed in K01 pcap (monitor → set 30°C → off → monitor → off).
 
+  async def request_temperature_control_enabled(self) -> bool:
+    """Check whether temperature sensors are currently reporting.
+
+    Returns:
+      ``True`` if heating or monitoring is active (status payload bytes
+      11-14 carry non-zero temperature values), ``False`` otherwise.
+    """
+    status = await self.request_machine_status()
+    return status["temperature_bottom"] is not None
+
   async def activate_temperature_monitoring(self) -> None:
-    """Enable temperature readout without heating (command ``0x06``, value ``0x0001``)."""
+    """Enable temperature readout without heating (command ``0x06``, value ``0x0001``).
+
+    Safe to call while heating is active: skips the monitor command if sensors
+    are already reporting, because sending ``0x06 0x0001`` would overwrite the
+    active heating setpoint (firmware replaces any prior ``0x06`` command).
+    """
+    if await self.request_temperature_control_enabled():
+      return
     await self.send_command(
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
       payload=b"\x00\x01",
@@ -876,13 +943,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     self,
     sensor: Literal["bottom", "top", "mean"] = "bottom",
   ) -> float:
-    """Enable monitoring and return the current incubator temperature.
+    """Return the current incubator temperature, activating sensors if needed.
 
-    Sends the monitor command (``0x06 0x0001``), then polls status once
-    to get a fresh reading.  The immediate response to the monitor command
-    may still carry zeros if monitoring was not already active (~200 ms
-    sensor latency observed in K01 pcap), so the extra poll ensures the
-    sensor has populated.
+    First polls status to check whether the temperature sensors are already
+    reporting (they will be if heating is active via ``start_temperature_control``
+    or if monitoring was previously enabled).  Only sends the MONITOR command
+    (``0x06 0x0001``) when the sensors are not yet populated, avoiding
+    overwriting an active heating setpoint.
 
     Status payload bytes 11-14 carry bottom (uint16 BE /10 °C) and top
     (uint16 BE /10 °C) plate temperatures.
@@ -895,13 +962,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     Returns:
       Temperature in °C.
 
+    Raises:
+      TimeoutError: If the sensor does not populate within
+        ``_PACKET_READ_TIMEOUT`` (3 s).
+
     Note:
       Uses ``_PACKET_READ_TIMEOUT`` (3 s) rather than ``read_timeout`` because
       sensor warm-up is bounded by hardware latency (~200 ms observed in K01
       pcap), not by command processing time.
     """
-    await self.activate_temperature_monitoring()
-    # Poll status until the sensor has populated (~200 ms from K01 pcap).
+    activated = False
     t = time.time()
     timeout = self._PACKET_READ_TIMEOUT
     while time.time() - t < timeout:
@@ -914,26 +984,21 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         if sensor == "top":
           return float(top)
         return round((float(bottom) + float(top)) / 2, 1)
+      if not activated:
+        await self.activate_temperature_monitoring()
+        activated = True
     raise TimeoutError(f"Temperature sensor did not populate within {timeout}s")
 
   # --------------------------------------------------------------------------
   # Commands
   # --------------------------------------------------------------------------
 
-  async def initialize(self, wait: bool = True, poll_interval: float = 0.0) -> None:
-    """Send the hardware init sequence (command ``0x01 0x00``) and poll until ready.
+  async def sense_drawer_open(self) -> bool:
+    """Return True if the plate drawer is currently open.
 
-    Args:
-      wait: If True, block until the device is no longer busy.
-      poll_interval: Seconds between status polls while waiting.
+    Delegates to ``request_machine_status()`` (status byte 3, bit 0).
     """
-    await self.send_command(
-      command_family=self.CommandFamily.INITIALIZE,
-      command=self.Command.INIT,
-      payload=b"\x00\x10\x02\x00",
-      wait=wait,
-      poll_interval=poll_interval,
-    )
+    return bool((await self.request_machine_status())["drawer_open"])
 
   async def open(self, wait: bool = True, poll_interval: float = 0.1) -> None:
     """Extend the plate drawer (command ``0x03 0x01``). Motor takes ~4.3 s.
