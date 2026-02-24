@@ -632,12 +632,11 @@ class TestTemperature(unittest.TestCase):
     self.assertEqual(mock.written[0], COMMANDS["status"][1])
     self.assertEqual(mock.written[1], COMMANDS["temp_monitor"][1])
 
-  def test_monitor_skips_when_heating_active(self):
-    """activate_temperature_monitoring must not overwrite an active heating setpoint."""
+  def test_monitor_skips_when_sensors_already_reporting(self):
+    """activate_temperature_monitoring skips if sensors are already populated."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # Status poll returns temperatures (heating is active) -> no monitor cmd sent.
     mock.queue_response(TestTemperature._make_temp_response(300, 305))
     asyncio.run(backend.activate_temperature_monitoring())
 

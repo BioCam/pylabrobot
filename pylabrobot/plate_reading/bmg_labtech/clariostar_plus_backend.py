@@ -931,6 +931,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
       payload=bytes([hi, lo]),
     )
+    # Firmware needs ~200ms to populate temperature sensors after a SET command.
+    # Without this, an immediate status poll sees zeros and
+    # activate_temperature_monitoring would send MONITOR, overwriting the setpoint.
+    await asyncio.sleep(0.3)
 
   async def stop_temperature_control(self) -> None:
     """Disable temperature control (command ``0x06``, value ``0x0000``)."""
