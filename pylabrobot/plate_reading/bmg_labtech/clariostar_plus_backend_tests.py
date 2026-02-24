@@ -612,12 +612,23 @@ class TestAvailableDetectionModes(unittest.TestCase):
 class TestTemperature(unittest.TestCase):
   """Verify temperature commands use standard framing (K01 pcap ground truth)."""
 
-  def test_stop_sends_correct_frame(self):
+  def test_stop_control_downgrades_to_monitor(self):
+    """stop_temperature_control sends MONITOR (0x0001), not OFF."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
     mock.queue_response(ACK)
     asyncio.run(backend.stop_temperature_control())
+
+    self.assertEqual(mock.written[0], COMMANDS["temp_monitor"][1])
+
+  def test_stop_monitoring_sends_off(self):
+    """stop_temperature_monitoring sends OFF (0x0000)."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    mock.queue_response(ACK)
+    asyncio.run(backend.stop_temperature_monitoring())
 
     self.assertEqual(mock.written[0], COMMANDS["temp_off"][1])
 
@@ -627,18 +638,18 @@ class TestTemperature(unittest.TestCase):
 
     # Status poll (sensors inactive) -> monitor command ack.
     mock.queue_response(TestTemperature._make_temp_response(0, 0), ACK)
-    asyncio.run(backend.activate_temperature_monitoring())
+    asyncio.run(backend.start_temperature_monitoring())
 
     self.assertEqual(mock.written[0], COMMANDS["status"][1])
     self.assertEqual(mock.written[1], COMMANDS["temp_monitor"][1])
 
   def test_monitor_skips_when_sensors_already_reporting(self):
-    """activate_temperature_monitoring skips if sensors are already populated."""
+    """start_temperature_monitoring skips if sensors are already populated."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
     mock.queue_response(TestTemperature._make_temp_response(300, 305))
-    asyncio.run(backend.activate_temperature_monitoring())
+    asyncio.run(backend.start_temperature_monitoring())
 
     # Only one status poll, no monitor command.
     self.assertEqual(len(mock.written), 1)
@@ -681,22 +692,23 @@ class TestTemperature(unittest.TestCase):
       asyncio.run(backend.start_temperature_control(target_celsius=50.0))
 
   @staticmethod
-  def _make_temp_response(bottom_raw: int, top_raw: int) -> bytes:
+  def _make_temp_response(bottom_raw: int, top_raw: int, byte15: int = 0xC0) -> bytes:
     """Build a standard framed response with temperature at payload bytes 11-14."""
     payload = bytearray(16)
     payload[11:13] = bottom_raw.to_bytes(2, "big")
     payload[13:15] = top_raw.to_bytes(2, "big")
+    payload[15] = byte15
     return _wrap_payload(bytes(payload))
 
   def test_measure_temperature_bottom(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # measure_temperature: status(zeros) -> activate_temperature_monitoring:
+    # measure_temperature: status(zeros) -> start_temperature_monitoring:
     #   status(zeros) + monitor_ack -> measure_temperature: status(populated).
     mock.queue_response(
       self._make_temp_response(0, 0),  # measure_temperature initial poll
-      self._make_temp_response(0, 0),  # activate_temperature_monitoring poll
+      self._make_temp_response(0, 0),  # start_temperature_monitoring poll
       ACK,  # monitor command ack
       self._make_temp_response(370, 375),  # measure_temperature retry poll
     )
@@ -772,6 +784,33 @@ class TestTemperature(unittest.TestCase):
     status = asyncio.run(backend.request_machine_status())
     self.assertIsNone(status["temperature_bottom"])
     self.assertIsNone(status["temperature_top"])
+
+  def test_heating_active_flag_in_status(self):
+    """Byte 15 bit 5 (0x20) distinguishes SET from MONITOR."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    # 0xe0 = SET active (bit 5 set)
+    mock.queue_response(self._make_temp_response(228, 232, byte15=0xE0))
+    status = asyncio.run(backend.request_machine_status())
+    self.assertTrue(status["heating_active"])
+
+    # 0xc0 = MONITOR only (bit 5 clear)
+    mock.queue_response(self._make_temp_response(228, 232, byte15=0xC0))
+    status = asyncio.run(backend.request_machine_status())
+    self.assertFalse(status["heating_active"])
+
+  def test_request_temperature_control_on_true(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(self._make_temp_response(228, 232, byte15=0xE0))
+    self.assertTrue(asyncio.run(backend.request_temperature_control_on()))
+
+  def test_request_temperature_control_on_false(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(self._make_temp_response(228, 232, byte15=0xC0))
+    self.assertFalse(asyncio.run(backend.request_temperature_control_on()))
 
 
 if __name__ == "__main__":

@@ -328,8 +328,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     Raises:
       RuntimeError: If a plate is detected and *accept_plate_left_in_device* is False.
     """
-    if await self.request_temperature_control_enabled():
-      await self.stop_temperature_control()
+    if await self.request_temperature_monitoring_on():
+      await self.stop_temperature_monitoring()
 
     if await self.sense_drawer_open():
       await self.close()
@@ -516,10 +516,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     Returns:
       Dict with bool flags (``standby``, ``busy``, ``running``, ``unread_data``,
-      ``initialized``, ``drawer_open``, ``plate_detected``),
-      ``Optional[float]`` temperatures (``temperature_bottom``,
-      ``temperature_top``) in °C. Temperatures are ``None`` when monitoring
-      is inactive (raw value 0x0000).
+      ``initialized``, ``drawer_open``, ``plate_detected``,
+      ``heating_active``), ``Optional[float]`` temperatures
+      (``temperature_bottom``, ``temperature_top``) in °C. Temperatures are
+      ``None`` when monitoring is inactive (raw value 0x0000).
+      ``heating_active`` is True when a SET command is active (byte 15 bit 5).
     """
     last_err: Optional[FrameError] = None
     for attempt in range(retries):
@@ -541,6 +542,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       else:
         status["temperature_bottom"] = None
         status["temperature_top"] = None
+      # Byte 15 bit 5 (0x20): set when a SET command is active (heating).
+      # Clear during MONITOR-only or idle. Confirmed on CLARIOstar Plus 430-2621.
+      status["heating_active"] = bool(payload[15] & 0x20) if len(payload) >= 16 else False
       return status
     assert last_err is not None
     raise last_err
@@ -887,7 +891,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   #
   # Wire format confirmed in K01 pcap (monitor → set 30°C → off → monitor → off).
 
-  async def request_temperature_control_enabled(self) -> bool:
+  _TEMP_OFF = b"\x00\x00"      # 0x0000: disable sensors + heating
+  _TEMP_MONITOR = b"\x00\x01"  # 0x0001: sensors only, no heating
+
+  async def request_temperature_monitoring_on(self) -> bool:
     """Check whether temperature sensors are currently reporting.
 
     Returns:
@@ -897,18 +904,31 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     status = await self.request_machine_status()
     return status["temperature_bottom"] is not None
 
-  async def activate_temperature_monitoring(self) -> None:
+  async def request_temperature_control_on(self) -> bool:
+    """Check whether the firmware is actively heating toward a setpoint.
+
+    Reads status byte 15 bit 5 (0x20), which is set when a SET command
+    is active and clear during MONITOR-only or idle.
+    Confirmed on CLARIOstar Plus 430-2621.
+
+    Returns:
+      ``True`` if a SET command is active (heating), ``False`` otherwise.
+    """
+    status = await self.request_machine_status()
+    return status["heating_active"]
+
+  async def start_temperature_monitoring(self) -> None:
     """Enable temperature readout without heating (command ``0x06``, value ``0x0001``).
 
     Safe to call while heating is active: skips the monitor command if sensors
     are already reporting, because sending ``0x06 0x0001`` would overwrite the
     active heating setpoint (firmware replaces any prior ``0x06`` command).
     """
-    if await self.request_temperature_control_enabled():
+    if await self.request_temperature_monitoring_on():
       return
     await self.send_command(
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
-      payload=b"\x00\x01",
+      payload=self._TEMP_MONITOR,
     )
 
   async def start_temperature_control(self, target_celsius: float) -> None:
@@ -933,14 +953,26 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     )
     # Firmware needs ~200ms to populate temperature sensors after a SET command.
     # Without this, an immediate status poll sees zeros and
-    # activate_temperature_monitoring would send MONITOR, overwriting the setpoint.
+    # start_temperature_monitoring would send MONITOR, overwriting the setpoint.
     await asyncio.sleep(0.3)
 
   async def stop_temperature_control(self) -> None:
-    """Disable temperature control (command ``0x06``, value ``0x0000``)."""
+    """Stop heating but keep temperature sensors active (command ``0x06``, value ``0x0001``).
+
+    Downgrades from SET to MONITOR. Use ``stop_temperature_monitoring`` to
+    turn off everything (sensors + heating).
+    """
     await self.send_command(
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
-      payload=b"\x00\x00",
+      payload=self._TEMP_MONITOR,
+    )
+
+  async def stop_temperature_monitoring(self) -> None:
+    """Disable temperature monitoring and heating (command ``0x06``, value ``0x0000``)."""
+    logger.warning("stop_temperature_monitoring sends OFF -- this also disables heating")
+    await self.send_command(
+      command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
+      payload=self._TEMP_OFF,
     )
 
   async def measure_temperature(
@@ -989,7 +1021,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
           return float(top)
         return round((float(bottom) + float(top)) / 2, 1)
       if not activated:
-        await self.activate_temperature_monitoring()
+        await self.start_temperature_monitoring()
         activated = True
     raise TimeoutError(f"Temperature sensor did not populate within {timeout}s")
 
