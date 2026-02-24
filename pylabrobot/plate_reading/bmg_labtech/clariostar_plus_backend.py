@@ -968,6 +968,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
       payload=self._TEMP_MONITOR,
     )
+    # Firmware briefly zeros temperature readings during SET -> MONITOR transition.
+    # Without this, an immediate status poll sees zeros and reports sensors as inactive.
+    await asyncio.sleep(0.3)
 
   async def stop_temperature_monitoring(self) -> None:
     """Disable temperature monitoring and heating."""
