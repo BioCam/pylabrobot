@@ -786,17 +786,22 @@ class TestTemperature(unittest.TestCase):
     self.assertIsNone(status["temperature_top"])
 
   def test_heating_active_flag_in_status(self):
-    """Byte 15 bit 5 (0x20) distinguishes SET from MONITOR."""
+    """heating_active requires BOTH byte 15 bit 5 AND non-zero temperatures."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # 0xe0 = SET active (bit 5 set)
+    # Heating: bit 5 set + sensors reporting
     mock.queue_response(self._make_temp_response(228, 232, byte15=0xE0))
     status = asyncio.run(backend.request_machine_status())
     self.assertTrue(status["heating_active"])
 
-    # 0xc0 = MONITOR only (bit 5 clear)
+    # MONITOR only: bit 5 clear + sensors reporting
     mock.queue_response(self._make_temp_response(228, 232, byte15=0xC0))
+    status = asyncio.run(backend.request_machine_status())
+    self.assertFalse(status["heating_active"])
+
+    # Cold boot: bit 5 set but temps are zero -- NOT heating
+    mock.queue_response(self._make_temp_response(0, 0, byte15=0xE0))
     status = asyncio.run(backend.request_machine_status())
     self.assertFalse(status["heating_active"])
 

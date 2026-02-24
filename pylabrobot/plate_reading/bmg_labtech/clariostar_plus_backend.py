@@ -542,9 +542,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       else:
         status["temperature_bottom"] = None
         status["temperature_top"] = None
-      # Byte 15 bit 5 (0x20): set when a SET command is active (heating).
-      # Clear during MONITOR-only or idle. Confirmed on CLARIOstar Plus 430-2621.
-      status["heating_active"] = bool(payload[15] & 0x20) if len(payload) >= 16 else False
+      # Byte 15 bit 5 (0x20) is set at cold boot AND during active heating,
+      # but clear after an explicit OFF or MONITOR command.  On its own it is
+      # unreliable (boot state looks like heating).  Combined with non-zero
+      # temperatures it becomes a valid heating indicator: at boot temps are
+      # zero, during heating they are non-zero.
+      byte15_bit5 = bool(payload[15] & 0x20) if len(payload) >= 16 else False
+      sensors_reporting = status["temperature_bottom"] is not None
+      status["heating_active"] = byte15_bit5 and sensors_reporting
       return status
     assert last_err is not None
     raise last_err
@@ -880,16 +885,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # The set target temperature is fire-and-forget -- it is NOT echoed back
   # in the status response. The host must track it locally.
   #
-  # HYPOTHESIS (unverified, K01 pcap): payload byte 15 may encode heating
-  # state as a bitmask. Observed values during a 30°C ramp:
-  #   0xC0 (1100_0000) -- idle / monitor-only
-  #   0xE0 (1110_0000) -- actively heating (ramp)
-  #   0x40 (0100_0000) -- near target
-  #   0x00 (0000_0000) -- at target / stable
-  # Needs hardware verification before use -- the bit pattern is not obviously
-  # logical and could be a reassembly artefact from fragmented USB reads.
+  # Payload byte 15 bit 5 (0x20):
+  #   Set at cold boot (default) AND during active heating (SET command).
+  #   Clear after an explicit OFF or MONITOR command.
+  #   On its own it is unreliable for detecting heating (boot looks like heating).
+  #   Combined with non-zero temperature readings (bytes 11-14) it becomes a
+  #   valid heating indicator: at boot temps are zero, during heating they are
+  #   non-zero.  This combination is what request_machine_status uses for
+  #   the "heating_active" flag.
   #
-  # Wire format confirmed in K01 pcap (monitor → set 30°C → off → monitor → off).
+  # Wire format confirmed in K01 pcap (monitor -> set 30 degC -> off -> monitor -> off).
 
   _TEMP_OFF = b"\x00\x00"  # 0x0000: disable sensors + heating
   _TEMP_MONITOR = b"\x00\x01"  # 0x0001: sensors only, no heating
@@ -907,12 +912,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   async def request_temperature_control_on(self) -> bool:
     """Check whether the firmware is actively heating toward a setpoint.
 
-    Reads status byte 15 bit 5 (0x20), which is set when a SET command
-    is active and clear during MONITOR-only or idle.
-    Confirmed on CLARIOstar Plus 430-2621.
-
     Returns:
-      ``True`` if a SET command is active (heating), ``False`` otherwise.
+      ``True`` if heating is active, ``False`` otherwise (including cold
+      boot, MONITOR-only, and OFF states).
     """
     status = await self.request_machine_status()
     return status["heating_active"]
