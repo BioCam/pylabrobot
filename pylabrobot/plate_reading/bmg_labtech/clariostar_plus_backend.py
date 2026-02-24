@@ -427,8 +427,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     return d
 
-  # Pre-cached STATUS_QUERY frame; avoids rebuilding on every poll.
-  _STATUS_FRAME = _wrap_payload(b"\x80")
+  # Pre-cached POLL frame (0x08 0x00).  Voyager uses POLL rather than
+  # STATUS_QUERY (0x80) -- both return the same 24-byte response, but only
+  # POLL populates byte 15 with the real heating phase indicator.
+  # STATUS_QUERY always returns 0xe0 regardless of heating state.
+  _STATUS_FRAME = _wrap_payload(b"\x08\x00")
 
   async def send_command(
     self,

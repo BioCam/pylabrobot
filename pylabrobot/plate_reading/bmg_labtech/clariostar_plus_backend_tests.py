@@ -40,10 +40,11 @@ COMMANDS: Dict[str, tuple] = {
     b"\x03\x00\x00\x00\x00\x00",
     bytes.fromhex("02000e0c03000000000000001f0d"),
   ),
-  # CF.STATUS(0x80), no command byte
+  # POLL (0x08 0x00) -- used instead of STATUS_QUERY (0x80) because only
+  # POLL populates byte 15 with the real heating phase indicator.
   "status": (
-    b"\x80",
-    bytes.fromhex("0200090c800000970d"),
+    b"\x08\x00",
+    bytes.fromhex("02000a0c080000 0020 0d".replace(" ", "")),
   ),
   # CF.TEMPERATURE(0x06), no command byte. K01 pcap ground truth.
   "temp_off": (
