@@ -344,7 +344,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     await self.io.stop()
 
   async def initialize(self, wait: bool = True, poll_interval: float = 0.0) -> None:
-    """Send the hardware init sequence (command ``0x01 0x00``) and poll until ready.
+    """Send the hardware init sequence and poll until ready.
 
     Args:
       wait: If True, block until the device is no longer busy.
@@ -505,7 +505,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # --------------------------------------------------------------------------
 
   async def request_machine_status(self, retries: int = 3) -> Dict:
-    """Query device status and return parsed flags (command ``0x80``).
+    """Query device status and return parsed flags.
 
     Bypasses ``send_command`` to avoid infinite recursion with
     ``_wait_until_machine_ready``. Retries on transient ``FrameError``
@@ -607,7 +607,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # --------------------------------------------------------------------------
 
   async def request_eeprom_data(self) -> Dict:
-    """Fetch and parse the EEPROM payload (command ``0x05 0x07``).
+    """Fetch and parse the EEPROM payload.
 
     Response is 264 bytes (observed on CLARIOstar Plus, type 0x0024).
 
@@ -768,7 +768,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     return result
 
   async def request_firmware_info(self) -> Dict[str, str]:
-    """Request firmware version and build date/time (command ``0x05 0x09``).
+    """Request firmware version and build date/time.
 
     Response payload is fixed-length: 32 bytes.
 
@@ -830,7 +830,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # --------------------------------------------------------------------------
 
   async def request_usage_counters(self) -> Dict[str, int]:
-    """Fetch lifetime usage counters (command ``0x05 0x21``).
+    """Fetch lifetime usage counters.
 
     Response payload is fixed-length: 43 bytes (nine u32 BE fields at
     offsets 6-41).
@@ -863,7 +863,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     }
 
   # --------------------------------------------------------------------------
-  # Temperature
+  # Feature: Temperature Control
   # --------------------------------------------------------------------------
   #
   # Temperature commands use standard framing with a 3-byte payload:
@@ -891,7 +891,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   #
   # Wire format confirmed in K01 pcap (monitor → set 30°C → off → monitor → off).
 
-  _TEMP_OFF = b"\x00\x00"      # 0x0000: disable sensors + heating
+  _TEMP_OFF = b"\x00\x00"  # 0x0000: disable sensors + heating
   _TEMP_MONITOR = b"\x00\x01"  # 0x0001: sensors only, no heating
 
   async def request_temperature_monitoring_on(self) -> bool:
@@ -918,11 +918,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     return status["heating_active"]
 
   async def start_temperature_monitoring(self) -> None:
-    """Enable temperature readout without heating (command ``0x06``, value ``0x0001``).
+    """Enable temperature readout without heating.
 
     Safe to call while heating is active: skips the monitor command if sensors
-    are already reporting, because sending ``0x06 0x0001`` would overwrite the
-    active heating setpoint (firmware replaces any prior ``0x06`` command).
+    are already reporting, because sending MONITOR would overwrite the active
+    heating setpoint (firmware treats the temperature register as single-state).
     """
     if await self.request_temperature_monitoring_on():
       return
@@ -957,7 +957,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     await asyncio.sleep(0.3)
 
   async def stop_temperature_control(self) -> None:
-    """Stop heating but keep temperature sensors active (command ``0x06``, value ``0x0001``).
+    """Stop heating but keep temperature sensors active.
 
     Downgrades from SET to MONITOR. Use ``stop_temperature_monitoring`` to
     turn off everything (sensors + heating).
@@ -968,7 +968,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     )
 
   async def stop_temperature_monitoring(self) -> None:
-    """Disable temperature monitoring and heating (command ``0x06``, value ``0x0000``)."""
+    """Disable temperature monitoring and heating."""
     logger.warning("stop_temperature_monitoring sends OFF -- this also disables heating")
     await self.send_command(
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
@@ -981,22 +981,21 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   ) -> float:
     """Return the current incubator temperature, activating sensors if needed.
 
-    First polls status to check whether the temperature sensors are already
-    reporting (they will be if heating is active via ``start_temperature_control``
-    or if monitoring was previously enabled).  Only sends the MONITOR command
-    (``0x06 0x0001``) when the sensors are not yet populated, avoiding
-    overwriting an active heating setpoint.
+    Calls ``start_temperature_monitoring`` which is idempotent -- it checks
+    ``request_temperature_monitoring_on`` and only sends MONITOR when the
+    sensors are not yet populated, so it will never overwrite an active
+    heating setpoint from ``start_temperature_control``.
 
-    Status payload bytes 11-14 carry bottom (uint16 BE /10 °C) and top
-    (uint16 BE /10 °C) plate temperatures.
+    Then polls ``request_machine_status`` until both bottom and top plate
+    temperatures are reported.
 
     Args:
       sensor: Which heating plate to read. ``"bottom"`` (below microplate,
-        tracks setpoint), ``"top"`` (above microplate, ~0.5°C above setpoint
+        tracks setpoint), ``"top"`` (above microplate, ~0.5 degC above setpoint
         to prevent condensation), or ``"mean"`` (average of both).
 
     Returns:
-      Temperature in °C.
+      Temperature in degC.
 
     Raises:
       TimeoutError: If the sensor does not populate within
@@ -1004,10 +1003,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     Note:
       Uses ``_PACKET_READ_TIMEOUT`` (3 s) rather than ``read_timeout`` because
-      sensor warm-up is bounded by hardware latency (~200 ms observed in K01
-      pcap), not by command processing time.
+      sensor warm-up is bounded by hardware latency (~200 ms), not by command
+      processing time.
     """
-    activated = False
+    await self.start_temperature_monitoring()
     t = time.time()
     timeout = self._PACKET_READ_TIMEOUT
     while time.time() - t < timeout:
@@ -1020,24 +1019,18 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         if sensor == "top":
           return float(top)
         return round((float(bottom) + float(top)) / 2, 1)
-      if not activated:
-        await self.start_temperature_monitoring()
-        activated = True
     raise TimeoutError(f"Temperature sensor did not populate within {timeout}s")
 
   # --------------------------------------------------------------------------
-  # Commands
+  # Feature: Drawer Control
   # --------------------------------------------------------------------------
 
   async def sense_drawer_open(self) -> bool:
-    """Return True if the plate drawer is currently open.
-
-    Delegates to ``request_machine_status()`` (status byte 3, bit 0).
-    """
+    """Return True if the plate drawer is currently open."""
     return bool((await self.request_machine_status())["drawer_open"])
 
   async def open(self, wait: bool = True, poll_interval: float = 0.1) -> None:
-    """Extend the plate drawer (command ``0x03 0x01``). Motor takes ~4.3 s.
+    """Extend the plate drawer. Motor takes ~4.3 s.
 
     Args:
       wait: If True, block until the device is no longer busy.
@@ -1058,7 +1051,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     wait: bool = True,
     poll_interval: float = 0.1,
   ) -> None:
-    """Retract the plate drawer (command ``0x03 0x00``). Motor takes ~8 s.
+    """Retract the plate drawer. Motor takes ~8 s.
 
     Args:
       plate: Unused (present for PlateReaderBackend interface compatibility).
@@ -1074,11 +1067,17 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     )
 
   # --------------------------------------------------------------------------
-  # Measurement (not yet implemented)
+  # Feature: Absorbance Measurement (not yet implemented)
   # --------------------------------------------------------------------------
 
-  async def read_absorbance(self, plate: Plate, wells: List[Well], wavelength: int) -> List[Dict]:
+  async def read_absorbance(
+    self, plate: Plate, wells: List[Well], wavelength: int, wavelengths: Optional[List[int]] = None
+  ) -> List[Dict]:
     raise NotImplementedError("Absorbance not yet implemented for CLARIOstar Plus.")
+
+  # --------------------------------------------------------------------------
+  # Feature: Fluorescence Measurement (not yet implemented)
+  # --------------------------------------------------------------------------
 
   async def read_fluorescence(
     self,
@@ -1089,6 +1088,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     focal_height: float,
   ) -> List[Dict]:
     raise NotImplementedError("Fluorescence not yet implemented for CLARIOstar Plus.")
+
+  # --------------------------------------------------------------------------
+  # Feature: Luminescence Measurement (not yet implemented)
+  # --------------------------------------------------------------------------
 
   async def read_luminescence(
     self, plate: Plate, wells: List[Well], focal_height: float

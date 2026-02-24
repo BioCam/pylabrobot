@@ -704,27 +704,24 @@ class TestTemperature(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # measure_temperature: status(zeros) -> start_temperature_monitoring:
-    #   status(zeros) + monitor_ack -> measure_temperature: status(populated).
+    # start_temperature_monitoring: status(zeros) -> monitor_ack
+    # measure_temperature poll: status(populated).
     mock.queue_response(
-      self._make_temp_response(0, 0),  # measure_temperature initial poll
       self._make_temp_response(0, 0),  # start_temperature_monitoring poll
       ACK,  # monitor command ack
-      self._make_temp_response(370, 375),  # measure_temperature retry poll
+      self._make_temp_response(370, 375),  # measure_temperature poll
     )
     temp = asyncio.run(backend.measure_temperature(sensor="bottom"))
     self.assertAlmostEqual(temp, 37.0)
     self.assertEqual(mock.written[0], COMMANDS["status"][1])
-    self.assertEqual(mock.written[1], COMMANDS["status"][1])
-    self.assertEqual(mock.written[2], COMMANDS["temp_monitor"][1])
-    self.assertEqual(mock.written[3], COMMANDS["status"][1])
+    self.assertEqual(mock.written[1], COMMANDS["temp_monitor"][1])
+    self.assertEqual(mock.written[2], COMMANDS["status"][1])
 
   def test_measure_temperature_top(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
     mock.queue_response(
-      self._make_temp_response(0, 0),
       self._make_temp_response(0, 0),
       ACK,
       self._make_temp_response(370, 375),
@@ -738,7 +735,6 @@ class TestTemperature(unittest.TestCase):
 
     mock.queue_response(
       self._make_temp_response(0, 0),
-      self._make_temp_response(0, 0),
       ACK,
       self._make_temp_response(370, 375),
     )
@@ -750,24 +746,28 @@ class TestTemperature(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # Status poll returns temps immediately -- no monitor command needed.
-    mock.queue_response(self._make_temp_response(300, 305))
+    # start_temperature_monitoring polls status -> sees temps -> returns early.
+    # measure_temperature polls status -> gets temps -> returns.
+    mock.queue_response(
+      self._make_temp_response(300, 305),  # start_temperature_monitoring poll
+      self._make_temp_response(300, 305),  # measure_temperature poll
+    )
     temp = asyncio.run(backend.measure_temperature(sensor="bottom"))
     self.assertAlmostEqual(temp, 30.0)
-    # Only one status poll, no monitor command sent.
-    self.assertEqual(len(mock.written), 1)
+    # Two status polls, no monitor command sent.
+    self.assertEqual(len(mock.written), 2)
     self.assertEqual(mock.written[0], COMMANDS["status"][1])
+    self.assertEqual(mock.written[1], COMMANDS["status"][1])
 
   def test_measure_temperature_retries_until_populated(self):
     """Sensor takes time to populate after monitor command."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # measure_temp: status(zeros) -> activate: status(zeros) + ack
-    # -> measure_temp: status(zeros still) -> status(populated).
+    # start_temperature_monitoring: status(zeros) -> monitor_ack
+    # measure_temperature: status(zeros still) -> status(populated).
     mock.queue_response(
-      self._make_temp_response(0, 0),  # measure_temperature initial
-      self._make_temp_response(0, 0),  # activate poll
+      self._make_temp_response(0, 0),  # start_temperature_monitoring poll
       ACK,  # monitor ack
       self._make_temp_response(0, 0),  # still not ready
       self._make_temp_response(291, 296),  # populated
