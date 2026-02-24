@@ -786,22 +786,37 @@ class TestTemperature(unittest.TestCase):
     self.assertIsNone(status["temperature_top"])
 
   def test_heating_active_flag_in_status(self):
-    """heating_active requires BOTH byte 15 bit 5 AND non-zero temperatures."""
+    """Byte 15 is a 4-state heating phase indicator."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # Heating: bit 5 set + sensors reporting
+    # 0xe0 + sensors: full-power ramp -> True
     mock.queue_response(self._make_temp_response(228, 232, byte15=0xE0))
     status = asyncio.run(backend.request_machine_status())
     self.assertTrue(status["heating_active"])
 
-    # MONITOR only: bit 5 clear + sensors reporting
+    # 0x40 + sensors: near target -> True
+    mock.queue_response(self._make_temp_response(296, 305, byte15=0x40))
+    status = asyncio.run(backend.request_machine_status())
+    self.assertTrue(status["heating_active"])
+
+    # 0x00 + sensors: at target, maintaining -> True
+    mock.queue_response(self._make_temp_response(300, 306, byte15=0x00))
+    status = asyncio.run(backend.request_machine_status())
+    self.assertTrue(status["heating_active"])
+
+    # 0xc0 + sensors: monitor-only or mid-ramp coasting -> False (ambiguous, default False)
     mock.queue_response(self._make_temp_response(228, 232, byte15=0xC0))
     status = asyncio.run(backend.request_machine_status())
     self.assertFalse(status["heating_active"])
 
-    # Cold boot: bit 5 set but temps are zero -- NOT heating
+    # 0xe0 + no temps: cold boot -> False
     mock.queue_response(self._make_temp_response(0, 0, byte15=0xE0))
+    status = asyncio.run(backend.request_machine_status())
+    self.assertFalse(status["heating_active"])
+
+    # 0x00 + no temps: OFF state -> False
+    mock.queue_response(self._make_temp_response(0, 0, byte15=0x00))
     status = asyncio.run(backend.request_machine_status())
     self.assertFalse(status["heating_active"])
 
