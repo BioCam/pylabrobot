@@ -660,37 +660,61 @@ class TestTemperature(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(ACK)
-    asyncio.run(backend.start_temperature_control(target_celsius=30.0))
+    # measure_temperature inside start_temperature_control:
+    #   1. _request_temperature_monitoring_on -> status poll (sensors inactive)
+    #   2. _start_temperature_monitoring -> _request_temperature_monitoring_on
+    #      -> status poll (inactive) -> sends MONITOR -> ack
+    #   3. measure loop -> status with temps (22°C room temp)
+    # Then the SET command itself -> ack.
+    mock.queue_response(
+      self._make_temp_response(0, 0),  # measure_temperature monitoring check
+      self._make_temp_response(0, 0),  # _start_temperature_monitoring check
+      ACK,  # monitor ack
+      self._make_temp_response(220, 225),  # measure_temperature poll
+      ACK,  # SET command ack
+    )
+    asyncio.run(backend.start_temperature_control(temperature=30.0))
 
-    self.assertEqual(mock.written[0], COMMANDS["temp_set_30c"][1])
+    self.assertEqual(mock.written[-1], COMMANDS["temp_set_30c"][1])
 
   def test_start_set_37c(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(ACK)
-    asyncio.run(backend.start_temperature_control(target_celsius=37.0))
+    mock.queue_response(
+      self._make_temp_response(0, 0),  # measure_temperature monitoring check
+      self._make_temp_response(0, 0),  # _start_temperature_monitoring check
+      ACK,  # monitor ack
+      self._make_temp_response(220, 225),  # measure_temperature poll
+      ACK,  # SET command ack
+    )
+    asyncio.run(backend.start_temperature_control(temperature=37.0))
 
     # 37.0°C = 370 = 0x0172
     expected = _wrap_payload(b"\x06\x01\x72")
-    self.assertEqual(mock.written[0], expected)
+    self.assertEqual(mock.written[-1], expected)
 
   def test_start_set_25c(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    mock.queue_response(ACK)
-    asyncio.run(backend.start_temperature_control(target_celsius=25.0))
+    mock.queue_response(
+      self._make_temp_response(0, 0),  # measure_temperature monitoring check
+      self._make_temp_response(0, 0),  # _start_temperature_monitoring check
+      ACK,  # monitor ack
+      self._make_temp_response(220, 225),  # measure_temperature poll
+      ACK,  # SET command ack
+    )
+    asyncio.run(backend.start_temperature_control(temperature=25.0))
 
     # 25.0°C = 250 = 0x00FA
     expected = _wrap_payload(b"\x06\x00\xfa")
-    self.assertEqual(mock.written[0], expected)
+    self.assertEqual(mock.written[-1], expected)
 
   def test_start_rejects_above_max(self):
     backend = _make_backend()
     with self.assertRaises(ValueError):
-      asyncio.run(backend.start_temperature_control(target_celsius=50.0))
+      asyncio.run(backend.start_temperature_control(temperature=50.0))
 
   @staticmethod
   def _make_temp_response(bottom_raw: int, top_raw: int, byte15: int = 0xC0) -> bytes:
@@ -705,27 +729,33 @@ class TestTemperature(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # _start_temperature_monitoring: status(zeros) -> monitor_ack
-    # measure_temperature poll: status(populated).
+    # measure_temperature flow:
+    #   1. _request_temperature_monitoring_on() -> status poll (sensors inactive)
+    #   2. _start_temperature_monitoring() -> _request_temperature_monitoring_on()
+    #      -> status poll (still inactive) -> sends MONITOR -> ack
+    #   3. measure_temperature poll -> status(populated)
     mock.queue_response(
-      self._make_temp_response(0, 0),  # _start_temperature_monitoring poll
+      self._make_temp_response(0, 0),  # measure_temperature monitoring check
+      self._make_temp_response(0, 0),  # _start_temperature_monitoring monitoring check
       ACK,  # monitor command ack
       self._make_temp_response(370, 375),  # measure_temperature poll
     )
     temp = asyncio.run(backend.measure_temperature(sensor="bottom"))
     self.assertAlmostEqual(temp, 37.0)
     self.assertEqual(mock.written[0], COMMANDS["status"][1])
-    self.assertEqual(mock.written[1], COMMANDS["temp_monitor"][1])
-    self.assertEqual(mock.written[2], COMMANDS["status"][1])
+    self.assertEqual(mock.written[1], COMMANDS["status"][1])
+    self.assertEqual(mock.written[2], COMMANDS["temp_monitor"][1])
+    self.assertEqual(mock.written[3], COMMANDS["status"][1])
 
   def test_measure_temperature_top(self):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
     mock.queue_response(
-      self._make_temp_response(0, 0),
-      ACK,
-      self._make_temp_response(370, 375),
+      self._make_temp_response(0, 0),  # measure_temperature monitoring check
+      self._make_temp_response(0, 0),  # _start_temperature_monitoring check
+      ACK,  # monitor ack
+      self._make_temp_response(370, 375),  # measure_temperature poll
     )
     temp = asyncio.run(backend.measure_temperature(sensor="top"))
     self.assertAlmostEqual(temp, 37.5)
@@ -735,9 +765,10 @@ class TestTemperature(unittest.TestCase):
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
     mock.queue_response(
-      self._make_temp_response(0, 0),
-      ACK,
-      self._make_temp_response(370, 375),
+      self._make_temp_response(0, 0),  # measure_temperature monitoring check
+      self._make_temp_response(0, 0),  # _start_temperature_monitoring check
+      ACK,  # monitor ack
+      self._make_temp_response(370, 375),  # measure_temperature poll
     )
     temp = asyncio.run(backend.measure_temperature(sensor="mean"))
     self.assertAlmostEqual(temp, 37.2)  # round((37.0 + 37.5) / 2, 1)
@@ -765,10 +796,14 @@ class TestTemperature(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # _start_temperature_monitoring: status(zeros) -> monitor_ack
-    # measure_temperature: status(zeros still) -> status(populated).
+    # measure_temperature flow:
+    #   1. _request_temperature_monitoring_on() -> status poll (inactive)
+    #   2. _start_temperature_monitoring() -> _request_temperature_monitoring_on()
+    #      -> status poll (inactive) -> sends MONITOR -> ack
+    #   3. measure loop: status(zeros still) -> status(populated)
     mock.queue_response(
-      self._make_temp_response(0, 0),  # _start_temperature_monitoring poll
+      self._make_temp_response(0, 0),  # measure_temperature monitoring check
+      self._make_temp_response(0, 0),  # _start_temperature_monitoring check
       ACK,  # monitor ack
       self._make_temp_response(0, 0),  # still not ready
       self._make_temp_response(291, 296),  # populated
@@ -794,37 +829,6 @@ class TestTemperature(unittest.TestCase):
     status = asyncio.run(backend.request_machine_status())
     self.assertNotIn("heating_active", status)
 
-  def test_request_temperature_control_on_after_set(self):
-    """After start_temperature_control, request_temperature_control_on returns True."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK)  # SET command ack
-    asyncio.run(backend.start_temperature_control(30.0))
-    self.assertTrue(asyncio.run(backend.request_temperature_control_on()))
-
-  def test_request_temperature_control_on_false_at_boot(self):
-    """Before any temperature command, request_temperature_control_on returns False."""
-    backend = _make_backend()
-    self.assertFalse(asyncio.run(backend.request_temperature_control_on()))
-
-  def test_request_temperature_control_on_false_after_stop_control(self):
-    """After stop_temperature_control, request_temperature_control_on returns False."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK, ACK)  # SET ack, MONITOR ack
-    asyncio.run(backend.start_temperature_control(30.0))
-    asyncio.run(backend.stop_temperature_control())
-    self.assertFalse(asyncio.run(backend.request_temperature_control_on()))
-
-  def test_request_temperature_control_on_false_after_stop_monitoring(self):
-    """After _stop_temperature_monitoring, request_temperature_control_on returns False."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK, ACK)  # SET ack, OFF ack
-    asyncio.run(backend.start_temperature_control(30.0))
-    asyncio.run(backend._stop_temperature_monitoring())
-    self.assertFalse(asyncio.run(backend.request_temperature_control_on()))
-
   def test_get_target_temperature_none_at_boot(self):
     """Before any temperature command, get_target_temperature returns None."""
     backend = _make_backend()
@@ -834,7 +838,13 @@ class TestTemperature(unittest.TestCase):
     """After start_temperature_control(37.0), get_target_temperature returns 37.0."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK)  # SET command ack
+    mock.queue_response(
+      self._make_temp_response(0, 0),  # measure_temperature monitoring check
+      self._make_temp_response(0, 0),  # _start_temperature_monitoring check
+      ACK,  # monitor ack
+      self._make_temp_response(220, 225),  # measure_temperature poll
+      ACK,  # SET command ack
+    )
     asyncio.run(backend.start_temperature_control(37.0))
     self.assertEqual(backend.get_target_temperature(), 37.0)
 
@@ -842,7 +852,14 @@ class TestTemperature(unittest.TestCase):
     """After stop_temperature_control, get_target_temperature returns None."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK, ACK)  # SET ack, MONITOR ack
+    mock.queue_response(
+      self._make_temp_response(0, 0),  # measure_temperature monitoring check
+      self._make_temp_response(0, 0),  # _start_temperature_monitoring check
+      ACK,  # monitor ack
+      self._make_temp_response(220, 225),  # measure_temperature poll
+      ACK,  # SET ack
+      ACK,  # stop_temperature_control (MONITOR) ack
+    )
     asyncio.run(backend.start_temperature_control(37.0))
     asyncio.run(backend.stop_temperature_control())
     self.assertIsNone(backend.get_target_temperature())

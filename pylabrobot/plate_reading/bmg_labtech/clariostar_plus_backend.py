@@ -9,6 +9,7 @@ import asyncio
 import enum
 import logging
 import time
+import warnings
 from typing import Dict, List, Literal, Optional
 
 from pylabrobot.io.ftdi import FTDI
@@ -271,6 +272,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "emission_filter_slots": 0,
     }
     self._target_temperature: Optional[float] = None
+    # TODO: keep searching for a way to retrieve target temp from device
 
   # --------------------------------------------------------------------------
   # Life cycle
@@ -446,9 +448,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     return d
 
-  # Pre-cached status frame: STATUS_QUERY (0x80).
-  _STATUS_FRAME = _wrap_payload(b"\x80")
-
   async def send_command(
     self,
     command_family: "CLARIOstarPlusBackend.CommandFamily",
@@ -522,6 +521,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # --------------------------------------------------------------------------
   # Status
   # --------------------------------------------------------------------------
+
+  # Pre-cached status frame: STATUS_QUERY (0x80).
+  _STATUS_FRAME = _wrap_payload(b"\x80")
 
   async def request_machine_status(self, retries: int = 3) -> Dict:
     """Query device status and return parsed flags.
@@ -917,17 +919,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     status = await self.request_machine_status()
     return status["temperature_bottom"] is not None
 
-  async def request_temperature_control_on(self) -> bool:
-    """Check whether the backend has an active heating setpoint.
-
-    Tracked in software: set by ``start_temperature_control`` and cleared
-    by ``stop_temperature_control`` / ``_stop_temperature_monitoring``.
-
-    Returns:
-      ``True`` if heating was started and not yet stopped, ``False`` otherwise.
-    """
-    return self._target_temperature is not None
-
   def get_target_temperature(self) -> Optional[float]:
     """Return the current heating target in °C, or ``None`` if not heating."""
     return self._target_temperature
@@ -946,27 +937,40 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       payload=self._TEMP_MONITOR,
     )
 
-  async def start_temperature_control(self, target_celsius: float) -> None:
+  async def start_temperature_control(self, temperature: float) -> None:
     """Set target temperature and enable heating.
 
     Args:
-      target_celsius: Target in degrees C (e.g. 37.0). Increments of 0.1°C.
+      temperature: Target in degrees C (e.g. 37.0). Increments of 0.1°C.
 
     Raises:
       ValueError: If target exceeds ``max_temperature``.
     """
-    if target_celsius > self.configuration["max_temperature"]:
+
+    max_temp = self.configuration["max_temperature"]
+    if not 0 <= temperature <= max_temp:
       raise ValueError(
-        f"Target {target_celsius}°C exceeds max {self.configuration['max_temperature']}°C"
+        f"Temperature must be between 0 and {max_temp} °C, got {temperature}."
       )
-    raw = int(round(target_celsius * 10))
+
+    current = await self.measure_temperature(sensor="bottom")
+    heater_overshoot_tolerance = 0.5
+    if temperature < current - heater_overshoot_tolerance:
+      warnings.warn(
+        f"Target {temperature} °C is below the current bottom plate temperature "
+        f"({current} °C). The CLARIOstar has no active cooling and will not reach "
+        f"this target unless the ambient temperature drops.",
+        stacklevel=2,
+      )
+
+    raw = int(round(temperature * 10))
     hi = (raw >> 8) & 0xFF
     lo = raw & 0xFF
     await self.send_command(
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
       payload=bytes([hi, lo]),
     )
-    self._target_temperature = target_celsius
+    self._target_temperature = temperature
     # Firmware needs ~200ms to populate temperature sensors after a SET command.
     # Without this, an immediate status poll sees zeros and
     # _start_temperature_monitoring would send MONITOR, overwriting the setpoint.
@@ -1016,7 +1020,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         to prevent condensation), or ``"mean"`` (average of both).
 
     Returns:
-      Temperature in degC.
+      Temperature in degree C.
 
     Raises:
       TimeoutError: If the sensor does not populate within
@@ -1027,7 +1031,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       sensor warm-up is bounded by hardware latency (~200 ms), not by command
       processing time.
     """
-    await self._start_temperature_monitoring()
+
+    if not await self._request_temperature_monitoring_on():
+      await self._start_temperature_monitoring()
+
     t = time.time()
     timeout = self._PACKET_READ_TIMEOUT
     while time.time() - t < timeout:
@@ -1087,12 +1094,36 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       poll_interval=poll_interval,
     )
 
+  
+  # --------------------------------------------------------------------------
+  # Common Reading Preparations (not yet implemented)
+  # --------------------------------------------------------------------------
+
+  # Payload: Plate Field #
+
+  # Payload: Shaking Field #
+
+
   # --------------------------------------------------------------------------
   # Feature: Absorbance Measurement (not yet implemented)
   # --------------------------------------------------------------------------
 
+  # Discrete Absorbance Measurement (1-8 wavelengths; not yet implemented) #
+
   async def read_absorbance(
     self, plate: Plate, wells: List[Well], wavelength: int, wavelengths: Optional[List[int]] = None
+  ) -> List[Dict]:
+    raise NotImplementedError("Absorbance not yet implemented for CLARIOstar Plus.")
+
+  # Absorbance Spectrum Measurement (1-8 wavelengths; not yet implemented) #
+
+  async def read_absorbance_spectrum(
+    self,
+    plate: Plate,
+    wells: List[Well],
+    start_wavelength: int,
+    end_wavelength: int,
+    step_size: int,
   ) -> List[Dict]:
     raise NotImplementedError("Absorbance not yet implemented for CLARIOstar Plus.")
 
@@ -1105,9 +1136,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     plate: Plate,
     wells: List[Well],
     excitation_wavelength: int,
+    excitation_width: int,
     emission_wavelength: int,
+    emission_width: int,
     focal_height: float,
-  ) -> List[Dict]:
+    optical_path: Literal["monochromator", "filter"] = "monochromator", # better word than 'filter'?
+    mode: Literal["top", "bottom"] = "bottom",
+ ) -> List[Dict]:
     raise NotImplementedError("Fluorescence not yet implemented for CLARIOstar Plus.")
 
   # --------------------------------------------------------------------------
