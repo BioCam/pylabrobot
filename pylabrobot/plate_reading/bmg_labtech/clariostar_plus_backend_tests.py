@@ -45,11 +45,6 @@ COMMANDS: Dict[str, tuple] = {
     b"\x80",
     bytes.fromhex("0200090c800000970d"),
   ),
-  # POLL (0x08 0x00) -- only command that returns the real heating phase in byte 15.
-  "poll": (
-    b"\x08\x00",
-    bytes.fromhex("02000a0c0800 0000200d".replace(" ", "")),
-  ),
   # CF.TEMPERATURE(0x06), no command byte. K01 pcap ground truth.
   "temp_off": (
     b"\x06\x00\x00",
@@ -150,6 +145,7 @@ def _make_backend() -> CLARIOstarPlusBackend:
     "dichroic_filter_slots": 0,
     "emission_filter_slots": 0,
   }
+  backend._heating_active = False
   return backend
 
 
@@ -791,61 +787,42 @@ class TestTemperature(unittest.TestCase):
     self.assertIsNone(status["temperature_top"])
 
   def test_status_dict_has_no_heating_active(self):
-    """STATUS_QUERY (0x80) does not carry heating state; key must be absent."""
+    """Status dict must not contain a heating_active key."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
     mock.queue_response(self._make_temp_response(228, 232))
     status = asyncio.run(backend.request_machine_status())
     self.assertNotIn("heating_active", status)
 
-  def test_request_temperature_control_on_true(self):
-    """POLL byte 15 = 0xe0 (full-power ramp) + sensors reporting -> True."""
+  def test_request_temperature_control_on_after_set(self):
+    """After start_temperature_control, request_temperature_control_on returns True."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
-    # _poll_heating_phase sends POLL -> 24-byte response with byte15=0xe0
-    mock.queue_response(
-      self._make_temp_response(228, 232, byte15=0xE0),  # POLL response
-      self._make_temp_response(228, 232),  # request_temperature_monitoring_on status
-    )
+    mock.queue_response(ACK)  # SET command ack
+    asyncio.run(backend.start_temperature_control(30.0))
     self.assertTrue(asyncio.run(backend.request_temperature_control_on()))
 
-  def test_request_temperature_control_on_near_target(self):
-    """POLL byte 15 = 0x40 (near target) + sensors reporting -> True."""
+  def test_request_temperature_control_on_false_at_boot(self):
+    """Before any temperature command, request_temperature_control_on returns False."""
     backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(
-      self._make_temp_response(296, 305, byte15=0x40),  # POLL response
-      self._make_temp_response(296, 305),  # status
-    )
-    self.assertTrue(asyncio.run(backend.request_temperature_control_on()))
-
-  def test_request_temperature_control_on_at_target(self):
-    """POLL byte 15 = 0x00 (at target) + sensors reporting -> True."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(
-      self._make_temp_response(300, 306, byte15=0x00),  # POLL response
-      self._make_temp_response(300, 306),  # status
-    )
-    self.assertTrue(asyncio.run(backend.request_temperature_control_on()))
-
-  def test_request_temperature_control_on_false_monitor(self):
-    """POLL byte 15 = 0xc0 (monitor/idle) -> False."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(
-      self._make_temp_response(228, 232, byte15=0xC0),  # POLL response
-    )
     self.assertFalse(asyncio.run(backend.request_temperature_control_on()))
 
-  def test_request_temperature_control_on_false_boot(self):
-    """POLL byte 15 = 0xe0 but no temps (cold boot) -> False."""
+  def test_request_temperature_control_on_false_after_stop_control(self):
+    """After stop_temperature_control, request_temperature_control_on returns False."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(
-      self._make_temp_response(0, 0, byte15=0xE0),  # POLL response
-      self._make_temp_response(0, 0),  # status (sensors not reporting)
-    )
+    mock.queue_response(ACK, ACK)  # SET ack, MONITOR ack
+    asyncio.run(backend.start_temperature_control(30.0))
+    asyncio.run(backend.stop_temperature_control())
+    self.assertFalse(asyncio.run(backend.request_temperature_control_on()))
+
+  def test_request_temperature_control_on_false_after_stop_monitoring(self):
+    """After stop_temperature_monitoring, request_temperature_control_on returns False."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK, ACK)  # SET ack, OFF ack
+    asyncio.run(backend.start_temperature_control(30.0))
+    asyncio.run(backend.stop_temperature_monitoring())
     self.assertFalse(asyncio.run(backend.request_temperature_control_on()))
 
 

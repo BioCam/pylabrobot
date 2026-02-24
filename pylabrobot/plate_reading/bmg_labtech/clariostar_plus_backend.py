@@ -270,6 +270,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "dichroic_filter_slots": 0,
       "emission_filter_slots": 0,
     }
+    self._heating_active: bool = False
 
   # --------------------------------------------------------------------------
   # Life cycle
@@ -328,6 +329,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     Raises:
       RuntimeError: If a plate is detected and *accept_plate_left_in_device* is False.
     """
+    self._heating_active = False
     if await self.request_temperature_monitoring_on():
       await self.stop_temperature_monitoring()
 
@@ -427,16 +429,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     return d
 
-  # Pre-cached frames for the two status commands.
-  # STATUS_QUERY (0x80): general-purpose status polling.  Byte 15 is always
-  # 0xe0 regardless of heating state -- useless for heating detection, but
-  # all other fields (flags, temperatures) are correct.
-  # POLL (0x08 0x00): Voyager's status command.  Returns the same 24-byte
-  # response but byte 15 contains the real 4-state heating phase indicator.
-  # Payload byte 3 differs between the two (0x24 vs 0x04) so they are NOT
-  # interchangeable for config parsing.
+  # Pre-cached status frame: STATUS_QUERY (0x80).
   _STATUS_FRAME = _wrap_payload(b"\x80")
-  _POLL_FRAME = _wrap_payload(b"\x08\x00")
 
   async def send_command(
     self,
@@ -549,8 +543,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       else:
         status["temperature_bottom"] = None
         status["temperature_top"] = None
-      # NOTE: byte 15 in STATUS_QUERY (0x80) responses is always 0xe0 --
-      # it does NOT carry heating state.  Use _poll_heating_phase() for that.
       return status
     assert last_err is not None
     raise last_err
@@ -886,19 +878,12 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # The set target temperature is fire-and-forget -- it is NOT echoed back
   # in the status response. The host must track it locally.
   #
-  # IMPORTANT: STATUS_QUERY (0x80) always returns 0xe0 in byte 15 --
-  # it does NOT carry heating state.  Only POLL (0x08 0x00) returns the
-  # real 4-state heating phase in byte 15:
-  #   0xe0 (1110_0000) -- full-power ramp (definitely SET, early heating)
-  #   0xc0 (1100_0000) -- idle / monitor / mid-ramp coasting (AMBIGUOUS)
-  #   0x40 (0100_0000) -- near target (definitely SET, approaching setpoint)
-  #   0x00 (0000_0000) -- at target (definitely SET, maintaining)
-  #
-  # Three values are exclusive to SET mode: 0xe0, 0x40, 0x00 (with sensors).
-  # 0xc0 is shared between MONITOR-only and SET mid-ramp coasting (~26-30 degC
-  # in the K01 capture).  _poll_heating_phase + request_temperature_control_on
-  # use POLL for heating detection; request_machine_status uses STATUS_QUERY
-  # for everything else (flags, temps, busy state).
+  # Heating state tracking: the firmware does not expose a reliable
+  # "heating active" flag. STATUS_QUERY (0x80) byte 15 is always 0xe0.
+  # POLL (0x08 0x00) byte 15 varies in K01 pcap captures from Voyager
+  # but is also always 0xe0 when sent from this backend (likely requires
+  # additional Voyager init commands to enable). Therefore, heating state
+  # is tracked in software via ``_heating_active``.
   #
   # Wire format confirmed in K01 pcap (monitor -> set 30 degC -> off -> monitor -> off).
 
@@ -915,42 +900,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     status = await self.request_machine_status()
     return status["temperature_bottom"] is not None
 
-  async def _poll_heating_phase(self) -> int:
-    """Send a POLL command and return the raw heating phase byte (byte 15).
-
-    POLL (0x08 0x00) is the only command that returns the real heating
-    phase in byte 15.  STATUS_QUERY (0x80) always returns 0xe0.
-
-    Returns:
-      Raw byte 15 value: 0xe0 (full-power ramp), 0xc0 (idle/monitor/
-      mid-ramp coasting), 0x40 (near target), 0x00 (at target).
-    """
-    await self._write_frame(self._POLL_FRAME)
-    resp = await self._read_frame()
-    _validate_frame(resp)
-    payload = _extract_payload(resp)
-    return payload[15] if len(payload) >= 16 else 0xC0
-
   async def request_temperature_control_on(self) -> bool:
-    """Check whether the firmware is actively heating toward a setpoint.
+    """Check whether the backend has an active heating setpoint.
 
-    Uses the POLL command which returns the real heating phase byte.
-    Reliable for full-power ramp, near-target, and at-target phases.
-    During mid-ramp coasting the firmware reports the same byte as
-    MONITOR-only, so this method may briefly return ``False`` mid-ramp.
+    Tracked in software: set to ``True`` by ``start_temperature_control``
+    and cleared by ``stop_temperature_control`` / ``stop_temperature_monitoring``.
 
     Returns:
-      ``True`` if heating is definitively active, ``False`` otherwise.
+      ``True`` if heating was started and not yet stopped, ``False`` otherwise.
     """
-    b15 = await self._poll_heating_phase()
-    if b15 == 0xC0:
-      return False
-    sensors_on = await self.request_temperature_monitoring_on()
-    if b15 in (0xE0, 0x40):
-      return sensors_on
-    if b15 == 0x00 and sensors_on:
-      return True
-    return False
+    return self._heating_active
 
   async def start_temperature_monitoring(self) -> None:
     """Enable temperature readout without heating.
@@ -986,6 +945,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
       payload=bytes([hi, lo]),
     )
+    self._heating_active = True
     # Firmware needs ~200ms to populate temperature sensors after a SET command.
     # Without this, an immediate status poll sees zeros and
     # start_temperature_monitoring would send MONITOR, overwriting the setpoint.
@@ -1001,6 +961,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
       payload=self._TEMP_MONITOR,
     )
+    self._heating_active = False
     # Firmware briefly zeros temperature readings during SET -> MONITOR transition.
     # Without this, an immediate status poll sees zeros and reports sensors as inactive.
     await asyncio.sleep(0.3)
@@ -1012,6 +973,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command_family=self.CommandFamily.TEMPERATURE_CONTROLLER,
       payload=self._TEMP_OFF,
     )
+    self._heating_active = False
 
   async def measure_temperature(
     self,
