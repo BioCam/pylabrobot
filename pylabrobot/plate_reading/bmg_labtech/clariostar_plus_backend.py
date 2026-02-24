@@ -542,14 +542,23 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       else:
         status["temperature_bottom"] = None
         status["temperature_top"] = None
-      # Byte 15 bit 5 (0x20) is set at cold boot AND during active heating,
-      # but clear after an explicit OFF or MONITOR command.  On its own it is
-      # unreliable (boot state looks like heating).  Combined with non-zero
-      # temperatures it becomes a valid heating indicator: at boot temps are
-      # zero, during heating they are non-zero.
-      byte15_bit5 = bool(payload[15] & 0x20) if len(payload) >= 16 else False
+      # Byte 15 is a 4-state heating phase indicator (K01 pcap confirmed):
+      #   0xe0 -- full-power ramp (definitely SET, early heating)
+      #   0xc0 -- idle / monitor / mid-ramp coasting (AMBIGUOUS)
+      #   0x40 -- near target (definitely SET, approaching setpoint)
+      #   0x00 -- at target (definitely SET, maintaining temperature)
+      # Three values (0xe0, 0x40, 0x00+sensors) are exclusive to SET mode.
+      # 0xc0 is shared between MONITOR-only and SET mid-ramp coasting.
+      b15 = payload[15] if len(payload) >= 16 else 0xC0
       sensors_reporting = status["temperature_bottom"] is not None
-      status["heating_active"] = byte15_bit5 and sensors_reporting
+      if b15 in (0xE0, 0x40):
+        status["heating_active"] = sensors_reporting
+      elif b15 == 0x00 and sensors_reporting:
+        status["heating_active"] = True
+      else:
+        # 0xc0: ambiguous -- could be monitor or mid-ramp coasting.
+        # Default to False to avoid false positives at boot / after MONITOR.
+        status["heating_active"] = False
       return status
     assert last_err is not None
     raise last_err
@@ -885,14 +894,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # The set target temperature is fire-and-forget -- it is NOT echoed back
   # in the status response. The host must track it locally.
   #
-  # Payload byte 15 bit 5 (0x20):
-  #   Set at cold boot (default) AND during active heating (SET command).
-  #   Clear after an explicit OFF or MONITOR command.
-  #   On its own it is unreliable for detecting heating (boot looks like heating).
-  #   Combined with non-zero temperature readings (bytes 11-14) it becomes a
-  #   valid heating indicator: at boot temps are zero, during heating they are
-  #   non-zero.  This combination is what request_machine_status uses for
-  #   the "heating_active" flag.
+  # Payload byte 15 is a 4-state heating phase indicator:
+  #   0xe0 (1110_0000) -- full-power ramp (definitely SET, early heating)
+  #   0xc0 (1100_0000) -- idle / monitor / mid-ramp coasting (AMBIGUOUS)
+  #   0x40 (0100_0000) -- near target (definitely SET, approaching setpoint)
+  #   0x00 (0000_0000) -- at target (definitely SET, maintaining)
+  #
+  # Three values are exclusive to SET mode: 0xe0, 0x40, 0x00 (with sensors).
+  # 0xc0 is shared between MONITOR-only and SET mid-ramp coasting (~26-30 degC
+  # in the K01 capture).  request_machine_status["heating_active"] is True
+  # only for the three definitive SET states; 0xc0 defaults to False.
   #
   # Wire format confirmed in K01 pcap (monitor -> set 30 degC -> off -> monitor -> off).
 
@@ -912,9 +923,12 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   async def request_temperature_control_on(self) -> bool:
     """Check whether the firmware is actively heating toward a setpoint.
 
+    Reliable for full-power ramp, near-target, and at-target phases.
+    During mid-ramp coasting the firmware reports the same status byte as
+    MONITOR-only, so this method may briefly return ``False`` mid-ramp.
+
     Returns:
-      ``True`` if heating is active, ``False`` otherwise (including cold
-      boot, MONITOR-only, and OFF states).
+      ``True`` if heating is definitively active, ``False`` otherwise.
     """
     status = await self.request_machine_status()
     return status["heating_active"]
