@@ -36,16 +36,17 @@ Verified against 6,780 pcap frames with zero failures.
 - **Payload:** `80`
 - **Response:** 5+ status bytes. Bit layout:
   - Byte 0, bit 1: `standby`
+  - Byte 1, bit 0: `valid` (status response validity)
   - Byte 1, bit 5: `busy`
   - Byte 1, bit 4: `running`
   - Byte 2, bit 0: `unread_data`
+  - Byte 3, bit 6: `lid_open` (instrument lid, distinct from drawer)
   - Byte 3, bit 5: `initialized`
-  - Byte 3, bit 6: `lid_open` *(documented, not yet parsed)*
-  - Byte 3, bit 0: `drawer_open`
+  - Byte 3, bit 3: `reading_wells` (optic head actively scanning wells)
+  - Byte 3, bit 2: `z_probed` (z-stage probe contact after plate loading)
   - Byte 3, bit 1: `plate_detected`
-  - Byte 3, bit 2: `z_probed` *(documented, not yet parsed)*
-  - Byte 3, bit 3: `active` *(documented, not yet parsed)*
-  - Byte 4, bit 6: `filter_cover_open` *(documented, not yet parsed)*
+  - Byte 3, bit 0: `drawer_open`
+  - Byte 4, bit 6: `filter_cover_open`
 
 ---
 
@@ -54,7 +55,7 @@ Verified against 6,780 pcap frames with zero failures.
 ### `request_eeprom_data`
 - **Group/Cmd:** `0x05 0x07`
 - **Payload:** `05 07 00 00 00 00 00 00`
-- **Response:** 264-byte payload. Key fields:
+- **Response:** 263-byte payload. Key fields:
   - Bytes 2-3: machine type code (uint16 BE). `0x0024`/`0x0026` = CLARIOstar Plus.
   - Byte 11: `has_absorbance` (bool)
   - Byte 12: `has_fluorescence` (bool)
@@ -83,25 +84,22 @@ Verified against 6,780 pcap frames with zero failures.
 
 ## Phase 3 — Temperature
 
-**Important:** Temperature commands use a **1-byte checksum** (not 3-byte).
-This is the only command family with this exception.
+Temperature commands use standard 3-byte checksum framing (same as all other
+command families). The payload is 3 bytes: `[0x06, temp_hi, temp_lo]`.
 
 ### `temperature_off`
-- **Group/Cmd:** `0x06 0x00`
-- **Payload:** `06 00 00 00 00`
-- **Checksum:** 1-byte (`sum(payload) & 0xFF`)
+- **Group/Cmd:** `0x06` (no command byte — TEMPERATURE_CONTROLLER is a no-command family)
+- **Payload:** `06 00 00`
 - **Response:** Acknowledgment frame.
 
 ### `temperature_monitor`
-- **Group/Cmd:** `0x06 0x01`
-- **Payload:** `06 00 01 00 00`
-- **Checksum:** 1-byte
+- **Group/Cmd:** `0x06`
+- **Payload:** `06 00 01`
 - **Notes:** Enables temperature sensor readout without heating.
 
 ### `temperature_set`
 - **Group/Cmd:** `0x06` (dynamic)
-- **Payload:** `06 <target_hi> <target_lo> 00 00` — target in 0.1 C units (uint16 BE).
-- **Checksum:** 1-byte
+- **Payload:** `06 <target_hi> <target_lo>` — target in 0.1 C units (uint16 BE).
 - **Notes:** Target 37.0 C → bytes `01 72` (370 decimal).
 
 ---
@@ -118,7 +116,7 @@ This is the only command family with this exception.
   00 00 00 <trailer: 02 00 00 00 00 01 00 00 00 01> 00 16 00 01 00 00
   ```
 - **Key params:**
-  - `plate_bytes`: 62B plate geometry (dimensions + well mask).
+  - `plate_bytes`: 63B plate geometry (dimensions + well mask).
   - `wavelength`: uint16 BE, value in 0.1 nm (e.g. 450nm → `0x1194`).
   - `0x82`: measurement type marker for absorbance.
   - `0x19`: settling time encoding.
@@ -146,10 +144,10 @@ This is the only command family with this exception.
 - **Payload:** `05 1d 00 00 00 00 00 00`
 - **Response:** Well measurement order for the last run.
 
-### `plate_bytes` encoding (62 bytes)
+### `plate_bytes` encoding (63 bytes)
 ```
 plate_length(2B) plate_width(2B) x1(2B) y1(2B) xn(2B) yn(2B)
-cols(1B) rows(1B) well_mask(48B)
+cols(1B) rows(1B) extra(1B=0x00) well_mask(48B)
 ```
 All dimensions in 0.01mm units (uint16 BE). Well mask is 384-bit big-endian.
 
@@ -211,15 +209,15 @@ All dimensions in 0.01mm units (uint16 BE). Well mask is 384-bit big-endian.
   [(1 << 4) | shake_type, speed_idx, duration_hi, duration_lo]
   ```
 - **Types:** Orbital(0), Linear(1), Double-Orbital(2), Meander(3).
-- **Speed:** 100-700 RPM in steps of 100. `speed_idx = rpm/100 - 1`.
+- **Speed:** 100-800 RPM in steps of 100. `speed_idx = rpm/100 - 1`.
 - **Meander max:** 300 RPM.
 
 ### Scan mode byte
 - **Encoding:** Single byte in RUN payloads.
   ```
-  | uni(7) | corner(6:4) | vert(3) | flying(2) | always_set(1) | 0 |
+  | uni(7) | corner(6:5) | 0(4) | vert(3) | 0(2) | always_set(1) | 0(0) |
   ```
-- **Start corners:** TopLeft(0x00), TopRight(0x02), BottomLeft(0x04), BottomRight(0x06).
+- **Start corners (2-bit values before shift):** TopLeft(0), TopRight(1), BottomLeft(2), BottomRight(3).
 
 ### Spectral scans
 - **Status:** Not yet captured. Likely uses monochromator sweep with repeated
@@ -273,4 +271,4 @@ CLARIOstarPlusBackend
 - **Go reference implementation:** `fl.go`, `abs.go`, command dispatch.
 - **OEM software (MARS):** Automated capture runs for absorbance, fluorescence, luminescence.
 - **ActiveX/DDE manual:** Command family documentation.
-- **Hardware:** CLARIOstar Plus serial 430-2621.
+- **Hardware:** CLARIOstar Plus.

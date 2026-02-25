@@ -18,6 +18,16 @@ A hinged or removable cover on top of a resource (e.g. a plate lid). In PLR, `Li
 
 Not to be confused with instrument doors or drawers.
 
+## Wire Protocol
+
+### Command
+
+A message sent **to** a device instructing it to perform an action or return information.
+
+### Response
+
+A message sent **from** a device after receiving a command.
+
 ## Plate Reader
 
 ### Detection Mode
