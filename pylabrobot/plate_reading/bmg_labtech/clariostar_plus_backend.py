@@ -329,6 +329,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     device_id: Optional[str] = None,
     read_timeout: float = 120.0,
     max_temperature: float = 45.0,
+    measurement_poll_interval: float = 0.2,
   ):
     """Create a new CLARIOstar Plus backend.
 
@@ -341,14 +342,20 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         ``send_command(read_timeout=...)``.
       max_temperature: Maximum allowed target temperature in °C. Standard
         incubator range is 0-45°C; extended incubator supports 10-65°C.
+      measurement_poll_interval: Seconds to sleep between measurement polling
+        cycles. Default 0.2 s. Also applied before retrying after a bad frame.
+        Set to 0.0 for maximum throughput (I/O-paced only).
     """
     if read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
     if not 0 < max_temperature <= 65:
       raise ValueError(f"max_temperature must be between 0 and 65 °C, got {max_temperature}.")
+    if measurement_poll_interval < 0:
+      raise ValueError(f"measurement_poll_interval must be >= 0, got {measurement_poll_interval}.")
 
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
     self.read_timeout = read_timeout
+    self.measurement_poll_interval = measurement_poll_interval
 
     self.configuration: Dict = {
       "serial_number": "",
@@ -2304,6 +2311,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         response = await self._request_measurement_data(progressive=True)
       except FrameError as e:
         logger.warning("data poll: bad frame (%s), retrying", e)
+        if self.measurement_poll_interval > 0:
+          await asyncio.sleep(self.measurement_poll_interval)
         continue
 
       written, expected = self._measurement_progress(response)
@@ -2324,6 +2333,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
           break
       except FrameError as e:
         logger.debug("interleaved status poll: bad frame (%s), ignoring", e)
+
+      # Pace polling to reduce firmware USB interrupt load during measurement.
+      # Set measurement_poll_interval=0.0 to disable.
+      if self.measurement_poll_interval > 0:
+        await asyncio.sleep(self.measurement_poll_interval)
 
     # 3. Retrieve final results.
     # Path A: progressive response already contains the complete data in the same

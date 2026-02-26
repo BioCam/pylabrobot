@@ -208,6 +208,7 @@ def _make_backend() -> CLARIOstarPlusBackend:
     "emission_filter_slots": 0,
   }
   backend._target_temperature = None
+  backend.measurement_poll_interval = 0.0  # no delay in unit tests
   return backend
 
 
