@@ -110,10 +110,10 @@ command families). The payload is 3 bytes: `[0x06, temp_hi, temp_lo]`.
 - **Group/Cmd:** `0x04` (RUN family)
 - **Payload structure:**
   ```
-  04 <plate_bytes(62)> 82 02 00 00 00 00 00 00 00 20 04 00 1e
+  04 <plate_bytes(63)> 82 02 00 00 00 00 00 00 00 20 04 00 1e
   <separator: 27 0f 27 0f>
   19 01 <wavelength(2B)> 00 00 00 64 00 00 00 00 00 00 00 64 00 00
-  00 00 00 <trailer: 02 00 00 00 00 01 00 00 00 01> 00 16 00 01 00 00
+  00 00 00 <trailer: 02 00 00 00 00 00 01 00 00 00 01> 00 16 00 01 00 00
   ```
 - **Key params:**
   - `plate_bytes`: 63B plate geometry (dimensions + well mask).
@@ -177,11 +177,11 @@ All dimensions in 0.01mm units (uint16 BE). Well mask is 384-bit big-endian.
 - **Group/Cmd:** `0x04` (RUN family)
 - **Payload structure:**
   ```
-  04 <plate_bytes(62)> 02 01 00 00 00 00 00 00 00 20 04 00 1e
+  04 <plate_bytes(63)> 02 01 00 00 00 00 00 00 00 20 04 00 1e
   <separator: 27 0f 27 0f>
   01 <focal_height(2B)> 00 00 01 00 00 0e 10 00 01 00 01 00
   01 00 01 00 01 00 06 00 00 00 00 00 00 00 00 00
-  <trailer: 02 00 00 00 00 01 00 00 00 01> 00 64 00 20 00 00
+  <trailer: 02 00 00 00 00 00 01 00 00 00 01> 00 64 00 20 00 00
   ```
 - **Key params:**
   - `focal_height`: uint16 BE, 0.01 mm units. Range 0-25mm.
@@ -252,9 +252,15 @@ All dimensions in 0.01mm units (uint16 BE). Well mask is 384-bit big-endian.
 
 | Type code | Model | Monochromator | Filter slots |
 |-----------|-------|---------------|-------------|
+| `0x0021` | CLARIOstar Plus | 220-1000 nm | 11 |
 | `0x0024` | CLARIOstar Plus | 220-1000 nm | 11 |
 | `0x0026` | CLARIOstar Plus | 220-1000 nm | 11 |
+| `0x0621` | CLARIOstar Plus | 220-1000 nm | 11 |
+| `0x0624` | CLARIOstar Plus | 220-1000 nm | 11 |
 | `0x0626` | CLARIOstar Plus | 220-1000 nm | 11 |
+| `0x0721` | CLARIOstar Plus | 220-1000 nm | 11 |
+| `0x0724` | CLARIOstar Plus | 220-1000 nm | 11 |
+| `0x0726` | CLARIOstar Plus | 220-1000 nm | 11 |
 
 ---
 

@@ -1551,7 +1551,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     if shake_mode is not None and shake_duration_s > 0:
       buf[12] = 0x02  # mixer_action
-      shake_pattern_map = {"orbital": 0, "linear": 1, "double_orbital": 2}
+      shake_pattern_map = {"orbital": 0, "linear": 1, "double_orbital": 2, "meander": 3}
       buf[17] = shake_pattern_map[shake_mode]
       buf[18] = (shake_speed_rpm // 100) - 1  # speed index
       buf[20:22] = shake_duration_s.to_bytes(2, "little")
