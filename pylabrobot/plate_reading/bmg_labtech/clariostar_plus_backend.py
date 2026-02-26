@@ -705,9 +705,21 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       payload = bytes([command_family, command]) + parameters
 
     frame = _wrap_payload(payload)
-    await self._write_frame(frame)
-    resp = await self._read_frame()
-    _validate_frame(resp)
+    last_err: Optional[FrameError] = None
+    for attempt in range(3):
+      await self._write_frame(frame)
+      resp = await self._read_frame()
+      try:
+        _validate_frame(resp)
+      except FrameError as e:
+        last_err = e
+        logger.warning("send_command: bad frame on attempt %d/3 (%s)", attempt + 1, e)
+        await self.io.usb_purge_rx_buffer()
+        continue
+      break
+    else:
+      assert last_err is not None
+      raise last_err
     ret = _extract_payload(resp)
 
     if wait:

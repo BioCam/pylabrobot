@@ -119,21 +119,20 @@ STATUS_RUNNING = bytes.fromhex("0200180c011500200000000000000000000000c000011c0d
 class MockFTDI(IOBase):
   """Minimal FTDI mock that records writes and plays back queued responses.
 
-  Delivers one queued frame per ``_read_frame`` invocation:
-    - First ``read()`` after a ``write()`` or after an empty-read boundary
-      delivers the next queued frame.
+  Delivers exactly one queued frame per ``write()`` cycle:
+    - First ``read()`` after a ``write()`` delivers the next queued frame.
     - Subsequent ``read()`` calls return empty bytes, signalling end-of-frame
-      to ``_read_frame`` and resetting the gate for the next frame.
-
-  This supports both the normal one-frame-per-write pattern and the
-  REQUEST status-then-data pattern where ``send_command`` calls
-  ``_read_frame`` twice without an intervening ``write()``.
+      to ``_read_frame``.
+    - After a frame is delivered, further empty reads do NOT re-arm delivery
+      until the next ``write()`` call. This prevents ``_read_frame`` timeout
+      loops from consuming queued responses meant for later retries.
   """
 
   def __init__(self) -> None:
     self.written: List[bytes] = []
     self._responses: List[bytes] = []
     self._ready = False  # True = next read() may deliver a frame
+    self._delivered = False  # True = frame delivered, block re-arm until next write
     self.device_id: str = ""
     self.stop_called: bool = False
 
@@ -156,7 +155,7 @@ class MockFTDI(IOBase):
     pass
 
   async def usb_purge_rx_buffer(self) -> None:
-    pass
+    self._ready = False
 
   async def usb_purge_tx_buffer(self) -> None:
     pass
@@ -170,14 +169,19 @@ class MockFTDI(IOBase):
   async def write(self, data: bytes) -> int:
     self.written.append(bytes(data))
     self._ready = True
+    self._delivered = False
     return len(data)
 
   async def read(self, n: int) -> bytes:
     if self._ready and self._responses:
       self._ready = False
+      self._delivered = True
       return self._responses.pop(0)
-    # Empty read = end-of-frame boundary. Re-arm for next _read_frame call.
-    self._ready = True
+    # Empty read = end-of-frame boundary. Re-arm only if no frame has been
+    # delivered yet in this write cycle. This prevents _read_frame timeout
+    # loops from consuming queued responses meant for later write cycles.
+    if not self._delivered:
+      self._ready = True
     return b""
 
 
@@ -2916,6 +2920,57 @@ class TestSendCommandValidation(unittest.TestCase):
         backend.send_command(
           command_family=backend.CommandFamily.REQUEST,
           command=0xFF,
+        )
+      )
+
+
+# ---------------------------------------------------------------------------
+# send_command frame retry tests
+# ---------------------------------------------------------------------------
+
+
+class TestSendCommandFrameRetry(unittest.TestCase):
+  """Verify send_command retries on transient FrameError (truncated frames)."""
+
+  def test_retries_on_truncated_frame(self):
+    """First read returns a truncated frame, second succeeds."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    backend._PACKET_READ_TIMEOUT = 0.01  # type: ignore[attr-defined]
+
+    # Truncated 18 bytes of a 53-byte DRAWER_CLOSE response (pcap ground truth
+    # from notebook cell 33 failure).
+    truncated = bytes.fromhex("0200350c032504260000000002610000370d")
+
+    mock.queue_response(
+      truncated,  # attempt 1: truncated → FrameError, retry
+      ACK,        # attempt 2: valid frame → success
+    )
+    result = asyncio.run(
+      backend.send_command(
+        command_family=backend.CommandFamily.STATUS,
+        parameters=b"",
+      )
+    )
+    # Should succeed without raising.
+    self.assertIsInstance(result, bytes)
+
+  def test_raises_after_all_retries_exhausted(self):
+    """Three consecutive truncated frames → FrameError raised."""
+    from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import FrameError
+
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    backend._PACKET_READ_TIMEOUT = 0.01  # type: ignore[attr-defined]
+
+    truncated = bytes.fromhex("0200350c032504260000000002610000370d")
+    mock.queue_response(truncated, truncated, truncated)
+
+    with self.assertRaises(FrameError):
+      asyncio.run(
+        backend.send_command(
+          command_family=backend.CommandFamily.STATUS,
+          parameters=b"",
         )
       )
 
