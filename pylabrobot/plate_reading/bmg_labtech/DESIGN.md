@@ -254,6 +254,7 @@ All dimensions in 0.01mm units (uint16 BE). Well mask is 384-bit big-endian.
 |-----------|-------|---------------|-------------|
 | `0x0024` | CLARIOstar Plus | 220-1000 nm | 11 |
 | `0x0026` | CLARIOstar Plus | 220-1000 nm | 11 |
+| `0x0626` | CLARIOstar Plus | 220-1000 nm | 11 |
 
 ---
 

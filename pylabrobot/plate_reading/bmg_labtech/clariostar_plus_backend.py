@@ -164,11 +164,13 @@ def _extract_payload(data: bytes) -> bytes:
 #
 
 
-# 0x0024: verified on CLARIOstar Plus hardware.
+# 0x0024: verified on CLARIOstar Plus hardware (initial pcap captures).
 # 0x0026: from vibed code, unverified on real hardware.
+# 0x0626: verified on CLARIOstar Plus hardware (live trace, serial 430-2621).
 _MODEL_LOOKUP: Dict[int, str] = {
   0x0024: "CLARIOstar Plus",
   0x0026: "CLARIOstar Plus",
+  0x0626: "CLARIOstar Plus",
 }
 
 # Constant blocks verified identical across all 38 absorbance pcap captures.
@@ -303,7 +305,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         flags[name] = False
     return flags
 
-  _PACKET_READ_TIMEOUT: float = 3  # seconds; max wait for a single serial frame
+  _PACKET_READ_TIMEOUT: float = 1.0  # seconds; max wait for a single serial frame
+  # At 125 kBaud even a 1612-byte frame takes only ~130 ms to transmit.
+  # The previous 3 s value caused unnecessary 3 s hangs on truncated frames
+  # during measurement polling.  1 s provides ample margin.
 
   # --------------------------------------------------------------------------
   # Constructor
@@ -490,6 +495,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
           command=self.Command.INIT,
           parameters=b"\x00\x10\x02\x00",
           wait=True,
+          poll_interval=0.1,
         )
         return
       except FrameError as e:
@@ -533,6 +539,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
       # Poll until running clears.
       for _ in range(10):
+        await asyncio.sleep(0.1)
         status = await self.request_machine_status()
         if not status["running"]:
           logger.info("running-state recovery: cleared by %s", name)
@@ -1349,6 +1356,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command=self.Command.TRAY_OPEN,
       parameters=b"\x00\x00\x00\x00",
       wait=True,
+      poll_interval=0.1,
     )
 
   async def close(self, plate: Optional[Plate] = None) -> None:
@@ -1362,6 +1370,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command=self.Command.TRAY_CLOSE,
       parameters=b"\x00\x00\x00\x00",
       wait=True,
+      poll_interval=0.1,
     )
 
   # --------------------------------------------------------------------------
