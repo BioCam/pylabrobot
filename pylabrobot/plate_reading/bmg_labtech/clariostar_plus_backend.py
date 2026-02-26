@@ -171,6 +171,7 @@ _MODEL_LOOKUP: Dict[int, str] = {
   0x0024: "CLARIOstar Plus",
   0x0026: "CLARIOstar Plus",
   0x0626: "CLARIOstar Plus",
+  0x0726: "CLARIOstar Plus",
 }
 
 # Constant blocks verified identical across all 38 absorbance pcap captures.
@@ -635,7 +636,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
           break
 
         if time.time() - t > timeout:
-          logger.warning("timed out reading response")
+          logger.debug("timed out reading response")
           break
 
         await asyncio.sleep(0.0001)
@@ -654,6 +655,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     read_timeout: Optional[float] = None,
     wait: bool = False,
     poll_interval: float = 0.0,
+    retries: int = 3,
   ) -> bytes:
     """Build a frame, send it, and return the validated response payload.
 
@@ -680,6 +682,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         (initialize, open, close, etc.).
       poll_interval: Seconds to sleep between status polls when *wait* is True.
         Default 0.0 (no sleep, paced by I/O roundtrip alone, ~37 ms/poll).
+      retries: Number of send/read attempts before raising FrameError.
+        Default 3. Use 1 for progressive data polling where empty responses
+        are expected and the caller handles FrameError directly.
 
     Returns:
       Validated response payload (frame overhead stripped).
@@ -706,14 +711,30 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     frame = _wrap_payload(payload)
     last_err: Optional[FrameError] = None
-    for attempt in range(3):
+    for attempt in range(retries):
       await self._write_frame(frame)
       resp = await self._read_frame()
       try:
         _validate_frame(resp)
       except FrameError as e:
         last_err = e
-        logger.warning("send_command: bad frame on attempt %d/3 (%s)", attempt + 1, e)
+        if len(resp) == 0:
+          # Empty response — the device may not have replied yet.  Try reading
+          # unread data from the RX buffer before re-sending, in case the
+          # response arrived after _read_frame's timeout expired.
+          unread = await self._read_frame()
+          if unread:
+            try:
+              _validate_frame(unread)
+              resp = unread
+              break
+            except FrameError:
+              pass
+          logger.debug("send_command: no response on attempt %d/%d", attempt + 1, retries)
+        else:
+          logger.warning(
+            "send_command: bad frame on attempt %d/%d (%s)", attempt + 1, retries, e
+          )
         await self.io.usb_purge_rx_buffer()
         continue
       break
@@ -1618,6 +1639,12 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.DATA,
       parameters=params,
+      # Progressive polls happen during active measurement where the device may
+      # be busy scanning and not respond immediately.  Use retries=1 so each
+      # poll iteration takes at most ~1s (one _PACKET_READ_TIMEOUT) instead of
+      # ~3s (3 retries), leaving the full timeout budget for the measurement
+      # itself.  The polling loop in read_absorbance already handles FrameError.
+      retries=1 if progressive else 3,
     )
 
   @staticmethod
