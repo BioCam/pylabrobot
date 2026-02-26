@@ -390,6 +390,25 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       if len(payload) >= 4 and payload[3] != 0x04:
         break
 
+    # Recover from a stuck "running" state.  If a previous session was
+    # interrupted mid-measurement (e.g. kernel restart, USB disconnect),
+    # the firmware can retain ``running=True`` even after a power cycle.
+    # In this state it ignores drawer and measurement commands.  Sending
+    # a standard GET_DATA (0x05 0x02) flushes the residual measurement
+    # buffer and clears the flag.
+    status = await self.request_machine_status()
+    if status["running"]:
+      logger.warning("firmware has running=True at startup — flushing residual measurement state")
+      try:
+        await self._request_measurement_data(progressive=False)
+      except FrameError as e:
+        logger.debug("flush get_data: %s (expected if no data buffered)", e)
+      # Poll until running clears (typically 1-2 iterations).
+      for _ in range(20):
+        status = await self.request_machine_status()
+        if not status["running"]:
+          break
+
     # Populate configuration from EEPROM + firmware info.
     eeprom_info = await self.request_eeprom_data()
     self.configuration.update(eeprom_info)
@@ -660,10 +679,12 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
                                             initializing, moving drawer, or
                                             any other command). Primary flag
                                             for is_ready(), polling loops.
-          bit 4  HIGH    ``running``        fleeting transitional state at
-                                            measurement completion (3 of
-                                            7,927 responses). Not actionable;
-                                            busy is the reliable indicator.
+          bit 4  HIGH    ``running``        active measurement in progress,
+                                            or residual state from an
+                                            interrupted measurement.  Can
+                                            persist across power cycles.
+                                            Cleared by fetching measurement
+                                            data (GET_DATA 0x05 0x02).
           bit 0  HIGH    ``valid``          status response validity. Set in
                                             all normal operation responses.
           bit 2          UNKNOWN            always set (0x05 base). Likely

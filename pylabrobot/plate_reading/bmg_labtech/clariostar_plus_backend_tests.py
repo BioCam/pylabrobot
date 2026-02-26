@@ -2380,8 +2380,9 @@ def _setup_backend_with_firmware(version_x1000: int) -> CLARIOstarPlusBackend:
     1. ACK for initialize() command
     2. STATUS_IDLE for _wait_until_machine_ready (not busy → exit)
     3. STATUS_IDLE for poll-flush loop (payload[3]!=0x04 → break)
-    4. _REAL_EEPROM_FRAME for request_eeprom_data()
-    5. firmware frame for request_firmware_info()
+    4. STATUS_IDLE for running-state recovery check (running=False → skip)
+    5. _REAL_EEPROM_FRAME for request_eeprom_data()
+    6. firmware frame for request_firmware_info()
   """
   backend = _make_backend()
   mock: MockFTDI = backend.io  # type: ignore[assignment]
@@ -2389,6 +2390,7 @@ def _setup_backend_with_firmware(version_x1000: int) -> CLARIOstarPlusBackend:
     ACK,
     STATUS_IDLE,
     STATUS_IDLE,
+    STATUS_IDLE,  # running-state check
     _REAL_EEPROM_FRAME,
     _make_firmware_frame(version_x1000),
   )
