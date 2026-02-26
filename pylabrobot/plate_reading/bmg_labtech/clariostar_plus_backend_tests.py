@@ -2305,11 +2305,10 @@ class TestReadAbsorbanceIntegration(unittest.TestCase):
 
     data_frame = _wrap_payload(_build_synthetic_response())
 
-    # Queue: run ack, progressive data (complete), final standard data
+    # Queue: run ack, progressive data (complete) — progressive complete skips standard request
     mock.queue_response(
       ACK,  # measurement run ack
       data_frame,  # progressive _request_measurement_data → values_written == expected
-      data_frame,  # final standard _request_measurement_data
     )
 
     results = asyncio.run(backend.read_absorbance(plate, wells, wavelength=600))
@@ -2331,7 +2330,7 @@ class TestReadAbsorbanceIntegration(unittest.TestCase):
     wells = [plate.get_item("A1")]
 
     data_frame = _wrap_payload(_build_synthetic_response(num_wells=1, schema=0x29))
-    mock.queue_response(ACK, data_frame, data_frame)
+    mock.queue_response(ACK, data_frame)
 
     asyncio.run(backend.read_absorbance(plate, wells, wavelength=600))
 
@@ -2392,8 +2391,7 @@ class TestReadAbsorbanceIntegration(unittest.TestCase):
       STATUS_BUSY,  # interleaved status — still measuring
       halfway,  # progressive poll 2: 2/4
       STATUS_BUSY,  # interleaved status — still measuring
-      complete,  # progressive poll 3: 4/4 → break
-      complete,  # final standard request
+      complete,  # progressive poll 3: 4/4 → break (progressive complete, no standard request)
     )
 
     results = asyncio.run(backend.read_absorbance(plate, wells, wavelength=600))
@@ -2442,6 +2440,30 @@ class TestReadAbsorbanceIntegration(unittest.TestCase):
     results = asyncio.run(backend.read_absorbance(plate, wells, wavelength=600))
     self.assertIsNotNone(results)
     self.assertEqual(len(results), 1)
+
+  def test_progressive_complete_skips_standard_request(self):
+    """When progressive polling completes (written >= expected), no standard GET_DATA is sent."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    data_frame = _wrap_payload(_build_synthetic_response())
+
+    # Only RUN ack + progressive data — no standard data response queued
+    mock.queue_response(ACK, data_frame)
+
+    results = asyncio.run(backend.read_absorbance(plate, wells, wavelength=600))
+    self.assertEqual(len(results), 1)
+
+    # Exactly 2 writes: RUN command + progressive GET_DATA. No third standard GET_DATA.
+    self.assertEqual(len(mock.written), 2)
+    # First write is the RUN command
+    inner0 = _extract_payload(mock.written[0])
+    self.assertEqual(inner0[0], 0x04)  # CommandFamily.RUN
+    # Second write is the progressive GET_DATA (ff ff ff ff 00)
+    inner1 = _extract_payload(mock.written[1])
+    self.assertEqual(inner1, b"\x05\x02\xff\xff\xff\xff\x00")
 
   def test_request_absorbance_results(self):
     """request_absorbance_results retrieves and parses data in one call."""

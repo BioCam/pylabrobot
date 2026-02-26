@@ -164,13 +164,22 @@ def _extract_payload(data: bytes) -> bytes:
 #
 
 
+# Same machine (serial 430-2621) reports different EEPROM type bytes across reads.
+# High byte varies (0x00, 0x06, 0x07), low byte varies (0x21, 0x24, 0x26).
+# Full cross-product of observed variants:
 # 0x0024: verified on CLARIOstar Plus hardware (initial pcap captures).
 # 0x0026: from vibed code, unverified on real hardware.
+# 0x0621: verified on CLARIOstar Plus hardware (live trace, serial 430-2621).
 # 0x0626: verified on CLARIOstar Plus hardware (live trace, serial 430-2621).
 _MODEL_LOOKUP: Dict[int, str] = {
+  0x0021: "CLARIOstar Plus",
   0x0024: "CLARIOstar Plus",
   0x0026: "CLARIOstar Plus",
+  0x0621: "CLARIOstar Plus",
+  0x0624: "CLARIOstar Plus",
   0x0626: "CLARIOstar Plus",
+  0x0721: "CLARIOstar Plus",
+  0x0724: "CLARIOstar Plus",
   0x0726: "CLARIOstar Plus",
 }
 
@@ -636,7 +645,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
           break
 
         if time.time() - t > timeout:
-          logger.debug("timed out reading response")
+          if expected_size is not None and 0 < len(d) < expected_size:
+            last_chance = await self.io.read(expected_size - len(d))
+            if last_chance:
+              d += last_chance
+              if len(d) >= expected_size:
+                break
+          logger.debug("timed out reading response (%d/%s bytes)",
+                       len(d), expected_size)
           break
 
         await asyncio.sleep(0.0001)
@@ -742,7 +758,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     ret = _extract_payload(resp)
 
     if wait:
-      await self._wait_until_machine_ready(read_timeout=read_timeout, poll_interval=poll_interval)
+      effective_timeout = read_timeout if read_timeout is not None else self.read_timeout
+      await self._wait_until_machine_ready(read_timeout=effective_timeout, poll_interval=poll_interval)
 
     return ret
 
@@ -867,7 +884,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         _validate_frame(resp)
       except FrameError as e:
         last_err = e
-        logger.warning("status request: bad frame on attempt %d/%d (%s)", attempt + 1, retries, e)
+        if len(resp) == 0:
+          logger.debug("status request: no response on attempt %d/%d", attempt + 1, retries)
+        else:
+          logger.warning("status request: bad frame on attempt %d/%d (%s)", attempt + 1, retries, e)
         continue
       payload = _extract_payload(resp)
       status: Dict = self._parse_status(payload[:5])
@@ -2087,7 +2107,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     shake_duration_s: Optional[int] = None,
     settling_time_s: Optional[float] = None,
     # --- execution ---
-    read_timeout: Optional[float] = None,
+    read_timeout: Optional[float] = 7200,
     wait: bool = True,
   ) -> List[Dict]:
     """Measure discrete absorbance at one or more wavelengths.
@@ -2144,13 +2164,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         ``shake_mode`` is set.
       settling_time_s: Wait time in seconds after shaking before reading
         (0.0-1.0). Required when ``shake_mode`` is set.
-      read_timeout: Optional safety timeout in seconds for the measurement
-        polling loop.  ``None`` (default) polls indefinitely until the device
-        signals completion — appropriate for long-running measurements
-        (spectral scans, large plates, extensive shaking) where duration
-        cannot be predicted from parameters alone.  Set a finite value only
-        when you need an upper bound; the coroutine can always be cancelled
-        externally (``Ctrl+C`` / ``asyncio.CancelledError``).
+      read_timeout: Safety timeout in seconds for the measurement polling
+        loop.  Default 7200 (2 hours), which is sufficient for any single
+        measurement run.  Set to ``None`` to poll indefinitely.  The
+        coroutine can always be cancelled externally (``Ctrl+C`` /
+        ``asyncio.CancelledError``).
       wait: If True, poll until measurement completes and return results.
         If False, fire the measurement and return an empty list immediately.
 
@@ -2273,6 +2291,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     # the measurement is complete.
     t0 = time.time()
     response = b""
+    progressive_complete = False
     while True:
       if read_timeout is not None and time.time() - t0 > read_timeout:
         raise TimeoutError(
@@ -2292,6 +2311,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         logger.info("measurement progress: %d/%d", written, expected)
 
       if expected > 0 and written >= expected:
+        progressive_complete = True
         break
 
       # Interleave a status query between data polls (matches Voyager pattern).
@@ -2305,8 +2325,15 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       except FrameError as e:
         logger.debug("interleaved status poll: bad frame (%s), ignoring", e)
 
-    # 3. Retrieve final results via the public collection method
-    return await self.request_absorbance_results(plate, wells, wls, report=report)
+    # 3. Retrieve final results.
+    # Path A: progressive response already contains the complete data in the same
+    # 36-byte-header format as a standard response — parse it directly.
+    # Path B: firmware reset counters to 0/0 and device is no longer busy — data
+    # is not in the progressive response, re-request via standard GET_DATA.
+    if progressive_complete:
+      return self._parse_absorbance_response(response, plate, wells, wls, report=report)
+    else:
+      return await self.request_absorbance_results(plate, wells, wls, report=report)
 
   # Absorbance Spectrum Measurement (not yet implemented)
 
