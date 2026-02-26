@@ -54,7 +54,7 @@ Verified against 6,780 pcap frames with zero failures.
 
 ### `request_eeprom_data`
 - **Group/Cmd:** `0x05 0x07`
-- **Payload:** `05 07 00 00 00 00 00 00`
+- **Payload:** `05 07 00 00 00 00 00`
 - **Response:** 263-byte payload. Key fields:
   - Bytes 2-3: machine type code (uint16 BE). `0x0024`/`0x0026` = CLARIOstar Plus.
   - Byte 11: `has_absorbance` (bool)
@@ -67,7 +67,7 @@ Verified against 6,780 pcap frames with zero failures.
 
 ### `request_firmware_info`
 - **Group/Cmd:** `0x05 0x09`
-- **Payload:** `05 09 00 00 00 00 00 00`
+- **Payload:** `05 09 00 00 00 00 00`
 - **Response:** 32-byte payload.
   - Bytes 6-7: firmware version x1000 (uint16 BE, e.g. `0x0546` = 1.35).
   - Bytes 8-19: build date, null-terminated ASCII (e.g. `"Nov 20 2020"`).
@@ -76,7 +76,7 @@ Verified against 6,780 pcap frames with zero failures.
 
 ### `request_usage_counters`
 - **Group/Cmd:** `0x05 0x21`
-- **Payload:** `05 21 00 00 00 00 00 00`
+- **Payload:** `05 21 00 00 00 00 00`
 - **Response:** Contains lifetime usage stats (flashes, wells measured, shake time).
 - **Status:** Response format not fully decoded.
 
@@ -127,7 +127,7 @@ command families). The payload is 3 bytes: `[0x06, temp_hi, temp_lo]`.
 
 ### `get_data`
 - **Group/Cmd:** `0x05 0x02`
-- **Payload:** `05 02 00 00 00 00 00 00`
+- **Payload:** `05 02 00 00 00 00 00`
 - **Response:** Variable-length. Contains:
   - Chromatic readings: N x int32 BE
   - Reference readings: N x int32 BE
@@ -136,12 +136,12 @@ command families). The payload is 3 bytes: `[0x06, temp_hi, temp_lo]`.
 
 ### `focus_height`
 - **Group/Cmd:** `0x05 0x0F`
-- **Payload:** `05 0f 00 00 00 00 00 00`
+- **Payload:** `05 0f 00 00 00 00 00`
 - **Response:** Microplate and focus height values.
 
 ### `read_order`
 - **Group/Cmd:** `0x05 0x1D`
-- **Payload:** `05 1d 00 00 00 00 00 00`
+- **Payload:** `05 1d 00 00 00 00 00`
 - **Response:** Well measurement order for the last run.
 
 ### `plate_bytes` encoding (63 bytes)

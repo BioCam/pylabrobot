@@ -1469,7 +1469,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     (e.g. ``request_absorbance_results``).
 
     Two parameter variants exist (observed in Voyager pcap captures):
-      - **Standard** (``00 00 00 00 00 00``): used after the measurement has
+      - **Standard** (``00 00 00 00 00``): used after the measurement has
         finished (``busy`` flag cleared). Returns the final complete dataset.
       - **Progressive** (``ff ff ff ff 00``): used *during* the measurement
         while the device is still busy. The response contains partially-filled
@@ -1484,7 +1484,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       Raw response payload bytes. Parse with ``_parse_absorbance_response``
       (or future fluorescence/luminescence parsers).
     """
-    params = b"\xff\xff\xff\xff\x00" if progressive else b"\x00\x00\x00\x00\x00\x00"
+    params = b"\xff\xff\xff\xff\x00" if progressive else b"\x00\x00\x00\x00\x00"
     return await self.send_command(
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.DATA,

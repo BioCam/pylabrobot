@@ -66,6 +66,21 @@ COMMANDS: Dict[str, tuple] = {
     b"\x06\x01\x2c",
     bytes.fromhex("02000b0c06012c 00004c0d".replace(" ", "")),
   ),
+  # CF.REQUEST(0x05) + Cmd.DATA(0x02) — standard variant. Pcap: A01 final frame.
+  "get_data_standard": (
+    b"\x05\x02\x00\x00\x00\x00\x00",
+    bytes.fromhex("02000f0c050200000000000000240d"),
+  ),
+  # CF.REQUEST(0x05) + Cmd.DATA(0x02) — progressive variant. Pcap: A01 mid-measurement.
+  "get_data_progressive": (
+    b"\x05\x02\xff\xff\xff\xff\x00",
+    bytes.fromhex("02000f0c0502ffffffff000004200d"),
+  ),
+  # CF.REQUEST(0x05) + Cmd.READ_ORDER(0x1D). Pcap: all measurement captures.
+  "read_order": (
+    b"\x05\x1d\x00\x00\x00\x00\x00",
+    bytes.fromhex("02000f0c051d000000000000003f0d"),
+  ),
 }
 
 # Generic command acknowledgement -- shared by all command tests.
@@ -1239,7 +1254,7 @@ class TestMeasurementData(unittest.TestCase):
     self.assertEqual(inner[2:7], b"\xff\xff\xff\xff\x00")
 
   def test_request_measurement_data_standard_payload(self):
-    """Standard variant sends 00 00 00 00 00 00 payload."""
+    """Standard variant sends 05 02 00 00 00 00 00 (7 bytes, matching pcap)."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
@@ -1250,9 +1265,7 @@ class TestMeasurementData(unittest.TestCase):
 
     sent = mock.written[0]
     inner = _extract_payload(sent)
-    self.assertEqual(inner[0], 0x05)
-    self.assertEqual(inner[1], 0x02)
-    self.assertEqual(inner[2:8], b"\x00\x00\x00\x00\x00\x00")
+    self.assertEqual(inner, b"\x05\x02\x00\x00\x00\x00\x00")  # 7 bytes total
 
   def test_measurement_progress_parsing(self):
     """_measurement_progress extracts (values_written, values_expected) from header."""
@@ -2273,11 +2286,9 @@ class TestReadAbsorbanceIntegration(unittest.TestCase):
     self.assertIsNotNone(results[0]["data"])
     self.assertIsInstance(results[0]["data"][0][0], float)
 
-    # Verify it sent the standard (non-progressive) payload
+    # Verify it sent the standard (non-progressive) payload (7 bytes, matching pcap)
     inner = _extract_payload(mock.written[0])
-    self.assertEqual(inner[0], 0x05)  # REQUEST
-    self.assertEqual(inner[1], 0x02)  # DATA
-    self.assertEqual(inner[2:8], b"\x00\x00\x00\x00\x00\x00")  # standard
+    self.assertEqual(inner, b"\x05\x02\x00\x00\x00\x00\x00")
 
 
 # ---------------------------------------------------------------------------
