@@ -366,6 +366,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     await self.io.set_line_property(8, 0, 0)  # 8N1
     await self.io.set_latency_timer(2)
 
+    # Drain any residual bytes left in the FTDI RX buffer (e.g. a trailing 0x0D
+    # from a previous session or power cycle).  Without this, the first command's
+    # _read_frame picks up stale data and _validate_frame fails.
+    await self.io.usb_purge_rx_buffer()
+
     await self.initialize()
 
     # Flush residual POLL (0x08) firmware state.  If the device was previously
@@ -455,13 +460,29 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     await self.io.stop()
 
   async def initialize(self) -> None:
-    """Send the hardware init sequence and poll until ready."""
-    await self.send_command(
-      command_family=self.CommandFamily.INITIALIZE,
-      command=self.Command.INIT,
-      parameters=b"\x00\x10\x02\x00",
-      wait=True,
-    )
+    """Send the hardware init sequence and poll until ready.
+
+    After a power cycle the FTDI RX buffer may contain residual bytes or the
+    firmware may not yet be ready to respond.  Retries up to 5 times with a
+    brief delay, purging the RX buffer between attempts.
+    """
+    last_err: Optional[FrameError] = None
+    for attempt in range(5):
+      try:
+        await self.send_command(
+          command_family=self.CommandFamily.INITIALIZE,
+          command=self.Command.INIT,
+          parameters=b"\x00\x10\x02\x00",
+          wait=True,
+        )
+        return
+      except FrameError as e:
+        last_err = e
+        logger.warning("initialize: bad frame on attempt %d/5 (%s), retrying", attempt + 1, e)
+        await self.io.usb_purge_rx_buffer()
+        await asyncio.sleep(0.5)
+    assert last_err is not None
+    raise last_err
 
   # --------------------------------------------------------------------------
   # Low-level I/O

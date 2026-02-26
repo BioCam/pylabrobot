@@ -153,6 +153,12 @@ class MockFTDI(IOBase):
   async def set_latency_timer(self, ms: int) -> None:
     pass
 
+  async def usb_purge_rx_buffer(self) -> None:
+    pass
+
+  async def usb_purge_tx_buffer(self) -> None:
+    pass
+
   async def stop(self) -> None:
     self.stop_called = True
 
@@ -255,6 +261,24 @@ class TestInitialize(unittest.TestCase):
 
     self.assertEqual(len(mock.written), 2)
     self.assertEqual(mock.written[1], COMMANDS["status"][1])
+
+
+  def test_initialize_retries_on_frame_error(self):
+    """After a power cycle the first response may be a stale 0x0D byte.
+
+    initialize() should retry (with RX purge) and succeed on a later attempt.
+    """
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    # First attempt: stale CR byte → FrameError. Second attempt: valid response.
+    mock.queue_response(b"\x0d", ACK, STATUS_IDLE)
+    asyncio.run(backend.initialize())
+
+    # Should have sent the init command twice (retry) + one status poll
+    self.assertEqual(len(mock.written), 3)
+    self.assertEqual(mock.written[0], COMMANDS["initialize"][1])
+    self.assertEqual(mock.written[1], COMMANDS["initialize"][1])  # retry
 
 
 class TestOpen(unittest.TestCase):
