@@ -107,6 +107,8 @@ STATUS_DRAWER_OPEN = bytes.fromhex("0200180c010500210000000000000000000000c00001
 STATUS_PLATE = bytes.fromhex("0200180c010500220000000000000000000000c000010e0d")
 # Busy + initialized
 STATUS_BUSY = bytes.fromhex("0200180c012500200000000000000000000000c000012c0d")
+# Running + initialized (stuck measurement state, not busy)
+STATUS_RUNNING = bytes.fromhex("0200180c011500200000000000000000000000c000011c0d")
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +159,9 @@ class MockFTDI(IOBase):
     pass
 
   async def usb_purge_tx_buffer(self) -> None:
+    pass
+
+  async def usb_reset(self) -> None:
     pass
 
   async def stop(self) -> None:
@@ -279,6 +284,104 @@ class TestInitialize(unittest.TestCase):
     self.assertEqual(len(mock.written), 3)
     self.assertEqual(mock.written[0], COMMANDS["initialize"][1])
     self.assertEqual(mock.written[1], COMMANDS["initialize"][1])  # retry
+
+
+class TestRunningStateRecovery(unittest.TestCase):
+  """Verify escalating recovery from a stuck running=True firmware state."""
+
+  def test_recovery_clears_on_get_data_standard(self):
+    """Strategy 1 (GET_DATA standard) clears running — no escalation needed."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    # setup() sequence:
+    #  1. ACK for initialize()
+    #  2. STATUS_IDLE for _wait_until_machine_ready
+    #  3. STATUS_IDLE for poll-flush loop (payload[3]!=0x04)
+    #  4. STATUS_RUNNING for running-state check → enters recovery
+    #  5. ACK for GET_DATA standard (strategy 1)
+    #  6. STATUS_IDLE for recovery poll → running cleared → done
+    #  7. _REAL_EEPROM_FRAME for request_eeprom_data()
+    #  8. firmware frame for request_firmware_info()
+    mock.queue_response(
+      ACK,
+      STATUS_IDLE,
+      STATUS_IDLE,
+      STATUS_RUNNING,  # triggers recovery
+      ACK,  # GET_DATA standard response
+      STATUS_IDLE,  # recovery poll: running cleared
+      _REAL_EEPROM_FRAME,
+      _make_firmware_frame(1350),
+    )
+    with warnings.catch_warnings(record=True):
+      warnings.simplefilter("always")
+      asyncio.run(backend.setup())
+    self.assertFalse(mock._responses, "all queued responses should be consumed")
+
+  def test_recovery_escalates_to_reinitialize(self):
+    """Strategies 1-2 fail, strategy 3 (re-initialize) clears running."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    # Strategy 1: GET_DATA standard → 10 polls all RUNNING
+    # Strategy 2: GET_DATA progressive → 10 polls all RUNNING
+    # Strategy 3: re-initialize → ACK + STATUS_IDLE in _wait → 10 polls: first clears
+    running_polls_10 = [STATUS_RUNNING] * 10
+
+    mock.queue_response(
+      ACK,           # initialize()
+      STATUS_IDLE,   # _wait_until_machine_ready
+      STATUS_IDLE,   # poll-flush loop
+      STATUS_RUNNING,  # running-state check → enters recovery
+      # Strategy 1: GET_DATA standard
+      ACK,
+      *running_polls_10,
+      # Strategy 2: GET_DATA progressive
+      ACK,
+      *running_polls_10,
+      # Strategy 3: re-initialize
+      ACK,           # initialize() ACK
+      STATUS_IDLE,   # _wait_until_machine_ready inside initialize()
+      STATUS_IDLE,   # recovery poll → running cleared
+      # Continue setup()
+      _REAL_EEPROM_FRAME,
+      _make_firmware_frame(1350),
+    )
+    with warnings.catch_warnings(record=True):
+      warnings.simplefilter("always")
+      asyncio.run(backend.setup())
+    self.assertFalse(mock._responses, "all queued responses should be consumed")
+
+  def test_recovery_raises_if_all_strategies_fail(self):
+    """If all 4 strategies fail, RuntimeError is raised."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    running_polls_10 = [STATUS_RUNNING] * 10
+
+    mock.queue_response(
+      ACK,           # initialize()
+      STATUS_IDLE,   # _wait_until_machine_ready
+      STATUS_IDLE,   # poll-flush loop
+      STATUS_RUNNING,  # running-state check → enters recovery
+      # Strategy 1: GET_DATA standard
+      ACK,
+      *running_polls_10,
+      # Strategy 2: GET_DATA progressive
+      ACK,
+      *running_polls_10,
+      # Strategy 3: re-initialize
+      ACK,           # initialize() ACK
+      STATUS_IDLE,   # _wait_until_machine_ready inside initialize()
+      *running_polls_10,
+      # Strategy 4: USB reset + re-initialize
+      ACK,           # initialize() ACK
+      STATUS_IDLE,   # _wait_until_machine_ready inside initialize()
+      *running_polls_10,
+    )
+    with self.assertRaises(RuntimeError) as ctx:
+      asyncio.run(backend.setup())
+    self.assertIn("running=True", str(ctx.exception))
 
 
 class TestOpen(unittest.TestCase):

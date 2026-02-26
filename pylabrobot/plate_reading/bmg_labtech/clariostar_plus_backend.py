@@ -393,21 +393,18 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     # Recover from a stuck "running" state.  If a previous session was
     # interrupted mid-measurement (e.g. kernel restart, USB disconnect),
     # the firmware can retain ``running=True`` even after a power cycle.
-    # In this state it ignores drawer and measurement commands.  Sending
-    # a standard GET_DATA (0x05 0x02) flushes the residual measurement
-    # buffer and clears the flag.
+    # In this state it ignores drawer and measurement commands.
+    #
+    # Escalating recovery strategy:
+    #   1. GET_DATA standard — flushes buffered measurement data.
+    #   2. GET_DATA progressive — may clear state when standard doesn't.
+    #   3. Re-initialize — sends INIT command to reset firmware state machine.
+    #   4. USB reset — chip-level reset of the FTDI device, full reconfigure,
+    #      and re-initialize.  This is the nuclear option.
     status = await self.request_machine_status()
     if status["running"]:
-      logger.warning("firmware has running=True at startup — flushing residual measurement state")
-      try:
-        await self._request_measurement_data(progressive=False)
-      except FrameError as e:
-        logger.debug("flush get_data: %s (expected if no data buffered)", e)
-      # Poll until running clears (typically 1-2 iterations).
-      for _ in range(20):
-        status = await self.request_machine_status()
-        if not status["running"]:
-          break
+      logger.warning("firmware has running=True at startup — attempting recovery")
+      await self._recover_running_state()
 
     # Populate configuration from EEPROM + firmware info.
     eeprom_info = await self.request_eeprom_data()
@@ -502,6 +499,75 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         await asyncio.sleep(0.5)
     assert last_err is not None
     raise last_err
+
+  async def _recover_running_state(self) -> None:
+    """Escalating recovery from a stuck ``running=True`` firmware state.
+
+    Called by ``setup()`` when the device reports ``running=True`` after
+    initialization.  Tries four strategies with increasing severity:
+
+      1. **GET_DATA standard** — flush any buffered measurement data.
+      2. **GET_DATA progressive** — may clear state when standard doesn't.
+      3. **Re-initialize** — reset the firmware state machine.
+      4. **USB reset** — chip-level FTDI reset, full reconfigure, re-init.
+
+    After each strategy, polls status up to 10 times.  Exits as soon as
+    ``running`` clears.
+
+    Raises:
+      RuntimeError: If ``running=True`` persists after all strategies.
+    """
+    strategies = [
+      ("GET_DATA standard", self._recovery_get_data_standard),
+      ("GET_DATA progressive", self._recovery_get_data_progressive),
+      ("re-initialize", self._recovery_reinitialize),
+      ("USB reset", self._recovery_usb_reset),
+    ]
+
+    for name, strategy in strategies:
+      logger.info("running-state recovery: trying %s", name)
+      try:
+        await strategy()
+      except Exception as e:  # pylint: disable=broad-except
+        logger.debug("running-state recovery: %s raised %s", name, e)
+
+      # Poll until running clears.
+      for _ in range(10):
+        status = await self.request_machine_status()
+        if not status["running"]:
+          logger.info("running-state recovery: cleared by %s", name)
+          return
+
+    raise RuntimeError(
+      "Device firmware is stuck with running=True after all recovery strategies. "
+      "This may require a longer power cycle (unplug USB for 30 seconds) or a "
+      "factory reset via the OEM MARS software."
+    )
+
+  async def _recovery_get_data_standard(self) -> None:
+    """Strategy 1: flush with standard GET_DATA (0x05 0x02, params 00...)."""
+    await self._request_measurement_data(progressive=False)
+
+  async def _recovery_get_data_progressive(self) -> None:
+    """Strategy 2: flush with progressive GET_DATA (params ff ff ff ff 00)."""
+    await self._request_measurement_data(progressive=True)
+
+  async def _recovery_reinitialize(self) -> None:
+    """Strategy 3: re-send the INITIALIZE command."""
+    await self.io.usb_purge_rx_buffer()
+    await self.initialize()
+
+  async def _recovery_usb_reset(self) -> None:
+    """Strategy 4: USB chip reset + full FTDI reconfigure + re-initialize."""
+    await self.io.usb_reset()
+    await asyncio.sleep(1.0)
+    await self.io.usb_purge_rx_buffer()
+    await self.io.usb_purge_tx_buffer()
+    await self.io.set_baudrate(125000)
+    await self.io.set_line_property(8, 0, 0)
+    await self.io.set_latency_timer(2)
+    await self.io.usb_purge_rx_buffer()
+    await self.initialize()
 
   # --------------------------------------------------------------------------
   # Low-level I/O

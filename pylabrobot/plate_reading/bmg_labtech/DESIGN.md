@@ -38,7 +38,7 @@ Verified against 6,780 pcap frames with zero failures.
   - Byte 0, bit 1: `standby`
   - Byte 1, bit 0: `valid` (status response validity)
   - Byte 1, bit 5: `busy`
-  - Byte 1, bit 4: `running`
+  - Byte 1, bit 4: `running` (can persist across power cycles — see Recovery below)
   - Byte 2, bit 0: `unread_data`
   - Byte 3, bit 6: `lid_open` (instrument lid, distinct from drawer)
   - Byte 3, bit 5: `initialized`
@@ -222,6 +222,18 @@ All dimensions in 0.01mm units (uint16 BE). Well mask is 384-bit big-endian.
 ### Spectral scans
 - **Status:** Not yet captured. Likely uses monochromator sweep with repeated
   RUN commands at different wavelengths.
+
+### Stuck `running=True` recovery
+- **Problem:** If a session is interrupted mid-measurement (kernel restart, USB
+  disconnect), the firmware can retain `running=True` across power cycles.
+  In this state it ignores drawer and measurement commands.
+- **Recovery:** `setup()` detects `running=True` and runs an escalating sequence:
+  1. GET_DATA standard (`05 02`, params `00 00 00 00 00`) — flush buffered data.
+  2. GET_DATA progressive (params `ff ff ff ff 00`) — alternate flush variant.
+  3. Re-initialize (`01 00`) — reset firmware state machine.
+  4. USB reset (`ftdi_usb_reset`) — chip-level reset + full FTDI reconfigure + re-init.
+- **Each step** polls status up to 10 times; exits as soon as `running` clears.
+- **If all fail:** `RuntimeError` is raised suggesting a longer power cycle or OEM software reset.
 
 ---
 
