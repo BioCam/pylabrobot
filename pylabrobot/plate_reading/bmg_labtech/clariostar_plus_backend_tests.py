@@ -2259,11 +2259,54 @@ class TestReadAbsorbanceIntegration(unittest.TestCase):
     mock.queue_response(
       ACK,  # RUN ack
       incomplete,  # progressive poll 1: 0/4
-      STATUS_IDLE,  # interleaved status
+      STATUS_BUSY,  # interleaved status — still measuring
       halfway,  # progressive poll 2: 2/4
-      STATUS_IDLE,  # interleaved status
+      STATUS_BUSY,  # interleaved status — still measuring
       complete,  # progressive poll 3: 4/4 → break
       complete,  # final standard request
+    )
+
+    results = asyncio.run(backend.read_absorbance(plate, wells, wavelength=600))
+    self.assertIsNotNone(results)
+    self.assertEqual(len(results), 1)
+
+  def test_polling_handles_firmware_counter_reset(self):
+    """Firmware resets progress to 0/0 after measurement — loop must still exit.
+
+    On real hardware the firmware can go from e.g. 364/392 directly to 0/0 without
+    ever reporting 392/392.  The polling loop detects this because the interleaved
+    status query shows busy=False once the measurement finishes.
+    """
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = [plate.get_item("A1")]
+
+    def _make_data_response(values_written: int, values_expected: int) -> bytes:
+      data_payload = bytearray(36 + 4 * 4 + 32)
+      data_payload[0] = 0x02
+      data_payload[1] = 0x05
+      data_payload[6] = 0x29
+      data_payload[7:9] = values_expected.to_bytes(2, "big")
+      data_payload[9:11] = values_written.to_bytes(2, "big")
+      data_payload[18:20] = (1).to_bytes(2, "big")
+      data_payload[20:22] = (1).to_bytes(2, "big")
+      for i in range(36, len(data_payload)):
+        data_payload[i] = 0x01
+      return _wrap_payload(bytes(data_payload))
+
+    expected = 12  # 1 well × 4 groups + 8 cal
+    partial = _make_data_response(values_written=8, values_expected=expected)
+    reset = _make_data_response(values_written=0, values_expected=0)  # firmware cleared
+    final = _make_data_response(values_written=expected, values_expected=expected)
+
+    mock.queue_response(
+      ACK,  # RUN ack
+      partial,  # progressive poll 1: 8/12
+      STATUS_BUSY,  # interleaved status — still measuring
+      reset,  # progressive poll 2: 0/0 → firmware reset counters
+      STATUS_IDLE,  # interleaved status — not busy → break
+      final,  # final standard request
     )
 
     results = asyncio.run(backend.read_absorbance(plate, wells, wavelength=600))

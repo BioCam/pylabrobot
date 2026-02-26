@@ -2107,6 +2107,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     # 2. Poll incrementally: request data (progressive), check progress,
     #    interleave status queries — matches Voyager protocol pattern.
+    #
+    # The firmware reports (values_written, values_expected) in each progressive
+    # data response.  Normally the loop breaks when written >= expected.  However,
+    # the firmware resets both counters to 0 once the measurement finishes, so it
+    # is possible to go from e.g. 364/392 directly to 0/0 without ever seeing
+    # 392/392.  When progress reports 0/0 we fall through to the interleaved
+    # status query and check the busy flag — if the device is no longer busy
+    # the measurement is complete.
     t0 = time.time()
     response = b""
     while True:
@@ -2129,9 +2137,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       if expected > 0 and written >= expected:
         break
 
-      # Interleave a status query between data polls (matches Voyager pattern)
+      # Interleave a status query between data polls (matches Voyager pattern).
+      # When the firmware resets counters to 0/0 after completing, the busy flag
+      # clears — use it as the definitive completion signal.
       try:
-        await self.request_machine_status()
+        status = await self.request_machine_status()
+        if not status["busy"]:
+          logger.info("measurement complete (device no longer busy)")
+          break
       except FrameError as e:
         logger.debug("interleaved status poll: bad frame (%s), ignoring", e)
 
