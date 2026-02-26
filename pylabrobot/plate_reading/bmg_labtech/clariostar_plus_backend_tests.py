@@ -271,7 +271,6 @@ class TestInitialize(unittest.TestCase):
     self.assertEqual(len(mock.written), 2)
     self.assertEqual(mock.written[1], COMMANDS["status"][1])
 
-
   def test_initialize_retries_on_frame_error(self):
     """After a power cycle the first response may be a stale 0x0D byte.
 
@@ -333,9 +332,9 @@ class TestRunningStateRecovery(unittest.TestCase):
     running_polls_10 = [STATUS_RUNNING] * 10
 
     mock.queue_response(
-      ACK,           # initialize()
-      STATUS_IDLE,   # _wait_until_machine_ready
-      STATUS_IDLE,   # poll-flush loop
+      ACK,  # initialize()
+      STATUS_IDLE,  # _wait_until_machine_ready
+      STATUS_IDLE,  # poll-flush loop
       STATUS_RUNNING,  # running-state check → enters recovery
       # Strategy 1: GET_DATA standard
       ACK,
@@ -344,9 +343,9 @@ class TestRunningStateRecovery(unittest.TestCase):
       ACK,
       *running_polls_10,
       # Strategy 3: re-initialize
-      ACK,           # initialize() ACK
-      STATUS_IDLE,   # _wait_until_machine_ready inside initialize()
-      STATUS_IDLE,   # recovery poll → running cleared
+      ACK,  # initialize() ACK
+      STATUS_IDLE,  # _wait_until_machine_ready inside initialize()
+      STATUS_IDLE,  # recovery poll → running cleared
       # Continue setup()
       _REAL_EEPROM_FRAME,
       _make_firmware_frame(1350),
@@ -364,9 +363,9 @@ class TestRunningStateRecovery(unittest.TestCase):
     running_polls_10 = [STATUS_RUNNING] * 10
 
     mock.queue_response(
-      ACK,           # initialize()
-      STATUS_IDLE,   # _wait_until_machine_ready
-      STATUS_IDLE,   # poll-flush loop
+      ACK,  # initialize()
+      STATUS_IDLE,  # _wait_until_machine_ready
+      STATUS_IDLE,  # poll-flush loop
       STATUS_RUNNING,  # running-state check → enters recovery
       # Strategy 1: GET_DATA standard
       ACK,
@@ -375,12 +374,12 @@ class TestRunningStateRecovery(unittest.TestCase):
       ACK,
       *running_polls_10,
       # Strategy 3: re-initialize
-      ACK,           # initialize() ACK
-      STATUS_IDLE,   # _wait_until_machine_ready inside initialize()
+      ACK,  # initialize() ACK
+      STATUS_IDLE,  # _wait_until_machine_ready inside initialize()
       *running_polls_10,
       # Strategy 4: USB reset + re-initialize
-      ACK,           # initialize() ACK
-      STATUS_IDLE,   # _wait_until_machine_ready inside initialize()
+      ACK,  # initialize() ACK
+      STATUS_IDLE,  # _wait_until_machine_ready inside initialize()
       *running_polls_10,
     )
     with self.assertRaises(RuntimeError) as ctx:
@@ -2944,7 +2943,7 @@ class TestSendCommandFrameRetry(unittest.TestCase):
 
     mock.queue_response(
       truncated,  # attempt 1: truncated → FrameError, retry
-      ACK,        # attempt 2: valid frame → success
+      ACK,  # attempt 2: valid frame → success
     )
     result = asyncio.run(
       backend.send_command(

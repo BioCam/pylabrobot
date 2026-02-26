@@ -732,9 +732,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
               pass
           logger.debug("send_command: no response on attempt %d/%d", attempt + 1, retries)
         else:
-          logger.warning(
-            "send_command: bad frame on attempt %d/%d (%s)", attempt + 1, retries, e
-          )
+          logger.warning("send_command: bad frame on attempt %d/%d (%s)", attempt + 1, retries, e)
         await self.io.usb_purge_rx_buffer()
         continue
       break
@@ -1957,9 +1955,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       c_hi = wl_cal[0]
 
       if report == "raw":
-        raw_flat: List[float] = [
-          float(samples[i + wl_idx * num_wells]) for i in range(num_wells)
-        ]
+        raw_flat: List[float] = [float(samples[i + wl_idx * num_wells]) for i in range(num_wells)]
         grid = self._map_readings_to_plate_grid(raw_flat, wells, plate)
         results.append(
           {
@@ -2148,7 +2144,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         ``shake_mode`` is set.
       settling_time_s: Wait time in seconds after shaking before reading
         (0.0-1.0). Required when ``shake_mode`` is set.
-      read_timeout: Timeout for the measurement. Defaults to self.read_timeout.
+      read_timeout: Optional safety timeout in seconds for the measurement
+        polling loop.  ``None`` (default) polls indefinitely until the device
+        signals completion — appropriate for long-running measurements
+        (spectral scans, large plates, extensive shaking) where duration
+        cannot be predicted from parameters alone.  Set a finite value only
+        when you need an upper bound; the coroutine can always be cancelled
+        externally (``Ctrl+C`` / ``asyncio.CancelledError``).
       wait: If True, poll until measurement completes and return results.
         If False, fire the measurement and return an empty list immediately.
 
@@ -2235,8 +2237,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if read_timeout is not None and read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
 
-    timeout = read_timeout if read_timeout is not None else self.read_timeout
-
     # 1. Build and send measurement parameters via send_command(RUN)
     measurement_params = self._build_absorbance_payload(
       plate,
@@ -2274,9 +2274,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     t0 = time.time()
     response = b""
     while True:
-      if time.time() - t0 > timeout:
+      if read_timeout is not None and time.time() - t0 > read_timeout:
         raise TimeoutError(
-          f"Measurement not complete after {timeout:.1f}s. Increase timeout via read_timeout=."
+          f"Measurement not complete after {read_timeout:.1f}s. "
+          f"Pass read_timeout=None to wait indefinitely, or increase the value."
         )
 
       # Progressive data request (ff ff ff ff 00)
