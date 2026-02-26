@@ -1,4 +1,40 @@
-2026-02-26 09:20:11,847 DEBUG FTDI device resolution: found 1 candidates for VID:PID 1027:47976, device_id None: None (VID:PID 0d8c:0014), SN0001 (VID:PID 0c45:636d), FT9NOXXH (VID:PID 0403:6001), BBWDU7AD (VID:PID 0856:ac11), None (VID:PID 2109:2817), FTEH6V0A (VID:PID 0403:6001), 430-2621 (VID:PID 0403:bb68), None (VID:PID 1a40:0101), None (VID:PID 1a86:8091), 1000480000.usb (VID:PID 1d6b:0002), xhci-hcd.1 (VID:PID 1d6b:0003), None (VID:PID 1a40:0101), None (VID:PID 413c:4503), xhci-hcd.1 (VID:PID 1d6b:0002), xhci-hcd.0 (VID:PID 1d6b:0003), None (VID:PID 413c:4503), 00 (VID:PID 08af:8000), xhci-hcd.0 (VID:PID 1d6b:0002)
-2026-02-26 09:20:11,867 INFO Successfully opened FTDI device: 430-2621
-2026-02-26 09:20:11,869 DEBUG sent 14 bytes: 02000e0c01000010020000002f0d
-2026-02-26 09:20:11,871 INFO read 1 bytes: 0d
+2026-02-26 09:26:28,549 DEBUG FTDI device resolution: found 1 candidates for VID:PID 1027:47976, device_id None: None (VID:PID 0d8c:0014), SN0001 (VID:PID 0c45:636d), FT9NOXXH (VID:PID 0403:6001), BBWDU7AD (VID:PID 0856:ac11), None (VID:PID 2109:2817), FTEH6V0A (VID:PID 0403:6001), 430-2621 (VID:PID 0403:bb68), None (VID:PID 1a40:0101), None (VID:PID 1a86:8091), 1000480000.usb (VID:PID 1d6b:0002), xhci-hcd.1 (VID:PID 1d6b:0003), None (VID:PID 1a40:0101), None (VID:PID 413c:4503), xhci-hcd.1 (VID:PID 1d6b:0002), xhci-hcd.0 (VID:PID 1d6b:0003), None (VID:PID 413c:4503), 00 (VID:PID 08af:8000), xhci-hcd.0 (VID:PID 1d6b:0002)
+2026-02-26 09:26:28,567 INFO Successfully opened FTDI device: 430-2621
+2026-02-26 09:26:28,571 DEBUG sent 14 bytes: 02000e0c01000010020000002f0d
+2026-02-26 09:26:28,573 INFO read 1 bytes: 0d
+2026-02-26 09:26:28,576 WARNING initialize: bad frame on attempt 1/5 (Response too short (1 bytes)), retrying
+2026-02-26 09:26:29,078 DEBUG sent 14 bytes: 02000e0c01000010020000002f0d
+2026-02-26 09:26:29,115 INFO read 41 bytes: 0200180c0115002600000300000000000d0200180c011500260000030000000000000000c00001250d
+2026-02-26 09:26:29,115 WARNING initialize: bad frame on attempt 2/5 (Size field says 24, got 41 bytes), retrying
+2026-02-26 09:26:29,617 DEBUG sent 14 bytes: 02000e0c01000010020000002f0d
+2026-02-26 09:26:29,655 INFO read 24 bytes: 0200180c011500260000030000000000000000c00001250d
+2026-02-26 09:26:29,655 WARNING _wait_until_machine_ready called without read_timeout, waiting indefinitely
+2026-02-26 09:26:29,656 DEBUG sent 9 bytes: 0200090c800000970d
+2026-02-26 09:26:29,693 INFO read 24 bytes: 0200180c011500260000c90000000000000000c00001eb0d
+2026-02-26 09:26:29,693 INFO status: {'standby': False, 'busy': False, 'running': True, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-02-26 09:26:29,694 DEBUG sent 9 bytes: 0200090c800000970d
+2026-02-26 09:26:29,731 INFO read 24 bytes: 0200180c011500260000c90000000000000000c00001eb0d
+2026-02-26 09:26:29,732 DEBUG sent 15 bytes: 02000f0c050700000000000000290d
+2026-02-26 09:26:29,803 INFO read 271 bytes: 02010f0c071500260000000100000a0101010100000100ee0200000f00e2030000000000000304000001000001020000000000000000000032000000000000000000000000000000000000000074006f0000000000000065000000dc050000000000000000f4010803a70408076009da08ac0d0000000000000000000000000000000000000000000000000100000001010000000000000001010000000000000012029806ae013d0a4605ee01fbff700c00000000a40058ff8e03f20460ff5511fe0b55118f1a170298065aff970668042603bc14b804080791009001463228460a0046071e0000000000000000002103d40628002c01900146001e00001411001209ac0d6009000000000020380d
+2026-02-26 09:26:29,803 INFO EEPROM: 263 bytes, head=071500260000000100000a0101010100
+2026-02-26 09:26:29,804 DEBUG sent 15 bytes: 02000f0c0509000000000000002b0d
+2026-02-26 09:26:29,843 INFO read 39 bytes: 0200270c0a150026000005464e6f7620323020323032300031313a35313a32310000010004fe0d
+2026-02-26 09:26:29,843 INFO CLARIOstar Plus (0x0026) fw 1.35 (Nov 20 2020 11:51:21) -- detection: absorbance, fluorescence, luminescence, alpha_technology
+2026-02-26 09:26:29,872 DEBUG sent 14 bytes: 02000e0c0301000000000000200d
+2026-02-26 09:26:29,908 INFO read 24 bytes: 0200180c011500260000c90000000000000000c00001eb0d
+2026-02-26 09:26:29,909 WARNING _wait_until_machine_ready called without read_timeout, waiting indefinitely
+2026-02-26 09:26:29,910 DEBUG sent 9 bytes: 0200090c800000970d
+2026-02-26 09:26:29,946 INFO read 24 bytes: 0200180c011500260000c90000000000000000c00001eb0d
+2026-02-26 09:26:29,948 INFO status: {'standby': False, 'busy': False, 'running': True, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-02-26 09:26:43,128 DEBUG sent 14 bytes: 02000e0c0301000000000000200d
+2026-02-26 09:26:43,166 INFO read 24 bytes: 0200180c011500260000c90000000000000000c00001eb0d
+2026-02-26 09:26:43,167 WARNING _wait_until_machine_ready called without read_timeout, waiting indefinitely
+2026-02-26 09:26:43,169 DEBUG sent 9 bytes: 0200090c800000970d
+2026-02-26 09:26:43,208 INFO read 24 bytes: 0200180c011500260000c90000000000000000c00001eb0d
+2026-02-26 09:26:43,210 INFO status: {'standby': False, 'busy': False, 'running': True, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-02-26 09:26:46,439 DEBUG sent 14 bytes: 02000e0c0301000000000000200d
+2026-02-26 09:26:46,475 INFO read 24 bytes: 0200180c011500260000c90000000000000000c00001eb0d
+2026-02-26 09:26:46,476 WARNING _wait_until_machine_ready called without read_timeout, waiting indefinitely
+2026-02-26 09:26:46,478 DEBUG sent 9 bytes: 0200090c800000970d
+2026-02-26 09:26:46,514 INFO read 24 bytes: 0200180c011500260000c90000000000000000c00001eb0d
+2026-02-26 09:26:46,515 INFO status: {'standby': False, 'busy': False, 'running': True, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
