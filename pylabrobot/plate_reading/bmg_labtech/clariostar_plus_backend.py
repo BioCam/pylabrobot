@@ -1672,6 +1672,87 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       retries=1 if progressive else 3,
     )
 
+  async def _retrieve_spectrum_pages(self, expected_total_values: int) -> List[bytes]:
+    """Retrieve all pages of spectrum data via repeated standard GET_DATA calls.
+
+    Spectrum measurements return paginated data: each standard GET_DATA call
+    returns one page containing u32 data values after a 36-byte header. Pages
+    are collected until the total number of u32 values meets or exceeds
+    ``expected_total_values``.
+
+    Page capacity varies by scan mode (~134 wl/page for point scan, ~156 for
+    spiral), so value-count-based termination is used instead of a fixed page
+    count.
+
+    Args:
+      expected_total_values: Total u32 values expected across all pages,
+        calculated as ``(num_wavelengths + 3) * (num_wells + 2)``.
+
+    Returns:
+      List of raw response payload bytes, one per page.
+    """
+    pages: List[bytes] = []
+    collected_values = 0
+    page_num = 0
+    while collected_values < expected_total_values:
+      page_num += 1
+      try:
+        page = await self._request_measurement_data(progressive=False)
+      except FrameError as e:
+        logger.warning("spectrum page %d: frame error (%s), stopping", page_num, e)
+        break
+      if not page or len(page) < 36:
+        logger.warning("spectrum page %d: response too short (%d bytes), stopping",
+                       page_num, len(page) if page else 0)
+        break
+      pages.append(page)
+      page_values = (len(page) - 36) // 4
+      collected_values += page_values
+      if logger.isEnabledFor(logging.INFO):
+        logger.info("spectrum page %d: %d values (%d/%d total)",
+                    page_num, page_values, collected_values, expected_total_values)
+    return pages
+
+  def _parse_spectrum_pages(
+    self,
+    pages: List[bytes],
+    plate: Plate,
+    wells: List[Well],
+    wavelengths: List[int],
+    report: Literal["optical_density", "transmittance", "raw"] = "optical_density",
+  ) -> List[Dict]:
+    """Parse paginated spectrum response into per-wavelength result dicts.
+
+    Spectrum data spans multiple pages, each with a 36-byte header followed
+    by u32 data values. This method:
+
+    1. Keeps page 1's header (36 bytes) as the virtual header.
+    2. Strips the 36-byte header from each subsequent page and concatenates
+       the data sections.
+    3. Delegates to ``_parse_absorbance_response`` for group detection,
+       extraction, and OD/transmittance/raw computation.
+
+    The concatenated layout is identical to a single discrete response with
+    ``num_wl_resp=1`` and ``(num_wl + 3) × (num_wells + 2)`` total u32
+    values, which the existing parser handles directly.
+
+    Args:
+      pages: List of raw response payloads from ``_retrieve_spectrum_pages``.
+      plate: The plate used for the measurement.
+      wells: Wells that were measured.
+      wavelengths: List of wavelengths in nm (one per spectrum step).
+      report: Output format.
+
+    Returns:
+      List of result dicts, one per wavelength.
+    """
+    if not pages:
+      raise ValueError("No spectrum pages to parse.")
+
+    # Build virtual payload: full page 1 + data sections from remaining pages
+    virtual_payload = pages[0] + b"".join(page[36:] for page in pages[1:])
+    return self._parse_absorbance_response(virtual_payload, plate, wells, wavelengths, report=report)
+
   @staticmethod
   def _measurement_progress(payload: bytes) -> Tuple[int, int]:
     """Extract (values_written, values_expected) from a DATA response header.
@@ -1821,6 +1902,125 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       + pause
       + num_wl
       + wl_data
+      + ref
+      + settling_flag
+      + settling_time
+      + trailer
+      + flash_bytes
+      + final
+    )
+
+    return payload
+
+  def _build_absorbance_spectrum_payload(
+    self,
+    plate: Plate,
+    wells: List[Well],
+    start_wavelength: int,
+    end_wavelength: int,
+    step_size: int,
+    flashes: int = 5,
+    well_scan: str = "point",
+    scan_diameter_mm: int = 3,
+    unidirectional: bool = True,
+    vertical: bool = True,
+    corner: str = "TL",
+    shake_mode: Optional[str] = None,
+    shake_speed_rpm: int = 0,
+    shake_duration_s: int = 0,
+    settling_time_s: float = 0.0,
+    pause_time: Optional[int] = None,
+  ) -> bytes:
+    """Build the payload for a MEASUREMENT_RUN absorbance spectrum command.
+
+    Mirrors ``_build_absorbance_payload`` but encodes spectrum parameters:
+    ``num_wl=0x00`` signals spectrum mode, followed by start/end/step as
+    u16 BE (nm x 10). Only ``_CORE_REFERENCE`` (9 bytes) is included —
+    ``_PRE_REFERENCE`` is not used because its 4 bytes are replaced by the
+    end + step fields in the wavelength encoding.
+
+    Verified byte-for-byte against H01/H02/H03/H04/H05 pcap captures.
+
+    Args:
+      start_wavelength: Start wavelength in nm (220-1000).
+      end_wavelength: End wavelength in nm (220-1000), must be > start_wavelength.
+      step_size: Step size in nm (1, 2, 5, 10, etc.).
+      pause_time: Override the pause_time byte directly (for pcap ground truth
+        tests). When None (default), computed from settling_time_s.
+
+    Returns:
+      Payload bytes (same size as discrete for point scan: 135 bytes).
+    """
+    # 1. Plate geometry + well mask (63 bytes)
+    plate_bytes = self._plate_field(plate, wells)
+
+    # 2. Scan direction (1 byte)
+    scan_byte = bytes([self._scan_direction_byte(unidirectional, vertical, corner)])
+
+    # 3. Pre-separator block (31 bytes)
+    scan_mode_map = {
+      "point": self.WellScanMode.POINT,
+      "orbital": self.WellScanMode.ORBITAL,
+      "spiral": self.WellScanMode.SPIRAL,
+    }
+    wsm = scan_mode_map[well_scan]
+    pre_sep = self._pre_separator_block(
+      modality=self.Modality.ABSORBANCE,
+      well_scan_mode=wsm,
+      shake_mode=shake_mode,
+      shake_speed_rpm=shake_speed_rpm,
+      shake_duration_s=shake_duration_s,
+    )
+
+    # 4. Separator (4 bytes)
+    sep = _SEPARATOR
+
+    # 5. Well scan field (0 or 5 bytes)
+    well_0 = plate.get_all_items()[0]
+    well_diam_100 = int(round(min(well_0.get_size_x(), well_0.get_size_y()) * 100))
+    wsf = self._well_scan_field(wsm, self.Modality.ABSORBANCE, scan_diameter_mm, well_diam_100)
+
+    # 6. Pause time (1 byte)
+    if pause_time is None:
+      pause_time = max(int(settling_time_s * 50), 1) if settling_time_s > 0 else 0x05
+    pause = bytes([pause_time])
+
+    # 7. Spectrum mode: num_wl=0x00, then start/end/step as u16 BE (nm × 10)
+    num_wl = b"\x00"
+    start_field = (start_wavelength * 10).to_bytes(2, "big")
+    end_field = (end_wavelength * 10).to_bytes(2, "big")
+    step_field = (step_size * 10).to_bytes(2, "big")
+
+    # 8. Reference block: _CORE_REFERENCE only (9 bytes)
+    # In discrete mode, _PRE_REFERENCE (4 bytes) + _CORE_REFERENCE (9 bytes) = 13 bytes.
+    # In spectrum mode, the 4 PRE_REFERENCE bytes are replaced by end+step fields above,
+    # so only _CORE_REFERENCE is appended here.
+    ref = _CORE_REFERENCE
+
+    # 9. Settling fields (1 + 2 bytes)
+    settling_flag = b"\x00"
+    settling_time = b"\x00\x00"
+
+    # 10. Trailer (11 bytes)
+    trailer = _TRAILER
+
+    # 11. Flashes (2 bytes u16 BE)
+    flash_bytes = flashes.to_bytes(2, "big")
+
+    # 12. Final bytes
+    final = b"\x00\x01\x00"
+
+    payload = (
+      plate_bytes
+      + scan_byte
+      + pre_sep
+      + sep
+      + wsf
+      + pause
+      + num_wl
+      + start_field
+      + end_field
+      + step_field
       + ref
       + settling_flag
       + settling_time
@@ -2349,7 +2549,20 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     else:
       return await self.request_absorbance_results(plate, wells, wls, report=report)
 
-  # Absorbance Spectrum Measurement (not yet implemented)
+  # --------------------------------------------------------------------------
+  # Feature: Absorbance Spectrum Measurement
+  # --------------------------------------------------------------------------
+  #
+  # Spectrum mode differs from discrete absorbance in three key ways:
+  #   1. Payload: num_wl=0x00 signals spectrum mode; wavelength field encodes
+  #      start/end/step instead of discrete values.
+  #   2. Polling: Status-only polling during measurement (no progressive GET_DATA).
+  #   3. Data retrieval: Paginated — repeated standard GET_DATA calls, each
+  #      returning a page of u32 data values (capacity varies by scan mode).
+  #
+  # Pages are concatenated (stripping 36-byte headers from pages 2+) to form
+  # a virtual payload identical in layout to a discrete response, then parsed
+  # by the same _parse_absorbance_response pipeline.
 
   async def read_absorbance_spectrum(
     self,
@@ -2358,8 +2571,206 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     start_wavelength: int,
     end_wavelength: int,
     step_size: int,
+    *,
+    report: Literal["optical_density", "transmittance", "raw"] = "optical_density",
+    flashes: int = 5,
+    well_scan: str = "point",
+    scan_diameter_mm: int = 3,
+    unidirectional: bool = True,
+    vertical: bool = True,
+    corner: str = "TL",
+    shake_mode: Optional[str] = None,
+    shake_speed_rpm: Optional[int] = None,
+    shake_duration_s: Optional[int] = None,
+    settling_time_s: Optional[float] = None,
+    read_timeout: Optional[float] = 7200,
+    wait: bool = True,
   ) -> List[Dict]:
-    raise NotImplementedError("Absorbance spectrum not yet implemented for CLARIOstar Plus.")
+    """Measure absorbance spectrum across a wavelength range.
+
+    Scans all wells at each wavelength from ``start_wavelength`` to
+    ``end_wavelength`` in increments of ``step_size``. Returns one result
+    dict per wavelength.
+
+    Protocol differences from ``read_absorbance`` (discrete):
+      - Payload encodes start/end/step instead of discrete wavelength list.
+      - No progressive data polling during measurement — status-only polling.
+      - Data retrieval is paginated: multiple GET_DATA calls, each returning
+        data for ~156 wavelengths.
+
+    Args:
+      plate: The plate to measure.
+      wells: Wells to measure.
+      start_wavelength: Start of scan range in nm (220-1000).
+      end_wavelength: End of scan range in nm (220-1000), must be > start.
+      step_size: Wavelength increment in nm. OEM-verified values: 1, 5.
+      report: Output format — ``"optical_density"`` (default), ``"transmittance"``,
+        or ``"raw"``.
+      flashes: Flashes per well per wavelength (default 5). OEM captures use 5.
+      well_scan: ``"point"`` (default), ``"orbital"``, or ``"spiral"``.
+      scan_diameter_mm: Scan diameter in mm for orbital/spiral modes.
+      unidirectional: If True, scan wells in one direction only.
+      vertical: If True, scan columns first (top to bottom).
+      corner: Starting corner: ``"TL"``, ``"TR"``, ``"BL"``, or ``"BR"``.
+      shake_mode: Shake plate before reading. None = no shake.
+      shake_speed_rpm: Shake speed in RPM (multiples of 100, 100-700).
+      shake_duration_s: Shake duration in seconds.
+      settling_time_s: Wait time after shaking (0.0-1.0 s).
+      read_timeout: Safety timeout in seconds (default 7200 = 2 hours).
+        Spectrum measurements can take significantly longer than discrete.
+      wait: If True, poll until complete and return results. If False, fire
+        measurement and return empty list.
+
+    Returns:
+      List of result dicts when wait=True, one per wavelength. Each dict has:
+        ``"wavelength"``: int (nm),
+        ``"time"``: float (epoch seconds),
+        ``"temperature"``: Optional[float] (°C or None),
+        ``"data"``: List[List[Optional[float]]] (2D grid, rows x cols)
+      When report="raw", each dict also includes:
+        ``"references"``: List[int] (per-well reference detector counts),
+        ``"chromatic_cal"``: Tuple[int, int] (hi, lo calibration),
+        ``"reference_cal"``: Tuple[int, int] (hi, lo reference calibration)
+      Empty list when wait=False.
+    """
+    # --- input validation ---
+    if not 220 <= start_wavelength <= 1000:
+      raise ValueError(
+        f"start_wavelength must be 220-1000 nm, got {start_wavelength}."
+      )
+    if not 220 <= end_wavelength <= 1000:
+      raise ValueError(
+        f"end_wavelength must be 220-1000 nm, got {end_wavelength}."
+      )
+    if end_wavelength <= start_wavelength:
+      raise ValueError(
+        f"end_wavelength ({end_wavelength}) must be > start_wavelength ({start_wavelength})."
+      )
+    if step_size < 1:
+      raise ValueError(f"step_size must be >= 1 nm, got {step_size}.")
+    if (end_wavelength - start_wavelength) % step_size != 0:
+      raise ValueError(
+        f"step_size ({step_size}) must evenly divide the range "
+        f"({end_wavelength} - {start_wavelength} = {end_wavelength - start_wavelength} nm)."
+      )
+
+    _flash_limits = {"point": (1, 200), "orbital": (1, 44), "spiral": (1, 127)}
+    valid_well_scans = tuple(_flash_limits)
+    if well_scan not in valid_well_scans:
+      raise ValueError(f"well_scan must be one of {valid_well_scans}, got {well_scan!r}.")
+
+    lo, hi = _flash_limits[well_scan]
+    if not lo <= flashes <= hi:
+      raise ValueError(f"flashes must be {lo}-{hi} for {well_scan} mode, got {flashes}.")
+
+    if well_scan not in ("point",) and not 1 <= scan_diameter_mm <= 6:
+      raise ValueError(
+        f"scan_diameter_mm must be 1-6 for {well_scan} mode, got {scan_diameter_mm}."
+      )
+
+    valid_corners = ("TL", "TR", "BL", "BR")
+    if corner not in valid_corners:
+      raise ValueError(f"corner must be one of {valid_corners}, got {corner!r}.")
+
+    valid_reports = ("optical_density", "transmittance", "raw")
+    if report not in valid_reports:
+      raise ValueError(f"report must be one of {valid_reports}, got {report!r}.")
+
+    valid_shake_modes = (None, "orbital", "linear", "double_orbital")
+    if shake_mode not in valid_shake_modes:
+      raise ValueError(f"shake_mode must be one of {valid_shake_modes}, got {shake_mode!r}.")
+    if shake_mode is not None:
+      if shake_speed_rpm is None:
+        raise ValueError("shake_speed_rpm is required when shake_mode is set.")
+      if shake_duration_s is None:
+        raise ValueError("shake_duration_s is required when shake_mode is set.")
+      if settling_time_s is None:
+        raise ValueError("settling_time_s is required when shake_mode is set.")
+      if shake_speed_rpm < 100 or shake_speed_rpm > 700 or shake_speed_rpm % 100 != 0:
+        raise ValueError(
+          f"shake_speed_rpm must be a multiple of 100 in range 100-700, got {shake_speed_rpm}."
+        )
+      if not 0 < shake_duration_s <= 65535:
+        raise ValueError(
+          f"shake_duration_s must be 1-65535 when shake_mode is set, got {shake_duration_s}."
+        )
+      if not 0 <= settling_time_s <= 1:
+        raise ValueError(
+          f"settling_time_s must be 0-1 (MARS range 0.0-1.0 s), got {settling_time_s}."
+        )
+    else:
+      if shake_speed_rpm is not None:
+        raise ValueError("shake_speed_rpm must be None when shake_mode is None.")
+      if shake_duration_s is not None:
+        raise ValueError("shake_duration_s must be None when shake_mode is None.")
+      if settling_time_s is not None:
+        raise ValueError("settling_time_s must be None when shake_mode is None.")
+
+    if read_timeout is not None and read_timeout <= 0:
+      raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
+
+    # 1. Build and send measurement payload
+    num_wavelengths = (end_wavelength - start_wavelength) // step_size + 1
+    measurement_params = self._build_absorbance_spectrum_payload(
+      plate,
+      wells,
+      start_wavelength,
+      end_wavelength,
+      step_size,
+      flashes=flashes,
+      well_scan=well_scan,
+      scan_diameter_mm=scan_diameter_mm,
+      unidirectional=unidirectional,
+      vertical=vertical,
+      corner=corner,
+      shake_mode=shake_mode,
+      shake_speed_rpm=shake_speed_rpm if shake_speed_rpm is not None else 0,
+      shake_duration_s=shake_duration_s if shake_duration_s is not None else 0,
+      settling_time_s=settling_time_s if settling_time_s is not None else 0.0,
+    )
+    await self.send_command(
+      command_family=self.CommandFamily.RUN,
+      parameters=measurement_params,
+    )
+
+    if not wait:
+      return []
+
+    # 2. Status-only polling loop (no progressive GET_DATA for spectrum)
+    t0 = time.time()
+    while True:
+      if read_timeout is not None and time.time() - t0 > read_timeout:
+        raise TimeoutError(
+          f"Spectrum measurement not complete after {read_timeout:.1f}s. "
+          f"Pass read_timeout=None to wait indefinitely, or increase the value."
+        )
+
+      try:
+        status = await self.request_machine_status()
+        if not status["busy"]:
+          logger.info("spectrum measurement complete (device no longer busy)")
+          break
+      except FrameError as e:
+        logger.warning("spectrum status poll: bad frame (%s), retrying", e)
+
+      if self.measurement_poll_interval > 0:
+        await asyncio.sleep(self.measurement_poll_interval)
+
+    # 3. Retrieve paginated spectrum data
+    # Total u32 values = (num_wl + 3) × (num_wells + 2), matching the discrete
+    # absorbance formula. The "+3" accounts for chrom2, chrom3, and reference
+    # groups; the "+2" accounts for calibration pairs per group.
+    num_wells = len(wells)
+    expected_total_values = (num_wavelengths + 3) * (num_wells + 2)
+    pages = await self._retrieve_spectrum_pages(expected_total_values)
+
+    if not pages:
+      logger.warning("spectrum: no data pages retrieved")
+      return []
+
+    # 4. Parse pages into per-wavelength results
+    wavelengths = [start_wavelength + i * step_size for i in range(num_wavelengths)]
+    return self._parse_spectrum_pages(pages, plate, wells, wavelengths, report=report)
 
   # --------------------------------------------------------------------------
   # Feature: Fluorescence Measurement (not yet implemented)

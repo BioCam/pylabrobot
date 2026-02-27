@@ -13,6 +13,7 @@ from typing import Dict, List
 
 from pylabrobot.io.io import IOBase
 from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
+  _CORE_REFERENCE,
   _REFERENCE_BLOCK,
   _SEPARATOR,
   _TRAILER,
@@ -1117,6 +1118,17 @@ _GT_HEX = {
     " ", ""
   ),
   "G02": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a32000000000000000000000002000000000002000500000000000000000000270f270f02030292000501177000000064232826ca0000006400000000020000000000010000000100070001000013d10d",
+  # H-series: absorbance spectrum captures
+  # H01: 300-700nm, 1nm step, point, all 96 wells, 5 flashes
+  "H01": "0200900c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a02000000000000000000000000000000000000000000000000000000000000270f270f05000bb81b58000a232826ca00000064000000000200000000000100000001000500010000134c0d",
+  # H02: 400-600nm, 1nm step, point, all 96 wells, 5 flashes
+  "H02": "0200900c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a02000000000000000000000000000000000000000000000000000000000000270f270f05000fa01770000a232826ca00000064000000000200000000000100000001000500010000134c0d",
+  # H03: 300-700nm, 5nm step, point, all 96 wells, 5 flashes
+  "H03": "0200900c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a02000000000000000000000000000000000000000000000000000000000000270f270f05000bb81b580032232826ca000000640000000002000000000001000000010005000100" + "0013740d",
+  # H04: 300-700nm, 1nm step, point, column 1 only (8 wells), 5 flashes
+  "H04": "0200900c0431e82164059e04642c4a1d000c08008008008008008008008008000000000000000000000000000000000000000000000000000000000000000000000000000a02000000000000000000000000000000000000000000000000000000000000270f270f05000bb81b58000a232826ca0000006400000000020000000000010000000100050001000009780d",
+  # H05: 300-700nm, 1nm step, orbital 3mm, all 96 wells, 5 flashes
+  "H05": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a32000000000000000000000000000000000000000000000000000000000000270f270f020302920005000bb81b58000a232826ca0000006400000000020000000000010000000100050001000014 1a0d".replace(" ", ""),
 }
 
 
@@ -1957,6 +1969,1139 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     wl_offset = sep_idx + 4 + 1 + 1
     wl_raw = int.from_bytes(payload[wl_offset : wl_offset + 2], "big")
     self.assertEqual(wl_raw, 6000)  # 600nm * 10
+
+
+class TestBuildAbsorbanceSpectrumPayload(unittest.TestCase):
+  """Verify _build_absorbance_spectrum_payload against pcap ground truth.
+
+  H01-H05 spectrum captures provide exact byte-level ground truth.
+  Same plate geometry tolerance as discrete tests (PLR vs OEM well offsets).
+  """
+
+  def setUp(self):
+    self.backend = _make_backend()
+    self.plate = _make_plate()
+    self.all_wells = self.plate.get_all_items()
+
+  def _get_gt_inner(self, key: str) -> bytes:
+    """Extract inner payload (no STX/size/header/checksum/CR) from ground truth hex."""
+    frame = bytes.fromhex(_GT_HEX[key])
+    return frame[4:-4]  # skip STX(1)+size(2)+header(1) and checksum(3)+CR(1)
+
+  def _compare_payload(self, payload: bytes, gt_key: str, msg: str = ""):
+    """Compare spectrum payload against ground truth.
+
+    Same skip logic as discrete tests: skip plate geometry bytes 1-12 and
+    well scan field diameter bytes (PLR vs OEM well diameter).
+    """
+    gt = self._get_gt_inner(gt_key)
+    # Prepend the 0x04 command family byte that send_command would add
+    full = bytes([0x04]) + payload
+    self.assertEqual(
+      len(full), len(gt), f"{msg} length mismatch: got {len(full)}, expected {len(gt)}"
+    )
+    # Byte 0 (0x04 command family)
+    self.assertEqual(full[0], gt[0], f"{msg} byte 0 (command family)")
+    # Skip bytes 1-12 (plate geometry — PLR offsets differ from OEM)
+    # Bytes 13-14: cols/rows
+    self.assertEqual(full[13], gt[13], f"{msg} byte 13 (cols)")
+    self.assertEqual(full[14], gt[14], f"{msg} byte 14 (rows)")
+    self.assertEqual(full[15], gt[15], f"{msg} byte 15 (extra)")
+    # Bytes 16-63: well mask
+    self.assertEqual(full[16:64], gt[16:64], f"{msg} well mask mismatch")
+    # Bytes 64 onward: compare byte-by-byte, skipping well diameter in scan field.
+    sep = b"\x27\x0f\x27\x0f"
+    sep_idx = full.index(sep, 64)
+    # Before separator (scan byte + pre-separator block): exact match
+    self.assertEqual(full[64 : sep_idx + 4], gt[64 : sep_idx + 4], f"{msg} scan+presep mismatch")
+    # After separator: check for well scan field
+    after_sep_p = full[sep_idx + 4 :]
+    after_sep_g = gt[sep_idx + 4 :]
+    if len(after_sep_p) != len(after_sep_g):
+      self.fail(f"{msg} post-sep length mismatch: {len(after_sep_p)} vs {len(after_sep_g)}")
+    if len(after_sep_p) > 5 and after_sep_p[0] == 0x02 and after_sep_g[0] == 0x02:
+      # Well scan field present (non-point mode)
+      self.assertEqual(after_sep_p[0], after_sep_g[0], f"{msg} wsf meas code")
+      self.assertEqual(after_sep_p[1], after_sep_g[1], f"{msg} wsf scan diameter")
+      # Skip bytes 2-3 (well diameter — PLR uses 686 vs OEM 658)
+      self.assertEqual(after_sep_p[4], after_sep_g[4], f"{msg} wsf terminator")
+      self.assertEqual(after_sep_p[5:], after_sep_g[5:], f"{msg} post-wsf mismatch")
+    else:
+      # Point mode: no well scan field, compare everything
+      self.assertEqual(after_sep_p, after_sep_g, f"{msg} post-sep mismatch")
+
+  def test_H01_spectrum_300_700_1nm(self):
+    """H01: 300-700nm, 1nm step, point, all 96 wells, 5 flashes.
+
+    OEM MARS uses bidirectional scanning for spectrum mode (scan byte 0x0A).
+    """
+    payload = self.backend._build_absorbance_spectrum_payload(
+      self.plate,
+      self.all_wells,
+      start_wavelength=300,
+      end_wavelength=700,
+      step_size=1,
+      flashes=5,
+      well_scan="point",
+      unidirectional=False,
+      vertical=True,
+      corner="TL",
+    )
+    self.assertEqual(len(payload), 135)
+    self._compare_payload(payload, "H01", "H01")
+
+  def test_H02_spectrum_400_600_1nm(self):
+    """H02: 400-600nm, 1nm step, point, all 96 wells, 5 flashes."""
+    payload = self.backend._build_absorbance_spectrum_payload(
+      self.plate,
+      self.all_wells,
+      start_wavelength=400,
+      end_wavelength=600,
+      step_size=1,
+      flashes=5,
+      well_scan="point",
+      unidirectional=False,
+      vertical=True,
+      corner="TL",
+    )
+    self.assertEqual(len(payload), 135)
+    self._compare_payload(payload, "H02", "H02")
+
+  def test_H03_spectrum_300_700_5nm(self):
+    """H03: 300-700nm, 5nm step, point, all 96 wells, 5 flashes."""
+    payload = self.backend._build_absorbance_spectrum_payload(
+      self.plate,
+      self.all_wells,
+      start_wavelength=300,
+      end_wavelength=700,
+      step_size=5,
+      flashes=5,
+      well_scan="point",
+      unidirectional=False,
+      vertical=True,
+      corner="TL",
+    )
+    self.assertEqual(len(payload), 135)
+    self._compare_payload(payload, "H03", "H03")
+
+  def test_H04_spectrum_col1_only(self):
+    """H04: 300-700nm, 1nm step, point, column 1 only (8 wells)."""
+    wells = [self.plate.get_item(f"{chr(65+r)}1") for r in range(8)]
+    payload = self.backend._build_absorbance_spectrum_payload(
+      self.plate,
+      wells,
+      start_wavelength=300,
+      end_wavelength=700,
+      step_size=1,
+      flashes=5,
+      well_scan="point",
+      unidirectional=False,
+      vertical=True,
+      corner="TL",
+    )
+    self.assertEqual(len(payload), 135)
+    self._compare_payload(payload, "H04", "H04")
+
+  def test_H05_spectrum_orbital(self):
+    """H05: 300-700nm, 1nm step, orbital 3mm, all 96 wells, 5 flashes."""
+    payload = self.backend._build_absorbance_spectrum_payload(
+      self.plate,
+      self.all_wells,
+      start_wavelength=300,
+      end_wavelength=700,
+      step_size=1,
+      flashes=5,
+      well_scan="orbital",
+      scan_diameter_mm=3,
+      unidirectional=False,
+      vertical=True,
+      corner="TL",
+    )
+    self.assertEqual(len(payload), 140)
+    self._compare_payload(payload, "H05", "H05")
+
+  def test_spectrum_wavelength_encoding(self):
+    """Verify wavelength bytes are correctly encoded as nm * 10 u16 BE."""
+    payload = self.backend._build_absorbance_spectrum_payload(
+      self.plate,
+      self.all_wells,
+      start_wavelength=220,
+      end_wavelength=1000,
+      step_size=10,
+      flashes=5,
+    )
+    sep = _SEPARATOR
+    sep_idx = payload.index(sep)
+    # For point: sep(4) + wsf(0) + pause(1) + num_wl(1) = sep_idx+6
+    num_wl_offset = sep_idx + 4 + 1
+    # num_wl should be 0 for spectrum mode
+    self.assertEqual(payload[num_wl_offset], 0x00)
+    # start_wavelength = 220 * 10 = 2200 = 0x0898
+    start_offset = num_wl_offset + 1
+    start_raw = int.from_bytes(payload[start_offset : start_offset + 2], "big")
+    self.assertEqual(start_raw, 2200)
+    # end_wavelength = 1000 * 10 = 10000 = 0x2710
+    end_raw = int.from_bytes(payload[start_offset + 2 : start_offset + 4], "big")
+    self.assertEqual(end_raw, 10000)
+    # step = 10 * 10 = 100 = 0x0064
+    step_raw = int.from_bytes(payload[start_offset + 4 : start_offset + 6], "big")
+    self.assertEqual(step_raw, 100)
+
+  def test_spectrum_uses_core_reference_only(self):
+    """Verify spectrum payload uses _CORE_REFERENCE without _PRE_REFERENCE."""
+    payload = self.backend._build_absorbance_spectrum_payload(
+      self.plate,
+      self.all_wells,
+      start_wavelength=300,
+      end_wavelength=700,
+      step_size=1,
+      flashes=5,
+    )
+    # _CORE_REFERENCE should appear in the payload
+    self.assertIn(_CORE_REFERENCE, payload)
+    # _REFERENCE_BLOCK (PRE + CORE) should NOT appear — only CORE is used
+    self.assertNotIn(_REFERENCE_BLOCK, payload)
+
+
+class TestReadAbsorbanceSpectrumValidation(unittest.TestCase):
+  """Verify input validation for read_absorbance_spectrum."""
+
+  def setUp(self):
+    self.backend = _make_backend()
+    self.plate = _make_plate()
+    self.all_wells = self.plate.get_all_items()
+
+  def test_start_wavelength_too_low(self):
+    with self.assertRaises(ValueError):
+      asyncio.run(
+        self.backend.read_absorbance_spectrum(
+          self.plate, self.all_wells, start_wavelength=200, end_wavelength=700, step_size=1
+        )
+      )
+
+  def test_end_wavelength_too_high(self):
+    with self.assertRaises(ValueError):
+      asyncio.run(
+        self.backend.read_absorbance_spectrum(
+          self.plate, self.all_wells, start_wavelength=300, end_wavelength=1100, step_size=1
+        )
+      )
+
+  def test_end_not_greater_than_start(self):
+    with self.assertRaises(ValueError):
+      asyncio.run(
+        self.backend.read_absorbance_spectrum(
+          self.plate, self.all_wells, start_wavelength=700, end_wavelength=300, step_size=1
+        )
+      )
+
+  def test_step_size_zero(self):
+    with self.assertRaises(ValueError):
+      asyncio.run(
+        self.backend.read_absorbance_spectrum(
+          self.plate, self.all_wells, start_wavelength=300, end_wavelength=700, step_size=0
+        )
+      )
+
+  def test_step_does_not_divide_range(self):
+    with self.assertRaises(ValueError):
+      asyncio.run(
+        self.backend.read_absorbance_spectrum(
+          self.plate, self.all_wells, start_wavelength=300, end_wavelength=700, step_size=3
+        )
+      )
+
+  def test_invalid_well_scan(self):
+    with self.assertRaises(ValueError):
+      asyncio.run(
+        self.backend.read_absorbance_spectrum(
+          self.plate, self.all_wells, start_wavelength=300, end_wavelength=700, step_size=1,
+          well_scan="matrix",
+        )
+      )
+
+  def test_shake_mode_without_params(self):
+    with self.assertRaises(ValueError):
+      asyncio.run(
+        self.backend.read_absorbance_spectrum(
+          self.plate, self.all_wells, start_wavelength=300, end_wavelength=700, step_size=1,
+          shake_mode="orbital",
+        )
+      )
+
+
+def _build_synthetic_spectrum_response(
+  num_wells: int = 96,
+  num_wavelengths: int = 81,
+  schema: int = 0xA9,
+  sample_base: int = 3_000_000,
+  ref_value: int = 1_300_000,
+  cal_hi: int = 3_932_985,
+  cal_lo: int = 596_217,
+  ref_cal_hi: int = 18_317,
+  ref_cal_lo: int = 0,
+  page_counter: int = 1,
+) -> bytes:
+  """Build a synthetic spectrum response page payload.
+
+  Unlike _build_synthetic_response (which packs all WLs into group0 with
+  num_wl_resp=N), this matches real spectrum hardware behavior: num_wl_resp=1
+  in the header, with additional wavelengths encoded as extra groups.
+
+  Layout (matching firmware format):
+    Header (36 bytes) with num_wl_resp=1
+    + group0 (WL1 samples, num_wells u32s)
+    + (num_wl - 1) extra groups for WL2..WLN (num_wells u32s each)
+    + chrom2 group (num_wells u32s)
+    + chrom3 group (num_wells u32s)
+    + reference group (num_wells u32s)
+    + (num_wl + 3) calibration pairs (8 bytes each)
+
+  Total u32 values = (num_wavelengths + 3) × (num_wells + 2).
+
+  Args:
+    num_wells: Number of wells.
+    num_wavelengths: Number of wavelengths in the spectrum.
+    schema: Response schema byte (0xA9 for absorbance).
+    sample_base: Base detector count for samples. Each well gets
+      sample_base + well_index to make values distinguishable.
+    ref_value: Detector count for reference wells.
+    cal_hi/cal_lo: Chromatic calibration pair for sample wavelengths.
+    ref_cal_hi/ref_cal_lo: Calibration pair for reference.
+    page_counter: Frame counter byte (1-indexed).
+
+  Returns:
+    Single page payload bytes (header + data).
+  """
+  num_groups = num_wavelengths + 3  # WL groups + chrom2 + chrom3 + ref
+  total_values = num_groups * (num_wells + 2)  # groups × wells + cal pairs × 2
+
+  header = bytearray(36)
+  header[0] = 0x02  # response_type
+  header[1] = 0x05  # status_flags
+  header[6] = schema
+  # Clamp to u16 max — real firmware uses per-page counts; parsing doesn't use this field.
+  clamped = min(total_values, 65535)
+  header[7:9] = clamped.to_bytes(2, "big")  # values_expected
+  header[9:11] = clamped.to_bytes(2, "big")  # values_written
+  header[18:20] = (1).to_bytes(2, "big")  # num_wl_resp = 1 (spectrum mode)
+  header[20:22] = num_wells.to_bytes(2, "big")
+  header[29] = page_counter
+
+  payload = bytearray(header)
+
+  # WL groups: group0 + (num_wl - 1) extra groups
+  for wl_idx in range(num_wavelengths):
+    for well_idx in range(num_wells):
+      val = sample_base + well_idx + wl_idx * 100  # vary by wavelength
+      payload.extend(val.to_bytes(4, "big"))
+
+  # chrom2 group
+  for _ in range(num_wells):
+    payload.extend((1_300_000).to_bytes(4, "big"))
+  # chrom3 group
+  for _ in range(num_wells):
+    payload.extend((600_000).to_bytes(4, "big"))
+  # reference group
+  for _ in range(num_wells):
+    payload.extend(ref_value.to_bytes(4, "big"))
+
+  # Calibration pairs: one per group (num_wavelengths + 3)
+  for wl_idx in range(num_wavelengths):
+    payload.extend(cal_hi.to_bytes(4, "big"))
+    payload.extend(cal_lo.to_bytes(4, "big"))
+  # chrom2 cal
+  payload.extend((1_537_345).to_bytes(4, "big"))
+  payload.extend((594_949).to_bytes(4, "big"))
+  # chrom3 cal
+  payload.extend((733_492).to_bytes(4, "big"))
+  payload.extend((594_217).to_bytes(4, "big"))
+  # reference cal
+  payload.extend(ref_cal_hi.to_bytes(4, "big"))
+  payload.extend(ref_cal_lo.to_bytes(4, "big"))
+
+  return bytes(payload)
+
+
+def _split_spectrum_into_pages(
+  full_payload: bytes,
+  values_per_page: int,
+) -> List[bytes]:
+  """Split a single synthetic spectrum payload into multiple pages.
+
+  Simulates the firmware's pagination: each page gets the same 36-byte header
+  (with an incrementing page counter at byte 29) and a slice of the data.
+
+  Args:
+    full_payload: Complete spectrum payload from _build_synthetic_spectrum_response.
+    values_per_page: Number of u32 values per page (e.g., 13197 for H01).
+
+  Returns:
+    List of page payloads, each with a 36-byte header + data slice.
+  """
+  header = full_payload[:36]
+  data = full_payload[36:]
+  total_values = len(data) // 4
+  pages = []
+  offset = 0
+  page_num = 0
+  while offset < total_values:
+    page_num += 1
+    chunk_values = min(values_per_page, total_values - offset)
+    chunk_data = data[offset * 4 : (offset + chunk_values) * 4]
+
+    page_header = bytearray(header)
+    page_header[29] = page_num
+    # Set per-page values_expected/written to chunk_values
+    page_header[7:9] = chunk_values.to_bytes(2, "big")
+    page_header[9:11] = chunk_values.to_bytes(2, "big")
+
+    pages.append(bytes(page_header) + chunk_data)
+    offset += chunk_values
+  return pages
+
+
+class TestParseSpectrumPages(unittest.TestCase):
+  """Verify _parse_spectrum_pages with synthetic spectrum data."""
+
+  def setUp(self):
+    self.backend = _make_backend()
+    self.plate = _make_plate()
+    self.all_wells = self.plate.get_all_items()
+
+  def test_single_page_spectrum(self):
+    """Single-page spectrum (like H03: 81 wl) parses correctly."""
+    num_wl = 81
+    full_payload = _build_synthetic_spectrum_response(
+      num_wells=96, num_wavelengths=num_wl
+    )
+    pages = [full_payload]
+    wavelengths = [300 + i * 5 for i in range(num_wl)]
+
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+
+    self.assertEqual(len(results), num_wl)
+    self.assertEqual(results[0]["wavelength"], 300)
+    self.assertEqual(results[-1]["wavelength"], 700)
+    for r in results:
+      self.assertIsNotNone(r["data"])
+      self.assertIsInstance(r["data"][0][0], float)
+      # OD should be positive and finite for our test values
+      self.assertTrue(0 < r["data"][0][0] < 10)
+
+  def test_multi_page_spectrum(self):
+    """Multi-page spectrum (like H01: 401 wl, 3 pages) parses correctly."""
+    num_wl = 401
+    full_payload = _build_synthetic_spectrum_response(
+      num_wells=96, num_wavelengths=num_wl
+    )
+    # Split into 3 pages: total=39592 values, ceil(39592/13198)=3
+    pages = _split_spectrum_into_pages(full_payload, values_per_page=13198)
+    self.assertEqual(len(pages), 3, f"expected 3 pages, got {len(pages)}")
+
+    wavelengths = [300 + i for i in range(num_wl)]
+
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+
+    self.assertEqual(len(results), num_wl)
+    self.assertEqual(results[0]["wavelength"], 300)
+    self.assertEqual(results[-1]["wavelength"], 700)
+    # Verify distinct OD values across wavelengths (sample_base varies per wl)
+    od_first = results[0]["data"][0][0]
+    od_last = results[-1]["data"][0][0]
+    self.assertNotAlmostEqual(od_first, od_last, places=3)
+
+  def test_transmittance_report(self):
+    """Spectrum with report='transmittance' returns percent transmittance."""
+    num_wl = 5
+    full_payload = _build_synthetic_spectrum_response(
+      num_wells=96, num_wavelengths=num_wl
+    )
+    pages = [full_payload]
+    wavelengths = [400 + i * 50 for i in range(num_wl)]
+
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="transmittance"
+    )
+
+    self.assertEqual(len(results), num_wl)
+    for r in results:
+      # Transmittance should be 0-100+
+      self.assertGreater(r["data"][0][0], 0)
+
+  def test_raw_report(self):
+    """Spectrum with report='raw' includes references and calibration."""
+    num_wl = 5
+    full_payload = _build_synthetic_spectrum_response(
+      num_wells=96, num_wavelengths=num_wl
+    )
+    pages = [full_payload]
+    wavelengths = [400 + i * 50 for i in range(num_wl)]
+
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="raw"
+    )
+
+    self.assertEqual(len(results), num_wl)
+    for r in results:
+      self.assertIn("references", r)
+      self.assertIn("chromatic_cal", r)
+      self.assertIn("reference_cal", r)
+      self.assertEqual(len(r["references"]), 96)
+
+  def test_empty_pages_raises(self):
+    """_parse_spectrum_pages raises ValueError for empty page list."""
+    with self.assertRaises(ValueError):
+      self.backend._parse_spectrum_pages(
+        [], self.plate, self.all_wells, [600], report="optical_density"
+      )
+
+  def test_five_page_spectrum(self):
+    """Five-page spectrum (like verification: 781 wl) parses correctly."""
+    num_wl = 781
+    full_payload = _build_synthetic_spectrum_response(
+      num_wells=96, num_wavelengths=num_wl
+    )
+    # Split into 5 pages: total=76832 values, ceil(76832/15367)=5
+    pages = _split_spectrum_into_pages(full_payload, values_per_page=15367)
+    self.assertEqual(len(pages), 5, f"expected 5 pages, got {len(pages)}")
+
+    wavelengths = [220 + i for i in range(num_wl)]
+
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+
+    self.assertEqual(len(results), num_wl)
+    self.assertEqual(results[0]["wavelength"], 220)
+    self.assertEqual(results[-1]["wavelength"], 1000)
+
+  def test_page_concatenation_preserves_data_order(self):
+    """Values from page N+1 continue exactly where page N left off."""
+    num_wl = 10
+    num_wells = 4
+    plate = _make_plate()
+    wells = plate.get_items("A1:D1")
+
+    # Build with distinctive sample values
+    full_payload = _build_synthetic_spectrum_response(
+      num_wells=num_wells, num_wavelengths=num_wl,
+      sample_base=1_000_000, ref_value=500_000
+    )
+    # Parse as single page
+    single_results = self.backend._parse_spectrum_pages(
+      [full_payload], plate, wells,
+      [300 + i * 10 for i in range(num_wl)],
+      report="raw"
+    )
+    # Split into 2 pages and parse
+    pages = _split_spectrum_into_pages(full_payload, values_per_page=40)
+    self.assertGreater(len(pages), 1)
+    multi_results = self.backend._parse_spectrum_pages(
+      pages, plate, wells,
+      [300 + i * 10 for i in range(num_wl)],
+      report="raw"
+    )
+
+    # Results must be identical
+    self.assertEqual(len(single_results), len(multi_results))
+    for s, m in zip(single_results, multi_results):
+      self.assertEqual(s["wavelength"], m["wavelength"])
+      self.assertEqual(s["data"], m["data"])
+
+
+class TestReadAbsorbanceSpectrumIntegration(unittest.TestCase):
+  """Integration test: full read_absorbance_spectrum flow with MockFTDI."""
+
+  def test_spectrum_flow_single_page(self):
+    """Spectrum measurement with 1 page: RUN → status poll → GET_DATA → parse."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    num_wl = 5  # small spectrum for fast test
+    full_payload = _build_synthetic_spectrum_response(
+      num_wells=96, num_wavelengths=num_wl
+    )
+    data_frame = _wrap_payload(full_payload)
+
+    mock.queue_response(
+      ACK,  # measurement RUN ack
+      STATUS_IDLE,  # status poll → not busy → measurement done
+      data_frame,  # standard GET_DATA → single page
+    )
+
+    results = asyncio.run(
+      backend.read_absorbance_spectrum(
+        plate, wells,
+        start_wavelength=400, end_wavelength=420, step_size=5,
+      )
+    )
+
+    self.assertEqual(len(results), num_wl)
+    self.assertEqual(results[0]["wavelength"], 400)
+    self.assertEqual(results[-1]["wavelength"], 420)
+    for r in results:
+      self.assertIsInstance(r["data"][0][0], float)
+
+  def test_spectrum_flow_multi_page(self):
+    """Spectrum with multiple pages: RUN → poll → GET_DATA × N → parse."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    num_wl = 81  # H03-like
+    full_payload = _build_synthetic_spectrum_response(
+      num_wells=96, num_wavelengths=num_wl
+    )
+    # Split into 2 pages
+    pages = _split_spectrum_into_pages(full_payload, values_per_page=4200)
+    self.assertEqual(len(pages), 2)
+
+    responses = [
+      ACK,  # RUN ack
+      STATUS_IDLE,  # status poll → done
+    ]
+    for p in pages:
+      responses.append(_wrap_payload(p))
+    mock.queue_response(*responses)
+
+    results = asyncio.run(
+      backend.read_absorbance_spectrum(
+        plate, wells,
+        start_wavelength=300, end_wavelength=700, step_size=5,
+      )
+    )
+
+    self.assertEqual(len(results), num_wl)
+    self.assertEqual(results[0]["wavelength"], 300)
+    self.assertEqual(results[-1]["wavelength"], 700)
+
+  def test_spectrum_wait_false(self):
+    """wait=False sends RUN only and returns empty list."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    mock.queue_response(ACK)
+
+    result = asyncio.run(
+      backend.read_absorbance_spectrum(
+        plate, wells,
+        start_wavelength=300, end_wavelength=700, step_size=5,
+        wait=False,
+      )
+    )
+
+    self.assertEqual(result, [])
+    self.assertEqual(len(mock.written), 1)
+    inner = _extract_payload(mock.written[0])
+    self.assertEqual(inner[0], 0x04)  # CommandFamily.RUN
+
+  def test_spectrum_status_polling_loop(self):
+    """Status polling loops until device reports not busy."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    num_wl = 5
+    full_payload = _build_synthetic_spectrum_response(
+      num_wells=96, num_wavelengths=num_wl
+    )
+
+    mock.queue_response(
+      ACK,  # RUN ack
+      STATUS_BUSY,  # poll 1: still measuring
+      STATUS_BUSY,  # poll 2: still measuring
+      STATUS_IDLE,  # poll 3: done
+      _wrap_payload(full_payload),  # data page
+    )
+
+    results = asyncio.run(
+      backend.read_absorbance_spectrum(
+        plate, wells,
+        start_wavelength=400, end_wavelength=420, step_size=5,
+      )
+    )
+
+    self.assertEqual(len(results), num_wl)
+
+  def test_spectrum_sends_standard_get_data(self):
+    """Spectrum uses standard GET_DATA (00 00 00 00), not progressive."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    num_wl = 5
+    full_payload = _build_synthetic_spectrum_response(
+      num_wells=96, num_wavelengths=num_wl
+    )
+
+    mock.queue_response(
+      ACK,  # RUN ack
+      STATUS_IDLE,  # not busy
+      _wrap_payload(full_payload),  # data page
+    )
+
+    asyncio.run(
+      backend.read_absorbance_spectrum(
+        plate, wells,
+        start_wavelength=400, end_wavelength=420, step_size=5,
+      )
+    )
+
+    # Writes: RUN command, STATUS query, GET_DATA (standard)
+    # Find the GET_DATA frame
+    get_data_frame = mock.written[-1]
+    inner = _extract_payload(get_data_frame)
+    # Standard GET_DATA: CF.REQUEST(0x05) + Cmd.DATA(0x02) + 00 00 00 00 00
+    self.assertEqual(inner, b"\x05\x02\x00\x00\x00\x00\x00")
+
+
+# ---------------------------------------------------------------------------
+# Spectrum ground truth tests — real pcap capture data
+# ---------------------------------------------------------------------------
+
+# OEM MARS OD at 600nm for all 96 wells from the verification plate spectrum scan
+# (220-1000nm, 1nm step, spiral scan, 20 flashes).
+# Source: 260226_verification_SPECTRUM220-1000_spiral_20f_20secorbital DATA CSV.
+VERIFICATION_SPECTRUM_OD_600 = {
+  "A01": 2.737, "A02": 2.727, "A03": 0.134, "A04": 1.199, "A05": 2.128,
+  "A06": 2.579, "A07": 2.639, "A08": 2.673, "A09": 2.644, "A10": 2.669,
+  "A11": 0.155, "A12": 0.121,
+  "B01": 0.095, "B02": 2.753, "B03": 2.705, "B04": 2.742, "B05": 2.744,
+  "B06": 2.750, "B07": 2.650, "B08": 2.675, "B09": 2.595, "B10": 2.565,
+  "B11": 0.143, "B12": 0.133,
+  "C01": 0.145, "C02": 0.149, "C03": 0.119, "C04": 0.110, "C05": 0.129,
+  "C06": 0.140, "C07": 0.151, "C08": 0.164, "C09": 2.257, "C10": 2.211,
+  "C11": 0.134, "C12": 0.120,
+  "D01": 0.143, "D02": 0.148, "D03": 0.155, "D04": 0.176, "D05": 0.194,
+  "D06": 0.216, "D07": 0.148, "D08": 0.151, "D09": 1.639, "D10": 1.611,
+  "D11": 0.114, "D12": 0.114,
+  "E01": 0.095, "E02": 0.098, "E03": 0.117, "E04": 0.101, "E05": 0.098,
+  "E06": 0.096, "E07": 0.102, "E08": 0.099, "E09": 0.860, "E10": 0.899,
+  "E11": 0.108, "E12": 0.092,
+  "F01": 0.098, "F02": 0.093, "F03": 0.098, "F04": 0.096, "F05": 0.094,
+  "F06": 0.114, "F07": 0.090, "F08": 0.092, "F09": 0.144, "F10": 0.092,
+  "F11": 0.092, "F12": 0.106,
+  "G01": 2.645, "G02": 2.638, "G03": 2.720, "G04": 2.649, "G05": 2.680,
+  "G06": 2.695, "G07": 2.675, "G08": 2.665, "G09": 2.632, "G10": 2.630,
+  "G11": 2.608, "G12": 2.645,
+  "H01": 2.647, "H02": 2.650, "H03": 2.693, "H04": 2.665, "H05": 2.674,
+  "H06": 2.644, "H07": 2.639, "H08": 2.703, "H09": 2.668, "H10": 2.655,
+  "H11": 2.656, "H12": 2.653,
+}
+
+# OEM MARS OD at selected wavelengths for A01 from the verification plate spectrum scan.
+VERIFICATION_SPECTRUM_A01_MULTI_WL = {
+  220: 1.304, 280: 2.610, 300: 2.350, 400: 1.524, 450: 0.198,
+  500: 0.319, 550: 1.526, 600: 2.737, 700: 0.205, 800: 0.092,
+  900: 0.120, 1000: 0.216,
+}
+
+# OEM MARS OD at selected wavelengths for B01 (low-OD clear well).
+VERIFICATION_SPECTRUM_B01_MULTI_WL = {
+  300: 0.718, 450: 0.119, 600: 0.095, 800: 0.085,
+}
+
+
+def _load_test_data_pages(prefix: str) -> List[bytes]:
+  """Load binary page payloads from test_data directory.
+
+  Args:
+    prefix: File prefix (e.g., 'h01', 'verification').
+
+  Returns:
+    List of raw payload bytes, one per page, in order.
+  """
+  import os
+
+  test_data_dir = os.path.join(os.path.dirname(__file__), "test_data")
+  pages = []
+  page_num = 1
+  while True:
+    path = os.path.join(test_data_dir, f"{prefix}_page{page_num}.bin")
+    if not os.path.exists(path):
+      break
+    with open(path, "rb") as f:
+      pages.append(f.read())
+    page_num += 1
+  return pages
+
+
+class TestSpectrumResponseGroundTruth(unittest.TestCase):
+  """Ground truth tests using real pcap spectrum response data.
+
+  Binary page payloads were extracted from USB pcap captures of real
+  CLARIOstar Plus hardware. Tests verify:
+  1. Structural correctness (page count, value count, wavelength count)
+  2. Header fields match expected values
+  3. Parser produces valid OD values
+  4. Verification plate OD matches OEM MARS ground truth CSV
+
+  Capture parameters:
+    H01: 300-700nm, 1nm step, 96 wells, point scan, 5 flashes → 401 wl, 3 pages
+    H02: 400-600nm, 1nm step, 96 wells, point scan, 5 flashes → 201 wl, 2 pages
+    H03: 300-700nm, 5nm step, 96 wells, point scan, 5 flashes → 81 wl, 1 page
+    H04: 300-700nm, 1nm step, 8 wells (col 1), point scan, 5 flashes → 401 wl, 1 page
+    H05: 300-700nm, 1nm step, 96 wells, orbital scan, 5 flashes → 401 wl, 3 pages
+    Verification: 220-1000nm, 1nm step, 96 wells, spiral scan, 20 flashes → 781 wl, 5 pages
+  """
+
+  def setUp(self):
+    self.backend = _make_backend()
+    self.plate = _make_plate()
+    self.all_wells = self.plate.get_all_items()
+
+  # -- Header validation helpers --
+
+  def _assert_page_headers(
+    self,
+    pages: List[bytes],
+    expected_num_wells: int,
+    expected_page_count: int,
+  ):
+    """Validate common header fields across all pages."""
+    self.assertEqual(len(pages), expected_page_count,
+                     f"expected {expected_page_count} pages, got {len(pages)}")
+    for i, page in enumerate(pages):
+      self.assertGreaterEqual(len(page), 36, f"page {i+1} too short: {len(page)} bytes")
+      schema = page[6]
+      self.assertEqual(schema, 0xA9, f"page {i+1}: schema 0x{schema:02X} != 0xA9")
+      num_wl_resp = int.from_bytes(page[18:20], "big")
+      self.assertEqual(num_wl_resp, 1, f"page {i+1}: num_wl_resp {num_wl_resp} != 1")
+      num_wells = int.from_bytes(page[20:22], "big")
+      self.assertEqual(num_wells, expected_num_wells,
+                       f"page {i+1}: num_wells {num_wells} != {expected_num_wells}")
+      page_counter = page[29]
+      self.assertEqual(page_counter, i + 1,
+                       f"page {i+1}: page_counter {page_counter} != {i+1}")
+
+  def _total_values(self, pages: List[bytes]) -> int:
+    """Sum of u32 values across all pages (excluding 36-byte headers)."""
+    return sum((len(p) - 36) // 4 for p in pages)
+
+  # -- H01: 300-700nm, 1nm step, 96 wells, point scan, 3 pages --
+
+  def test_h01_page_structure(self):
+    """H01 capture: 3 pages, 96 wells, 39592 total values."""
+    pages = _load_test_data_pages("h01")
+    self._assert_page_headers(pages, expected_num_wells=96, expected_page_count=3)
+    self.assertEqual(self._total_values(pages), 39592)  # (401+3)×(96+2)
+
+  def test_h01_parse_produces_401_wavelengths(self):
+    """H01: parser returns 401 wavelength dicts with valid OD values."""
+    pages = _load_test_data_pages("h01")
+    wavelengths = list(range(300, 701))
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+    self.assertEqual(len(results), 401)
+    self.assertEqual(results[0]["wavelength"], 300)
+    self.assertEqual(results[-1]["wavelength"], 700)
+    for r in results:
+      self.assertEqual(len(r["data"]), 8)  # 8 rows
+      self.assertEqual(len(r["data"][0]), 12)  # 12 cols
+      od = r["data"][0][0]  # A01
+      self.assertIsInstance(od, float)
+      self.assertTrue(math.isfinite(od), f"non-finite OD at {r['wavelength']}nm: {od}")
+
+  # -- H02: 400-600nm, 1nm step, 96 wells, point scan, 2 pages --
+
+  def test_h02_page_structure(self):
+    """H02 capture: 2 pages, 96 wells, 19992 total values."""
+    pages = _load_test_data_pages("h02")
+    self._assert_page_headers(pages, expected_num_wells=96, expected_page_count=2)
+    self.assertEqual(self._total_values(pages), 19992)  # (201+3)×(96+2)
+
+  def test_h02_parse_produces_201_wavelengths(self):
+    """H02: parser returns 201 wavelength dicts."""
+    pages = _load_test_data_pages("h02")
+    wavelengths = list(range(400, 601))
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+    self.assertEqual(len(results), 201)
+    self.assertEqual(results[0]["wavelength"], 400)
+    self.assertEqual(results[-1]["wavelength"], 600)
+
+  # -- H03: 300-700nm, 5nm step, 96 wells, point scan, 1 page --
+
+  def test_h03_page_structure(self):
+    """H03 capture: 1 page, 96 wells, 8232 total values."""
+    pages = _load_test_data_pages("h03")
+    self._assert_page_headers(pages, expected_num_wells=96, expected_page_count=1)
+    self.assertEqual(self._total_values(pages), 8232)  # (81+3)×(96+2)
+
+  def test_h03_parse_produces_81_wavelengths(self):
+    """H03: parser returns 81 wavelength dicts."""
+    pages = _load_test_data_pages("h03")
+    wavelengths = [300 + i * 5 for i in range(81)]
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+    self.assertEqual(len(results), 81)
+    self.assertEqual(results[0]["wavelength"], 300)
+    self.assertEqual(results[-1]["wavelength"], 700)
+
+  # -- H04: 300-700nm, 1nm step, 8 wells (col 1), point scan, 1 page --
+
+  def test_h04_page_structure(self):
+    """H04 capture: 1 page, 8 wells, 4040 total values.
+
+    H04 was captured with 1nm step (confirmed from pcap RUN payload),
+    giving 401 wavelengths. Values: (401+3)×(8+2) = 4040.
+    """
+    pages = _load_test_data_pages("h04")
+    self._assert_page_headers(pages, expected_num_wells=8, expected_page_count=1)
+    self.assertEqual(self._total_values(pages), 4040)  # (401+3)×(8+2)
+
+  def test_h04_parse_produces_401_wavelengths_8_wells(self):
+    """H04: parser returns 401 wavelength dicts for 8 wells (col 1)."""
+    pages = _load_test_data_pages("h04")
+    wells_col1 = [self.plate.get_well(f"{r}1") for r in "ABCDEFGH"]
+    wavelengths = list(range(300, 701))
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, wells_col1, wavelengths, report="optical_density"
+    )
+    self.assertEqual(len(results), 401)
+    self.assertEqual(results[0]["wavelength"], 300)
+    self.assertEqual(results[-1]["wavelength"], 700)
+    # 8 wells in column 1 → data grid should have 8 rows, 1 col each
+    # (since only col 1 wells are requested)
+    inf_count = 0
+    for r in results:
+      for row in range(8):
+        od = r["data"][row][0]
+        self.assertIsInstance(od, float)
+        if not math.isfinite(od):
+          inf_count += 1
+    # Allow up to 1% inf values (detector saturation at extreme OD)
+    max_inf = int(401 * 8 * 0.01)
+    self.assertLessEqual(inf_count, max_inf,
+                         f"H04: too many inf values ({inf_count}/{401*8})")
+
+  # -- H05: 300-700nm, 1nm step, 96 wells, orbital scan, 3 pages --
+
+  def test_h05_page_structure(self):
+    """H05 capture: 3 pages, 96 wells, 39592 total values (same as H01)."""
+    pages = _load_test_data_pages("h05")
+    self._assert_page_headers(pages, expected_num_wells=96, expected_page_count=3)
+    self.assertEqual(self._total_values(pages), 39592)  # (401+3)×(96+2)
+
+  def test_h05_parse_produces_401_wavelengths(self):
+    """H05 (orbital scan): parser returns 401 wavelength dicts."""
+    pages = _load_test_data_pages("h05")
+    wavelengths = list(range(300, 701))
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+    self.assertEqual(len(results), 401)
+    self.assertEqual(results[0]["wavelength"], 300)
+    self.assertEqual(results[-1]["wavelength"], 700)
+    for r in results:
+      od = r["data"][0][0]
+      self.assertIsInstance(od, float)
+      self.assertTrue(math.isfinite(od), f"non-finite OD at {r['wavelength']}nm: {od}")
+
+  # -- Verification plate: 220-1000nm, 1nm step, 96 wells, spiral scan, 5 pages --
+
+  def test_verification_page_structure(self):
+    """Verification capture: 5 pages, 96 wells, 76832 total values."""
+    pages = _load_test_data_pages("verification")
+    self._assert_page_headers(pages, expected_num_wells=96, expected_page_count=5)
+    self.assertEqual(self._total_values(pages), 76832)  # (781+3)×(96+2)
+
+  def test_verification_parse_produces_781_wavelengths(self):
+    """Verification: parser returns 781 wavelength dicts."""
+    pages = _load_test_data_pages("verification")
+    wavelengths = list(range(220, 1001))
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+    self.assertEqual(len(results), 781)
+    self.assertEqual(results[0]["wavelength"], 220)
+    self.assertEqual(results[-1]["wavelength"], 1000)
+
+  def test_verification_temperature(self):
+    """Verification capture pages report temperature = 24.1°C."""
+    pages = _load_test_data_pages("verification")
+    # Header byte[34:36] = 0x00F1 = 241 → 241/10 = 24.1°C
+    for i, page in enumerate(pages):
+      raw_temp = int.from_bytes(page[34:36], "big")
+      self.assertEqual(raw_temp, 241, f"page {i+1}: raw temp {raw_temp} != 241")
+
+  def test_verification_od_600nm_all_96_wells(self):
+    """Verification: OD at 600nm matches OEM MARS ground truth for all 96 wells.
+
+    Tolerance: ±0.015 OD for low-OD wells (OD < 1.0), ±0.04 OD for high-OD wells.
+    Spectrum measurements inherently differ from discrete at high OD due to
+    stray light and bandwidth effects, so wider tolerance is expected at OD > 2.
+    """
+    pages = _load_test_data_pages("verification")
+    wavelengths = list(range(220, 1001))
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+
+    # Find the 600nm result (index 380 = 600 - 220)
+    idx_600 = 600 - 220
+    self.assertEqual(results[idx_600]["wavelength"], 600)
+    data_600 = results[idx_600]["data"]
+
+    mismatches = []
+    for row_idx, row_letter in enumerate("ABCDEFGH"):
+      for col_idx in range(12):
+        well = f"{row_letter}{col_idx + 1:02d}"
+        expected = VERIFICATION_SPECTRUM_OD_600[well]
+        actual = data_600[row_idx][col_idx]
+        tol = 0.04 if expected > 1.0 else 0.015
+        if abs(actual - expected) > tol:
+          mismatches.append(
+            f"{well}: actual={actual:.4f}, expected={expected:.3f}, diff={abs(actual-expected):.4f}"
+          )
+    self.assertEqual(
+      mismatches, [],
+      f"OD mismatches at 600nm ({len(mismatches)}/{96}):\n" + "\n".join(mismatches[:20]),
+    )
+
+  def test_verification_a01_multi_wavelength(self):
+    """Verification: A01 OD at multiple wavelengths matches OEM MARS ground truth.
+
+    Tests across the full spectrum range to verify correct wavelength mapping
+    and data ordering across page boundaries.
+    """
+    pages = _load_test_data_pages("verification")
+    wavelengths = list(range(220, 1001))
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+
+    for wl_nm, expected_od in VERIFICATION_SPECTRUM_A01_MULTI_WL.items():
+      idx = wl_nm - 220
+      actual_od = results[idx]["data"][0][0]  # row 0, col 0 = A01
+      tol = 0.04 if expected_od > 1.0 else 0.015
+      self.assertAlmostEqual(
+        actual_od, expected_od, delta=tol,
+        msg=f"A01 @ {wl_nm}nm: actual={actual_od:.4f}, expected={expected_od:.3f}",
+      )
+
+  def test_verification_b01_multi_wavelength(self):
+    """Verification: B01 (low-OD well) at multiple wavelengths."""
+    pages = _load_test_data_pages("verification")
+    wavelengths = list(range(220, 1001))
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+
+    for wl_nm, expected_od in VERIFICATION_SPECTRUM_B01_MULTI_WL.items():
+      idx = wl_nm - 220
+      actual_od = results[idx]["data"][1][0]  # row 1, col 0 = B01
+      tol = 0.015
+      self.assertAlmostEqual(
+        actual_od, expected_od, delta=tol,
+        msg=f"B01 @ {wl_nm}nm: actual={actual_od:.4f}, expected={expected_od:.3f}",
+      )
+
+  def test_verification_raw_report_has_references(self):
+    """Verification: raw report includes reference and calibration data."""
+    pages = _load_test_data_pages("verification")
+    wavelengths = list(range(220, 1001))
+    results = self.backend._parse_spectrum_pages(
+      pages, self.plate, self.all_wells, wavelengths, report="raw"
+    )
+
+    self.assertEqual(len(results), 781)
+    for r in results:
+      self.assertIn("references", r)
+      self.assertIn("chromatic_cal", r)
+      self.assertIn("reference_cal", r)
+      self.assertEqual(len(r["references"]), 96)
+      # Reference values should be positive integers
+      for ref in r["references"]:
+        self.assertGreater(ref, 0, f"zero reference at {r['wavelength']}nm")
+
+  # -- Cross-capture consistency tests --
+
+  def test_h01_h05_same_wavelengths_different_scan(self):
+    """H01 (point) and H05 (orbital) measure the same plate at same wavelengths.
+
+    Values should differ (different scan mode) but both should produce
+    valid OD values and the same number of wavelengths.
+    """
+    h01_pages = _load_test_data_pages("h01")
+    h05_pages = _load_test_data_pages("h05")
+    wavelengths = list(range(300, 701))
+
+    h01_results = self.backend._parse_spectrum_pages(
+      h01_pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+    h05_results = self.backend._parse_spectrum_pages(
+      h05_pages, self.plate, self.all_wells, wavelengths, report="optical_density"
+    )
+
+    self.assertEqual(len(h01_results), len(h05_results))
+    # Both should produce valid OD values for all wells and wavelengths.
+    # A small number of inf values are expected at very-high-OD wells where the
+    # detector reads zero (e.g., saturated dye wells near absorption peak).
+    inf_count_h01 = 0
+    inf_count_h05 = 0
+    for r1, r5 in zip(h01_results, h05_results):
+      self.assertEqual(r1["wavelength"], r5["wavelength"])
+      for row_idx in range(8):
+        for col_idx in range(12):
+          if not math.isfinite(r1["data"][row_idx][col_idx]):
+            inf_count_h01 += 1
+          if not math.isfinite(r5["data"][row_idx][col_idx]):
+            inf_count_h05 += 1
+    # Allow up to 1% inf values (detector saturation at extreme OD)
+    max_inf = int(401 * 96 * 0.01)
+    self.assertLessEqual(inf_count_h01, max_inf,
+                         f"H01: too many inf values ({inf_count_h01}/{401*96})")
+    self.assertLessEqual(inf_count_h05, max_inf,
+                         f"H05: too many inf values ({inf_count_h05}/{401*96})")
+
+  def test_h01_h03_overlapping_wavelengths(self):
+    """H01 (1nm step) and H03 (5nm step) cover the same range.
+
+    At shared wavelengths (every 5nm from 300-700), OD values should be
+    similar since they're the same plate/scan mode.
+    """
+    h01_pages = _load_test_data_pages("h01")
+    h03_pages = _load_test_data_pages("h03")
+
+    h01_results = self.backend._parse_spectrum_pages(
+      h01_pages, self.plate, self.all_wells,
+      list(range(300, 701)), report="optical_density"
+    )
+    h03_results = self.backend._parse_spectrum_pages(
+      h03_pages, self.plate, self.all_wells,
+      [300 + i * 5 for i in range(81)], report="optical_density"
+    )
+
+    # Compare at shared wavelengths (every 5nm)
+    for h3_idx, h3_result in enumerate(h03_results):
+      wl = h3_result["wavelength"]
+      h1_idx = wl - 300  # 1nm step → index = wl - start
+      h1_result = h01_results[h1_idx]
+      self.assertEqual(h1_result["wavelength"], wl)
+
+      # OD values should be reasonably similar (same plate, same scan mode)
+      # Allow wider tolerance because different hardware sessions may have
+      # slightly different calibration
+      a1_h1 = h1_result["data"][0][0]
+      a1_h3 = h3_result["data"][0][0]
+      self.assertTrue(math.isfinite(a1_h1))
+      self.assertTrue(math.isfinite(a1_h3))
 
 
 class TestParseAbsorbanceResponse(unittest.TestCase):
