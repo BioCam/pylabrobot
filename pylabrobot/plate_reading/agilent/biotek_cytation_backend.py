@@ -922,6 +922,7 @@ class CytationBackend(BioTekPlateReaderBackend, ImagerBackend):
           t1 - t0,
         )
     finally:
+      await self.led_off()
       if auto_stop_acquisition:
         self.stop_acquisition()
 
