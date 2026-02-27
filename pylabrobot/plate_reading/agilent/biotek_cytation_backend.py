@@ -730,6 +730,7 @@ class CytationBackend(BioTekPlateReaderBackend, ImagerBackend):
       await self.send_command("Y", f"P0e{objective_code:02}", timeout=60)
 
     self._objective = objective
+    self._imaging_mode = None
 
   async def set_imaging_mode(self, mode: ImagingMode, led_intensity: int):
     if self._cam is None:
