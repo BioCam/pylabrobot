@@ -40,6 +40,7 @@ from .molecular_devices import (
   SpectrumSettings,
 )
 from .plate_reader import PlateReader
+from .result import AbsorbanceResult, FluorescenceResult, LuminescenceResult, PlateReaderResult
 from .standard import (
   Exposure,
   FocalPosition,

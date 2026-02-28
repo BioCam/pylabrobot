@@ -1,12 +1,15 @@
 import logging
-from typing import Dict, List, Optional, cast
+from typing import Dict, List, Optional, Union, cast
 
 from pylabrobot.machines.machine import Machine, need_setup_finished
 from pylabrobot.plate_reading.backend import PlateReaderBackend
+from pylabrobot.plate_reading.result import AbsorbanceResult, FluorescenceResult, LuminescenceResult
 from pylabrobot.plate_reading.standard import NoPlateError
 from pylabrobot.resources import Coordinate, Plate, Resource, ResourceHolder, Well
 
 logger = logging.getLogger(__name__)
+
+_VALID_RETURN_TYPES = {"legacy", "dict", "result"}
 
 
 class PlateReader(ResourceHolder, Machine):
@@ -77,40 +80,71 @@ class PlateReader(ResourceHolder, Machine):
     plate = self.get_plate() if len(self.children) > 0 else None
     await self.backend.close(plate=plate, **backend_kwargs)
 
+  @staticmethod
+  def _resolve_return_type(
+    return_type: Optional[str],
+    use_new_return_type: bool,
+    method_name: str,
+  ) -> str:
+    """Resolve the effective return type from the two parameters.
+
+    Priority: ``return_type`` wins if given; otherwise fall back to the legacy boolean.
+    """
+
+    if return_type is not None:
+      if return_type not in _VALID_RETURN_TYPES:
+        raise ValueError(
+          f"return_type must be one of {_VALID_RETURN_TYPES!r}, got {return_type!r}"
+        )
+      return return_type
+
+    # Legacy boolean path
+    if use_new_return_type:
+      return "dict"
+
+    logger.warning(
+      "The return type of %s will change in a future version. Please set "
+      "return_type='dict' or return_type='result' to silence this warning.",
+      method_name,
+    )
+    return "legacy"
+
   @need_setup_finished
   async def read_luminescence(
     self,
     focal_height: float,
     wells: Optional[List[Well]] = None,
     use_new_return_type: bool = False,
+    return_type: Optional[str] = None,
     **backend_kwargs,
-  ) -> List[Dict]:
+  ) -> Union[LuminescenceResult, List[Dict]]:
     """Read the luminescence from the plate reader.
 
     Args:
       focal_height: The focal height to read the luminescence at, in millimeters.
-      use_new_return_type: Whether to return the new return type, which is a list of dictionaries.
+      use_new_return_type: Whether to return the ``List[Dict]`` return type (kept for
+        backwards compatibility; prefer ``return_type``).
+      return_type: ``"legacy"`` returns ``result[0]["data"]``, ``"dict"`` returns
+        ``List[Dict]``, ``"result"`` returns a :class:`LuminescenceResult`.
 
     Returns:
-      A list of dictionaries, one for each measurement. Each dictionary contains:
-        "time": float,
-        "temperature": float,
-        "data": List[List[float]]
+      Depends on *return_type* / *use_new_return_type*.
     """
 
+    rt = self._resolve_return_type(return_type, use_new_return_type, "read_luminescence")
+
+    plate = self.get_plate()
     result = await self.backend.read_luminescence(
-      plate=self.get_plate(),
-      wells=wells or self.get_plate().get_all_items(),
+      plate=plate,
+      wells=wells or plate.get_all_items(),
       focal_height=focal_height,
       **backend_kwargs,
     )
 
-    if not use_new_return_type:
-      logger.warning(
-        "The return type of read_luminescence will change in a future version. Please set "
-        "use_new_return_type=True to use the new return type."
-      )
+    if rt == "legacy":
       return result[0]["data"]  # type: ignore[no-any-return]
+    if rt == "result":
+      return LuminescenceResult(result, num_rows=plate.num_items_y, num_cols=plate.num_items_x)
     return result
 
   @need_setup_finished
@@ -119,35 +153,36 @@ class PlateReader(ResourceHolder, Machine):
     wavelength: int,
     wells: Optional[List[Well]] = None,
     use_new_return_type: bool = False,
+    return_type: Optional[str] = None,
     **backend_kwargs,
-  ) -> List[Dict]:
+  ) -> Union[AbsorbanceResult, List[Dict]]:
     """Read the absorbance from the plate reader.
 
     Args:
       wavelength: The wavelength to read the absorbance at, in nanometers.
-      use_new_return_type: Whether to return the new return type, which is a list of dictionaries.
+      use_new_return_type: Whether to return the ``List[Dict]`` return type (kept for
+        backwards compatibility; prefer ``return_type``).
+      return_type: ``"legacy"`` returns ``result[0]["data"]``, ``"dict"`` returns
+        ``List[Dict]``, ``"result"`` returns an :class:`AbsorbanceResult`.
 
     Returns:
-      A list of dictionaries, one for each measurement. Each dictionary contains:
-        "wavelength": int,
-        "time": float,
-        "temperature": float,
-        "data": List[List[float]]
+      Depends on *return_type* / *use_new_return_type*.
     """
 
+    rt = self._resolve_return_type(return_type, use_new_return_type, "read_absorbance")
+
+    plate = self.get_plate()
     result = await self.backend.read_absorbance(
-      plate=self.get_plate(),
-      wells=wells or self.get_plate().get_all_items(),
+      plate=plate,
+      wells=wells or plate.get_all_items(),
       wavelength=wavelength,
       **backend_kwargs,
     )
 
-    if not use_new_return_type:
-      logger.warning(
-        "The return type of read_absorbance will change in a future version. Please set "
-        "use_new_return_type=True to use the new return type."
-      )
+    if rt == "legacy":
       return result[0]["data"]  # type: ignore[no-any-return]
+    if rt == "result":
+      return AbsorbanceResult(result, num_rows=plate.num_items_y, num_cols=plate.num_items_x)
     return result
 
   @need_setup_finished
@@ -158,23 +193,22 @@ class PlateReader(ResourceHolder, Machine):
     focal_height: float,
     wells: Optional[List[Well]] = None,
     use_new_return_type: bool = False,
+    return_type: Optional[str] = None,
     **backend_kwargs,
-  ) -> List[Dict]:
+  ) -> Union[FluorescenceResult, List[Dict]]:
     """Read the fluorescence from the plate reader.
 
     Args:
       excitation_wavelength: The excitation wavelength to read the fluorescence at, in nanometers.
       emission_wavelength: The emission wavelength to read the fluorescence at, in nanometers.
       focal_height: The focal height to read the fluorescence at, in millimeters.
-      use_new_return_type: Whether to return the new return type, which is a list of dictionaries.
+      use_new_return_type: Whether to return the ``List[Dict]`` return type (kept for
+        backwards compatibility; prefer ``return_type``).
+      return_type: ``"legacy"`` returns ``result[0]["data"]``, ``"dict"`` returns
+        ``List[Dict]``, ``"result"`` returns a :class:`FluorescenceResult`.
 
     Returns:
-      A list of dictionaries, one for each measurement. Each dictionary contains:
-        "ex_wavelength": int,
-        "em_wavelength": int,
-        "time": float,
-        "temperature": float,
-        "data": List[List[float]]
+      Depends on *return_type* / *use_new_return_type*.
     """
 
     if excitation_wavelength > emission_wavelength:
@@ -182,20 +216,22 @@ class PlateReader(ResourceHolder, Machine):
         "Excitation wavelength is greater than emission wavelength. This is unusual and may indicate an error."
       )
 
+    rt = self._resolve_return_type(return_type, use_new_return_type, "read_fluorescence")
+
+    plate = self.get_plate()
     result = await self.backend.read_fluorescence(
-      plate=self.get_plate(),
-      wells=wells or self.get_plate().get_all_items(),
+      plate=plate,
+      wells=wells or plate.get_all_items(),
       excitation_wavelength=excitation_wavelength,
       emission_wavelength=emission_wavelength,
       focal_height=focal_height,
       **backend_kwargs,
     )
-    if not use_new_return_type:
-      logger.warning(
-        "The return type of read_fluorescence will change in a future version. Please set "
-        "use_new_return_type=True to use the new return type."
-      )
+
+    if rt == "legacy":
       return result[0]["data"]  # type: ignore[no-any-return]
+    if rt == "result":
+      return FluorescenceResult(result, num_rows=plate.num_items_y, num_cols=plate.num_items_x)
     return result
 
   def serialize(self) -> dict:

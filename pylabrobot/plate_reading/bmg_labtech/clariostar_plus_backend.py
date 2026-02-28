@@ -315,10 +315,12 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         flags[name] = False
     return flags
 
-  _PACKET_READ_TIMEOUT: float = 1.0  # seconds; max wait for a single serial frame
-  # At 125 kBaud even a 1612-byte frame takes only ~130 ms to transmit.
-  # The previous 3 s value caused unnecessary 3 s hangs on truncated frames
-  # during measurement polling.  1 s provides ample margin.
+  _PACKET_READ_TIMEOUT: float = 1.0  # seconds; base timeout for a single serial frame
+  # At 125 kBaud a 1612-byte frame takes ~130 ms; a 52 KB spectrum page takes
+  # ~4.2 s.  _read_frame dynamically extends the timeout once it parses the
+  # size field from the header, so this base value only needs to cover small
+  # frames and the initial header read of large ones.
+  _BAUD_RATE: int = 125_000  # baud; used to compute wire-time-scaled timeouts
 
   # --------------------------------------------------------------------------
   # Constructor
@@ -329,7 +331,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     device_id: Optional[str] = None,
     read_timeout: float = 120.0,
     max_temperature: float = 45.0,
-    measurement_poll_interval: float = 0.2,
+    measurement_poll_interval: float = 0.25,
   ):
     """Create a new CLARIOstar Plus backend.
 
@@ -343,8 +345,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       max_temperature: Maximum allowed target temperature in °C. Standard
         incubator range is 0-45°C; extended incubator supports 10-65°C.
       measurement_poll_interval: Seconds to sleep between measurement polling
-        cycles. Default 0.2 s. Also applied before retrying after a bad frame.
-        Set to 0.0 for maximum throughput (I/O-paced only).
+        cycles. Default 0.25 s; combined with the ~35 ms I/O round-trip this
+        yields ~285 ms per poll cycle, matching the OEM MARS software cadence
+        (~280-300 ms) observed in pcap captures. Also applied before retrying
+        after a bad frame. Set to 0.0 for maximum throughput (I/O-paced only).
     """
     if read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
@@ -631,6 +635,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         # Parse size field once we have the header.
         if expected_size is None and len(d) >= 3 and d[0] == 0x02:
           expected_size = int.from_bytes(d[1:3], "big")
+          # Scale timeout to match wire time.  At 125 kBaud, each byte takes
+          # 80 µs (10 bits/byte); a 52 KB spectrum page needs ~4.2 s on the
+          # wire.  OEM MARS captures show ~6.2 s for 52 KB including firmware
+          # processing.  Use 2.5× wire time (matches OEM overhead) with a
+          # floor of the base _PACKET_READ_TIMEOUT.
+          wire_time = expected_size * 10 / self._BAUD_RATE
+          timeout = max(timeout, wire_time * 2.5)
 
         # Fast path: short FTDI read ending in CR → frame complete,
         # but only if we have enough bytes to satisfy the size field.
