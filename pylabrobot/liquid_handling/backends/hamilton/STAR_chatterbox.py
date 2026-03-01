@@ -1,11 +1,19 @@
 import datetime
+from collections import OrderedDict
 from contextlib import asynccontextmanager
+from dataclasses import dataclass, field
 from typing import Dict, List, Literal, Optional, Union
 
 from pylabrobot.liquid_handling.backends import LiquidHandlerBackend
 from pylabrobot.liquid_handling.backends.hamilton.STAR_backend import (
   Head96Information,
   STARBackend,
+)
+from pylabrobot.liquid_handling.pipette_orchestration import (
+  X_GROUPING_TOLERANCE_MM,
+  compute_positions,
+  plan_batches,
+  validate_probing_inputs,
 )
 from pylabrobot.resources.container import Container
 from pylabrobot.resources.coordinate import Coordinate
@@ -317,7 +325,6 @@ class STARChatterboxBackend(STARBackend):
     lld_mode: LLDMode = LLDMode.GAMMA,
     search_speed: float = 10.0,
     n_replicates: int = 1,
-    move_to_z_safety_before: bool = True,
     move_to_z_safety_after: bool = True,
     allow_duplicate_channels: bool = False,
     min_traverse_height_at_beginning_of_command: Optional[float] = None,
@@ -347,29 +354,32 @@ class STARChatterboxBackend(STARBackend):
     plld_foam_ad_values: int = 30,
     plld_foam_search_speed: float = 10.0,
     dispense_back_plld_volume: Optional[float] = None,
+    x_grouping_tolerance: float = X_GROUPING_TOLERANCE_MM,
   ) -> List[float]:
     """Probe liquid heights by computing from tracked container volumes.
 
     Instead of simulating hardware LLD, this mock computes liquid heights directly from
-    each container's volume tracker using `container.compute_height_from_volume()`.
+    each container's volume tracker using ``container.compute_height_from_volume()``.
 
     Args:
-      containers: List of Container objects to probe.
-      use_channels: Channel indices (validated for tip presence).
+      containers: List of Container objects to probe, one per channel.
+      use_channels: Channel indices to use (0-indexed). Defaults to ``[0, ..., len(containers)-1]``.
+      resource_offsets: Accepted for API compatibility but unused in mock.
       All other parameters: Accepted for API compatibility but unused in mock.
 
     Returns:
       Liquid heights in mm from cavity bottom for each container, computed from tracked volumes.
 
     Raises:
-      NotImplementedError: If a container doesn't support compute_height_from_volume.
+      ValueError: If ``use_channels`` is empty, contains out-of-range indices, or if
+        ``containers`` and ``use_channels`` have different lengths.
+      NoTipError: If any specified channel lacks a tip.
     """
     # Unused parameters kept for signature compatibility:
     _ = (
       lld_mode,
       search_speed,
       n_replicates,
-      move_to_z_safety_before,
       move_to_z_safety_after,
       allow_duplicate_channels,
       min_traverse_height_at_beginning_of_command,
@@ -399,10 +409,17 @@ class STARChatterboxBackend(STARBackend):
       plld_foam_ad_values,
       plld_foam_search_speed,
       dispense_back_plld_volume,
+      x_grouping_tolerance,
       resource_offsets,
     )
-    if use_channels is None:
-      use_channels = list(range(len(containers)))
+    use_channels, _ = validate_probing_inputs(
+      containers=containers,
+      use_channels=use_channels,
+      resource_offsets=resource_offsets,
+      num_channels=self.num_channels,
+      channel_spacings=self._channel_minimum_y_spacing,
+      allow_duplicate_channels=allow_duplicate_channels,
+    )
 
     # Validate tip presence using tip tracker
     for ch in use_channels:
@@ -419,3 +436,116 @@ class STARChatterboxBackend(STARBackend):
 
     print(f"probe_liquid_heights: {[f'{h:.2f}' for h in heights]} mm")
     return heights
+
+  def get_probing_plan(
+    self,
+    containers: List[Container],
+    use_channels: Optional[List[int]] = None,
+    resource_offsets: Optional[List[Coordinate]] = None,
+    x_grouping_tolerance: float = X_GROUPING_TOLERANCE_MM,
+  ) -> "ProbingPlan":
+    """Compute the batched execution plan for probe_liquid_heights without running hardware.
+
+    Delegates to :func:`plan_batches` (the same function used by STARBackend) for
+    X grouping, Y sub-batching, and phantom channel interpolation, then wraps the
+    flat ChannelBatch list into the nested ProbingPlan → XGroup → YBatch structure.
+
+    Returns:
+      A ProbingPlan containing the nested batch structure with container identifiers.
+    """
+    use_channels, resource_offsets = validate_probing_inputs(
+      containers=containers,
+      use_channels=use_channels,
+      resource_offsets=resource_offsets,
+      num_channels=self.num_channels,
+      channel_spacings=self._channel_minimum_y_spacing,
+    )
+
+    x_pos, y_pos = compute_positions(containers, resource_offsets, self.deck)
+
+    # ── Delegate to plan_batches ──
+    channel_batches = plan_batches(
+      use_channels=use_channels,
+      x_pos=x_pos,
+      y_pos=y_pos,
+      channel_spacings=self._channel_minimum_y_spacing,
+      x_tolerance=x_grouping_tolerance,
+    )
+
+    # ── Convert flat ChannelBatch list → nested XGroup/YBatch structure ──
+    x_tolerance = x_grouping_tolerance
+    grouped: OrderedDict[float, List] = OrderedDict()
+    for cb in channel_batches:
+      x_key = round(cb.x_position / x_tolerance) * x_tolerance
+      grouped.setdefault(x_key, []).append(cb)
+
+    plan_x_groups: List[XGroup] = []
+    for x_key, cbs in grouped.items():
+      y_batches: List[YBatch] = []
+      for cb in cbs:
+        batch_channels = cb.channels
+        batch_containers = [containers[i] for i in cb.indices]
+        # Active channel Y positions (exclude phantoms)
+        batch_y_positions = {ch: cb.y_positions[ch] for ch in batch_channels}
+        # Intermediate (phantom) channel positions
+        intermediate_positions = {
+          ch: y for ch, y in cb.y_positions.items() if ch not in batch_channels
+        }
+        y_batches.append(YBatch(
+          channels=batch_channels,
+          containers=batch_containers,
+          y_positions=batch_y_positions,
+          intermediate_y_positions=intermediate_positions,
+        ))
+      plan_x_groups.append(XGroup(
+        x_position=cbs[0].x_position,
+        y_batches=y_batches,
+      ))
+
+    return ProbingPlan(
+      containers=[c.name for c in containers],
+      use_channels=list(use_channels),
+      x_groups=plan_x_groups,
+    )
+
+
+@dataclass
+class YBatch:
+  """A set of channels that can probe simultaneously (same Y batch)."""
+  channels: List[int]
+  containers: List[Container]
+  y_positions: Dict[int, float]  # channel → Y position (mm)
+  intermediate_y_positions: Dict[int, float] = field(default_factory=dict)
+
+  @property
+  def container_names(self) -> List[str]:
+    return [c.name for c in self.containers]
+
+
+@dataclass
+class XGroup:
+  """All channels at the same X position, partitioned into Y batches."""
+  x_position: float  # mm
+  y_batches: List[YBatch] = field(default_factory=list)
+
+
+@dataclass
+class ProbingPlan:
+  """Complete execution plan for probe_liquid_heights.
+
+  Structure: ProbingPlan → XGroup[] → YBatch[]
+    - X groups are processed sequentially (single X carriage)
+    - Y batches within an X group are processed sequentially
+    - Channels within a Y batch probe in parallel
+  """
+  containers: List[str]  # container names, one per input
+  use_channels: List[int]
+  x_groups: List[XGroup] = field(default_factory=list)
+
+  @property
+  def total_batches(self) -> int:
+    return sum(len(xg.y_batches) for xg in self.x_groups)
+
+  @property
+  def is_fully_parallel(self) -> bool:
+    return self.total_batches == 1

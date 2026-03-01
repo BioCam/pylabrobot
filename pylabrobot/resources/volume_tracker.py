@@ -64,6 +64,7 @@ class VolumeTracker:
 
   def set_volume(self, volume: float) -> None:
     """Set the volume in the container."""
+    # TODO: add validation against container max_volume / capacity
     self.volume = volume
     self.pending_volume = volume
 

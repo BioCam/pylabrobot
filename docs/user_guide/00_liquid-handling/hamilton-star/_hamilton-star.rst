@@ -11,6 +11,7 @@ Tools for working with Hamilton-STAR specific functions.
    autoload_and_1d_barcode_reader
    iswap-module
    star_lld
+   probe-liquid-heights
    y-probing
    z-probing
    foil
