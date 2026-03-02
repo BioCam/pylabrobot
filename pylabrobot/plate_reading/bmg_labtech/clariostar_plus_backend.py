@@ -642,6 +642,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
           # floor of the base _PACKET_READ_TIMEOUT.
           wire_time = expected_size * 10 / self._BAUD_RATE
           timeout = max(timeout, wire_time * 2.5)
+          t = time.time()  # reset: measure wire time from first data, not from entry
 
         # Fast path: short FTDI read ending in CR → frame complete,
         # but only if we have enough bytes to satisfy the size field.
