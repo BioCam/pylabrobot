@@ -654,6 +654,18 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         # Size-based completion: all expected bytes received.
         if expected_size is not None and len(d) >= expected_size:
           break
+
+        # Mid-frame 0x0D: the FTDI event character can split one serial
+        # frame into two USB transfers.  We know exactly how many bytes
+        # are missing — ask for them now instead of waiting for the next
+        # bulk loop iteration (which may return empty and sleep).
+        if expected_size is not None and len(d) < expected_size:
+          gap = await self.io.read(expected_size - len(d))
+          if gap:
+            d += gap
+            end_byte_found = d[-1] == 0x0D
+            if len(d) >= expected_size:
+              break
       else:
         # Empty read after we already saw CR → done,
         # but only if we have all bytes the size field promised.
