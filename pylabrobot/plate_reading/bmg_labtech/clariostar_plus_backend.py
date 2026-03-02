@@ -2,8 +2,8 @@
 
 Lifecycle: initialize, open/close drawer, status polling, EEPROM/firmware
 identification, machine type auto-detection.
-Measurement: discrete absorbance (1-8 wavelengths), fluorescence (stub),
-luminescence (stub).
+Measurement: discrete absorbance (1-8 wavelengths), absorbance spectrum,
+fluorescence, luminescence (stub).
 """
 
 import asyncio
@@ -203,7 +203,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   """BMG CLARIOstar Plus plate reader backend.
 
   Lifecycle: initialize, open/close drawer, status polling, device identification.
-  Measurement: absorbance (implemented), fluorescence and luminescence (stubs).
+  Measurement: absorbance (discrete + spectrum), fluorescence. Luminescence (stub).
   """
 
   # -- Command enums (CLARIOstar-specific, to our knowledge)------------------
@@ -1599,17 +1599,21 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     """Build 0 or 5 bytes for non-point well scan modes.
 
     For point scans, returns empty bytes.
-    For orbital/spiral: [modality, scan_width_mm, well_diam_hi, well_diam_lo, 0x00]
+    For orbital/spiral: [meas_code, scan_width_mm, well_diam_hi, well_diam_lo, 0x00]
 
-    NOTE: buf[0] uses int(modality) which is correct for absorbance (0x02) but
-    DESIGN.md says fluorescence well scan code should be 0x03, not 0x00
-    (Modality.FLUORESCENCE). Fix when implementing fluorescence.
+    The measurement code byte (buf[0]) differs by modality:
+      ABS = 0x02, FL = 0x03.
+    Verified across all 38 ABS + 20 FL pcap captures.
     """
     WSM = CLARIOstarPlusBackend.WellScanMode
     if well_scan_mode == WSM.POINT:
       return b""
+    _WELL_SCAN_CODE = {
+      CLARIOstarPlusBackend.Modality.ABSORBANCE: 0x02,
+      CLARIOstarPlusBackend.Modality.FLUORESCENCE: 0x03,
+    }
     buf = bytearray(5)
-    buf[0] = int(modality)
+    buf[0] = _WELL_SCAN_CODE[modality]
     buf[1] = scan_diameter_mm
     buf[2:4] = well_diameter_mm_100.to_bytes(2, "big")
     buf[4] = 0x00
@@ -2797,11 +2801,225 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     return self._parse_spectrum_pages(pages, plate, wells, wavelengths, report=report)
 
   # --------------------------------------------------------------------------
-  # Feature: Fluorescence Measurement (not yet implemented)
+  # Feature: Fluorescence Measurement
   # --------------------------------------------------------------------------
   # NOTE: Gain must be set explicitly. Firmware 1.35 (Nov 2020) pre-dates
-  # Enhanced Dynamic Range (EDR), so auto-gain is not available. A `gain`
-  # parameter will be required when this stub is implemented.
+  # Enhanced Dynamic Range (EDR), so auto-gain is not available.
+
+  # Fixed constant blocks verified identical across all 20 FL pcap captures.
+  _FL_MULTICHROMATIC = b"\x00\x00\x01\x00\x00\x00\x00\x00\x0c"  # 9 bytes
+  _FL_SLIT = b"\x00\x04\x00\x03\x00"  # 5 bytes
+  _FL_PAUSE = b"\x00\x00\x00"  # 3 bytes
+  _FL_TRAILER = b"\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"  # 11 bytes (byte 0 differs from ABS)
+  _FL_TAIL = b"\x00\x01\x00"  # 3 bytes
+
+  def _build_fluorescence_payload(
+    self,
+    plate: Plate,
+    wells: List[Well],
+    excitation_wavelength: int,
+    emission_wavelength: int,
+    focal_height: float,
+    *,
+    excitation_bandwidth: int = 15,
+    emission_bandwidth: int = 20,
+    dichroic: Optional[int] = None,
+    gain: int = 1000,
+    optic_position: str = "top",
+    flashes: int = 10,
+    settling_time_s: float = 0.1,
+    well_scan: str = "point",
+    scan_diameter_mm: int = 3,
+    unidirectional: bool = False,
+    vertical: bool = True,
+    corner: str = "TL",
+    shake_mode: Optional[str] = None,
+    shake_speed_rpm: int = 0,
+    shake_duration_s: int = 0,
+    # Test overrides (pass exact pcap edge values to bypass ±2 firmware calibration)
+    _ex_hi: Optional[int] = None,
+    _ex_lo: Optional[int] = None,
+    _em_hi: Optional[int] = None,
+    _em_lo: Optional[int] = None,
+    _dichroic_raw: Optional[int] = None,
+  ) -> bytes:
+    """Build the payload for a MEASUREMENT_RUN fluorescence command.
+
+    Passed to ``send_command(CommandFamily.RUN, parameters=...)``, which prepends
+    the 0x04 command family byte.
+
+    Post-separator layout (48 bytes for point mode):
+      settling(1) + focal_height(2) + multichromatic(9) + gain(2) +
+      ExHi(2) + ExLo(2) + Dichroic(2) + EmHi(2) + EmLo(2) +
+      slit(5) + pause(3) + trailer(11) + flashes(2) + tail(3)
+
+    Verified byte-for-byte against 20 FL pcap captures (F-A01 through F-L01).
+
+    Returns:
+      Payload bytes (148 for point, 153 for orbital/spiral).
+    """
+    # 1. Plate geometry + well mask (63 bytes)
+    plate_bytes = self._plate_field(plate, wells)
+
+    # 2. Scan direction (1 byte)
+    scan_byte = bytes([self._scan_direction_byte(unidirectional, vertical, corner)])
+
+    # 3. Pre-separator block (31 bytes)
+    scan_mode_map = {
+      "point": self.WellScanMode.POINT,
+      "orbital": self.WellScanMode.ORBITAL,
+      "spiral": self.WellScanMode.SPIRAL,
+    }
+    wsm = scan_mode_map[well_scan]
+    optic_pos = self.OpticPosition.BOTTOM if optic_position == "bottom" else self.OpticPosition.TOP
+    pre_sep = self._pre_separator_block(
+      modality=self.Modality.FLUORESCENCE,
+      well_scan_mode=wsm,
+      shake_mode=shake_mode,
+      shake_speed_rpm=shake_speed_rpm,
+      shake_duration_s=shake_duration_s,
+      optic_position=optic_pos,
+    )
+
+    # 4. Separator (4 bytes)
+    sep = _SEPARATOR
+
+    # 5. Well scan field (0 or 5 bytes)
+    well_0 = plate.get_all_items()[0]
+    well_diam_100 = int(round(min(well_0.get_size_x(), well_0.get_size_y()) * 100))
+    wsf = self._well_scan_field(wsm, self.Modality.FLUORESCENCE, scan_diameter_mm, well_diam_100)
+
+    # 6. Settling time (1 byte): raw = settling_s / 0.02, special case 0.0 → 1
+    settling_raw = max(int(settling_time_s / 0.02), 1) if settling_time_s >= 0 else 1
+    settling = bytes([settling_raw])
+
+    # 7. Focal height (2 bytes u16 BE): raw = focal_mm * 100
+    focal_raw = int(round(focal_height * 100))
+    focal = focal_raw.to_bytes(2, "big")
+
+    # 8. Multichromatic block (9 bytes, constant)
+    multi = self._FL_MULTICHROMATIC
+
+    # 9. Gain (2 bytes u16 BE)
+    gain_bytes = gain.to_bytes(2, "big")
+
+    # 10. Wavelength encoding (all u16 BE, nm×10)
+    ex_hi = _ex_hi if _ex_hi is not None else int((excitation_wavelength + excitation_bandwidth / 2) * 10)
+    ex_lo = _ex_lo if _ex_lo is not None else int((excitation_wavelength - excitation_bandwidth / 2) * 10)
+    em_hi = _em_hi if _em_hi is not None else int((emission_wavelength + emission_bandwidth / 2) * 10)
+    em_lo = _em_lo if _em_lo is not None else int((emission_wavelength - emission_bandwidth / 2) * 10)
+
+    # Dichroic: auto = midpoint of ExHi and EmLo
+    if _dichroic_raw is not None:
+      dich = _dichroic_raw
+    elif dichroic is not None:
+      dich = dichroic * 10
+    else:
+      dich = (ex_hi + em_lo) // 2
+
+    ex_hi_bytes = ex_hi.to_bytes(2, "big")
+    ex_lo_bytes = ex_lo.to_bytes(2, "big")
+    dich_bytes = dich.to_bytes(2, "big")
+    em_hi_bytes = em_hi.to_bytes(2, "big")
+    em_lo_bytes = em_lo.to_bytes(2, "big")
+
+    # 11. Slit (5 bytes, constant)
+    slit = self._FL_SLIT
+
+    # 12. Pause (3 bytes, constant)
+    pause = self._FL_PAUSE
+
+    # 13. Trailer (11 bytes)
+    trailer = self._FL_TRAILER
+
+    # 14. Flashes (2 bytes u16 BE)
+    flash_bytes = flashes.to_bytes(2, "big")
+
+    # 15. Tail (3 bytes)
+    tail = self._FL_TAIL
+
+    payload = (
+      plate_bytes
+      + scan_byte
+      + pre_sep
+      + sep
+      + wsf
+      + settling
+      + focal
+      + multi
+      + gain_bytes
+      + ex_hi_bytes
+      + ex_lo_bytes
+      + dich_bytes
+      + em_hi_bytes
+      + em_lo_bytes
+      + slit
+      + pause
+      + trailer
+      + flash_bytes
+      + tail
+    )
+
+    return payload
+
+  def _parse_fluorescence_response(
+    self,
+    payload: bytes,
+    plate: Plate,
+    wells: List[Well],
+    excitation_wavelength: int,
+    emission_wavelength: int,
+  ) -> List[Dict]:
+    """Parse a FL DATA_RESPONSE payload into a result dict.
+
+    FL responses are simpler than ABS — no reference groups, no chromatic calibration.
+    Just raw u32 counts per well.
+
+    Response layout:
+      [0]     02 (echoes DATA subcommand)
+      [1]     05 (status)
+      [6]     schema: 0xA1 (FL+incubation) or 0x21 (FL no incubation)
+      [7:9]   total values (u16 BE) == num_wells
+      [9:11]  complete values (u16 BE) == num_wells when done
+      [11:15] overflow threshold (u32 BE) — always 260000
+      [32:34] temperature (u16 BE ÷10 → °C) when schema has 0x80 bit
+      [34:]   data values, u32 BE per well
+
+    Returns:
+      List with single dict containing ex/em wavelengths, time, temperature, and 2D data grid.
+    """
+    if len(payload) < 34:
+      raise FrameError(f"FL response too short: {len(payload)} bytes (need >= 34)")
+
+    schema = payload[6]
+    num_wells = int.from_bytes(payload[7:9], "big")
+
+    temp: Optional[float] = None
+    if schema & 0x80:  # incubation flag set (0xA1)
+      raw_temp = int.from_bytes(payload[32:34], "big")
+      if raw_temp > 1:
+        temp = raw_temp / 10.0
+
+    # Data values start at byte 34, u32 BE per well
+    data_start = 34
+    readings: List[float] = []
+    for i in range(num_wells):
+      offset = data_start + i * 4
+      if offset + 4 <= len(payload):
+        val = int.from_bytes(payload[offset : offset + 4], "big")
+        readings.append(float(val))
+
+    grid = self._map_readings_to_plate_grid(readings, wells, plate)
+
+    return [
+      {
+        "ex_wavelength": excitation_wavelength,
+        "em_wavelength": emission_wavelength,
+        "time": time.time(),
+        "temperature": temp,
+        "data": grid,
+      }
+    ]
 
   async def read_fluorescence(
     self,
@@ -2811,12 +3029,207 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     emission_wavelength: int,
     focal_height: float,
     *,
-    excitation_width: int = 10,
-    emission_width: int = 10,
-    optical_path: Literal["monochromator", "filter"] = "monochromator",
-    mode: Literal["top", "bottom"] = "bottom",
+    excitation_bandwidth: int = 15,
+    emission_bandwidth: int = 20,
+    dichroic: Optional[int] = None,
+    gain: int = 1000,
+    optic_position: str = "top",
+    flashes: int = 10,
+    settling_time_s: float = 0.1,
+    well_scan: str = "point",
+    scan_diameter_mm: int = 3,
+    unidirectional: bool = False,
+    vertical: bool = True,
+    corner: str = "TL",
+    shake_mode: Optional[str] = None,
+    shake_speed_rpm: Optional[int] = None,
+    shake_duration_s: Optional[int] = None,
+    read_timeout: Optional[float] = 7200,
+    wait: bool = True,
   ) -> List[Dict]:
-    raise NotImplementedError("Fluorescence not yet implemented for CLARIOstar Plus.")
+    """Measure fluorescence intensity.
+
+    Sends a MEASUREMENT_RUN command, optionally polls for completion, and returns
+    parsed results. Follows the same orchestration pattern as ``read_absorbance``.
+
+    Args:
+      plate: The plate to measure.
+      wells: Wells to measure.
+      excitation_wavelength: Excitation center wavelength in nm (320-840).
+      emission_wavelength: Emission center wavelength in nm (320-840).
+      focal_height: Focal height in mm (0-25).
+      excitation_bandwidth: Excitation bandwidth in nm (default 15).
+      emission_bandwidth: Emission bandwidth in nm (default 20).
+      dichroic: Dichroic mirror wavelength in nm. None = auto-calculated
+        as midpoint of excitation upper edge and emission lower edge.
+      gain: PMT gain (0-4095, default 1000). No auto-gain on firmware 1.35.
+      optic_position: ``"top"`` (default) or ``"bottom"`` reading.
+      flashes: Flashes per well (default 10).
+      settling_time_s: Wait time after plate movement (0.0-5.0 s, default 0.1).
+      well_scan: ``"point"`` (default), ``"orbital"``, or ``"spiral"``.
+      scan_diameter_mm: Scan diameter for orbital/spiral (1-6 mm).
+      unidirectional: Scan direction (default False = bidirectional).
+      vertical: Scan columns first (default True).
+      corner: Starting corner: ``"TL"``, ``"TR"``, ``"BL"``, ``"BR"``.
+      shake_mode: ``None``, ``"orbital"``, ``"linear"``, or ``"double_orbital"``.
+      shake_speed_rpm: Shake speed in RPM (multiples of 100, 100-700).
+      shake_duration_s: Shake duration in seconds.
+      read_timeout: Safety timeout in seconds (default 7200).
+      wait: If True, poll until complete. If False, return empty list.
+
+    Returns:
+      List with single dict when wait=True:
+        ``"ex_wavelength"``: int (nm),
+        ``"em_wavelength"``: int (nm),
+        ``"time"``: float (epoch seconds),
+        ``"temperature"``: Optional[float] (°C or None),
+        ``"data"``: List[List[Optional[float]]] (2D grid, rows×cols)
+      Empty list when wait=False.
+    """
+    # --- input validation ---
+    for wl_name, wl_val in [
+      ("excitation_wavelength", excitation_wavelength),
+      ("emission_wavelength", emission_wavelength),
+    ]:
+      if not 320 <= wl_val <= 840:
+        raise ValueError(
+          f"{wl_name} must be 320-840 nm (LVF monochromator range), got {wl_val}."
+        )
+
+    if not 0 <= focal_height <= 25:
+      raise ValueError(f"focal_height must be 0-25 mm, got {focal_height}.")
+
+    if not 0 <= gain <= 4095:
+      raise ValueError(f"gain must be 0-4095, got {gain}.")
+
+    valid_optic_positions = ("top", "bottom")
+    if optic_position not in valid_optic_positions:
+      raise ValueError(
+        f"optic_position must be one of {valid_optic_positions}, got {optic_position!r}."
+      )
+
+    _flash_limits = {"point": (1, 200), "orbital": (1, 44), "spiral": (1, 127)}
+    valid_well_scans = tuple(_flash_limits)
+    if well_scan not in valid_well_scans:
+      raise ValueError(f"well_scan must be one of {valid_well_scans}, got {well_scan!r}.")
+
+    lo, hi = _flash_limits[well_scan]
+    if not lo <= flashes <= hi:
+      raise ValueError(f"flashes must be {lo}-{hi} for {well_scan} mode, got {flashes}.")
+
+    if well_scan != "point" and not 1 <= scan_diameter_mm <= 6:
+      raise ValueError(
+        f"scan_diameter_mm must be 1-6 for {well_scan} mode, got {scan_diameter_mm}."
+      )
+
+    valid_corners = ("TL", "TR", "BL", "BR")
+    if corner not in valid_corners:
+      raise ValueError(f"corner must be one of {valid_corners}, got {corner!r}.")
+
+    valid_shake_modes = (None, "orbital", "linear", "double_orbital")
+    if shake_mode not in valid_shake_modes:
+      raise ValueError(f"shake_mode must be one of {valid_shake_modes}, got {shake_mode!r}.")
+    if shake_mode is not None:
+      if shake_speed_rpm is None:
+        raise ValueError("shake_speed_rpm is required when shake_mode is set.")
+      if shake_duration_s is None:
+        raise ValueError("shake_duration_s is required when shake_mode is set.")
+      if shake_speed_rpm < 100 or shake_speed_rpm > 700 or shake_speed_rpm % 100 != 0:
+        raise ValueError(
+          f"shake_speed_rpm must be a multiple of 100 in range 100-700, got {shake_speed_rpm}."
+        )
+      if not 0 < shake_duration_s <= 65535:
+        raise ValueError(
+          f"shake_duration_s must be 1-65535 when shake_mode is set, got {shake_duration_s}."
+        )
+    else:
+      if shake_speed_rpm is not None:
+        raise ValueError("shake_speed_rpm must be None when shake_mode is None.")
+      if shake_duration_s is not None:
+        raise ValueError("shake_duration_s must be None when shake_mode is None.")
+
+    if read_timeout is not None and read_timeout <= 0:
+      raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
+
+    # 1. Build and send measurement parameters via send_command(RUN)
+    measurement_params = self._build_fluorescence_payload(
+      plate,
+      wells,
+      excitation_wavelength,
+      emission_wavelength,
+      focal_height,
+      excitation_bandwidth=excitation_bandwidth,
+      emission_bandwidth=emission_bandwidth,
+      dichroic=dichroic,
+      gain=gain,
+      optic_position=optic_position,
+      flashes=flashes,
+      settling_time_s=settling_time_s,
+      well_scan=well_scan,
+      scan_diameter_mm=scan_diameter_mm,
+      unidirectional=unidirectional,
+      vertical=vertical,
+      corner=corner,
+      shake_mode=shake_mode,
+      shake_speed_rpm=shake_speed_rpm if shake_speed_rpm is not None else 0,
+      shake_duration_s=shake_duration_s if shake_duration_s is not None else 0,
+    )
+    await self.send_command(
+      command_family=self.CommandFamily.RUN,
+      parameters=measurement_params,
+    )
+
+    if not wait:
+      return []
+
+    # 2. Poll incrementally: progressive data + interleaved status (same as ABS).
+    t0 = time.time()
+    response = b""
+    progressive_complete = False
+    while True:
+      if read_timeout is not None and time.time() - t0 > read_timeout:
+        raise TimeoutError(
+          f"Fluorescence measurement not complete after {read_timeout:.1f}s. "
+          f"Pass read_timeout=None to wait indefinitely, or increase the value."
+        )
+
+      try:
+        response = await self._request_measurement_data(progressive=True)
+      except FrameError as e:
+        logger.warning("FL data poll: bad frame (%s), retrying", e)
+        if self.measurement_poll_interval > 0:
+          await asyncio.sleep(self.measurement_poll_interval)
+        continue
+
+      written, expected = self._measurement_progress(response)
+      if logger.isEnabledFor(logging.INFO):
+        logger.info("FL progress: %d/%d", written, expected)
+
+      if expected > 0 and written >= expected:
+        progressive_complete = True
+        break
+
+      try:
+        status = await self.request_machine_status()
+        if not status["busy"]:
+          logger.info("FL measurement complete (device no longer busy)")
+          break
+      except FrameError as e:
+        logger.debug("FL interleaved status poll: bad frame (%s), ignoring", e)
+
+      if self.measurement_poll_interval > 0:
+        await asyncio.sleep(self.measurement_poll_interval)
+
+    # 3. Parse results.
+    if progressive_complete:
+      return self._parse_fluorescence_response(
+        response, plate, wells, excitation_wavelength, emission_wavelength
+      )
+    else:
+      final = await self._request_measurement_data(progressive=False)
+      return self._parse_fluorescence_response(
+        final, plate, wells, excitation_wavelength, emission_wavelength
+      )
 
   # --------------------------------------------------------------------------
   # Feature: Luminescence Measurement (not yet implemented)

@@ -4166,5 +4166,861 @@ class TestStatusRetries(unittest.TestCase):
       asyncio.run(backend.request_machine_status(retries=-1))
 
 
+# ===========================================================================
+# Fluorescence Measurement Tests
+# ===========================================================================
+# Ground truth hex from 20 pcap captures (F-A01 through F-L01).
+# Full wire frames: STX(1) + size(2) + header(1) + payload + checksum(3) + CR(1).
+
+_FL_GT_HEX = {
+  # F-A01: baseline — top, point, Ex=485/15, Em=528/20, gain=1000, focal=8.5mm, 10 flashes, all 96
+  "FA01": "02009c0c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000270f270f05035200000100000000000c03e8133b12a913bc1501143f00040003000000000000000000000100000001000a00010000141b0d",
+  # F-A02: bottom optic — same as A01 but optic byte = 0x40
+  "FA02": "02009c0c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a40000000000000000000000000000000000000000000000000000000000000270f270f05035200000100000000000c03e8133b12a913bc1501143f00040003000000000000000000000100000001000a00010000145b0d",
+  # F-A03: A1 only — same as A01 but well mask = 80 00 00...
+  "FA03": "02009c0c0431ec2166059604602c561d060c08008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000270f270f05035200000100000000000c03e8133b12a913bc1501143f00040003000000000000000000000100000001000a0001000008a70d",
+  # F-B01: Ex=540/15, Em=590/20 — different wavelengths
+  "FB01": "02009c0c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000270f270f05035200000100000000000c03e8156114cf1606176d16ab00040003000000000000000000000100000001000a0001000014940d",
+  # F-D01: gain=500
+  "FD01": "02009c0c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000270f270f05035200000100000000000c01f4133b12a913bc1501143f00040003000000000000000000000100000001000a0001000014250d",
+  # F-E01: focal_height=4.0mm
+  "FE01": "02009c0c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000270f270f05019000000100000000000c03e8133b12a913bc1501143f00040003000000000000000000000100000001000a0001000014570d",
+  # F-G01: orbital 3mm, 7 flashes (161B frame — 5 extra well scan bytes)
+  "FG01": "0200a10c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a30000000000000000000000000000000000000000000000000000000000000270f270f0303027b0005035200000100000000000c03e8133b12a913bc1501143f0004000300000000000000000000010000000100070001000014d00d",
+  # F-K01: temp 37°C — measurement command identical to A01
+  "FK01": "02009c0c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000270f270f05035200000100000000000c03e8133b12a913bc1501143f00040003000000000000000000000100000001000a00010000141b0d",
+  # F-O01: flying mode — scan_byte=0x1E (flying+vertical), settling=1 (0.0s), flashes=1
+  "FO01": "02009c0c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000001e00000000000000000000000000000000000000000000000000000000000000270f270f01035200000100000000000c03e8133b12a913bc1501143f0004000300000000000000000000010000000100010001000014220d",
+  # F-P01: EDR mode — optic byte[1]=0x40 (EDR flag), scan_byte=0x1A
+  "FP01": "02009c0c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000001a00400000000000000000000000000000000000000000000000000000000000270f270f05035200000100000000000c03e8133b12a913bc1501143f00040003000000000000000000000100000001000a00010000146b0d",
+  # F-Q01: auto-focus — same as baseline but focal_height=10.0mm, scan_byte=0x1A
+  "FQ01": "02009c0c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000001a00000000000000000000000000000000000000000000000000000000000000270f270f0503e800000100000000000c03e8133b12a913bc1501143f00040003000000000000000000000100000001000a0001000014c10d",
+  # F-M01: dual chromatic (176B) — multi[2]=0x02, 2 chromatic blocks + 3B inter-chrom separator
+  "FM01": "0200b00c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000270f270f05035200000200000000000c03e8133b12a913bc1501143f000400030000000c03e81868174018e71b54196800040003000000000000000000000100000001000a0001000017f40d",
+  # F-Lf01: all-filter mode — Ex/Em/Dich all filter, slit=00 01 00 01 00
+  "FLf01": "02009c0c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000270f270f05035200000100000000000c03e80002000100020001000200010001000000000000000000000100000001000a0001000011dd0d",
+  # F-Lf02: mixed mono Ex + filter Em — ExHi/Lo real, Dich/Em filter
+  "FLf02": "02009c0c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000270f270f05035200000100000000000c03e80fe70f5900020001000200010003000000000000000000000100000001000a00010000133a0d",
+  # F-Lf03: mixed filter Ex + mono Em — ExHi/Lo/Dich filter, Em real
+  "FLf03": "02009c0c0431ec2166059604602c561d060c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a00000000000000000000000000000000000000000000000000000000000000270f270f05035200000100000000000c03e80002000100021501143f00040001000000000000000000000100000001000a0001000012460d",
+  # F-S01: matrix 3×3 — optic[0]=0x10, well scan field present, A1 only
+  "FS01": "0200a10c0431ec2166059604602c561d060c08008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000001a10000000000000000000000000000000000000000000000000000000000000270f270f0303027b0005035200000100000000000c03e8133b12a913bc1501143f00040003000000000000000000000100000001000a00010000094f0d",
+}
+
+# FL DATA_RESPONSE hex (full wire frames, exact from pcap)
+_FL_RESP_HEX = {
+  # F-A01: 96 wells, room temp — 426 bytes
+  "FA01": "0201aa0c020506260000a1006000600003f7a00100010060010001000000010100000000000000000097000000900000009c000000a10000009d0000009b0000009b000000970000009b0000009900000a8c0000008a0000009700000091000000a90000009a0000009a00000093000000a0000000a0000006f0000000b1000008330000009300000a89000007af000000b5000008640000078a00000737000006d9000006bd00000719000000c6000008350000009f00000aa4000007ca000006c40000062e000005d600000607000006af00000680000006da000000d500000831000000a4000000f000000100000000b0000000d3000000de000000f7000000f2000000ef0000071b000000e10000080c0000009a000000ea000000f4000000f40000010c0000010900000109000000f1000000f800000774000000f9000000e80000009400000097000000a2000000a100000097000000a2000000950000009e000000a1000000a3000000a1000000a0000000960000008500000096000000920000008e0000009300000092000000900000008c000000900000009a0000009600000086003e550d",
+  # F-A03: 1 well, room temp — 46 bytes
+  "FA03": "02002e0c022506260000a1000100010003f7a001000100010100010000000101000000000000000000910003640d",
+  # F-K01: 96 wells, 37°C — 426 bytes
+  "FK01": "0201aa0c020506260000a1006000600003f7a0010001006001000100000001010000000001720000008d0000008f000000a50000009d00000093000000980000009600000093000000950000009400000ac5000000950000009a000000970000009d0000009b0000009100000093000000a30000009b00000718000000ae0000084d0000009500000aaf000007d9000000b50000086f0000078800000734000006f1000006c100000707000000bf000008550000009900000ad2000007f1000006ea00000640000005e500000611000006bb0000068d000006cf000000d20000082e000000a0000000eb000000fd000000b7000000ce000000de000000f1000000f3000000f30000071f000000df000008020000009c000000ef000000f2000000f1000001040000010300000105000000f0000000f30000076a000000f6000000eb00000094000000900000009f0000009b0000009a000000970000009f000000990000009a000000970000009f0000009f0000009b0000008a000000950000008e000000940000008f0000008a000000960000008c00000090000000930000008e00000089003fd70d",
+  # F-M01: dual chromatic — 192 values (96 wells × 2 chromatics), room temp
+  "FM01": "02032a0c020506260000a100c000c00003f7a00100020060010001000000010100000000000000000095000000a2000000a60000009b0000009e000000970000009f0000009b000000980000009300000a9b0000008e00000098000000740000007b000000780000007a0000007b0000007d00000081000004160000008a000005c30000009e00000a9b0000041d000000710000049f0000042f000003e7000003be00000399000003ae0000008d00000572000000a100000ab2000004020000039e0000035b00000340000003370000036a0000036300000390000000a000000554000000a0000000f00000009a0000007a0000008a0000009d000000a20000009a00000098000003ba000000b400000559000000a5000000f400000091000000950000009f000000ae000000a60000009f00000095000003df000000be000000c10000009c000000960000006c000000740000006c000000700000007a00000078000000730000007f000000830000008a0000009e0000008e0000009900000099000000930000008e000000930000009400000097000000960000009d0000009a000000910000140300001213000000270000136f000013eb0000134d000013080000135f0000130d00001331000000560000002f000000300000075e00000741000006f40000074500000700000007f2000007c300000852000008890000004b0000002a00000049000000350000002500000033000000330000003a00000036000000390000070e0000087b0000004c0000002a00000051000000330000002f0000003a0000003b000000390000003c00000034000007260000098500000047000000310000002a000000280000002b0000002b0000002c00000027000000350000002900000766000009b6000000340000002a0000002d0000002d0000002e000000260000002f000000300000002d00000028000000340000002a0000002b0000002e0000142a000005750000054f000006760000073a000007d7000008050000075100000901000009fc00000a930000136c0000156a0000147b00001426000013ed000013cf0000142b000014470000134800001425000013a900001499000015aa0059c40d",
+  # F-P01: EDR — 96 wells, overflow threshold 700M
+  "FP01": "0201aa0c020506260000a10060006029b92700010001006001000100000001010000000000000000175d0000181c00001af90000191200001922000018840000194d000018930000181f000018e20001ec4b0000170c00001913000011b90000127c000011da000011c60000113a000012d5000012180000bd650000155c00010bfc000018ce0001ec5a0000babd000011ff0000d22a0000bde90000b0540000abdf0000a3640000acbc000016ed0000f9090000197e0001eee60000b6380000a234000099b0000094e70000912800009b0000009a1b0000a26600001a0a0000f3ab000019ed00002988000016f20000129100001534000017110000192700001903000018680000aa6f00001c520000f463000019eb000027df00001734000017f200001a3700001ab700001a6900001931000017e90000b4ba00001fa600001ed40000186b000017e800000fc600000ffd000011280000114d00001327000011d50000122c000013a40000152e000014720000192a000015900000181c000017700000184a000017b3000017be000017e8000016d7000017ea0000182d0000182c0000165a004ad30d",
+  # F-O01: flying mode — 96 wells
+  "FO01": "0201aa0c020506260000a1006000600003f7a001000100600100010000000101000000000000000000a90000009b00000150000000b9000000a2000000ab000000aa000000b20000009b0000009400000a3e000000a300000091000000780000008d00000074000000730000007c00000075000000750000042600000090000005b1000000a300000a55000003fd00000084000004800000041c000003cf000003bf0000038c000003ce0000008c00000596000000a500000a8e0000040500000399000003460000033400000327000003570000034a000003b1000000990000054b00000090000000e4000000950000007900000092000000a2000000a20000009c00000092000003b6000000a10000053f000000ac000000f70000008e00000094000000940000009f000000b000000098000000a6000003cf000000b6000000b1000000910000008a0000006700000072000000720000006a0000007900000077000000730000007d00000083000000780000009000000076000000a80000009a000000a00000008c00000089000000960000008b0000009f00000096000000960000008000391d0d",
+  # F-S01: matrix 3×3 — 9 values (1 well × 9 matrix positions)
+  "FS01": "02004e0c020506260000a1000900090003f7a00100010001030009000000010100000000000000000091000000930000008e000000880000009000000090000000890000008e0000008b0007e90d",
+}
+
+
+class TestBuildFluorescencePayload(unittest.TestCase):
+  """Verify _build_fluorescence_payload against pcap ground truth.
+
+  Same pattern as TestBuildAbsorbancePayload: compare output against pcap
+  ground truth hex, skipping plate geometry bytes 1-12 (PLR vs OEM well
+  center offsets) and wavelength bytes (±2-3 firmware calibration offsets).
+  """
+
+  def setUp(self):
+    self.backend = _make_backend()
+    self.plate = _make_plate()
+    self.all_wells = self.plate.get_all_items()
+
+  def _get_gt_inner(self, key: str) -> bytes:
+    """Extract inner payload (no STX/size/header/checksum/CR) from ground truth hex."""
+    frame = bytes.fromhex(_FL_GT_HEX[key])
+    return frame[4:-4]
+
+  def _compare_fl_payload(self, payload: bytes, gt_key: str, msg: str = ""):
+    """Compare FL payload against ground truth, skipping known differences.
+
+    Skips:
+    - Bytes 1-12: plate geometry (PLR vs OEM well center offsets)
+    - Wavelength bytes in post-separator (±2-3 firmware calibration)
+    - Well scan field diameter bytes (PLR vs OEM well diameter)
+    """
+    gt = self._get_gt_inner(gt_key)
+    full = bytes([0x04]) + payload
+    self.assertEqual(
+      len(full), len(gt), f"{msg} length mismatch: got {len(full)}, expected {len(gt)}"
+    )
+    # Byte 0 (0x04 command family)
+    self.assertEqual(full[0], gt[0], f"{msg} byte 0 (command family)")
+    # Skip bytes 1-12 (plate geometry)
+    # Bytes 13-14: cols/rows
+    self.assertEqual(full[13], gt[13], f"{msg} byte 13 (cols)")
+    self.assertEqual(full[14], gt[14], f"{msg} byte 14 (rows)")
+    self.assertEqual(full[15], gt[15], f"{msg} byte 15 (extra)")
+    # Bytes 16-63: well mask
+    self.assertEqual(full[16:64], gt[16:64], f"{msg} well mask mismatch")
+    # Byte 64: scan direction
+    self.assertEqual(full[64], gt[64], f"{msg} scan direction byte")
+    # Bytes 65-95: pre-separator block (31 bytes)
+    self.assertEqual(full[65:96], gt[65:96], f"{msg} pre-separator mismatch")
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], gt[96:100], f"{msg} separator mismatch")
+    # After separator: well scan field (if present) + FL post-sep fields
+    after_sep_p = full[100:]
+    after_sep_g = gt[100:]
+    self.assertEqual(
+      len(after_sep_p), len(after_sep_g), f"{msg} post-sep length mismatch"
+    )
+
+    # Determine well scan field length
+    wsf_len = 0
+    if len(after_sep_p) > 48:  # non-point mode: 5 extra bytes
+      wsf_len = 5
+      # Well scan field: byte 0 (meas code), byte 1 (diameter), bytes 2-3 (well diam), byte 4
+      self.assertEqual(after_sep_p[0], after_sep_g[0], f"{msg} wsf meas code")
+      self.assertEqual(after_sep_p[1], after_sep_g[1], f"{msg} wsf scan diameter")
+      # Skip bytes 2-3 (well diameter — PLR vs OEM)
+      self.assertEqual(after_sep_p[4], after_sep_g[4], f"{msg} wsf terminator")
+
+    # FL post-separator: settling(1) + focal(2) + multi(9) + gain(2) +
+    #   ExHi(2) + ExLo(2) + Dich(2) + EmHi(2) + EmLo(2) +
+    #   slit(5) + pause(3) + trailer(11) + flashes(2) + tail(3)
+    ps_p = after_sep_p[wsf_len:]
+    ps_g = after_sep_g[wsf_len:]
+    # settling + focal + multi + gain = 1+2+9+2 = 14 bytes
+    self.assertEqual(ps_p[:14], ps_g[:14], f"{msg} settle+focal+multi+gain mismatch")
+    # Skip wavelength bytes 14-23 (ExHi, ExLo, Dich, EmHi, EmLo = 10 bytes)
+    # Remaining: slit(5)+pause(3)+trailer(11)+flashes(2)+tail(3) = 24 bytes at offset 24
+    self.assertEqual(ps_p[24:], ps_g[24:], f"{msg} slit+pause+trailer+flashes+tail mismatch")
+
+  def test_FA01_baseline_top_point(self):
+    """F-A01: baseline — top, point, Ex=485/15, Em=528/20, gain=1000, focal=8.5, 10 flashes."""
+    payload = self.backend._build_fluorescence_payload(
+      self.plate,
+      self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=528,
+      focal_height=8.5,
+      excitation_bandwidth=15,
+      emission_bandwidth=20,
+      gain=1000,
+      optic_position="top",
+      flashes=10,
+      settling_time_s=0.1,
+      well_scan="point",
+      # Exact pcap wavelength values (bypass ±2-3 firmware calibration)
+      _ex_hi=4923, _ex_lo=4777, _em_hi=5377, _em_lo=5183, _dichroic_raw=5052,
+    )
+    self.assertEqual(len(payload), 147)
+    self._compare_fl_payload(payload, "FA01", "FA01")
+
+  def test_FA02_bottom_optic(self):
+    """F-A02: bottom optic."""
+    payload = self.backend._build_fluorescence_payload(
+      self.plate,
+      self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=528,
+      focal_height=8.5,
+      excitation_bandwidth=15,
+      emission_bandwidth=20,
+      gain=1000,
+      optic_position="bottom",
+      flashes=10,
+      settling_time_s=0.1,
+      well_scan="point",
+      _ex_hi=4923, _ex_lo=4777, _em_hi=5377, _em_lo=5183, _dichroic_raw=5052,
+    )
+    self.assertEqual(len(payload), 147)
+    self._compare_fl_payload(payload, "FA02", "FA02")
+
+  def test_FA03_A1_only(self):
+    """F-A03: single well A1."""
+    wells = [self.plate.get_item("A1")]
+    payload = self.backend._build_fluorescence_payload(
+      self.plate,
+      wells,
+      excitation_wavelength=485,
+      emission_wavelength=528,
+      focal_height=8.5,
+      excitation_bandwidth=15,
+      emission_bandwidth=20,
+      gain=1000,
+      optic_position="top",
+      flashes=10,
+      settling_time_s=0.1,
+      well_scan="point",
+      _ex_hi=4923, _ex_lo=4777, _em_hi=5377, _em_lo=5183, _dichroic_raw=5052,
+    )
+    self.assertEqual(len(payload), 147)
+    self._compare_fl_payload(payload, "FA03", "FA03")
+
+  def test_FB01_different_wavelengths(self):
+    """F-B01: Ex=540/15, Em=590/20 (different wavelengths)."""
+    payload = self.backend._build_fluorescence_payload(
+      self.plate,
+      self.all_wells,
+      excitation_wavelength=540,
+      emission_wavelength=590,
+      focal_height=8.5,
+      excitation_bandwidth=15,
+      emission_bandwidth=20,
+      gain=1000,
+      optic_position="top",
+      flashes=10,
+      settling_time_s=0.1,
+      well_scan="point",
+      _ex_hi=5473, _ex_lo=5327, _em_hi=5997, _em_lo=5803, _dichroic_raw=5638,
+    )
+    self.assertEqual(len(payload), 147)
+    self._compare_fl_payload(payload, "FB01", "FB01")
+
+  def test_FD01_gain_500(self):
+    """F-D01: gain=500."""
+    payload = self.backend._build_fluorescence_payload(
+      self.plate,
+      self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=528,
+      focal_height=8.5,
+      excitation_bandwidth=15,
+      emission_bandwidth=20,
+      gain=500,
+      optic_position="top",
+      flashes=10,
+      settling_time_s=0.1,
+      well_scan="point",
+      _ex_hi=4923, _ex_lo=4777, _em_hi=5377, _em_lo=5183, _dichroic_raw=5052,
+    )
+    self.assertEqual(len(payload), 147)
+    self._compare_fl_payload(payload, "FD01", "FD01")
+
+  def test_FE01_focal_4mm(self):
+    """F-E01: focal_height=4.0mm."""
+    payload = self.backend._build_fluorescence_payload(
+      self.plate,
+      self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=528,
+      focal_height=4.0,
+      excitation_bandwidth=15,
+      emission_bandwidth=20,
+      gain=1000,
+      optic_position="top",
+      flashes=10,
+      settling_time_s=0.1,
+      well_scan="point",
+      _ex_hi=4923, _ex_lo=4777, _em_hi=5377, _em_lo=5183, _dichroic_raw=5052,
+    )
+    self.assertEqual(len(payload), 147)
+    self._compare_fl_payload(payload, "FE01", "FE01")
+
+  def test_FG01_orbital_3mm(self):
+    """F-G01: orbital 3mm, 7 flashes."""
+    payload = self.backend._build_fluorescence_payload(
+      self.plate,
+      self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=528,
+      focal_height=8.5,
+      excitation_bandwidth=15,
+      emission_bandwidth=20,
+      gain=1000,
+      optic_position="top",
+      flashes=7,
+      settling_time_s=0.1,
+      well_scan="orbital",
+      scan_diameter_mm=3,
+      _ex_hi=4923, _ex_lo=4777, _em_hi=5377, _em_lo=5183, _dichroic_raw=5052,
+    )
+    self.assertEqual(len(payload), 152)
+    self._compare_fl_payload(payload, "FG01", "FG01")
+
+  def test_FK01_temp_37C(self):
+    """F-K01: temp 37°C — command identical to F-A01 (temp is set separately)."""
+    payload = self.backend._build_fluorescence_payload(
+      self.plate,
+      self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=528,
+      focal_height=8.5,
+      excitation_bandwidth=15,
+      emission_bandwidth=20,
+      gain=1000,
+      optic_position="top",
+      flashes=10,
+      settling_time_s=0.1,
+      well_scan="point",
+      _ex_hi=4923, _ex_lo=4777, _em_hi=5377, _em_lo=5183, _dichroic_raw=5052,
+    )
+    self.assertEqual(len(payload), 147)
+    self._compare_fl_payload(payload, "FK01", "FK01")
+
+  def test_nominal_wavelength_encoding(self):
+    """Verify nominal wavelength encoding without pcap overrides."""
+    payload = self.backend._build_fluorescence_payload(
+      self.plate,
+      self.all_wells,
+      excitation_wavelength=485,
+      emission_wavelength=528,
+      focal_height=8.5,
+    )
+    self.assertEqual(len(payload), 147)
+    # Check wavelength fields at known offsets in post-separator
+    # post-sep starts at byte 99 (plate63 + scan1 + presep31 + sep4)
+    # settling(1) + focal(2) + multi(9) + gain(2) = 14 bytes
+    # wavelengths start at offset 99 + 14 = 113
+    ex_hi = int.from_bytes(payload[113:115], "big")
+    ex_lo = int.from_bytes(payload[115:117], "big")
+    em_hi = int.from_bytes(payload[119:121], "big")
+    em_lo = int.from_bytes(payload[121:123], "big")
+    # Nominal: Ex=485/15 → ExHi=4925, ExLo=4775
+    self.assertEqual(ex_hi, 4925)
+    self.assertEqual(ex_lo, 4775)
+    # Nominal: Em=528/20 → EmHi=5380, EmLo=5180
+    self.assertEqual(em_hi, 5380)
+    self.assertEqual(em_lo, 5180)
+    # Auto-dichroic = (ExHi + EmLo) // 2 = (4925 + 5180) // 2 = 5052
+    dich = int.from_bytes(payload[117:119], "big")
+    self.assertEqual(dich, 5052)
+
+  def test_FQ01_auto_focus_focal_height(self):
+    """F-Q01: auto-focus — focal=10.0mm. Verify post-separator focal encoding."""
+    gt = bytes.fromhex(_FL_GT_HEX["FQ01"])
+    inner = gt[4:-4]  # strip envelope
+    # Post-sep starts at byte 100 (after separator at 96:100)
+    post = inner[100:]
+    # settle(1) + focal(2) at post[1:3]
+    focal_raw = int.from_bytes(post[1:3], "big")
+    self.assertEqual(focal_raw, 1000)  # 10.0mm * 100
+    self.assertEqual(focal_raw / 100, 10.0)
+
+
+class TestFluorescenceFrameValidity(unittest.TestCase):
+  """Verify all new FL pcap ground truth frames have valid checksums."""
+
+  def _validate_gt_frame(self, hex_str: str, name: str):
+    """Validate frame envelope: STX, size, checksum, CR."""
+    raw = bytes.fromhex(hex_str)
+    self.assertEqual(raw[0], 0x02, f"{name}: STX")
+    self.assertEqual(raw[-1], 0x0D, f"{name}: CR")
+    size = int.from_bytes(raw[1:3], "big")
+    self.assertEqual(size, len(raw), f"{name}: size field")
+    cs = int.from_bytes(raw[-4:-1], "big")
+    computed = sum(raw[:-4]) & 0xFFFFFF
+    self.assertEqual(cs, computed, f"{name}: checksum")
+
+  def test_all_measurement_run_frames_valid(self):
+    """All MEASUREMENT_RUN ground truth frames have valid checksums."""
+    for key, hex_str in _FL_GT_HEX.items():
+      with self.subTest(key=key):
+        self._validate_gt_frame(hex_str, key)
+
+  def test_all_data_response_frames_valid(self):
+    """All DATA_RESPONSE ground truth frames have valid checksums."""
+    for key, hex_str in _FL_RESP_HEX.items():
+      with self.subTest(key=key):
+        self._validate_gt_frame(hex_str, key)
+
+  def test_FM01_dual_chromatic_frame_length(self):
+    """F-M01: dual chromatic frame is 176B (20B longer than 156B single)."""
+    raw = bytes.fromhex(_FL_GT_HEX["FM01"])
+    self.assertEqual(len(raw), 176)
+    # Post-sep should be 68 bytes (48 single + 20 extra for 2nd chromatic)
+    inner = raw[4:-4]
+    post = inner[100:]
+    self.assertEqual(len(post), 68)
+
+  def test_FS01_matrix_frame_length(self):
+    """F-S01: matrix 3×3 frame is 161B (5 extra for well scan field)."""
+    raw = bytes.fromhex(_FL_GT_HEX["FS01"])
+    self.assertEqual(len(raw), 161)
+
+
+class TestFluorescencePostSeparatorGroundTruth(unittest.TestCase):
+  """Byte-level verification of post-separator fields from new pcap captures.
+
+  Tests the wire encoding of features not yet implemented in the backend:
+  dual chromatic, filter mode, flying mode, EDR, matrix scan. These serve as
+  ground truth specifications for future implementation.
+  """
+
+  def _get_post_sep(self, key: str) -> bytes:
+    """Extract post-separator bytes from a MEASUREMENT_RUN ground truth frame."""
+    raw = bytes.fromhex(_FL_GT_HEX[key])
+    inner = raw[4:-4]
+    return inner[100:]
+
+  # --- Dual chromatic (F-M01) ---
+
+  def test_FM01_multi_block_n_chrom_2(self):
+    """F-M01: multichromatic block byte[2] = 0x02 (dual)."""
+    post = self._get_post_sep("FM01")
+    multi = post[3:12]
+    self.assertEqual(multi[2], 0x02)
+
+  def test_FM01_chromatic_1_wavelengths(self):
+    """F-M01: chromatic 1 = Ex=485/15, Em=528/20 (same as baseline)."""
+    post = self._get_post_sep("FM01")
+    # Chromatic 1 starts at offset 12: gain(2) + ExHi(2) + ExLo(2) + Dich(2) + EmHi(2) + EmLo(2)
+    gain1 = int.from_bytes(post[12:14], "big")
+    ex_hi1 = int.from_bytes(post[14:16], "big")
+    ex_lo1 = int.from_bytes(post[16:18], "big")
+    em_hi1 = int.from_bytes(post[20:22], "big")
+    em_lo1 = int.from_bytes(post[22:24], "big")
+    self.assertEqual(gain1, 1000)
+    self.assertAlmostEqual((ex_hi1 + ex_lo1) / 20, 485, delta=1)
+    self.assertAlmostEqual((em_hi1 + em_lo1) / 20, 528, delta=1)
+
+  def test_FM01_inter_chromatic_separator(self):
+    """F-M01: inter-chromatic separator is 00 00 0c (3 bytes) at offset 29."""
+    post = self._get_post_sep("FM01")
+    # chrom1 ends at offset 29 (12 + 17), separator at 29:32
+    self.assertEqual(post[29:32], b"\x00\x00\x0c")
+
+  def test_FM01_chromatic_2_wavelengths(self):
+    """F-M01: chromatic 2 = Ex≈610/30, Em≈675/49."""
+    post = self._get_post_sep("FM01")
+    # Chromatic 2 starts at offset 32: gain(2) + ExHi(2) + ...
+    gain2 = int.from_bytes(post[32:34], "big")
+    ex_hi2 = int.from_bytes(post[34:36], "big")
+    ex_lo2 = int.from_bytes(post[36:38], "big")
+    em_hi2 = int.from_bytes(post[40:42], "big")
+    em_lo2 = int.from_bytes(post[42:44], "big")
+    self.assertEqual(gain2, 1000)
+    self.assertAlmostEqual((ex_hi2 + ex_lo2) / 20, 610, delta=1)
+    self.assertAlmostEqual((em_hi2 + em_lo2) / 20, 675, delta=1)
+
+  def test_FM01_tail_fields_after_chrom2(self):
+    """F-M01: pause+trailer+flashes+tail are at standard offsets after chrom2."""
+    post = self._get_post_sep("FM01")
+    # chrom2 ends at 49, then: pause(3) + trailer(11) + flashes(2) + tail(3)
+    self.assertEqual(post[49:52], b"\x00\x00\x00")  # pause disabled
+    self.assertEqual(post[52:63], b"\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01")  # trailer
+    flashes = int.from_bytes(post[63:65], "big")
+    self.assertEqual(flashes, 10)
+    self.assertEqual(post[65:68], b"\x00\x01\x00")  # tail
+
+  # --- Filter mode (F-Lf01, F-Lf02, F-Lf03) ---
+
+  def test_FLf01_all_filter_wavelength_encoding(self):
+    """F-Lf01: all-filter — Ex/Dich/Em all use filter flag 0x0002/slot 0x0001."""
+    post = self._get_post_sep("FLf01")
+    ex_hi = int.from_bytes(post[14:16], "big")
+    ex_lo = int.from_bytes(post[16:18], "big")
+    dich = int.from_bytes(post[18:20], "big")
+    em_hi = int.from_bytes(post[20:22], "big")
+    em_lo = int.from_bytes(post[22:24], "big")
+    # Filter encoding: ExHi=flag(2), ExLo=slot(1), Dich=flag(2), EmHi=slot(1), EmLo=flag(2)
+    self.assertEqual(ex_hi, 0x0002)
+    self.assertEqual(ex_lo, 0x0001)
+    self.assertEqual(dich, 0x0002)
+    self.assertEqual(em_hi, 0x0001)
+    self.assertEqual(em_lo, 0x0002)
+
+  def test_FLf01_all_filter_slit_config(self):
+    """F-Lf01: all-filter slit = 00 01 00 01 00 (both channels filter)."""
+    post = self._get_post_sep("FLf01")
+    slit = post[24:29]
+    self.assertEqual(slit, b"\x00\x01\x00\x01\x00")
+
+  def test_FLf02_mixed_mono_ex_filter_em(self):
+    """F-Lf02: mono Ex=400/14 + filter Em. Slit = 00 01 00 03 00."""
+    post = self._get_post_sep("FLf02")
+    ex_hi = int.from_bytes(post[14:16], "big")
+    ex_lo = int.from_bytes(post[16:18], "big")
+    dich = int.from_bytes(post[18:20], "big")
+    em_hi = int.from_bytes(post[20:22], "big")
+    em_lo = int.from_bytes(post[22:24], "big")
+    # Ex is monochromator: real wavelength edges
+    self.assertAlmostEqual((ex_hi + ex_lo) / 20, 400, delta=1)
+    # Dich and Em are filter
+    self.assertEqual(dich, 0x0002)
+    self.assertEqual(em_hi, 0x0001)
+    self.assertEqual(em_lo, 0x0002)
+    # Slit: slit[1]=0x01 (filter Em), slit[3]=0x03 (mono Ex)
+    slit = post[24:29]
+    self.assertEqual(slit, b"\x00\x01\x00\x03\x00")
+
+  def test_FLf03_mixed_filter_ex_mono_em(self):
+    """F-Lf03: filter Ex + mono Em=528/19. Slit = 00 04 00 01 00."""
+    post = self._get_post_sep("FLf03")
+    ex_hi = int.from_bytes(post[14:16], "big")
+    ex_lo = int.from_bytes(post[16:18], "big")
+    dich = int.from_bytes(post[18:20], "big")
+    em_hi = int.from_bytes(post[20:22], "big")
+    em_lo = int.from_bytes(post[22:24], "big")
+    # Ex is filter
+    self.assertEqual(ex_hi, 0x0002)
+    self.assertEqual(ex_lo, 0x0001)
+    self.assertEqual(dich, 0x0002)
+    # Em is monochromator: real wavelength edges
+    self.assertAlmostEqual((em_hi + em_lo) / 20, 528, delta=1)
+    # Slit: slit[1]=0x04 (mono Em), slit[3]=0x01 (filter Ex)
+    slit = post[24:29]
+    self.assertEqual(slit, b"\x00\x04\x00\x01\x00")
+
+  # --- Flying mode (F-O01) ---
+
+  def test_FO01_scan_byte_has_flying_flag(self):
+    """F-O01: scan byte = 0x1E with flying bit (bit2) set."""
+    raw = bytes.fromhex(_FL_GT_HEX["FO01"])
+    inner = raw[4:-4]
+    scan_byte = inner[64]
+    self.assertEqual(scan_byte, 0x1E)
+    self.assertTrue(scan_byte & 0x04, "flying bit (bit2) not set")
+
+  def test_FO01_settling_forced_to_1(self):
+    """F-O01: flying mode forces settling raw=1 (0.0s)."""
+    post = self._get_post_sep("FO01")
+    self.assertEqual(post[0], 0x01)
+
+  def test_FO01_flashes_forced_to_1(self):
+    """F-O01: flying mode forces flashes=1."""
+    post = self._get_post_sep("FO01")
+    flashes = int.from_bytes(post[43:45], "big")
+    self.assertEqual(flashes, 1)
+
+  # --- EDR mode (F-P01) ---
+
+  def test_FP01_optic_byte1_has_edr_flag(self):
+    """F-P01: EDR flag is optic block byte[1] = 0x40."""
+    raw = bytes.fromhex(_FL_GT_HEX["FP01"])
+    inner = raw[4:-4]
+    optic_byte1 = inner[66]  # offset 65 + 1
+    self.assertEqual(optic_byte1, 0x40)
+
+  def test_FP01_scan_byte_0x1A(self):
+    """F-P01: EDR uses scan_byte=0x1A (explicit TL corner, vertical, bidirectional)."""
+    raw = bytes.fromhex(_FL_GT_HEX["FP01"])
+    inner = raw[4:-4]
+    self.assertEqual(inner[64], 0x1A)
+
+  # --- Matrix 3×3 (F-S01) ---
+
+  def test_FS01_optic_byte0_has_matrix_flag(self):
+    """F-S01: matrix scan = optic byte[0] = 0x10."""
+    raw = bytes.fromhex(_FL_GT_HEX["FS01"])
+    inner = raw[4:-4]
+    self.assertEqual(inner[65], 0x10)
+
+  def test_FS01_well_scan_field_present(self):
+    """F-S01: matrix scan includes 5-byte well scan field with code=3."""
+    raw = bytes.fromhex(_FL_GT_HEX["FS01"])
+    inner = raw[4:-4]
+    # After separator at 96:100, well scan field at 100:105
+    wsf = inner[100:105]
+    self.assertEqual(wsf[0], 0x03)  # FL measurement code
+    self.assertEqual(wsf[1], 0x03)  # scan diameter = 3mm
+    self.assertEqual(wsf[4], 0x00)  # terminator
+
+  def test_FS01_well_mask_A1_only(self):
+    """F-S01: matrix capture was done with A1 only."""
+    raw = bytes.fromhex(_FL_GT_HEX["FS01"])
+    inner = raw[4:-4]
+    mask = inner[16:64]
+    self.assertEqual(mask[0], 0x80)  # A1 bit set
+    self.assertEqual(sum(mask[1:]), 0)  # no other wells
+
+
+class TestParseFluorescenceResponse(unittest.TestCase):
+  """Verify _parse_fluorescence_response against pcap ground truth."""
+
+  def setUp(self):
+    self.backend = _make_backend()
+    self.plate = _make_plate()
+    self.all_wells = self.plate.get_all_items()
+
+  def test_FA01_96wells_room_temp(self):
+    """F-A01: 96 wells, room temperature — no incubation data."""
+    frame = bytes.fromhex(_FL_RESP_HEX["FA01"])
+    _validate_frame(frame)
+    payload = _extract_payload(frame)
+
+    results = self.backend._parse_fluorescence_response(
+      payload, self.plate, self.all_wells, 485, 528
+    )
+
+    self.assertEqual(len(results), 1)
+    r = results[0]
+    self.assertEqual(r["ex_wavelength"], 485)
+    self.assertEqual(r["em_wavelength"], 528)
+    self.assertIsNone(r["temperature"])
+    self.assertIsNotNone(r["data"])
+    # First 4 wells (row A, cols 1-4): 0x97=151, 0x90=144, 0x9c=156, 0xa1=161
+    self.assertEqual(r["data"][0][0], 151.0)
+    self.assertEqual(r["data"][0][1], 144.0)
+    self.assertEqual(r["data"][0][2], 156.0)
+    self.assertEqual(r["data"][0][3], 161.0)
+    # Grid shape: 8 rows × 12 cols
+    self.assertEqual(len(r["data"]), 8)
+    self.assertEqual(len(r["data"][0]), 12)
+
+  def test_FA03_1well_room_temp(self):
+    """F-A03: 1 well (A1), room temperature."""
+    frame = bytes.fromhex(_FL_RESP_HEX["FA03"])
+    _validate_frame(frame)
+    payload = _extract_payload(frame)
+    wells = [self.plate.get_item("A1")]
+
+    results = self.backend._parse_fluorescence_response(
+      payload, self.plate, wells, 485, 528
+    )
+
+    self.assertEqual(len(results), 1)
+    r = results[0]
+    self.assertIsNone(r["temperature"])
+    # A1 value: 0x91 = 145
+    self.assertEqual(r["data"][0][0], 145.0)
+    # All other wells should be None
+    none_count = sum(1 for row in r["data"] for v in row if v is None)
+    self.assertEqual(none_count, 95)
+
+  def test_FK01_96wells_37C(self):
+    """F-K01: 96 wells, incubation at 37°C."""
+    frame = bytes.fromhex(_FL_RESP_HEX["FK01"])
+    _validate_frame(frame)
+    payload = _extract_payload(frame)
+
+    results = self.backend._parse_fluorescence_response(
+      payload, self.plate, self.all_wells, 485, 528
+    )
+
+    self.assertEqual(len(results), 1)
+    r = results[0]
+    # Temperature: bytes [32:34] = 0x0172 = 370 → 37.0°C
+    self.assertEqual(r["temperature"], 37.0)
+    # First well: 0x8d = 141
+    self.assertEqual(r["data"][0][0], 141.0)
+
+  def test_FO01_flying_mode_96wells(self):
+    """F-O01: flying mode — standard 96-well response."""
+    frame = bytes.fromhex(_FL_RESP_HEX["FO01"])
+    _validate_frame(frame)
+    payload = _extract_payload(frame)
+
+    results = self.backend._parse_fluorescence_response(
+      payload, self.plate, self.all_wells, 485, 528
+    )
+
+    self.assertEqual(len(results), 1)
+    r = results[0]
+    self.assertIsNone(r["temperature"])
+    # First well A1: 0xa9 = 169
+    self.assertEqual(r["data"][0][0], 169.0)
+    # Grid shape: 8×12
+    self.assertEqual(len(r["data"]), 8)
+    self.assertEqual(len(r["data"][0]), 12)
+
+  def test_FP01_edr_response_overflow_threshold(self):
+    """F-P01: EDR response has overflow=700M, data still parses correctly."""
+    frame = bytes.fromhex(_FL_RESP_HEX["FP01"])
+    _validate_frame(frame)
+    payload = _extract_payload(frame)
+    # Verify the overflow threshold is 700M (EDR signature)
+    overflow = int.from_bytes(payload[11:15], "big")
+    self.assertEqual(overflow, 700_000_000)
+
+    results = self.backend._parse_fluorescence_response(
+      payload, self.plate, self.all_wells, 485, 528
+    )
+
+    self.assertEqual(len(results), 1)
+    r = results[0]
+    # First well A1: 0x175d = 5981
+    self.assertEqual(r["data"][0][0], 5981.0)
+    # EDR values are much larger than standard (thousands vs hundreds)
+    self.assertGreater(r["data"][0][0], 1000)
+
+  def test_FM01_dual_chromatic_192_values(self):
+    """F-M01: dual chromatic response has 192 values (96 wells × 2 chromatics).
+
+    The current parser reads num_wells from bytes 7:9 (=192) and returns all
+    192 values mapped to the grid. This is a known limitation — multi-chromatic
+    support would return separate dicts per chromatic.
+    """
+    frame = bytes.fromhex(_FL_RESP_HEX["FM01"])
+    _validate_frame(frame)
+    payload = _extract_payload(frame)
+    # Total values = 192 (96 × 2 chromatics)
+    total = int.from_bytes(payload[7:9], "big")
+    self.assertEqual(total, 192)
+    # Chromatic 1, first well (A1): 0x95 = 149
+    val_c1_a1 = int.from_bytes(payload[34:38], "big")
+    self.assertEqual(val_c1_a1, 149)
+    # Chromatic 2, first well: offset 34 + 96*4 = 418
+    val_c2_a1 = int.from_bytes(payload[418:422], "big")
+    self.assertEqual(val_c2_a1, 5123)  # 0x1403
+
+  def test_FS01_matrix_9_values(self):
+    """F-S01: matrix 3×3 response has 9 values (1 well × 9 positions)."""
+    frame = bytes.fromhex(_FL_RESP_HEX["FS01"])
+    _validate_frame(frame)
+    payload = _extract_payload(frame)
+    total = int.from_bytes(payload[7:9], "big")
+    self.assertEqual(total, 9)
+    # First value: 0x91 = 145
+    val0 = int.from_bytes(payload[34:38], "big")
+    self.assertEqual(val0, 145)
+    # All 9 values should be in the 130-150 range (background fluorescence)
+    for i in range(9):
+      v = int.from_bytes(payload[34 + i * 4 : 38 + i * 4], "big")
+      self.assertGreater(v, 100, f"matrix position {i} value too low: {v}")
+      self.assertLess(v, 200, f"matrix position {i} value too high: {v}")
+
+
+def _build_synthetic_fl_response(
+  num_wells: int = 96,
+  schema: int = 0xA1,
+  temperature_raw: int = 0,
+) -> bytes:
+  """Build a synthetic fluorescence response payload for integration tests."""
+  total_values = num_wells
+  header = bytearray(34)
+  header[0] = 0x02  # echoes DATA subcommand
+  header[1] = 0x05  # status_flags
+  header[6] = schema
+  header[7:9] = total_values.to_bytes(2, "big")
+  header[9:11] = total_values.to_bytes(2, "big")
+  header[11:15] = (260000).to_bytes(4, "big")  # overflow threshold
+  if schema & 0x80 and temperature_raw > 0:
+    header[32:34] = temperature_raw.to_bytes(2, "big")
+
+  payload = bytearray(header)
+  for i in range(num_wells):
+    payload.extend((100 + i).to_bytes(4, "big"))
+
+  return bytes(payload)
+
+
+class TestReadFluorescenceIntegration(unittest.TestCase):
+  """Integration test: full read_fluorescence flow."""
+
+  def test_read_fluorescence_flow(self):
+    """Verify read_fluorescence sends RUN, polls, retrieves data, and returns results."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    data_frame = _wrap_payload(_build_synthetic_fl_response())
+
+    mock.queue_response(
+      ACK,  # measurement run ack
+      data_frame,  # progressive data — values_written == expected
+    )
+
+    results = asyncio.run(
+      backend.read_fluorescence(
+        plate, wells, excitation_wavelength=485, emission_wavelength=528, focal_height=8.5
+      )
+    )
+
+    self.assertEqual(len(results), 1)
+    self.assertEqual(results[0]["ex_wavelength"], 485)
+    self.assertEqual(results[0]["em_wavelength"], 528)
+    self.assertIsNotNone(results[0]["data"])
+    for row in results[0]["data"]:
+      for val in row:
+        self.assertIsNotNone(val)
+        self.assertIsInstance(val, float)
+
+  def test_read_fluorescence_wait_false(self):
+    """wait=False sends RUN only and returns empty list immediately."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    mock.queue_response(ACK)
+
+    result = asyncio.run(
+      backend.read_fluorescence(
+        plate, wells, excitation_wavelength=485, emission_wavelength=528,
+        focal_height=8.5, wait=False,
+      )
+    )
+
+    self.assertEqual(result, [])
+    self.assertEqual(len(mock.written), 1)
+    inner = _extract_payload(mock.written[0])
+    self.assertEqual(inner[0], 0x04)  # CommandFamily.RUN
+
+  def test_read_fluorescence_sends_via_send_command(self):
+    """Verify first write has 0x04 command family byte."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = [plate.get_item("A1")]
+
+    data_frame = _wrap_payload(_build_synthetic_fl_response(num_wells=1))
+    mock.queue_response(ACK, data_frame)
+
+    asyncio.run(
+      backend.read_fluorescence(
+        plate, wells, excitation_wavelength=485, emission_wavelength=528, focal_height=8.5
+      )
+    )
+
+    first_frame = mock.written[0]
+    _validate_frame(first_frame)
+    inner = _extract_payload(first_frame)
+    self.assertEqual(inner[0], 0x04)  # CommandFamily.RUN
+
+  def test_read_fluorescence_validates_wavelength_range(self):
+    """Wavelengths outside 320-840nm raise ValueError."""
+    backend = _make_backend()
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    with self.assertRaises(ValueError):
+      asyncio.run(
+        backend.read_fluorescence(
+          plate, wells, excitation_wavelength=200, emission_wavelength=528, focal_height=8.5
+        )
+      )
+
+    with self.assertRaises(ValueError):
+      asyncio.run(
+        backend.read_fluorescence(
+          plate, wells, excitation_wavelength=485, emission_wavelength=900, focal_height=8.5
+        )
+      )
+
+  def test_read_fluorescence_validates_gain_range(self):
+    """Gain outside 0-4095 raises ValueError."""
+    backend = _make_backend()
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    with self.assertRaises(ValueError):
+      asyncio.run(
+        backend.read_fluorescence(
+          plate, wells, excitation_wavelength=485, emission_wavelength=528,
+          focal_height=8.5, gain=5000,
+        )
+      )
+
+  def test_read_fluorescence_validates_focal_height(self):
+    """Focal height outside 0-25 raises ValueError."""
+    backend = _make_backend()
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    with self.assertRaises(ValueError):
+      asyncio.run(
+        backend.read_fluorescence(
+          plate, wells, excitation_wavelength=485, emission_wavelength=528, focal_height=30.0
+        )
+      )
+
+
 if __name__ == "__main__":
   unittest.main()
