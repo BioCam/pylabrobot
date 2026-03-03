@@ -64,8 +64,8 @@ class Machine(ABC):
     self._setup_finished = True
 
   @need_setup_finished
-  async def stop(self):
-    await self.backend.stop()
+  async def stop(self, **backend_kwargs):
+    await self.backend.stop(**backend_kwargs)
     self._setup_finished = False
 
   async def __aenter__(self):

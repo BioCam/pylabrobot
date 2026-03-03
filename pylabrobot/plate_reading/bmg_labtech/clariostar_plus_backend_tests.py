@@ -6884,7 +6884,7 @@ class TestFilterDetection(unittest.TestCase):
     self.assertEqual(result.bandwidth, 18)
 
   def test_parse_filter_result_dichroic_occupied(self):
-    """Pcap cycle 5: Dichroic A → LP 422 (LP TR filter installed).
+    """Pcap cycle 5: Dichroic A → DM 422 (LP TR filter installed).
 
     Type byte: 0x83 (dichroic long-pass)
     Bytes 7-10 = zeros (no center/bandwidth for dichroic)
@@ -6901,7 +6901,7 @@ class TestFilterDetection(unittest.TestCase):
     self.assertIsNotNone(result)
     self.assertIsInstance(result, CLARIOstarPlusBackend.DichroicFilter)
     self.assertEqual(result.slot, 1)
-    self.assertEqual(result.name, "LP 422")
+    self.assertEqual(result.name, "DM 422")
     self.assertEqual(result.cut_on_wavelength, 422)
 
   def test_parse_filter_result_empty(self):
@@ -6938,7 +6938,7 @@ class TestFilterDetection(unittest.TestCase):
 
     Expected results (matching pcap + MARS screenshots):
       Ex 1 → BP 327/90 (Ex TR), Ex 2-4 → empty
-      Dich A → LP 422 (LP TR), Dich B-C → empty
+      Dich A → DM 422 (LP TR), Dich B-C → empty
       Em 5 → BP 614/18 (615-18), Em 6-8 → empty
     """
     io: MockFTDI = self.backend.io  # type: ignore[assignment]
@@ -6985,7 +6985,7 @@ class TestFilterDetection(unittest.TestCase):
       _make_filter_result(0x80, center_raw=8430),
       # Cycle 4: Ex 4 → empty
       _make_filter_result(0x80, center_raw=9620),
-      # Cycle 5: Dich A → occupied (LP 422)
+      # Cycle 5: Dich A → occupied (DM 422)
       _make_filter_result(0x83, cut_on_raw=4218),
       # Cycle 6: Dich B → empty
       _make_filter_result(0x83),
@@ -7011,30 +7011,38 @@ class TestFilterDetection(unittest.TestCase):
 
     result = asyncio.run(self.backend.detect_all_filters())
 
-    # Verify return dict structure
-    self.assertEqual(len(result["excitation"]), 1)
-    self.assertEqual(len(result["dichroic"]), 1)
-    self.assertEqual(len(result["emission"]), 1)
+    # Verify return dict structure — positional lists (index = slot - 1)
+    self.assertEqual(len(result["excitation"]), 4)
+    self.assertEqual(len(result["dichroic"]), 3)
+    self.assertEqual(len(result["emission"]), 4)
 
-    # Verify excitation filter
+    # Verify excitation filter (slot 1 occupied, 2-4 empty)
     ex = result["excitation"][0]
     self.assertEqual(ex.slot, 1)
     self.assertEqual(ex.name, "BP 327/90")
     self.assertEqual(ex.center_wavelength, 327)
     self.assertEqual(ex.bandwidth, 90)
+    self.assertIsNone(result["excitation"][1])
+    self.assertIsNone(result["excitation"][2])
+    self.assertIsNone(result["excitation"][3])
 
-    # Verify dichroic filter
+    # Verify dichroic filter (slot 1 occupied, 2-3 empty)
     dich = result["dichroic"][0]
     self.assertEqual(dich.slot, 1)
-    self.assertEqual(dich.name, "LP 422")
+    self.assertEqual(dich.name, "DM 422")
     self.assertEqual(dich.cut_on_wavelength, 422)
+    self.assertIsNone(result["dichroic"][1])
+    self.assertIsNone(result["dichroic"][2])
 
-    # Verify emission filter
+    # Verify emission filter (slot 1 occupied, 2-4 empty)
     em = result["emission"][0]
     self.assertEqual(em.slot, 1)
     self.assertEqual(em.name, "BP 614/18")
     self.assertEqual(em.center_wavelength, 614)
     self.assertEqual(em.bandwidth, 18)
+    self.assertIsNone(result["emission"][1])
+    self.assertIsNone(result["emission"][2])
+    self.assertIsNone(result["emission"][3])
 
     # Verify filter slides are populated
     self.assertIs(self.backend.excitation_filter_slide[1], ex)
@@ -7043,8 +7051,510 @@ class TestFilterDetection(unittest.TestCase):
 
     # Verify attribute access works
     self.assertIs(self.backend.excitation_filter_slide.BP_327_90, ex)
-    self.assertIs(self.backend.dichroic_filter_slide.LP_422, dich)
+    self.assertIs(self.backend.dichroic_filter_slide.DM_422, dich)
     self.assertIs(self.backend.emission_filter_slide.BP_614_18, em)
+
+
+# ===========================================================================
+# Fluorescence Spectrum Tests
+# ===========================================================================
+
+# Pcap ground truth: excitation scan F-SCAN-A01 post-separator (68 bytes)
+# settling(1) + focal(2) + scan_header(7) + block1(20) + block2(20) + tail(18)
+_FL_SCAN_EX_POST_SEP_HEX = (
+  "0503520200dd00000000"                        # settling + focal + scan_header
+  "000c03e80fce0f7217571fa01ee0000300020000"    # block 1 (START: Ex=400)
+  "000c03e8186818081ba31fa01ee0000300020000"    # block 2 (STOP: Ex=620)
+  "000000000000000001000000010005000100"        # tail (byte14=0x05)
+)
+# Pcap ground truth: emission scan F-SCAN-A02 post-separator (68 bytes)
+_FL_SCAN_EM_POST_SEP_HEX = (
+  "05035202006500000000"                        # settling + focal + scan_header
+  "000c03e80fce0f72119413b81358000200030000"    # block 1 (START: Em=500)
+  "000c03e80fce0f72138817a01740000200030000"    # block 2 (STOP: Em=600)
+  "000000000000000001000000010005000100"        # tail (byte14=0x05)
+)
+
+
+def _build_synthetic_fl_spectrum_page(
+  n_steps: int = 101,
+  schema: int = 0xA0,
+  status_flags: int = 0x25,
+  temperature_raw: int = 0,
+  base_value: int = 70,
+) -> bytes:
+  """Build a synthetic FL spectrum DATA_RESPONSE page (one per well)."""
+  header = bytearray(34)
+  header[0] = 0x02  # response_type
+  header[1] = status_flags
+  header[6] = schema
+  # bytes 7:9 = step_count in spectrum pages (0xA0 schema)
+  header[7:9] = n_steps.to_bytes(2, "big")
+  header[9:11] = n_steps.to_bytes(2, "big")
+  if schema & 0x80 and temperature_raw > 0:
+    header[32:34] = temperature_raw.to_bytes(2, "big")
+  payload = bytearray(header)
+  for i in range(n_steps):
+    payload.extend((base_value + i).to_bytes(4, "big"))
+  return bytes(payload)
+
+
+class TestBuildFluorescenceSpectrumPayload(unittest.TestCase):
+  """Verify _build_fl_spectrum_payload against pcap ground truth."""
+
+  def setUp(self):
+    self.backend = _make_backend()
+    self.plate = _make_plate()
+    self.all_wells = self.plate.get_all_items()
+
+  def _get_post_separator(self, payload: bytes) -> bytes:
+    """Extract post-separator bytes from a fl spectrum payload."""
+    # payload starts after 0x04 cmd byte (added by send_command)
+    # plate(63) + scan(1) + pre_sep(31) + separator(4) = 99 bytes
+    return payload[99:]
+
+  def test_excitation_scan_post_separator_ground_truth(self):
+    """Post-separator bytes must match F-SCAN-A01 pcap exactly."""
+    payload = self.backend._build_fl_spectrum_payload(
+      self.plate, self.all_wells,
+      start_wavelength=400, end_wavelength=620,
+      fixed_wavelength=800, focal_height=8.5,
+      scan="excitation", scan_bandwidth=10, fixed_bandwidth=20,
+      gain=1000, flashes_per_step=1000, settling_time_s=0.1,
+      # Exact pcap edge values
+      _start_ex_hi=0x0FCE, _start_ex_lo=0x0F72,
+      _start_em_hi=0x1FA0, _start_em_lo=0x1EE0, _start_dichroic=0x1757,
+      _stop_ex_hi=0x1868, _stop_ex_lo=0x1808,
+      _stop_em_hi=0x1FA0, _stop_em_lo=0x1EE0, _stop_dichroic=0x1BA3,
+    )
+    post_sep = self._get_post_separator(payload)
+    expected = bytes.fromhex(_FL_SCAN_EX_POST_SEP_HEX)
+    self.assertEqual(post_sep.hex(), expected.hex())
+
+  def test_emission_scan_post_separator_ground_truth(self):
+    """Post-separator bytes must match F-SCAN-A02 pcap exactly."""
+    payload = self.backend._build_fl_spectrum_payload(
+      self.plate, self.all_wells,
+      start_wavelength=500, end_wavelength=600,
+      fixed_wavelength=400, focal_height=8.5,
+      scan="emission", scan_bandwidth=10, fixed_bandwidth=20,
+      gain=1000, flashes_per_step=1000, settling_time_s=0.1,
+      _start_ex_hi=0x0FCE, _start_ex_lo=0x0F72,
+      _start_em_hi=0x13B8, _start_em_lo=0x1358, _start_dichroic=0x1194,
+      _stop_ex_hi=0x0FCE, _stop_ex_lo=0x0F72,
+      _stop_em_hi=0x17A0, _stop_em_lo=0x1740, _stop_dichroic=0x1388,
+    )
+    post_sep = self._get_post_separator(payload)
+    expected = bytes.fromhex(_FL_SCAN_EM_POST_SEP_HEX)
+    self.assertEqual(post_sep.hex(), expected.hex())
+
+  def test_scan_header_mode_flag_0x02(self):
+    """Scan header byte[0] must be 0x02 (spectral scan mode)."""
+    payload = self.backend._build_fl_spectrum_payload(
+      self.plate, self.all_wells,
+      start_wavelength=500, end_wavelength=600,
+      fixed_wavelength=400, focal_height=8.5, scan="emission",
+    )
+    post_sep = self._get_post_separator(payload)
+    # settling(1) + focal(2) = 3 bytes, then scan_header byte[0]
+    self.assertEqual(post_sep[3], 0x02)
+
+  def test_scan_header_step_count_excitation(self):
+    """Excitation scan 400→620 = 221 steps."""
+    payload = self.backend._build_fl_spectrum_payload(
+      self.plate, self.all_wells,
+      start_wavelength=400, end_wavelength=620,
+      fixed_wavelength=800, focal_height=8.5, scan="excitation",
+    )
+    post_sep = self._get_post_separator(payload)
+    step_count = int.from_bytes(post_sep[4:6], "big")
+    self.assertEqual(step_count, 221)
+
+  def test_scan_header_step_count_emission(self):
+    """Emission scan 500→600 = 101 steps."""
+    payload = self.backend._build_fl_spectrum_payload(
+      self.plate, self.all_wells,
+      start_wavelength=500, end_wavelength=600,
+      fixed_wavelength=400, focal_height=8.5, scan="emission",
+    )
+    post_sep = self._get_post_separator(payload)
+    step_count = int.from_bytes(post_sep[4:6], "big")
+    self.assertEqual(step_count, 101)
+
+  def test_filter_cfg_excitation_scan(self):
+    """Excitation scan: filter_cfg = 00 03 00 02 in both blocks."""
+    payload = self.backend._build_fl_spectrum_payload(
+      self.plate, self.all_wells,
+      start_wavelength=400, end_wavelength=620,
+      fixed_wavelength=800, focal_height=8.5, scan="excitation",
+    )
+    post_sep = self._get_post_separator(payload)
+    # Block 1 starts at offset 10 (settle+focal+header = 1+2+7 = 10)
+    # filter_cfg at block[14:18] → post_sep offset 10+14=24
+    self.assertEqual(post_sep[24:28], b"\x00\x03\x00\x02")
+    # Block 2 filter_cfg at 10+20+14=44
+    self.assertEqual(post_sep[44:48], b"\x00\x03\x00\x02")
+
+  def test_filter_cfg_emission_scan(self):
+    """Emission scan: filter_cfg = 00 02 00 03 in both blocks."""
+    payload = self.backend._build_fl_spectrum_payload(
+      self.plate, self.all_wells,
+      start_wavelength=500, end_wavelength=600,
+      fixed_wavelength=400, focal_height=8.5, scan="emission",
+    )
+    post_sep = self._get_post_separator(payload)
+    self.assertEqual(post_sep[24:28], b"\x00\x02\x00\x03")
+    self.assertEqual(post_sep[44:48], b"\x00\x02\x00\x03")
+
+  def test_tail_byte14_is_0x05(self):
+    """Tail byte[14] = 0x05 (spectral scan marker), not flash count."""
+    payload = self.backend._build_fl_spectrum_payload(
+      self.plate, self.all_wells,
+      start_wavelength=500, end_wavelength=600,
+      fixed_wavelength=400, focal_height=8.5, scan="emission",
+    )
+    post_sep = self._get_post_separator(payload)
+    # Tail starts at offset 10+40=50, byte[14] is at 50+14=64
+    tail = post_sep[50:]
+    self.assertEqual(len(tail), 18)
+    self.assertEqual(tail[14], 0x05)
+
+  def test_total_payload_length_point_scan(self):
+    """Point scan payload = 167 bytes (no WSF)."""
+    payload = self.backend._build_fl_spectrum_payload(
+      self.plate, self.all_wells,
+      start_wavelength=500, end_wavelength=600,
+      fixed_wavelength=400, focal_height=8.5, scan="emission",
+      well_scan="point",
+    )
+    self.assertEqual(len(payload), 167)
+
+  def test_total_payload_length_orbital(self):
+    """Orbital scan payload = 172 bytes (5-byte WSF added)."""
+    payload = self.backend._build_fl_spectrum_payload(
+      self.plate, self.all_wells,
+      start_wavelength=500, end_wavelength=600,
+      fixed_wavelength=400, focal_height=8.5, scan="emission",
+      well_scan="orbital", scan_diameter_mm=3,
+    )
+    self.assertEqual(len(payload), 172)
+
+  def test_pre_separator_identical_to_discrete_fl(self):
+    """Pre-separator block uses DetectionMode.FLUORESCENCE (0x00)."""
+    payload = self.backend._build_fl_spectrum_payload(
+      self.plate, self.all_wells,
+      start_wavelength=500, end_wavelength=600,
+      fixed_wavelength=400, focal_height=8.5, scan="emission",
+    )
+    # Pre-separator at bytes 64:95 (scan_dir at 63, pre_sep starts at 64)
+    pre_sep = payload[64:95]
+    # byte[0] of pre-separator = detection_mode | well_scan_mode
+    # FLUORESCENCE=0x00, POINT=0x00 → 0x00
+    self.assertEqual(pre_sep[0], 0x00)
+
+
+class TestReadFluorescenceSpectrumValidation(unittest.TestCase):
+  """Input validation for read_fluorescence_spectrum."""
+
+  def setUp(self):
+    self.backend = _make_backend()
+    self.plate = _make_plate()
+    self.wells = self.plate.get_all_items()
+
+  def _run(self, **kwargs):
+    defaults = dict(
+      plate=self.plate, wells=self.wells,
+      start_wavelength=500, end_wavelength=600,
+      fixed_wavelength=400, focal_height=8.5,
+    )
+    defaults.update(kwargs)
+    return asyncio.run(self.backend.read_fluorescence_spectrum(**defaults))
+
+  def test_start_wavelength_too_low(self):
+    with self.assertRaises(ValueError):
+      self._run(start_wavelength=200)
+
+  def test_end_wavelength_too_high(self):
+    with self.assertRaises(ValueError):
+      self._run(end_wavelength=900)
+
+  def test_end_not_greater_than_start(self):
+    with self.assertRaises(ValueError):
+      self._run(start_wavelength=600, end_wavelength=500)
+
+  def test_end_equal_to_start(self):
+    with self.assertRaises(ValueError):
+      self._run(start_wavelength=500, end_wavelength=500)
+
+  def test_invalid_well_scan_matrix(self):
+    with self.assertRaises(ValueError):
+      self._run(well_scan="matrix")
+
+  def test_gain_out_of_range(self):
+    with self.assertRaises(ValueError):
+      self._run(gain=5000)
+
+  def test_focal_height_out_of_range(self):
+    with self.assertRaises(ValueError):
+      self._run(focal_height=30.0)
+
+  def test_shake_mode_without_speed(self):
+    with self.assertRaises(ValueError):
+      self._run(shake_mode="orbital", shake_duration_s=5)
+
+  def test_scan_invalid_value(self):
+    with self.assertRaises(ValueError):
+      self._run(scan="both")
+
+
+class TestParseFluorescenceSpectrumResponse(unittest.TestCase):
+  """Verify _parse_fl_spectrum_pages against synthetic data."""
+
+  def setUp(self):
+    self.backend = _make_backend()
+    self.plate = _make_plate()
+    self.all_wells = self.plate.get_all_items()
+
+  def test_parse_single_well_emission_scan(self):
+    """Single well, 101-step emission scan → 101 result dicts."""
+    page = _build_synthetic_fl_spectrum_page(n_steps=101, status_flags=0x05)
+    results = self.backend._parse_fl_spectrum_pages(
+      [page], self.plate, [self.plate.get_item("A1")],
+      list(range(500, 601)), "emission", 400,
+    )
+    self.assertEqual(len(results), 101)
+    self.assertEqual(results[0]["wavelength"], 500)
+    self.assertEqual(results[-1]["wavelength"], 600)
+
+  def test_parse_multi_well(self):
+    """4 wells × 101 steps → 101 results with correct grid mapping."""
+    wells = [self.plate.get_item(w) for w in ["A1", "A2", "B1", "B2"]]
+    pages = [
+      _build_synthetic_fl_spectrum_page(n_steps=101, status_flags=0x25, base_value=100 + w * 10)
+      for w in range(4)
+    ]
+    # Last page should have done status
+    pages[-1] = _build_synthetic_fl_spectrum_page(
+      n_steps=101, status_flags=0x05, base_value=100 + 30)
+
+    results = self.backend._parse_fl_spectrum_pages(
+      pages, self.plate, wells, list(range(500, 601)), "emission", 400,
+    )
+    self.assertEqual(len(results), 101)
+    # Check that data grid has values for our 4 wells
+    first_grid = results[0]["data"]
+    self.assertIsNotNone(first_grid[0][0])  # A1
+    self.assertIsNotNone(first_grid[0][1])  # A2
+    self.assertIsNotNone(first_grid[1][0])  # B1
+    self.assertIsNotNone(first_grid[1][1])  # B2
+    self.assertIsNone(first_grid[2][0])  # C1 not measured
+
+  def test_temperature_extraction(self):
+    """Schema 0xA0 has 0x80 bit → temperature from bytes 32:34."""
+    page = _build_synthetic_fl_spectrum_page(
+      n_steps=10, schema=0xA0, temperature_raw=253)
+    results = self.backend._parse_fl_spectrum_pages(
+      [page], self.plate, [self.plate.get_item("A1")],
+      list(range(500, 510)), "emission", 400,
+    )
+    self.assertAlmostEqual(results[0]["temperature"], 25.3)
+
+  def test_empty_pages_raises(self):
+    """No pages → ValueError."""
+    with self.assertRaises(ValueError):
+      self.backend._parse_fl_spectrum_pages(
+        [], self.plate, self.all_wells, [500], "emission", 400,
+      )
+
+  def test_wavelength_assignment(self):
+    """Wavelength key increments by 1 nm."""
+    page = _build_synthetic_fl_spectrum_page(n_steps=5, status_flags=0x05)
+    results = self.backend._parse_fl_spectrum_pages(
+      [page], self.plate, [self.plate.get_item("A1")],
+      [400, 401, 402, 403, 404], "excitation", 800,
+    )
+    self.assertEqual([r["wavelength"] for r in results], [400, 401, 402, 403, 404])
+
+  def test_ex_em_wavelength_keys_emission_scan(self):
+    """Emission scan: ex_wavelength = fixed, em_wavelength = swept."""
+    page = _build_synthetic_fl_spectrum_page(n_steps=3, status_flags=0x05)
+    results = self.backend._parse_fl_spectrum_pages(
+      [page], self.plate, [self.plate.get_item("A1")],
+      [500, 501, 502], "emission", 400,
+    )
+    for r in results:
+      self.assertEqual(r["ex_wavelength"], 400)
+    self.assertEqual(results[0]["em_wavelength"], 500)
+    self.assertEqual(results[2]["em_wavelength"], 502)
+
+  def test_ex_em_wavelength_keys_excitation_scan(self):
+    """Excitation scan: em_wavelength = fixed, ex_wavelength = swept."""
+    page = _build_synthetic_fl_spectrum_page(n_steps=3, status_flags=0x05)
+    results = self.backend._parse_fl_spectrum_pages(
+      [page], self.plate, [self.plate.get_item("A1")],
+      [400, 401, 402], "excitation", 800,
+    )
+    for r in results:
+      self.assertEqual(r["em_wavelength"], 800)
+    self.assertEqual(results[0]["ex_wavelength"], 400)
+    self.assertEqual(results[2]["ex_wavelength"], 402)
+
+
+class TestReadFluorescenceSpectrumIntegration(unittest.TestCase):
+  """Integration tests for the full read_fluorescence_spectrum flow."""
+
+  def test_emission_scan_full_flow(self):
+    """Full emission scan: RUN → status poll → GET_DATA pages → parsed results."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = [plate.get_item("A1")]
+
+    page = _build_synthetic_fl_spectrum_page(n_steps=101, status_flags=0x05, base_value=70)
+    page_frame = _wrap_payload(page)
+
+    mock.queue_response(
+      ACK,  # measurement run ack
+      STATUS_IDLE,  # status poll → not busy
+      page_frame,  # GET_DATA page for A1
+    )
+
+    results = asyncio.run(
+      backend.read_fluorescence_spectrum(
+        plate, wells,
+        start_wavelength=500, end_wavelength=600,
+        fixed_wavelength=400, focal_height=8.5,
+        scan="emission",
+      )
+    )
+
+    self.assertEqual(len(results), 101)
+    self.assertEqual(results[0]["wavelength"], 500)
+    self.assertEqual(results[-1]["wavelength"], 600)
+    self.assertEqual(results[0]["ex_wavelength"], 400)
+    self.assertEqual(results[0]["em_wavelength"], 500)
+    self.assertIsNotNone(results[0]["data"])
+    self.assertIsNotNone(results[0]["data"][0][0])
+
+  def test_excitation_scan_full_flow(self):
+    """Full excitation scan: RUN → status poll → GET_DATA pages → parsed results."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = [plate.get_item("A1")]
+
+    page = _build_synthetic_fl_spectrum_page(n_steps=221, status_flags=0x05, base_value=50)
+    page_frame = _wrap_payload(page)
+
+    mock.queue_response(ACK, STATUS_IDLE, page_frame)
+
+    results = asyncio.run(
+      backend.read_fluorescence_spectrum(
+        plate, wells,
+        start_wavelength=400, end_wavelength=620,
+        fixed_wavelength=800, focal_height=8.5,
+        scan="excitation",
+      )
+    )
+
+    self.assertEqual(len(results), 221)
+    self.assertEqual(results[0]["wavelength"], 400)
+    self.assertEqual(results[-1]["wavelength"], 620)
+    self.assertEqual(results[0]["ex_wavelength"], 400)
+    self.assertEqual(results[0]["em_wavelength"], 800)
+
+  def test_wait_false_returns_empty(self):
+    """wait=False sends RUN only and returns empty list."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    mock.queue_response(ACK)
+
+    result = asyncio.run(
+      backend.read_fluorescence_spectrum(
+        plate, wells,
+        start_wavelength=500, end_wavelength=600,
+        fixed_wavelength=400, focal_height=8.5,
+        wait=False,
+      )
+    )
+
+    self.assertEqual(result, [])
+    self.assertEqual(len(mock.written), 1)
+    inner = _extract_payload(mock.written[0])
+    self.assertEqual(inner[0], 0x04)
+
+  def test_timeout_raises(self):
+    """Timeout during status polling raises TimeoutError."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = [plate.get_item("A1")]
+
+    # Queue busy status responses (never clears)
+    mock.queue_response(ACK, *([STATUS_BUSY] * 100))
+
+    with self.assertRaises(TimeoutError):
+      asyncio.run(
+        backend.read_fluorescence_spectrum(
+          plate, wells,
+          start_wavelength=500, end_wavelength=510,
+          fixed_wavelength=400, focal_height=8.5,
+          read_timeout=0.01,
+        )
+      )
+
+  def test_orbital_well_scan(self):
+    """Orbital mode: WSF bytes present in payload."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = [plate.get_item("A1")]
+
+    page = _build_synthetic_fl_spectrum_page(n_steps=11, status_flags=0x05)
+    mock.queue_response(ACK, STATUS_IDLE, _wrap_payload(page))
+
+    results = asyncio.run(
+      backend.read_fluorescence_spectrum(
+        plate, wells,
+        start_wavelength=500, end_wavelength=510,
+        fixed_wavelength=400, focal_height=8.5,
+        well_scan="orbital", scan_diameter_mm=3,
+      )
+    )
+
+    # Verify payload is 172 bytes (167 + 5 WSF)
+    first_frame = mock.written[0]
+    inner = _extract_payload(first_frame)
+    self.assertEqual(len(inner), 173)  # 172 payload + 1 byte cmd family
+
+    self.assertEqual(len(results), 11)
+
+  def test_bottom_optic(self):
+    """Bottom optic position byte in pre-separator."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = [plate.get_item("A1")]
+
+    page = _build_synthetic_fl_spectrum_page(n_steps=11, status_flags=0x05)
+    mock.queue_response(ACK, STATUS_IDLE, _wrap_payload(page))
+
+    asyncio.run(
+      backend.read_fluorescence_spectrum(
+        plate, wells,
+        start_wavelength=500, end_wavelength=510,
+        fixed_wavelength=400, focal_height=8.5,
+        optic_position="bottom",
+      )
+    )
+
+    first_frame = mock.written[0]
+    inner = _extract_payload(first_frame)
+    # Pre-separator byte[0] at inner[65]: FLUORESCENCE(0x00) | BOTTOM(0x40) = 0x40
+    self.assertEqual(inner[65], 0x40)
 
 
 if __name__ == "__main__":

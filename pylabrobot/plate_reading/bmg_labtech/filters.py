@@ -93,11 +93,6 @@ class FilterCube:
   emission: Optional[Filter] = None
 
 
-# Backward-compat aliases
-FilterSlide = Filter
-ExcitationFilter = Filter
-EmissionFilter = Filter
-
 
 # ---------------------------------------------------------------------------
 # Filter slide classes (containers)
