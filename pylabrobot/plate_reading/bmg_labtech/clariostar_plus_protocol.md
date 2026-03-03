@@ -129,11 +129,11 @@ Contains the optic configuration byte and shake parameters.
 ```
 Offset  Field
 ──────  ─────
- 0      optic_config = Modality | WellScanMode | OpticPosition  (see §4)
+ 0      optic_config = DetectionMode | WellScanMode | OpticPosition  (see §4)
  1-11   zeros (11 bytes)
 12      mixer_action: 0x02 when shaking, 0x00 otherwise
 13-16   zeros (4 bytes)
-17      shake_pattern: 0=orbital, 1=linear, 2=double_orbital
+17      shake_pattern: 0=orbital, 1=linear, 2=double_orbital, 3=meander
 18      shake_speed_index: (RPM / 100) - 1       e.g. 300rpm → 2
 19      zero
 20-21   shake_duration (u16 LE, seconds)
@@ -160,7 +160,7 @@ Only present for non-point scan modes (orbital, spiral).
 ```
 Offset  Field
 ──────  ─────
- 0      modality byte (same as Modality enum: 0x02=abs, 0x00=fl)
+ 0      detection mode byte (same as DetectionMode enum: 0x02=abs, 0x00=fl)
  1      scan_diameter (integer mm)
  2-3    well_diameter (mm × 100, u16 BE)       e.g. 6.58mm → 0x0292
  4      always 0x00
@@ -243,13 +243,13 @@ Verified: H01 frame = 144 bytes = 136 inner.
 
 The optic byte at pre-separator offset 0 is a bitfield composed by OR'ing three enums:
 
-### Modality (measurement type)
+### DetectionMode
 
 | Name | Value | Bits | Notes |
 |------|-------|------|-------|
-| `FLUORESCENCE` | `0x00` | `0000 0000` | No modality bits set |
+| `FLUORESCENCE` | `0x00` | `0000 0000` | No detection mode bits set |
+| `LUMINESCENCE` | `0x01` | `0000 0001` | Bit 0 (from Go reference) |
 | `ABSORBANCE` | `0x02` | `0000 0010` | Bit 1 |
-| `LUMINESCENCE` | TBD | TBD | No captures available yet |
 
 ### WellScanMode (scan pattern)
 
@@ -277,7 +277,7 @@ The optic byte at pre-separator offset 0 is a bitfield composed by OR'ing three 
 | `0x30` | `0011 0000` | FLUORESCENCE \| ORBITAL \| TOP | (from Go fl.go) |
 | `0x40` | `0100 0000` | FLUORESCENCE \| POINT \| BOTTOM | (from Go fl.go) |
 
-The modality does NOT change between discrete and spectral measurements —
+The detection mode does NOT change between discrete and spectral measurements —
 both use `ABSORBANCE` (`0x02`). The discrete-vs-spectral distinction is encoded
 in the wavelength section (`num_wavelengths = 0` signals spectral mode).
 

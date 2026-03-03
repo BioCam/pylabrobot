@@ -7,6 +7,7 @@ fluorescence, luminescence (stub).
 """
 
 import asyncio
+import dataclasses
 import enum
 import logging
 import math
@@ -19,6 +20,18 @@ from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well
 
 from ..backend import PlateReaderBackend
+from .filters import (
+  _FilterBase,
+  Filter,
+  DichroicFilter,
+  FilterSlide,
+  ExcitationFilter,
+  EmissionFilter,
+  _FilterSlideBase,
+  ExcitationFilterSlide,
+  EmissionFilterSlide,
+  DichroicFilterSlide,
+)
 
 logger = logging.getLogger("pylabrobot")
 
@@ -80,7 +93,7 @@ class ChecksumError(FrameError):
 # If year granularity proves insufficient, switch values to (year, month) tuples.
 
 CONFIRMED_FIRMWARE_VERSIONS: Dict[str, int] = {
-  "1.35": 2020,  # pre-dates Enhanced Dynamic Range (EDR); no auto-gain support
+  "1.35": 2020,  # supports EDR (verified via pcap F-P01); no auto-gain support
 }
 
 _FRAME_OVERHEAD = 8  # STX + size(2) + header(1) + checksum(3) + CR(1)
@@ -217,6 +230,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     REQUEST = 0x05
     TEMPERATURE_CONTROLLER = 0x06
     POLL = 0x08
+    AUTO_FOCUS = 0x0C
+    FILTER_SCAN = 0x24
     STATUS = 0x80
     HW_STATUS = 0x81
 
@@ -237,9 +252,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     DATA = 0x02
     EEPROM = 0x07
     FIRMWARE_INFO = 0x09
+    FOCUS_RESULT = 0x05
     FOCUS_HEIGHT = 0x0F
+    SPECTRAL_DATA = 0x11
+    FILTER_RESULT = 0x1B
     READ_ORDER = 0x1D
     USAGE_COUNTERS = 0x21
+    # FILTER_SCAN (subcmds for CommandFamily.FILTER_SCAN)
+    FILTER_SCAN_EXCITATION = 0x20
+    FILTER_SCAN_EMISSION = 0x21
+    FILTER_SCAN_DICHROIC = 0x23
     # POLL
     POLL = 0x00
 
@@ -248,11 +270,19 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     CommandFamily.TRAY: {Command.TRAY_CLOSE, Command.TRAY_OPEN},
     CommandFamily.REQUEST: {
       Command.DATA,
+      Command.FOCUS_RESULT,
       Command.EEPROM,
       Command.FIRMWARE_INFO,
       Command.FOCUS_HEIGHT,
+      Command.SPECTRAL_DATA,
+      Command.FILTER_RESULT,
       Command.READ_ORDER,
       Command.USAGE_COUNTERS,
+    },
+    CommandFamily.FILTER_SCAN: {
+      Command.FILTER_SCAN_EXCITATION,
+      Command.FILTER_SCAN_EMISSION,
+      Command.FILTER_SCAN_DICHROIC,
     },
     CommandFamily.POLL: {Command.POLL},
   }
@@ -261,22 +291,24 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     CommandFamily.HW_STATUS,
     CommandFamily.TEMPERATURE_CONTROLLER,
     CommandFamily.RUN,
+    CommandFamily.AUTO_FOCUS,
   }
 
   # -- Optic byte flags (bit field, OR'd together) -------------------------
 
-  class Modality(enum.IntEnum):
-    """Measurement modality (base value for the optic config byte)."""
+  class DetectionMode(enum.IntEnum):
+    """Detection mode (base value for the optic config byte)."""
 
     FLUORESCENCE = 0x00
+    LUMINESCENCE = 0x01
     ABSORBANCE = 0x02
-    # LUMINESCENCE = 0x??  # TODO: determine from captures
 
   class WellScanMode(enum.IntEnum):
     """Well scan mode flags OR'd into the optic config byte."""
 
     POINT = 0x00
     SPIRAL = 0x04
+    MATRIX = 0x10
     ORBITAL = 0x30
 
   class OpticPosition(enum.IntEnum):
@@ -284,6 +316,63 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     TOP = 0x00
     BOTTOM = 0x40
+
+  # -- Filter scan enums (auto-detection, see FILTER_AUTODETECT_PROTOCOL.md) --
+
+  class FilterScanMode(enum.IntEnum):
+    """Scan mode for the 0x24 FILTER_SCAN command (payload byte 1).
+
+    Determines which monochromator/detector is used to characterize the filter
+    in the target slide position.
+    """
+
+    EXCITATION = 0x20
+    EMISSION = 0x21
+    DICHROIC = 0x23
+
+  class FilterDetectType(enum.IntEnum):
+    """Filter type byte in the 0x1b FILTER_RESULT response (payload byte 6).
+
+    Identifies the slide category that was scanned and determines
+    which wavelength fields are populated in the response.
+
+    Bandpass (EXCITATION, EMISSION): center, bandwidth, low edge, high edge.
+    Long-pass (DICHROIC): cut-on wavelength only.
+    """
+
+    EXCITATION = 0x80
+    EMISSION = 0x81
+    DICHROIC = 0x83
+
+  class FilterSlideMotor(enum.IntEnum):
+    """Physical filter slide motor indices in the 0x24 FILTER_SCAN command.
+
+    The command contains 8 × u16 BE motor positions at bytes 16-31.
+    Value 0x0001 = home; 0x0002+ = filter slot positions.
+
+    5 motors correspond to physical filter slides (2 excitation, 1 dichroic,
+    2 emission). The remaining 3 are always at home and purpose is unknown.
+    """
+
+    EXCITATION_SLIDE_1 = 1  # Ex positions 1-2 (values 2-3)
+    EXCITATION_SLIDE_2 = 2  # Ex positions 3-4 (values 2-3)
+    DICHROIC_SLIDE = 3      # Dichroic A/B/C  (values 2-4)
+    EMISSION_SLIDE_2 = 4    # Em positions 7-8 (values 2-3)
+    EMISSION_SLIDE_1 = 5    # Em positions 5-6 (values 2-3)
+
+  # -- Filter / Filter slide (imported from filters.py) ----------------------
+
+  _FilterBase = _FilterBase
+  Filter = Filter
+  DichroicFilter = DichroicFilter
+  FilterSlide = FilterSlide
+  ExcitationFilter = ExcitationFilter
+  EmissionFilter = EmissionFilter
+  _FilterSlideBase = _FilterSlideBase
+  _FilterNamespace = _FilterSlideBase  # backward-compat
+  ExcitationFilterSlide = ExcitationFilterSlide
+  EmissionFilterSlide = EmissionFilterSlide
+  DichroicFilterSlide = DichroicFilterSlide
 
   # -- Status flags (CLARIOstar-specific bit positions) ---------------------
 
@@ -380,6 +469,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     }
     self._target_temperature: Optional[float] = None
     # TODO: keep searching for a way to retrieve target temp from device
+    self.excitation_filter_slide = self.ExcitationFilterSlide()
+    self.emission_filter_slide = self.EmissionFilterSlide()
+    self.dichroic_filter_slide = self.DichroicFilterSlide()
 
   # --------------------------------------------------------------------------
   # Life cycle
@@ -438,6 +530,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     fw_info = await self.request_firmware_info()
     self.configuration.update(fw_info)
+
+    # Update filter slide slot counts from EEPROM.
+    self.excitation_filter_slide._update_max_slots(
+      self.configuration.get("excitation_filter_slots", 0))
+    self.emission_filter_slide._update_max_slots(
+      self.configuration.get("emission_filter_slots", 0))
+    self.dichroic_filter_slide._update_max_slots(
+      self.configuration.get("dichroic_filter_slots", 0))
 
     fw_ver = self.configuration["firmware_version"]
     if fw_ver and fw_ver not in CONFIRMED_FIRMWARE_VERSIONS:
@@ -1253,6 +1353,208 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     }
 
   # --------------------------------------------------------------------------
+  # Feature: Filter Auto-Detection
+  # --------------------------------------------------------------------------
+  #
+  # The CLARIOstar Plus has 11 physical filter positions across 5 filter slides:
+  #   - 4 excitation (2 slides × 2 positions each)
+  #   - 3 dichroic   (1 slide  × 3 positions)
+  #   - 4 emission   (2 slides × 2 positions each)
+  #
+  # The "Detect all filters" routine scans each position spectroscopically
+  # using the 0x24 FILTER_SCAN command, then reads characterization results
+  # via CMD_05/0x1b (FILTER_RESULT).
+  #
+  # Wire protocol verified against clariostar_plus_filter_autodetection_routine.pcapng.
+  # See FILTER_AUTODETECT_PROTOCOL.md for the full byte-level analysis.
+
+  # (scan_mode, motor_index, motor_value, label, category, slot)
+  _FILTER_SCAN_TABLE = (
+    (0x20, 1, 2, "Ex 1",   "excitation", 1),
+    (0x20, 1, 3, "Ex 2",   "excitation", 2),
+    (0x20, 2, 2, "Ex 3",   "excitation", 3),
+    (0x20, 2, 3, "Ex 4",   "excitation", 4),
+    (0x23, 3, 2, "Dich A", "dichroic",   1),
+    (0x23, 3, 3, "Dich B", "dichroic",   2),
+    (0x23, 3, 4, "Dich C", "dichroic",   3),
+    (0x21, 5, 2, "Em 5",   "emission",   1),
+    (0x21, 5, 3, "Em 6",   "emission",   2),
+    (0x21, 4, 2, "Em 7",   "emission",   3),
+    (0x21, 4, 3, "Em 8",   "emission",   4),
+  )
+
+  # Emission scans (mode 0x21) need these 8 bytes at payload positions 6-13.
+  # Configures the excitation monochromator/lamp for measuring emission filters.
+  # Excitation and dichroic scans use all zeros.
+  # Observed constant across all 4 emission scans in the pcap capture.
+  _EMISSION_SCAN_WAVELENGTH_CONFIG = bytes([
+    0x04, 0x4C, 0x04, 0xB0, 0x04, 0x4C, 0x04, 0x7E,
+  ])
+
+  @staticmethod
+  def _build_filter_scan_payload(
+    scan_mode: int,
+    motor_index: int,
+    motor_value: int,
+  ) -> bytes:
+    """Build the parameters for a 0x24 FILTER_SCAN command.
+
+    The full command payload sent to ``send_command`` is
+    ``[0x24, scan_mode] + parameters``. This method builds the *parameters*
+    portion (26 bytes).
+
+    Args:
+      scan_mode: 0x20 (excitation), 0x21 (emission), or 0x23 (dichroic).
+      motor_index: Which of the 8 motor slots (0-7) to move.
+      motor_value: Target position for that motor (2+ = filter slot).
+
+    Returns:
+      26-byte parameters block.
+    """
+    # Bytes 0-7: wavelength config (emission) or zeros (excitation/dichroic)
+    if scan_mode == 0x21:
+      wl_config = CLARIOstarPlusBackend._EMISSION_SCAN_WAVELENGTH_CONFIG
+    else:
+      wl_config = b"\x00" * 8
+
+    # Byte 8: 0x00, Byte 9: 0x01
+    preamble = b"\x00\x01"
+
+    # Bytes 10-25: 8 × u16 BE motor positions, all 0x0001 except target
+    motors = bytearray()
+    for i in range(8):
+      val = motor_value if i == motor_index else 1
+      motors.extend(val.to_bytes(2, "big"))
+
+    return wl_config + preamble + bytes(motors)
+
+  @staticmethod
+  def _parse_filter_result(
+    payload: bytes,
+    slot: int,
+    category: str,
+  ) -> Optional["_FilterBase"]:
+    """Parse a 0x1b FILTER_RESULT response into a Filter or DichroicFilter.
+
+    Args:
+      payload: Full response payload from ``send_command`` (starts with 0x1b).
+      slot: The filter slot number (1-based) for the resulting object.
+      category: ``"excitation"``, ``"emission"``, or ``"dichroic"``.
+
+    Returns:
+      ``Filter`` for occupied bandpass positions,
+      ``DichroicFilter`` for occupied dichroic positions,
+      ``None`` for empty positions.
+    """
+    # Payload byte 6: type byte (0x80=ex, 0x81=em, 0x83=dichroic)
+    # Bytes 7-8: center wavelength (u16 BE, nm×10) — bandpass only
+    # Bytes 9-10: bandwidth (u16 BE, nm×10) — bandpass only
+    # Bytes 11-12: low edge (u16 BE, nm×10) — bandpass only (or cut-on for dichroic)
+    type_byte = payload[6]
+
+    if type_byte in (0x80, 0x81):
+      # Bandpass filter (excitation or emission)
+      bw_raw = int.from_bytes(payload[9:11], "big")
+      if bw_raw == 0:
+        return None  # empty position
+      center_raw = int.from_bytes(payload[7:9], "big")
+      center = round(center_raw / 10)
+      bandwidth = round(bw_raw / 10)
+      return Filter(
+        slot=slot,
+        name=f"BP {center}/{bandwidth}",
+        center_wavelength=center,
+        bandwidth=bandwidth,
+      )
+
+    if type_byte == 0x83:
+      # Dichroic (long-pass) — cut-on at bytes 11-12
+      cut_on_raw = int.from_bytes(payload[11:13], "big")
+      if cut_on_raw == 0:
+        return None  # empty position
+      cut_on = round(cut_on_raw / 10)
+      return DichroicFilter(
+        slot=slot,
+        name=f"LP {cut_on}",
+        cut_on_wavelength=cut_on,
+      )
+
+    return None
+
+  async def detect_all_filters(self) -> Dict[str, list]:
+    """Scan all 11 filter positions and auto-populate filter slide registries.
+
+    Performs the same "Detect all filters" routine as the BMG MARS software.
+    Each position is scanned spectroscopically; the firmware characterizes
+    the filter and returns center wavelength, bandwidth, and band edges.
+
+    Detected filters are registered into ``excitation_filter_slide``,
+    ``emission_filter_slide``, and ``dichroic_filter_slide``.
+
+    Returns:
+      Dict with keys ``"excitation"``, ``"emission"``, ``"dichroic"``,
+      each mapping to a list of detected ``Filter`` or ``DichroicFilter``
+      objects. Empty positions are omitted.
+
+    Raises:
+      TimeoutError: If a scan does not complete within ``read_timeout``.
+    """
+    CF = self.CommandFamily
+    Cmd = self.Command
+
+    result: Dict[str, list] = {"excitation": [], "emission": [], "dichroic": []}
+
+    for scan_mode, motor_idx, motor_val, label, category, slot in self._FILTER_SCAN_TABLE:
+      # Map scan_mode to the correct FILTER_SCAN sub-command
+      scan_cmd = {
+        0x20: Cmd.FILTER_SCAN_EXCITATION,
+        0x21: Cmd.FILTER_SCAN_EMISSION,
+        0x23: Cmd.FILTER_SCAN_DICHROIC,
+      }[scan_mode]
+
+      params = self._build_filter_scan_payload(scan_mode, motor_idx, motor_val)
+
+      # 1. Send FILTER_SCAN — moves slide motor and performs spectral scan
+      logger.debug("detect_all_filters: scanning %s (motor %d → %d)", label, motor_idx, motor_val)
+      await self.send_command(
+        command_family=CF.FILTER_SCAN,
+        command=scan_cmd,
+        parameters=params,
+        wait=True,
+        read_timeout=self.read_timeout,
+      )
+
+      # 2. Drain spectral data buffer (0x11) — firmware expects this read
+      await self.send_command(
+        command_family=CF.REQUEST,
+        command=Cmd.SPECTRAL_DATA,
+        parameters=b"\x00\x00\x00\x00\x00",
+      )
+
+      # 3. Read filter characterization result (0x1b)
+      filter_payload = await self.send_command(
+        command_family=CF.REQUEST,
+        command=Cmd.FILTER_RESULT,
+        parameters=b"\x00\x00\x00\x00\x00",
+      )
+
+      # 4. Parse and register
+      detected = self._parse_filter_result(filter_payload, slot, category)
+      if detected is not None:
+        if category == "excitation":
+          self.excitation_filter_slide.register(detected)
+        elif category == "emission":
+          self.emission_filter_slide.register(detected)
+        elif category == "dichroic":
+          self.dichroic_filter_slide.register(detected)
+        result[category].append(detected)
+        logger.info("detect_all_filters: %s → %s", label, detected)
+      else:
+        logger.debug("detect_all_filters: %s → empty", label)
+
+    return result
+
+  # --------------------------------------------------------------------------
   # Feature: Temperature Control
   # --------------------------------------------------------------------------
   #
@@ -1533,16 +1835,18 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   def _scan_direction_byte(
     unidirectional: bool = True,
     vertical: bool = True,
-    corner: str = "TL",
+    corner: Literal["TL", "TR", "BL", "BR"] = "TL",
+    flying: bool = False,
   ) -> int:
     """Encode the scan direction byte.
 
-    Bit layout: | uni(7) | corner(6:5) | 0(4) | vert(3) | 0(2) | always_set(1) | 0(0) |
+    Bit layout: | uni(7) | corner(6:5) | 0(4) | vert(3) | fly(2) | always_set(1) | 0(0) |
 
-    Ground truth values verified across all 38 captures:
+    Ground truth values verified across all 38+29 captures:
       0x8A: uni=1, TL, vert=1    0x0A: uni=0, TL, vert=1
       0x2A: TR                   0x4A: BL
       0x6A: BR                   0x02: horizontal (vert=0)
+      0x0E: flying (TL, vert)   0x1E: flying (TL explicit, vert)
     """
     corner_map = {"TL": 0, "TR": 1, "BL": 2, "BR": 3}
     b = 0
@@ -1551,34 +1855,40 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     b |= corner_map[corner] << 5
     if vertical:
       b |= 1 << 3
+    if flying:
+      b |= 1 << 2
     b |= 1 << 1  # always set
     return b
 
   @staticmethod
   def _pre_separator_block(
-    modality: "CLARIOstarPlusBackend.Modality",
+    detection_mode: "CLARIOstarPlusBackend.DetectionMode",
     well_scan_mode: "CLARIOstarPlusBackend.WellScanMode",
-    shake_mode: Optional[str] = None,
+    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
     shake_speed_rpm: int = 0,
     shake_duration_s: int = 0,
     optic_position: Optional["CLARIOstarPlusBackend.OpticPosition"] = None,
+    edr: bool = False,
   ) -> bytes:
     """Build the 31-byte block between scan direction byte and separator.
 
     Args:
-      modality: Measurement modality (ABSORBANCE, FLUORESCENCE).
-      well_scan_mode: Well scan mode (POINT, ORBITAL, SPIRAL).
-      shake_mode: None, "orbital", "linear", or "double_orbital".
-      shake_speed_rpm: Shake speed in RPM (100-800, multiples of 100).
+      detection_mode: Detection mode (ABSORBANCE, FLUORESCENCE).
+      well_scan_mode: Well scan mode (POINT, ORBITAL, SPIRAL, MATRIX).
+      shake_mode: None, "orbital", "linear", "double_orbital", or "meander".
+      shake_speed_rpm: Shake speed in RPM (100-700, multiples of 100; meander max 300).
       shake_duration_s: Shake duration in seconds.
       optic_position: Optic position (TOP, BOTTOM). Fluorescence only.
+      edr: Enhanced Dynamic Range. Sets byte[1] = 0x40. Fluorescence only.
     """
-    optic_config = int(modality) | int(well_scan_mode)
+    optic_config = int(detection_mode) | int(well_scan_mode)
     if optic_position is not None:
       optic_config |= int(optic_position)
 
     buf = bytearray(31)
     buf[0] = optic_config
+    if edr:
+      buf[1] = 0x40
 
     if shake_mode is not None and shake_duration_s > 0:
       buf[12] = 0x02  # mixer_action
@@ -1592,28 +1902,34 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   @staticmethod
   def _well_scan_field(
     well_scan_mode: "CLARIOstarPlusBackend.WellScanMode",
-    modality: "CLARIOstarPlusBackend.Modality",
+    detection_mode: "CLARIOstarPlusBackend.DetectionMode",
     scan_diameter_mm: int,
     well_diameter_mm_100: int,
+    matrix_size: int = 0,
   ) -> bytes:
     """Build 0 or 5 bytes for non-point well scan modes.
 
     For point scans, returns empty bytes.
     For orbital/spiral: [meas_code, scan_width_mm, well_diam_hi, well_diam_lo, 0x00]
+    For matrix: [N, scan_width_mm, well_diam_hi, well_diam_lo, 0x00]
 
-    The measurement code byte (buf[0]) differs by modality:
+    The measurement code byte (buf[0]) differs by detection mode:
       ABS = 0x02, FL = 0x03.
-    Verified across all 38 ABS + 20 FL pcap captures.
+    For matrix mode, buf[0] is the grid side dimension N instead.
+    Verified across all 38 ABS + 29 FL pcap captures.
     """
     WSM = CLARIOstarPlusBackend.WellScanMode
     if well_scan_mode == WSM.POINT:
       return b""
     _WELL_SCAN_CODE = {
-      CLARIOstarPlusBackend.Modality.ABSORBANCE: 0x02,
-      CLARIOstarPlusBackend.Modality.FLUORESCENCE: 0x03,
+      CLARIOstarPlusBackend.DetectionMode.ABSORBANCE: 0x02,
+      CLARIOstarPlusBackend.DetectionMode.FLUORESCENCE: 0x03,
     }
     buf = bytearray(5)
-    buf[0] = _WELL_SCAN_CODE[modality]
+    if well_scan_mode == WSM.MATRIX:
+      buf[0] = matrix_size
+    else:
+      buf[0] = _WELL_SCAN_CODE[detection_mode]
     buf[1] = scan_diameter_mm
     buf[2:4] = well_diameter_mm_100.to_bytes(2, "big")
     buf[4] = 0x00
@@ -1835,12 +2151,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     wells: List[Well],
     wavelengths: List[int],
     flashes: int = 5,
-    well_scan: str = "point",
+    well_scan: Literal["point", "orbital", "spiral", "matrix"] = "point",
     scan_diameter_mm: int = 3,
+    matrix_size: int = 0,
     unidirectional: bool = True,
     vertical: bool = True,
-    corner: str = "TL",
-    shake_mode: Optional[str] = None,
+    corner: Literal["TL", "TR", "BL", "BR"] = "TL",
+    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
     shake_speed_rpm: int = 0,
     shake_duration_s: int = 0,
     settling_time_s: float = 0.0,
@@ -1872,10 +2189,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "point": self.WellScanMode.POINT,
       "orbital": self.WellScanMode.ORBITAL,
       "spiral": self.WellScanMode.SPIRAL,
+      "matrix": self.WellScanMode.MATRIX,
     }
     wsm = scan_mode_map[well_scan]
     pre_sep = self._pre_separator_block(
-      modality=self.Modality.ABSORBANCE,
+      detection_mode=self.DetectionMode.ABSORBANCE,
       well_scan_mode=wsm,
       shake_mode=shake_mode,
       shake_speed_rpm=shake_speed_rpm,
@@ -1888,7 +2206,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     # 5. Well scan field (0 or 5 bytes)
     well_0 = plate.get_all_items()[0]
     well_diam_100 = int(round(min(well_0.get_size_x(), well_0.get_size_y()) * 100))
-    wsf = self._well_scan_field(wsm, self.Modality.ABSORBANCE, scan_diameter_mm, well_diam_100)
+    wsf = self._well_scan_field(
+      wsm, self.DetectionMode.ABSORBANCE, scan_diameter_mm, well_diam_100, matrix_size
+    )
 
     # 6. Pause time (1 byte)
     # OEM encodes settling delay as pause_time = int(settling_s * 50).
@@ -1948,12 +2268,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     end_wavelength: int,
     step_size: int,
     flashes: int = 5,
-    well_scan: str = "point",
+    well_scan: Literal["point", "orbital", "spiral", "matrix"] = "point",
     scan_diameter_mm: int = 3,
+    matrix_size: int = 0,
     unidirectional: bool = True,
     vertical: bool = True,
-    corner: str = "TL",
-    shake_mode: Optional[str] = None,
+    corner: Literal["TL", "TR", "BL", "BR"] = "TL",
+    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
     shake_speed_rpm: int = 0,
     shake_duration_s: int = 0,
     settling_time_s: float = 0.0,
@@ -1990,10 +2311,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "point": self.WellScanMode.POINT,
       "orbital": self.WellScanMode.ORBITAL,
       "spiral": self.WellScanMode.SPIRAL,
+      "matrix": self.WellScanMode.MATRIX,
     }
     wsm = scan_mode_map[well_scan]
     pre_sep = self._pre_separator_block(
-      modality=self.Modality.ABSORBANCE,
+      detection_mode=self.DetectionMode.ABSORBANCE,
       well_scan_mode=wsm,
       shake_mode=shake_mode,
       shake_speed_rpm=shake_speed_rpm,
@@ -2006,7 +2328,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     # 5. Well scan field (0 or 5 bytes)
     well_0 = plate.get_all_items()[0]
     well_diam_100 = int(round(min(well_0.get_size_x(), well_0.get_size_y()) * 100))
-    wsf = self._well_scan_field(wsm, self.Modality.ABSORBANCE, scan_diameter_mm, well_diam_100)
+    wsf = self._well_scan_field(
+      wsm, self.DetectionMode.ABSORBANCE, scan_diameter_mm, well_diam_100, matrix_size
+    )
 
     # 6. Pause time (1 byte)
     if pause_time is None:
@@ -2064,11 +2388,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   @staticmethod
   def _parse_response_header(
     payload: bytes,
-  ) -> Tuple[int, int, int, Optional[float]]:
+  ) -> Tuple[int, int, int, int, Optional[float]]:
     """Extract metadata from the 36-byte absorbance response header.
 
     Returns:
-      (schema, num_wl_resp, num_wells, temperature).
+      (schema, num_wl_resp, num_wells, n_positions, temperature).
+      n_positions is the number of measurement positions per well (>1 for
+      matrix scan). For schema 0xA9: payload[23:25] = n_positions (u16 BE).
+      For schema 0x29: those bytes are temperature, so n_positions defaults to 1.
       temperature is None when the raw sensor value is ≤ 1 (inactive).
     """
     if len(payload) < 36:
@@ -2079,16 +2406,19 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     num_wells = int.from_bytes(payload[20:22], "big")
 
     temp: Optional[float] = None
+    n_positions = 1
     if schema == 0x29:
       raw_temp = int.from_bytes(payload[23:25], "big")
       if raw_temp > 1:
         temp = raw_temp / 10.0
     elif schema == 0xA9:
+      n_positions = int.from_bytes(payload[23:25], "big") if len(payload) >= 25 else 1
+      n_positions = max(n_positions, 1)
       raw_temp = int.from_bytes(payload[34:36], "big")
       if raw_temp > 1:
         temp = raw_temp / 10.0
 
-    return schema, num_wl_resp, num_wells, temp
+    return schema, num_wl_resp, num_wells, n_positions, temp
 
   @staticmethod
   def _detect_group_layout(payload_len: int, num_wells: int, num_wl_resp: int) -> int:
@@ -2170,6 +2500,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     extras: List[List[int]],
     cal_pairs: List[Tuple[int, int]],
     num_wells: int,
+    n_positions: int,
     temp: Optional[float],
     plate: Plate,
     wells: List[Well],
@@ -2183,12 +2514,23 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       Dual WL   (4 extras): WL2, chrom2, chrom3, ref
       Triple WL (5 extras): WL2, WL3, chrom2, chrom3, ref
 
+    When n_positions > 1 (matrix scan), each well has n_positions consecutive
+    values. These are averaged per well before computing OD/transmittance.
+
     Transmittance formula (no dark subtraction)::
 
       T = (sample / c_hi) × (r_hi / ref)
       T% = T × 100
       OD = -log10(T)
     """
+    effective = num_wells * n_positions
+
+    def _avg_positions(flat: List, n_wells: int, n_pos: int) -> List:
+      """Average n_pos consecutive values per well."""
+      if n_pos <= 1:
+        return flat
+      return [sum(flat[w * n_pos:(w + 1) * n_pos]) / n_pos for w in range(n_wells)]
+
     num_extra_wl = max(0, len(extras) - 3)
 
     # Concatenate all WL sample values: group0 + extra WL groups
@@ -2197,7 +2539,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       samples.extend(extras[wl_extra_idx])
 
     # Reference is always the LAST extra group
-    refs = extras[-1] if extras else [0] * num_wells
+    refs_raw = extras[-1] if extras else [0] * effective
+    refs = _avg_positions(refs_raw, num_wells, n_positions)
 
     # Reference calibration is always the LAST cal pair
     ref_cal = cal_pairs[-1] if len(cal_pairs) >= 2 else (0, 0)
@@ -2209,8 +2552,12 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       wl_cal = cal_pairs[wl_idx] if wl_idx < len(cal_pairs) else cal_pairs[0]
       c_hi = wl_cal[0]
 
+      # Extract this wavelength's slice and average positions
+      wl_slice = samples[wl_idx * effective:(wl_idx + 1) * effective]
+      wl_averaged = _avg_positions(wl_slice, num_wells, n_positions)
+
       if report == "raw":
-        raw_flat: List[float] = [float(samples[i + wl_idx * num_wells]) for i in range(num_wells)]
+        raw_flat: List[float] = [float(v) for v in wl_averaged]
         grid = self._map_readings_to_plate_grid(raw_flat, wells, plate)
         results.append(
           {
@@ -2218,7 +2565,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
             "time": now,
             "temperature": temp,
             "data": grid,
-            "references": list(refs),
+            "references": [float(v) for v in refs],
             "chromatic_cal": wl_cal,
             "reference_cal": ref_cal,
           }
@@ -2226,7 +2573,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       else:
         values: List[float] = []
         for i in range(num_wells):
-          sample_val = samples[i + wl_idx * num_wells]
+          sample_val = wl_averaged[i]
           ref_val = refs[i]
           if c_hi > 0 and ref_val > 0:
             t = (sample_val / c_hi) * (r_hi / ref_val)
@@ -2267,19 +2614,20 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     See ``_detect_group_layout`` for the dynamic group layout documentation.
     """
-    schema, num_wl_resp, num_wells, temp = self._parse_response_header(payload)
-    extra_groups = self._detect_group_layout(len(payload), num_wells, num_wl_resp)
-    if extra_groups == 0 and len(payload) > 36 + num_wells * num_wl_resp * 4 + 8 + 1:
+    schema, num_wl_resp, num_wells, n_positions, temp = self._parse_response_header(payload)
+    effective = num_wells * n_positions
+    extra_groups = self._detect_group_layout(len(payload), effective, num_wl_resp)
+    if extra_groups == 0 and len(payload) > 36 + effective * num_wl_resp * 4 + 8 + 1:
       logger.warning(
         "Could not determine group layout for %d-byte response (%d wells, %d wl_resp); "
         "results may be invalid (all-zero references produce OD=inf)",
         len(payload),
-        num_wells,
+        effective,
         num_wl_resp,
       )
-    group0, extras, cal_pairs = self._extract_groups(payload, num_wells, num_wl_resp, extra_groups)
+    group0, extras, cal_pairs = self._extract_groups(payload, effective, num_wl_resp, extra_groups)
     return self._compute_results(
-      group0, extras, cal_pairs, num_wells, temp, plate, wells, wavelengths, report
+      group0, extras, cal_pairs, num_wells, n_positions, temp, plate, wells, wavelengths, report
     )
 
   async def request_absorbance_results(
@@ -2330,14 +2678,15 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     report: Literal["optical_density", "transmittance", "raw"] = "optical_density",
     # --- optics ---
     flashes: int = 10,
-    well_scan: str = "point",
+    well_scan: Literal["point", "orbital", "spiral", "matrix"] = "point",
     scan_diameter_mm: int = 3,
+    matrix_size: Optional[int] = None,
     # --- scan direction ---
     unidirectional: bool = True,
     vertical: bool = True,
-    corner: str = "TL",
+    corner: Literal["TL", "TR", "BL", "BR"] = "TL",
     # --- shaking ---
-    shake_mode: Optional[str] = None,
+    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
     shake_speed_rpm: Optional[int] = None,
     shake_duration_s: Optional[int] = None,
     settling_time_s: Optional[float] = None,
@@ -2391,10 +2740,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         rows first (left→right).
       corner: Starting corner: ``"TL"``, ``"TR"``, ``"BL"``, or ``"BR"``.
       shake_mode: Shake plate before reading. ``None`` (default) = no shake,
-        ``"orbital"``, ``"linear"``, or ``"double_orbital"``. When set, requires
-        ``shake_speed_rpm``, ``shake_duration_s``, and ``settling_time_s``.
-      shake_speed_rpm: Shake speed in RPM (multiples of 100, 100-700). Required
-        when ``shake_mode`` is set.
+        ``"orbital"``, ``"linear"``, ``"double_orbital"``, or ``"meander"``.
+        When set, requires ``shake_speed_rpm``, ``shake_duration_s``, and
+        ``settling_time_s``.
+      shake_speed_rpm: Shake speed in RPM (multiples of 100, 100-700; meander
+        max 300). Required when ``shake_mode`` is set.
       shake_duration_s: Shake duration in seconds (> 0). Required when
         ``shake_mode`` is set.
       settling_time_s: Wait time in seconds after shaking before reading
@@ -2441,8 +2791,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if not lo <= flashes <= hi:
       raise ValueError(f"flashes must be {lo}-{hi} for {well_scan} mode, got {flashes}.")
 
+    if matrix_size is not None:
+      well_scan = "matrix"
     if well_scan == "matrix":
-      raise NotImplementedError("matrix well scan is not yet implemented.")
+      if matrix_size is None:
+        raise ValueError("matrix_size is required when well_scan='matrix'.")
+      if matrix_size < 2 or matrix_size > 11:
+        raise ValueError(f"matrix_size must be 2-11, got {matrix_size}.")
 
     if well_scan not in ("point", "matrix") and not 1 <= scan_diameter_mm <= 6:
       raise ValueError(
@@ -2457,7 +2812,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if report not in valid_reports:
       raise ValueError(f"report must be one of {valid_reports}, got {report!r}.")
 
-    valid_shake_modes = (None, "orbital", "linear", "double_orbital")
+    valid_shake_modes = (None, "orbital", "linear", "double_orbital", "meander")
     if shake_mode not in valid_shake_modes:
       raise ValueError(f"shake_mode must be one of {valid_shake_modes}, got {shake_mode!r}.")
     if shake_mode is not None:
@@ -2467,9 +2822,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         raise ValueError("shake_duration_s is required when shake_mode is set.")
       if settling_time_s is None:
         raise ValueError("settling_time_s is required when shake_mode is set.")
-      if shake_speed_rpm < 100 or shake_speed_rpm > 700 or shake_speed_rpm % 100 != 0:
+      max_rpm = 300 if shake_mode == "meander" else 700
+      if shake_speed_rpm < 100 or shake_speed_rpm > max_rpm or shake_speed_rpm % 100 != 0:
         raise ValueError(
-          f"shake_speed_rpm must be a multiple of 100 in range 100-700, got {shake_speed_rpm}."
+          f"shake_speed_rpm must be a multiple of 100 in range 100-{max_rpm}, "
+          f"got {shake_speed_rpm}."
         )
       if not 0 < shake_duration_s <= 65535:
         raise ValueError(
@@ -2498,6 +2855,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       flashes=flashes,
       well_scan=well_scan,
       scan_diameter_mm=scan_diameter_mm,
+      matrix_size=matrix_size if matrix_size is not None else 0,
       unidirectional=unidirectional,
       vertical=vertical,
       corner=corner,
@@ -2602,12 +2960,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     *,
     report: Literal["optical_density", "transmittance", "raw"] = "optical_density",
     flashes: int = 5,
-    well_scan: str = "point",
+    well_scan: Literal["point", "orbital", "spiral", "matrix"] = "point",
     scan_diameter_mm: int = 3,
+    matrix_size: Optional[int] = None,
     unidirectional: bool = True,
     vertical: bool = True,
-    corner: str = "TL",
-    shake_mode: Optional[str] = None,
+    corner: Literal["TL", "TR", "BL", "BR"] = "TL",
+    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
     shake_speed_rpm: Optional[int] = None,
     shake_duration_s: Optional[int] = None,
     settling_time_s: Optional[float] = None,
@@ -2640,8 +2999,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       unidirectional: If True, scan wells in one direction only.
       vertical: If True, scan columns first (top to bottom).
       corner: Starting corner: ``"TL"``, ``"TR"``, ``"BL"``, or ``"BR"``.
-      shake_mode: Shake plate before reading. None = no shake.
-      shake_speed_rpm: Shake speed in RPM (multiples of 100, 100-700).
+      shake_mode: Shake plate before reading. None = no shake,
+        ``"orbital"``, ``"linear"``, ``"double_orbital"``, or ``"meander"``.
+      shake_speed_rpm: Shake speed in RPM (multiples of 100, 100-700; meander
+        max 300).
       shake_duration_s: Shake duration in seconds.
       settling_time_s: Wait time after shaking (0.0-1.0 s).
       read_timeout: Safety timeout in seconds (default 7200 = 2 hours).
@@ -2682,7 +3043,15 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         f"({end_wavelength} - {start_wavelength} = {end_wavelength - start_wavelength} nm)."
       )
 
-    _flash_limits = {"point": (1, 200), "orbital": (1, 44), "spiral": (1, 127)}
+    if matrix_size is not None:
+      well_scan = "matrix"
+    if well_scan == "matrix":
+      if matrix_size is None:
+        raise ValueError("matrix_size is required when well_scan='matrix'.")
+      if matrix_size < 2 or matrix_size > 11:
+        raise ValueError(f"matrix_size must be 2-11, got {matrix_size}.")
+
+    _flash_limits = {"point": (1, 200), "orbital": (1, 44), "spiral": (1, 127), "matrix": (1, 200)}
     valid_well_scans = tuple(_flash_limits)
     if well_scan not in valid_well_scans:
       raise ValueError(f"well_scan must be one of {valid_well_scans}, got {well_scan!r}.")
@@ -2691,7 +3060,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if not lo <= flashes <= hi:
       raise ValueError(f"flashes must be {lo}-{hi} for {well_scan} mode, got {flashes}.")
 
-    if well_scan not in ("point",) and not 1 <= scan_diameter_mm <= 6:
+    if well_scan not in ("point", "matrix") and not 1 <= scan_diameter_mm <= 6:
       raise ValueError(
         f"scan_diameter_mm must be 1-6 for {well_scan} mode, got {scan_diameter_mm}."
       )
@@ -2704,7 +3073,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if report not in valid_reports:
       raise ValueError(f"report must be one of {valid_reports}, got {report!r}.")
 
-    valid_shake_modes = (None, "orbital", "linear", "double_orbital")
+    valid_shake_modes = (None, "orbital", "linear", "double_orbital", "meander")
     if shake_mode not in valid_shake_modes:
       raise ValueError(f"shake_mode must be one of {valid_shake_modes}, got {shake_mode!r}.")
     if shake_mode is not None:
@@ -2714,9 +3083,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         raise ValueError("shake_duration_s is required when shake_mode is set.")
       if settling_time_s is None:
         raise ValueError("settling_time_s is required when shake_mode is set.")
-      if shake_speed_rpm < 100 or shake_speed_rpm > 700 or shake_speed_rpm % 100 != 0:
+      max_rpm = 300 if shake_mode == "meander" else 700
+      if shake_speed_rpm < 100 or shake_speed_rpm > max_rpm or shake_speed_rpm % 100 != 0:
         raise ValueError(
-          f"shake_speed_rpm must be a multiple of 100 in range 100-700, got {shake_speed_rpm}."
+          f"shake_speed_rpm must be a multiple of 100 in range 100-{max_rpm}, "
+          f"got {shake_speed_rpm}."
         )
       if not 0 < shake_duration_s <= 65535:
         raise ValueError(
@@ -2748,6 +3119,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       flashes=flashes,
       well_scan=well_scan,
       scan_diameter_mm=scan_diameter_mm,
+      matrix_size=matrix_size if matrix_size is not None else 0,
       unidirectional=unidirectional,
       vertical=vertical,
       corner=corner,
@@ -2803,12 +3175,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # --------------------------------------------------------------------------
   # Feature: Fluorescence Measurement
   # --------------------------------------------------------------------------
-  # NOTE: Gain must be set explicitly. Firmware 1.35 (Nov 2020) pre-dates
-  # Enhanced Dynamic Range (EDR), so auto-gain is not available.
+  # NOTE: Gain must be set explicitly — no auto-gain on firmware 1.35.
+  # EDR is supported (verified via pcap F-P01).
+  # Multi-chromatic (1-5), filter, flying, matrix supported.
 
-  # Fixed constant blocks verified identical across all 20 FL pcap captures.
-  _FL_MULTICHROMATIC = b"\x00\x00\x01\x00\x00\x00\x00\x00\x0c"  # 9 bytes
-  _FL_SLIT = b"\x00\x04\x00\x03\x00"  # 5 bytes
+  # Fixed constant blocks verified identical across all 29 FL pcap captures.
+  _FL_MULTICHROMATIC_TEMPLATE = b"\x00\x00\x01\x00\x00\x00\x00\x00\x0c"  # 9 bytes; byte[2]=count
+  _FL_INTER_CHROMATIC_SEP = b"\x00\x00\x0c"  # 3 bytes between chromatic blocks
+  _FL_SLIT_MONO_MONO = b"\x00\x04\x00\x03\x00"  # 5 bytes: mono Em, mono Ex
   _FL_PAUSE = b"\x00\x00\x00"  # 3 bytes
   _FL_TRAILER = b"\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"  # 11 bytes (byte 0 differs from ABS)
   _FL_TAIL = b"\x00\x01\x00"  # 3 bytes
@@ -2823,120 +3197,206 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     *,
     excitation_bandwidth: int = 15,
     emission_bandwidth: int = 20,
-    dichroic: Optional[int] = None,
+    dichroic_split_wavelength: Optional[float] = None,
     gain: int = 1000,
-    optic_position: str = "top",
+    optic_position: Literal["top", "bottom"] = "top",
     flashes: int = 10,
     settling_time_s: float = 0.1,
-    well_scan: str = "point",
+    well_scan: Literal["point", "orbital", "spiral", "matrix"] = "point",
     scan_diameter_mm: int = 3,
+    matrix_size: int = 0,
     unidirectional: bool = False,
     vertical: bool = True,
-    corner: str = "TL",
-    shake_mode: Optional[str] = None,
+    corner: Literal["TL", "TR", "BL", "BR"] = "TL",
+    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
     shake_speed_rpm: int = 0,
     shake_duration_s: int = 0,
+    edr: bool = False,
+    flying_mode: bool = False,
+    excitation_filter: Optional["CLARIOstarPlusBackend.Filter"] = None,
+    emission_filter: Optional["CLARIOstarPlusBackend.Filter"] = None,
+    dichroic_filter: Optional["CLARIOstarPlusBackend.DichroicFilter"] = None,
+    chromatics: Optional[List[Dict]] = None,
     # Test overrides (pass exact pcap edge values to bypass ±2 firmware calibration)
     _ex_hi: Optional[int] = None,
     _ex_lo: Optional[int] = None,
     _em_hi: Optional[int] = None,
     _em_lo: Optional[int] = None,
     _dichroic_raw: Optional[int] = None,
+    _chromatic_overrides: Optional[List[Dict]] = None,
   ) -> bytes:
     """Build the payload for a MEASUREMENT_RUN fluorescence command.
 
     Passed to ``send_command(CommandFamily.RUN, parameters=...)``, which prepends
     the 0x04 command family byte.
 
-    Post-separator layout (48 bytes for point mode):
-      settling(1) + focal_height(2) + multichromatic(9) + gain(2) +
-      ExHi(2) + ExLo(2) + Dichroic(2) + EmHi(2) + EmLo(2) +
-      slit(5) + pause(3) + trailer(11) + flashes(2) + tail(3)
+    Supports single chromatic (default), multi-chromatic (1-5), filter modes,
+    EDR, flying mode, and matrix/orbital/spiral well scans.
 
-    Verified byte-for-byte against 20 FL pcap captures (F-A01 through F-L01).
+    Post-separator layout per chromatic:
+      settle(1) + focal(2) + multi_header(9) +
+      [gain(2) + ExHi(2) + ExLo(2) + Dich(2) + EmHi(2) + EmLo(2) + slit(5)] × N +
+      [inter_sep(3)] × (N-1) +
+      pause(3) + trailer(11) + flashes(2) + tail(3)
 
-    Returns:
-      Payload bytes (148 for point, 153 for orbital/spiral).
+    Verified byte-for-byte against 29 FL pcap captures (F-A01 through F-S01).
     """
+    # --- Derive mode from filter presence ---
+    excitation_mode = "filter" if excitation_filter is not None else "monochromator"
+    emission_mode = "filter" if emission_filter is not None else "monochromator"
+    dichroic_mode = "filter" if dichroic_filter is not None else "lvdm"
+    ex_filter_slot = excitation_filter.slot if excitation_filter is not None else 1
+    em_filter_slot = emission_filter.slot if emission_filter is not None else 1
+
+    # --- Build chromatic list ---
+    if chromatics is not None:
+      chrom_list = chromatics
+    else:
+      chrom_list = [{
+        "excitation_wavelength": excitation_wavelength,
+        "excitation_bandwidth": excitation_bandwidth,
+        "emission_wavelength": emission_wavelength,
+        "emission_bandwidth": emission_bandwidth,
+        "gain": gain,
+        "dichroic_split_wavelength": dichroic_split_wavelength,
+        "excitation_filter": excitation_filter,
+        "emission_filter": emission_filter,
+        "ex_filter_slot": ex_filter_slot,
+        "em_filter_slot": em_filter_slot,
+      }]
+    n_chrom = len(chrom_list)
+
     # 1. Plate geometry + well mask (63 bytes)
     plate_bytes = self._plate_field(plate, wells)
 
     # 2. Scan direction (1 byte)
-    scan_byte = bytes([self._scan_direction_byte(unidirectional, vertical, corner)])
+    scan_byte = bytes([self._scan_direction_byte(
+      unidirectional, vertical, corner, flying=flying_mode)])
 
     # 3. Pre-separator block (31 bytes)
     scan_mode_map = {
       "point": self.WellScanMode.POINT,
       "orbital": self.WellScanMode.ORBITAL,
       "spiral": self.WellScanMode.SPIRAL,
+      "matrix": self.WellScanMode.MATRIX,
     }
     wsm = scan_mode_map[well_scan]
     optic_pos = self.OpticPosition.BOTTOM if optic_position == "bottom" else self.OpticPosition.TOP
     pre_sep = self._pre_separator_block(
-      modality=self.Modality.FLUORESCENCE,
+      detection_mode=self.DetectionMode.FLUORESCENCE,
       well_scan_mode=wsm,
       shake_mode=shake_mode,
       shake_speed_rpm=shake_speed_rpm,
       shake_duration_s=shake_duration_s,
       optic_position=optic_pos,
+      edr=edr,
     )
 
     # 4. Separator (4 bytes)
     sep = _SEPARATOR
 
-    # 5. Well scan field (0 or 5 bytes)
+    # 5. Well scan field (0 or 5 bytes for orbital/spiral/matrix)
     well_0 = plate.get_all_items()[0]
     well_diam_100 = int(round(min(well_0.get_size_x(), well_0.get_size_y()) * 100))
-    wsf = self._well_scan_field(wsm, self.Modality.FLUORESCENCE, scan_diameter_mm, well_diam_100)
+    wsf = self._well_scan_field(
+      wsm, self.DetectionMode.FLUORESCENCE, scan_diameter_mm, well_diam_100, matrix_size
+    )
 
-    # 6. Settling time (1 byte): raw = settling_s / 0.02, special case 0.0 → 1
-    settling_raw = max(int(settling_time_s / 0.02), 1) if settling_time_s >= 0 else 1
-    settling = bytes([settling_raw])
+    # 6. Settling time (1 byte): flying forces raw=1
+    if flying_mode:
+      settling = bytes([1])
+    else:
+      settling_raw = max(int(settling_time_s / 0.02), 1) if settling_time_s >= 0 else 1
+      settling = bytes([settling_raw])
 
     # 7. Focal height (2 bytes u16 BE): raw = focal_mm * 100
     focal_raw = int(round(focal_height * 100))
     focal = focal_raw.to_bytes(2, "big")
 
-    # 8. Multichromatic block (9 bytes, constant)
-    multi = self._FL_MULTICHROMATIC
+    # 8. Multichromatic header (9 bytes) — byte[2] = N chromatics
+    multi = bytearray(self._FL_MULTICHROMATIC_TEMPLATE)
+    multi[2] = n_chrom
 
-    # 9. Gain (2 bytes u16 BE)
-    gain_bytes = gain.to_bytes(2, "big")
+    # 9. Per-chromatic blocks (17 bytes each, 3-byte inter-sep between them)
+    chrom_data = bytearray()
+    for i, chrom in enumerate(chrom_list):
+      if i > 0:
+        chrom_data += self._FL_INTER_CHROMATIC_SEP
 
-    # 10. Wavelength encoding (all u16 BE, nm×10)
-    ex_hi = _ex_hi if _ex_hi is not None else int((excitation_wavelength + excitation_bandwidth / 2) * 10)
-    ex_lo = _ex_lo if _ex_lo is not None else int((excitation_wavelength - excitation_bandwidth / 2) * 10)
-    em_hi = _em_hi if _em_hi is not None else int((emission_wavelength + emission_bandwidth / 2) * 10)
-    em_lo = _em_lo if _em_lo is not None else int((emission_wavelength - emission_bandwidth / 2) * 10)
+      c_gain = chrom.get("gain", 1000)
 
-    # Dichroic: auto = midpoint of ExHi and EmLo
-    if _dichroic_raw is not None:
-      dich = _dichroic_raw
-    elif dichroic is not None:
-      dich = dichroic * 10
-    else:
-      dich = (ex_hi + em_lo) // 2
+      # Resolve per-chromatic filter objects → mode + slot
+      c_ex_filter = chrom.get("excitation_filter", excitation_filter)
+      c_em_filter = chrom.get("emission_filter", emission_filter)
+      c_dich_filter = chrom.get("dichroic_filter", dichroic_filter)
+      c_ex_mode = "filter" if c_ex_filter is not None else "monochromator"
+      c_em_mode = "filter" if c_em_filter is not None else "monochromator"
+      c_dich_mode = "filter" if c_dich_filter is not None else "lvdm"
+      if c_ex_filter is not None:
+        chrom = {**chrom, "ex_filter_slot": c_ex_filter.slot}
+      if c_em_filter is not None:
+        chrom = {**chrom, "em_filter_slot": c_em_filter.slot}
 
-    ex_hi_bytes = ex_hi.to_bytes(2, "big")
-    ex_lo_bytes = ex_lo.to_bytes(2, "big")
-    dich_bytes = dich.to_bytes(2, "big")
-    em_hi_bytes = em_hi.to_bytes(2, "big")
-    em_lo_bytes = em_lo.to_bytes(2, "big")
+      ovr = (_chromatic_overrides[i]
+             if _chromatic_overrides and i < len(_chromatic_overrides) else {})
 
-    # 11. Slit (5 bytes, constant)
-    slit = self._FL_SLIT
+      # Gain (2 bytes u16 BE)
+      chrom_data += c_gain.to_bytes(2, "big")
 
-    # 12. Pause (3 bytes, constant)
-    pause = self._FL_PAUSE
+      # --- Excitation edges ---
+      if c_ex_mode == "filter":
+        c_ex_hi = 0x0002  # filter flag
+        c_ex_lo = chrom.get("ex_filter_slot", 1)
+      elif ovr.get("ex_hi") is not None:
+        c_ex_hi, c_ex_lo = ovr["ex_hi"], ovr["ex_lo"]
+      elif i == 0 and _ex_hi is not None:
+        c_ex_hi, c_ex_lo = _ex_hi, _ex_lo
+      else:
+        c_ex_wl = chrom["excitation_wavelength"]
+        c_ex_bw = chrom.get("excitation_bandwidth", 15)
+        c_ex_hi = int((c_ex_wl + c_ex_bw / 2) * 10)
+        c_ex_lo = int((c_ex_wl - c_ex_bw / 2) * 10)
 
-    # 13. Trailer (11 bytes)
-    trailer = self._FL_TRAILER
+      # --- Emission edges ---
+      if c_em_mode == "filter":
+        c_em_hi = chrom.get("em_filter_slot", 1)
+        c_em_lo = 0x0002  # filter flag (reversed from Ex!)
+      elif ovr.get("em_hi") is not None:
+        c_em_hi, c_em_lo = ovr["em_hi"], ovr["em_lo"]
+      elif i == 0 and _em_hi is not None:
+        c_em_hi, c_em_lo = _em_hi, _em_lo
+      else:
+        c_em_wl = chrom["emission_wavelength"]
+        c_em_bw = chrom.get("emission_bandwidth", 20)
+        c_em_hi = int((c_em_wl + c_em_bw / 2) * 10)
+        c_em_lo = int((c_em_wl - c_em_bw / 2) * 10)
 
-    # 14. Flashes (2 bytes u16 BE)
-    flash_bytes = flashes.to_bytes(2, "big")
+      # --- Dichroic ---
+      if c_dich_mode == "filter" or c_ex_mode == "filter" or c_em_mode == "filter":
+        c_dich = 0x0002  # filter flag when any channel uses filter
+      elif ovr.get("dichroic") is not None:
+        c_dich = ovr["dichroic"]
+      elif i == 0 and _dichroic_raw is not None:
+        c_dich = _dichroic_raw
+      elif chrom.get("dichroic_split_wavelength") is not None:
+        c_dich = int(chrom["dichroic_split_wavelength"] * 10)
+      else:
+        c_dich = (c_ex_hi + c_em_lo) // 2  # auto-dichroic
 
-    # 15. Tail (3 bytes)
-    tail = self._FL_TAIL
+      chrom_data += c_ex_hi.to_bytes(2, "big")
+      chrom_data += c_ex_lo.to_bytes(2, "big")
+      chrom_data += c_dich.to_bytes(2, "big")
+      chrom_data += c_em_hi.to_bytes(2, "big")
+      chrom_data += c_em_lo.to_bytes(2, "big")
+
+      # --- Slit config (5 bytes) ---
+      slit = bytearray(5)
+      slit[1] = 0x01 if c_em_mode == "filter" else 0x04
+      slit[3] = 0x01 if c_ex_mode == "filter" else 0x03
+      chrom_data += bytes(slit)
+
+    # 10. Fixed tail: pause + trailer + flashes + tail
+    actual_flashes = 1 if flying_mode else flashes
 
     payload = (
       plate_bytes
@@ -2946,18 +3406,12 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       + wsf
       + settling
       + focal
-      + multi
-      + gain_bytes
-      + ex_hi_bytes
-      + ex_lo_bytes
-      + dich_bytes
-      + em_hi_bytes
-      + em_lo_bytes
-      + slit
-      + pause
-      + trailer
-      + flash_bytes
-      + tail
+      + bytes(multi)
+      + bytes(chrom_data)
+      + self._FL_PAUSE
+      + self._FL_TRAILER
+      + actual_flashes.to_bytes(2, "big")
+      + self._FL_TAIL
     )
 
     return payload
@@ -2967,32 +3421,36 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     payload: bytes,
     plate: Plate,
     wells: List[Well],
-    excitation_wavelength: int,
-    emission_wavelength: int,
+    chromatics: List[Tuple[int, int]],
   ) -> List[Dict]:
-    """Parse a FL DATA_RESPONSE payload into a result dict.
+    """Parse a FL DATA_RESPONSE payload into result dicts.
 
     FL responses are simpler than ABS — no reference groups, no chromatic calibration.
     Just raw u32 counts per well.
 
+    Args:
+      payload: Raw response payload (after frame extraction).
+      plate: The plate resource.
+      wells: Wells that were measured.
+      chromatics: List of (ex_wavelength, em_wavelength) tuples, one per chromatic.
+
     Response layout:
-      [0]     02 (echoes DATA subcommand)
-      [1]     05 (status)
       [6]     schema: 0xA1 (FL+incubation) or 0x21 (FL no incubation)
-      [7:9]   total values (u16 BE) == num_wells
-      [9:11]  complete values (u16 BE) == num_wells when done
-      [11:15] overflow threshold (u32 BE) — always 260000
+      [7:9]   total values (u16 BE) = wells × chromatics × matrix_positions
+      [11:15] overflow threshold (u32 BE) — 260000 normal, 700M EDR
       [32:34] temperature (u16 BE ÷10 → °C) when schema has 0x80 bit
-      [34:]   data values, u32 BE per well
+      [34:]   data values, u32 BE per reading
 
     Returns:
-      List with single dict containing ex/em wavelengths, time, temperature, and 2D data grid.
+      List of dicts, one per chromatic. Each dict:
+        ``"ex_wavelength"``, ``"em_wavelength"``, ``"time"``, ``"temperature"``, ``"data"``
+      For matrix mode, each well's value is the mean of its matrix positions.
     """
     if len(payload) < 34:
       raise FrameError(f"FL response too short: {len(payload)} bytes (need >= 34)")
 
     schema = payload[6]
-    num_wells = int.from_bytes(payload[7:9], "big")
+    total_values = int.from_bytes(payload[7:9], "big")
 
     temp: Optional[float] = None
     if schema & 0x80:  # incubation flag set (0xA1)
@@ -3000,26 +3458,48 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       if raw_temp > 1:
         temp = raw_temp / 10.0
 
-    # Data values start at byte 34, u32 BE per well
+    # Read all data values (u32 BE from byte 34)
+    all_readings: List[float] = []
     data_start = 34
-    readings: List[float] = []
-    for i in range(num_wells):
+    for i in range(total_values):
       offset = data_start + i * 4
       if offset + 4 <= len(payload):
         val = int.from_bytes(payload[offset : offset + 4], "big")
-        readings.append(float(val))
+        all_readings.append(float(val))
 
-    grid = self._map_readings_to_plate_grid(readings, wells, plate)
+    n_chrom = len(chromatics)
+    n_wells = len(wells)
+    values_per_well = total_values // max(n_wells * n_chrom, 1)
 
-    return [
-      {
-        "ex_wavelength": excitation_wavelength,
-        "em_wavelength": emission_wavelength,
-        "time": time.time(),
+    # Split into per-chromatic groups and map to plate grid
+    results: List[Dict] = []
+    chunk_size = n_wells * values_per_well
+    now = time.time()
+
+    for c_idx, (ex_wl, em_wl) in enumerate(chromatics):
+      c_start = c_idx * chunk_size
+      c_end = c_start + chunk_size
+      c_readings = all_readings[c_start:c_end]
+
+      if values_per_well > 1:
+        # Matrix mode: average positions per well
+        averaged = [
+          sum(c_readings[w * values_per_well : (w + 1) * values_per_well]) / values_per_well
+          for w in range(n_wells)
+        ]
+      else:
+        averaged = c_readings
+
+      grid = self._map_readings_to_plate_grid(averaged, wells, plate)
+      results.append({
+        "ex_wavelength": ex_wl,
+        "em_wavelength": em_wl,
+        "time": now,
         "temperature": temp,
         "data": grid,
-      }
-    ]
+      })
+
+    return results
 
   async def read_fluorescence(
     self,
@@ -3029,23 +3509,38 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     emission_wavelength: int,
     focal_height: float,
     *,
+    # Monochromator/LVDM Usage
     excitation_bandwidth: int = 15,
     emission_bandwidth: int = 20,
-    dichroic: Optional[int] = None,
+    dichroic_split_wavelength: Optional[float] = None,
+    # Filter/Beam Split Usage 
+    excitation_filter: Optional["Filter"] = None,
+    emission_filter: Optional["Filter"] = None,
+    dichroic_filter: Optional["DichroicFilter"] = None,
+    #
     gain: int = 1000,
-    optic_position: str = "top",
+    optic_position: Literal["top", "bottom"] = "top",
+    # Well scan parameters
     flashes: int = 10,
     settling_time_s: float = 0.1,
-    well_scan: str = "point",
+    well_scan: Literal["point", "orbital", "spiral", "matrix"] = "point",
     scan_diameter_mm: int = 3,
+    matrix_size: Optional[int] = None,
+    # Plate scan direction arguments
     unidirectional: bool = False,
     vertical: bool = True,
-    corner: str = "TL",
-    shake_mode: Optional[str] = None,
+    corner: Literal["TL", "TR", "BL", "BR"] = "TL",
+    # Shaking parameters
+    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
     shake_speed_rpm: Optional[int] = None,
     shake_duration_s: Optional[int] = None,
-    read_timeout: Optional[float] = 7200,
+    # Non-blocking
     wait: bool = True,
+    # Enhanced Dynamic Range (raises overflow ceiling to 700M)
+    edr: bool = False,
+    flying_mode: bool = False,
+    chromatics: Optional[List[Dict]] = None,
+    read_timeout: Optional[float] = 7200,
   ) -> List[Dict]:
     """Measure fluorescence intensity.
 
@@ -3056,51 +3551,109 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       plate: The plate to measure.
       wells: Wells to measure.
       excitation_wavelength: Excitation center wavelength in nm (320-840).
+        Ignored when ``chromatics`` is provided.
       emission_wavelength: Emission center wavelength in nm (320-840).
+        Ignored when ``chromatics`` is provided.
       focal_height: Focal height in mm (0-25).
       excitation_bandwidth: Excitation bandwidth in nm (default 15).
       emission_bandwidth: Emission bandwidth in nm (default 20).
-      dichroic: Dichroic mirror wavelength in nm. None = auto-calculated
-        as midpoint of excitation upper edge and emission lower edge.
-      gain: PMT gain (0-4095, default 1000). No auto-gain on firmware 1.35.
+      dichroic_split_wavelength: LVDM split wavelength in nm (float). None =
+        auto-calculated as ``(ex_upper + em_lower) / 2``.
+      gain: PMT gain (0-4095, default 1000).
       optic_position: ``"top"`` (default) or ``"bottom"`` reading.
-      flashes: Flashes per well (default 10).
+      flashes: Flashes per well (default 10). Flying mode forces 1.
       settling_time_s: Wait time after plate movement (0.0-5.0 s, default 0.1).
-      well_scan: ``"point"`` (default), ``"orbital"``, or ``"spiral"``.
-      scan_diameter_mm: Scan diameter for orbital/spiral (1-6 mm).
+      well_scan: ``"point"`` (default), ``"orbital"``, ``"spiral"``, or ``"matrix"``.
+      scan_diameter_mm: Scan diameter for orbital/spiral/matrix (1-6 mm).
       unidirectional: Scan direction (default False = bidirectional).
       vertical: Scan columns first (default True).
       corner: Starting corner: ``"TL"``, ``"TR"``, ``"BL"``, ``"BR"``.
-      shake_mode: ``None``, ``"orbital"``, ``"linear"``, or ``"double_orbital"``.
-      shake_speed_rpm: Shake speed in RPM (multiples of 100, 100-700).
+      shake_mode: ``None``, ``"orbital"``, ``"linear"``, ``"double_orbital"``, or
+        ``"meander"``. Meander is limited to 300 RPM max.
+      shake_speed_rpm: Shake speed in RPM (multiples of 100, 100-700; meander
+        max 300).
       shake_duration_s: Shake duration in seconds.
       read_timeout: Safety timeout in seconds (default 7200).
       wait: If True, poll until complete. If False, return empty list.
+      edr: Enhanced Dynamic Range (raises overflow ceiling to 700M).
+      flying_mode: Flying mode (forces settling=0, flashes=1). Point scan only.
+      excitation_filter: A ``Filter`` object. When provided, selects filter
+        mode for excitation (uses filter sentinel + slot). ``None`` = monochromator.
+      emission_filter: A ``Filter`` object. Same behaviour for emission.
+      dichroic_filter: A ``Filter`` object. Selects filter dichroic.
+        ``None`` = LVDM (Linear Variable Dichroic Mirror).
+      chromatics: List of 1-5 dicts for multi-chromatic measurement.
+        When provided, overrides per-chromatic wavelength/gain/dichroic/filter params.
+        Each dict requires ``"excitation_wavelength"`` and ``"emission_wavelength"``
+        and optionally ``"excitation_bandwidth"``, ``"emission_bandwidth"``, ``"gain"``,
+        ``"dichroic_split_wavelength"``, ``"excitation_filter"``,
+        ``"emission_filter"``, ``"dichroic_filter"``.
 
     Returns:
-      List with single dict when wait=True:
-        ``"ex_wavelength"``: int (nm),
-        ``"em_wavelength"``: int (nm),
-        ``"time"``: float (epoch seconds),
-        ``"temperature"``: Optional[float] (°C or None),
-        ``"data"``: List[List[Optional[float]]] (2D grid, rows×cols)
+      List of dicts (one per chromatic) when wait=True. Each dict:
+        ``"ex_wavelength"``: int, ``"em_wavelength"``: int, ``"time"``: float,
+        ``"temperature"``: Optional[float], ``"data"``: List[List[Optional[float]]]
       Empty list when wait=False.
     """
-    # --- input validation ---
-    for wl_name, wl_val in [
-      ("excitation_wavelength", excitation_wavelength),
-      ("emission_wavelength", emission_wavelength),
-    ]:
-      if not 320 <= wl_val <= 840:
+    # --- filter slot validation (EEPROM-based) ---
+    if excitation_filter is not None:
+      max_slots = self.configuration.get("excitation_filter_slots", 0)
+      if max_slots > 0 and not 1 <= excitation_filter.slot <= max_slots:
         raise ValueError(
-          f"{wl_name} must be 320-840 nm (LVF monochromator range), got {wl_val}."
+          f"excitation_filter slot {excitation_filter.slot} out of range "
+          f"(instrument has {max_slots} excitation filter slots)")
+    if emission_filter is not None:
+      max_slots = self.configuration.get("emission_filter_slots", 0)
+      if max_slots > 0 and not 1 <= emission_filter.slot <= max_slots:
+        raise ValueError(
+          f"emission_filter slot {emission_filter.slot} out of range "
+          f"(instrument has {max_slots} emission filter slots)")
+    if dichroic_filter is not None:
+      max_slots = self.configuration.get("dichroic_filter_slots", 0)
+      if max_slots > 0 and not 1 <= dichroic_filter.slot <= max_slots:
+        raise ValueError(
+          f"dichroic_filter slot {dichroic_filter.slot} out of range "
+          f"(instrument has {max_slots} dichroic filter slots)")
+
+    # --- input validation ---
+    if chromatics is not None:
+      if not 1 <= len(chromatics) <= 5:
+        raise ValueError(f"chromatics must have 1-5 entries, got {len(chromatics)}.")
+      for ci, chrom in enumerate(chromatics):
+        for key in ("excitation_wavelength", "emission_wavelength"):
+          if key not in chrom:
+            raise ValueError(f"chromatics[{ci}] missing required key: {key!r}.")
+        for wl_key in ("excitation_wavelength", "emission_wavelength"):
+          wl_val = chrom[wl_key]
+          filter_key = "excitation_filter" if "excitation" in wl_key else "emission_filter"
+          c_has_filter = chrom.get(filter_key) is not None
+          if not c_has_filter:
+            if not 320 <= wl_val <= 840:
+              raise ValueError(
+                f"chromatics[{ci}][{wl_key!r}] must be 320-840 nm, got {wl_val}."
+              )
+        c_gain = chrom.get("gain", 1000)
+        if not 0 <= c_gain <= 4095:
+          raise ValueError(f"chromatics[{ci}]['gain'] must be 0-4095, got {c_gain}.")
+      chromatic_wavelengths = [
+        (c["excitation_wavelength"], c["emission_wavelength"]) for c in chromatics
+      ]
+    else:
+      # Single-chromatic validation
+      if excitation_filter is None and not 320 <= excitation_wavelength <= 840:
+        raise ValueError(
+          f"excitation_wavelength must be 320-840 nm, got {excitation_wavelength}."
         )
+      if emission_filter is None and not 320 <= emission_wavelength <= 840:
+        raise ValueError(
+          f"emission_wavelength must be 320-840 nm, got {emission_wavelength}."
+        )
+      if not 0 <= gain <= 4095:
+        raise ValueError(f"gain must be 0-4095, got {gain}.")
+      chromatic_wavelengths = [(excitation_wavelength, emission_wavelength)]
 
     if not 0 <= focal_height <= 25:
       raise ValueError(f"focal_height must be 0-25 mm, got {focal_height}.")
-
-    if not 0 <= gain <= 4095:
-      raise ValueError(f"gain must be 0-4095, got {gain}.")
 
     valid_optic_positions = ("top", "bottom")
     if optic_position not in valid_optic_positions:
@@ -3108,25 +3661,39 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         f"optic_position must be one of {valid_optic_positions}, got {optic_position!r}."
       )
 
-    _flash_limits = {"point": (1, 200), "orbital": (1, 44), "spiral": (1, 127)}
+    if matrix_size is not None:
+      well_scan = "matrix"
+    if well_scan == "matrix":
+      if matrix_size is None:
+        raise ValueError("matrix_size is required when well_scan='matrix'.")
+      if matrix_size < 2 or matrix_size > 11:
+        raise ValueError(f"matrix_size must be 2-11, got {matrix_size}.")
+
+    _flash_limits = {
+      "point": (1, 200), "orbital": (1, 44), "spiral": (1, 127), "matrix": (1, 200),
+    }
     valid_well_scans = tuple(_flash_limits)
     if well_scan not in valid_well_scans:
       raise ValueError(f"well_scan must be one of {valid_well_scans}, got {well_scan!r}.")
 
-    lo, hi = _flash_limits[well_scan]
-    if not lo <= flashes <= hi:
-      raise ValueError(f"flashes must be {lo}-{hi} for {well_scan} mode, got {flashes}.")
+    if not flying_mode:
+      lo, hi = _flash_limits[well_scan]
+      if not lo <= flashes <= hi:
+        raise ValueError(f"flashes must be {lo}-{hi} for {well_scan} mode, got {flashes}.")
 
     if well_scan != "point" and not 1 <= scan_diameter_mm <= 6:
       raise ValueError(
         f"scan_diameter_mm must be 1-6 for {well_scan} mode, got {scan_diameter_mm}."
       )
 
+    if flying_mode and well_scan != "point":
+      raise ValueError("flying_mode is only supported with point well scan.")
+
     valid_corners = ("TL", "TR", "BL", "BR")
     if corner not in valid_corners:
       raise ValueError(f"corner must be one of {valid_corners}, got {corner!r}.")
 
-    valid_shake_modes = (None, "orbital", "linear", "double_orbital")
+    valid_shake_modes = (None, "orbital", "linear", "double_orbital", "meander")
     if shake_mode not in valid_shake_modes:
       raise ValueError(f"shake_mode must be one of {valid_shake_modes}, got {shake_mode!r}.")
     if shake_mode is not None:
@@ -3134,9 +3701,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         raise ValueError("shake_speed_rpm is required when shake_mode is set.")
       if shake_duration_s is None:
         raise ValueError("shake_duration_s is required when shake_mode is set.")
-      if shake_speed_rpm < 100 or shake_speed_rpm > 700 or shake_speed_rpm % 100 != 0:
+      max_rpm = 300 if shake_mode == "meander" else 700
+      if shake_speed_rpm < 100 or shake_speed_rpm > max_rpm or shake_speed_rpm % 100 != 0:
         raise ValueError(
-          f"shake_speed_rpm must be a multiple of 100 in range 100-700, got {shake_speed_rpm}."
+          f"shake_speed_rpm must be a multiple of 100 in range 100-{max_rpm}, "
+          f"got {shake_speed_rpm}."
         )
       if not 0 < shake_duration_s <= 65535:
         raise ValueError(
@@ -3160,19 +3729,26 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       focal_height,
       excitation_bandwidth=excitation_bandwidth,
       emission_bandwidth=emission_bandwidth,
-      dichroic=dichroic,
+      dichroic_split_wavelength=dichroic_split_wavelength,
       gain=gain,
       optic_position=optic_position,
       flashes=flashes,
       settling_time_s=settling_time_s,
       well_scan=well_scan,
       scan_diameter_mm=scan_diameter_mm,
+      matrix_size=matrix_size if matrix_size is not None else 0,
       unidirectional=unidirectional,
       vertical=vertical,
       corner=corner,
       shake_mode=shake_mode,
       shake_speed_rpm=shake_speed_rpm if shake_speed_rpm is not None else 0,
       shake_duration_s=shake_duration_s if shake_duration_s is not None else 0,
+      edr=edr,
+      flying_mode=flying_mode,
+      excitation_filter=excitation_filter,
+      emission_filter=emission_filter,
+      dichroic_filter=dichroic_filter,
+      chromatics=chromatics,
     )
     await self.send_command(
       command_family=self.CommandFamily.RUN,
@@ -3223,20 +3799,278 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     # 3. Parse results.
     if progressive_complete:
       return self._parse_fluorescence_response(
-        response, plate, wells, excitation_wavelength, emission_wavelength
+        response, plate, wells, chromatic_wavelengths
       )
     else:
       final = await self._request_measurement_data(progressive=False)
       return self._parse_fluorescence_response(
-        final, plate, wells, excitation_wavelength, emission_wavelength
+        final, plate, wells, chromatic_wavelengths
       )
 
   # --------------------------------------------------------------------------
   # Feature: Luminescence Measurement (not yet implemented)
   # --------------------------------------------------------------------------
-  # NOTE: Same gain caveat as fluorescence — no EDR on firmware 1.35.
+  # NOTE: Gain must be set explicitly — no auto-gain on firmware 1.35.
 
   async def read_luminescence(
     self, plate: Plate, wells: List[Well], focal_height: float
   ) -> List[Dict]:
     raise NotImplementedError("Luminescence not yet implemented for CLARIOstar Plus.")
+
+  # --------------------------------------------------------------------------
+  # Auto-Focus
+  # --------------------------------------------------------------------------
+
+  def _build_autofocus_payload(
+    self,
+    plate: Plate,
+    wells: List[Well],
+    excitation_wavelength: int,
+    emission_wavelength: int,
+    *,
+    excitation_bandwidth: int = 15,
+    emission_bandwidth: int = 20,
+    dichroic_split_wavelength: Optional[float] = None,
+    max_focal_height_mm: float = 15.0,
+    flashes_per_position: int = 10,
+    excitation_filter: Optional["CLARIOstarPlusBackend.Filter"] = None,
+    emission_filter: Optional["CLARIOstarPlusBackend.Filter"] = None,
+    dichroic_filter: Optional["CLARIOstarPlusBackend.DichroicFilter"] = None,
+  ) -> bytes:
+    """Build the 0x0c AUTO_FOCUS_SCAN payload (88 bytes, excluding command byte).
+
+    The auto-focus command uses a simplified layout compared to MEASUREMENT_RUN:
+      plate_block(63) + config(1) + max_focal(2) + zero(1) + flashes(1) +
+      zeros(5) + multi_marker(1) + ExHi(2) + ExLo(2) + Dich(2) + EmHi(2) +
+      EmLo(2) + slit(4) = 88 bytes
+
+    The leading 0x0c command byte is prepended by send_command.
+    """
+    # --- Derive mode from filter presence ---
+    excitation_mode = "filter" if excitation_filter is not None else "monochromator"
+    emission_mode = "filter" if emission_filter is not None else "monochromator"
+    dichroic_mode = "filter" if dichroic_filter is not None else "lvdm"
+    ex_filter_slot = excitation_filter.slot if excitation_filter is not None else 1
+    em_filter_slot = emission_filter.slot if emission_filter is not None else 1
+
+    # 1. Plate block (63 bytes) — same geometry as measurement run
+    #    but with plate_extra=0xFF and extended well mask
+    plate_bytes = bytearray(self._plate_field(plate, wells))
+    plate_bytes[14] = 0xFF  # auto-focus uses 0xFF for plate_extra
+
+    # 2. Config byte (purpose not fully determined; echoed in response)
+    config = bytes([0x08])
+
+    # 3. Max focal height (u16 BE, mm×100)
+    max_focal_raw = int(round(max_focal_height_mm * 100))
+    max_focal = max_focal_raw.to_bytes(2, "big")
+
+    # 4. Zero + flashes per Z position
+    flash_byte = bytes([0x00, flashes_per_position])
+
+    # 5. Zeros (5 bytes)
+    zeros = b"\x00\x00\x00\x00\x00"
+
+    # 6. Multi marker
+    multi_marker = bytes([0x0C])
+
+    # 7. Wavelength edges (same encoding as FL chromatic blocks)
+    if excitation_mode == "filter":
+      ex_hi = 0x0002
+      ex_lo = ex_filter_slot
+    else:
+      ex_hi = int((excitation_wavelength + excitation_bandwidth / 2) * 10)
+      ex_lo = int((excitation_wavelength - excitation_bandwidth / 2) * 10)
+
+    if emission_mode == "filter":
+      em_hi = em_filter_slot
+      em_lo = 0x0002
+    else:
+      em_hi = int((emission_wavelength + emission_bandwidth / 2) * 10)
+      em_lo = int((emission_wavelength - emission_bandwidth / 2) * 10)
+
+    if dichroic_mode == "filter" or excitation_mode == "filter" or emission_mode == "filter":
+      dich_raw = 0x0002
+    elif dichroic_split_wavelength is not None:
+      dich_raw = int(dichroic_split_wavelength * 10)
+    else:
+      dich_raw = (ex_hi + em_lo) // 2
+
+    wl_bytes = (
+      ex_hi.to_bytes(2, "big")
+      + ex_lo.to_bytes(2, "big")
+      + dich_raw.to_bytes(2, "big")
+      + em_hi.to_bytes(2, "big")
+      + em_lo.to_bytes(2, "big")
+    )
+
+    # 8. Slit config (4 bytes — no trailing 0x00 unlike measurement run's 5-byte slit)
+    slit = bytearray(4)
+    slit[1] = 0x01 if emission_mode == "filter" else 0x04
+    slit[3] = 0x01 if excitation_mode == "filter" else 0x03
+
+    payload = (
+      bytes(plate_bytes)
+      + config
+      + max_focal
+      + flash_byte
+      + zeros
+      + multi_marker
+      + wl_bytes
+      + bytes(slit)
+    )
+    return payload
+
+  def _parse_focus_result(self, payload: bytes) -> dict:
+    """Parse a FOCUS_RESULT response (0x05/0x05).
+
+    Returns:
+      Dict with keys:
+        ``best_focal_mm`` – firmware-determined optimal focal height (float).
+        ``z_profile`` – list of dicts, each with ``z_mm`` (float), ``signal`` (int),
+        ``pass_flag`` (int), in descending Z order.
+    """
+    if len(payload) < 27:
+      raise ValueError(f"Focus result payload too short: {len(payload)} bytes (need >=27)")
+
+    best_focal_raw = int.from_bytes(payload[17:19], "big")
+    best_focal_mm = best_focal_raw / 100.0
+
+    # Z-scan profile: 8-byte records from offset 27
+    z_profile: List[dict] = []
+    i = 27
+    while i + 8 <= len(payload):
+      z_raw = int.from_bytes(payload[i:i + 2], "big")
+      pass_flag = int.from_bytes(payload[i + 2:i + 4], "big")
+      signal = int.from_bytes(payload[i + 4:i + 6], "big")
+      # payload[i+6:i+8] is padding (always 0x0000)
+      if z_raw == 0:
+        break
+      z_profile.append({"z_mm": z_raw / 100.0, "signal": signal, "pass_flag": pass_flag})
+      i += 8
+
+    return {"best_focal_mm": best_focal_mm, "z_profile": z_profile}
+
+  async def _request_focus_result(self) -> bytes:
+    """Retrieve focus scan result from the device (REQUEST/FOCUS_RESULT = 0x05 0x05)."""
+    return await self.send_command(
+      command_family=self.CommandFamily.REQUEST,
+      command=self.Command.FOCUS_RESULT,
+      parameters=b"\x00\x00\x00\x00\x00",
+    )
+
+  async def auto_focus(
+    self,
+    plate: Plate,
+    wells: List[Well],
+    excitation_wavelength: int,
+    emission_wavelength: int,
+    *,
+    excitation_bandwidth: int = 15,
+    emission_bandwidth: int = 20,
+    dichroic_split_wavelength: Optional[float] = None,
+    max_focal_height_mm: float = 15.0,
+    flashes_per_position: int = 10,
+    excitation_filter: Optional["Filter"] = None,
+    emission_filter: Optional["Filter"] = None,
+    dichroic_filter: Optional["DichroicFilter"] = None,
+    scan_timeout: float = 120.0,
+  ) -> dict:
+    """Run a Z-scan auto-focus and return the optimal focal height.
+
+    The firmware physically sweeps the Z-axis from 0.8mm to ``max_focal_height_mm``
+    in 0.1mm steps, measuring FL intensity at each position. It identifies the
+    W-curve intensity peaks and returns the midpoint as the best focal height.
+
+    Args:
+      plate: Plate resource.
+      wells: Wells to use for the focus scan.
+      excitation_wavelength: Center excitation wavelength in nm.
+      emission_wavelength: Center emission wavelength in nm.
+      excitation_bandwidth: Full excitation bandwidth in nm (default 15).
+      emission_bandwidth: Full emission bandwidth in nm (default 20).
+      dichroic_split_wavelength: LVDM split wavelength in nm, or None for
+        auto-calculation from ``(ex_upper + em_lower) / 2``.
+      max_focal_height_mm: Upper Z-scan limit in mm (default 15.0).
+      flashes_per_position: Number of FL flashes per Z step (default 10).
+      excitation_filter: A ``Filter`` object. ``None`` = monochromator.
+      emission_filter: A ``Filter`` object. ``None`` = monochromator.
+      dichroic_filter: A ``Filter`` object. ``None`` = LVDM.
+      scan_timeout: Maximum seconds to wait for the Z-scan (default 120).
+
+    Returns:
+      Dict with keys:
+        ``best_focal_mm`` – firmware-determined optimal focal height (float).
+        ``z_profile`` – list of dicts, each with ``z_mm`` (float), ``signal`` (int),
+        ``pass_flag`` (int), in descending Z order.
+
+    Raises:
+      ValueError: If wavelength or parameter ranges are invalid.
+      TimeoutError: If the Z-scan doesn't complete within scan_timeout.
+    """
+    # Filter slot validation (EEPROM-based)
+    if excitation_filter is not None:
+      max_slots = self.configuration.get("excitation_filter_slots", 0)
+      if max_slots > 0 and not 1 <= excitation_filter.slot <= max_slots:
+        raise ValueError(
+          f"excitation_filter slot {excitation_filter.slot} out of range "
+          f"(instrument has {max_slots} excitation filter slots)")
+    if emission_filter is not None:
+      max_slots = self.configuration.get("emission_filter_slots", 0)
+      if max_slots > 0 and not 1 <= emission_filter.slot <= max_slots:
+        raise ValueError(
+          f"emission_filter slot {emission_filter.slot} out of range "
+          f"(instrument has {max_slots} emission filter slots)")
+    if dichroic_filter is not None:
+      max_slots = self.configuration.get("dichroic_filter_slots", 0)
+      if max_slots > 0 and not 1 <= dichroic_filter.slot <= max_slots:
+        raise ValueError(
+          f"dichroic_filter slot {dichroic_filter.slot} out of range "
+          f"(instrument has {max_slots} dichroic filter slots)")
+
+    # Input validation
+    if not 320 <= excitation_wavelength <= 840:
+      raise ValueError(
+        f"excitation_wavelength must be 320-840 nm, got {excitation_wavelength}")
+    if not 320 <= emission_wavelength <= 840:
+      raise ValueError(
+        f"emission_wavelength must be 320-840 nm, got {emission_wavelength}")
+    if not 0.1 <= max_focal_height_mm <= 25.0:
+      raise ValueError(
+        f"max_focal_height_mm must be 0.1-25.0, got {max_focal_height_mm}")
+    if not 1 <= flashes_per_position <= 200:
+      raise ValueError(
+        f"flashes_per_position must be 1-200, got {flashes_per_position}")
+
+    # Build and send the auto-focus scan command
+    af_payload = self._build_autofocus_payload(
+      plate, wells,
+      excitation_wavelength, emission_wavelength,
+      excitation_bandwidth=excitation_bandwidth,
+      emission_bandwidth=emission_bandwidth,
+      dichroic_split_wavelength=dichroic_split_wavelength,
+      max_focal_height_mm=max_focal_height_mm,
+      flashes_per_position=flashes_per_position,
+      excitation_filter=excitation_filter,
+      emission_filter=emission_filter,
+      dichroic_filter=dichroic_filter,
+    )
+    await self.send_command(
+      command_family=self.CommandFamily.AUTO_FOCUS,
+      parameters=af_payload,
+    )
+
+    # Poll until the Z-scan completes
+    deadline = time.time() + scan_timeout
+    while time.time() < deadline:
+      status = await self.request_machine_status()
+      if not status.get("running", False):
+        break
+      await asyncio.sleep(0.3)
+    else:
+      raise TimeoutError(
+        f"Auto-focus Z-scan did not complete within {scan_timeout}s")
+
+    # Retrieve and parse the focus result
+    result_payload = await self._request_focus_result()
+    return self._parse_focus_result(result_payload)
