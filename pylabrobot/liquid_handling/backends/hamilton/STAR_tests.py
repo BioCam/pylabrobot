@@ -1531,57 +1531,118 @@ class TestSTARTipPickupDropAllSizes(unittest.IsolatedAsyncioTestCase):
 
 
 class TestChannelsMinimumYSpacing(unittest.IsolatedAsyncioTestCase):
-  """Test per-channel minimum Y spacing behavior with 4-channel 18mm machines."""
+  """Test that different channel spacing configurations produce different behavior.
 
-  async def _make_backend(self, spacings):
+  Real firmware VY responses captured from hardware (GitHub issue #822):
+    - 4-channel 18mm single-rail:  P<n>VYid<id>yc194 388 1  (yc[1]=388 → 18.0mm)
+    - 8-channel 9mm standard:      P<n>VYid<id>yc000 194 0  (yc[1]=194 → 9.0mm)
+  """
+
+  # -- can_reach_position: reachability shrinks with wider spacing ----------------
+
+  async def test_can_reach_4ch_18mm_rejects_position_reachable_at_9mm(self):
+    """A position reachable by channel 0 at 9mm spacing is unreachable at 18mm spacing.
+
+    Channel 0 (backmost) max_y = 601.6 - sum(spacings[0..0]) = 601.6 - 0 = 601.6  (same)
+    Channel 0 (backmost) min_y = 6 + sum(spacings[1..3])
+      At 9mm:  6 + 9*3 = 33   → y=33 reachable
+      At 18mm: 6 + 18*3 = 60  → y=33 unreachable
+    """
+    backend = STARBackend()
+    backend._num_channels = 4
+
+    backend._channels_minimum_y_spacing = [9.0] * 4
+    self.assertTrue(backend.can_reach_position(0, Coordinate(100, 33, 100)))
+
+    backend._channels_minimum_y_spacing = [18.0] * 4
+    self.assertFalse(backend.can_reach_position(0, Coordinate(100, 33, 100)))
+
+  async def test_can_reach_4ch_18mm_rejects_back_channel_too_far_back(self):
+    """At 18mm spacing, the backmost channel has a lower max_y than at 9mm.
+
+    Channel 3 (frontmost) max_y = 601.6 - sum(spacings[0..2])
+      At 9mm:  601.6 - 9*3 = 574.6  → y=574 reachable
+      At 18mm: 601.6 - 18*3 = 547.6 → y=574 unreachable
+    """
+    backend = STARBackend()
+    backend._num_channels = 4
+
+    backend._channels_minimum_y_spacing = [9.0] * 4
+    self.assertTrue(backend.can_reach_position(3, Coordinate(100, 574, 100)))
+
+    backend._channels_minimum_y_spacing = [18.0] * 4
+    self.assertFalse(backend.can_reach_position(3, Coordinate(100, 574, 100)))
+
+  # -- position_channels_in_y_direction: validation rejects tight positions -------
+
+  async def _make_chatterbox(self, num_channels, spacings):
+    """Helper: set up a chatterbox backend with given channel count and spacings."""
     backend = STARChatterboxBackend(
-      num_channels=len(spacings),
+      num_channels=num_channels,
       channels_minimum_y_spacing=spacings,
-      iswap_installed=True,
     )
-    from pylabrobot.resources.hamilton import STARLetDeck
-
     deck = STARLetDeck()
     lh = LiquidHandler(backend, deck=deck)
     await lh.setup()
-    return backend
-
-  async def test_can_reach_4ch_18mm_rejects_position_reachable_at_9mm(self):
-    """Position y=50 is reachable for ch0 at 9mm (min_y=33) but not at 18mm (min_y=69)."""
-    backend = await self._make_backend([18.0] * 4)
-    self.assertFalse(backend.can_reach_position(0, Coordinate(100, 50, 100)))
-
-  async def test_can_reach_4ch_18mm_rejects_back_channel_too_far_back(self):
-    """Channel 1 max_y = 601.6 - 18 = 583.6, so y=590 is out of reach."""
-    backend = await self._make_backend([18.0] * 4)
-    self.assertFalse(backend.can_reach_position(1, Coordinate(100, 590, 100)))
+    return backend, lh
 
   async def test_position_channels_rejects_9mm_gap_when_spacing_is_18mm(self):
-    """9mm gap between channels should fail validation when spacing is 18mm."""
-    backend = await self._make_backend([18.0] * 4)
-    backend.get_channels_y_positions = unittest.mock.AsyncMock(
-      return_value={0: 300.0, 1: 282.0, 2: 264.0, 3: 246.0}
+    """With make_space=False, channels 9mm apart pass validation at 9mm but are rejected at 18mm."""
+    # At 9mm: channels spaced 9mm apart → valid, JY command is sent.
+    backend_9, lh_9 = await self._make_chatterbox(4, [9.0] * 4)
+    spread_positions = {0: 100.0, 1: 91.0, 2: 82.0, 3: 73.0}
+    backend_9.get_channels_y_positions = unittest.mock.AsyncMock(
+      return_value=dict(spread_positions)
+    )
+    backend_9._write_and_read_command = unittest.mock.AsyncMock()
+    await backend_9.position_channels_in_y_direction(spread_positions, make_space=False)
+    # JY command was sent.
+    self.assertTrue(backend_9._write_and_read_command.called)
+
+    # At 18mm: same positions → rejected.
+    backend_18, lh_18 = await self._make_chatterbox(4, [18.0] * 4)
+    backend_18.get_channels_y_positions = unittest.mock.AsyncMock(
+      return_value=dict(spread_positions)
     )
     with self.assertRaises(ValueError):
-      await backend.position_channels_in_y_direction(
-        {1: 200.0, 2: 191.0},  # 9mm apart, but 18mm required
-        make_space=False,
-      )
+      await backend_18.position_channels_in_y_direction(spread_positions, make_space=False)
+
+    await lh_9.stop()
+    await lh_18.stop()
 
   async def test_position_channels_make_space_spreads_wider_at_18mm(self):
-    """make_space should push adjacent channels 18mm apart, not 9mm."""
-    backend = await self._make_backend([18.0] * 4)
-    backend.get_channels_y_positions = unittest.mock.AsyncMock(
-      return_value={0: 300.0, 1: 282.0, 2: 264.0, 3: 246.0}
-    )
-    backend.send_command = unittest.mock.AsyncMock()
-    await backend.position_channels_in_y_direction({2: 200.0}, make_space=True)
-    # Check the JY command positions
-    call_kwargs = backend.send_command.call_args.kwargs
-    yp_str = call_kwargs["yp"]
-    positions = [int(v) / 10 for v in yp_str.split()]
-    # Channel 2 at 200, channel 3 pushed to 200 - 18 = 182
-    self.assertAlmostEqual(positions[3], 182.0)
-    # Channels 0, 1 unchanged (already >= 18mm apart from channel 2)
-    self.assertAlmostEqual(positions[0], 300.0)
-    self.assertAlmostEqual(positions[1], 282.0)
+    """make_space=True pushes non-target channels further apart at 18mm than at 9mm.
+
+    Move only channel 2 to y=40. make_space adjusts channels 3 (in front of channel 2)
+    to respect minimum spacing. At 9mm it pushes channel 3 to 31, at 18mm to 22.
+    """
+    # Current positions: well spread, all valid for both configurations.
+    current = {0: 300.0, 1: 200.0, 2: 100.0, 3: 50.0}
+
+    # Move channel 2 to y=40 — channel 3 at 50 is now *in front* of channel 2 at 40,
+    # which violates ordering. make_space pushes channel 3 (front) down.
+    requested = {2: 40.0}
+
+    # At 9mm: channel 3 must be ≤ 40 - 9 = 31.
+    backend_9, lh_9 = await self._make_chatterbox(4, [9.0] * 4)
+    backend_9.get_channels_y_positions = unittest.mock.AsyncMock(return_value=dict(current))
+    backend_9._write_and_read_command = unittest.mock.AsyncMock()
+    await backend_9.position_channels_in_y_direction(dict(requested), make_space=True)
+    cmd_9mm = backend_9._write_and_read_command.call_args.kwargs["cmd"]
+    # Channel 3 pushed to 31.0 → 310 increments.
+    self.assertIn("0310", cmd_9mm)
+
+    # At 18mm: channel 3 must be ≤ 40 - 18 = 22.
+    backend_18, lh_18 = await self._make_chatterbox(4, [18.0] * 4)
+    backend_18.get_channels_y_positions = unittest.mock.AsyncMock(return_value=dict(current))
+    backend_18._write_and_read_command = unittest.mock.AsyncMock()
+    await backend_18.position_channels_in_y_direction(dict(requested), make_space=True)
+    cmd_18mm = backend_18._write_and_read_command.call_args.kwargs["cmd"]
+    # Channel 3 pushed to 22.0 → 220 increments.
+    self.assertIn("0220", cmd_18mm)
+
+    # The JY commands must differ.
+    self.assertNotEqual(cmd_9mm, cmd_18mm)
+
+    await lh_9.stop()
+    await lh_18.stop()

@@ -1221,10 +1221,17 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return self._channels_minimum_y_spacing[-1] - 3
 
   async def _backmost_channel_max_y(self) -> float:
-    """Maximum Y position reachable by the backmost channel (mm)."""
+    """Maximum Y position the backmost channel can reach.
+
+    If the iswap is installed, this is bounded by the iswap's current Y position.
+    Otherwise, it's the machine drive limit (635 mm).
+    Symmetric with _frontmost_channel_min_y: max_y = limit - spacing[0] + 3.
+    """
     if self.iswap_installed:
-      return await self.iswap_rotation_drive_request_y()
-    return 635.0
+      limit = await self.iswap_rotation_drive_request_y()
+    else:
+      limit = 635.0
+    return limit - self._channels_minimum_y_spacing[0] + 3
 
   def _min_spacing_between(self, i: int, j: int) -> float:
     """Return the minimum Y spacing between adjacent channels i and j.
@@ -1232,7 +1239,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     The result is the max of the two channels' spacings, ceiling'd to 0.1 mm.
     """
     if abs(i - j) != 1:
-      raise ValueError(f"Channels must be adjacent, got {i} and {j}.")
+      raise ValueError(f"Channels must be adjacent, got i={i}, j={j}")
     spacings = self._channels_minimum_y_spacing
     return math.ceil(max(spacings[i], spacings[j]) * 10) / 10
 
@@ -4287,9 +4294,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
           f"(channel {channel + 1} y-position is {round(y, 2)} mm)"
         )
     else:
-      min_y_pos = self._frontmost_channel_min_y()
-      if y < min_y_pos:
-        raise ValueError(f"channel {channel} y-target must be >= {min_y_pos} mm (machine limit)")
+      if y < self._frontmost_channel_min_y():
+        raise ValueError(
+          f"channel {channel} y-target must be >= {self._frontmost_channel_min_y()} mm"
+        )
 
     await self.position_single_pipetting_channel_in_y_direction(
       pipetting_channel_index=channel + 1, y_position=round(y * 10)
@@ -11219,13 +11227,12 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       raise ValueError("Channel N would hit the front of the robot")
 
     for i in range(len(channel_locations) - 1):
-      pair_spacing = self._min_spacing_between(i, i + 1)
-      gap = round((channel_locations[i] - channel_locations[i + 1]) * 1000)
-      required = round(pair_spacing * 1000) - 10  # float fixing
-      if gap < required:
+      required = self._min_spacing_between(i, i + 1)
+      actual = channel_locations[i] - channel_locations[i + 1]
+      if round(actual * 1000) < round(required * 1000):  # compare in um to avoid float issues
         raise ValueError(
-          f"Channels {i} and {i+1} must be at least {pair_spacing}mm apart, "
-          f"but are {channel_locations[i] - channel_locations[i+1]:.1f}mm apart"
+          f"Channels {i} and {i + 1} must be at least {required}mm apart, "
+          f"but are {actual:.2f}mm apart."
         )
 
     yp = " ".join([f"{round(y*10):04}" for y in channel_locations.values()])
