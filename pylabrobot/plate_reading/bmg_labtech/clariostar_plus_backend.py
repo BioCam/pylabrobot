@@ -22,7 +22,7 @@ from pylabrobot.resources.well import Well
 from ..backend import PlateReaderBackend
 from .filters import (
   _FilterBase,
-  Filter,
+  OpticalFilter,
   DichroicFilter,
   _FilterSlideBase,
   ExcitationFilterSlide,
@@ -213,7 +213,31 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   """BMG CLARIOstar Plus plate reader backend.
 
   Lifecycle: initialize, open/close drawer, status polling, device identification.
-  Measurement: absorbance (discrete + spectrum), fluorescence. Luminescence (stub).
+  Measurement: absorbance (discrete + spectrum), fluorescence (discrete + spectrum).
+  Luminescence (stub).
+
+  Sections (search for the ``# Feature:`` / section headers):
+    Enums & constants .............. CommandFamily, Command, DetectionMode, etc.
+    Constructor .................... __init__
+    Life cycle ..................... setup, stop, initialize, recovery
+    Low-level I/O .................. _write_frame, _read_frame, send_command
+    Status ......................... request_machine_status, is_ready, sense_plate
+    Device info .................... request_eeprom_data, firmware, detection modes
+    Usage counters ................. request_usage_counters
+    Filter auto-detection ......... detect_all_filters, _parse_filter_result
+    Temperature control ........... start/stop_temperature_control, measure
+    Drawer control ................. open, close, sense_drawer_open
+    Common reading helpers ......... _plate_field, _pre_separator_block, polling
+    Absorbance (discrete) ......... read_absorbance, _build/_parse_absorbance_*
+    Absorbance (spectrum) ......... read_absorbance_spectrum, _retrieve/_parse_abs_*
+    Fluorescence (discrete) ....... read_fluorescence, _build/_parse_fluorescence_*
+    Fluorescence (spectrum) ....... read_fluorescence_spectrum, _build/_parse_fl_*
+    Luminescence ................... (stub)
+    Auto-focus ..................... auto_focus, _build/_parse_autofocus_*
+
+  TODO: When this class exceeds ~6000 lines, consider splitting measurement
+  sections (ABS, FL, luminescence, auto-focus) into mixin classes, keeping
+  shared helpers and lifecycle in the base.
   """
 
   # -- Command enums (CLARIOstar-specific, to our knowledge)------------------
@@ -317,7 +341,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   # -- Filter / Filter slide (imported from filters.py) ----------------------
 
   _FilterBase = _FilterBase
-  Filter = Filter
+  OpticalFilter = OpticalFilter
   DichroicFilter = DichroicFilter
   _FilterSlideBase = _FilterSlideBase
   ExcitationFilterSlide = ExcitationFilterSlide
@@ -1384,7 +1408,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     slot: int,
     category: str,
   ) -> Optional["_FilterBase"]:
-    """Parse a 0x1b FILTER_RESULT response into a Filter or DichroicFilter.
+    """Parse a 0x1b FILTER_RESULT response into an OpticalFilter or DichroicFilter.
 
     Args:
       payload: Full response payload from ``send_command`` (starts with 0x1b).
@@ -1392,7 +1416,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       category: ``"excitation"``, ``"emission"``, or ``"dichroic"``.
 
     Returns:
-      ``Filter`` for occupied bandpass positions,
+      ``OpticalFilter`` for occupied bandpass positions,
       ``DichroicFilter`` for occupied dichroic positions,
       ``None`` for empty positions.
     """
@@ -1412,7 +1436,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       center_raw = int.from_bytes(payload[7:9], "big")
       center = round(center_raw / 10)
       bandwidth = round(bw_raw / 10)
-      return Filter(
+      return OpticalFilter(
         slot=slot,
         name=f"BP {center}/{bandwidth}",
         center_wavelength=center,
@@ -1446,7 +1470,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     Returns:
       Dict with keys ``"excitation"``, ``"emission"``, ``"dichroic"``,
       each mapping to a positional list (index = slot - 1).  Occupied
-      positions contain ``Filter`` or ``DichroicFilter`` objects; empty
+      positions contain ``OpticalFilter`` or ``DichroicFilter`` objects; empty
       positions are ``None``.
 
     Raises:
@@ -1939,6 +1963,141 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     return grid
 
+  @staticmethod
+  def _validate_shake_params(
+    shake_mode: Optional[str],
+    shake_speed_rpm: Optional[int],
+    shake_duration_s: Optional[int],
+    settling_time_s: Optional[float] = None,
+    *,
+    require_settling: bool = False,
+  ) -> None:
+    """Validate shake parameters shared across all measurement methods.
+
+    Args:
+      require_settling: If True, ``settling_time_s`` is treated as part of the
+        shake parameter group (required when shake is on, must be None when off).
+        Used by absorbance methods. Fluorescence methods manage settling
+        independently, so they pass ``require_settling=False`` (default).
+    """
+    valid_shake_modes = (None, "orbital", "linear", "double_orbital", "meander")
+    if shake_mode not in valid_shake_modes:
+      raise ValueError(f"shake_mode must be one of {valid_shake_modes}, got {shake_mode!r}.")
+    if shake_mode is not None:
+      if shake_speed_rpm is None:
+        raise ValueError("shake_speed_rpm is required when shake_mode is set.")
+      if shake_duration_s is None:
+        raise ValueError("shake_duration_s is required when shake_mode is set.")
+      if require_settling and settling_time_s is None:
+        raise ValueError("settling_time_s is required when shake_mode is set.")
+      max_rpm = 300 if shake_mode == "meander" else 700
+      if shake_speed_rpm < 100 or shake_speed_rpm > max_rpm or shake_speed_rpm % 100 != 0:
+        raise ValueError(
+          f"shake_speed_rpm must be a multiple of 100 in range 100-{max_rpm}, "
+          f"got {shake_speed_rpm}."
+        )
+      if not 0 < shake_duration_s <= 65535:
+        raise ValueError(
+          f"shake_duration_s must be 1-65535 when shake_mode is set, got {shake_duration_s}."
+        )
+      if require_settling and settling_time_s is not None:
+        if not 0 <= settling_time_s <= 1:
+          raise ValueError(
+            f"settling_time_s must be 0-1 (MARS range 0.0-1.0 s), got {settling_time_s}."
+          )
+    else:
+      if shake_speed_rpm is not None:
+        raise ValueError("shake_speed_rpm must be None when shake_mode is None.")
+      if shake_duration_s is not None:
+        raise ValueError("shake_duration_s must be None when shake_mode is None.")
+      if require_settling and settling_time_s is not None:
+        raise ValueError("settling_time_s must be None when shake_mode is None.")
+
+  async def _poll_progressive(
+    self,
+    read_timeout: Optional[float],
+    log_prefix: str = "measurement",
+  ) -> Tuple[bytes, bool]:
+    """Progressive data polling loop shared by discrete ABS and FL.
+
+    Alternates progressive GET_DATA with interleaved status queries until the
+    firmware signals completion (written >= expected) or the device is no longer
+    busy.
+
+    Returns:
+      ``(response, progressive_complete)`` — the last progressive response and
+      whether it contained the complete data (True) or the loop exited via the
+      busy-flag path (False, meaning a final standard GET_DATA is needed).
+    """
+    t0 = time.time()
+    response = b""
+    progressive_complete = False
+    while True:
+      if read_timeout is not None and time.time() - t0 > read_timeout:
+        raise TimeoutError(
+          f"{log_prefix} not complete after {read_timeout:.1f}s. "
+          f"Pass read_timeout=None to wait indefinitely, or increase the value."
+        )
+
+      try:
+        response = await self._request_measurement_data(progressive=True)
+      except FrameError as e:
+        logger.warning("%s data poll: bad frame (%s), retrying", log_prefix, e)
+        if self.measurement_poll_interval > 0:
+          await asyncio.sleep(self.measurement_poll_interval)
+        continue
+
+      written, expected = self._measurement_progress(response)
+      if logger.isEnabledFor(logging.INFO):
+        logger.info("%s progress: %d/%d", log_prefix, written, expected)
+
+      if expected > 0 and written >= expected:
+        progressive_complete = True
+        break
+
+      try:
+        status = await self.request_machine_status()
+        if not status["busy"]:
+          logger.info("%s complete (device no longer busy)", log_prefix)
+          break
+      except FrameError as e:
+        logger.debug("%s interleaved status poll: bad frame (%s), ignoring",
+                     log_prefix, e)
+
+      if self.measurement_poll_interval > 0:
+        await asyncio.sleep(self.measurement_poll_interval)
+
+    return response, progressive_complete
+
+  async def _poll_status_only(
+    self,
+    read_timeout: Optional[float],
+    log_prefix: str = "measurement",
+  ) -> None:
+    """Status-only polling loop shared by spectrum measurements.
+
+    Polls ``request_machine_status`` until the device is no longer busy.
+    Used by spectrum modes where progressive GET_DATA is not available.
+    """
+    t0 = time.time()
+    while True:
+      if read_timeout is not None and time.time() - t0 > read_timeout:
+        raise TimeoutError(
+          f"{log_prefix} not complete after {read_timeout:.1f}s. "
+          f"Pass read_timeout=None to wait indefinitely, or increase the value."
+        )
+
+      try:
+        status = await self.request_machine_status()
+        if not status["busy"]:
+          logger.info("%s complete (device no longer busy)", log_prefix)
+          break
+      except FrameError as e:
+        logger.warning("%s status poll: bad frame (%s), retrying", log_prefix, e)
+
+      if self.measurement_poll_interval > 0:
+        await asyncio.sleep(self.measurement_poll_interval)
+
   async def _request_measurement_data(self, progressive: bool = False) -> bytes:
     """Retrieve measurement data from the device buffer (internal).
 
@@ -1976,7 +2135,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       retries=1 if progressive else 3,
     )
 
-  async def _retrieve_spectrum_pages(self, expected_total_values: int) -> List[bytes]:
+  async def _retrieve_abs_spectrum_pages(self, expected_total_values: int) -> List[bytes]:
     """Retrieve all pages of spectrum data via repeated standard GET_DATA calls.
 
     Spectrum measurements return paginated data: each standard GET_DATA call
@@ -2017,7 +2176,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
                     page_num, page_values, collected_values, expected_total_values)
     return pages
 
-  def _parse_spectrum_pages(
+  def _parse_abs_spectrum_pages(
     self,
     pages: List[bytes],
     plate: Plate,
@@ -2041,7 +2200,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     values, which the existing parser handles directly.
 
     Args:
-      pages: List of raw response payloads from ``_retrieve_spectrum_pages``.
+      pages: List of raw response payloads from ``_retrieve_abs_spectrum_pages``.
       plate: The plate used for the measurement.
       wells: Wells that were measured.
       wavelengths: List of wavelengths in nm (one per spectrum step).
@@ -2469,6 +2628,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   ) -> List[Dict]:
     """Convert extracted groups into per-wavelength result dicts.
 
+    TODO: Add detailed documentation for the calibration math (chrom2/chrom3
+    role, dark-subtraction assumptions, multi-wavelength group mapping). The
+    current docstring covers the formula but not the full data-flow from raw
+    u32 firmware values through group extraction to final OD/T/raw.
+
     Assigns groups by position:
       Single WL (3 extras): chrom2, chrom3, ref
       Dual WL   (4 extras): WL2, chrom2, chrom3, ref
@@ -2772,37 +2936,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if report not in valid_reports:
       raise ValueError(f"report must be one of {valid_reports}, got {report!r}.")
 
-    valid_shake_modes = (None, "orbital", "linear", "double_orbital", "meander")
-    if shake_mode not in valid_shake_modes:
-      raise ValueError(f"shake_mode must be one of {valid_shake_modes}, got {shake_mode!r}.")
-    if shake_mode is not None:
-      if shake_speed_rpm is None:
-        raise ValueError("shake_speed_rpm is required when shake_mode is set.")
-      if shake_duration_s is None:
-        raise ValueError("shake_duration_s is required when shake_mode is set.")
-      if settling_time_s is None:
-        raise ValueError("settling_time_s is required when shake_mode is set.")
-      max_rpm = 300 if shake_mode == "meander" else 700
-      if shake_speed_rpm < 100 or shake_speed_rpm > max_rpm or shake_speed_rpm % 100 != 0:
-        raise ValueError(
-          f"shake_speed_rpm must be a multiple of 100 in range 100-{max_rpm}, "
-          f"got {shake_speed_rpm}."
-        )
-      if not 0 < shake_duration_s <= 65535:
-        raise ValueError(
-          f"shake_duration_s must be 1-65535 when shake_mode is set, got {shake_duration_s}."
-        )
-      if not 0 <= settling_time_s <= 1:
-        raise ValueError(
-          f"settling_time_s must be 0-1 (MARS range 0.0-1.0 s), got {settling_time_s}."
-        )
-    else:
-      if shake_speed_rpm is not None:
-        raise ValueError("shake_speed_rpm must be None when shake_mode is None.")
-      if shake_duration_s is not None:
-        raise ValueError("shake_duration_s must be None when shake_mode is None.")
-      if settling_time_s is not None:
-        raise ValueError("settling_time_s must be None when shake_mode is None.")
+    self._validate_shake_params(
+      shake_mode, shake_speed_rpm, shake_duration_s, settling_time_s,
+      require_settling=True,
+    )
 
     if read_timeout is not None and read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
@@ -2832,64 +2969,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if not wait:
       return []
 
-    # 2. Poll incrementally: request data (progressive), check progress,
-    #    interleave status queries — matches Voyager protocol pattern.
-    #
-    # The firmware reports (values_written, values_expected) in each progressive
-    # data response.  Normally the loop breaks when written >= expected.  However,
-    # the firmware resets both counters to 0 once the measurement finishes, so it
-    # is possible to go from e.g. 364/392 directly to 0/0 without ever seeing
-    # 392/392.  When progress reports 0/0 we fall through to the interleaved
-    # status query and check the busy flag — if the device is no longer busy
-    # the measurement is complete.
-    t0 = time.time()
-    response = b""
-    progressive_complete = False
-    while True:
-      if read_timeout is not None and time.time() - t0 > read_timeout:
-        raise TimeoutError(
-          f"Measurement not complete after {read_timeout:.1f}s. "
-          f"Pass read_timeout=None to wait indefinitely, or increase the value."
-        )
-
-      # Progressive data request (ff ff ff ff 00)
-      try:
-        response = await self._request_measurement_data(progressive=True)
-      except FrameError as e:
-        logger.warning("data poll: bad frame (%s), retrying", e)
-        if self.measurement_poll_interval > 0:
-          await asyncio.sleep(self.measurement_poll_interval)
-        continue
-
-      written, expected = self._measurement_progress(response)
-      if logger.isEnabledFor(logging.INFO):
-        logger.info("measurement progress: %d/%d", written, expected)
-
-      if expected > 0 and written >= expected:
-        progressive_complete = True
-        break
-
-      # Interleave a status query between data polls (matches Voyager pattern).
-      # When the firmware resets counters to 0/0 after completing, the busy flag
-      # clears — use it as the definitive completion signal.
-      try:
-        status = await self.request_machine_status()
-        if not status["busy"]:
-          logger.info("measurement complete (device no longer busy)")
-          break
-      except FrameError as e:
-        logger.debug("interleaved status poll: bad frame (%s), ignoring", e)
-
-      # Pace polling to reduce firmware USB interrupt load during measurement.
-      # Set measurement_poll_interval=0.0 to disable.
-      if self.measurement_poll_interval > 0:
-        await asyncio.sleep(self.measurement_poll_interval)
+    # 2. Progressive data + interleaved status polling (Voyager pattern).
+    response, progressive_complete = await self._poll_progressive(
+      read_timeout, log_prefix="ABS measurement")
 
     # 3. Retrieve final results.
-    # Path A: progressive response already contains the complete data in the same
-    # 36-byte-header format as a standard response — parse it directly.
-    # Path B: firmware reset counters to 0/0 and device is no longer busy — data
-    # is not in the progressive response, re-request via standard GET_DATA.
     if progressive_complete:
       return self._parse_absorbance_response(response, plate, wells, wls, report=report)
     else:
@@ -3033,37 +3117,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if report not in valid_reports:
       raise ValueError(f"report must be one of {valid_reports}, got {report!r}.")
 
-    valid_shake_modes = (None, "orbital", "linear", "double_orbital", "meander")
-    if shake_mode not in valid_shake_modes:
-      raise ValueError(f"shake_mode must be one of {valid_shake_modes}, got {shake_mode!r}.")
-    if shake_mode is not None:
-      if shake_speed_rpm is None:
-        raise ValueError("shake_speed_rpm is required when shake_mode is set.")
-      if shake_duration_s is None:
-        raise ValueError("shake_duration_s is required when shake_mode is set.")
-      if settling_time_s is None:
-        raise ValueError("settling_time_s is required when shake_mode is set.")
-      max_rpm = 300 if shake_mode == "meander" else 700
-      if shake_speed_rpm < 100 or shake_speed_rpm > max_rpm or shake_speed_rpm % 100 != 0:
-        raise ValueError(
-          f"shake_speed_rpm must be a multiple of 100 in range 100-{max_rpm}, "
-          f"got {shake_speed_rpm}."
-        )
-      if not 0 < shake_duration_s <= 65535:
-        raise ValueError(
-          f"shake_duration_s must be 1-65535 when shake_mode is set, got {shake_duration_s}."
-        )
-      if not 0 <= settling_time_s <= 1:
-        raise ValueError(
-          f"settling_time_s must be 0-1 (MARS range 0.0-1.0 s), got {settling_time_s}."
-        )
-    else:
-      if shake_speed_rpm is not None:
-        raise ValueError("shake_speed_rpm must be None when shake_mode is None.")
-      if shake_duration_s is not None:
-        raise ValueError("shake_duration_s must be None when shake_mode is None.")
-      if settling_time_s is not None:
-        raise ValueError("settling_time_s must be None when shake_mode is None.")
+    self._validate_shake_params(
+      shake_mode, shake_speed_rpm, shake_duration_s, settling_time_s,
+      require_settling=True,
+    )
 
     if read_timeout is not None and read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
@@ -3096,25 +3153,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if not wait:
       return []
 
-    # 2. Status-only polling loop (no progressive GET_DATA for spectrum)
-    t0 = time.time()
-    while True:
-      if read_timeout is not None and time.time() - t0 > read_timeout:
-        raise TimeoutError(
-          f"Spectrum measurement not complete after {read_timeout:.1f}s. "
-          f"Pass read_timeout=None to wait indefinitely, or increase the value."
-        )
-
-      try:
-        status = await self.request_machine_status()
-        if not status["busy"]:
-          logger.info("spectrum measurement complete (device no longer busy)")
-          break
-      except FrameError as e:
-        logger.warning("spectrum status poll: bad frame (%s), retrying", e)
-
-      if self.measurement_poll_interval > 0:
-        await asyncio.sleep(self.measurement_poll_interval)
+    # 2. Status-only polling (no progressive GET_DATA for spectrum).
+    await self._poll_status_only(read_timeout, log_prefix="ABS spectrum")
 
     # 3. Retrieve paginated spectrum data
     # Total u32 values = (num_wl + 3) × (num_wells + 2), matching the discrete
@@ -3122,7 +3162,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     # groups; the "+2" accounts for calibration pairs per group.
     num_wells = len(wells)
     expected_total_values = (num_wavelengths + 3) * (num_wells + 2)
-    pages = await self._retrieve_spectrum_pages(expected_total_values)
+    pages = await self._retrieve_abs_spectrum_pages(expected_total_values)
 
     if not pages:
       logger.warning("spectrum: no data pages retrieved")
@@ -3130,7 +3170,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     # 4. Parse pages into per-wavelength results
     wavelengths = [start_wavelength + i * step_size for i in range(num_wavelengths)]
-    return self._parse_spectrum_pages(pages, plate, wells, wavelengths, report=report)
+    return self._parse_abs_spectrum_pages(pages, plate, wells, wavelengths, report=report)
 
   # --------------------------------------------------------------------------
   # Feature: Fluorescence Measurement
@@ -3173,8 +3213,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     shake_duration_s: int = 0,
     edr: bool = False,
     flying_mode: bool = False,
-    excitation_filter: Optional["CLARIOstarPlusBackend.Filter"] = None,
-    emission_filter: Optional["CLARIOstarPlusBackend.Filter"] = None,
+    excitation_filter: Optional["CLARIOstarPlusBackend.OpticalFilter"] = None,
+    emission_filter: Optional["CLARIOstarPlusBackend.OpticalFilter"] = None,
     dichroic_filter: Optional["CLARIOstarPlusBackend.DichroicFilter"] = None,
     chromatics: Optional[List[Dict]] = None,
     # Test overrides (pass exact pcap edge values to bypass ±2 firmware calibration)
@@ -3474,8 +3514,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     emission_bandwidth: int = 20,
     dichroic_split_wavelength: Optional[float] = None,
     # Filter/Beam Split Usage 
-    excitation_filter: Optional["Filter"] = None,
-    emission_filter: Optional["Filter"] = None,
+    excitation_filter: Optional["OpticalFilter"] = None,
+    emission_filter: Optional["OpticalFilter"] = None,
     dichroic_filter: Optional["DichroicFilter"] = None,
     #
     gain: int = 1000,
@@ -3537,10 +3577,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       wait: If True, poll until complete. If False, return empty list.
       edr: Enhanced Dynamic Range (raises overflow ceiling to 700M).
       flying_mode: Flying mode (forces settling=0, flashes=1). Point scan only.
-      excitation_filter: A ``Filter`` object. When provided, selects filter
+      excitation_filter: An ``OpticalFilter`` object. When provided, selects filter
         mode for excitation (uses filter sentinel + slot). ``None`` = monochromator.
-      emission_filter: A ``Filter`` object. Same behaviour for emission.
-      dichroic_filter: A ``Filter`` object. Selects filter dichroic.
+      emission_filter: An ``OpticalFilter`` object. Same behaviour for emission.
+      dichroic_filter: A ``DichroicFilter`` object. Selects filter dichroic.
         ``None`` = LVDM (Linear Variable Dichroic Mirror).
       chromatics: List of 1-5 dicts for multi-chromatic measurement.
         When provided, overrides per-chromatic wavelength/gain/dichroic/filter params.
@@ -3653,29 +3693,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if corner not in valid_corners:
       raise ValueError(f"corner must be one of {valid_corners}, got {corner!r}.")
 
-    valid_shake_modes = (None, "orbital", "linear", "double_orbital", "meander")
-    if shake_mode not in valid_shake_modes:
-      raise ValueError(f"shake_mode must be one of {valid_shake_modes}, got {shake_mode!r}.")
-    if shake_mode is not None:
-      if shake_speed_rpm is None:
-        raise ValueError("shake_speed_rpm is required when shake_mode is set.")
-      if shake_duration_s is None:
-        raise ValueError("shake_duration_s is required when shake_mode is set.")
-      max_rpm = 300 if shake_mode == "meander" else 700
-      if shake_speed_rpm < 100 or shake_speed_rpm > max_rpm or shake_speed_rpm % 100 != 0:
-        raise ValueError(
-          f"shake_speed_rpm must be a multiple of 100 in range 100-{max_rpm}, "
-          f"got {shake_speed_rpm}."
-        )
-      if not 0 < shake_duration_s <= 65535:
-        raise ValueError(
-          f"shake_duration_s must be 1-65535 when shake_mode is set, got {shake_duration_s}."
-        )
-    else:
-      if shake_speed_rpm is not None:
-        raise ValueError("shake_speed_rpm must be None when shake_mode is None.")
-      if shake_duration_s is not None:
-        raise ValueError("shake_duration_s must be None when shake_mode is None.")
+    self._validate_shake_params(shake_mode, shake_speed_rpm, shake_duration_s)
 
     if read_timeout is not None and read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
@@ -3718,43 +3736,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if not wait:
       return []
 
-    # 2. Poll incrementally: progressive data + interleaved status (same as ABS).
-    t0 = time.time()
-    response = b""
-    progressive_complete = False
-    while True:
-      if read_timeout is not None and time.time() - t0 > read_timeout:
-        raise TimeoutError(
-          f"Fluorescence measurement not complete after {read_timeout:.1f}s. "
-          f"Pass read_timeout=None to wait indefinitely, or increase the value."
-        )
-
-      try:
-        response = await self._request_measurement_data(progressive=True)
-      except FrameError as e:
-        logger.warning("FL data poll: bad frame (%s), retrying", e)
-        if self.measurement_poll_interval > 0:
-          await asyncio.sleep(self.measurement_poll_interval)
-        continue
-
-      written, expected = self._measurement_progress(response)
-      if logger.isEnabledFor(logging.INFO):
-        logger.info("FL progress: %d/%d", written, expected)
-
-      if expected > 0 and written >= expected:
-        progressive_complete = True
-        break
-
-      try:
-        status = await self.request_machine_status()
-        if not status["busy"]:
-          logger.info("FL measurement complete (device no longer busy)")
-          break
-      except FrameError as e:
-        logger.debug("FL interleaved status poll: bad frame (%s), ignoring", e)
-
-      if self.measurement_poll_interval > 0:
-        await asyncio.sleep(self.measurement_poll_interval)
+    # 2. Progressive data + interleaved status polling.
+    response, progressive_complete = await self._poll_progressive(
+      read_timeout, log_prefix="FL measurement")
 
     # 3. Parse results.
     if progressive_complete:
@@ -4138,29 +4122,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         f"optic_position must be one of {valid_optic_positions}, got {optic_position!r}."
       )
 
-    valid_shake_modes = (None, "orbital", "linear", "double_orbital", "meander")
-    if shake_mode not in valid_shake_modes:
-      raise ValueError(f"shake_mode must be one of {valid_shake_modes}, got {shake_mode!r}.")
-    if shake_mode is not None:
-      if shake_speed_rpm is None:
-        raise ValueError("shake_speed_rpm is required when shake_mode is set.")
-      if shake_duration_s is None:
-        raise ValueError("shake_duration_s is required when shake_mode is set.")
-      max_rpm = 300 if shake_mode == "meander" else 700
-      if shake_speed_rpm < 100 or shake_speed_rpm > max_rpm or shake_speed_rpm % 100 != 0:
-        raise ValueError(
-          f"shake_speed_rpm must be a multiple of 100 in range 100-{max_rpm}, "
-          f"got {shake_speed_rpm}."
-        )
-      if not 0 < shake_duration_s <= 65535:
-        raise ValueError(
-          f"shake_duration_s must be 1-65535 when shake_mode is set, got {shake_duration_s}."
-        )
-    else:
-      if shake_speed_rpm is not None:
-        raise ValueError("shake_speed_rpm must be None when shake_mode is None.")
-      if shake_duration_s is not None:
-        raise ValueError("shake_duration_s must be None when shake_mode is None.")
+    self._validate_shake_params(shake_mode, shake_speed_rpm, shake_duration_s)
 
     if read_timeout is not None and read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
@@ -4193,25 +4155,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if not wait:
       return []
 
-    # 2. Status-only polling loop (no progressive GET_DATA for spectrum)
-    t0 = time.time()
-    while True:
-      if read_timeout is not None and time.time() - t0 > read_timeout:
-        raise TimeoutError(
-          f"FL spectrum measurement not complete after {read_timeout:.1f}s. "
-          f"Pass read_timeout=None to wait indefinitely, or increase the value."
-        )
-
-      try:
-        status = await self.request_machine_status()
-        if not status["busy"]:
-          logger.info("FL spectrum measurement complete (device no longer busy)")
-          break
-      except FrameError as e:
-        logger.warning("FL spectrum status poll: bad frame (%s), retrying", e)
-
-      if self.measurement_poll_interval > 0:
-        await asyncio.sleep(self.measurement_poll_interval)
+    # 2. Status-only polling (no progressive GET_DATA for spectrum).
+    await self._poll_status_only(read_timeout, log_prefix="FL spectrum")
 
     # 3. Retrieve one page per well via standard GET_DATA
     num_wells = len(wells)
@@ -4269,8 +4214,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     dichroic_split_wavelength: Optional[float] = None,
     max_focal_height_mm: float = 15.0,
     flashes_per_position: int = 10,
-    excitation_filter: Optional["CLARIOstarPlusBackend.Filter"] = None,
-    emission_filter: Optional["CLARIOstarPlusBackend.Filter"] = None,
+    excitation_filter: Optional["CLARIOstarPlusBackend.OpticalFilter"] = None,
+    emission_filter: Optional["CLARIOstarPlusBackend.OpticalFilter"] = None,
     dichroic_filter: Optional["CLARIOstarPlusBackend.DichroicFilter"] = None,
   ) -> bytes:
     """Build the 0x0c AUTO_FOCUS_SCAN payload (88 bytes, excluding command byte).
@@ -4407,8 +4352,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     dichroic_split_wavelength: Optional[float] = None,
     max_focal_height_mm: float = 15.0,
     flashes_per_position: int = 10,
-    excitation_filter: Optional["Filter"] = None,
-    emission_filter: Optional["Filter"] = None,
+    excitation_filter: Optional["OpticalFilter"] = None,
+    emission_filter: Optional["OpticalFilter"] = None,
     dichroic_filter: Optional["DichroicFilter"] = None,
     scan_timeout: float = 120.0,
   ) -> dict:
@@ -4429,9 +4374,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         auto-calculation from ``(ex_upper + em_lower) / 2``.
       max_focal_height_mm: Upper Z-scan limit in mm (default 15.0).
       flashes_per_position: Number of FL flashes per Z step (default 10).
-      excitation_filter: A ``Filter`` object. ``None`` = monochromator.
-      emission_filter: A ``Filter`` object. ``None`` = monochromator.
-      dichroic_filter: A ``Filter`` object. ``None`` = LVDM.
+      excitation_filter: An ``OpticalFilter`` object. ``None`` = monochromator.
+      emission_filter: An ``OpticalFilter`` object. ``None`` = monochromator.
+      dichroic_filter: A ``DichroicFilter`` object. ``None`` = LVDM.
       scan_timeout: Maximum seconds to wait for the Z-scan (default 120).
 
     Returns:

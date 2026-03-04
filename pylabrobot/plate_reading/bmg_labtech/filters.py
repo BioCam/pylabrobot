@@ -3,14 +3,14 @@
 Defines the types of physical optical elements installed in the CLARIOstar
 filter slides:
 
-- **Filter** — bandpass filter (excitation and emission slides, positions 1–4).
+- **OpticalFilter** — bandpass filter (excitation and emission slides, positions 1–4).
   Characterized by center wavelength and bandwidth.
 - **DichroicFilter** — dichroic mirror / long-pass edge filter (dichroic slide,
   positions A/B/C). Characterized by cut-on wavelength.
 - **FilterCube** — a matched set of excitation filter, dichroic mirror, and
   emission filter. Not yet implemented.
 
-``Filter`` and ``DichroicFilter`` share a common ``slot`` field which is the
+``OpticalFilter`` and ``DichroicFilter`` share a common ``slot`` field which is the
 only thing sent on the wire — all other fields are user-side metadata for
 decision-making (e.g. "does this filter cover my fluorophore?").
 
@@ -36,7 +36,7 @@ class _FilterBase:
 
 
 @dataclasses.dataclass(frozen=True)
-class Filter(_FilterBase):
+class OpticalFilter(_FilterBase):
   """A bandpass optical filter installed in an excitation or emission slide.
 
   Selects a narrow wavelength band defined by center ± bandwidth/2.
@@ -45,8 +45,8 @@ class Filter(_FilterBase):
 
   Examples::
 
-      Filter(slot=1, name="BP 480", center_wavelength=480, bandwidth=20)
-      Filter(slot=2)  # anonymous, slot number only
+      OpticalFilter(slot=1, name="BP 480", center_wavelength=480, bandwidth=20)
+      OpticalFilter(slot=2)  # anonymous, slot number only
   """
   center_wavelength: Optional[int] = None  # nm
   bandwidth: Optional[int] = None  # nm
@@ -82,15 +82,15 @@ class FilterCube:
 
       FilterCube(
           name="GFP",
-          excitation=Filter(slot=1, name="BP 480", center_wavelength=480, bandwidth=20),
+          excitation=OpticalFilter(slot=1, name="BP 480", center_wavelength=480, bandwidth=20),
           dichroic=DichroicFilter(slot=1, name="LP 504", cut_on_wavelength=504),
-          emission=Filter(slot=1, name="BP 520", center_wavelength=520, bandwidth=20),
+          emission=OpticalFilter(slot=1, name="BP 520", center_wavelength=520, bandwidth=20),
       )
   """
   name: str
-  excitation: Optional[Filter] = None
+  excitation: Optional[OpticalFilter] = None
   dichroic: Optional[DichroicFilter] = None
-  emission: Optional[Filter] = None
+  emission: Optional[OpticalFilter] = None
 
 
 
@@ -163,14 +163,14 @@ class ExcitationFilterSlide(_FilterSlideBase):
   """Excitation filter slide (positions 1–4, two physical slides)."""
   _CATEGORY = "excitation"
   _DEFAULT_MAX_SLOTS = 4
-  _FILTER_CLASS = Filter
+  _FILTER_CLASS = OpticalFilter
 
 
 class EmissionFilterSlide(_FilterSlideBase):
   """Emission filter slide (positions 1–4, two physical slides)."""
   _CATEGORY = "emission"
   _DEFAULT_MAX_SLOTS = 4
-  _FILTER_CLASS = Filter
+  _FILTER_CLASS = OpticalFilter
 
 
 class DichroicFilterSlide(_FilterSlideBase):

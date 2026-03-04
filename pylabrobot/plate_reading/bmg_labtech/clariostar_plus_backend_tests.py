@@ -2397,7 +2397,7 @@ def _split_spectrum_into_pages(
 
 
 class TestParseSpectrumPages(unittest.TestCase):
-  """Verify _parse_spectrum_pages with synthetic spectrum data."""
+  """Verify _parse_abs_spectrum_pages with synthetic spectrum data."""
 
   def setUp(self):
     self.backend = _make_backend()
@@ -2413,7 +2413,7 @@ class TestParseSpectrumPages(unittest.TestCase):
     pages = [full_payload]
     wavelengths = [300 + i * 5 for i in range(num_wl)]
 
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
 
@@ -2438,7 +2438,7 @@ class TestParseSpectrumPages(unittest.TestCase):
 
     wavelengths = [300 + i for i in range(num_wl)]
 
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
 
@@ -2459,7 +2459,7 @@ class TestParseSpectrumPages(unittest.TestCase):
     pages = [full_payload]
     wavelengths = [400 + i * 50 for i in range(num_wl)]
 
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="transmittance"
     )
 
@@ -2477,7 +2477,7 @@ class TestParseSpectrumPages(unittest.TestCase):
     pages = [full_payload]
     wavelengths = [400 + i * 50 for i in range(num_wl)]
 
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="raw"
     )
 
@@ -2489,9 +2489,9 @@ class TestParseSpectrumPages(unittest.TestCase):
       self.assertEqual(len(r["references"]), 96)
 
   def test_empty_pages_raises(self):
-    """_parse_spectrum_pages raises ValueError for empty page list."""
+    """_parse_abs_spectrum_pages raises ValueError for empty page list."""
     with self.assertRaises(ValueError):
-      self.backend._parse_spectrum_pages(
+      self.backend._parse_abs_spectrum_pages(
         [], self.plate, self.all_wells, [600], report="optical_density"
       )
 
@@ -2507,7 +2507,7 @@ class TestParseSpectrumPages(unittest.TestCase):
 
     wavelengths = [220 + i for i in range(num_wl)]
 
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
 
@@ -2528,7 +2528,7 @@ class TestParseSpectrumPages(unittest.TestCase):
       sample_base=1_000_000, ref_value=500_000
     )
     # Parse as single page
-    single_results = self.backend._parse_spectrum_pages(
+    single_results = self.backend._parse_abs_spectrum_pages(
       [full_payload], plate, wells,
       [300 + i * 10 for i in range(num_wl)],
       report="raw"
@@ -2536,7 +2536,7 @@ class TestParseSpectrumPages(unittest.TestCase):
     # Split into 2 pages and parse
     pages = _split_spectrum_into_pages(full_payload, values_per_page=40)
     self.assertGreater(len(pages), 1)
-    multi_results = self.backend._parse_spectrum_pages(
+    multi_results = self.backend._parse_abs_spectrum_pages(
       pages, plate, wells,
       [300 + i * 10 for i in range(num_wl)],
       report="raw"
@@ -2837,7 +2837,7 @@ class TestSpectrumResponseGroundTruth(unittest.TestCase):
     """H01: parser returns 401 wavelength dicts with valid OD values."""
     pages = _load_test_data_pages("h01")
     wavelengths = list(range(300, 701))
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
     self.assertEqual(len(results), 401)
@@ -2862,7 +2862,7 @@ class TestSpectrumResponseGroundTruth(unittest.TestCase):
     """H02: parser returns 201 wavelength dicts."""
     pages = _load_test_data_pages("h02")
     wavelengths = list(range(400, 601))
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
     self.assertEqual(len(results), 201)
@@ -2881,7 +2881,7 @@ class TestSpectrumResponseGroundTruth(unittest.TestCase):
     """H03: parser returns 81 wavelength dicts."""
     pages = _load_test_data_pages("h03")
     wavelengths = [300 + i * 5 for i in range(81)]
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
     self.assertEqual(len(results), 81)
@@ -2905,7 +2905,7 @@ class TestSpectrumResponseGroundTruth(unittest.TestCase):
     pages = _load_test_data_pages("h04")
     wells_col1 = [self.plate.get_well(f"{r}1") for r in "ABCDEFGH"]
     wavelengths = list(range(300, 701))
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, wells_col1, wavelengths, report="optical_density"
     )
     self.assertEqual(len(results), 401)
@@ -2937,7 +2937,7 @@ class TestSpectrumResponseGroundTruth(unittest.TestCase):
     """H05 (orbital scan): parser returns 401 wavelength dicts."""
     pages = _load_test_data_pages("h05")
     wavelengths = list(range(300, 701))
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
     self.assertEqual(len(results), 401)
@@ -2960,7 +2960,7 @@ class TestSpectrumResponseGroundTruth(unittest.TestCase):
     """Verification: parser returns 781 wavelength dicts."""
     pages = _load_test_data_pages("verification")
     wavelengths = list(range(220, 1001))
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
     self.assertEqual(len(results), 781)
@@ -2984,7 +2984,7 @@ class TestSpectrumResponseGroundTruth(unittest.TestCase):
     """
     pages = _load_test_data_pages("verification")
     wavelengths = list(range(220, 1001))
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
 
@@ -3017,7 +3017,7 @@ class TestSpectrumResponseGroundTruth(unittest.TestCase):
     """
     pages = _load_test_data_pages("verification")
     wavelengths = list(range(220, 1001))
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
 
@@ -3034,7 +3034,7 @@ class TestSpectrumResponseGroundTruth(unittest.TestCase):
     """Verification: B01 (low-OD well) at multiple wavelengths."""
     pages = _load_test_data_pages("verification")
     wavelengths = list(range(220, 1001))
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
 
@@ -3051,7 +3051,7 @@ class TestSpectrumResponseGroundTruth(unittest.TestCase):
     """Verification: raw report includes reference and calibration data."""
     pages = _load_test_data_pages("verification")
     wavelengths = list(range(220, 1001))
-    results = self.backend._parse_spectrum_pages(
+    results = self.backend._parse_abs_spectrum_pages(
       pages, self.plate, self.all_wells, wavelengths, report="raw"
     )
 
@@ -3077,10 +3077,10 @@ class TestSpectrumResponseGroundTruth(unittest.TestCase):
     h05_pages = _load_test_data_pages("h05")
     wavelengths = list(range(300, 701))
 
-    h01_results = self.backend._parse_spectrum_pages(
+    h01_results = self.backend._parse_abs_spectrum_pages(
       h01_pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
-    h05_results = self.backend._parse_spectrum_pages(
+    h05_results = self.backend._parse_abs_spectrum_pages(
       h05_pages, self.plate, self.all_wells, wavelengths, report="optical_density"
     )
 
@@ -3114,11 +3114,11 @@ class TestSpectrumResponseGroundTruth(unittest.TestCase):
     h01_pages = _load_test_data_pages("h01")
     h03_pages = _load_test_data_pages("h03")
 
-    h01_results = self.backend._parse_spectrum_pages(
+    h01_results = self.backend._parse_abs_spectrum_pages(
       h01_pages, self.plate, self.all_wells,
       list(range(300, 701)), report="optical_density"
     )
-    h03_results = self.backend._parse_spectrum_pages(
+    h03_results = self.backend._parse_abs_spectrum_pages(
       h03_pages, self.plate, self.all_wells,
       [300 + i * 5 for i in range(81)], report="optical_density"
     )
@@ -5546,11 +5546,11 @@ class TestBuildFluorescencePayloadFilter(unittest.TestCase):
 
   def test_all_filter_wavelength_sentinels(self):
     """All-filter mode uses sentinel values: ExHi=2, ExLo=1, Dich=2, EmHi=1, EmLo=2."""
-    Filter = CLARIOstarPlusBackend.Filter
+    OpticalFilter = CLARIOstarPlusBackend.OpticalFilter
     payload = self.backend._build_fluorescence_payload(
       self.plate, self.all_wells,
       excitation_wavelength=485, emission_wavelength=528, focal_height=8.5,
-      excitation_filter=Filter(slot=1), emission_filter=Filter(slot=1),
+      excitation_filter=OpticalFilter(slot=1), emission_filter=OpticalFilter(slot=1),
     )
     post = self._get_post_sep(payload)
     # Chrom block starts at offset 12 (settle1+focal2+multi9)
@@ -5568,11 +5568,11 @@ class TestBuildFluorescencePayloadFilter(unittest.TestCase):
 
   def test_all_filter_slit_config(self):
     """All-filter slit = 00 01 00 01 00."""
-    Filter = CLARIOstarPlusBackend.Filter
+    OpticalFilter = CLARIOstarPlusBackend.OpticalFilter
     payload = self.backend._build_fluorescence_payload(
       self.plate, self.all_wells,
       excitation_wavelength=485, emission_wavelength=528, focal_height=8.5,
-      excitation_filter=Filter(slot=1), emission_filter=Filter(slot=1),
+      excitation_filter=OpticalFilter(slot=1), emission_filter=OpticalFilter(slot=1),
     )
     post = self._get_post_sep(payload)
     slit = post[24:29]
@@ -5580,11 +5580,11 @@ class TestBuildFluorescencePayloadFilter(unittest.TestCase):
 
   def test_all_filter_matches_FLf01(self):
     """All-filter payload matches F-Lf01 pcap post-separator."""
-    Filter = CLARIOstarPlusBackend.Filter
+    OpticalFilter = CLARIOstarPlusBackend.OpticalFilter
     payload = self.backend._build_fluorescence_payload(
       self.plate, self.all_wells,
       excitation_wavelength=485, emission_wavelength=528, focal_height=8.5,
-      excitation_filter=Filter(slot=1), emission_filter=Filter(slot=1),
+      excitation_filter=OpticalFilter(slot=1), emission_filter=OpticalFilter(slot=1),
     )
     full = bytes([0x04]) + payload
     gt = bytes.fromhex(_FL_GT_HEX["FLf01"])[4:-4]
@@ -5594,12 +5594,12 @@ class TestBuildFluorescencePayloadFilter(unittest.TestCase):
 
   def test_mono_ex_filter_em_slit(self):
     """Mono Ex + filter Em: slit = 00 01 00 03 00."""
-    Filter = CLARIOstarPlusBackend.Filter
+    OpticalFilter = CLARIOstarPlusBackend.OpticalFilter
     payload = self.backend._build_fluorescence_payload(
       self.plate, self.all_wells,
       excitation_wavelength=400, emission_wavelength=528, focal_height=8.5,
       excitation_bandwidth=14,
-      emission_filter=Filter(slot=1),
+      emission_filter=OpticalFilter(slot=1),
     )
     post = self._get_post_sep(payload)
     slit = post[24:29]
@@ -5615,11 +5615,11 @@ class TestBuildFluorescencePayloadFilter(unittest.TestCase):
 
   def test_filter_ex_mono_em_slit(self):
     """Filter Ex + mono Em: slit = 00 04 00 01 00."""
-    Filter = CLARIOstarPlusBackend.Filter
+    OpticalFilter = CLARIOstarPlusBackend.OpticalFilter
     payload = self.backend._build_fluorescence_payload(
       self.plate, self.all_wells,
       excitation_wavelength=485, emission_wavelength=528, focal_height=8.5,
-      excitation_filter=Filter(slot=1),
+      excitation_filter=OpticalFilter(slot=1),
     )
     post = self._get_post_sep(payload)
     slit = post[24:29]
@@ -5635,11 +5635,11 @@ class TestBuildFluorescencePayloadFilter(unittest.TestCase):
 
   def test_filter_dichroic_is_always_0x0002(self):
     """When any channel uses filter, dichroic is always 0x0002."""
-    Filter = CLARIOstarPlusBackend.Filter
+    OpticalFilter = CLARIOstarPlusBackend.OpticalFilter
     test_cases = [
-      (Filter(slot=1), None, "ex_filter"),
-      (None, Filter(slot=1), "em_filter"),
-      (Filter(slot=1), Filter(slot=1), "both_filter"),
+      (OpticalFilter(slot=1), None, "ex_filter"),
+      (None, OpticalFilter(slot=1), "em_filter"),
+      (OpticalFilter(slot=1), OpticalFilter(slot=1), "both_filter"),
     ]
     for ex_f, em_f, label in test_cases:
       payload = self.backend._build_fluorescence_payload(
@@ -6387,7 +6387,7 @@ class TestCommandFamilyAutoFocus(unittest.TestCase):
 class TestFilter(unittest.TestCase):
   """Tests for Filter dataclass and filter slide classes."""
 
-  Filter = CLARIOstarPlusBackend.Filter
+  OpticalFilter = CLARIOstarPlusBackend.OpticalFilter
   DichroicFilter = CLARIOstarPlusBackend.DichroicFilter
 
   def setUp(self):
@@ -6403,11 +6403,11 @@ class TestFilter(unittest.TestCase):
 
   def test_excitation_filter_resolves_mode_and_slot(self):
     """Filter on excitation selects filter mode and uses its slot number."""
-    ef = self.Filter(slot=3, name="480/20 BP")
+    ef = self.OpticalFilter(slot=3, name="480/20 BP")
     payload = self.backend._build_fluorescence_payload(
       self.plate, self.all_wells,
       excitation_wavelength=0, emission_wavelength=528, focal_height=8.5,
-      excitation_filter=ef, emission_filter=self.Filter(slot=1),
+      excitation_filter=ef, emission_filter=self.OpticalFilter(slot=1),
     )
     post = self._get_post_sep(payload)
     ex_hi = int.from_bytes(post[14:16], "big")
@@ -6417,11 +6417,11 @@ class TestFilter(unittest.TestCase):
 
   def test_emission_filter_resolves_mode_and_slot(self):
     """Filter on emission selects filter mode and uses its slot number."""
-    emf = self.Filter(slot=2, name="520/25 BP")
+    emf = self.OpticalFilter(slot=2, name="520/25 BP")
     payload = self.backend._build_fluorescence_payload(
       self.plate, self.all_wells,
       excitation_wavelength=485, emission_wavelength=0, focal_height=8.5,
-      emission_filter=emf, excitation_filter=self.Filter(slot=1),
+      emission_filter=emf, excitation_filter=self.OpticalFilter(slot=1),
     )
     post = self._get_post_sep(payload)
     em_hi = int.from_bytes(post[20:22], "big")
@@ -6431,8 +6431,8 @@ class TestFilter(unittest.TestCase):
 
   def test_filter_objects_all_three(self):
     """All three filter objects produce full filter-mode encoding."""
-    ef = self.Filter(slot=1)
-    emf = self.Filter(slot=1)
+    ef = self.OpticalFilter(slot=1)
+    emf = self.OpticalFilter(slot=1)
     df = self.DichroicFilter(slot=1)
     payload = self.backend._build_fluorescence_payload(
       self.plate, self.all_wells,
@@ -6487,7 +6487,7 @@ class TestFilter(unittest.TestCase):
   def test_excitation_filter_slot_out_of_range(self):
     """Filter with out-of-range excitation slot raises ValueError."""
     self.backend.configuration["excitation_filter_slots"] = 4
-    ef = self.Filter(slot=5)
+    ef = self.OpticalFilter(slot=5)
     with self.assertRaises(ValueError) as cm:
       asyncio.run(self.backend.read_fluorescence(
         self.plate, self.all_wells,
@@ -6500,7 +6500,7 @@ class TestFilter(unittest.TestCase):
   def test_emission_filter_slot_out_of_range(self):
     """Filter with out-of-range emission slot raises ValueError."""
     self.backend.configuration["emission_filter_slots"] = 4
-    emf = self.Filter(slot=5)
+    emf = self.OpticalFilter(slot=5)
     with self.assertRaises(ValueError) as cm:
       asyncio.run(self.backend.read_fluorescence(
         self.plate, self.all_wells,
@@ -6526,12 +6526,12 @@ class TestFilter(unittest.TestCase):
   def test_slot_validation_skipped_when_eeprom_zero(self):
     """No validation error when EEPROM reports 0 slots (unknown hardware)."""
     self.backend.configuration["excitation_filter_slots"] = 0
-    ef = self.Filter(slot=99)
+    ef = self.OpticalFilter(slot=99)
     # Should not raise — 0 means "don't validate"
     payload = self.backend._build_fluorescence_payload(
       self.plate, self.all_wells,
       excitation_wavelength=0, emission_wavelength=528, focal_height=8.5,
-      excitation_filter=ef, emission_filter=self.Filter(slot=1),
+      excitation_filter=ef, emission_filter=self.OpticalFilter(slot=1),
     )
     post = self._get_post_sep(payload)
     ex_lo = int.from_bytes(post[16:18], "big")
@@ -6541,8 +6541,8 @@ class TestFilter(unittest.TestCase):
 
   def test_filter_in_chromatics_dict(self):
     """excitation_filter/emission_filter in chromatics dict resolves correctly."""
-    ef = self.Filter(slot=2)
-    emf = self.Filter(slot=3)
+    ef = self.OpticalFilter(slot=2)
+    emf = self.OpticalFilter(slot=3)
     payload = self.backend._build_fluorescence_payload(
       self.plate, self.all_wells,
       excitation_wavelength=485, emission_wavelength=528, focal_height=8.5,
@@ -6583,8 +6583,8 @@ class TestFilter(unittest.TestCase):
 
   def test_autofocus_filter_objects(self):
     """Filter objects work in _build_autofocus_payload."""
-    ef = self.Filter(slot=1)
-    emf = self.Filter(slot=2)
+    ef = self.OpticalFilter(slot=1)
+    emf = self.OpticalFilter(slot=2)
     payload = self.backend._build_autofocus_payload(
       self.plate, [self.plate.get_item("A1")],
       excitation_wavelength=0, emission_wavelength=0,
@@ -6617,14 +6617,14 @@ class TestFilter(unittest.TestCase):
 
   def test_filters_are_frozen(self):
     """Filter is immutable."""
-    ef = self.Filter(slot=1, name="test")
+    ef = self.OpticalFilter(slot=1, name="test")
     with self.assertRaises(AttributeError):
       ef.slot = 2  # type: ignore[misc]
 
   def test_filters_are_hashable(self):
     """Frozen Filter can be used in sets/dicts."""
-    ef1 = self.Filter(slot=1, name="A")
-    ef2 = self.Filter(slot=1, name="A")
+    ef1 = self.OpticalFilter(slot=1, name="A")
+    ef2 = self.OpticalFilter(slot=1, name="A")
     self.assertEqual(ef1, ef2)
     self.assertEqual(hash(ef1), hash(ef2))
     self.assertEqual(len({ef1, ef2}), 1)
@@ -6633,13 +6633,13 @@ class TestFilter(unittest.TestCase):
 
   def test_center_wavelength_and_bandwidth(self):
     """Filter stores optional center_wavelength and bandwidth."""
-    fs = self.Filter(slot=1, name="480/20 BP", center_wavelength=480, bandwidth=20)
+    fs = self.OpticalFilter(slot=1, name="480/20 BP", center_wavelength=480, bandwidth=20)
     self.assertEqual(fs.center_wavelength, 480)
     self.assertEqual(fs.bandwidth, 20)
 
   def test_metadata_defaults_to_none(self):
     """center_wavelength and bandwidth default to None."""
-    fs = self.Filter(slot=1)
+    fs = self.OpticalFilter(slot=1)
     self.assertIsNone(fs.center_wavelength)
     self.assertIsNone(fs.bandwidth)
 
@@ -6648,14 +6648,14 @@ class TestFilter(unittest.TestCase):
   def test_filter_slide_register_and_lookup(self):
     """Register a filter and look it up by attribute name."""
     slide = CLARIOstarPlusBackend.ExcitationFilterSlide()
-    fs = self.Filter(slot=1, name="BP 480")
+    fs = self.OpticalFilter(slot=1, name="BP 480")
     slide.register(fs)
     self.assertIs(slide.BP_480, fs)  # name sanitised: space → _
 
   def test_filter_slide_by_slot(self):
     """by_slot returns registered filter or creates anonymous one."""
     slide = CLARIOstarPlusBackend.ExcitationFilterSlide()
-    fs = self.Filter(slot=2, name="test")
+    fs = self.OpticalFilter(slot=2, name="test")
     slide.register(fs)
     self.assertIs(slide.by_slot(2), fs)
     anon = slide.by_slot(99)
@@ -6672,12 +6672,12 @@ class TestFilter(unittest.TestCase):
     """Register with out-of-range slot raises ValueError."""
     slide = CLARIOstarPlusBackend.ExcitationFilterSlide(max_slots=4)
     with self.assertRaises(ValueError):
-      slide.register(self.Filter(slot=5))
+      slide.register(self.OpticalFilter(slot=5))
 
   def test_excitation_filter_slide_getitem(self):
     """__getitem__ returns registered filter or creates anonymous one."""
     slide = CLARIOstarPlusBackend.ExcitationFilterSlide()
-    fs = self.Filter(slot=1, name="BP 480")
+    fs = self.OpticalFilter(slot=1, name="BP 480")
     slide.register(fs)
     self.assertIs(slide[1], fs)
     anon = slide[99]
@@ -6705,9 +6705,9 @@ class TestFilter(unittest.TestCase):
     slide._update_max_slots(8)
     # Should now reject slot > 8
     with self.assertRaises(ValueError):
-      slide.register(self.Filter(slot=9))
+      slide.register(self.OpticalFilter(slot=9))
     # But slot 8 should be fine
-    slide.register(self.Filter(slot=8, name="ok"))
+    slide.register(self.OpticalFilter(slot=8, name="ok"))
 
   def test_backend_has_three_slide_attrs(self):
     """Backend instance has excitation, emission, and dichroic filter slide attributes."""
@@ -6854,7 +6854,7 @@ class TestFilterDetection(unittest.TestCase):
     ])
     result = CLARIOstarPlusBackend._parse_filter_result(payload, slot=1, category="excitation")
     self.assertIsNotNone(result)
-    self.assertIsInstance(result, CLARIOstarPlusBackend.Filter)
+    self.assertIsInstance(result, CLARIOstarPlusBackend.OpticalFilter)
     self.assertEqual(result.slot, 1)
     self.assertEqual(result.name, "BP 327/90")
     self.assertEqual(result.center_wavelength, 327)
@@ -6877,7 +6877,7 @@ class TestFilterDetection(unittest.TestCase):
     ])
     result = CLARIOstarPlusBackend._parse_filter_result(payload, slot=1, category="emission")
     self.assertIsNotNone(result)
-    self.assertIsInstance(result, CLARIOstarPlusBackend.Filter)
+    self.assertIsInstance(result, CLARIOstarPlusBackend.OpticalFilter)
     self.assertEqual(result.slot, 1)
     self.assertEqual(result.name, "BP 614/18")
     self.assertEqual(result.center_wavelength, 614)
