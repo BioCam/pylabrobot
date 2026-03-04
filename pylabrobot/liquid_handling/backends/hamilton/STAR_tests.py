@@ -39,6 +39,7 @@ from .STAR_backend import (
   UnknownHamiltonError,
   parse_star_fw_string,
 )
+from .STAR_chatterbox import STARChatterboxBackend
 
 
 class TestSTARResponseParsing(unittest.TestCase):
@@ -1527,3 +1528,60 @@ class TestSTARTipPickupDropAllSizes(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(tz, 2186)
 
     tip_rack.unassign()
+
+
+class TestChannelsMinimumYSpacing(unittest.IsolatedAsyncioTestCase):
+  """Test per-channel minimum Y spacing behavior with 4-channel 18mm machines."""
+
+  async def _make_backend(self, spacings):
+    backend = STARChatterboxBackend(
+      num_channels=len(spacings),
+      channels_minimum_y_spacing=spacings,
+      iswap_installed=True,
+    )
+    from pylabrobot.resources.hamilton import STARLetDeck
+
+    deck = STARLetDeck()
+    lh = LiquidHandler(backend, deck=deck)
+    await lh.setup()
+    return backend
+
+  async def test_can_reach_4ch_18mm_rejects_position_reachable_at_9mm(self):
+    """Position y=50 is reachable for ch0 at 9mm (min_y=33) but not at 18mm (min_y=69)."""
+    backend = await self._make_backend([18.0] * 4)
+    self.assertFalse(backend.can_reach_position(0, Coordinate(100, 50, 100)))
+
+  async def test_can_reach_4ch_18mm_rejects_back_channel_too_far_back(self):
+    """Channel 1 max_y = 601.6 - 18 = 583.6, so y=590 is out of reach."""
+    backend = await self._make_backend([18.0] * 4)
+    self.assertFalse(backend.can_reach_position(1, Coordinate(100, 590, 100)))
+
+  async def test_position_channels_rejects_9mm_gap_when_spacing_is_18mm(self):
+    """9mm gap between channels should fail validation when spacing is 18mm."""
+    backend = await self._make_backend([18.0] * 4)
+    backend.get_channels_y_positions = unittest.mock.AsyncMock(
+      return_value={0: 300.0, 1: 282.0, 2: 264.0, 3: 246.0}
+    )
+    with self.assertRaises(ValueError):
+      await backend.position_channels_in_y_direction(
+        {1: 200.0, 2: 191.0},  # 9mm apart, but 18mm required
+        make_space=False,
+      )
+
+  async def test_position_channels_make_space_spreads_wider_at_18mm(self):
+    """make_space should push adjacent channels 18mm apart, not 9mm."""
+    backend = await self._make_backend([18.0] * 4)
+    backend.get_channels_y_positions = unittest.mock.AsyncMock(
+      return_value={0: 300.0, 1: 282.0, 2: 264.0, 3: 246.0}
+    )
+    backend.send_command = unittest.mock.AsyncMock()
+    await backend.position_channels_in_y_direction({2: 200.0}, make_space=True)
+    # Check the JY command positions
+    call_kwargs = backend.send_command.call_args.kwargs
+    yp_str = call_kwargs["yp"]
+    positions = [int(v) / 10 for v in yp_str.split()]
+    # Channel 2 at 200, channel 3 pushed to 200 - 18 = 182
+    self.assertAlmostEqual(positions[3], 182.0)
+    # Channels 0, 1 unchanged (already >= 18mm apart from channel 2)
+    self.assertAlmostEqual(positions[0], 300.0)
+    self.assertAlmostEqual(positions[1], 282.0)

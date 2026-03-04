@@ -32,6 +32,7 @@ class STARChatterboxBackend(STARBackend):
     num_channels: int = 8,
     core96_head_installed: bool = True,
     iswap_installed: bool = True,
+    channels_minimum_y_spacing: Optional[List[float]] = None,
   ):
     """Initialize a chatter box backend.
 
@@ -39,12 +40,15 @@ class STARChatterboxBackend(STARBackend):
       num_channels: Number of pipetting channels (default: 8)
       core96_head_installed: Whether the CoRe 96 head is installed (default: True)
       iswap_installed: Whether the iSWAP robotic arm is installed (default: True)
+      channels_minimum_y_spacing: Per-channel minimum Y spacings. If None, defaults to
+        [9.0] * num_channels.
     """
     super().__init__()
     self._num_channels = num_channels
     self._iswap_parked = True
     self._core96_head_installed = core96_head_installed
     self._iswap_installed = iswap_installed
+    self._init_channels_minimum_y_spacing = channels_minimum_y_spacing
 
   async def setup(
     self,
@@ -94,6 +98,17 @@ class STARChatterboxBackend(STARBackend):
       )
     else:
       self._head96_information = None
+
+    # Per-channel spacing
+    if self._init_channels_minimum_y_spacing is not None:
+      if len(self._init_channels_minimum_y_spacing) != self.num_channels:
+        raise ValueError(
+          f"channels_minimum_y_spacing length ({len(self._init_channels_minimum_y_spacing)}) "
+          f"must match num_channels ({self.num_channels})"
+        )
+      self._channels_minimum_y_spacing = list(self._init_channels_minimum_y_spacing)
+    else:
+      self._channels_minimum_y_spacing = [9.0] * self.num_channels
 
   async def stop(self):
     await LiquidHandlerBackend.stop(self)
@@ -218,6 +233,14 @@ class STARChatterboxBackend(STARBackend):
       raise ValueError(f"channel_idx must be between 0 and {self.num_channels-1}")
 
     return simulated_value
+
+  async def channel_request_y_minimum_spacing(self, channel_idx: int) -> float:
+    """Return mock per-channel minimum Y spacing."""
+    return self._channels_minimum_y_spacing[channel_idx]
+
+  async def channels_request_y_minimum_spacing(self) -> List[float]:
+    """Return mock per-channel minimum Y spacings for all channels."""
+    return list(self._channels_minimum_y_spacing)
 
   async def move_channel_y(self, channel: int, y: float):
     print(f"moving channel {channel} to y: {y}")
@@ -417,7 +440,7 @@ class STARChatterboxBackend(STARBackend):
       use_channels=use_channels,
       resource_offsets=resource_offsets,
       num_channels=self.num_channels,
-      channel_spacings=self._channel_minimum_y_spacing,
+      channel_spacings=self._channels_minimum_y_spacing,
       allow_duplicate_channels=allow_duplicate_channels,
     )
 
@@ -458,7 +481,7 @@ class STARChatterboxBackend(STARBackend):
       use_channels=use_channels,
       resource_offsets=resource_offsets,
       num_channels=self.num_channels,
-      channel_spacings=self._channel_minimum_y_spacing,
+      channel_spacings=self._channels_minimum_y_spacing,
     )
 
     x_pos, y_pos = compute_positions(containers, resource_offsets, self.deck)
@@ -468,7 +491,7 @@ class STARChatterboxBackend(STARBackend):
       use_channels=use_channels,
       x_pos=x_pos,
       y_pos=y_pos,
-      channel_spacings=self._channel_minimum_y_spacing,
+      channel_spacings=self._channels_minimum_y_spacing,
       x_tolerance=x_grouping_tolerance,
     )
 
