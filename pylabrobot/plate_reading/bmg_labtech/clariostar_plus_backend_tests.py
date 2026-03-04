@@ -8,6 +8,7 @@ Phase 4 adds absorbance measurement tests verified against pcap ground truth.
 import asyncio
 import math
 import unittest
+from unittest.mock import AsyncMock, patch
 import warnings
 from typing import Dict, List
 
@@ -19,6 +20,7 @@ from pylabrobot.plate_reading.bmg_labtech.clariostar_plus_backend import (
   _TRAILER,
   CONFIRMED_FIRMWARE_VERSIONS,
   CLARIOstarPlusBackend,
+  MeasurementInterrupted,
   _extract_payload,
   _validate_frame,
   _wrap_payload,
@@ -81,6 +83,21 @@ COMMANDS: Dict[str, tuple] = {
   "read_order": (
     b"\x05\x1d\x00\x00\x00\x00\x00",
     bytes.fromhex("02000f0c051d000000000000003f0d"),
+  ),
+  # CF.PAUSE_RESUME(0x0D) — pause. Pcap: stop_and_abandon capture @17.3s.
+  "pause_measurement": (
+    b"\x0d\xff\xff\x00\x00",
+    bytes.fromhex("02000d0c0dffff00000002260d"),
+  ),
+  # CF.PAUSE_RESUME(0x0D) — resume. Pcap: stop_and_abandon capture @78.4s.
+  "resume_measurement": (
+    b"\x0d\x00\x00\x00\x00",
+    bytes.fromhex("02000d0c0d000000000000280d"),
+  ),
+  # CF.STOP(0x0B). Pcap: stop_and_abandon capture @86.0s.
+  "stop_measurement": (
+    b"\x0b\x00",
+    bytes.fromhex("02000a0c0b000000230d"),
   ),
 }
 
@@ -210,6 +227,7 @@ def _make_backend() -> CLARIOstarPlusBackend:
   }
   backend._target_temperature = None
   backend.measurement_poll_interval = 0.0  # no delay in unit tests
+  backend.pause_on_interrupt = False
   backend.excitation_filter_slide = CLARIOstarPlusBackend.ExcitationFilterSlide()
   backend.emission_filter_slide = CLARIOstarPlusBackend.EmissionFilterSlide()
   backend.dichroic_filter_slide = CLARIOstarPlusBackend.DichroicFilterSlide()
@@ -4269,6 +4287,7 @@ class TestStop(unittest.TestCase):
     mock: MockFTDI = backend.io  # type: ignore[assignment]
     # Status: not monitoring, drawer closed, no plate
     mock.queue_response(
+      STATUS_IDLE,  # request_machine_status -> not busy
       _wrap_payload(b"\x00" * 16),  # _request_temperature_monitoring_on -> inactive
       STATUS_IDLE,  # sense_drawer_open -> closed
       STATUS_IDLE,  # sense_plate_present -> no plate
@@ -4280,6 +4299,7 @@ class TestStop(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
     mock.queue_response(
+      STATUS_IDLE,  # request_machine_status -> not busy
       _wrap_payload(b"\x00" * 16),  # temp monitoring check -> inactive
       STATUS_DRAWER_OPEN,  # sense_drawer_open -> True
       ACK,  # close() command ack
@@ -4299,6 +4319,7 @@ class TestStop(unittest.TestCase):
     temp_active[11:13] = (250).to_bytes(2, "big")
     temp_active[13:15] = (255).to_bytes(2, "big")
     mock.queue_response(
+      STATUS_IDLE,  # request_machine_status -> not busy
       _wrap_payload(bytes(temp_active)),  # monitoring check -> active
       ACK,  # _stop_temperature_monitoring -> OFF ack
       STATUS_IDLE,  # sense_drawer_open -> closed
@@ -4313,6 +4334,7 @@ class TestStop(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
     mock.queue_response(
+      STATUS_IDLE,  # request_machine_status -> not busy
       _wrap_payload(b"\x00" * 16),  # temp check -> inactive
       STATUS_IDLE,  # sense_drawer_open -> closed
       STATUS_PLATE,  # sense_plate_present -> True
@@ -4326,6 +4348,7 @@ class TestStop(unittest.TestCase):
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
     mock.queue_response(
+      STATUS_IDLE,  # request_machine_status -> not busy
       _wrap_payload(b"\x00" * 16),  # temp check -> inactive
       STATUS_IDLE,  # sense_drawer_open -> closed
       # No plate check — skipped
@@ -7555,6 +7578,195 @@ class TestReadFluorescenceSpectrumIntegration(unittest.TestCase):
     inner = _extract_payload(first_frame)
     # Pre-separator byte[0] at inner[65]: FLUORESCENCE(0x00) | BOTTOM(0x40) = 0x40
     self.assertEqual(inner[65], 0x40)
+
+
+class TestMeasurementControl(unittest.TestCase):
+  """Pcap ground truth for pause_measurement, resume_measurement, stop_measurement.
+
+  Source: clariostar_stop_then_abort_drawer_in_out.pcapng
+  """
+
+  def test_pause_measurement_sends_correct_frame(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK)
+    asyncio.run(backend.pause_measurement())
+    self.assertEqual(mock.written[0], COMMANDS["pause_measurement"][1])
+
+  def test_resume_measurement_sends_correct_frame(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK)
+    asyncio.run(backend.resume_measurement())
+    self.assertEqual(mock.written[0], COMMANDS["resume_measurement"][1])
+
+  def test_stop_measurement_sends_correct_frame(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK)
+    asyncio.run(backend.stop_measurement())
+    self.assertEqual(mock.written[0], COMMANDS["stop_measurement"][1])
+
+  def test_pause_payload_matches_pcap_ground_truth(self):
+    """Byte-for-byte match against pcap frame at t=17.3s."""
+    expected = bytes.fromhex("02000d0c0dffff00000002260d")
+    self.assertEqual(_wrap_payload(b"\x0d\xff\xff\x00\x00"), expected)
+
+  def test_resume_payload_matches_pcap_ground_truth(self):
+    """Byte-for-byte match against pcap frame at t=78.4s."""
+    expected = bytes.fromhex("02000d0c0d000000000000280d")
+    self.assertEqual(_wrap_payload(b"\x0d\x00\x00\x00\x00"), expected)
+
+  def test_stop_payload_matches_pcap_ground_truth(self):
+    """Byte-for-byte match against pcap frame at t=86.0s."""
+    expected = bytes.fromhex("02000a0c0b000000230d")
+    self.assertEqual(_wrap_payload(b"\x0b\x00"), expected)
+
+
+class TestInterruptHandling(unittest.TestCase):
+  """Tests for interrupt-triggered stop/pause during measurements."""
+
+  # -- Default behavior: interrupt → stop --
+
+  def test_keyboard_interrupt_during_progressive_poll_stops_device(self):
+    """Default: KeyboardInterrupt stops device and raises MeasurementInterrupted."""
+    backend = _make_backend()
+    first_response = b"\x00" * 20  # dummy partial data
+    call_count = 0
+
+    async def fake_request_data(progressive=False):
+      nonlocal call_count
+      call_count += 1
+      if call_count == 1:
+        return first_response
+      raise KeyboardInterrupt()
+
+    backend._request_measurement_data = fake_request_data
+    backend._measurement_progress = lambda resp: (0, 10)
+    backend.request_machine_status = AsyncMock(return_value={"busy": True})
+    backend.stop_measurement = AsyncMock()
+    backend.pause_measurement = AsyncMock()
+
+    with self.assertRaises(MeasurementInterrupted) as ctx:
+      asyncio.run(backend._poll_progressive(read_timeout=30.0, log_prefix="test"))
+
+    self.assertIsNotNone(ctx.exception.partial_data)
+    self.assertEqual(ctx.exception.partial_data, first_response)
+    backend.stop_measurement.assert_called_once()
+    backend.pause_measurement.assert_not_called()
+    self.assertIn("stopped", str(ctx.exception))
+
+  def test_cancelled_error_during_progressive_poll_stops_device(self):
+    """Default: asyncio.CancelledError stops device and raises MeasurementInterrupted."""
+    backend = _make_backend()
+    first_response = b"\x00" * 20
+    call_count = 0
+
+    async def fake_request_data(progressive=False):
+      nonlocal call_count
+      call_count += 1
+      if call_count == 1:
+        return first_response
+      raise asyncio.CancelledError()
+
+    backend._request_measurement_data = fake_request_data
+    backend._measurement_progress = lambda resp: (0, 10)
+    backend.request_machine_status = AsyncMock(return_value={"busy": True})
+    backend.stop_measurement = AsyncMock()
+
+    with self.assertRaises(MeasurementInterrupted) as ctx:
+      asyncio.run(backend._poll_progressive(read_timeout=30.0, log_prefix="test"))
+
+    self.assertIsNotNone(ctx.exception.partial_data)
+    backend.stop_measurement.assert_called_once()
+
+  def test_keyboard_interrupt_during_status_only_poll_stops_device(self):
+    """Default: KeyboardInterrupt in _poll_status_only stops device."""
+    backend = _make_backend()
+    backend.request_machine_status = AsyncMock(side_effect=KeyboardInterrupt())
+    backend.stop_measurement = AsyncMock()
+    backend.pause_measurement = AsyncMock()
+
+    with self.assertRaises(MeasurementInterrupted) as ctx:
+      asyncio.run(backend._poll_status_only(read_timeout=30.0, log_prefix="test"))
+
+    self.assertIsNone(ctx.exception.partial_data)
+    backend.stop_measurement.assert_called_once()
+    backend.pause_measurement.assert_not_called()
+
+  # -- Opt-in behavior: pause_on_interrupt=True → pause --
+
+  def test_interrupt_with_pause_on_interrupt_pauses_device(self):
+    """With pause_on_interrupt=True, interrupt pauses instead of stopping."""
+    backend = _make_backend()
+    backend.pause_on_interrupt = True
+    first_response = b"\x00" * 20
+    call_count = 0
+
+    async def fake_request_data(progressive=False):
+      nonlocal call_count
+      call_count += 1
+      if call_count == 1:
+        return first_response
+      raise KeyboardInterrupt()
+
+    backend._request_measurement_data = fake_request_data
+    backend._measurement_progress = lambda resp: (0, 10)
+    backend.request_machine_status = AsyncMock(return_value={"busy": True})
+    backend.pause_measurement = AsyncMock()
+    backend.stop_measurement = AsyncMock()
+
+    with self.assertRaises(MeasurementInterrupted) as ctx:
+      asyncio.run(backend._poll_progressive(read_timeout=30.0, log_prefix="test"))
+
+    self.assertIsNotNone(ctx.exception.partial_data)
+    backend.pause_measurement.assert_called_once()
+    backend.stop_measurement.assert_not_called()
+    self.assertIn("paused", str(ctx.exception).lower())
+
+  def test_interrupt_status_only_with_pause_on_interrupt_pauses_device(self):
+    """With pause_on_interrupt=True, interrupt in status-only poll pauses."""
+    backend = _make_backend()
+    backend.pause_on_interrupt = True
+    backend.request_machine_status = AsyncMock(side_effect=KeyboardInterrupt())
+    backend.pause_measurement = AsyncMock()
+    backend.stop_measurement = AsyncMock()
+
+    with self.assertRaises(MeasurementInterrupted) as ctx:
+      asyncio.run(backend._poll_status_only(read_timeout=30.0, log_prefix="test"))
+
+    backend.pause_measurement.assert_called_once()
+    backend.stop_measurement.assert_not_called()
+    self.assertIn("resume", str(ctx.exception))
+
+  # -- _safe_interrupt and exception --
+
+  def test_safe_interrupt_swallows_errors_stop(self):
+    """_safe_interrupt does not propagate exceptions from stop_measurement."""
+    backend = _make_backend()
+    backend.stop_measurement = AsyncMock(side_effect=RuntimeError("comm failure"))
+
+    asyncio.run(backend._safe_interrupt())
+    backend.stop_measurement.assert_called_once()
+
+  def test_safe_interrupt_swallows_errors_pause(self):
+    """_safe_interrupt does not propagate exceptions from pause_measurement."""
+    backend = _make_backend()
+    backend.pause_on_interrupt = True
+    backend.pause_measurement = AsyncMock(side_effect=RuntimeError("comm failure"))
+
+    asyncio.run(backend._safe_interrupt())
+    backend.pause_measurement.assert_called_once()
+
+  def test_measurement_interrupted_carries_partial_data(self):
+    """MeasurementInterrupted stores partial_data attribute."""
+    data = b"\xde\xad\xbe\xef"
+    exc = MeasurementInterrupted("paused", partial_data=data)
+    self.assertEqual(exc.partial_data, data)
+    self.assertIn("paused", str(exc))
+
+    exc_none = MeasurementInterrupted("paused")
+    self.assertIsNone(exc_none.partial_data)
 
 
 if __name__ == "__main__":

@@ -46,6 +46,19 @@ class ChecksumError(FrameError):
   """Raised when the frame checksum does not match."""
 
 
+class MeasurementInterrupted(Exception):
+  """Raised when a measurement is interrupted by the user (Ctrl+C / Jupyter stop).
+
+  By default the device has been stopped. If ``pause_on_interrupt`` was True,
+  the device is paused instead and can be resumed via ``resume_measurement()``.
+
+  Partial data (if any) is available via ``partial_data``.
+  """
+  def __init__(self, message: str, partial_data: Optional[bytes] = None):
+    super().__init__(message)
+    self.partial_data = partial_data
+
+
 # ---------------------------------------------------------------------------
 # Wire-protocol framing
 # ---------------------------------------------------------------------------
@@ -251,7 +264,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     REQUEST = 0x05
     TEMPERATURE_CONTROLLER = 0x06
     POLL = 0x08
+    STOP = 0x0B
     AUTO_FOCUS = 0x0C
+    PAUSE_RESUME = 0x0D
     FILTER_SCAN = 0x24
     STATUS = 0x80
     HW_STATUS = 0x81
@@ -313,6 +328,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     CommandFamily.TEMPERATURE_CONTROLLER,
     CommandFamily.RUN,
     CommandFamily.AUTO_FOCUS,
+    CommandFamily.STOP,
+    CommandFamily.PAUSE_RESUME,
   }
 
   # -- Optic byte flags (bit field, OR'd together) -------------------------
@@ -412,6 +429,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         yields ~285 ms per poll cycle, matching the OEM MARS software cadence
         (~280-300 ms) observed in pcap captures. Also applied before retrying
         after a bad frame. Set to 0.0 for maximum throughput (I/O-paced only).
+
+    Attributes:
+      pause_on_interrupt: If False (default), a user interrupt (Ctrl+C / Jupyter
+        stop) during a measurement stops the device. If True, the device is
+        paused instead, allowing ``resume_measurement()`` to continue.
     """
     if read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
@@ -423,6 +445,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
     self.read_timeout = read_timeout
     self.measurement_poll_interval = measurement_poll_interval
+    self.pause_on_interrupt: bool = False
 
     self.configuration: Dict = {
       "serial_number": "",
@@ -548,9 +571,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   async def stop(self, accept_plate_left_in_device: bool = False) -> None:
     """Close the FTDI connection. Requires a new ``setup()`` call to use the reader again.
 
-    Shuts down temperature control and closes the drawer before disconnecting.
-    If a plate is still detected inside the device, the drawer is reopened and
-    a ``RuntimeError`` is raised so the user can retrieve it.
+    If a measurement is still running, it is stopped first via
+    ``stop_measurement()``. Then shuts down temperature control and closes the
+    drawer before disconnecting. If a plate is still detected inside the device,
+    the drawer is reopened and a ``RuntimeError`` is raised so the user can
+    retrieve it.
 
     Args:
       accept_plate_left_in_device: If True, skip the plate-presence check and
@@ -559,6 +584,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     Raises:
       RuntimeError: If a plate is detected and *accept_plate_left_in_device* is False.
     """
+    try:
+      status = await self.request_machine_status()
+      if status.get("reading_wells"):
+        logger.info("Measurement still running during stop(), sending stop_measurement()")
+        await self.stop_measurement()
+    except Exception:
+      logger.warning("Could not check measurement status during stop()", exc_info=True)
+
     self._target_temperature = None
     if await self._request_temperature_monitoring_on():
       await self._stop_temperature_monitoring()
@@ -2024,48 +2057,71 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     firmware signals completion (written >= expected) or the device is no longer
     busy.
 
+    If the user interrupts (Ctrl+C / Jupyter stop), the device is stopped
+    (or paused when ``pause_on_interrupt`` is True) and
+    :class:`MeasurementInterrupted` is raised with any partial data collected.
+
     Returns:
       ``(response, progressive_complete)`` — the last progressive response and
       whether it contained the complete data (True) or the loop exited via the
       busy-flag path (False, meaning a final standard GET_DATA is needed).
+
+    Raises:
+      TimeoutError: If ``read_timeout`` is exceeded.
+      MeasurementInterrupted: If the user interrupts the measurement.
     """
     t0 = time.time()
     response = b""
     progressive_complete = False
     while True:
-      if read_timeout is not None and time.time() - t0 > read_timeout:
-        raise TimeoutError(
-          f"{log_prefix} not complete after {read_timeout:.1f}s. "
-          f"Pass read_timeout=None to wait indefinitely, or increase the value."
-        )
-
       try:
-        response = await self._request_measurement_data(progressive=True)
-      except FrameError as e:
-        logger.warning("%s data poll: bad frame (%s), retrying", log_prefix, e)
+        if read_timeout is not None and time.time() - t0 > read_timeout:
+          raise TimeoutError(
+            f"{log_prefix} not complete after {read_timeout:.1f}s. "
+            f"Pass read_timeout=None to wait indefinitely, or increase the value."
+          )
+
+        try:
+          response = await self._request_measurement_data(progressive=True)
+        except FrameError as e:
+          logger.warning("%s data poll: bad frame (%s), retrying", log_prefix, e)
+          if self.measurement_poll_interval > 0:
+            await asyncio.sleep(self.measurement_poll_interval)
+          continue
+
+        written, expected = self._measurement_progress(response)
+        if logger.isEnabledFor(logging.INFO):
+          logger.info("%s progress: %d/%d", log_prefix, written, expected)
+
+        if expected > 0 and written >= expected:
+          progressive_complete = True
+          break
+
+        try:
+          status = await self.request_machine_status()
+          if not status["busy"]:
+            logger.info("%s complete (device no longer busy)", log_prefix)
+            break
+        except FrameError as e:
+          logger.debug("%s interleaved status poll: bad frame (%s), ignoring",
+                       log_prefix, e)
+
         if self.measurement_poll_interval > 0:
           await asyncio.sleep(self.measurement_poll_interval)
-        continue
 
-      written, expected = self._measurement_progress(response)
-      if logger.isEnabledFor(logging.INFO):
-        logger.info("%s progress: %d/%d", log_prefix, written, expected)
-
-      if expected > 0 and written >= expected:
-        progressive_complete = True
-        break
-
-      try:
-        status = await self.request_machine_status()
-        if not status["busy"]:
-          logger.info("%s complete (device no longer busy)", log_prefix)
-          break
-      except FrameError as e:
-        logger.debug("%s interleaved status poll: bad frame (%s), ignoring",
-                     log_prefix, e)
-
-      if self.measurement_poll_interval > 0:
-        await asyncio.sleep(self.measurement_poll_interval)
+      except (KeyboardInterrupt, asyncio.CancelledError):
+        action = "pausing" if self.pause_on_interrupt else "stopping"
+        logger.info("%s interrupted by user, %s device", log_prefix, action)
+        await self._safe_interrupt()
+        if self.pause_on_interrupt:
+          msg = (f"{log_prefix} interrupted by user. Device is paused. "
+                 "Call resume_measurement() to continue or stop_measurement() to end.")
+        else:
+          msg = f"{log_prefix} interrupted by user. Device has been stopped."
+        raise MeasurementInterrupted(
+          msg,
+          partial_data=response if response else None,
+        )
 
     return response, progressive_complete
 
@@ -2078,25 +2134,48 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     Polls ``request_machine_status`` until the device is no longer busy.
     Used by spectrum modes where progressive GET_DATA is not available.
+
+    If the user interrupts (Ctrl+C / Jupyter stop), the device is stopped
+    (or paused when ``pause_on_interrupt`` is True) and
+    :class:`MeasurementInterrupted` is raised.
+
+    Raises:
+      TimeoutError: If ``read_timeout`` is exceeded.
+      MeasurementInterrupted: If the user interrupts the measurement.
     """
     t0 = time.time()
     while True:
-      if read_timeout is not None and time.time() - t0 > read_timeout:
-        raise TimeoutError(
-          f"{log_prefix} not complete after {read_timeout:.1f}s. "
-          f"Pass read_timeout=None to wait indefinitely, or increase the value."
-        )
-
       try:
-        status = await self.request_machine_status()
-        if not status["busy"]:
-          logger.info("%s complete (device no longer busy)", log_prefix)
-          break
-      except FrameError as e:
-        logger.warning("%s status poll: bad frame (%s), retrying", log_prefix, e)
+        if read_timeout is not None and time.time() - t0 > read_timeout:
+          raise TimeoutError(
+            f"{log_prefix} not complete after {read_timeout:.1f}s. "
+            f"Pass read_timeout=None to wait indefinitely, or increase the value."
+          )
 
-      if self.measurement_poll_interval > 0:
-        await asyncio.sleep(self.measurement_poll_interval)
+        try:
+          status = await self.request_machine_status()
+          if not status["busy"]:
+            logger.info("%s complete (device no longer busy)", log_prefix)
+            break
+        except FrameError as e:
+          logger.warning("%s status poll: bad frame (%s), retrying", log_prefix, e)
+
+        if self.measurement_poll_interval > 0:
+          await asyncio.sleep(self.measurement_poll_interval)
+
+      except (KeyboardInterrupt, asyncio.CancelledError):
+        action = "pausing" if self.pause_on_interrupt else "stopping"
+        logger.info("%s interrupted by user, %s device", log_prefix, action)
+        await self._safe_interrupt()
+        if self.pause_on_interrupt:
+          msg = (f"{log_prefix} interrupted by user. Device is paused. "
+                 "Call resume_measurement() to continue or stop_measurement() to end.")
+        else:
+          msg = f"{log_prefix} interrupted by user. Device has been stopped."
+        raise MeasurementInterrupted(
+          msg,
+          partial_data=None,
+        )
 
   async def _request_measurement_data(self, progressive: bool = False) -> bytes:
     """Retrieve measurement data from the device buffer (internal).
@@ -2259,6 +2338,82 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     values_expected = int.from_bytes(payload[7:9], "big")
     values_written = int.from_bytes(payload[9:11], "big")
     return values_written, values_expected
+
+  # --------------------------------------------------------------------------
+  # Measurement Control: Pause / Resume / Abandon
+  # --------------------------------------------------------------------------
+
+  async def pause_measurement(self) -> None:
+    """Pause a running measurement after the current well completes.
+
+    The device finishes scanning the active well, then halts. Partial results
+    collected so far can be retrieved with GET_DATA while paused. Use
+    :meth:`resume_measurement` to continue or :meth:`stop_measurement` to
+    terminate the run.
+
+    Status flags after pause:
+      - ``busy`` stays set (measurement context alive)
+      - ``reading_wells`` stays set (key indicator: paused, not ended)
+      - ``unread_data`` toggles as partial data is retrieved via GET_DATA
+
+    Wire: ``0x0D ff ff 00 00``
+    """
+    await self.send_command(
+      command_family=self.CommandFamily.PAUSE_RESUME,
+      parameters=b"\xff\xff\x00\x00",
+    )
+
+  async def resume_measurement(self) -> None:
+    """Resume a paused measurement from where it stopped.
+
+    The device continues scanning the remaining wells.
+
+    Status flags after resume:
+      - No immediate change — flags remain the same as the paused state.
+      - ``unread_data`` reappears as new wells complete scanning.
+
+    Wire: ``0x0D 00 00 00 00``
+    """
+    await self.send_command(
+      command_family=self.CommandFamily.PAUSE_RESUME,
+      parameters=b"\x00\x00\x00\x00",
+    )
+
+  async def stop_measurement(self) -> None:
+    """Stop a running or paused measurement.
+
+    Terminates the current run and transitions the device to idle over ~5 s.
+    Retrieve any partial data with GET_DATA *before* calling this — no further
+    data will be produced after the stop command.
+
+    Can be sent at any point: mid-run, while paused, or after natural
+    completion.
+
+    Status flags after stop:
+      - ``reading_wells`` clears immediately (measurement context destroyed)
+      - ``busy`` and ``initialized`` clear ~5 s later (device fully idle)
+
+    Wire: ``0x0B 00``
+    """
+    await self.send_command(
+      command_family=self.CommandFamily.STOP,
+      parameters=b"\x00",
+    )
+
+  async def _safe_interrupt(self) -> None:
+    """Best-effort pause or stop on interrupt — swallows errors since we're already handling one.
+
+    When ``pause_on_interrupt`` is True, pauses the device (measurement can be
+    resumed). Otherwise stops the measurement (default).
+    """
+    try:
+      if self.pause_on_interrupt:
+        await self.pause_measurement()
+      else:
+        await self.stop_measurement()
+    except Exception:
+      logger.warning("Failed to send %s command during interrupt",
+                     "pause" if self.pause_on_interrupt else "stop", exc_info=True)
 
   # --------------------------------------------------------------------------
   # Feature: Absorbance Measurement
@@ -4455,3 +4610,4 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     # Retrieve and parse the focus result
     result_payload = await self._request_focus_result()
     return self._parse_focus_result(result_payload)
+
