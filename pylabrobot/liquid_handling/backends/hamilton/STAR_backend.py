@@ -1587,8 +1587,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   async def channel_request_y_minimum_spacing(self, channel_idx: int) -> float:
     """Request the minimum Y spacing for a given channel.
+
     Args:
       channel_idx: the channel index to query. (0-indexed)
+
     Returns:
       The minimum Y spacing in mm.
     """
@@ -4370,14 +4372,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     center = location + resource.centers()[0] + offset
     y_width_to_gripper_bump = resource.get_absolute_size_y() - gripper_y_margin * 2
     max_spacing = max(self._channels_minimum_y_spacing)
-    assert (
-      max_spacing
-      <= y_width_to_gripper_bump
-      <= round(resource.get_absolute_size_y())
-    ), (
+    assert max_spacing <= y_width_to_gripper_bump <= round(resource.get_absolute_size_y()), (
       f"width between channels must be between {max_spacing} and "
       f"{resource.get_absolute_size_y()} mm"
-      " (i.e. the minimal distance between channels and the max y size of the resource"
+      " (i.e. the maximal distance between channels and the max y size of the resource"
     )
 
     # Check if CoRe gripper currently in use
@@ -5992,9 +5990,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     assert (
       back_channel_y_center > front_channel_y_center
     ), "back_channel_y_center must be greater than front_channel_y_center"
-    assert front_channel_y_center > self._frontmost_channel_min_y(), (
-      f"front_channel_y_center must be greater than {self._frontmost_channel_min_y()}mm"
-    )
+    assert (
+      front_channel_y_center > self._frontmost_channel_min_y()
+    ), f"front_channel_y_center must be greater than {self._frontmost_channel_min_y()}mm"
     return back_channel_y_center, front_channel_y_center
 
   def _get_core_x(self) -> float:
@@ -11177,15 +11175,15 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     Args:
       ys: A dictionary mapping channel index to the desired Y position in mm. The channel index is
         0-indexed from the back.
-      make_space: If True, the channels will be moved to ensure they are at least 9mm apart and in
-        descending order, after the channels in `ys` have been put at the desired locations. Note
-        that an error may still be raised, if there is insufficient space to move the channels or
-        if the requested locations are not valid. Set this to False if you wan to avoid inadvertently
-        moving other channels.
+      make_space: If True, the channels will be moved to ensure they respect each channel pair's
+        minimum Y spacing and are in descending order, after the channels in `ys` have been put
+        at the desired locations. Note that an error may still be raised, if there is insufficient
+        space to move the channels or if the requested locations are not valid. Set this to False
+        if you want to avoid inadvertently moving other channels.
     """
 
-    # check that the locations of channels after the move will be at least 9mm apart, and in
-    # descending order
+    # check that the locations of channels after the move will respect pairwise minimum
+    # spacing and be in descending order
     channel_locations = await self.get_channels_y_positions()
 
     for channel_idx, y in ys.items():
