@@ -9,7 +9,7 @@ from pylabrobot.liquid_handling.backends.hamilton.STAR_backend import (
   Head96Information,
   STARBackend,
 )
-from pylabrobot.liquid_handling.pipette_orchestration import (
+from pylabrobot.liquid_handling.pipette_batch_scheduling import (
   X_GROUPING_TOLERANCE_MM,
   compute_positions,
   plan_batches,
@@ -230,7 +230,7 @@ class STARChatterboxBackend(STARBackend):
     Returns a mock position with a default value of 0.0 for all channels.
     """
     if not (0 <= channel_idx < self.num_channels):
-      raise ValueError(f"channel_idx must be between 0 and {self.num_channels-1}")
+      raise ValueError(f"channel_idx must be between 0 and {self.num_channels - 1}")
 
     return simulated_value
 
@@ -486,13 +486,21 @@ class STARChatterboxBackend(STARBackend):
 
     x_pos, y_pos = compute_positions(containers, resource_offsets, self.deck)
 
-    # ── Delegate to plan_batches ──
+    # ── Delegate to plan_batches (with transition optimization, matching STAR_backend) ──
+    # Compute Y bounds without async (chatterbox has no real hardware).
+    # _backmost_channel_max_y: iswap parked → limit=635.0 → 635 - spacing[0] + 3
+    max_y = 635.0 - self._channels_minimum_y_spacing[0] + 3
+    min_y = self._frontmost_channel_min_y()
+
     channel_batches = plan_batches(
       use_channels=use_channels,
       x_pos=x_pos,
       y_pos=y_pos,
       channel_spacings=self._channels_minimum_y_spacing,
       x_tolerance=x_grouping_tolerance,
+      num_channels=self.num_channels,
+      max_y=max_y,
+      min_y=min_y,
     )
 
     # ── Convert flat ChannelBatch list → nested XGroup/YBatch structure ──
@@ -508,22 +516,19 @@ class STARChatterboxBackend(STARBackend):
       for cb in cbs:
         batch_channels = cb.channels
         batch_containers = [containers[i] for i in cb.indices]
-        # Active channel Y positions (exclude phantoms)
-        batch_y_positions = {ch: cb.y_positions[ch] for ch in batch_channels}
-        # Intermediate (phantom) channel positions
-        intermediate_positions = {
-          ch: y for ch, y in cb.y_positions.items() if ch not in batch_channels
-        }
-        y_batches.append(YBatch(
-          channels=batch_channels,
-          containers=batch_containers,
-          y_positions=batch_y_positions,
-          intermediate_y_positions=intermediate_positions,
-        ))
-      plan_x_groups.append(XGroup(
-        x_position=cbs[0].x_position,
-        y_batches=y_batches,
-      ))
+        y_batches.append(
+          YBatch(
+            channels=batch_channels,
+            containers=batch_containers,
+            y_positions=dict(cb.y_positions),
+          )
+        )
+      plan_x_groups.append(
+        XGroup(
+          x_position=cbs[0].x_position,
+          y_batches=y_batches,
+        )
+      )
 
     return ProbingPlan(
       containers=[c.name for c in containers],
@@ -534,11 +539,15 @@ class STARChatterboxBackend(STARBackend):
 
 @dataclass
 class YBatch:
-  """A set of channels that can probe simultaneously (same Y batch)."""
+  """A set of channels that can probe simultaneously (same Y batch).
+
+  y_positions contains positions for ALL channels (active + idle), as computed
+  by plan_batches with transition optimization.
+  """
+
   channels: List[int]
   containers: List[Container]
-  y_positions: Dict[int, float]  # channel → Y position (mm)
-  intermediate_y_positions: Dict[int, float] = field(default_factory=dict)
+  y_positions: Dict[int, float]  # channel → Y position (mm), all channels
 
   @property
   def container_names(self) -> List[str]:
@@ -548,6 +557,7 @@ class YBatch:
 @dataclass
 class XGroup:
   """All channels at the same X position, partitioned into Y batches."""
+
   x_position: float  # mm
   y_batches: List[YBatch] = field(default_factory=list)
 
@@ -561,6 +571,7 @@ class ProbingPlan:
     - Y batches within an X group are processed sequentially
     - Channels within a Y batch probe in parallel
   """
+
   containers: List[str]  # container names, one per input
   use_channels: List[int]
   x_groups: List[XGroup] = field(default_factory=list)
