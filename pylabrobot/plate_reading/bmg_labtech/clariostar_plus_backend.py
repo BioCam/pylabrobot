@@ -20,7 +20,7 @@ from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well
 
 from ..backend import PlateReaderBackend
-from .filters import (
+from .optical_elements import (
   _FilterBase,
   OpticalFilter,
   DichroicFilter,
