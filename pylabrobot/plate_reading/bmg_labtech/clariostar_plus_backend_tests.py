@@ -6240,11 +6240,20 @@ class TestParseFocusResult(unittest.TestCase):
     self.assertEqual(rec["signal"], 29716)
     self.assertEqual(rec["pass_flag"], 1)
 
-  def test_short_payload_raises(self):
-    """Payload shorter than 27 bytes should raise ValueError."""
+  def test_very_short_payload_raises(self):
+    """Payload shorter than 12 bytes should raise ValueError."""
     backend = _make_backend()
     with self.assertRaises(ValueError):
-      backend._parse_focus_result(b"\x05\x05" + b"\x00" * 10)
+      backend._parse_focus_result(b"\x05\x05" + b"\x00" * 5)
+
+  def test_short_payload_returns_focal_height(self):
+    """17-byte summary response should return focal height from bytes 10-11."""
+    backend = _make_backend()
+    # bytes 10-11 = 03 f7 = 1015 → 10.15mm
+    payload = bytes.fromhex("05052026000000096000") + b"\x03\xf7" + b"\xa0\x00\x03\x07\x04"
+    result = backend._parse_focus_result(payload)
+    self.assertAlmostEqual(result["best_focal_mm"], 10.15, places=2)
+    self.assertEqual(result["z_profile"], [])
 
 
 class TestAutoFocusIntegration(unittest.TestCase):
@@ -6284,23 +6293,40 @@ class TestAutoFocusIntegration(unittest.TestCase):
     wells = plate.get_all_items()
 
     # Queue:
-    #  (1) ACK for POLL command
-    #  (2) ACK for 0x0c AUTO_FOCUS command
-    #  (3) idle status for busy-poll
-    #  (4) real pcap focus result for _request_focus_result()
-    #  (5) idle status for POLL-flush loop (payload[3]!=0x04 → break)
+    #  (1) ACK for 0x0c AUTO_FOCUS command
+    #  (2) idle status for busy-poll
+    #  (3) real pcap focus result for _request_focus_result()
     pcap_result = bytes.fromhex(_AF_GT_RESULT_FULL)
     mock.queue_response(
-      ACK, ACK, self._build_idle_status(),
-      _wrap_payload(pcap_result), self._build_idle_status(),
+      ACK, self._build_idle_status(),
+      _wrap_payload(pcap_result),
     )
 
     result = asyncio.run(backend.auto_focus(plate, wells, 485, 528))
     self.assertAlmostEqual(result["best_focal_mm"], 10.0, places=1)
     self.assertEqual(len(result["z_profile"]), 143)
 
+  def test_auto_focus_short_response(self):
+    """auto_focus should handle 17-byte summary response (focal height at bytes 10-11)."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    plate = _make_plate()
+    wells = plate.get_all_items()
+
+    # 17-byte short response observed on real hardware:
+    # bytes 10-11 = 03 f7 = 1015 → 10.15mm
+    short_payload = bytes.fromhex("0505202600000009600003f7a00003070400")[:17]
+    mock.queue_response(
+      ACK, self._build_idle_status(),
+      _wrap_payload(short_payload),
+    )
+
+    result = asyncio.run(backend.auto_focus(plate, wells, 485, 528))
+    self.assertAlmostEqual(result["best_focal_mm"], 10.15, places=2)
+    self.assertEqual(result["z_profile"], [])
+
   def test_auto_focus_sends_0x0c_command(self):
-    """auto_focus should send a POLL then a 0x0c command family."""
+    """auto_focus should send a 0x0c command family."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
     plate = _make_plate()
@@ -6308,18 +6334,14 @@ class TestAutoFocusIntegration(unittest.TestCase):
 
     focus_result = self._build_synthetic_focus_response()
     mock.queue_response(
-      ACK, ACK, self._build_idle_status(),
-      _wrap_payload(focus_result), self._build_idle_status(),
+      ACK, self._build_idle_status(),
+      _wrap_payload(focus_result),
     )
 
     asyncio.run(backend.auto_focus(plate, wells, 485, 528))
 
-    # First written frame should be POLL (0x08), second should be 0x0c command
-    poll_frame = mock.written[0]
-    poll_inner = _extract_payload(poll_frame)
-    self.assertEqual(poll_inner[0], 0x08)
-
-    af_frame = mock.written[1]
+    # First written frame should be the 0x0c auto-focus command
+    af_frame = mock.written[0]
     af_inner = _extract_payload(af_frame)
     self.assertEqual(af_inner[0], 0x0C)
 

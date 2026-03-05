@@ -4555,14 +4555,32 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   def _parse_focus_result(self, payload: bytes) -> dict:
     """Parse a FOCUS_RESULT response (0x05/0x05).
 
+    Two response formats are observed:
+
+    **Full response (>=27 bytes, seen in pcap F-Q01 with MARS):**
+      27-byte header + N×8-byte Z-scan records.
+      Best focal height at payload[17:19] (u16 BE, mm×100).
+
+    **Short response (17 bytes, observed on real hardware):**
+      Summary-only.  Best focal height at payload[10:12] (u16 BE, mm×100).
+      No Z-profile data.
+
     Returns:
       Dict with keys:
         ``best_focal_mm`` – firmware-determined optimal focal height (float).
         ``z_profile`` – list of dicts, each with ``z_mm`` (float), ``signal`` (int),
-        ``pass_flag`` (int), in descending Z order.
+        ``pass_flag`` (int), in descending Z order.  Empty for short responses.
     """
+    if len(payload) < 12:
+      raise ValueError(f"Focus result payload too short: {len(payload)} bytes (need >=12)")
+
     if len(payload) < 27:
-      raise ValueError(f"Focus result payload too short: {len(payload)} bytes (need >=27)")
+      # Short (17-byte) summary response: focal height at bytes 10-11.
+      best_focal_raw = int.from_bytes(payload[10:12], "big")
+      best_focal_mm = best_focal_raw / 100.0
+      logger.info("Auto-focus short response (%d bytes): best focal = %.2f mm",
+                  len(payload), best_focal_mm)
+      return {"best_focal_mm": best_focal_mm, "z_profile": []}
 
     best_focal_raw = int.from_bytes(payload[17:19], "big")
     best_focal_mm = best_focal_raw / 100.0
@@ -4686,17 +4704,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       emission_filter=emission_filter,
       dichroic_filter=dichroic_filter,
     )
-    # Enter POLL mode before the auto-focus command.  In pcap F-Q01, MARS
-    # has POLL (0x08) active right before sending the 0x0c scan command.
-    # Without a prior POLL, the firmware returns only a 17-byte summary for
-    # the FOCUS_RESULT (0x05/0x05) request instead of the full Z-profile
-    # (1177 bytes in the pcap).  One POLL is sufficient to enable full data
-    # buffering.
-    await self.send_command(
-      command_family=self.CommandFamily.POLL,
-      command=self.Command.POLL,
-    )
-
     await self.send_command(
       command_family=self.CommandFamily.AUTO_FOCUS,
       parameters=af_payload,
@@ -4715,22 +4722,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       raise TimeoutError(
         f"Auto-focus Z-scan did not complete within {scan_timeout}s")
 
-    # Retrieve and parse the focus result
+    # Retrieve and parse the focus result.
+    # The firmware may return a full Z-profile (1177 bytes, seen in pcap F-Q01)
+    # or a 17-byte summary with just the focal height.  _parse_focus_result
+    # handles both formats.
     result_payload = await self._request_focus_result()
-
-    # Flush the POLL state set above.  POLL contaminates byte 3 of all
-    # subsequent responses (sets it to 0x04), corrupting status flags.
-    # Sending STATUS_QUERY frames clears the contamination.
-    for _ in range(50):
-      await self._write_frame(self._STATUS_FRAME)
-      resp = await self._read_frame()
-      try:
-        _validate_frame(resp)
-      except FrameError:
-        continue
-      payload = _extract_payload(resp)
-      if len(payload) >= 4 and payload[3] != 0x04:
-        break
-
     return self._parse_focus_result(result_payload)
 
