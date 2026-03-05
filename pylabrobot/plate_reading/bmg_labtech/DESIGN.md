@@ -65,7 +65,101 @@ Entirely new. Scans a wavelength range with configurable step size. Paginated da
 - **New**: Parses 12 boolean flags from 5-byte status word. Drawer/plate/lid/filter-cover detection. CMD_0x0E sent during normal boot (matches OEM MARS pcap) clears stuck `running=True` state as a side effect — no special recovery logic needed.
 
 ### 8. Auto-Focus
-Entirely new. Sends `AUTO_FOCUS_SCAN` command. Sweeps focal height (0-25 mm). Returns best Z position + fluorescence intensity at that height. Supports filter and monochromator modes.
+
+Entirely new.  Sends `AUTO_FOCUS_SCAN` (`0x0C`) command, polls until busy
+clears, then retrieves the result via `REQUEST/FOCUS_RESULT` (`0x05/0x05`).
+
+#### OEM two-phase process (from Software Manual Part II, 0430F0035B)
+
+The OEM MARS software implements auto-focus as **two distinct phases**:
+
+1. **Search phase (`R_FocusPlate`)** — Measures all wells in the layout at a
+   single (default?) height and selects the well with the **highest signal**.
+   This is the "auto search" referenced in Section 6.3.1 (p57).
+
+2. **Z-scan phase (`R_FocusWell`)** — Sweeps the selected well through focal
+   heights in 0.1 mm steps (range 0–25 mm top optic, 0–9.7 mm bottom optic).
+   Finds the height producing the highest signal.  The "Focal Height Curve"
+   dialog (Section 6.3.3, p58) shows this as a table of Z (mm) vs F(raw)
+   values and a characteristic confocal W-curve plot.
+
+`R_FocusPlate` performs both phases sequentially.  `R_FocusWell` performs
+only phase 2 on a user-specified well (column, row).  Both require firmware
+≥ V1.30.  An optional `WithWellScan`/`WithoutWellScan` parameter (firmware
+≥ V1.31) controls whether the focus measurement uses the protocol's well
+scan pattern (matrix/orbital/spiral) or just the well centre.
+
+**Script commands** (Section 9.4.4, p85):
+```
+R_FocusPlate {Protocol} {Chromatic} {Channel} (Flying) (WithWellScan)
+R_FocusWell  {Protocol} {Col} {Row} {Chromatic} (Wavelength) {Channel} (WithWellScan)
+```
+
+**ActiveX/DDE retrieval** (ActiveX manual 0430N0003I, Section 2–3):
+After `GainWell`/`GainPlate` with focus parameter `"A"`:
+- `GainData` → `"1"` when results ready
+- `FocalHeight` → optimal height in mm (string)
+- `FocusRaw` → raw signal at that height
+
+#### Current implementation
+
+Our `auto_focus()` sends the `0x0C` command with the user's well mask,
+polls STATUS_QUERY until busy clears, then requests the result via
+`0x05/0x05`.  The firmware returns one of two response formats:
+
+- **Full response (≥27 bytes):** 27-byte header + N×8-byte Z-scan records.
+  Observed in pcap F-Q01 (1177 bytes, 143 Z-points) where MARS had a
+  continuous POLL (0x08) idle loop running before the scan.  Best focal
+  height at payload[17:19].
+
+- **Short response (17 bytes):** Summary only.  Best focal height at
+  payload[10:12].  No Z-profile data.  Observed on real hardware when
+  sending the `0x0C` command directly (without MARS's POLL streaming).
+
+Both formats return the firmware-determined optimal focal height as u16 BE
+in mm×100.  The parser (`_parse_focus_result`) handles both.
+
+#### What we don't yet understand
+
+The well mask affects the result — different masks produce different focal
+heights (e.g. all-96-wells → 10.15 mm, A1-only → 7.43 mm), confirming
+the firmware uses the mask during the search phase.  However we cannot yet
+distinguish at the USB protocol level:
+
+1. Whether `0x0C` always triggers **both** phases (search + Z-scan) or just
+   the Z-scan on a firmware-chosen position.
+2. How the search phase selects the target well (first in mask? highest
+   signal from a quick pre-scan?).
+3. What enables the full Z-profile response vs the 17-byte summary (POLL
+   streaming state? a separate configuration command? firmware mode?).
+
+#### Planned pcap captures to resolve unknowns
+
+| Capture | OEM operation | Purpose |
+|---------|---------------|---------|
+| **F-Q02** | `R_FocusWell` on a single specified well | Isolate the Z-scan phase — no search.  Compare `0x0C` payload & response with F-Q01. |
+| **F-Q03** | `R_FocusPlate` with sparse well mask (e.g. 3 wells with different signal levels) | Observe the search phase: does the firmware send intermediate data or just the final best-well result? |
+| **F-Q04** | `R_FocusWell` with `WithoutWellScan` | Check if well-scan mode affects the USB command or is purely software-side. |
+
+Once we understand the search and Z-scan phases at the protocol level, we
+can implement custom algorithms — e.g. binary-search Z-scan, adaptive
+well selection, or parallel multi-well focusing — to accelerate the process
+beyond what the OEM firmware provides.
+
+#### Manual references
+
+- **Operating Manual CLARIOstar Plus** (0430B0006B), p5: "Automatic focal
+  height adjustment (0.1 mm resolution) with curve monitoring"
+- **Operating Manual CLARIOstar Plus** (0430B0006B), p20, §6.6: "Automatic
+  Height Sensor" — initial plate height monitoring on every PlateIn command
+- **Software Manual Part II** (0430F0035B), p57, §6.3.1: Focus combo box
+  (auto focus / previous / new)
+- **Software Manual Part II** (0430F0035B), p58, §6.3.3: Focus Adjustment
+  dialog — Focal Height Curve with W-curve plot and Z/signal table
+- **Software Manual Part II** (0430F0035B), p85, §9.4.4: `R_FocusPlate`,
+  `R_FocusWell` script commands
+- **ActiveX/DDE Manual** (0430N0003I), §2–3: `GainData`, `FocalHeight`,
+  `FocusRaw` status items; `GainWell`/`GainPlate` with focus parameter
 
 ### 9. Filter Infrastructure (`filters.py`)
 - `Filter` -- frozen dataclass (slot, name, center_wavelength, bandwidth).
@@ -401,5 +495,7 @@ CLARIOstarPlusBackend
 - **Pcap captures:** 88 USB capture files (59 absorbance + 29 fluorescence), 6,780+ frames total.
 - **Go reference implementation:** `fl.go`, `abs.go`, command dispatch.
 - **OEM software (MARS):** Automated capture runs for absorbance, fluorescence, luminescence.
-- **ActiveX/DDE manual:** Command family documentation.
+- **ActiveX/DDE manual** (0430N0003I): Command family documentation, `GainWell`/`GainPlate` focus parameters, status items.
+- **Software Manual Part II** (0430F0035B): Focus/gain adjustment UI (§6.3), `R_FocusPlate`/`R_FocusWell` script commands (§9.4.4), `WithWellScan` option (§6.3.5).
+- **Operating Manual CLARIOstar Plus** (0430B0006B): Hardware specs, automatic height sensor (§6.6).
 - **Hardware:** CLARIOstar Plus.
