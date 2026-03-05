@@ -4686,6 +4686,17 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       emission_filter=emission_filter,
       dichroic_filter=dichroic_filter,
     )
+    # Enter POLL mode before the auto-focus command.  In pcap F-Q01, MARS
+    # has POLL (0x08) active right before sending the 0x0c scan command.
+    # Without a prior POLL, the firmware returns only a 17-byte summary for
+    # the FOCUS_RESULT (0x05/0x05) request instead of the full Z-profile
+    # (1177 bytes in the pcap).  One POLL is sufficient to enable full data
+    # buffering.
+    await self.send_command(
+      command_family=self.CommandFamily.POLL,
+      command=self.Command.POLL,
+    )
+
     await self.send_command(
       command_family=self.CommandFamily.AUTO_FOCUS,
       parameters=af_payload,
@@ -4706,5 +4717,20 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     # Retrieve and parse the focus result
     result_payload = await self._request_focus_result()
+
+    # Flush the POLL state set above.  POLL contaminates byte 3 of all
+    # subsequent responses (sets it to 0x04), corrupting status flags.
+    # Sending STATUS_QUERY frames clears the contamination.
+    for _ in range(50):
+      await self._write_frame(self._STATUS_FRAME)
+      resp = await self._read_frame()
+      try:
+        _validate_frame(resp)
+      except FrameError:
+        continue
+      payload = _extract_payload(resp)
+      if len(payload) >= 4 and payload[3] != 0x04:
+        break
+
     return self._parse_focus_result(result_payload)
 

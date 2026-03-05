@@ -6283,30 +6283,45 @@ class TestAutoFocusIntegration(unittest.TestCase):
     plate = _make_plate()
     wells = plate.get_all_items()
 
-    # Queue: (1) ACK for 0x0c command, (2) idle status, (3) real pcap focus result
+    # Queue:
+    #  (1) ACK for POLL command
+    #  (2) ACK for 0x0c AUTO_FOCUS command
+    #  (3) idle status for busy-poll
+    #  (4) real pcap focus result for _request_focus_result()
+    #  (5) idle status for POLL-flush loop (payload[3]!=0x04 → break)
     pcap_result = bytes.fromhex(_AF_GT_RESULT_FULL)
-    mock.queue_response(ACK, self._build_idle_status(), _wrap_payload(pcap_result))
+    mock.queue_response(
+      ACK, ACK, self._build_idle_status(),
+      _wrap_payload(pcap_result), self._build_idle_status(),
+    )
 
     result = asyncio.run(backend.auto_focus(plate, wells, 485, 528))
     self.assertAlmostEqual(result["best_focal_mm"], 10.0, places=1)
     self.assertEqual(len(result["z_profile"]), 143)
 
   def test_auto_focus_sends_0x0c_command(self):
-    """auto_focus should send a 0x0c command family."""
+    """auto_focus should send a POLL then a 0x0c command family."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
     plate = _make_plate()
     wells = plate.get_all_items()
 
     focus_result = self._build_synthetic_focus_response()
-    mock.queue_response(ACK, self._build_idle_status(), _wrap_payload(focus_result))
+    mock.queue_response(
+      ACK, ACK, self._build_idle_status(),
+      _wrap_payload(focus_result), self._build_idle_status(),
+    )
 
     asyncio.run(backend.auto_focus(plate, wells, 485, 528))
 
-    # First written frame should be 0x0c command
-    first_frame = mock.written[0]
-    inner = _extract_payload(first_frame)
-    self.assertEqual(inner[0], 0x0C)
+    # First written frame should be POLL (0x08), second should be 0x0c command
+    poll_frame = mock.written[0]
+    poll_inner = _extract_payload(poll_frame)
+    self.assertEqual(poll_inner[0], 0x08)
+
+    af_frame = mock.written[1]
+    af_inner = _extract_payload(af_frame)
+    self.assertEqual(af_inner[0], 0x0C)
 
   def test_auto_focus_validation_wavelength(self):
     """auto_focus should reject invalid wavelengths."""
