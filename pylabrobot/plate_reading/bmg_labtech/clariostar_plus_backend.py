@@ -267,6 +267,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     STOP = 0x0B
     AUTO_FOCUS = 0x0C
     PAUSE_RESUME = 0x0D
+    CMD_0x0E = 0x0E
     FILTER_SCAN = 0x24
     STATUS = 0x80
     HW_STATUS = 0x81
@@ -330,6 +331,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     CommandFamily.AUTO_FOCUS,
     CommandFamily.STOP,
     CommandFamily.PAUSE_RESUME,
+    CommandFamily.CMD_0x0E,
   }
 
   # -- Optic byte flags (bit field, OR'd together) -------------------------
@@ -2398,6 +2400,34 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     await self.send_command(
       command_family=self.CommandFamily.STOP,
       parameters=b"\x00",
+    )
+
+  async def _send_cmd_0x0e(self) -> None:
+    """Send the unknown CMD_0x0E observed in OEM MARS startup sequences.
+
+    Purpose is not fully understood. Observed in pcap captures of MARS startup:
+
+    - Sent after INITIALIZE + EEPROM read (REQUEST/0x07) during normal boot
+    - Also sent when recovering a device stuck in ``running`` state
+    - Sometimes skipped by MARS during normal startup (conditional logic unknown)
+    - The last parameter byte equals EEPROM byte[25] (boot counter) + 1
+
+    Pcap ground truth::
+
+      Recovery capture:  0x0E 0x0B 0x12 0x00 0x00 0x04 0x18
+      Normal boot (A):   0x0E 0x0B 0x12 0x00 0x00 0x04 0x19
+      Normal boot (B):   not sent
+
+    The first parameter byte (0x0B) matches the STOP command family.
+
+    Wire: ``0x0E 0B 12 00 00 04 <counter+1>``
+    """
+    # EEPROM byte[25] is a boot counter; the command uses counter + 1.
+    # For now we hardcode the observed static prefix — the counter byte may
+    # need to be read from request_eeprom_data() once we understand it better.
+    await self.send_command(
+      command_family=self.CommandFamily.CMD_0x0E,
+      parameters=b"\x0b\x12\x00\x00\x04\x19",
     )
 
   async def _safe_interrupt(self) -> None:

@@ -99,6 +99,11 @@ COMMANDS: Dict[str, tuple] = {
     b"\x0b\x00",
     bytes.fromhex("02000a0c0b000000230d"),
   ),
+  # CF.CMD_0x0E(0x0E). Pcap: normal_power_cycle_oem_start capture @34.3s.
+  "cmd_0x0e": (
+    b"\x0e\x0b\x12\x00\x00\x04\x19",
+    bytes.fromhex("02000f0c0e0b12000004190000650d"),
+  ),
 }
 
 # Generic command acknowledgement -- shared by all command tests.
@@ -7621,6 +7626,18 @@ class TestMeasurementControl(unittest.TestCase):
     """Byte-for-byte match against pcap frame at t=86.0s."""
     expected = bytes.fromhex("02000a0c0b000000230d")
     self.assertEqual(_wrap_payload(b"\x0b\x00"), expected)
+
+  def test_cmd_0x0e_sends_correct_frame(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK)
+    asyncio.run(backend._send_cmd_0x0e())
+    self.assertEqual(mock.written[0], COMMANDS["cmd_0x0e"][1])
+
+  def test_cmd_0x0e_payload_matches_pcap_ground_truth(self):
+    """Byte-for-byte match against pcap frame from normal boot capture."""
+    expected = bytes.fromhex("02000f0c0e0b12000004190000650d")
+    self.assertEqual(_wrap_payload(b"\x0e\x0b\x12\x00\x00\x04\x19"), expected)
 
 
 class TestInterruptHandling(unittest.TestCase):
