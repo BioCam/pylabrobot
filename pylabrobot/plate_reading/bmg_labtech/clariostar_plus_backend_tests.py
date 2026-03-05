@@ -318,102 +318,38 @@ class TestInitialize(unittest.TestCase):
     self.assertEqual(mock.written[1], COMMANDS["initialize"][1])  # retry
 
 
-class TestRunningStateRecovery(unittest.TestCase):
-  """Verify escalating recovery from a stuck running=True firmware state."""
+class TestSetupSendsCmdOx0e(unittest.TestCase):
+  """Verify that setup() sends CMD_0x0E after EEPROM + firmware reads (matches OEM pcap)."""
 
-  def test_recovery_clears_on_get_data_standard(self):
-    """Strategy 1 (GET_DATA standard) clears running — no escalation needed."""
+  def test_setup_sends_cmd_0x0e(self):
+    """CMD_0x0E frame appears in the written frames during setup()."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
 
-    # setup() sequence:
+    # setup() sequence (no running-state check anymore):
     #  1. ACK for initialize()
     #  2. STATUS_IDLE for _wait_until_machine_ready
     #  3. STATUS_IDLE for poll-flush loop (payload[3]!=0x04)
-    #  4. STATUS_RUNNING for running-state check → enters recovery
-    #  5. ACK for GET_DATA standard (strategy 1)
-    #  6. STATUS_IDLE for recovery poll → running cleared → done
-    #  7. _REAL_EEPROM_FRAME for request_eeprom_data()
-    #  8. firmware frame for request_firmware_info()
+    #  4. _REAL_EEPROM_FRAME for request_eeprom_data()
+    #  5. firmware frame for request_firmware_info()
+    #  6. ACK for _send_cmd_0x0e()
     mock.queue_response(
       ACK,
       STATUS_IDLE,
       STATUS_IDLE,
-      STATUS_RUNNING,  # triggers recovery
-      ACK,  # GET_DATA standard response
-      STATUS_IDLE,  # recovery poll: running cleared
       _REAL_EEPROM_FRAME,
       _make_firmware_frame(1350),
+      ACK,  # _send_cmd_0x0e()
     )
     with warnings.catch_warnings(record=True):
       warnings.simplefilter("always")
       asyncio.run(backend.setup())
     self.assertFalse(mock._responses, "all queued responses should be consumed")
 
-  def test_recovery_escalates_to_reinitialize(self):
-    """Strategies 1-2 fail, strategy 3 (re-initialize) clears running."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-
-    # Strategy 1: GET_DATA standard → 10 polls all RUNNING
-    # Strategy 2: GET_DATA progressive → 10 polls all RUNNING
-    # Strategy 3: re-initialize → ACK + STATUS_IDLE in _wait → 10 polls: first clears
-    running_polls_10 = [STATUS_RUNNING] * 10
-
-    mock.queue_response(
-      ACK,  # initialize()
-      STATUS_IDLE,  # _wait_until_machine_ready
-      STATUS_IDLE,  # poll-flush loop
-      STATUS_RUNNING,  # running-state check → enters recovery
-      # Strategy 1: GET_DATA standard
-      ACK,
-      *running_polls_10,
-      # Strategy 2: GET_DATA progressive
-      ACK,
-      *running_polls_10,
-      # Strategy 3: re-initialize
-      ACK,  # initialize() ACK
-      STATUS_IDLE,  # _wait_until_machine_ready inside initialize()
-      STATUS_IDLE,  # recovery poll → running cleared
-      # Continue setup()
-      _REAL_EEPROM_FRAME,
-      _make_firmware_frame(1350),
-    )
-    with warnings.catch_warnings(record=True):
-      warnings.simplefilter("always")
-      asyncio.run(backend.setup())
-    self.assertFalse(mock._responses, "all queued responses should be consumed")
-
-  def test_recovery_raises_if_all_strategies_fail(self):
-    """If all 4 strategies fail, RuntimeError is raised."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-
-    running_polls_10 = [STATUS_RUNNING] * 10
-
-    mock.queue_response(
-      ACK,  # initialize()
-      STATUS_IDLE,  # _wait_until_machine_ready
-      STATUS_IDLE,  # poll-flush loop
-      STATUS_RUNNING,  # running-state check → enters recovery
-      # Strategy 1: GET_DATA standard
-      ACK,
-      *running_polls_10,
-      # Strategy 2: GET_DATA progressive
-      ACK,
-      *running_polls_10,
-      # Strategy 3: re-initialize
-      ACK,  # initialize() ACK
-      STATUS_IDLE,  # _wait_until_machine_ready inside initialize()
-      *running_polls_10,
-      # Strategy 4: USB reset + re-initialize
-      ACK,  # initialize() ACK
-      STATUS_IDLE,  # _wait_until_machine_ready inside initialize()
-      *running_polls_10,
-    )
-    with self.assertRaises(RuntimeError) as ctx:
-      asyncio.run(backend.setup())
-    self.assertIn("running=True", str(ctx.exception))
+    # Verify CMD_0x0E (command family 0x0E) was sent.
+    # Frame format: STX(0x02) | size(2B) | header(0x0C) | payload[0]=cmd_family | ...
+    cmd_0x0e_frames = [f for f in mock.written if len(f) > 4 and f[4] == 0x0E]
+    self.assertTrue(cmd_0x0e_frames, "CMD_0x0E should be sent during setup()")
 
 
 class TestOpen(unittest.TestCase):
@@ -4056,9 +3992,9 @@ def _setup_backend_with_firmware(version_x1000: int) -> CLARIOstarPlusBackend:
     1. ACK for initialize() command
     2. STATUS_IDLE for _wait_until_machine_ready (not busy → exit)
     3. STATUS_IDLE for poll-flush loop (payload[3]!=0x04 → break)
-    4. STATUS_IDLE for running-state recovery check (running=False → skip)
-    5. _REAL_EEPROM_FRAME for request_eeprom_data()
-    6. firmware frame for request_firmware_info()
+    4. _REAL_EEPROM_FRAME for request_eeprom_data()
+    5. firmware frame for request_firmware_info()
+    6. ACK for _send_cmd_0x0e()
   """
   backend = _make_backend()
   mock: MockFTDI = backend.io  # type: ignore[assignment]
@@ -4066,9 +4002,9 @@ def _setup_backend_with_firmware(version_x1000: int) -> CLARIOstarPlusBackend:
     ACK,
     STATUS_IDLE,
     STATUS_IDLE,
-    STATUS_IDLE,  # running-state check
     _REAL_EEPROM_FRAME,
     _make_firmware_frame(version_x1000),
+    ACK,  # _send_cmd_0x0e()
   )
   return backend
 

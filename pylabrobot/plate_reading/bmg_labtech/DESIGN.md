@@ -18,7 +18,7 @@ This branch (`clariostar-refactor-with-fluorescence`) rewrote the plate reader b
 | **Temperature** | Not supported (`NaN`) | Full control: monitor, set target (0-65 C), measure (top/bottom/mean) |
 | **Device identification** | EEPROM only (unparsed) | EEPROM parsed (model, capabilities, mono ranges, filter slots) + firmware version + usage counters |
 | **Status polling** | Simple busy/ready byte check | 12-flag bitfield parsing (busy, running, plate_detected, drawer_open, lid_open, etc.) |
-| **Error recovery** | None | 4-strategy escalation (standard flush -> progressive flush -> re-init -> USB reset) |
+| **Error recovery** | None | CMD_0x0E during boot clears stuck running state (matches OEM MARS pcap) |
 | **Filter support** | None | Filter/DichroicFilter dataclasses, 3 slide containers with slot + name lookup |
 | **Auto-focus** | None | Focal-height sweep with best-Z + intensity result |
 
@@ -62,7 +62,7 @@ Entirely new. Scans a wavelength range with configurable step size. Paginated da
 
 ### 7. Status & Error Recovery
 - **Old**: Polls 24-byte status, checks one byte for busy/ready.
-- **New**: Parses 12 boolean flags from 5-byte status word. Drawer/plate/lid/filter-cover detection. Running-state recovery with 4-strategy escalation (progressively more aggressive: standard data flush -> progressive flush -> re-initialize -> USB chip reset + full reconfigure). `setup()` auto-recovers from stuck measurement states.
+- **New**: Parses 12 boolean flags from 5-byte status word. Drawer/plate/lid/filter-cover detection. CMD_0x0E sent during normal boot (matches OEM MARS pcap) clears stuck `running=True` state as a side effect — no special recovery logic needed.
 
 ### 8. Auto-Focus
 Entirely new. Sends `AUTO_FOCUS_SCAN` command. Sweeps focal height (0-25 mm). Returns best Z position + fluorescence intensity at that height. Supports filter and monochromator modes.
@@ -339,13 +339,10 @@ All dimensions in 0.01mm units (uint16 BE). Well mask is 384-bit big-endian.
 - **Problem:** If a session is interrupted mid-measurement (kernel restart, USB
   disconnect), the firmware can retain `running=True` across power cycles.
   In this state it ignores drawer and measurement commands.
-- **Recovery:** `setup()` detects `running=True` and runs an escalating sequence:
-  1. GET_DATA standard (`05 02`, params `00 00 00 00 00`) -- flush buffered data.
-  2. GET_DATA progressive (params `ff ff ff ff 00`) -- alternate flush variant.
-  3. Re-initialize (`01 00`) -- reset firmware state machine.
-  4. USB reset (`ftdi_usb_reset`) -- chip-level reset + full FTDI reconfigure + re-init.
-- **Each step** polls status up to 10 times; exits as soon as `running` clears.
-- **If all fail:** `RuntimeError` is raised suggesting a longer power cycle or OEM software reset.
+- **Recovery:** CMD_0x0E (`0x0E 0x0B 0x12 ...`) is sent during every `setup()` boot
+  sequence (after INIT → EEPROM → firmware info), matching the OEM MARS pcap. This
+  command clears the stuck running state as a side effect — no special detection or
+  escalating recovery is needed.
 
 ---
 
