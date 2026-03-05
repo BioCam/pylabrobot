@@ -231,6 +231,7 @@ def _make_backend() -> CLARIOstarPlusBackend:
     "emission_filter_slots": 0,
   }
   backend._target_temperature = None
+  backend._resume_context = None
   backend.measurement_poll_interval = 0.0  # no delay in unit tests
   backend.pause_on_interrupt = False
   backend.excitation_filter_slide = CLARIOstarPlusBackend.ExcitationFilterSlide()
@@ -7598,11 +7599,23 @@ class TestMeasurementControl(unittest.TestCase):
     asyncio.run(backend.pause_measurement())
     self.assertEqual(mock.written[0], COMMANDS["pause_measurement"][1])
 
-  def test_resume_measurement_sends_correct_frame(self):
+  def test_resume_measurement_and_collect_data_sends_resume_frame(self):
+    """resume_measurement_and_collect_data sends the PAUSE_RESUME(0x00) frame."""
     backend = _make_backend()
     mock: MockFTDI = backend.io  # type: ignore[assignment]
+    # Set up resume context (progressive mode, simplest case)
+    backend._resume_context = {
+      "poll_mode": "progressive",
+      "log_prefix": "test",
+      "read_timeout": 30.0,
+      "collect_fn": lambda resp, prog_complete: [],
+      "fallback_collect_fn": AsyncMock(return_value=[]),
+    }
+    # Queue: ACK for resume command, then poll needs status not-busy
     mock.queue_response(ACK)
-    asyncio.run(backend.resume_measurement())
+    # Mock polling to return immediately
+    backend._poll_progressive = AsyncMock(return_value=(b"\x00" * 20, True))
+    asyncio.run(backend.resume_measurement_and_collect_data())
     self.assertEqual(mock.written[0], COMMANDS["resume_measurement"][1])
 
   def test_stop_measurement_sends_correct_frame(self):
@@ -7784,6 +7797,167 @@ class TestInterruptHandling(unittest.TestCase):
 
     exc_none = MeasurementInterrupted("paused")
     self.assertIsNone(exc_none.partial_data)
+
+
+class TestResumeAndCollect(unittest.TestCase):
+  """Tests for resume_measurement_and_collect_data()."""
+
+  def test_resume_and_collect_progressive(self):
+    """Resume sends command, re-enters progressive poll, returns parsed results."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    expected_results = [{"wavelength": 450, "data": [[0.5]]}]
+    collect_fn = lambda resp, prog_complete: expected_results if prog_complete else None
+
+    backend._resume_context = {
+      "poll_mode": "progressive",
+      "log_prefix": "ABS measurement",
+      "read_timeout": 30.0,
+      "collect_fn": collect_fn,
+      "fallback_collect_fn": AsyncMock(return_value=expected_results),
+    }
+
+    # ACK for resume command
+    mock.queue_response(ACK)
+    # Mock the polling to simulate completion
+    backend._poll_progressive = AsyncMock(return_value=(b"\x00" * 20, True))
+
+    result = asyncio.run(backend.resume_measurement_and_collect_data())
+
+    # Verify resume command was sent
+    self.assertEqual(mock.written[0], COMMANDS["resume_measurement"][1])
+    # Verify polling was invoked
+    backend._poll_progressive.assert_called_once_with(30.0, log_prefix="ABS measurement")
+    # Verify results returned
+    self.assertEqual(result, expected_results)
+    # Verify context cleared
+    self.assertIsNone(backend._resume_context)
+
+  def test_resume_and_collect_progressive_fallback(self):
+    """When progressive data is incomplete, fallback_collect_fn is used."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    expected_results = [{"wavelength": 450, "data": [[0.5]]}]
+    # collect_fn returns None when prog_complete=False
+    collect_fn = lambda resp, prog_complete: None
+
+    fallback = AsyncMock(return_value=expected_results)
+    backend._resume_context = {
+      "poll_mode": "progressive",
+      "log_prefix": "FL measurement",
+      "read_timeout": 30.0,
+      "collect_fn": collect_fn,
+      "fallback_collect_fn": fallback,
+    }
+
+    mock.queue_response(ACK)
+    backend._poll_progressive = AsyncMock(return_value=(b"\x00" * 20, False))
+
+    result = asyncio.run(backend.resume_measurement_and_collect_data())
+
+    fallback.assert_called_once()
+    self.assertEqual(result, expected_results)
+    self.assertIsNone(backend._resume_context)
+
+  def test_resume_and_collect_status_only(self):
+    """Resume with status-only polling (spectrum path)."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    expected_results = [{"wavelength": 300, "data": [[1.2]]}]
+    collect_fn = AsyncMock(return_value=expected_results)
+
+    backend._resume_context = {
+      "poll_mode": "status_only",
+      "log_prefix": "ABS spectrum",
+      "read_timeout": 60.0,
+      "collect_fn": collect_fn,
+    }
+
+    mock.queue_response(ACK)
+    backend._poll_status_only = AsyncMock()
+
+    result = asyncio.run(backend.resume_measurement_and_collect_data())
+
+    self.assertEqual(mock.written[0], COMMANDS["resume_measurement"][1])
+    backend._poll_status_only.assert_called_once_with(60.0, log_prefix="ABS spectrum")
+    collect_fn.assert_called_once()
+    self.assertEqual(result, expected_results)
+    self.assertIsNone(backend._resume_context)
+
+  def test_resume_without_context_raises(self):
+    """Calling resume_measurement_and_collect_data() without prior interrupt raises RuntimeError."""
+    backend = _make_backend()
+    self.assertIsNone(backend._resume_context)
+    with self.assertRaises(RuntimeError) as ctx:
+      asyncio.run(backend.resume_measurement_and_collect_data())
+    self.assertIn("No paused measurement", str(ctx.exception))
+
+  def test_stop_clears_resume_context(self):
+    """stop_measurement() clears _resume_context."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+
+    backend._resume_context = {
+      "poll_mode": "progressive",
+      "log_prefix": "test",
+      "read_timeout": 30.0,
+      "collect_fn": lambda resp, prog_complete: [],
+      "fallback_collect_fn": AsyncMock(return_value=[]),
+    }
+
+    mock.queue_response(ACK)
+    asyncio.run(backend.stop_measurement())
+
+    self.assertIsNone(backend._resume_context)
+
+  def test_interrupt_stop_clears_resume_context(self):
+    """When interrupt stops (not pauses), _resume_context is cleared."""
+    backend = _make_backend()
+    backend.pause_on_interrupt = False
+    backend._resume_context = {
+      "poll_mode": "progressive",
+      "log_prefix": "test",
+      "read_timeout": 30.0,
+      "collect_fn": lambda resp, prog_complete: [],
+      "fallback_collect_fn": AsyncMock(return_value=[]),
+    }
+
+    backend._request_measurement_data = AsyncMock(side_effect=KeyboardInterrupt())
+    backend._measurement_progress = lambda resp: (0, 10)
+    backend.request_machine_status = AsyncMock(return_value={"busy": True})
+    backend.stop_measurement = AsyncMock()
+
+    with self.assertRaises(MeasurementInterrupted):
+      asyncio.run(backend._poll_progressive(read_timeout=30.0, log_prefix="test"))
+
+    self.assertIsNone(backend._resume_context)
+
+  def test_interrupt_pause_preserves_resume_context(self):
+    """When interrupt pauses, _resume_context is preserved for later resume."""
+    backend = _make_backend()
+    backend.pause_on_interrupt = True
+    ctx = {
+      "poll_mode": "progressive",
+      "log_prefix": "test",
+      "read_timeout": 30.0,
+      "collect_fn": lambda resp, prog_complete: [],
+      "fallback_collect_fn": AsyncMock(return_value=[]),
+    }
+    backend._resume_context = ctx
+
+    backend._request_measurement_data = AsyncMock(side_effect=KeyboardInterrupt())
+    backend._measurement_progress = lambda resp: (0, 10)
+    backend.request_machine_status = AsyncMock(return_value={"busy": True})
+    backend.pause_measurement = AsyncMock()
+
+    with self.assertRaises(MeasurementInterrupted):
+      asyncio.run(backend._poll_progressive(read_timeout=30.0, log_prefix="test"))
+
+    # Context should still be there for resume
+    self.assertIs(backend._resume_context, ctx)
 
 
 if __name__ == "__main__":

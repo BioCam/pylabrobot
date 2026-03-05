@@ -50,7 +50,8 @@ class MeasurementInterrupted(Exception):
   """Raised when a measurement is interrupted by the user (Ctrl+C / Jupyter stop).
 
   By default the device has been stopped. If ``pause_on_interrupt`` was True,
-  the device is paused instead and can be resumed via ``resume_measurement()``.
+  the device is paused instead and can be resumed via
+  ``resume_measurement_and_collect_data()``.
 
   Partial data (if any) is available via ``partial_data``.
   """
@@ -435,7 +436,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     Attributes:
       pause_on_interrupt: If False (default), a user interrupt (Ctrl+C / Jupyter
         stop) during a measurement stops the device. If True, the device is
-        paused instead, allowing ``resume_measurement()`` to continue.
+        paused instead, allowing ``resume_measurement_and_collect_data()`` to continue.
     """
     if read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
@@ -467,6 +468,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       "emission_filter_slots": 0,
     }
     self._target_temperature: Optional[float] = None
+    self._resume_context: Optional[dict] = None
     # TODO: keep searching for a way to retrieve target temp from device
     self.excitation_filter_slide = self.ExcitationFilterSlide()
     self.emission_filter_slide = self.EmissionFilterSlide()
@@ -2117,8 +2119,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         await self._safe_interrupt()
         if self.pause_on_interrupt:
           msg = (f"{log_prefix} interrupted by user. Device is paused. "
-                 "Call resume_measurement() to continue or stop_measurement() to end.")
+                 "Call resume_measurement_and_collect_data() to continue "
+                 "or stop_measurement() to end.")
         else:
+          self._resume_context = None
           msg = f"{log_prefix} interrupted by user. Device has been stopped."
         raise MeasurementInterrupted(
           msg,
@@ -2171,8 +2175,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         await self._safe_interrupt()
         if self.pause_on_interrupt:
           msg = (f"{log_prefix} interrupted by user. Device is paused. "
-                 "Call resume_measurement() to continue or stop_measurement() to end.")
+                 "Call resume_measurement_and_collect_data() to continue "
+                 "or stop_measurement() to end.")
         else:
+          self._resume_context = None
           msg = f"{log_prefix} interrupted by user. Device has been stopped."
         raise MeasurementInterrupted(
           msg,
@@ -2297,6 +2303,61 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     virtual_payload = pages[0] + b"".join(page[36:] for page in pages[1:])
     return self._parse_absorbance_response(virtual_payload, plate, wells, wavelengths, report=report)
 
+  async def _collect_abs_spectrum(
+    self,
+    expected_total_values: int,
+    plate: Plate,
+    wells: List[Well],
+    wavelengths: List[int],
+    report: Literal["optical_density", "transmittance", "raw"] = "optical_density",
+  ) -> List[Dict]:
+    """Retrieve and parse absorbance spectrum pages (used by resume context)."""
+    pages = await self._retrieve_abs_spectrum_pages(expected_total_values)
+    if not pages:
+      logger.warning("spectrum: no data pages retrieved")
+      return []
+    return self._parse_abs_spectrum_pages(pages, plate, wells, wavelengths, report=report)
+
+  async def _collect_fl_discrete(
+    self,
+    plate: Plate,
+    wells: List[Well],
+    chromatic_wavelengths: list,
+  ) -> List[Dict]:
+    """Retrieve and parse fluorescence discrete data via standard GET_DATA (used by resume context)."""
+    final = await self._request_measurement_data(progressive=False)
+    return self._parse_fluorescence_response(final, plate, wells, chromatic_wavelengths)
+
+  async def _collect_fl_spectrum(
+    self,
+    num_wells: int,
+    plate: Plate,
+    wells: List[Well],
+    wavelengths: List[int],
+    scan: str,
+    fixed_wavelength: int,
+  ) -> List[Dict]:
+    """Retrieve and parse fluorescence spectrum pages (used by resume context)."""
+    pages: List[bytes] = []
+    for page_num in range(num_wells):
+      try:
+        page = await self._request_measurement_data(progressive=False)
+      except FrameError as e:
+        logger.warning("FL spectrum page %d: frame error (%s), stopping", page_num, e)
+        break
+      if not page or len(page) < 34:
+        logger.warning("FL spectrum page %d: response too short (%d bytes), stopping",
+                       page_num, len(page) if page else 0)
+        break
+      pages.append(page)
+      if len(page) >= 2 and not (page[1] & 0x20):
+        logger.info("FL spectrum: final page reached at page %d", page_num)
+        break
+    if not pages:
+      logger.warning("FL spectrum: no data pages retrieved")
+      return []
+    return self._parse_fl_spectrum_pages(pages, plate, wells, wavelengths, scan, fixed_wavelength)
+
   @staticmethod
   def _measurement_progress(payload: bytes) -> Tuple[int, int]:
     """Extract (values_written, values_expected) from a DATA response header.
@@ -2350,7 +2411,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     The device finishes scanning the active well, then halts. Partial results
     collected so far can be retrieved with GET_DATA while paused. Use
-    :meth:`resume_measurement` to continue or :meth:`stop_measurement` to
+    :meth:`resume_measurement_and_collect_data` to continue or :meth:`stop_measurement` to
     terminate the run.
 
     Status flags after pause:
@@ -2365,21 +2426,49 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       parameters=b"\xff\xff\x00\x00",
     )
 
-  async def resume_measurement(self) -> None:
-    """Resume a paused measurement from where it stopped.
+  async def resume_measurement_and_collect_data(self) -> List[Dict]:
+    """Resume a paused measurement and collect the remaining data.
 
-    The device continues scanning the remaining wells.
+    Sends the PAUSE_RESUME(0x00 0x00) command, re-enters the appropriate
+    polling loop, retrieves the final data, and returns parsed results in the
+    same format as the original measurement call.
 
-    Status flags after resume:
-      - No immediate change — flags remain the same as the paused state.
-      - ``unread_data`` reappears as new wells complete scanning.
+    Must be called after a ``MeasurementInterrupted`` was raised with
+    ``pause_on_interrupt=True``. Raises ``RuntimeError`` if no resume context
+    is available (e.g. measurement was stopped, not paused).
 
-    Wire: ``0x0D 00 00 00 00``
+    Returns:
+      Parsed measurement results — same format as the original
+      ``read_absorbance`` / ``read_fluorescence`` / etc. call.
     """
+    if self._resume_context is None:
+      raise RuntimeError(
+        "No paused measurement to resume. resume_measurement_and_collect_data() "
+        "can only be called after a MeasurementInterrupted with pause_on_interrupt=True."
+      )
+
+    ctx = self._resume_context
+
+    # Send resume command
     await self.send_command(
       command_family=self.CommandFamily.PAUSE_RESUME,
       parameters=b"\x00\x00\x00\x00",
     )
+
+    # Re-enter the appropriate polling loop
+    if ctx["poll_mode"] == "progressive":
+      response, progressive_complete = await self._poll_progressive(
+        ctx["read_timeout"], log_prefix=ctx["log_prefix"])
+      if progressive_complete:
+        result = ctx["collect_fn"](response, True)
+      else:
+        result = await ctx["fallback_collect_fn"]()
+    else:  # status_only
+      await self._poll_status_only(ctx["read_timeout"], log_prefix=ctx["log_prefix"])
+      result = await ctx["collect_fn"]()
+
+    self._resume_context = None
+    return result
 
   async def stop_measurement(self) -> None:
     """Stop a running or paused measurement.
@@ -2397,6 +2486,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     Wire: ``0x0B 00``
     """
+    self._resume_context = None
     await self.send_command(
       command_family=self.CommandFamily.STOP,
       parameters=b"\x00",
@@ -3154,9 +3244,26 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if not wait:
       return []
 
+    # Store resume context so resume_measurement_and_collect_data() can
+    # re-enter the correct polling loop and parse the final data.
+    if self.pause_on_interrupt:
+      self._resume_context = {
+        "poll_mode": "progressive",
+        "log_prefix": "ABS measurement",
+        "read_timeout": read_timeout,
+        "collect_fn": lambda resp, prog_complete: (
+          self._parse_absorbance_response(resp, plate, wells, wls, report=report)
+          if prog_complete else None
+        ),
+        "fallback_collect_fn": lambda: self.request_absorbance_results(
+          plate, wells, wls, report=report
+        ),
+      }
+
     # 2. Progressive data + interleaved status polling (Voyager pattern).
     response, progressive_complete = await self._poll_progressive(
       read_timeout, log_prefix="ABS measurement")
+    self._resume_context = None
 
     # 3. Retrieve final results.
     if progressive_complete:
@@ -3338,15 +3445,28 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if not wait:
       return []
 
+    # Store resume context for spectrum polling path.
+    num_wells = len(wells)
+    expected_total_values = (num_wavelengths + 3) * (num_wells + 2)
+    wavelengths = [start_wavelength + i * step_size for i in range(num_wavelengths)]
+    if self.pause_on_interrupt:
+      self._resume_context = {
+        "poll_mode": "status_only",
+        "log_prefix": "ABS spectrum",
+        "read_timeout": read_timeout,
+        "collect_fn": lambda: self._collect_abs_spectrum(
+          expected_total_values, plate, wells, wavelengths, report
+        ),
+      }
+
     # 2. Status-only polling (no progressive GET_DATA for spectrum).
     await self._poll_status_only(read_timeout, log_prefix="ABS spectrum")
+    self._resume_context = None
 
     # 3. Retrieve paginated spectrum data
     # Total u32 values = (num_wl + 3) × (num_wells + 2), matching the discrete
     # absorbance formula. The "+3" accounts for chrom2, chrom3, and reference
     # groups; the "+2" accounts for calibration pairs per group.
-    num_wells = len(wells)
-    expected_total_values = (num_wavelengths + 3) * (num_wells + 2)
     pages = await self._retrieve_abs_spectrum_pages(expected_total_values)
 
     if not pages:
@@ -3354,7 +3474,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       return []
 
     # 4. Parse pages into per-wavelength results
-    wavelengths = [start_wavelength + i * step_size for i in range(num_wavelengths)]
     return self._parse_abs_spectrum_pages(pages, plate, wells, wavelengths, report=report)
 
   # --------------------------------------------------------------------------
@@ -3921,9 +4040,25 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if not wait:
       return []
 
+    # Store resume context for fluorescence discrete.
+    if self.pause_on_interrupt:
+      self._resume_context = {
+        "poll_mode": "progressive",
+        "log_prefix": "FL measurement",
+        "read_timeout": read_timeout,
+        "collect_fn": lambda resp, prog_complete: (
+          self._parse_fluorescence_response(resp, plate, wells, chromatic_wavelengths)
+          if prog_complete else None
+        ),
+        "fallback_collect_fn": lambda: self._collect_fl_discrete(
+          plate, wells, chromatic_wavelengths
+        ),
+      }
+
     # 2. Progressive data + interleaved status polling.
     response, progressive_complete = await self._poll_progressive(
       read_timeout, log_prefix="FL measurement")
+    self._resume_context = None
 
     # 3. Parse results.
     if progressive_complete:
@@ -4340,11 +4475,24 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if not wait:
       return []
 
+    # Store resume context for FL spectrum.
+    num_wells = len(wells)
+    wavelengths = list(range(start_wavelength, end_wavelength + 1))
+    if self.pause_on_interrupt:
+      self._resume_context = {
+        "poll_mode": "status_only",
+        "log_prefix": "FL spectrum",
+        "read_timeout": read_timeout,
+        "collect_fn": lambda: self._collect_fl_spectrum(
+          num_wells, plate, wells, wavelengths, scan, fixed_wavelength
+        ),
+      }
+
     # 2. Status-only polling (no progressive GET_DATA for spectrum).
     await self._poll_status_only(read_timeout, log_prefix="FL spectrum")
+    self._resume_context = None
 
     # 3. Retrieve one page per well via standard GET_DATA
-    num_wells = len(wells)
     pages: List[bytes] = []
     for page_num in range(num_wells):
       try:
@@ -4368,7 +4516,6 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       return []
 
     # 4. Parse pages into per-wavelength results
-    wavelengths = list(range(start_wavelength, end_wavelength + 1))
     return self._parse_fl_spectrum_pages(
       pages, plate, wells, wavelengths, scan, fixed_wavelength
     )
