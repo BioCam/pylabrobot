@@ -1,0 +1,496 @@
+2026-03-05 17:30:20,370 DEBUG FTDI device resolution: found 1 candidates for VID:PID 1027:47976, device_id None: None (VID:PID 0d8c:0014), SN0001 (VID:PID 0c45:636d), FT9NOXXH (VID:PID 0403:6001), BBWDU7AD (VID:PID 0856:ac11), None (VID:PID 2109:2817), FTEH6V0A (VID:PID 0403:6001), 430-2621 (VID:PID 0403:bb68), None (VID:PID 1a40:0101), None (VID:PID 1a86:8091), 1000480000.usb (VID:PID 1d6b:0002), xhci-hcd.1 (VID:PID 1d6b:0003), None (VID:PID 1a40:0101), None (VID:PID 413c:4503), xhci-hcd.1 (VID:PID 1d6b:0002), xhci-hcd.0 (VID:PID 1d6b:0003), None (VID:PID 413c:4503), 00 (VID:PID 08af:8000), xhci-hcd.0 (VID:PID 1d6b:0002)
+2026-03-05 17:30:20,387 INFO Successfully opened FTDI device: 430-2621
+2026-03-05 17:30:20,391 DEBUG sent 14 bytes: 02000e0c01000010020000002f0d
+2026-03-05 17:30:20,645 INFO read 24 bytes: 0200180c011520060000030000000000000000e00001450d
+2026-03-05 17:30:20,646 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:20,683 INFO read 24 bytes: 0200180c010520060000000000000000000000e00001320d
+2026-03-05 17:30:20,683 INFO status: {'standby': False, 'busy': False, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': False, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:20,686 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:20,723 INFO read 24 bytes: 0200180c010520060000000000000000000000e00001320d
+2026-03-05 17:30:20,724 DEBUG sent 15 bytes: 02000f0c050700000000000000290d
+2026-03-05 17:30:20,794 INFO read 271 bytes: 02010f0c070520060000000100000a0101010100000100ee0200000f0019040000000000000304000001000001020000000000000000000032000000000000000000000000000000000000000074006f0000000000000065000000dc050000000000000000f4010803a70408076009da08ac0d0000000000000000000000000000000000000000000000000100000001010000000000000001010000000000000012029806ae013d0a4605ee01fbff700c00000000a40058ff8e03f20460ff5511fe0b55118f1a170298065aff970668042603bc14b804080791009001463228460a0046071e00200398062003f2062103d40628002c01900146001e00001411001209ac0d60090000000000213c0d
+2026-03-05 17:30:20,795 INFO EEPROM: 263 bytes, head=070520060000000100000a0101010100
+2026-03-05 17:30:20,797 DEBUG sent 15 bytes: 02000f0c0509000000000000002b0d
+2026-03-05 17:30:20,834 INFO read 39 bytes: 0200270c0a052006000005464e6f7620323020323032300031313a35313a32310000010004ee0d
+2026-03-05 17:30:20,836 DEBUG sent 15 bytes: 02000f0c0e0b12000004190000650d
+2026-03-05 17:30:20,873 INFO read 24 bytes: 0200180c0125200600000e0000000000000000e00001600d
+2026-03-05 17:30:20,874 INFO Unknown BMG reader (type 0x2006) (0x2006) fw 1.35 (Nov 20 2020 11:51:21) -- detection: absorbance, fluorescence, luminescence, alpha_technology
+2026-03-05 17:30:20,909 DEBUG sent 14 bytes: 02000e0c0301000000000000200d
+2026-03-05 17:30:20,944 INFO read 24 bytes: 0200180c012520060000030000000000000000e00001550d
+2026-03-05 17:30:20,946 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:20,982 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:20,984 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:21,086 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:21,122 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:21,126 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:21,229 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:21,265 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:21,266 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:21,367 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:21,403 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:21,404 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:21,506 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:21,541 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:21,542 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:21,643 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:21,680 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:21,680 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:21,781 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:21,817 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:21,818 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:21,919 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:21,956 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:21,957 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:22,058 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:22,095 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:22,096 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:22,198 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:22,233 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:22,234 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:22,335 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:22,371 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:22,372 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:22,475 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:22,512 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:22,513 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:22,614 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:22,650 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:22,652 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:22,753 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:22,789 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:22,791 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:22,893 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:22,928 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:22,930 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:23,031 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:23,067 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:23,069 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:23,170 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:23,206 INFO read 24 bytes: 0200180c012520260000030000000000000000e00001750d
+2026-03-05 17:30:23,208 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:23,310 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:23,346 INFO read 24 bytes: 0200180c012520270000030000000000000000e00001760d
+2026-03-05 17:30:23,348 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:23,449 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:23,485 INFO read 24 bytes: 0200180c012520270000030000000000000000e00001760d
+2026-03-05 17:30:23,486 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:23,587 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:23,623 INFO read 24 bytes: 0200180c012520270000030000000000000000e00001760d
+2026-03-05 17:30:23,625 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:23,727 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:23,763 INFO read 24 bytes: 0200180c012520270000030000000000000000e00001760d
+2026-03-05 17:30:23,764 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:23,865 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:23,901 INFO read 24 bytes: 0200180c012520270000030000000000000000e00001760d
+2026-03-05 17:30:23,902 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:24,003 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:24,039 INFO read 24 bytes: 0200180c012520270000030000000000000000e00001760d
+2026-03-05 17:30:24,040 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:24,141 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:24,178 INFO read 24 bytes: 0200180c012520270000030000000000000000e00001760d
+2026-03-05 17:30:24,179 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:24,280 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:24,317 INFO read 24 bytes: 0200180c012520270000030000000000000000e00001760d
+2026-03-05 17:30:24,318 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:24,419 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:24,455 INFO read 24 bytes: 0200180c012520270000030000000000000000e00001760d
+2026-03-05 17:30:24,456 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:24,559 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:24,593 INFO read 24 bytes: 0200180c012520270000030000000000000000e00001760d
+2026-03-05 17:30:24,594 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:24,697 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:24,733 INFO read 24 bytes: 0200180c010520210000000000000000000000e000014d0d
+2026-03-05 17:30:24,734 INFO status: {'standby': False, 'busy': False, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:24,740 DEBUG sent 14 bytes: 02000e0c03000000000000001f0d
+2026-03-05 17:30:24,777 INFO read 24 bytes: 0200180c012520210000030000000000000000e00001700d
+2026-03-05 17:30:24,781 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:24,817 INFO read 24 bytes: 0200180c012520210000030000000000000000e00001700d
+2026-03-05 17:30:24,818 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:24,919 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:24,955 INFO read 24 bytes: 0200180c012520210000030000000000000000e00001700d
+2026-03-05 17:30:24,957 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:25,058 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:25,094 INFO read 24 bytes: 0200180c012520210000030000000000000000e00001700d
+2026-03-05 17:30:25,095 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:25,196 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:25,232 INFO read 24 bytes: 0200180c012520210000030000000000000000e00001700d
+2026-03-05 17:30:25,233 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:25,334 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:25,370 INFO read 24 bytes: 0200180c012520210000030000000000000000e00001700d
+2026-03-05 17:30:25,371 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:25,472 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:25,509 INFO read 24 bytes: 0200180c012520210000030000000000000000e00001700d
+2026-03-05 17:30:25,510 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:25,611 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:25,647 INFO read 24 bytes: 0200180c012520210000030000000000000000e00001700d
+2026-03-05 17:30:25,648 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:25,749 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:25,784 INFO read 24 bytes: 0200180c012520210000030000000000000000e00001700d
+2026-03-05 17:30:25,785 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:25,886 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:25,923 INFO read 24 bytes: 0200180c012520210000030000000000000000e00001700d
+2026-03-05 17:30:25,924 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': True, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:26,025 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:26,062 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:26,063 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:26,164 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:26,201 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:26,202 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:26,303 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:26,338 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:26,339 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:26,440 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:26,476 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:26,477 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:26,578 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:26,614 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:26,616 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:26,717 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:26,755 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:26,756 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:26,857 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:26,893 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:26,894 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:26,995 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:27,031 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:27,032 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:27,133 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:27,169 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:27,170 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:27,271 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:27,307 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:27,308 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:27,409 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:27,445 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:27,446 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:27,547 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:27,583 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:27,584 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:27,686 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:27,722 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:27,723 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:27,825 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:27,861 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:27,862 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:27,963 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:27,999 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:28,000 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:28,101 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:28,137 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:28,138 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:28,240 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:28,276 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:28,282 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:28,384 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:28,420 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:28,423 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:28,526 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:28,563 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:28,564 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:28,665 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:28,701 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:28,702 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:28,802 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:28,840 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:28,841 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:28,943 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:28,979 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:28,980 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:29,085 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:29,117 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:29,122 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:29,223 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:29,259 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:29,260 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:29,360 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:29,398 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:29,398 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:29,499 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:29,537 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:29,537 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:29,638 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:29,676 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:29,676 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:29,781 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:29,817 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:29,821 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:29,923 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:30,965 DEBUG timed out reading response (17/24 bytes)
+2026-03-05 17:30:30,965 INFO read 17 bytes: 0200180c0125202000000300000000000d
+2026-03-05 17:30:30,965 WARNING status request: bad frame on attempt 1/5 (Size field says 24, got 17 bytes)
+2026-03-05 17:30:30,966 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:31,003 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:31,004 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:31,105 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:31,141 INFO read 24 bytes: 0200180c012520200000030000000000000000e000016f0d
+2026-03-05 17:30:31,142 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': False, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:31,243 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:31,281 INFO read 24 bytes: 0200180c012520220000030000000000000000e00001710d
+2026-03-05 17:30:31,281 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:31,382 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:31,419 INFO read 24 bytes: 0200180c012520220000030000000000000000e00001710d
+2026-03-05 17:30:31,420 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:31,521 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:31,557 INFO read 24 bytes: 0200180c012520220000030000000000000000e00001710d
+2026-03-05 17:30:31,557 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:31,659 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:31,695 INFO read 24 bytes: 0200180c012520220000030000000000000000e00001710d
+2026-03-05 17:30:31,695 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:31,797 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:31,833 INFO read 24 bytes: 0200180c012520220000030000000000000000e00001710d
+2026-03-05 17:30:31,833 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:31,934 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:31,970 INFO read 24 bytes: 0200180c012520220000030000000000000000e00001710d
+2026-03-05 17:30:31,970 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:32,071 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:32,107 INFO read 24 bytes: 0200180c012520220000030000000000000000e00001710d
+2026-03-05 17:30:32,107 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:32,208 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:32,246 INFO read 24 bytes: 0200180c012520220000030000000000000000e00001710d
+2026-03-05 17:30:32,246 INFO status: {'standby': False, 'busy': True, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': False, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:32,347 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:32,385 INFO read 24 bytes: 0200180c010520260000000000000000000000e00001520d
+2026-03-05 17:30:32,385 INFO status: {'standby': False, 'busy': False, 'running': False, 'valid': True, 'unread_data': False, 'lid_open': False, 'initialized': True, 'reading_wells': False, 'z_probed': True, 'plate_detected': True, 'drawer_open': False, 'filter_cover_open': False, 'temperature_bottom': None, 'temperature_top': None}
+2026-03-05 17:30:32,393 DEBUG sent 15 bytes: 02000f0c050700000000000000290d
+2026-03-05 17:30:32,464 INFO read 271 bytes: 02010f0c070520260000000100000a0101010100000100ee0200000f0019040000000000000304000001000001020000000000000000000032000000000000000000000000000000000000000074006f0000000000000065000000dc050000000000000000f4010803a70408076009da08ac0d0000000000000000000000000000000000000000000000000100000001010000000000000001010000000000000012029806ae013d0a4605ee01fbff700c00000000a40058ff8e03f20460ff5511fe0b55118f1a170298065aff970668042603bc14b804080791009001463228460a0046071e00200398062003f2062103d40628002c01900146001e00001411001209ac0d60090000000000215c0d
+2026-03-05 17:30:32,465 INFO EEPROM: 263 bytes, head=070520260000000100000a0101010100
+2026-03-05 17:30:32,473 DEBUG sent 15 bytes: 02000f0c052100000000000000430d
+2026-03-05 17:30:32,511 INFO read 50 bytes: 0200320c2105202600000024208a000009ef0000065e0000057d0002d9870000165f0000000a0000000a0000000a00054d0d
+2026-03-05 17:30:32,518 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:32,556 INFO read 24 bytes: 0200180c010520260000000000000000000000e00001520d
+2026-03-05 17:30:33,121 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:33,156 INFO read 24 bytes: 0200180c010520260000000000000000000000e00001520d
+2026-03-05 17:30:33,158 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:33,194 INFO read 24 bytes: 0200180c010520260000000000000000000000e00001520d
+2026-03-05 17:30:36,726 INFO Focus well: scanning test_plate_well_D6
+2026-03-05 17:30:36,729 DEBUG sent 53 bytes: 0200350c0931e82164059604682c521cfc0c0806040408000a05dc00000000000c133d12a713bc1504143c0004000300060007f60d
+2026-03-05 17:30:36,779 INFO read 24 bytes: 0200180c012500260000090000000000000000e000015b0d
+2026-03-05 17:30:36,783 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:36,819 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:37,121 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:37,158 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:37,460 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:37,497 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:37,798 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:37,836 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:38,138 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:38,175 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:38,476 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:38,514 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:38,815 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:38,853 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:39,155 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:39,192 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:39,493 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:39,529 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:39,830 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:39,866 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:40,168 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:40,205 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:40,506 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:40,542 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:40,843 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:40,879 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:41,181 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:41,218 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:41,519 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:41,557 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:41,858 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:41,896 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:42,198 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:42,234 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:42,536 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:42,572 INFO read 24 bytes: 0200180c012500260000090200040000000000e00001610d
+2026-03-05 17:30:42,873 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:42,911 INFO read 24 bytes: 0200180c012500260000090200040000000000e00001610d
+2026-03-05 17:30:43,212 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:43,250 INFO read 24 bytes: 0200180c012500260000090200040000000000e00001610d
+2026-03-05 17:30:43,551 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:43,589 INFO read 24 bytes: 0200180c012500260000090200040000000000e00001610d
+2026-03-05 17:30:43,890 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:43,928 INFO read 24 bytes: 0200180c012500260000090200040000000000e00001610d
+2026-03-05 17:30:44,229 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:44,266 INFO read 24 bytes: 0200180c012500260000090200040000000000e00001610d
+2026-03-05 17:30:44,567 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:44,603 INFO read 24 bytes: 0200180c012500260000090200040000000000e00001610d
+2026-03-05 17:30:44,904 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:44,942 INFO read 24 bytes: 0200180c012500260000090200040000000000e00001610d
+2026-03-05 17:30:45,243 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:45,280 INFO read 24 bytes: 0200180c012500260000090200060000000000e00001630d
+2026-03-05 17:30:45,582 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:45,618 INFO read 24 bytes: 0200180c012500260000090200060000000000e00001630d
+2026-03-05 17:30:45,920 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:45,955 INFO read 24 bytes: 0200180c012500260000090200060000000000e00001630d
+2026-03-05 17:30:46,257 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:46,294 INFO read 24 bytes: 0200180c012500260000090200060000000000e00001630d
+2026-03-05 17:30:46,596 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:46,633 INFO read 24 bytes: 0200180c012500260000090200060000000000e00001630d
+2026-03-05 17:30:46,935 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:46,972 INFO read 24 bytes: 0200180c012500260000090200060000000000e00001630d
+2026-03-05 17:30:47,274 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:47,311 INFO read 24 bytes: 0200180c012500260000090200060000000000e00001630d
+2026-03-05 17:30:47,613 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:47,650 INFO read 24 bytes: 0200180c012500260000090200060000000000e00001630d
+2026-03-05 17:30:47,952 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:47,989 INFO read 24 bytes: 0200180c012500260000090200060000000000e00001630d
+2026-03-05 17:30:48,291 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:48,328 INFO read 24 bytes: 0200180c012500260000090200060000000000e00001630d
+2026-03-05 17:30:48,630 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:48,667 INFO read 24 bytes: 0200180c012500260000090200060000000000e00001630d
+2026-03-05 17:30:48,969 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:49,006 INFO read 24 bytes: 0200180c010520060000000000000000000000e00001320d
+2026-03-05 17:30:49,007 DEBUG sent 15 bytes: 02000f0c050500000000000000270d
+2026-03-05 17:30:49,166 INFO read 1185 bytes: 0204a10c050520060000000000000000000000060404060000b4c20090000005dc000032c7000005d2000033b9000005c800003314000005be00002fbc000005b400002fc0000005aa00002fc2000005a000002ecd0000059600002d860000058c00002de40000058200002c630000057800002f040000056e00002de10000056400002ee60000055a00002ffe000005500000315300000546000031a10000053c000031f100000532000034fa00000528000035a10000051e000037c10000051400003a010000050a00003c650000050000003cba000004f600004252000004ec000045a0000004e20000477b000004d80000482e000004ce000050ef000004c4000055dc000004ba00005905000004b000006002000004a6000061840000049c00006ac90000049200006f2a00000488000077820000047e00007b9000000474000083ad0000046a0000890f00000460000091c500000456000099740000044c00009d04000004420000a4cc000004380000a97d0000042e0000ad27000004240000b15b0000041a0000b49b000004100000b2ae000004060000b664000003fc0000b6b2000003f20000b36b000003e80000ae58000003de0000b0bd000003d40000acfb000003ca0000a826000003c00000a709000003b60000a1b7000003ac00009e87000003a2000095c200000398000091d10000038e00008f0300000384000088560000037a000083af0000037000007de0000003660000766e0000035c0000716b0000035200006a3700000348000063660000033e00005cfb00000334000057b60000032a000051f30000032000004b7d000003160000478d0000030c0000438c0000030200003f6b000002f800003b39000002ee000036fc000002e4000035cd000002da00003257000002d00000306f000002c600002adc000002bc000028c9000002b20000263f000002a8000024c90000029e000021e800000294000022400000028a000020990000028000001e5b0000027600001e6a0000026c00001c2b0000026200001afd0000025800001a580000024e0000189800000244000015d70000023a00001766000002300000167900000226000015560000021c0000141b00000212000012a900000208000013ce000001fe0000126c000001f400001168000001ea0000108b000001e00000102b000001d600001009000001cc00000ff2000001c200000e60000001b800000dba000001ae00000d8d000001a400000dc20000019a00000d490000019000000c6e0000018600000c300000017c00000ba10000017200000a6e0000016800000b410000015e00000ad00000015400000a360000014a0000099000000140000009b000000136000009420000012c0000094e00000122000008d4000001180000087b0000010e0000088200000104000007e6000000fa00000846000000f000000795000000e6000006c8000000dc000006c3000000d200000704000000c800000696000000be0000066a000000b40000069a000000aa00000608000000a0000005fa00000096000005440000008c000005be00000082000004c400000078000005060000006e000004e100000064000004a20000005a0000052100000050000004b6000000460000049e00bbe80d
+2026-03-05 17:30:49,168 INFO Focus result: 143 Z-positions, gain=0, peak_signal=46274, best_focal=10.30mm
+2026-03-05 17:30:49,169 INFO Focus well: scanning test_plate_well_H5
+2026-03-05 17:30:49,171 DEBUG sent 53 bytes: 0200350c0931e82164059604682c521cfc0c0805080408000a05dc00000000000c133d12a713bc1504143c0004000300060007f90d
+2026-03-05 17:30:49,222 INFO read 24 bytes: 0200180c012500060000090000000000000000e000013b0d
+2026-03-05 17:30:49,224 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:49,260 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:49,562 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:49,598 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:49,900 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:49,935 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:50,237 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:50,273 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:50,574 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:50,610 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:50,911 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:50,949 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:51,250 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:51,286 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:51,587 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:51,623 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:51,924 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:51,960 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:52,261 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:52,305 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:52,606 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:52,642 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:30:52,943 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:52,979 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:53,280 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:53,316 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:53,617 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:53,653 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:53,954 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:53,992 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:54,293 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:54,331 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:54,632 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:54,669 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:54,970 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:55,007 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:55,308 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:55,345 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:55,646 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:55,683 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:55,985 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:56,021 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:30:56,323 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:30:56,359 INFO read 24 bytes: 0200180c010520060000000000000000000000e00001320d
+2026-03-05 17:30:56,360 DEBUG sent 15 bytes: 02000f0c050500000000000000270d
+2026-03-05 17:30:56,519 INFO read 1185 bytes: 0204a10c050520060000000000000000000000050805dc0000d4590090000005dc0000e200000005d20000d5bb000005c80000c552000005be0000b912000005b40000a597000005aa0000a5e0000005a000009e2600000596000095f70000058c000089b40000058200007fed0000057800007ebf0000056e000072f10000056400006ed60000055a0000698f0000055000005ee70000054600005dbc0000053c000058ad000005320000573c00000528000052740000051e00004daf0000051400004be50000050a0000440d000005000000496a000004f600004596000004ec000039b6000004e2000043af000004d800003ed9000004ce00003945000004c4000037a3000004ba0000373a000004b00000360a000004a6000035270000049c000035ac00000492000031c900000488000033ba0000047e00002ce500000474000030720000046a00002d5a0000046000002d730000045600002d440000044c00002d2d0000044200002abd0000043800002dd70000042e000029d300000424000029580000041a00002a190000041000002b750000040600002dbe000003fc00002cdf000003f200002833000003e800002a72000003de00002c39000003d400002c94000003ca00002a75000003c000002b8a000003b600002dcb000003ac00003363000003a20000316d0000039800002ba70000038e00002f6c0000038400002f550000037a000031f3000003700000385200000366000031fc0000035c000030d200000352000035fb00000348000039830000033e0000369900000334000036660000032a00003d1a0000032000003a8600000316000041ec0000030c000041af000003020000453d000002f8000041e8000002ee000046eb000002e400004631000002da00004529000002d0000048eb000002c6000049a7000002bc00004784000002b200004a4d000002a8000050490000029e00004ec400000294000052950000028a0000519e00000280000053340000027600004c420000026c0000515e0000026200005287000002580000517b0000024e0000506e0000024400004bf40000023a00004c2e000002300000494f00000226000045b50000021c00003e0c00000212000041120000020800003eea000001fe000039c9000001f400003c57000001ea0000391e000001e0000036f8000001d600003588000001cc00002fa0000001c200002eca000001b80000308e000001ae00002bf7000001a400002bd20000019a000026df00000190000025e400000186000023320000017c000022200000017200001dbe0000016800001acd0000015e00001c910000015400001a140000014a0000193800000140000017cc000001360000174a0000012c0000146800000122000014d900000118000015090000010e0000141b000001040000117e000000fa00001259000000f000001183000000e600000ff8000000dc00001090000000d200000e43000000c800000e2b000000be00000fc1000000b400000c0f000000aa00000cfc000000a000000cef0000009600000b270000008c00000aa10000008200000b79000000780000097e0000006e00000b2b0000006400000b6b0000005a0000084800000050000009460000004600000bf100bb220d
+2026-03-05 17:30:56,520 INFO Focus result: 143 Z-positions, gain=0, peak_signal=54361, best_focal=15.00mm
+2026-03-05 17:34:04,802 INFO Focus well: scanning test_plate_well_D6
+2026-03-05 17:34:04,805 DEBUG sent 53 bytes: 0200350c0931e82164059604682c521cfc0c0806040408000a05dc00000000000c133d12a713bc1504143c0004000300060007f60d
+2026-03-05 17:34:04,855 INFO read 24 bytes: 0200180c012500260000090000000000000000e000015b0d
+2026-03-05 17:34:04,856 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:04,893 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:05,196 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:05,232 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:05,535 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:05,573 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:05,874 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:05,912 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:06,213 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:06,251 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:06,552 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:06,589 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:06,891 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:06,928 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:07,231 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:07,266 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:07,568 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:07,603 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:07,905 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:07,942 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:08,244 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:08,279 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:08,582 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:08,618 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:08,921 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:08,956 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:09,258 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:09,294 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:09,596 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:09,632 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:09,934 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:09,970 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:10,272 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:10,309 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:10,611 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:10,647 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:10,949 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:10,986 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:11,288 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:11,325 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:11,627 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:11,663 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:11,965 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:12,001 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:12,303 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:12,339 INFO read 24 bytes: 0200180c010520060000000000000000000000e00001320d
+2026-03-05 17:34:12,341 DEBUG sent 15 bytes: 02000f0c050500000000000000270d
+2026-03-05 17:34:12,511 INFO read 1289 bytes: 0205090c0505200600000000000000000000000604019a0000abfe009d000005dc000005fb000005d2000004fc000005c800000744000005be000003dc000005b40000055a000005aa000005bf000005a0000002ae00000596000005bd0000058c00000614000005820000054500000578000005170000056e000006c000000564000005bc0000055a0000051800000550000005aa000005460000071e0000053c0000077b00000532000006df00000528000007800000051e000006e100000514000007dd0000050a0000062600000500000006e2000004f6000007e9000004ec00000682000004e200000684000004d80000095a000004ce00000913000004c4000007b4000004ba0000099e000004b00000087d000004a6000008e00000049c00000a6d000004920000097400000488000009cb0000047e0000087600000474000008240000046a00000a990000046000000a6a00000456000009b00000044c000009390000044200000a7b0000043800000a430000042e00000bed0000042400000ca70000041a00000bf10000041000000b210000040600000c2c000003fc00000b76000003f200000c73000003e800000d66000003de00000ed0000003d400000d12000003ca00000da6000003c000001266000003b600000f12000003ac0000131d000003a2000012d300000398000011c40000038e0000115100000384000013e90000037a00001286000003700000157600000366000015a60000035c000016d0000003520000165a00000348000016310000033e0000197100000334000019dd0000032a000019090000032000001cf90000031600001fa30000030c0000220d0000030200001f16000002f800002162000002ee000021be000002e400002518000002da00002795000002d000002778000002c600002d90000002bc00002cbd000002b20000310c000002a8000031b60000029e0000347a00000294000038ef0000028a00003c620000028000003c5e00000276000040950000026c000048880000026200004823000002580000540a0000024e000050220000024400005a2e0000023a0000615800000230000066a400000226000069b60000021c00006b9a00000212000077160000020800007963000001fe00008cbe000001f4000085b7000001ea000090d7000001e00000981b000001d600009bd9000001cc00009fad000001c20000a6b7000001b80000a371000001ae0000ad38000001a40000af6d0000019a0000aadc000001900000b021000001860000a4540000017c0000a8de000001720000a93f000001680000a5ed0000015e00009b240000015400009b470000014a0000981800000140000095560000013600008bee0000012c000088fd00000122000083a70000011800007d440000010e00007cd70000010400006fb1000000fa00006f5b000000f0000064fc000000e600005bb3000000dc00005380000000d200004e83000000c80000485b000000be00003fab000000b400003a6b000000aa000036ce000000a00000328600000096000028ca0000008c000024960000008200002bbf000000780000212a0000006e0000213600000064000020ad0000005a000021a60000005000001b2f0000004600001a490000003c00001980000000320000177000000028000017f40000001e0000155c000000140000127f0000000a000014760000000000001172fffffff600000ebfffffffec00000e1bffffffe200000e52ffffffd800000ed9ffffffce00000e7cffffffc400000ed500d4200d
+2026-03-05 17:34:12,514 INFO Focus result: 150 Z-positions, gain=0, peak_signal=44030, best_focal=4.10mm
+2026-03-05 17:34:12,515 INFO Focus well: scanning test_plate_well_H5
+2026-03-05 17:34:12,517 DEBUG sent 53 bytes: 0200350c0931e82164059604682c521cfc0c0805080408000a05dc00000000000c133d12a713bc1504143c0004000300060007f90d
+2026-03-05 17:34:12,567 INFO read 24 bytes: 0200180c012500060000090000000000000000e000013b0d
+2026-03-05 17:34:12,568 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:12,605 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:12,907 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:12,944 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:13,246 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:13,283 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:13,585 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:13,621 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:13,922 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:13,960 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:14,262 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:14,298 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:14,600 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:14,636 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:14,938 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:14,974 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:15,276 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:15,312 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:15,613 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:15,651 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:15,953 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:15,989 INFO read 24 bytes: 0200180c012500260000090000080000000000e00001630d
+2026-03-05 17:34:16,290 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:16,328 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:16,629 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:16,666 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:16,967 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:17,005 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:17,306 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:17,343 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:17,644 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:17,682 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:17,984 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:18,022 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:18,324 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:18,360 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:18,661 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:18,699 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:19,000 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:19,037 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:19,339 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:19,375 INFO read 24 bytes: 0200180c012500260000090200080000000000e00001650d
+2026-03-05 17:34:19,677 DEBUG sent 9 bytes: 0200090c800000970d
+2026-03-05 17:34:19,714 INFO read 24 bytes: 0200180c010520060000000000000000000000e00001320d
+2026-03-05 17:34:19,716 DEBUG sent 15 bytes: 02000f0c050500000000000000270d
+2026-03-05 17:34:19,899 INFO read 1289 bytes: 0205090c050520060000000000000000000000050801ea000092a6009d000005dc000005e1000005d200000519000005c800000459000005be000004be000005b400000530000005aa000003ee000005a0000004d700000596000003810000058c0000061c000005820000062400000578000003d10000056e0000048800000564000006e20000055a000005b1000005500000074c00000546000006620000053c0000063e00000532000006b600000528000006d60000051e0000084500000514000007620000050a000005ea0000050000000828000004f6000006b7000004ec00000875000004e200000791000004d800000693000004ce000008d8000004c4000008b0000004ba00000905000004b00000090c000004a6000008c80000049c000008bd000004920000094600000488000007f00000047e00000a2600000474000009d70000046a00000ae000000460000009cb0000045600000c2c0000044c00000c930000044200000bd90000043800000bb60000042e00000c530000042400000c450000041a00000d7e0000041000000dc60000040600000c5e000003fc00000cb3000003f200000ee8000003e800000c46000003de00000d43000003d400000fe2000003ca00001298000003c0000013bc000003b600000f1e000003ac0000134a000003a20000145c00000398000014b80000038e0000155e00000384000014e40000037a00001571000003700000185d00000366000018230000035c0000193f0000035200001a130000034800001e610000033e00001e210000033400001e910000032a00002094000003200000217100000316000025be0000030c000021bb0000030200002917000002f800002b01000002ee00002d74000002e400002dc6000002da000030b4000002d0000033d6000002c600003a6e000002bc00003a8b000002b200003c6a000002a8000044310000029e000047b90000029400004db50000028a000054f8000002800000597e00000276000059970000026c0000631b00000262000060fc0000025800006d910000024e00006bde00000244000076ba0000023a000079f0000002300000832d00000226000085f30000021c0000901900000212000089c40000020800009236000001fe0000903a000001f40000939e000001ea00009427000001e0000090f3000001d60000944c000001cc00008cdc000001c200008e15000001b80000879a000001ae000086b0000001a4000083320000019a00008341000001900000794900000186000076370000017c0000739f000001720000691d00000168000069500000015e000064c10000015400005bf80000014a00005b3e000001400000508e0000013600004db90000012c00004ab600000122000043860000011800003b6a0000010e000040b9000001040000367d000000fa0000352f000000f000003420000000e600002c34000000dc000028d9000000d20000282d000000c800002354000000be00002169000000b40000207b000000aa00001bd6000000a000001b6e00000096000019e20000008c000016cf00000082000014be00000078000013cd0000006e000014b0000000640000115c0000005a000010e80000005000000f4300000046000012870000003c000010b40000003200000eae0000002800000f190000001e00000e1e0000001400000dd30000000a00000dda0000000000000eb5fffffff600000b1affffffec00000b57ffffffe200000aa8ffffffd800000b88ffffffce00000b58ffffffc400000a0d00d0030d
+2026-03-05 17:34:19,900 INFO Focus result: 150 Z-positions, gain=0, peak_signal=37542, best_focal=4.90mm
