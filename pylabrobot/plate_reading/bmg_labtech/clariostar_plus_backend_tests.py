@@ -240,6 +240,18 @@ def _make_backend() -> CLARIOstarPlusBackend:
   return backend
 
 
+def _make_backend_and_mock():
+  backend = _make_backend()
+  mock: MockFTDI = backend.io  # type: ignore[assignment]
+  return backend, mock
+
+
+def _get_gt_inner(gt_hex: dict, key: str) -> bytes:
+  """Extract inner payload from ground truth hex frame."""
+  frame = bytes.fromhex(gt_hex[key])
+  return frame[4:-4]
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -1458,9 +1470,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.all_wells = self.plate.get_all_items()
 
   def _get_gt_inner(self, key: str) -> bytes:
-    """Extract inner payload (no STX/size/header/checksum/CR) from ground truth hex."""
-    frame = bytes.fromhex(_GT_HEX[key])
-    return frame[4:-4]  # skip STX(1)+size(2)+header(1) and checksum(3)+CR(1)
+    return _get_gt_inner(_GT_HEX, key)
 
   def _compare_payload(self, payload: bytes, gt_key: str, msg: str = ""):
     """Compare payload against ground truth, skipping known PLR-vs-OEM differences.
@@ -1979,9 +1989,7 @@ class TestBuildAbsorbanceSpectrumPayload(unittest.TestCase):
     self.all_wells = self.plate.get_all_items()
 
   def _get_gt_inner(self, key: str) -> bytes:
-    """Extract inner payload (no STX/size/header/checksum/CR) from ground truth hex."""
-    frame = bytes.fromhex(_GT_HEX[key])
-    return frame[4:-4]  # skip STX(1)+size(2)+header(1) and checksum(3)+CR(1)
+    return _get_gt_inner(_GT_HEX, key)
 
   def _compare_payload(self, payload: bytes, gt_key: str, msg: str = ""):
     """Compare spectrum payload against ground truth.
@@ -4594,9 +4602,7 @@ class TestBuildFluorescencePayload(unittest.TestCase):
     self.all_wells = self.plate.get_all_items()
 
   def _get_gt_inner(self, key: str) -> bytes:
-    """Extract inner payload (no STX/size/header/checksum/CR) from ground truth hex."""
-    frame = bytes.fromhex(_FL_GT_HEX[key])
-    return frame[4:-4]
+    return _get_gt_inner(_FL_GT_HEX, key)
 
   def _compare_fl_payload(self, payload: bytes, gt_key: str, msg: str = ""):
     """Compare FL payload against ground truth, skipping known differences.
@@ -7945,6 +7951,20 @@ def _extract_payload(frame: bytes) -> bytes:
   return frame[4:-4]
 
 
+_SHAKING_PCAP_CASES = [
+  # (name, capture, pattern, rpm, duration, x, y, expected_hex)
+  ("orbital_300rpm_5s",   "SH-02", "orbital",        300, 5,  9999, 9999, "1d00020005270f270f0000"),
+  ("linear_300rpm_5s",    "SH-02", "linear",         300, 5,  9999, 9999, "1d01020005270f270f0000"),
+  ("double_orbital",      "SH-03", "double_orbital",  300, 5,  9999, 9999, "1d02020005270f270f0000"),
+  ("meander_300rpm_5s",   "SH-04", "meander",        300, 5,  9999, 9999, "1d03020005270f270f0000"),
+  ("orbital_500rpm_5s",   "SH-05", "orbital",        500, 5,  9999, 9999, "1d00040005270f270f0000"),
+  ("orbital_700rpm_5s",   "SH-07", "orbital",        700, 5,  9999, 9999, "1d00060005270f270f0000"),
+  ("orbital_300rpm_10s",  "SH-06", "orbital",        300, 10, 9999, 9999, "1d0002000a270f270f0000"),
+  ("orbital_300rpm_30s",  "ST-01", "orbital",        300, 30, 9999, 9999, "1d0002001e270f270f0000"),
+  ("custom_x500",         "SH-10", "orbital",        300, 5,  500,  9999, "1d0002000501f4270f0001"),
+]
+
+
 class TestStartShaking(unittest.TestCase):
   """Verify start_shaking() payload bytes against DDE pcap ground truth.
 
@@ -7956,91 +7976,17 @@ class TestStartShaking(unittest.TestCase):
   differs from OEM MARS framing (1-byte checksum), but the device accepts both.
   """
 
-  def test_orbital_300rpm_5s(self):
-    """SH-02 pcap: orbital 300rpm 5s default position."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK, STATUS_IDLE)  # ACK + wait poll
-    asyncio.run(backend.start_shaking(pattern="orbital", rpm=300, duration=5))
-    payload = _extract_payload(mock.written[0])
-    # Pcap ground truth: 1d 00 02 00 05 27 0f 27 0f 00 00
-    self.assertEqual(payload, bytes.fromhex("1d00020005270f270f0000"))
-
-  def test_linear_300rpm_5s(self):
-    """SH-02 pcap: linear 300rpm 5s."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK, STATUS_IDLE)
-    asyncio.run(backend.start_shaking(pattern="linear", rpm=300, duration=5))
-    payload = _extract_payload(mock.written[0])
-    self.assertEqual(payload, bytes.fromhex("1d01020005270f270f0000"))
-
-  def test_double_orbital_300rpm_5s(self):
-    """SH-03 pcap: double_orbital 300rpm 5s."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK, STATUS_IDLE)
-    asyncio.run(backend.start_shaking(pattern="double_orbital", rpm=300, duration=5))
-    payload = _extract_payload(mock.written[0])
-    self.assertEqual(payload, bytes.fromhex("1d02020005270f270f0000"))
-
-  def test_meander_300rpm_5s(self):
-    """SH-04 pcap: meander 300rpm 5s."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK, STATUS_IDLE)
-    asyncio.run(backend.start_shaking(pattern="meander", rpm=300, duration=5))
-    payload = _extract_payload(mock.written[0])
-    self.assertEqual(payload, bytes.fromhex("1d03020005270f270f0000"))
-
-  def test_orbital_500rpm_5s(self):
-    """SH-05 pcap: orbital 500rpm 5s — speed_idx=4."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK, STATUS_IDLE)
-    asyncio.run(backend.start_shaking(pattern="orbital", rpm=500, duration=5))
-    payload = _extract_payload(mock.written[0])
-    self.assertEqual(payload, bytes.fromhex("1d00040005270f270f0000"))
-
-  def test_orbital_700rpm_5s(self):
-    """SH-07 pcap: orbital 700rpm 5s — speed_idx=6."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK, STATUS_IDLE)
-    asyncio.run(backend.start_shaking(pattern="orbital", rpm=700, duration=5))
-    payload = _extract_payload(mock.written[0])
-    self.assertEqual(payload, bytes.fromhex("1d00060005270f270f0000"))
-
-  def test_orbital_300rpm_10s(self):
-    """SH-06 pcap: orbital 300rpm 10s — duration=0x000A."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK, STATUS_IDLE)
-    asyncio.run(backend.start_shaking(pattern="orbital", rpm=300, duration=10))
-    payload = _extract_payload(mock.written[0])
-    self.assertEqual(payload, bytes.fromhex("1d0002000a270f270f0000"))
-
-  def test_orbital_300rpm_30s(self):
-    """ST-01/ST-04 pcap: orbital 300rpm 30s — duration=0x001E."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK, STATUS_IDLE)
-    asyncio.run(backend.start_shaking(pattern="orbital", rpm=300, duration=30))
-    payload = _extract_payload(mock.written[0])
-    self.assertEqual(payload, bytes.fromhex("1d0002001e270f270f0000"))
-
-  def test_custom_position_x500(self):
-    """SH-10 pcap: orbital 300rpm 5s x=500 y=9999."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK, STATUS_IDLE)
-    asyncio.run(backend.start_shaking(
-      pattern="orbital", rpm=300, duration=5,
-      x_position=500, y_position=9999,
-    ))
-    payload = _extract_payload(mock.written[0])
-    # Pcap: 1d 00 02 00 05 01 f4 27 0f 00 01
-    self.assertEqual(payload, bytes.fromhex("1d0002000501f4270f0001"))
+  def test_pcap_ground_truth(self):
+    for name, capture, pattern, rpm, dur, x, y, expected_hex in _SHAKING_PCAP_CASES:
+      with self.subTest(name=name, capture=capture):
+        backend, mock = _make_backend_and_mock()
+        mock.queue_response(ACK, STATUS_IDLE)
+        asyncio.run(backend.start_shaking(
+          pattern=pattern, rpm=rpm, duration=dur,
+          x_position=x, y_position=y,
+        ))
+        payload = _extract_payload(mock.written[0])
+        self.assertEqual(payload, bytes.fromhex(expected_hex))
 
   def test_meander_speed_validation(self):
     """Meander rejects > 300 RPM (confirmed: DDE exit 1000 at 400 RPM)."""
@@ -8073,8 +8019,7 @@ class TestStopShaking(unittest.TestCase):
   """
 
   def test_stop_sends_stop_command(self):
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    backend, mock = _make_backend_and_mock()
     mock.queue_response(
       STATUS_RUNNING,    # request_machine_status → running=True
       ACK,               # stop_measurement → STOP 0x0B
@@ -8085,8 +8030,7 @@ class TestStopShaking(unittest.TestCase):
     self.assertEqual(len(stop_frames), 1)
 
   def test_stop_noop_when_not_running(self):
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    backend, mock = _make_backend_and_mock()
     mock.queue_response(STATUS_IDLE)
     asyncio.run(backend.stop_shaking())
     stop_frames = [w for w in mock.written if w == COMMANDS["stop_measurement"][1]]
@@ -8098,6 +8042,14 @@ class TestStopShaking(unittest.TestCase):
 # ---------------------------------------------------------------------------
 
 
+_IDLE_MOVE_PCAP_CASES = [
+  # (name, capture, pattern, duration, on_time, off_time, expected_hex)
+  ("linear_60s_periodic",   "IM-06",  "linear_corner", 60, 10, 5, "270100003c0005000a0000"),
+  ("incubation_5s",         "VAL-17", "incubation",     5,  0, 0, "27020000050000000000 00"),
+  ("linear_30s_5on_3off",   "VAL-18", "linear_corner", 30,  5, 3, "270100001e000300050000"),
+]
+
+
 class TestStartIdleMovement(unittest.TestCase):
   """Verify start_idle_movement() payload bytes against DDE pcap ground truth.
 
@@ -8106,39 +8058,16 @@ class TestStartIdleMovement(unittest.TestCase):
     [0x27] [mode] [speed_idx] [0x00] [duration_lo] [off_time:2B BE] [on_time:2B BE] [0x00] [0x00]
   """
 
-  def test_linear_corner_60s_periodic(self):
-    """IM-06 pcap: linear_corner, 60s, on=10s, off=5s.
-    Pcap payload: 27 01 00 00 3c 00 05 00 0a 00 00"""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK)
-    asyncio.run(backend.start_idle_movement(
-      pattern="linear_corner", duration=60, on_time=10, off_time=5,
-    ))
-    payload = _extract_payload(mock.written[0])
-    self.assertEqual(payload, bytes.fromhex("270100003c0005000a0000"))
-
-  def test_incubation_5s(self):
-    """VAL-17 pcap: incubation mode, 5s.
-    Pcap payload: 27 02 00 00 05 00 00 00 00 00 00"""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK)
-    asyncio.run(backend.start_idle_movement(pattern="incubation", duration=5))
-    payload = _extract_payload(mock.written[0])
-    self.assertEqual(payload, bytes.fromhex("27020000050000000000 00".replace(" ", "")))
-
-  def test_linear_corner_30s_periodic_5on_3off(self):
-    """VAL-18 pcap: linear_corner, 30s, on=5s, off=3s.
-    Pcap payload: 27 01 00 00 1e 00 03 00 05 00 00"""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
-    mock.queue_response(ACK)
-    asyncio.run(backend.start_idle_movement(
-      pattern="linear_corner", duration=30, on_time=5, off_time=3,
-    ))
-    payload = _extract_payload(mock.written[0])
-    self.assertEqual(payload, bytes.fromhex("270100001e000300050000"))
+  def test_pcap_ground_truth(self):
+    for name, capture, pattern, dur, on_t, off_t, expected_hex in _IDLE_MOVE_PCAP_CASES:
+      with self.subTest(name=name, capture=capture):
+        backend, mock = _make_backend_and_mock()
+        mock.queue_response(ACK)
+        asyncio.run(backend.start_idle_movement(
+          pattern=pattern, duration=dur, on_time=on_t, off_time=off_t,
+        ))
+        payload = _extract_payload(mock.written[0])
+        self.assertEqual(payload, bytes.fromhex(expected_hex.replace(" ", "")))
 
   def test_invalid_mode(self):
     backend = _make_backend()
@@ -8154,8 +8083,7 @@ class TestStopIdleMovement(unittest.TestCase):
 
   def test_cancel_payload(self):
     """IM-03 pcap: cancel idle movement (mode=0, all zeros)."""
-    backend = _make_backend()
-    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    backend, mock = _make_backend_and_mock()
     mock.queue_response(ACK)
     asyncio.run(backend.stop_idle_movement())
     payload = _extract_payload(mock.written[0])

@@ -1652,7 +1652,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     valid_sensors = ("bottom", "top", "mean")
     if sensor not in valid_sensors:
-      raise ValueError(f"sensor must be one of {valid_sensors}, got {sensor!r}.")
+      raise ValueError(f"sensor must be one of {valid_sensors}, got '{sensor}'.")
 
     if not await self._request_temperature_monitoring_on():
       await self._start_temperature_monitoring()
@@ -1751,7 +1751,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     last_well_x = plate_length - a1_x
     last_well_y = plate_width - a1_y
 
-    buf = bytearray(63)
+    buf = bytearray(self._PLATE_FIELD_SIZE)
     buf[0:2] = int(round(plate_length * 100)).to_bytes(2, "big")
     buf[2:4] = int(round(plate_width * 100)).to_bytes(2, "big")
     buf[4:6] = int(round(a1_x * 100)).to_bytes(2, "big")
@@ -1762,18 +1762,18 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     buf[13] = num_rows
     buf[14] = 0x00
 
-    # Well mask: 48 bytes (384 bits). Bit index = row * num_cols + col.
+    # Well mask: _WELL_MASK_BYTES bytes. Bit index = row * num_cols + col.
     # get_all_items returns column-major: A1,B1,...,H1,A2,...,H12
     # so index i maps to row=i%num_rows, col=i//num_rows
     well_set = set(id(w) for w in wells)
-    mask = bytearray(48)
+    mask = bytearray(self._WELL_MASK_BYTES)
     for i, w in enumerate(all_wells):
       if id(w) in well_set:
         row = i % num_rows
         col = i // num_rows
         idx = row * num_cols + col
         mask[idx // 8] |= 1 << (7 - (idx % 8))
-    buf[15:63] = mask
+    buf[15:self._PLATE_FIELD_SIZE] = mask
 
     return bytes(buf)
 
@@ -1944,7 +1944,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     """
     valid_shake_patterns = (None, "orbital", "linear", "double_orbital", "meander")
     if shake_pattern not in valid_shake_patterns:
-      raise ValueError(f"shake_pattern must be one of {valid_shake_patterns}, got {shake_pattern!r}.")
+      raise ValueError(f"shake_pattern must be one of {valid_shake_patterns}, got '{shake_pattern}'.")
     if shake_pattern is not None:
       if shake_rpm is None:
         raise ValueError("shake_rpm is required when shake_pattern is set.")
@@ -2464,7 +2464,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       orbital 300rpm 3600s default: 1d 00 02 0e 10 27 0f 27 0f 00 00
     """
     if pattern not in self._SHAKE_MODES:
-      raise ValueError(f"pattern must be one of {list(self._SHAKE_MODES)}, got {pattern!r}.")
+      raise ValueError(f"pattern must be one of {list(self._SHAKE_MODES)}, got '{pattern}'.")
     max_rpm = 300 if pattern == "meander" else 700
     if rpm < 100 or rpm > max_rpm or rpm % 100 != 0:
       raise ValueError(
@@ -2551,6 +2551,26 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     "double_orbital": 0x06,   # pcap-confirmed (IM-06, also DDE arg 3)
   }
 
+  # Validation constants
+  _FLASH_LIMITS = {"point": (1, 200), "orbital": (1, 44), "spiral": (1, 127), "matrix": (1, 200)}
+  _VALID_CORNERS = ("TL", "TR", "BL", "BR")
+  _VALID_ABSORBANCE_REPORTS = ("optical_density", "transmittance", "raw")
+  _VALID_OPTIC_POSITIONS = ("top", "bottom")
+
+  # Hardware range constants
+  _ABS_WAVELENGTH_RANGE = (220, 1000)
+  _FL_WAVELENGTH_RANGE = (320, 840)
+  _FOCAL_HEIGHT_RANGE = (0, 25)
+  _PMT_GAIN_RANGE = (0, 4095)
+  _MATRIX_SIZE_RANGE = (2, 11)
+  _SCAN_DIAMETER_RANGE = (1, 6)
+
+  # Plate encoding constants (standard 384-well configuration).
+  # 1536-well instruments likely use a larger mask (192 bytes / 1536 bits);
+  # update these when a 1536-well pcap capture is available.
+  _WELL_MASK_BYTES = 48                        # 384 wells max (48 × 8 bits)
+  _PLATE_FIELD_SIZE = 15 + _WELL_MASK_BYTES    # 15-byte geometry header + mask
+
   async def stop_idle_movement(self) -> None:
     """Cancel any active idle movement (R_IdleMove cancel, command 0x27).
 
@@ -2607,7 +2627,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       27 01 00 00 3c 00 05 00 0a 00 00
     """
     if pattern not in self._IDLE_MOVE_MODES:
-      raise ValueError(f"pattern must be one of {list(self._IDLE_MOVE_MODES)}, got {pattern!r}.")
+      raise ValueError(f"pattern must be one of {list(self._IDLE_MOVE_MODES)}, got '{pattern}'.")
     if not 1 <= duration <= 65535:
       raise ValueError(f"duration must be 1–65535, got {duration}.")
 
@@ -2680,6 +2700,62 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     except Exception:
       logger.warning("Failed to send %s command during interrupt",
                      "pause" if self.pause_on_interrupt else "stop", exc_info=True)
+
+  # --------------------------------------------------------------------------
+  # Shared validation helpers
+  # --------------------------------------------------------------------------
+
+  def _validate_well_scan_params(
+    self,
+    well_scan: str,
+    flashes: Optional[int],
+    scan_diameter_mm: int,
+    matrix_size: Optional[int],
+    *,
+    allow_matrix: bool = True,
+  ) -> str:
+    """Validate well scan parameters. Returns (possibly updated) well_scan."""
+    if matrix_size is not None:
+      well_scan = "matrix"
+    valid = tuple(self._FLASH_LIMITS) if allow_matrix else ("point", "orbital", "spiral")
+    if well_scan not in valid:
+      raise ValueError(f"well_scan must be one of {valid}, got '{well_scan}'.")
+    if well_scan == "matrix":
+      lo, hi = self._MATRIX_SIZE_RANGE
+      if matrix_size is None:
+        raise ValueError("matrix_size is required when well_scan='matrix'.")
+      if not lo <= matrix_size <= hi:
+        raise ValueError(f"matrix_size must be {lo}-{hi}, got {matrix_size}.")
+    if flashes is not None:
+      lo, hi = self._FLASH_LIMITS[well_scan]
+      if not lo <= flashes <= hi:
+        raise ValueError(f"flashes must be {lo}-{hi} for {well_scan} mode, got {flashes}.")
+    if well_scan not in ("point", "matrix"):
+      lo, hi = self._SCAN_DIAMETER_RANGE
+      if not lo <= scan_diameter_mm <= hi:
+        raise ValueError(
+          f"scan_diameter_mm must be {lo}-{hi} for {well_scan} mode, got {scan_diameter_mm}."
+        )
+    return well_scan
+
+  def _validate_corner(self, corner: str) -> None:
+    if corner not in self._VALID_CORNERS:
+      raise ValueError(f"corner must be one of {self._VALID_CORNERS}, got '{corner}'.")
+
+  @staticmethod
+  def _validate_wavelength(value: int, name: str, lo: int, hi: int) -> None:
+    if not lo <= value <= hi:
+      raise ValueError(f"{name} must be {lo}-{hi} nm, got {value}.")
+
+  def _validate_focal_height(self, value: float) -> None:
+    lo, hi = self._FOCAL_HEIGHT_RANGE
+    if not lo <= value <= hi:
+      raise ValueError(f"focal_height must be {lo}-{hi} mm, got {value}.")
+
+  def _validate_gain(self, value: int) -> None:
+    lo, hi = self._PMT_GAIN_RANGE
+    if not lo <= value <= hi:
+      raise ValueError(f"gain must be {lo}-{hi}, got {value}.")
 
   # --------------------------------------------------------------------------
   # Feature: Absorbance Measurement
@@ -3321,41 +3397,17 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     if not 1 <= len(wls) <= 8:
       raise ValueError(f"wavelengths must contain 1-8 entries, got {len(wls)}.")
+    lo, hi = self._ABS_WAVELENGTH_RANGE
     for wl in wls:
-      if not 220 <= wl <= 1000:
-        raise ValueError(
-          f"Wavelength must be 220-1000 nm (UV/Vis absorbance spectrometer range), got {wl}."
-        )
+      self._validate_wavelength(wl, "Wavelength", lo, hi)
 
-    _flash_limits = {"point": (1, 200), "orbital": (1, 44), "spiral": (1, 127), "matrix": (1, 200)}
-    valid_well_scans = tuple(_flash_limits)
-    if well_scan not in valid_well_scans:
-      raise ValueError(f"well_scan must be one of {valid_well_scans}, got {well_scan!r}.")
+    well_scan = self._validate_well_scan_params(
+      well_scan, flashes, scan_diameter_mm, matrix_size)
+    self._validate_corner(corner)
 
-    lo, hi = _flash_limits[well_scan]
-    if not lo <= flashes <= hi:
-      raise ValueError(f"flashes must be {lo}-{hi} for {well_scan} mode, got {flashes}.")
-
-    if matrix_size is not None:
-      well_scan = "matrix"
-    if well_scan == "matrix":
-      if matrix_size is None:
-        raise ValueError("matrix_size is required when well_scan='matrix'.")
-      if matrix_size < 2 or matrix_size > 11:
-        raise ValueError(f"matrix_size must be 2-11, got {matrix_size}.")
-
-    if well_scan not in ("point", "matrix") and not 1 <= scan_diameter_mm <= 6:
+    if report not in self._VALID_ABSORBANCE_REPORTS:
       raise ValueError(
-        f"scan_diameter_mm must be 1-6 for {well_scan} mode, got {scan_diameter_mm}."
-      )
-
-    valid_corners = ("TL", "TR", "BL", "BR")
-    if corner not in valid_corners:
-      raise ValueError(f"corner must be one of {valid_corners}, got {corner!r}.")
-
-    valid_reports = ("optical_density", "transmittance", "raw")
-    if report not in valid_reports:
-      raise ValueError(f"report must be one of {valid_reports}, got {report!r}.")
+        f"report must be one of {self._VALID_ABSORBANCE_REPORTS}, got '{report}'.")
 
     self._validate_shake_params(
       shake_pattern, shake_rpm, shake_duration_s, settling_time_s,
@@ -3364,6 +3416,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     if read_timeout is not None and read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
+
+    _shake_rpm = shake_rpm or 0
+    _shake_duration_s = shake_duration_s or 0
+    _settling_time_s = settling_time_s or 0.0
 
     # 1. Build and send measurement parameters via send_command(RUN)
     measurement_params = self._build_absorbance_payload(
@@ -3378,9 +3434,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       vertical=vertical,
       corner=corner,
       shake_pattern=shake_pattern,
-      shake_rpm=shake_rpm if shake_rpm is not None else 0,
-      shake_duration_s=shake_duration_s if shake_duration_s is not None else 0,
-      settling_time_s=settling_time_s if settling_time_s is not None else 0.0,
+      shake_rpm=_shake_rpm,
+      shake_duration_s=_shake_duration_s,
+      settling_time_s=_settling_time_s,
     )
     await self.send_command(
       command_family=self.CommandFamily.RUN,
@@ -3505,14 +3561,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       Empty list when wait=False.
     """
     # --- input validation ---
-    if not 220 <= start_wavelength <= 1000:
-      raise ValueError(
-        f"start_wavelength must be 220-1000 nm, got {start_wavelength}."
-      )
-    if not 220 <= end_wavelength <= 1000:
-      raise ValueError(
-        f"end_wavelength must be 220-1000 nm, got {end_wavelength}."
-      )
+    lo, hi = self._ABS_WAVELENGTH_RANGE
+    self._validate_wavelength(start_wavelength, "start_wavelength", lo, hi)
+    self._validate_wavelength(end_wavelength, "end_wavelength", lo, hi)
     if end_wavelength <= start_wavelength:
       raise ValueError(
         f"end_wavelength ({end_wavelength}) must be > start_wavelength ({start_wavelength})."
@@ -3525,35 +3576,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         f"({end_wavelength} - {start_wavelength} = {end_wavelength - start_wavelength} nm)."
       )
 
-    if matrix_size is not None:
-      well_scan = "matrix"
-    if well_scan == "matrix":
-      if matrix_size is None:
-        raise ValueError("matrix_size is required when well_scan='matrix'.")
-      if matrix_size < 2 or matrix_size > 11:
-        raise ValueError(f"matrix_size must be 2-11, got {matrix_size}.")
+    well_scan = self._validate_well_scan_params(
+      well_scan, flashes, scan_diameter_mm, matrix_size)
+    self._validate_corner(corner)
 
-    _flash_limits = {"point": (1, 200), "orbital": (1, 44), "spiral": (1, 127), "matrix": (1, 200)}
-    valid_well_scans = tuple(_flash_limits)
-    if well_scan not in valid_well_scans:
-      raise ValueError(f"well_scan must be one of {valid_well_scans}, got {well_scan!r}.")
-
-    lo, hi = _flash_limits[well_scan]
-    if not lo <= flashes <= hi:
-      raise ValueError(f"flashes must be {lo}-{hi} for {well_scan} mode, got {flashes}.")
-
-    if well_scan not in ("point", "matrix") and not 1 <= scan_diameter_mm <= 6:
+    if report not in self._VALID_ABSORBANCE_REPORTS:
       raise ValueError(
-        f"scan_diameter_mm must be 1-6 for {well_scan} mode, got {scan_diameter_mm}."
-      )
-
-    valid_corners = ("TL", "TR", "BL", "BR")
-    if corner not in valid_corners:
-      raise ValueError(f"corner must be one of {valid_corners}, got {corner!r}.")
-
-    valid_reports = ("optical_density", "transmittance", "raw")
-    if report not in valid_reports:
-      raise ValueError(f"report must be one of {valid_reports}, got {report!r}.")
+        f"report must be one of {self._VALID_ABSORBANCE_REPORTS}, got '{report}'.")
 
     self._validate_shake_params(
       shake_pattern, shake_rpm, shake_duration_s, settling_time_s,
@@ -3562,6 +3591,10 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
     if read_timeout is not None and read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
+
+    _shake_rpm = shake_rpm or 0
+    _shake_duration_s = shake_duration_s or 0
+    _settling_time_s = settling_time_s or 0.0
 
     # 1. Build and send measurement payload
     num_wavelengths = (end_wavelength - start_wavelength) // step_size + 1
@@ -3579,9 +3612,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       vertical=vertical,
       corner=corner,
       shake_pattern=shake_pattern,
-      shake_rpm=shake_rpm if shake_rpm is not None else 0,
-      shake_duration_s=shake_duration_s if shake_duration_s is not None else 0,
-      settling_time_s=settling_time_s if settling_time_s is not None else 0.0,
+      shake_rpm=_shake_rpm,
+      shake_duration_s=_shake_duration_s,
+      settling_time_s=_settling_time_s,
     )
     await self.send_command(
       command_family=self.CommandFamily.RUN,
@@ -4066,87 +4099,55 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
           f"(instrument has {max_slots} dichroic filter slots)")
 
     # --- input validation ---
+    fl_lo, fl_hi = self._FL_WAVELENGTH_RANGE
     if chromatics is not None:
       if not 1 <= len(chromatics) <= 5:
         raise ValueError(f"chromatics must have 1-5 entries, got {len(chromatics)}.")
       for ci, chrom in enumerate(chromatics):
         for key in ("excitation_wavelength", "emission_wavelength"):
           if key not in chrom:
-            raise ValueError(f"chromatics[{ci}] missing required key: {key!r}.")
+            raise ValueError(f"chromatics[{ci}] missing required key: '{key}'.")
         for wl_key in ("excitation_wavelength", "emission_wavelength"):
           wl_val = chrom[wl_key]
           filter_key = "excitation_filter" if "excitation" in wl_key else "emission_filter"
           c_has_filter = chrom.get(filter_key) is not None
           if not c_has_filter:
-            if not 320 <= wl_val <= 840:
-              raise ValueError(
-                f"chromatics[{ci}][{wl_key!r}] must be 320-840 nm, got {wl_val}."
-              )
+            self._validate_wavelength(wl_val, f"chromatics[{ci}]['{wl_key}']", fl_lo, fl_hi)
         c_gain = chrom.get("gain", 1000)
-        if not 0 <= c_gain <= 4095:
-          raise ValueError(f"chromatics[{ci}]['gain'] must be 0-4095, got {c_gain}.")
+        self._validate_gain(c_gain)
       chromatic_wavelengths = [
         (c["excitation_wavelength"], c["emission_wavelength"]) for c in chromatics
       ]
     else:
       # Single-chromatic validation
-      if excitation_filter is None and not 320 <= excitation_wavelength <= 840:
-        raise ValueError(
-          f"excitation_wavelength must be 320-840 nm, got {excitation_wavelength}."
-        )
-      if emission_filter is None and not 320 <= emission_wavelength <= 840:
-        raise ValueError(
-          f"emission_wavelength must be 320-840 nm, got {emission_wavelength}."
-        )
-      if not 0 <= gain <= 4095:
-        raise ValueError(f"gain must be 0-4095, got {gain}.")
+      if excitation_filter is None:
+        self._validate_wavelength(excitation_wavelength, "excitation_wavelength", fl_lo, fl_hi)
+      if emission_filter is None:
+        self._validate_wavelength(emission_wavelength, "emission_wavelength", fl_lo, fl_hi)
+      self._validate_gain(gain)
       chromatic_wavelengths = [(excitation_wavelength, emission_wavelength)]
 
-    if not 0 <= focal_height <= 25:
-      raise ValueError(f"focal_height must be 0-25 mm, got {focal_height}.")
+    self._validate_focal_height(focal_height)
 
-    valid_optic_positions = ("top", "bottom")
-    if optic_position not in valid_optic_positions:
+    if optic_position not in self._VALID_OPTIC_POSITIONS:
       raise ValueError(
-        f"optic_position must be one of {valid_optic_positions}, got {optic_position!r}."
+        f"optic_position must be one of {self._VALID_OPTIC_POSITIONS}, got '{optic_position}'."
       )
 
-    if matrix_size is not None:
-      well_scan = "matrix"
-    if well_scan == "matrix":
-      if matrix_size is None:
-        raise ValueError("matrix_size is required when well_scan='matrix'.")
-      if matrix_size < 2 or matrix_size > 11:
-        raise ValueError(f"matrix_size must be 2-11, got {matrix_size}.")
-
-    _flash_limits = {
-      "point": (1, 200), "orbital": (1, 44), "spiral": (1, 127), "matrix": (1, 200),
-    }
-    valid_well_scans = tuple(_flash_limits)
-    if well_scan not in valid_well_scans:
-      raise ValueError(f"well_scan must be one of {valid_well_scans}, got {well_scan!r}.")
-
-    if not flying_mode:
-      lo, hi = _flash_limits[well_scan]
-      if not lo <= flashes <= hi:
-        raise ValueError(f"flashes must be {lo}-{hi} for {well_scan} mode, got {flashes}.")
-
-    if well_scan != "point" and not 1 <= scan_diameter_mm <= 6:
-      raise ValueError(
-        f"scan_diameter_mm must be 1-6 for {well_scan} mode, got {scan_diameter_mm}."
-      )
+    well_scan = self._validate_well_scan_params(
+      well_scan, flashes if not flying_mode else None, scan_diameter_mm, matrix_size)
 
     if flying_mode and well_scan != "point":
       raise ValueError("flying_mode is only supported with point well scan.")
 
-    valid_corners = ("TL", "TR", "BL", "BR")
-    if corner not in valid_corners:
-      raise ValueError(f"corner must be one of {valid_corners}, got {corner!r}.")
-
+    self._validate_corner(corner)
     self._validate_shake_params(shake_pattern, shake_rpm, shake_duration_s)
 
     if read_timeout is not None and read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
+
+    _shake_rpm = shake_rpm or 0
+    _shake_duration_s = shake_duration_s or 0
 
     # 1. Build and send measurement parameters via send_command(RUN)
     measurement_params = self._build_fluorescence_payload(
@@ -4169,8 +4170,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       vertical=vertical,
       corner=corner,
       shake_pattern=shake_pattern,
-      shake_rpm=shake_rpm if shake_rpm is not None else 0,
-      shake_duration_s=shake_duration_s if shake_duration_s is not None else 0,
+      shake_rpm=_shake_rpm,
+      shake_duration_s=_shake_duration_s,
       edr=edr,
       flying_mode=flying_mode,
       excitation_filter=excitation_filter,
@@ -4548,50 +4549,36 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     # --- input validation ---
     valid_scans = ("excitation", "emission")
     if scan not in valid_scans:
-      raise ValueError(f"scan must be one of {valid_scans}, got {scan!r}.")
+      raise ValueError(f"scan must be one of {valid_scans}, got '{scan}'.")
 
-    if not 320 <= start_wavelength <= 840:
-      raise ValueError(f"start_wavelength must be 320-840 nm, got {start_wavelength}.")
-    if not 320 <= end_wavelength <= 840:
-      raise ValueError(f"end_wavelength must be 320-840 nm, got {end_wavelength}.")
+    fl_lo, fl_hi = self._FL_WAVELENGTH_RANGE
+    self._validate_wavelength(start_wavelength, "start_wavelength", fl_lo, fl_hi)
+    self._validate_wavelength(end_wavelength, "end_wavelength", fl_lo, fl_hi)
     if end_wavelength <= start_wavelength:
       raise ValueError(
         f"end_wavelength ({end_wavelength}) must be > start_wavelength ({start_wavelength})."
       )
-    if not 320 <= fixed_wavelength <= 840:
-      raise ValueError(f"fixed_wavelength must be 320-840 nm, got {fixed_wavelength}.")
+    self._validate_wavelength(fixed_wavelength, "fixed_wavelength", fl_lo, fl_hi)
 
-    if not 0 <= focal_height <= 25:
-      raise ValueError(f"focal_height must be 0-25 mm, got {focal_height}.")
-    if not 0 <= gain <= 4095:
-      raise ValueError(f"gain must be 0-4095, got {gain}.")
+    self._validate_focal_height(focal_height)
+    self._validate_gain(gain)
 
-    valid_well_scans = ("point", "orbital", "spiral")
-    if well_scan not in valid_well_scans:
+    well_scan = self._validate_well_scan_params(
+      well_scan, None, scan_diameter_mm, None, allow_matrix=False)
+    self._validate_corner(corner)
+
+    if optic_position not in self._VALID_OPTIC_POSITIONS:
       raise ValueError(
-        f"well_scan must be one of {valid_well_scans}, got {well_scan!r}. "
-        f"Matrix mode is not supported for fluorescence spectrum (untested)."
-      )
-
-    if well_scan != "point" and not 1 <= scan_diameter_mm <= 6:
-      raise ValueError(
-        f"scan_diameter_mm must be 1-6 for {well_scan} mode, got {scan_diameter_mm}."
-      )
-
-    valid_corners = ("TL", "TR", "BL", "BR")
-    if corner not in valid_corners:
-      raise ValueError(f"corner must be one of {valid_corners}, got {corner!r}.")
-
-    valid_optic_positions = ("top", "bottom")
-    if optic_position not in valid_optic_positions:
-      raise ValueError(
-        f"optic_position must be one of {valid_optic_positions}, got {optic_position!r}."
+        f"optic_position must be one of {self._VALID_OPTIC_POSITIONS}, got '{optic_position}'."
       )
 
     self._validate_shake_params(shake_pattern, shake_rpm, shake_duration_s)
 
     if read_timeout is not None and read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
+
+    _shake_rpm = shake_rpm or 0
+    _shake_duration_s = shake_duration_s or 0
 
     # 1. Build and send measurement payload
     measurement_params = self._build_fl_spectrum_payload(
@@ -4610,8 +4597,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       vertical=vertical,
       corner=corner,
       shake_pattern=shake_pattern,
-      shake_rpm=shake_rpm if shake_rpm is not None else 0,
-      shake_duration_s=shake_duration_s if shake_duration_s is not None else 0,
+      shake_rpm=_shake_rpm,
+      shake_duration_s=_shake_duration_s,
     )
     await self.send_command(
       command_family=self.CommandFamily.RUN,
