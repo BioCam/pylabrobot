@@ -1262,7 +1262,7 @@ class TestPreSeparatorBlock(unittest.TestCase):
 
   def test_orbital_with_orbital_shake(self):
     block = CLARIOstarPlusBackend._pre_separator_block(
-      self.ABS, self.ORBITAL, shake_mode="orbital", shake_speed_rpm=300, shake_duration_s=5
+      self.ABS, self.ORBITAL, shake_pattern="orbital", shake_rpm=300, shake_duration_s=5
     )
     self.assertEqual(block[0], 0x32)
     self.assertEqual(block[12], 0x02)  # mixer_action
@@ -1272,19 +1272,19 @@ class TestPreSeparatorBlock(unittest.TestCase):
 
   def test_linear_shake(self):
     block = CLARIOstarPlusBackend._pre_separator_block(
-      self.ABS, self.ORBITAL, shake_mode="linear", shake_speed_rpm=300, shake_duration_s=5
+      self.ABS, self.ORBITAL, shake_pattern="linear", shake_rpm=300, shake_duration_s=5
     )
     self.assertEqual(block[17], 0x01)  # shake_pattern: linear
 
   def test_double_orbital_shake(self):
     block = CLARIOstarPlusBackend._pre_separator_block(
-      self.ABS, self.ORBITAL, shake_mode="double_orbital", shake_speed_rpm=300, shake_duration_s=5
+      self.ABS, self.ORBITAL, shake_pattern="double_orbital", shake_rpm=300, shake_duration_s=5
     )
     self.assertEqual(block[17], 0x02)  # shake_pattern: double_orbital
 
   def test_meander_shake(self):
     block = CLARIOstarPlusBackend._pre_separator_block(
-      self.ABS, self.ORBITAL, shake_mode="meander", shake_speed_rpm=200, shake_duration_s=5
+      self.ABS, self.ORBITAL, shake_pattern="meander", shake_rpm=200, shake_duration_s=5
     )
     self.assertEqual(block[12], 0x02)  # mixer_action
     self.assertEqual(block[17], 0x03)  # shake_pattern: meander
@@ -1777,8 +1777,8 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       unidirectional=False,
       vertical=True,
       corner="TL",
-      shake_mode="orbital",
-      shake_speed_rpm=300,
+      shake_pattern="orbital",
+      shake_rpm=300,
       shake_duration_s=5,
     )
     self.assertEqual(len(payload), 140)
@@ -1796,8 +1796,8 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       unidirectional=False,
       vertical=True,
       corner="TL",
-      shake_mode="orbital",
-      shake_speed_rpm=500,
+      shake_pattern="orbital",
+      shake_rpm=500,
       shake_duration_s=5,
     )
     self.assertEqual(len(payload), 140)
@@ -1815,8 +1815,8 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       unidirectional=False,
       vertical=True,
       corner="TL",
-      shake_mode="orbital",
-      shake_speed_rpm=300,
+      shake_pattern="orbital",
+      shake_rpm=300,
       shake_duration_s=10,
     )
     self.assertEqual(len(payload), 140)
@@ -1834,8 +1834,8 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       unidirectional=False,
       vertical=True,
       corner="TL",
-      shake_mode="double_orbital",
-      shake_speed_rpm=300,
+      shake_pattern="double_orbital",
+      shake_rpm=300,
       shake_duration_s=5,
     )
     self.assertEqual(len(payload), 140)
@@ -1853,8 +1853,8 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       unidirectional=False,
       vertical=True,
       corner="TL",
-      shake_mode="linear",
-      shake_speed_rpm=300,
+      shake_pattern="linear",
+      shake_rpm=300,
       shake_duration_s=5,
     )
     self.assertEqual(len(payload), 140)
@@ -1873,8 +1873,8 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       unidirectional=False,
       vertical=True,
       corner="TL",
-      shake_mode="orbital",
-      shake_speed_rpm=300,
+      shake_pattern="orbital",
+      shake_rpm=300,
       shake_duration_s=5,
     )
     self.assertEqual(len(payload), 140)
@@ -1892,8 +1892,8 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       unidirectional=False,
       vertical=True,
       corner="TL",
-      shake_mode="orbital",
-      shake_speed_rpm=300,
+      shake_pattern="orbital",
+      shake_rpm=300,
       shake_duration_s=5,
       pause_time=0x19,
     )
@@ -1912,8 +1912,8 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       unidirectional=False,
       vertical=True,
       corner="TL",
-      shake_mode="orbital",
-      shake_speed_rpm=300,
+      shake_pattern="orbital",
+      shake_rpm=300,
       shake_duration_s=5,
     )
     self.assertEqual(len(payload), 140)
@@ -2215,12 +2215,12 @@ class TestReadAbsorbanceSpectrumValidation(unittest.TestCase):
         )
       )
 
-  def test_shake_mode_without_params(self):
+  def test_shake_pattern_without_params(self):
     with self.assertRaises(ValueError):
       asyncio.run(
         self.backend.read_absorbance_spectrum(
           self.plate, self.all_wells, start_wavelength=300, end_wavelength=700, step_size=1,
-          shake_mode="orbital",
+          shake_pattern="orbital",
         )
       )
 
@@ -4136,70 +4136,70 @@ class TestInputValidation(unittest.TestCase):
     with self.assertRaises(ValueError):
       self._call_absorbance(report="absorbance")
 
-  def test_read_absorbance_invalid_shake_mode(self):
+  def test_read_absorbance_invalid_shake_pattern(self):
     with self.assertRaises(ValueError):
-      self._call_absorbance(shake_mode="vibrate")
+      self._call_absorbance(shake_pattern="vibrate")
 
   def test_read_absorbance_invalid_shake_speed(self):
     with self.assertRaises(ValueError):
       self._call_absorbance(
-        shake_mode="orbital", shake_speed_rpm=0, shake_duration_s=5, settling_time_s=0
+        shake_pattern="orbital", shake_rpm=0, shake_duration_s=5, settling_time_s=0
       )
     with self.assertRaises(ValueError):
       self._call_absorbance(
-        shake_mode="orbital", shake_speed_rpm=150, shake_duration_s=5, settling_time_s=0
+        shake_pattern="orbital", shake_rpm=150, shake_duration_s=5, settling_time_s=0
       )
     with self.assertRaises(ValueError):  # 800 exceeds 700 max
       self._call_absorbance(
-        shake_mode="orbital", shake_speed_rpm=800, shake_duration_s=5, settling_time_s=0
+        shake_pattern="orbital", shake_rpm=800, shake_duration_s=5, settling_time_s=0
       )
 
   def test_read_absorbance_meander_speed_limit(self):
     """Meander shake mode is capped at 300 RPM."""
     with self.assertRaises(ValueError):  # 400 exceeds meander 300 max
       self._call_absorbance(
-        shake_mode="meander", shake_speed_rpm=400, shake_duration_s=5, settling_time_s=0
+        shake_pattern="meander", shake_rpm=400, shake_duration_s=5, settling_time_s=0
       )
     with self.assertRaises(ValueError):  # 700 exceeds meander 300 max
       self._call_absorbance(
-        shake_mode="meander", shake_speed_rpm=700, shake_duration_s=5, settling_time_s=0
+        shake_pattern="meander", shake_rpm=700, shake_duration_s=5, settling_time_s=0
       )
 
   def test_read_absorbance_invalid_shake_duration(self):
     with self.assertRaises(ValueError):
       self._call_absorbance(
-        shake_mode="orbital", shake_speed_rpm=300, shake_duration_s=0, settling_time_s=0
+        shake_pattern="orbital", shake_rpm=300, shake_duration_s=0, settling_time_s=0
       )
     with self.assertRaises(ValueError):
       self._call_absorbance(
-        shake_mode="linear", shake_speed_rpm=300, shake_duration_s=-1, settling_time_s=0
+        shake_pattern="linear", shake_rpm=300, shake_duration_s=-1, settling_time_s=0
       )
 
   def test_read_absorbance_invalid_settling_time(self):
     with self.assertRaises(ValueError):
       self._call_absorbance(
-        shake_mode="orbital", shake_speed_rpm=300, shake_duration_s=5, settling_time_s=-1
+        shake_pattern="orbital", shake_rpm=300, shake_duration_s=5, settling_time_s=-1
       )
     with self.assertRaises(ValueError):
       self._call_absorbance(
-        shake_mode="orbital", shake_speed_rpm=300, shake_duration_s=5, settling_time_s=2
+        shake_pattern="orbital", shake_rpm=300, shake_duration_s=5, settling_time_s=2
       )
 
   def test_read_absorbance_shake_requires_speed(self):
     with self.assertRaises(ValueError):
-      self._call_absorbance(shake_mode="orbital", shake_duration_s=5, settling_time_s=0)
+      self._call_absorbance(shake_pattern="orbital", shake_duration_s=5, settling_time_s=0)
 
   def test_read_absorbance_shake_requires_duration(self):
     with self.assertRaises(ValueError):
-      self._call_absorbance(shake_mode="orbital", shake_speed_rpm=300, settling_time_s=0)
+      self._call_absorbance(shake_pattern="orbital", shake_rpm=300, settling_time_s=0)
 
   def test_read_absorbance_shake_requires_settling(self):
     with self.assertRaises(ValueError):
-      self._call_absorbance(shake_mode="orbital", shake_speed_rpm=300, shake_duration_s=5)
+      self._call_absorbance(shake_pattern="orbital", shake_rpm=300, shake_duration_s=5)
 
   def test_read_absorbance_shake_params_without_mode(self):
     with self.assertRaises(ValueError):
-      self._call_absorbance(shake_speed_rpm=300)
+      self._call_absorbance(shake_rpm=300)
     with self.assertRaises(ValueError):
       self._call_absorbance(shake_duration_s=5)
     with self.assertRaises(ValueError):
@@ -5953,7 +5953,7 @@ class TestReadFluorescenceNewFeatureValidation(unittest.TestCase):
     mock.queue_response(ACK, data_frame)
     results = asyncio.run(backend.read_fluorescence(
       plate, wells, 485, 528, 8.5,
-      shake_mode="meander", shake_speed_rpm=200, shake_duration_s=5,
+      shake_pattern="meander", shake_rpm=200, shake_duration_s=5,
     ))
     self.assertEqual(len(results), 1)
     # Verify shake pattern byte = 3 (meander)
@@ -5970,7 +5970,7 @@ class TestReadFluorescenceNewFeatureValidation(unittest.TestCase):
     with self.assertRaises(ValueError):
       asyncio.run(backend.read_fluorescence(
         plate, wells, 485, 528, 8.5,
-        shake_mode="meander", shake_speed_rpm=400, shake_duration_s=5,
+        shake_pattern="meander", shake_rpm=400, shake_duration_s=5,
       ))
 
 
@@ -7300,9 +7300,9 @@ class TestReadFluorescenceSpectrumValidation(unittest.TestCase):
     with self.assertRaises(ValueError):
       self._run(focal_height=30.0)
 
-  def test_shake_mode_without_speed(self):
+  def test_shake_pattern_without_speed(self):
     with self.assertRaises(ValueError):
-      self._run(shake_mode="orbital", shake_duration_s=5)
+      self._run(shake_pattern="orbital", shake_duration_s=5)
 
   def test_scan_invalid_value(self):
     with self.assertRaises(ValueError):
@@ -7931,6 +7931,235 @@ class TestResumeAndCollect(unittest.TestCase):
 
     # Context should still be there for resume
     self.assertIs(backend._resume_context, ctx)
+
+
+# ---------------------------------------------------------------------------
+# Standalone Shaking — pcap ground truth tests
+# ---------------------------------------------------------------------------
+
+
+def _extract_payload(frame: bytes) -> bytes:
+  """Extract the inner payload from a framed wire message.
+  Frame: STX(1) + size(2) + 0x0C(1) + PAYLOAD + checksum(3) + CR(1)
+  """
+  return frame[4:-4]
+
+
+class TestStartShaking(unittest.TestCase):
+  """Verify start_shaking() payload bytes against DDE pcap ground truth.
+
+  Ground truth from SH-01 through SH-10 captures.
+  Pcap payload (11 bytes, no command sub-byte):
+    [0x1D] [mode] [speed_idx] [duration:2B BE] [x:2B BE] [y:2B BE] [0x00] [flags]
+
+  Tests verify the PAYLOAD matches pcap exactly. Our framing (3-byte checksum)
+  differs from OEM MARS framing (1-byte checksum), but the device accepts both.
+  """
+
+  def test_orbital_300rpm_5s(self):
+    """SH-02 pcap: orbital 300rpm 5s default position."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK, STATUS_IDLE)  # ACK + wait poll
+    asyncio.run(backend.start_shaking(pattern="orbital", rpm=300, duration=5))
+    payload = _extract_payload(mock.written[0])
+    # Pcap ground truth: 1d 00 02 00 05 27 0f 27 0f 00 00
+    self.assertEqual(payload, bytes.fromhex("1d00020005270f270f0000"))
+
+  def test_linear_300rpm_5s(self):
+    """SH-02 pcap: linear 300rpm 5s."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK, STATUS_IDLE)
+    asyncio.run(backend.start_shaking(pattern="linear", rpm=300, duration=5))
+    payload = _extract_payload(mock.written[0])
+    self.assertEqual(payload, bytes.fromhex("1d01020005270f270f0000"))
+
+  def test_double_orbital_300rpm_5s(self):
+    """SH-03 pcap: double_orbital 300rpm 5s."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK, STATUS_IDLE)
+    asyncio.run(backend.start_shaking(pattern="double_orbital", rpm=300, duration=5))
+    payload = _extract_payload(mock.written[0])
+    self.assertEqual(payload, bytes.fromhex("1d02020005270f270f0000"))
+
+  def test_meander_300rpm_5s(self):
+    """SH-04 pcap: meander 300rpm 5s."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK, STATUS_IDLE)
+    asyncio.run(backend.start_shaking(pattern="meander", rpm=300, duration=5))
+    payload = _extract_payload(mock.written[0])
+    self.assertEqual(payload, bytes.fromhex("1d03020005270f270f0000"))
+
+  def test_orbital_500rpm_5s(self):
+    """SH-05 pcap: orbital 500rpm 5s — speed_idx=4."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK, STATUS_IDLE)
+    asyncio.run(backend.start_shaking(pattern="orbital", rpm=500, duration=5))
+    payload = _extract_payload(mock.written[0])
+    self.assertEqual(payload, bytes.fromhex("1d00040005270f270f0000"))
+
+  def test_orbital_700rpm_5s(self):
+    """SH-07 pcap: orbital 700rpm 5s — speed_idx=6."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK, STATUS_IDLE)
+    asyncio.run(backend.start_shaking(pattern="orbital", rpm=700, duration=5))
+    payload = _extract_payload(mock.written[0])
+    self.assertEqual(payload, bytes.fromhex("1d00060005270f270f0000"))
+
+  def test_orbital_300rpm_10s(self):
+    """SH-06 pcap: orbital 300rpm 10s — duration=0x000A."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK, STATUS_IDLE)
+    asyncio.run(backend.start_shaking(pattern="orbital", rpm=300, duration=10))
+    payload = _extract_payload(mock.written[0])
+    self.assertEqual(payload, bytes.fromhex("1d0002000a270f270f0000"))
+
+  def test_orbital_300rpm_30s(self):
+    """ST-01/ST-04 pcap: orbital 300rpm 30s — duration=0x001E."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK, STATUS_IDLE)
+    asyncio.run(backend.start_shaking(pattern="orbital", rpm=300, duration=30))
+    payload = _extract_payload(mock.written[0])
+    self.assertEqual(payload, bytes.fromhex("1d0002001e270f270f0000"))
+
+  def test_custom_position_x500(self):
+    """SH-10 pcap: orbital 300rpm 5s x=500 y=9999."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK, STATUS_IDLE)
+    asyncio.run(backend.start_shaking(
+      pattern="orbital", rpm=300, duration=5,
+      x_position=500, y_position=9999,
+    ))
+    payload = _extract_payload(mock.written[0])
+    # Pcap: 1d 00 02 00 05 01 f4 27 0f 00 01
+    self.assertEqual(payload, bytes.fromhex("1d0002000501f4270f0001"))
+
+  def test_meander_speed_validation(self):
+    """Meander rejects > 300 RPM (confirmed: DDE exit 1000 at 400 RPM)."""
+    backend = _make_backend()
+    with self.assertRaises(ValueError):
+      asyncio.run(backend.start_shaking(pattern="meander", rpm=400, duration=5))
+
+  def test_invalid_mode(self):
+    backend = _make_backend()
+    with self.assertRaises(ValueError):
+      asyncio.run(backend.start_shaking(pattern="wobble", rpm=300, duration=5))
+
+  def test_speed_not_multiple_of_100(self):
+    backend = _make_backend()
+    with self.assertRaises(ValueError):
+      asyncio.run(backend.start_shaking(pattern="orbital", rpm=250, duration=5))
+
+  def test_duration_out_of_range(self):
+    backend = _make_backend()
+    with self.assertRaises(ValueError):
+      asyncio.run(backend.start_shaking(pattern="orbital", rpm=300, duration=0))
+    with self.assertRaises(ValueError):
+      asyncio.run(backend.start_shaking(pattern="orbital", rpm=300, duration=3601))
+
+
+class TestStopShaking(unittest.TestCase):
+  """Verify stop_shaking() sends STOP (0x0B) when device is running.
+
+  ST-01/ST-04 pcap ground truth: payload = 0b 00
+  """
+
+  def test_stop_sends_stop_command(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(
+      STATUS_RUNNING,    # request_machine_status → running=True
+      ACK,               # stop_measurement → STOP 0x0B
+      STATUS_IDLE,       # poll → not running
+    )
+    asyncio.run(backend.stop_shaking())
+    stop_frames = [w for w in mock.written if w == COMMANDS["stop_measurement"][1]]
+    self.assertEqual(len(stop_frames), 1)
+
+  def test_stop_noop_when_not_running(self):
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(STATUS_IDLE)
+    asyncio.run(backend.stop_shaking())
+    stop_frames = [w for w in mock.written if w == COMMANDS["stop_measurement"][1]]
+    self.assertEqual(len(stop_frames), 0)
+
+
+# ---------------------------------------------------------------------------
+# Idle Movement — pcap ground truth tests
+# ---------------------------------------------------------------------------
+
+
+class TestStartIdleMovement(unittest.TestCase):
+  """Verify start_idle_movement() payload bytes against DDE pcap ground truth.
+
+  Ground truth from IM-03/06, VAL-15 through VAL-18.
+  Pcap payload (11 bytes, no command sub-byte):
+    [0x27] [mode] [speed_idx] [0x00] [duration_lo] [off_time:2B BE] [on_time:2B BE] [0x00] [0x00]
+  """
+
+  def test_linear_corner_60s_periodic(self):
+    """IM-06 pcap: linear_corner, 60s, on=10s, off=5s.
+    Pcap payload: 27 01 00 00 3c 00 05 00 0a 00 00"""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK)
+    asyncio.run(backend.start_idle_movement(
+      pattern="linear_corner", duration=60, on_time=10, off_time=5,
+    ))
+    payload = _extract_payload(mock.written[0])
+    self.assertEqual(payload, bytes.fromhex("270100003c0005000a0000"))
+
+  def test_incubation_5s(self):
+    """VAL-17 pcap: incubation mode, 5s.
+    Pcap payload: 27 02 00 00 05 00 00 00 00 00 00"""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK)
+    asyncio.run(backend.start_idle_movement(pattern="incubation", duration=5))
+    payload = _extract_payload(mock.written[0])
+    self.assertEqual(payload, bytes.fromhex("27020000050000000000 00".replace(" ", "")))
+
+  def test_linear_corner_30s_periodic_5on_3off(self):
+    """VAL-18 pcap: linear_corner, 30s, on=5s, off=3s.
+    Pcap payload: 27 01 00 00 1e 00 03 00 05 00 00"""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK)
+    asyncio.run(backend.start_idle_movement(
+      pattern="linear_corner", duration=30, on_time=5, off_time=3,
+    ))
+    payload = _extract_payload(mock.written[0])
+    self.assertEqual(payload, bytes.fromhex("270100001e000300050000"))
+
+  def test_invalid_mode(self):
+    backend = _make_backend()
+    with self.assertRaises(ValueError):
+      asyncio.run(backend.start_idle_movement(pattern="zigzag", duration=5))
+
+
+class TestStopIdleMovement(unittest.TestCase):
+  """Verify stop_idle_movement() sends cancel frame.
+
+  IM-03/IM-05 pcap payload: 27 00 00 00 00 00 00 00 00 00 00
+  """
+
+  def test_cancel_payload(self):
+    """IM-03 pcap: cancel idle movement (mode=0, all zeros)."""
+    backend = _make_backend()
+    mock: MockFTDI = backend.io  # type: ignore[assignment]
+    mock.queue_response(ACK)
+    asyncio.run(backend.stop_idle_movement())
+    payload = _extract_payload(mock.written[0])
+    self.assertEqual(payload, bytes.fromhex("2700000000000000000000"))
 
 
 if __name__ == "__main__":

@@ -46,6 +46,14 @@ sub-command byte (payload byte 1), others do not.
 |--------|-------|-------|-----------|
 | RUN | `0x04` | Measurement command. Payload is plate geometry + measurement config | Host → Device |
 | TEMPERATURE_CONTROLLER | `0x06` | Temperature monitoring / heating control | Host → Device |
+| FOCUS_WELL | `0x09` | Focus / Z-height probe | Host → Device |
+| STOP | `0x0B` | Stop running operation (measurement, shaking) | Host → Device |
+| AUTO_FOCUS | `0x0C` | Auto-focus Z-scan | Host → Device |
+| PAUSE_RESUME | `0x0D` | Pause / resume running operation | Host → Device |
+| CMD_0x0E | `0x0E` | Boot sequence command; clears stuck running state | Host → Device |
+| SHAKE | `0x1D` | Standalone plate shaking (R_Shake) | Host → Device |
+| FILTER_SCAN | `0x24` | Filter position scan | Host → Device |
+| IDLE_MOVE | `0x27` | Continuous/periodic plate movement (R_IdleMove) | Host → Device |
 | STATUS | `0x80` | Status query (no params) | Host → Device |
 | HW_STATUS | `0x81` | Hardware telemetry query (no params) | Host → Device |
 
@@ -383,6 +391,12 @@ Host                                          CLARIOstar Plus
 Triggers hardware initialization. Device responds with STATUS frame.
 Use `wait=True` to poll until initialization completes.
 
+**OEM MARS vs our implementation:**
+- MARS sends dynamic byte[0] (values 0x01, 0x0D observed across boots) and byte[2]=0x03
+  with 5 parameter bytes. Our implementation uses fixed `\x00\x10\x02\x00` (4 bytes).
+  Both work — the firmware appears tolerant of parameter variations. The meaning of
+  MARS's dynamic byte[0] is unknown (possibly session/sequence counter).
+
 ### 7.2 TRAY (0x03)
 
 ```
@@ -415,6 +429,12 @@ Single-byte command family (no sub-command). Used for:
 - Start/stop heating to target temperature
 - Query current temperature
 
+**DDE vs direct USB:** The DDE commands `SetTemp` and `TempOff` are NOT valid DDE
+Execute commands — they return exit code 1000 and produce NO USB traffic. Temperature
+control works correctly via direct USB (0x06 payloads). OEM MARS likely exposes
+temperature via ActiveX properties or embeds it in measurement setup sequences rather
+than using standalone DDE Execute calls.
+
 ### 7.5 REQUEST/DATA (0x05/0x02)
 
 ```
@@ -431,6 +451,125 @@ Bytes 6–9: `00 00 00 00` = final (authoritative), `ff ff ff ff` = progressive 
 ```
 
 Returns 114-byte hardware telemetry (temperatures, lamp hours, voltages).
+
+### 7.7 STOP (0x0B)
+
+Single-byte family (no sub-command). Stops the currently running operation (measurement
+or standalone shaking).
+
+```
+02 00 0a 0c 0b 00 00 00 1d 0d
+```
+
+Payload: `0b 00` — param `0x00` = StopTest Nosave. The `running` flag clears within
+~5 seconds after STOP is sent.
+
+**Pcap verification:** Confirmed in ST-01 and ST-04 captures. STOP reliably terminates
+standalone shaking started by R_Shake (0x1D).
+
+### 7.8 SHAKE (0x1D) — Standalone Plate Shaking
+
+Single-byte family, 11-byte payload (10 param bytes). Starts plate shaking
+independently of any measurement.
+
+```
+[0x1D] [mode] [speed_idx] [duration:2B BE] [x_pos:2B BE] [y_pos:2B BE] [0x00] [flags]
+```
+
+| Byte | Field | Encoding |
+|------|-------|----------|
+| 0 | mode | 0x00=orbital, 0x01=linear, 0x02=double_orbital, 0x03=meander |
+| 1 | speed_idx | `(RPM / 100) - 1` e.g. 300 RPM → 0x02 |
+| 2–3 | duration | u16 BE, seconds (1–3600) |
+| 4–5 | x_position | u16 BE (250–3100, or 0x270F for default) |
+| 6–7 | y_position | u16 BE (125–800, or 0x270F for default) |
+| 8 | reserved | always 0x00 |
+| 9 | flags | 0x01 when custom x_position specified, 0x00 otherwise |
+
+**Pcap ground truth (13 captures):**
+
+| Capture | Settings | Wire bytes (payload) |
+|---------|----------|---------------------|
+| SH-01 | orbital 300rpm 5s default | `1d 00 02 00 05 27 0f 27 0f 00 00` |
+| SH-02 | orbital 300rpm 5s x=500 | `1d 00 02 00 05 01 f4 27 0f 00 01` |
+| SH-03 | orbital 500rpm 5s default | `1d 00 04 00 05 27 0f 27 0f 00 00` |
+| SH-04 | orbital 700rpm 5s default | `1d 00 06 00 05 27 0f 27 0f 00 00` |
+| SH-05 | orbital 300rpm 10s default | `1d 00 02 00 0a 27 0f 27 0f 00 00` |
+| SH-07 | linear 300rpm 5s default | `1d 01 02 00 05 27 0f 27 0f 00 00` |
+| SH-10 | double_orbital 300rpm 5s | `1d 02 02 00 05 27 0f 27 0f 00 00` |
+| VAL-01 | orbital 300rpm 300s | `1d 00 02 01 2c 27 0f 27 0f 00 00` |
+| VAL-02 | orbital 300rpm 600s | `1d 00 02 02 58 27 0f 27 0f 00 01` |
+| VAL-03 | orbital 300rpm 3600s | `1d 00 02 0e 10 27 0f 27 0f 00 00` |
+| VAL-06 | orbital 100rpm 5s | `1d 00 00 00 05 27 0f 27 0f 00 00` |
+| VAL-07 | orbital 200rpm 5s | `1d 00 01 00 05 27 0f 27 0f 00 00` |
+| DIS-06 | orbital 300rpm 256s | `1d 00 02 01 00 27 0f 27 0f 00 00` |
+
+**Key confirmations:**
+- Duration encoding: u16 BE (confirmed across 5, 10, 256, 300, 512, 600, 3600 seconds)
+- Speed encoding: `(RPM / 100) - 1` (confirmed for 100, 200, 300, 500, 700 RPM)
+- Default position: 0x270F (9999) for both X and Y
+- Flags byte: 0x01 when custom X position is set
+
+**Boundaries (from validation captures):**
+- Duration = 0: DDE rejects (exit 1000)
+- Speed = 800 RPM: DDE rejects
+- Meander at 400 RPM: DDE rejects
+
+### 7.9 IDLE_MOVE (0x27) — Continuous/Periodic Plate Movement
+
+Single-byte family, 11-byte payload (10 param bytes). Designed for keeping
+samples mixed during incubation. Runs in the background.
+
+```
+[0x27] [mode] [speed_idx] [0x00] [duration] [off_time:2B BE] [on_time:2B BE] [0x00] [0x00]
+```
+
+| Byte | Field | Encoding |
+|------|-------|----------|
+| 0 | mode | 0x00=cancel, 0x01=linear_corner, 0x02=incubation, 0x06=DDE-mode-3 (see notes) |
+| 1 | speed_idx | `(RPM / 100) - 1` for modes that support speed, else 0x00 |
+| 2 | reserved | 0x00 |
+| 3 | duration | seconds (encoding may be u8 or u16 — needs more pcap data) |
+| 4–5 | off_time | u16 BE, seconds between movement cycles (0 = permanent) |
+| 6–7 | on_time | u16 BE, seconds per movement cycle (0 = permanent) |
+| 8–9 | reserved | 0x00 0x00 |
+
+**Mode mapping — DDE arg to wire byte:**
+
+| DDE arg | Wire byte | Name (our label) | Status |
+|---------|-----------|-------------------|--------|
+| 0 | 0x00 | cancel | Confirmed (pcap) |
+| 1 | 0x01 | linear_corner | Confirmed (pcap IM-01) |
+| 2 | 0x02 | incubation | Confirmed (pcap IM-02) |
+| 3 | 0x06 | unknown (possibly double_orbital) | Confirmed (pcap VAL captures) |
+| 4–7 | — | — | DDE rejects (invalid mode) |
+
+**Important:** Wire bytes 0x03, 0x04, 0x05 have **never been observed** on the wire.
+Our original assumption of sequential mapping (0x03=meander_corner, 0x04=orbital_corner,
+0x05=orbital, 0x06=double_orbital) was **incorrect**. Only 0x01, 0x02, and 0x06 are
+confirmed via pcap captures.
+
+**Pcap ground truth:**
+
+| Capture | Settings | Wire bytes (payload) |
+|---------|----------|---------------------|
+| IM-01 | linear_corner 60s on=10 off=5 | `27 01 00 00 3c 00 05 00 0a 00 00` |
+| IM-02 | incubation 60s on=10 off=5 | `27 02 00 00 3c 00 05 00 0a 00 00` |
+| IM-04 | orbital 300rpm 60s on=10 off=5 | `27 05 02 00 3c 00 05 00 0a 00 00` |
+| IM-06 | double_orbital 300rpm 60s on=10 off=5 | `27 06 02 00 3c 00 05 00 0a 00 00` |
+
+### 7.10 CMD_0x0E — Boot Sequence Command
+
+Sent by OEM MARS during normal boot (after INITIALIZE → EEPROM read) in every
+pcap capture observed — both normal startup and stuck-state recovery. Clears the
+stuck `running=True` state as a side effect.
+
+```
+02 00 12 0c 0e 0b 12 00 00 00 01 04 96 00 00 00 00 57 0d
+```
+
+Payload: `0e 0b 12 00 00 00 01 04 96 00 00 00 00`. Purpose beyond recovery is
+not fully understood.
 
 ---
 
@@ -449,7 +588,9 @@ These byte sequences are invariant across all 40 captures:
 
 ## 9. Capture Index
 
-40 captures organized by test group:
+88+ captures organized by test group:
+
+### OEM Measurement Captures (40)
 
 | Group | Captures | Purpose |
 |-------|----------|---------|
@@ -464,6 +605,30 @@ These byte sequences are invariant across all 40 captures:
 | I (2) | I01–I02 | Temperature: measurement at 29°C (point + orbital) |
 | J (1) | J01 | Boot / drawer in+out sequence |
 | K (1) | K01 | Temperature control only (monitor, heat to 30°C, off) |
+
+### DDE Standalone Captures (2026-03-06)
+
+| Group | Captures | Purpose |
+|-------|----------|---------|
+| SH (8) | SH-01–SH-07, SH-10 | Standalone shaking: modes, speeds, positions, durations |
+| IM (6) | IM-01–IM-06 | Idle movement: modes, speed, periodic timing |
+| ST (4) | ST-01–ST-04 | Stop commands: StopTest during shake/idle |
+| VAL (22) | VAL-01–VAL-22 | Validation: duration encoding, drawer control, temp, IdleMove modes, boundaries |
+| DIS (7) | DIS-01–DIS-07 | Discovery: Init params, duration 256/512, motor/version (DDE-only) |
+| CRI (6) | CRI-01–CRI-06 | Critical unknowns: SetTemp (DDE-only), IdleMove modes 4/7 (rejected) |
+
+### Key findings from DDE captures
+
+- **DDE commands with no USB traffic:** MotorDis, MotorEn, Version, GetInfo, SetTemp,
+  TempOff — these are MARS-internal abstractions that do not produce wire commands
+- **Duration encoding:** u16 BE confirmed (256=0x0100, 300=0x012C, 512=0x0200,
+  600=0x0258, 3600=0x0E10)
+- **Speed encoding:** `(RPM/100)-1` confirmed for both R_Shake and R_IdleMove
+  (100=0x00, 200=0x01, 300=0x02, 500=0x04, 700=0x06)
+- **IdleMove mode mapping:** DDE arg→wire is NOT sequential. DDE arg 3 → wire 0x06.
+  Wire bytes 0x03-0x05 never observed.
+- **Drawer control:** MARS sends INIT+EEPROM before PlateOut (our code matches)
+- **Boundaries:** duration=0 rejected, speed=800 rejected, meander@400rpm rejected
 
 ---
 

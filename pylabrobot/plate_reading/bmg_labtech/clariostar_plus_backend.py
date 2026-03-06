@@ -247,7 +247,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     Fluorescence (discrete) ....... read_fluorescence, _build/_parse_fluorescence_*
     Fluorescence (spectrum) ....... read_fluorescence_spectrum, _build/_parse_fl_*
     Luminescence ................... (stub)
-    Auto-focus ..................... auto_focus, _build/_parse_autofocus_*
+    Focus well (Z-scan) .......... focus_well, _build_focus_well_payload
+    Auto-focus (deprecated) ...... auto_focus, _build_autofocus_payload
 
   TODO: When this class exceeds ~6000 lines, consider splitting measurement
   sections (ABS, FL, luminescence, auto-focus) into mixin classes, keeping
@@ -265,12 +266,14 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     REQUEST = 0x05
     TEMPERATURE_CONTROLLER = 0x06
     POLL = 0x08
-    FOCUS_WELL = 0x09
+    FOCUS_WELL = 0x09    # R_FocusWell: single-well Z-scan (51B frame, 45B payload)
     STOP = 0x0B
-    AUTO_FOCUS = 0x0C
+    AUTO_FOCUS = 0x0C    # R_FocusPlate: multi-well search + Z-scan (97B frame, 91B payload)
     PAUSE_RESUME = 0x0D
     CMD_0x0E = 0x0E
+    SHAKE = 0x1D           # R_Shake: standalone shaking (17B frame, 11B payload)
     FILTER_SCAN = 0x24
+    IDLE_MOVE = 0x27       # R_IdleMove: continuous/periodic shaking (17B frame, 11B payload)
     STATUS = 0x80
     HW_STATUS = 0x81
 
@@ -335,6 +338,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     CommandFamily.STOP,
     CommandFamily.PAUSE_RESUME,
     CommandFamily.CMD_0x0E,
+    CommandFamily.SHAKE,
+    CommandFamily.IDLE_MOVE,
   }
 
   # -- Optic byte flags (bit field, OR'd together) -------------------------
@@ -1805,8 +1810,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   def _pre_separator_block(
     detection_mode: "CLARIOstarPlusBackend.DetectionMode",
     well_scan_mode: "CLARIOstarPlusBackend.WellScanMode",
-    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
-    shake_speed_rpm: int = 0,
+    shake_pattern: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
+    shake_rpm: int = 0,
     shake_duration_s: int = 0,
     optic_position: Optional["CLARIOstarPlusBackend.OpticPosition"] = None,
     edr: bool = False,
@@ -1816,8 +1821,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     Args:
       detection_mode: Detection mode (ABSORBANCE, FLUORESCENCE).
       well_scan_mode: Well scan mode (POINT, ORBITAL, SPIRAL, MATRIX).
-      shake_mode: None, "orbital", "linear", "double_orbital", or "meander".
-      shake_speed_rpm: Shake speed in RPM (100-700, multiples of 100; meander max 300).
+      shake_pattern: None, "orbital", "linear", "double_orbital", or "meander".
+      shake_rpm: Shake speed in RPM (100-700, multiples of 100; meander max 300).
       shake_duration_s: Shake duration in seconds.
       optic_position: Optic position (TOP, BOTTOM). Fluorescence only.
       edr: Enhanced Dynamic Range. Sets byte[1] = 0x40. Fluorescence only.
@@ -1831,11 +1836,11 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if edr:
       buf[1] = 0x40
 
-    if shake_mode is not None and shake_duration_s > 0:
+    if shake_pattern is not None and shake_duration_s > 0:
       buf[12] = 0x02  # mixer_action
       shake_pattern_map = {"orbital": 0, "linear": 1, "double_orbital": 2, "meander": 3}
-      buf[17] = shake_pattern_map[shake_mode]
-      buf[18] = (shake_speed_rpm // 100) - 1  # speed index
+      buf[17] = shake_pattern_map[shake_pattern]
+      buf[18] = (shake_rpm // 100) - 1  # speed index
       buf[20:22] = shake_duration_s.to_bytes(2, "little")
 
     return bytes(buf)
@@ -1922,8 +1927,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
 
   @staticmethod
   def _validate_shake_params(
-    shake_mode: Optional[str],
-    shake_speed_rpm: Optional[int],
+    shake_pattern: Optional[str],
+    shake_rpm: Optional[int],
     shake_duration_s: Optional[int],
     settling_time_s: Optional[float] = None,
     *,
@@ -1937,25 +1942,25 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         Used by absorbance methods. Fluorescence methods manage settling
         independently, so they pass ``require_settling=False`` (default).
     """
-    valid_shake_modes = (None, "orbital", "linear", "double_orbital", "meander")
-    if shake_mode not in valid_shake_modes:
-      raise ValueError(f"shake_mode must be one of {valid_shake_modes}, got {shake_mode!r}.")
-    if shake_mode is not None:
-      if shake_speed_rpm is None:
-        raise ValueError("shake_speed_rpm is required when shake_mode is set.")
+    valid_shake_patterns = (None, "orbital", "linear", "double_orbital", "meander")
+    if shake_pattern not in valid_shake_patterns:
+      raise ValueError(f"shake_pattern must be one of {valid_shake_patterns}, got {shake_pattern!r}.")
+    if shake_pattern is not None:
+      if shake_rpm is None:
+        raise ValueError("shake_rpm is required when shake_pattern is set.")
       if shake_duration_s is None:
-        raise ValueError("shake_duration_s is required when shake_mode is set.")
+        raise ValueError("shake_duration_s is required when shake_pattern is set.")
       if require_settling and settling_time_s is None:
-        raise ValueError("settling_time_s is required when shake_mode is set.")
-      max_rpm = 300 if shake_mode == "meander" else 700
-      if shake_speed_rpm < 100 or shake_speed_rpm > max_rpm or shake_speed_rpm % 100 != 0:
+        raise ValueError("settling_time_s is required when shake_pattern is set.")
+      max_rpm = 300 if shake_pattern == "meander" else 700
+      if shake_rpm < 100 or shake_rpm > max_rpm or shake_rpm % 100 != 0:
         raise ValueError(
-          f"shake_speed_rpm must be a multiple of 100 in range 100-{max_rpm}, "
-          f"got {shake_speed_rpm}."
+          f"shake_rpm must be a multiple of 100 in range 100-{max_rpm}, "
+          f"got {shake_rpm}."
         )
       if not 0 < shake_duration_s <= 65535:
         raise ValueError(
-          f"shake_duration_s must be 1-65535 when shake_mode is set, got {shake_duration_s}."
+          f"shake_duration_s must be 1-65535 when shake_pattern is set, got {shake_duration_s}."
         )
       if require_settling and settling_time_s is not None:
         if not 0 <= settling_time_s <= 1:
@@ -1963,12 +1968,12 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
             f"settling_time_s must be 0-1 (MARS range 0.0-1.0 s), got {settling_time_s}."
           )
     else:
-      if shake_speed_rpm is not None:
-        raise ValueError("shake_speed_rpm must be None when shake_mode is None.")
+      if shake_rpm is not None:
+        raise ValueError("shake_rpm must be None when shake_pattern is None.")
       if shake_duration_s is not None:
-        raise ValueError("shake_duration_s must be None when shake_mode is None.")
+        raise ValueError("shake_duration_s must be None when shake_pattern is None.")
       if require_settling and settling_time_s is not None:
-        raise ValueError("settling_time_s must be None when shake_mode is None.")
+        raise ValueError("settling_time_s must be None when shake_pattern is None.")
 
   async def _poll_progressive(
     self,
@@ -2412,6 +2417,227 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       parameters=b"\x00",
     )
 
+  _SHAKE_MODES = {
+    "orbital": 0x00,
+    "linear": 0x01,
+    "double_orbital": 0x02,
+    "meander": 0x03,
+  }
+
+  async def start_shaking(
+    self,
+    pattern: Literal["orbital", "linear", "double_orbital", "meander"] = "orbital",
+    rpm: int = 300,
+    duration: Optional[int] = None,
+    x_position: int = 9999,
+    y_position: int = 9999,
+  ) -> None:
+    """Standalone plate shaking (R_Shake, command 0x1D).
+
+    Shakes the plate independently of any measurement. When no ``duration``
+    is given, shakes for the maximum time (3600 s). Call
+    :meth:`stop_measurement` to interrupt early.
+
+    Args:
+      pattern: Shake pattern — ``"orbital"`` (default), ``"linear"``,
+        ``"double_orbital"``, or ``"meander"``.
+      rpm: Shake frequency in RPM. Must be a multiple of 100.
+        Range 100–700 for most modes, 100–300 for meander.
+      duration: Shake duration in seconds (1–3600). If ``None``, shakes
+        for 3600 s (1 hour). Use :meth:`stop_measurement` to stop early.
+      x_position: Plate X position (250–3100), or 9999 for default/random.
+      y_position: Plate Y position (125–800), or 9999 for default/random.
+
+    Wire (11-byte payload, no command sub-byte)::
+
+      [0x1D] [mode] [speed_idx] [duration:2B BE]
+             [x_pos:2B BE] [y_pos:2B BE] [0x00] [flags]
+
+    Pcap ground truth::
+
+      orbital 300rpm   5s default:  1d 00 02 00 05 27 0f 27 0f 00 00
+      orbital 300rpm   5s x=500:   1d 00 02 00 05 01 f4 27 0f 00 01
+      orbital 100rpm   5s default:  1d 00 00 00 05 27 0f 27 0f 00 00
+      orbital 200rpm   5s default:  1d 00 01 00 05 27 0f 27 0f 00 00
+      orbital 300rpm 300s default:  1d 00 02 01 2c 27 0f 27 0f 00 00
+      orbital 300rpm 600s default:  1d 00 02 02 58 27 0f 27 0f 00 01
+      orbital 300rpm 3600s default: 1d 00 02 0e 10 27 0f 27 0f 00 00
+    """
+    if pattern not in self._SHAKE_MODES:
+      raise ValueError(f"pattern must be one of {list(self._SHAKE_MODES)}, got {pattern!r}.")
+    max_rpm = 300 if pattern == "meander" else 700
+    if rpm < 100 or rpm > max_rpm or rpm % 100 != 0:
+      raise ValueError(
+        f"rpm must be a multiple of 100 in range 100–{max_rpm}, got {rpm}."
+      )
+
+    if duration is None:
+      duration = 3600
+    if not 1 <= duration <= 3600:
+      raise ValueError(f"duration must be 1–3600, got {duration}.")
+
+    mode_byte = self._SHAKE_MODES[pattern]
+    speed_idx = (rpm // 100) - 1
+    # Byte 10 is a flag: 0x01 when custom x_position is specified
+    custom_pos = 0x01 if x_position != 9999 else 0x00
+
+    # Duration is u16 BE at bytes 2-3 — confirmed by pcap captures
+    # VAL-01 (300s=0x012C), VAL-02 (600s=0x0258), VAL-03 (3600s=0x0E10).
+    payload = bytearray(10)
+    payload[0] = mode_byte
+    payload[1] = speed_idx
+    payload[2:4] = duration.to_bytes(2, "big")
+    payload[4:6] = x_position.to_bytes(2, "big")
+    payload[6:8] = y_position.to_bytes(2, "big")
+    payload[8] = 0x00
+    payload[9] = custom_pos
+
+    await self.send_command(
+      command_family=self.CommandFamily.SHAKE,
+      parameters=bytes(payload),
+      wait=True,
+    )
+
+  async def stop_shaking(self) -> None:
+    """Stop standalone shaking started by :meth:`start_shaking`.
+
+    Queries device status and acts based on state:
+
+    - **Running but no measurement** (standalone shake): calls
+      :meth:`stop_measurement` (STOP 0x0B 0x00) and polls until the
+      ``running`` flag clears (~5 s).
+    - **Running with active measurement**: logs a warning that stopping
+      will cancel the measurement, then calls :meth:`stop_measurement`.
+    - **Not running**: does nothing (shake already finished or never started).
+
+    Pcap ground truth confirms STOP 0x0B 0x00 reliably terminates
+    standalone shaking (captures ST-01, ST-04).
+    """
+    status = await self.request_machine_status()
+
+    if not status["running"]:
+      logger.info("stop_shaking: device not running, nothing to do")
+      return
+
+    if status["reading_wells"]:
+      logger.warning(
+        "stop_shaking: device is running a measurement (reading_wells=True). "
+        "Calling stop_measurement will cancel the entire run."
+      )
+
+    await self.stop_measurement()
+
+    # Poll until running clears (typically ~5 s)
+    t = time.time()
+    timeout = 15.0
+    while time.time() - t < timeout:
+      await asyncio.sleep(0.25)
+      status = await self.request_machine_status()
+      if not status["running"]:
+        logger.info("stop_shaking: running flag cleared after %.1fs", time.time() - t)
+        return
+    logger.warning("stop_shaking: running flag still set after %.1fs", time.time() - t)
+
+  # Mode→wire-byte mapping for R_IdleMove (0x27).
+  # Confirmed via DDE pcap: arg 1→0x01, arg 2→0x02, arg 3→0x06.
+  # DDE args 4-7 are rejected. Wire bytes 0x03-0x05 were NEVER observed.
+  # The names for 0x03-0x05 below are speculative (from Go reference).
+  _IDLE_MOVE_MODES = {
+    "linear_corner": 0x01,    # pcap-confirmed (IM-01)
+    "incubation": 0x02,       # pcap-confirmed (IM-02)
+    "meander_corner": 0x03,   # speculative — never seen on wire
+    "orbital_corner": 0x04,   # speculative — never seen on wire
+    "orbital": 0x05,          # pcap-confirmed (IM-04)
+    "double_orbital": 0x06,   # pcap-confirmed (IM-06, also DDE arg 3)
+  }
+
+  async def stop_idle_movement(self) -> None:
+    """Cancel any active idle movement (R_IdleMove cancel, command 0x27).
+
+    Sends mode=0 (cancel) to stop movement started by
+    :meth:`start_idle_movement`.
+
+    Wire::
+
+      27 00 00 00 00 00 00 00 00 00 00
+    """
+    await self.send_command(
+      command_family=self.CommandFamily.IDLE_MOVE,
+      parameters=b"\x00" * 10,
+    )
+
+  async def start_idle_movement(
+    self,
+    pattern: Literal[
+      "linear_corner", "incubation", "meander_corner",
+      "orbital_corner", "orbital", "double_orbital",
+    ] = "orbital",
+    rpm: int = 300,
+    duration: int = 65535,
+    on_time: int = 0,
+    off_time: int = 0,
+  ) -> None:
+    """Start continuous or periodic plate movement (R_IdleMove, command 0x27).
+
+    Designed for keeping samples mixed during incubation. Runs in the
+    background and does not block. When ``off_time`` is 0, shaking is
+    permanent for the full ``duration``. Cancel anytime with
+    :meth:`stop_idle_movement`.
+
+    Requires firmware >= 1.20.
+
+    Args:
+      pattern: Movement pattern. ``"orbital"`` and ``"double_orbital"`` support
+        speed control (100–700 rpm). ``"meander_corner"`` supports 100–300 rpm.
+        ``"linear_corner"`` and ``"incubation"`` ignore speed.
+        ``"orbital_corner"`` requires special plate carrier.
+      rpm: Shake frequency in RPM. Must be a multiple of 100.
+        Ignored for ``"linear_corner"`` and ``"incubation"`` modes.
+      duration: Total duration in seconds (1–65535). Default 65535 (~18 hours).
+      on_time: Seconds of movement per cycle (0 = permanent, no pauses).
+      off_time: Seconds of pause between cycles (0 = permanent, no pauses).
+
+    Wire (11-byte payload, no command sub-byte)::
+
+      [0x27] [mode] [speed_idx?] [0x00] [duration]
+             [off_time:2B BE] [on_time:2B BE] [0x00] [0x00]
+
+    Pcap ground truth (linear corner, 60s, on=10s, off=5s)::
+
+      27 01 00 00 3c 00 05 00 0a 00 00
+    """
+    if pattern not in self._IDLE_MOVE_MODES:
+      raise ValueError(f"pattern must be one of {list(self._IDLE_MOVE_MODES)}, got {pattern!r}.")
+    if not 1 <= duration <= 65535:
+      raise ValueError(f"duration must be 1–65535, got {duration}.")
+
+    mode_byte = self._IDLE_MOVE_MODES[pattern]
+
+    # Speed encoding — same as R_Shake for modes that support it
+    speed_idx = 0x00
+    if pattern in ("meander_corner", "orbital_corner", "orbital", "double_orbital"):
+      max_rpm = 300 if pattern == "meander_corner" else 700
+      if rpm < 100 or rpm > max_rpm or rpm % 100 != 0:
+        raise ValueError(
+          f"rpm must be a multiple of 100 in range 100–{max_rpm}, got {rpm}."
+        )
+      speed_idx = (rpm // 100) - 1
+
+    payload = bytearray(10)
+    payload[0] = mode_byte
+    payload[1] = speed_idx
+    payload[2] = 0x00
+    payload[3] = duration & 0xFF  # low byte (may be u16 — needs more pcap data)
+    payload[4:6] = off_time.to_bytes(2, "big")
+    payload[6:8] = on_time.to_bytes(2, "big")
+    payload[8] = 0x00
+    payload[9] = 0x00
+
+    await self.send_command(
+      command_family=self.CommandFamily.IDLE_MOVE,
+      parameters=bytes(payload),
+    )
+
   async def _send_cmd_0x0e(self) -> None:
     """Send the unknown CMD_0x0E observed in OEM MARS startup sequences.
 
@@ -2471,8 +2697,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     unidirectional: bool = True,
     vertical: bool = True,
     corner: Literal["TL", "TR", "BL", "BR"] = "TL",
-    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
-    shake_speed_rpm: int = 0,
+    shake_pattern: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
+    shake_rpm: int = 0,
     shake_duration_s: int = 0,
     settling_time_s: float = 0.0,
     pause_time: Optional[int] = None,
@@ -2509,8 +2735,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     pre_sep = self._pre_separator_block(
       detection_mode=self.DetectionMode.ABSORBANCE,
       well_scan_mode=wsm,
-      shake_mode=shake_mode,
-      shake_speed_rpm=shake_speed_rpm,
+      shake_pattern=shake_pattern,
+      shake_rpm=shake_rpm,
       shake_duration_s=shake_duration_s,
     )
 
@@ -2588,8 +2814,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     unidirectional: bool = True,
     vertical: bool = True,
     corner: Literal["TL", "TR", "BL", "BR"] = "TL",
-    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
-    shake_speed_rpm: int = 0,
+    shake_pattern: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
+    shake_rpm: int = 0,
     shake_duration_s: int = 0,
     settling_time_s: float = 0.0,
     pause_time: Optional[int] = None,
@@ -2631,8 +2857,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     pre_sep = self._pre_separator_block(
       detection_mode=self.DetectionMode.ABSORBANCE,
       well_scan_mode=wsm,
-      shake_mode=shake_mode,
-      shake_speed_rpm=shake_speed_rpm,
+      shake_pattern=shake_pattern,
+      shake_rpm=shake_rpm,
       shake_duration_s=shake_duration_s,
     )
 
@@ -3005,8 +3231,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     vertical: bool = True,
     corner: Literal["TL", "TR", "BL", "BR"] = "TL",
     # --- shaking ---
-    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
-    shake_speed_rpm: Optional[int] = None,
+    shake_pattern: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
+    shake_rpm: Optional[int] = None,
     shake_duration_s: Optional[int] = None,
     settling_time_s: Optional[float] = None,
     # --- execution ---
@@ -3058,16 +3284,16 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       vertical: If True, scan columns first (top→bottom). If False, scan
         rows first (left→right).
       corner: Starting corner: ``"TL"``, ``"TR"``, ``"BL"``, or ``"BR"``.
-      shake_mode: Shake plate before reading. ``None`` (default) = no shake,
+      shake_pattern: Shake plate before reading. ``None`` (default) = no shake,
         ``"orbital"``, ``"linear"``, ``"double_orbital"``, or ``"meander"``.
-        When set, requires ``shake_speed_rpm``, ``shake_duration_s``, and
+        When set, requires ``shake_rpm``, ``shake_duration_s``, and
         ``settling_time_s``.
-      shake_speed_rpm: Shake speed in RPM (multiples of 100, 100-700; meander
-        max 300). Required when ``shake_mode`` is set.
+      shake_rpm: Shake speed in RPM (multiples of 100, 100-700; meander
+        max 300). Required when ``shake_pattern`` is set.
       shake_duration_s: Shake duration in seconds (> 0). Required when
-        ``shake_mode`` is set.
+        ``shake_pattern`` is set.
       settling_time_s: Wait time in seconds after shaking before reading
-        (0.0-1.0). Required when ``shake_mode`` is set.
+        (0.0-1.0). Required when ``shake_pattern`` is set.
       read_timeout: Safety timeout in seconds for the measurement polling
         loop.  Default 7200 (2 hours), which is sufficient for any single
         measurement run.  Set to ``None`` to poll indefinitely.  The
@@ -3132,7 +3358,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       raise ValueError(f"report must be one of {valid_reports}, got {report!r}.")
 
     self._validate_shake_params(
-      shake_mode, shake_speed_rpm, shake_duration_s, settling_time_s,
+      shake_pattern, shake_rpm, shake_duration_s, settling_time_s,
       require_settling=True,
     )
 
@@ -3151,8 +3377,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       unidirectional=unidirectional,
       vertical=vertical,
       corner=corner,
-      shake_mode=shake_mode,
-      shake_speed_rpm=shake_speed_rpm if shake_speed_rpm is not None else 0,
+      shake_pattern=shake_pattern,
+      shake_rpm=shake_rpm if shake_rpm is not None else 0,
       shake_duration_s=shake_duration_s if shake_duration_s is not None else 0,
       settling_time_s=settling_time_s if settling_time_s is not None else 0.0,
     )
@@ -3222,8 +3448,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     unidirectional: bool = True,
     vertical: bool = True,
     corner: Literal["TL", "TR", "BL", "BR"] = "TL",
-    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
-    shake_speed_rpm: Optional[int] = None,
+    shake_pattern: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
+    shake_rpm: Optional[int] = None,
     shake_duration_s: Optional[int] = None,
     settling_time_s: Optional[float] = None,
     read_timeout: Optional[float] = 7200,
@@ -3255,9 +3481,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       unidirectional: If True, scan wells in one direction only.
       vertical: If True, scan columns first (top to bottom).
       corner: Starting corner: ``"TL"``, ``"TR"``, ``"BL"``, or ``"BR"``.
-      shake_mode: Shake plate before reading. None = no shake,
+      shake_pattern: Shake plate before reading. None = no shake,
         ``"orbital"``, ``"linear"``, ``"double_orbital"``, or ``"meander"``.
-      shake_speed_rpm: Shake speed in RPM (multiples of 100, 100-700; meander
+      shake_rpm: Shake speed in RPM (multiples of 100, 100-700; meander
         max 300).
       shake_duration_s: Shake duration in seconds.
       settling_time_s: Wait time after shaking (0.0-1.0 s).
@@ -3330,7 +3556,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       raise ValueError(f"report must be one of {valid_reports}, got {report!r}.")
 
     self._validate_shake_params(
-      shake_mode, shake_speed_rpm, shake_duration_s, settling_time_s,
+      shake_pattern, shake_rpm, shake_duration_s, settling_time_s,
       require_settling=True,
     )
 
@@ -3352,8 +3578,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       unidirectional=unidirectional,
       vertical=vertical,
       corner=corner,
-      shake_mode=shake_mode,
-      shake_speed_rpm=shake_speed_rpm if shake_speed_rpm is not None else 0,
+      shake_pattern=shake_pattern,
+      shake_rpm=shake_rpm if shake_rpm is not None else 0,
       shake_duration_s=shake_duration_s if shake_duration_s is not None else 0,
       settling_time_s=settling_time_s if settling_time_s is not None else 0.0,
     )
@@ -3432,8 +3658,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     unidirectional: bool = False,
     vertical: bool = True,
     corner: Literal["TL", "TR", "BL", "BR"] = "TL",
-    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
-    shake_speed_rpm: int = 0,
+    shake_pattern: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
+    shake_rpm: int = 0,
     shake_duration_s: int = 0,
     edr: bool = False,
     flying_mode: bool = False,
@@ -3509,8 +3735,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     pre_sep = self._pre_separator_block(
       detection_mode=self.DetectionMode.FLUORESCENCE,
       well_scan_mode=wsm,
-      shake_mode=shake_mode,
-      shake_speed_rpm=shake_speed_rpm,
+      shake_pattern=shake_pattern,
+      shake_rpm=shake_rpm,
       shake_duration_s=shake_duration_s,
       optic_position=optic_pos,
       edr=edr,
@@ -3755,8 +3981,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     vertical: bool = True,
     corner: Literal["TL", "TR", "BL", "BR"] = "TL",
     # Shaking parameters
-    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
-    shake_speed_rpm: Optional[int] = None,
+    shake_pattern: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
+    shake_rpm: Optional[int] = None,
     shake_duration_s: Optional[int] = None,
     # Non-blocking
     wait: bool = True,
@@ -3792,9 +4018,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       unidirectional: Scan direction (default False = bidirectional).
       vertical: Scan columns first (default True).
       corner: Starting corner: ``"TL"``, ``"TR"``, ``"BL"``, ``"BR"``.
-      shake_mode: ``None``, ``"orbital"``, ``"linear"``, ``"double_orbital"``, or
+      shake_pattern: ``None``, ``"orbital"``, ``"linear"``, ``"double_orbital"``, or
         ``"meander"``. Meander is limited to 300 RPM max.
-      shake_speed_rpm: Shake speed in RPM (multiples of 100, 100-700; meander
+      shake_rpm: Shake speed in RPM (multiples of 100, 100-700; meander
         max 300).
       shake_duration_s: Shake duration in seconds.
       read_timeout: Safety timeout in seconds (default 7200).
@@ -3917,7 +4143,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     if corner not in valid_corners:
       raise ValueError(f"corner must be one of {valid_corners}, got {corner!r}.")
 
-    self._validate_shake_params(shake_mode, shake_speed_rpm, shake_duration_s)
+    self._validate_shake_params(shake_pattern, shake_rpm, shake_duration_s)
 
     if read_timeout is not None and read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
@@ -3942,8 +4168,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       unidirectional=unidirectional,
       vertical=vertical,
       corner=corner,
-      shake_mode=shake_mode,
-      shake_speed_rpm=shake_speed_rpm if shake_speed_rpm is not None else 0,
+      shake_pattern=shake_pattern,
+      shake_rpm=shake_rpm if shake_rpm is not None else 0,
       shake_duration_s=shake_duration_s if shake_duration_s is not None else 0,
       edr=edr,
       flying_mode=flying_mode,
@@ -4020,8 +4246,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     unidirectional: bool = False,
     vertical: bool = True,
     corner: Literal["TL", "TR", "BL", "BR"] = "TL",
-    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
-    shake_speed_rpm: int = 0,
+    shake_pattern: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
+    shake_rpm: int = 0,
     shake_duration_s: int = 0,
     # Test overrides (pass exact pcap edge values to bypass ±2 firmware calibration)
     _start_ex_hi: Optional[int] = None,
@@ -4064,8 +4290,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     pre_sep = self._pre_separator_block(
       detection_mode=self.DetectionMode.FLUORESCENCE,
       well_scan_mode=wsm,
-      shake_mode=shake_mode,
-      shake_speed_rpm=shake_speed_rpm,
+      shake_pattern=shake_pattern,
+      shake_rpm=shake_rpm,
       shake_duration_s=shake_duration_s,
       optic_position=optic_pos,
     )
@@ -4265,8 +4491,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
     unidirectional: bool = False,
     vertical: bool = True,
     corner: Literal["TL", "TR", "BL", "BR"] = "TL",
-    shake_mode: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
-    shake_speed_rpm: Optional[int] = None,
+    shake_pattern: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
+    shake_rpm: Optional[int] = None,
     shake_duration_s: Optional[int] = None,
     wait: bool = True,
     read_timeout: Optional[float] = 7200,
@@ -4302,9 +4528,9 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       unidirectional: Scan direction (default False = bidirectional).
       vertical: Scan columns first (default True).
       corner: Starting corner: ``"TL"``, ``"TR"``, ``"BL"``, ``"BR"``.
-      shake_mode: ``None``, ``"orbital"``, ``"linear"``, ``"double_orbital"``,
+      shake_pattern: ``None``, ``"orbital"``, ``"linear"``, ``"double_orbital"``,
         or ``"meander"``.
-      shake_speed_rpm: Shake speed in RPM (multiples of 100, 100-700).
+      shake_rpm: Shake speed in RPM (multiples of 100, 100-700).
       shake_duration_s: Shake duration in seconds.
       wait: If True, poll until complete and return results. If False, fire
         measurement and return empty list.
@@ -4362,7 +4588,7 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
         f"optic_position must be one of {valid_optic_positions}, got {optic_position!r}."
       )
 
-    self._validate_shake_params(shake_mode, shake_speed_rpm, shake_duration_s)
+    self._validate_shake_params(shake_pattern, shake_rpm, shake_duration_s)
 
     if read_timeout is not None and read_timeout <= 0:
       raise ValueError(f"read_timeout must be > 0, got {read_timeout}.")
@@ -4383,8 +4609,8 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       unidirectional=unidirectional,
       vertical=vertical,
       corner=corner,
-      shake_mode=shake_mode,
-      shake_speed_rpm=shake_speed_rpm if shake_speed_rpm is not None else 0,
+      shake_pattern=shake_pattern,
+      shake_rpm=shake_rpm if shake_rpm is not None else 0,
       shake_duration_s=shake_duration_s if shake_duration_s is not None else 0,
     )
     await self.send_command(
@@ -4651,9 +4877,12 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
   ) -> dict:
     """Run a Z-scan auto-focus and return the optimal focal height.
 
-    The firmware physically sweeps the Z-axis from 0.8mm to ``max_focal_height_mm``
-    in 0.1mm steps, measuring FL intensity at each position. It identifies the
-    W-curve intensity peaks and returns the midpoint as the best focal height.
+    .. deprecated::
+      This method uses command 0x0C with a **broken payload** (88 bytes instead
+      of the correct 91 — missing gain_target field, wrong well mask offset, and
+      4-byte slit instead of 5). It produces only a 17-byte short response with
+      no Z-profile data. Use :meth:`focus_well` instead, which sends the correct
+      0x09 FOCUS_WELL command and returns the full 144-point Z-profile.
 
     Args:
       plate: Plate resource.
@@ -4681,6 +4910,13 @@ class CLARIOstarPlusBackend(PlateReaderBackend):
       ValueError: If wavelength or parameter ranges are invalid.
       TimeoutError: If the Z-scan doesn't complete within scan_timeout.
     """
+    import warnings
+    warnings.warn(
+      "auto_focus() uses a broken 0x0C payload (88 bytes vs correct 91) and only "
+      "returns a 17-byte short response with no Z-profile. Use focus_well() instead.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
     # Filter slot validation (EEPROM-based)
     if excitation_filter is not None:
       max_slots = self.configuration.get("excitation_filter_slots", 0)

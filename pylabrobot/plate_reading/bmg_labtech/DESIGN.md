@@ -8,8 +8,9 @@ This branch (`clariostar-refactor-with-fluorescence`) rewrote the plate reader b
 
 | Capability | CLARIOstar (old) | CLARIOstarPlus (new) |
 |---|---|---|
-| **Lines of code** | ~350 | ~3,800 (backend) + 6,345 (tests) + 195 (filters) |
+| **Lines of code** | ~350 | ~5,200 (backend) + 6,345 (tests) + 195 (filters) |
 | **Test methods** | 0 | 359 |
+| **Standalone shaking** | Not supported | `start_shaking()`, `stop_shaking()`, `start_idle_movement()`, `stop_idle_movement()` — hardware-validated via 27+ pcap captures |
 | **Wire protocol** | Hardcoded byte arrays, 2-byte checksum | Structured frame builder, 24-bit checksum, validation, retries |
 | **Absorbance (discrete)** | Single wavelength | 1-8 wavelengths per run |
 | **Absorbance (spectrum)** | Not supported | Full spectrum scans (220-1000 nm, variable step) with paginated retrieval |
@@ -51,6 +52,7 @@ Entirely new. Scans a wavelength range with configurable step size. Paginated da
 ### 5. Temperature Control
 - **Old**: Not supported. All temperature fields returned `NaN`.
 - **New**: Three-tier control -- monitoring only (sensor readout), active heating (setpoint + PID), off. `measure_temperature()` returns bottom, top, or mean. Setpoint tracked locally. Sensors auto-activated on demand.
+- **DDE finding (2026-03-06)**: DDE `SetTemp`/`TempOff` are NOT valid DDE Execute commands (exit 1000, no USB traffic). Our direct USB 0x06 commands work correctly. OEM MARS likely uses ActiveX properties or embeds temp control in measurement setup sequences.
 
 ### 6. Device Identification & Diagnostics
 - **Old**: `request_eeprom_data()` -- returned raw bytes, no parsing.
@@ -222,6 +224,9 @@ Verified against 6,780 pcap frames with zero failures.
 - **Payload:** `01 00 00 10 02 00`
 - **Response:** Status frame -- poll until `initialized` flag is set.
 - **Notes:** Must be the first command after FTDI setup. Takes ~3-5s.
+  OEM MARS sends different params: dynamic byte[0] (0x01/0x0D observed),
+  byte[2]=0x03, and 5 param bytes. Our 4-byte payload works fine —
+  firmware is tolerant of parameter variations.
 
 #### `open` (drawer out)
 - **Group/Cmd:** `0x03 0x01`
@@ -409,7 +414,7 @@ All dimensions in 0.01mm units (uint16 BE). Well mask is 384-bit big-endian.
 - **Notes:** Used during long measurement runs to get intermediate data.
   Progressive `get_data` variant uses `FF FF FF FF` at payload bytes 2-5.
 
-#### Shaker
+#### Shaker (embedded in RUN payloads)
 - **Encoding:** 4 bytes embedded in RUN payloads.
   ```
   [(1 << 4) | shake_type, speed_idx, duration_hi, duration_lo]
@@ -417,6 +422,35 @@ All dimensions in 0.01mm units (uint16 BE). Well mask is 384-bit big-endian.
 - **Types:** Orbital(0), Linear(1), Double-Orbital(2), Meander(3).
 - **Speed:** 100-700 RPM in steps of 100. `speed_idx = rpm/100 - 1`.
 - **Meander max:** 300 RPM.
+
+#### `start_shaking` (standalone R_Shake)
+- **Group/Cmd:** `0x1D` (no command byte — SHAKE is a single-byte family)
+- **Payload:** 11 bytes: `[0x1D] [mode] [speed_idx] [duration:2B BE] [x:2B BE] [y:2B BE] [0x00] [flags]`
+- **Modes:** 0x00=orbital, 0x01=linear, 0x02=double_orbital, 0x03=meander.
+- **Speed:** `(RPM/100)-1`. Confirmed for 100-700 RPM via pcap.
+- **Duration:** u16 BE, seconds (1–3600). Confirmed via pcap: 5, 10, 256, 300, 512, 600, 3600.
+- **Position:** 0x270F (9999) = default. Custom positions set flags byte to 0x01.
+- **Hardware-validated:** 13 pcap captures (SH-01 through SH-10, VAL-01 through VAL-03, DIS-06/07).
+
+#### `stop_shaking`
+- Queries device status. If `running=True`, sends STOP (0x0B 0x00) then polls until `running` clears.
+- Poll cadence: 0.25s (matches device communication interval). Timeout: 15s.
+- STOP confirmed via pcap (ST-01, ST-04).
+
+#### `start_idle_movement` (R_IdleMove)
+- **Group/Cmd:** `0x27` (no command byte — IDLE_MOVE is a single-byte family)
+- **Payload:** 11 bytes: `[0x27] [mode] [speed_idx] [0x00] [duration] [off:2B BE] [on:2B BE] [0x00] [0x00]`
+- **Modes confirmed via pcap:** 0x01=linear_corner, 0x02=incubation, 0x06=DDE-mode-3.
+  Wire bytes 0x03-0x05 never observed. DDE args 4-7 rejected.
+- **Speed:** Same `(RPM/100)-1` as R_Shake. Confirmed via pcap.
+- **Periodic:** on_time/off_time enable intermittent movement (e.g. 10s on, 5s off).
+
+#### `stop_idle_movement` (R_IdleMove cancel)
+- Sends mode=0x00 (cancel) to stop active idle movement.
+
+#### `stop_measurement`
+- **Group/Cmd:** `0x0B 0x00`
+- **Notes:** Stops any running operation (measurement or standalone shaking).
 
 #### Scan mode byte
 - **Encoding:** Single byte in RUN payloads.
@@ -485,6 +519,8 @@ CLARIOstarPlusBackend
 ├── Measurement - Fluorescence (mono/filter/multi-chromatic/EDR/flying/matrix)
 ├── Measurement - Luminescence (stub)
 ├── Auto-Focus
+├── Standalone Shaking (start_shaking, stop_shaking)
+├── Idle Movement (start_idle_movement, stop_idle_movement)
 └── Usage Counters
 ```
 
@@ -492,7 +528,7 @@ CLARIOstarPlusBackend
 
 ### Sources
 
-- **Pcap captures:** 88 USB capture files (59 absorbance + 29 fluorescence), 6,780+ frames total.
+- **Pcap captures:** 130+ USB capture files (59 absorbance + 29 fluorescence + 45+ DDE standalone captures), 6,780+ frames total.
 - **Go reference implementation:** `fl.go`, `abs.go`, command dispatch.
 - **OEM software (MARS):** Automated capture runs for absorbance, fluorescence, luminescence.
 - **ActiveX/DDE manual** (0430N0003I): Command family documentation, `GainWell`/`GainPlate` focus parameters, status items.

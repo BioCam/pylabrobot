@@ -25,7 +25,9 @@ This is an **analysis-only** document. No code changes proposed.
 | Auto-focus (Z-scan) | `auto_focus()` | FQ01 pcap verified, 143-point Z-profile parsing |
 | Well scan: point, orbital, spiral | All measurement methods | Validated for absorbance + fluorescence |
 | Scan direction (all 16 OEM patterns) | `_scan_direction_byte()` | 4 corners x 2 directions x 2 uni/bidi |
-| Shaking (orbital, linear, double_orbital) | Integrated into all measurements | RPM 100-700, duration, settling |
+| Shaking (orbital, linear, double_orbital) | Integrated into all measurements | RPM 100-700, duration, settling. **Hardware-validated** via 13+ DDE pcap captures |
+| Standalone shaking | `start_shaking()`, `stop_shaking()` | 4 modes, speed 100-700, duration u16 BE confirmed. 13 pcap ground truth frames. STOP (0x0B) confirmed. |
+| Idle movement | `start_idle_movement()`, `stop_idle_movement()` | R_IdleMove (0x27). Periodic on/off timing. 6 pcap captures. |
 | Flying mode | `read_fluorescence(flying_mode=True)` | FO01 pcap match, forces settling=1/flashes=1 |
 | EDR (Enhanced Dynamic Range) | `read_fluorescence(edr=True)` | FP01 pcap match, overflow ceiling 700M |
 | Filter mode (per-channel mono/filter mixing) | `ex_mode`/`em_mode` params | FLf01/02/03 pcap match, all 3 combos |
@@ -81,6 +83,8 @@ This is an **analysis-only** document. No code changes proposed.
 **Temperature (4):** `start_temperature_control`, `stop_temperature_control`, `measure_temperature`, `get_target_temperature`
 
 **Measurement (4):** `read_absorbance`, `read_absorbance_spectrum`, `read_fluorescence`, `read_luminescence` (stub)
+
+**Shaking (4):** `start_shaking`, `stop_shaking`, `start_idle_movement`, `stop_idle_movement`
 
 **Results (1):** `request_absorbance_results`
 
@@ -154,8 +158,10 @@ The OEM MARS software shows **6 measurement methods** with up to **4 reading mod
 |---|---|
 | Shake before plate reading | `shake_mode=` — **DONE** |
 | Shake modes (orbital, double orbital, linear) | **DONE** (meander also in builder but not exposed publicly) |
-| Frequency (100-700 RPM) | `shake_speed_rpm=` — **DONE** |
-| Time (seconds) | `shake_duration_s=` — **DONE** |
+| Frequency (100-700 RPM) | `shake_speed_rpm=` — **DONE** (pcap-confirmed: 100-700 in 100 steps) |
+| Time (seconds) | `shake_duration_s=` — **DONE** (pcap-confirmed: u16 BE, 1-3600) |
+| Standalone shaking (outside measurement) | `start_shaking()` / `stop_shaking()` — **DONE** (13+ pcap captures) |
+| Idle movement (incubation mixing) | `start_idle_movement()` / `stop_idle_movement()` — **DONE** (6 pcap captures) |
 | Multiple shaking actions (+/- buttons) | **MISSING** — only single shake supported |
 
 ### Start Measurement (from `start_measurement_window_*`)
@@ -253,11 +259,15 @@ The OEM MARS software shows **6 measurement methods** with up to **4 reading mod
 
 ## Minor Inconsistencies Found During Audit
 
-1. **Shake RPM upper bound**: `read_absorbance` validates `shake_speed_rpm <= 700`, but `_pre_separator_block` docstring says 100-800. Should verify which is correct on hardware.
+1. **Shake RPM upper bound**: `read_absorbance` validates `shake_speed_rpm <= 700`, but `_pre_separator_block` docstring says 100-800. **Resolved:** DDE rejects 800 RPM. 700 is the correct max.
 
-2. **Meander shake mode**: Exists as index 3 in the builder but is not listed in any public method's validation. Either expose it or document why it's excluded.
+2. **Meander shake mode**: Exists as index 3 in the builder but is not listed in any public method's validation. **Confirmed:** Meander at 400 RPM rejected by DDE; 300 RPM max is correct.
 
 3. **ABS spectrum matrix**: Not in validation dict (raises `ValueError`), while ABS discrete has it in validation dict (raises `NotImplementedError`). Inconsistent error for the same unsupported feature.
+
+4. **IdleMove mode mapping**: `_IDLE_MOVE_MODES` assumed sequential wire bytes 0x01-0x06. DDE pcap reveals DDE arg 3 → wire 0x06 (not 0x03). Wire bytes 0x03-0x05 never observed. Mapping needs correction.
+
+5. **Temperature via DDE**: DDE `SetTemp`/`TempOff` are NOT valid DDE Execute commands (exit 1000). Our direct USB 0x06 works correctly. No inconsistency in our code — just confirms DDE is a higher-level abstraction.
 
 ---
 
@@ -265,7 +275,7 @@ The OEM MARS software shows **6 measurement methods** with up to **4 reading mod
 
 | Metric | Count |
 |--------|-------|
-| Public methods | 19 |
+| Public methods | 23 |
 | Lines of code | 3,636 |
 | Lines of tests | 5,958 |
 | Test classes | 53 |
