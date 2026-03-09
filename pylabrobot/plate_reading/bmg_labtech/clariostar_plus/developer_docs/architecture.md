@@ -1,6 +1,6 @@
 # CLARIOstar Plus Backend — Architecture & Implementation
 
-Production-grade driver for the BMG Labtech CLARIOstar Plus, built from 88+ capture captures with byte-level verification. Replaces the original ~350-line proof-of-concept.
+Production-grade driver for the BMG Labtech CLARIOstar Plus, built from 88+ captures with byte-level verification. Replaces the original ~350-line proof-of-concept.
 
 ---
 
@@ -8,12 +8,12 @@ Production-grade driver for the BMG Labtech CLARIOstar Plus, built from 88+ capt
 
 | Capability | Old backend | Current |
 |---|---|---|
-| **Code** | ~350 lines, 0 tests | ~5,200 lines (9 mixin modules) + 8,094 lines tests |
-| **Tests** | 0 | 458 methods, hardware-verified |
+| **Code** | ~350 lines, 0 tests | ~5,200 lines (8 mixin modules + backend) + 8,094 lines tests |
+| **Tests** | 0 | 463 methods, hardware-verified |
 | **Wire protocol** | Hardcoded byte arrays, 2-byte checksum | Structured frame builder, 24-bit checksum, validation, retries |
 | **Absorbance** | Single wavelength, point scan | 1–8 wavelengths, spectrum scans, all well-scan modes |
 | **Fluorescence** | `NotImplementedError` | Discrete + spectrum, mono + filter + multi-chromatic + EDR + flying + matrix |
-| **Luminescence** | Basic (hardcoded payload) | Stub (`NotImplementedError`) — pending capture captures |
+| **Luminescence** | Basic (hardcoded payload) | Stub (`NotImplementedError`) — pending captures |
 | **Temperature** | Not supported (`NaN`) | Full: monitor, set target (0–65 °C), measure (top/bottom/mean) |
 | **Shaking** | Not supported | Standalone + idle movement, 4 modes, hardware-validated |
 | **Device ID** | EEPROM (unparsed) | EEPROM parsed + firmware version + usage counters |
@@ -29,11 +29,9 @@ Production-grade driver for the BMG Labtech CLARIOstar Plus, built from 88+ capt
 `CLARIOstarPlusBackend` is composed from mixins via multiple inheritance:
 
 ```
-CLARIOstarPlusBackend (backend.py — assembly, enums, constants, status flags)
-├── _LifecycleMixin (_lifecycle.py)
+CLARIOstarPlusBackend (backend.py — assembly, enums, constants, status flags, connection, I/O, device info)
 │   ├── Constructor, setup, stop
 │   ├── Low-level I/O (_write_frame, _read_frame)
-│   ├── Frame utilities (_wrap_payload, _validate_frame, _extract_payload)
 │   ├── Command layer (send_command)
 │   ├── Status & Polling (request_machine_status, is_ready)
 │   ├── Device Info (EEPROM, firmware, detection modes)
@@ -58,7 +56,7 @@ CLARIOstarPlusBackend (backend.py — assembly, enums, constants, status flags)
 ├── _ShakerMixin (_shaker.py)
 │   ├── start_shaking / stop_shaking
 │   └── start_idle_movement / stop_idle_movement
-└── _protocol.py (wire protocol framing, checksums, error decoding)
+└── _framing.py (frame encoding/validation, protocol exceptions, payload byte blocks — leaf module)
 ```
 
 ---
@@ -295,11 +293,78 @@ See [wire_protocol.md](wire_protocol.md) for byte-level details of each command.
 | ResetError | Error state recovery |
 | GetKFactor | FP calibration — need FP hardware |
 | CalculateTestDuration | Query only |
-| Luminescence | Need capture captures |
+| Luminescence | Need captures |
 
 ### Not needed (no USB traffic)
 
 Dummy, SetSampleIDs, ClearSampleIDs, ClearDilutionFactors, EditLayout, EditConcAndVol, ImportLayout, ImportConcAndVol, MotorDis, MotorEn, Terminate.
+
+---
+
+## Protocol Byte Coverage
+
+How many payload bytes are understood vs unknown/hardcoded for each command.
+Frame overhead (STX + size + header + checksum + CR = 8 bytes) is excluded.
+
+### Sent payloads
+
+| # | Command | Hex | Sent Bytes | Known | Unknown | Notes |
+|---|---------|-----|-----------|-------|---------|-------|
+| 1 | STATUS_QUERY | `0x80` | 1 | 1 (100%) | 0 | |
+| 2 | INITIALIZE | `0x01 0x00` | 6 | 2 (33%) | 4 | `\x00\x10\x02\x00` unexplained |
+| 3 | TRAY_OPEN/CLOSE | `0x03` | 6 | 2 (33%) | 4 | `\x00\x00\x00\x00` padding |
+| 4 | TEMP_CTRL | `0x06` | 3 | 3 (100%) | 0 | Fully understood |
+| 5 | EEPROM | `0x05 0x07` | 7 | 2 (29%) | 5 | 5 zero-byte params |
+| 6 | FIRMWARE_INFO | `0x05 0x09` | 7 | 2 (29%) | 5 | 5 zero-byte params |
+| 7 | USAGE_COUNTERS | `0x05 0x21` | 7 | 2 (29%) | 5 | 5 zero-byte params |
+| 8 | GET_DATA | `0x05 0x02` | 7 | 4 (57%) | 3 | `\xff` variant = progressive |
+| 9 | CMD_0x0E | `0x0E` | 7 | 1 (14%) | 6 | Most opaque command |
+| 10 | STOP | `0x0B` | 2 | 2 (100%) | 0 | |
+| 11 | PAUSE/RESUME | `0x0D` | 5 | 1 (20%) | 4 | Magic constants |
+| 12 | R_Shake | `0x1D` | 11 | 10 (91%) | 1 | 1 hardcoded zero |
+| 13 | R_IdleMove | `0x27` | 11 | 8 (73%) | 3 | 3 hardcoded zeros |
+| 14 | ABS discrete RUN | `0x04` | ~136 | ~80 (59%) | ~56 | Separator, reference, trailer |
+| 15 | ABS spectrum RUN | `0x04` | ~136 | ~80 (59%) | ~56 | Same structure |
+| 16 | FL discrete RUN | `0x04` | ~137 | ~90 (66%) | ~47 | Similar unknowns |
+| 17 | FL spectrum RUN | `0x04` | ~167 | ~120 (72%) | ~47 | Similar unknowns |
+| 18 | FOCUS_WELL | `0x09` | 45 | 39 (87%) | 6 | Mostly padding |
+| 19 | FILTER_SCAN | `0x24` | 28 | 20 (71%) | 8 | Wavelength config blob |
+
+### Received payloads
+
+| # | Command | Response Bytes | Known | Unknown | Notes |
+|---|---------|---------------|-------|---------|-------|
+| 1 | STATUS_QUERY | 16 | 11 (69%) | 5 | Bytes 5-10 unparsed, byte 15 ambiguous |
+| 2 | EEPROM | 263 | ~20 (8%) | ~243 | Factory calibration, flags, sparse regions |
+| 3 | FIRMWARE_INFO | 32 | 26 (81%) | 6 | 4 trailing + 2 mid-header |
+| 4 | USAGE_COUNTERS | 43 | 38 (88%) | 5 | 1 trailing + 4 header |
+| 5 | GET_DATA (ABS) | variable | ~60-70% | ~30-40% | 17/36 header bytes unknown |
+| 6 | GET_DATA (FL) | variable | ~60-70% | ~30-40% | 19/34 header bytes unknown |
+| 7 | FOCUS_RESULT | ~1177 | ~85% | ~15% | ~20 header bytes unknown |
+| 8 | FILTER_RESULT | ~13 | 7 (54%) | 6 | Longpass encoding unknown |
+| 9 | SPECTRAL_DATA | variable | 0% | 100% | Not parsed (buffer drain only) |
+
+### Largest unknown byte clusters
+
+1. **EEPROM response** (243/263 unknown) — factory calibration (~96B), boolean flags (~18B), sparse regions (~43B), board info (~7B). Only serial, machine type, detection modes, filter slots, and mono ranges are decoded.
+
+2. **Measurement RUN payloads** (~50 unknown bytes each):
+   - `_SEPARATOR` (`\x27\x0f\x27\x0f`) — 4B, possibly default XY coords (9999, 9999)
+   - `_REFERENCE_BLOCK` — 13B hardcoded, possibly calibration references
+   - `_TRAILER` / `_FL_TRAILER` — 11B each, hardcoded constants
+   - Pre-separator — 21/31 bytes are unexplained zeros
+
+3. **CMD_0x0E** (6/7 unknown) — sent every boot, meaning not fully understood
+
+4. **All REQUEST parameters** (`0x05 XX`) — 5 zero bytes each. Could be page selectors or truly unused.
+
+5. **GET_DATA response headers** — 17-19 bytes skipped in both ABS and FL parsers.
+
+### Caveats on named fields
+
+**`"initialized"` flag (status byte 3, bit 5)** — Named by correlation: goes high after INITIALIZE (`0x01 0x00`), stays high during normal operation. However, we are not confident this bit truly represents "device has been initialized". It could be a motor-homed flag, optics-ready state, or something else. We have never observed it go low after a successful `setup()`, but edge cases (partial init failure, power glitch) have not been tested.
+
+**`machine_type_code` (EEPROM bytes 2-3)** — Not a stable device identifier. The same physical unit (serial 430-2621, firmware 1.35) reports different values across reads: high byte varies (`0x00`, `0x06`, `0x07`), low byte varies (`0x21`, `0x24`, `0x26`). The full cross-product is enumerated in `_MODEL_LOOKUP` as a workaround. The field name is misleading — these bytes encode some combination of device state or configuration variant, not a fixed hardware type code.
 
 ---
 

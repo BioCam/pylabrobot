@@ -1,4 +1,4 @@
-"""CLARIOstar Plus shared measurement helpers: plate encoding, polling, validation, shaking."""
+"""CLARIOstar Plus shared measurement helpers: plate encoding, polling, validation."""
 
 import asyncio
 import logging
@@ -9,13 +9,7 @@ from typing import Dict, List, Literal, Optional, Tuple
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well
 
-from ._protocol import (
-  FrameError,
-  MeasurementInterrupted,
-  _SEPARATOR,
-  _TRAILER,
-  _wrap_payload,
-)
+from ._framing import FrameError, MeasurementInterrupted, _SEPARATOR, _TRAILER, _wrap_payload
 
 logger = logging.getLogger("pylabrobot")
 

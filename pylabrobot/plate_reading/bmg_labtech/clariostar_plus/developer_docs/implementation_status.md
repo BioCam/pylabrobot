@@ -10,7 +10,7 @@ Last updated: 2026-03-07
 
 | Feature | Method(s) | Evidence |
 |---------|-----------|----------|
-| Lifecycle | `setup()`, `stop()`, `initialize()` | 40+ captures |
+| Connection & init | `setup()`, `stop()`, `initialize()` | 40+ captures |
 | Drawer control | `open()`, `close()`, `sense_drawer_open()` | capture confirmed |
 | Device identification | `request_eeprom_data()`, `request_firmware_info()`, `request_usage_counters()`, `request_available_detection_modes()` | Real 263-byte EEPROM frame |
 | Status polling (12 flags) | `request_machine_status()`, `is_ready()`, `sense_plate_present()` | All flag combinations tested |
@@ -18,12 +18,12 @@ Last updated: 2026-03-07
 | Temperature control | `start/stop_temperature_control()`, `measure_temperature()`, `get_target_temperature()` | USB 0x06 confirmed |
 | Absorbance (discrete) | `read_absorbance()` — 1–8 wavelengths | 22 capture payloads |
 | Absorbance (spectrum) | `read_absorbance_spectrum()` — paginated | 5 capture payloads, 15 binary ground-truth files |
-| Fluorescence (discrete) | `read_fluorescence()` — mono, filter, multi-chromatic, EDR, flying, matrix | 29 capture captures |
+| Fluorescence (discrete) | `read_fluorescence()` — mono, filter, multi-chromatic, EDR, flying, matrix | 29 captures |
 | Fluorescence (spectrum) | `read_fluorescence_spectrum()` — excitation/emission sweep | Implemented |
 | Filter auto-detection | `detect_all_filters()` — 11 positions | hardware-verified |
 | Focus | `focus_well()` — Z-scan per well | hardware-verified |
 | Standalone shaking | `start_shaking()`, `stop_shaking()` | 13 capture frames |
-| Idle movement | `start_idle_movement()`, `stop_idle_movement()` | 6 capture captures |
+| Idle movement | `start_idle_movement()`, `stop_idle_movement()` | 6 captures |
 | Well scan modes | point, orbital, spiral, matrix | All modes for ABS + FL |
 | Scan directions | 16 patterns (4 corners × 2 orientations × 2 uni/bidi) | All tested |
 | Non-blocking mode | `wait=False` on all measurements | Implemented |
@@ -40,13 +40,13 @@ Last updated: 2026-03-07
 
 | Feature | Blocker | Priority |
 |---------|---------|----------|
-| **Luminescence** | No capture captures. `read_luminescence()` raises `NotImplementedError`. | High |
+| **Luminescence** | No captures. `read_luminescence()` raises `NotImplementedError`. | High |
 | **Auto-gain** | Firmware 1.35 supports GainWell/GainPlate but no captures exist. | Medium |
 | **Pause before plate reading** | Wire field known but not exposed as public param. | Medium |
 | **FL `wait=False` collect helper** | `request_absorbance_results()` exists for ABS; no FL equivalent. | Medium |
 | **Python-side warnings** | Ex-em 25nm minimum distance, gain > 3000 noise, overflow detection. | Medium |
-| **TRF** | No capture captures, filter-only, microsecond timing. | Low |
-| **Fluorescence Polarization** | No capture captures, dual-channel encoding unknown. | Low |
+| **TRF** | No captures, filter-only, microsecond timing. | Low |
+| **Fluorescence Polarization** | No captures, dual-channel encoding unknown. | Low |
 | **Kinetic modes** | Different RUN command structure. | Low |
 | **Injectors (Pump 1 & 2)** | No hardware attached, separate command set. | Low |
 | **Well multichromatics ordering** | Flag in wire protocol, not exposed. | Low |
@@ -61,12 +61,12 @@ Last updated: 2026-03-07
 
 ## Test coverage
 
-458 test methods across the test suite. Key areas:
+463 test methods across the test suite. Key areas:
 
 | Area | Tests | Ground truth |
 |------|-------|-------------|
 | Wire protocol & framing | 17 | 10 command round-trips |
-| Lifecycle | 15 | — |
+| Connection & init | 15 | — |
 | Status & device ID | 35 | Real EEPROM (263B) + firmware (39B) |
 | Temperature | 14 | — |
 | Absorbance discrete | 70 | 22 capture payloads |

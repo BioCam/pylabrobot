@@ -1,7 +1,7 @@
 # CLARIOstar Plus Wire Protocol Reference
 
 Complete binary protocol specification for the BMG Labtech CLARIOstar Plus plate reader,
-derived from byte-level analysis of 40 OEM OEM software capture captures and Go reference implementation.
+derived from byte-level analysis of 40 OEM software captures and Go reference implementation.
 
 ---
 
@@ -329,7 +329,7 @@ All well values are in **row-major** order (A1, A2, ..., A12, B1, B2, ..., H12).
 
 ### 5.3 OD Computation
 
-Verified against OEM OEM software software within ±0.001 OD:
+Verified against OEM software within ±0.001 OD:
 
 ```
 calibration_pairs = [(c1_hi, c1_lo), (c2_hi, c2_lo), (c3_hi, c3_lo), (ref_hi, ref_lo)]
@@ -391,7 +391,7 @@ Host                                          CLARIOstar Plus
 Triggers hardware initialization. Device responds with STATUS frame.
 Use `wait=True` to poll until initialization completes.
 
-**OEM OEM software vs our implementation:**
+**OEM software vs our implementation:**
 - OEM software sends dynamic byte[0] (values 0x01, 0x0D observed across boots) and byte[2]=0x03
   with 5 parameter bytes. Our implementation uses fixed `\x00\x10\x02\x00` (4 bytes).
   Both work — the firmware appears tolerant of parameter variations. The meaning of
@@ -431,7 +431,7 @@ Single-byte command family (no sub-command). Used for:
 
 **DDE vs direct USB:** The DDE commands `SetTemp` and `TempOff` are NOT valid DDE
 Execute commands — they return exit code 1000 and produce NO USB traffic. Temperature
-control works correctly via direct USB (0x06 payloads). OEM OEM software likely exposes
+control works correctly via direct USB (0x06 payloads). OEM software likely exposes
 temperature via ActiveX properties or embeds it in measurement setup sequences rather
 than using standalone DDE Execute calls.
 
@@ -544,10 +544,9 @@ samples mixed during incubation. Runs in the background.
 | 3 | 0x06 | unknown (possibly double_orbital) | Confirmed (capture VAL captures) |
 | 4–7 | — | — | DDE rejects (invalid mode) |
 
-**Important:** Wire bytes 0x03, 0x04, 0x05 have **never been observed** on the wire.
-Our original assumption of sequential mapping (0x03=meander_corner, 0x04=orbital_corner,
-0x05=orbital, 0x06=double_orbital) was **incorrect**. Only 0x01, 0x02, and 0x06 are
-confirmed via capture captures.
+**Important:** Wire bytes 0x03 and 0x04 have **never been observed** on the wire.
+Our original assumption of sequential mapping (0x03=meander_corner, 0x04=orbital_corner)
+was **incorrect**. Only 0x01, 0x02, 0x05, and 0x06 are confirmed via captures.
 
 **Hardware-verified ground truth:**
 
@@ -560,8 +559,8 @@ confirmed via capture captures.
 
 ### 7.10 CMD_0x0E — Boot Sequence Command
 
-Sent by OEM OEM software during normal boot (after INITIALIZE → EEPROM read) in every
-capture capture observed — both normal startup and stuck-state recovery. Clears the
+Sent by OEM software during normal boot (after INITIALIZE → EEPROM read) in every
+capture observed — both normal startup and stuck-state recovery. Clears the
 stuck `running=True` state as a side effect.
 
 ```
@@ -626,7 +625,7 @@ These byte sequences are invariant across all 40 captures:
 - **Speed encoding:** `(RPM/100)-1` confirmed for both R_Shake and R_IdleMove
   (100=0x00, 200=0x01, 300=0x02, 500=0x04, 700=0x06)
 - **IdleMove mode mapping:** DDE arg→wire is NOT sequential. DDE arg 3 → wire 0x06.
-  Wire bytes 0x03-0x05 never observed.
+  Wire bytes 0x03-0x04 never observed. Wire byte 0x05 confirmed (IM-04).
 - **Drawer control:** OEM software sends INIT+EEPROM before PlateOut (our code matches)
 - **Boundaries:** duration=0 rejected, speed=800 rejected, meander@400rpm rejected
 
@@ -634,7 +633,7 @@ These byte sequences are invariant across all 40 captures:
 
 ## 10. PLR vs OEM Plate Geometry
 
-PyLabRobot (`Cor_96_wellplate_360ul_Fb`) and OEM OEM software use slightly different
+PyLabRobot (`Cor_96_wellplate_360ul_Fb`) and OEM software use slightly different
 plate definitions. The firmware is tolerant of these differences.
 
 | Dimension | PLR | OEM | Diff |

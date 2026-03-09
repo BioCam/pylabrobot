@@ -1,4 +1,4 @@
-"""CLARIOstar Plus fluorescence measurement mixin (discrete + spectrum)."""
+"""CLARIOstar Plus fluorescence mixin: discrete, spectrum, and filter auto-detection."""
 
 import logging
 import math
@@ -8,7 +8,7 @@ from typing import Dict, List, Literal, Optional, Tuple, Union
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well
 
-from ._protocol import (
+from ._framing import (
   FrameError,
   _CORE_REFERENCE,
   _PRE_REFERENCE,

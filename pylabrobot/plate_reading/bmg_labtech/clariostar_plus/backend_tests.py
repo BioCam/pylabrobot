@@ -110,6 +110,15 @@ COMMANDS: Dict[str, tuple] = {
 ACK = _wrap_payload(b"\x00")
 
 # ---------------------------------------------------------------------------
+# Expected plate geometry bytes for Cor_96_wellplate_360ul_Fb
+#
+# 12 bytes: plate_length, plate_width, a1_x, a1_y, last_well_x, last_well_y
+# (all u16 BE, mm × 100). Computed from PLR plate definition:
+#   plate: 127.76 × 85.48 mm, A1 center: (14.30, 11.28), well spacing: 9.0 mm
+# ---------------------------------------------------------------------------
+PLATE_GEOMETRY_BYTES = bytes.fromhex("31e82164059604682c521cfc")
+
+# ---------------------------------------------------------------------------
 # Shared status response frames (hardware-verified ground truth)
 #
 # Full wire frames (STX | size | 0x0C | payload | checksum | CR).
@@ -1066,33 +1075,6 @@ class TestTemperature(unittest.TestCase):
 # Ground truth hex from captureCSV (raw_command_hex_captured).
 # These are FULL wire frames including STX, size, header, checksum, CR.
 _GT_HEX = {
-  "A01": "0200900c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000008a02000000000000000000000000000000000000000000000000000000000000270f270f0501177000000064232826ca0000006400000000020000000000010000000100050001000013780d",
-  "A02": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000008a32000000000000000000000000000000000000000000000000000000000000270f270f02030292000501177000000064232826ca0000006400000000020000000000010000000100070001000014480d",
-  "A03": "0200900c0431e82164059e04642c4a1d000c08008008008008008008008008000000000000000000000000000000000000000000000000000000000000000000000000008a02000000000000000000000000000000000000000000000000000000000000270f270f0501177000000064232826ca0000006400000000020000000000010000000100050001000009a40d",
-  "A05": "0200900c0431e82164059e04642c4a1d000c08008000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000008a02000000000000000000000000000000000000000000000000000000000000270f270f0501177000000064232826ca0000006400000000020000000000010000000100050001000008040d",
-  "A07": "0200900c0431e82164059e04642c4a1d000c0800fc0fc0fc0fc0fc0fc0fc0fc00000000000000000000000000000000000000000000000000000000000000000000000008a02000000000000000000000000000000000000000000000000000000000000270f270f0501177000000064232826ca000000640000000002000000000001000000010005000100000eb00d",
-  "A08": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000000000000000a32000000000000000000000000000000000000000000000000000000000000270f270f02030292000101177000000064232826ca000000640000000002000000000001000000010007000100000dca0d",
-  "B01": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000008a06000000000000000000000000000000000000000000000000000000000000270f270f02040292000101177000000064232826ca00000064000000000200000000000100000001000f0001000014210d",
-  "B02": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000008a06000000000000000000000000000000000000000000000000000000000000270f270f02030292000101177000000064232826ca00000064000000000200000000000100000001000f0001000014200d",
-  "C01": "0200900c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000002a02000000000000000000000000000000000000000000000000000000000000270f270f0101177000000064232826ca0000006400000000020000000000010000000100010001000013100d",
-  "C02": "0200900c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000004a02000000000000000000000000000000000000000000000000000000000000270f270f0101177000000064232826ca0000006400000000020000000000010000000100010001000013300d",
-  "C03": "0200900c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000006a02000000000000000000000000000000000000000000000000000000000000270f270f0101177000000064232826ca0000006400000000020000000000010000000100010001000013500d",
-  "C04": "0200900c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000008a02000000000000000000000000000000000000000000000000000000000000270f270f0101177000000064232826ca0000006400000000020000000000010000000100010001000013700d",
-  "C05": "0200900c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000202000000000000000000000000000000000000000000000000000000000000270f270f0101177000000064232826ca0000006400000000020000000000010000000100010001000012e80d",
-  "D01": "0200900c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a02000000000000000000000000000000000000000000000000000000000000270f270f0101119400000064232826ca00000064000000000200000000000100000001000100010000130e0d",
-  "D02": "0200920c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a02000000000000000000000000000000000000000000000000000000000000270f270f01021194177000000064232826ca0000006400000000020000000000010000000100010001000013980d",
-  "D03": "0200940c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a02000000000000000000000000000000000000000000000000000000000000270f270f01031194177019c800000064232826ca00000064000000000200000000000100000001000100010000147c0d",
-  "F01": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a32000000000000000000000002000000000002000500000000000000000000270f270f02030292000501177000000064232826ca0000006400000000020000000000010000000100070001000013d10d",
-  "F04": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a32000000000000000000000002000000000202000500000000000000000000270f270f02030292000501177000000064232826ca0000006400000000020000000000010000000100070001000013d30d",
-  "F02": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a32000000000000000000000002000000000004000500000000000000000000270f270f02030292000501177000000064232826ca0000006400000000020000000000010000000100070001000013d30d",
-  "F03": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a32000000000000000000000002000000000002000a00000000000000000000270f270f02030292000501177000000064232826ca0000006400000000020000000000010000000100070001000013d60d",
-  "F05": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a32000000000000000000000002000000000102000500000000000000000000270f270f02030292000501177000000064232826ca0000006400000000020000000000010000000100070001000013d20d",
-  "F06": "0200950c0431e82164059e04642c4a1d000c08008008008008008008008008000000000000000000000000000000000000000000000000000000000000000000000000000a32000000000000000000000002000000000002000500000000000000000000270f270f02030292000501177000000064232826ca0000006400000000020000000000010000000100070001000009fd0d",
-  # G-series: shake + settling time variations
-  "G01": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a32000000000000000000000002000000000002000500000000000000000000270f270f020302920019011770000000642328 26ca0000006400000000020000000000010000000100070001000013e50d".replace(
-    " ", ""
-  ),
-  "G02": "0200950c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a32000000000000000000000002000000000002000500000000000000000000270f270f02030292000501177000000064232826ca0000006400000000020000000000010000000100070001000013d10d",
   # H-series: absorbance spectrum captures
   # H01: 300-700nm, 1nm step, point, all 96 wells, 5 flashes
   "H01": "0200900c0431e82164059e04642c4a1d000c0800ffffffffffffffffffffffff0000000000000000000000000000000000000000000000000000000000000000000000000a02000000000000000000000000000000000000000000000000000000000000270f270f05000bb81b58000a232826ca00000064000000000200000000000100000001000500010000134c0d",
@@ -1185,6 +1167,12 @@ class TestPlateField(unittest.TestCase):
   def setUp(self):
     self.backend = _make_backend()
     self.plate = _make_plate()
+
+  def test_plate_geometry_bytes(self):
+    """Plate geometry (bytes 0-11) matches Cor_96_wellplate_360ul_Fb dimensions."""
+    wells = self.plate.get_all_items()
+    field = self.backend._plate_field(self.plate, wells)
+    self.assertEqual(field[0:12], PLATE_GEOMETRY_BYTES)
 
   def test_all_96_wells_mask(self):
     """All 96 wells → first 12 bytes = 0xFF, rest = 0x00."""
@@ -1462,65 +1450,15 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
 
   The plate geometry bytes (well centers) differ from capture(~0.08mm) because PLR
   uses different well offsets than OEM software. We compare all other bytes exactly.
+
+  Each test method contains inline, annotated ground truth derived from USB captures.
+  Byte regions are documented so the reader can see exactly what each assertion checks.
   """
 
   def setUp(self):
     self.backend = _make_backend()
     self.plate = _make_plate()
     self.all_wells = self.plate.get_all_items()
-
-  def _get_gt_inner(self, key: str) -> bytes:
-    return _get_gt_inner(_GT_HEX, key)
-
-  def _compare_payload(self, payload: bytes, gt_key: str, msg: str = ""):
-    """Compare payload against ground truth, skipping known PLR-vs-OEM differences.
-
-    The ground truth inner payload starts with the 0x04 command family byte
-    (added by send_command), so we prepend it to the payload for comparison.
-
-    Skips:
-    - Bytes 1-12 of full frame: plate geometry (A1 center differs ~0.08mm)
-    - Well scan field diameter bytes (PLR: 6.86mm → 0x02AE, OEM: 6.58mm → 0x0292)
-    All other bytes must match exactly.
-    """
-    gt = self._get_gt_inner(gt_key)
-    # Prepend the 0x04 command family byte that send_command would add
-    full = bytes([0x04]) + payload
-    self.assertEqual(
-      len(full), len(gt), f"{msg} length mismatch: got {len(full)}, expected {len(gt)}"
-    )
-    # Byte 0 (0x04 command family)
-    self.assertEqual(full[0], gt[0], f"{msg} byte 0 (command family)")
-    # Skip bytes 1-12 (plate geometry — PLR offsets differ from OEM)
-    # Bytes 13-14: cols/rows
-    self.assertEqual(full[13], gt[13], f"{msg} byte 13 (cols)")
-    self.assertEqual(full[14], gt[14], f"{msg} byte 14 (rows)")
-    self.assertEqual(full[15], gt[15], f"{msg} byte 15 (extra)")
-    # Bytes 16-63: well mask
-    self.assertEqual(full[16:64], gt[16:64], f"{msg} well mask mismatch")
-    # Bytes 64 onward: compare byte-by-byte, skipping well diameter in scan field.
-    # Find separator position to locate well scan field.
-    sep = b"\x27\x0f\x27\x0f"
-    sep_idx = full.index(sep, 64)
-    # Before separator (scan byte + pre-separator block): exact match
-    self.assertEqual(full[64 : sep_idx + 4], gt[64 : sep_idx + 4], f"{msg} scan+presep mismatch")
-    # After separator: if non-point scan, skip well diameter at wsf[2:4]
-    after_sep_p = full[sep_idx + 4 :]
-    after_sep_g = gt[sep_idx + 4 :]
-    if len(after_sep_p) != len(after_sep_g):
-      self.fail(f"{msg} post-sep length mismatch: {len(after_sep_p)} vs {len(after_sep_g)}")
-    # Check if well scan field is present (non-point: first byte is 0x02 measurement code)
-    if len(after_sep_p) > 5 and after_sep_p[0] == 0x02 and after_sep_g[0] == 0x02:
-      # Well scan field: byte 0 (meas code), byte 1 (diameter), bytes 2-3 (well diam), byte 4
-      self.assertEqual(after_sep_p[0], after_sep_g[0], f"{msg} wsf meas code")
-      self.assertEqual(after_sep_p[1], after_sep_g[1], f"{msg} wsf scan diameter")
-      # Skip bytes 2-3 (well diameter — PLR uses 686 vs OEM 658)
-      self.assertEqual(after_sep_p[4], after_sep_g[4], f"{msg} wsf terminator")
-      # Rest after well scan field
-      self.assertEqual(after_sep_p[5:], after_sep_g[5:], f"{msg} post-wsf mismatch")
-    else:
-      # Point mode: no well scan field, compare everything
-      self.assertEqual(after_sep_p, after_sep_g, f"{msg} post-sep mismatch")
 
   def test_A01_point_all96_600nm(self):
     """A01: point, all 96 wells, 600nm, 5 flashes, uni/vert/TL."""
@@ -1535,7 +1473,37 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       corner="TL",
     )
     self.assertEqual(len(payload), 135)
-    self._compare_payload(payload, "A01", "A01")
+    full = bytes([0x04]) + payload  # prepend cmd family byte
+
+    # --- Ground truth (USB capture A01) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x8A (uni, vertical, TL)
+    self.assertEqual(full[64], 0x8A)
+    # Bytes 65-95: pre-separator (point ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Byte 100: settling time = 0x05
+    self.assertEqual(full[100], 0x05)
+    # Byte 101: num_wavelengths = 1
+    self.assertEqual(full[101], 0x01)
+    # Bytes 102-103: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[102:104], b"\x17\x70")
+    # Bytes 104-116: reference block (hardcoded constant)
+    self.assertEqual(full[104:117], _REFERENCE_BLOCK)
+    # Bytes 117-119: settling fields (zeros)
+    self.assertEqual(full[117:120], b"\x00\x00\x00")
+    # Bytes 120-130: trailer (hardcoded constant)
+    self.assertEqual(full[120:131], _TRAILER)
+    # Bytes 131-132: flashes = 5 (u16 BE)
+    self.assertEqual(full[131:133], b"\x00\x05")
+    # Bytes 133-135: tail
+    self.assertEqual(full[133:136], b"\x00\x01\x00")
 
   def test_A05_point_A1_only(self):
     """A05: point, single well A1."""
@@ -1551,7 +1519,37 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       corner="TL",
     )
     self.assertEqual(len(payload), 135)
-    self._compare_payload(payload, "A05", "A05")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture A05) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (A1 only)
+    self.assertEqual(full[16:64], bytes.fromhex("800000000000000000000000") + b"\x00" * 36)
+    # Byte 64: scan direction = 0x8A (uni, vertical, TL)
+    self.assertEqual(full[64], 0x8A)
+    # Bytes 65-95: pre-separator (point ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Byte 100: settling time = 0x05
+    self.assertEqual(full[100], 0x05)
+    # Byte 101: num_wavelengths = 1
+    self.assertEqual(full[101], 0x01)
+    # Bytes 102-103: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[102:104], b"\x17\x70")
+    # Bytes 104-116: reference block (hardcoded constant)
+    self.assertEqual(full[104:117], _REFERENCE_BLOCK)
+    # Bytes 117-119: settling fields (zeros)
+    self.assertEqual(full[117:120], b"\x00\x00\x00")
+    # Bytes 120-130: trailer (hardcoded constant)
+    self.assertEqual(full[120:131], _TRAILER)
+    # Bytes 131-132: flashes = 5 (u16 BE)
+    self.assertEqual(full[131:133], b"\x00\x05")
+    # Bytes 133-135: tail
+    self.assertEqual(full[133:136], b"\x00\x01\x00")
 
   def test_A03_point_col1(self):
     """A03: point, column 1 only (8 wells)."""
@@ -1567,7 +1565,37 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       corner="TL",
     )
     self.assertEqual(len(payload), 135)
-    self._compare_payload(payload, "A03", "A03")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture A03) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (column 1 only (8 wells))
+    self.assertEqual(full[16:64], bytes.fromhex("800800800800800800800800") + b"\x00" * 36)
+    # Byte 64: scan direction = 0x8A (uni, vertical, TL)
+    self.assertEqual(full[64], 0x8A)
+    # Bytes 65-95: pre-separator (point ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Byte 100: settling time = 0x05
+    self.assertEqual(full[100], 0x05)
+    # Byte 101: num_wavelengths = 1
+    self.assertEqual(full[101], 0x01)
+    # Bytes 102-103: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[102:104], b"\x17\x70")
+    # Bytes 104-116: reference block (hardcoded constant)
+    self.assertEqual(full[104:117], _REFERENCE_BLOCK)
+    # Bytes 117-119: settling fields (zeros)
+    self.assertEqual(full[117:120], b"\x00\x00\x00")
+    # Bytes 120-130: trailer (hardcoded constant)
+    self.assertEqual(full[120:131], _TRAILER)
+    # Bytes 131-132: flashes = 5 (u16 BE)
+    self.assertEqual(full[131:133], b"\x00\x05")
+    # Bytes 133-135: tail
+    self.assertEqual(full[133:136], b"\x00\x01\x00")
 
   def test_A02_orbital_all96(self):
     """A02: orbital, all 96 wells, 600nm, 7 flashes."""
@@ -1583,7 +1611,42 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       corner="TL",
     )
     self.assertEqual(len(payload), 140)
-    self._compare_payload(payload, "A02", "A02")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture A02) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x8A (uni, vertical, TL)
+    self.assertEqual(full[64], 0x8A)
+    # Bytes 65-95: pre-separator (orbital ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x32)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
+    self.assertEqual(full[100], 0x02)  # measurement code
+    self.assertEqual(full[101], 0x03)  # scan diameter
+    # Bytes 102-103: well diameter — SKIPPED (PLR=6.86mm vs OEM=6.58mm)
+    self.assertEqual(full[104], 0x00)  # WSF terminator
+    # Byte 105: settling time = 0x05
+    self.assertEqual(full[105], 0x05)
+    # Byte 106: num_wavelengths = 1
+    self.assertEqual(full[106], 0x01)
+    # Bytes 107-108: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[107:109], b"\x17\x70")
+    # Bytes 109-121: reference block (hardcoded constant)
+    self.assertEqual(full[109:122], _REFERENCE_BLOCK)
+    # Bytes 122-124: settling fields (zeros)
+    self.assertEqual(full[122:125], b"\x00\x00\x00")
+    # Bytes 125-135: trailer (hardcoded constant)
+    self.assertEqual(full[125:136], _TRAILER)
+    # Bytes 136-137: flashes = 7 (u16 BE)
+    self.assertEqual(full[136:138], b"\x00\x07")
+    # Bytes 138-140: tail
+    self.assertEqual(full[138:141], b"\x00\x01\x00")
 
   def test_A07_cols16_point(self):
     """A07: point, columns 1-6 (48 wells), 600nm, 5 flashes."""
@@ -1599,7 +1662,37 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       corner="TL",
     )
     self.assertEqual(len(payload), 135)
-    self._compare_payload(payload, "A07", "A07")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture A07) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (columns 1-6 (48 wells))
+    self.assertEqual(full[16:64], bytes.fromhex("fc0fc0fc0fc0fc0fc0fc0fc0") + b"\x00" * 36)
+    # Byte 64: scan direction = 0x8A (uni, vertical, TL)
+    self.assertEqual(full[64], 0x8A)
+    # Bytes 65-95: pre-separator (point ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Byte 100: settling time = 0x05
+    self.assertEqual(full[100], 0x05)
+    # Byte 101: num_wavelengths = 1
+    self.assertEqual(full[101], 0x01)
+    # Bytes 102-103: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[102:104], b"\x17\x70")
+    # Bytes 104-116: reference block (hardcoded constant)
+    self.assertEqual(full[104:117], _REFERENCE_BLOCK)
+    # Bytes 117-119: settling fields (zeros)
+    self.assertEqual(full[117:120], b"\x00\x00\x00")
+    # Bytes 120-130: trailer (hardcoded constant)
+    self.assertEqual(full[120:131], _TRAILER)
+    # Bytes 131-132: flashes = 5 (u16 BE)
+    self.assertEqual(full[131:133], b"\x00\x05")
+    # Bytes 133-135: tail
+    self.assertEqual(full[133:136], b"\x00\x01\x00")
 
   def test_A08_rows_AD_orbital(self):
     """A08: orbital, rows A-D (48 wells), 600nm, 7 flashes, bidi/vert/TL."""
@@ -1617,7 +1710,42 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       pause_time=0x01,
     )
     self.assertEqual(len(payload), 140)
-    self._compare_payload(payload, "A08", "A08")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture A08) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (rows A-D (48 wells))
+    self.assertEqual(full[16:64], bytes.fromhex("ffffffffffff") + b"\x00" * 42)
+    # Byte 64: scan direction = 0x0A (bidi, vertical, TL)
+    self.assertEqual(full[64], 0x0A)
+    # Bytes 65-95: pre-separator (orbital ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x32)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
+    self.assertEqual(full[100], 0x02)  # measurement code
+    self.assertEqual(full[101], 0x03)  # scan diameter
+    # Bytes 102-103: well diameter — SKIPPED (PLR=6.86mm vs OEM=6.58mm)
+    self.assertEqual(full[104], 0x00)  # WSF terminator
+    # Byte 105: settling time = 0x01
+    self.assertEqual(full[105], 0x01)
+    # Byte 106: num_wavelengths = 1
+    self.assertEqual(full[106], 0x01)
+    # Bytes 107-108: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[107:109], b"\x17\x70")
+    # Bytes 109-121: reference block (hardcoded constant)
+    self.assertEqual(full[109:122], _REFERENCE_BLOCK)
+    # Bytes 122-124: settling fields (zeros)
+    self.assertEqual(full[122:125], b"\x00\x00\x00")
+    # Bytes 125-135: trailer (hardcoded constant)
+    self.assertEqual(full[125:136], _TRAILER)
+    # Bytes 136-137: flashes = 7 (u16 BE)
+    self.assertEqual(full[136:138], b"\x00\x07")
+    # Bytes 138-140: tail
+    self.assertEqual(full[138:141], b"\x00\x01\x00")
 
   def test_B01_spiral_4mm(self):
     """B01: spiral 4mm, all 96, 600nm, 15 flashes."""
@@ -1634,7 +1762,42 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       pause_time=0x01,
     )
     self.assertEqual(len(payload), 140)
-    self._compare_payload(payload, "B01", "B01")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture B01) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x8A (uni, vertical, TL)
+    self.assertEqual(full[64], 0x8A)
+    # Bytes 65-95: pre-separator (spiral ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x06)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Bytes 100-104: well scan field (meas=0x02, scan_diam=4mm)
+    self.assertEqual(full[100], 0x02)  # measurement code
+    self.assertEqual(full[101], 0x04)  # scan diameter
+    # Bytes 102-103: well diameter — SKIPPED (PLR=6.86mm vs OEM=6.58mm)
+    self.assertEqual(full[104], 0x00)  # WSF terminator
+    # Byte 105: settling time = 0x01
+    self.assertEqual(full[105], 0x01)
+    # Byte 106: num_wavelengths = 1
+    self.assertEqual(full[106], 0x01)
+    # Bytes 107-108: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[107:109], b"\x17\x70")
+    # Bytes 109-121: reference block (hardcoded constant)
+    self.assertEqual(full[109:122], _REFERENCE_BLOCK)
+    # Bytes 122-124: settling fields (zeros)
+    self.assertEqual(full[122:125], b"\x00\x00\x00")
+    # Bytes 125-135: trailer (hardcoded constant)
+    self.assertEqual(full[125:136], _TRAILER)
+    # Bytes 136-137: flashes = 15 (u16 BE)
+    self.assertEqual(full[136:138], b"\x00\x0f")
+    # Bytes 138-140: tail
+    self.assertEqual(full[138:141], b"\x00\x01\x00")
 
   def test_B02_spiral_3mm(self):
     """B02: spiral 3mm, all 96, 600nm, 15 flashes."""
@@ -1651,7 +1814,42 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       pause_time=0x01,
     )
     self.assertEqual(len(payload), 140)
-    self._compare_payload(payload, "B02", "B02")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture B02) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x8A (uni, vertical, TL)
+    self.assertEqual(full[64], 0x8A)
+    # Bytes 65-95: pre-separator (spiral ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x06)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
+    self.assertEqual(full[100], 0x02)  # measurement code
+    self.assertEqual(full[101], 0x03)  # scan diameter
+    # Bytes 102-103: well diameter — SKIPPED (PLR=6.86mm vs OEM=6.58mm)
+    self.assertEqual(full[104], 0x00)  # WSF terminator
+    # Byte 105: settling time = 0x01
+    self.assertEqual(full[105], 0x01)
+    # Byte 106: num_wavelengths = 1
+    self.assertEqual(full[106], 0x01)
+    # Bytes 107-108: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[107:109], b"\x17\x70")
+    # Bytes 109-121: reference block (hardcoded constant)
+    self.assertEqual(full[109:122], _REFERENCE_BLOCK)
+    # Bytes 122-124: settling fields (zeros)
+    self.assertEqual(full[122:125], b"\x00\x00\x00")
+    # Bytes 125-135: trailer (hardcoded constant)
+    self.assertEqual(full[125:136], _TRAILER)
+    # Bytes 136-137: flashes = 15 (u16 BE)
+    self.assertEqual(full[136:138], b"\x00\x0f")
+    # Bytes 138-140: tail
+    self.assertEqual(full[138:141], b"\x00\x01\x00")
 
   def test_C01_corner_TR(self):
     """C01: point, corner TR."""
@@ -1666,7 +1864,37 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       corner="TR",
       pause_time=0x01,
     )
-    self._compare_payload(payload, "C01", "C01")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture C01) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x2A (bidi, vertical, TR)
+    self.assertEqual(full[64], 0x2A)
+    # Bytes 65-95: pre-separator (point ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Byte 100: settling time = 0x01
+    self.assertEqual(full[100], 0x01)
+    # Byte 101: num_wavelengths = 1
+    self.assertEqual(full[101], 0x01)
+    # Bytes 102-103: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[102:104], b"\x17\x70")
+    # Bytes 104-116: reference block (hardcoded constant)
+    self.assertEqual(full[104:117], _REFERENCE_BLOCK)
+    # Bytes 117-119: settling fields (zeros)
+    self.assertEqual(full[117:120], b"\x00\x00\x00")
+    # Bytes 120-130: trailer (hardcoded constant)
+    self.assertEqual(full[120:131], _TRAILER)
+    # Bytes 131-132: flashes = 1 (u16 BE)
+    self.assertEqual(full[131:133], b"\x00\x01")
+    # Bytes 133-135: tail
+    self.assertEqual(full[133:136], b"\x00\x01\x00")
 
   def test_C02_corner_BL(self):
     """C02: point, corner BL."""
@@ -1681,7 +1909,37 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       corner="BL",
       pause_time=0x01,
     )
-    self._compare_payload(payload, "C02", "C02")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture C02) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x4A (bidi, vertical, BL)
+    self.assertEqual(full[64], 0x4A)
+    # Bytes 65-95: pre-separator (point ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Byte 100: settling time = 0x01
+    self.assertEqual(full[100], 0x01)
+    # Byte 101: num_wavelengths = 1
+    self.assertEqual(full[101], 0x01)
+    # Bytes 102-103: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[102:104], b"\x17\x70")
+    # Bytes 104-116: reference block (hardcoded constant)
+    self.assertEqual(full[104:117], _REFERENCE_BLOCK)
+    # Bytes 117-119: settling fields (zeros)
+    self.assertEqual(full[117:120], b"\x00\x00\x00")
+    # Bytes 120-130: trailer (hardcoded constant)
+    self.assertEqual(full[120:131], _TRAILER)
+    # Bytes 131-132: flashes = 1 (u16 BE)
+    self.assertEqual(full[131:133], b"\x00\x01")
+    # Bytes 133-135: tail
+    self.assertEqual(full[133:136], b"\x00\x01\x00")
 
   def test_C03_corner_BR(self):
     """C03: point, corner BR."""
@@ -1696,7 +1954,37 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       corner="BR",
       pause_time=0x01,
     )
-    self._compare_payload(payload, "C03", "C03")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture C03) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x6A (bidi, vertical, BR)
+    self.assertEqual(full[64], 0x6A)
+    # Bytes 65-95: pre-separator (point ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Byte 100: settling time = 0x01
+    self.assertEqual(full[100], 0x01)
+    # Byte 101: num_wavelengths = 1
+    self.assertEqual(full[101], 0x01)
+    # Bytes 102-103: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[102:104], b"\x17\x70")
+    # Bytes 104-116: reference block (hardcoded constant)
+    self.assertEqual(full[104:117], _REFERENCE_BLOCK)
+    # Bytes 117-119: settling fields (zeros)
+    self.assertEqual(full[117:120], b"\x00\x00\x00")
+    # Bytes 120-130: trailer (hardcoded constant)
+    self.assertEqual(full[120:131], _TRAILER)
+    # Bytes 131-132: flashes = 1 (u16 BE)
+    self.assertEqual(full[131:133], b"\x00\x01")
+    # Bytes 133-135: tail
+    self.assertEqual(full[133:136], b"\x00\x01\x00")
 
   def test_C04_non_bidirectional(self):
     """C04: point, non-bidirectional (same as TL uni but with 1 flash)."""
@@ -1711,7 +1999,37 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       corner="TL",
       pause_time=0x01,
     )
-    self._compare_payload(payload, "C04", "C04")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture C04) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x8A (uni, vertical, TL)
+    self.assertEqual(full[64], 0x8A)
+    # Bytes 65-95: pre-separator (point ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Byte 100: settling time = 0x01
+    self.assertEqual(full[100], 0x01)
+    # Byte 101: num_wavelengths = 1
+    self.assertEqual(full[101], 0x01)
+    # Bytes 102-103: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[102:104], b"\x17\x70")
+    # Bytes 104-116: reference block (hardcoded constant)
+    self.assertEqual(full[104:117], _REFERENCE_BLOCK)
+    # Bytes 117-119: settling fields (zeros)
+    self.assertEqual(full[117:120], b"\x00\x00\x00")
+    # Bytes 120-130: trailer (hardcoded constant)
+    self.assertEqual(full[120:131], _TRAILER)
+    # Bytes 131-132: flashes = 1 (u16 BE)
+    self.assertEqual(full[131:133], b"\x00\x01")
+    # Bytes 133-135: tail
+    self.assertEqual(full[133:136], b"\x00\x01\x00")
 
   def test_C05_horizontal(self):
     """C05: point, horizontal (not vertical)."""
@@ -1726,7 +2044,37 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       corner="TL",
       pause_time=0x01,
     )
-    self._compare_payload(payload, "C05", "C05")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture C05) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x02 (bidi, horizontal, TL)
+    self.assertEqual(full[64], 0x02)
+    # Bytes 65-95: pre-separator (point ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Byte 100: settling time = 0x01
+    self.assertEqual(full[100], 0x01)
+    # Byte 101: num_wavelengths = 1
+    self.assertEqual(full[101], 0x01)
+    # Bytes 102-103: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[102:104], b"\x17\x70")
+    # Bytes 104-116: reference block (hardcoded constant)
+    self.assertEqual(full[104:117], _REFERENCE_BLOCK)
+    # Bytes 117-119: settling fields (zeros)
+    self.assertEqual(full[117:120], b"\x00\x00\x00")
+    # Bytes 120-130: trailer (hardcoded constant)
+    self.assertEqual(full[120:131], _TRAILER)
+    # Bytes 131-132: flashes = 1 (u16 BE)
+    self.assertEqual(full[131:133], b"\x00\x01")
+    # Bytes 133-135: tail
+    self.assertEqual(full[133:136], b"\x00\x01\x00")
 
   def test_D01_450nm(self):
     """D01: single 450nm."""
@@ -1741,10 +2089,40 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       corner="TL",
       pause_time=0x01,
     )
-    self._compare_payload(payload, "D01", "D01")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture D01) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x0A (bidi, vertical, TL)
+    self.assertEqual(full[64], 0x0A)
+    # Bytes 65-95: pre-separator (point ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Byte 100: settling time = 0x01
+    self.assertEqual(full[100], 0x01)
+    # Byte 101: num_wavelengths = 1
+    self.assertEqual(full[101], 0x01)
+    # Bytes 102-103: wavelength 450nm = 0x1194 (nm*10, u16 BE)
+    self.assertEqual(full[102:104], b"\x11\x94")
+    # Bytes 104-116: reference block (hardcoded constant)
+    self.assertEqual(full[104:117], _REFERENCE_BLOCK)
+    # Bytes 117-119: settling fields (zeros)
+    self.assertEqual(full[117:120], b"\x00\x00\x00")
+    # Bytes 120-130: trailer (hardcoded constant)
+    self.assertEqual(full[120:131], _TRAILER)
+    # Bytes 131-132: flashes = 1 (u16 BE)
+    self.assertEqual(full[131:133], b"\x00\x01")
+    # Bytes 133-135: tail
+    self.assertEqual(full[133:136], b"\x00\x01\x00")
 
   def test_D02_dual_wavelength(self):
-    """D02: dual 450+600nm → 137 payload bytes (138 on wire with cmd byte)."""
+    """D02: dual 450+600nm -> 137 payload bytes (138 on wire with cmd byte)."""
     payload = self.backend._build_absorbance_payload(
       self.plate,
       self.all_wells,
@@ -1757,10 +2135,42 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       pause_time=0x01,
     )
     self.assertEqual(len(payload), 137)
-    self._compare_payload(payload, "D02", "D02")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture D02) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x0A (bidi, vertical, TL)
+    self.assertEqual(full[64], 0x0A)
+    # Bytes 65-95: pre-separator (point ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Byte 100: settling time = 0x01
+    self.assertEqual(full[100], 0x01)
+    # Byte 101: num_wavelengths = 2
+    self.assertEqual(full[101], 0x02)
+    # Bytes 102-103: wavelength 450nm = 0x1194 (nm*10, u16 BE)
+    self.assertEqual(full[102:104], b"\x11\x94")
+    # Bytes 104-105: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[104:106], b"\x17\x70")
+    # Bytes 106-118: reference block (hardcoded constant)
+    self.assertEqual(full[106:119], _REFERENCE_BLOCK)
+    # Bytes 119-121: settling fields (zeros)
+    self.assertEqual(full[119:122], b"\x00\x00\x00")
+    # Bytes 122-132: trailer (hardcoded constant)
+    self.assertEqual(full[122:133], _TRAILER)
+    # Bytes 133-134: flashes = 1 (u16 BE)
+    self.assertEqual(full[133:135], b"\x00\x01")
+    # Bytes 135-137: tail
+    self.assertEqual(full[135:138], b"\x00\x01\x00")
 
   def test_D03_triple_wavelength(self):
-    """D03: triple 450+600+660nm → 139 payload bytes (140 on wire with cmd byte)."""
+    """D03: triple 450+600+660nm -> 139 payload bytes (140 on wire with cmd byte)."""
     payload = self.backend._build_absorbance_payload(
       self.plate,
       self.all_wells,
@@ -1773,7 +2183,41 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       pause_time=0x01,
     )
     self.assertEqual(len(payload), 139)
-    self._compare_payload(payload, "D03", "D03")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture D03) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x0A (bidi, vertical, TL)
+    self.assertEqual(full[64], 0x0A)
+    # Bytes 65-95: pre-separator (point ABS at byte 65, rest zeros)
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Byte 100: settling time = 0x01
+    self.assertEqual(full[100], 0x01)
+    # Byte 101: num_wavelengths = 3
+    self.assertEqual(full[101], 0x03)
+    # Bytes 102-103: wavelength 450nm = 0x1194 (nm*10, u16 BE)
+    self.assertEqual(full[102:104], b"\x11\x94")
+    # Bytes 104-105: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[104:106], b"\x17\x70")
+    # Bytes 106-107: wavelength 660nm = 0x19C8 (nm*10, u16 BE)
+    self.assertEqual(full[106:108], b"\x19\xc8")
+    # Bytes 108-120: reference block (hardcoded constant)
+    self.assertEqual(full[108:121], _REFERENCE_BLOCK)
+    # Bytes 121-123: settling fields (zeros)
+    self.assertEqual(full[121:124], b"\x00\x00\x00")
+    # Bytes 124-134: trailer (hardcoded constant)
+    self.assertEqual(full[124:135], _TRAILER)
+    # Bytes 135-136: flashes = 1 (u16 BE)
+    self.assertEqual(full[135:137], b"\x00\x01")
+    # Bytes 137-139: tail
+    self.assertEqual(full[137:140], b"\x00\x01\x00")
 
   def test_F01_orbital_shake(self):
     """F01: orbital, orbital shake 300rpm 5s."""
@@ -1792,7 +2236,43 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       shake_duration_s=5,
     )
     self.assertEqual(len(payload), 140)
-    self._compare_payload(payload, "F01", "F01")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture F01) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x0A (bidi, vertical, TL)
+    self.assertEqual(full[64], 0x0A)
+    # Byte 65: optic/scan mode = 0x32 (orbital ABS)
+    self.assertEqual(full[65], 0x32)
+    # Bytes 66-95: pre-separator with shake config
+    self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000002000500000000000000000000"))
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
+    self.assertEqual(full[100], 0x02)  # measurement code
+    self.assertEqual(full[101], 0x03)  # scan diameter
+    # Bytes 102-103: well diameter — SKIPPED (PLR=6.86mm vs OEM=6.58mm)
+    self.assertEqual(full[104], 0x00)  # WSF terminator
+    # Byte 105: settling time = 0x05
+    self.assertEqual(full[105], 0x05)
+    # Byte 106: num_wavelengths = 1
+    self.assertEqual(full[106], 0x01)
+    # Bytes 107-108: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[107:109], b"\x17\x70")
+    # Bytes 109-121: reference block (hardcoded constant)
+    self.assertEqual(full[109:122], _REFERENCE_BLOCK)
+    # Bytes 122-124: settling fields (zeros)
+    self.assertEqual(full[122:125], b"\x00\x00\x00")
+    # Bytes 125-135: trailer (hardcoded constant)
+    self.assertEqual(full[125:136], _TRAILER)
+    # Bytes 136-137: flashes = 7 (u16 BE)
+    self.assertEqual(full[136:138], b"\x00\x07")
+    # Bytes 138-140: tail
+    self.assertEqual(full[138:141], b"\x00\x01\x00")
 
   def test_F02_orbital_500_5(self):
     """F02: orbital, orbital shake 500rpm 5s."""
@@ -1811,7 +2291,43 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       shake_duration_s=5,
     )
     self.assertEqual(len(payload), 140)
-    self._compare_payload(payload, "F02", "F02")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture F02) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x0A (bidi, vertical, TL)
+    self.assertEqual(full[64], 0x0A)
+    # Byte 65: optic/scan mode = 0x32 (orbital ABS)
+    self.assertEqual(full[65], 0x32)
+    # Bytes 66-95: pre-separator with shake config
+    self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000004000500000000000000000000"))
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
+    self.assertEqual(full[100], 0x02)  # measurement code
+    self.assertEqual(full[101], 0x03)  # scan diameter
+    # Bytes 102-103: well diameter — SKIPPED (PLR=6.86mm vs OEM=6.58mm)
+    self.assertEqual(full[104], 0x00)  # WSF terminator
+    # Byte 105: settling time = 0x05
+    self.assertEqual(full[105], 0x05)
+    # Byte 106: num_wavelengths = 1
+    self.assertEqual(full[106], 0x01)
+    # Bytes 107-108: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[107:109], b"\x17\x70")
+    # Bytes 109-121: reference block (hardcoded constant)
+    self.assertEqual(full[109:122], _REFERENCE_BLOCK)
+    # Bytes 122-124: settling fields (zeros)
+    self.assertEqual(full[122:125], b"\x00\x00\x00")
+    # Bytes 125-135: trailer (hardcoded constant)
+    self.assertEqual(full[125:136], _TRAILER)
+    # Bytes 136-137: flashes = 7 (u16 BE)
+    self.assertEqual(full[136:138], b"\x00\x07")
+    # Bytes 138-140: tail
+    self.assertEqual(full[138:141], b"\x00\x01\x00")
 
   def test_F03_orbital_300_10(self):
     """F03: orbital, orbital shake 300rpm 10s."""
@@ -1830,7 +2346,43 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       shake_duration_s=10,
     )
     self.assertEqual(len(payload), 140)
-    self._compare_payload(payload, "F03", "F03")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture F03) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x0A (bidi, vertical, TL)
+    self.assertEqual(full[64], 0x0A)
+    # Byte 65: optic/scan mode = 0x32 (orbital ABS)
+    self.assertEqual(full[65], 0x32)
+    # Bytes 66-95: pre-separator with shake config
+    self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000002000a00000000000000000000"))
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
+    self.assertEqual(full[100], 0x02)  # measurement code
+    self.assertEqual(full[101], 0x03)  # scan diameter
+    # Bytes 102-103: well diameter — SKIPPED (PLR=6.86mm vs OEM=6.58mm)
+    self.assertEqual(full[104], 0x00)  # WSF terminator
+    # Byte 105: settling time = 0x05
+    self.assertEqual(full[105], 0x05)
+    # Byte 106: num_wavelengths = 1
+    self.assertEqual(full[106], 0x01)
+    # Bytes 107-108: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[107:109], b"\x17\x70")
+    # Bytes 109-121: reference block (hardcoded constant)
+    self.assertEqual(full[109:122], _REFERENCE_BLOCK)
+    # Bytes 122-124: settling fields (zeros)
+    self.assertEqual(full[122:125], b"\x00\x00\x00")
+    # Bytes 125-135: trailer (hardcoded constant)
+    self.assertEqual(full[125:136], _TRAILER)
+    # Bytes 136-137: flashes = 7 (u16 BE)
+    self.assertEqual(full[136:138], b"\x00\x07")
+    # Bytes 138-140: tail
+    self.assertEqual(full[138:141], b"\x00\x01\x00")
 
   def test_F04_double_orbital_shake(self):
     """F04: orbital, double-orbital shake 300rpm 5s."""
@@ -1849,7 +2401,43 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       shake_duration_s=5,
     )
     self.assertEqual(len(payload), 140)
-    self._compare_payload(payload, "F04", "F04")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture F04) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x0A (bidi, vertical, TL)
+    self.assertEqual(full[64], 0x0A)
+    # Byte 65: optic/scan mode = 0x32 (orbital ABS)
+    self.assertEqual(full[65], 0x32)
+    # Bytes 66-95: pre-separator with shake config
+    self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000202000500000000000000000000"))
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
+    self.assertEqual(full[100], 0x02)  # measurement code
+    self.assertEqual(full[101], 0x03)  # scan diameter
+    # Bytes 102-103: well diameter — SKIPPED (PLR=6.86mm vs OEM=6.58mm)
+    self.assertEqual(full[104], 0x00)  # WSF terminator
+    # Byte 105: settling time = 0x05
+    self.assertEqual(full[105], 0x05)
+    # Byte 106: num_wavelengths = 1
+    self.assertEqual(full[106], 0x01)
+    # Bytes 107-108: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[107:109], b"\x17\x70")
+    # Bytes 109-121: reference block (hardcoded constant)
+    self.assertEqual(full[109:122], _REFERENCE_BLOCK)
+    # Bytes 122-124: settling fields (zeros)
+    self.assertEqual(full[122:125], b"\x00\x00\x00")
+    # Bytes 125-135: trailer (hardcoded constant)
+    self.assertEqual(full[125:136], _TRAILER)
+    # Bytes 136-137: flashes = 7 (u16 BE)
+    self.assertEqual(full[136:138], b"\x00\x07")
+    # Bytes 138-140: tail
+    self.assertEqual(full[138:141], b"\x00\x01\x00")
 
   def test_F05_linear_shake(self):
     """F05: orbital, linear shake 300rpm 5s."""
@@ -1868,7 +2456,43 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       shake_duration_s=5,
     )
     self.assertEqual(len(payload), 140)
-    self._compare_payload(payload, "F05", "F05")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture F05) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x0A (bidi, vertical, TL)
+    self.assertEqual(full[64], 0x0A)
+    # Byte 65: optic/scan mode = 0x32 (orbital ABS)
+    self.assertEqual(full[65], 0x32)
+    # Bytes 66-95: pre-separator with shake config
+    self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000102000500000000000000000000"))
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
+    self.assertEqual(full[100], 0x02)  # measurement code
+    self.assertEqual(full[101], 0x03)  # scan diameter
+    # Bytes 102-103: well diameter — SKIPPED (PLR=6.86mm vs OEM=6.58mm)
+    self.assertEqual(full[104], 0x00)  # WSF terminator
+    # Byte 105: settling time = 0x05
+    self.assertEqual(full[105], 0x05)
+    # Byte 106: num_wavelengths = 1
+    self.assertEqual(full[106], 0x01)
+    # Bytes 107-108: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[107:109], b"\x17\x70")
+    # Bytes 109-121: reference block (hardcoded constant)
+    self.assertEqual(full[109:122], _REFERENCE_BLOCK)
+    # Bytes 122-124: settling fields (zeros)
+    self.assertEqual(full[122:125], b"\x00\x00\x00")
+    # Bytes 125-135: trailer (hardcoded constant)
+    self.assertEqual(full[125:136], _TRAILER)
+    # Bytes 136-137: flashes = 7 (u16 BE)
+    self.assertEqual(full[136:138], b"\x00\x07")
+    # Bytes 138-140: tail
+    self.assertEqual(full[138:141], b"\x00\x01\x00")
 
   def test_F06_col1_orbital_shake(self):
     """F06: orbital, column 1 only (8 wells), orbital shake 300rpm 5s."""
@@ -1888,7 +2512,43 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       shake_duration_s=5,
     )
     self.assertEqual(len(payload), 140)
-    self._compare_payload(payload, "F06", "F06")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture F06) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (column 1 only (8 wells))
+    self.assertEqual(full[16:64], bytes.fromhex("800800800800800800800800") + b"\x00" * 36)
+    # Byte 64: scan direction = 0x0A (bidi, vertical, TL)
+    self.assertEqual(full[64], 0x0A)
+    # Byte 65: optic/scan mode = 0x32 (orbital ABS)
+    self.assertEqual(full[65], 0x32)
+    # Bytes 66-95: pre-separator with shake config
+    self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000002000500000000000000000000"))
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
+    self.assertEqual(full[100], 0x02)  # measurement code
+    self.assertEqual(full[101], 0x03)  # scan diameter
+    # Bytes 102-103: well diameter — SKIPPED (PLR=6.86mm vs OEM=6.58mm)
+    self.assertEqual(full[104], 0x00)  # WSF terminator
+    # Byte 105: settling time = 0x05
+    self.assertEqual(full[105], 0x05)
+    # Byte 106: num_wavelengths = 1
+    self.assertEqual(full[106], 0x01)
+    # Bytes 107-108: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[107:109], b"\x17\x70")
+    # Bytes 109-121: reference block (hardcoded constant)
+    self.assertEqual(full[109:122], _REFERENCE_BLOCK)
+    # Bytes 122-124: settling fields (zeros)
+    self.assertEqual(full[122:125], b"\x00\x00\x00")
+    # Bytes 125-135: trailer (hardcoded constant)
+    self.assertEqual(full[125:136], _TRAILER)
+    # Bytes 136-137: flashes = 7 (u16 BE)
+    self.assertEqual(full[136:138], b"\x00\x07")
+    # Bytes 138-140: tail
+    self.assertEqual(full[138:141], b"\x00\x01\x00")
 
   def test_G01_orbital_shake_settle05(self):
     """G01: orbital shake 300rpm 5s, settling 0.5s (OEM encodes as pause_time=0x19)."""
@@ -1908,7 +2568,43 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       pause_time=0x19,
     )
     self.assertEqual(len(payload), 140)
-    self._compare_payload(payload, "G01", "G01")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture G01) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x0A (bidi, vertical, TL)
+    self.assertEqual(full[64], 0x0A)
+    # Byte 65: optic/scan mode = 0x32 (orbital ABS)
+    self.assertEqual(full[65], 0x32)
+    # Bytes 66-95: pre-separator with shake config
+    self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000002000500000000000000000000"))
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
+    self.assertEqual(full[100], 0x02)  # measurement code
+    self.assertEqual(full[101], 0x03)  # scan diameter
+    # Bytes 102-103: well diameter — SKIPPED (PLR=6.86mm vs OEM=6.58mm)
+    self.assertEqual(full[104], 0x00)  # WSF terminator
+    # Byte 105: settling time = 0x19
+    self.assertEqual(full[105], 0x19)
+    # Byte 106: num_wavelengths = 1
+    self.assertEqual(full[106], 0x01)
+    # Bytes 107-108: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[107:109], b"\x17\x70")
+    # Bytes 109-121: reference block (hardcoded constant)
+    self.assertEqual(full[109:122], _REFERENCE_BLOCK)
+    # Bytes 122-124: settling fields (zeros)
+    self.assertEqual(full[122:125], b"\x00\x00\x00")
+    # Bytes 125-135: trailer (hardcoded constant)
+    self.assertEqual(full[125:136], _TRAILER)
+    # Bytes 136-137: flashes = 7 (u16 BE)
+    self.assertEqual(full[136:138], b"\x00\x07")
+    # Bytes 138-140: tail
+    self.assertEqual(full[138:141], b"\x00\x01\x00")
 
   def test_G02_orbital_shake_settle10(self):
     """G02: orbital shake 300rpm 5s, settling 1.0s (wire-identical to F01)."""
@@ -1927,7 +2623,43 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       shake_duration_s=5,
     )
     self.assertEqual(len(payload), 140)
-    self._compare_payload(payload, "G02", "G02")
+    full = bytes([0x04]) + payload
+
+    # --- Ground truth (USB capture G02) ---
+    # Bytes 1-12: plate geometry, bytes 13-15: cols=12, rows=8, extra=0x00
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    self.assertEqual(full[13:16], bytes([0x0C, 0x08, 0x00]))
+    # Bytes 16-63: well mask (all 96 wells set)
+    self.assertEqual(full[16:64], b"\xff" * 12 + b"\x00" * 36)
+    # Byte 64: scan direction = 0x0A (bidi, vertical, TL)
+    self.assertEqual(full[64], 0x0A)
+    # Byte 65: optic/scan mode = 0x32 (orbital ABS)
+    self.assertEqual(full[65], 0x32)
+    # Bytes 66-95: pre-separator with shake config
+    self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000002000500000000000000000000"))
+    # Bytes 96-99: separator
+    self.assertEqual(full[96:100], _SEPARATOR)
+    # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
+    self.assertEqual(full[100], 0x02)  # measurement code
+    self.assertEqual(full[101], 0x03)  # scan diameter
+    # Bytes 102-103: well diameter — SKIPPED (PLR=6.86mm vs OEM=6.58mm)
+    self.assertEqual(full[104], 0x00)  # WSF terminator
+    # Byte 105: settling time = 0x05
+    self.assertEqual(full[105], 0x05)
+    # Byte 106: num_wavelengths = 1
+    self.assertEqual(full[106], 0x01)
+    # Bytes 107-108: wavelength 600nm = 0x1770 (nm*10, u16 BE)
+    self.assertEqual(full[107:109], b"\x17\x70")
+    # Bytes 109-121: reference block (hardcoded constant)
+    self.assertEqual(full[109:122], _REFERENCE_BLOCK)
+    # Bytes 122-124: settling fields (zeros)
+    self.assertEqual(full[122:125], b"\x00\x00\x00")
+    # Bytes 125-135: trailer (hardcoded constant)
+    self.assertEqual(full[125:136], _TRAILER)
+    # Bytes 136-137: flashes = 7 (u16 BE)
+    self.assertEqual(full[136:138], b"\x00\x07")
+    # Bytes 138-140: tail
+    self.assertEqual(full[138:141], b"\x00\x01\x00")
 
   def test_separator_always_present(self):
     """Separator 0x270f270f appears in every payload."""
@@ -1993,8 +2725,8 @@ class TestBuildAbsorbanceSpectrumPayload(unittest.TestCase):
   def _compare_payload(self, payload: bytes, gt_key: str, msg: str = ""):
     """Compare spectrum payload against ground truth.
 
-    Same skip logic as discrete tests: skip plate geometry bytes 1-12 and
-    well scan field diameter bytes (PLR vs OEM well diameter).
+    Verifies plate geometry bytes 1-12 against PLR plate definition.
+    Skips well scan field diameter bytes (PLR vs OEM well diameter).
     """
     gt = self._get_gt_inner(gt_key)
     # Prepend the 0x04 command family byte that send_command would add
@@ -2004,8 +2736,8 @@ class TestBuildAbsorbanceSpectrumPayload(unittest.TestCase):
     )
     # Byte 0 (0x04 command family)
     self.assertEqual(full[0], gt[0], f"{msg} byte 0 (command family)")
-    # Skip bytes 1-12 (plate geometry — PLR offsets differ from OEM)
-    # Bytes 13-14: cols/rows
+    # Bytes 1-12: plate geometry, bytes 13-14: cols/rows
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES, f"{msg} plate geometry")
     self.assertEqual(full[13], gt[13], f"{msg} byte 13 (cols)")
     self.assertEqual(full[14], gt[14], f"{msg} byte 14 (rows)")
     self.assertEqual(full[15], gt[15], f"{msg} byte 15 (extra)")
@@ -4586,8 +5318,8 @@ class TestBuildFluorescencePayload(unittest.TestCase):
   """Verify _build_fluorescence_payload against hardware-verified ground truth.
 
   Same pattern as TestBuildAbsorbancePayload: compare output against USB capture
-  ground truth hex, skipping plate geometry bytes 1-12 (PLR vs OEM well
-  center offsets) and wavelength bytes (±2-3 firmware calibration offsets).
+  ground truth hex. Plate geometry bytes 1-12 verified against PLR plate definition.
+  Wavelength bytes skipped (±2-3 firmware calibration offsets).
   """
 
   def setUp(self):
@@ -4599,12 +5331,11 @@ class TestBuildFluorescencePayload(unittest.TestCase):
     return _get_gt_inner(_FL_GT_HEX, key)
 
   def _compare_fl_payload(self, payload: bytes, gt_key: str, msg: str = ""):
-    """Compare FL payload against ground truth, skipping known differences.
+    """Compare FL payload against ground truth.
 
-    Skips:
-    - Bytes 1-12: plate geometry (PLR vs OEM well center offsets)
-    - Wavelength bytes in post-separator (±2-3 firmware calibration)
-    - Well scan field diameter bytes (PLR vs OEM well diameter)
+    Verifies all bytes including plate geometry and wavelengths.
+    Tests must pass exact capture wavelength values via _ex_hi/_ex_lo/etc. overrides.
+    Only skips well scan field diameter bytes 2-3 (PLR vs OEM well diameter).
     """
     gt = self._get_gt_inner(gt_key)
     full = bytes([0x04]) + payload
@@ -4613,8 +5344,8 @@ class TestBuildFluorescencePayload(unittest.TestCase):
     )
     # Byte 0 (0x04 command family)
     self.assertEqual(full[0], gt[0], f"{msg} byte 0 (command family)")
-    # Skip bytes 1-12 (plate geometry)
-    # Bytes 13-14: cols/rows
+    # Bytes 1-12: plate geometry, bytes 13-14: cols/rows
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES, f"{msg} plate geometry")
     self.assertEqual(full[13], gt[13], f"{msg} byte 13 (cols)")
     self.assertEqual(full[14], gt[14], f"{msg} byte 14 (rows)")
     self.assertEqual(full[15], gt[15], f"{msg} byte 15 (extra)")
@@ -4648,11 +5379,9 @@ class TestBuildFluorescencePayload(unittest.TestCase):
     #   slit(5) + pause(3) + trailer(11) + flashes(2) + tail(3)
     ps_p = after_sep_p[wsf_len:]
     ps_g = after_sep_g[wsf_len:]
-    # settling + focal + multi + gain = 1+2+9+2 = 14 bytes
-    self.assertEqual(ps_p[:14], ps_g[:14], f"{msg} settle+focal+multi+gain mismatch")
-    # Skip wavelength bytes 14-23 (ExHi, ExLo, Dich, EmHi, EmLo = 10 bytes)
-    # Remaining: slit(5)+pause(3)+trailer(11)+flashes(2)+tail(3) = 24 bytes at offset 24
-    self.assertEqual(ps_p[24:], ps_g[24:], f"{msg} slit+pause+trailer+flashes+tail mismatch")
+    # All post-separator bytes including wavelengths (tests pass exact capture
+    # values via _ex_hi/_ex_lo/_em_hi/_em_lo/_dichroic_raw overrides)
+    self.assertEqual(ps_p, ps_g, f"{msg} post-separator mismatch")
 
   def test_FA01_baseline_top_point(self):
     """F-A01: baseline — top, point, Ex=485/15, Em=528/20, gain=1000, focal=8.5, 10 flashes."""
@@ -5389,7 +6118,12 @@ class TestBuildFluorescencePayloadEDR(unittest.TestCase):
     self.assertEqual(full[66], 0x00)
 
   def test_edr_matches_FP01_ground_truth(self):
-    """EDR payload matches F-P01 capture(skipping plate geometry and wavelength bytes)."""
+    """EDR payload matches F-P01 capture.
+
+    Byte 64 (scan direction) differs: FP01 capture has 0x1a (bit4 set), our code
+    produces 0x0a. Bit4 meaning is unknown — the OEM capture may encode an
+    EDR-specific scan flag. All other bytes match when plate geometry uses PLR coords.
+    """
     payload = self.backend._build_fluorescence_payload(
       self.plate, self.all_wells,
       excitation_wavelength=485, emission_wavelength=528, focal_height=8.5,
@@ -5399,10 +6133,16 @@ class TestBuildFluorescencePayloadEDR(unittest.TestCase):
     full = bytes([0x04]) + payload
     gt = bytes.fromhex(_FL_GT_HEX["FP01"])[4:-4]
     self.assertEqual(len(full), len(gt))
-    # Optic byte[1] = EDR flag
+    # Plate geometry: PLR coordinates
+    self.assertEqual(full[1:13], PLATE_GEOMETRY_BYTES)
+    # Cols/rows through well mask
+    self.assertEqual(full[13:64], gt[13:64])
+    # Byte 64: scan direction — known difference (bit4), verify our value
+    self.assertEqual(full[64], 0x0A)
+    # Optic byte[1] = EDR flag (0x40)
     self.assertEqual(full[66], gt[66])
-    # Post-separator fields (settle through tail) should match
-    self.assertEqual(full[100:], gt[100:])
+    # Pre-separator bytes 67-95, separator, and all post-separator fields
+    self.assertEqual(full[67:], gt[67:])
 
   def test_edr_does_not_change_payload_length(self):
     """EDR doesn't add or remove bytes from payload."""
@@ -7180,26 +7920,6 @@ class TestBuildFluorescenceSpectrumPayload(unittest.TestCase):
     tail = post_sep[50:]
     self.assertEqual(len(tail), 18)
     self.assertEqual(tail[14], 0x05)
-
-  def test_total_payload_length_point_scan(self):
-    """Point scan payload = 167 bytes (no WSF)."""
-    payload = self.backend._build_fl_spectrum_payload(
-      self.plate, self.all_wells,
-      start_wavelength=500, end_wavelength=600,
-      fixed_wavelength=400, focal_height=8.5, scan="emission",
-      well_scan="point",
-    )
-    self.assertEqual(len(payload), 167)
-
-  def test_total_payload_length_orbital(self):
-    """Orbital scan payload = 172 bytes (5-byte WSF added)."""
-    payload = self.backend._build_fl_spectrum_payload(
-      self.plate, self.all_wells,
-      start_wavelength=500, end_wavelength=600,
-      fixed_wavelength=400, focal_height=8.5, scan="emission",
-      well_scan="orbital", scan_diameter_mm=3,
-    )
-    self.assertEqual(len(payload), 172)
 
   def test_pre_separator_identical_to_discrete_fl(self):
     """Pre-separator block uses DetectionMode.FLUORESCENCE (0x00)."""

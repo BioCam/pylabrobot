@@ -8,7 +8,7 @@ from typing import Dict, List, Literal, Optional, Tuple
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well
 
-from ._protocol import (
+from ._framing import (
   FrameError,
   _CORE_REFERENCE,
   _PRE_REFERENCE,

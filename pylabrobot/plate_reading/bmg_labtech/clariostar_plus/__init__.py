@@ -1,8 +1,7 @@
 """CLARIOstar Plus plate reader backend package."""
 
-from .backend import CLARIOstarPlusBackend
-from ._protocol import (
-  CONFIRMED_FIRMWARE_VERSIONS,
+from .backend import CLARIOstarPlusBackend, CONFIRMED_FIRMWARE_VERSIONS
+from ._framing import (
   ChecksumError,
   FrameError,
   MeasurementInterrupted,

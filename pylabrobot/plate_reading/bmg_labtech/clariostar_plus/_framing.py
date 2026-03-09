@@ -1,6 +1,6 @@
-"""CLARIOstar Plus wire-protocol: framing, exceptions, and shared constants."""
+"""CLARIOstar Plus frame encoding, validation, protocol exceptions, and payload byte blocks."""
 
-from typing import Dict, Optional
+from typing import Optional
 
 
 # ---------------------------------------------------------------------------
@@ -43,14 +43,14 @@ class MeasurementInterrupted(Exception):
 # Payload hierarchy:
 #
 #   Command:
-#     frame  →  payload  →  command_family + [command] + parameters
-#                                                           ↓
+#     frame  ->  payload  ->  command_family + [command] + parameters
+#                                                           |
 #                                                     fields (plate, wells,
 #                                                     wavelengths, flashes, ...)
 #
 #   Response:
-#     frame  →  payload  →  response_type + status_flags + parameters
-#                                                              ↓
+#     frame  ->  payload  ->  response_type + status_flags + parameters
+#                                                              |
 #                                                        fields (schema, values_expected,
 #                                                        values_written, wavelengths, wells,
 #                                                        temperature, data groups, cal pairs)
@@ -59,23 +59,32 @@ class MeasurementInterrupted(Exception):
 #     0x01 = status/state report (POLL, STATUS, TRAY, TEMP_CTRL)
 #     0x03 = RUN acknowledgment
 #     0x09 = hardware info (HW_STATUS)
-#     For REQUEST family: usually echoes the subcommand byte (0x02, 0x07, 0x08, …)
+#     For REQUEST family: usually echoes the subcommand byte (0x02, 0x07, 0x08, ...)
 #       Exception: FIRMWARE_INFO (0x09) responds with 0x0a (subcommand + 1).
 #
 #   status_flags (bytes 0-4): device state bits.
 #     12 flags across 5 bytes -- see _STATUS_FLAGS and request_machine_status().
 
 # ---------------------------------------------------------------------------
-# Confirmed firmware versions
+# Response-parsing flow
 # ---------------------------------------------------------------------------
-# Firmware versions verified against hardware-verified ground truth, mapped to build year.
-# Used during setup() to warn when the connected device runs untested firmware.
-# Add entries here as new versions are verified.
-# If year granularity proves insufficient, switch values to (year, month) tuples.
-
-CONFIRMED_FIRMWARE_VERSIONS: Dict[str, int] = {
-  "1.35": 2020,  # supports EDR (verified via capture F-P01); no auto-gain support
-}
+#
+# Commands with wait=True follow a two-phase path:
+#
+#   Phase A (once): send_command -> _wrap_payload -> _write_frame -> _read_frame
+#                   -> _validate_frame -> _extract_payload
+#
+#   Phase B (loop): _wait_until_machine_ready -> request_machine_status
+#                   -> flags["busy"] check -> return or retry
+#
+# _read_frame terminates on: short FTDI read (<25 bytes) ending in 0x0D,
+# guarded by the size field to avoid false termination on mid-payload 0x0D.
+#
+# Pre-cached _STATUS_FRAME avoids per-poll frame construction.
+# .hex() in I/O methods guarded by isEnabledFor() to skip eager string allocation.
+#
+# ~37 ms/poll. Open ~ 4.3 s, close ~ 8 s, dominated by physical motor speed.
+#
 
 _FRAME_OVERHEAD = 8  # STX + size(2) + header(1) + checksum(3) + CR(1)
 
@@ -137,49 +146,13 @@ def _extract_payload(data: bytes) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Response-parsing flow
+# Payload constant blocks
 # ---------------------------------------------------------------------------
-#
-# Commands with wait=True follow a two-phase path:
-#
-#   Phase A (once): send_command → _wrap_payload → _write_frame → _read_frame
-#                   → _validate_frame → _extract_payload
-#
-#   Phase B (loop): _wait_until_machine_ready → request_machine_status
-#                   → flags["busy"] check → return or retry
-#
-# _read_frame terminates on: short FTDI read (<25 bytes) ending in 0x0D,
-# guarded by the size field to avoid false termination on mid-payload 0x0D.
-#
-# Pre-cached _STATUS_FRAME avoids per-poll frame construction.
-# .hex() in I/O methods guarded by isEnabledFor() to skip eager string allocation.
-#
-# ~37 ms/poll. Open ≈ 4.3 s, close ≈ 8 s, dominated by physical motor speed.
-#
+# Verified identical across all 38 absorbance USB captures.
 
-
-# Same machine (serial 430-2621) reports different EEPROM type bytes across reads.
-# High byte varies (0x00, 0x06, 0x07), low byte varies (0x21, 0x24, 0x26).
-# Full cross-product of observed variants:
-# 0x0024: verified on CLARIOstar Plus hardware (initial USB captures).
-# 0x0026: from vibed code, unverified on real hardware.
-# 0x0621: verified on CLARIOstar Plus hardware (live trace, serial 430-2621).
-# 0x0626: verified on CLARIOstar Plus hardware (live trace, serial 430-2621).
-_MODEL_LOOKUP: Dict[int, str] = {
-  0x0021: "CLARIOstar Plus",
-  0x0024: "CLARIOstar Plus",
-  0x0026: "CLARIOstar Plus",
-  0x0621: "CLARIOstar Plus",
-  0x0624: "CLARIOstar Plus",
-  0x0626: "CLARIOstar Plus",
-  0x0721: "CLARIOstar Plus",
-  0x0724: "CLARIOstar Plus",
-  0x0726: "CLARIOstar Plus",
-}
-
-# Constant blocks verified identical across all 38 absorbance USB captures.
 _SEPARATOR = b"\x27\x0f\x27\x0f"
 _TRAILER = b"\x02\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"
+
 # The 13-byte reference block is actually two parts:
 #   _PRE_REFERENCE (4 bytes): context-dependent. 0x00000064 for discrete/filter mode;
 #     repurposed as end_wl(2 BE) + 0x00 + step(1) in spectroscopy mode (n_wl=0).

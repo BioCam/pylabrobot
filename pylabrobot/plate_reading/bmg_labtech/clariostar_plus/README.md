@@ -24,7 +24,7 @@ PyLabRobot backend for the **BMG Labtech CLARIOstar Plus** multi-detection mode 
 
 <!-- TEMPLATE: Bulleted list grouped by feature/mixin. Each bullet = one public method or capability. Mark stubs. -->
 
-### Lifecycle
+### Connection & device info
 
 - `setup()` / `stop()` — FTDI init, EEPROM + firmware discovery, graceful shutdown
 - `initialize()` — hardware initialization command
@@ -113,10 +113,9 @@ This backend uses a mixin architecture — each feature area lives in its own mo
 
 | File | Mixin / role |
 |---|---|
-| `backend.py` | `CLARIOstarPlusBackend` assembly, enums, constants, status flags |
-| `_lifecycle.py` | `_LifecycleMixin` — setup, stop, I/O, EEPROM |
+| `backend.py` | `CLARIOstarPlusBackend` assembly, enums, constants, status flags, connection, I/O, device info |
+| `_framing.py` | Frame encoding/validation, protocol exceptions, payload byte blocks |
 | `_drawer.py` | `_DrawerMixin` — drawer open/close/sense |
-| `_protocol.py` | Wire protocol framing, checksums, error decoding |
 | `_measurement_common.py` | `_MeasurementCommonMixin` — plate encoding, validation, polling |
 | `_absorbance.py` | `_AbsorbanceMixin` — discrete + spectrum absorbance |
 | `_fluorescence.py` | `_FluorescenceMixin` — discrete + spectrum fluorescence, filter detection |
@@ -124,7 +123,7 @@ This backend uses a mixin architecture — each feature area lives in its own mo
 | `_luminescence.py` | `_LuminescenceMixin` — luminescence measurement (stub) |
 | `_temperature_control.py` | `_TemperatureControlMixin` — heating, sensor reads |
 | `_shaker.py` | `_ShakerMixin` — standalone and idle shaking |
-| `backend_tests.py` | 458 hardware-verified tests |
+| `backend_tests.py` | 463 hardware-verified tests |
 | `test_data/` | 15 binary absorbance spectrum response payloads |
 | `developer_docs/` | Architecture, wire protocol, implementation status, guides |
 
@@ -181,11 +180,11 @@ To add support for a peripheral, capture its USB traffic with Wireshark, decode 
 python -m pytest pylabrobot/plate_reading/bmg_labtech/clariostar_plus/backend_tests.py -v
 ```
 
-**458 tests** covering:
+**463 tests** covering:
 
 - Wire protocol frame round-trips (initialize, open, close, every command family)
 - Status flag parsing (all 12 hardware flags)
-- Lifecycle operations (setup, stop, error recovery)
+- Connection and teardown (setup, stop, error recovery)
 - Absorbance payload construction and response parsing (discrete + spectrum)
 - Fluorescence payload construction and response parsing
 - Well mask encoding for all plate formats (8 → 384 wells)
