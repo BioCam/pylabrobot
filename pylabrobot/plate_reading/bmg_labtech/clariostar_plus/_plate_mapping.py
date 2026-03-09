@@ -329,7 +329,7 @@ class _PlateMappingMixin:
     return await self.send_command(
       command_family=self.CommandFamily.REQUEST,
       command=self.Command.DATA,
-      parameters=b"\x00\x00\x00\x00",
+      parameters=b"\x00\x00\x00\x00\x00",
     )
 
   async def request_plate_map_xy(self) -> Dict[str, float]:
