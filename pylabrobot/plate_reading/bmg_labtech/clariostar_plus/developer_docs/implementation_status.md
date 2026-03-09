@@ -37,12 +37,14 @@ Last updated: 2026-03-09
 | Fluorescence bottom optic | `optic_position="bottom"` — capture wire match, no hardware test |
 | Multi-chromatic 3–5 channels | Dual verified; 3–5 ch untested |
 | 384-well fluorescence | capture wire verified, no hardware test |
+| 384-well absorbance | DOE_P384_01 confirmed plate_field[14]=0x00 (padding), full 48-byte mask |
+| Matrix well scan | DOE_MTX01/MTX02 confirmed WellScanMode.MATRIX=0x10, well_scan_field encoding |
 
 ## Not implemented
 
 | Feature | Blocker | Priority |
 |---------|---------|----------|
-| **Luminescence** | No captures. `read_luminescence()` raises `NotImplementedError`. | High |
+| **Luminescence** | 1 capture (DOE_LUM01): DetectionMode=0x01, 145-byte payload, different post-boundary structure. ~20 unknown LUM-specific bytes need 2–3 more captures with varied settings to diff. `read_luminescence()` raises `NotImplementedError`. | High |
 | **Auto-gain** | Firmware 1.35 supports GainWell/GainPlate but no captures exist. | Medium |
 | **Pause before cycle** | Wire encoding decoded (DOE_SPC06/SPC07): bytes [116:120] encode mode flag, target cycle, duration. "each" = manual popup (0xff,0xff), specific cycle = auto-timed. Backend not yet parameterized. | Medium |
 | **FL `wait=False` collect helper** | `request_absorbance_results()` exists for ABS; no FL equivalent. | Medium |
@@ -75,7 +77,7 @@ Last updated: 2026-03-09
 | Connection & init | 15 | — |
 | Status & device ID | 35 | Real EEPROM (263B) + firmware (39B) |
 | Temperature | 14 | — |
-| Absorbance discrete | 81 | 22 OEM + 12 DOE capture payloads |
+| Absorbance discrete | 81 | 22 OEM + 18 DOE capture payloads |
 | Absorbance spectrum | 39 | 5 capture payloads + 781-wavelength dataset |
 | Fluorescence | 62 | 15 capture payloads + 7 response frames |
 | Focus | 25 | capture send + 143-point result |

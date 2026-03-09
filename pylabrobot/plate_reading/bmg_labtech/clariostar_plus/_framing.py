@@ -153,7 +153,7 @@ def _extract_payload(data: bytes) -> bytes:
 # Mechanical/optical boundary marker: separates the plate geometry + movement
 # configuration (plate_field, scan_direction, pre_separator) from the optical
 # measurement configuration (wavelengths, flashes, kinetic timing, etc.).
-# Invariant across all 135 MEASUREMENT_RUN payloads (ABS + FL, all scan modes).
+# Invariant across all 142 MEASUREMENT_RUN payloads (ABS + FL + LUM, all scan modes, 96 + 384-well).
 #
 # TODO: Use this marker to locate the optical config section when parsing
 #   response payloads, instead of relying on hardcoded byte offsets. The

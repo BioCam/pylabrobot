@@ -120,9 +120,11 @@ class _AbsorbanceMixin:
     ref = _REFERENCE_BLOCK
 
     # 9. Settling fields (1 + 2 bytes): settling_flag always 0x00 in all captures.
-    # settling_time is 0x0000 in OEM captures, 0x0005 in DOE captures (MARS GUI
-    # default settling 0.1s → matches flashes=5?). Actual settling is encoded via
-    # pause_time (step 6 above). Keeping 0x0000 to match OEM ground truth.
+    # settling_time is 0x0000 in OEM captures, 0x0005 in all MARS/DOE captures
+    # regardless of flash count or settling time (confirmed by DOE_REF02: 200
+    # flashes still 0x0005). It is a fixed constant, not a parameter encoding.
+    # Actual settling is encoded via pause_time (step 6 above).
+    # Keeping 0x0000 to match OEM ground truth.
     settling_flag = b"\x00"
     settling_time = b"\x00\x00"
 
@@ -649,8 +651,7 @@ class _AbsorbanceMixin:
           ``"data"``.
       flashes: Flashes per well (default 10). Limits depend on well_scan mode:
         point 1-200, orbital 1-44, spiral 1-127, matrix 1-200.
-      well_scan: ``"point"``, ``"orbital"``, ``"spiral"``, or ``"matrix"``
-        (matrix not yet implemented).
+      well_scan: ``"point"``, ``"orbital"``, ``"spiral"``, or ``"matrix"``.
       scan_diameter_mm: Scan diameter in mm for orbital/spiral modes.
       bidirectional: If True (default), serpentine "snake-line" scanning. If False,
         unidirectional scanning (same direction each pass, slower).

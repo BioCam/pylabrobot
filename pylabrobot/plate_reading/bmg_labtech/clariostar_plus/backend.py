@@ -44,6 +44,7 @@ from ._fluorescence import _FluorescenceMixin
 from ._focus import _FocusMixin
 from ._luminescence import _LuminescenceMixin
 from ._measurement_common import _MeasurementCommonMixin
+from ._plate_mapping import _PlateMappingMixin
 from ._shaker import _ShakerMixin
 from ._temperature_control import _TemperatureControlMixin
 
@@ -94,6 +95,7 @@ _MODEL_LOOKUP: Dict[int, str] = {
 
 
 class CLARIOstarPlusBackend(
+  _PlateMappingMixin,
   _FocusMixin,
   _LuminescenceMixin,
   _DrawerMixin,
@@ -145,6 +147,9 @@ class CLARIOstarPlusBackend(
     _focus.py:
       Focus well (Z-scan) .......... focus_well
       Auto-focus (deprecated) ...... auto_focus
+    _plate_mapping.py:
+      Plate mapping ................ scan_plate_mapping, request_plate_map_xy,
+                                     request_plate_map_config
     _luminescence.py:
       Luminescence .................. read_luminescence (stub)
   """
@@ -167,6 +172,7 @@ class CLARIOstarPlusBackend(
     CMD_0x0E = 0x0E
     SHAKE = 0x1D           # R_Shake: standalone shaking (17B frame, 11B payload)
     FILTER_SCAN = 0x24
+    PLATE_MAP_SCAN = 0x07  # XY raster scan of corner wells (41B FI / 40B ABS payload)
     IDLE_MOVE = 0x27       # R_IdleMove: continuous/periodic shaking (17B frame, 11B payload)
     STATUS = 0x80
     HW_STATUS = 0x81
@@ -186,9 +192,11 @@ class CLARIOstarPlusBackend(
     TRAY_OPEN = 0x01
     # REQUEST
     DATA = 0x02
+    PLATE_MAP_XY = 0x04       # GET calibrated XY positions from plate mapping scan
+    FOCUS_RESULT = 0x05
     EEPROM = 0x07
     FIRMWARE_INFO = 0x09
-    FOCUS_RESULT = 0x05
+    PLATE_MAP_CONFIG = 0x0D   # GET plate mapping metadata/config
     FOCUS_HEIGHT = 0x0F
     SPECTRAL_DATA = 0x11
     FILTER_RESULT = 0x1B
@@ -206,9 +214,11 @@ class CLARIOstarPlusBackend(
     CommandFamily.TRAY: {Command.TRAY_CLOSE, Command.TRAY_OPEN},
     CommandFamily.REQUEST: {
       Command.DATA,
+      Command.PLATE_MAP_XY,
       Command.FOCUS_RESULT,
       Command.EEPROM,
       Command.FIRMWARE_INFO,
+      Command.PLATE_MAP_CONFIG,
       Command.FOCUS_HEIGHT,
       Command.SPECTRAL_DATA,
       Command.FILTER_RESULT,
@@ -227,6 +237,7 @@ class CLARIOstarPlusBackend(
     CommandFamily.HW_STATUS,
     CommandFamily.TEMPERATURE_CONTROLLER,
     CommandFamily.RUN,
+    CommandFamily.PLATE_MAP_SCAN,
     CommandFamily.FOCUS_WELL,
     CommandFamily.AUTO_FOCUS,
     CommandFamily.STOP,

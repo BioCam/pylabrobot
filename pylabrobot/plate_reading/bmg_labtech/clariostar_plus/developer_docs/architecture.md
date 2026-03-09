@@ -1,6 +1,6 @@
 # CLARIOstar Plus Backend — Architecture & Implementation
 
-Production-grade driver for the BMG Labtech CLARIOstar Plus, built from 100+ captures (88 OEM + 13 DOE) with byte-level verification. Replaces the original ~350-line proof-of-concept.
+Production-grade driver for the BMG Labtech CLARIOstar Plus, built from 160 captures (88 OEM measurement + 53 DDE standalone + 19 DOE) with byte-level verification. Replaces the original ~350-line proof-of-concept.
 
 ---
 
@@ -352,17 +352,18 @@ Frame overhead (STX + size + header + checksum + CR = 8 bytes) is excluded.
 1. **EEPROM response** (243/263 unknown) — factory calibration (~96B), boolean flags (~18B), sparse regions (~43B), board info (~7B). Only serial, machine type, detection modes, filter slots, and mono ranges are decoded.
 
 2. **Measurement RUN payloads** (~43 unknown bytes each):
-   - `_MEAS_BOUNDARY` (`\x27\x0f\x27\x0f`) — 4B, fixed magic constant (confirmed across 135 payloads)
+   - `_MEAS_BOUNDARY` (`\x27\x0f\x27\x0f`) — 4B, fixed magic constant (confirmed across 142 payloads incl. LUM + 384-well)
    - `_REFERENCE_BLOCK` — 13B, last byte overloaded as pause mode flag (DOE_SPC06/07)
    - `_TRAILER_PREFIX` — 10B, decoded: mode flag, speed, shake enable, 0x003b constant (DOE_SPC04/05)
    - Kinetic tail (cycles + flashes + cycle_time + final_zero) — fully decoded
+   - `settling_time_field` — 2B, confirmed as fixed constant 0x0005 (invariant to flash count per DOE_REF02)
    - Pre-separator — 21/31 bytes are unexplained zeros
 
 3. **CMD_0x0E** (6/7 unknown) — sent every boot, meaning not fully understood
 
 4. **All REQUEST parameters** (`0x05 XX`) — 5 zero bytes each. Could be page selectors or truly unused.
 
-5. **GET_DATA response headers** — 17-19 bytes skipped in both ABS and FL parsers.
+5. **GET_DATA response headers** — 17-19 bytes skipped in both ABS and FL parsers. DOE_KIN_DATA01 progressive vs final diff decoded 5 header bytes: offset 1 (in-progress flag, bit 5), offset 3 (partial data flag, bit 3), offset 10 (completed data size), offset 28 (cycles completed), offset 33 (cycle_time echoed).
 
 ### Caveats on named fields
 
@@ -374,7 +375,7 @@ Frame overhead (STX + size + header + checksum + CR = 8 bytes) is excluded.
 
 ## Sources
 
-- **USB captures:** 143+ USB capture files (59 absorbance + 29 fluorescence + 45+ DDE standalone + 13 DOE), 6,780+ frames total.
+- **USB captures:** 149+ USB capture files (59 absorbance + 29 fluorescence + 53 DDE standalone + 19 DOE), 12,800+ frames total.
 - **OEM manuals:**
   - `0430N0003I` — ActiveX and DDE Manual, CLARIOstar V5.00–5.70R2
   - `0430F0035B` — Software Manual, CLARIOstar 5.70 R2 Part II (script language, §9)

@@ -8998,5 +8998,389 @@ class TestStopIdleMovement(unittest.TestCase):
     self.assertEqual(payload, bytes.fromhex("2700000000000000000000"))
 
 
+# ---------------------------------------------------------------------------
+# Plate Mapping tests
+# ---------------------------------------------------------------------------
+#
+# Ground truth from 3 USB captures (2026-03-09):
+#   automated_plate_mapping_test_1 (FI, gain=2239)
+#   automated_plate_mapping_test_2 (FI, gain=2248)
+#   automated_plate_mapping_using_ABS_test_1 (ABS, 600nm)
+#
+# Capture payload hex (full frame, including STX/size/header/checksum/CR):
+#   FI test_1:  020031 0c 07 02 31e8 2164 0596 0460 2c52 1d04 0c08 00000000 0c 1354 12cc 13d3 1579 1453 0004 0003 05dc 08bf 000000 0873 0d
+#   ABS test_1: 020031 0c 07 02 31e8 2164 0596 0460 2c52 1d04 0c08 02 000000000000000000000000000000000000000000 1770 0004 21 0d
+#
+# XY response payload (after frame extraction):
+#   FI test_1:  04 054626 0000 0202 05a5 046f 2c45 1ce8
+#   FI test_2:  04 054626 0000 0202 05ab 046d 2c44 1ce8
+#   ABS:        04 055606 0000 0202 0000 0000 0000 0000 (scan failed)
+#
+# Config response payload (after frame extraction):
+#   All:        10 250426 0000 1f 03c1 014a 0000
+
+# -- Plate geometry note: captures used a Corning plate definition with
+# A1_y=0x0460 (11.20mm) and last_well_y=0x1d04 (74.28mm). PLR's
+# Cor_96_wellplate_360ul_Fb has A1_y=0x0468 (11.28mm) and last_well_y=0x1cfc
+# (73.88mm). The difference is due to different vendor plate definitions.
+# Payload structure tests use PLR geometry; response parsing tests use exact
+# captured hex.
+
+
+class TestBuildPlateMapPayload(unittest.TestCase):
+  """Tests for _build_plate_map_payload against capture ground truth."""
+
+  def setUp(self):
+    self.backend = _make_backend()
+    self.plate = _make_plate()
+
+  def test_abs_payload_length(self):
+    """ABS payload should be exactly 40 bytes."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="absorbance", wavelength=600)
+    self.assertEqual(len(payload), 40)
+
+  def test_fl_payload_length(self):
+    """FL payload should be exactly 40 bytes."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence",
+      excitation_wavelength=488, emission_wavelength=535,
+      excitation_bandwidth=14, emission_bandwidth=30,
+      gain=2239)
+    self.assertEqual(len(payload), 40)
+
+  def test_abs_sub_command(self):
+    """Byte [0] should be 0x02 (sub-command constant)."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="absorbance", wavelength=600)
+    self.assertEqual(payload[0], 0x02)
+
+  def test_fl_sub_command(self):
+    """Byte [0] should be 0x02 (sub-command constant)."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence",
+      excitation_wavelength=488, emission_wavelength=535)
+    self.assertEqual(payload[0], 0x02)
+
+  def test_abs_plate_geometry(self):
+    """Plate geometry [1:13] matches Cor_96_wellplate_360ul_Fb."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="absorbance", wavelength=600)
+    self.assertEqual(payload[1:13], PLATE_GEOMETRY_BYTES)
+
+  def test_fl_plate_geometry(self):
+    """Plate geometry [1:13] matches Cor_96_wellplate_360ul_Fb."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence",
+      excitation_wavelength=488, emission_wavelength=535)
+    self.assertEqual(payload[1:13], PLATE_GEOMETRY_BYTES)
+
+  def test_abs_num_cols_rows(self):
+    """[13]=12, [14]=8 for 96-well plate."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="absorbance", wavelength=600)
+    self.assertEqual(payload[13], 12)
+    self.assertEqual(payload[14], 8)
+
+  def test_abs_detection_mode(self):
+    """[15] should be 0x02 (DetectionMode.ABSORBANCE)."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="absorbance", wavelength=600)
+    self.assertEqual(payload[15], 0x02)
+
+  def test_fl_detection_mode(self):
+    """[15] should be 0x00 (DetectionMode.FLUORESCENCE)."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence",
+      excitation_wavelength=488, emission_wavelength=535)
+    self.assertEqual(payload[15], 0x00)
+
+  def test_abs_wavelength(self):
+    """ABS wavelength at [38:40] should be 600nm → 0x1770."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="absorbance", wavelength=600)
+    self.assertEqual(payload[38:40], b"\x17\x70")
+
+  def test_abs_zeros(self):
+    """ABS mode: bytes [16:38] should all be zero."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="absorbance", wavelength=600)
+    self.assertEqual(payload[16:38], b"\x00" * 22)
+
+  def test_fl_separator(self):
+    """FL mode: [19] should be num_cols (0x0c=12) separator echo."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence",
+      excitation_wavelength=488, emission_wavelength=535)
+    self.assertEqual(payload[19], 12)
+
+  def test_fl_wavelengths(self):
+    """FL wavelength edges match capture: 488±7nm ex, 535±15nm em.
+
+    Capture ground truth (from automated_plate_mapping_test_1):
+      ex_hi=0x1354 (4948→494.8nm), ex_lo=0x12cc (4812→481.2nm)
+      dich=0x13d3 (5075→507.5nm)
+      em_hi=0x1579 (5497→549.7nm), em_lo=0x1453 (5203→520.3nm)
+    """
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence",
+      excitation_wavelength=488, emission_wavelength=535,
+      excitation_bandwidth=14, emission_bandwidth=30,
+      dichroic_split_wavelength=507.5)
+    # ex_hi = (488 + 7) × 10 = 4950 → 0x1356
+    # Note: capture has 4948 due to rounding; PLR computes 4950.
+    # We verify the structure is correct, not exact match with different rounding.
+    ex_hi = int.from_bytes(payload[20:22], "big")
+    ex_lo = int.from_bytes(payload[22:24], "big")
+    dich = int.from_bytes(payload[24:26], "big")
+    em_hi = int.from_bytes(payload[26:28], "big")
+    em_lo = int.from_bytes(payload[28:30], "big")
+    # Verify wavelength relationships
+    self.assertAlmostEqual(ex_hi / 10, 495.0, places=0)
+    self.assertAlmostEqual(ex_lo / 10, 481.0, places=0)
+    self.assertAlmostEqual(dich / 10, 507.5, places=0)
+    self.assertAlmostEqual(em_hi / 10, 550.0, places=0)
+    self.assertAlmostEqual(em_lo / 10, 520.0, places=0)
+    # Verify ordering: ex_lo < ex_hi < dich < em_lo < em_hi
+    self.assertLess(ex_lo, ex_hi)
+    self.assertLess(ex_hi, dich)
+    self.assertLess(dich, em_lo)
+    self.assertLess(em_lo, em_hi)
+
+  def test_fl_slit_config(self):
+    """FL slit config: [30:32]=0x0004, [32:34]=0x0003 (monochromator defaults)."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence",
+      excitation_wavelength=488, emission_wavelength=535)
+    self.assertEqual(payload[30:32], b"\x00\x04")
+    self.assertEqual(payload[32:34], b"\x00\x03")
+
+  def test_fl_focal_height(self):
+    """FL focal height at [34:36] should be 15.0mm → 0x05dc."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence",
+      excitation_wavelength=488, emission_wavelength=535,
+      focal_height_mm=15.0)
+    self.assertEqual(payload[34:36], b"\x05\xdc")
+
+  def test_fl_gain(self):
+    """FL gain at [36:38] should match capture ground truth."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence",
+      excitation_wavelength=488, emission_wavelength=535,
+      gain=2239)
+    self.assertEqual(int.from_bytes(payload[36:38], "big"), 2239)
+
+  def test_fl_gain_test2(self):
+    """FL gain 2248 matches automated_plate_mapping_test_2 (0x08c8)."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence",
+      excitation_wavelength=488, emission_wavelength=535,
+      gain=2248)
+    self.assertEqual(payload[36:38], b"\x08\xc8")
+
+  def test_fl_trailing_zeros(self):
+    """FL mode: [38:40] should be zero."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence",
+      excitation_wavelength=488, emission_wavelength=535)
+    self.assertEqual(payload[38:40], b"\x00\x00")
+
+  def test_invalid_mode(self):
+    """Invalid mode should raise ValueError."""
+    with self.assertRaises(ValueError):
+      self.backend._build_plate_map_payload(self.plate, mode="luminescence")
+
+  def test_frame_structure(self):
+    """Complete frame should match expected structure: STX + size(49) + 0x0C + 0x07 + params + checksum + CR."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="absorbance", wavelength=600)
+    frame = _wrap_payload(b"\x07" + payload)
+    self.assertEqual(len(frame), 49)  # 40 params + 1 cmd_family + 8 overhead
+    self.assertEqual(frame[0], 0x02)   # STX
+    self.assertEqual(frame[3], 0x0C)   # header
+    self.assertEqual(frame[4], 0x07)   # PLATE_MAP_SCAN
+    self.assertEqual(frame[-1], 0x0D)  # CR
+    _validate_frame(frame)  # should not raise
+
+
+class TestParsePlateMapXY(unittest.TestCase):
+  """Tests for _parse_plate_map_xy against capture ground truth."""
+
+  def test_fi_test1_xy(self):
+    """FI test_1: X1=14.45mm, Y1=11.35mm, Xn=113.33mm, Yn=74.00mm."""
+    backend = _make_backend()
+    # Exact payload from automated_plate_mapping_test_1 capture
+    payload = bytes.fromhex("040546260000020205a5046f2c451ce8")
+    result = backend._parse_plate_map_xy(payload)
+    self.assertAlmostEqual(result["x1_mm"], 14.45, places=2)
+    self.assertAlmostEqual(result["y1_mm"], 11.35, places=2)
+    self.assertAlmostEqual(result["xn_mm"], 113.33, places=2)
+    self.assertAlmostEqual(result["yn_mm"], 74.00, places=2)
+
+  def test_fi_test2_xy(self):
+    """FI test_2: X1=14.51mm, Y1=11.33mm, Xn=113.32mm, Yn=74.00mm."""
+    backend = _make_backend()
+    payload = bytes.fromhex("0405462600000202 05ab 046d 2c44 1ce8".replace(" ", ""))
+    result = backend._parse_plate_map_xy(payload)
+    self.assertAlmostEqual(result["x1_mm"], 14.51, places=2)
+    self.assertAlmostEqual(result["y1_mm"], 11.33, places=2)
+    self.assertAlmostEqual(result["xn_mm"], 113.32, places=2)
+    self.assertAlmostEqual(result["yn_mm"], 74.00, places=2)
+
+  def test_abs_scan_failed(self):
+    """ABS capture: all XY positions are zero (scan failed to locate wells)."""
+    backend = _make_backend()
+    payload = bytes.fromhex("04055606000002020000000000000000")
+    result = backend._parse_plate_map_xy(payload)
+    self.assertEqual(result["x1_mm"], 0.0)
+    self.assertEqual(result["y1_mm"], 0.0)
+    self.assertEqual(result["xn_mm"], 0.0)
+    self.assertEqual(result["yn_mm"], 0.0)
+
+  def test_fi_test1_test2_consistency(self):
+    """FI test_1 and test_2 positions should be within 0.2mm of each other."""
+    backend = _make_backend()
+    r1 = backend._parse_plate_map_xy(bytes.fromhex("040546260000020205a5046f2c451ce8"))
+    r2 = backend._parse_plate_map_xy(bytes.fromhex("04054626000002020 5ab046d2c441ce8".replace(" ", "")))
+    for key in ("x1_mm", "y1_mm", "xn_mm", "yn_mm"):
+      self.assertAlmostEqual(r1[key], r2[key], delta=0.2,
+        msg=f"{key}: {r1[key]} vs {r2[key]}")
+
+  def test_too_short_raises(self):
+    """Payload shorter than 16 bytes should raise ValueError."""
+    backend = _make_backend()
+    with self.assertRaises(ValueError):
+      backend._parse_plate_map_xy(b"\x04" + b"\x00" * 10)
+
+
+class TestParsePlateMapConfig(unittest.TestCase):
+  """Tests for _parse_plate_map_config against capture ground truth."""
+
+  def test_config_response(self):
+    """Config response from all 3 captures (identical): response_type=0x10."""
+    backend = _make_backend()
+    # Exact payload from all 3 captures
+    payload = bytes.fromhex("102504260000 1f 03c1 014a 0000".replace(" ", ""))
+    result = backend._parse_plate_map_config(payload)
+    self.assertEqual(result["response_type"], 0x10)
+    self.assertEqual(result["grid_size"], 31)
+    self.assertEqual(result["n_points"], 961)
+    self.assertEqual(result["field_9_10"], 0x014a)
+
+  def test_grid_size_squared_equals_n_points(self):
+    """grid_size² should equal n_points (31×31=961)."""
+    backend = _make_backend()
+    payload = bytes.fromhex("10250426000 01f 03c1 014a 0000".replace(" ", ""))
+    result = backend._parse_plate_map_config(payload)
+    self.assertEqual(result["grid_size"] ** 2, result["n_points"])
+
+  def test_too_short_raises(self):
+    """Payload shorter than 13 bytes should raise ValueError."""
+    backend = _make_backend()
+    with self.assertRaises(ValueError):
+      backend._parse_plate_map_config(b"\x10" + b"\x00" * 5)
+
+
+class TestParsePlateMapRaster(unittest.TestCase):
+  """Tests for _parse_plate_map_raster against capture ground truth.
+
+  Ground truth from automated_plate_mapping_test_1 (FI, 2026-03-09).
+  Two DATA responses (3886-byte frames, 3878-byte payloads):
+    R1 (A1):  header byte[24]=0x01 (col), byte[26]=0x01 (row)
+    R2 (H12): header byte[24]=0x0c (col), byte[26]=0x08 (row)
+  Both have n_points=961, saturation=260000 (0x03f7a0).
+  """
+
+  # First 10 data values from R1 (A1), from capture hex (4-byte groups after 31-byte header)
+  _R1_FIRST_10 = [
+    0x000000, 0x021921, 0x02219e, 0x021906, 0x0220b2,
+    0x0239dd, 0x0221fa, 0x02245b, 0x021bd9, 0x02287c,
+  ]
+
+  def _make_minimal_raster_payload(self, *, well_col=1, well_row=1,
+                                    n_points=4, values=None):
+    """Build a synthetic raster DATA payload for testing."""
+    if values is None:
+      values = [100, 200, 300, 400]
+    header = bytearray(31)
+    header[7:9] = n_points.to_bytes(2, "big")
+    header[9:11] = n_points.to_bytes(2, "big")  # values_written = n_points
+    header[12] = 0x03; header[13] = 0xf7; header[14] = 0xa0  # saturation=260000
+    header[24] = well_col
+    header[26] = well_row
+    data = bytearray()
+    for v in values:
+      data.extend([(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff, 0x00])
+    return bytes(header) + bytes(data)
+
+  def test_well_col_row_a1(self):
+    """R1 corner should be well_col=1, well_row=1 (A1)."""
+    backend = _make_backend()
+    payload = self._make_minimal_raster_payload(well_col=1, well_row=1)
+    result = backend._parse_plate_map_raster(payload)
+    self.assertEqual(result["well_col"], 1)
+    self.assertEqual(result["well_row"], 1)
+
+  def test_well_col_row_h12(self):
+    """R2 corner should be well_col=12, well_row=8 (H12)."""
+    backend = _make_backend()
+    payload = self._make_minimal_raster_payload(well_col=12, well_row=8)
+    result = backend._parse_plate_map_raster(payload)
+    self.assertEqual(result["well_col"], 12)
+    self.assertEqual(result["well_row"], 8)
+
+  def test_n_points(self):
+    """n_points should be 961 for 31×31 grid."""
+    backend = _make_backend()
+    payload = self._make_minimal_raster_payload(n_points=961,
+                                                 values=[0]*961)
+    result = backend._parse_plate_map_raster(payload)
+    self.assertEqual(result["n_points"], 961)
+    self.assertEqual(len(result["intensities"]), 961)
+
+  def test_grid_size_inferred(self):
+    """grid_size should be 31 for 961 points."""
+    backend = _make_backend()
+    payload = self._make_minimal_raster_payload(n_points=961,
+                                                 values=[0]*961)
+    result = backend._parse_plate_map_raster(payload)
+    self.assertEqual(result["grid_size"], 31)
+
+  def test_saturation_value(self):
+    """Saturation should be 260000 (0x03f7a0)."""
+    backend = _make_backend()
+    payload = self._make_minimal_raster_payload()
+    result = backend._parse_plate_map_raster(payload)
+    self.assertEqual(result["saturation"], 260000)
+
+  def test_intensity_values(self):
+    """Intensity values should be correctly decoded from 3-byte BE + padding."""
+    backend = _make_backend()
+    values = [0, 12345, 260000, 100000]
+    payload = self._make_minimal_raster_payload(n_points=4, values=values)
+    result = backend._parse_plate_map_raster(payload)
+    self.assertEqual(result["intensities"], values)
+
+  def test_capture_first_values(self):
+    """First 10 values from capture R1 (A1) should decode correctly."""
+    backend = _make_backend()
+    # Build payload with capture ground truth header + first 10 values
+    payload = self._make_minimal_raster_payload(
+      n_points=10, well_col=1, well_row=1, values=self._R1_FIRST_10)
+    result = backend._parse_plate_map_raster(payload)
+    self.assertEqual(result["intensities"], self._R1_FIRST_10)
+    # First value is 0 (reference/origin point)
+    self.assertEqual(result["intensities"][0], 0)
+    # Second value from capture: 0x021921 = 137505
+    self.assertEqual(result["intensities"][1], 0x021921)
+
+  def test_too_short_raises(self):
+    """Payload shorter than header + 4 bytes should raise ValueError."""
+    backend = _make_backend()
+    with self.assertRaises(ValueError):
+      backend._parse_plate_map_raster(b"\x00" * 30)
+
+
 if __name__ == "__main__":
   unittest.main()

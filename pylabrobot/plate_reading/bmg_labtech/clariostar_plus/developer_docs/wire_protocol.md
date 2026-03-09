@@ -1,7 +1,7 @@
 # CLARIOstar Plus Wire Protocol Reference
 
 Complete binary protocol specification for the BMG Labtech CLARIOstar Plus plate reader,
-derived from byte-level analysis of 40 OEM software captures, 13 DOE captures, and Go reference implementation.
+derived from byte-level analysis of 88 OEM measurement captures (59 ABS + 29 FL), 53 DDE standalone captures, 19 DOE captures, and Go reference implementation.
 
 ---
 
@@ -226,8 +226,8 @@ region — see §3.6.3.
 
 ### 3.4 Separator (4 bytes)
 
-Always `27 0f 27 0f`. Fixed magic constant — confirmed identical across all 135 MEASUREMENT_RUN
-payloads (ABS + FL, all scan modes, all well selections, OEM + DOE captures). The `0x270F` = 9999
+Always `27 0f 27 0f`. Fixed magic constant — confirmed identical across all 142 MEASUREMENT_RUN
+payloads (ABS + FL + LUM, all scan modes, all well selections, 96 + 384-well, OEM + DOE captures). The `0x270F` = 9999
 resemblance to the shake command's default XY sentinel is coincidental; no mechanism to change it.
 
 ### 3.5 Well Scan Field (0 or 5 bytes)
@@ -265,7 +265,7 @@ Offset  Size  Encoding   Field
  2      2×N   u16 BE     wavelength[0..N-1]           nm × 10, e.g. 600nm → 0x1770
 +0      13    raw        reference_block              constant: 00 00 00 64 23 28 26 ca 00 00 00 64 00
 +0       1    u8         settling_flag                always 0x00 in all captures
-+1       2    u16 BE     settling_time_field           always 0x0005 in all DOE captures (purpose TBD)
++1       2    u16 BE     settling_time_field           fixed constant 0x0005 in all MARS captures (invariant to flash count, settling time, scan mode — confirmed by DOE_REF02)
 +0      10    raw        trailer_prefix               see §3.6.3 — varies for shake-between-readings
 +0       1    u8         kinetic_cycles               cycle count (1 = endpoint, N = kinetic)
 +0       2    u16 BE     flashes                      flashes per well (1–200)
@@ -823,7 +823,7 @@ and shake-between-readings, the trailer region is parameterized — see §3.6.3.
 
 ## 9. Capture Index
 
-100+ captures organized by test group:
+160 captures organized by test group:
 
 ### OEM Measurement Captures (40)
 
@@ -859,7 +859,11 @@ and shake-between-readings, the trailer region is parameterized — see §3.6.3.
 | Baseline | DOE_Baseline | Reference: 96-well, 600nm, 5 flashes, point, bidi TL vertical |
 | KIN (4) | KIN01–KIN04 | Kinetic mode: 2/10/50 cycles, 45/60/300s cycle time |
 | SPC (7) | SPC01–SPC07 | Shake timing: each/first/defined/between, pause-before-cycle: each/specific |
-| REF (1) | REF01 | Fluorescence: mono, 485ex/520em, 1000 gain, cols 1-8 |
+| REF (2) | REF01–REF02 | REF01: FL mono 485ex/520em. REF02: ABS 200 flashes (settling_time_field confirmed constant) |
+| MTX (2) | MTX01–MTX02 | Matrix well scan: 3×3 and 5×5. Confirmed WellScanMode.MATRIX=0x10, well_scan_field encoding |
+| DAT (1) | KIN_DATA01 | Kinetic 3-cycle progressive data retrieval (MARS version). PLR trace also captured |
+| LUM (1) | LUM01 | Luminescence baseline: DetectionMode=0x01, 145-byte payload, different post-boundary structure |
+| PLT (1) | P384_01 | 384-well plate: plate_field[14] confirmed as padding (still 0x00), full 48-byte well mask |
 
 ### Key findings from DDE captures
 

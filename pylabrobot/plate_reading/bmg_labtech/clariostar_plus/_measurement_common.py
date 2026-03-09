@@ -663,6 +663,13 @@ class _MeasurementCommonMixin:
       - D02 (96 wells, 2 WL): expected = 96×4 + 8 + 1×(96+2) = 490
       - D03 (96 wells, 3 WL): expected = 96×4 + 8 + 2×(96+2) = 588
 
+    Other header bytes decoded from DOE_KIN_DATA01 progressive vs final diff
+    (not parsed here — informational only):
+      - [1] bit 5: measurement in-progress flag (set during progressive, clear on final)
+      - [3] bit 3: partial data flag (set during progressive, clear on final)
+      - [28]: kinetic cycles completed so far (u8)
+      - [33]: cycle_time_s echoed back during measurement (0x3c=60), 0 when done
+
     Returns:
       (values_written, values_expected) tuple.
 
