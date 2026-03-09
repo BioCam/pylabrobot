@@ -9,7 +9,7 @@ from typing import Dict, List, Literal, Optional, Tuple
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well
 
-from ._framing import FrameError, MeasurementInterrupted, _SEPARATOR, _TRAILER, _wrap_payload
+from ._framing import FrameError, MeasurementInterrupted, _MEAS_BOUNDARY, _TRAILER, _wrap_payload
 
 logger = logging.getLogger("pylabrobot")
 
@@ -127,10 +127,16 @@ class _MeasurementCommonMixin:
     shake_pattern: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
     shake_rpm: int = 0,
     shake_duration_s: int = 0,
+    shake_timing: Literal["each", "first", "defined"] = "each",
+    shake_defined_cycles: Optional[List[int]] = None,
     optic_position: Optional["CLARIOstarPlusBackend.OpticPosition"] = None,
     edr: bool = False,
   ) -> bytes:
     """Build the 31-byte block between scan direction byte and separator.
+
+    The shake encoding within the pre-separator has three variants depending on
+    when shaking occurs relative to kinetic cycles. A fourth variant ("between
+    readings") uses the post-separator trailer instead and is NOT encoded here.
 
     Args:
       detection_mode: Detection mode (ABSORBANCE, FLUORESCENCE).
@@ -138,6 +144,10 @@ class _MeasurementCommonMixin:
       shake_pattern: None, "orbital", "linear", "double_orbital", or "meander".
       shake_rpm: Shake speed in RPM (100-700, multiples of 100; meander max 300).
       shake_duration_s: Shake duration in seconds.
+      shake_timing: When to shake. "each" = before every kinetic cycle (buf[12]=0x02),
+        "first" = before first cycle only (buf[12]=0x08, different byte positions),
+        "defined" = before specific cycles (buf[11]=0x02, cycle list at [24],[26],...).
+      shake_defined_cycles: List of 1-based cycle numbers for "defined" timing.
       optic_position: Optic position (TOP, BOTTOM). Fluorescence only.
       edr: Enhanced Dynamic Range. Sets byte[1] = 0x40. Fluorescence only.
     """
@@ -150,12 +160,34 @@ class _MeasurementCommonMixin:
     if edr:
       buf[1] = 0x40
 
+    shake_pattern_map = {"orbital": 0, "linear": 1, "double_orbital": 2, "meander": 3}
+    speed_index = (shake_rpm // 100) - 1 if shake_rpm > 0 else 0
+
     if shake_pattern is not None and shake_duration_s > 0:
-      buf[12] = 0x02  # mixer_action
-      shake_pattern_map = {"orbital": 0, "linear": 1, "double_orbital": 2, "meander": 3}
-      buf[17] = shake_pattern_map[shake_pattern]
-      buf[18] = (shake_rpm // 100) - 1  # speed index
-      buf[20:22] = shake_duration_s.to_bytes(2, "little")
+      if shake_timing == "each":
+        # DOE_SPC01: buf[12]=0x02, pattern at [17], speed at [18], duration at [20:22]
+        buf[12] = 0x02
+        buf[17] = shake_pattern_map[shake_pattern]
+        buf[18] = speed_index
+        buf[20:22] = shake_duration_s.to_bytes(2, "little")
+      elif shake_timing == "first":
+        # DOE_SPC02: buf[12]=0x08, pattern at [13], speed at [14], duration at [16:18]
+        buf[12] = 0x08
+        buf[13] = shake_pattern_map[shake_pattern]
+        buf[14] = speed_index
+        buf[16:18] = shake_duration_s.to_bytes(2, "little")
+      elif shake_timing == "defined":
+        # DOE_SPC03: buf[11]=0x02, pattern at [17], speed at [18], duration at [20:22],
+        # cycle list at [24],[26],... (u8 values with zero gaps)
+        buf[11] = 0x02
+        buf[17] = shake_pattern_map[shake_pattern]
+        buf[18] = speed_index
+        buf[20:22] = shake_duration_s.to_bytes(2, "little")
+        if shake_defined_cycles:
+          for i, cycle_num in enumerate(shake_defined_cycles):
+            offset = 24 + i * 2
+            if offset < 31:
+              buf[offset] = cycle_num
 
     return bytes(buf)
 
@@ -725,7 +757,8 @@ class _MeasurementCommonMixin:
       - ``reading_wells`` clears immediately (measurement context destroyed)
       - ``busy`` and ``initialized`` clear ~5 s later (device fully idle)
 
-    Wire: ``0x0B 00``
+    Wire: ``0x0B 00`` (StopTest). A StopSystem variant uses ``0x0B 01``
+    (system-level stop, safe when idle) but is not currently exposed.
     """
     self._resume_context = None
     await self.send_command(

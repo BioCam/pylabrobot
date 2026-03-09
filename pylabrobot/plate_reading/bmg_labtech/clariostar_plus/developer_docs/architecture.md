@@ -1,6 +1,6 @@
 # CLARIOstar Plus Backend — Architecture & Implementation
 
-Production-grade driver for the BMG Labtech CLARIOstar Plus, built from 88+ captures with byte-level verification. Replaces the original ~350-line proof-of-concept.
+Production-grade driver for the BMG Labtech CLARIOstar Plus, built from 100+ captures (88 OEM + 13 DOE) with byte-level verification. Replaces the original ~350-line proof-of-concept.
 
 ---
 
@@ -9,7 +9,7 @@ Production-grade driver for the BMG Labtech CLARIOstar Plus, built from 88+ capt
 | Capability | Old backend | Current |
 |---|---|---|
 | **Code** | ~350 lines, 0 tests | ~5,200 lines (8 mixin modules + backend) + 8,094 lines tests |
-| **Tests** | 0 | 463 methods, hardware-verified |
+| **Tests** | 0 | 474 methods, hardware-verified |
 | **Wire protocol** | Hardcoded byte arrays, 2-byte checksum | Structured frame builder, 24-bit checksum, validation, retries |
 | **Absorbance** | Single wavelength, point scan | 1–8 wavelengths, spectrum scans, all well-scan modes |
 | **Fluorescence** | `NotImplementedError` | Discrete + spectrum, mono + filter + multi-chromatic + EDR + flying + matrix |
@@ -80,6 +80,8 @@ Checksum = `sum(frame[:-4]) & 0xFFFFFF`. 8-byte overhead total. Verified against
 - Well scan modes: point, orbital, spiral, matrix (2×2 to 11×11). Scan diameter 1–6 mm.
 - Configurable flashes (1–200), settling time (0–1 s).
 - Pre-measurement shaking: orbital, linear, double_orbital, meander (100–700 RPM).
+- Kinetic mode: configurable cycles (u8) and cycle time (u16 BE seconds). Shake timing variants: each, first, defined cycles, between readings.
+- Shake-between-readings: trailer_prefix encoding with pattern and RPM (DOE_SPC04/SPC05).
 
 ### Fluorescence
 
@@ -144,23 +146,23 @@ The deprecated `auto_focus()` uses `0x0C` but produces incorrect payload length 
 | 3.2 | **Init** | Yes — 0x01 | `setup()` / `initialize()` | 40+ captures |
 | 3.3 | **User** | Unknown | Not implemented | Not captured |
 | 3.4 | **PlateIn** / **PlateOut** | Yes — 0x03 | `close()` / `open()` | Confirmed |
-| 3.5 | **Pump1** / **Pump2** | Yes — unknown opcode | Not implemented | Not captured |
+| 3.5 | **Pump1** / **Pump2** | Pump1: no USB frames observed (MON-05, exit 0); Pump2: DDE error 2000 (no hardware) | Not implemented | MON-05/06 captured — no protocol frames |
 | 3.6 | **Temp** | None via DDE (exit 1000) | `start/stop_temperature_control()` via USB 0x06 | USB confirmed |
 | 3.7 | **GainWell** / **GainPlate** / **GetKFactor** | Yes | Not implemented (auto-gain/FP) | Not captured |
 | 3.8 | **SetGain** | Unknown | Not implemented | Not captured |
 | 3.9 | **SetFocalHeight** | Unknown | `focal_height=` param | Not captured via DDE |
 | 3.10–3.14 | **SetSampleIDs**, **EditLayout**, etc. | None — OEM-internal | N/A | N/A |
 | 3.15 | **Run** | Yes — 0x04 | `read_absorbance()` / `read_fluorescence()` | 40+ captures |
-| 3.16 | **Pause** | Yes — 0x19 | Not implemented | Not captured |
-| 3.17 | **Continue** | Yes — 0x19 | Not implemented | Not captured |
-| 3.18 | **StopTest** | Yes — 0x0B | `stop_shaking()` uses 0x0B | Partial |
-| 3.19 | **StopSystem** | Yes | Not implemented | Not captured |
+| 3.16 | **Pause** | Yes — 0x0D | `pause_measurement()` | MON-03 (standalone), cleanup/ (mid-measurement) |
+| 3.17 | **Continue** | Yes — 0x0D | `resume_measurement_and_collect_data()` | MON-04 (standalone), cleanup/ (mid-measurement) |
+| 3.18 | **StopTest** | Yes — 0x0B param 0x00 | `stop_measurement()` | ST-01, ST-04 |
+| 3.19 | **StopSystem** | Yes — 0x0B param 0x01 | Not implemented (captured) | MON-02 |
 | 3.20 | **ACU** | Yes — unknown | Not implemented (no hardware) | Not captured |
 | 3.21 | **Fan** | Yes — unknown | Not implemented | Not captured |
 | 3.22 | **Shake** | Yes — 0x1D | `start_shaking()` | 13 frames |
 | 3.23 | **IdleMove** | Yes — 0x27 | `start_idle_movement()` / `stop_idle_movement()` | 6 captures |
 | 3.24–3.25 | **MotorDis** / **MotorEn** | None | N/A | Confirmed no USB |
-| 3.26 | **ResetError** | Unknown | Not implemented | Not captured |
+| 3.26 | **ResetError** | Re-init sequence: INIT(0x01) → STATUS_QUERY(0x80) → EEPROM(0x05/0x07) → POLL(0x08). No unique opcode. | Not implemented (no unique command needed) | MON-01 |
 | 3.27 | **Terminate** | None — OEM lifecycle | N/A | N/A |
 
 ### Script Language Commands (§9.4–9.5)
@@ -272,17 +274,18 @@ See [wire_protocol.md](wire_protocol.md) for byte-level details of each command.
 
 | Command | Wire opcode | Complexity | Notes |
 |---------|------------|------------|-------|
-| Pause | 0x19 | Low | Single byte flag |
-| Continue | 0x19 | Low | Resume from pause |
+| ~~Pause~~ | ~~0x19~~ 0x0D | ~~Low~~ Done | Implemented as `pause_measurement()`. MON-03 confirms standalone form. |
+| ~~Continue~~ | ~~0x19~~ 0x0D | ~~Low~~ Done | Implemented as `resume_measurement_and_collect_data()`. MON-04 confirms. |
 | StopTest | 0x0B | Low | Already send 0x0B for shaking; need `save_results` param |
+| StopSystem | 0x0B param 0x01 | Low | Captured in MON-02. Trivial to add. |
+| **Kinetic modes** | 0x04 (RUN) | Medium | Wire encoding fully decoded (DOE 2026-03-09). Backend parameterized: `kinetic_cycles`, `kinetic_cycle_time_s` in `_build_absorbance_payload`. Shake-between-readings trailer construction implemented. No public `read_absorbance_kinetic()` API yet. See wire_protocol.md §3.3 and §3.6.3. |
 
 ### Medium priority (need captures)
 
 | Command | Complexity | Notes |
 |---------|------------|-------|
-| Pump1/Pump2 | Medium | Syringe pump control. Need hardware + capture. |
-| GainWell/GainPlate | Medium | Auto-gain pre-measurement. Multi-command sequence. |
-| StopSystem | Low | Emergency stop. |
+| Pump1/Pump2 | Medium | MON-05 shows Pump1 produces no USB frames (DDEclient exit 0). Likely requires physical pump hardware or uses a different comm channel. MON-06 (Pump2) failed with DDE error 2000. |
+| GainWell/GainPlate | Medium | Auto-gain pre-measurement. MON-08/09 failed — need valid FL test protocol `PLR_FI_Test` in MARS. |
 | Fan | Low | Only useful with ACU. |
 
 ### Low priority (need hardware)
@@ -290,7 +293,7 @@ See [wire_protocol.md](wire_protocol.md) for byte-level details of each command.
 | Command | Notes |
 |---------|-------|
 | ACU | Atmospheric control — need ACU hardware |
-| ResetError | Error state recovery |
+| ~~ResetError~~ | ~~Error state recovery~~ — MON-01 confirms this is a re-init sequence (INIT + EEPROM read), not a unique command. Equivalent to calling `setup()` again. |
 | GetKFactor | FP calibration — need FP hardware |
 | CalculateTestDuration | Query only |
 | Luminescence | Need captures |
@@ -323,8 +326,8 @@ Frame overhead (STX + size + header + checksum + CR = 8 bytes) is excluded.
 | 11 | PAUSE/RESUME | `0x0D` | 5 | 1 (20%) | 4 | Magic constants |
 | 12 | R_Shake | `0x1D` | 11 | 10 (91%) | 1 | 1 hardcoded zero |
 | 13 | R_IdleMove | `0x27` | 11 | 8 (73%) | 3 | 3 hardcoded zeros |
-| 14 | ABS discrete RUN | `0x04` | ~136 | ~80 (59%) | ~56 | Separator, reference, trailer |
-| 15 | ABS spectrum RUN | `0x04` | ~136 | ~80 (59%) | ~56 | Same structure |
+| 14 | ABS discrete RUN | `0x04` | ~136 | ~93 (68%) | ~43 | Separator, reference (partial), pre-sep zeros |
+| 15 | ABS spectrum RUN | `0x04` | ~136 | ~93 (68%) | ~43 | Same structure |
 | 16 | FL discrete RUN | `0x04` | ~137 | ~90 (66%) | ~47 | Similar unknowns |
 | 17 | FL spectrum RUN | `0x04` | ~167 | ~120 (72%) | ~47 | Similar unknowns |
 | 18 | FOCUS_WELL | `0x09` | 45 | 39 (87%) | 6 | Mostly padding |
@@ -348,10 +351,11 @@ Frame overhead (STX + size + header + checksum + CR = 8 bytes) is excluded.
 
 1. **EEPROM response** (243/263 unknown) — factory calibration (~96B), boolean flags (~18B), sparse regions (~43B), board info (~7B). Only serial, machine type, detection modes, filter slots, and mono ranges are decoded.
 
-2. **Measurement RUN payloads** (~50 unknown bytes each):
-   - `_SEPARATOR` (`\x27\x0f\x27\x0f`) — 4B, possibly default XY coords (9999, 9999)
-   - `_REFERENCE_BLOCK` — 13B hardcoded, possibly calibration references
-   - `_TRAILER` / `_FL_TRAILER` — 11B each, hardcoded constants
+2. **Measurement RUN payloads** (~43 unknown bytes each):
+   - `_MEAS_BOUNDARY` (`\x27\x0f\x27\x0f`) — 4B, fixed magic constant (confirmed across 135 payloads)
+   - `_REFERENCE_BLOCK` — 13B, last byte overloaded as pause mode flag (DOE_SPC06/07)
+   - `_TRAILER_PREFIX` — 10B, decoded: mode flag, speed, shake enable, 0x003b constant (DOE_SPC04/05)
+   - Kinetic tail (cycles + flashes + cycle_time + final_zero) — fully decoded
    - Pre-separator — 21/31 bytes are unexplained zeros
 
 3. **CMD_0x0E** (6/7 unknown) — sent every boot, meaning not fully understood
@@ -370,7 +374,7 @@ Frame overhead (STX + size + header + checksum + CR = 8 bytes) is excluded.
 
 ## Sources
 
-- **USB captures:** 130+ USB capture files (59 absorbance + 29 fluorescence + 45+ DDE standalone), 6,780+ frames total.
+- **USB captures:** 143+ USB capture files (59 absorbance + 29 fluorescence + 45+ DDE standalone + 13 DOE), 6,780+ frames total.
 - **OEM manuals:**
   - `0430N0003I` — ActiveX and DDE Manual, CLARIOstar V5.00–5.70R2
   - `0430F0035B` — Software Manual, CLARIOstar 5.70 R2 Part II (script language, §9)

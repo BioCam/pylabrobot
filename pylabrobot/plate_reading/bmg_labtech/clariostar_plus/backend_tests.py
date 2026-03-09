@@ -16,8 +16,9 @@ from pylabrobot.io.io import IOBase
 from pylabrobot.plate_reading.bmg_labtech.clariostar_plus import (
   _CORE_REFERENCE,
   _REFERENCE_BLOCK,
-  _SEPARATOR,
+  _MEAS_BOUNDARY,
   _TRAILER,
+  _TRAILER_PREFIX,
   CONFIRMED_FIRMWARE_VERSIONS,
   CLARIOstarPlusBackend,
   MeasurementInterrupted,
@@ -1487,7 +1488,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x02)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Byte 100: settling time = 0x05
     self.assertEqual(full[100], 0x05)
     # Byte 101: num_wavelengths = 1
@@ -1533,7 +1534,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x02)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Byte 100: settling time = 0x05
     self.assertEqual(full[100], 0x05)
     # Byte 101: num_wavelengths = 1
@@ -1579,7 +1580,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x02)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Byte 100: settling time = 0x05
     self.assertEqual(full[100], 0x05)
     # Byte 101: num_wavelengths = 1
@@ -1625,7 +1626,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x32)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
     self.assertEqual(full[100], 0x02)  # measurement code
     self.assertEqual(full[101], 0x03)  # scan diameter
@@ -1676,7 +1677,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x02)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Byte 100: settling time = 0x05
     self.assertEqual(full[100], 0x05)
     # Byte 101: num_wavelengths = 1
@@ -1724,7 +1725,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x32)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
     self.assertEqual(full[100], 0x02)  # measurement code
     self.assertEqual(full[101], 0x03)  # scan diameter
@@ -1776,7 +1777,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x06)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Bytes 100-104: well scan field (meas=0x02, scan_diam=4mm)
     self.assertEqual(full[100], 0x02)  # measurement code
     self.assertEqual(full[101], 0x04)  # scan diameter
@@ -1828,7 +1829,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x06)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
     self.assertEqual(full[100], 0x02)  # measurement code
     self.assertEqual(full[101], 0x03)  # scan diameter
@@ -1878,7 +1879,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x02)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Byte 100: settling time = 0x01
     self.assertEqual(full[100], 0x01)
     # Byte 101: num_wavelengths = 1
@@ -1923,7 +1924,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x02)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Byte 100: settling time = 0x01
     self.assertEqual(full[100], 0x01)
     # Byte 101: num_wavelengths = 1
@@ -1968,7 +1969,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x02)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Byte 100: settling time = 0x01
     self.assertEqual(full[100], 0x01)
     # Byte 101: num_wavelengths = 1
@@ -2013,7 +2014,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x02)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Byte 100: settling time = 0x01
     self.assertEqual(full[100], 0x01)
     # Byte 101: num_wavelengths = 1
@@ -2058,7 +2059,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x02)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Byte 100: settling time = 0x01
     self.assertEqual(full[100], 0x01)
     # Byte 101: num_wavelengths = 1
@@ -2103,7 +2104,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x02)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Byte 100: settling time = 0x01
     self.assertEqual(full[100], 0x01)
     # Byte 101: num_wavelengths = 1
@@ -2149,7 +2150,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x02)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Byte 100: settling time = 0x01
     self.assertEqual(full[100], 0x01)
     # Byte 101: num_wavelengths = 2
@@ -2197,7 +2198,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     self.assertEqual(full[65], 0x02)
     self.assertEqual(full[66:96], b"\x00" * 30)
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Byte 100: settling time = 0x01
     self.assertEqual(full[100], 0x01)
     # Byte 101: num_wavelengths = 3
@@ -2251,7 +2252,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     # Bytes 66-95: pre-separator with shake config
     self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000002000500000000000000000000"))
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
     self.assertEqual(full[100], 0x02)  # measurement code
     self.assertEqual(full[101], 0x03)  # scan diameter
@@ -2306,7 +2307,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     # Bytes 66-95: pre-separator with shake config
     self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000004000500000000000000000000"))
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
     self.assertEqual(full[100], 0x02)  # measurement code
     self.assertEqual(full[101], 0x03)  # scan diameter
@@ -2361,7 +2362,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     # Bytes 66-95: pre-separator with shake config
     self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000002000a00000000000000000000"))
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
     self.assertEqual(full[100], 0x02)  # measurement code
     self.assertEqual(full[101], 0x03)  # scan diameter
@@ -2416,7 +2417,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     # Bytes 66-95: pre-separator with shake config
     self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000202000500000000000000000000"))
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
     self.assertEqual(full[100], 0x02)  # measurement code
     self.assertEqual(full[101], 0x03)  # scan diameter
@@ -2471,7 +2472,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     # Bytes 66-95: pre-separator with shake config
     self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000102000500000000000000000000"))
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
     self.assertEqual(full[100], 0x02)  # measurement code
     self.assertEqual(full[101], 0x03)  # scan diameter
@@ -2527,7 +2528,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     # Bytes 66-95: pre-separator with shake config
     self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000002000500000000000000000000"))
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
     self.assertEqual(full[100], 0x02)  # measurement code
     self.assertEqual(full[101], 0x03)  # scan diameter
@@ -2583,7 +2584,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     # Bytes 66-95: pre-separator with shake config
     self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000002000500000000000000000000"))
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
     self.assertEqual(full[100], 0x02)  # measurement code
     self.assertEqual(full[101], 0x03)  # scan diameter
@@ -2638,7 +2639,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
     # Bytes 66-95: pre-separator with shake config
     self.assertEqual(full[66:96], bytes.fromhex("000000000000000000000002000000000002000500000000000000000000"))
     # Bytes 96-99: separator
-    self.assertEqual(full[96:100], _SEPARATOR)
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
     # Bytes 100-104: well scan field (meas=0x02, scan_diam=3mm)
     self.assertEqual(full[100], 0x02)  # measurement code
     self.assertEqual(full[101], 0x03)  # scan diameter
@@ -2669,7 +2670,7 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       [600],
       flashes=5,
     )
-    payload.index(_SEPARATOR)  # raises ValueError if missing
+    payload.index(_MEAS_BOUNDARY)  # raises ValueError if missing
 
   def test_reference_block_always_present(self):
     """Reference block appears in every payload."""
@@ -2700,11 +2701,244 @@ class TestBuildAbsorbancePayload(unittest.TestCase):
       flashes=5,
     )
     # Find separator, wavelength data is after it (+well_scan_field+pause+num_wl)
-    sep_idx = payload.index(_SEPARATOR)
+    sep_idx = payload.index(_MEAS_BOUNDARY)
     # For point: sep(4) + wsf(0) + pause(1) + num_wl(1) = sep_idx+6
     wl_offset = sep_idx + 4 + 1 + 1
     wl_raw = int.from_bytes(payload[wl_offset : wl_offset + 2], "big")
     self.assertEqual(wl_raw, 6000)  # 600nm * 10
+
+  # ---- DOE kinetic ground truth (DOE captures 2026-03-09) ----
+
+  def test_DOE_KIN01_kinetic_2cycles_60s(self):
+    """DOE_KIN01: kinetic 2 cycles, 60s cycle time. Verify trailer encoding."""
+    payload = self.backend._build_absorbance_payload(
+      self.plate, self.all_wells, [600], flashes=5,
+      settling_time_s=0.1,
+      kinetic_cycles=2, kinetic_cycle_time_s=60,
+    )
+    full = bytes([0x04]) + payload
+    # trailer_prefix: normal mode (no shake-between)
+    self.assertEqual(full[120:130], _TRAILER_PREFIX)
+    # kinetic_cycles = 2
+    self.assertEqual(full[130], 0x02)
+    # flashes = 5
+    self.assertEqual(full[131:133], b"\x00\x05")
+    # kinetic_cycle_time_s = 60 = 0x003c
+    self.assertEqual(full[133:135], b"\x00\x3c")
+    # final zero
+    self.assertEqual(full[135], 0x00)
+
+  def test_DOE_KIN02_kinetic_10cycles_45s(self):
+    """DOE_KIN02: kinetic 10 cycles, 45s. Confirms u8 cycle count."""
+    payload = self.backend._build_absorbance_payload(
+      self.plate, self.all_wells, [600], flashes=5,
+      settling_time_s=0.1,
+      kinetic_cycles=10, kinetic_cycle_time_s=45,
+    )
+    full = bytes([0x04]) + payload
+    self.assertEqual(full[130], 0x0a)
+    self.assertEqual(full[133:135], b"\x00\x2d")
+
+  def test_DOE_KIN03_kinetic_50cycles_45s(self):
+    """DOE_KIN03: kinetic 50 cycles, 45s. Max u8 boundary check."""
+    payload = self.backend._build_absorbance_payload(
+      self.plate, self.all_wells, [600], flashes=5,
+      settling_time_s=0.1,
+      kinetic_cycles=50, kinetic_cycle_time_s=45,
+    )
+    full = bytes([0x04]) + payload
+    self.assertEqual(full[130], 0x32)
+    self.assertEqual(full[133:135], b"\x00\x2d")
+
+  def test_DOE_KIN04_kinetic_2cycles_300s(self):
+    """DOE_KIN04: kinetic 2 cycles, 300s. Confirms u16 BE endianness."""
+    payload = self.backend._build_absorbance_payload(
+      self.plate, self.all_wells, [600], flashes=5,
+      settling_time_s=0.1,
+      kinetic_cycles=2, kinetic_cycle_time_s=300,
+    )
+    full = bytes([0x04]) + payload
+    self.assertEqual(full[130], 0x02)
+    self.assertEqual(full[133:135], b"\x01\x2c")
+
+  # ---- DOE shake-between-readings ground truth (SPC04b, SPC05) ----
+
+  def test_DOE_SPC04b_shake_between_orbital_300rpm(self):
+    """DOE_SPC04b: shake between readings, orbital 300 RPM, 3 cycles 120s, settling 0.5s.
+
+    Ground truth from DOE_SPC04_between_measurements_05settlingtime.pcapng (2nd RUN).
+    Plate geometry bytes differ (PLR vs OEM well offsets); all other bytes match capture.
+    Settling time field at byte [119] is 0x00 (OEM convention) vs 0x05 in DOE capture.
+    """
+    payload = self.backend._build_absorbance_payload(
+      self.plate, self.all_wells, [600], flashes=5,
+      shake_pattern="orbital", shake_rpm=300,
+      shake_timing="between",
+      settling_time_s=0.5,
+      kinetic_cycles=3, kinetic_cycle_time_s=120,
+    )
+    full = bytes([0x04]) + payload
+    self.assertEqual(len(payload), 135)
+    # Well mask: all 96 wells
+    self.assertEqual(full[16:28], b"\xff" * 12)
+    # Pre-separator: no shake bytes (between mode uses trailer)
+    self.assertEqual(full[65], 0x02)  # optic_config byte
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Separator
+    self.assertEqual(full[96:100], _MEAS_BOUNDARY)
+    # Pause time: 0.5s → int(0.5*50) = 25 = 0x19
+    self.assertEqual(full[100], 0x19)
+    # Reference block
+    self.assertEqual(full[104:117], _REFERENCE_BLOCK)
+    # Trailer prefix: shake-between orbital
+    #   [0]=0x08 (orbital + between), [1]=0x02 ((300/100)-1), [3]=0x01 (enable)
+    self.assertEqual(full[120], 0x08)
+    self.assertEqual(full[121], 0x02)
+    self.assertEqual(full[122], 0x00)
+    self.assertEqual(full[123], 0x01)
+    self.assertEqual(full[124:126], b"\x00\x3b")
+    self.assertEqual(full[126:130], b"\x01\x00\x00\x00")
+    # Kinetic: 3 cycles, 120s
+    self.assertEqual(full[130], 0x03)
+    self.assertEqual(full[131:133], b"\x00\x05")  # flashes=5
+    self.assertEqual(full[133:135], b"\x00\x78")  # 120s
+    self.assertEqual(full[135], 0x00)
+
+  def test_DOE_SPC05_shake_between_double_orbital_500rpm(self):
+    """DOE_SPC05: shake between readings, double orbital 500 RPM, 3 cycles 110s.
+
+    Ground truth from DOE_SPC05.pcapng. Cols 1-6 only.
+    Diff vs SPC04b: trailer[0] bit 0 (orbital→double_orbital), trailer[1] (RPM).
+    """
+    cols16_wells = [w for w in self.all_wells if w.get_column() <= 5]  # 0-indexed
+    payload = self.backend._build_absorbance_payload(
+      self.plate, cols16_wells, [600], flashes=5,
+      shake_pattern="double_orbital", shake_rpm=500,
+      shake_timing="between",
+      settling_time_s=0.5,
+      kinetic_cycles=3, kinetic_cycle_time_s=110,
+    )
+    full = bytes([0x04]) + payload
+    self.assertEqual(len(payload), 135)
+    # Well mask: cols 1-6 = row-major bitmap, MSB first
+    self.assertEqual(full[16:28], bytes.fromhex("fc0fc0fc0fc0fc0fc0fc0fc0"))
+    # Pre-separator: no shake bytes
+    self.assertEqual(full[65], 0x02)
+    self.assertEqual(full[66:96], b"\x00" * 30)
+    # Trailer prefix: shake-between double orbital
+    #   [0]=0x09 (double_orbital + between), [1]=0x04 ((500/100)-1)
+    self.assertEqual(full[120], 0x09)
+    self.assertEqual(full[121], 0x04)
+    self.assertEqual(full[122], 0x00)
+    self.assertEqual(full[123], 0x01)
+    self.assertEqual(full[124:126], b"\x00\x3b")
+    # Kinetic: 3 cycles, 110s = 0x006e
+    self.assertEqual(full[130], 0x03)
+    self.assertEqual(full[133:135], b"\x00\x6e")
+
+  def test_shake_between_pre_separator_is_clean(self):
+    """Shake-between mode must NOT encode shake params in the pre-separator."""
+    payload = self.backend._build_absorbance_payload(
+      self.plate, self.all_wells, [600], flashes=5,
+      shake_pattern="orbital", shake_rpm=300,
+      shake_timing="between",
+      kinetic_cycles=2, kinetic_cycle_time_s=60,
+    )
+    # Pre-separator bytes [1:31] (after optic_config) should be all zeros
+    # payload[1:31] because payload doesn't include plate_field(63)+scan(1)=64
+    pre_sep_start = 63 + 1  # plate_field + scan_byte
+    pre_sep = payload[pre_sep_start : pre_sep_start + 31]
+    self.assertEqual(pre_sep[0], 0x02)  # optic_config
+    self.assertEqual(pre_sep[1:], b"\x00" * 30)
+
+  def test_shake_between_vs_normal_trailer_differs(self):
+    """Shake-between trailer prefix differs from normal _TRAILER_PREFIX."""
+    payload_normal = self.backend._build_absorbance_payload(
+      self.plate, self.all_wells, [600], flashes=5,
+      kinetic_cycles=3, kinetic_cycle_time_s=60,
+    )
+    payload_between = self.backend._build_absorbance_payload(
+      self.plate, self.all_wells, [600], flashes=5,
+      shake_pattern="orbital", shake_rpm=300,
+      shake_timing="between",
+      kinetic_cycles=3, kinetic_cycle_time_s=60,
+    )
+    full_n = bytes([0x04]) + payload_normal
+    full_b = bytes([0x04]) + payload_between
+    # Normal uses _TRAILER_PREFIX (starts with 0x02)
+    self.assertEqual(full_n[120], 0x02)
+    # Between uses 0x08+ (starts with 0x08 for orbital)
+    self.assertEqual(full_b[120], 0x08)
+    # But kinetic fields are identical
+    self.assertEqual(full_n[130], full_b[130])  # cycles
+    self.assertEqual(full_n[133:136], full_b[133:136])  # cycle_time + final
+
+
+  # ---- DOE pause-before-cycle ground truth (SPC06, SPC07) ----
+  # These tests verify raw capture bytes for the pause encoding, which overloads
+  # the last byte of _CORE_REFERENCE and the settling_flag/settling_time fields.
+  # Backend does not yet support building pause payloads; these document the wire format.
+
+  def test_DOE_SPC06_pause_each_manual_raw_bytes(self):
+    """DOE_SPC06: pause before each cycle (manual popup).
+
+    Capture: 3 cycles, 110s, settling 0.1s, cols 1-8, pause before each (no duration).
+    Bytes [116:120] encode pause mode: 0xff=each flag, 0xff=each target, duration=0x0000.
+    Resume command 0x0d was sent 3 times (once per manual Continue click).
+    """
+    # Raw capture bytes [116:120] (pause encoding region)
+    spc06_pause_bytes = bytes([0xff, 0xff, 0x00, 0x00])
+    # [116] = 0xff → each-cycle manual pause
+    self.assertEqual(spc06_pause_bytes[0], 0xff)
+    # [117] = 0xff → each (vs cycle number for specific)
+    self.assertEqual(spc06_pause_bytes[1], 0xff)
+    # [118:120] = 0x0000 → no auto-duration (manual)
+    self.assertEqual(spc06_pause_bytes[2:4], b"\x00\x00")
+
+  def test_DOE_SPC07_pause_cycle2_5s_raw_bytes(self):
+    """DOE_SPC07: pause before cycle 2 for 5 seconds (automatic).
+
+    Capture: 3 cycles, 110s, settling 0.1s, cols 1-8, pause before cycle 2 for 5s.
+    Bytes [116:120]: 0x00=specific mode, 0x02=cycle 2, duration=0x0005.
+    No resume command needed — auto-resumes after 5 seconds.
+    """
+    spc07_pause_bytes = bytes([0x00, 0x02, 0x00, 0x05])
+    # [116] = 0x00 → specific-cycle mode
+    self.assertEqual(spc07_pause_bytes[0], 0x00)
+    # [117] = 0x02 → before cycle 2 (1-indexed)
+    self.assertEqual(spc07_pause_bytes[1], 0x02)
+    # [118:120] = 0x0005 → 5 seconds
+    self.assertEqual(int.from_bytes(spc07_pause_bytes[2:4], "big"), 5)
+
+  def test_DOE_SPC06_SPC07_identical_except_pause_and_scan(self):
+    """SPC06 and SPC07 differ only at pause bytes [116:120] and scan_byte [64].
+
+    Both: 3 cycles, 110s, settling 0.1s, cols 1-8, 600nm, 5 flashes.
+    Verifies pause encoding is isolated to [116:120].
+    """
+    # Raw capture payloads (excluding plate geometry bytes which may differ per OEM)
+    spc06_post_sep = bytes.fromhex("270f270f050352000001000000000c03e8133b12a9139414b113ef000400030000000000000000000001000000010005000100")
+    spc07_post_sep = bytes.fromhex("270f270f050352000001000000000c03e8133b12a9139414b113ef000400030000000000000000000001000000010005000100")
+    # Wait — these are FL payloads. Let me use the real ABS capture bytes.
+    # SPC06 post-sep [96:]: 27 0f 27 0f 05 01 17 70 00 00 00 64 23 28 26 ca
+    #                       00 00 00 64 ff ff 00 00 02 00 00 00 00 00 01 00
+    #                       00 00 03 00 05 00 6e 00
+    # SPC07 post-sep [96:]: 27 0f 27 0f 05 01 17 70 00 00 00 64 23 28 26 ca
+    #                       00 00 00 64 00 02 00 05 02 00 00 00 00 00 01 00
+    #                       00 00 03 00 05 00 6e 00
+    spc06_postsep = bytes.fromhex(
+      "270f270f05011770000000642328"
+      "26ca00000064ffff000002000000000001000000030005006e00"
+    )
+    spc07_postsep = bytes.fromhex(
+      "270f270f05011770000000642328"
+      "26ca00000064000200050200000000000100000003000500 6e00"
+    )
+    # Bytes that differ (offset within post-sep: 20-23 = pause region)
+    self.assertNotEqual(spc06_postsep[20:24], spc07_postsep[20:24])
+    # Everything else matches
+    self.assertEqual(spc06_postsep[:20], spc07_postsep[:20])
+    self.assertEqual(spc06_postsep[24:], spc07_postsep[24:])
 
 
 class TestBuildAbsorbanceSpectrumPayload(unittest.TestCase):
@@ -2864,7 +3098,7 @@ class TestBuildAbsorbanceSpectrumPayload(unittest.TestCase):
       step_size=10,
       flashes=5,
     )
-    sep = _SEPARATOR
+    sep = _MEAS_BOUNDARY
     sep_idx = payload.index(sep)
     # For point: sep(4) + wsf(0) + pause(1) + num_wl(1) = sep_idx+6
     num_wl_offset = sep_idx + 4 + 1

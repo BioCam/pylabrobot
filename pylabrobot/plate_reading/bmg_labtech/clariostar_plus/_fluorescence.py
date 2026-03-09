@@ -13,7 +13,7 @@ from ._framing import (
   _CORE_REFERENCE,
   _PRE_REFERENCE,
   _REFERENCE_BLOCK,
-  _SEPARATOR,
+  _MEAS_BOUNDARY,
   _TRAILER,
 )
 from ..optical_elements import (
@@ -148,7 +148,7 @@ class _FluorescenceMixin:
     )
 
     # 4. Separator (4 bytes)
-    sep = _SEPARATOR
+    sep = _MEAS_BOUNDARY
 
     # 5. Well scan field (0 or 5 bytes for orbital/spiral/matrix)
     well_0 = plate.get_all_items()[0]
@@ -670,7 +670,7 @@ class _FluorescenceMixin:
     )
 
     # 4. Separator (4 bytes)
-    sep = _SEPARATOR
+    sep = _MEAS_BOUNDARY
 
     # 5. Well scan field (0 or 5 bytes)
     well_0 = plate.get_all_items()[0]

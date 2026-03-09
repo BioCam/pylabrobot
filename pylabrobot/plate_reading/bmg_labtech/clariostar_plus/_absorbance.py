@@ -13,8 +13,9 @@ from ._framing import (
   _CORE_REFERENCE,
   _PRE_REFERENCE,
   _REFERENCE_BLOCK,
-  _SEPARATOR,
+  _MEAS_BOUNDARY,
   _TRAILER,
+  _TRAILER_PREFIX,
 )
 
 logger = logging.getLogger("pylabrobot")
@@ -42,8 +43,12 @@ class _AbsorbanceMixin:
     shake_pattern: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
     shake_rpm: int = 0,
     shake_duration_s: int = 0,
-    settling_time_s: float = 0.0,
+    shake_timing: Literal["each", "first", "defined", "between"] = "each",
+    shake_defined_cycles: Optional[List[int]] = None,
+    settling_time_s: float = 0.1,
     pause_time: Optional[int] = None,
+    kinetic_cycles: int = 1,
+    kinetic_cycle_time_s: int = 1,
   ) -> bytes:
     """Build the payload for a MEASUREMENT_RUN absorbance command.
 
@@ -51,11 +56,13 @@ class _AbsorbanceMixin:
     which prepends the 0x04 command family byte to produce the full frame payload.
 
     Args:
-      settling_time_s: Wait time after shaking (0.0-1.0 s). Encoded as the
-        pause_time byte via ``int(settling_time_s * 50)``. Verified for 0.1 s → 5
-        and 0.5 s → 25 (capture F01, G01). TODO: confirm with M-series captures.
+      settling_time_s: Wait time after plate movement (0.0-1.0 s for ABS). Encoded as
+        the pause_time byte via ``int(settling_time_s * 50)``. Default 0.1 s → 0x05.
+        Verified: 0.1 s → 5 (F01, DOE_Baseline), 0.5 s → 25 (G01, DOE_SPC04).
       pause_time: Override the pause_time byte directly (for hardware-verified ground truth
         tests). When None (default), computed from settling_time_s.
+      kinetic_cycles: Number of kinetic cycles. 1 = endpoint mode (default).
+      kinetic_cycle_time_s: Time per kinetic cycle in seconds. 1 = endpoint mode (default).
 
     Returns:
       Payload bytes (135 for point/1wl, 140 for orbital/1wl, +2 per extra wl).
@@ -67,6 +74,7 @@ class _AbsorbanceMixin:
     scan_byte = bytes([self._scan_direction_byte(bidirectional, vertical, corner)])
 
     # 3. Pre-separator block (31 bytes)
+    # Shake-between-readings is encoded in the trailer, not the pre-separator.
     scan_mode_map = {
       "point": self.WellScanMode.POINT,
       "orbital": self.WellScanMode.ORBITAL,
@@ -74,16 +82,19 @@ class _AbsorbanceMixin:
       "matrix": self.WellScanMode.MATRIX,
     }
     wsm = scan_mode_map[well_scan]
+    _between = shake_timing == "between"
     pre_sep = self._pre_separator_block(
       detection_mode=self.DetectionMode.ABSORBANCE,
       well_scan_mode=wsm,
-      shake_pattern=shake_pattern,
-      shake_rpm=shake_rpm,
-      shake_duration_s=shake_duration_s,
+      shake_pattern=shake_pattern if not _between else None,
+      shake_rpm=shake_rpm if not _between else 0,
+      shake_duration_s=shake_duration_s if not _between else 0,
+      shake_timing=shake_timing if not _between else "each",
+      shake_defined_cycles=shake_defined_cycles,
     )
 
     # 4. Separator (4 bytes)
-    sep = _SEPARATOR
+    sep = _MEAS_BOUNDARY
 
     # 5. Well scan field (0 or 5 bytes)
     well_0 = plate.get_all_items()[0]
@@ -94,10 +105,9 @@ class _AbsorbanceMixin:
 
     # 6. Pause time (1 byte)
     # OEM encodes settling delay as pause_time = int(settling_s * 50).
-    # Verified: 0.1s→0x05 (F01), 0.5s→0x19 (G01). G02 (1.0s) anomalous.
-    # TODO: confirm formula with M-series captures.
+    # Verified: 0.1s→0x05 (F01, DOE_Baseline), 0.5s→0x19 (G01, DOE_SPC04).
     if pause_time is None:
-      pause_time = max(int(settling_time_s * 50), 1) if settling_time_s > 0 else 0x05
+      pause_time = max(int(settling_time_s * 50), 1)
     pause = bytes([pause_time])
 
     # 7. Num wavelengths (1 byte) + wavelength data (2 bytes × N, nm×10 u16 BE)
@@ -109,19 +119,38 @@ class _AbsorbanceMixin:
     # 8. Reference block (13 bytes)
     ref = _REFERENCE_BLOCK
 
-    # 9. Settling fields (1 + 2 bytes): always 0x00 in all OEM captures.
-    # Actual settling is encoded via pause_time (step 6 above).
+    # 9. Settling fields (1 + 2 bytes): settling_flag always 0x00 in all captures.
+    # settling_time is 0x0000 in OEM captures, 0x0005 in DOE captures (MARS GUI
+    # default settling 0.1s → matches flashes=5?). Actual settling is encoded via
+    # pause_time (step 6 above). Keeping 0x0000 to match OEM ground truth.
     settling_flag = b"\x00"
     settling_time = b"\x00\x00"
 
-    # 10. Trailer (11 bytes)
-    trailer = _TRAILER
+    # 10. Trailer: prefix (10 bytes) + kinetic_cycles (1 byte)
+    # Prefix byte [0] encodes shake-between-readings mode:
+    #   0x02 = normal (no shake between readings)
+    #   0x08 = shake-between, orbital
+    #   0x09 = shake-between, double orbital
+    # Byte [1] = RPM encoding: (RPM / 100) - 1
+    # Byte [3] = shake enable flag: 0x01 when shake-between active
+    # Bytes [4:6] = 0x003b (constant across all captures)
+    # DOE evidence: SPC04 (orbital 300→0x08,0x02), SPC05 (dbl_orbital 500→0x09,0x04)
+    if shake_timing == "between" and shake_pattern is not None:
+      _PATTERN_TO_BIT0 = {"orbital": 0, "double_orbital": 1}
+      mode_byte = 0x08 | _PATTERN_TO_BIT0.get(shake_pattern, 0)
+      speed_byte = (shake_rpm // 100) - 1
+      trailer_prefix = bytes([mode_byte, speed_byte, 0x00, 0x01,
+                              0x00, 0x3b, 0x01, 0x00, 0x00, 0x00])
+    else:
+      trailer_prefix = _TRAILER_PREFIX
+    trailer = trailer_prefix + kinetic_cycles.to_bytes(1, "big")
 
     # 11. Flashes (2 bytes u16 BE)
     flash_bytes = flashes.to_bytes(2, "big")
 
-    # 12. Final bytes
-    final = b"\x00\x01\x00"
+    # 12. Kinetic cycle time (2 bytes u16 BE) + final zero (1 byte)
+    # Endpoint mode = 1 second. Kinetic mode = cycle time in seconds.
+    final = kinetic_cycle_time_s.to_bytes(2, "big") + b"\x00"
 
     payload = (
       plate_bytes
@@ -159,7 +188,7 @@ class _AbsorbanceMixin:
     shake_pattern: Optional[Literal["orbital", "linear", "double_orbital", "meander"]] = None,
     shake_rpm: int = 0,
     shake_duration_s: int = 0,
-    settling_time_s: float = 0.0,
+    settling_time_s: float = 0.1,
     pause_time: Optional[int] = None,
   ) -> bytes:
     """Build the payload for a MEASUREMENT_RUN absorbance spectrum command.
@@ -176,6 +205,7 @@ class _AbsorbanceMixin:
       start_wavelength: Start wavelength in nm (220-1000).
       end_wavelength: End wavelength in nm (220-1000), must be > start_wavelength.
       step_size: Step size in nm (1, 2, 5, 10, etc.).
+      settling_time_s: Wait time after plate movement (0.0-1.0 s for ABS). Default 0.1 s.
       pause_time: Override the pause_time byte directly (for hardware-verified ground truth
         tests). When None (default), computed from settling_time_s.
 
@@ -202,10 +232,11 @@ class _AbsorbanceMixin:
       shake_pattern=shake_pattern,
       shake_rpm=shake_rpm,
       shake_duration_s=shake_duration_s,
+      shake_timing="each",
     )
 
     # 4. Separator (4 bytes)
-    sep = _SEPARATOR
+    sep = _MEAS_BOUNDARY
 
     # 5. Well scan field (0 or 5 bytes)
     well_0 = plate.get_all_items()[0]
@@ -216,7 +247,7 @@ class _AbsorbanceMixin:
 
     # 6. Pause time (1 byte)
     if pause_time is None:
-      pause_time = max(int(settling_time_s * 50), 1) if settling_time_s > 0 else 0x05
+      pause_time = max(int(settling_time_s * 50), 1)
     pause = bytes([pause_time])
 
     # 7. Spectrum mode: num_wl=0x00, then start/end/step as u16 BE (nm × 10)

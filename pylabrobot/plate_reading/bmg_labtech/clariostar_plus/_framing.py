@@ -148,15 +148,43 @@ def _extract_payload(data: bytes) -> bytes:
 # ---------------------------------------------------------------------------
 # Payload constant blocks
 # ---------------------------------------------------------------------------
-# Verified identical across all 38 absorbance USB captures.
+# Verified identical across all 38 absorbance USB captures + 9 DOE captures.
 
-_SEPARATOR = b"\x27\x0f\x27\x0f"
-_TRAILER = b"\x02\x00\x00\x00\x00\x00\x01\x00\x00\x00\x01"
+# Mechanical/optical boundary marker: separates the plate geometry + movement
+# configuration (plate_field, scan_direction, pre_separator) from the optical
+# measurement configuration (wavelengths, flashes, kinetic timing, etc.).
+# Invariant across all 135 MEASUREMENT_RUN payloads (ABS + FL, all scan modes).
+#
+# TODO: Use this marker to locate the optical config section when parsing
+#   response payloads, instead of relying on hardcoded byte offsets. The
+#   well_scan_field before it is variable-length (0B for point, 5B for
+#   orbital/spiral), so delimiter-based parsing would be more robust than
+#   fixed offsets if the firmware ever changes the layout.
+_MEAS_BOUNDARY = b"\x27\x0f\x27\x0f"
+
+# The 11-byte "trailer" is actually: trailer_prefix(10) + kinetic_cycles(1).
+# For endpoint mode (1 cycle), the last byte is 0x01. For kinetic mode, it is
+# the cycle count.  Similarly, "final" = kinetic_cycle_time_s(u16 BE) + 0x00;
+# endpoint uses 0x0001 (1 second).
+#
+# Shake-between-readings mode overrides trailer_prefix (DOE_SPC04/SPC05):
+#   [0] = mode flag: 0x02=normal, 0x08=orbital+between, 0x09=dbl_orbital+between
+#         (bit 3: shake-between enable; bit 0: 0=orbital, 1=double_orbital)
+#   [1] = speed: (RPM / 100) - 1.  0x02→300rpm, 0x04→500rpm.
+#   [3] = shake enable: 0x01 when active
+#   [4:6] = 0x003b (constant across all captures)
+#
+# Fluorescence uses 0x00 at [0] instead of 0x02 (DOE_REF01, 2026-03-09).
+_TRAILER_PREFIX = b"\x02\x00\x00\x00\x00\x00\x01\x00\x00\x00"
+_TRAILER = _TRAILER_PREFIX + b"\x01"  # endpoint default: 1 cycle
 
 # The 13-byte reference block is actually two parts:
 #   _PRE_REFERENCE (4 bytes): context-dependent. 0x00000064 for discrete/filter mode;
 #     repurposed as end_wl(2 BE) + 0x00 + step(1) in spectroscopy mode (n_wl=0).
-#   _CORE_REFERENCE (9 bytes): constant across all 38 USB captures.
+#   _CORE_REFERENCE (9 bytes): last byte (_CORE_REFERENCE[8]) is overloaded as
+#     pause-before-cycle mode flag when pause is enabled (0xff=each, DOE_SPC06).
+#     The settling_flag byte immediately after is overloaded as pause target
+#     (0xff=each, or cycle number 1-indexed, DOE_SPC07).
 _PRE_REFERENCE = b"\x00\x00\x00\x64"
 _CORE_REFERENCE = b"\x23\x28\x26\xca\x00\x00\x00\x64\x00"
 _REFERENCE_BLOCK = _PRE_REFERENCE + _CORE_REFERENCE

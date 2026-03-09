@@ -1,7 +1,7 @@
 # CLARIOstar Plus Wire Protocol Reference
 
 Complete binary protocol specification for the BMG Labtech CLARIOstar Plus plate reader,
-derived from byte-level analysis of 40 OEM software captures and Go reference implementation.
+derived from byte-level analysis of 40 OEM software captures, 13 DOE captures, and Go reference implementation.
 
 ---
 
@@ -108,6 +108,7 @@ All 96:    ff ff ff ff ff ff ff ff ff ff ff ff 00×36
 Column 1:  80 08 00 80 08 00 80 08 00 80 08 00 00×36
 Well A1:   80 00×47
 Half (1-6): fc 0f c0 fc 0f c0 fc 0f c0 fc 0f c0 00×36
+Cols 1-8:  ff 0f f0 ff 0f f0 ff 0f f0 ff 0f f0 00×36
 ```
 
 ### 3.2 Scan Direction Byte (1 byte)
@@ -132,14 +133,21 @@ Bit 0:   unused
 
 ### 3.3 Pre-Separator Block (31 bytes)
 
-Contains the optic configuration byte and shake parameters.
+Contains the optic configuration byte, shake parameters, and kinetic shake timing.
+
+The shake encoding within the pre-separator has **four distinct variants** depending
+on when shaking occurs relative to kinetic cycles. The first three variants encode
+shake parameters in the pre-separator; the fourth ("between readings") uses the
+post-separator trailer instead (see §3.6.3).
+
+#### 3.3.1 Shake Before Each Cycle (mixer_action = 0x02)
 
 ```
 Offset  Field
 ──────  ─────
  0      optic_config = DetectionMode | WellScanMode | OpticPosition  (see §4)
  1-11   zeros (11 bytes)
-12      mixer_action: 0x02 when shaking, 0x00 otherwise
+12      mixer_action: 0x02
 13-16   zeros (4 bytes)
 17      shake_pattern: 0=orbital, 1=linear, 2=double_orbital, 3=meander
 18      shake_speed_index: (RPM / 100) - 1       e.g. 300rpm → 2
@@ -148,7 +156,7 @@ Offset  Field
 22-30   zeros (9 bytes)
 ```
 
-Shake examples from captures:
+Shake-each examples from captures:
 | Capture | Pattern | Speed | Duration | Bytes [12,17,18,20:22] |
 |---------|---------|-------|----------|----------------------|
 | F01 | orbital | 300 rpm | 5s | `02, 00, 02, 05 00` |
@@ -156,10 +164,71 @@ Shake examples from captures:
 | F03 | orbital | 300 rpm | 10s | `02, 00, 02, 0a 00` |
 | F04 | double_orbital | 300 rpm | 5s | `02, 02, 02, 05 00` |
 | F05 | linear | 300 rpm | 5s | `02, 01, 02, 05 00` |
+| DOE_SPC01 | orbital | 300 rpm | 5s | `02, 00, 02, 05 00` |
+
+#### 3.3.2 Shake Before First Cycle Only (mixer_action = 0x08)
+
+**Different byte positions** from the each-cycle variant. Speed and duration shift
+to offsets 14 and 16 respectively. Discovered via DOE_SPC02.
+
+```
+Offset  Field
+──────  ─────
+ 0      optic_config
+ 1-11   zeros
+12      mixer_action: 0x08
+13      shake_pattern: 0=orbital, 1=linear, 2=double_orbital, 3=meander
+14      shake_speed_index: (RPM / 100) - 1
+15      zero
+16-17   shake_duration (u16 LE, seconds)
+18-30   zeros (13 bytes)
+```
+
+| Capture | Pattern | Speed | Duration | Bytes [12,13,14,16:18] |
+|---------|---------|-------|----------|----------------------|
+| DOE_SPC02 | orbital | 300 rpm | 5s | `08, 00, 02, 05 00` |
+
+#### 3.3.3 Shake Before Defined Cycles (offset 11 = 0x02)
+
+Action flag is at **offset 11** (not 12). Speed and duration are at the same
+positions as the each-cycle variant. Additionally, the target cycle numbers are
+listed as individual u8 values at offsets 24, 26, ... (with zero gaps between them).
+
+```
+Offset  Field
+──────  ─────
+ 0      optic_config
+ 1-10   zeros
+11      mixer_action: 0x02  (at offset 11, not 12!)
+12-16   zeros
+17      shake_pattern
+18      shake_speed_index
+19      zero
+20-21   shake_duration (u16 LE, seconds)
+22-23   zeros
+24      cycle_number[0] (u8)
+25      zero
+26      cycle_number[1] (u8)
+27      zero
+28      cycle_number[2] (u8, if applicable)
+29-30   zeros
+```
+
+| Capture | Pattern | Speed | Duration | Cycles | Bytes [11,18,20:22,24,26] |
+|---------|---------|-------|----------|--------|--------------------------|
+| DOE_SPC03 | orbital | 300 rpm | 5s | 2, 3 | `02, 02, 05 00, 02, 03` |
+
+#### 3.3.4 Shake Between Readings
+
+No pre-separator shake bytes are used. The pre-separator is all zeros (aside from
+the optic_config byte). Instead, this mode is encoded in the post-separator trailer
+region — see §3.6.3.
 
 ### 3.4 Separator (4 bytes)
 
-Always `27 0f 27 0f`. Fixed magic marker present in every measurement command.
+Always `27 0f 27 0f`. Fixed magic constant — confirmed identical across all 135 MEASUREMENT_RUN
+payloads (ABS + FL, all scan modes, all well selections, OEM + DOE captures). The `0x270F` = 9999
+resemblance to the shake command's default XY sentinel is coincidental; no mechanism to change it.
 
 ### 3.5 Well Scan Field (0 or 5 bytes)
 
@@ -191,15 +260,17 @@ The structure after the well scan field depends on whether this is a
 ```
 Offset  Size  Encoding   Field
 ──────  ────  ────────   ─────
- 0       1    u8         pause_time                    0x05 = 1.0 decisecond, 0x01 = 0
+ 0       1    u8         pause_time                    int(settling_s × 50); default 0x05 = 0.1s
  1       1    u8         num_wavelengths               1–8 (0 = spectral mode, see §3.6.2)
  2      2×N   u16 BE     wavelength[0..N-1]           nm × 10, e.g. 600nm → 0x1770
 +0      13    raw        reference_block              constant: 00 00 00 64 23 28 26 ca 00 00 00 64 00
-+0       1    u8         settling_flag                0x00=off, 0x01=on
-+1       2    u16 BE     settling_time                seconds (0–10)
-+0      11    raw        trailer                      constant: 02 00 00 00 00 00 01 00 00 00 01
++0       1    u8         settling_flag                always 0x00 in all captures
++1       2    u16 BE     settling_time_field           always 0x0005 in all DOE captures (purpose TBD)
++0      10    raw        trailer_prefix               see §3.6.3 — varies for shake-between-readings
++0       1    u8         kinetic_cycles               cycle count (1 = endpoint, N = kinetic)
 +0       2    u16 BE     flashes                      flashes per well (1–200)
-+0       3    raw        final                        00 01 00
++0       2    u16 BE     kinetic_cycle_time_s          cycle time in seconds (1 = endpoint)
++0       1    raw        final_zero                   always 0x00
 ```
 
 Wavelength examples:
@@ -209,6 +280,16 @@ Wavelength examples:
 | D01 | `01` | `11 94` | 450 nm |
 | D02 | `02` | `11 94 17 70` | 450 nm, 600 nm |
 | D03 | `03` | `11 94 17 70 19 c8` | 450 nm, 600 nm, 660 nm |
+
+Settling / pause_time encoding (ABS):
+
+Formula: `pause_time = int(settling_s × 50)`. Default settling is 0.1s.
+
+| Settling | pause_time | Hex | Captures |
+|----------|-----------|-----|----------|
+| 0.1s (default) | 5 | `05` | F01, DOE_Baseline, DOE_KIN01–04, DOE_SPC01–03 |
+| 0.5s | 25 | `19` | G01, DOE_SPC04 |
+| 1.0s | 50 | `32` | G02 (anomalous — TODO: retest) |
 
 Total inner payload sizes (discrete absorbance):
 | Config | Calculation | Inner bytes | Frame bytes |
@@ -244,6 +325,102 @@ Spectral examples:
 Total inner payload for spectral: same as discrete with 3 wavelengths = 136 bytes (point)
 because `0 + 6 spectral bytes` occupies the same space as `1 + 1×2 discrete bytes` + 3 extra.
 Verified: H01 frame = 144 bytes = 136 inner.
+
+#### 3.6.3 Kinetic Mode & Trailer Region
+
+**Kinetic encoding** — discovered via DOE captures (2026-03-09). What was previously
+treated as constant "trailer" and "final" blocks actually contains kinetic parameters.
+Endpoint mode is simply kinetic with 1 cycle and 1s cycle time.
+
+| Field | Position (ABS 1wl point) | Encoding | Endpoint | Kinetic |
+|-------|--------------------------|----------|----------|---------|
+| trailer_prefix | frame[124:134] | 10 raw bytes | `02 00 00 00 00 00 01 00 00 00` | varies for shake-between |
+| kinetic_cycles | frame[134] | u8 | `01` | cycle count |
+| flashes | frame[135:137] | u16 BE | flash count | flash count |
+| kinetic_cycle_time_s | frame[137:139] | u16 BE | `00 01` (1s) | cycle time in seconds |
+| final_zero | frame[139] | u8 | `00` | `00` |
+
+Kinetic examples from DOE captures:
+| Capture | Cycles | Cycle Time | Bytes [134, 137:139] |
+|---------|--------|------------|---------------------|
+| DOE_Baseline | 1 | 1s | `01, 00 01` |
+| DOE_KIN01 | 2 | 60s | `02, 00 3c` |
+| DOE_KIN02 | 10 | 45s | `0a, 00 2d` |
+| DOE_KIN03 | 50 | 45s | `32, 00 2d` |
+| DOE_KIN04 | 2 | 300s | `02, 01 2c` |
+
+**Shake between readings** — when trailer_prefix[0] = `0x08` instead of `0x02`,
+the trailer carries shake parameters. Pre-separator shake bytes are all zeros in
+this mode. Discovered via DOE_SPC04.
+
+```
+trailer_prefix layout (10 bytes):
+
+Normal mode:          02 00 00 00 00 00 01 00 00 00
+Shake-between mode:   08 PP 00 XX 00 YY 01 00 00 00
+
+  [0] = mode flag (bitfield):
+        0x02 = normal (no shake)
+        0x08 = shake-between-readings, orbital
+        0x09 = shake-between-readings, double orbital
+        → bit 3: shake-between enable; bit 0: 0=orbital, 1=double_orbital
+  [1] = speed: RPM = (byte + 1) × 100.  0x02→300, 0x04→500.
+  [2] = 0x00
+  [3] = shake enable flag: 0x00=off, 0x01=on
+  [4:6] = 0x003b (59) — constant across all shake-between captures; purpose TBD
+  [6] = 0x01 (scan direction, constant)
+  [7-9] = 00 00 00
+```
+
+| Capture | Mode | Pattern | RPM | Bytes [0:6] | Decoding |
+|---------|------|---------|-----|-------------|----------|
+| DOE_Baseline | normal | — | — | `02 00 00 00 00 00` | no shake |
+| DOE_SPC04a | between | orbital | 300 | `08 02 00 01 00 3b` | 0x08=orbital+between, (2+1)×100=300 |
+| DOE_SPC04b | between | orbital | 300 | `08 02 00 01 00 3b` | same as SPC04a |
+| DOE_SPC05 | between | dbl orbital | 500 | `09 04 00 01 00 3b` | 0x09=dbl_orbital+between, (4+1)×100=500 |
+
+**Pause before cycle** — discovered via DOE_SPC06/SPC07 (2026-03-09). Overloads the
+settling_flag and settling_time_field bytes. Two modes:
+
+- **"each" (manual)**: Pauses before every cycle with a GUI popup requiring human
+  click (Continue/Abort). Device sends resume command `0x0d 00 00 00 00` after each click.
+  No configurable duration.
+- **specific cycle (auto)**: Pauses before a single cycle number for a timed duration.
+  Automatic — no popup, no human interaction needed.
+
+```
+Pause-before-cycle encoding (bytes [116:120] in ABS 1wl point):
+
+  [116] = pause mode flag
+          0x00 = no pause / specific-cycle mode
+          0xff = each-cycle manual pause
+  [117] = pause target
+          0x00 = no pause
+          0xff = each (manual)
+          0x02 = before cycle 2 (1-indexed)
+  [118:120] = pause duration (u16 BE, seconds)
+          0x0000 = manual (no auto-resume)
+          0x0005 = 5 seconds
+          NOTE: also 0x0005 in no-pause captures (flashes=5); REF02 will disambiguate.
+```
+
+| Capture | Mode | Target | Duration | Bytes [116:120] |
+|---------|------|--------|----------|-----------------|
+| DOE_Baseline | none | — | — | `00 00 00 05` |
+| DOE_KIN01 | none | — | — | `00 00 00 05` |
+| DOE_SPC06 | each (manual) | all | — | `ff ff 00 00` |
+| DOE_SPC07 | specific | cycle 2 | 5s | `00 02 00 05` |
+
+**Fluorescence trailer prefix** — DOE_REF01 shows FL uses `0x00` at trailer_prefix[0]
+(vs `0x02` for ABS). The kinetic tail (cycles, flashes, cycle_time, final) is
+structurally identical and aligned from the end.
+
+| Measurement | trailer_prefix[0] |
+|-------------|-------------------|
+| Absorbance | `0x02` |
+| Fluorescence | `0x00` |
+| ABS + shake-between (orbital) | `0x08` |
+| ABS + shake-between (dbl orbital) | `0x09` |
 
 ---
 
@@ -458,14 +635,69 @@ Single-byte family (no sub-command). Stops the currently running operation (meas
 or standalone shaking).
 
 ```
-02 00 0a 0c 0b 00 00 00 1d 0d
+02 00 0a 0c 0b 00 00 00 1d 0d       StopTest (param 0x00)
+02 00 0a 0c 0b 01 00 00 24 0d       StopSystem (param 0x01)
 ```
 
-Payload: `0b 00` — param `0x00` = StopTest Nosave. The `running` flag clears within
-~5 seconds after STOP is sent.
+| Param byte | DDE command | Meaning |
+|------------|-------------|---------|
+| `0x00` | StopTest [Nosave] | Terminate measurement; no results saved |
+| `0x01` | StopSystem | System-level stop; safe when no measurement is active |
 
-**Capture verification:** Confirmed in ST-01 and ST-04 captures. STOP reliably terminates
-standalone shaking started by R_Shake (0x1D).
+The `running` flag clears within ~5 seconds after STOP is sent.
+
+**Capture verification:** StopTest confirmed in ST-01 and ST-04 captures. STOP reliably
+terminates standalone shaking started by R_Shake (0x1D). StopSystem confirmed in
+MON-02 capture (2026-03-09); device accepts silently when idle.
+
+### 7.7.1 PAUSE_RESUME (0x0D)
+
+Pauses or resumes a running measurement. The device finishes scanning the active well
+before halting. Same command family for both operations, distinguished by parameters.
+
+**Pause (stop after current well):**
+
+```
+02 00 0d 0c 0d ff ff 00 00 00 02 26 0d       DDE standalone (6 param bytes)
+```
+
+Payload: `0d ff ff 00 00 00 02`
+
+- Bytes 0–1: `ff ff` — pause duration (0xFFFF = indefinite)
+- Bytes 2–4: `00 00 00` — reserved
+- Byte 5: `0x02` — purpose unknown (only observed in standalone DDE invocation)
+
+**Note:** The PLR implementation sends 4 param bytes (`ff ff 00 00`) without the trailing
+`00 02`, which works correctly during active measurements. The 6-byte form is what DDEclient
+sends when invoked standalone (no active measurement). Both are accepted by the device.
+
+**Continue (resume from pause):**
+
+```
+02 00 0d 0c 0d 00 00 00 00 00 00 28 0d       DDE standalone (6 param bytes)
+```
+
+Payload: `0d 00 00 00 00 00 00` — all zeros = resume.
+
+**Status response when no measurement is active:**
+
+Both Pause and Continue trigger a momentary one-frame status anomaly when sent without
+an active measurement:
+
+```
+Response: 02 00 18 0c 01 15 00 04 00 00 d6 00 ...
+                       ^^             ^^
+                       0x15           0xd6
+```
+
+- Byte 1: `0x15` = `0x05 | 0x10` — `running` flag (bit 4) set momentarily
+- Byte 5: `0xd6` — ack/error code for "no measurement to pause/resume"
+
+The next poll returns to normal (`0x05`, `0x00`). This is a transient acknowledgement,
+not an error state.
+
+**Capture verification:** Pause confirmed in MON-03 (standalone, 2026-03-09) and
+cleanup/ stop_and_abandon captures (mid-measurement). Continue confirmed in MON-04.
 
 ### 7.8 SHAKE (0x1D) — Standalone Plate Shaking
 
@@ -574,20 +806,24 @@ not fully understood.
 
 ## 8. Constant Blocks
 
-These byte sequences are invariant across all 40 captures:
+These byte sequences are invariant across all endpoint captures. For kinetic mode
+and shake-between-readings, the trailer region is parameterized — see §3.6.3.
 
-| Name | Hex | Size | Location |
-|------|-----|------|----------|
-| Separator | `27 0f 27 0f` | 4 B | Between pre-separator block and well scan field |
-| Reference block | `00 00 00 64 23 28 26 ca 00 00 00 64 00` | 13 B | After wavelength data |
-| Trailer | `02 00 00 00 00 00 01 00 00 00 01` | 11 B | After settling time |
-| Final | `00 01 00` | 3 B | Last 3 bytes of payload |
+| Name | Hex | Size | Location | Notes |
+|------|-----|------|----------|-------|
+| Separator | `27 0f 27 0f` | 4 B | Between pre-separator and well scan field | Always constant |
+| Reference block | `00 00 00 64 23 28 26 ca 00 00 00 64 00` | 13 B | After wavelength data | Last byte overloaded as pause mode flag (0xff=each, §3.6.3) |
+| Trailer prefix | `02 00 00 00 00 00 01 00 00 00` | 10 B | After settling time | Byte [0] = 0x08 for shake-between; bytes [1:6] carry shake params |
+| Kinetic cycles | `01` | 1 B | After trailer prefix | u8: 1=endpoint, N=kinetic |
+| Flashes | `00 05` | 2 B | After kinetic cycles | u16 BE: flashes per well |
+| Kinetic cycle time | `00 01` | 2 B | After flashes | u16 BE seconds: 1=endpoint, N=kinetic |
+| Final zero | `00` | 1 B | Last byte of payload | Always 0x00 |
 
 ---
 
 ## 9. Capture Index
 
-88+ captures organized by test group:
+100+ captures organized by test group:
 
 ### OEM Measurement Captures (40)
 
@@ -615,6 +851,15 @@ These byte sequences are invariant across all 40 captures:
 | VAL (22) | VAL-01–VAL-22 | Validation: duration encoding, drawer control, temp, IdleMove modes, boundaries |
 | DIS (7) | DIS-01–DIS-07 | Discovery: Init params, duration 256/512, motor/version (DDE-only) |
 | CRI (6) | CRI-01–CRI-06 | Critical unknowns: SetTemp (DDE-only), IdleMove modes 4/7 (rejected) |
+
+### DOE Captures (2026-03-09)
+
+| Group | Captures | Purpose |
+|-------|----------|---------|
+| Baseline | DOE_Baseline | Reference: 96-well, 600nm, 5 flashes, point, bidi TL vertical |
+| KIN (4) | KIN01–KIN04 | Kinetic mode: 2/10/50 cycles, 45/60/300s cycle time |
+| SPC (7) | SPC01–SPC07 | Shake timing: each/first/defined/between, pause-before-cycle: each/specific |
+| REF (1) | REF01 | Fluorescence: mono, 485ex/520em, 1000 gain, cols 1-8 |
 
 ### Key findings from DDE captures
 

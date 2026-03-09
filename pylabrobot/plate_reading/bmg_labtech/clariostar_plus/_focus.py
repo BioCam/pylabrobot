@@ -9,7 +9,7 @@ from typing import Dict, List, Optional, Union
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.well import Well
 
-from ._framing import _SEPARATOR, _TRAILER
+from ._framing import _MEAS_BOUNDARY, _TRAILER
 from ..optical_elements import OpticalFilter, DichroicFilter
 
 logger = logging.getLogger("pylabrobot")
