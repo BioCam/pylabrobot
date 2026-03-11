@@ -10,7 +10,7 @@ This is used by MARS to compensate for plate misalignment. The 0x07
 PLATE_MAP_SCAN command triggers the entire operation — no separate
 MEASUREMENT_RUN (0x04) is needed.
 
-Protocol (3 USB captures: 2 FI + 1 ABS, 2026-03-09):
+Protocol (6 USB captures: 4 FL + 2 ABS across 96/384-well plates):
   1. (Optional) focus_well() for FL-based mapping
   2. PLATE_MAP_SCAN (0x07): 40-byte parameters, starts raster scan
   3. REQUEST/PLATE_MAP_CONFIG (0x05 0x0D): metadata (grid_size, n_points)
@@ -51,11 +51,12 @@ Parameters layout (40 bytes, same frame size for both ABS and FI):
 
 DATA response payload (REQUEST/DATA, 3878 bytes per corner):
   Header (31 bytes):
+    [6]      = schema (0xa0=FL, 0xa8=ABS)
     [7:9]    = n_points (u16 BE, 961 = 31×31)
     [9:11]   = values_written (u16 BE, 961 when complete)
-    [12:15]  = saturation_value (u24 BE, 260000 = 0x03f7a0)
-    [24]     = well_col (1-indexed: 1=A1, 12=H12 col)
-    [26]     = well_row (1-indexed: 1=A1, 8=H12 row)
+    [12:15]  = saturation_value (u24 BE, FL=259936, ABS=983025)
+    [24]     = well_col (1-indexed: 1=A1, 12=H12/24=P24 col)
+    [26]     = well_row (1-indexed: 1=A1, 8=H12/16=P24 row)
   Raster data (961 × 4 bytes):
     Each point: 3-byte BE intensity + 0x00 padding.
     Values range 0 to saturation_value (260000).
@@ -255,7 +256,7 @@ class _PlateMappingMixin:
         ``response_type`` - always 0x10
         ``grid_size`` - raster grid dimension (31 in all captures)
         ``n_points`` - total raster points (961 = 31×31 in all captures)
-        ``field_9_10`` - u16 BE at offset 9 (330 in all captures, purpose TBD)
+        ``field_9_10`` - u16 BE at offset 9 (scales with well spacing: 330 for 96-well, 165 for 384-well)
     """
     if len(payload) < 13:
       raise ValueError(f"PLATE_MAP_CONFIG response too short: {len(payload)} bytes (need >=13)")
