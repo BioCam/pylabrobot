@@ -81,7 +81,7 @@ Config response payload (REQUEST/PLATE_MAP_CONFIG, 13 bytes):
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 from pylabrobot.resources.plate import Plate
 
@@ -497,6 +497,259 @@ class _PlateMappingMixin:
         f"Plate mapping scan did not complete within {scan_timeout}s")
 
     # Retrieve calibrated XY positions
+    xy = await self.request_plate_map_xy()
+
+    return {
+      "xy": xy,
+      "config": config,
+      "rasters": rasters,
+    }
+
+  # --------------------------------------------------------------------------
+  # Arbitrary position scanning
+  # --------------------------------------------------------------------------
+
+  def _build_arbitrary_plate_map_payload(
+    self,
+    positions: List[Tuple[float, float]],
+    *,
+    plate_size: Tuple[float, float] = (127.76, 85.48),
+    mode: str = "fluorescence",
+    wavelength: int = 600,
+    excitation_wavelength: int = 488,
+    emission_wavelength: int = 535,
+    excitation_bandwidth: int = 14,
+    emission_bandwidth: int = 30,
+    dichroic_split_wavelength: Optional[float] = None,
+    focal_height_mm: float = 15.0,
+    gain: int = 2239,
+  ) -> bytes:
+    """Build a PLATE_MAP_SCAN payload targeting arbitrary XY positions.
+
+    Instead of deriving geometry from a Plate resource, this method accepts
+    raw XY coordinates (in mm) and encodes them directly into the 0x07
+    payload. The device will raster-scan a 31×31 grid around each of the
+    two corner positions.
+
+    The CLARIOstar coordinate system has origin at the top-left of the plate
+    carrier, with X increasing rightward and Y increasing downward (Y is
+    inverted relative to pylabrobot's convention where Y=0 is the bottom).
+
+    Args:
+      positions: List of 1 or 2 (x_mm, y_mm) tuples in CLARIOstar device
+        coordinates. If 1 position is given, both corners are set to the
+        same point (single-point scan). If 2, they define the two diagonal
+        corners.
+      plate_size: (length_mm, width_mm) of the carrier area. Defaults to
+        SBS standard (127.76, 85.48).
+      mode: ``"fluorescence"`` or ``"absorbance"``.
+      wavelength: ABS wavelength in nm (only used when mode="absorbance").
+      excitation_wavelength: FL excitation center wavelength in nm.
+      emission_wavelength: FL emission center wavelength in nm.
+      excitation_bandwidth: FL excitation full bandwidth in nm.
+      emission_bandwidth: FL emission full bandwidth in nm.
+      dichroic_split_wavelength: LVDM split wavelength in nm, or None for
+        auto-calculation.
+      focal_height_mm: FL focal height in mm.
+      gain: FL PMT gain.
+
+    Returns:
+      40-byte parameters for PLATE_MAP_SCAN (0x07).
+    """
+    mode = mode.lower()
+    if mode not in ("fluorescence", "absorbance"):
+      raise ValueError(f"mode must be 'fluorescence' or 'absorbance', got {mode!r}")
+    if not positions or len(positions) > 2:
+      raise ValueError(f"positions must have 1 or 2 entries, got {len(positions)}")
+
+    plate_length, plate_width = plate_size
+    x1, y1 = positions[0]
+    if len(positions) == 2:
+      x2, y2 = positions[1]
+    else:
+      x2, y2 = x1, y1
+
+    # Encode as 1×1 (single point) or 1×2 (two points) virtual plate.
+    # For a single point, cols=1, rows=1, A1 = last well = the target.
+    # For two points, cols=2, rows=1, A1 = pos[0], last = pos[1].
+    if len(positions) == 1:
+      num_cols, num_rows = 1, 1
+    else:
+      num_cols, num_rows = 2, 1
+
+    buf = bytearray(40)
+    buf[0] = 0x02  # sub-command constant
+
+    buf[1:3] = int(round(plate_length * 100)).to_bytes(2, "big")
+    buf[3:5] = int(round(plate_width * 100)).to_bytes(2, "big")
+    buf[5:7] = int(round(x1 * 100)).to_bytes(2, "big")
+    buf[7:9] = int(round(y1 * 100)).to_bytes(2, "big")
+    buf[9:11] = int(round(x2 * 100)).to_bytes(2, "big")
+    buf[11:13] = int(round(y2 * 100)).to_bytes(2, "big")
+    buf[13] = num_cols
+    buf[14] = num_rows
+
+    if mode == "absorbance":
+      buf[15] = 0x02
+      wl_raw = wavelength * 10
+      buf[38:40] = wl_raw.to_bytes(2, "big")
+    else:
+      buf[15] = 0x00
+      buf[19] = num_cols
+
+      ex_hi = int((excitation_wavelength + excitation_bandwidth / 2) * 10)
+      ex_lo = int((excitation_wavelength - excitation_bandwidth / 2) * 10)
+      em_hi = int((emission_wavelength + emission_bandwidth / 2) * 10)
+      em_lo = int((emission_wavelength - emission_bandwidth / 2) * 10)
+
+      if dichroic_split_wavelength is not None:
+        dich = int(dichroic_split_wavelength * 10)
+      else:
+        dich = (ex_hi + em_lo) // 2
+
+      buf[20:22] = ex_hi.to_bytes(2, "big")
+      buf[22:24] = ex_lo.to_bytes(2, "big")
+      buf[24:26] = dich.to_bytes(2, "big")
+      buf[26:28] = em_hi.to_bytes(2, "big")
+      buf[28:30] = em_lo.to_bytes(2, "big")
+
+      buf[30:32] = (0x0004).to_bytes(2, "big")
+      buf[32:34] = (0x0003).to_bytes(2, "big")
+
+      buf[34:36] = int(round(focal_height_mm * 100)).to_bytes(2, "big")
+      buf[36:38] = gain.to_bytes(2, "big")
+
+    return bytes(buf)
+
+  async def raster_scan_positions(
+    self,
+    positions: List[Tuple[float, float]],
+    *,
+    plate_size: Tuple[float, float] = (127.76, 85.48),
+    mode: str = "fluorescence",
+    wavelength: int = 600,
+    excitation_wavelength: int = 488,
+    emission_wavelength: int = 535,
+    excitation_bandwidth: int = 14,
+    emission_bandwidth: int = 30,
+    dichroic_split_wavelength: Optional[float] = None,
+    focal_height_mm: float = 15.0,
+    gain: int = 2239,
+    scan_timeout: float = 300.0,
+  ) -> dict:
+    """Raster-scan arbitrary XY positions on the plate carrier.
+
+    Sends a PLATE_MAP_SCAN (0x07) command with custom geometry targeting
+    the given positions. The device performs a 31×31 raster intensity scan
+    around each position (~100-150s total).
+
+    This bypasses normal plate well layout and allows scanning any point
+    in the carrier's XY coordinate space.
+
+    Coordinate system:
+      - Origin: top-left corner of the plate carrier
+      - X: increases rightward (0 to plate_length mm)
+      - Y: increases downward (0 to plate_width mm)
+      - For a standard 96-well plate, A1 is near (14.3, 11.2) mm
+
+    Args:
+      positions: 1 or 2 (x_mm, y_mm) tuples. If 1, a single-point scan.
+        If 2, two diagonal corners are scanned (like standard plate mapping).
+      plate_size: (length_mm, width_mm) of the carrier. Default SBS standard.
+      mode: ``"fluorescence"`` or ``"absorbance"``.
+      wavelength: ABS wavelength in nm (mode="absorbance" only).
+      excitation_wavelength: FL excitation center wavelength in nm.
+      emission_wavelength: FL emission center wavelength in nm.
+      excitation_bandwidth: FL excitation full bandwidth in nm.
+      emission_bandwidth: FL emission full bandwidth in nm.
+      dichroic_split_wavelength: LVDM split wavelength in nm, or None.
+      focal_height_mm: FL focal height in mm.
+      gain: FL PMT gain.
+      scan_timeout: Maximum seconds to wait for the scan.
+
+    Returns:
+      Dict with keys:
+        ``xy`` - calibrated XY positions (dict with ``x1_mm``, ``y1_mm``,
+        ``xn_mm``, ``yn_mm``). All zeros if scan failed.
+        ``config`` - scan config (``grid_size``, ``n_points``).
+        ``rasters`` - list of raster dicts (1 or 2), each with
+        ``well_col``, ``well_row``, ``grid_size``, ``intensities``,
+        ``saturation``.
+    """
+    n_corners = len(positions)
+    if n_corners not in (1, 2):
+      raise ValueError(f"positions must have 1 or 2 entries, got {n_corners}")
+
+    params = self._build_arbitrary_plate_map_payload(
+      positions,
+      plate_size=plate_size,
+      mode=mode,
+      wavelength=wavelength,
+      excitation_wavelength=excitation_wavelength,
+      emission_wavelength=emission_wavelength,
+      excitation_bandwidth=excitation_bandwidth,
+      emission_bandwidth=emission_bandwidth,
+      dichroic_split_wavelength=dichroic_split_wavelength,
+      focal_height_mm=focal_height_mm,
+      gain=gain,
+    )
+
+    logger.info("Raster scan: %d position(s) at %s, mode=%s",
+                n_corners, positions, mode)
+
+    await self.send_command(
+      command_family=self.CommandFamily.PLATE_MAP_SCAN,
+      parameters=params,
+    )
+
+    config = await self.request_plate_map_config()
+    logger.info("Raster scan config: grid_size=%d, n_points=%d",
+                config["grid_size"], config["n_points"])
+
+    # Collect raster data. For 1 position → 1 raster expected (but device
+    # may still produce 2 if it scans both "corners" at the same point).
+    # For 2 positions → 2 rasters.
+    rasters: List[dict] = []
+    deadline = time.time() + scan_timeout
+    prev_unread = False
+    expected_rasters = n_corners
+
+    while time.time() < deadline:
+      status = await self.request_machine_status()
+      unread = status.get("unread_data", False)
+      busy = status.get("busy", False)
+
+      if unread and not prev_unread:
+        payload = await self._request_plate_map_data()
+        raster = self._parse_plate_map_raster(payload)
+        rasters.append(raster)
+        logger.info("Raster %d: pos=(%d,%d), %d points, saturation=%d",
+                     len(rasters), raster["well_col"], raster["well_row"],
+                     len(raster["intensities"]), raster["saturation"])
+
+        if len(rasters) >= expected_rasters:
+          while time.time() < deadline:
+            status = await self.request_machine_status()
+            if not status.get("busy", False):
+              break
+            await asyncio.sleep(self.measurement_poll_interval)
+          break
+
+      prev_unread = unread
+
+      if not busy and len(rasters) >= expected_rasters:
+        break
+      if not busy and not unread:
+        logger.warning("Raster scan: busy cleared with only %d raster(s) "
+                       "collected (expected %d).",
+                       len(rasters), expected_rasters)
+        break
+
+      await asyncio.sleep(self.measurement_poll_interval)
+    else:
+      raise TimeoutError(
+        f"Raster scan did not complete within {scan_timeout}s")
+
     xy = await self.request_plate_map_xy()
 
     return {
