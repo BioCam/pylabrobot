@@ -407,7 +407,7 @@ class CLARIOstarPlusBackend(
     if measurement_poll_interval < 0:
       raise ValueError(f"measurement_poll_interval must be >= 0, got {measurement_poll_interval}.")
 
-    self.io = FTDI(device_id=device_id, vid=0x0403, pid=0xBB68)
+    self.io = FTDI(human_readable_device_name="CLARIOstar Plus", device_id=device_id, vid=0x0403, pid=0xBB68)
     self.read_timeout = read_timeout
     self.measurement_poll_interval = measurement_poll_interval
     self.pause_on_interrupt: bool = False

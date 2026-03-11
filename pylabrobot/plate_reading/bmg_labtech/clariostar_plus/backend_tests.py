@@ -27,6 +27,7 @@ from pylabrobot.plate_reading.bmg_labtech.clariostar_plus import (
   _wrap_payload,
 )
 from pylabrobot.resources.corning.plates import Cor_96_wellplate_360ul_Fb
+from pylabrobot.resources.greiner.plates import Greiner_384_wellplate_28ul_Fb
 
 # ---------------------------------------------------------------------------
 # Hardware-verified ground truth -- commands (verified against USB captures)
@@ -9089,11 +9090,18 @@ class TestBuildPlateMapPayload(unittest.TestCase):
     self.assertEqual(payload[15], 0x02)
 
   def test_fl_detection_mode(self):
-    """[15] should be 0x00 (DetectionMode.FLUORESCENCE)."""
+    """[15] should be 0x00 (DetectionMode.FL_TOP) by default."""
     payload = self.backend._build_plate_map_payload(
       self.plate, mode="fluorescence",
       excitation_wavelength=488, emission_wavelength=535)
     self.assertEqual(payload[15], 0x00)
+
+  def test_fl_bottom_detection_mode(self):
+    """[15] should be 0x01 (DetectionMode.FL_BOTTOM)."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence", optic_position="bottom",
+      excitation_wavelength=488, emission_wavelength=535)
+    self.assertEqual(payload[15], 0x01)
 
   def test_abs_wavelength(self):
     """ABS wavelength at [38:40] should be 600nm → 0x1770."""
@@ -9108,11 +9116,11 @@ class TestBuildPlateMapPayload(unittest.TestCase):
     self.assertEqual(payload[16:38], b"\x00" * 22)
 
   def test_fl_separator(self):
-    """FL mode: [19] should be num_cols (0x0c=12) separator echo."""
+    """FL mode: [19] should be 0x0C constant (not num_cols)."""
     payload = self.backend._build_plate_map_payload(
       self.plate, mode="fluorescence",
       excitation_wavelength=488, emission_wavelength=535)
-    self.assertEqual(payload[19], 12)
+    self.assertEqual(payload[19], 0x0C)
 
   def test_fl_wavelengths(self):
     """FL wavelength edges match capture: 488±7nm ex, 535±15nm em.
@@ -9380,6 +9388,208 @@ class TestParsePlateMapRaster(unittest.TestCase):
     backend = _make_backend()
     with self.assertRaises(ValueError):
       backend._parse_plate_map_raster(b"\x00" * 30)
+
+
+class TestBuildPlateMapPayload384(unittest.TestCase):
+  """Tests for _build_plate_map_payload with 384-well plates.
+
+  Ground truth from 384-well captures (2026-03-11):
+    test3: FL bottom, Alexa488, Greiner 384-well plate
+    test4: FL top, Alexa546, Greiner 384-well plate
+    test5: ABS 450nm, Greiner 384-well plate
+  """
+
+  def setUp(self):
+    self.backend = _make_backend()
+    self.plate = Greiner_384_wellplate_28ul_Fb("test_384")
+
+  def test_384_payload_length(self):
+    """384-well payload should be exactly 40 bytes."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence")
+    self.assertEqual(len(payload), 40)
+
+  def test_384_num_cols_rows(self):
+    """[13]=24 cols, [14]=16 rows for 384-well plate."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence")
+    self.assertEqual(payload[13], 24)
+    self.assertEqual(payload[14], 16)
+
+  def test_384_plate_dimensions(self):
+    """384-well plate has same SBS dimensions: 127.76 × 85.48 mm."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence")
+    plate_len = int.from_bytes(payload[1:3], "big") / 100
+    plate_wid = int.from_bytes(payload[3:5], "big") / 100
+    self.assertAlmostEqual(plate_len, 127.76, places=1)
+    self.assertAlmostEqual(plate_wid, 85.48, places=1)
+
+  def test_384_fl_separator_constant(self):
+    """FL mode: [19] should be 0x0C constant, NOT num_cols (24)."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence")
+    self.assertEqual(payload[19], 0x0C)
+    self.assertNotEqual(payload[19], 24)  # explicit: NOT num_cols
+
+  def test_384_fl_bottom_detection_mode(self):
+    """FL bottom optic: [15] should be 0x01."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence", optic_position="bottom")
+    self.assertEqual(payload[15], 0x01)
+
+  def test_384_fl_top_detection_mode(self):
+    """FL top optic: [15] should be 0x00."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence", optic_position="top")
+    self.assertEqual(payload[15], 0x00)
+
+  def test_384_abs_detection_mode(self):
+    """ABS mode: [15] should be 0x02."""
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="absorbance", wavelength=450)
+    self.assertEqual(payload[15], 0x02)
+
+  def test_384_fl_bottom_optic_params(self):
+    """FL bottom with Alexa488 settings should produce correct optic bytes.
+
+    Capture test3 ground truth (FL bottom, Alexa488):
+      ex_hi=0x1354 (494.8nm), ex_lo=0x12cc (481.2nm), dich=0x13d3 (507.5nm)
+      em_hi=0x1579 (549.7nm), em_lo=0x1453 (520.3nm)
+      focal=0x017c (3.80mm), gain=0x0b62 (2914)
+    """
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence", optic_position="bottom",
+      excitation_wavelength=488, emission_wavelength=535,
+      excitation_bandwidth=14, emission_bandwidth=30,
+      dichroic_split_wavelength=507.5,
+      focal_height_mm=3.80, gain=2914)
+    self.assertEqual(payload[15], 0x01)
+    focal = int.from_bytes(payload[34:36], "big") / 100
+    self.assertAlmostEqual(focal, 3.80, places=2)
+    self.assertEqual(int.from_bytes(payload[36:38], "big"), 2914)
+
+  def test_384_fl_top_alexa546_params(self):
+    """FL top with Alexa546 settings.
+
+    Capture test4 ground truth:
+      ex_hi=0x157a (549.0nm), ex_lo=0x14b6 (530.6nm), dich=0x15f9 (562.5nm)
+      em_hi=0x179f (607.1nm), em_lo=0x1679 (577.7nm)
+      focal=0x02e4 (7.40mm), gain=0x0555 (1365)
+    """
+    payload = self.backend._build_plate_map_payload(
+      self.plate, mode="fluorescence", optic_position="top",
+      excitation_wavelength=540, emission_wavelength=592,
+      excitation_bandwidth=18, emission_bandwidth=30,
+      dichroic_split_wavelength=562.5,
+      focal_height_mm=7.40, gain=1365)
+    self.assertEqual(payload[15], 0x00)
+    focal = int.from_bytes(payload[34:36], "big") / 100
+    self.assertAlmostEqual(focal, 7.40, places=2)
+    self.assertEqual(int.from_bytes(payload[36:38], "big"), 1365)
+
+
+class TestParsePlateMapXY384(unittest.TestCase):
+  """Tests for _parse_plate_map_xy with 384-well capture ground truth."""
+
+  def test_384_fl_bottom_test3_xy(self):
+    """384-well FL bottom (test3): calibrated positions from capture."""
+    backend = _make_backend()
+    # From test3 XY response: 04054626000002 04ee 03be 2cc6 1d80
+    # Wait - the summary says: XY response `04054626000002 04ee 03be 2cc6 1d80`
+    # That's only 15 bytes for the address part. Let me use the full 16-byte payload.
+    payload = bytes.fromhex("04054626000002 02 04ee 03be 2cc6 1d80".replace(" ", ""))
+    result = backend._parse_plate_map_xy(payload)
+    self.assertAlmostEqual(result["x1_mm"], 12.62, places=2)  # 0x04ee = 1262
+    self.assertAlmostEqual(result["y1_mm"], 9.58, places=2)   # 0x03be = 958
+    self.assertAlmostEqual(result["xn_mm"], 114.62, places=2) # 0x2cc6 = 11462
+    self.assertAlmostEqual(result["yn_mm"], 75.52, places=2)  # 0x1d80 = 7552
+
+  def test_384_fl_top_test4_xy(self):
+    """384-well FL top (test4): calibrated positions from capture."""
+    backend = _make_backend()
+    # From test4 XY response: 04054626000002 04ae 0383 2d1d 1da7
+    payload = bytes.fromhex("04054626000002 02 04ae 0383 2d1d 1da7".replace(" ", ""))
+    result = backend._parse_plate_map_xy(payload)
+    self.assertAlmostEqual(result["x1_mm"], 11.98, places=2)  # 0x04ae = 1198
+    self.assertAlmostEqual(result["y1_mm"], 8.99, places=2)   # 0x0383 = 899
+    self.assertAlmostEqual(result["xn_mm"], 115.49, places=2) # 0x2d1d = 11549
+    self.assertAlmostEqual(result["yn_mm"], 75.91, places=2)  # 0x1da7 = 7591
+
+  def test_384_abs_test5_failed(self):
+    """384-well ABS (test5): all zeros (scan failed)."""
+    backend = _make_backend()
+    payload = bytes.fromhex("04055606000002020000000000000000")
+    result = backend._parse_plate_map_xy(payload)
+    self.assertEqual(result["x1_mm"], 0.0)
+    self.assertEqual(result["yn_mm"], 0.0)
+
+
+class TestParsePlateMapConfig384(unittest.TestCase):
+  """Tests for _parse_plate_map_config with 384-well captures."""
+
+  def test_384_config_field_9_10(self):
+    """384-well config: field_9_10=165 (0x00a5), half of 96-well value (330)."""
+    backend = _make_backend()
+    # 384-well config response (test3/test5): field_9_10 = 0x00a5 = 165
+    payload = bytes.fromhex("102504260000 1f 03c1 00a5 0000".replace(" ", ""))
+    result = backend._parse_plate_map_config(payload)
+    self.assertEqual(result["grid_size"], 31)
+    self.assertEqual(result["n_points"], 961)
+    self.assertEqual(result["field_9_10"], 165)
+
+  def test_384_config_field_9_10_test4(self):
+    """384-well config (test4): field_9_10=163 (0x00a3)."""
+    backend = _make_backend()
+    payload = bytes.fromhex("102504260000 1f 03c1 00a3 0000".replace(" ", ""))
+    result = backend._parse_plate_map_config(payload)
+    self.assertEqual(result["field_9_10"], 163)
+
+  def test_field_9_10_scales_with_well_spacing(self):
+    """field_9_10 ratio (96-well / 384-well) ≈ 2.0, matching well spacing ratio (9mm / 4.5mm)."""
+    backend = _make_backend()
+    r96 = backend._parse_plate_map_config(
+      bytes.fromhex("10250426000 01f 03c1 014a 0000".replace(" ", "")))
+    r384 = backend._parse_plate_map_config(
+      bytes.fromhex("102504260000 1f 03c1 00a5 0000".replace(" ", "")))
+    ratio = r96["field_9_10"] / r384["field_9_10"]
+    self.assertAlmostEqual(ratio, 2.0, places=1)
+
+
+class TestParsePlateMapRaster384(unittest.TestCase):
+  """Tests for _parse_plate_map_raster with 384-well corner wells."""
+
+  def _make_minimal_raster_payload(self, *, well_col=1, well_row=1,
+                                    n_points=4, values=None):
+    """Build a synthetic raster DATA payload for testing."""
+    if values is None:
+      values = [100, 200, 300, 400]
+    header = bytearray(31)
+    header[7:9] = n_points.to_bytes(2, "big")
+    header[9:11] = n_points.to_bytes(2, "big")
+    header[12] = 0x03; header[13] = 0xf7; header[14] = 0xa0
+    header[24] = well_col
+    header[26] = well_row
+    data = bytearray()
+    for v in values:
+      data.extend([(v >> 16) & 0xff, (v >> 8) & 0xff, v & 0xff, 0x00])
+    return bytes(header) + bytes(data)
+
+  def test_384_corner_p24(self):
+    """384-well last corner: well_col=24, well_row=16 (P24)."""
+    backend = _make_backend()
+    payload = self._make_minimal_raster_payload(well_col=24, well_row=16)
+    result = backend._parse_plate_map_raster(payload)
+    self.assertEqual(result["well_col"], 24)
+    self.assertEqual(result["well_row"], 16)
+
+  def test_384_corner_a1(self):
+    """384-well first corner: well_col=1, well_row=1 (A1)."""
+    backend = _make_backend()
+    payload = self._make_minimal_raster_payload(well_col=1, well_row=1)
+    result = backend._parse_plate_map_raster(payload)
+    self.assertEqual(result["well_col"], 1)
+    self.assertEqual(result["well_row"], 1)
 
 
 if __name__ == "__main__":

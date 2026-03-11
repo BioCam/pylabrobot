@@ -29,7 +29,7 @@ Parameters layout (40 bytes, same frame size for both ABS and FI):
   [11:13]  = last_well_center_y (u16 BE, mm×100, Y-inverted)
   [13]     = num_cols
   [14]     = num_rows
-  [15]     = detection_mode (0x00=FL, 0x02=ABS)
+  [15]     = detection_mode (0x00=FL top, 0x01=FL bottom, 0x02=ABS)
 
   ABS-specific [16:40]:
     [16:38] = zeros (22 bytes)
@@ -37,7 +37,7 @@ Parameters layout (40 bytes, same frame size for both ABS and FI):
 
   FL-specific [16:40]:
     [16:19] = zeros (3 bytes)
-    [19]    = num_cols (separator echo)
+    [19]    = 0x0C constant
     [20:22] = ex_hi (u16 BE, nm×10)
     [22:24] = ex_lo (u16 BE, nm×10)
     [24:26] = dichroic (u16 BE, nm×10)
@@ -75,7 +75,7 @@ Config response payload (REQUEST/PLATE_MAP_CONFIG, 13 bytes):
   [0]      = 0x10 (response type)
   [6]      = grid_size (0x1f = 31)
   [7:9]    = n_points (u16 BE, 0x03c1 = 961 = 31×31)
-  [9:11]   = field_9_10 (u16 BE, 0x014a = 330, purpose TBD)
+  [9:11]   = field_9_10 (u16 BE, scales with well spacing: 330 for 96-well/9mm, 165 for 384-well/4.5mm)
 """
 
 import asyncio
@@ -103,6 +103,7 @@ class _PlateMappingMixin:
     plate: Plate,
     *,
     mode: str = "fluorescence",
+    optic_position: str = "top",
     wavelength: int = 600,
     excitation_wavelength: int = 488,
     emission_wavelength: int = 535,
@@ -117,6 +118,8 @@ class _PlateMappingMixin:
     Args:
       plate: Plate resource for geometry encoding.
       mode: ``"fluorescence"`` or ``"absorbance"``.
+      optic_position: ``"top"`` or ``"bottom"`` (FL only). Detection mode:
+        0x00=FL top, 0x01=FL bottom, 0x02=ABS.
       wavelength: ABS wavelength in nm (only used when mode="absorbance").
       excitation_wavelength: FL excitation center wavelength in nm.
       emission_wavelength: FL emission center wavelength in nm.
@@ -177,9 +180,12 @@ class _PlateMappingMixin:
       buf[38:40] = wl_raw.to_bytes(2, "big")
 
     else:  # fluorescence
-      buf[15] = 0x00  # DetectionMode.FLUORESCENCE
+      if optic_position.lower() == "bottom":
+        buf[15] = 0x01  # DetectionMode.FL_BOTTOM
+      else:
+        buf[15] = 0x00  # DetectionMode.FL_TOP
       # [16:19] = zeros (already zero)
-      buf[19] = num_cols  # separator echo
+      buf[19] = 0x0C  # constant (all captures)
 
       # Wavelength edges (nm×10)
       ex_hi = int((excitation_wavelength + excitation_bandwidth / 2) * 10)
@@ -372,6 +378,7 @@ class _PlateMappingMixin:
     plate: Plate,
     *,
     mode: str = "fluorescence",
+    optic_position: str = "top",
     wavelength: int = 600,
     excitation_wavelength: int = 488,
     emission_wavelength: int = 535,
@@ -399,6 +406,7 @@ class _PlateMappingMixin:
     Args:
       plate: Plate resource.
       mode: ``"fluorescence"`` or ``"absorbance"``.
+      optic_position: ``"top"`` or ``"bottom"`` (FL only).
       wavelength: ABS wavelength in nm (only used when mode="absorbance").
       excitation_wavelength: FL excitation center wavelength in nm.
       emission_wavelength: FL emission center wavelength in nm.
@@ -426,6 +434,7 @@ class _PlateMappingMixin:
     params = self._build_plate_map_payload(
       plate,
       mode=mode,
+      optic_position=optic_position,
       wavelength=wavelength,
       excitation_wavelength=excitation_wavelength,
       emission_wavelength=emission_wavelength,
@@ -515,6 +524,7 @@ class _PlateMappingMixin:
     *,
     plate_size: Tuple[float, float] = (127.76, 85.48),
     mode: str = "fluorescence",
+    optic_position: str = "top",
     wavelength: int = 600,
     excitation_wavelength: int = 488,
     emission_wavelength: int = 535,
@@ -543,6 +553,7 @@ class _PlateMappingMixin:
       plate_size: (length_mm, width_mm) of the carrier area. Defaults to
         SBS standard (127.76, 85.48).
       mode: ``"fluorescence"`` or ``"absorbance"``.
+      optic_position: ``"top"`` or ``"bottom"`` (FL only).
       wavelength: ABS wavelength in nm (only used when mode="absorbance").
       excitation_wavelength: FL excitation center wavelength in nm.
       emission_wavelength: FL emission center wavelength in nm.
@@ -594,8 +605,11 @@ class _PlateMappingMixin:
       wl_raw = wavelength * 10
       buf[38:40] = wl_raw.to_bytes(2, "big")
     else:
-      buf[15] = 0x00
-      buf[19] = num_cols
+      if optic_position.lower() == "bottom":
+        buf[15] = 0x01  # DetectionMode.FL_BOTTOM
+      else:
+        buf[15] = 0x00  # DetectionMode.FL_TOP
+      buf[19] = 0x0C  # constant (all captures)
 
       ex_hi = int((excitation_wavelength + excitation_bandwidth / 2) * 10)
       ex_lo = int((excitation_wavelength - excitation_bandwidth / 2) * 10)
@@ -627,6 +641,7 @@ class _PlateMappingMixin:
     *,
     plate_size: Tuple[float, float] = (127.76, 85.48),
     mode: str = "fluorescence",
+    optic_position: str = "top",
     wavelength: int = 600,
     excitation_wavelength: int = 488,
     emission_wavelength: int = 535,
@@ -684,6 +699,7 @@ class _PlateMappingMixin:
       positions,
       plate_size=plate_size,
       mode=mode,
+      optic_position=optic_position,
       wavelength=wavelength,
       excitation_wavelength=excitation_wavelength,
       emission_wavelength=emission_wavelength,
