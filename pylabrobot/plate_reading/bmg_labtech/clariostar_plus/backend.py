@@ -25,6 +25,7 @@ import time
 import warnings
 from typing import Dict, List, Optional
 
+from pylabrobot.io import LOG_LEVEL_IO
 from pylabrobot.io.ftdi import FTDI
 
 from ...backend import PlateReaderBackend
@@ -600,8 +601,8 @@ class CLARIOstarPlusBackend(
     n = await self.io.write(frame)
     if n != len(frame):
       raise IOError(f"Short write: sent {n} of {len(frame)} bytes")
-    if logger.isEnabledFor(logging.DEBUG):
-      logger.debug("sent %d bytes: %s", len(frame), frame.hex())
+    if logger.isEnabledFor(LOG_LEVEL_IO):
+      logger.log(LOG_LEVEL_IO, "sent %d bytes: %s", len(frame), frame.hex())
 
   async def _read_frame(self, timeout: Optional[float] = None) -> bytes:
     """Read a complete frame from the serial port.
@@ -682,8 +683,8 @@ class CLARIOstarPlusBackend(
 
         await asyncio.sleep(0.0001)
 
-    if d and logger.isEnabledFor(logging.DEBUG):
-      logger.debug("read %d bytes: %s", len(d), d.hex())
+    if d and logger.isEnabledFor(LOG_LEVEL_IO):
+      logger.log(LOG_LEVEL_IO, "read %d bytes: %s", len(d), d.hex())
 
     return d
 

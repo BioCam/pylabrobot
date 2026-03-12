@@ -368,7 +368,7 @@ class _MeasurementCommonMixin:
 
         written, expected = self._measurement_progress(response)
         if logger.isEnabledFor(logging.INFO):
-          logger.info("%s progress: %d/%d", log_prefix, written, expected)
+          logger.debug("%s progress: %d/%d", log_prefix, written, expected)
 
         if expected > 0 and written >= expected:
           progressive_complete = True
