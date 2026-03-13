@@ -99,7 +99,6 @@ from pylabrobot.resources.liquid import Liquid
 from pylabrobot.resources.rotation import Rotation
 from pylabrobot.resources.trash import Trash
 
-from pylabrobot.liquid_handling.backends.hamilton.simulatable import simulated_value
 
 T = TypeVar("T")
 
@@ -1304,8 +1303,6 @@ class Head96Information:
 class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   """Interface for the Hamilton STARBackend."""
 
-  _is_simulation_backend: bool = False
-
   def __init__(
     self,
     device_address: Optional[int] = None,
@@ -1352,6 +1349,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     self._default_1d_symbology: Barcode1DSymbology = "Code 128 (Subset B and C)"
 
     self._setup_done = False
+
+  @asynccontextmanager
+  async def simulated_values(self, **overrides):
+    """No-op on real hardware — methods run normally, overrides are ignored."""
+    yield
 
   def _min_spacing_between(self, i: int, j: int) -> float:
     """Return the conservative minimum Y spacing required between channels *i* and *j*.
@@ -4540,7 +4542,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return True
 
 
-  @simulated_value
+
   async def core_check_resource_exists_at_location_center(
     self,
     location: Coordinate,
@@ -5486,7 +5488,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   # -------------- 3.4.3 X-query --------------
 
 
-  @simulated_value
+
   async def request_left_x_arm_position(self) -> float:
     """Request left X-Arm position"""
     resp_dmm = await self.send_command(module="C0", command="RX", fmt="rx#####")
@@ -6811,7 +6813,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   # TODO:(command:RY): Request Y-Positions of all pipetting channels
 
 
-  @simulated_value
+
   async def request_x_pos_channel_n(self, pipetting_channel_index: int = 0) -> float:
     """Request X-Position of Pipetting channel n (in mm)"""
 
@@ -6821,7 +6823,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return round(resp, 1)
 
 
-  @simulated_value
+
   async def request_y_pos_channel_n(self, pipetting_channel_index: int) -> float:
     """Request Y-Position of Pipetting channel n
 
@@ -6848,7 +6850,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   # TODO:(command:RZ): Request Z-Positions of all pipetting channels
 
 
-  @simulated_value
+
   async def request_z_pos_channel_n(self, pipetting_channel_index: int) -> float:
     warnings.warn(
       "Deprecated. Use either request_tip_bottom_z_position or request_probe_z_position. "
@@ -6905,7 +6907,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return [int(v) for v in await self.request_tip_presence() if v is not None]
 
 
-  @simulated_value
+
   async def request_pip_height_last_lld(self) -> List[float]:
     """
     Return the absolute liquid heights measured during the most recent
@@ -7076,7 +7078,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   # -------------- 3.10 96-Head commands --------------
 
 
-  @simulated_value
+
   async def head96_request_firmware_version(self) -> datetime.date:
     """Request 96 Head firmware version (MEM-READ command)."""
     resp: str = await self.send_command(module="H0", command="RF")
@@ -8346,7 +8348,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return await self.send_command(module="C0", command="QH", fmt="qh#")
 
 
-  @simulated_value
+
   async def head96_request_tip_presence(self) -> int:
     """Request Tip presence on the 96-Head
 
@@ -8590,7 +8592,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return sorted(slots)
 
 
-  @simulated_value
+
   async def request_presence_of_carriers_on_deck(self) -> list[int]:
     """
     Read the deck carrier presence sensors and return the positions where carriers
@@ -8611,7 +8613,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return self._decode_hex_bitmask_to_track_list(ce_resp)
 
 
-  @simulated_value
+
   async def request_presence_of_carriers_on_loading_tray(self) -> list[int]:
     """
     Moves autoload sled across loading tray and reads its front-facing proximity sensors
@@ -8637,7 +8639,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return self._decode_hex_bitmask_to_track_list(mask_hex)
 
 
-  @simulated_value
+
   async def request_presence_of_single_carrier_on_loading_tray(self, track: int) -> bool:
     """
     Check whether a specific loading-tray track contains a carrier.
@@ -8916,7 +8918,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return await self.send_command(module="C0", command="CU", cu=should_monitor)
 
 
-  @simulated_value
+
   async def load_carrier_from_autoload_belt(
     self,
     barcode_reading: bool = False,
@@ -10182,7 +10184,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return round(STARBackend.y_drive_increment_to_mm(iswap_y_pos), 1)
 
 
-  @simulated_value
+
   async def request_iswap_initialization_status(self) -> bool:
     """Request iSWAP initialization status
 
@@ -10304,7 +10306,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return STARBackend.dispensing_drive_increment_to_volume(inc)
 
 
-  @simulated_value
+
   async def clld_probe_x_position_using_channel(
     self,
     channel_idx: int,  # 0-based indexing of channels!
@@ -10421,7 +10423,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return round(material_x_pos, 1)
 
 
-  @simulated_value
+
   async def clld_probe_y_position_using_channel(
     self,
     channel_idx: int,  # 0-based indexing of channels!
@@ -10693,7 +10695,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
 
 
-  @simulated_value
+
   async def clld_probe_z_height_using_channel(
     self,
     channel_idx: int,  # 0-based indexing of channels!

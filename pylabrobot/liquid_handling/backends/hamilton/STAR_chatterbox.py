@@ -43,8 +43,6 @@ _DEFAULT_EXTENDED_CONFIGURATION = ExtendedConfiguration(
 class STARChatterboxBackend(STARBackend):
   """Chatterbox backend for 'STAR'"""
 
-  _is_simulation_backend: bool = True
-
   def __init__(
     self,
     num_channels: int = 8,
@@ -149,6 +147,53 @@ class STARChatterboxBackend(STARBackend):
     await LiquidHandlerBackend.stop(self)
     self._setup_done = False
 
+  # # # # # # # # Simulated values # # # # # # # #
+
+  _SENTINEL = object()
+
+  @asynccontextmanager
+  async def simulated_values(self, **overrides):
+    """Temporarily override method return values for simulation.
+
+    Within the block, each overridden method still runs its body (assembling
+    and logging firmware commands) but returns the declared value instead of
+    the parsed response.  On exit, the original methods are restored.
+
+    Usage::
+
+        async with star.simulated_values(head96_request_tip_presence=0):
+            q = await star.head96_request_tip_presence()  # returns 0
+    """
+    saved = {}
+    for name, value in overrides.items():
+        saved[name] = self.__dict__.get(name, self._SENTINEL)
+
+        # Walk the MRO to find the real method (class-level, not instance-level)
+        real_method = None
+        for cls in type(self).__mro__:
+            if name in cls.__dict__:
+                real_method = cls.__dict__[name]
+                break
+        if real_method is None:
+            raise AttributeError(f"{type(self).__name__} has no method {name!r}")
+
+        async def _wrapper(*args, _orig=real_method, _val=value, **kwargs):
+            try:
+                await _orig(self, *args, **kwargs)
+            except Exception:
+                pass
+            return _val
+
+        self.__dict__[name] = _wrapper
+    try:
+        yield
+    finally:
+        for name, orig in saved.items():
+            if orig is self._SENTINEL:
+                self.__dict__.pop(name, None)
+            else:
+                self.__dict__[name] = orig
+
   # # # # # # # # Low-level command sending/receiving # # # # # # # #
 
   async def _write_and_read_command(
@@ -240,21 +285,6 @@ class STARChatterboxBackend(STARBackend):
       `False` if not, or `None` if unknown.
     """
     return [self.head[ch].has_tip for ch in range(self.num_channels)]
-
-  async def channel_dispensing_drive_request_position(
-    self, channel_idx: int, simulated_value: float = 0.0
-  ) -> float:
-    """Override to return mock dispensing drive position.
-
-    This method is called when the system needs to know the current position
-    of a channel's dispensing drive (e.g., before emptying tips).
-
-    Returns a mock position with a default value of 0.0 for all channels.
-    """
-    if not (0 <= channel_idx < self.num_channels):
-      raise ValueError(f"channel_idx must be between 0 and {self.num_channels - 1}")
-
-    return simulated_value
 
   async def channel_request_y_minimum_spacing(self, channel_idx: int) -> float:
     """Return mock minimum Y spacing for the given channel.

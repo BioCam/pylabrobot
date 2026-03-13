@@ -4,7 +4,6 @@ from pylabrobot.io.validation_utils import LOG_LEVEL_IO
 from pylabrobot.liquid_handling import LiquidHandler
 from pylabrobot.resources import (
   Coordinate,
-  Resource,
   TIP_CAR_480_A00,
   hamilton_96_tiprack_1000uL,
 )
@@ -48,10 +47,6 @@ class TestSTARChatterboxBackend(unittest.IsolatedAsyncioTestCase):
     resp = await self.backend._write_and_read_command(id_=None, cmd="C0ASid0000 ...")
     self.assertIn("id0000", resp)
 
-  async def test_head96_request_tip_presence(self):
-    result = await self.backend.head96_request_tip_presence(simulated_value=0)
-    self.assertEqual(result, 0)
-
   async def test_park_iswap(self):
     self.backend._iswap_parked = False
     await self.backend.park_iswap()
@@ -62,55 +57,68 @@ class TestSTARChatterboxBackend(unittest.IsolatedAsyncioTestCase):
     await self.backend.return_core_gripper_tools()
     self.assertTrue(self.backend._core_parked)
 
-  async def test_core_check_resource_exists(self):
-    result = await self.backend.core_check_resource_exists_at_location_center(
-      location=Coordinate(100, 200, 300),
-      resource=Resource(name="test", size_x=10, size_y=10, size_z=10),
-      simulated_value=True,
-    )
-    self.assertTrue(result)
-
   async def test_request_presence_of_carriers(self):
-    self.assertEqual(
-      await self.backend.request_presence_of_carriers_on_loading_tray(simulated_value=[]), []
-    )
-    self.assertEqual(
-      await self.backend.request_presence_of_carriers_on_deck(), []
-    )
+    self.assertEqual(await self.backend.request_presence_of_carriers_on_deck(), [])
 
   async def test_send_raw_command_logged_at_io_level(self):
     with self.assertLogs("pylabrobot", level=LOG_LEVEL_IO) as cm:
       await self.backend.send_raw_command("C0RVid0001")
     self.assertTrue(any("C0RVid0001" in msg for msg in cm.output))
 
-  # --- @simulated_value decorator tests ---
+  # --- simulated_values context manager tests ---
 
-  async def test_simulated_value_omitted_returns_zero_default(self):
-    """Omitting simulated_value= in simulation returns zeroed default from _parse_response."""
+  async def test_simulated_values_returns_override(self):
+    """Within the context manager, methods return the declared value."""
+    async with self.backend.simulated_values(head96_request_tip_presence=1):
+      result = await self.backend.head96_request_tip_presence()
+    self.assertEqual(result, 1)
+
+  async def test_simulated_values_restores_after_exit(self):
+    """After exiting the context manager, methods return the normal default."""
+    async with self.backend.simulated_values(head96_request_tip_presence=1):
+      pass
     result = await self.backend.head96_request_tip_presence()
-    self.assertEqual(result, 0)
+    self.assertEqual(result, 0)  # zeroed default from _parse_response
 
-  async def test_simulated_value_returns_provided_value(self):
-    """simulated_value= returns the caller-provided value."""
-    self.assertEqual(
-      await self.backend.head96_request_tip_presence(simulated_value=0), 0
-    )
-    self.assertEqual(
-      await self.backend.request_presence_of_carriers_on_loading_tray(
-        simulated_value=[1, 3]
-      ),
-      [1, 3],
-    )
-
-  async def test_simulated_value_generates_firmware_log(self):
-    """@simulated_value methods still generate firmware commands in the log."""
+  async def test_simulated_values_generates_firmware_log(self):
+    """Overridden methods still generate firmware commands in the log."""
     with self.assertLogs("pylabrobot", level=LOG_LEVEL_IO) as cm:
-      result = await self.backend.request_presence_of_carriers_on_loading_tray(
-        simulated_value=[]
-      )
-    self.assertEqual(result, [])
+      async with self.backend.simulated_values(head96_request_tip_presence=1):
+        result = await self.backend.head96_request_tip_presence()
+    self.assertEqual(result, 1)
     io_messages = [m for m in cm.output if "write:" in m]
     self.assertGreater(len(io_messages), 0)
+
+  async def test_simulated_values_multiple_methods(self):
+    """Multiple methods can be overridden simultaneously."""
+    async with self.backend.simulated_values(
+      head96_request_tip_presence=1,
+      request_left_x_arm_position=42.5,
+    ):
+      self.assertEqual(await self.backend.head96_request_tip_presence(), 1)
+      self.assertEqual(await self.backend.request_left_x_arm_position(), 42.5)
+
+  async def test_simulated_values_nested(self):
+    """Nested context managers: inner overrides outer, outer restores after inner exits."""
+    async with self.backend.simulated_values(head96_request_tip_presence=0):
+      self.assertEqual(await self.backend.head96_request_tip_presence(), 0)
+      async with self.backend.simulated_values(head96_request_tip_presence=1):
+        self.assertEqual(await self.backend.head96_request_tip_presence(), 1)
+      self.assertEqual(await self.backend.head96_request_tip_presence(), 0)
+
+  async def test_simulated_values_complex_type(self):
+    """Complex return types (lists, Coordinates) work correctly."""
+    async with self.backend.simulated_values(
+      request_iswap_position=Coordinate(x=100.0, y=200.0, z=300.0),
+    ):
+      pos = await self.backend.request_iswap_position()
+    self.assertEqual(pos, Coordinate(x=100.0, y=200.0, z=300.0))
+
+  async def test_simulated_values_invalid_method_raises(self):
+    """Passing a non-existent method name raises AttributeError."""
+    with self.assertRaises(AttributeError):
+      async with self.backend.simulated_values(nonexistent_method=42):
+        pass
 
 
 if __name__ == "__main__":
