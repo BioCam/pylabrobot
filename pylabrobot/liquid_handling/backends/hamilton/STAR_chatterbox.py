@@ -1,6 +1,9 @@
 import copy
 import datetime
+import logging
 import warnings
+
+from pylabrobot.io.validation_utils import LOG_LEVEL_IO
 from contextlib import asynccontextmanager
 from typing import Dict, List, Literal, Optional, Union
 
@@ -12,7 +15,11 @@ from pylabrobot.liquid_handling.backends.hamilton.STAR_backend import (
   MachineConfiguration,
   STARBackend,
 )
+from pylabrobot.resources import Carrier, Container, Coordinate, Resource
+from pylabrobot.resources.barcode import Barcode, Barcode1DSymbology
 from pylabrobot.resources.well import Well
+
+logger = logging.getLogger("pylabrobot")
 
 _DEFAULT_MACHINE_CONFIGURATION = MachineConfiguration(
   pip_type_1000ul=True,
@@ -150,8 +157,12 @@ class STARChatterboxBackend(STARBackend):
     read_timeout: Optional[int] = None,
     wait: bool = True,
   ) -> Optional[str]:
-    print(cmd)
-    return None
+    logger.log(LOG_LEVEL_IO, "write: %s", cmd)
+    prefix = cmd[:4]
+    id_str = f"id{id_:04d}" if id_ is not None else "id0000"
+    resp = f"{prefix}{id_str} er00/00"
+    logger.log(LOG_LEVEL_IO, "read: %s", resp)
+    return resp
 
   async def send_raw_command(
     self,
@@ -160,7 +171,7 @@ class STARChatterboxBackend(STARBackend):
     read_timeout: Optional[int] = None,
     wait: bool = True,
   ) -> Optional[str]:
-    print(command)
+    logger.log(LOG_LEVEL_IO, "write: %s", command)
     return None
 
   # # # # # # # # STAR configuration # # # # # # # #
@@ -214,16 +225,16 @@ class STARChatterboxBackend(STARBackend):
     return self._channels_minimum_y_spacing[channel_idx]
 
   async def move_channel_y(self, channel: int, y: float):
-    print(f"moving channel {channel} to y: {y}")
+    logger.info("moving channel %d to y: %s", channel, y)
 
   async def move_channel_x(self, channel: int, x: float):
-    print(f"moving channel {channel} to x: {x}")
+    logger.info("moving channel %d to x: %s", channel, x)
 
   async def move_all_channels_in_z_safety(self):
-    print("moving all channels to z safety")
+    logger.info("moving all channels to z safety")
 
   async def position_channels_in_z_direction(self, zs: Dict[int, float]):
-    print(f"positioning channels in z: {zs}")
+    logger.info("positioning channels in z: %s", zs)
 
   # # # # # # # # 1_000 uL Channel: Complex Commands # # # # # # # #
 
@@ -235,9 +246,10 @@ class STARChatterboxBackend(STARBackend):
     move_inwards: float = 2,
     move_height: float = 15,
   ):
-    print(
-      f"stepping off foil | wells: {wells} | front channel: {front_channel} | "
-      f"back channel: {back_channel} | move inwards: {move_inwards} | move height: {move_height}"
+    logger.info(
+      "stepping off foil | wells: %s | front channel: %s | "
+      "back channel: %s | move inwards: %s | move height: %s",
+      wells, front_channel, back_channel, move_inwards, move_height,
     )
 
   async def pierce_foil(
@@ -250,10 +262,12 @@ class STARChatterboxBackend(STARBackend):
     one_by_one: bool = False,
     distance_from_bottom: float = 20.0,
   ):
-    print(
-      f"piercing foil | wells: {wells} | piercing channels: {piercing_channels} | "
-      f"hold down channels: {hold_down_channels} | move inwards: {move_inwards} | "
-      f"spread: {spread} | one by one: {one_by_one} | distance from bottom: {distance_from_bottom}"
+    logger.info(
+      "piercing foil | wells: %s | piercing channels: %s | "
+      "hold down channels: %s | move inwards: %s | "
+      "spread: %s | one by one: %s | distance from bottom: %s",
+      wells, piercing_channels, hold_down_channels, move_inwards,
+      spread, one_by_one, distance_from_bottom,
     )
 
   # # # # # # # # Extension: 96-Head # # # # # # # #
@@ -261,6 +275,14 @@ class STARChatterboxBackend(STARBackend):
   async def head96_request_firmware_version(self) -> datetime.date:
     """Return mock 96-head firmware version."""
     return datetime.date(2023, 1, 1)
+
+  async def head96_request_tip_presence(self) -> int:
+    """Return mock 96-head tip presence from tracker state.
+
+    Returns:
+      0 = no tips, 1 = tips present on the 96-head.
+    """
+    return 0
 
   # # # # # # # # Extension: iSWAP # # # # # # # #
 
@@ -273,13 +295,13 @@ class STARChatterboxBackend(STARBackend):
     return self._iswap_parked is True
 
   async def move_iswap_x(self, x_position: float):
-    print("moving iswap x to", x_position)
+    logger.info("moving iswap x to %s", x_position)
 
   async def move_iswap_y(self, y_position: float):
-    print("moving iswap y to", y_position)
+    logger.info("moving iswap y to %s", y_position)
 
   async def move_iswap_z(self, z_position: float):
-    print("moving iswap z to", z_position)
+    logger.info("moving iswap z to %s", z_position)
 
   @asynccontextmanager
   async def slow_iswap(self, wrist_velocity: int = 20_000, gripper_velocity: int = 20_000):
@@ -292,7 +314,7 @@ class STARChatterboxBackend(STARBackend):
       yield
     finally:
       messages.append("end slow iswap")
-      print(" | ".join(messages))
+      logger.info(" | ".join(messages))
 
   # # # # # # # # Liquid Level Detection (LLD) # # # # # # # #
 
@@ -312,7 +334,129 @@ class STARChatterboxBackend(STARBackend):
     return tip.total_tip_length
 
   async def position_channels_in_y_direction(self, ys, make_space=True):
-    print("positioning channels in y:", ys, "make_space:", make_space)
+    logger.info("positioning channels in y: %s make_space: %s", ys, make_space)
 
   async def request_pip_height_last_lld(self):
     return list(range(12))
+
+  async def request_y_pos_channel_n(
+    self, pipetting_channel_index: int, simulated_value: float = 285.0
+  ) -> float:
+    """Return mock Y position for channel."""
+    return simulated_value
+
+  async def request_x_pos_channel_n(
+    self, pipetting_channel_index: int = 0, simulated_value: float = 400.0
+  ) -> float:
+    """Return mock X position for channel."""
+    return simulated_value
+
+  async def request_left_x_arm_position(self, simulated_value: float = 400.0) -> float:
+    """Return mock left X-arm position."""
+    return simulated_value
+
+  async def clld_probe_z_height_using_channel(
+    self, channel_idx: int, simulated_value: float = 200.0, **kwargs
+  ) -> float:
+    """Return mock Z height from cLLD probing."""
+    return simulated_value
+
+  async def clld_probe_y_position_using_channel(
+    self, channel_idx: int, simulated_value: float = 285.0, **kwargs
+  ) -> float:
+    """Return mock Y position from cLLD probing."""
+    return simulated_value
+
+  async def clld_probe_x_position_using_channel(
+    self, channel_idx: int, simulated_value: float = 400.0, **kwargs
+  ) -> float:
+    """Return mock X position from cLLD probing."""
+    return simulated_value
+
+  async def probe_liquid_heights(
+    self,
+    containers: List[Container],
+    use_channels: Optional[List[int]] = None,
+    **kwargs,
+  ) -> List[float]:
+    """Return liquid heights derived from the volume tracker state."""
+    return [
+      container.compute_height_from_volume(container.tracker.get_used_volume())
+      for container in containers
+    ]
+
+  # # # # # # # # Extension: iSWAP (additional) # # # # # # # #
+
+  async def park_iswap(
+    self,
+    minimum_traverse_height_at_beginning_of_a_command: int = 2840,
+  ):
+    """Park iSWAP (simulation — sets state only)."""
+    self._iswap_parked = True
+    logger.info("park_iswap")
+
+  # # # # # # # # Extension: CoRe Gripper # # # # # # # #
+
+  async def return_core_gripper_tools(
+    self,
+    front_offset: Optional[Coordinate] = None,
+    back_offset: Optional[Coordinate] = None,
+  ):
+    """Return CoRe gripper tools (simulation — sets state only)."""
+    self._core_parked = True
+    logger.info("return_core_gripper_tools")
+
+  async def core_check_resource_exists_at_location_center(
+    self,
+    location: Coordinate,
+    resource: Resource,
+    gripper_y_margin: float = 0.5,
+    offset: Coordinate = Coordinate.zero(),
+    minimum_traverse_height_at_beginning_of_a_command: float = 275.0,
+    z_position_at_the_command_end: float = 275.0,
+    enable_recovery: bool = True,
+    audio_feedback: bool = True,
+  ) -> bool:
+    """Resource always present in simulation."""
+    return True
+
+  # # # # # # # # Carrier presence / autoload # # # # # # # #
+
+  async def request_presence_of_carriers_on_loading_tray(self) -> list[int]:
+    """No carriers on tray in simulation."""
+    return []
+
+  async def request_presence_of_carriers_on_deck(self) -> list[int]:
+    """Not tracked in simulation."""
+    return []
+
+  async def request_presence_of_single_carrier_on_loading_tray(self, track: int) -> bool:
+    """No carrier on loading tray in simulation."""
+    return False
+
+  async def take_carrier_out_to_autoload_belt(self, carrier: Carrier):
+    """Autoload no-op in simulation."""
+    logger.info("take_carrier_out_to_autoload_belt: %s", carrier.name)
+
+  async def load_carrier_from_autoload_belt(
+    self,
+    barcode_reading: bool = False,
+    barcode_reading_direction: Literal["horizontal", "vertical"] = "horizontal",
+    barcode_symbology: Optional[Barcode1DSymbology] = None,
+    reading_position_of_first_barcode: float = 63.0,
+    no_container_per_carrier: int = 5,
+    distance_between_containers: float = 96.0,
+    width_of_reading_window: float = 38.0,
+    reading_speed: float = 128.1,
+    park_autoload_after: bool = True,
+  ) -> dict[int, Optional[Barcode]]:
+    """Return empty barcode dict in simulation."""
+    return {}
+
+  async def unload_carrier(
+    self,
+    carrier: Carrier,
+    park_autoload_after: bool = True,
+  ):
+    """Autoload no-op in simulation."""
+    logger.info("unload_carrier: %s", carrier.name)
