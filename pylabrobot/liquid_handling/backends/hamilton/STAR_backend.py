@@ -99,8 +99,9 @@ from pylabrobot.resources.liquid import Liquid
 from pylabrobot.resources.rotation import Rotation
 from pylabrobot.resources.trash import Trash
 
-T = TypeVar("T")
+from pylabrobot.liquid_handling.backends.hamilton.simulatable import simulated_value
 
+T = TypeVar("T")
 
 logger = logging.getLogger("pylabrobot")
 
@@ -1303,6 +1304,8 @@ class Head96Information:
 class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   """Interface for the Hamilton STARBackend."""
 
+  _is_simulation_backend: bool = False
+
   def __init__(
     self,
     device_address: Optional[int] = None,
@@ -1731,6 +1734,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   # # # # Single-Channel Pipette Commands # # # #
 
   # # # Machine Query (MEM-READ) Commands: Single-Channel # # #
+
 
   async def channel_request_y_minimum_spacing(self, channel_idx: int) -> float:
     """Request the minimum Y spacing for a given channel.
@@ -2261,6 +2265,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       await self.move_all_channels_in_z_safety()
       raise
 
+
   async def probe_liquid_heights(
     self,
     containers: List[Container],
@@ -2444,6 +2449,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   DISPENSING_DRIVE_VOL_LIMIT_BOTTOM = -45  # vol TODO: confirm with others
   DISPENSING_DRIVE_VOL_LIMIT_TOP = 1_250  # vol
+
 
   async def channel_dispensing_drive_request_position(self, channel_idx: int) -> float:
     """Request the current position of the channel's dispensing drive"""
@@ -4464,9 +4470,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     await self.position_max_free_y_for_n(pipetting_channel_index=channel)
 
+
   async def move_channel_x(self, channel: int, x: float):
     """Move a channel in the x direction."""
     await self.position_left_x_arm_(round(x * 10))
+
 
   @need_iswap_parked
   async def move_channel_y(self, channel: int, y: float):
@@ -4531,6 +4539,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       return False
     return True
 
+
+  @simulated_value
   async def core_check_resource_exists_at_location_center(
     self,
     location: Coordinate,
@@ -5226,6 +5236,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # TODO: parse res
     return await self.send_command(module="C0", command="UJ")
 
+
   async def request_machine_configuration(self) -> MachineConfiguration:
     """Request machine configuration (RM command) [SFCO.0035].
 
@@ -5246,6 +5257,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       temp_controlled_carrier_2_installed=bool(kb & (1 << 7)),
       num_pip_channels=resp["kp"],
     )
+
 
   async def request_extended_configuration(self) -> ExtendedConfiguration:
     """Request extended configuration (QM command).
@@ -5473,6 +5485,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   # -------------- 3.4.3 X-query --------------
 
+
+  @simulated_value
   async def request_left_x_arm_position(self) -> float:
     """Request left X-Arm position"""
     resp_dmm = await self.send_command(module="C0", command="RX", fmt="rx#####")
@@ -6335,6 +6349,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     warnings.warn("Deprecated. Use return_core_gripper_tools instead.", DeprecationWarning)
     return await self.return_core_gripper_tools()
 
+
   @need_iswap_parked
   async def return_core_gripper_tools(
     self,
@@ -6718,6 +6733,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       xs=f"{x_position:05}",
     )
 
+
   async def spread_pip_channels(self):
     """Spread PIP channels"""
 
@@ -6784,6 +6800,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       pn=f"{pipetting_channel_index:02}",
     )
 
+
   async def move_all_channels_in_z_safety(self):
     """Move all pipetting channels in Z-safety position"""
 
@@ -6793,6 +6810,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   # TODO:(command:RY): Request Y-Positions of all pipetting channels
 
+
+  @simulated_value
   async def request_x_pos_channel_n(self, pipetting_channel_index: int = 0) -> float:
     """Request X-Position of Pipetting channel n (in mm)"""
 
@@ -6801,6 +6820,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     return round(resp, 1)
 
+
+  @simulated_value
   async def request_y_pos_channel_n(self, pipetting_channel_index: int) -> float:
     """Request Y-Position of Pipetting channel n
 
@@ -6826,6 +6847,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   # TODO:(command:RZ): Request Z-Positions of all pipetting channels
 
+
+  @simulated_value
   async def request_z_pos_channel_n(self, pipetting_channel_index: int) -> float:
     warnings.warn(
       "Deprecated. Use either request_tip_bottom_z_position or request_probe_z_position. "
@@ -6860,6 +6883,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # Extract z-coordinate and convert to mm
     return float(z_pos_query["rd"] / 10)
 
+
   async def request_tip_presence(self) -> List[Optional[bool]]:
     """Measure tip presence on all single channels using their sleeve sensors.
 
@@ -6880,6 +6904,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
     return [int(v) for v in await self.request_tip_presence() if v is not None]
 
+
+  @simulated_value
   async def request_pip_height_last_lld(self) -> List[float]:
     """
     Return the absolute liquid heights measured during the most recent
@@ -7049,6 +7075,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   # -------------- 3.10 96-Head commands --------------
 
+
+  @simulated_value
   async def head96_request_firmware_version(self) -> datetime.date:
     """Request 96 Head firmware version (MEM-READ command)."""
     resp: str = await self.send_command(module="H0", command="RF")
@@ -8317,6 +8345,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     return await self.send_command(module="C0", command="QH", fmt="qh#")
 
+
+  @simulated_value
   async def head96_request_tip_presence(self) -> int:
     """Request Tip presence on the 96-Head
 
@@ -8559,6 +8589,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     return sorted(slots)
 
+
+  @simulated_value
   async def request_presence_of_carriers_on_deck(self) -> list[int]:
     """
     Read the deck carrier presence sensors and return the positions where carriers
@@ -8578,6 +8610,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     return self._decode_hex_bitmask_to_track_list(ce_resp)
 
+
+  @simulated_value
   async def request_presence_of_carriers_on_loading_tray(self) -> list[int]:
     """
     Moves autoload sled across loading tray and reads its front-facing proximity sensors
@@ -8602,6 +8636,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     return self._decode_hex_bitmask_to_track_list(mask_hex)
 
+
+  @simulated_value
   async def request_presence_of_single_carrier_on_loading_tray(self, track: int) -> bool:
     """
     Check whether a specific loading-tray track contains a carrier.
@@ -8690,6 +8726,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     # Park autoload to max x position available
     return await self.send_command(module="I0", command="XP", xp=max_x_pos)
+
 
   async def take_carrier_out_to_autoload_belt(self, carrier: Carrier):
     """Take carrier out to identification position for barcode reading.
@@ -8878,6 +8915,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     return await self.send_command(module="C0", command="CU", cu=should_monitor)
 
+
+  @simulated_value
   async def load_carrier_from_autoload_belt(
     self,
     barcode_reading: bool = False,
@@ -9185,6 +9224,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
     print("\n✓ All carriers successfully loaded and detected!\n")
 
+
   async def unload_carrier(
     self,
     carrier: Carrier,
@@ -9426,6 +9466,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       module="C0", command="GZ", gz=str(round(abs(step_size) * 10)).zfill(3), zd=direction
     )
 
+
   async def move_iswap_x(self, x_position: float):
     """Move iSWAP X to absolute position"""
     loc = await self.request_iswap_position()
@@ -9434,6 +9475,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       allow_splitting=True,
     )
 
+
   async def move_iswap_y(self, y_position: float):
     """Move iSWAP Y to absolute position"""
     loc = await self.request_iswap_position()
@@ -9441,6 +9483,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       step_size=y_position - loc.y,
       allow_splitting=True,
     )
+
 
   async def move_iswap_z(self, z_position: float):
     """Move iSWAP Z to absolute position"""
@@ -9498,6 +9541,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
 
   # -------------- 3.17.2 Stack handling commands CP --------------
+
 
   async def park_iswap(
     self,
@@ -10137,6 +10181,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     iswap_y_pos = resp["ry"][1]  # 0 = FW counter, 1 = HW counter
     return round(STARBackend.y_drive_increment_to_mm(iswap_y_pos), 1)
 
+
+  @simulated_value
   async def request_iswap_initialization_status(self) -> bool:
     """Request iSWAP initialization status
 
@@ -10162,6 +10208,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     """Unlock cover"""
 
     return await self.send_command(module="C0", command="HO")
+
 
   async def disable_cover_control(self):
     """Disable cover control"""
@@ -10256,6 +10303,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     inc = STARBackend.dispensing_drive_mm_to_increment(position_mm)
     return STARBackend.dispensing_drive_increment_to_volume(inc)
 
+
+  @simulated_value
   async def clld_probe_x_position_using_channel(
     self,
     channel_idx: int,  # 0-based indexing of channels!
@@ -10371,6 +10420,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     return round(material_x_pos, 1)
 
+
+  @simulated_value
   async def clld_probe_y_position_using_channel(
     self,
     channel_idx: int,  # 0-based indexing of channels!
@@ -10641,6 +10692,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       zi=f"{post_detection_dist_increments:04}",  # Distance to move up after detection [increment]
     )
 
+
+  @simulated_value
   async def clld_probe_z_height_using_channel(
     self,
     channel_idx: int,  # 0-based indexing of channels!
@@ -11182,6 +11235,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     increments = resp["rz"]
     return self.z_drive_increment_to_mm(increments)
 
+
   async def request_tip_len_on_channel(self, channel_idx: int) -> float:
     """Measures the length of the tip attached to the specified pipetting channel.
     Checks if a tip is present on the given channel. Raises an error if no tip is present.
@@ -11429,6 +11483,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     return {channel_idx: y for channel_idx, y in enumerate(y_positions)}
 
+
   @need_iswap_parked
   async def position_channels_in_y_direction(self, ys: Dict[int, float], make_space=True):
     """position all channels simultaneously in the Y direction.
@@ -11515,6 +11570,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
     return {channel_idx: round(y / 10, 2) for channel_idx, y in enumerate(resp["rz"])}
 
+
   async def position_channels_in_z_direction(self, zs: Dict[int, float]):
     channel_locations = await self.get_channels_z_positions()
 
@@ -11524,6 +11580,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return await self.send_command(
       module="C0", command="JZ", zp=[f"{round(z * 10):04}" for z in channel_locations.values()]
     )
+
 
   async def pierce_foil(
     self,
@@ -11604,6 +11661,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       front_channel=hold_down_channels[1],
       move_inwards=move_inwards,
     )
+
 
   async def step_off_foil(
     self,
@@ -11699,6 +11757,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     resp = await self.send_command(STARBackend.channel_id(channel), "QC", fmt="qc##### (n)")
     _, current_volume = resp["qc"]  # first is max volume
     return float(current_volume) / 10
+
 
   @asynccontextmanager
   async def slow_iswap(self, wrist_velocity: int = 20_000, gripper_velocity: int = 20_000):

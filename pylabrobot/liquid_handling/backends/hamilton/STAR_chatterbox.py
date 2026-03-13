@@ -1,6 +1,7 @@
 import copy
 import datetime
 import logging
+import re
 import warnings
 
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
@@ -15,8 +16,7 @@ from pylabrobot.liquid_handling.backends.hamilton.STAR_backend import (
   MachineConfiguration,
   STARBackend,
 )
-from pylabrobot.resources import Carrier, Container, Coordinate, Resource
-from pylabrobot.resources.barcode import Barcode, Barcode1DSymbology
+from pylabrobot.resources import Carrier, Container, Coordinate
 from pylabrobot.resources.well import Well
 
 logger = logging.getLogger("pylabrobot")
@@ -42,6 +42,8 @@ _DEFAULT_EXTENDED_CONFIGURATION = ExtendedConfiguration(
 
 class STARChatterboxBackend(STARBackend):
   """Chatterbox backend for 'STAR'"""
+
+  _is_simulation_backend: bool = True
 
   def __init__(
     self,
@@ -164,6 +166,51 @@ class STARChatterboxBackend(STARBackend):
     logger.log(LOG_LEVEL_IO, "read: %s", resp)
     return resp
 
+  def _parse_response(self, resp: str, fmt: str) -> dict:
+    """Return zeroed defaults derived from the format string.
+
+    Instead of parsing the mock response (which has no real parameter data),
+    we extract parameter names and types from ``fmt`` and return zero/empty
+    values for each.  This allows every ``send_command(..., fmt=...)`` call
+    to succeed in simulation without per-method overrides.
+    """
+    info: dict = {}
+
+    # Split fmt into parameter tokens using the same logic as parse_star_fw_string.
+    params: list[str] = []
+    current = ""
+    prevchar = None
+    for char in fmt:
+      if char.islower() and prevchar != "(":
+        if len(current) > 2:
+          params.append(current)
+          current = ""
+      current += char
+      prevchar = char
+    if current:
+      params.append(current)
+
+    for param in params:
+      name, data = param[:2], param[2:]
+      if not data:
+        continue
+      is_list = param.endswith(" (n)")
+      type_char = data[0]
+      if type_char == "#":
+        info[name] = [0] if is_list else 0
+      elif type_char == "*":
+        info[name] = [0] if is_list else 0
+      elif type_char == "&":
+        length = len(data.split(" ")[0])
+        info[name] = ["\x00" * length] if is_list else "\x00" * length
+
+    # Always include id
+    if "id" not in info:
+      id_match = re.search(r"id(\d+)", resp)
+      info["id"] = int(id_match.group(1)) if id_match else 0
+
+    return info
+
   async def send_raw_command(
     self,
     command: str,
@@ -193,9 +240,6 @@ class STARChatterboxBackend(STARBackend):
       `False` if not, or `None` if unknown.
     """
     return [self.head[ch].has_tip for ch in range(self.num_channels)]
-
-  async def request_z_pos_channel_n(self, channel: int) -> float:
-    return 285.0
 
   async def channel_dispensing_drive_request_position(
     self, channel_idx: int, simulated_value: float = 0.0
@@ -270,25 +314,7 @@ class STARChatterboxBackend(STARBackend):
       spread, one_by_one, distance_from_bottom,
     )
 
-  # # # # # # # # Extension: 96-Head # # # # # # # #
-
-  async def head96_request_firmware_version(self) -> datetime.date:
-    """Return mock 96-head firmware version."""
-    return datetime.date(2023, 1, 1)
-
-  async def head96_request_tip_presence(self) -> int:
-    """Return mock 96-head tip presence from tracker state.
-
-    Returns:
-      0 = no tips, 1 = tips present on the 96-head.
-    """
-    return 0
-
   # # # # # # # # Extension: iSWAP # # # # # # # #
-
-  async def request_iswap_initialization_status(self) -> bool:
-    """Return mock iSWAP initialization status."""
-    return True
 
   @property
   def iswap_parked(self) -> bool:
@@ -336,43 +362,6 @@ class STARChatterboxBackend(STARBackend):
   async def position_channels_in_y_direction(self, ys, make_space=True):
     logger.info("positioning channels in y: %s make_space: %s", ys, make_space)
 
-  async def request_pip_height_last_lld(self):
-    return list(range(12))
-
-  async def request_y_pos_channel_n(
-    self, pipetting_channel_index: int, simulated_value: float = 285.0
-  ) -> float:
-    """Return mock Y position for channel."""
-    return simulated_value
-
-  async def request_x_pos_channel_n(
-    self, pipetting_channel_index: int = 0, simulated_value: float = 400.0
-  ) -> float:
-    """Return mock X position for channel."""
-    return simulated_value
-
-  async def request_left_x_arm_position(self, simulated_value: float = 400.0) -> float:
-    """Return mock left X-arm position."""
-    return simulated_value
-
-  async def clld_probe_z_height_using_channel(
-    self, channel_idx: int, simulated_value: float = 200.0, **kwargs
-  ) -> float:
-    """Return mock Z height from cLLD probing."""
-    return simulated_value
-
-  async def clld_probe_y_position_using_channel(
-    self, channel_idx: int, simulated_value: float = 285.0, **kwargs
-  ) -> float:
-    """Return mock Y position from cLLD probing."""
-    return simulated_value
-
-  async def clld_probe_x_position_using_channel(
-    self, channel_idx: int, simulated_value: float = 400.0, **kwargs
-  ) -> float:
-    """Return mock X position from cLLD probing."""
-    return simulated_value
-
   async def probe_liquid_heights(
     self,
     containers: List[Container],
@@ -384,6 +373,12 @@ class STARChatterboxBackend(STARBackend):
       container.compute_height_from_volume(container.tracker.get_used_volume())
       for container in containers
     ]
+
+  # # # # # # # # Carrier presence (no firmware in sim) # # # # # # # #
+
+  async def request_presence_of_carriers_on_deck(self) -> list[int]:
+    """Return empty list — carrier presence is not tracked in simulation."""
+    return []
 
   # # # # # # # # Extension: iSWAP (additional) # # # # # # # #
 
@@ -406,52 +401,9 @@ class STARChatterboxBackend(STARBackend):
     self._core_parked = True
     logger.info("return_core_gripper_tools")
 
-  async def core_check_resource_exists_at_location_center(
-    self,
-    location: Coordinate,
-    resource: Resource,
-    gripper_y_margin: float = 0.5,
-    offset: Coordinate = Coordinate.zero(),
-    minimum_traverse_height_at_beginning_of_a_command: float = 275.0,
-    z_position_at_the_command_end: float = 275.0,
-    enable_recovery: bool = True,
-    audio_feedback: bool = True,
-  ) -> bool:
-    """Resource always present in simulation."""
-    return True
-
-  # # # # # # # # Carrier presence / autoload # # # # # # # #
-
-  async def request_presence_of_carriers_on_loading_tray(self) -> list[int]:
-    """No carriers on tray in simulation."""
-    return []
-
-  async def request_presence_of_carriers_on_deck(self) -> list[int]:
-    """Not tracked in simulation."""
-    return []
-
-  async def request_presence_of_single_carrier_on_loading_tray(self, track: int) -> bool:
-    """No carrier on loading tray in simulation."""
-    return False
-
   async def take_carrier_out_to_autoload_belt(self, carrier: Carrier):
     """Autoload no-op in simulation."""
     logger.info("take_carrier_out_to_autoload_belt: %s", carrier.name)
-
-  async def load_carrier_from_autoload_belt(
-    self,
-    barcode_reading: bool = False,
-    barcode_reading_direction: Literal["horizontal", "vertical"] = "horizontal",
-    barcode_symbology: Optional[Barcode1DSymbology] = None,
-    reading_position_of_first_barcode: float = 63.0,
-    no_container_per_carrier: int = 5,
-    distance_between_containers: float = 96.0,
-    width_of_reading_window: float = 38.0,
-    reading_speed: float = 128.1,
-    park_autoload_after: bool = True,
-  ) -> dict[int, Optional[Barcode]]:
-    """Return empty barcode dict in simulation."""
-    return {}
 
   async def unload_carrier(
     self,
