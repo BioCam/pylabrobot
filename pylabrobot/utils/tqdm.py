@@ -1,7 +1,12 @@
 """Minimal progress bar, stdlib-only.
 
-Adapted verbatim from tinygrad/helpers.py
-(https://github.com/tinygrad/tinygrad/blob/master/tinygrad/helpers.py).
+Adapted verbatim from tinygrad/helpers.py.
+
+Pinned source (commit 8da3085, lines 509–544):
+https://github.com/tinygrad/tinygrad/blob/8da308573fae6f9b3afc03a90c9dad3f4f9d336f/tinygrad/helpers.py#L509-L544
+
+Latest (may drift):
+https://github.com/tinygrad/tinygrad/blob/master/tinygrad/helpers.py
 
 Kept as a pylabrobot utility to avoid pulling in the ``tqdm`` dependency for
 long-running protocols (multi-plate transfers, incubator waits, firmware
