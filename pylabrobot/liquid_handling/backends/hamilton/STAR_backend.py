@@ -10302,6 +10302,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     The safety radius bounds the link-1 and protrusion sweep across all
     rotation poses.
 
+    Primitive for updating all iSWAP nodes' Y Positions.
+
     Args:
       y: Target Y coordinate in mm.
       speed: Max velocity in mm/sec. Default 220.0.
@@ -10313,6 +10315,63 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     """
     if not self.extended_conf.left_x_drive.iswap_installed:
       raise RuntimeError("iSWAP is not installed")
+
+    # Identify iSWAP Pose
+    # -> for safe movement we have to know the exact state of the iswap, including 
+    # the grip center -> need states for checks + fk-computed information
+
+    current_iswap_state = await self.iswap_request_joint_state()
+
+    wrist_straight_increments = self.iswap_information.wrist_drive_predefined_increments[
+        STARBackend.WristDriveOrientation.STRAIGHT
+    ]
+    wrist_straight_angle = STARBackend._iswap_wrist_drive_increments_to_angle(
+      wrist_straight_increments, self.iswap_information.wrist_deg_per_increment
+    )
+
+    joints = {
+      STARBackend.iSWAPAxis(k): v for k, v in current_iswap_state.items()
+    }
+
+    current_gripper_pose = self._iswap_fk(
+      joints=joints,
+      link_1_length=self.iswap_information.link_1_length,
+      link_2_length=self.iswap_information.link_2_length,
+      wrist_straight_angle=wrist_straight_angle,
+    )
+
+    relative_y_movement = y - current_iswap_state[self.iSWAPAxis.Y]
+
+    gripper_y = current_gripper_pose.location.y + relative_y_movement
+
+    # Safety 1: Guard against crashing into the back - if gripper_pose
+
+    if current_gripper_pose.rotation.z > 0: # gripper points backwards
+
+      y_safety_margin = 50 # units: mm
+
+      if self._iswap_information["rotation_drive_y_max"] > (gripper_y + y_safety_margin):
+        raise ValueError(
+          f"Moving iSWAP channel to {y}, with gripper yaw {current_gripper_pose.rotation.z} "
+          "would crash channel into back of X-arm. Use `make_space=True` to automatically"
+          f"rotate the gripper forward (yaw=90°)."
+          )
+
+
+    # 1- check channel y positions -> to get information of whether movement will 
+    # pass through ANY channel's y positions + safety margin for payload??
+
+    # 2- 
+
+
+
+    # Quick check for definitely safe movement
+    # if all(
+    #   [
+    #     current_iswap_state[self.iSWAPAxis.ROATION] < 0,
+    #     current_iswap_state[self.iSWAPAxis.WRIST]
+
+    # identify t
 
     iswap_radius = (
       STARBackend.iswap_rotation_drive_diameter / 2 + STARBackend.iswap_rotation_drive_safety_radius
