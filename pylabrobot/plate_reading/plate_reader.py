@@ -4,6 +4,7 @@ from typing import Dict, List, Optional, cast
 from pylabrobot.machines.machine import Machine, need_setup_finished
 from pylabrobot.plate_reading.backend import PlateReaderBackend
 from pylabrobot.plate_reading.standard import NoPlateError
+from pylabrobot.plate_reading.utils import grid_to_wells_dict
 from pylabrobot.resources import Coordinate, Plate, Resource, ResourceHolder, Rotation, Well
 
 logger = logging.getLogger(__name__)
@@ -100,9 +101,11 @@ class PlateReader(ResourceHolder, Machine):
         "data": List[List[float]]
     """
 
+    plate = self.get_plate()
+    resolved_wells = wells or plate.get_all_items()
     result = await self.backend.read_luminescence(
-      plate=self.get_plate(),
-      wells=wells or self.get_plate().get_all_items(),
+      plate=plate,
+      wells=resolved_wells,
       focal_height=focal_height,
       **backend_kwargs,
     )
@@ -113,7 +116,7 @@ class PlateReader(ResourceHolder, Machine):
         "use_new_return_type=True to use the new return type."
       )
       return result[0]["data"]  # type: ignore[no-any-return]
-    return result
+    return self._enrich_with_wells_dict(result, resolved_wells, plate)
 
   @need_setup_finished
   async def read_absorbance(
@@ -137,9 +140,11 @@ class PlateReader(ResourceHolder, Machine):
         "data": List[List[float]]
     """
 
+    plate = self.get_plate()
+    resolved_wells = wells or plate.get_all_items()
     result = await self.backend.read_absorbance(
-      plate=self.get_plate(),
-      wells=wells or self.get_plate().get_all_items(),
+      plate=plate,
+      wells=resolved_wells,
       wavelength=wavelength,
       **backend_kwargs,
     )
@@ -150,7 +155,7 @@ class PlateReader(ResourceHolder, Machine):
         "use_new_return_type=True to use the new return type."
       )
       return result[0]["data"]  # type: ignore[no-any-return]
-    return result
+    return self._enrich_with_wells_dict(result, resolved_wells, plate)
 
   @need_setup_finished
   async def read_fluorescence(
@@ -184,9 +189,11 @@ class PlateReader(ResourceHolder, Machine):
         "Excitation wavelength is greater than emission wavelength. This is unusual and may indicate an error."
       )
 
+    plate = self.get_plate()
+    resolved_wells = wells or plate.get_all_items()
     result = await self.backend.read_fluorescence(
-      plate=self.get_plate(),
-      wells=wells or self.get_plate().get_all_items(),
+      plate=plate,
+      wells=resolved_wells,
       excitation_wavelength=excitation_wavelength,
       emission_wavelength=emission_wavelength,
       focal_height=focal_height,
@@ -198,6 +205,28 @@ class PlateReader(ResourceHolder, Machine):
         "use_new_return_type=True to use the new return type."
       )
       return result[0]["data"]  # type: ignore[no-any-return]
+    return self._enrich_with_wells_dict(result, resolved_wells, plate)
+
+  @staticmethod
+  def _enrich_with_wells_dict(
+    result: List[Dict],
+    wells: List[Well],
+    plate: Plate,
+  ) -> List[Dict]:
+    """Add a ``"wells"`` sibling to each result dict if not already present.
+
+    Backends that populate ``"wells"`` directly (such as the CLARIOstar Plus)
+    are left untouched. Backends that return only the row-major ``"data"``
+    grid get a sparse ``{well_id: value}`` view computed from it via
+    :func:`grid_to_wells_dict`, so downstream callers see a uniform shape.
+    """
+    for entry in result:
+      if "wells" in entry:
+        continue
+      grid = entry.get("data")
+      if grid is None:
+        continue
+      entry["wells"] = grid_to_wells_dict(grid, wells, plate)
     return result
 
   def serialize(self) -> dict:

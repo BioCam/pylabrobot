@@ -46,7 +46,13 @@ class PlateReaderBackend(MachineBackend, metaclass=ABCMeta):
       A list of dictionaries, one for each measurement. Each dictionary contains:
         "time": float,
         "temperature": float,
-        "data": List[List[float]]
+        "data": List[List[float]]    -- row-major plate grid
+        "wells": Dict[str, float]    -- optional; sparse {well_id: value} view
+                                       of the same readings. The
+                                       :class:`PlateReader` wrapper populates
+                                       this from "data" via
+                                       :func:`grid_to_wells_dict` if the
+                                       backend doesn't supply it directly.
     """
 
   @abstractmethod
@@ -58,7 +64,13 @@ class PlateReaderBackend(MachineBackend, metaclass=ABCMeta):
         "wavelength": int,
         "time": float,
         "temperature": float,
-        "data": List[List[float]]
+        "data": List[List[float]]    -- row-major plate grid
+        "wells": Dict[str, float]    -- optional; sparse {well_id: value} view
+                                       of the same readings. The
+                                       :class:`PlateReader` wrapper populates
+                                       this from "data" via
+                                       :func:`grid_to_wells_dict` if the
+                                       backend doesn't supply it directly.
     """
 
   @abstractmethod
@@ -78,7 +90,13 @@ class PlateReaderBackend(MachineBackend, metaclass=ABCMeta):
         "em_wavelength": int,
         "time": float,
         "temperature": float,
-        "data": List[List[float]]
+        "data": List[List[float]]    -- row-major plate grid
+        "wells": Dict[str, float]    -- optional; sparse {well_id: value} view
+                                       of the same readings. The
+                                       :class:`PlateReader` wrapper populates
+                                       this from "data" via
+                                       :func:`grid_to_wells_dict` if the
+                                       backend doesn't supply it directly.
     """
 
 

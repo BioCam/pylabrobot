@@ -1,4 +1,4 @@
-from typing import Iterable, List, Tuple
+from typing import Any, Dict, Iterable, List, Sequence, Tuple
 
 from pylabrobot.resources import Plate, Well
 
@@ -57,3 +57,43 @@ def _get_min_max_row_col_tuples(wells: List[Well], plate: Plate) -> List[Tuple[i
   if len(plates) != 1 or plates.pop() != plate:
     raise ValueError("All wells must be in the specified plate")
   return _non_overlapping_rectangles((well.get_row(), well.get_column()) for well in wells)
+
+
+def grid_to_wells_dict(
+  grid: Sequence[Sequence[Any]],
+  wells: List[Well],
+  plate: Plate,
+) -> Dict[str, Any]:
+  """Read measured values out of a row-major plate grid, keyed by well id.
+
+  Maps each ``Well`` in ``wells`` to its short-form well id ("A1", "H12", ...)
+  derived from the (row, col) position on ``plate``, and pulls the value at
+  ``grid[row][col]``. Wells whose grid cell is ``None`` (not measured) are
+  omitted from the result.
+
+  This is the inverse view of the row-major grid returned by plate-reader
+  backends: the same numeric values, exposed as a sparse, name-keyed dict for
+  data-science workflows (DataFrame ``.map()``, dict merges, JSON dumps).
+
+  Args:
+    grid: 2D sequence indexed by ``[row][col]``, as returned in the ``"data"``
+      field of plate-reader read results.
+    wells: The wells that were measured. Each must belong to ``plate``.
+    plate: The plate the wells live on.
+
+  Returns:
+    Dict mapping well ids to their measured values. Only wells whose grid
+    cell is not ``None`` are included.
+  """
+  result: Dict[str, Any] = {}
+  for well in wells:
+    row = well.get_row()
+    col = well.get_column()
+    if row >= len(grid) or col >= len(grid[row]):
+      continue
+    value = grid[row][col]
+    if value is None:
+      continue
+    well_id = f"{chr(ord('A') + row)}{col + 1}"
+    result[well_id] = value
+  return result
