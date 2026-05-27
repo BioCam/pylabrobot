@@ -36,6 +36,26 @@ class PlateReaderBackend(MachineBackend, metaclass=ABCMeta):
   async def close(self, plate: Optional[Plate]) -> None:
     """Close the plate reader. Also known as plate in."""
 
+  # Common optional fields populated by backends (or synthesised by the
+  # :class:`PlateReader` wrapper if absent):
+  #
+  # - ``"wells"`` (``Dict[str, value]``): sparse, well-id-keyed view of
+  #   ``"data"``. Wrapper computes this from the grid via
+  #   :func:`grid_to_wells_dict` when the backend doesn't supply it.
+  # - ``"mode"`` (``str``): the measurement modality (``"fluorescence"``,
+  #   ``"absorbance"``, ``"luminescence"``). Wrapper synthesises this from the
+  #   calling method when the backend doesn't supply it.
+  # - ``"units"`` (``str``): measurement unit string ("RFU", "OD", "%T",
+  #   "counts", "RLU"). Backend-supplied only.
+  # - ``"overflow_threshold"`` (``int``): raw detector-count ceiling above
+  #   which a reading is saturated. Backend-supplied only. NB: applies to
+  #   RAW counts, not post-processed values. For absorbance reads with
+  #   ``report="optical_density"`` or ``"transmittance"``, ``"wells"`` holds
+  #   the *converted* value, so callers can't naively compare it against
+  #   ``"overflow_threshold"``. Backends that surface this field should also
+  #   surface the raw counts (e.g. as a separate ``report="raw"`` read) if
+  #   per-well overflow detection matters.
+
   @abstractmethod
   async def read_luminescence(
     self, plate: Plate, wells: List[Well], focal_height: float
@@ -43,16 +63,14 @@ class PlateReaderBackend(MachineBackend, metaclass=ABCMeta):
     """Read the luminescence from the plate reader.
 
     Returns:
-      A list of dictionaries, one for each measurement. Each dictionary contains:
+      A list of dictionaries, one for each measurement. Each dictionary
+      contains the modality-specific fields:
         "time": float,
         "temperature": float,
         "data": List[List[float]]    -- row-major plate grid
-        "wells": Dict[str, float]    -- optional; sparse {well_id: value} view
-                                       of the same readings. The
-                                       :class:`PlateReader` wrapper populates
-                                       this from "data" via
-                                       :func:`grid_to_wells_dict` if the
-                                       backend doesn't supply it directly.
+
+      Plus the optional standard fields documented at the class level:
+      ``"wells"``, ``"mode"``, ``"units"``, ``"overflow_threshold"``.
     """
 
   @abstractmethod
@@ -60,17 +78,15 @@ class PlateReaderBackend(MachineBackend, metaclass=ABCMeta):
     """Read the absorbance from the plate reader.
 
     Returns:
-      A list of dictionaries, one for each measurement. Each dictionary contains:
+      A list of dictionaries, one for each measurement. Each dictionary
+      contains the modality-specific fields:
         "wavelength": int,
         "time": float,
         "temperature": float,
         "data": List[List[float]]    -- row-major plate grid
-        "wells": Dict[str, float]    -- optional; sparse {well_id: value} view
-                                       of the same readings. The
-                                       :class:`PlateReader` wrapper populates
-                                       this from "data" via
-                                       :func:`grid_to_wells_dict` if the
-                                       backend doesn't supply it directly.
+
+      Plus the optional standard fields documented at the class level:
+      ``"wells"``, ``"mode"``, ``"units"``, ``"overflow_threshold"``.
     """
 
   @abstractmethod
@@ -85,18 +101,16 @@ class PlateReaderBackend(MachineBackend, metaclass=ABCMeta):
     """Read the fluorescence from the plate reader.
 
     Returns:
-      A list of dictionaries, one for each measurement. Each dictionary contains:
+      A list of dictionaries, one for each measurement. Each dictionary
+      contains the modality-specific fields:
         "ex_wavelength": int,
         "em_wavelength": int,
         "time": float,
         "temperature": float,
         "data": List[List[float]]    -- row-major plate grid
-        "wells": Dict[str, float]    -- optional; sparse {well_id: value} view
-                                       of the same readings. The
-                                       :class:`PlateReader` wrapper populates
-                                       this from "data" via
-                                       :func:`grid_to_wells_dict` if the
-                                       backend doesn't supply it directly.
+
+      Plus the optional standard fields documented at the class level:
+      ``"wells"``, ``"mode"``, ``"units"``, ``"overflow_threshold"``.
     """
 
 

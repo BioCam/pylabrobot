@@ -116,7 +116,7 @@ class PlateReader(ResourceHolder, Machine):
         "use_new_return_type=True to use the new return type."
       )
       return result[0]["data"]  # type: ignore[no-any-return]
-    return self._enrich_with_wells_dict(result, resolved_wells, plate)
+    return self._enrich_result_shape(result, resolved_wells, plate, mode="luminescence")
 
   @need_setup_finished
   async def read_absorbance(
@@ -155,7 +155,7 @@ class PlateReader(ResourceHolder, Machine):
         "use_new_return_type=True to use the new return type."
       )
       return result[0]["data"]  # type: ignore[no-any-return]
-    return self._enrich_with_wells_dict(result, resolved_wells, plate)
+    return self._enrich_result_shape(result, resolved_wells, plate, mode="absorbance")
 
   @need_setup_finished
   async def read_fluorescence(
@@ -205,28 +205,38 @@ class PlateReader(ResourceHolder, Machine):
         "use_new_return_type=True to use the new return type."
       )
       return result[0]["data"]  # type: ignore[no-any-return]
-    return self._enrich_with_wells_dict(result, resolved_wells, plate)
+    return self._enrich_result_shape(result, resolved_wells, plate, mode="fluorescence")
 
   @staticmethod
-  def _enrich_with_wells_dict(
+  def _enrich_result_shape(
     result: List[Dict],
     wells: List[Well],
     plate: Plate,
+    *,
+    mode: str,
   ) -> List[Dict]:
-    """Add a ``"wells"`` sibling to each result dict if not already present.
+    """Add standard data-science-friendly fields to each result dict.
 
-    Backends that populate ``"wells"`` directly (such as the CLARIOstar Plus)
-    are left untouched. Backends that return only the row-major ``"data"``
-    grid get a sparse ``{well_id: value}`` view computed from it via
-    :func:`grid_to_wells_dict`, so downstream callers see a uniform shape.
+    For each entry in ``result``, populate any of the following that the
+    backend didn't supply directly:
+
+    - ``"wells"``: sparse ``{well_id: value}`` view of ``"data"``, computed
+      via :func:`grid_to_wells_dict`.
+    - ``"mode"``: the measurement modality the call originated from
+      (``"fluorescence"``, ``"absorbance"``, ``"luminescence"``).
+
+    Backends that populate these fields directly (such as the CLARIOstar
+    Plus, which sets ``mode``/``units``/``overflow_threshold`` at the parser
+    level) are left untouched. Backends that return only the row-major
+    ``"data"`` grid get the well-keyed view and the mode tag for free, so
+    downstream callers see a uniform shape across backends.
     """
     for entry in result:
-      if "wells" in entry:
-        continue
-      grid = entry.get("data")
-      if grid is None:
-        continue
-      entry["wells"] = grid_to_wells_dict(grid, wells, plate)
+      if "wells" not in entry:
+        grid = entry.get("data")
+        if grid is not None:
+          entry["wells"] = grid_to_wells_dict(grid, wells, plate)
+      entry.setdefault("mode", mode)
     return result
 
   def serialize(self) -> dict:

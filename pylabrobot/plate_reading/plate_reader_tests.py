@@ -129,6 +129,8 @@ class TestPlateReaderWellsEnrichment(unittest.TestCase):
     self.assertEqual(len(result), 1)
     self.assertIn("wells", result[0])
     self.assertEqual(result[0]["wells"], {"A1": 100.0, "C4": 200.0, "H12": 300.0})
+    # Mode is synthesised from the calling method.
+    self.assertEqual(result[0]["mode"], "fluorescence")
     # Grid is preserved untouched.
     self.assertEqual(result[0]["data"][0][0], 100.0)
     self.assertEqual(result[0]["data"][7][11], 300.0)
@@ -143,6 +145,7 @@ class TestPlateReaderWellsEnrichment(unittest.TestCase):
       )
     )
     self.assertEqual(result[0]["wells"], {"A1": 100.0, "C4": 200.0, "H12": 300.0})
+    self.assertEqual(result[0]["mode"], "absorbance")
 
   def test_luminescence_wrapper_adds_wells_when_missing(self):
     pr = self._make_pr(supply_wells=False)
@@ -154,6 +157,30 @@ class TestPlateReaderWellsEnrichment(unittest.TestCase):
       )
     )
     self.assertEqual(result[0]["wells"], {"A1": 100.0, "C4": 200.0, "H12": 300.0})
+    self.assertEqual(result[0]["mode"], "luminescence")
+
+  def test_wrapper_preserves_backend_supplied_mode(self):
+    """Backend-supplied ``"mode"`` is not overwritten by the wrapper."""
+    class _ModeBackend(_StubBackend):
+      async def read_fluorescence(self, plate, wells, excitation_wavelength, emission_wavelength, focal_height):
+        results = await super().read_fluorescence(
+          plate, wells, excitation_wavelength, emission_wavelength, focal_height
+        )
+        results[0]["mode"] = "custom_mode"  # backend pre-populates
+        return results
+
+    pr = PlateReader(
+      name="pr_mode", backend=_ModeBackend(), size_x=1, size_y=1, size_z=1,
+    )
+    pr._setup_finished = True
+    pr.assign_child_resource(Cor_96_wellplate_360ul_Fb(name="plate_mode"))
+    result = asyncio.run(
+      pr.read_fluorescence(
+        excitation_wavelength=640, emission_wavelength=670, focal_height=8.0,
+        wells=[pr.get_plate().get_well("A1")], use_new_return_type=True,
+      )
+    )
+    self.assertEqual(result[0]["mode"], "custom_mode")
 
   def test_wrapper_preserves_backend_supplied_wells(self):
     """Backend-supplied ``"wells"`` is not overwritten by the wrapper."""
