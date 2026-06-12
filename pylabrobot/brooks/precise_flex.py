@@ -154,6 +154,61 @@ class PreciseFlexConfiguration:
     return WorkingVolume(inner=inner, outer=outer, zmin=zmin, zmax=zmax)
 
 
+@dataclass(frozen=True)
+class StereoParameters:
+  """IntelliGuide stereo-locator configuration for one robot/camera pair.
+
+  Read with ``request_stereo_parameters`` (``StereoParam`` get) and written with
+  ``set_stereo_parameters`` (set). The dual-ArUco stereo locator uses these to find a
+  target; the fields and their order mirror the controller's ``StereoParam`` reply.
+  Requires the IntelliGuide vision module.
+  """
+
+  process_name: str
+  tool_name: str
+  optimum_distance_to_target: float
+  optimum_window_scale_factor: float
+  wrist_axis_index: int
+  aruco1_number: int
+  aruco2_number: int
+  distance_between_arucos: float
+  max_aruco_distance_estimate_error: float
+  wait_msecs: int
+
+  @classmethod
+  def from_reply(cls, reply: str) -> "StereoParameters":
+    """Parse a ``StereoParam`` get reply: 10 space-separated fields in field order.
+
+    The process and tool names are assumed single tokens (no embedded spaces); the
+    wire format requires this since the controller space-joins the fields.
+    """
+    fields = reply.split()
+    if len(fields) != 10:
+      raise ValueError(f"expected 10 stereo-parameter fields, got {len(fields)}: {reply!r}")
+    return cls(
+      process_name=fields[0],
+      tool_name=fields[1],
+      optimum_distance_to_target=float(fields[2]),
+      optimum_window_scale_factor=float(fields[3]),
+      wrist_axis_index=int(float(fields[4])),
+      aruco1_number=int(float(fields[5])),
+      aruco2_number=int(float(fields[6])),
+      distance_between_arucos=float(fields[7]),
+      max_aruco_distance_estimate_error=float(fields[8]),
+      wait_msecs=int(float(fields[9])),
+    )
+
+  def to_command_args(self) -> str:
+    """The 10 fields as the space-separated argument string for ``StereoParam`` set."""
+    return (
+      f"{self.process_name} {self.tool_name} "
+      f"{self.optimum_distance_to_target} {self.optimum_window_scale_factor} "
+      f"{self.wrist_axis_index} {self.aruco1_number} {self.aruco2_number} "
+      f"{self.distance_between_arucos} {self.max_aruco_distance_estimate_error} "
+      f"{self.wait_msecs}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Exceptions
 # ---------------------------------------------------------------------------
@@ -1493,6 +1548,48 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
       is_dual_gripper=bool(axis_mask & 0x80),
       is_vision_gripper=suffix[:1] == "V",
       reach_class=reach_class,
+    )
+
+  # -- vision (IntelliGuide stereo locator) ----------------------------------
+
+  async def request_stereo_parameters(
+    self, robot_number: int = 1, camera_number: int = 1
+  ) -> StereoParameters:
+    """Read the IntelliGuide stereo-locator configuration (``StereoParam`` get).
+
+    Read-only: queries the software locator for the given robot and camera and returns
+    its settings. Does not drive the camera - see ``StereoLocate`` for the capture.
+    Requires the IntelliGuide vision module (raises otherwise).
+    """
+    reply = await self.driver.send_command(f"StereoParam {robot_number} {camera_number}")
+    return StereoParameters.from_reply(reply)
+
+  async def set_stereo_parameters(
+    self, params: StereoParameters, robot_number: int = 1, camera_number: int = 1
+  ) -> None:
+    """Write the IntelliGuide stereo-locator configuration (``StereoParam`` set)."""
+    await self.driver.send_command(
+      f"StereoParam {robot_number} {camera_number} {params.to_command_args()}"
+    )
+
+  async def locate_target(
+    self, robot_number: int = 1, camera_number: int = 1
+  ) -> PreciseFlexCartesianPose:
+    """Locate an ArUco target by stereo vision (``StereoLocate``); return its robot-frame pose.
+
+    ACTION - this MOVES THE ARM. The single gripper camera builds a stereo view by driving
+    to multiple viewpoints, so the controller enables power and the arm moves to capture the
+    target. Clear the workspace before calling. Requires a prior stereoscopic camera
+    calibration and a configured locator (see ``request_stereo_parameters``); the target's
+    two ArUco markers must match the configured marker numbers.
+
+    Returns the target location in robot coordinates (x/y/z in mm, rotation in degrees).
+    """
+    reply = await self.driver.send_command(f"StereoLocate {robot_number} {camera_number}")
+    x, y, z, yaw, pitch, roll = (float(v) for v in reply.split())
+    return PreciseFlexCartesianPose(
+      location=Coordinate(x=x, y=y, z=z),
+      rotation=Rotation(x=roll, y=pitch, z=yaw),
     )
 
   async def reset(self, robot_number: int) -> None:

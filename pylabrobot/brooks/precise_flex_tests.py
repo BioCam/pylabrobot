@@ -2,7 +2,7 @@ import unittest
 from typing import Tuple
 from unittest.mock import AsyncMock, MagicMock
 
-from pylabrobot.brooks.precise_flex import Axis, PreciseFlex400Backend
+from pylabrobot.brooks.precise_flex import Axis, PreciseFlex400Backend, StereoParameters
 
 
 def _make_backend(
@@ -117,3 +117,57 @@ class TestPreciseFlex400OutOfRangeRecovery(unittest.IsolatedAsyncioTestCase):
     recovered = await self.backend.recover_axes_within_limits()
     self.assertEqual(recovered, {})
     self.assertEqual(self._move_one_axis_cmds(), [])
+
+
+class TestPreciseFlex400StereoParameters(unittest.IsolatedAsyncioTestCase):
+  def setUp(self):
+    self.backend, self.driver = _make_backend()
+
+  async def test_request_stereo_parameters_sends_command_and_parses_reply(self):
+    """request_stereo_parameters issues `StereoParam <robot> <camera>` and parses the 10
+    space-separated reply fields in order (observed wire format)."""
+    self.driver.send_command = AsyncMock(
+      return_value="aruco_dual default_tool 100.0 1.5 4 10 11 50.0 2.0 200"
+    )
+    params = await self.backend.request_stereo_parameters(robot_number=1, camera_number=1)
+    self.driver.send_command.assert_awaited_once_with("StereoParam 1 1")
+    self.assertEqual(params.process_name, "aruco_dual")
+    self.assertEqual(params.aruco1_number, 10)
+    self.assertEqual(params.wait_msecs, 200)
+
+  async def test_set_stereo_parameters_sends_twelve_field_command(self):
+    """set_stereo_parameters issues `StereoParam <robot> <camera>` followed by the 10 config
+    fields in order (12 args total)."""
+    params = StereoParameters(
+      process_name="aruco_dual",
+      tool_name="default_tool",
+      optimum_distance_to_target=100.0,
+      optimum_window_scale_factor=1.5,
+      wrist_axis_index=4,
+      aruco1_number=10,
+      aruco2_number=11,
+      distance_between_arucos=50.0,
+      max_aruco_distance_estimate_error=2.0,
+      wait_msecs=200,
+    )
+    await self.backend.set_stereo_parameters(params, robot_number=1, camera_number=2)
+    self.driver.send_command.assert_awaited_once_with(
+      "StereoParam 1 2 aruco_dual default_tool 100.0 1.5 4 10 11 50.0 2.0 200"
+    )
+
+  def test_from_reply_rejects_wrong_field_count(self):
+    """A reply without exactly 10 fields is malformed and raises rather than mis-parsing."""
+    with self.assertRaises(ValueError):
+      StereoParameters.from_reply("too few fields")
+
+  async def test_locate_target_sends_command_and_parses_cartesian(self):
+    """locate_target issues `StereoLocate <robot> <camera>` and maps the 6-field reply
+    (X Y Z Yaw Pitch Roll) into a robot-frame pose: yaw->rotation.z, pitch->rotation.y,
+    roll->rotation.x. Distinct angle values lock the mapping."""
+    self.driver.send_command = AsyncMock(return_value="100.0 200.0 50.0 30.0 60.0 90.0")
+    pose = await self.backend.locate_target(robot_number=1, camera_number=1)
+    self.driver.send_command.assert_awaited_once_with("StereoLocate 1 1")
+    self.assertEqual((pose.location.x, pose.location.y, pose.location.z), (100.0, 200.0, 50.0))
+    self.assertEqual(pose.rotation.z, 30.0)  # yaw
+    self.assertEqual(pose.rotation.y, 60.0)  # pitch
+    self.assertEqual(pose.rotation.x, 90.0)  # roll
