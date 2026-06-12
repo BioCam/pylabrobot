@@ -1853,6 +1853,7 @@ Older GPL systems may display the license number shown above in ( ) rather than 
     "description": "The motor power dump circuit has been turn on too long. The dump circuit has been switched off to avoid overheating the dump resistor.\n\nNOTE: If you load GPL versions 4.1J1 and later or 4.2E and later into a PreciseFlex™400 Rev B or earlier robot, this error may be erroneously generated. If this occurs, loading GPL 4.2H or later will properly detect the dump board in the robot and eliminate this error.",
   },
   -3161: {"text": "No position updated in Fpga", "description": ""},
+  # --- Vision errors (-4000 to -4023): PreciseVision / GPL vision interface ---
   -4000: {
     "text": "Cannot connect to vision server",
     "description": 'GPL cannot establish an Ethernet TCP connection with the Precise Vision software on the vision host PC. If the web interface is not working, check the basic Ethernet connectivity. In addition, verify that the "Vision Server IP address" (DataID 424) is set properly for your vision host PC. Make sure that Precise Vision is active on that PC.',
@@ -1917,5 +1918,39 @@ Older GPL systems may display the license number shown above in ( ) rather than 
   -4023: {
     "text": "Vision project not saved",
     "description": "A remote request to load a new vision project has failed because the current project has not been saved. Save the current project before attempting to load a new one.",
+  },
+  # --- IntelliGuide stereo-locator plugin errors (-4050 to -4064): custom to the
+  # IntelliGuide vision plugin (StereoLocate); not in the standard GPL reference ---
+  -4050: {
+    "text": "Arm too close",
+    "description": "The robot arm is too close to the target and should be moved back.",
+  },
+  -4051: {
+    "text": "Mid plate angle too large",
+    "description": "The calculated angle difference between the located targets is too large. This should not occur.",
+  },
+  -4052: {
+    "text": "Too far above ArUcos",
+    "description": "The robot arm is too far above the target and should be moved down.",
+  },
+  -4053: {
+    "text": "Too far below ArUcos",
+    "description": "The robot arm is too far below the target and should be moved up.",
+  },
+  -4054: {
+    "text": "Arm too far",
+    "description": "The robot arm is too far from the target and should be moved closer.",
+  },
+  -4055: {
+    "text": "Too close to center",
+    "description": "The robot arm is too close to the center when searching for ArUcos.",
+  },
+  -4063: {
+    "text": "Teach ArUcos not found",
+    "description": "The ArUco or ArUcos were not located.",
+  },
+  -4064: {
+    "text": "Cannot locate target",
+    "description": "The ArUco or ArUcos were located but not within acceptable tolerances.",
   },
 }
