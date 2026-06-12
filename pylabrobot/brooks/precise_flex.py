@@ -1599,22 +1599,31 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
   # these move the arm (unlike locate_target). The saved file lives on the controller
   # filesystem - retrieve it over a separate transport (e.g. FTP).
 
-  async def request_vision_info(self) -> str:
-    """Read PreciseVision status. Read-only, no motion - use as a pre-flight check.
+  async def request_camera_count(self) -> int:
+    """Number of cameras PreciseVision sees (``VToolProperty System CameraCount``).
 
-    Returns the vision version followed by the acquire type and the connection state of
-    each camera, so a non-empty reply confirms PreciseVision is up and reports which
-    cameras are attached. Requires the IntelliGuide vision module.
+    Read-only, no motion, and project-independent, so it doubles as a vision pre-flight:
+    it raises if PreciseVision is not running and otherwise returns the camera count.
+    Requires the IntelliGuide vision module.
     """
-    return await self.request_vision_tool_property("System", "Info")
+    return int(await self.request_vision_tool_property("System", "CameraCount"))
 
   async def request_vision_tool_property(self, tool: str, property_name: str) -> str:
     """Read one PreciseVision property (``VToolProperty <tool> <property>``).
 
-    The reserved tool name ``System`` addresses server-level properties; any other name
-    addresses a tool defined in the loaded vision project. Read-only, no motion.
+    The reserved tool name ``System`` addresses server-level properties (e.g. CameraCount);
+    any other name addresses a tool in the loaded vision project. Read-only, no motion.
+
+    VToolProperty does not use the standard ``<code> <data>`` reply: a successful read
+    returns the bare property value and a failure returns the bare negative error code. So
+    this reads the raw reply and raises on a negative code rather than misparsing the value
+    through the normal reply handler.
     """
-    return await self.driver.send_command(f"VToolProperty {tool} {property_name}")
+    await self.driver.io.write(f"VToolProperty {tool} {property_name}".encode("utf-8") + b"\n")
+    reply = (await self.driver.io.readline()).decode("utf-8").strip()
+    if reply.startswith("-") and reply[1:].isdigit():
+      raise PreciseFlexError(int(reply), "")
+    return reply
 
   async def set_vision_tool_property(self, tool: str, property_name: str, value: str) -> None:
     """Write one PreciseVision property (``VToolProperty <tool> <property> <value>``).

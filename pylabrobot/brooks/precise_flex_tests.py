@@ -177,13 +177,24 @@ class TestPreciseFlex400CameraImage(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.backend, self.driver = _make_backend()
 
-  async def test_request_vision_info_reads_system_info(self):
-    """request_vision_info issues the read form `VToolProperty System Info` (the pre-flight
-    probe) and returns the controller reply verbatim."""
-    self.driver.send_command = AsyncMock(return_value="5.0,Camera,Connected")
-    reply = await self.backend.request_vision_info()
-    self.driver.send_command.assert_awaited_once_with("VToolProperty System Info")
-    self.assertEqual(reply, "5.0,Camera,Connected")
+  async def test_request_camera_count_reads_system_cameracount(self):
+    """request_camera_count reads `VToolProperty System CameraCount`. VToolProperty replies
+    with a bare value (not `<code> <data>`), so the raw reply is read directly and parsed."""
+    self.driver.io.write = AsyncMock()
+    self.driver.io.readline = AsyncMock(return_value=b"2\r\n")
+    count = await self.backend.request_camera_count()
+    self.driver.io.write.assert_awaited_once_with(b"VToolProperty System CameraCount\n")
+    self.assertEqual(count, 2)
+
+  async def test_request_vision_tool_property_raises_on_bare_error_code(self):
+    """A bare negative reply (e.g. -4016) is a vision error code, not a value, so it raises
+    instead of being returned as the property value."""
+    from pylabrobot.brooks.precise_flex import PreciseFlexError
+
+    self.driver.io.write = AsyncMock()
+    self.driver.io.readline = AsyncMock(return_value=b"-4016\r\n")
+    with self.assertRaises(PreciseFlexError):
+      await self.backend.request_vision_tool_property("System", "Info")
 
   async def test_set_vision_tool_property_appends_value(self):
     """set_vision_tool_property issues the write form (3 args): tool, property, value. The
