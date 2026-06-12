@@ -171,3 +171,43 @@ class TestPreciseFlex400StereoParameters(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(pose.rotation.z, 30.0)  # yaw
     self.assertEqual(pose.rotation.y, 60.0)  # pitch
     self.assertEqual(pose.rotation.x, 90.0)  # roll
+
+
+class TestPreciseFlex400CameraImage(unittest.IsolatedAsyncioTestCase):
+  def setUp(self):
+    self.backend, self.driver = _make_backend()
+
+  async def test_request_vision_info_reads_system_info(self):
+    """request_vision_info issues the read form `VToolProperty System Info` (the pre-flight
+    probe) and returns the controller reply verbatim."""
+    self.driver.send_command = AsyncMock(return_value="5.0,Camera,Connected")
+    reply = await self.backend.request_vision_info()
+    self.driver.send_command.assert_awaited_once_with("VToolProperty System Info")
+    self.assertEqual(reply, "5.0,Camera,Connected")
+
+  async def test_set_vision_tool_property_appends_value(self):
+    """set_vision_tool_property issues the write form (3 args): tool, property, value. The
+    value arg distinguishes a write from a read."""
+    await self.backend.set_vision_tool_property("System", "SaveImage1", "/rd/img.jpg")
+    self.driver.send_command.assert_awaited_once_with("VToolProperty System SaveImage1 /rd/img.jpg")
+
+  async def test_save_camera_image_targets_numbered_buffer(self):
+    """save_camera_image writes camera_number into the SaveImage{n} property name (camera 2
+    -> SaveImage2), so the buffer index reaches the wire."""
+    await self.backend.save_camera_image("/rd/img.bmp", camera_number=2)
+    self.driver.send_command.assert_awaited_once_with("VToolProperty System SaveImage2 /rd/img.bmp")
+
+  async def test_run_vision_process_sends_named_process(self):
+    """run_vision_process issues `Vprocess <name>`."""
+    self.driver.send_command = AsyncMock(return_value="0 1")
+    await self.backend.run_vision_process("snap")
+    self.driver.send_command.assert_awaited_once_with("Vprocess snap")
+
+  async def test_capture_image_acquires_then_saves_in_order(self):
+    """capture_image chains the two rungs in order: Vprocess (acquire) before SaveImage
+    (write), so the saved file is the freshly captured frame, not a stale buffer."""
+    await self.backend.capture_image("/rd/img.jpg", "snap", camera_number=1)
+    self.assertEqual(
+      [c.args[0] for c in self.driver.send_command.await_args_list],
+      ["Vprocess snap", "VToolProperty System SaveImage1 /rd/img.jpg"],
+    )

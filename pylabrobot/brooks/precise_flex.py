@@ -1592,6 +1592,68 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
       rotation=Rotation(x=roll, y=pitch, z=yaw),
     )
 
+  # -- vision (IntelliGuide camera image capture) ----------------------------
+  #
+  # Step-by-step rungs over the controller's vision command, building up to a single
+  # frame on disk. Each step is one TCS command; capture_image chains them. None of
+  # these move the arm (unlike locate_target). The saved file lives on the controller
+  # filesystem - retrieve it over a separate transport (e.g. FTP).
+
+  async def request_vision_info(self) -> str:
+    """Read PreciseVision status. Read-only, no motion - use as a pre-flight check.
+
+    Returns the vision version followed by the acquire type and the connection state of
+    each camera, so a non-empty reply confirms PreciseVision is up and reports which
+    cameras are attached. Requires the IntelliGuide vision module.
+    """
+    return await self.request_vision_tool_property("System", "Info")
+
+  async def request_vision_tool_property(self, tool: str, property_name: str) -> str:
+    """Read one PreciseVision property (``VToolProperty <tool> <property>``).
+
+    The reserved tool name ``System`` addresses server-level properties; any other name
+    addresses a tool defined in the loaded vision project. Read-only, no motion.
+    """
+    return await self.driver.send_command(f"VToolProperty {tool} {property_name}")
+
+  async def set_vision_tool_property(self, tool: str, property_name: str, value: str) -> None:
+    """Write one PreciseVision property (``VToolProperty <tool> <property> <value>``).
+
+    The controller splits the command on spaces, so value must not contain spaces.
+    """
+    await self.driver.send_command(f"VToolProperty {tool} {property_name} {value}")
+
+  async def run_vision_process(self, process_name: str) -> str:
+    """Run a vision process (``Vprocess <name>``); returns the controller reply.
+
+    A process whose acquire is set to a plain acquire loads a fresh frame into the camera
+    buffer (then write it with save_camera_image); an acquire-and-save process both
+    captures and writes the file in one step. Does not move the arm.
+    """
+    return await self.driver.send_command(f"Vprocess {process_name}")
+
+  async def save_camera_image(self, remote_path: str, camera_number: int = 1) -> None:
+    """Save the current camera buffer to a file on the controller (``System.SaveImage{n}``).
+
+    Writes whatever is currently in the buffer for ``camera_number`` to remote_path on the
+    controller filesystem, so acquire a fresh frame first (run_vision_process or
+    locate_target). The file extension selects the format (.bmp/.png/.jpg). remote_path
+    must not contain spaces. Retrieve the file over a separate transport (e.g. FTP).
+    """
+    await self.set_vision_tool_property("System", f"SaveImage{camera_number}", remote_path)
+
+  async def capture_image(
+    self, remote_path: str, process_name: str, camera_number: int = 1
+  ) -> None:
+    """Acquire a fresh frame and write it to a file on the controller (combined step).
+
+    Runs ``process_name`` to load a new frame, then saves it with save_camera_image. Use
+    this when the process only acquires; for a process that already acquires and saves,
+    call run_vision_process directly. No arm motion.
+    """
+    await self.run_vision_process(process_name)
+    await self.save_camera_image(remote_path, camera_number=camera_number)
+
   async def reset(self, robot_number: int) -> None:
     """Reset the threads associated with the specified robot.
 
