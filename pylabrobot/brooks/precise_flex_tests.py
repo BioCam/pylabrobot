@@ -222,3 +222,31 @@ class TestPreciseFlex400CameraImage(unittest.IsolatedAsyncioTestCase):
       [c.args[0] for c in self.driver.send_command.await_args_list],
       ["Vprocess snap", "VToolProperty System SaveImage1 /rd/img.jpg"],
     )
+
+  async def test_capture_image_to_engine_toggles_acquire_mode_around_process(self):
+    """capture_image_to_engine flips the acquire tool to ACQUIRE_AND_SAVE, applies the
+    prefix/path overrides, runs the process, then restores NORMAL_ACQUIRE - in that order."""
+    self.driver.send_command = AsyncMock(return_value="0 1")
+    await self.backend.capture_image_to_engine(
+      "Camera1", "acq1", acquire_prefix="cap", acquire_path="Images"
+    )
+    self.assertEqual(
+      [c.args[0] for c in self.driver.send_command.await_args_list],
+      [
+        "VToolProperty acq1 acquiremode ACQUIRE_AND_SAVE",
+        "VToolProperty acq1 acquirepath Images",
+        "VToolProperty acq1 acquireprefix cap",
+        "Vprocess Camera1",
+        "VToolProperty acq1 acquiremode NORMAL_ACQUIRE",
+      ],
+    )
+
+  async def test_capture_image_to_engine_restores_mode_on_failure(self):
+    """If the process errors, the acquire tool is still restored to NORMAL_ACQUIRE (finally)."""
+    self.driver.send_command = AsyncMock(side_effect=[None, RuntimeError("boom"), None])
+    with self.assertRaises(RuntimeError):
+      await self.backend.capture_image_to_engine("Camera1", "acq1")
+    self.assertEqual(
+      self.driver.send_command.await_args_list[-1].args[0],
+      "VToolProperty acq1 acquiremode NORMAL_ACQUIRE",
+    )

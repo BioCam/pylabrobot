@@ -1648,6 +1648,10 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     controller filesystem, so acquire a fresh frame first (run_vision_process or
     locate_target). The file extension selects the format (.bmp/.png/.jpg). remote_path
     must not contain spaces. Retrieve the file over a separate transport (e.g. FTP).
+
+    NOTE: some embedded PreciseVision builds (e.g. the PF400 gripper-camera engine) do not
+    implement this standalone write and return ``-4016`` for any path; use
+    ``capture_image_to_engine`` (ACQUIRE_AND_SAVE) on those.
     """
     await self.set_vision_tool_property("System", f"SaveImage{camera_number}", remote_path)
 
@@ -1662,6 +1666,37 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     """
     await self.run_vision_process(process_name)
     await self.save_camera_image(remote_path, camera_number=camera_number)
+
+  async def capture_image_to_engine(
+    self,
+    process_name: str,
+    acquire_tool: str,
+    acquire_prefix: Optional[str] = None,
+    acquire_path: Optional[str] = None,
+  ) -> str:
+    """Acquire and save a frame via the acquire tool's ACQUIRE_AND_SAVE mode (no arm motion).
+
+    Use this on embedded PreciseVision builds (e.g. the PF400 gripper-camera engine) where the
+    standalone ``System.SaveImage{n} <path>`` write is unimplemented and returns ``-4016``.
+    Rather than writing the buffer after the fact, this switches the named acquire tool to
+    ``ACQUIRE_AND_SAVE`` so running the process both captures and writes the file, then restores
+    the tool to ``NORMAL_ACQUIRE`` (even if the process errors).
+
+    The file is written on the vision-engine host (not the controller), under the tool's acquire
+    path - by default an ``Images`` folder beside the project files - as
+    ``<acquire_prefix><index>.<ext>``; retrieve it over a separate transport (e.g. FTP).
+    ``acquire_prefix``/``acquire_path`` override the tool's configured values when given; neither
+    may contain spaces. Returns the ``Vprocess`` reply.
+    """
+    await self.set_vision_tool_property(acquire_tool, "acquiremode", "ACQUIRE_AND_SAVE")
+    if acquire_path is not None:
+      await self.set_vision_tool_property(acquire_tool, "acquirepath", acquire_path)
+    if acquire_prefix is not None:
+      await self.set_vision_tool_property(acquire_tool, "acquireprefix", acquire_prefix)
+    try:
+      return await self.run_vision_process(process_name)
+    finally:
+      await self.set_vision_tool_property(acquire_tool, "acquiremode", "NORMAL_ACQUIRE")
 
   async def reset(self, robot_number: int) -> None:
     """Reset the threads associated with the specified robot.
