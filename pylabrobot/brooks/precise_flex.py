@@ -1,5 +1,6 @@
 import asyncio
 import dataclasses
+import functools
 import logging
 import warnings
 from abc import ABC
@@ -115,6 +116,15 @@ class PreciseFlexConfiguration:
     return self.soft_limits[Axis.GRIPPER]
 
   @property
+  def has_vision_module(self) -> bool:
+    """Whether the IntelliGuide vision TCS module (StereoVision.gpl) is loaded.
+
+    It supplies ``VToolProperty``/``StereoParam``/``StereoLocate``; without it those return
+    ``-2805 *Unknown command*``. Detected from the module list reported by ``version``.
+    """
+    return any("intelliguide" in m.lower() for m in self.modules)
+
+  @property
   def z_range(self) -> tuple:
     return self.soft_limits[Axis.BASE]
 
@@ -224,6 +234,52 @@ class PreciseFlexError(Exception):
       super().__init__(f"PreciseFlexError {replycode}: {text}. {description} - {message}")
     else:
       super().__init__(f"PreciseFlexError {replycode}: {message}")
+
+
+def _requires_vision_gripper(method):
+  """Guard a backend coroutine so it only runs on a vision (camera) gripper.
+
+  The check is the cached ``is_vision_gripper`` flag resolved once at ``setup()`` (from the
+  model-name suffix), so it costs a single attribute read - no per-call controller round-trip
+  that an older or non-vision arm might not answer. It degrades safely: before setup,
+  ``self.configuration`` raises the usual "run setup() first" error; a non-vision gripper, or an
+  older config object that predates the flag, reads ``False`` (via the ``getattr`` default) and
+  raises a clear capability error rather than sending a vision command the hardware can't honour.
+  """
+
+  @functools.wraps(method)
+  async def wrapper(self, *args, **kwargs):
+    if not getattr(self.configuration, "is_vision_gripper", False):
+      raise RuntimeError(
+        f"{method.__name__}() requires a vision (camera) gripper, but "
+        f"{self.configuration.robot_name!r} reports none."
+      )
+    return await method(self, *args, **kwargs)
+
+  return wrapper
+
+
+def _requires_vision_module(method):
+  """Guard a backend coroutine that needs the IntelliGuide vision TCS module loaded.
+
+  ``VToolProperty``/``StereoParam``/``StereoLocate`` are defined in StereoVision.gpl
+  (IntelliGuide), so without that module the controller returns ``-2805 *Unknown command*``
+  regardless of the gripper hardware. Reads the cached ``has_vision_module`` flag (from the
+  module list in ``version``) - one attribute read, no round-trip - and degrades safely like
+  ``_requires_vision_gripper``. (``Vprocess`` is a base command and uses the gripper guard.)
+  """
+
+  @functools.wraps(method)
+  async def wrapper(self, *args, **kwargs):
+    if not getattr(self.configuration, "has_vision_module", False):
+      raise RuntimeError(
+        f"{method.__name__}() needs the IntelliGuide vision module (StereoVision.gpl), not "
+        f"loaded on {self.configuration.robot_name!r}; VToolProperty/StereoParam/StereoLocate "
+        f"return -2805 without it."
+      )
+    return await method(self, *args, **kwargs)
+
+  return wrapper
 
 
 # ---------------------------------------------------------------------------
@@ -1488,6 +1544,10 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     suffix = name_tokens[-1].upper().lstrip("0123456789") if name_tokens else ""
     # The version command reports the TCS app version then its loaded modules.
     tcs_version, *modules = (seg.strip() for seg in (await self.request_version()).split(","))
+    # IntelliGuide (StereoVision.gpl) provides VToolProperty/StereoParam/StereoLocate; its
+    # presence gates those commands and corroborates the model-name "V" suffix (which alone
+    # is fragile across naming variants).
+    has_intelliguide = any("intelliguide" in m.lower() for m in modules)
 
     # Combine the per-axis 100% references with the global percent caps into the
     # effective per-joint maxima, so consumers get usable limits, not raw factors.
@@ -1546,12 +1606,13 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
       kinematics_source=kinematics_source,
       has_rail=Axis.RAIL in soft_limits,
       is_dual_gripper=bool(axis_mask & 0x80),
-      is_vision_gripper=suffix[:1] == "V",
+      is_vision_gripper=suffix[:1] == "V" or has_intelliguide,
       reach_class=reach_class,
     )
 
   # -- vision (IntelliGuide stereo locator) ----------------------------------
 
+  @_requires_vision_module
   async def request_stereo_parameters(
     self, robot_number: int = 1, camera_number: int = 1
   ) -> StereoParameters:
@@ -1564,6 +1625,7 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     reply = await self.driver.send_command(f"StereoParam {robot_number} {camera_number}")
     return StereoParameters.from_reply(reply)
 
+  @_requires_vision_module
   async def set_stereo_parameters(
     self, params: StereoParameters, robot_number: int = 1, camera_number: int = 1
   ) -> None:
@@ -1572,6 +1634,7 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
       f"StereoParam {robot_number} {camera_number} {params.to_command_args()}"
     )
 
+  @_requires_vision_module
   async def locate_target(
     self, robot_number: int = 1, camera_number: int = 1
   ) -> PreciseFlexCartesianPose:
@@ -1599,6 +1662,7 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
   # these move the arm (unlike locate_target). The saved file lives on the controller
   # filesystem - retrieve it over a separate transport (e.g. FTP).
 
+  @_requires_vision_module
   async def request_camera_count(self) -> int:
     """Number of cameras PreciseVision sees (``VToolProperty System CameraCount``).
 
@@ -1608,6 +1672,7 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     """
     return int(await self.request_vision_tool_property("System", "CameraCount"))
 
+  @_requires_vision_module
   async def request_vision_tool_property(self, tool: str, property_name: str) -> str:
     """Read one PreciseVision property (``VToolProperty <tool> <property>``).
 
@@ -1625,6 +1690,7 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
       raise PreciseFlexError(int(reply), "")
     return reply
 
+  @_requires_vision_module
   async def set_vision_tool_property(self, tool: str, property_name: str, value: str) -> None:
     """Write one PreciseVision property (``VToolProperty <tool> <property> <value>``).
 
@@ -1632,6 +1698,7 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     """
     await self.driver.send_command(f"VToolProperty {tool} {property_name} {value}")
 
+  @_requires_vision_gripper
   async def run_vision_process(self, process_name: str) -> str:
     """Run a vision process (``Vprocess <name>``); returns the controller reply.
 
@@ -1641,6 +1708,7 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     """
     return await self.driver.send_command(f"Vprocess {process_name}")
 
+  @_requires_vision_module
   async def save_camera_image(self, remote_path: str, camera_number: int = 1) -> None:
     """Save the current camera buffer to a file on the controller (``System.SaveImage{n}``).
 
@@ -1655,6 +1723,7 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     """
     await self.set_vision_tool_property("System", f"SaveImage{camera_number}", remote_path)
 
+  @_requires_vision_module
   async def capture_image(
     self, remote_path: str, process_name: str, camera_number: int = 1
   ) -> None:
@@ -1667,6 +1736,7 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     await self.run_vision_process(process_name)
     await self.save_camera_image(remote_path, camera_number=camera_number)
 
+  @_requires_vision_module
   async def capture_image_to_engine(
     self,
     process_name: str,

@@ -2,7 +2,12 @@ import unittest
 from typing import Tuple
 from unittest.mock import AsyncMock, MagicMock
 
-from pylabrobot.brooks.precise_flex import Axis, PreciseFlex400Backend, StereoParameters
+from pylabrobot.brooks.precise_flex import (
+  Axis,
+  PreciseFlex400Backend,
+  PreciseFlexConfiguration,
+  StereoParameters,
+)
 
 
 def _make_backend(
@@ -122,6 +127,10 @@ class TestPreciseFlex400OutOfRangeRecovery(unittest.IsolatedAsyncioTestCase):
 class TestPreciseFlex400StereoParameters(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.backend, self.driver = _make_backend()
+    # stereo commands are guarded; advertise a vision gripper with IntelliGuide loaded.
+    self.backend._configuration = MagicMock(
+      is_vision_gripper=True, has_vision_module=True, robot_name="PF400-VS"
+    )
 
   async def test_request_stereo_parameters_sends_command_and_parses_reply(self):
     """request_stereo_parameters issues `StereoParam <robot> <camera>` and parses the 10
@@ -176,6 +185,10 @@ class TestPreciseFlex400StereoParameters(unittest.IsolatedAsyncioTestCase):
 class TestPreciseFlex400CameraImage(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.backend, self.driver = _make_backend()
+    # vision commands are guarded; advertise a vision gripper with IntelliGuide loaded.
+    self.backend._configuration = MagicMock(
+      is_vision_gripper=True, has_vision_module=True, robot_name="PF400-VS"
+    )
 
   async def test_request_camera_count_reads_system_cameracount(self):
     """request_camera_count reads `VToolProperty System CameraCount`. VToolProperty replies
@@ -250,3 +263,43 @@ class TestPreciseFlex400CameraImage(unittest.IsolatedAsyncioTestCase):
       self.driver.send_command.await_args_list[-1].args[0],
       "VToolProperty acq1 acquiremode NORMAL_ACQUIRE",
     )
+
+  async def test_capture_rejects_without_vision_module(self):
+    """capture_image_to_engine is VToolProperty-based, so it needs IntelliGuide loaded; without
+    it the guard raises a clear error and sends nothing (would otherwise be -2805)."""
+    self.backend._configuration = MagicMock(has_vision_module=False, robot_name="PF400")
+    with self.assertRaises(RuntimeError):
+      await self.backend.capture_image_to_engine("Camera1", "acq1")
+    self.driver.send_command.assert_not_awaited()
+
+  async def test_run_vision_process_rejects_non_vision_gripper(self):
+    """run_vision_process is a base Cmd.gpl command (no IntelliGuide needed), so it is gated on
+    the vision gripper itself, not the vision module."""
+    self.backend._configuration = MagicMock(is_vision_gripper=False, robot_name="PF400")
+    with self.assertRaises(RuntimeError):
+      await self.backend.run_vision_process("Camera1")
+    self.driver.send_command.assert_not_awaited()
+
+  async def test_capture_requires_setup(self):
+    """Before setup the guard raises (configuration unavailable) rather than crashing."""
+    self.backend._configuration = None
+    with self.assertRaises(RuntimeError):
+      await self.backend.capture_image_to_engine("Camera1", "acq1")
+    self.driver.send_command.assert_not_awaited()
+
+
+class TestPreciseFlex400VisionCapability(unittest.TestCase):
+  @staticmethod
+  def _config(modules) -> PreciseFlexConfiguration:
+    return PreciseFlexConfiguration(
+      manufacturer="", controller_model="", hardware_version="", gpl_version="",
+      controller_serial="", robot_name="PF400", robot_type=0, tcs_version="",
+      modules=tuple(modules), num_axes=0, extra_axes=0, axis_mask=0, soft_limits={},
+      hard_limits={}, max_joint_speed={}, max_joint_accel={}, max_joint_decel={},
+      max_cartesian_speed=0.0, max_cartesian_accel=0.0, power_state=0,
+    )
+
+  def test_has_vision_module_detects_intelliguide(self):
+    """has_vision_module keys off the IntelliGuide entry in the version module list."""
+    self.assertTrue(self._config(["IntelliGuide 1.0 05-22-2024"]).has_vision_module)
+    self.assertFalse(self._config(["PARobot Module 3.0", "SSGrip Module 3.0"]).has_vision_module)
