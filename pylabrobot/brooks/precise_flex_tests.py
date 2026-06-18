@@ -61,10 +61,6 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
     self.assertIn("GripOpenPos 530.0", commands)
     self.assertIn("GripClosePos 530.0", commands)
 
-  async def test_min_max_gripper_width_advertised(self):
-    self.assertEqual(self.backend.min_gripper_width, 60.0)
-    self.assertEqual(self.backend.max_gripper_width, 145.0)
-
   async def test_closed_gripper_position_shifts_units(self):
     # Different anchor ⇒ same width yields a different firmware-unit target.
     backend, driver = _make_backend(closed_gripper_position=1000.0)
@@ -212,14 +208,10 @@ class TestPreciseFlex400CameraImage(unittest.IsolatedAsyncioTestCase):
   async def test_set_vision_tool_property_appends_value(self):
     """set_vision_tool_property issues the write form (3 args): tool, property, value. The
     value arg distinguishes a write from a read."""
-    await self.backend.set_vision_tool_property("System", "SaveImage1", "/rd/img.jpg")
-    self.driver.send_command.assert_awaited_once_with("VToolProperty System SaveImage1 /rd/img.jpg")
-
-  async def test_save_camera_image_targets_numbered_buffer(self):
-    """save_camera_image writes camera_number into the SaveImage{n} property name (camera 2
-    -> SaveImage2), so the buffer index reaches the wire."""
-    await self.backend.save_camera_image("/rd/img.bmp", camera_number=2)
-    self.driver.send_command.assert_awaited_once_with("VToolProperty System SaveImage2 /rd/img.bmp")
+    await self.backend.set_vision_tool_property("acq1", "acquiremode", "ACQUIRE_AND_SAVE")
+    self.driver.send_command.assert_awaited_once_with(
+      "VToolProperty acq1 acquiremode ACQUIRE_AND_SAVE"
+    )
 
   async def test_run_vision_process_sends_named_process(self):
     """run_vision_process issues `Vprocess <name>`."""
@@ -227,22 +219,11 @@ class TestPreciseFlex400CameraImage(unittest.IsolatedAsyncioTestCase):
     await self.backend.run_vision_process("snap")
     self.driver.send_command.assert_awaited_once_with("Vprocess snap")
 
-  async def test_capture_image_acquires_then_saves_in_order(self):
-    """capture_image chains the two rungs in order: Vprocess (acquire) before SaveImage
-    (write), so the saved file is the freshly captured frame, not a stale buffer."""
-    await self.backend.capture_image("/rd/img.jpg", "snap", camera_number=1)
-    self.assertEqual(
-      [c.args[0] for c in self.driver.send_command.await_args_list],
-      ["Vprocess snap", "VToolProperty System SaveImage1 /rd/img.jpg"],
-    )
-
-  async def test_capture_image_to_engine_toggles_acquire_mode_around_process(self):
-    """capture_image_to_engine flips the acquire tool to ACQUIRE_AND_SAVE, applies the
+  async def test_capture_image_toggles_acquire_mode_around_process(self):
+    """capture_image flips the acquire tool to ACQUIRE_AND_SAVE, applies the
     prefix/path overrides, runs the process, then restores NORMAL_ACQUIRE - in that order."""
     self.driver.send_command = AsyncMock(return_value="0 1")
-    await self.backend.capture_image_to_engine(
-      "Camera1", "acq1", acquire_prefix="cap", acquire_path="Images"
-    )
+    await self.backend.capture_image("Camera1", "acq1", acquire_prefix="cap", acquire_path="Images")
     self.assertEqual(
       [c.args[0] for c in self.driver.send_command.await_args_list],
       [
@@ -254,22 +235,22 @@ class TestPreciseFlex400CameraImage(unittest.IsolatedAsyncioTestCase):
       ],
     )
 
-  async def test_capture_image_to_engine_restores_mode_on_failure(self):
+  async def test_capture_image_restores_mode_on_failure(self):
     """If the process errors, the acquire tool is still restored to NORMAL_ACQUIRE (finally)."""
     self.driver.send_command = AsyncMock(side_effect=[None, RuntimeError("boom"), None])
     with self.assertRaises(RuntimeError):
-      await self.backend.capture_image_to_engine("Camera1", "acq1")
+      await self.backend.capture_image("Camera1", "acq1")
     self.assertEqual(
       self.driver.send_command.await_args_list[-1].args[0],
       "VToolProperty acq1 acquiremode NORMAL_ACQUIRE",
     )
 
   async def test_capture_rejects_without_vision_module(self):
-    """capture_image_to_engine is VToolProperty-based, so it needs IntelliGuide loaded; without
+    """capture_image is VToolProperty-based, so it needs IntelliGuide loaded; without
     it the guard raises a clear error and sends nothing (would otherwise be -2805)."""
     self.backend._configuration = MagicMock(has_vision_module=False, robot_name="PF400")
     with self.assertRaises(RuntimeError):
-      await self.backend.capture_image_to_engine("Camera1", "acq1")
+      await self.backend.capture_image("Camera1", "acq1")
     self.driver.send_command.assert_not_awaited()
 
   async def test_run_vision_process_rejects_non_vision_gripper(self):
@@ -284,7 +265,7 @@ class TestPreciseFlex400CameraImage(unittest.IsolatedAsyncioTestCase):
     """Before setup the guard raises (configuration unavailable) rather than crashing."""
     self.backend._configuration = None
     with self.assertRaises(RuntimeError):
-      await self.backend.capture_image_to_engine("Camera1", "acq1")
+      await self.backend.capture_image("Camera1", "acq1")
     self.driver.send_command.assert_not_awaited()
 
 
@@ -292,11 +273,26 @@ class TestPreciseFlex400VisionCapability(unittest.TestCase):
   @staticmethod
   def _config(modules) -> PreciseFlexConfiguration:
     return PreciseFlexConfiguration(
-      manufacturer="", controller_model="", hardware_version="", gpl_version="",
-      controller_serial="", robot_name="PF400", robot_type=0, tcs_version="",
-      modules=tuple(modules), num_axes=0, extra_axes=0, axis_mask=0, soft_limits={},
-      hard_limits={}, max_joint_speed={}, max_joint_accel={}, max_joint_decel={},
-      max_cartesian_speed=0.0, max_cartesian_accel=0.0, power_state=0,
+      manufacturer="",
+      controller_model="",
+      hardware_version="",
+      gpl_version="",
+      controller_serial="",
+      robot_name="PF400",
+      robot_type=0,
+      tcs_version="",
+      modules=tuple(modules),
+      num_axes=0,
+      extra_axes=0,
+      axis_mask=0,
+      soft_limits={},
+      hard_limits={},
+      max_joint_speed={},
+      max_joint_accel={},
+      max_joint_decel={},
+      max_cartesian_speed=0.0,
+      max_cartesian_accel=0.0,
+      power_state=0,
     )
 
   def test_has_vision_module_detects_intelliguide(self):

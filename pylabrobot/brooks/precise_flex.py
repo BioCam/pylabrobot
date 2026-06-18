@@ -1657,10 +1657,10 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
 
   # -- vision (IntelliGuide camera image capture) ----------------------------
   #
-  # Step-by-step rungs over the controller's vision command, building up to a single
-  # frame on disk. Each step is one TCS command; capture_image chains them. None of
-  # these move the arm (unlike locate_target). The saved file lives on the controller
-  # filesystem - retrieve it over a separate transport (e.g. FTP).
+  # Primitives over the controller's vision commands (VToolProperty / Vprocess); capture_image
+  # composes them into a single saved frame. None of these move the arm (unlike locate_target).
+  # The saved file lives on the vision-engine host filesystem - retrieve it over a separate
+  # transport (e.g. FTP).
 
   @_requires_vision_module
   async def request_camera_count(self) -> int:
@@ -1702,42 +1702,14 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
   async def run_vision_process(self, process_name: str) -> str:
     """Run a vision process (``Vprocess <name>``); returns the controller reply.
 
-    A process whose acquire is set to a plain acquire loads a fresh frame into the camera
-    buffer (then write it with save_camera_image); an acquire-and-save process both
-    captures and writes the file in one step. Does not move the arm.
+    A plain-acquire process loads a fresh frame into the camera buffer; an acquire-and-save
+    process both captures and writes the file in one step (see capture_image). Does not move
+    the arm.
     """
     return await self.driver.send_command(f"Vprocess {process_name}")
 
   @_requires_vision_module
-  async def save_camera_image(self, remote_path: str, camera_number: int = 1) -> None:
-    """Save the current camera buffer to a file on the controller (``System.SaveImage{n}``).
-
-    Writes whatever is currently in the buffer for ``camera_number`` to remote_path on the
-    controller filesystem, so acquire a fresh frame first (run_vision_process or
-    locate_target). The file extension selects the format (.bmp/.png/.jpg). remote_path
-    must not contain spaces. Retrieve the file over a separate transport (e.g. FTP).
-
-    NOTE: some embedded PreciseVision builds (e.g. the PF400 gripper-camera engine) do not
-    implement this standalone write and return ``-4016`` for any path; use
-    ``capture_image_to_engine`` (ACQUIRE_AND_SAVE) on those.
-    """
-    await self.set_vision_tool_property("System", f"SaveImage{camera_number}", remote_path)
-
-  @_requires_vision_module
   async def capture_image(
-    self, remote_path: str, process_name: str, camera_number: int = 1
-  ) -> None:
-    """Acquire a fresh frame and write it to a file on the controller (combined step).
-
-    Runs ``process_name`` to load a new frame, then saves it with save_camera_image. Use
-    this when the process only acquires; for a process that already acquires and saves,
-    call run_vision_process directly. No arm motion.
-    """
-    await self.run_vision_process(process_name)
-    await self.save_camera_image(remote_path, camera_number=camera_number)
-
-  @_requires_vision_module
-  async def capture_image_to_engine(
     self,
     process_name: str,
     acquire_tool: str,
@@ -1746,11 +1718,17 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
   ) -> str:
     """Acquire and save a frame via the acquire tool's ACQUIRE_AND_SAVE mode (no arm motion).
 
-    Use this on embedded PreciseVision builds (e.g. the PF400 gripper-camera engine) where the
-    standalone ``System.SaveImage{n} <path>`` write is unimplemented and returns ``-4016``.
-    Rather than writing the buffer after the fact, this switches the named acquire tool to
-    ``ACQUIRE_AND_SAVE`` so running the process both captures and writes the file, then restores
-    the tool to ``NORMAL_ACQUIRE`` (even if the process errors).
+    Switches the named acquire tool to ``ACQUIRE_AND_SAVE`` so running ``process_name`` both
+    captures and writes the file, then restores it to ``NORMAL_ACQUIRE`` (even if the process
+    errors). This is the path that works on embedded PreciseVision builds (e.g. the PF400
+    gripper-camera engine), where the standalone ``System.SaveImage{n} <path>`` write is
+    unimplemented and returns ``-4016``. On a full PreciseVision PC build, ``SaveImage{n}`` is
+    also reachable directly via ``set_vision_tool_property("System", "SaveImage<n>", path)``.
+
+    The camera is not a parameter here: it is fixed by the acquire tool's ``CameraNumber`` in the
+    vision project, so you select it by naming the matching process/tool pair. On the PF400
+    IntelliGuide project that is ``("Camera1", "acq1")`` for the front-facing camera (1) and
+    ``("Camera2", "acq2")`` for the downward-facing camera (2).
 
     The file is written on the vision-engine host (not the controller), under the tool's acquire
     path - by default an ``Images`` folder beside the project files - as
