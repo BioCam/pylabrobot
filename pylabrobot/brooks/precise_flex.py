@@ -1,6 +1,5 @@
 import asyncio
 import dataclasses
-import functools
 import logging
 import warnings
 from abc import ABC
@@ -240,52 +239,6 @@ class PreciseFlexError(Exception):
       super().__init__(f"PreciseFlexError {replycode}: {message}")
 
 
-def _requires_vision_gripper(method):
-  """Guard a backend coroutine so it only runs on a vision (camera) gripper.
-
-  The check is the cached ``is_vision_gripper`` flag resolved once at ``setup()`` (from the
-  model-name suffix), so it costs a single attribute read - no per-call controller round-trip
-  that an older or non-vision arm might not answer. It degrades safely: before setup,
-  ``self.configuration`` raises the usual "run setup() first" error; a non-vision gripper, or an
-  older config object that predates the flag, reads ``False`` (via the ``getattr`` default) and
-  raises a clear capability error rather than sending a vision command the hardware can't honour.
-  """
-
-  @functools.wraps(method)
-  async def wrapper(self, *args, **kwargs):
-    if not getattr(self.configuration, "is_vision_gripper", False):
-      raise RuntimeError(
-        f"{method.__name__}() requires a vision (camera) gripper, but "
-        f"{self.configuration.robot_name!r} reports none."
-      )
-    return await method(self, *args, **kwargs)
-
-  return wrapper
-
-
-def _requires_vision_module(method):
-  """Guard a backend coroutine that needs the IntelliGuide vision TCS module loaded.
-
-  ``VToolProperty``/``StereoParam``/``StereoLocate`` are defined in StereoVision.gpl
-  (IntelliGuide), so without that module the controller returns ``-2805 *Unknown command*``
-  regardless of the gripper hardware. Reads the cached ``has_vision_module`` flag (from the
-  module list in ``version``) - one attribute read, no round-trip - and degrades safely like
-  ``_requires_vision_gripper``. (``Vprocess`` is a base command and uses the gripper guard.)
-  """
-
-  @functools.wraps(method)
-  async def wrapper(self, *args, **kwargs):
-    if not getattr(self.configuration, "has_vision_module", False):
-      raise RuntimeError(
-        f"{method.__name__}() needs the IntelliGuide vision module (StereoVision.gpl), not "
-        f"loaded on {self.configuration.robot_name!r}; VToolProperty/StereoParam/StereoLocate "
-        f"return -2805 without it."
-      )
-    return await method(self, *args, **kwargs)
-
-  return wrapper
-
-
 # ---------------------------------------------------------------------------
 # Driver — owns Socket I/O and device lifecycle
 # ---------------------------------------------------------------------------
@@ -305,6 +258,10 @@ class PreciseFlexDriver(Driver):
     super().__init__()
     self.io = Socket(human_readable_device_name="Precise Flex Arm", host=host, port=port)
     self.timeout = timeout
+    # Nullable vision capability, built by the arm backend at setup only when the configuration's
+    # vision_gripper_installed is true (mirrors STAR's driver.head96/iswap). The probe that decides
+    # this lives in the backend's config step, so the backend wires it after _request_configuration.
+    self.vision: Optional["PreciseFlexVisionBackend"] = None
 
   # -- communication ---------------------------------------------------------
 
@@ -632,6 +589,108 @@ def _zip_axis_ranges(
   return {axis: (low[axis], high[axis]) for axis in low.keys() & high.keys()}
 
 
+class PreciseFlexVisionBackend:
+  """IntelliGuide vision capability for a PreciseFlex with a camera gripper.
+
+  Held as the nullable ``driver.vision``, built by the arm backend at setup only when
+  ``configuration.vision_gripper_installed`` - so its existence is the capability gate (no
+  per-method guards needed here). Orchestrations delegate to the driver's vision wire primitives;
+  none move the arm except ``locate_target``. ``available`` caches the FTP project enumeration
+  when present (else ``None``).
+  """
+
+  def __init__(
+    self,
+    driver: "PreciseFlexDriver",
+    available: Optional[Dict[str, List[str]]] = None,
+  ):
+    self.driver = driver
+    self.available = available
+
+  async def capture_image(
+    self,
+    process_name: str,
+    acquire_tool: str,
+    acquire_prefix: Optional[str] = None,
+    acquire_path: Optional[str] = None,
+  ) -> str:
+    """Acquire and save a frame via the acquire tool's ACQUIRE_AND_SAVE mode; no arm motion.
+
+    Camera is fixed by the acquire tool's CameraNumber, so pick it by process/tool pair:
+    ``("Camera1", "acq1")`` front, ``("Camera2", "acq2")`` downward. The file is written on the
+    vision-engine host; retrieve it over a separate transport. Returns the ``Vprocess`` reply.
+    """
+    await self.driver.vtool_property(acquire_tool, "acquiremode", "ACQUIRE_AND_SAVE")
+    if acquire_path is not None:
+      await self.driver.vtool_property(acquire_tool, "acquirepath", acquire_path)
+    if acquire_prefix is not None:
+      await self.driver.vtool_property(acquire_tool, "acquireprefix", acquire_prefix)
+    try:
+      return await self.driver.vprocess(process_name)
+    finally:
+      await self.driver.vtool_property(acquire_tool, "acquiremode", "NORMAL_ACQUIRE")
+
+  async def read_barcode(
+    self, process_name: str, barcode_tool: str = "barcode_read1", index: int = 1
+  ) -> str:
+    """Run a process containing a BarcodeRead tool and return the decoded type+value; no motion."""
+    await self.driver.vprocess(process_name)
+    return await self.driver.vresult_info_string(barcode_tool, index)
+
+  async def request_camera_count(self) -> int:
+    """Number of cameras PreciseVision sees (``System.CameraCount``); read-only, no motion."""
+    return int(await self.driver.vtool_property("System", "CameraCount"))
+
+  async def set_lighting(
+    self,
+    camera: Union[Literal["front", "bottom"], int] = "front",
+    *,
+    brightness: int = 100,
+    delay: Optional[int] = None,
+    light_tool: str = "led",
+    light_process: str = "LightControl",
+  ) -> None:
+    """Set the camera LED bank/brightness and apply it; ``brightness=0`` turns the LEDs off."""
+    await self.driver.start_led(
+      camera,
+      brightness=brightness,
+      delay=delay,
+      light_tool=light_tool,
+      light_process=light_process,
+    )
+
+  async def request_stereo_parameters(
+    self, robot_number: int = 1, camera_number: int = 1
+  ) -> StereoParameters:
+    """Read the IntelliGuide stereo-locator configuration (``StereoParam`` get); no motion."""
+    reply = await self.driver.send_command(f"StereoParam {robot_number} {camera_number}")
+    return StereoParameters.from_reply(reply)
+
+  async def set_stereo_parameters(
+    self, params: StereoParameters, robot_number: int = 1, camera_number: int = 1
+  ) -> None:
+    """Write the IntelliGuide stereo-locator configuration (``StereoParam`` set)."""
+    await self.driver.send_command(
+      f"StereoParam {robot_number} {camera_number} {params.to_command_args()}"
+    )
+
+  async def locate_target(
+    self, robot_number: int = 1, camera_number: int = 1
+  ) -> "PreciseFlexCartesianPose":
+    """Locate an ArUco target by stereo vision (``StereoLocate``); returns its robot-frame pose.
+
+    ACTION - this MOVES THE ARM: the selected gripper camera builds a stereo view by driving to
+    multiple viewpoints. Clear the workspace. Requires a prior stereoscopic calibration and a
+    configured locator. Returns x/y/z (mm) + rotation (deg).
+    """
+    reply = await self.driver.send_command(f"StereoLocate {robot_number} {camera_number}")
+    x, y, z, yaw, pitch, roll = (float(v) for v in reply.split())
+    return PreciseFlexCartesianPose(
+      location=Coordinate(x=x, y=y, z=z),
+      rotation=Rotation(x=roll, y=pitch, z=yaw),
+    )
+
+
 class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive, ABC):
   """Backend for the PreciseFlex robotic arm.
 
@@ -714,6 +773,13 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
       )
       return
     self._adopt_configuration(self._configuration)
+    # Build the nullable vision capability when the camera gripper is present (its existence is the
+    # capability gate). Enumeration credentials are not wired yet, so `available` stays None.
+    self.driver.vision = (
+      PreciseFlexVisionBackend(self.driver)
+      if self._configuration.vision_gripper_installed
+      else None
+    )
     self._log_configuration_summary(self._configuration)
     self._assess_configuration(self._configuration)
     await self._handle_out_of_range_axes()
@@ -1691,67 +1757,7 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
       reach_class=reach_class,
     )
 
-  # -- vision (IntelliGuide stereo locator) ----------------------------------
-
-  @_requires_vision_module
-  async def request_stereo_parameters(
-    self, robot_number: int = 1, camera_number: int = 1
-  ) -> StereoParameters:
-    """Read the IntelliGuide stereo-locator configuration (``StereoParam`` get).
-
-    Read-only: queries the software locator for the given robot and camera and returns
-    its settings. Does not drive the camera - see ``StereoLocate`` for the capture.
-    Requires the IntelliGuide vision module (raises otherwise).
-    """
-    reply = await self.driver.send_command(f"StereoParam {robot_number} {camera_number}")
-    return StereoParameters.from_reply(reply)
-
-  @_requires_vision_module
-  async def set_stereo_parameters(
-    self, params: StereoParameters, robot_number: int = 1, camera_number: int = 1
-  ) -> None:
-    """Write the IntelliGuide stereo-locator configuration (``StereoParam`` set)."""
-    await self.driver.send_command(
-      f"StereoParam {robot_number} {camera_number} {params.to_command_args()}"
-    )
-
-  @_requires_vision_module
-  async def locate_target(
-    self, robot_number: int = 1, camera_number: int = 1
-  ) -> PreciseFlexCartesianPose:
-    """Locate an ArUco target by stereo vision (``StereoLocate``); return its robot-frame pose.
-
-    ACTION - this MOVES THE ARM. The single gripper camera builds a stereo view by driving
-    to multiple viewpoints, so the controller enables power and the arm moves to capture the
-    target. Clear the workspace before calling. Requires a prior stereoscopic camera
-    calibration and a configured locator (see ``request_stereo_parameters``); the target's
-    two ArUco markers must match the configured marker numbers.
-
-    Returns the target location in robot coordinates (x/y/z in mm, rotation in degrees).
-    """
-    reply = await self.driver.send_command(f"StereoLocate {robot_number} {camera_number}")
-    x, y, z, yaw, pitch, roll = (float(v) for v in reply.split())
-    return PreciseFlexCartesianPose(
-      location=Coordinate(x=x, y=y, z=z),
-      rotation=Rotation(x=roll, y=pitch, z=yaw),
-    )
-
-  # -- vision (IntelliGuide camera image capture) ----------------------------
-  #
-  # Primitives over the controller's vision commands (VToolProperty / Vprocess); capture_image
-  # composes them into a single saved frame. None of these move the arm (unlike locate_target).
-  # The saved file lives on the vision-engine host filesystem - retrieve it over a separate
-  # transport (e.g. FTP).
-
-  @_requires_vision_module
-  async def request_camera_count(self) -> int:
-    """Number of cameras PreciseVision sees (``VToolProperty System CameraCount``).
-
-    Read-only, no motion, and project-independent, so it doubles as a vision pre-flight:
-    it raises if PreciseVision is not running and otherwise returns the camera count.
-    Requires the IntelliGuide vision module.
-    """
-    return int(await self.request_vision_tool_property("System", "CameraCount"))
+  # -- vision setup helper (the vision capability itself lives on driver.vision) --------------
 
   async def _try_request_camera_count(self) -> int:
     """Best-effort ``System.CameraCount`` read for setup, before ``configuration`` exists; never raises.
@@ -1767,109 +1773,6 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     except Exception:  # noqa: BLE001
       return 0
     return int(reply) if reply.isdigit() else 0
-
-  @_requires_vision_module
-  async def request_vision_tool_property(self, tool: str, property_name: str) -> str:
-    """Read one PreciseVision property (``VToolProperty <tool> <property>``).
-
-    The reserved tool name ``System`` addresses server-level properties (e.g. CameraCount);
-    any other name addresses a tool in the loaded vision project. Read-only, no motion.
-
-    VToolProperty does not use the standard ``<code> <data>`` reply: a successful read
-    returns the bare property value and a failure returns the bare negative error code. So
-    this reads the raw reply and raises on a negative code rather than misparsing the value
-    through the normal reply handler.
-    """
-    await self.driver.io.write(f"VToolProperty {tool} {property_name}".encode("utf-8") + b"\n")
-    reply = (await self.driver.io.readline()).decode("utf-8").strip()
-    if reply.startswith("-") and reply[1:].isdigit():
-      raise PreciseFlexError(int(reply), "")
-    return reply
-
-  @_requires_vision_module
-  async def set_vision_tool_property(self, tool: str, property_name: str, value: str) -> None:
-    """Write one PreciseVision property (``VToolProperty <tool> <property> <value>``).
-
-    The controller splits the command on spaces, so value must not contain spaces.
-    """
-    await self.driver.send_command(f"VToolProperty {tool} {property_name} {value}")
-
-  @_requires_vision_gripper
-  async def run_vision_process(self, process_name: str) -> str:
-    """Run a vision process (``Vprocess <name>``); returns the controller reply.
-
-    A plain-acquire process loads a fresh frame into the camera buffer; an acquire-and-save
-    process both captures and writes the file in one step (see capture_image). Does not move
-    the arm.
-    """
-    return await self.driver.send_command(f"Vprocess {process_name}")
-
-  @_requires_vision_module
-  async def capture_image(
-    self,
-    process_name: str,
-    acquire_tool: str,
-    acquire_prefix: Optional[str] = None,
-    acquire_path: Optional[str] = None,
-  ) -> str:
-    """Acquire and save a frame via the acquire tool's ACQUIRE_AND_SAVE mode (no arm motion).
-
-    Switches the named acquire tool to ``ACQUIRE_AND_SAVE`` so running ``process_name`` both
-    captures and writes the file, then restores it to ``NORMAL_ACQUIRE`` (even if the process
-    errors). This is the path that works on embedded PreciseVision builds (e.g. the PF400
-    gripper-camera engine), where the standalone ``System.SaveImage{n} <path>`` write is
-    unimplemented and returns ``-4016``. On a full PreciseVision PC build, ``SaveImage{n}`` is
-    also reachable directly via ``set_vision_tool_property("System", "SaveImage<n>", path)``.
-
-    The camera is not a parameter here: it is fixed by the acquire tool's ``CameraNumber`` in the
-    vision project, so you select it by naming the matching process/tool pair. On the PF400
-    IntelliGuide project that is ``("Camera1", "acq1")`` for the front-facing camera (1) and
-    ``("Camera2", "acq2")`` for the downward-facing camera (2).
-
-    The file is written on the vision-engine host (not the controller), under the tool's acquire
-    path - by default an ``Images`` folder beside the project files - as
-    ``<acquire_prefix><index>.<ext>``; retrieve it over a separate transport (e.g. FTP).
-    ``acquire_prefix``/``acquire_path`` override the tool's configured values when given; neither
-    may contain spaces. Returns the ``Vprocess`` reply.
-    """
-    await self.set_vision_tool_property(acquire_tool, "acquiremode", "ACQUIRE_AND_SAVE")
-    if acquire_path is not None:
-      await self.set_vision_tool_property(acquire_tool, "acquirepath", acquire_path)
-    if acquire_prefix is not None:
-      await self.set_vision_tool_property(acquire_tool, "acquireprefix", acquire_prefix)
-    try:
-      return await self.run_vision_process(process_name)
-    finally:
-      await self.set_vision_tool_property(acquire_tool, "acquiremode", "NORMAL_ACQUIRE")
-
-  @_requires_vision_module
-  async def request_vision_result_info_string(
-    self, tool: Optional[str] = None, index: Optional[int] = None
-  ) -> str:
-    """Read a vision result's text result (``VresultInfoString``); read-only, no motion.
-
-    Returns the tool-specific text result of the last vision process (no args) or of a specific
-    result (``tool`` + 1-based ``index``, given together). For a BarcodeRead tool this is the
-    decoded barcode - its type and value.
-    """
-    if (tool is None) != (index is None):
-      raise ValueError("tool and index must be given together, or both omitted")
-    suffix = f" {tool} {index}" if tool is not None else ""
-    return (await self.driver.send_command(f"VresultInfoString{suffix}")).strip()
-
-  @_requires_vision_module
-  async def read_barcode(
-    self, process_name: str, barcode_tool: str = "barcode_read1", index: int = 1
-  ) -> str:
-    """Run a vision process and return a decoded barcode (no arm motion).
-
-    Runs ``process_name`` (which must contain a BarcodeRead tool), then reads the decoded
-    barcode (type and value) from ``barcode_tool`` result ``index`` (1-based). For multiple
-    codes (the tool's FindAll property), call with successive indices. Which symbologies are
-    decoded is configured per-symbology on the tool, not here.
-    """
-    await self.run_vision_process(process_name)
-    return await self.request_vision_result_info_string(barcode_tool, index)
 
   async def reset(self, robot_number: int) -> None:
     """Reset the threads associated with the specified robot.
