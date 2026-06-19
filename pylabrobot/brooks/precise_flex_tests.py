@@ -1,6 +1,6 @@
 import unittest
 from typing import Tuple
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from pylabrobot.brooks.precise_flex import (
   Axis,
@@ -9,6 +9,11 @@ from pylabrobot.brooks.precise_flex import (
   PreciseFlexDriver,
   PreciseFlexError,
   StereoParameters,
+)
+from pylabrobot.brooks.vision_introspection import (
+  assemble_available,
+  enumerate_vision_project,
+  parse_project_member_name,
 )
 
 
@@ -406,3 +411,38 @@ class TestPreciseFlexDriverVisionPrimitives(unittest.IsolatedAsyncioTestCase):
   async def test_start_led_rejects_bad_camera(self):
     with self.assertRaises(ValueError):
       await self.driver.start_led("left")
+
+
+class TestVisionIntrospection(unittest.TestCase):
+  """FTP-based enumeration of the loaded vision project (best-effort, never raises)."""
+
+  def test_parse_project_member_name_reads_name_field(self):
+    text = "[VisionProcess]\n@Count=1\n[Name]\n@Count=1\nValue=Camera1\n[ToolCount]\n"
+    self.assertEqual(parse_project_member_name(text), "Camera1")
+
+  def test_parse_project_member_name_none_without_name_section(self):
+    self.assertIsNone(parse_project_member_name("[Foo]\n@Count=1\nValue=x\n"))
+
+  def test_assemble_available_splits_by_extension_and_ignores_others(self):
+    files = {
+      "Camera1.process": "[Name]\nValue=Camera1\n",
+      "led.tool": "[Name]\nValue=led\n",
+      "DirectShow_CameraCalibration_1.dat": "ignored",
+    }
+    self.assertEqual(assemble_available(files), {"processes": ["Camera1"], "tools": ["led"]})
+
+  def test_assemble_available_falls_back_to_filename_stem(self):
+    self.assertEqual(
+      assemble_available({"acq1.tool": "[Foo]\n@Count=1\n"}),
+      {"processes": [], "tools": ["acq1"]},
+    )
+
+  def test_enumerate_returns_none_without_credentials_or_target(self):
+    self.assertIsNone(enumerate_vision_project(None, None, None, "proj"))
+    self.assertIsNone(enumerate_vision_project("vhost", "user", "pw", None))
+
+  def test_enumerate_returns_none_on_ftp_failure(self):
+    """Any FTP error degrades to None, never raises (the device error backstops)."""
+    with patch("ftplib.FTP") as MockFTP:
+      MockFTP.return_value.connect.side_effect = OSError("unreachable")
+      self.assertIsNone(enumerate_vision_project("vhost", "user", "pw", "proj"))
