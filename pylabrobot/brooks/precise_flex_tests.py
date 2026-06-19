@@ -137,21 +137,19 @@ class TestPreciseFlex400VisionSetupHelpers(unittest.IsolatedAsyncioTestCase):
     self.backend, self.driver = _make_backend()
 
   async def test_try_request_camera_count_returns_positive_count(self):
-    """_try_request_camera_count reads the bare CameraCount value (setup-time, unguarded)."""
-    self.driver.io.write = AsyncMock()
-    self.driver.io.readline = AsyncMock(return_value=b"2\r\n")
+    """_try_request_camera_count routes the bare CameraCount read through driver.vtool_property."""
+    self.driver.vtool_property = AsyncMock(return_value="2")
     self.assertEqual(await self.backend._try_request_camera_count(), 2)
-    self.driver.io.write.assert_awaited_once_with(b"VToolProperty System CameraCount\n")
+    self.driver.vtool_property.assert_awaited_once_with("System", "CameraCount")
 
   async def test_try_request_camera_count_treats_error_code_as_zero(self):
-    """A negative error reply (e.g. -4016, vision engine absent) resolves to 0, not a raise."""
-    self.driver.io.write = AsyncMock()
-    self.driver.io.readline = AsyncMock(return_value=b"-4016\r\n")
+    """A vision error (e.g. -4016, engine absent) raised by the read resolves to 0, not a raise."""
+    self.driver.vtool_property = AsyncMock(side_effect=PreciseFlexError(-4016, ""))
     self.assertEqual(await self.backend._try_request_camera_count(), 0)
 
   async def test_try_request_camera_count_swallows_io_failure(self):
     """An I/O failure during the read returns 0 (degrade gracefully), never raises."""
-    self.driver.io.write = AsyncMock(side_effect=OSError("boom"))
+    self.driver.vtool_property = AsyncMock(side_effect=OSError("boom"))
     self.assertEqual(await self.backend._try_request_camera_count(), 0)
 
   def test_from_reply_rejects_wrong_field_count(self):

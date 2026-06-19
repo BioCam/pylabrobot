@@ -1768,8 +1768,10 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     or an I/O error), so a non-camera unit resolves to ``vision_gripper_installed=False``.
     """
     try:
-      await self.driver.io.write(b"VToolProperty System CameraCount\n")
-      reply = (await self.driver.io.readline()).decode("utf-8").strip()
+      # Route through the driver's bare-reply VToolProperty read (the single wire-read
+      # implementation) rather than re-issuing io.write/readline here; a negative error code
+      # raises PreciseFlexError and an I/O failure raises - both are swallowed to 0 below.
+      reply = await self.driver.vtool_property("System", "CameraCount")
     except Exception:  # noqa: BLE001
       return 0
     return int(reply) if reply.isdigit() else 0

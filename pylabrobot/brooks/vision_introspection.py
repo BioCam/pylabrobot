@@ -8,7 +8,10 @@ and the device's own ``-4012``/``-4015`` errors remain the runtime backstop.
 
 import ftplib
 import io
+import logging
 from typing import Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 
 def parse_project_member_name(text: str) -> Optional[str]:
@@ -67,8 +70,8 @@ def enumerate_vision_project(
     return None
   base = f"/Project Data/{project_name}"
   files: Dict[str, str] = {}
+  ftp = ftplib.FTP()
   try:
-    ftp = ftplib.FTP()
     ftp.connect(host, port, timeout=timeout)
     ftp.login(user, password or "")
     for entry in ftp.nlst(base):
@@ -78,7 +81,12 @@ def enumerate_vision_project(
       buf = io.BytesIO()
       ftp.retrbinary(f"RETR {base}/{name}", buf.write)
       files[name] = buf.getvalue().decode("utf-8", "replace")
-    ftp.quit()
-  except Exception:  # noqa: BLE001
+  except Exception as exc:  # noqa: BLE001
+    logger.debug("vision-project enumeration failed (%s on %s): %s", project_name, host, exc)
     return None
+  finally:
+    try:
+      ftp.close()  # always release the control connection, including on the error paths
+    except Exception:  # noqa: BLE001
+      pass
   return assemble_available(files)
