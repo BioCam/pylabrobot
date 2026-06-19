@@ -268,6 +268,36 @@ class TestPreciseFlex400CameraImage(unittest.IsolatedAsyncioTestCase):
       await self.backend.capture_image("Camera1", "acq1")
     self.driver.send_command.assert_not_awaited()
 
+  async def test_request_vision_result_info_string_specific_result(self):
+    """A specific result sends `VresultInfoString <tool> <idx>` and strips the parsed text
+    (the BarcodeRead tool's type+value, which the wire pads with a leading space)."""
+    self.driver.send_command = AsyncMock(return_value=" Code128 ABC123")
+    value = await self.backend.request_vision_result_info_string("barcode_read1", 1)
+    self.driver.send_command.assert_awaited_once_with("VresultInfoString barcode_read1 1")
+    self.assertEqual(value, "Code128 ABC123")
+
+  async def test_request_vision_result_info_string_last_result_no_args(self):
+    """With no tool/index it reads the last result: bare `VresultInfoString`."""
+    self.driver.send_command = AsyncMock(return_value=" QR foo")
+    await self.backend.request_vision_result_info_string()
+    self.driver.send_command.assert_awaited_once_with("VresultInfoString")
+
+  async def test_request_vision_result_info_string_rejects_partial_args(self):
+    """tool without index (or vice-versa) is ambiguous and raises before any send."""
+    with self.assertRaises(ValueError):
+      await self.backend.request_vision_result_info_string("barcode_read1")
+
+  async def test_read_barcode_runs_process_then_reads_result(self):
+    """read_barcode runs the process (acquire + decode) then reads the decoded value from the
+    barcode tool result, in that order."""
+    self.driver.send_command = AsyncMock(side_effect=["1", " Code128 ABC123"])
+    value = await self.backend.read_barcode("Camera1", barcode_tool="barcode_read1", index=1)
+    self.assertEqual(value, "Code128 ABC123")
+    self.assertEqual(
+      [c.args[0] for c in self.driver.send_command.await_args_list],
+      ["Vprocess Camera1", "VresultInfoString barcode_read1 1"],
+    )
+
 
 class TestPreciseFlex400VisionCapability(unittest.TestCase):
   @staticmethod

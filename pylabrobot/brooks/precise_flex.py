@@ -1746,6 +1746,35 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     finally:
       await self.set_vision_tool_property(acquire_tool, "acquiremode", "NORMAL_ACQUIRE")
 
+  @_requires_vision_module
+  async def request_vision_result_info_string(
+    self, tool: Optional[str] = None, index: Optional[int] = None
+  ) -> str:
+    """Read a vision result's text result (``VresultInfoString``); read-only, no motion.
+
+    Returns the tool-specific text result of the last vision process (no args) or of a specific
+    result (``tool`` + 1-based ``index``, given together). For a BarcodeRead tool this is the
+    decoded barcode - its type and value.
+    """
+    if (tool is None) != (index is None):
+      raise ValueError("tool and index must be given together, or both omitted")
+    suffix = f" {tool} {index}" if tool is not None else ""
+    return (await self.driver.send_command(f"VresultInfoString{suffix}")).strip()
+
+  @_requires_vision_module
+  async def read_barcode(
+    self, process_name: str, barcode_tool: str = "barcode_read1", index: int = 1
+  ) -> str:
+    """Run a vision process and return a decoded barcode (no arm motion).
+
+    Runs ``process_name`` (which must contain a BarcodeRead tool), then reads the decoded
+    barcode (type and value) from ``barcode_tool`` result ``index`` (1-based). For multiple
+    codes (the tool's FindAll property), call with successive indices. Which symbologies are
+    decoded is configured per-symbology on the tool, not here.
+    """
+    await self.run_vision_process(process_name)
+    return await self.request_vision_result_info_string(barcode_tool, index)
+
   async def reset(self, robot_number: int) -> None:
     """Reset the threads associated with the specified robot.
 
