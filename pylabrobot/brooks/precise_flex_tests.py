@@ -17,6 +17,11 @@ from pylabrobot.brooks.vision_introspection import (
   enumerate_vision_project,
   parse_project_member_name,
 )
+from pylabrobot.brooks import vision_engine
+from pylabrobot.brooks.vision_engine import (
+  enumerate_vision_project_via_engine,
+  parse_engine_reply,
+)
 
 
 def _make_backend(
@@ -388,3 +393,79 @@ class TestPreciseFlex400VisionExposure(unittest.IsolatedAsyncioTestCase):
     dev.driver.vision = None
     await dev.setup()
     self.assertIsNone(dev.vision)
+
+
+class TestVisionEngine(unittest.TestCase):
+  """Password-free engine property-protocol enumeration (no credentials)."""
+
+  def test_parse_engine_reply_success_and_error(self):
+    self.assertEqual(parse_engine_reply("0 acq1 acq2"), "acq1 acq2")
+    self.assertEqual(parse_engine_reply("0"), "")
+    self.assertIsNone(parse_engine_reply("-4017 PropertyNotFound"))
+
+  def test_enumerate_via_engine_parses_processes_and_tools(self):
+    """system.listprocesses (comma) + system.listtools (space) -> sorted name lists."""
+    with patch.object(
+      vision_engine,
+      "_query",
+      return_value=["0 Camera1,Camera2,LightControl", "0 acq1 acq2 aruco1"],
+    ):
+      self.assertEqual(
+        enumerate_vision_project_via_engine("vhost"),
+        {"processes": ["Camera1", "Camera2", "LightControl"], "tools": ["acq1", "acq2", "aruco1"]},
+      )
+
+  def test_enumerate_via_engine_none_without_host(self):
+    self.assertIsNone(enumerate_vision_project_via_engine(None))
+
+  def test_enumerate_via_engine_none_on_socket_error(self):
+    with patch.object(vision_engine, "_query", side_effect=OSError("unreachable")):
+      self.assertIsNone(enumerate_vision_project_via_engine("vhost"))
+
+  def test_enumerate_via_engine_none_on_negative_reply(self):
+    with patch.object(vision_engine, "_query", return_value=["-4016 InvalidArguments", "0 acq1"]):
+      self.assertIsNone(enumerate_vision_project_via_engine("vhost"))
+
+
+class TestPreciseFlex400VisionEnumeration(unittest.IsolatedAsyncioTestCase):
+  """Setup-time project enumeration: password-free engine protocol preferred, FTP fallback."""
+
+  def setUp(self):
+    self.backend, self.driver = _make_backend()
+
+  async def test_enumerate_prefers_engine_over_ftp(self):
+    self.backend._vision_engine_host = "vhost"
+    self.backend._vision_ftp_host = "fhost"
+    self.backend._vision_ftp_user = "u"
+    with patch(
+      "pylabrobot.brooks.precise_flex.enumerate_vision_project_via_engine",
+      return_value={"processes": ["Camera1"], "tools": ["acq1"]},
+    ) as engine, patch("pylabrobot.brooks.precise_flex.enumerate_vision_project") as ftp:
+      result = await self.backend._enumerate_vision_project()
+    engine.assert_called_once_with("vhost")
+    ftp.assert_not_called()
+    self.assertEqual(result, {"processes": ["Camera1"], "tools": ["acq1"]})
+
+  async def test_enumerate_falls_back_to_ftp_when_engine_none(self):
+    self.backend._vision_engine_host = None
+    self.backend._vision_ftp_host = "fhost"
+    self.backend._vision_ftp_user = "u"
+    self.backend._vision_ftp_password = "p"
+    self.driver.vtool_property = AsyncMock(return_value="VisionTest")
+    with patch(
+      "pylabrobot.brooks.precise_flex.enumerate_vision_project_via_engine", return_value=None
+    ), patch(
+      "pylabrobot.brooks.precise_flex.enumerate_vision_project",
+      return_value={"processes": [], "tools": ["led"]},
+    ) as ftp:
+      result = await self.backend._enumerate_vision_project()
+    ftp.assert_called_once_with("fhost", "u", "p", "VisionTest")
+    self.assertEqual(result, {"processes": [], "tools": ["led"]})
+
+  async def test_enumerate_none_when_no_source(self):
+    self.backend._vision_engine_host = None
+    self.backend._vision_ftp_host = None
+    with patch(
+      "pylabrobot.brooks.precise_flex.enumerate_vision_project_via_engine", return_value=None
+    ):
+      self.assertIsNone(await self.backend._enumerate_vision_project())

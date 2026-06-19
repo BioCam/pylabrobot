@@ -16,6 +16,8 @@ from pylabrobot.brooks.confirmed_firmware_versions import (
   suggest_entry,
 )
 from pylabrobot.brooks.tcs_modules import missing_required_modules
+from pylabrobot.brooks.vision_engine import enumerate_vision_project_via_engine
+from pylabrobot.brooks.vision_introspection import enumerate_vision_project
 from pylabrobot.brooks import kinematics
 from pylabrobot.capabilities.arms.backend import (
   CanFreedrive,
@@ -711,6 +713,10 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     has_rail: bool = False,
     read_kinematics_from_device: bool = True,
     recover_out_of_range_at_setup: bool = True,
+    vision_engine_host: Optional[str] = None,
+    vision_ftp_host: Optional[str] = None,
+    vision_ftp_user: Optional[str] = None,
+    vision_ftp_password: Optional[str] = None,
   ) -> None:
     """
     Args:
@@ -735,6 +741,10 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
         Depends on the mounted gripper. The conversion mm → firmware units is
         linear with slope 1: ``units = closed_gripper_position + (width_mm -
         min_gripper_width)``.
+      vision_engine_host: vision-engine host for the password-free property protocol (:1450), used to
+        enumerate the loaded project at setup. ``None`` disables it. Preferred over FTP.
+      vision_ftp_host / vision_ftp_user / vision_ftp_password: credentialed FTP fallback for project
+        enumeration, used only when the engine host is unset/unreachable. ``None`` disables the fallback.
     """
     super().__init__()
     self.driver = driver
@@ -751,12 +761,38 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     )
     self._read_kinematics_from_device = read_kinematics_from_device
     self._recover_out_of_range_at_setup = recover_out_of_range_at_setup
+    # Vision-project enumeration sources: the password-free engine protocol (preferred) and the
+    # credentialed FTP path (fallback only). All optional; None disables that source.
+    self._vision_engine_host = vision_engine_host
+    self._vision_ftp_host = vision_ftp_host
+    self._vision_ftp_user = vision_ftp_user
+    self._vision_ftp_password = vision_ftp_password
     # Device configuration, resolved once at setup; None until then.
     self._configuration: Optional[PreciseFlexConfiguration] = None
     if is_dual_gripper:
       warnings.warn(
         "Dual gripper support is experimental and may not work as expected.", UserWarning
       )
+
+  async def _enumerate_vision_project(self) -> Optional[Dict[str, List[str]]]:
+    """Best-effort enumeration of the loaded vision project's processes and tools.
+
+    Prefers the **password-free** engine property protocol (``vision_engine_host`` :1450); only if
+    that is not configured/reachable does it fall back to the credentialed FTP enumeration (when an
+    FTP host+user are supplied). Returns the ``{"processes": [...], "tools": [...]}`` map, or ``None``.
+    """
+    available = enumerate_vision_project_via_engine(self._vision_engine_host)
+    if available is not None:
+      return available
+    if self._vision_ftp_host and self._vision_ftp_user:
+      try:
+        project = await self.driver.vtool_property("System", "ProjectName")
+      except Exception:  # noqa: BLE001
+        return None
+      return enumerate_vision_project(
+        self._vision_ftp_host, self._vision_ftp_user, self._vision_ftp_password, project
+      )
+    return None
 
   async def _on_setup(self, backend_params: Optional[BackendParams] = None) -> None:
     await super()._on_setup(backend_params=backend_params)
@@ -774,12 +810,13 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
       return
     self._adopt_configuration(self._configuration)
     # Build the nullable vision capability when the camera gripper is present (its existence is the
-    # capability gate). Enumeration credentials are not wired yet, so `available` stays None.
-    self.driver.vision = (
-      PreciseFlexVisionBackend(self.driver)
-      if self._configuration.vision_gripper_installed
-      else None
-    )
+    # capability gate); enumerate the loaded project best-effort (password-free engine protocol
+    # preferred, FTP fallback) so `available` lists its processes/tools.
+    if self._configuration.vision_gripper_installed:
+      available = await self._enumerate_vision_project()
+      self.driver.vision = PreciseFlexVisionBackend(self.driver, available=available)
+    else:
+      self.driver.vision = None
     self._log_configuration_summary(self._configuration)
     self._assess_configuration(self._configuration)
     await self._handle_out_of_range_axes()
