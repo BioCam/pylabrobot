@@ -6,6 +6,8 @@ from pylabrobot.brooks.precise_flex import (
   Axis,
   PreciseFlex400Backend,
   PreciseFlexConfiguration,
+  PreciseFlexDriver,
+  PreciseFlexError,
   StereoParameters,
 )
 
@@ -195,6 +197,24 @@ class TestPreciseFlex400CameraImage(unittest.IsolatedAsyncioTestCase):
     self.driver.io.write.assert_awaited_once_with(b"VToolProperty System CameraCount\n")
     self.assertEqual(count, 2)
 
+  async def test_try_request_camera_count_returns_positive_count(self):
+    """_try_request_camera_count reads the bare CameraCount value (setup-time, unguarded)."""
+    self.driver.io.write = AsyncMock()
+    self.driver.io.readline = AsyncMock(return_value=b"2\r\n")
+    self.assertEqual(await self.backend._try_request_camera_count(), 2)
+    self.driver.io.write.assert_awaited_once_with(b"VToolProperty System CameraCount\n")
+
+  async def test_try_request_camera_count_treats_error_code_as_zero(self):
+    """A negative error reply (e.g. -4016, vision engine absent) resolves to 0, not a raise."""
+    self.driver.io.write = AsyncMock()
+    self.driver.io.readline = AsyncMock(return_value=b"-4016\r\n")
+    self.assertEqual(await self.backend._try_request_camera_count(), 0)
+
+  async def test_try_request_camera_count_swallows_io_failure(self):
+    """An I/O failure during the read returns 0 (degrade gracefully), never raises."""
+    self.driver.io.write = AsyncMock(side_effect=OSError("boom"))
+    self.assertEqual(await self.backend._try_request_camera_count(), 0)
+
   async def test_request_vision_tool_property_raises_on_bare_error_code(self):
     """A bare negative reply (e.g. -4016) is a vision error code, not a value, so it raises
     instead of being returned as the property value."""
@@ -329,3 +349,60 @@ class TestPreciseFlex400VisionCapability(unittest.TestCase):
     """has_vision_module keys off the IntelliGuide entry in the version module list."""
     self.assertTrue(self._config(["IntelliGuide 1.0 05-22-2024"]).has_vision_module)
     self.assertFalse(self._config(["PARobot Module 3.0", "SSGrip Module 3.0"]).has_vision_module)
+
+
+class TestPreciseFlexDriverVisionPrimitives(unittest.IsolatedAsyncioTestCase):
+  """The unconditional driver-level wire primitives (no guards)."""
+
+  def setUp(self):
+    self.driver = PreciseFlexDriver(host="localhost")
+    self.driver.send_command = AsyncMock(return_value="")
+    self.driver.io = MagicMock()
+
+  async def test_vtool_property_write_uses_send_command(self):
+    """A write (value given) goes through the normal reply parser."""
+    await self.driver.vtool_property("acq1", "acquiremode", "ACQUIRE_AND_SAVE")
+    self.driver.send_command.assert_awaited_once_with(
+      "VToolProperty acq1 acquiremode ACQUIRE_AND_SAVE"
+    )
+
+  async def test_vtool_property_read_returns_bare_value(self):
+    """A read (no value) reads the raw bare reply, bypassing the <code> <data> parser."""
+    self.driver.io.write = AsyncMock()
+    self.driver.io.readline = AsyncMock(return_value=b"2\r\n")
+    self.assertEqual(await self.driver.vtool_property("System", "CameraCount"), "2")
+    self.driver.io.write.assert_awaited_once_with(b"VToolProperty System CameraCount\n")
+
+  async def test_vtool_property_read_raises_on_error_code(self):
+    """A bare negative reply is a vision error code, not a value, so it raises."""
+    self.driver.io.write = AsyncMock()
+    self.driver.io.readline = AsyncMock(return_value=b"-4016\r\n")
+    with self.assertRaises(PreciseFlexError):
+      await self.driver.vtool_property("System", "Info")
+
+  async def test_vprocess_sends_named_process(self):
+    await self.driver.vprocess("snap")
+    self.driver.send_command.assert_awaited_once_with("Vprocess snap")
+
+  async def test_vresult_info_string_addresses_result_and_strips(self):
+    """A specific result sends `VresultInfoString <tool> <idx>` and strips the leading-space pad."""
+    self.driver.send_command = AsyncMock(return_value=" Code128 ABC123")
+    value = await self.driver.vresult_info_string("barcode_read1", 1)
+    self.driver.send_command.assert_awaited_once_with("VresultInfoString barcode_read1 1")
+    self.assertEqual(value, "Code128 ABC123")
+
+  async def test_vresult_info_string_rejects_partial_args(self):
+    with self.assertRaises(ValueError):
+      await self.driver.vresult_info_string("barcode_read1")
+
+  async def test_start_led_sets_bank_brightness_then_runs_process(self):
+    """start_led maps camera->Bank, sets brightness, then runs the light process - in order."""
+    await self.driver.start_led("bottom", brightness=80)
+    self.assertEqual(
+      [c.args[0] for c in self.driver.send_command.await_args_list],
+      ["VToolProperty led Bank 2", "VToolProperty led Brightness 80", "Vprocess LightControl"],
+    )
+
+  async def test_start_led_rejects_bad_camera(self):
+    with self.assertRaises(ValueError):
+      await self.driver.start_led("left")

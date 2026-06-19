@@ -6,7 +6,7 @@ import warnings
 from abc import ABC
 from dataclasses import dataclass
 from enum import IntEnum
-from typing import Dict, List, Literal, Optional
+from typing import Dict, List, Literal, Optional, Union
 
 from pylabrobot.brooks.error_codes import ERROR_CODES
 from pylabrobot.brooks.data_ids import DataID
@@ -109,6 +109,10 @@ class PreciseFlexConfiguration:
   has_rail: bool = False
   is_dual_gripper: bool = False
   is_vision_gripper: bool = False
+  # Hardware-authoritative (from a System.CameraCount read at setup), unlike is_vision_gripper
+  # which is a model-name/module heuristic. Zero cameras / unreachable engine -> not installed.
+  vision_gripper_installed: bool = False
+  camera_count: int = 0
   reach_class: Literal["standard", "extended"] = "standard"
 
   @property
@@ -513,6 +517,77 @@ class PreciseFlexDriver(Driver):
       str: The current motion state.
     """
     return await self.send_command("state")
+
+  # -- vision wire primitives (unconditional, no guards; the capability layer gates) --------
+  #
+  # The layered home for the VToolProperty/Vprocess wire calls. The backend's
+  # set/request_vision_tool_property / run_vision_process still build these inline today; they
+  # are re-pointed onto these primitives when the vision capability backend is introduced.
+
+  async def vtool_property(self, tool: str, property_name: str, value: Optional[str] = None) -> str:
+    """``VToolProperty`` read (no value) or write (value given); no arm motion.
+
+    A read returns the BARE property value (PreciseVision does not prefix it with the usual
+    ``<code> <data>``), so it is read raw and a negative reply is raised as a PreciseFlexError.
+    A write goes through the normal reply parser. ``value`` must not contain spaces.
+    """
+    if value is not None:
+      return await self.send_command(f"VToolProperty {tool} {property_name} {value}")
+    await self.io.write(f"VToolProperty {tool} {property_name}".encode("utf-8") + b"\n")
+    reply = (await self.io.readline()).decode("utf-8").strip()
+    if reply.startswith("-") and reply[1:].isdigit():
+      raise PreciseFlexError(int(reply), "")
+    return reply
+
+  async def vprocess(self, name: str) -> str:
+    """Run a vision process (``Vprocess <name>``); returns the reply. No arm motion."""
+    return await self.send_command(f"Vprocess {name}")
+
+  async def vresult_info_string(
+    self, tool: Optional[str] = None, index: Optional[int] = None
+  ) -> str:
+    """``VresultInfoString`` - a result's text result (e.g. a decoded barcode), or the last result.
+
+    ``tool`` and 1-based ``index`` are given together or both omitted. The wire pads the value
+    with a leading space, which is stripped.
+    """
+    if (tool is None) != (index is None):
+      raise ValueError("tool and index must be given together, or both omitted")
+    suffix = f" {tool} {index}" if tool is not None else ""
+    return (await self.send_command(f"VresultInfoString{suffix}")).strip()
+
+  async def start_led(
+    self,
+    camera: Union[Literal["front", "bottom"], int] = "front",
+    *,
+    brightness: int = 100,
+    delay: Optional[int] = None,
+    light_tool: str = "led",
+    light_process: str = "LightControl",
+  ) -> None:
+    """Turn on the IntelliGuide camera lighting (LightControl vision tool); no arm motion.
+
+    Sets the named LightControl tool's LED bank and brightness, then runs the process that
+    contains it to apply the change.
+
+    Args:
+      camera: which integrated LED source - ``"front"``/``1`` or ``"bottom"``/``2``. Drives the
+        tool's LED Bank (1 = front-facing, 2 = bottom-facing).
+      brightness: LED brightness 0-100 (PWM duty); ``0`` turns the LEDs off.
+      delay: optional light time delay in milliseconds.
+      light_tool: the LightControl tool name in the loaded vision project.
+      light_process: the process containing ``light_tool``, run to apply the settings.
+    """
+    bank = {"front": 1, "bottom": 2, 1: 1, 2: 2}.get(camera)
+    if bank is None:
+      raise ValueError(f"camera must be 'front'/1 or 'bottom'/2, got {camera!r}")
+    if not 0 <= brightness <= 100:
+      raise ValueError(f"brightness must be 0-100, got {brightness}")
+    await self.vtool_property(light_tool, "Bank", str(bank))
+    await self.vtool_property(light_tool, "Brightness", str(brightness))
+    if delay is not None:
+      await self.vtool_property(light_tool, "Delay", str(delay))
+    await self.vprocess(light_process)
 
 
 # ---------------------------------------------------------------------------
@@ -1548,6 +1623,10 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     # presence gates those commands and corroborates the model-name "V" suffix (which alone
     # is fragile across naming variants).
     has_intelliguide = any("intelliguide" in m.lower() for m in modules)
+    # The IntelliGuide module can load on non-camera units, so confirm a reachable vision engine
+    # with connected cameras by reading System.CameraCount (the guarded request_camera_count
+    # cannot run yet - configuration is still being built).
+    camera_count = await self._try_request_camera_count() if has_intelliguide else 0
 
     # Combine the per-axis 100% references with the global percent caps into the
     # effective per-joint maxima, so consumers get usable limits, not raw factors.
@@ -1607,6 +1686,8 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
       has_rail=Axis.RAIL in soft_limits,
       is_dual_gripper=bool(axis_mask & 0x80),
       is_vision_gripper=suffix[:1] == "V" or has_intelliguide,
+      vision_gripper_installed=has_intelliguide and camera_count > 0,
+      camera_count=camera_count,
       reach_class=reach_class,
     )
 
@@ -1671,6 +1752,21 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     Requires the IntelliGuide vision module.
     """
     return int(await self.request_vision_tool_property("System", "CameraCount"))
+
+  async def _try_request_camera_count(self) -> int:
+    """Best-effort ``System.CameraCount`` read for setup, before ``configuration`` exists; never raises.
+
+    Unlike ``request_camera_count`` this is unguarded - the vision-module guard reads
+    ``configuration``, which is still being built during ``_request_configuration`` - and it
+    swallows failures: an absent or unreachable vision engine returns 0 (a negative error reply
+    or an I/O error), so a non-camera unit resolves to ``vision_gripper_installed=False``.
+    """
+    try:
+      await self.driver.io.write(b"VToolProperty System CameraCount\n")
+      reply = (await self.driver.io.readline()).decode("utf-8").strip()
+    except Exception:  # noqa: BLE001
+      return 0
+    return int(reply) if reply.isdigit() else 0
 
   @_requires_vision_module
   async def request_vision_tool_property(self, tool: str, property_name: str) -> str:
