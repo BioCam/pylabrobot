@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from pylabrobot.brooks.precise_flex import (
   Axis,
+  PreciseFlex400,
   PreciseFlex400Backend,
   PreciseFlexConfiguration,
   PreciseFlexDriver,
@@ -359,3 +360,33 @@ class TestPreciseFlexVisionBackend(unittest.IsolatedAsyncioTestCase):
     self.driver.send_command.assert_awaited_once_with(
       "StereoParam 1 2 aruco_dual default_tool 100.0 1.5 4 10 11 50.0 2.0 200"
     )
+
+
+class TestPreciseFlex400VisionExposure(unittest.IsolatedAsyncioTestCase):
+  """PreciseFlex400.setup exposes self.vision iff the backend built driver.vision and skip_vision
+  is not set."""
+
+  def _device(self) -> PreciseFlex400:
+    dev = PreciseFlex400(host="localhost", closed_gripper_position=500.0)
+    dev._capabilities = []  # skip the real arm _on_setup (no I/O in this unit test)
+    dev.driver.setup = AsyncMock()  # Device.setup calls driver.setup()
+    return dev
+
+  async def test_vision_exposed_when_driver_vision_built(self):
+    dev = self._device()
+    sentinel = object()
+    dev.driver.vision = sentinel  # what the backend's _on_setup would have built
+    await dev.setup()
+    self.assertIs(dev.vision, sentinel)
+
+  async def test_vision_skipped_with_skip_vision_flag(self):
+    dev = self._device()
+    dev.driver.vision = object()
+    await dev.setup(skip_vision=True)
+    self.assertIsNone(dev.vision)
+
+  async def test_no_vision_when_not_installed(self):
+    dev = self._device()
+    dev.driver.vision = None
+    await dev.setup()
+    self.assertIsNone(dev.vision)

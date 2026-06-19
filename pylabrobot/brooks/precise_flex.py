@@ -2676,6 +2676,25 @@ class PreciseFlex400(Device):
     self.reference = Resource(name="PreciseFlex400", size_x=200, size_y=200, size_z=200)
     self.arm = OrientableGripperArm(backend=backend, reference_resource=self.reference)
     self._capabilities = [self.arm]
+    # Vision is composed after setup, once the backend has probed the hardware (driver.vision).
+    # The capability backend already has the clean high-level API (capture_image, read_barcode,
+    # set_lighting, stereo), and vision has no resource/deck semantics, so it is exposed directly
+    # rather than behind a pure pass-through front-end wrapper.
+    self.vision: Optional[PreciseFlexVisionBackend] = None
+
+  async def setup(
+    self, backend_params: Optional[BackendParams] = None, *, skip_vision: bool = False
+  ) -> None:
+    """Set up the arm, then expose the vision capability if a camera gripper is present.
+
+    Args:
+      skip_vision: if True, do not expose ``self.vision`` even when a camera gripper is detected
+        (``driver.vision`` is still built by the backend). Mirrors STAR's ``skip_*`` setup flags.
+    """
+    await super().setup(backend_params=backend_params)
+    self.vision = (
+      self.driver.vision if (self.driver.vision is not None and not skip_vision) else None
+    )
 
 
 class PreciseFlex3400Backend(PreciseFlexArmBackend):
