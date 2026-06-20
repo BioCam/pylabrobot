@@ -18,10 +18,13 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-ENGINE_PROPERTY_PORT = 1450
+ENGINE_PROPERTY_PORT = 1450  # text command/query protocol
+ENGINE_IMAGE_PORT = 1500  # binary stream carrying the pushed "Primary Image [n]" JPEG results
 
 # Engine result framing for a pushed image (from the 2026-06-19 captures): a 3-byte marker, a
-# little-endian uint32 length, the result name (e.g. "Primary Image [1]"), then the JPEG bytes.
+# header (carrying a little-endian uint32 JPEG length) and the result name (e.g.
+# "Primary Image [1]"), then the JPEG bytes. The images flow on ENGINE_IMAGE_PORT; the command
+# port only carries the cameraacquire trigger and its reply.
 _IMAGE_RESULT_MARKER = b"\x10\x02\x01"
 _JPEG_SOI = b"\xff\xd8\xff"
 _JPEG_EOI = b"\xff\xd9"
@@ -118,37 +121,89 @@ def parse_camera_image_result(buf: bytes) -> Optional[bytes]:
   return buf[soi : eoi + 2] if eoi > 0 else None
 
 
-def get_camera_image(
-  host: Optional[str], camera: int = 1, *, port: int = ENGINE_PROPERTY_PORT, timeout: float = 5.0
-) -> Optional[bytes]:
-  """Acquire one JPEG frame from a camera over the engine protocol - **no credentials**.
+def _drain_named_image(buf: bytearray) -> Optional[tuple]:
+  """Pop the next complete ``(header, jpeg)`` image result from a buffer, consuming it.
 
-  Sends ``property set system.cameraacquire <camera>`` on the engine port and reads back the
-  pushed ``Primary Image [n]`` result (see ``parse_camera_image_result`` for the framing),
-  returning the JPEG bytes. Best-effort: returns ``None`` if the host is missing/unreachable or
-  no complete frame arrives - never raises.
-
-  Protocol derived from the 2026-06-19 captures; confirm against the live engine before relying on
-  it. ``camera`` is 1 (front) or 2 (downward).
+  ``header`` is the marker-to-SOI bytes (it carries the ``Primary Image [n]`` result name);
+  ``jpeg`` is ``FFD8…FFD9``. Returns ``None`` while bytes are still arriving.
   """
-  if not host:
+  marker = buf.find(_IMAGE_RESULT_MARKER)
+  if marker < 0:
     return None
+  soi = buf.find(_JPEG_SOI, marker)
+  if soi < 0:
+    return None
+  eoi = buf.find(_JPEG_EOI, soi)
+  if eoi < 0:
+    return None
+  header = bytes(buf[marker:soi])
+  jpeg = bytes(buf[soi : eoi + 2])
+  del buf[: eoi + 2]
+  return header, jpeg
+
+
+def _trigger_acquire(host: str, camera: int, port: int, timeout: float) -> None:
+  """Best-effort ``cameraacquire`` on the command port to push a fresh frame (ignores failure)."""
   try:
     sock = socket.create_connection((host, port), timeout=timeout)
     try:
       sock.settimeout(timeout)
       sock.sendall(f"property set system.cameraacquire {camera}\r\n".encode("utf-8"))
-      buf = b""
+      sock.recv(256)  # drain the "0"/ok reply
+    finally:
+      sock.close()
+  except Exception as exc:  # noqa: BLE001
+    logger.debug("cameraacquire trigger failed (%s:%s cam %s): %s", host, port, camera, exc)
+
+
+def request_camera_image_via_engine(
+  host: Optional[str],
+  camera: int = 1,
+  *,
+  image_port: int = ENGINE_IMAGE_PORT,
+  command_port: int = ENGINE_PROPERTY_PORT,
+  timeout: float = 5.0,
+  trigger: bool = True,
+) -> Optional[bytes]:
+  """Fetch one JPEG frame for ``camera`` from the engine image stream - **no credentials**.
+
+  The engine pushes named ``Primary Image [n]`` JPEG results on the image stream
+  (``image_port`` 1500); the text command port (1450) carries only the ``cameraacquire`` trigger
+  and its reply. Connects to the image port, optionally triggers a fresh capture with
+  ``property set system.cameraacquire <camera>`` on the command port, and returns the JPEG bytes
+  for the matching camera (full 2592x1944; ``camera`` 1 = front, 2 = downward). Decode with
+  PIL/cv2/numpy at the call site.
+
+  Best-effort, mirroring the other engine helpers: returns ``None`` if the host is
+  missing/unreachable or no matching frame arrives - never raises.
+
+  Protocol derived from the 2026-06-19 captures; needs live confirmation that the stream flows on
+  a bare connection (the GDS client may first enable the live feed) before being relied upon.
+  """
+  if not host:
+    return None
+  want = f"Primary Image [{camera}]".encode("ascii")
+  try:
+    sock = socket.create_connection((host, image_port), timeout=timeout)
+    try:
+      sock.settimeout(timeout)
+      if trigger:
+        _trigger_acquire(host, camera, command_port, timeout)
+      buf = bytearray()
       while len(buf) < _MAX_IMAGE_BYTES:
         chunk = sock.recv(65536)
         if not chunk:
           break
         buf += chunk
-        jpeg = parse_camera_image_result(buf)
-        if jpeg is not None and jpeg.endswith(_JPEG_EOI):
-          return jpeg
+        while True:
+          framed = _drain_named_image(buf)
+          if framed is None:
+            break
+          header, jpeg = framed
+          if want in header:
+            return jpeg
     finally:
       sock.close()
   except Exception as exc:  # noqa: BLE001
-    logger.debug("camera image fetch failed (%s:%s cam %s): %s", host, port, camera, exc)
+    logger.debug("camera image fetch failed (%s:%s cam %s): %s", host, image_port, camera, exc)
   return None

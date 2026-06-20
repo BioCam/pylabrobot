@@ -7,18 +7,24 @@ from dataclasses import dataclass
 from enum import IntEnum
 from typing import Dict, List, Literal, Optional, Union
 
+# Shared Brooks tools (reusable across Brooks devices) - absolute imports.
 from pylabrobot.brooks.error_codes import ERROR_CODES
 from pylabrobot.brooks.data_ids import DataID
-from pylabrobot.brooks.confirmed_firmware_versions import (
+from pylabrobot.brooks.tcs_modules import missing_required_modules
+from pylabrobot.brooks.vision_engine import (
+  enumerate_vision_project_via_engine,
+  request_camera_image_via_engine,
+)
+from pylabrobot.brooks.vision_introspection import enumerate_vision_project
+
+# PreciseFlex-specific siblings - relative imports.
+from . import kinematics
+from .confirmed_firmware_versions import (
   SUPPORTED_ROBOT_TYPES,
   is_confirmed,
   is_supported_model,
   suggest_entry,
 )
-from pylabrobot.brooks.tcs_modules import missing_required_modules
-from pylabrobot.brooks.vision_engine import enumerate_vision_project_via_engine
-from pylabrobot.brooks.vision_introspection import enumerate_vision_project
-from pylabrobot.brooks import kinematics
 from pylabrobot.capabilities.arms.backend import (
   CanFreedrive,
   HasJoints,
@@ -605,9 +611,11 @@ class PreciseFlexVisionBackend:
     self,
     driver: "PreciseFlexDriver",
     available: Optional[Dict[str, List[str]]] = None,
+    vision_engine_host: Optional[str] = None,
   ):
     self.driver = driver
     self.available = available
+    self._vision_engine_host = vision_engine_host
 
   async def capture_image(
     self,
@@ -631,6 +639,16 @@ class PreciseFlexVisionBackend:
       return await self.driver.vprocess(process_name)
     finally:
       await self.driver.vtool_property(acquire_tool, "acquiremode", "NORMAL_ACQUIRE")
+
+  async def request_camera_image(self, camera: int = 1, *, timeout: float = 5.0) -> Optional[bytes]:
+    """Fetch one JPEG frame for ``camera`` from the vision engine - password-free, in-memory.
+
+    Returns the full 2592x1944 JPEG bytes pulled off the engine image stream (``camera`` 1 = front,
+    2 = downward), or ``None`` if no engine host is configured or no frame arrives. Decode with
+    PIL/cv2/numpy at the call site; no arm motion. For a lossless full-resolution file instead, use
+    ``capture_image`` (written on the engine host, retrieved over a credentialed transport).
+    """
+    return request_camera_image_via_engine(self._vision_engine_host, camera, timeout=timeout)
 
   async def read_barcode(
     self, process_name: str, barcode_tool: str = "barcode_read1", index: int = 1
@@ -814,7 +832,9 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     # preferred, FTP fallback) so `available` lists its processes/tools.
     if self._configuration.vision_gripper_installed:
       available = await self._enumerate_vision_project()
-      self.driver.vision = PreciseFlexVisionBackend(self.driver, available=available)
+      self.driver.vision = PreciseFlexVisionBackend(
+        self.driver, available=available, vision_engine_host=self._vision_engine_host
+      )
     else:
       self.driver.vision = None
     self._log_configuration_summary(self._configuration)

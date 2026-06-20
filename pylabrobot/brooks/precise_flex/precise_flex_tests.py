@@ -20,9 +20,9 @@ from pylabrobot.brooks.vision_introspection import (
 from pylabrobot.brooks import vision_engine
 from pylabrobot.brooks.vision_engine import (
   enumerate_vision_project_via_engine,
-  get_camera_image,
   parse_camera_image_result,
   parse_engine_reply,
+  request_camera_image_via_engine,
 )
 
 
@@ -314,6 +314,18 @@ class TestPreciseFlexVisionBackend(unittest.IsolatedAsyncioTestCase):
     )
     self.driver.vprocess.assert_awaited_once_with("Camera1")
 
+  async def test_request_camera_image_uses_configured_engine_host(self):
+    """The backend method passes its configured engine host through to the engine helper."""
+    vision = PreciseFlexVisionBackend(self.driver, vision_engine_host="vhost")
+    with patch(
+      "pylabrobot.brooks.precise_flex.precise_flex.request_camera_image_via_engine",
+      return_value=b"jpeg",
+    ) as fetch:
+      out = await vision.request_camera_image(2)
+    self.assertEqual(out, b"jpeg")
+    self.assertEqual(fetch.call_args.args[0], "vhost")
+    self.assertEqual(fetch.call_args.args[1], 2)
+
   async def test_read_barcode_runs_process_then_reads_result(self):
     value = await self.vision.read_barcode("Camera1", "barcode_read1", 1)
     self.driver.vprocess.assert_awaited_once_with("Camera1")
@@ -446,19 +458,43 @@ class TestVisionEngine(unittest.TestCase):
     partial = b"\x10\x02\x01" + (99).to_bytes(4, "little") + b"Primary Image [1]\xff\xd8\xffBODY"
     self.assertIsNone(parse_camera_image_result(partial))
 
-  def test_get_camera_image_sends_acquire_and_returns_jpeg(self):
-    """get_camera_image sends `property set system.cameraacquire <n>` and returns the JPEG."""
+  def test_request_camera_image_reads_named_frame_from_image_port(self):
+    """The frame is read off the image port (1500), matched by camera name, JPEG returned."""
     jpeg = b"\xff\xd8\xffBODY\xff\xd9"
     framed = b"\x10\x02\x01" + len(jpeg).to_bytes(4, "little") + b"Primary Image [1]" + jpeg
     fake = MagicMock()
     fake.recv.side_effect = [framed, b""]
-    with patch("pylabrobot.brooks.vision_engine.socket.create_connection", return_value=fake):
-      out = get_camera_image("vhost", 1)
+    with patch("pylabrobot.brooks.vision_engine.socket.create_connection", return_value=fake) as cc:
+      out = request_camera_image_via_engine("vhost", 1, trigger=False)
     self.assertEqual(out, jpeg)
-    fake.sendall.assert_called_once_with(b"property set system.cameraacquire 1\r\n")
+    self.assertEqual(cc.call_args.args[0], ("vhost", 1500))  # image stream, not the command port
 
-  def test_get_camera_image_none_without_host(self):
-    self.assertIsNone(get_camera_image(None))
+  def test_request_camera_image_trigger_sends_cameraacquire(self):
+    """With trigger on, `cameraacquire <n>` is sent on the command port before the read."""
+    jpeg = b"\xff\xd8\xffB\xff\xd9"
+    framed = b"\x10\x02\x01" + len(jpeg).to_bytes(4, "little") + b"Primary Image [2]" + jpeg
+    img, cmd = MagicMock(), MagicMock()
+    img.recv.side_effect = [framed, b""]
+    cmd.recv.return_value = b"0\r\n"
+    with patch("pylabrobot.brooks.vision_engine.socket.create_connection", side_effect=[img, cmd]):
+      out = request_camera_image_via_engine("vhost", 2, trigger=True)
+    self.assertEqual(out, jpeg)
+    cmd.sendall.assert_called_once_with(b"property set system.cameraacquire 2\r\n")
+
+  def test_request_camera_image_skips_other_camera_frame(self):
+    """A frame for the other camera is consumed and skipped until the wanted one arrives."""
+    j1 = b"\xff\xd8\xffONE\xff\xd9"
+    j2 = b"\xff\xd8\xffTWO\xff\xd9"
+    f1 = b"\x10\x02\x01" + len(j1).to_bytes(4, "little") + b"Primary Image [1]" + j1
+    f2 = b"\x10\x02\x01" + len(j2).to_bytes(4, "little") + b"Primary Image [2]" + j2
+    fake = MagicMock()
+    fake.recv.side_effect = [f1 + f2, b""]
+    with patch("pylabrobot.brooks.vision_engine.socket.create_connection", return_value=fake):
+      out = request_camera_image_via_engine("vhost", 2, trigger=False)
+    self.assertEqual(out, j2)
+
+  def test_request_camera_image_none_without_host(self):
+    self.assertIsNone(request_camera_image_via_engine(None))
 
 
 class TestPreciseFlex400VisionEnumeration(unittest.IsolatedAsyncioTestCase):
@@ -473,10 +509,10 @@ class TestPreciseFlex400VisionEnumeration(unittest.IsolatedAsyncioTestCase):
     self.backend._vision_ftp_user = "u"
     with (
       patch(
-        "pylabrobot.brooks.precise_flex.enumerate_vision_project_via_engine",
+        "pylabrobot.brooks.precise_flex.precise_flex.enumerate_vision_project_via_engine",
         return_value={"processes": ["Camera1"], "tools": ["acq1"]},
       ) as engine,
-      patch("pylabrobot.brooks.precise_flex.enumerate_vision_project") as ftp,
+      patch("pylabrobot.brooks.precise_flex.precise_flex.enumerate_vision_project") as ftp,
     ):
       result = await self.backend._enumerate_vision_project()
     engine.assert_called_once_with("vhost")
@@ -491,10 +527,11 @@ class TestPreciseFlex400VisionEnumeration(unittest.IsolatedAsyncioTestCase):
     self.driver.vtool_property = AsyncMock(return_value="VisionTest")
     with (
       patch(
-        "pylabrobot.brooks.precise_flex.enumerate_vision_project_via_engine", return_value=None
+        "pylabrobot.brooks.precise_flex.precise_flex.enumerate_vision_project_via_engine",
+        return_value=None,
       ),
       patch(
-        "pylabrobot.brooks.precise_flex.enumerate_vision_project",
+        "pylabrobot.brooks.precise_flex.precise_flex.enumerate_vision_project",
         return_value={"processes": [], "tools": ["led"]},
       ) as ftp,
     ):
@@ -506,6 +543,7 @@ class TestPreciseFlex400VisionEnumeration(unittest.IsolatedAsyncioTestCase):
     self.backend._vision_engine_host = None
     self.backend._vision_ftp_host = None
     with patch(
-      "pylabrobot.brooks.precise_flex.enumerate_vision_project_via_engine", return_value=None
+      "pylabrobot.brooks.precise_flex.precise_flex.enumerate_vision_project_via_engine",
+      return_value=None,
     ):
       self.assertIsNone(await self.backend._enumerate_vision_project())

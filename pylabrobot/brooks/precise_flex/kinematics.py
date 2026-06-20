@@ -22,7 +22,7 @@ from typing import TYPE_CHECKING
 from pylabrobot.capabilities.arms.standard import JointPose
 
 if TYPE_CHECKING:
-  from pylabrobot.brooks.precise_flex import PreciseFlexCartesianPose
+  from pylabrobot.brooks.precise_flex.precise_flex import PreciseFlexCartesianPose
 
 
 @dataclass
@@ -51,7 +51,7 @@ def fk(joints: JointPose, p: PF400Params) -> "PreciseFlexCartesianPose":
     orientation/wrist derived from the joint configuration (J3 sign and
     wrapped J4 sign, respectively).
   """
-  from pylabrobot.brooks.precise_flex import PreciseFlexCartesianPose
+  from pylabrobot.brooks.precise_flex.precise_flex import PreciseFlexCartesianPose
   from pylabrobot.resources import Coordinate, Rotation
 
   j1 = joints[1]
