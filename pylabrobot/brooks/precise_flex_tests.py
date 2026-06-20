@@ -20,6 +20,8 @@ from pylabrobot.brooks.vision_introspection import (
 from pylabrobot.brooks import vision_engine
 from pylabrobot.brooks.vision_engine import (
   enumerate_vision_project_via_engine,
+  get_camera_image,
+  parse_camera_image_result,
   parse_engine_reply,
 )
 
@@ -426,6 +428,38 @@ class TestVisionEngine(unittest.TestCase):
     with patch.object(vision_engine, "_query", return_value=["-4016 InvalidArguments", "0 acq1"]):
       self.assertIsNone(enumerate_vision_project_via_engine("vhost"))
 
+  def test_parse_camera_image_uses_length_prefix(self):
+    """The LE u32 length before the name is the JPEG size when it lands on the FFD9 EOI."""
+    jpeg = b"\xff\xd8\xffBODY\xff\xd9"
+    buf = b"junk\x10\x02\x01" + len(jpeg).to_bytes(4, "little") + b"Primary Image [1]" + jpeg
+    self.assertEqual(parse_camera_image_result(buf), jpeg)
+
+  def test_parse_camera_image_falls_back_to_eoi_scan(self):
+    """A length that does not land on the EOI falls back to scanning FFD8..FFD9."""
+    jpeg = b"\xff\xd8\xffBODY\xff\xd9"
+    buf = b"\x10\x02\x01" + (0).to_bytes(4, "little") + b"Primary Image [1]" + jpeg + b"trailing"
+    self.assertEqual(parse_camera_image_result(buf), jpeg)
+
+  def test_parse_camera_image_none_until_complete(self):
+    """No marker, or a frame still missing its EOI, returns None (keep reading)."""
+    self.assertIsNone(parse_camera_image_result(b"no marker here"))
+    partial = b"\x10\x02\x01" + (99).to_bytes(4, "little") + b"Primary Image [1]\xff\xd8\xffBODY"
+    self.assertIsNone(parse_camera_image_result(partial))
+
+  def test_get_camera_image_sends_acquire_and_returns_jpeg(self):
+    """get_camera_image sends `property set system.cameraacquire <n>` and returns the JPEG."""
+    jpeg = b"\xff\xd8\xffBODY\xff\xd9"
+    framed = b"\x10\x02\x01" + len(jpeg).to_bytes(4, "little") + b"Primary Image [1]" + jpeg
+    fake = MagicMock()
+    fake.recv.side_effect = [framed, b""]
+    with patch("pylabrobot.brooks.vision_engine.socket.create_connection", return_value=fake):
+      out = get_camera_image("vhost", 1)
+    self.assertEqual(out, jpeg)
+    fake.sendall.assert_called_once_with(b"property set system.cameraacquire 1\r\n")
+
+  def test_get_camera_image_none_without_host(self):
+    self.assertIsNone(get_camera_image(None))
+
 
 class TestPreciseFlex400VisionEnumeration(unittest.IsolatedAsyncioTestCase):
   """Setup-time project enumeration: password-free engine protocol preferred, FTP fallback."""
@@ -437,10 +471,13 @@ class TestPreciseFlex400VisionEnumeration(unittest.IsolatedAsyncioTestCase):
     self.backend._vision_engine_host = "vhost"
     self.backend._vision_ftp_host = "fhost"
     self.backend._vision_ftp_user = "u"
-    with patch(
-      "pylabrobot.brooks.precise_flex.enumerate_vision_project_via_engine",
-      return_value={"processes": ["Camera1"], "tools": ["acq1"]},
-    ) as engine, patch("pylabrobot.brooks.precise_flex.enumerate_vision_project") as ftp:
+    with (
+      patch(
+        "pylabrobot.brooks.precise_flex.enumerate_vision_project_via_engine",
+        return_value={"processes": ["Camera1"], "tools": ["acq1"]},
+      ) as engine,
+      patch("pylabrobot.brooks.precise_flex.enumerate_vision_project") as ftp,
+    ):
       result = await self.backend._enumerate_vision_project()
     engine.assert_called_once_with("vhost")
     ftp.assert_not_called()
@@ -452,12 +489,15 @@ class TestPreciseFlex400VisionEnumeration(unittest.IsolatedAsyncioTestCase):
     self.backend._vision_ftp_user = "u"
     self.backend._vision_ftp_password = "p"
     self.driver.vtool_property = AsyncMock(return_value="VisionTest")
-    with patch(
-      "pylabrobot.brooks.precise_flex.enumerate_vision_project_via_engine", return_value=None
-    ), patch(
-      "pylabrobot.brooks.precise_flex.enumerate_vision_project",
-      return_value={"processes": [], "tools": ["led"]},
-    ) as ftp:
+    with (
+      patch(
+        "pylabrobot.brooks.precise_flex.enumerate_vision_project_via_engine", return_value=None
+      ),
+      patch(
+        "pylabrobot.brooks.precise_flex.enumerate_vision_project",
+        return_value={"processes": [], "tools": ["led"]},
+      ) as ftp,
+    ):
       result = await self.backend._enumerate_vision_project()
     ftp.assert_called_once_with("fhost", "u", "p", "VisionTest")
     self.assertEqual(result, {"processes": [], "tools": ["led"]})
