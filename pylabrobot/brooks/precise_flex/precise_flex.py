@@ -81,10 +81,10 @@ class PreciseFlexConfiguration:
   """Device configuration resolved once at setup; immutable afterwards.
 
   The identity/limit/envelope fields are read from the controller (`pd <DataID>`
-  via ``request_parameter`` and the ``version`` command). The kinematics/flags
-  tier is supplied at construction or derived: link lengths are not on the arm,
-  ``has_rail`` comes from the joint set, ``is_dual_gripper`` from the axis_mask
-  ``&H80`` bit, and ``is_vision_gripper``/``reach_class`` from the model name.
+  via ``request_parameter`` and the ``version`` command). Derived fields: ``has_rail``
+  from the joint set, ``is_dual_gripper`` from the axis_mask ``&H80`` bit,
+  ``is_vision_gripper`` from the model-name suffix / IntelliGuide module, and
+  ``reach_class`` (standard vs extended arm) from the controller-read link lengths (l1 + l2).
   """
 
   # --- identity / version (DataIDs 100-110, 2002, 116; version command) ---
@@ -111,7 +111,9 @@ class PreciseFlexConfiguration:
   max_cartesian_accel: float
   power_state: int
   # --- supplied / derived ---
-  kinematics: "kinematics.PF400Params" = dataclasses.field(default_factory=kinematics.PF400Params)
+  kinematics: "kinematics.PreciseFlexScaraParams" = dataclasses.field(
+    default_factory=kinematics.PreciseFlexScaraParams
+  )
   kinematics_source: Literal["device", "provided", "default"] = "default"
   has_rail: bool = False
   is_dual_gripper: bool = False
@@ -120,7 +122,8 @@ class PreciseFlexConfiguration:
   # which is a model-name/module heuristic. Zero cameras / unreachable engine -> not installed.
   vision_gripper_installed: bool = False
   camera_count: int = 0
-  reach_class: Literal["standard", "extended"] = "standard"
+  # defaults to "extended" to match the default PreciseFlexScaraParams (the extended/XR link lengths)
+  reach_class: Literal["standard", "extended", "unknown"] = "extended"
 
   @property
   def gripper_width_range(self) -> tuple:
@@ -774,7 +777,7 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     self._has_rail = has_rail
     self._is_dual_gripper = is_dual_gripper
     self.closed_gripper_position = closed_gripper_position
-    self._kinematics_params = kinematics.PF400Params(
+    self._kinematics_params = kinematics.PreciseFlexScaraParams(
       gripper_length=gripper_length, gripper_z_offset=gripper_z_offset
     )
     self._read_kinematics_from_device = read_kinematics_from_device
@@ -1655,8 +1658,8 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     values = [float(v) for v in (await self.request_parameter(DataID.TOOL_OFFSET)).split(",")]
     return values[2]
 
-  async def request_kinematic_parameters(self) -> "kinematics.PF400Params":
-    """Build PF400Params from the controller's stored geometry.
+  async def request_kinematic_parameters(self) -> "kinematics.PreciseFlexScaraParams":
+    """Build PreciseFlexScaraParams from the controller's stored geometry.
 
     Link lengths and tool length come from the device; gripper_z_offset is not on
     the controller, so it is carried over from the constructor params.
@@ -1778,10 +1781,17 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     else:
       kinematic_params = self._kinematics_params
       kinematics_source = "provided"
-    # Classify by reach: the standard 400 has l1+l2 ~= 435 mm, the extended ~= 591.
-    reach_class: Literal["standard", "extended"] = (
-      "extended" if (kinematic_params.l1 + kinematic_params.l2) >= 513 else "standard"
-    )
+    reach_class = kinematics.classify_arm((kinematic_params.l1, kinematic_params.l2))
+    if reach_class == "unknown":
+      logger.warning(
+        "[PreciseFlex %s] link lengths l1=%.1f l2=%.1f match neither the standard %s nor "
+        "extended %s PF400 arm; kinematics may be wrong (wrong model, bad read, or unlisted variant)",
+        self.driver.io._host,
+        kinematic_params.l1,
+        kinematic_params.l2,
+        kinematics.ARM_LINKS_STANDARD,
+        kinematics.ARM_LINKS_EXTENDED,
+      )
 
     return PreciseFlexConfiguration(
       manufacturer=await self.request_manufacturer(),
@@ -2773,4 +2783,63 @@ class PreciseFlex3400Backend(PreciseFlexArmBackend):
       gripper_length=gripper_length,
       gripper_z_offset=gripper_z_offset,
       closed_gripper_position=closed_gripper_position,
+    )
+
+
+class PreciseFlex3400(Device):
+  """Device wrapper for the PreciseFlex 3400 robotic arm.
+
+  Mirrors :class:`PreciseFlex400`. The 3400 is the same two-link SCARA family (its link
+  lengths are read from the controller at setup), with a taller reach. Like the 400 it
+  composes the optional IntelliGuide vision capability after setup when a camera gripper
+  is detected.
+  """
+
+  def __init__(
+    self,
+    host: str,
+    closed_gripper_position: float,
+    gripper_length: float,
+    port: int = 10100,
+    has_rail: bool = False,
+    timeout: int = 20,
+    gripper_z_offset: float = 0.0,
+  ) -> None:
+    """
+    Args:
+      closed_gripper_position: firmware-unit value at which the jaws are at the backend's
+        :attr:`~PreciseFlexArmBackend.min_gripper_width`. Depends on the mounted gripper;
+        calibrate before first use.
+      gripper_length: wrist-axis → TCP distance in mm. Required - unlike the PF400 there is
+        no stock default, because the 3400 ships with an IntelliGuide gripper whose length
+        differs; set it for the gripper actually mounted.
+      gripper_z_offset: vertical offset in mm from the wrist plate to the tool tip.
+    """
+    driver = PreciseFlexDriver(host=host, port=port, timeout=timeout)
+    super().__init__(driver=driver)
+    self.driver: PreciseFlexDriver = driver
+    backend = PreciseFlex3400Backend(
+      driver=driver,
+      has_rail=has_rail,
+      gripper_length=gripper_length,
+      gripper_z_offset=gripper_z_offset,
+      closed_gripper_position=closed_gripper_position,
+    )
+    self.reference = Resource(name="PreciseFlex3400", size_x=200, size_y=200, size_z=200)
+    self.arm = OrientableGripperArm(backend=backend, reference_resource=self.reference)
+    self._capabilities = [self.arm]
+    self.vision: Optional[PreciseFlexVisionBackend] = None
+
+  async def setup(
+    self, backend_params: Optional[BackendParams] = None, *, skip_vision: bool = False
+  ) -> None:
+    """Set up the arm, then expose the vision capability if a camera gripper is present.
+
+    Args:
+      skip_vision: if True, do not expose ``self.vision`` even when a camera gripper is
+        detected (``driver.vision`` is still built by the backend).
+    """
+    await super().setup(backend_params=backend_params)
+    self.vision = (
+      self.driver.vision if (self.driver.vision is not None and not skip_vision) else None
     )

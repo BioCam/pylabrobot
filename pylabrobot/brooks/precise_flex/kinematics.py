@@ -1,5 +1,12 @@
 """
-PF400 kinematics: FK and IK for a 4-DOF SCARA + prismatic Z + optional rail.
+PreciseFlex SCARA kinematics: FK and IK for the 4-DOF SCARA arm - a prismatic Z lift plus a
+two-link planar arm (shoulder, elbow) and a wrist - with an optional linear rail (a 5th axis).
+
+This exact axis assignment (J1 Z, J2 shoulder, J3 elbow, J4 wrist) is shared by the PF400 and the
+PF3400 - same fk/ik, only the link lengths differ per model (read from the controller at setup).
+The c10 is also a column SCARA but uses a different joint order (J1 base rotation, J2 Z, J3 elbow,
+J4 wrist), so it is NOT covered by this fk/ik as written without a joint-index remap and a geometry
+check. Six-axis models (e.g. c8A) need a different kinematics model entirely.
 
 Joint dict keys match the firmware and `Axis` enum:
   1: J1 (Z lift) [mm]
@@ -17,7 +24,7 @@ Sign conventions follow right-hand rule about +Z (CCW positive looking down).
 
 from dataclasses import dataclass
 from math import atan2, cos, hypot, pi, radians, degrees, sin
-from typing import TYPE_CHECKING
+from typing import Literal, Tuple, TYPE_CHECKING
 
 from pylabrobot.capabilities.arms.standard import JointPose
 
@@ -25,22 +32,55 @@ if TYPE_CHECKING:
   from pylabrobot.brooks.precise_flex.precise_flex import PreciseFlexCartesianPose
 
 
-@dataclass
-class PF400Params:
-  """Calibrated link lengths; sub-mm FK residual on a held-out probe set."""
+# Known PF400 link-length configs (l1 = shoulder->elbow, l2 = elbow->wrist), in mm, per the 615287
+# System Dimensions - the single source of truth for the standard vs extended arm.
+ARM_LINKS_STANDARD = (225.0, 210.0)
+ARM_LINKS_EXTENDED = (302.0, 289.0)
+_LINK_MATCH_TOLERANCE = 15.0  # mm; per-link calibration spread allowed when matching a read
 
-  l1: float = 302.0  # shoulder -> elbow [mm]
-  l2: float = 289.0  # elbow -> wrist [mm]
+
+@dataclass
+class PreciseFlexScaraParams:
+  """Two-link SCARA link lengths + gripper offsets.
+
+  Defaults are the PF400 extended (XR) config. The standard-reach PF400 is l1=225, l2=210 mm
+  (615287 System Dimensions). With read_kinematics_from_device, l1/l2 and the tool length are read
+  from the controller at setup and replace these defaults. The PF3400 horizontal reach is 588 mm
+  (same as the PF400 extended); its l1/l2 are not published in the datasheet or service manual. The
+  XR defaults give a sub-mm FK residual on a held-out probe set."""
+
+  l1: float = ARM_LINKS_EXTENDED[0]  # shoulder -> elbow [mm]  (XR config)
+  l2: float = ARM_LINKS_EXTENDED[1]  # elbow -> wrist [mm]  (XR config)
   gripper_length: float = 162.0  # wrist -> TCP [mm]
   gripper_z_offset: float = 0.0
   eps: float = 1e-6
+
+
+def classify_arm(links: Tuple[float, float]) -> Literal["standard", "extended", "unknown"]:
+  """Classify (l1, l2) link lengths as the standard or extended PF400 arm, or "unknown".
+
+  "unknown" means the lengths match neither known config - a sign the arm's internal memory (its
+  stored link lengths) may have been changed.
+
+  Args:
+    links: (l1, l2) link lengths in mm (inner shoulder/base -> elbow, outer elbow -> wrist).
+  Returns:
+    "standard", "extended", or "unknown".
+  """
+  l1, l2 = links
+  tol = _LINK_MATCH_TOLERANCE
+  if abs(l1 - ARM_LINKS_STANDARD[0]) <= tol and abs(l2 - ARM_LINKS_STANDARD[1]) <= tol:
+    return "standard"
+  if abs(l1 - ARM_LINKS_EXTENDED[0]) <= tol and abs(l2 - ARM_LINKS_EXTENDED[1]) <= tol:
+    return "extended"
+  return "unknown"
 
 
 class IKError(ValueError):
   """Target pose is unreachable."""
 
 
-def fk(joints: JointPose, p: PF400Params) -> "PreciseFlexCartesianPose":
+def fk(joints: JointPose, p: PreciseFlexScaraParams) -> "PreciseFlexCartesianPose":
   """Forward kinematics.
 
   Args:
@@ -75,7 +115,7 @@ def fk(joints: JointPose, p: PF400Params) -> "PreciseFlexCartesianPose":
   )
 
 
-def ik(pose: "PreciseFlexCartesianPose", p: PF400Params) -> JointPose:
+def ik(pose: "PreciseFlexCartesianPose", p: PreciseFlexScaraParams) -> JointPose:
   """Inverse kinematics.
 
   Args:

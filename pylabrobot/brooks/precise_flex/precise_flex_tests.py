@@ -6,12 +6,15 @@ from pylabrobot.brooks.precise_flex import (
   Axis,
   PreciseFlex400,
   PreciseFlex400Backend,
+  PreciseFlex3400,
+  PreciseFlex3400Backend,
   PreciseFlexConfiguration,
   PreciseFlexDriver,
   PreciseFlexError,
   PreciseFlexVisionBackend,
   StereoParameters,
 )
+from pylabrobot.brooks.precise_flex import kinematics
 from pylabrobot.brooks.vision_introspection import (
   assemble_available,
   enumerate_vision_project,
@@ -407,6 +410,46 @@ class TestPreciseFlex400VisionExposure(unittest.IsolatedAsyncioTestCase):
     dev.driver.vision = None
     await dev.setup()
     self.assertIsNone(dev.vision)
+
+
+class TestPreciseFlex3400(unittest.IsolatedAsyncioTestCase):
+  """The PF3400 device wrapper composes its own backend and gates vision like the PF400."""
+
+  def _device(self) -> PreciseFlex3400:
+    dev = PreciseFlex3400(host="localhost", closed_gripper_position=500.0, gripper_length=140.0)
+    dev._capabilities = []  # skip the real arm _on_setup (no I/O in this unit test)
+    dev.driver.setup = AsyncMock()  # Device.setup calls driver.setup()
+    return dev
+
+  def test_composes_pf3400_backend(self):
+    self.assertIsInstance(self._device().arm.backend, PreciseFlex3400Backend)
+
+  def test_gripper_length_is_required(self):
+    """Unlike the PF400 there is no stock gripper_length default - it must be supplied."""
+    with self.assertRaises(TypeError):
+      PreciseFlex3400(host="localhost", closed_gripper_position=500.0)
+
+  async def test_vision_exposed_and_skippable_like_pf400(self):
+    dev = self._device()
+    sentinel = object()
+    dev.driver.vision = sentinel  # what the backend's _on_setup would have built
+    await dev.setup()
+    self.assertIs(dev.vision, sentinel)
+    skipped = self._device()
+    skipped.driver.vision = object()
+    await skipped.setup(skip_vision=True)
+    self.assertIsNone(skipped.vision)
+
+
+class TestScaraKinematics(unittest.TestCase):
+  """Reach classification from link lengths (615287: standard 225/210, extended 302/289)."""
+
+  def test_classify_arm(self):
+    """A link-length tuple is classified as standard, extended, or unknown."""
+    self.assertEqual(kinematics.classify_arm((225, 210)), "standard")
+    self.assertEqual(kinematics.classify_arm((302, 289)), "extended")
+    self.assertEqual(kinematics.classify_arm((300, 291)), "extended")  # within tolerance
+    self.assertEqual(kinematics.classify_arm((500, 500)), "unknown")
 
 
 class TestVisionEngine(unittest.TestCase):

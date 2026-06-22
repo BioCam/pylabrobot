@@ -6,8 +6,9 @@ discovered into ``PreciseFlexConfiguration``. At setup the driver checks the
 discovered stack here:
 
 - ``SUPPORTED_ROBOT_TYPES`` gates the client-side kinematics. This driver's FK/IK
-  is the PreciseFlex 400 two-link SCARA geometry, so other models would get
-  silently-wrong joint targets and are flagged.
+  is the two-link SCARA geometry (link lengths per model, read from the controller);
+  a model whose geometry is not this family would get silently-wrong joint targets
+  and is flagged.
 - ``CONFIRMED_FIRMWARE_VERSIONS`` is the list of full (model, GPL, TCS, module-set)
   software stacks validated against this driver; an unlisted one logs a warning
   asking for a report so it can be added.
