@@ -1,5 +1,7 @@
 """PreciseFlex controller reply codes (the error-code table) and the driver's exception type."""
 
+# -- controller reply codes (the error table) ------------------------------
+
 ERROR_CODES = {
   0: {"text": "Success", "description": "Operation completed successfully without an error."},
   1: {
@@ -1920,7 +1922,42 @@ Older GPL systems may display the license number shown above in ( ) rather than 
     "text": "Vision project not saved",
     "description": "A remote request to load a new vision project has failed because the current project has not been saved. Save the current project before attempting to load a new one.",
   },
+  -4050: {
+    "text": "Arm too close",
+    "description": "The robot arm is too close to the target and should be moved back.",
+  },
+  -4051: {
+    "text": "Mid plate angle too large",
+    "description": "The calculated angle difference between the located targets is too large. This should not occur.",
+  },
+  -4052: {
+    "text": "Too far above ArUcos",
+    "description": "The robot arm is too far above the target and should be moved down.",
+  },
+  -4053: {
+    "text": "Too far below ArUcos",
+    "description": "The robot arm is too far below the target and should be moved up.",
+  },
+  -4054: {
+    "text": "Arm too far",
+    "description": "The robot arm is too far from the target and should be moved closer.",
+  },
+  -4055: {
+    "text": "Too close to center",
+    "description": "The robot arm is too close to the center when searching for ArUcos.",
+  },
+  -4063: {
+    "text": "Teach ArUcos not found",
+    "description": "The ArUco or ArUcos were not located.",
+  },
+  -4064: {
+    "text": "Cannot locate target",
+    "description": "The ArUco or ArUcos were located but not within acceptable tolerances.",
+  },
 }
+
+
+# -- exception type --------------------------------------------------------
 
 
 class PreciseFlexError(Exception):

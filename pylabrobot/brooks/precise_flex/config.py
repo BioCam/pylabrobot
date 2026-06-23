@@ -76,6 +76,10 @@ class PreciseFlexConfiguration:
   has_rail: bool = False
   is_dual_gripper: bool = False
   is_vision_gripper: bool = False
+  # True only when an IntelliGuide vision module is loaded AND the controller reports cameras;
+  # gates the nullable driver.vision capability.
+  vision_gripper_installed: bool = False
+  camera_count: int = 0
   # "unknown" if the controller-read link lengths match neither known arm; defaults to "extended"
   # to match the default PF400Params (the extended/XR link lengths)
   reach_class: Literal["standard", "extended", "unknown"] = "extended"
@@ -83,6 +87,15 @@ class PreciseFlexConfiguration:
   @property
   def gripper_width_range(self) -> tuple:
     return self.soft_limits[Axis.GRIPPER]
+
+  @property
+  def has_vision_module(self) -> bool:
+    """Whether the IntelliGuide vision TCS module is loaded.
+
+    It supplies ``VToolProperty``/``StereoParam``/``StereoLocate``; without it those return
+    ``-2805 *Unknown command*``. Detected from the module list reported by ``version``.
+    """
+    return any("intelliguide" in m.lower() for m in self.modules)
 
   @property
   def z_range(self) -> tuple:

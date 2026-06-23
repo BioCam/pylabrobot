@@ -4,7 +4,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Dict, Literal, Optional
+from typing import TYPE_CHECKING, Dict, Literal, Optional
 
 from pylabrobot.capabilities.capability import BackendParams
 from pylabrobot.device import Driver
@@ -13,6 +13,9 @@ from pylabrobot.io.socket import Socket
 from .data_ids import PowerState
 from .errors import PreciseFlexError
 from .interrupt import halt_and_resync, halt_on_interrupt
+
+if TYPE_CHECKING:
+  from .vision_backend import PreciseFlexVisionBackend
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,8 @@ class PreciseFlexDriver(Driver):
     super().__init__()
     self.io = Socket(human_readable_device_name="Precise Flex Arm", host=host, port=port)
     self.timeout = timeout
+    # Nullable vision capability, built by the arm backend at setup when a camera gripper is present.
+    self.vision: Optional["PreciseFlexVisionBackend"] = None
 
   # -- communication ---------------------------------------------------------
 
@@ -43,6 +48,15 @@ class PreciseFlexDriver(Driver):
     await self.io.write(command.encode("utf-8") + b"\n")
     reply = await self.io.readline()
     return self._parse_reply_ensure_successful(reply)
+
+  async def query_raw(self, command: str) -> str:
+    """Write a command and return its reply line stripped, without the ``<code> <data>`` parsing.
+
+    For protocols that reply with a bare value - e.g. PreciseVision ``VToolProperty`` reads, which
+    are not prefixed with a reply code. The caller interprets the raw line.
+    """
+    await self.io.write(command.encode("utf-8") + b"\n")
+    return (await self.io.readline()).decode("utf-8").strip()
 
   def _parse_reply_ensure_successful(self, reply: bytes) -> str:
     """Parse reply from Precise Flex.
@@ -98,6 +112,8 @@ class PreciseFlexDriver(Driver):
     await self.detach()
     await self.power_off_robot()
     await self.exit()
+    if self.vision is not None and self.vision.vision_driver is not None:
+      await self.vision.vision_driver.stop()  # close the held PreciseVision engine connections
     await self.io.stop()
     logger.info("[PreciseFlex %s] disconnected: port=%s", self.io._host, self.io._port)
 
