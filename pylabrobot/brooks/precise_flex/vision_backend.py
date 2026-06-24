@@ -425,17 +425,28 @@ class PreciseFlexVisionBackend:
   @requires_vision_tool_type("Acquire")
   async def capture_image(
     self,
-    process_name: str,
-    acquire_tool: str,
+    camera: Union[Literal["front", "bottom"], int] = "front",
+    *,
     acquire_prefix: Optional[str] = None,
     acquire_path: Optional[str] = None,
   ) -> str:
     """Acquire and save a frame via the acquire tool's ACQUIRE_AND_SAVE mode; no arm motion.
 
-    Camera is fixed by the acquire tool's CameraNumber, so pick it by process/tool pair:
-    ``("Camera1", "acq1")`` front, ``("Camera2", "acq2")`` downward. The file is written on the
-    vision-engine host; retrieve it over a separate transport. Returns the ``Vprocess`` reply.
+    The file is written on the vision-engine host; retrieve it over a separate transport. Returns
+    the ``Vprocess`` reply.
+
+    Args:
+      camera: which gripper camera - ``"front"``/``1`` (front-facing) or ``"bottom"``/``2``
+        (downward). Selects the acquire tool (``acq<n>``) and the process that runs it
+        (``Camera<n>``); the camera itself is fixed by that tool's CameraNumber.
+      acquire_prefix: optional filename prefix for the saved frame.
+      acquire_path: optional directory on the engine host to write the frame to.
     """
+    index = {"front": 1, "bottom": 2, 1: 1, 2: 2}.get(camera)
+    if index is None:
+      raise ValueError(f"camera must be 'front'/1 or 'bottom'/2, got {camera!r}")
+    process_name = f"Camera{index}"
+    acquire_tool = f"acq{index}"
     await self.vtool_property(acquire_tool, "acquiremode", "ACQUIRE_AND_SAVE")
     if acquire_path is not None:
       await self.vtool_property(acquire_tool, "acquirepath", acquire_path)

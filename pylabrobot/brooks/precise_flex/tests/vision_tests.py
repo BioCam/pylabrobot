@@ -163,7 +163,8 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
     self.vision = PreciseFlexVisionBackend(self.driver)
 
   async def test_capture_image_toggles_acquire_mode_around_process(self):
-    await self.vision.capture_image("Camera1", "acq1", acquire_prefix="cap", acquire_path="Images")
+    # "front" selects the acq1/Camera1 tool+process and toggles ACQUIRE_AND_SAVE around the run.
+    await self.vision.capture_image("front", acquire_prefix="cap", acquire_path="Images")
     self.assertEqual(
       [c.args[0] for c in self.driver.send_command.await_args_list],
       [
@@ -174,6 +175,23 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
         "VToolProperty acq1 acquiremode NORMAL_ACQUIRE",
       ],
     )
+
+  async def test_capture_image_bottom_selects_acq2_camera2(self):
+    # "bottom" routes to the second acquire tool/process (acq2/Camera2).
+    await self.vision.capture_image("bottom")
+    self.assertEqual(
+      [c.args[0] for c in self.driver.send_command.await_args_list],
+      [
+        "VToolProperty acq2 acquiremode ACQUIRE_AND_SAVE",
+        "Vprocess Camera2",
+        "VToolProperty acq2 acquiremode NORMAL_ACQUIRE",
+      ],
+    )
+
+  async def test_capture_image_rejects_unknown_camera(self):
+    # Only front/bottom (or 1/2) are valid camera selectors.
+    with self.assertRaises(ValueError):
+      await self.vision.capture_image("sideways")
 
   async def test_read_barcode_runs_process_then_reads_result(self):
     self.driver.send_command = AsyncMock(side_effect=["0 1", " Code128 ABC123"])
