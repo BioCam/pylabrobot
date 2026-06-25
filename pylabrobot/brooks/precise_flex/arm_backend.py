@@ -37,7 +37,6 @@ from .config import Axis, PreciseFlexConfiguration
 from .confirmed_firmware_versions import (
   SUPPORTED_ROBOT_TYPES,
   is_confirmed,
-  is_confirmed_vision_version,
   is_supported_model,
   suggest_entry,
 )
@@ -223,10 +222,11 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     # engine client (best-effort) for direct image acquisition. None otherwise.
     if self._configuration.vision_gripper_installed:
       vision_driver = await self._setup_vision_driver()
-      self.driver.vision = PreciseFlexVisionBackend(
+      vision = PreciseFlexVisionBackend(
         self.driver, vision_host=self._vision_host, vision_driver=vision_driver
       )
-      await self._record_vision_configuration()
+      self.driver.vision = vision
+      await vision.setup()  # discovers, caches, and logs its own capability summary (best-effort)
     else:
       self.driver.vision = None
     self._log_configuration_summary(self._configuration)
@@ -1509,44 +1509,6 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
       config.kinematics.l1,
       config.kinematics.l2,
       ", ".join(config.modules),
-    )
-
-  # [int]
-  async def _record_vision_configuration(self) -> None:
-    """Discover, cache, and record the PreciseVision capabilities (best-effort, no motion).
-
-    Populates ``driver.vision.configuration``, warns when the engine version is not in the confirmed
-    list, and logs a one-line summary so the discovered capabilities are recorded in the run log.
-    """
-    vision = self.driver.vision
-    if vision is None:
-      return
-    try:
-      config = await vision.discover_configuration()
-    except Exception as exc:  # discovery is best-effort and never blocks setup
-      logger.warning(
-        "[PreciseFlex %s] vision capability discovery failed: %s", self.driver.io._host, exc
-      )
-      return
-    if not config.discovered:
-      return
-    if not is_confirmed_vision_version(config.vision_version):
-      logger.warning(
-        "[PreciseFlex %s] PreciseVision engine %s is not in the confirmed list; please report it if "
-        "the vision capability works so others benefit.",
-        self.driver.io._host,
-        config.vision_version,
-      )
-    logger.info(
-      "[PreciseFlex %s] Vision: engine %s (licensed=%s), project %r - %d tools, %d tool types, "
-      "%d cameras",
-      self.driver.io._host,
-      config.vision_version,
-      config.licensed,
-      config.active_project,
-      len(config.vision_tools),
-      len(config.vision_tool_types),
-      len(config.cameras),
     )
 
   # [int]

@@ -488,8 +488,8 @@ class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
 
   @staticmethod
   def _engine(*, tools, types, props, cameras, palette, projects, active, processes):
-    """A MagicMock engine whose ``request_property`` answers the discovery reads from a name->reply map -
-    the single boundary discover_configuration now talks to (everything goes through request_property)."""
+    """A MagicMock engine whose ``request_parameter`` answers the discovery reads from a name->reply map -
+    the single boundary discover_configuration now talks to (everything goes through request_parameter)."""
     replies = {
       "system.listtools": " ".join(tools),
       "system.cameracount": str(cameras),

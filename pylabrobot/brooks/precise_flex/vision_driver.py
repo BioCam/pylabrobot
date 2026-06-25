@@ -159,7 +159,7 @@ class PreciseVisionDriver(Driver):
     """Write one engine command line and return its success value (``None`` on a negative reply).
 
     The :1450 text protocol's raw command/reply primitive. The backend wraps it with the ``property
-    get`` / ``property set`` grammar (``request_property`` / ``set_property``).
+    get`` / ``property set`` grammar (``request_parameter`` / ``set_parameter``).
     """
     await self.io_property.write(command.encode("utf-8") + b"\r\n")
     reply = (await self.io_property.readline()).decode("utf-8", "replace").strip()
