@@ -254,7 +254,7 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
     # stream, then decodes the matching frame. "bottom" resolves to engine camera 2.
     jpeg = b"\xff\xd8\xff\xe0frame\xff\xd9"
     engine = MagicMock()
-    engine.property_set = AsyncMock()
+    engine.send_command = AsyncMock()
     engine.read_next_record = AsyncMock(
       side_effect=[
         ("VisionResults[led]", b"..."),  # non-image record - skipped
@@ -268,14 +268,14 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
       side_effect=lambda d: ("decoded", d),
     ) as dec:
       out = await vision.capture_image("bottom")
-    engine.property_set.assert_awaited_once_with("system.cameraacquire", 2)
+    engine.send_command.assert_awaited_once_with("property set system.cameraacquire 2")
     dec.assert_called_once_with(jpeg)
     self.assertEqual(out, ("decoded", jpeg))
 
   async def test_capture_image_raises_when_stream_ends_without_frame(self):
     # read_next_record returns None at the stream end before the wanted frame - a clear error, not None.
     engine = MagicMock()
-    engine.property_set = AsyncMock()
+    engine.send_command = AsyncMock()
     engine.read_next_record = AsyncMock(return_value=None)
     vision = PreciseFlexVisionBackend(self.driver, vision_driver=engine)
     with self.assertRaises(RuntimeError):
@@ -488,8 +488,8 @@ class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
 
   @staticmethod
   def _engine(*, tools, types, props, cameras, palette, projects, active, processes):
-    """A MagicMock engine whose ``property_get`` answers the discovery reads from a name->reply map -
-    the single boundary discover_configuration now talks to (everything goes through property_get)."""
+    """A MagicMock engine whose ``request_property`` answers the discovery reads from a name->reply map -
+    the single boundary discover_configuration now talks to (everything goes through request_property)."""
     replies = {
       "system.listtools": " ".join(tools),
       "system.cameracount": str(cameras),
@@ -510,7 +510,10 @@ class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
       replies[f"system.cameraframeheight {cam}"] = "1944"
       replies[f"system.cameraresolutions {cam}"] = "640x480"
     e = MagicMock()
-    e.property_get = AsyncMock(side_effect=lambda name: replies.get(name))
+    # discovery issues only `property get <name>` reads; map them back to the name->reply table
+    e.send_command = AsyncMock(
+      side_effect=lambda cmd: replies.get(cmd.removeprefix("property get "))
+    )
     return e
 
   def _simple_engine(self):

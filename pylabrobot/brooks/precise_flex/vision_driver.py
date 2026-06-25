@@ -153,19 +153,17 @@ class PreciseVisionDriver(Driver):
     await self.io_image.stop()
     await self.io_property.stop()
 
-  # -- low-level property protocol (:1450) ---------------------------------
+  # -- command/reply (:1450) -----------------------------------------------
 
-  async def query(self, command: str) -> Optional[str]:
-    """Send a ``property ...`` command and return the success value (``None`` on a negative reply)."""
+  async def send_command(self, command: str) -> Optional[str]:
+    """Write one engine command line and return its success value (``None`` on a negative reply).
+
+    The :1450 text protocol's raw command/reply primitive. The backend wraps it with the ``property
+    get`` / ``property set`` grammar (``request_property`` / ``set_property``).
+    """
     await self.io_property.write(command.encode("utf-8") + b"\r\n")
     reply = (await self.io_property.readline()).decode("utf-8", "replace").strip()
     return parse_engine_reply(reply)
-
-  async def property_get(self, name: str) -> Optional[str]:
-    return await self.query(f"property get {name}")
-
-  async def property_set(self, name: str, value: object) -> Optional[str]:
-    return await self.query(f"property set {name} {value}")
 
   # -- image stream (:1500) ------------------------------------------------
 

@@ -37,6 +37,8 @@ from .errors import PreciseFlexError
 from .kinematics import PreciseFlexCartesianPose
 from .vision_driver import PreciseVisionDriver, decode_jpeg
 
+_NO_ENGINE = "no PreciseVision engine configured - pass vision_host at setup to use this method"
+
 
 def _split_names(value: str) -> List[str]:
   """Split an engine name list on commas and/or whitespace (listtools is space-, listprocesses comma-)."""
@@ -293,13 +295,23 @@ class PreciseFlexVisionBackend:
     suffix = f" {tool} {index}" if tool is not None else ""
     return (await self.driver.send_command(f"VresultInfoString{suffix}")).strip()
 
-  def _require_engine(self) -> PreciseVisionDriver:
-    """The held engine client, or a clear error if none was configured at setup."""
+  async def request_property(self, name: str) -> Optional[str]:
+    """Read an engine property (``property get <name>``); ``None`` on a negative reply.
+
+    Raises if no engine was configured at setup (no reachable ``vision_host``).
+    """
     if self.vision_driver is None:
-      raise RuntimeError(
-        "no PreciseVision engine configured - pass vision_host at setup to use this method"
-      )
-    return self.vision_driver
+      raise RuntimeError(_NO_ENGINE)
+    return await self.vision_driver.send_command(f"property get {name}")
+
+  async def set_property(self, name: str, value: object) -> Optional[str]:
+    """Write an engine property (``property set <name> <value>``); ``None`` on a negative reply.
+
+    Raises if no engine was configured at setup (no reachable ``vision_host``).
+    """
+    if self.vision_driver is None:
+      raise RuntimeError(_NO_ENGINE)
+    return await self.vision_driver.send_command(f"property set {name} {value}")
 
   # -- engine session & discovery ------------------------------------------
 
@@ -313,36 +325,35 @@ class PreciseFlexVisionBackend:
 
   async def request_vision_version(self) -> Optional[str]:
     """The PreciseVision engine version (``system.engineversion``)."""
-    return await self._require_engine().property_get("system.engineversion")
+    return await self.request_property("system.engineversion")
 
   async def request_is_licensed(self) -> bool:
     """Whether the engine reports a valid license (``system.islicensed``)."""
-    return (await self._require_engine().property_get("system.islicensed")) == "True"
+    return (await self.request_property("system.islicensed")) == "True"
 
   async def request_projects(self) -> List[str]:
     """List all projects on the engine (``system.listprojects``); the active one is request_project_name."""
-    value = await self._require_engine().property_get("system.listprojects")
+    value = await self.request_property("system.listprojects")
     return _split_names(value) if value is not None else []
 
   async def request_project_name(self) -> Optional[str]:
     """The active project's name (``system.projectname``)."""
-    return await self._require_engine().property_get("system.projectname")
+    return await self.request_property("system.projectname")
 
   async def request_processes(self) -> List[str]:
     """List all process names in the active project (``system.listprocesses``)."""
-    value = await self._require_engine().property_get("system.listprocesses")
+    value = await self.request_property("system.listprocesses")
     return _split_names(value) if value is not None else []
 
   async def request_vision_tools(self) -> List[str]:
     """List all tool names in the active project (``system.listtools``)."""
-    value = await self._require_engine().property_get("system.listtools")
+    value = await self.request_property("system.listtools")
     return _split_names(value) if value is not None else []
 
   async def enumerate_project(self) -> Optional[Dict[str, List[str]]]:
     """List the loaded project's processes and tools (``system.listprocesses`` / ``listtools``)."""
-    engine = self._require_engine()
-    processes = await engine.property_get("system.listprocesses")
-    tools = await engine.property_get("system.listtools")
+    processes = await self.request_property("system.listprocesses")
+    tools = await self.request_property("system.listtools")
     if processes is None or tools is None:
       return None
     return {
@@ -357,8 +368,7 @@ class PreciseFlexVisionBackend:
     names, and per-camera info via the engine reads (all read-only). Returns an undiscovered (empty)
     configuration when no engine was configured at setup.
     """
-    engine = self.vision_driver
-    if engine is None:
+    if self.vision_driver is None:
       self.configuration = VisionConfiguration(discovered=False)
       return self.configuration
     tools: Dict[str, VisionToolInfo] = {}
@@ -368,7 +378,7 @@ class PreciseFlexVisionBackend:
         type=await self.request_vision_tool_type(name),
         properties=await self.request_vision_tool_properties(name),
       )
-    count = await engine.property_get("system.cameracount")
+    count = await self.request_property("system.cameracount")
     cameras: Dict[int, CameraInfo] = {}
     for cam in range(1, (int(count) if count is not None and count.isdigit() else 0) + 1):
       cameras[cam] = CameraInfo(
@@ -395,25 +405,25 @@ class PreciseFlexVisionBackend:
 
   async def request_camera_name(self, camera: int = 1) -> Optional[str]:
     """A camera's friendly name, e.g. ``Cam1`` (``system.cameraname <camera>``)."""
-    return await self._require_engine().property_get(f"system.cameraname {camera}")
+    return await self.request_property(f"system.cameraname {camera}")
 
   async def request_camera_type(self, camera: int = 1) -> Optional[str]:
     """A camera's capture backend, e.g. ``DirectShow`` (``system.cameratype <camera>``)."""
-    return await self._require_engine().property_get(f"system.cameratype {camera}")
+    return await self.request_property(f"system.cameratype {camera}")
 
   async def request_camera_width(self, camera: int = 1) -> Optional[int]:
     """A camera's native frame width in px (``system.cameraframewidth <camera>``)."""
-    value = await self._require_engine().property_get(f"system.cameraframewidth {camera}")
+    value = await self.request_property(f"system.cameraframewidth {camera}")
     return int(value) if value is not None and value.isdigit() else None
 
   async def request_camera_height(self, camera: int = 1) -> Optional[int]:
     """A camera's native frame height in px (``system.cameraframeheight <camera>``)."""
-    value = await self._require_engine().property_get(f"system.cameraframeheight {camera}")
+    value = await self.request_property(f"system.cameraframeheight {camera}")
     return int(value) if value is not None and value.isdigit() else None
 
   async def request_camera_resolutions(self, camera: int = 1) -> List[str]:
     """A camera's supported resolution modes (``system.cameraresolutions <camera>``)."""
-    value = await self._require_engine().property_get(f"system.cameraresolutions {camera}")
+    value = await self.request_property(f"system.cameraresolutions {camera}")
     return _split_names(value) if value is not None else []
 
   # ========================================================================
@@ -424,25 +434,25 @@ class PreciseFlexVisionBackend:
 
   async def request_vision_tool_property(self, tool: str, property_name: str) -> Optional[str]:
     """Read one tool property value (``property get <tool>.<property>``)."""
-    return await self._require_engine().property_get(f"{tool}.{property_name}")
+    return await self.request_property(f"{tool}.{property_name}")
 
   async def request_vision_tool_properties(self, tool: str) -> List[str]:
     """List the property names of one tool (``system.toolproperties <tool>``)."""
-    value = await self._require_engine().property_get(f"system.toolproperties {tool}")
+    value = await self.request_property(f"system.toolproperties {tool}")
     return _split_names(value) if value is not None else []
 
   async def request_vision_tool_property_info(self, tool: str, property_name: str) -> Optional[str]:
     """The type / enum / range metadata for one tool property (``system.toolpropertyinfo``)."""
     name = f"system.toolpropertyinfo {tool} {property_name}"
-    return await self._require_engine().property_get(name)
+    return await self.request_property(name)
 
   async def request_vision_tool_type(self, tool: str) -> Optional[str]:
     """The tool's type/class, e.g. ``Acquire`` or ``FiducialLocator`` (``system.tooltype``)."""
-    return await self._require_engine().property_get(f"system.tooltype {tool}")
+    return await self.request_property(f"system.tooltype {tool}")
 
   async def request_vision_tool_types(self) -> List[str]:
     """List all tool types the engine can instantiate (``system.tooltypes``) - the fixed palette."""
-    value = await self._require_engine().property_get("system.tooltypes")
+    value = await self.request_property("system.tooltypes")
     return _split_names(value) if value is not None else []
 
   async def _set_vision_tool_property(
@@ -455,7 +465,7 @@ class PreciseFlexVisionBackend:
     methods (``set_camera_setting``, ``set_barcode_symbologies``) wrap it. Pass ``apply=False`` to
     stage several writes and apply them with one later ``_run_vision_tool``.
     """
-    await self._require_engine().property_set(f"{tool}.{property_name}", value)
+    await self.set_property(f"{tool}.{property_name}", value)
     if apply:
       await self._run_vision_tool(tool)
 
@@ -465,7 +475,7 @@ class PreciseFlexVisionBackend:
     Internal apply primitive: for an acquire tool it pushes the tool's stored settings to the camera
     and grabs a frame. A bare property write only stores a value; running the tool applies it.
     """
-    await self._require_engine().property_set("system.runtool", tool)
+    await self.set_property("system.runtool", tool)
 
   # -- lighting (LightControl) ---------------------------------------------
 
@@ -547,8 +557,8 @@ class PreciseFlexVisionBackend:
 
     Triggers a frame with ``system.cameraacquire`` and reads records off the engine's image stream
     until the matching ``Primary Image [n]`` arrives, discarding non-image and other-camera records,
-    then decodes its JPEG to an RGB array. Requires a configured engine (raises via ``_require_engine``
-    if none was set up). For a saved file on the engine host instead, use ``save_image``.
+    then decodes its JPEG to an RGB array. Requires a configured engine (raises if none was set up).
+    For a saved file on the engine host instead, use ``save_image``.
 
     This grabs the camera's current hardware state; it does NOT apply pending acquire-tool settings.
     Change one first with ``set_camera_setting`` (which applies it) for it to show in the frame.
@@ -563,10 +573,11 @@ class PreciseFlexVisionBackend:
       TimeoutError: if no frame arrives off the engine image stream before the read times out.
       RuntimeError: if the image stream ends before the requested frame is seen.
     """
-    engine = self._require_engine()
     index = self._camera_index(camera)
     want = f"Primary Image [{index}]"
-    await engine.property_set("system.cameraacquire", index)
+    await self.set_property("system.cameraacquire", index)  # gates a missing engine
+    engine = self.vision_driver
+    assert engine is not None  # set_property above raised if no engine was configured
     while True:
       try:
         record = await engine.read_next_record()

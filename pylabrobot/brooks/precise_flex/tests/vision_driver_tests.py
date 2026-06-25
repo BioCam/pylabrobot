@@ -93,9 +93,10 @@ class TestPreciseVisionDriver(unittest.IsolatedAsyncioTestCase):
     self.driver.io_property = self.prop  # type: ignore[assignment]
     self.driver.io_image = self.img  # type: ignore[assignment]
 
-  async def test_query_parses_success_value(self):
+  async def test_send_command_writes_line_and_parses_value(self):
+    """send_command writes the command line (CRLF) and returns the parsed success value."""
     self.prop.readline = AsyncMock(return_value=b"0 5.3.3.0\r\n")
-    self.assertEqual(await self.driver.query("property get system.engineversion"), "5.3.3.0")
+    self.assertEqual(await self.driver.send_command("property get system.engineversion"), "5.3.3.0")
     self.prop.write.assert_awaited_once_with(b"property get system.engineversion\r\n")
 
   async def test_read_next_record_returns_buffered_record(self):
