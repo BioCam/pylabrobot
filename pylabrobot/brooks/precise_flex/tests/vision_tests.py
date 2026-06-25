@@ -191,7 +191,7 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
   async def test_save_image_rejects_unknown_camera(self):
     # Only front/bottom (or 1/2) are valid camera selectors.
     with self.assertRaises(ValueError):
-      await self.vision.save_image("sideways")
+      await self.vision.save_image("sideways")  # type: ignore[arg-type]
 
   async def test_read_barcode_runs_process_then_reads_result(self):
     self.driver.send_command = AsyncMock(side_effect=["0 1", " Code128 ABC123"])
@@ -249,14 +249,37 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
       "StereoParam 1 2 aruco_dual default_tool 100.0 1.5 4 10 11 50.0 2.0 200"
     )
 
-  async def test_capture_image_delegates_to_vision_driver(self):
-    # "bottom" resolves to engine camera 2; the backend forwards the driver's decoded array unchanged.
-    frame = object()  # opaque: stands in for the numpy array the driver returns
-    vision_driver = MagicMock()
-    vision_driver.capture_image = AsyncMock(return_value=frame)
-    vision = PreciseFlexVisionBackend(self.driver, vision_driver=vision_driver)
-    self.assertIs(await vision.capture_image("bottom"), frame)
-    vision_driver.capture_image.assert_awaited_once_with(2)
+  async def test_capture_image_triggers_skips_nonmatching_and_decodes(self):
+    # The backend triggers cameraacquire, skips non-image and other-camera records off the engine
+    # stream, then decodes the matching frame. "bottom" resolves to engine camera 2.
+    jpeg = b"\xff\xd8\xff\xe0frame\xff\xd9"
+    engine = MagicMock()
+    engine.property_set = AsyncMock()
+    engine.read_next_record = AsyncMock(
+      side_effect=[
+        ("VisionResults[led]", b"..."),  # non-image record - skipped
+        ("Primary Image [1]", b"other"),  # other camera - skipped
+        ("Primary Image [2]", jpeg),  # the wanted frame
+      ]
+    )
+    vision = PreciseFlexVisionBackend(self.driver, vision_driver=engine)
+    with patch(
+      "pylabrobot.brooks.precise_flex.vision_backend.decode_jpeg",
+      side_effect=lambda d: ("decoded", d),
+    ) as dec:
+      out = await vision.capture_image("bottom")
+    engine.property_set.assert_awaited_once_with("system.cameraacquire", 2)
+    dec.assert_called_once_with(jpeg)
+    self.assertEqual(out, ("decoded", jpeg))
+
+  async def test_capture_image_raises_when_stream_ends_without_frame(self):
+    # read_next_record returns None at the stream end before the wanted frame - a clear error, not None.
+    engine = MagicMock()
+    engine.property_set = AsyncMock()
+    engine.read_next_record = AsyncMock(return_value=None)
+    vision = PreciseFlexVisionBackend(self.driver, vision_driver=engine)
+    with self.assertRaises(RuntimeError):
+      await vision.capture_image(1)
 
   async def test_capture_image_raises_without_engine_configured(self):
     # Calling a vision-engine method with no engine wired up is unsupported - raise, don't return None.
@@ -326,69 +349,186 @@ class TestPreciseFlex3400(unittest.IsolatedAsyncioTestCase):
     self.assertIsNone(skipped.vision)
 
 
-class TestVisionEngineDelegation(unittest.IsolatedAsyncioTestCase):
-  """Backend methods that delegate to the held PreciseVision engine client."""
+def _backend_with_engine() -> "tuple[PreciseFlexVisionBackend, MagicMock]":
+  """A backend wired to a real PreciseVisionDriver whose property socket is mocked, returning the
+  backend and the socket so tests can assert the :1450 command bytes and stub replies."""
+  prop = MagicMock()
+  prop.write = AsyncMock()
+  prop.readline = AsyncMock(return_value=b"0\r\n")
+  engine = PreciseVisionDriver("127.0.0.1")
+  engine.io_property = prop  # type: ignore[assignment]
+  return PreciseFlexVisionBackend(MagicMock(), vision_driver=engine), prop
+
+
+class TestVisionEngineCapabilities(unittest.IsolatedAsyncioTestCase):
+  """Backend capability methods over a real PreciseVision engine driver with a mocked property socket."""
 
   def setUp(self):
-    self.engine = MagicMock()
-    self.engine.set_vision_tool_property = AsyncMock()
-    self.engine.run_vision_tool = AsyncMock()
-    self.vision = PreciseFlexVisionBackend(MagicMock())
-    self.vision.vision_driver = self.engine  # type: ignore[assignment]
+    self.vision, self.prop = _backend_with_engine()
 
-  async def test_set_camera_setting_targets_acq_tool_and_applies(self):
-    """set_camera_setting writes acq<N>.<setting> and applies it (apply=True)."""
-    await self.vision.set_camera_setting(2, "brightness", 4)
-    self.engine.set_vision_tool_property.assert_awaited_once_with(
-      "acq2", "brightness", 4, apply=True
+  async def test_set_camera_setting_resolves_alias_writes_then_applies(self):
+    """set_camera_setting resolves the front/bottom alias to acq<N>, writes the knob, then applies it."""
+    await self.vision.set_camera_setting("bottom", "brightness", 4)
+    self.assertEqual(
+      [c.args[0] for c in self.prop.write.await_args_list],
+      [b"property set acq2.brightness 4\r\n", b"property set system.runtool acq2\r\n"],
     )
 
   async def test_set_barcode_symbologies_enables_each_stored(self):
-    """Each symbology is set 'true' and stored (apply=False) for the next barcode run."""
+    """Each symbology is written 'true' and stored (apply=False, no runtool) for the next barcode run."""
     await self.vision.set_barcode_symbologies("barcode_read1", ["code128", "qrcode"])
-    calls = self.engine.set_vision_tool_property.await_args_list
-    self.assertEqual(len(calls), 2)
-    self.assertEqual(calls[0].args, ("barcode_read1", "code128", "true"))
-    self.assertEqual(calls[0].kwargs, {"apply": False})
-    self.assertEqual(calls[1].args, ("barcode_read1", "qrcode", "true"))
+    self.assertEqual(
+      [c.args[0] for c in self.prop.write.await_args_list],
+      [
+        b"property set barcode_read1.code128 true\r\n",
+        b"property set barcode_read1.qrcode true\r\n",
+      ],
+    )
+
+  async def test_set_vision_tool_property_writes_then_applies(self):
+    """The internal write primitive stores the value, then runs the tool (two commands) by default."""
+    await self.vision._set_vision_tool_property("acq1", "brightness", 2)
+    self.assertEqual(
+      [c.args[0] for c in self.prop.write.await_args_list],
+      [b"property set acq1.brightness 2\r\n", b"property set system.runtool acq1\r\n"],
+    )
+
+  async def test_set_vision_tool_property_apply_false_only_writes(self):
+    """apply=False stores the value without running the tool (a single command)."""
+    await self.vision._set_vision_tool_property("acq1", "brightness", 2, apply=False)
+    self.prop.write.assert_awaited_once_with(b"property set acq1.brightness 2\r\n")
+
+  async def test_run_vision_tool_sends_runtool(self):
+    """The internal apply primitive issues exactly `property set system.runtool <tool>`."""
+    await self.vision._run_vision_tool("acq1")
+    self.prop.write.assert_awaited_once_with(b"property set system.runtool acq1\r\n")
+
+  async def test_request_camera_width_sends_index_and_parses_int(self):
+    """request_camera_width passes the camera index and returns an int."""
+    self.prop.readline = AsyncMock(return_value=b"0 2592\r\n")
+    self.assertEqual(await self.vision.request_camera_width(1), 2592)
+    self.prop.write.assert_awaited_once_with(b"property get system.cameraframewidth 1\r\n")
+
+  async def test_request_vision_tool_properties_splits_list(self):
+    """request_vision_tool_properties parses the engine's name list into a list of strings."""
+    self.prop.readline = AsyncMock(return_value=b"0 brightness hue gain\r\n")
+    self.assertEqual(
+      await self.vision.request_vision_tool_properties("acq1"), ["brightness", "hue", "gain"]
+    )
+
+  async def test_request_projects_splits_comma_list(self):
+    """request_projects parses the comma-separated project list."""
+    self.prop.readline = AsyncMock(return_value=b"0 arucos_cam1,VisionTest,vision_project\r\n")
+    self.assertEqual(
+      await self.vision.request_projects(), ["arucos_cam1", "VisionTest", "vision_project"]
+    )
+
+  async def test_request_is_licensed_parses_bool(self):
+    """request_is_licensed maps the engine's True/False string to a bool."""
+    self.prop.readline = AsyncMock(return_value=b"0 True\r\n")
+    self.assertTrue(await self.vision.request_is_licensed())
+
+  async def test_enumerate_project_splits_both_list_formats(self):
+    """enumerate_project parses the space- and comma-separated process/tool lists."""
+    self.prop.readline = AsyncMock(side_effect=[b"0 Camera1, Camera2\r\n", b"0 acq1 acq2 led\r\n"])
+    self.assertEqual(
+      await self.vision.enumerate_project(),
+      {"processes": ["Camera1", "Camera2"], "vision_tools": ["acq1", "acq2", "led"]},
+    )
 
   async def test_engine_methods_raise_without_engine(self):
     """Engine-dependent methods raise a clear error when no engine was configured."""
     no_engine = PreciseFlexVisionBackend(MagicMock())
     with self.assertRaises(RuntimeError):
-      await no_engine.run_vision_tool("acq1")
+      await no_engine._run_vision_tool("acq1")
+
+
+# --- Real engine replies captured from our PF400 rig (PreciseVision 5.3.3.0). ------------------
+# Ground truth, not hand-written mocks: refresh from a new capture if the device changes.
+REAL_TOOLTYPES = (
+  "ObjectFinder Classifier BarcodeRead Acquire ArcFitter ClearGrip ComputedLine ComputeIntersection "
+  "ComputePointOnLine EdgeFinder SharpnessDetector FindBlob FindMid FixedFrame ImageProcess "
+  "FiducialLocator LightControl LineFitter PixelWindow PixelWindowColor PointFinder SensorWindow"
+)
+REAL_LISTTOOLS = (
+  "acq1 acq2 aruco1 aruco2 barcode_read1 barcode_read2 led sharpness_detector1 sharpness_detector2"
+)
+REAL_ACQUIREMODE_INFO = "Type[AcquireModeEnum] EnumValues[NORMAL_ACQUIRE ACQUIRE_AND_SAVE PLAY_FROM_DISK SAVE_ONLY CLEAR_BUFFER]"
+
+
+class TestBackendCapturedEngineReplies(unittest.IsolatedAsyncioTestCase):
+  """Backend engine reads driven by REAL captured replies - adaptive ground truth, not hand-mocks."""
+
+  def setUp(self):
+    self.vision, self.prop = _backend_with_engine()
+
+  async def test_tooltypes_reply_yields_full_palette(self):
+    """The captured system.tooltypes reply parses to all 22 tool types, incl. known members."""
+    self.prop.readline = AsyncMock(return_value=b"0 " + REAL_TOOLTYPES.encode() + b"\r\n")
+    types = await self.vision.request_vision_tool_types()
+    self.assertEqual(len(types), 22)
+    self.assertIn("FiducialLocator", types)
+    self.assertIn("Acquire", types)
+
+  async def test_listtools_reply_yields_visiontest_instances(self):
+    """The captured system.listtools reply parses to the 9 VisionTest tool instances."""
+    self.prop.readline = AsyncMock(return_value=b"0 " + REAL_LISTTOOLS.encode() + b"\r\n")
+    self.assertEqual(await self.vision.request_vision_tools(), REAL_LISTTOOLS.split())
+
+  async def test_toolpropertyinfo_reply_returned_verbatim(self):
+    """The captured toolpropertyinfo reply (Type[...] EnumValues[...]) is returned to the caller."""
+    self.prop.readline = AsyncMock(return_value=b"0 " + REAL_ACQUIREMODE_INFO.encode() + b"\r\n")
+    info = await self.vision.request_vision_tool_property_info("acq1", "acquiremode")
+    self.assertEqual(info, REAL_ACQUIREMODE_INFO)
+    self.assertIn("EnumValues[NORMAL_ACQUIRE ACQUIRE_AND_SAVE", info or "")
 
 
 class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
   """discover_configuration builds and caches a capability snapshot from the engine reads."""
 
-  def _engine(self):
+  @staticmethod
+  def _engine(*, tools, types, props, cameras, palette, projects, active, processes):
+    """A MagicMock engine whose ``property_get`` answers the discovery reads from a name->reply map -
+    the single boundary discover_configuration now talks to (everything goes through property_get)."""
+    replies = {
+      "system.listtools": " ".join(tools),
+      "system.cameracount": str(cameras),
+      "system.engineversion": "5.3.3.0",
+      "system.islicensed": "True",
+      "system.tooltypes": " ".join(palette),
+      "system.listprojects": ",".join(projects),
+      "system.projectname": active,
+      "system.listprocesses": " ".join(processes),
+    }
+    for t in tools:
+      replies[f"system.tooltype {t}"] = types[t]
+      replies[f"system.toolproperties {t}"] = " ".join(props)
+    for cam in range(1, cameras + 1):
+      replies[f"system.cameraname {cam}"] = f"Cam{cam}"
+      replies[f"system.cameratype {cam}"] = "DirectShow"
+      replies[f"system.cameraframewidth {cam}"] = "2592"
+      replies[f"system.cameraframeheight {cam}"] = "1944"
+      replies[f"system.cameraresolutions {cam}"] = "640x480"
     e = MagicMock()
-    e.request_vision_tools = AsyncMock(return_value=["acq1", "aruco1"])
-    e.request_vision_tool_type = AsyncMock(
-      side_effect=lambda t: {"acq1": "Acquire", "aruco1": "FiducialLocator"}[t]
-    )
-    e.request_vision_tool_properties = AsyncMock(return_value=["brightness", "hue"])
-    e.request_camera_count = AsyncMock(return_value=1)
-    e.request_camera_name = AsyncMock(return_value="Cam1")
-    e.request_camera_type = AsyncMock(return_value="DirectShow")
-    e.request_camera_width = AsyncMock(return_value=2592)
-    e.request_camera_height = AsyncMock(return_value=1944)
-    e.request_camera_resolutions = AsyncMock(return_value=["640x480"])
-    e.request_vision_version = AsyncMock(return_value="5.3.3.0")
-    e.request_is_licensed = AsyncMock(return_value=True)
-    e.request_vision_tool_types = AsyncMock(
-      return_value=["Acquire", "FiducialLocator", "BarcodeRead"]
-    )
-    e.request_projects = AsyncMock(return_value=["VisionTest", "vision_project"])
-    e.request_project_name = AsyncMock(return_value="VisionTest")
-    e.request_processes = AsyncMock(return_value=["Camera1"])
+    e.property_get = AsyncMock(side_effect=lambda name: replies.get(name))
     return e
+
+  def _simple_engine(self):
+    return self._engine(
+      tools=["acq1", "aruco1"],
+      types={"acq1": "Acquire", "aruco1": "FiducialLocator"},
+      props=["brightness", "hue"],
+      cameras=1,
+      palette=["Acquire", "FiducialLocator", "BarcodeRead"],
+      projects=["VisionTest", "vision_project"],
+      active="VisionTest",
+      processes=["Camera1"],
+    )
 
   async def test_discover_builds_and_caches(self):
     """Discovery populates the typed snapshot (tools with type+props, cameras, palette) and caches it."""
     vision = PreciseFlexVisionBackend(MagicMock())
-    vision.vision_driver = self._engine()  # type: ignore[assignment]
+    vision.vision_driver = self._simple_engine()  # type: ignore[assignment]
     config = await vision.discover_configuration()
     self.assertIs(config, vision.configuration)
     self.assertTrue(config.discovered)
@@ -409,11 +549,13 @@ class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
   async def test_to_dict_records_snapshot(self):
     """to_dict serialises the cached configuration for recording."""
     vision = PreciseFlexVisionBackend(MagicMock())
-    vision.vision_driver = self._engine()  # type: ignore[assignment]
+    vision.vision_driver = self._simple_engine()  # type: ignore[assignment]
     await vision.discover_configuration()
     snapshot = vision.configuration.to_dict()
     self.assertEqual(snapshot["vision_version"], "5.3.3.0")
-    self.assertEqual(snapshot["vision_tools"]["aruco1"]["type"], "FiducialLocator")
+    vision_tools = snapshot["vision_tools"]
+    assert isinstance(vision_tools, dict)
+    self.assertEqual(vision_tools["aruco1"]["type"], "FiducialLocator")
 
   def test_confirmed_vision_version_record(self):
     """The confirmed-versions record flags validated vs untested engines."""
@@ -439,24 +581,16 @@ class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
       "FixedFrame ImageProcess FiducialLocator LightControl LineFitter PixelWindow PixelWindowColor "
       "PointFinder SensorWindow"
     ).split()
-    e = MagicMock()
-    e.request_vision_tools = AsyncMock(return_value=list(real_types))
-    e.request_vision_tool_type = AsyncMock(side_effect=lambda t: real_types[t])
-    e.request_vision_tool_properties = AsyncMock(return_value=["brightness", "hue", "exposure"])
-    e.request_camera_count = AsyncMock(return_value=2)
-    e.request_camera_name = AsyncMock(side_effect=lambda c: f"Cam{c}")
-    e.request_camera_type = AsyncMock(return_value="DirectShow")
-    e.request_camera_width = AsyncMock(return_value=2592)
-    e.request_camera_height = AsyncMock(return_value=1944)
-    e.request_camera_resolutions = AsyncMock(return_value=["640x480"])
-    e.request_vision_version = AsyncMock(return_value="5.3.3.0")
-    e.request_is_licensed = AsyncMock(return_value=True)
-    e.request_vision_tool_types = AsyncMock(return_value=palette)
-    e.request_projects = AsyncMock(
-      return_value=["arucos_cam1", "arucos_cam2", "VisionTest", "vision_project"]
+    e = self._engine(
+      tools=list(real_types),
+      types=real_types,
+      props=["brightness", "hue", "exposure"],
+      cameras=2,
+      palette=palette,
+      projects=["arucos_cam1", "arucos_cam2", "VisionTest", "vision_project"],
+      active="VisionTest",
+      processes=["Camera1", "Camera2", "LightControl"],
     )
-    e.request_project_name = AsyncMock(return_value="VisionTest")
-    e.request_processes = AsyncMock(return_value=["Camera1", "Camera2", "LightControl"])
     vision = PreciseFlexVisionBackend(MagicMock())
     vision.vision_driver = e  # type: ignore[assignment]
     cfg = await vision.discover_configuration()
@@ -472,9 +606,10 @@ class TestVisionCapabilityGating(unittest.IsolatedAsyncioTestCase):
   """@requires_vision_tool_type / @requires_vision_tool gate methods against the discovered configuration."""
 
   def _backend(self, types):
-    vision = PreciseFlexVisionBackend(MagicMock())
-    vision.driver.send_command = AsyncMock(return_value="0 1")
-    vision.driver.query_raw = AsyncMock(return_value="")
+    driver = MagicMock()
+    driver.send_command = AsyncMock(return_value="0 1")
+    driver.query_raw = AsyncMock(return_value="")
+    vision = PreciseFlexVisionBackend(driver)
     vision.configuration = VisionConfiguration(discovered=True, vision_tool_types=types)
     return vision
 
@@ -498,8 +633,9 @@ class TestVisionCapabilityGating(unittest.IsolatedAsyncioTestCase):
 
   async def test_gate_noops_before_discovery(self):
     """An undiscovered configuration never blocks - the method runs."""
-    vision = PreciseFlexVisionBackend(MagicMock())
-    vision.driver.send_command = AsyncMock(return_value="0 1")
+    driver = MagicMock()
+    driver.send_command = AsyncMock(return_value="0 1")
+    vision = PreciseFlexVisionBackend(driver)
     self.assertEqual(await vision.read_barcode("Camera1"), "0 1")  # discovered defaults False
 
   async def test_requires_vision_tool_distinguishes_provisionable_from_unsupported(self):
@@ -523,35 +659,3 @@ class TestVisionCapabilityGating(unittest.IsolatedAsyncioTestCase):
       await dummy.needs_present_type()
     with self.assertRaisesRegex(RuntimeError, "not available"):
       await dummy.needs_absent_type()
-
-
-class TestVisionCommandSequences(unittest.IsolatedAsyncioTestCase):
-  """Sequential logic: the ORDER of commands a behaviour emits on the wire, end to end."""
-
-  def _backend_with_real_driver(self):
-    """Backend whose vision client is a real PreciseVisionDriver over a mocked socket."""
-    prop = MagicMock()
-    prop.write = AsyncMock()
-    prop.readline = AsyncMock(return_value=b"0\r\n")
-    driver = PreciseVisionDriver("127.0.0.1")
-    driver.io_property = prop  # type: ignore[assignment]
-    vision = PreciseFlexVisionBackend(MagicMock())
-    vision.vision_driver = driver  # type: ignore[assignment]
-    return vision, prop
-
-  async def test_set_camera_setting_writes_then_applies_on_the_wire(self):
-    """set_camera_setting emits the stored write, THEN the runtool that applies it - in that order."""
-    vision, prop = self._backend_with_real_driver()
-    await vision.set_camera_setting(2, "brightness", 4)
-    self.assertEqual(
-      [c.args[0] for c in prop.write.await_args_list],
-      [b"property set acq2.brightness 4\r\n", b"property set system.runtool acq2\r\n"],
-    )
-
-  async def test_run_vision_tool_without_set_emits_only_runtool(self):
-    """Running a tool directly is a single command - no stray property write precedes it."""
-    vision, prop = self._backend_with_real_driver()
-    await vision.run_vision_tool("acq1")
-    self.assertEqual(
-      [c.args[0] for c in prop.write.await_args_list], [b"property set system.runtool acq1\r\n"]
-    )

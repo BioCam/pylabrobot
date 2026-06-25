@@ -1,24 +1,29 @@
 import io
+import struct
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pylabrobot.brooks.precise_flex import vision_driver
 from pylabrobot.brooks.precise_flex.vision_driver import (
   PreciseVisionDriver,
-  _decode_jpeg,
-  _drain_named_image,
+  _drain_named_record,
+  decode_jpeg,
   parse_engine_reply,
 )
 
-# A realistic engine image header: binary preamble (length etc.) + the result name, then the JPEG.
-_HDR = b"\x01\x11\x00\x00\x00\x00\x00\x00"
+
+def _record(name: str, data: bytes) -> bytes:
+  """One :1500 result record on the wire: the engine's fixed 16-byte header, then the name, then data.
+
+  Header: ``01 | name_len (u8) | 00 00 00 | data_len (u32 LE) | seven 00 padding bytes``.
+  """
+  header = bytes([0x01, len(name)]) + b"\x00\x00\x00" + struct.pack("<I", len(data)) + b"\x00" * 7
+  return header + name.encode("ascii") + data
 
 
-def _framed(camera: int, payload: bytes = b"img") -> bytes:
-  """One engine image result, as on the wire: binary header + name + JPEG (FFD8…FFD9)."""
-  header = _HDR + f"Primary Image [{camera}]".encode()
-  jpeg = b"\xff\xd8\xff\xe0" + payload + b"\xff\xd9"
-  return header + jpeg
+def _framed(camera: int, jpeg: bytes = b"\xff\xd8\xff\xe0img\xff\xd9") -> bytes:
+  """A ``Primary Image [camera]`` record carrying ``jpeg`` as its data."""
+  return _record(f"Primary Image [{camera}]", jpeg)
 
 
 class TestEngineFraming(unittest.TestCase):
@@ -27,24 +32,41 @@ class TestEngineFraming(unittest.TestCase):
     self.assertEqual(parse_engine_reply("0"), "")  # success with empty value
     self.assertIsNone(parse_engine_reply("-4017 some error"))
 
-  def test_drain_named_image_extracts_and_consumes_complete_frame(self):
-    buf = bytearray(_framed(1, b"abc"))
-    framed = _drain_named_image(buf)
-    assert framed is not None
-    header, jpeg = framed
-    self.assertIn(b"Primary Image [1]", header)
-    self.assertTrue(jpeg.startswith(b"\xff\xd8\xff") and jpeg.endswith(b"\xff\xd9"))
+  def test_drain_named_record_extracts_and_consumes_complete_record(self):
+    jpeg = b"\xff\xd8\xff\xe0abc\xff\xd9"
+    buf = bytearray(_framed(1, jpeg))
+    record = _drain_named_record(buf)
+    assert record is not None
+    name, data = record
+    self.assertEqual(name, "Primary Image [1]")
+    self.assertEqual(data, jpeg)  # exactly data_len bytes, by the announced length (no FFD9 scan)
     self.assertEqual(buf, bytearray())  # consumed
 
-  def test_drain_named_image_none_until_complete(self):
-    buf = bytearray(_HDR + b"Primary Image [1]" + b"\xff\xd8\xff" + b"partial")  # no EOI yet
-    self.assertIsNone(_drain_named_image(buf))
+  def test_drain_named_record_none_until_complete(self):
+    # The header announces a longer data_len than has arrived, so the record is not yet drainable.
+    buf = bytearray(_framed(1, b"\xff\xd8\xff\xe0abc\xff\xd9"))[:-3]  # truncated mid-data
+    self.assertIsNone(_drain_named_record(buf))
+
+  def test_drain_named_record_skips_non_image_record(self):
+    # The stream interleaves non-image records (tool results); they frame identically and come back by
+    # name so capture_image can discard them.
+    buf = bytearray(_record("VisionResults[led]", b"ToolName led\r\nResultCount 0\r\n"))
+    record = _drain_named_record(buf)
+    assert record is not None
+    name, _ = record
+    self.assertEqual(name, "VisionResults[led]")
+    self.assertEqual(buf, bytearray())
+
+  def test_drain_named_record_raises_on_desync(self):
+    # A record not starting with 0x01 means the stream lost alignment; fail loud, not silently.
+    with self.assertRaises(ValueError):
+      _drain_named_record(bytearray(b"\x99" + b"\x00" * 20))
 
   def test_decode_jpeg_requires_pillow_and_numpy(self):
     # Without the optional imaging deps the decoder raises a clear install error, not AttributeError.
     with patch.object(vision_driver, "np", None), patch.object(vision_driver, "PILImage", None):
       with self.assertRaises(ImportError):
-        _decode_jpeg(b"\xff\xd8\xff\xe0jpeg\xff\xd9")
+        decode_jpeg(b"\xff\xd8\xff\xe0jpeg\xff\xd9")
 
   def test_decode_jpeg_returns_rgb_uint8_array(self):
     # End-to-end decode (skipped when Pillow/numpy absent): a red frame decodes height-first,
@@ -53,7 +75,7 @@ class TestEngineFraming(unittest.TestCase):
       self.skipTest("Pillow/numpy not installed")
     buf = io.BytesIO()
     vision_driver.PILImage.new("RGB", (4, 3), (200, 0, 0)).save(buf, format="JPEG")
-    arr = _decode_jpeg(buf.getvalue())
+    arr = decode_jpeg(buf.getvalue())
     self.assertEqual(arr.shape, (3, 4, 3))  # height x width x channels
     self.assertEqual(arr.dtype, vision_driver.np.uint8)
     self.assertGreater(arr[..., 0].mean(), arr[..., 2].mean())  # red > blue == RGB ordering
@@ -76,131 +98,40 @@ class TestPreciseVisionDriver(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(await self.driver.query("property get system.engineversion"), "5.3.3.0")
     self.prop.write.assert_awaited_once_with(b"property get system.engineversion\r\n")
 
-  async def test_request_camera_count(self):
-    self.prop.readline = AsyncMock(return_value=b"0 2\r\n")
-    self.assertEqual(await self.driver.request_camera_count(), 2)
+  async def test_read_next_record_returns_buffered_record(self):
+    # The next complete record is framed off the stream by its announced length and returned as-is.
+    jpeg = b"\xff\xd8\xff\xe0jpegbytes\xff\xd9"
+    self.img.read = AsyncMock(side_effect=[_framed(1, jpeg), b""])
+    self.assertEqual(await self.driver.read_next_record(), ("Primary Image [1]", jpeg))
 
-  async def test_enumerate_project_splits_both_list_formats(self):
-    self.prop.readline = AsyncMock(side_effect=[b"0 Camera1, Camera2\r\n", b"0 acq1 acq2 led\r\n"])
-    out = await self.driver.enumerate_project()
-    self.assertEqual(
-      out, {"processes": ["Camera1", "Camera2"], "vision_tools": ["acq1", "acq2", "led"]}
-    )
+  async def test_read_next_record_drains_buffered_records_in_order(self):
+    # One socket read can carry several records; each call returns the next without re-reading.
+    two = _framed(2, b"\xff\xd8\xff\xe0a\xff\xd9") + _framed(1, b"\xff\xd8\xff\xe0b\xff\xd9")
+    self.img.read = AsyncMock(side_effect=[two, b""])
+    first = await self.driver.read_next_record()
+    second = await self.driver.read_next_record()
+    assert first is not None and second is not None
+    self.assertEqual((first[0], second[0]), ("Primary Image [2]", "Primary Image [1]"))
+    self.img.read.assert_awaited_once()  # both records came from the one read
 
-  async def test_capture_image_triggers_cameraacquire_and_decodes_selected_frame(self):
-    # The JPEG carved from the stream is the one handed to the decoder, whose array we return.
-    self.img.read = AsyncMock(side_effect=[_framed(1, b"jpegbytes"), b""])
-    with patch.object(vision_driver, "_decode_jpeg", side_effect=lambda j: ("decoded", j)) as dec:
-      out = await self.driver.capture_image(1)
-    self.prop.write.assert_awaited_once_with(b"property set system.cameraacquire 1\r\n")
-    dec.assert_called_once_with(b"\xff\xd8\xff\xe0jpegbytes\xff\xd9")
-    self.assertEqual(out, ("decoded", b"\xff\xd8\xff\xe0jpegbytes\xff\xd9"))
+  async def test_read_next_record_returns_none_on_stream_end(self):
+    # An empty read means the stream closed; signal it with None rather than blocking or raising.
+    self.img.read = AsyncMock(return_value=b"")
+    self.assertIsNone(await self.driver.read_next_record())
 
-  async def test_capture_image_skips_other_camera_then_matches(self):
-    # Camera 2's frame is drained and discarded; camera 1's JPEG is the one decoded.
-    self.img.read = AsyncMock(side_effect=[_framed(2, b"other"), _framed(1, b"mine"), b""])
-    with patch.object(vision_driver, "_decode_jpeg", side_effect=lambda j: j):
-      self.assertEqual(await self.driver.capture_image(1), b"\xff\xd8\xff\xe0mine\xff\xd9")
+  async def test_read_next_record_retains_partial_record_across_timeout(self):
+    # A read that times out mid-record leaves the partial bytes buffered, so the next call completes
+    # the record instead of starting mid-stream (the held-socket desync guard).
+    whole = _framed(1, b"\xff\xd8\xff\xe0data\xff\xd9")
+    self.img.read = AsyncMock(side_effect=[whole[:20], TimeoutError, whole[20:]])
+    with self.assertRaises(TimeoutError):
+      await self.driver.read_next_record()
+    recovered = await self.driver.read_next_record()
+    assert recovered is not None
+    self.assertEqual(recovered[0], "Primary Image [1]")
 
-  async def test_capture_image_raises_on_timeout(self):
-    # A read timeout means no frame arrived - surface it, don't return None.
+  async def test_read_next_record_propagates_timeout(self):
+    # A read timeout surfaces as TimeoutError for the caller (capture_image) to contextualise.
     self.img.read = AsyncMock(side_effect=TimeoutError)
     with self.assertRaises(TimeoutError):
-      await self.driver.capture_image(1)
-
-  async def test_capture_image_raises_when_stream_ends_without_frame(self):
-    # The stream closes (empty read) before the requested camera's frame - a clear error, not None.
-    self.img.read = AsyncMock(side_effect=[_framed(2, b"other"), b""])
-    with self.assertRaises(RuntimeError):
-      await self.driver.capture_image(1)
-
-  async def test_run_vision_tool_sends_runtool(self):
-    """run_vision_tool issues exactly `property set system.runtool <tool>`."""
-    await self.driver.run_vision_tool("acq1")
-    self.prop.write.assert_awaited_once_with(b"property set system.runtool acq1\r\n")
-
-  async def test_set_vision_tool_property_writes_then_applies(self):
-    """set_vision_tool_property writes the value, then runs the tool (two commands) by default."""
-    await self.driver.set_vision_tool_property("acq1", "brightness", 2)
-    self.assertEqual(
-      [c.args[0] for c in self.prop.write.await_args_list],
-      [b"property set acq1.brightness 2\r\n", b"property set system.runtool acq1\r\n"],
-    )
-
-  async def test_set_vision_tool_property_apply_false_only_writes(self):
-    """apply=False stores the value without running the tool (a single command)."""
-    await self.driver.set_vision_tool_property("acq1", "brightness", 2, apply=False)
-    self.prop.write.assert_awaited_once_with(b"property set acq1.brightness 2\r\n")
-
-  async def test_request_vision_tool_properties_splits_list(self):
-    """request_vision_tool_properties parses the engine's name list into a list of strings."""
-    self.prop.readline = AsyncMock(return_value=b"0 brightness hue gain\r\n")
-    self.assertEqual(
-      await self.driver.request_vision_tool_properties("acq1"), ["brightness", "hue", "gain"]
-    )
-
-  async def test_request_projects_splits_comma_list(self):
-    """request_projects parses the comma-separated project list."""
-    self.prop.readline = AsyncMock(return_value=b"0 arucos_cam1,VisionTest,vision_project\r\n")
-    self.assertEqual(
-      await self.driver.request_projects(), ["arucos_cam1", "VisionTest", "vision_project"]
-    )
-
-  async def test_request_is_licensed_parses_bool(self):
-    """request_is_licensed maps the engine's True/False string to a bool."""
-    self.prop.readline = AsyncMock(return_value=b"0 True\r\n")
-    self.assertTrue(await self.driver.request_is_licensed())
-    self.prop.readline = AsyncMock(return_value=b"0 False\r\n")
-    self.assertFalse(await self.driver.request_is_licensed())
-
-  async def test_request_camera_width_sends_index_and_parses_int(self):
-    """request_camera_width passes the camera index and returns an int."""
-    self.prop.readline = AsyncMock(return_value=b"0 2592\r\n")
-    self.assertEqual(await self.driver.request_camera_width(1), 2592)
-    self.prop.write.assert_awaited_once_with(b"property get system.cameraframewidth 1\r\n")
-
-
-# --- Real engine replies captured from our PF400 rig (PreciseVision 5.3.3.0). ------------------
-# Ground truth, not hand-written mocks: refresh from a new capture if the device changes and the
-# tests below adapt to whatever the hardware actually returns.
-REAL_TOOLTYPES = (
-  "ObjectFinder Classifier BarcodeRead Acquire ArcFitter ClearGrip ComputedLine ComputeIntersection "
-  "ComputePointOnLine EdgeFinder SharpnessDetector FindBlob FindMid FixedFrame ImageProcess "
-  "FiducialLocator LightControl LineFitter PixelWindow PixelWindowColor PointFinder SensorWindow"
-)
-REAL_LISTTOOLS = (
-  "acq1 acq2 aruco1 aruco2 barcode_read1 barcode_read2 led sharpness_detector1 sharpness_detector2"
-)
-REAL_ACQUIREMODE_INFO = "Type[AcquireModeEnum] EnumValues[NORMAL_ACQUIRE ACQUIRE_AND_SAVE PLAY_FROM_DISK SAVE_ONLY CLEAR_BUFFER]"
-
-
-class TestCapturedEngineReplies(unittest.IsolatedAsyncioTestCase):
-  """Readers driven by REAL captured engine replies - adaptive ground truth, not hand-mocks."""
-
-  def setUp(self):
-    self.prop = MagicMock()
-    self.prop.write = AsyncMock()
-    self.prop.readline = AsyncMock(return_value=b"0\r\n")
-    self.driver = PreciseVisionDriver("127.0.0.1")
-    self.driver.io_property = self.prop  # type: ignore[assignment]
-
-  async def test_tooltypes_reply_yields_full_palette(self):
-    """The captured system.tooltypes reply parses to all 22 tool types, incl. known members."""
-    self.prop.readline = AsyncMock(return_value=b"0 " + REAL_TOOLTYPES.encode() + b"\r\n")
-    types = await self.driver.request_vision_tool_types()
-    self.assertEqual(len(types), 22)
-    self.assertIn("ObjectFinder", types)
-    self.assertIn("FiducialLocator", types)
-    self.assertIn("Acquire", types)
-
-  async def test_listtools_reply_yields_visiontest_instances(self):
-    """The captured system.listtools reply parses to the 9 VisionTest tool instances."""
-    self.prop.readline = AsyncMock(return_value=b"0 " + REAL_LISTTOOLS.encode() + b"\r\n")
-    self.assertEqual(await self.driver.request_vision_tools(), REAL_LISTTOOLS.split())
-
-  async def test_toolpropertyinfo_reply_returned_verbatim(self):
-    """The captured toolpropertyinfo reply (Type[...] EnumValues[...]) is returned to the caller."""
-    self.prop.readline = AsyncMock(return_value=b"0 " + REAL_ACQUIREMODE_INFO.encode() + b"\r\n")
-    info = await self.driver.request_vision_tool_property_info("acq1", "acquiremode")
-    self.assertEqual(info, REAL_ACQUIREMODE_INFO)
-    self.assertIn("EnumValues[NORMAL_ACQUIRE ACQUIRE_AND_SAVE", info)
+      await self.driver.read_next_record()
