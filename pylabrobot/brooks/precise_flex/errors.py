@@ -1961,6 +1961,16 @@ Older GPL systems may display the license number shown above in ( ) rather than 
 
 
 class PreciseFlexError(Exception):
+  def __new__(cls, replycode: int, message: str):
+    # Construct the most specific subclass for this code (like STAR's error_code_to_exception), so
+    # callers can catch a category - e.g. `except PreciseFlexCollisionError`. Only refine when
+    # constructed as the base type, so directly constructing a subclass is left untouched. This is a
+    # pure type refinement (no side effects); every existing `raise PreciseFlexError(code, msg)` site
+    # gets the right subclass without changing.
+    if cls is PreciseFlexError:
+      cls = _error_class_for_code(replycode)
+    return super().__new__(cls)
+
   def __init__(self, replycode: int, message: str):
     self.replycode = replycode
     self.message = message
@@ -1970,6 +1980,20 @@ class PreciseFlexError(Exception):
       super().__init__(f"PreciseFlexError {replycode}: {text}. {description} - {message}")
     else:
       super().__init__(f"PreciseFlexError {replycode}: {message}")
+
+
+class PreciseFlexCollisionError(PreciseFlexError):
+  """A collision / over-drive error (the arm hit something): an envelope error (-3100 / -3122) or a
+  torque-saturation error (-3101 / -3105). Lets protocol code catch a crash with
+  ``except PreciseFlexCollisionError`` without also matching ordinary command errors.
+  """
+
+
+class PreciseFlexVisionError(PreciseFlexError):
+  """A PreciseVision error (the -40xx band): a vision-engine or stereo-locate failure - e.g. a tool
+  property rejected, a process failed, or an ArUco target not found. Lets vision code catch a vision
+  failure with ``except PreciseFlexVisionError`` without also matching motion / controller errors.
+  """
 
 
 class OperationInterrupted(Exception):
@@ -2007,10 +2031,28 @@ class OutOfRangeOfMotionError(Exception):
 #   -3105  motor stalled  (torque saturated at the peak rating)
 COLLISION_ERROR_CODES = frozenset({-3100, -3101, -3105, -3122})
 
+# PreciseVision (vision-engine and stereo-locator) errors occupy the -40xx band. Derived from the
+# error table so there is a single source of truth for which codes are vision codes.
+VISION_ERROR_CODES = frozenset(code for code in ERROR_CODES if -4099 <= code <= -4000)
+
+
+def _error_class_for_code(replycode: int) -> type:
+  """The most specific ``PreciseFlexError`` subclass for a reply code (base class for unmapped codes).
+
+  The dispatch behind ``PreciseFlexError.__new__``; the counterpart of STAR's
+  ``error_code_to_exception``.
+  """
+  if replycode in COLLISION_ERROR_CODES:
+    return PreciseFlexCollisionError
+  if replycode in VISION_ERROR_CODES:
+    return PreciseFlexVisionError
+  return PreciseFlexError
+
 
 def is_collision(exc: object) -> bool:
-  """Whether ``exc`` is a ``PreciseFlexError`` from a collision / over-drive (the arm hit something) -
-  an envelope (``-3100`` / ``-3122``) or torque-saturation (``-3101`` / ``-3105``) error - as opposed
-  to an ordinary command error. Lets protocol code branch on "did I crash?".
+  """Whether ``exc`` is a collision / over-drive error (the arm hit something) - an envelope
+  (``-3100`` / ``-3122``) or torque-saturation (``-3101`` / ``-3105``) error - as opposed to an
+  ordinary command error. Lets protocol code branch on "did I crash?". Equivalent to
+  ``isinstance(exc, PreciseFlexCollisionError)``.
   """
-  return isinstance(exc, PreciseFlexError) and exc.replycode in COLLISION_ERROR_CODES
+  return isinstance(exc, PreciseFlexCollisionError)

@@ -375,7 +375,7 @@ class PreciseFlexVisionBackend:
     """
     return int(await self.driver.request_vision_tool_property("System", "CameraCount"))
 
-  async def request_vision_version(self) -> Optional[str]:
+  async def request_vision_version(self) -> str:
     """The PreciseVision engine version (``system.engineversion``)."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
@@ -391,10 +391,9 @@ class PreciseFlexVisionBackend:
     """List all projects on the engine (``system.listprojects``); the active one is request_project_name."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
-    value = await self.vision_driver.request_property("system.listprojects")
-    return _split_names(value) if value is not None else []
+    return _split_names(await self.vision_driver.request_property("system.listprojects"))
 
-  async def request_project_name(self) -> Optional[str]:
+  async def request_project_name(self) -> str:
     """The active project's name (``system.projectname``)."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
@@ -404,24 +403,20 @@ class PreciseFlexVisionBackend:
     """List all process names in the active project (``system.listprocesses``)."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
-    value = await self.vision_driver.request_property("system.listprocesses")
-    return _split_names(value) if value is not None else []
+    return _split_names(await self.vision_driver.request_property("system.listprocesses"))
 
   async def request_vision_tools(self) -> List[str]:
     """List all tool names in the active project (``system.listtools``)."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
-    value = await self.vision_driver.request_property("system.listtools")
-    return _split_names(value) if value is not None else []
+    return _split_names(await self.vision_driver.request_property("system.listtools"))
 
-  async def enumerate_project(self) -> Optional[Dict[str, List[str]]]:
+  async def enumerate_project(self) -> Dict[str, List[str]]:
     """List the loaded project's processes and tools (``system.listprocesses`` / ``listtools``)."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
     processes = await self.vision_driver.request_property("system.listprocesses")
     tools = await self.vision_driver.request_property("system.listtools")
-    if processes is None or tools is None:
-      return None
     return {
       "processes": sorted(_split_names(processes)),
       "vision_tools": sorted(_split_names(tools)),
@@ -446,7 +441,7 @@ class PreciseFlexVisionBackend:
       )
     count = await self.vision_driver.request_property("system.cameracount")
     cameras: Dict[int, CameraInfo] = {}
-    for cam in range(1, (int(count) if count is not None and count.isdigit() else 0) + 1):
+    for cam in range(1, (int(count) if count.isdigit() else 0) + 1):
       cameras[cam] = CameraInfo(
         name=await self.request_camera_name(cam),
         type=await self.request_camera_type(cam),
@@ -528,7 +523,7 @@ class PreciseFlexVisionBackend:
 
   async def request_camera_name(
     self, camera: Union[Literal["front", "bottom"], int] = "front"
-  ) -> Optional[str]:
+  ) -> str:
     """A camera's friendly name, e.g. ``Cam1`` (``system.cameraname <camera>``)."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
@@ -538,7 +533,7 @@ class PreciseFlexVisionBackend:
 
   async def request_camera_type(
     self, camera: Union[Literal["front", "bottom"], int] = "front"
-  ) -> Optional[str]:
+  ) -> str:
     """A camera's capture backend, e.g. ``DirectShow`` (``system.cameratype <camera>``)."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
@@ -555,7 +550,7 @@ class PreciseFlexVisionBackend:
     value = await self.vision_driver.request_property(
       f"system.cameraframewidth {self._camera_index(camera)}"
     )
-    return int(value) if value is not None and value.isdigit() else None
+    return int(value) if value.isdigit() else None
 
   async def request_camera_height(
     self, camera: Union[Literal["front", "bottom"], int] = "front"
@@ -566,7 +561,7 @@ class PreciseFlexVisionBackend:
     value = await self.vision_driver.request_property(
       f"system.cameraframeheight {self._camera_index(camera)}"
     )
-    return int(value) if value is not None and value.isdigit() else None
+    return int(value) if value.isdigit() else None
 
   async def request_camera_resolutions(
     self, camera: Union[Literal["front", "bottom"], int] = "front"
@@ -574,10 +569,11 @@ class PreciseFlexVisionBackend:
     """A camera's supported resolution modes (``system.cameraresolutions <camera>``)."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
-    value = await self.vision_driver.request_property(
-      f"system.cameraresolutions {self._camera_index(camera)}"
+    return _split_names(
+      await self.vision_driver.request_property(
+        f"system.cameraresolutions {self._camera_index(camera)}"
+      )
     )
-    return _split_names(value) if value is not None else []
 
   # ========================================================================
   # VISION TOOLS
@@ -585,9 +581,7 @@ class PreciseFlexVisionBackend:
 
   # -- tool properties -----------------------------------------------------
 
-  async def request_vision_tool_property_value(
-    self, tool: str, property_name: str
-  ) -> Optional[str]:
+  async def request_vision_tool_property_value(self, tool: str, property_name: str) -> str:
     """Read one tool property value (``property get <tool>.<property>``)."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
@@ -597,10 +591,9 @@ class PreciseFlexVisionBackend:
     """List the property names of one tool (``system.toolproperties <tool>``)."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
-    value = await self.vision_driver.request_property(f"system.toolproperties {tool}")
-    return _split_names(value) if value is not None else []
+    return _split_names(await self.vision_driver.request_property(f"system.toolproperties {tool}"))
 
-  async def request_vision_tool_property_info(self, tool: str, property_name: str) -> Optional[str]:
+  async def request_vision_tool_property_info(self, tool: str, property_name: str) -> str:
     """The type / enum / range metadata for one tool property (``system.toolpropertyinfo``)."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
@@ -608,7 +601,7 @@ class PreciseFlexVisionBackend:
       f"system.toolpropertyinfo {tool} {property_name}"
     )
 
-  async def request_vision_tool_type(self, tool: str) -> Optional[str]:
+  async def request_vision_tool_type(self, tool: str) -> str:
     """The tool's type/class, e.g. ``Acquire`` or ``FiducialLocator`` (``system.tooltype``)."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
@@ -618,8 +611,7 @@ class PreciseFlexVisionBackend:
     """List all tool types the engine can instantiate (``system.tooltypes``) - the fixed palette."""
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
-    value = await self.vision_driver.request_property("system.tooltypes")
-    return _split_names(value) if value is not None else []
+    return _split_names(await self.vision_driver.request_property("system.tooltypes"))
 
   async def _run_vision_tool(self, tool: str) -> None:
     """Run a single engine vision tool (``property set system.runtool <tool>``).

@@ -22,6 +22,8 @@ from pylabrobot.capabilities.capability import BackendParams
 from pylabrobot.device import Driver
 from pylabrobot.io.socket import Socket
 
+from .errors import PreciseFlexError
+
 try:
   import numpy as np
 except ImportError:
@@ -55,17 +57,31 @@ _MAX_IMAGE_BYTES = (
 )  # sanity cap: a record this large signals a desync, not a real frame
 
 
-def parse_engine_reply(reply: str) -> Optional[str]:
-  """Parse an engine reply line into its success value.
+def parse_engine_reply(reply: str) -> str:
+  """Parse an engine reply line into its success value, raising on a negative (error) reply.
+
+  Mirrors the controller transport (``PreciseFlexDriver._parse_reply_ensure_successful``): a negative
+  reply is a vision error code, surfaced as a ``PreciseFlexError`` whose message looks the code up in
+  the shared error table (the vision ``-40xx`` codes are in it), rather than silently swallowed to
+  ``None``.
 
   Args:
-    reply: a raw reply line - ``0 <value>`` on success, or a negative error code (e.g. ``-4017``).
+    reply: a raw reply line - ``0 <value>`` on success, or a negative code (+ optional message text).
 
   Returns:
-    The ``<value>`` of a success reply, or ``None`` for a negative (error) reply.
+    The ``<value>`` of a success reply (possibly empty).
+
+  Raises:
+    PreciseFlexError: on a negative (error) reply, carrying the engine's numeric code and message.
   """
   code, _, rest = reply.partition(" ")
-  return rest if code == "0" else None
+  if code == "0":
+    return rest
+  try:
+    replycode = int(code)
+  except ValueError as e:
+    raise PreciseFlexError(-1, f"unparseable engine reply: {reply!r}") from e
+  raise PreciseFlexError(replycode, rest)
 
 
 def _drain_named_record(buf: bytearray) -> Optional[Tuple[str, bytes]]:
@@ -182,24 +198,29 @@ class PreciseVisionDriver(Driver):
 
   # -- command/reply (:1450) -----------------------------------------------
 
-  async def send_command(self, command: str) -> Optional[str]:
-    """Write one engine command line and return its success value.
+  async def send_command(self, command: str) -> str:
+    """Write one engine command line and return its success value, raising on an error reply.
 
     The :1450 text protocol's raw command/reply primitive, wrapped by ``request_property`` /
-    ``_set_property`` with the ``property get`` / ``property set`` grammar.
+    ``_set_property`` with the ``property get`` / ``property set`` grammar. A negative reply raises
+    ``PreciseFlexError`` (mirroring the controller transport), so callers get an informative coded
+    error rather than a silent ``None``.
 
     Args:
       command: the full command line to send (the trailing CRLF is added here).
 
     Returns:
-      The success value of the reply, or ``None`` on a negative (error) reply.
+      The success value of the reply (possibly empty).
+
+    Raises:
+      PreciseFlexError: on a negative (error) reply.
     """
     await self.io_property.write(command.encode("utf-8") + b"\r\n")
     reply = (await self.io_property.readline()).decode("utf-8", "replace").strip()
     return parse_engine_reply(reply)
 
-  async def request_property(self, name: str) -> Optional[str]:
-    """Read a named engine parameter (``property get <name>``); ``None`` on a negative reply.
+  async def request_property(self, name: str) -> str:
+    """Read a named engine parameter (``property get <name>``); raises on an error reply.
 
     The engine's generic property namespace - reads, settings, and triggers all live here.
 
@@ -208,12 +229,15 @@ class PreciseVisionDriver(Driver):
         trailing positional args (e.g. ``system.cameraname 1``).
 
     Returns:
-      The parameter value, or ``None`` on a negative (error) reply.
+      The parameter value (possibly empty).
+
+    Raises:
+      PreciseFlexError: on a negative (error) reply, carrying the engine's numeric code and message.
     """
     return await self.send_command(f"property get {name}")
 
-  async def _set_property(self, name: str, value: object) -> Optional[str]:
-    """Write a named engine parameter (``property set <name> <value>``); ``None`` on a negative reply.
+  async def _set_property(self, name: str, value: object) -> str:
+    """Write a named engine parameter (``property set <name> <value>``); raises on an error reply.
 
     Private: a write changes device state, so it is reached through the vision backend's vetted
     orchestrations, not called directly (the ``request_property`` read is public). The same generic
@@ -224,7 +248,10 @@ class PreciseVisionDriver(Driver):
       value: the value to write; stringified onto the command line.
 
     Returns:
-      The reply value, or ``None`` on a negative (error) reply.
+      The reply value (possibly empty).
+
+    Raises:
+      PreciseFlexError: on a negative (error) reply.
     """
     return await self.send_command(f"property set {name} {value}")
 

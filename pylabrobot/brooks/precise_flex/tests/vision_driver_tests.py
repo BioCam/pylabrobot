@@ -4,6 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pylabrobot.brooks.precise_flex import vision_driver
+from pylabrobot.brooks.precise_flex.errors import PreciseFlexError, PreciseFlexVisionError
 from pylabrobot.brooks.precise_flex.vision_driver import (
   PreciseVisionDriver,
   _drain_named_record,
@@ -41,9 +42,13 @@ class TestEnginePropertyPrimitives(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(await self.engine.request_property("system.engineversion"), "5.3.3.0")
     self.prop.write.assert_awaited_once_with(b"property get system.engineversion\r\n")
 
-  async def test_request_property_returns_none_on_negative(self):
+  async def test_request_property_raises_vision_error_with_code_on_negative(self):
+    """A negative reply surfaces as a coded PreciseFlexVisionError (a -40xx code), not a silent None."""
     self.prop.readline = AsyncMock(return_value=b"-4017 some error\r\n")
-    self.assertIsNone(await self.engine.request_property("bogus.name"))
+    with self.assertRaises(PreciseFlexVisionError) as ctx:
+      await self.engine.request_property("bogus.name")
+    self.assertEqual(ctx.exception.replycode, -4017)
+    self.assertIsInstance(ctx.exception, PreciseFlexError)  # still caught by the base type
 
   async def test_set_property_builds_set(self):
     await self.engine._set_property("system.runtool", "acq1")
@@ -59,7 +64,9 @@ class TestEngineFraming(unittest.TestCase):
   def test_parse_engine_reply_success_and_error(self):
     self.assertEqual(parse_engine_reply("0 5.3.3.0"), "5.3.3.0")
     self.assertEqual(parse_engine_reply("0"), "")  # success with empty value
-    self.assertIsNone(parse_engine_reply("-4017 some error"))
+    with self.assertRaises(PreciseFlexError) as ctx:  # negative reply is a coded error, raised
+      parse_engine_reply("-4017 some error")
+    self.assertEqual(ctx.exception.replycode, -4017)
 
   def test_drain_named_record_extracts_and_consumes_complete_record(self):
     jpeg = b"\xff\xd8\xff\xe0abc\xff\xd9"
