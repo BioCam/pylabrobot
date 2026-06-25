@@ -376,8 +376,8 @@ class TestVisionEngineCapabilities(unittest.IsolatedAsyncioTestCase):
     self.vision, self.prop = _backend_with_engine()
 
   async def test_set_camera_setting_resolves_alias_writes_then_applies(self):
-    """set_camera_setting resolves the front/bottom alias to acq<N>, writes the knob, then applies it."""
-    await self.vision.set_camera_setting("bottom", "brightness", 4)
+    """_set_camera_setting resolves the front/bottom alias to acq<N>, writes the knob, then applies it."""
+    await self.vision._set_camera_setting("bottom", "brightness", 4)
     self.assertEqual(
       [c.args[0] for c in self.prop.write.await_args_list],
       [b"property set acq2.brightness 4\r\n", b"property set system.runtool acq2\r\n"],

@@ -687,25 +687,25 @@ class PreciseFlexVisionBackend:
   # -- camera image (Acquire) ----------------------------------------------
 
   @requires_vision_tool_type("Acquire")
-  async def set_camera_setting(
-    self, camera: Union[Literal["front", "bottom"], int], setting: str, value: object
+  async def _set_camera_setting(
+    self, camera: Union[Literal["front", "bottom"], int], camera_property: str, value: object
   ) -> None:
-    """Set one acquire-tool camera knob and apply it to the camera; no arm motion.
+    """Set one acquire-tool camera property and apply it to the camera; no arm motion.
 
-    Writes ``acq<n>.<setting>`` (brightness/hue/gain/exposure/...) and runs the acquire tool so the
-    change reaches the DirectShow camera - a bare write only stores it. The live stream then reflects
-    it.
+    Writes ``acq<n>.<camera_property>`` (brightness/hue/gain/exposure/...) and runs the acquire tool
+    so the change reaches the DirectShow camera - a bare write only stores it. The live stream then
+    reflects it.
 
     Args:
       camera: which gripper camera - ``"front"``/``1`` (front-facing) or ``"bottom"``/``2`` (downward).
-      setting: the acquire-tool property name (e.g. ``brightness``, ``exposure``, ``gain``).
+      camera_property: the acquire-tool property name (e.g. ``brightness``, ``exposure``, ``gain``).
       value: the value to write. The camera may clamp it to its own range, so read it back with
         ``request_vision_tool_property_value`` to confirm the effective value.
     """
     if self.vision_driver is None:
       raise RuntimeError(_NO_ENGINE)
     acquire_tool = f"acq{self._camera_index(camera)}"
-    await self.vision_driver._set_property(f"{acquire_tool}.{setting}", value)
+    await self.vision_driver._set_property(f"{acquire_tool}.{camera_property}", value)
     await self._run_vision_tool(acquire_tool)  # a bare write only stores; run the tool to apply
 
   async def capture_image(
@@ -719,7 +719,7 @@ class PreciseFlexVisionBackend:
     For a saved file on the engine host instead, use ``save_image``.
 
     This grabs the camera's current hardware state; it does NOT apply pending acquire-tool settings.
-    Change one first with ``set_camera_setting`` (which applies it) for it to show in the frame.
+    Change one first with ``_set_camera_setting`` (which applies it) for it to show in the frame.
 
     Args:
       camera: which gripper camera - ``"front"``/``1`` (front-facing) or ``"bottom"``/``2`` (downward).
