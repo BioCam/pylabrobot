@@ -636,17 +636,22 @@ class PreciseFlexVisionBackend:
     camera: Union[Literal["front", "bottom"], int] = "front",
     brightness: int = 100,
     delay: Optional[int] = None,
+    use_server: Literal["controller", "vision"] = "controller",
   ) -> None:
     """Turn on the IntelliGuide camera lighting (LightControl vision tool); no arm motion.
 
-    Sets the LightControl tool's LED bank and brightness, then runs the process that applies it.
-    ``brightness=0`` turns the LEDs off, or use ``stop_led``.
+    Sets the ``led`` tool's bank and brightness, then applies them. ``brightness=0`` turns the LEDs
+    off, or use ``stop_led``.
 
     Args:
       camera: which integrated LED source - ``"front"``/``1`` or ``"bottom"``/``2``. Drives the
-        tool's LED Bank (1 = front-facing, 2 = bottom-facing).
+        tool's LED bank (1 = front-facing, 2 = bottom-facing).
       brightness: LED brightness 0-100 (PWM duty); ``0`` turns the LEDs off.
       delay: optional light time delay in milliseconds.
+      use_server: which server carries out the change. ``"controller"`` (the default) relays
+        ``VToolProperty`` writes and applies them with ``Vprocess`` through the arm controller.
+        ``"vision"`` writes the ``led`` tool properties straight to the PreciseVision engine and
+        applies them with ``system.runtool``; it needs a connected engine (``vision_host``).
     """
     bank = self._camera_index(camera)  # LED bank 1 = front-facing, 2 = bottom-facing
     if self.configuration.discovered and bank not in self.configuration.cameras:
@@ -656,15 +661,28 @@ class PreciseFlexVisionBackend:
       )
     if not 0 <= brightness <= 100:
       raise ValueError(f"brightness must be 0-100, got {brightness}")
-    await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Bank", str(bank))
-    await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Brightness", str(brightness))
-    if delay is not None:
-      await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Delay", str(delay))
-    await self._run_vision_process(self._LIGHT_PROCESS)
+    if use_server == "controller":
+      await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Bank", str(bank))
+      await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Brightness", str(brightness))
+      if delay is not None:
+        await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Delay", str(delay))
+      await self._run_vision_process(self._LIGHT_PROCESS)
+    else:
+      if self.vision_driver is None:
+        raise RuntimeError(_NO_ENGINE)
+      await self.vision_driver._set_property(f"{self._LIGHT_TOOL}.bank", bank)
+      await self.vision_driver._set_property(f"{self._LIGHT_TOOL}.brightness", brightness)
+      if delay is not None:
+        await self.vision_driver._set_property(f"{self._LIGHT_TOOL}.delay", delay)
+      await self._run_vision_tool(self._LIGHT_TOOL)
 
-  async def stop_led(self, camera: Union[Literal["front", "bottom"], int] = "front") -> None:
+  async def stop_led(
+    self,
+    camera: Union[Literal["front", "bottom"], int] = "front",
+    use_server: Literal["controller", "vision"] = "controller",
+  ) -> None:
     """Turn off the IntelliGuide camera lighting (the ``start_led`` counterpart); no arm motion."""
-    await self.start_led(camera, 0)
+    await self.start_led(camera, 0, use_server=use_server)
 
   # -- camera image (Acquire) ----------------------------------------------
 

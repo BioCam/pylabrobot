@@ -91,7 +91,6 @@ class TestVisionWirePrimitives(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.driver = MagicMock()
     self.driver.send_command = AsyncMock(return_value="")
-    self.driver.query_raw = AsyncMock(return_value="")
     self.driver.request_vision_tool_property = AsyncMock(return_value="")
     self.driver._set_vision_tool_property = AsyncMock(return_value="")
     self.vision = PreciseFlexVisionBackend(self.driver)
@@ -124,6 +123,11 @@ class TestVisionWirePrimitives(unittest.IsolatedAsyncioTestCase):
     with self.assertRaises(ValueError):
       await self.vision.start_led("left")  # type: ignore[arg-type]
 
+  async def test_start_led_vision_server_without_engine_raises(self):
+    """use_server='vision' needs a connected engine; without one it raises rather than relaying."""
+    with self.assertRaises(RuntimeError):
+      await self.vision.start_led(use_server="vision")  # this backend has no vision_driver
+
 
 class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
   """The vision orchestrations compose the wire primitives over the driver transport. Mocking the
@@ -132,7 +136,6 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.driver = MagicMock()
     self.driver.send_command = AsyncMock(return_value="")
-    self.driver.query_raw = AsyncMock(return_value="")
     self.driver.request_vision_tool_property = AsyncMock(return_value="")
     self.driver._set_vision_tool_property = AsyncMock(return_value="")
     self.vision = PreciseFlexVisionBackend(self.driver)
@@ -396,6 +399,19 @@ class TestVisionEngineCapabilities(unittest.IsolatedAsyncioTestCase):
     await self.vision._run_vision_tool("acq1")
     self.prop.write.assert_awaited_once_with(b"property set system.runtool acq1\r\n")
 
+  async def test_start_led_vision_server_writes_led_props_then_runtool(self):
+    """use_server='vision' writes led.bank/brightness/delay straight to the engine, then runtool led."""
+    await self.vision.start_led("bottom", brightness=80, delay=5, use_server="vision")
+    self.assertEqual(
+      [c.args[0] for c in self.prop.write.await_args_list],
+      [
+        b"property set led.bank 2\r\n",
+        b"property set led.brightness 80\r\n",
+        b"property set led.delay 5\r\n",
+        b"property set system.runtool led\r\n",
+      ],
+    )
+
   async def test_request_camera_width_sends_index_and_parses_int(self):
     """request_camera_width passes the camera index and returns an int."""
     self.prop.readline = AsyncMock(return_value=b"0 2592\r\n")
@@ -603,7 +619,6 @@ class TestVisionCapabilityGating(unittest.IsolatedAsyncioTestCase):
   def _backend(self, types):
     driver = MagicMock()
     driver.send_command = AsyncMock(return_value="0 1")
-    driver.query_raw = AsyncMock(return_value="")
     vision = PreciseFlexVisionBackend(driver)
     vision.configuration = VisionConfiguration(discovered=True, vision_tool_types=types)
     return vision

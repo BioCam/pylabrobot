@@ -60,7 +60,7 @@ _MAX_IMAGE_BYTES = (
 def parse_engine_reply(reply: str) -> str:
   """Parse an engine reply line into its success value, raising on a negative (error) reply.
 
-  Mirrors the controller transport (``PreciseFlexDriver._parse_reply_ensure_successful``): a negative
+  Mirrors the controller transport (``PreciseFlexDriver._ensure_successful``): a negative
   reply is a vision error code, surfaced as a ``PreciseFlexError`` whose message looks the code up in
   the shared error table (the vision ``-40xx`` codes are in it), rather than silently swallowed to
   ``None``.

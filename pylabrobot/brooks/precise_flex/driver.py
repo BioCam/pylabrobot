@@ -44,36 +44,45 @@ class PreciseFlexDriver(Driver):
 
   # -- communication ---------------------------------------------------------
 
-  async def send_command(self, command: str) -> str:
+  async def _write(self, command: str) -> None:
+    """Write one command line to the controller (the trailing newline is added here)."""
     await self.io.write(command.encode("utf-8") + b"\n")
-    reply = await self.io.readline()
-    return self._parse_reply_ensure_successful(reply)
 
-  async def query_raw(self, command: str) -> str:
-    """Write a command and return its reply line stripped, without the ``<code> <data>`` parsing.
-
-    For protocols that reply with a bare value - e.g. PreciseVision ``VToolProperty`` reads, which
-    are not prefixed with a reply code. The caller interprets the raw line.
-    """
-    await self.io.write(command.encode("utf-8") + b"\n")
+  async def _read(self) -> str:
+    """Read one reply line from the controller, decoded and stripped."""
     return (await self.io.readline()).decode("utf-8").strip()
 
-  def _parse_reply_ensure_successful(self, reply: bytes) -> str:
-    """Parse reply from Precise Flex.
+  async def send_command(self, command: str) -> str:
+    """Send a command and return the accepted ``<code> <data>`` payload.
 
-    Expected format: b'replycode data message\r\n'
-    - replycode is an integer at the beginning
-    - data is rest of the line (excluding CRLF)
+    Writes the command and reads one reply line, then applies the standard acceptance gate
+    (``_ensure_successful``): a non-zero reply code raises, otherwise the data payload is returned.
+    A reply in a different grammar (e.g. PreciseVision's bare ``VToolProperty`` value) is read with
+    ``_write``/``_read`` directly and parsed by the caller instead.
     """
-    text = reply.decode().strip()
-    if not text:
+    await self._write(command)
+    return self._ensure_successful(await self._read())
+
+  def _ensure_successful(self, reply: str) -> str:
+    """Acceptance gate for the standard ``<code> <data>`` reply: raise on a non-zero code, else return the data.
+
+    Verifies the controller accepted the command - the leading integer reply code is ``0`` - and
+    strips it, returning the rest of the line as the data payload. This is only the success check;
+    interpreting the payload is a separate concern left to the caller.
+
+    Args:
+      reply: one decoded, stripped reply line.
+
+    Returns:
+      The data payload (the line with its leading reply code removed).
+
+    Raises:
+      PreciseFlexError: on an empty reply or a non-zero reply code.
+    """
+    if not reply:
       raise PreciseFlexError(-1, "Empty reply from device.")
-    parts = text.split(" ", 1)
-    if len(parts) == 1:
-      replycode = int(parts[0])
-      data = ""
-    else:
-      replycode, data = int(parts[0]), parts[1]
+    code, _, data = reply.partition(" ")
+    replycode = int(code)
     if replycode != 0:
       raise PreciseFlexError(replycode, data)
     return data
@@ -100,7 +109,8 @@ class PreciseFlexDriver(Driver):
     Raises:
       PreciseFlexError: on a negative reply (a vision error code).
     """
-    reply = await self.query_raw(f"VToolProperty {tool} {property_name}")
+    await self._write(f"VToolProperty {tool} {property_name}")
+    reply = await self._read()
     if reply.startswith("-") and reply[1:].isdigit():
       raise PreciseFlexError(int(reply), "")
     return reply
