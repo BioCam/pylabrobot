@@ -50,33 +50,46 @@ class PreciseFlex400(Device):
     driver = PreciseFlexDriver(host=host, port=port, timeout=timeout)
     super().__init__(driver=driver)
     self.driver: PreciseFlexDriver
-    backend = PreciseFlexArmBackend(
+    self._vision_host = vision_host
+    self._arm_backend = PreciseFlexArmBackend(
       driver=driver,
       has_rail=has_rail,
       gripper_length=gripper_length,
       gripper_z_offset=gripper_z_offset,
       closed_gripper_position=closed_gripper_position,
       recover_out_of_range=recover_out_of_range,
-      vision_host=vision_host,
     )
     self.reference = Resource(name="PreciseFlex400", size_x=200, size_y=200, size_z=200)
-    self.arm = OrientableGripperArm(backend=backend, reference_resource=self.reference)
+    self.arm = OrientableGripperArm(backend=self._arm_backend, reference_resource=self.reference)
     self._capabilities = [self.arm]
     self.vision: Optional[PreciseFlexVisionBackend] = None
 
   async def setup(
     self, backend_params: Optional[BackendParams] = None, *, skip_vision: bool = False
   ) -> None:
-    """Set up the arm, then expose the vision capability if a camera gripper is present.
+    """Set up the arm, then connect and expose the vision capability if a vision module is present.
+
+    The arm discovers the loaded TCS modules; when an IntelliGuide vision module is among them the
+    driver builds and connects the vision capability (symmetric with ``driver.stop``), which this then
+    exposes as ``self.vision``.
 
     Args:
-      skip_vision: if True, do not expose ``self.vision`` even when a camera gripper is detected
-        (``driver.vision`` is still built by the backend). Mirrors STAR's ``skip_*`` setup flags.
+      skip_vision: if True, leave ``self.vision`` and ``driver.vision`` unset even when a vision
+        module is detected. Mirrors STAR's ``skip_*`` setup flags.
     """
     await super().setup(backend_params=backend_params)
-    self.vision = (
-      self.driver.vision if (self.driver.vision is not None and not skip_vision) else None
-    )
+    if not skip_vision and self._has_vision_module():
+      await self.driver.setup_vision(self._vision_host)
+    else:
+      self.driver.vision = None
+    self.vision = self.driver.vision
+
+  def _has_vision_module(self) -> bool:
+    """Whether arm discovery reported an IntelliGuide vision module; False if discovery did not run."""
+    try:
+      return self._arm_backend.configuration.has_vision_module
+    except RuntimeError:
+      return False
 
 
 # -- PreciseFlex 3400 ------------------------------------------------------
@@ -122,30 +135,43 @@ class PreciseFlex3400(Device):
     driver = PreciseFlexDriver(host=host, port=port, timeout=timeout)
     super().__init__(driver=driver)
     self.driver: PreciseFlexDriver
-    backend = PreciseFlexArmBackend(
+    self._vision_host = vision_host
+    self._arm_backend = PreciseFlexArmBackend(
       driver=driver,
       has_rail=has_rail,
       gripper_length=gripper_length,
       gripper_z_offset=gripper_z_offset,
       closed_gripper_position=closed_gripper_position,
       recover_out_of_range=recover_out_of_range,
-      vision_host=vision_host,
     )
     self.reference = Resource(name="PreciseFlex3400", size_x=200, size_y=200, size_z=200)
-    self.arm = OrientableGripperArm(backend=backend, reference_resource=self.reference)
+    self.arm = OrientableGripperArm(backend=self._arm_backend, reference_resource=self.reference)
     self._capabilities = [self.arm]
     self.vision: Optional[PreciseFlexVisionBackend] = None
 
   async def setup(
     self, backend_params: Optional[BackendParams] = None, *, skip_vision: bool = False
   ) -> None:
-    """Set up the arm, then expose the vision capability if a camera gripper is present.
+    """Set up the arm, then connect and expose the vision capability if a vision module is present.
+
+    The arm discovers the loaded TCS modules; when an IntelliGuide vision module is among them the
+    driver builds and connects the vision capability (symmetric with ``driver.stop``), which this then
+    exposes as ``self.vision``.
 
     Args:
-      skip_vision: if True, do not expose ``self.vision`` even when a camera gripper is detected
-        (``driver.vision`` is still built by the backend). Mirrors STAR's ``skip_*`` setup flags.
+      skip_vision: if True, leave ``self.vision`` and ``driver.vision`` unset even when a vision
+        module is detected. Mirrors STAR's ``skip_*`` setup flags.
     """
     await super().setup(backend_params=backend_params)
-    self.vision = (
-      self.driver.vision if (self.driver.vision is not None and not skip_vision) else None
-    )
+    if not skip_vision and self._has_vision_module():
+      await self.driver.setup_vision(self._vision_host)
+    else:
+      self.driver.vision = None
+    self.vision = self.driver.vision
+
+  def _has_vision_module(self) -> bool:
+    """Whether arm discovery reported an IntelliGuide vision module; False if discovery did not run."""
+    try:
+      return self._arm_backend.configuration.has_vision_module
+    except RuntimeError:
+      return False

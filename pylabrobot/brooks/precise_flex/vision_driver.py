@@ -56,7 +56,14 @@ _MAX_IMAGE_BYTES = (
 
 
 def parse_engine_reply(reply: str) -> Optional[str]:
-  """The data of a ``0 <value>`` success reply, or ``None`` for a negative error code (e.g. ``-4017``)."""
+  """Parse an engine reply line into its success value.
+
+  Args:
+    reply: a raw reply line - ``0 <value>`` on success, or a negative error code (e.g. ``-4017``).
+
+  Returns:
+    The ``<value>`` of a success reply, or ``None`` for a negative (error) reply.
+  """
   code, _, rest = reply.partition(" ")
   return rest if code == "0" else None
 
@@ -67,8 +74,14 @@ def _drain_named_record(buf: bytearray) -> Optional[Tuple[str, bytes]]:
   Reads the engine's fixed 16-byte record header (see the module comment): the name length, the
   little-endian ``data_len``, then ``name_len`` name bytes and exactly ``data_len`` data bytes. Parsing
   by the announced length never inspects the payload, so a JPEG's internal markers cannot mis-frame it,
-  and the same path frames the interleaved non-image records. Returns ``None`` while the full record has
-  not arrived yet. Assumes ``buf`` begins on a record boundary, which a freshly held stream does.
+  and the same path frames the interleaved non-image records. Assumes ``buf`` begins on a record
+  boundary, which a freshly held stream does.
+
+  Args:
+    buf: the held read buffer; a complete record is removed from its front in place.
+
+  Returns:
+    The next ``(name, data)`` record, or ``None`` while the full record has not arrived yet.
 
   Raises:
     ValueError: if the header is not a record start (``buf[0] != 0x01``) or declares an implausibly
@@ -96,7 +109,17 @@ def _drain_named_record(buf: bytearray) -> Optional[Tuple[str, bytes]]:
 
 
 def decode_jpeg(jpeg: bytes) -> "np.ndarray":
-  """Decode an engine JPEG frame to an RGB ``numpy`` array (height x width x 3, ``uint8``)."""
+  """Decode an engine JPEG frame to an RGB ``numpy`` array (height x width x 3, ``uint8``).
+
+  Args:
+    jpeg: the raw JPEG bytes of one frame (``FFD8…FFD9``).
+
+  Returns:
+    The decoded frame as an RGB ``numpy`` array (height x width x 3, ``uint8``).
+
+  Raises:
+    ImportError: if Pillow and numpy (the ``precise-flex-vision`` extra) are not installed.
+  """
   if np is None or PILImage is None:
     raise ImportError(
       "Pillow and numpy are required to decode camera images; install them with "
@@ -137,7 +160,11 @@ class PreciseVisionDriver(Driver):
     self._image_buf = bytearray()
 
   async def setup(self, backend_params: Optional[BackendParams] = None) -> None:
-    """Open and hold both engine connections (property + image stream)."""
+    """Open and hold both engine connections (property + image stream).
+
+    Args:
+      backend_params: unused; present for the ``Driver.setup`` interface.
+    """
     await self.io_property.setup()
     await self.io_image.setup()
     self._image_buf.clear()  # a fresh stream; drop anything buffered from a previous session
@@ -156,14 +183,50 @@ class PreciseVisionDriver(Driver):
   # -- command/reply (:1450) -----------------------------------------------
 
   async def send_command(self, command: str) -> Optional[str]:
-    """Write one engine command line and return its success value (``None`` on a negative reply).
+    """Write one engine command line and return its success value.
 
-    The :1450 text protocol's raw command/reply primitive. The backend wraps it with the ``property
-    get`` / ``property set`` grammar (``request_parameter`` / ``set_parameter``).
+    The :1450 text protocol's raw command/reply primitive, wrapped by ``request_property`` /
+    ``_set_property`` with the ``property get`` / ``property set`` grammar.
+
+    Args:
+      command: the full command line to send (the trailing CRLF is added here).
+
+    Returns:
+      The success value of the reply, or ``None`` on a negative (error) reply.
     """
     await self.io_property.write(command.encode("utf-8") + b"\r\n")
     reply = (await self.io_property.readline()).decode("utf-8", "replace").strip()
     return parse_engine_reply(reply)
+
+  async def request_property(self, name: str) -> Optional[str]:
+    """Read a named engine parameter (``property get <name>``); ``None`` on a negative reply.
+
+    The engine's generic property namespace - reads, settings, and triggers all live here.
+
+    Args:
+      name: the engine parameter name (e.g. ``system.engineversion``, ``acq1.exposure``). May carry
+        trailing positional args (e.g. ``system.cameraname 1``).
+
+    Returns:
+      The parameter value, or ``None`` on a negative (error) reply.
+    """
+    return await self.send_command(f"property get {name}")
+
+  async def _set_property(self, name: str, value: object) -> Optional[str]:
+    """Write a named engine parameter (``property set <name> <value>``); ``None`` on a negative reply.
+
+    Private: a write changes device state, so it is reached through the vision backend's vetted
+    orchestrations, not called directly (the ``request_property`` read is public). The same generic
+    namespace carries action triggers too (e.g. ``system.runtool``, ``system.cameraacquire``).
+
+    Args:
+      name: the engine parameter name (e.g. ``acq1.exposure``, ``system.runtool``).
+      value: the value to write; stringified onto the command line.
+
+    Returns:
+      The reply value, or ``None`` on a negative (error) reply.
+    """
+    return await self.send_command(f"property set {name} {value}")
 
   # -- image stream (:1500) ------------------------------------------------
 
@@ -176,8 +239,14 @@ class PreciseVisionDriver(Driver):
     frame-aligned rather than mid-record. This is the transport primitive; the trigger / camera-match /
     decode policy is the backend's ``capture_image``.
 
+    Args:
+      timeout: per-read timeout in seconds; defaults to ``self.timeout`` when ``None``.
+
+    Returns:
+      The next ``(name, data)`` record, or ``None`` if the stream closed before a full record.
+
     Raises:
-      TimeoutError: if no bytes arrive within ``timeout`` (default ``self.timeout``).
+      TimeoutError: if no bytes arrive within ``timeout``.
       ValueError: if the stream has desynchronised (see ``_drain_named_record``).
     """
     buf = self._image_buf

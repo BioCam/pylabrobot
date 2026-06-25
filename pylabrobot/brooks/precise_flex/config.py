@@ -76,10 +76,6 @@ class PreciseFlexConfiguration:
   has_rail: bool = False
   is_dual_gripper: bool = False
   is_vision_gripper: bool = False
-  # True only when an IntelliGuide vision module is loaded AND the controller reports cameras;
-  # gates the nullable driver.vision capability.
-  vision_gripper_installed: bool = False
-  camera_count: int = 0
   # "unknown" if the controller-read link lengths match neither known arm; defaults to "extended"
   # to match the default PF400Params (the extended/XR link lengths)
   reach_class: Literal["standard", "extended", "unknown"] = "extended"

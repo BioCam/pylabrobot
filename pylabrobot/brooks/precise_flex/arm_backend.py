@@ -45,8 +45,6 @@ from .driver import PreciseFlexDriver
 from .errors import OutOfRangeOfMotionError, PreciseFlexError
 from .kinematics import ElbowOrientation, PreciseFlexCartesianPose, Wrist
 from .tcs_modules import missing_required_modules
-from .vision_backend import PreciseFlexVisionBackend
-from .vision_driver import PreciseVisionDriver
 
 logger = logging.getLogger(__name__)
 
@@ -133,7 +131,6 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     has_rail: bool = False,
     read_kinematics_from_device: bool = True,
     recover_out_of_range: bool = True,
-    vision_host: Optional[str] = None,
     parking_position: Optional[JointPose] = None,
   ) -> None:
     """
@@ -161,11 +158,6 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
         Depends on the mounted gripper. The conversion mm → firmware units is
         linear with slope 1: ``units = closed_gripper_position + (width_mm -
         min_gripper_width)``.
-      vision_host: address (IP or hostname) of the PreciseVision engine, a separate machine from the
-        arm controller (its own box with its own IP). Set it to connect to the engine, which powers
-        both image fetch and engine-side discovery/introspection (what projects, tools, and tool types
-        exist). None leaves the engine unconnected, disabling those; the controller-side execution path
-        (running processes/tools, setting properties, lighting, barcodes, stereo locate) is unaffected.
       parking_position: initial value for the public, runtime-settable ``parking_position`` that
         ``park()`` moves to. Leave None (the default) and setup fills the generic default RIGHT pose
         (planar fold, Z column at 3/4 of the discovered travel); reassign it any time to park
@@ -186,9 +178,6 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     )
     self._read_kinematics_from_device = read_kinematics_from_device
     self._recover_out_of_range = recover_out_of_range
-    # Address of the PreciseVision engine, a separate machine from the controller; None leaves the
-    # engine unconnected (the rest of vision runs over the controller).
-    self._vision_host = vision_host
     # Device configuration, resolved once at setup; None until then. Set before parking_position so its
     # validating setter can check assignments against the soft limits once they are known.
     self._configuration: Optional[PreciseFlexConfiguration] = None
@@ -217,18 +206,6 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     self._adopt_configuration(self._configuration)
     if self.parking_position is None:
       self.parking_position = self.PARKING_POSITION_RIGHT
-    # Build the nullable vision capability when a camera gripper is present; its existence is the
-    # capability gate (no per-method guards). When a vision engine host is set, also connect the
-    # engine client (best-effort) for direct image acquisition. None otherwise.
-    if self._configuration.vision_gripper_installed:
-      vision_driver = await self._setup_vision_driver()
-      vision = PreciseFlexVisionBackend(
-        self.driver, vision_host=self._vision_host, vision_driver=vision_driver
-      )
-      self.driver.vision = vision
-      await vision.setup()  # discovers, caches, and logs its own capability summary (best-effort)
-    else:
-      self.driver.vision = None
     self._log_configuration_summary(self._configuration)
     self._assess_configuration(self._configuration)
     await self._handle_out_of_range_axes()
@@ -1378,9 +1355,6 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
         kinematics.ARM_LINKS_EXTENDED,
       )
 
-    camera_count = await self._try_request_camera_count()
-    has_intelliguide = any("intelliguide" in m.lower() for m in modules)
-
     return PreciseFlexConfiguration(
       manufacturer=await self.request_manufacturer(),
       controller_model=await self.request_controller_model(),
@@ -1413,8 +1387,6 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
       has_rail=Axis.RAIL in soft_limits,
       is_dual_gripper=bool(axis_mask & 0x80),
       is_vision_gripper=suffix[:1] == "V",
-      vision_gripper_installed=has_intelliguide and camera_count > 0,
-      camera_count=camera_count,
       reach_class=reach_class,
     )
 
@@ -1510,47 +1482,6 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
       config.kinematics.l2,
       ", ".join(config.modules),
     )
-
-  # [int]
-  async def _try_request_camera_count(self) -> int:
-    """Best-effort ``System.CameraCount`` read for setup, before ``configuration`` exists; never raises.
-
-    Runs while ``_request_configuration`` is still building the config, so the vision capability
-    does not exist yet - it reads the bare ``VToolProperty`` value directly over the driver. An
-    absent or unreachable vision module returns 0 (a negative error reply or an I/O failure), so a
-    non-camera unit resolves to ``vision_gripper_installed=False``.
-    """
-    try:
-      reply = await self.driver.query_raw("VToolProperty System CameraCount")
-    except Exception:  # noqa: BLE001
-      return 0
-    return int(reply) if reply.isdigit() else 0
-
-  # [int]
-  async def _setup_vision_driver(self) -> Optional[PreciseVisionDriver]:
-    """Best-effort build and connect the PreciseVision engine driver; never raises.
-
-    Returns a connected ``PreciseVisionDriver`` when ``vision_host`` is set and reachable, else
-    ``None``. The engine connection powers image fetch (``pf.vision.capture_image``) and the
-    engine-side discovery/introspection (``discover_configuration`` and the ``request_*`` reads of
-    projects, tools, and tool types); all of those become unavailable without it. The controller-side
-    execution path (running processes/tools, setting properties, lighting, barcodes, stereo locate) is
-    what is unaffected, since it runs over the controller rather than the engine.
-    """
-    if not self._vision_host:
-      return None
-    vision_driver = PreciseVisionDriver(self._vision_host)
-    try:
-      await vision_driver.setup()
-    except Exception as exc:  # noqa: BLE001 - a missing/unreachable engine just disables image fetch
-      logger.warning(
-        "[PreciseFlex %s] vision engine at %s unreachable; direct image acquisition disabled: %s",
-        self.driver.io._host,
-        self._vision_host,
-        exc,
-      )
-      return None
-    return vision_driver
 
   # -- homing & range recovery --------------------------------------------------------------
 

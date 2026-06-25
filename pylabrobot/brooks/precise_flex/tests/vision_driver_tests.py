@@ -26,6 +26,35 @@ def _framed(camera: int, jpeg: bytes = b"\xff\xd8\xff\xe0img\xff\xd9") -> bytes:
   return _record(f"Primary Image [{camera}]", jpeg)
 
 
+class TestEnginePropertyPrimitives(unittest.IsolatedAsyncioTestCase):
+  """The engine ``property get/set`` read/write primitives over a mocked :1450 property socket."""
+
+  def setUp(self):
+    self.prop = MagicMock()
+    self.prop.write = AsyncMock()
+    self.prop.readline = AsyncMock(return_value=b"0\r\n")
+    self.engine = PreciseVisionDriver("127.0.0.1")
+    self.engine.io_property = self.prop  # type: ignore[assignment]
+
+  async def test_request_property_builds_get_and_returns_value(self):
+    self.prop.readline = AsyncMock(return_value=b"0 5.3.3.0\r\n")
+    self.assertEqual(await self.engine.request_property("system.engineversion"), "5.3.3.0")
+    self.prop.write.assert_awaited_once_with(b"property get system.engineversion\r\n")
+
+  async def test_request_property_returns_none_on_negative(self):
+    self.prop.readline = AsyncMock(return_value=b"-4017 some error\r\n")
+    self.assertIsNone(await self.engine.request_property("bogus.name"))
+
+  async def test_set_property_builds_set(self):
+    await self.engine._set_property("system.runtool", "acq1")
+    self.prop.write.assert_awaited_once_with(b"property set system.runtool acq1\r\n")
+
+  async def test_set_property_dot_joined_tool_property_writes_one_token_key(self):
+    """A tool property is addressed as the dotted ``<tool>.<property>`` key (one token on the wire)."""
+    await self.engine._set_property("acq1.brightness", 4)
+    self.prop.write.assert_awaited_once_with(b"property set acq1.brightness 4\r\n")
+
+
 class TestEngineFraming(unittest.TestCase):
   def test_parse_engine_reply_success_and_error(self):
     self.assertEqual(parse_engine_reply("0 5.3.3.0"), "5.3.3.0")

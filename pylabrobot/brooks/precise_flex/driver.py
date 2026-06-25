@@ -78,6 +78,54 @@ class PreciseFlexDriver(Driver):
       raise PreciseFlexError(replycode, data)
     return data
 
+  # -- vision tool properties (controller relay) -----------------------------
+
+  async def request_vision_tool_property(self, tool: str, property_name: str) -> str:
+    """Read a PreciseVision tool property over the controller (``VToolProperty <tool> <prop>``).
+
+    Named ``vision_`` because this is the general controller where ``tool`` already means the robot's
+    tool frame. The controller relays the read to the vision engine and replies with the BARE value
+    (no ``<code> <data>`` prefix), so it is read raw; a negative reply is a vision error code and
+    raised. The (tool, property) split is needed because VToolProperty's wire form is two tokens;
+    direct to the engine the same read is ``PreciseVisionDriver.request_property("<tool>.<property>")``
+    (dotted, and ``None`` on error rather than raising).
+
+    Args:
+      tool: the vision tool name (e.g. ``led``, ``acq1``, or ``System`` for server properties).
+      property_name: the tool property name (e.g. ``Bank``, ``Brightness``, ``CameraCount``).
+
+    Returns:
+      The bare property value.
+
+    Raises:
+      PreciseFlexError: on a negative reply (a vision error code).
+    """
+    reply = await self.query_raw(f"VToolProperty {tool} {property_name}")
+    if reply.startswith("-") and reply[1:].isdigit():
+      raise PreciseFlexError(int(reply), "")
+    return reply
+
+  async def _set_vision_tool_property(self, tool: str, property_name: str, value: str) -> str:
+    """Write a PreciseVision tool property over the controller (``VToolProperty <tool> <prop> <value>``).
+
+    Private: a write changes device state, so it is reached through the vision backend's vetted
+    orchestrations, not called directly (the ``request_`` read sibling is public). Named ``vision_``
+    because this is the general controller where ``tool`` already means the robot's tool frame. The
+    (tool, property) split is needed because VToolProperty's wire form is two tokens; direct to the
+    engine the same write is ``PreciseVisionDriver._set_property("<tool>.<property>", value)``. The
+    write only stores the value; run the owning tool/process to apply it. Goes through the normal
+    ``<code> <data>`` reply parser.
+
+    Args:
+      tool: the vision tool name (e.g. ``led``, ``acq1``).
+      property_name: the tool property name (e.g. ``Bank``, ``acquiremode``).
+      value: the value to write; must not contain spaces.
+
+    Returns:
+      The write reply.
+    """
+    return await self.send_command(f"VToolProperty {tool} {property_name} {value}")
+
   # -- lifecycle -------------------------------------------------------------
 
   @dataclass
@@ -107,13 +155,45 @@ class PreciseFlexDriver(Driver):
       await self.home()
     logger.debug("[PreciseFlex %s] connected: port=%s", self.io._host, self.io._port)
 
+  async def setup_vision(self, vision_host: Optional[str]) -> None:
+    """Build the vision capability and connect its PreciseVision engine; best-effort, never raises.
+
+    Called by the arm backend once it has discovered a camera gripper is installed - the driver owns
+    the connection, symmetric with how ``stop`` closes it. The controller side of vision always works;
+    a set, reachable ``vision_host`` additionally opens the engine for image fetch and discovery. A
+    missing or unreachable host leaves ``self.vision`` built but engine-less.
+
+    Args:
+      vision_host: address of the PreciseVision engine, or ``None`` for controller-only vision.
+    """
+    from .vision_backend import PreciseFlexVisionBackend  # local import: breaks the import cycle
+    from .vision_driver import PreciseVisionDriver
+
+    vision_driver: Optional[PreciseVisionDriver] = None
+    if vision_host:
+      vision_driver = PreciseVisionDriver(vision_host)
+      try:
+        await vision_driver.setup()
+      except Exception as exc:  # noqa: BLE001 - a missing/unreachable engine just disables image fetch
+        logger.warning(
+          "[PreciseFlex %s] vision engine at %s unreachable; direct image acquisition disabled: %s",
+          self.io._host,
+          vision_host,
+          exc,
+        )
+        vision_driver = None
+    self.vision = PreciseFlexVisionBackend(
+      self, vision_host=vision_host, vision_driver=vision_driver
+    )
+    await self.vision.setup()  # discovers, caches, and logs the capability summary (best-effort)
+
   async def stop(self):
     """Stop the PreciseFlex driver."""
     await self.detach()
     await self.power_off_robot()
     await self.exit()
     if self.vision is not None and self.vision.vision_driver is not None:
-      await self.vision.vision_driver.stop()  # close the held PreciseVision engine connections
+      await self.vision.vision_driver.stop()  # close the held PreciseVision engine connection
     await self.io.stop()
     logger.info("[PreciseFlex %s] disconnected: port=%s", self.io._host, self.io._port)
 
