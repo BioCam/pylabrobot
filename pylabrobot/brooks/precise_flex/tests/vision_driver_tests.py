@@ -1,8 +1,11 @@
+import io
 import unittest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from pylabrobot.brooks.precise_flex import vision_driver
 from pylabrobot.brooks.precise_flex.vision_driver import (
   PreciseVisionDriver,
+  _decode_jpeg,
   _drain_named_image,
   parse_engine_reply,
 )
@@ -37,6 +40,24 @@ class TestEngineFraming(unittest.TestCase):
     buf = bytearray(_HDR + b"Primary Image [1]" + b"\xff\xd8\xff" + b"partial")  # no EOI yet
     self.assertIsNone(_drain_named_image(buf))
 
+  def test_decode_jpeg_requires_pillow_and_numpy(self):
+    # Without the optional imaging deps the decoder raises a clear install error, not AttributeError.
+    with patch.object(vision_driver, "np", None), patch.object(vision_driver, "PILImage", None):
+      with self.assertRaises(ImportError):
+        _decode_jpeg(b"\xff\xd8\xff\xe0jpeg\xff\xd9")
+
+  def test_decode_jpeg_returns_rgb_uint8_array(self):
+    # End-to-end decode (skipped when Pillow/numpy absent): a red frame decodes height-first,
+    # 3-channel uint8, with the red channel dominant - i.e. RGB order, not BGR.
+    if vision_driver.PILImage is None or vision_driver.np is None:
+      self.skipTest("Pillow/numpy not installed")
+    buf = io.BytesIO()
+    vision_driver.PILImage.new("RGB", (4, 3), (200, 0, 0)).save(buf, format="JPEG")
+    arr = _decode_jpeg(buf.getvalue())
+    self.assertEqual(arr.shape, (3, 4, 3))  # height x width x channels
+    self.assertEqual(arr.dtype, vision_driver.np.uint8)
+    self.assertGreater(arr[..., 0].mean(), arr[..., 2].mean())  # red > blue == RGB ordering
+
 
 class TestPreciseVisionDriver(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
@@ -66,19 +87,32 @@ class TestPreciseVisionDriver(unittest.IsolatedAsyncioTestCase):
       out, {"processes": ["Camera1", "Camera2"], "vision_tools": ["acq1", "acq2", "led"]}
     )
 
-  async def test_request_camera_image_triggers_cameraacquire_and_returns_frame(self):
+  async def test_capture_image_triggers_cameraacquire_and_decodes_selected_frame(self):
+    # The JPEG carved from the stream is the one handed to the decoder, whose array we return.
     self.img.read = AsyncMock(side_effect=[_framed(1, b"jpegbytes"), b""])
-    out = await self.driver.request_camera_image(1)
+    with patch.object(vision_driver, "_decode_jpeg", side_effect=lambda j: ("decoded", j)) as dec:
+      out = await self.driver.capture_image(1)
     self.prop.write.assert_awaited_once_with(b"property set system.cameraacquire 1\r\n")
-    self.assertEqual(out, b"\xff\xd8\xff\xe0jpegbytes\xff\xd9")
+    dec.assert_called_once_with(b"\xff\xd8\xff\xe0jpegbytes\xff\xd9")
+    self.assertEqual(out, ("decoded", b"\xff\xd8\xff\xe0jpegbytes\xff\xd9"))
 
-  async def test_request_camera_image_skips_other_camera_then_matches(self):
+  async def test_capture_image_skips_other_camera_then_matches(self):
+    # Camera 2's frame is drained and discarded; camera 1's JPEG is the one decoded.
     self.img.read = AsyncMock(side_effect=[_framed(2, b"other"), _framed(1, b"mine"), b""])
-    self.assertEqual(await self.driver.request_camera_image(1), b"\xff\xd8\xff\xe0mine\xff\xd9")
+    with patch.object(vision_driver, "_decode_jpeg", side_effect=lambda j: j):
+      self.assertEqual(await self.driver.capture_image(1), b"\xff\xd8\xff\xe0mine\xff\xd9")
 
-  async def test_request_camera_image_none_on_timeout(self):
+  async def test_capture_image_raises_on_timeout(self):
+    # A read timeout means no frame arrived - surface it, don't return None.
     self.img.read = AsyncMock(side_effect=TimeoutError)
-    self.assertIsNone(await self.driver.request_camera_image(1))
+    with self.assertRaises(TimeoutError):
+      await self.driver.capture_image(1)
+
+  async def test_capture_image_raises_when_stream_ends_without_frame(self):
+    # The stream closes (empty read) before the requested camera's frame - a clear error, not None.
+    self.img.read = AsyncMock(side_effect=[_framed(2, b"other"), b""])
+    with self.assertRaises(RuntimeError):
+      await self.driver.capture_image(1)
 
   async def test_run_vision_tool_sends_runtool(self):
     """run_vision_tool issues exactly `property set system.runtool <tool>`."""

@@ -1569,7 +1569,7 @@ class PreciseFlexArmBackend(OrientableGripperArmBackend, HasJoints, CanFreedrive
     """Best-effort build and connect the PreciseVision engine driver; never raises.
 
     Returns a connected ``PreciseVisionDriver`` when ``vision_host`` is set and reachable, else
-    ``None``. The engine connection powers image fetch (``pf.vision.request_camera_image``) and the
+    ``None``. The engine connection powers image fetch (``pf.vision.capture_image``) and the
     engine-side discovery/introspection (``discover_configuration`` and the ``request_*`` reads of
     projects, tools, and tool types); all of those become unavailable without it. The controller-side
     execution path (running processes/tools, setting properties, lighting, barcodes, stereo locate) is

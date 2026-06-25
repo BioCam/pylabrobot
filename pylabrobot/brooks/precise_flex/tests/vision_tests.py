@@ -162,9 +162,9 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
     self.driver.query_raw = AsyncMock(return_value="")
     self.vision = PreciseFlexVisionBackend(self.driver)
 
-  async def test_capture_image_toggles_acquire_mode_around_process(self):
+  async def test_save_image_toggles_acquire_mode_around_process(self):
     # "front" selects the acq1/Camera1 tool+process and toggles ACQUIRE_AND_SAVE around the run.
-    await self.vision.capture_image("front", acquire_prefix="cap", acquire_path="Images")
+    await self.vision.save_image("front", acquire_prefix="cap", acquire_path="Images")
     self.assertEqual(
       [c.args[0] for c in self.driver.send_command.await_args_list],
       [
@@ -176,9 +176,9 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
       ],
     )
 
-  async def test_capture_image_bottom_selects_acq2_camera2(self):
+  async def test_save_image_bottom_selects_acq2_camera2(self):
     # "bottom" routes to the second acquire tool/process (acq2/Camera2).
-    await self.vision.capture_image("bottom")
+    await self.vision.save_image("bottom")
     self.assertEqual(
       [c.args[0] for c in self.driver.send_command.await_args_list],
       [
@@ -188,10 +188,10 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
       ],
     )
 
-  async def test_capture_image_rejects_unknown_camera(self):
+  async def test_save_image_rejects_unknown_camera(self):
     # Only front/bottom (or 1/2) are valid camera selectors.
     with self.assertRaises(ValueError):
-      await self.vision.capture_image("sideways")
+      await self.vision.save_image("sideways")
 
   async def test_read_barcode_runs_process_then_reads_result(self):
     self.driver.send_command = AsyncMock(side_effect=["0 1", " Code128 ABC123"])
@@ -249,15 +249,19 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
       "StereoParam 1 2 aruco_dual default_tool 100.0 1.5 4 10 11 50.0 2.0 200"
     )
 
-  async def test_request_camera_image_delegates_to_vision_driver(self):
+  async def test_capture_image_delegates_to_vision_driver(self):
+    # "bottom" resolves to engine camera 2; the backend forwards the driver's decoded array unchanged.
+    frame = object()  # opaque: stands in for the numpy array the driver returns
     vision_driver = MagicMock()
-    vision_driver.request_camera_image = AsyncMock(return_value=b"jpegbytes")
+    vision_driver.capture_image = AsyncMock(return_value=frame)
     vision = PreciseFlexVisionBackend(self.driver, vision_driver=vision_driver)
-    self.assertEqual(await vision.request_camera_image(2), b"jpegbytes")
-    vision_driver.request_camera_image.assert_awaited_once_with(2)
+    self.assertIs(await vision.capture_image("bottom"), frame)
+    vision_driver.capture_image.assert_awaited_once_with(2)
 
-  async def test_request_camera_image_none_without_engine_configured(self):
-    self.assertIsNone(await self.vision.request_camera_image(1))  # no vision_driver on self.vision
+  async def test_capture_image_raises_without_engine_configured(self):
+    # Calling a vision-engine method with no engine wired up is unsupported - raise, don't return None.
+    with self.assertRaises(RuntimeError):
+      await self.vision.capture_image(1)  # no vision_driver on self.vision
 
 
 class TestPreciseFlex400VisionExposure(unittest.IsolatedAsyncioTestCase):

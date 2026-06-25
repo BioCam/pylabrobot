@@ -6,14 +6,28 @@ Folds the GPL vision wire primitives (``VToolProperty``, ``Vprocess``, ``Vresult
 when a camera gripper is present - so its existence is the capability gate (no per-method guards).
 Only ``locate_target`` moves the arm.
 
-Password-free engine image retrieval (``request_camera_image``) and vision-project enumeration use
+Password-free engine image retrieval (``capture_image``) and vision-project enumeration use
 the separate PreciseVision engine protocol rather than the TCS controller, and are added on top of
 this module.
 """
 
 import functools
 from dataclasses import dataclass, field
-from typing import Awaitable, Callable, Dict, List, Literal, Optional, TypeVar, Union, cast
+from typing import (
+  TYPE_CHECKING,
+  Awaitable,
+  Callable,
+  Dict,
+  List,
+  Literal,
+  Optional,
+  TypeVar,
+  Union,
+  cast,
+)
+
+if TYPE_CHECKING:
+  import numpy as np
 
 from pylabrobot.resources import Coordinate, Rotation
 
@@ -196,6 +210,14 @@ def requires_vision_tool(name: str, *, tool_type: Optional[str] = None) -> Calla
     return cast(F, wrapper)
 
   return decorator
+
+
+def _camera_index(camera: Union[Literal["front", "bottom"], int]) -> int:
+  """Resolve a gripper-camera selector to its engine camera number: ``front``->1, ``bottom``->2."""
+  index = {"front": 1, "bottom": 2, 1: 1, 2: 2}.get(camera)
+  if index is None:
+    raise ValueError(f"camera must be 'front'/1 or 'bottom'/2, got {camera!r}")
+  return index
 
 
 class PreciseFlexVisionBackend:
@@ -411,19 +433,27 @@ class PreciseFlexVisionBackend:
       f"acq{camera}", setting, value, apply=True
     )
 
-  async def request_camera_image(self, camera: int = 1) -> Optional[bytes]:
-    """Fetch one JPEG frame for ``camera`` directly off the PreciseVision engine, no motion.
+  async def capture_image(
+    self, camera: Union[Literal["front", "bottom"], int] = "front"
+  ) -> "np.ndarray":
+    """Fetch one frame for ``camera`` directly off the PreciseVision engine as an array, no motion.
 
-    Delegates to the held engine client (``engine``); returns ``None`` if no engine was configured
-    (no ``vision_host`` at setup). The frame is the full-resolution JPEG; decode at the call
-    site. For a saved file instead, use ``capture_image`` (written on the engine host).
+    Requires a configured engine (raises via ``_require_engine`` if none was set up). For a saved file
+    on the engine host instead, use ``save_image``.
+
+    Args:
+      camera: which gripper camera - ``"front"``/``1`` (front-facing) or ``"bottom"``/``2`` (downward).
+
+    Returns:
+      The full-resolution frame as an RGB ``numpy`` array (height x width x 3, ``uint8``).
+
+    Raises:
+      TimeoutError: if no frame arrives off the engine image stream before the read times out.
     """
-    if self.vision_driver is None:
-      return None
-    return await self.vision_driver.request_camera_image(camera)
+    return await self._require_engine().capture_image(_camera_index(camera))
 
   @requires_vision_tool_type("Acquire")
-  async def capture_image(
+  async def save_image(
     self,
     camera: Union[Literal["front", "bottom"], int] = "front",
     *,
@@ -442,9 +472,7 @@ class PreciseFlexVisionBackend:
       acquire_prefix: optional filename prefix for the saved frame.
       acquire_path: optional directory on the engine host to write the frame to.
     """
-    index = {"front": 1, "bottom": 2, 1: 1, 2: 2}.get(camera)
-    if index is None:
-      raise ValueError(f"camera must be 'front'/1 or 'bottom'/2, got {camera!r}")
+    index = _camera_index(camera)
     process_name = f"Camera{index}"
     acquire_tool = f"acq{index}"
     await self.vtool_property(acquire_tool, "acquiremode", "ACQUIRE_AND_SAVE")

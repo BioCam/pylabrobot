@@ -4,7 +4,7 @@ The vision engine runs on a different host from the TCS controller and speaks a 
 property protocol on :1450 (``property get/set <name> [args]``, reply ``0 <value>`` or a negative
 code) and pushes JPEG image results on :1500. The OEM GUI holds one connection per port for a whole
 session and triggers each frame with ``property set system.cameraacquire <N>``; this driver mirrors
-that - ``setup()`` opens and holds both, ``request_camera_image()`` triggers a frame and reads it off
+that - ``setup()`` opens and holds both, ``capture_image()`` triggers a frame and reads it off
 the held image stream. The connect "handshake" is just informational property reads (no auth).
 
 Engine protocol confirmed from the 2026-06-22 captures (per-frame trigger = ``cameraacquire``, framing
@@ -12,6 +12,7 @@ below). Open hardware item: whether a freshly-opened :1500 socket receives the p
 the GUI's held-from-connect socket does - hence both connections are held from ``setup()``.
 """
 
+import io
 import logging
 import re
 from typing import Dict, List, Optional, Tuple
@@ -19,6 +20,16 @@ from typing import Dict, List, Optional, Tuple
 from pylabrobot.capabilities.capability import BackendParams
 from pylabrobot.device import Driver
 from pylabrobot.io.socket import Socket
+
+try:
+  import numpy as np
+except ImportError:
+  np = None  # type: ignore[assignment]
+
+try:
+  from PIL import Image as PILImage
+except ImportError:
+  PILImage = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -64,11 +75,21 @@ def _drain_named_image(buf: bytearray) -> Optional[Tuple[bytes, bytes]]:
   return header, jpeg
 
 
+def _decode_jpeg(jpeg: bytes) -> "np.ndarray":
+  """Decode an engine JPEG frame to an RGB ``numpy`` array (height x width x 3, ``uint8``)."""
+  if np is None or PILImage is None:
+    raise ImportError(
+      "Pillow and numpy are required to decode camera images; install them with "
+      '`pip install "PyLabRobot[precise-flex-vision]"`.'
+    )
+  return np.asarray(PILImage.open(io.BytesIO(jpeg)))
+
+
 class PreciseVisionDriver(Driver):
   """Persistent client for the PreciseVision engine (property ``:1450`` + image stream ``:1500``).
 
   Separate from the arm's ``PreciseFlexDriver`` - a different host and protocol. Holds both
-  connections open for the session, mirroring the OEM GUI; ``request_camera_image`` triggers a frame
+  connections open for the session, mirroring the OEM GUI; ``capture_image`` triggers a frame
   with ``cameraacquire`` and reads it off the held image stream.
   """
 
@@ -235,16 +256,20 @@ class PreciseVisionDriver(Driver):
 
   # -- image stream (:1500) ------------------------------------------------
 
-  async def request_camera_image(self, camera: int = 1) -> Optional[bytes]:
-    """Trigger a frame for ``camera`` and return its JPEG bytes off the held image stream.
+  async def capture_image(self, camera: int = 1) -> "np.ndarray":
+    """Trigger a frame for ``camera`` and return it as a decoded RGB array off the held image stream.
 
     Sends ``property set system.cameraacquire <camera>`` on :1450 (the confirmed per-frame trigger),
-    then reads the next complete ``Primary Image [camera]`` result off :1500. Returns ``None`` if no
-    matching frame arrives before the read times out. Decode with PIL/cv2/numpy at the call site.
+    then reads the next complete ``Primary Image [camera]`` result off :1500 and decodes its JPEG to an
+    RGB ``numpy`` array (height x width x 3, ``uint8``).
 
     This grabs the camera's current hardware state; it does NOT apply pending acquire-tool settings.
     After changing a setting, run the acquire tool first (``set_vision_tool_property(..., apply=True)`` or
     ``run_vision_tool``) for the change to show up in the returned frame.
+
+    Raises:
+      TimeoutError: if no matching frame arrives within ``self.timeout``.
+      RuntimeError: if the image stream ends before the requested frame is seen.
     """
     want = f"Primary Image [{camera}]".encode("ascii")
     await self.property_set("system.cameraacquire", camera)
@@ -252,8 +277,10 @@ class PreciseVisionDriver(Driver):
     while len(buf) < _MAX_IMAGE_BYTES:
       try:
         chunk = await self.io_image.read(65536, timeout=self.timeout)
-      except TimeoutError:
-        break
+      except TimeoutError as e:
+        raise TimeoutError(
+          f"no 'Primary Image [{camera}]' frame arrived within {self.timeout}s"
+        ) from e
       if not chunk:
         break
       buf += chunk
@@ -263,5 +290,5 @@ class PreciseVisionDriver(Driver):
           break
         header, jpeg = framed
         if want in header:
-          return jpeg
-    return None
+          return _decode_jpeg(jpeg)
+    raise RuntimeError(f"engine image stream ended without a 'Primary Image [{camera}]' frame")
