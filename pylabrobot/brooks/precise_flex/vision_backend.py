@@ -630,7 +630,7 @@ class PreciseFlexVisionBackend:
   _LIGHT_TOOL = "led"
   _LIGHT_PROCESS = "LightControl"
 
-  @requires_vision_tool_type("LightControl")
+  @requires_vision_tool_type(_LIGHT_PROCESS)
   async def start_led(
     self,
     camera: Union[Literal["front", "bottom"], int] = "front",
@@ -640,12 +640,12 @@ class PreciseFlexVisionBackend:
   ) -> None:
     """Turn on the IntelliGuide camera lighting (LightControl vision tool); no arm motion.
 
-    Sets the ``led`` tool's bank and brightness, then applies them. ``brightness=0`` turns the LEDs
-    off, or use ``stop_led``.
+    Sets the ``led`` tool's led ("bank" in Brooks lingo) and brightness, then applies them.
+    ``brightness=0`` turns the LEDs off, or use ``.stop_led()``.
 
     Args:
-      camera: which integrated LED source - ``"front"``/``1`` or ``"bottom"``/``2``. Drives the
-        tool's LED bank (1 = front-facing, 2 = bottom-facing).
+      camera: which integrated LED source - ``"front"``/``1`` or ``"bottom"``/``2``. Drives
+        the tool's LED bank (1 = front-facing, 2 = bottom-facing).
       brightness: LED brightness 0-100 (PWM duty); ``0`` turns the LEDs off.
       delay: optional light time delay in milliseconds.
       use_server: which server carries out the change. ``"controller"`` (the default) relays
@@ -653,35 +653,47 @@ class PreciseFlexVisionBackend:
         ``"vision"`` writes the ``led`` tool properties straight to the PreciseVision engine and
         applies them with ``system.runtool``; it needs a connected engine (``vision_host``).
     """
-    bank = self._camera_index(camera)  # LED bank 1 = front-facing, 2 = bottom-facing
-    if self.configuration.discovered and bank not in self.configuration.cameras:
+    led = self._camera_index(camera)  # LED 1 = front-facing, 2 = bottom-facing
+    if self.configuration.discovered and led not in self.configuration.cameras:
       raise RuntimeError(
-        f"camera {camera!r} (engine camera {bank}) is not among the discovered "
+        f"camera {camera!r} (engine camera {led}) is not among the discovered "
         f"cameras {sorted(self.configuration.cameras)}"
       )
     if not 0 <= brightness <= 100:
       raise ValueError(f"brightness must be 0-100, got {brightness}")
+
     if use_server == "controller":
-      await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Bank", str(bank))
+      await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Bank", str(led))
       await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Brightness", str(brightness))
+
       if delay is not None:
         await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Delay", str(delay))
+
       await self._run_vision_process(self._LIGHT_PROCESS)
-    else:
+
+    elif use_server == "vision":
       if self.vision_driver is None:
         raise RuntimeError(_NO_ENGINE)
-      await self.vision_driver._set_property(f"{self._LIGHT_TOOL}.bank", bank)
+
+      await self.vision_driver._set_property(f"{self._LIGHT_TOOL}.bank", led)
       await self.vision_driver._set_property(f"{self._LIGHT_TOOL}.brightness", brightness)
+
       if delay is not None:
         await self.vision_driver._set_property(f"{self._LIGHT_TOOL}.delay", delay)
+
       await self._run_vision_tool(self._LIGHT_TOOL)
+
+    else:
+      raise ValueError(f"use_server has to be either `controller` or `vision`, is {use_server}")
 
   async def stop_led(
     self,
     camera: Union[Literal["front", "bottom"], int] = "front",
     use_server: Literal["controller", "vision"] = "controller",
   ) -> None:
-    """Turn off the IntelliGuide camera lighting (the ``start_led`` counterpart); no arm motion."""
+    """Turn off the IntelliGuide camera lighting (the ``start_led`` counterpart);
+    no arm motion.
+    """
     await self.start_led(camera, 0, use_server=use_server)
 
   # -- camera image (Acquire) ----------------------------------------------

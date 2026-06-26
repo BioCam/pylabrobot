@@ -43,9 +43,9 @@ class PreciseFlex400(Device):
         autonomous motion; an out-of-range axis then raises instead, carrying recovery instructions.
       vision_host: address of the PreciseVision engine, a separate machine from the controller (its
         own box with its own IP). Set it to connect to the engine, which powers both image fetch and
-        engine-side discovery/introspection (what projects, tools, and tool types exist). None leaves
-        the engine unconnected, disabling those; the controller-side execution path (running
-        processes/tools, setting properties, lighting, barcodes, stereo locate) is unaffected.
+        engine-side discovery/introspection (what tool types, tools, processes, and projects exist).
+        None leaves the engine unconnected, disabling those; the controller-side execution path
+        (running processes/tools, setting properties, lighting, barcodes, stereo locate) is unaffected.
     """
     driver = PreciseFlexDriver(host=host, port=port, timeout=timeout)
     super().__init__(driver=driver)
@@ -128,9 +128,9 @@ class PreciseFlex3400(Device):
         autonomous motion; an out-of-range axis then raises instead, carrying recovery instructions.
       vision_host: address of the PreciseVision engine, a separate machine from the controller (its
         own box with its own IP). Set it to connect to the engine, which powers both image fetch and
-        engine-side discovery/introspection (what projects, tools, and tool types exist). None leaves
-        the engine unconnected, disabling those; the controller-side execution path (running
-        processes/tools, setting properties, lighting, barcodes, stereo locate) is unaffected.
+        engine-side discovery/introspection (what tool types, tools, processes, and projects exist).
+        None leaves the engine unconnected, disabling those; the controller-side execution path
+        (running processes/tools, setting properties, lighting, barcodes, stereo locate) is unaffected.
     """
     driver = PreciseFlexDriver(host=host, port=port, timeout=timeout)
     super().__init__(driver=driver)
@@ -150,17 +150,18 @@ class PreciseFlex3400(Device):
     self.vision: Optional[PreciseFlexVisionBackend] = None
 
   async def setup(
-    self, backend_params: Optional[BackendParams] = None, *, skip_vision: bool = False
+    self, backend_params: Optional[BackendParams] = None, skip_vision: bool = False
   ) -> None:
-    """Set up the arm, then connect and expose the vision capability if a vision module is present.
+    """Set up the arm, then connect and expose the vision capability if
+    a vision module is present.
 
-    The arm discovers the loaded TCS modules; when an IntelliGuide vision module is among them the
-    driver builds and connects the vision capability (symmetric with ``driver.stop``), which this then
-    exposes as ``self.vision``.
+    The arm discovers the loaded TCS modules; when an IntelliGuide vision module
+    is among them the driver builds and connects the vision capability (symmetric
+    with ``driver.stop``), which this then exposes as ``self.vision``.
 
     Args:
-      skip_vision: if True, leave ``self.vision`` and ``driver.vision`` unset even when a vision
-        module is detected. Mirrors STAR's ``skip_*`` setup flags.
+      skip_vision: if True, leave ``self.vision`` and ``driver.vision`` unset even
+      when a vision module is detected. Mirrors STAR's ``skip_*`` setup flags.
     """
     await super().setup(backend_params=backend_params)
     if not skip_vision and self._has_vision_module():
@@ -170,7 +171,9 @@ class PreciseFlex3400(Device):
     self.vision = self.driver.vision
 
   def _has_vision_module(self) -> bool:
-    """Whether arm discovery reported an IntelliGuide vision module; False if discovery did not run."""
+    """Whether arm discovery reported an IntelliGuide vision module; False if
+    discovery did not run.
+    """
     try:
       return self._arm_backend.configuration.has_vision_module
     except RuntimeError:
