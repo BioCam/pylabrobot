@@ -39,29 +39,46 @@ class PreciseFlexDriver(Driver):
     super().__init__()
     self.io = Socket(human_readable_device_name="Precise Flex Arm", host=host, port=port)
     self.timeout = timeout
+    # Serializes each request->reply exchange over the single shared controller socket; the rationale
+    # (and why it is kept though uncontended today) is in _locked_exchange.
+    self._io_lock = asyncio.Lock()
     # Nullable vision capability, built by the arm backend at setup when a camera gripper is present.
     self.vision: Optional["PreciseFlexVisionBackend"] = None
 
   # -- communication ---------------------------------------------------------
 
-  async def _write(self, command: str) -> None:
-    """Write one command line to the controller (the trailing newline is added here)."""
-    await self.io.write(command.encode("utf-8") + b"\n")
+  async def _locked_exchange(self, command: str) -> str:
+    """Write one command and read its single reply line as one atomic, lock-held exchange.
 
-  async def _read(self) -> str:
-    """Read one reply line from the controller, decoded and stripped."""
-    return (await self.io.readline()).decode("utf-8").strip()
+    Why the lock: the controller exposes a single socket (port 10100 refuses a second connection), so
+    every caller shares it - arm motion and the controller-relayed vision commands (``VToolProperty``,
+    ``Vprocess``, ``StereoLocate``) alike. A request and its reply are correlated only by order on that
+    socket, so if two coroutines' write/read pairs interleave, one reads the other's reply line. This
+    lock makes each write-and-its-reply atomic, so they cannot interleave.
+
+    No caller is concurrent today (the backend drives a single async flow), so the lock is currently
+    uncontended - it is a forward guard, kept because the failure it prevents is silent
+    reply-misattribution the moment anyone runs e.g. ``asyncio.gather(arm_op, vision_relay_op)``, and an
+    uncontended ``asyncio.Lock`` is near-free. It is held per exchange, not across a whole move-wait, so
+    commands issued while a move polls for end-of-motion still slot in between polls (the move-wait's
+    emergency halt deliberately bypasses this lock - see ``_wait_for_eom``).
+
+    This is the single choke point both reply grammars share (``send_command`` and the bare
+    ``VToolProperty`` read). The trailing newline is added here; the reply line is decoded and stripped.
+    """
+    async with self._io_lock:
+      await self.io.write(command.encode("utf-8") + b"\n")
+      return (await self.io.readline()).decode("utf-8").strip()
 
   async def send_command(self, command: str) -> str:
     """Send a command and return the accepted ``<code> <data>`` payload.
 
-    Writes the command and reads one reply line, then applies the standard acceptance gate
-    (``_ensure_successful``): a non-zero reply code raises, otherwise the data payload is returned.
-    A reply in a different grammar (e.g. PreciseVision's bare ``VToolProperty`` value) is read with
-    ``_write``/``_read`` directly and parsed by the caller instead.
+    Writes the command and reads one reply line (as one locked exchange), then applies the standard
+    acceptance gate (``_ensure_successful``): a non-zero reply code raises, otherwise the data payload
+    is returned. A reply in a different grammar (e.g. PreciseVision's bare ``VToolProperty`` value)
+    goes through the same ``_locked_exchange`` and is parsed by the caller instead.
     """
-    await self._write(command)
-    return self._ensure_successful(await self._read())
+    return self._ensure_successful(await self._locked_exchange(command))
 
   def _ensure_successful(self, reply: str) -> str:
     """Acceptance gate for the standard ``<code> <data>`` reply: raise on a non-zero code, else return the data.
@@ -109,8 +126,7 @@ class PreciseFlexDriver(Driver):
     Raises:
       PreciseFlexError: on a negative reply (a vision error code).
     """
-    await self._write(f"VToolProperty {tool} {property_name}")
-    reply = await self._read()
+    reply = await self._locked_exchange(f"VToolProperty {tool} {property_name}")
     if reply.startswith("-") and reply[1:].isdigit():
       raise PreciseFlexError(int(reply), "")
     return reply
@@ -396,7 +412,11 @@ class PreciseFlexDriver(Driver):
 
     # On interrupt, `halt` stops the move on the now-free connection and we resync; the connection is
     # kept open. Hardware-verified: a clean halt keeps power, attach, and the link (only a collision
-    # trips -3122 and drops power, which needs explicit recovery).
+    # trips -3122 and drops power, which needs explicit recovery). The halt is deliberately NOT taken
+    # under `_io_lock`: the interrupted poll releases the lock as it unwinds, so today (single task)
+    # there is no contention, and an emergency halt must not wait on another caller's in-flight read.
+    # When concurrent socket users are introduced, the halt should pre-empt them (cancel peers) or
+    # take the lock with a short timeout rather than block on a slow transaction.
     async with halt_on_interrupt(lambda: halt_and_resync(self.io, b"halt")):
       previous = _floats(await self.send_command("wherej"))
       deadline = time.monotonic() + timeout
