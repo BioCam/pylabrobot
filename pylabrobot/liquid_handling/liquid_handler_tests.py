@@ -71,6 +71,7 @@ def _create_mock_backend(num_channels: int = 8):
   mock = unittest.mock.create_autospec(LiquidHandlerBackend, instance=True)
   type(mock).num_channels = PropertyMock(return_value=num_channels)
   type(mock).num_arms = PropertyMock(return_value=1)
+  type(mock).arm_names = PropertyMock(return_value=["Arm 0"])
   type(mock).head96_installed = PropertyMock(return_value=True)
   mock.can_pick_up_tip.return_value = True
   mock.get_channel_spacings.side_effect = lambda channels: [9.0] * len(channels)
@@ -1156,6 +1157,9 @@ class TestLiquidHandlerSerializeState(unittest.IsolatedAsyncioTestCase):
     # 1 arm, no resource picked up
     self.assertEqual(state["arm_state"], {0: None})
 
+    # arm display names accompany the arm slots
+    self.assertEqual(state["arm_names"], {0: "Arm 0"})
+
   async def test_serialize_state_no_head96(self):
     backend = _create_mock_backend(num_channels=8)
     type(backend).head96_installed = PropertyMock(return_value=False)
@@ -1196,6 +1200,55 @@ class TestLiquidHandlerSerializeState(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(serialized_pickup["direction"], "FRONT")
     self.assertIn("resource", serialized_pickup)
     self.assertEqual(serialized_pickup["resource"]["name"], "plate")
+
+  async def test_serialize_state_pickup_gripper_defaults_to_arm(self):
+    """A pickup constructed without a gripper serializes gripper='arm' (integrated arm),
+    keeping arm_state backward compatible for existing callers."""
+    self.lh._resource_pickup = ResourcePickup(
+      resource=self.plate,
+      offset=Coordinate.zero(),
+      pickup_distance_from_top=5.0,
+      direction=GripDirection.FRONT,
+    )
+    self.assertEqual(self.lh.serialize_state()["arm_state"][0]["gripper"], "arm")
+
+  async def test_pick_up_resource_channel_gripper_own_slot(self):
+    """The channel gripper occupies its own 'channel' arm_state entry, so the integrated
+    arm slot stays present and idle rather than being overwritten. use_arm='core' is
+    inferred to the same 'channel' attribution; a default pickup uses the arm slot."""
+    await self.lh.pick_up_resource(self.plate, gripper="channel")
+    state = self.lh.serialize_state()["arm_state"]
+    self.assertEqual(state["channel"]["gripper"], "channel")
+    self.assertIsNone(state[0])  # integrated arm slot still present, shown idle
+
+    self.lh._resource_pickup = None
+    await self.lh.pick_up_resource(self.plate)
+    state = self.lh.serialize_state()["arm_state"]
+    self.assertEqual(state[0]["gripper"], "arm")
+    self.assertNotIn("channel", state)
+
+    # STAR selects the channel gripper via use_arm='core'; with a backend that accepts it,
+    # pick_up_resource infers the same channel attribution without an explicit gripper arg.
+    self.lh._resource_pickup = None
+    self.backend.pick_up_resource = unittest.mock.AsyncMock()
+    await self.lh.pick_up_resource(self.plate, use_arm="core")
+    self.assertEqual(self.lh.serialize_state()["arm_state"]["channel"]["gripper"], "channel")
+
+  async def test_channel_gripper_pickup_without_installed_arm(self):
+    """A channel-gripper pickup uses its own slot and so does not require an installed arm:
+    it works when num_arms == 0 and appears as the sole 'channel' entry."""
+    backend = _create_mock_backend(num_channels=8)
+    type(backend).num_arms = PropertyMock(return_value=0)
+    deck = STARLetDeck()
+    lh = LiquidHandler(backend=backend, deck=deck)
+    plate = cor_96_wellplate_360uL_Fb(name="plate_no_arm")
+    deck.assign_child_resource(plate, location=Coordinate(200, 200, 0))
+    await lh.setup()
+
+    await lh.pick_up_resource(plate, gripper="channel")
+    state = lh.serialize_state()["arm_state"]
+    self.assertEqual(list(state.keys()), ["channel"])
+    self.assertEqual(state["channel"]["gripper"], "channel")
 
   async def test_serialize_state_arm_none_after_drop(self):
     self.lh._resource_pickup = ResourcePickup(

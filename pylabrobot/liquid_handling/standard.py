@@ -151,6 +151,10 @@ class ResourcePickup:
   offset: Coordinate
   pickup_distance_from_top: float
   direction: GripDirection
+  # Which gripper performed the pickup, for display attribution. "arm" is the
+  # integrated arm (e.g. iSWAP); "channel" is the plate gripper formed by the
+  # pipetting channels. Defaults to "arm" so existing callers are unchanged.
+  gripper: str = "arm"
 
 
 @dataclass(frozen=True)

@@ -145,15 +145,30 @@ class LiquidHandler(Resource, Machine):
     super().assign_child_resource(deck, location=deck.location or Coordinate.zero())
 
     self._resource_pickups: Dict[int, Optional[ResourcePickup]] = {}
+    # The channel gripper (pipetting channels gripping a plate) has its own pickup slot,
+    # independent of the integrated arm(s), so both can be shown distinctly and a
+    # channel-gripper move does not require an installed arm.
+    self._channel_gripper_pickup: Optional[ResourcePickup] = None
 
   @property
   def _resource_pickup(self) -> Optional[ResourcePickup]:
-    """Backward-compatible access to the first arm's pickup state."""
+    """The resource currently gripped: the channel gripper's if engaged, else the arm's."""
+    if self._channel_gripper_pickup is not None:
+      return self._channel_gripper_pickup
     return self._resource_pickups.get(0)
 
   @_resource_pickup.setter
   def _resource_pickup(self, value: Optional[ResourcePickup]) -> None:
-    self._resource_pickups[0] = value
+    # Route by gripper: a "channel" pickup goes to the channel-gripper slot, anything else
+    # to the first arm slot. Clearing (None) empties whichever gripper currently holds.
+    if value is None:
+      self._channel_gripper_pickup = None
+      if 0 in self._resource_pickups:
+        self._resource_pickups[0] = None
+    elif value.gripper == "channel":
+      self._channel_gripper_pickup = value
+    else:
+      self._resource_pickups[0] = value
 
   async def setup(self, **backend_kwargs):
     """Prepare the robot for use."""
@@ -181,6 +196,7 @@ class LiquidHandler(Resource, Machine):
       tracker.register_callback(self._state_updated)
 
     self._resource_pickups = {a: None for a in range(self.backend.num_arms)}
+    self._channel_gripper_pickup = None
 
   def serialize_state(self) -> Dict[str, Any]:
     """Serialize the state of this liquid handler. Use :meth:`~Resource.serialize_all_states` to
@@ -192,19 +208,24 @@ class LiquidHandler(Resource, Machine):
       if self.head96
       else None
     )
-    arm_state: Optional[Dict[int, Any]]
-    if self._resource_pickups:
-      arm_state = {
-        arm_id: serialize(pickup) if pickup is not None else None
-        for arm_id, pickup in self._resource_pickups.items()
-      }
-    else:
-      arm_state = None
+    # Integrated arm slot(s) are always shown (empty when idle); the channel gripper
+    # appears as its own entry only while it is holding a resource.
+    arm_pickups: Dict[Union[int, str], Any] = {
+      arm_id: serialize(pickup) if pickup is not None else None
+      for arm_id, pickup in self._resource_pickups.items()
+    }
+    if self._channel_gripper_pickup is not None:
+      arm_pickups["channel"] = serialize(self._channel_gripper_pickup)
+    arm_state: Optional[Dict[Union[int, str], Any]] = arm_pickups or None
+    # Display names for the integrated arm slot(s), so the panel can label an idle arm
+    # (e.g. "iSWAP") rather than a bare slot index.
+    arm_names = {arm_id: name for arm_id, name in enumerate(self.backend.arm_names)}
     return {
       **super().serialize_state(),
       "head_state": head_state,
       "head96_state": head96_state,
       "arm_state": arm_state,
+      "arm_names": arm_names,
     }
 
   def load_state(self, state: Dict[str, Any]):
@@ -2014,17 +2035,27 @@ class LiquidHandler(Resource, Machine):
     offset: Coordinate = Coordinate.zero(),
     pickup_distance_from_top: Optional[float] = None,
     direction: GripDirection = GripDirection.FRONT,
+    gripper: Optional[str] = None,
     **backend_kwargs,
   ):
+    # Record which gripper is doing the pickup so the visualizer can attribute it
+    # correctly. If the caller does not say, infer it from the backend's own
+    # gripper selector (STAR's `use_arm`): the channel-gripper option maps to
+    # "channel", everything else to the integrated arm.
+    if gripper is None:
+      gripper = "channel" if backend_kwargs.get("use_arm") == "core" else "arm"
+
     self._log_command(
       "pick_up_resource",
       resource=resource,
       offset=offset,
       pickup_distance_from_top=pickup_distance_from_top,
       direction=direction,
+      gripper=gripper,
     )
 
-    if self.setup_finished and not self._resource_pickups:
+    # The integrated arm needs an installed arm slot; the channel gripper does not.
+    if gripper != "channel" and self.setup_finished and not self._resource_pickups:
       raise RuntimeError("No robotic arm is installed on this liquid handler.")
 
     if pickup_distance_from_top is None:
@@ -2047,6 +2078,7 @@ class LiquidHandler(Resource, Machine):
       offset=offset,
       pickup_distance_from_top=pickup_distance_from_top,
       direction=direction,
+      gripper=gripper,
     )
 
     extras = self._check_args(

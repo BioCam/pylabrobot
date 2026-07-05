@@ -1768,6 +1768,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return 1 if self.extended_conf.left_x_drive.iswap_installed else 0
 
   @property
+  def arm_names(self) -> List[str]:
+    return ["iSWAP"] if self.extended_conf.left_x_drive.iswap_installed else []
+
+  @property
   def head96_installed(self) -> Optional[bool]:
     return self.extended_conf.left_x_drive.core_96_head_installed
 

@@ -2514,14 +2514,31 @@ function fillHead96Grid(panel, head96State) {
   }
 }
 
-function buildSingleArm(armData, anchorDropdown, armId) {
+function buildSingleArm(armData, anchorDropdown, armId, armName) {
   // Build one gripper visualization column
   var hasResource = armData !== null && armData !== undefined;
+  // A "channel" pickup is the plate gripper formed by the pipetting channels, not
+  // the integrated arm; label it as such so the panel is not misattributed. The
+  // integrated arm uses its backend-provided name (e.g. "iSWAP") when available.
+  var isChannelGripper = hasResource && armData.gripper === "channel";
+  var gripperName = isChannelGripper ? "Channel gripper" : (armName || "Arm " + armId);
+  var gripperType = isChannelGripper ? "ChannelGripper" : "IntegratedArm";
   var col = document.createElement("div");
   col.style.display = "flex";
   col.style.flexDirection = "column";
   col.style.alignItems = "center";
   col.style.justifyContent = "center";
+
+  // Visible gripper name so the panel states which gripper holds the plate
+  // (integrated arm vs the pipetting-channel gripper) rather than only in the tooltip.
+  var nameLabel = document.createElement("div");
+  nameLabel.textContent = gripperName;
+  nameLabel.style.fontSize = "11px";
+  nameLabel.style.fontWeight = "700";
+  nameLabel.style.color = "#888";
+  nameLabel.style.marginBottom = "3px";
+  nameLabel.style.textAlign = "center";
+  col.appendChild(nameLabel);
 
   // Compute scaled plate dimensions for gripper sizing.
   // The serialized resource data (saved before destruction in resourceSnapshots) is used
@@ -2549,6 +2566,9 @@ function buildSingleArm(armData, anchorDropdown, armId) {
   var svgW = Math.max(closedGap, fingerGap, minFingerGap) + 28; // 14px margin each side (room for outer guide bars)
   var svgH = 110;
   var cx = svgW / 2; // centre x
+  // The integrated arm hangs from its top carriage, so its held plate sits low (y=85).
+  // The channel gripper has no carriage, so its plate + pads are centred in the panel.
+  var gripperCenterY = isChannelGripper ? svgH / 2 : 85;
 
   // Finger (rail) positions spread based on plate size
   var lRailX = cx - fingerGap / 2 - 7; // left rail, offset outward from center
@@ -2571,25 +2591,30 @@ function buildSingleArm(armData, anchorDropdown, armId) {
   svg.appendChild(defs);
   var shapes = "";
 
-  // Horizontal guide bars — drawn first (behind rails), extending inward from each finger
-  var barH = 5.1, barW = 12, barY = 10; // aligned with top of rails
-  shapes += '<rect x="' + (lRailX + 7) + '" y="' + barY + '" width="' + barW + '" height="' + barH + '" rx="1" ry="1" fill="#555" stroke="#444" stroke-width="0.6"/>';
-  shapes += '<rect x="' + (rRailX + 1 - barW) + '" y="' + barY + '" width="' + barW + '" height="' + barH + '" rx="1" ry="1" fill="#555" stroke="#444" stroke-width="0.6"/>';
+  // The integrated arm draws its finger rails (with guide bars) and the carriage back
+  // panel + mounting post. The channel gripper is only the two gripping pads, so it
+  // omits the fingers and the back panel — just the pads remain.
+  if (!isChannelGripper) {
+    // Horizontal guide bars — drawn first (behind rails), extending inward from each finger
+    var barH = 5.1, barW = 12, barY = 10; // aligned with top of rails
+    shapes += '<rect x="' + (lRailX + 7) + '" y="' + barY + '" width="' + barW + '" height="' + barH + '" rx="1" ry="1" fill="#555" stroke="#444" stroke-width="0.6"/>';
+    shapes += '<rect x="' + (rRailX + 1 - barW) + '" y="' + barY + '" width="' + barW + '" height="' + barH + '" rx="1" ry="1" fill="#555" stroke="#444" stroke-width="0.6"/>';
 
-  // Draw rails after guide bars (painter's order)
-  // Left rail (7px wide, 90% of original 8px)
-  shapes += '<rect x="' + lRailX + '" y="10" width="7" height="75" fill="#333" stroke="#222" stroke-width="1"/>';
-  // Right rail
-  shapes += '<rect x="' + (rRailX + 1) + '" y="10" width="7" height="75" fill="#333" stroke="#222" stroke-width="1"/>';
+    // Draw rails after guide bars (painter's order)
+    // Left rail (7px wide, 90% of original 8px)
+    shapes += '<rect x="' + lRailX + '" y="10" width="7" height="75" fill="#333" stroke="#222" stroke-width="1"/>';
+    // Right rail
+    shapes += '<rect x="' + (rRailX + 1) + '" y="10" width="7" height="75" fill="#333" stroke="#222" stroke-width="1"/>';
 
-  // Top carriage block (grey, wide) — fixed size, drawn after rails so it covers them
-  var carriageW = closedGap + 8;
-  var carriageX = cx - carriageW / 2;
-  shapes += '<rect x="' + carriageX + '" y="0" width="' + carriageW + '" height="24" rx="2" ry="2" fill="#aaa" stroke="#666" stroke-width="1.2"/>';
-  // Darker top strip on carriage
-  shapes += '<rect x="' + carriageX + '" y="0" width="' + carriageW + '" height="7" rx="2" ry="2" fill="#888" stroke="#666" stroke-width="1.2"/>';
-  // Centre mounting post
-  shapes += '<rect x="' + (cx - 4) + '" y="3" width="8" height="18" fill="#666" stroke="#555" stroke-width="0.8"/>';
+    // Top carriage block (grey, wide) — fixed size, drawn after rails so it covers them
+    var carriageW = closedGap + 8;
+    var carriageX = cx - carriageW / 2;
+    shapes += '<rect x="' + carriageX + '" y="0" width="' + carriageW + '" height="24" rx="2" ry="2" fill="#aaa" stroke="#666" stroke-width="1.2"/>';
+    // Darker top strip on carriage
+    shapes += '<rect x="' + carriageX + '" y="0" width="' + carriageW + '" height="7" rx="2" ry="2" fill="#888" stroke="#666" stroke-width="1.2"/>';
+    // Centre mounting post
+    shapes += '<rect x="' + (cx - 4) + '" y="3" width="8" height="18" fill="#666" stroke="#555" stroke-width="0.8"/>';
+  }
 
   // Cushion geometry: pad y=74, height=22 → center at y=85
   var cushY = 74, cushH = 22, pinH = 2.4;
@@ -2598,29 +2623,57 @@ function buildSingleArm(armData, anchorDropdown, armId) {
   var pinTopY = cushCenterY - pinOffset - pinH / 2;    // 78.8
   var pinBotY = cushCenterY + pinOffset - pinH / 2;    // 88.8
 
-  // Left finger cushion — pins drawn first (behind), then vertical pad on top
-  var lCushX = lRailX + 7 + 2; // rail width + gap
-  shapes += '<rect x="' + (lCushX + 2) + '" y="' + pinTopY + '" width="5" height="' + pinH + '" rx="0.5" ry="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>';
-  shapes += '<rect x="' + (lCushX + 2) + '" y="' + pinBotY + '" width="5" height="' + pinH + '" rx="0.5" ry="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>';
-  shapes += '<rect x="' + lCushX + '" y="' + cushY + '" width="4" height="' + cushH + '" rx="1" ry="1" fill="#444" stroke="#333" stroke-width="0.6"/>';
+  if (isChannelGripper) {
+    // The channel gripper always grips front-back, so its pads are rotated 90°:
+    // horizontal, snug to the plate's top (front) and bottom (back) edges. The plate
+    // itself is not rotated.
+    var padLen = cushH;   // pad length, now along X
+    var padThick = 4;
+    var padGap = 6;       // gap between pad and plate edge, holding the gripping pins
+    var pinLen = padGap - 2; // pins reach from the pad toward the plate
+    var padX = cx - padLen / 2;
+    var plateTopY = gripperCenterY - plateH / 2;
+    var plateBotY = gripperCenterY + plateH / 2;
+    var pinLX = cx - padLen / 2 + 3;
+    var pinRX = cx + padLen / 2 - 3 - pinH;
+    var topPadY = plateTopY - padGap - padThick;
+    var botPadY = plateBotY + padGap;
+    // Top of the panel is the back of the deck: back pad, with its gripping pins facing
+    // the plate (downward, into the gap).
+    shapes += '<rect x="' + padX + '" y="' + topPadY + '" width="' + padLen + '" height="' + padThick + '" rx="1" ry="1" fill="#444" stroke="#333" stroke-width="0.6"/>';
+    shapes += '<rect x="' + pinLX + '" y="' + (topPadY + padThick) + '" width="' + pinH + '" height="' + pinLen + '" rx="0.5" ry="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>';
+    shapes += '<rect x="' + pinRX + '" y="' + (topPadY + padThick) + '" width="' + pinH + '" height="' + pinLen + '" rx="0.5" ry="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>';
+    // Bottom of the panel is the front of the deck: front pad, with its gripping pins
+    // facing the plate (upward, into the gap).
+    shapes += '<rect x="' + padX + '" y="' + botPadY + '" width="' + padLen + '" height="' + padThick + '" rx="1" ry="1" fill="#444" stroke="#333" stroke-width="0.6"/>';
+    shapes += '<rect x="' + pinLX + '" y="' + (botPadY - pinLen) + '" width="' + pinH + '" height="' + pinLen + '" rx="0.5" ry="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>';
+    shapes += '<rect x="' + pinRX + '" y="' + (botPadY - pinLen) + '" width="' + pinH + '" height="' + pinLen + '" rx="0.5" ry="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>';
+  } else {
+    // Left finger cushion — pins drawn first (behind), then vertical pad on top
+    var lCushX = lRailX + 7 + 2; // rail width + gap
+    shapes += '<rect x="' + (lCushX + 2) + '" y="' + pinTopY + '" width="5" height="' + pinH + '" rx="0.5" ry="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>';
+    shapes += '<rect x="' + (lCushX + 2) + '" y="' + pinBotY + '" width="5" height="' + pinH + '" rx="0.5" ry="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>';
+    shapes += '<rect x="' + lCushX + '" y="' + cushY + '" width="4" height="' + cushH + '" rx="1" ry="1" fill="#444" stroke="#333" stroke-width="0.6"/>';
 
-  // Right finger cushion — pins drawn first (behind), then vertical pad on top
-  var rCushX = rRailX + 1 - 2 - 4; // rail left edge - gap - cushion width
-  shapes += '<rect x="' + (rCushX - 3) + '" y="' + pinTopY + '" width="5" height="' + pinH + '" rx="0.5" ry="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>';
-  shapes += '<rect x="' + (rCushX - 3) + '" y="' + pinBotY + '" width="5" height="' + pinH + '" rx="0.5" ry="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>';
-  shapes += '<rect x="' + rCushX + '" y="' + cushY + '" width="4" height="' + cushH + '" rx="1" ry="1" fill="#444" stroke="#333" stroke-width="0.6"/>';
+    // Right finger cushion — pins drawn first (behind), then vertical pad on top
+    var rCushX = rRailX + 1 - 2 - 4; // rail left edge - gap - cushion width
+    shapes += '<rect x="' + (rCushX - 3) + '" y="' + pinTopY + '" width="5" height="' + pinH + '" rx="0.5" ry="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>';
+    shapes += '<rect x="' + (rCushX - 3) + '" y="' + pinBotY + '" width="5" height="' + pinH + '" rx="0.5" ry="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>';
+    shapes += '<rect x="' + rCushX + '" y="' + cushY + '" width="4" height="' + cushH + '" rx="1" ry="1" fill="#444" stroke="#333" stroke-width="0.6"/>';
+  }
 
   var gripperG = document.createElementNS("http://www.w3.org/2000/svg", "g");
   gripperG.innerHTML = shapes;
   gripperG.style.cursor = "pointer";
   var gripperTitle = document.createElementNS("http://www.w3.org/2000/svg", "title");
-  gripperTitle.textContent = "Arm " + armId + (hasResource ? " — holding " + armData.resource_name : " — empty") + " — click for details";
+  gripperTitle.textContent = gripperName + (hasResource ? " — holding " + armData.resource_name : " — empty") + " — click for details";
   gripperG.appendChild(gripperTitle);
   gripperG.addEventListener("mouseenter", function () { gripperG.setAttribute("filter", "url(#armGlow)"); });
   gripperG.addEventListener("mouseleave", function () { gripperG.removeAttribute("filter"); });
   gripperG.addEventListener("click", function (e) {
     e.stopPropagation();
-    var attrs = [{ key: "arm", value: armId }];
+    var attrs = [{ key: "gripper", value: isChannelGripper ? "channel gripper" : "integrated arm" }];
+    if (!isChannelGripper) attrs.push({ key: "arm", value: armId });
     attrs.push({ key: "has_resource", value: hasResource ? "true" : "false" });
     if (hasResource) {
       attrs.push({ key: "resource_name", value: armData.resource_name });
@@ -2630,7 +2683,7 @@ function buildSingleArm(armData, anchorDropdown, armId) {
       attrs.push({ key: "size", value: (armData.size_x || "?") + " × " + (armData.size_y || "?") + " × " + (armData.size_z || "?") + " mm" });
       if (armData.num_items_x) attrs.push({ key: "wells", value: (armData.num_items_x * (armData.num_items_y || 1)) });
     }
-    showPipetteInfoPanel("Arm " + armId, "IntegratedArm", attrs, anchorDropdown, armId, "channel");
+    showPipetteInfoPanel(gripperName, gripperType, attrs, anchorDropdown, armId, "channel");
   });
   svg.appendChild(gripperG);
   // Wrap the SVG and plate in a positioned container.
@@ -2650,7 +2703,7 @@ function buildSingleArm(armData, anchorDropdown, armId) {
     // Cost: one temporary Konva stage + ~97 nodes for a 96-well plate, created and
     // destroyed each time the arm panel updates.
     var plateX = cx - plateW / 2;
-    var plateY = 85 - plateH / 2;
+    var plateY = gripperCenterY - plateH / 2;
     try {
       var realW = Math.ceil(snapshot.size_x);
       var realH = Math.ceil(snapshot.size_y);
@@ -2703,7 +2756,7 @@ function buildSingleArm(armData, anchorDropdown, armId) {
   } else if (hasResource) {
     // Fallback: simple colored rectangle when no serialized data is available
     var plateX2 = cx - plateW / 2;
-    var plateY2 = 85 - plateH / 2;
+    var plateY2 = gripperCenterY - plateH / 2;
     var fallbackColor = RESOURCE_COLORS[armData.resource_type] || RESOURCE_COLORS["Resource"];
     var fallbackSvg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     fallbackSvg.setAttribute("width", String(svgW));
@@ -2735,7 +2788,7 @@ function buildSingleArm(armData, anchorDropdown, armId) {
   return col;
 }
 
-function fillArmPanel(panel, armState) {
+function fillArmPanel(panel, armState, armNames) {
   clearPanelContent(panel);
   ensurePanelResetButton(panel);
   if (!armState || Object.keys(armState).length === 0) {
@@ -2755,25 +2808,24 @@ function fillArmPanel(panel, armState) {
     panel.appendChild(msg);
     return;
   }
-  var arms = Object.keys(armState).sort(function (a, b) { return +a - +b; });
+  // Numeric arm slots first (0, 1, ...), then the non-numeric "channel" gripper entry.
+  var arms = Object.keys(armState).sort(function (a, b) {
+    var na = +a, nb = +b;
+    if (isNaN(na) && isNaN(nb)) return a < b ? -1 : a > b ? 1 : 0;
+    if (isNaN(na)) return 1;
+    if (isNaN(nb)) return -1;
+    return na - nb;
+  });
   for (var i = 0; i < arms.length; i++) {
     var armId = arms[i];
     var wrapper = document.createElement("div");
     wrapper.style.display = "flex";
     wrapper.style.flexDirection = "column";
     wrapper.style.alignItems = "center";
-    // Arm index label (only when multiple arms)
-    if (arms.length > 1) {
-      var idLabel = document.createElement("span");
-      idLabel.textContent = armId;
-      idLabel.style.fontSize = "15px";
-      idLabel.style.fontWeight = "700";
-      idLabel.style.color = "#888";
-      idLabel.style.marginBottom = "2px";
-      idLabel.title = "Arm " + armId + " — click gripper for details";
-      wrapper.appendChild(idLabel);
-    }
-    wrapper.appendChild(buildSingleArm(armState[armId], panel, armId));
+    // Each column is titled by buildSingleArm (its gripper name label), so no separate
+    // index label is needed here.
+    var armName = armNames && armNames[armId];
+    wrapper.appendChild(buildSingleArm(armState[armId], panel, armId, armName));
     panel.appendChild(wrapper);
   }
 }
@@ -2814,6 +2866,7 @@ class LiquidHandler extends Resource {
     }
     if ("arm_state" in state) {
       this.armState = state.arm_state;
+      this.armNames = state.arm_names || {};
       // Show/hide arm button based on whether the machine tool exists
       var armBtnEl = document.getElementById("arm-btn-" + this.name);
       if (armBtnEl) armBtnEl.style.display = (this.armState !== null && this.armState !== undefined) ? "" : "none";
@@ -2835,7 +2888,7 @@ class LiquidHandler extends Resource {
       }
       var armPanel = document.getElementById("arm-dropdown-" + this.name);
       if (armPanel) {
-        fillArmPanel(armPanel, this.armState);
+        fillArmPanel(armPanel, this.armState, this.armNames);
       }
     }
   }
@@ -5305,7 +5358,8 @@ function buildNavbarLHMachineTools() {
         panel.id = panelId;
         var lhResource = resources[handlerName];
         var armState = (lhResource && lhResource.armState) ? lhResource.armState : {};
-        fillArmPanel(panel, armState);
+        var armNames = (lhResource && lhResource.armNames) ? lhResource.armNames : {};
+        fillArmPanel(panel, armState, armNames);
         mainEl.appendChild(panel);
         makeMachineToolPanelDraggable(panel);
         positionPanels(handlerName, singleBtnRef);

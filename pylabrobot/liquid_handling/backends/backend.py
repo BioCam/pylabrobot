@@ -41,6 +41,12 @@ class LiquidHandlerBackend(MachineBackend, metaclass=ABCMeta):
   def num_arms(self) -> int:
     return self._num_arms
 
+  @property
+  def arm_names(self) -> List[str]:
+    """Display names for the integrated arm(s), one per ``num_arms``. Backends with a
+    specifically named arm (such as an iSWAP) should override this; the default is generic."""
+    return [f"Arm {i}" for i in range(self.num_arms)]
+
   def __init__(self):
     super().__init__()
     self.setup_finished = False
