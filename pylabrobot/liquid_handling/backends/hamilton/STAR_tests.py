@@ -691,36 +691,45 @@ class TestXArmTrackerConfiguration(unittest.TestCase):
     self.assertIsNone(star.right_x_arm_tracker)
 
 
-class TestXArmVisualizerBars(unittest.IsolatedAsyncioTestCase):
-  """The STAR backend assigns a deck bar per present X-arm tracker and moves it
-  when the tracker commits."""
+class TestXArmVisualizerMarkers(unittest.IsolatedAsyncioTestCase):
+  """The deck owns an X-arm marker per present arm; the backend keeps it in sync with
+  the tracker."""
 
   async def asyncSetUp(self):
     self.deck = STARLetDeck()
     self.lh = LiquidHandler(STARChatterboxBackend(), deck=self.deck)
     await self.lh.setup()
-    self.bars = self.lh.backend._x_arm_bars
 
-  async def test_left_only_creates_one_bar(self):
-    self.assertEqual(set(self.bars), {"left"})
-    self.assertTrue(self.deck.has_resource("left_x_arm"))
+  async def test_left_only_creates_one_marker(self):
+    markers = [c.name for c in self.deck.children if c.category == "X-arm"]
+    self.assertEqual(markers, ["left_x_arm"])
 
-  async def test_bar_dimensions_and_location(self):
-    bar = self.bars["left"]
-    self.assertEqual(bar.get_size_x(), self.lh.backend.extended_conf.left_x_arm_width)
-    self.assertEqual(bar.get_size_y(), self.deck.get_size_y())
-    self.assertEqual(bar.get_size_z(), 140.0)
-    self.assertEqual(bar.category, "X-arm")
-    self.assertEqual(bar.location.y, 0.0)
-    self.assertEqual(bar.location.z, 248.0)
+  async def test_marker_dimensions_and_location(self):
+    marker = self.deck.get_resource("left_x_arm")
+    self.assertEqual(marker.get_size_x(), self.lh.backend.extended_conf.left_x_arm_width)
+    self.assertEqual(marker.get_size_y(), self.deck.get_size_y())
+    self.assertEqual(marker.get_size_z(), 140.0)
+    self.assertEqual(marker.category, "X-arm")
+    self.assertEqual(marker.location.y, 0.0)
+    self.assertEqual(marker.location.z, 248.0)
 
   async def test_seeded_at_home_not_zero(self):
-    # The bar must not start at x=0 (border-crash region); it seeds from the arm.
-    self.assertGreater(self.bars["left"].location.x, 0.0)
+    # The arm must not start at x=0 (border-crash region); it seeds from the arm.
+    self.assertGreater(self.lh.backend.get_x_arm_position()[0], 0.0)
 
-  async def test_tracked_move_moves_the_bar(self):
+  async def test_tracked_move_centres_marker_on_tracked_x(self):
     await self.lh.backend.experimental_x_arm_move(500.0)
-    self.assertEqual(self.bars["left"].location.x, 500.0)
+    marker = self.deck.get_resource("left_x_arm")
+    # location is the left edge; the marker centre must land on the tracked x.
+    self.assertEqual(marker.location.x + marker.get_size_x() / 2, 500.0)
+    self.assertEqual(self.lh.backend.get_x_arm_position()[0], 500.0)
+
+  async def test_resetup_reuses_marker(self):
+    # Regression: re-setup must not crash or duplicate the deck-owned marker.
+    await self.lh.stop()
+    await self.lh.setup()
+    markers = [c.name for c in self.deck.children if c.category == "X-arm"]
+    self.assertEqual(markers, ["left_x_arm"])
 
 
 class TestSTARUSBComms(unittest.IsolatedAsyncioTestCase):

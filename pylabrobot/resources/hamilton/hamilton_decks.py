@@ -18,6 +18,13 @@ logger = logging.getLogger("pylabrobot")
 
 _RAILS_WIDTH = 22.5  # space between rails (mm)
 
+# Geometry of an X-arm marker (a deck-owned Resource the Visualizer renders to show
+# where an X-arm is): its bottom sits at z, and it is this tall in z. Its x and width
+# come from the backend (tracked position and firmware arm width); its y-height spans
+# the deck.
+_X_ARM_MARKER_Z = 248.0
+_X_ARM_MARKER_SIZE_Z = 140.0
+
 STARLET_NUM_RAILS = 32
 STARLET_SIZE_X = 1005
 STARLET_SIZE_Y = 653.5
@@ -542,6 +549,36 @@ class HamiltonSTARDeck(HamiltonDeck):
       "with_teaching_rack": False,  # data encoded as child. (not very pretty to have this key though...)
       "core_grippers": None,  # data encoded as child. (not very pretty to have this key though...)
     }
+
+  def update_x_arm_marker(self, name: str, left_edge_x: float, width: float) -> Resource:
+    """Create or reposition an X-arm marker owned by this deck.
+
+    An X-arm marker is a full-deck-height Resource (category ``"X-arm"``) the Visualizer
+    renders to show where an X-arm is. The deck owns it: this creates it as a child the
+    first time and just repositions it thereafter, so repeated ``setup()`` calls reuse
+    the same marker instead of duplicating it.
+
+    Args:
+      name: unique marker name, e.g. ``"left_x_arm"``.
+      left_edge_x: deck-x of the marker's left edge (the backend applies the arm's
+        firmware reference convention before calling this).
+      width: marker width in mm (the firmware-reported arm width).
+    """
+    location = Coordinate(left_edge_x, 0.0, _X_ARM_MARKER_Z)
+    if self.has_resource(name):
+      marker = self.get_resource(name)
+      marker.set_location(location)
+      return marker
+    marker = Resource(
+      name=name,
+      size_x=width,
+      size_y=self.get_size_y(),
+      size_z=_X_ARM_MARKER_SIZE_Z,
+      category="X-arm",
+      model="x_arm",
+    )
+    self.assign_child_resource(marker, location=location, ignore_collision=True)
+    return marker
 
   def rails_to_location(self, rails: int) -> Coordinate:
     x = 100.0 + (rails - 1) * _RAILS_WIDTH
