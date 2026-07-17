@@ -1368,30 +1368,33 @@ class Deck extends Resource {
 
 class XArm extends Resource {
   // Visual marker for an X-arm carriage reference point: a translucent dark-grey
-  // full-deck-height frame (a rectangle with a rectangular hole) centred on the
-  // tracked x, with a magenta centre line marking the exact position. Fill and
-  // border carry different alphas, so they are set as rgba.
+  // full-deck-height frame (a rectangle with a rectangular hole), with a cyan centre
+  // line marking the tracked x. Drawn as a normal resource (local [0, size_x]) so its
+  // bounding box and selection highlight stay aligned; the backend places location.x
+  // at tracked_x - size_x/2 so the centre lands on the tracked x. Fill and border
+  // carry different alphas (rgba). The x position tweens on update so moves read as
+  // motion.
   draggable = false;
   canDelete = false;
 
   drawMainShape() {
-    // location.x is the X-arm centre, so centre the frame on it (offset by half
-    // its width) rather than drawing from the left edge like a normal resource.
     const w = this.size_x;
     const h = this.size_y;
-    const ox = -w / 2;
     const insetX = 95; // mm from each x border to the hole
     const insetY = 20; // mm from each y border to the hole
     const innerW = w - 2 * insetX;
     const innerH = h - 2 * insetY;
 
     const g = new Konva.Group();
-    // Centre line marking the exact tracked x (the arm centre, local x = 0). Added
-    // first so the frame draws on top of it, leaving it visible only through the hole.
+    // Reference line at the exact firmware x. Its local position is the reference
+    // offset - the arm centre for widths > 300 mm, else the right edge - mirroring
+    // STARBackend._x_arm_marker_left_edge so the line always marks the tracked x.
+    // Added first so the frame draws on top of it, visible only through the hole.
+    const refLocalX = w > 300 ? w / 2 : w;
     g.add(
       new Konva.Line({
-        points: [0, 0, 0, h],
-        stroke: "rgba(139, 0, 139, 0.7)",
+        points: [refLocalX, 0, refLocalX, h],
+        stroke: "rgba(0, 229, 255, 0.7)",
         strokeWidth: 2,
         listening: false,
       })
@@ -1400,11 +1403,11 @@ class XArm extends Resource {
       new Konva.Shape({
         sceneFunc: (ctx, shape) => {
           ctx.beginPath();
-          ctx.rect(ox, 0, w, h); // outer, clockwise
+          ctx.rect(0, 0, w, h); // outer, clockwise
           if (innerW > 0 && innerH > 0) {
             // inner rectangle wound counter-clockwise to punch a see-through hole
-            const l = ox + insetX;
-            const r = ox + w - insetX;
+            const l = insetX;
+            const r = w - insetX;
             const t = insetY;
             const b = h - insetY;
             ctx.moveTo(l, t);
@@ -1422,6 +1425,40 @@ class XArm extends Resource {
       })
     );
     return g;
+  }
+
+  setState(state) {
+    // Rotation and y snap as usual; x glides so arm moves read as motion rather
+    // than teleports. The tracker only has commanded targets, so this interpolates
+    // between them - purely cosmetic.
+    if (state && state.rotation !== undefined && state.rotation !== null) {
+      this.rotation = state.rotation;
+      if (this.group !== undefined) {
+        this.group.rotation(this.rotation.z || 0);
+      }
+    }
+    if (state && state.location !== undefined && state.location !== null) {
+      this.location = state.location;
+      if (this.group !== undefined) {
+        this.group.y(this.location.y);
+        const reduce =
+          window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if (reduce) {
+          this.group.x(this.location.x);
+        } else {
+          if (this._xTween) {
+            this._xTween.destroy();
+          }
+          this._xTween = new Konva.Tween({
+            node: this.group,
+            x: this.location.x,
+            duration: 0.2,
+            easing: Konva.Easings.EaseInOut,
+          });
+          this._xTween.play();
+        }
+      }
+    }
   }
 }
 
