@@ -2796,3 +2796,40 @@ class TestChannelAbsoluteZPipetting(unittest.IsolatedAsyncioTestCase):
     )
     k = self._sent()
     self.assertEqual(k["za"], f"{STARBackend.mm_to_z_drive_increment(120.0):05}")
+
+
+class TestChannelAbsoluteZMix(unittest.IsolatedAsyncioTestCase):
+  """The Mix object maps onto the STAR mix fields; None disables mixing."""
+
+  async def asyncSetUp(self):
+    self.star = STARBackend()
+    self.star._num_channels = 8
+    self.star.request_tip_presence = unittest.mock.AsyncMock(return_value=[True] * 8)
+    self.star.request_tip_len_on_channel = unittest.mock.AsyncMock(return_value=95.0)
+    self.star.send_command = unittest.mock.AsyncMock(return_value={})
+
+  async def test_mix_maps_to_wire_fields(self):
+    await self.star._channel_aspirate_in_absolute_z(
+      channel_idx=0,
+      z=120.0,
+      volume=10.0,
+      mix=Mix(volume=20.0, repetitions=3, flow_rate=200.0, surface_following_distance=1.5),
+    )
+    k = self.star.send_command.call_args.kwargs
+    self.assertEqual(k["dm"], f"{STARBackend.dispensing_drive_vol_to_increment(20.0):05}")
+    self.assertEqual(k["dn"], "03")
+    self.assertEqual(k["do"], f"{STARBackend.dispensing_drive_vol_to_increment(200.0):05}")
+    self.assertEqual(k["zy"], f"{STARBackend.mm_to_z_drive_increment(1.5):04}")
+
+  async def test_mix_none_disables(self):
+    await self.star._channel_aspirate_in_absolute_z(channel_idx=0, z=120.0, volume=10.0)
+    k = self.star.send_command.call_args.kwargs
+    self.assertEqual(k["dm"], "00000")
+    self.assertEqual(k["dn"], "00")
+
+  async def test_mix_without_surface_following(self):
+    await self.star._channel_dispense_in_absolute_z(
+      channel_idx=0, z=120.0, volume=10.0, mix=Mix(volume=15.0, repetitions=2, flow_rate=150.0)
+    )
+    k = self.star.send_command.call_args.kwargs
+    self.assertEqual(k["zy"], "0000")  # surface_following_distance None -> 0

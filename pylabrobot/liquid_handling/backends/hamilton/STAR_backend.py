@@ -7194,11 +7194,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     pre_wetting_volume: float = 0.0,
     swap_speed: float = 12.0,
     settling_time: float = 0.0,
-    mix_volume: float = 0.0,
-    mix_cycles: int = 0,
+    mix: Optional["Mix"] = None,
     mix_position_offset: float = 0.0,
-    mix_speed: float = 249.99,
-    mix_surface_following_distance: float = 0.0,
     tadm: Optional["STARBackend.TADMParameters"] = None,
     mechanical_clearance_reversing_volume: float = 4.69,
     flow_acceleration: float = 4687.6,
@@ -7206,7 +7203,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     z_speed: float = 128.73,
     z_acceleration: float = 804.6,
     z_current_limit: int = 3,
-    mix_volume_correction_percent: int = 90,
+    # mv/me: effect unknown, defaulted to 100 (no correction). See TODO to characterise.
+    mix_volume_correction_percent: int = 100,
     last_dispense_mix_volume_correction_percent: int = 100,
     requires_tip: bool = True,
   ) -> Any:
@@ -7254,12 +7252,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         for this field is non-zero, so this is a deliberate no-op default, not the wire default.
       swap_speed: Z-drive speed on leaving the liquid, mm/s.
       settling_time: Time to wait in the liquid after aspirating, seconds.
-      mix_volume: Mix volume, uL; 0 disables mixing and makes the rest of the mix arguments inert.
-      mix_cycles: Number of mix cycles.
+      mix: In-tip mixing (`Mix`: volume, repetitions, flow_rate, surface_following_distance). None
+        (default) disables mixing. STAR-specific extras Mix cannot express stay separate below
+        (`mix_position_offset`, and the `mix_*_correction_percent` pair).
       mix_position_offset: Mix height relative to the aspiration position, mm. A distance, so the tip
-        overhang does not apply.
-      mix_speed: Dispensing-drive speed during mixing, uL/s.
-      mix_surface_following_distance: Z travel during the mix stroke, mm.
+        overhang does not apply. Inert unless `mix` is set.
       tadm: Total aspiration and dispense monitoring settings (see `STARBackend.TADMParameters`).
         None (default) leaves monitoring off. Monitoring also requires TADM mode enabled on the
         channel (firmware `AF af1`); the fields on this object alone do not enable it.
@@ -7270,11 +7267,12 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       z_speed: Z-drive travel speed, mm/s.
       z_acceleration: Z-drive acceleration, mm/s^2.
       z_current_limit: Z-drive current limit, 0-7.
-      mix_volume_correction_percent: Correction applied to the mix volume during the
-        dispense/aspirate sequence, percent. Varying this (50/90/100) produced no observable change
-        in the TADM pressure trace in testing, so its practical effect appears negligible here.
-      last_dispense_mix_volume_correction_percent: Correction applied to the final dispense of the
-        mix sequence, percent. No observable effect in the same testing.
+      mix_volume_correction_percent: Firmware `mv`, percent. What it actually corrects is not
+        understood: the one-line firmware description is all that exists, and varying it (50/90/100)
+        produced no observable change in the TADM pressure trace. Defaulted to 100 (no correction)
+        until characterised. TODO: test on the device.
+      last_dispense_mix_volume_correction_percent: Firmware `me`, percent. Same as above - effect
+        not understood, no observable change in testing, defaulted to 100. TODO: test on the device.
       requires_tip: If True, raise when the channel holds no tip. Tip presence, not tip capacity:
         this does not check that `volume` fits.
 
@@ -7313,8 +7311,17 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     zg = STARBackend.mm_to_z_drive_increment(z_position_at_end_of_command + overhang)
     zh = STARBackend.mm_to_z_drive_increment(minimum_height + overhang)
     zd = STARBackend.mm_to_z_drive_increment(surface_following_distance)
+    # Mix (None = no mixing). mix_position_offset, mv and me are STAR extras Mix cannot hold.
+    _mix_volume = mix.volume if mix is not None else 0.0
+    _mix_cycles = mix.repetitions if mix is not None else 0
+    _mix_speed = mix.flow_rate if mix is not None else 249.99
+    _mix_sfd = (
+      mix.surface_following_distance
+      if mix is not None and mix.surface_following_distance is not None
+      else 0.0
+    )
     dz = STARBackend.mm_to_z_drive_increment(mix_position_offset)
-    zy = STARBackend.mm_to_z_drive_increment(mix_surface_following_distance)
+    zy = STARBackend.mm_to_z_drive_increment(_mix_sfd)
     zv = STARBackend.mm_to_z_drive_increment(z_speed)
     zu = STARBackend.mm_to_z_drive_increment(swap_speed)
     zr = STARBackend.mm_to_z_drive_increment(z_acceleration / 1000)
@@ -7323,8 +7330,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     de = STARBackend.dispensing_drive_vol_to_increment(mechanical_clearance_reversing_volume)
     df = STARBackend.dispensing_drive_vol_to_increment(blow_out_air_volume)
     dg = STARBackend.dispensing_drive_vol_to_increment(transport_air_volume)
-    dm = STARBackend.dispensing_drive_vol_to_increment(mix_volume)
-    do = STARBackend.dispensing_drive_vol_to_increment(mix_speed)
+    dm = STARBackend.dispensing_drive_vol_to_increment(_mix_volume)
+    do = STARBackend.dispensing_drive_vol_to_increment(_mix_speed)
     dv = STARBackend.dispensing_drive_vol_to_increment(flow_rate)
     dr = round(STARBackend.dispensing_drive_vol_to_increment(flow_acceleration) * 0.001)
     to = round(settling_time * 10)
@@ -7357,8 +7364,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       )
     if not (0 <= zy <= 9999):
       raise ValueError(
-        f"mix_surface_following_distance must be between 0 and "
-        f"{STARBackend.z_drive_increment_to_mm(9999)} mm, got {mix_surface_following_distance} mm"
+        f"mix.surface_following_distance must be between 0 and "
+        f"{STARBackend.z_drive_increment_to_mm(9999)} mm, got {_mix_sfd} mm"
       )
     if not (20 <= zv <= 15000):
       raise ValueError(
@@ -7403,13 +7410,13 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       )
     if not (0 <= dm <= 26666):
       raise ValueError(
-        f"mix_volume must be between 0 and "
-        f"{STARBackend.dispensing_drive_increment_to_volume(26666)} uL, got {mix_volume} uL"
+        f"mix.volume must be between 0 and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(26666)} uL, got {_mix_volume} uL"
       )
     if not (20 <= do <= 13500):
       raise ValueError(
-        f"mix_speed must be between {STARBackend.dispensing_drive_increment_to_volume(20)} and "
-        f"{STARBackend.dispensing_drive_increment_to_volume(13500)} uL/s, got {mix_speed} uL/s"
+        f"mix.flow_rate must be between {STARBackend.dispensing_drive_increment_to_volume(20)} and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(13500)} uL/s, got {_mix_speed} uL/s"
       )
     if not (20 <= dv <= 13500):
       raise ValueError(
@@ -7425,8 +7432,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       )
     if not (0 <= to <= 999):
       raise ValueError(f"settling_time must be between 0 and 99.9 s, got {settling_time} s")
-    if not (0 <= mix_cycles <= 99):
-      raise ValueError(f"mix_cycles must be between 0 and 99, got {mix_cycles}")
+    if not (0 <= _mix_cycles <= 99):
+      raise ValueError(f"mix.repetitions must be between 0 and 99, got {_mix_cycles}")
     if not (0 <= mix_volume_correction_percent <= 100):
       raise ValueError(
         f"mix_volume_correction_percent must be between 0 and 100, "
@@ -7461,12 +7468,12 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       df=f"{df:05}",
       dg=f"{dg:04}",
       to=f"{to:03}",
-      dj="0",  # aspirate mode; empty-cup (dj1) not exposed - untested, see TODO
-      bl="0",  # ADC algorithm off; effect undocumented and untested, see TODO
+      dj="0",  # aspirate mode. TODO: empty-cup (dj1) not exposed - untested; test on the device.
+      bl="0",  # ADC algorithm off. TODO: effect undocumented and untested; test on the device.
       dm=f"{dm:05}",
       mv=f"{mix_volume_correction_percent:03}",
       me=f"{last_dispense_mix_volume_correction_percent:03}",
-      dn=f"{mix_cycles:02}",
+      dn=f"{_mix_cycles:02}",
       dz=f"{dz:04}",
       zy=f"{zy:04}",
       do=f"{do:05}",
@@ -7498,18 +7505,16 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     transport_air_volume: float = 0.0,
     swap_speed: float = 12.0,
     settling_time: float = 0.0,
-    mix_volume: float = 0.0,
-    mix_cycles: int = 0,
+    mix: Optional["Mix"] = None,
     mix_position_offset: float = 0.0,
-    mix_speed: float = 249.99,
-    mix_surface_following_distance: float = 0.0,
     tadm: Optional["STARBackend.TADMParameters"] = None,
     flow_acceleration: float = 4687.6,
     current_limit: int = 5,
     z_speed: float = 128.73,
     z_acceleration: float = 804.6,
     z_current_limit: int = 3,
-    mix_volume_correction_percent: int = 90,
+    # mv/me: effect unknown, defaulted to 100 (no correction). See TODO to characterise.
+    mix_volume_correction_percent: int = 100,
     last_dispense_mix_volume_correction_percent: int = 100,
     requires_tip: bool = True,
   ) -> Any:
@@ -7545,12 +7550,12 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         which transport air is handled, unlike the level-detecting dispense command.
       swap_speed: Z-drive speed on leaving the liquid, mm/s.
       settling_time: Time to wait in the liquid after dispensing, seconds.
-      mix_volume: Mix volume, uL; 0 disables mixing and makes the rest of the mix arguments inert.
-      mix_cycles: Number of mix cycles.
+      mix: In-tip mixing (`Mix`: volume, repetitions, flow_rate, surface_following_distance). None
+        (default) disables mixing. STAR-specific extras Mix cannot express stay separate below
+        (`mix_position_offset`, and the `mix_*_correction_percent` pair). Note: mixing on the
+        dispense path has not been tested on hardware - see TODO.
       mix_position_offset: Mix height relative to the dispense position, mm. A distance, so the tip
-        overhang does not apply.
-      mix_speed: Dispensing-drive speed during mixing, uL/s.
-      mix_surface_following_distance: Z travel during the mix stroke, mm.
+        overhang does not apply. Inert unless `mix` is set.
       tadm: Total aspiration and dispense monitoring settings (see `STARBackend.TADMParameters`).
         None (default) leaves monitoring off. Monitoring also requires TADM mode enabled on the
         channel (firmware `AF af1`); the fields on this object alone do not enable it.
@@ -7559,11 +7564,12 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       z_speed: Z-drive travel speed, mm/s.
       z_acceleration: Z-drive acceleration, mm/s^2.
       z_current_limit: Z-drive current limit, 0-7.
-      mix_volume_correction_percent: Correction applied to the mix volume during the
-        dispense/aspirate sequence, percent. Varying this (50/90/100) produced no observable change
-        in the TADM pressure trace in testing, so its practical effect appears negligible here.
-      last_dispense_mix_volume_correction_percent: Correction applied to the final dispense of the
-        mix sequence, percent. No observable effect in the same testing.
+      mix_volume_correction_percent: Firmware `mv`, percent. What it actually corrects is not
+        understood: the one-line firmware description is all that exists, and varying it (50/90/100)
+        produced no observable change in the TADM pressure trace. Defaulted to 100 (no correction)
+        until characterised. TODO: test on the device.
+      last_dispense_mix_volume_correction_percent: Firmware `me`, percent. Same as above - effect
+        not understood, no observable change in testing, defaulted to 100. TODO: test on the device.
       requires_tip: If True, raise when the channel holds no tip. Tip presence, not tip contents:
         this does not check that the tip holds `volume`.
 
@@ -7602,16 +7608,25 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     zg = STARBackend.mm_to_z_drive_increment(z_position_at_end_of_command + overhang)
     zh = STARBackend.mm_to_z_drive_increment(minimum_height + overhang)
     ze = STARBackend.mm_to_z_drive_increment(surface_following_distance)
+    # Mix (None = no mixing). mix_position_offset, mv and me are STAR extras Mix cannot hold.
+    _mix_volume = mix.volume if mix is not None else 0.0
+    _mix_cycles = mix.repetitions if mix is not None else 0
+    _mix_speed = mix.flow_rate if mix is not None else 249.99
+    _mix_sfd = (
+      mix.surface_following_distance
+      if mix is not None and mix.surface_following_distance is not None
+      else 0.0
+    )
     dz = STARBackend.mm_to_z_drive_increment(mix_position_offset)
-    zy = STARBackend.mm_to_z_drive_increment(mix_surface_following_distance)
+    zy = STARBackend.mm_to_z_drive_increment(_mix_sfd)
     zv = STARBackend.mm_to_z_drive_increment(z_speed)
     zu = STARBackend.mm_to_z_drive_increment(swap_speed)
     zr = STARBackend.mm_to_z_drive_increment(z_acceleration / 1000)
     db = STARBackend.dispensing_drive_vol_to_increment(volume)
     dd = STARBackend.dispensing_drive_vol_to_increment(stop_back_volume)
     dg = STARBackend.dispensing_drive_vol_to_increment(transport_air_volume)
-    dm = STARBackend.dispensing_drive_vol_to_increment(mix_volume)
-    do = STARBackend.dispensing_drive_vol_to_increment(mix_speed)
+    dm = STARBackend.dispensing_drive_vol_to_increment(_mix_volume)
+    do = STARBackend.dispensing_drive_vol_to_increment(_mix_speed)
     dv = STARBackend.dispensing_drive_vol_to_increment(flow_rate)
     du = STARBackend.dispensing_drive_vol_to_increment(stop_flow_rate)
     dr = round(STARBackend.dispensing_drive_vol_to_increment(flow_acceleration) * 0.001)
@@ -7645,8 +7660,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       )
     if not (0 <= zy <= 9999):
       raise ValueError(
-        f"mix_surface_following_distance must be between 0 and "
-        f"{STARBackend.z_drive_increment_to_mm(9999)} mm, got {mix_surface_following_distance} mm"
+        f"mix.surface_following_distance must be between 0 and "
+        f"{STARBackend.z_drive_increment_to_mm(9999)} mm, got {_mix_sfd} mm"
       )
     if not (20 <= zv <= 15000):
       raise ValueError(
@@ -7680,13 +7695,13 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       )
     if not (0 <= dm <= 26666):
       raise ValueError(
-        f"mix_volume must be between 0 and "
-        f"{STARBackend.dispensing_drive_increment_to_volume(26666)} uL, got {mix_volume} uL"
+        f"mix.volume must be between 0 and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(26666)} uL, got {_mix_volume} uL"
       )
     if not (20 <= do <= 13500):
       raise ValueError(
-        f"mix_speed must be between {STARBackend.dispensing_drive_increment_to_volume(20)} and "
-        f"{STARBackend.dispensing_drive_increment_to_volume(13500)} uL/s, got {mix_speed} uL/s"
+        f"mix.flow_rate must be between {STARBackend.dispensing_drive_increment_to_volume(20)} and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(13500)} uL/s, got {_mix_speed} uL/s"
       )
     if not (20 <= dv <= 13500):
       raise ValueError(
@@ -7707,8 +7722,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       )
     if not (0 <= to <= 999):
       raise ValueError(f"settling_time must be between 0 and 99.9 s, got {settling_time} s")
-    if not (0 <= mix_cycles <= 99):
-      raise ValueError(f"mix_cycles must be between 0 and 99, got {mix_cycles}")
+    if not (0 <= _mix_cycles <= 99):
+      raise ValueError(f"mix.repetitions must be between 0 and 99, got {_mix_cycles}")
     if not (0 <= mix_volume_correction_percent <= 100):
       raise ValueError(
         f"mix_volume_correction_percent must be between 0 and 100, "
@@ -7741,11 +7756,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       zg=f"{zg:05}",
       dg=f"{dg:04}",
       to=f"{to:03}",
-      bl="0",  # ADC algorithm off; effect undocumented and untested, see TODO
+      bl="0",  # ADC algorithm off. TODO: effect undocumented and untested; test on the device.
       dm=f"{dm:05}",
       mv=f"{mix_volume_correction_percent:03}",
       me=f"{last_dispense_mix_volume_correction_percent:03}",
-      dn=f"{mix_cycles:02}",
+      dn=f"{_mix_cycles:02}",
       dz=f"{dz:04}",
       zy=f"{zy:04}",
       do=f"{do:05}",
