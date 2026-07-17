@@ -16,6 +16,7 @@ from pylabrobot.liquid_handling.backends.hamilton.STAR_backend import (
   iSWAPInformation,
 )
 from pylabrobot.resources.container import Container
+from pylabrobot.resources.hamilton.hamilton_decks import HamiltonDeck
 from pylabrobot.resources.tip_tracker import does_tip_tracking
 from pylabrobot.resources.well import Well
 
@@ -28,9 +29,11 @@ _DEFAULT_MACHINE_CONFIGURATION = MachineConfiguration(
   num_pip_channels=8,
 )
 
-# Simulated X-arm carriage resting position (mm), reported by the RX queries
-# before any tracked move has committed a position.
-_SIM_X_ARM_HOME = 362.9
+# Simulated left X-arm resting x (mm), reported by RX before any tracked move. Small
+# enough to sit within reach of any STAR deck. The right arm's rest is derived from
+# the deck instead (see _simulated_right_x_arm_home), since its reach differs sharply
+# between a STARlet (~800 mm) and a STAR (~1340 mm) and the two arms must not overlap.
+_SIM_LEFT_X_ARM_HOME = 362.9
 
 _DEFAULT_EXTENDED_CONFIGURATION = ExtendedConfiguration(
   left_x_drive_large=True,
@@ -199,7 +202,7 @@ class STARChatterboxBackend(STARBackend):
     else:
       self._iswap_information = None
 
-    await self._setup_x_arm_bars()
+    await self._setup_x_arm_markers()
 
   async def stop(self):
     await LiquidHandlerBackend.stop(self)
@@ -295,7 +298,9 @@ class STARChatterboxBackend(STARBackend):
   async def request_left_x_arm_position(self) -> float:
     # No hardware to read: report the tracked carriage position, or a resting
     # home before any tracked move has committed one.
-    x = self.left_x_arm_tracker.get_x() if self.left_x_arm_tracker.is_known else _SIM_X_ARM_HOME
+    x = (
+      self.left_x_arm_tracker.get_x() if self.left_x_arm_tracker.is_known else _SIM_LEFT_X_ARM_HOME
+    )
     if not self.left_x_arm_tracker.is_disabled:
       self.left_x_arm_tracker.set_x(x)
     return x
@@ -304,10 +309,22 @@ class STARChatterboxBackend(STARBackend):
     tracker = self.right_x_arm_tracker
     if tracker is None:
       raise RuntimeError("Right X-arm is not installed.")
-    x = tracker.get_x() if tracker.is_known else _SIM_X_ARM_HOME
+    x = tracker.get_x() if tracker.is_known else self._simulated_right_x_arm_home()
     if not tracker.is_disabled:
       tracker.set_x(x)
     return x
+
+  def _simulated_right_x_arm_home(self) -> float:
+    """Rightmost on-deck resting x for the right X-arm in simulation, derived from the
+    deck's reachable range so it is valid for the deck in use and clear of the left
+    arm's rest. Positions the arm so its right edge sits at the far reachable x."""
+    reach_max = 1338.0  # nominal STAR reach; refined from the deck when available
+    deck = self._deck
+    if isinstance(deck, HamiltonDeck):
+      reach_max = deck.rails_to_location(deck.num_rails).x
+    elif deck is not None:
+      reach_max = deck.get_size_x()
+    return reach_max - self.extended_conf.right_x_arm_width / 2
 
   async def move_all_channels_in_z_safety(self):
     logger.info("moving all channels to z safety")
