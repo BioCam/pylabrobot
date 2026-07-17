@@ -3,7 +3,7 @@ import datetime
 import logging
 import warnings
 from contextlib import asynccontextmanager
-from typing import Dict, List, Literal, Optional, Union
+from typing import Dict, List, Literal, Optional, Tuple, Union
 
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
 from pylabrobot.liquid_handling.backends import LiquidHandlerBackend
@@ -171,7 +171,6 @@ class STARChatterboxBackend(STARBackend):
     # Request machine information
     self._machine_conf = await self.request_machine_configuration()
     self._extended_conf = await self.request_extended_configuration()
-    self._configure_x_arm_trackers()
 
     # Mock firmware information for 96-head if installed
     if self.extended_conf.left_x_drive.core_96_head_installed and not skip_core96_head:
@@ -202,7 +201,8 @@ class STARChatterboxBackend(STARBackend):
     else:
       self._iswap_information = None
 
-    await self._setup_x_arm_markers()
+    await self._build_x_arm_information()
+    await self._setup_x_arms()
 
   async def stop(self):
     await LiquidHandlerBackend.stop(self)
@@ -298,11 +298,10 @@ class STARChatterboxBackend(STARBackend):
   async def request_left_x_arm_position(self) -> float:
     # No hardware to read: report the tracked carriage position, or a resting
     # home before any tracked move has committed one.
-    x = (
-      self.left_x_arm_tracker.get_x() if self.left_x_arm_tracker.is_known else _SIM_LEFT_X_ARM_HOME
-    )
-    if not self.left_x_arm_tracker.is_disabled:
-      self.left_x_arm_tracker.set_x(x)
+    tracker = self.left_x_arm_tracker
+    x = tracker.get_x() if tracker is not None and tracker.is_known else _SIM_LEFT_X_ARM_HOME
+    if tracker is not None and not tracker.is_disabled:
+      tracker.set_x(x)
     return x
 
   async def request_right_x_arm_position(self) -> float:
@@ -314,17 +313,30 @@ class STARChatterboxBackend(STARBackend):
       tracker.set_x(x)
     return x
 
+  def _simulated_x_reach_max(self) -> float:
+    """Rightmost reachable X (mm) in simulation, from the deck's reachable range."""
+    deck = self._deck
+    if isinstance(deck, HamiltonDeck):
+      return deck.rails_to_location(deck.num_rails).x
+    if deck is not None:
+      return deck.get_size_x()
+    return 1338.0  # nominal STAR reach
+
   def _simulated_right_x_arm_home(self) -> float:
     """Rightmost on-deck resting x for the right X-arm in simulation, derived from the
     deck's reachable range so it is valid for the deck in use and clear of the left
     arm's rest. Positions the arm so its right edge sits at the far reachable x."""
-    reach_max = 1338.0  # nominal STAR reach; refined from the deck when available
-    deck = self._deck
-    if isinstance(deck, HamiltonDeck):
-      reach_max = deck.rails_to_location(deck.num_rails).x
-    elif deck is not None:
-      reach_max = deck.get_size_x()
-    return reach_max - self.extended_conf.right_x_arm_width / 2
+    return self._simulated_x_reach_max() - self.extended_conf.right_x_arm_width / 2
+
+  async def request_maximal_ranges_of_x_drives(self) -> Dict[str, Tuple[float, float]]:
+    x_range = (95.0, self._simulated_x_reach_max())
+    return {"left": x_range, "right": x_range}
+
+  async def request_present_wrap_size_of_installed_arms(
+    self,
+  ) -> Dict[str, Tuple[float, Tuple[float, float]]]:
+    arm = (595.2, (-323.2, self._simulated_x_reach_max()))  # wrap, workspace
+    return {"left": arm, "right": arm}
 
   async def move_all_channels_in_z_safety(self):
     logger.info("moving all channels to z safety")

@@ -40,7 +40,6 @@ from pylabrobot.liquid_handling.backends.hamilton.base import (
   HamiltonLiquidHandler,
 )
 from pylabrobot.liquid_handling.backends.hamilton.common import fill_in_defaults
-from pylabrobot.liquid_handling.backends.hamilton.x_arm_tracker import XArmTracker
 from pylabrobot.liquid_handling.channel_positioning import (
   get_tight_single_resource_liquid_op_offsets,
   get_wide_single_resource_liquid_op_offsets,
@@ -107,6 +106,8 @@ from pylabrobot.resources.liquid import Liquid
 from pylabrobot.resources.rotation import Rotation
 from pylabrobot.resources.tip_tracker import does_tip_tracking
 from pylabrobot.resources.trash import Trash
+from pylabrobot.resources.x_arm import XArm
+from pylabrobot.resources.x_arm_tracker import XArmTracker
 
 T = TypeVar("T")
 
@@ -1601,6 +1602,47 @@ class iSWAPInformation:
   gripper_mm_per_increment: float = 0.00554337
 
 
+@dataclass(frozen=True, eq=False)
+class SingleXArmInformation:
+  """One installed X-arm's facts, resolved at setup from firmware.
+
+  Populated by `STARBackend._build_x_arm_information` from the QM configuration, the RU
+  drive ranges, and the UA arm query. Immutable post-setup.
+  """
+
+  position: Literal["left", "right"]
+  """Which rail this arm is on."""
+
+  width: float
+  """Arm width (mm), from QM `xu`/`xv`."""
+
+  model: str
+  """Arm variant, derived from `width` (wide arms span both rails, narrow arms one)."""
+
+  reference_point: Literal["center", "right"]
+  """Where along the arm's width the tracked X refers to: the arm centre for a
+  dual-rail arm, the right edge for a single-rail arm."""
+
+  x_range: Tuple[float, float]
+  """Drive travel `(min, max)` in mm, from RU."""
+
+  workspace_range: Tuple[float, float]
+  """Reachable X workspace `(min, max)` in mm, from UA."""
+
+
+@dataclass(frozen=True, eq=False)
+class XArmInformation:
+  """The machine's X-arm(s), resolved at setup. A side is None when not installed."""
+
+  left: Optional[SingleXArmInformation] = None
+  right: Optional[SingleXArmInformation] = None
+
+  @property
+  def number_x_arms(self) -> int:
+    """Number of installed X-arms."""
+    return sum(arm is not None for arm in (self.left, self.right))
+
+
 class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   """Interface for the Hamilton STARBackend."""
 
@@ -1704,8 +1746,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # commands that move the arm as a side effect do not (yet). A STAR always has
     # a left X-arm; the right tracker is created by setup() only when the loaded
     # configuration reports a right X-arm, and stays None otherwise.
-    self.left_x_arm_tracker = XArmTracker(thing="left X-arm")
-    self.right_x_arm_tracker: Optional[XArmTracker] = None
+    # The X-arm trackers are owned by the deck's X-arms (created at setup);
+    # `left_x_arm_tracker` / `right_x_arm_tracker` read them via property.
+    # X-arm facts (widths, models, ranges) resolved from firmware at setup.
+    self._x_arm_information: Optional[XArmInformation] = None
 
     self._setup_done = False
 
@@ -2084,7 +2128,6 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # Request machine information
     self._machine_conf = await self.request_machine_configuration()
     self._extended_conf = await self.request_extended_configuration()
-    self._configure_x_arm_trackers()
     self._head96_information: Optional[Head96Information] = None
 
     initialized = await self.request_instrument_initialization_status()
@@ -2216,7 +2259,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # the core grippers.
     self._core_parked = True
 
-    await self._setup_x_arm_markers()
+    await self._build_x_arm_information()
+    await self._setup_x_arms()
 
     self._setup_done = True
 
@@ -2269,9 +2313,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         f"current_protection_limiter must be between 0 and 7, is {current_protection_limiter}"
       )
 
-    tracking = not self.left_x_arm_tracker.is_disabled
-    if tracking:
-      self.left_x_arm_tracker.set_x(x, commit=False)
+    tracker = self.left_x_arm_tracker
+    if tracker is not None and not tracker.is_disabled:
+      tracker.set_x(x, commit=False)
     try:
       resp = await self.send_command(
         module="X0",
@@ -2281,84 +2325,111 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         lw=str(current_protection_limiter),
       )
     except Exception:
-      if tracking:
-        self.left_x_arm_tracker.invalidate()
+      if tracker is not None and not tracker.is_disabled:
+        tracker.invalidate()
       raise
-    if tracking:
-      self.left_x_arm_tracker.commit()
+    if tracker is not None and not tracker.is_disabled:
+      tracker.commit()
     return resp
 
-  def _configure_x_arm_trackers(self) -> None:
-    """Create or drop the right X-arm tracker to match the loaded configuration.
+  @property
+  def left_x_arm_tracker(self) -> Optional[XArmTracker]:
+    """The left X-arm's tracker, owned by the deck's left X-arm (created at
+    setup). None before setup or without a deck."""
+    return self._x_arm_tracker("left_x_arm")
 
-    The left X-arm always exists on a STAR, so its tracker (created in __init__)
-    is left untouched. The right tracker exists only when `extended_conf`'s right
-    X-drive reports a module installed. Called by setup() once the configuration
-    is loaded.
+  @property
+  def right_x_arm_tracker(self) -> Optional[XArmTracker]:
+    """The right X-arm's tracker, owned by the deck's right X-arm. None when no
+    right arm is installed, or before setup."""
+    return self._x_arm_tracker("right_x_arm")
+
+  def _x_arm_tracker(self, name: str) -> Optional[XArmTracker]:
+    if self._deck is not None and self._deck.has_resource(name):
+      x_arm = self._deck.get_resource(name)
+      if isinstance(x_arm, XArm):
+        return x_arm.tracker
+    return None
+
+  @property
+  def x_arm_information(self) -> XArmInformation:
+    """The machine's X-arm facts, resolved at setup (widths, models, ranges)."""
+    if self._x_arm_information is None:
+      raise RuntimeError("X-arm information not loaded; forgot to call `setup`?")
+    return self._x_arm_information
+
+  @staticmethod
+  def _x_arm_model_and_reference(width: float) -> Tuple[str, Literal["center", "right"]]:
+    """Arm variant and reference point for a given arm width.
+
+    Wide arms span both rails and reference their centre; narrow arms sit on a single
+    (right) rail and reference their right edge.
     """
-    if self.extended_conf.right_x_drive.is_present:
-      if self.right_x_arm_tracker is None:
-        self.right_x_arm_tracker = XArmTracker(thing="right X-arm")
-    else:
-      self.right_x_arm_tracker = None
+    if width > 300:
+      return "hamilton_legacy_star_dual_rail_arm", "center"
+    return "hamilton_legacy_star_single_right_rail_arm", "right"
 
-  async def _setup_x_arm_markers(self) -> None:
-    """Seed the deck-owned X-arm marker for each present arm and wire its tracker to
-    keep it in sync. The deck owns the marker resource (see
-    `HamiltonSTARDeck.update_x_arm_marker`); this only supplies the position (from the
-    tracker) and width (from the firmware config). No-op when no deck is attached.
+  async def _build_x_arm_information(self) -> None:
+    """Resolve the machine's X-arm facts from firmware and cache them.
+
+    Fuses the QM configuration (widths), the RU drive ranges, and the UA arm query
+    (workspace) into an `XArmInformation` - one `SingleXArmInformation` per installed
+    arm. Called by setup() once the configuration is loaded.
+    """
+    ranges = await self.request_maximal_ranges_of_x_drives()
+    wraps = await self.request_present_wrap_size_of_installed_arms()
+    widths = {
+      "left": self.extended_conf.left_x_arm_width,
+      "right": self.extended_conf.right_x_arm_width,
+    }
+    drives = {"left": self.extended_conf.left_x_drive, "right": self.extended_conf.right_x_drive}
+
+    def build(position: Literal["left", "right"]) -> Optional[SingleXArmInformation]:
+      if not drives[position].is_present:
+        return None
+      model, reference_point = self._x_arm_model_and_reference(widths[position])
+      _wrap, workspace_range = wraps[position]
+      return SingleXArmInformation(
+        position=position,
+        width=widths[position],
+        model=model,
+        reference_point=reference_point,
+        x_range=ranges[position],
+        workspace_range=workspace_range,
+      )
+
+    self._x_arm_information = XArmInformation(left=build("left"), right=build("right"))
+
+  async def _setup_x_arms(self) -> None:
+    """Create the deck-owned X-arm for each present arm and seed its tracker.
+
+    The X-arm (an ``XArm``) owns its ``XArmTracker`` and reports it as state, so the
+    Visualizer positions it; this asks the deck to create it (sized and modelled
+    from `x_arm_information`) and seeds the tracker from the arm (its resting home in
+    simulation, its true position on hardware). No-op without a deck.
     """
     if self._deck is None:
       return
+    deck = cast(HamiltonSTARDeck, self.deck)
+    info = self.x_arm_information
     queries = {"left": self.request_left_x_arm_position, "right": self.request_right_x_arm_position}
-    trackers = {"left": self.left_x_arm_tracker, "right": self.right_x_arm_tracker}
-    for arm, tracker in trackers.items():
-      if tracker is None:
+    for position, arm in (("left", info.left), ("right", info.right)):
+      if arm is None:
         continue
-      # Seed from the arm itself (its resting/home position in simulation, its true
-      # position on hardware) - never x=0, which sits in the border-crash region.
-      await queries[arm]()
-      self._update_x_arm_marker(arm)
-      tracker.register_callback(functools.partial(self._update_x_arm_marker, arm))
-
-  @staticmethod
-  def _x_arm_marker_left_edge(reference_x: float, width: float) -> float:
-    """Deck-x of the marker's left edge from the firmware X reference and arm width.
-
-    The firmware references the arm centre for widths above 300 mm, and the right
-    (high-x) edge for smaller arms. This is the single place the reference convention
-    lives, so it is easy to revise if it turns out to differ.
-    """
-    if width > 300:
-      return reference_x - width / 2
-    return reference_x - width
-
-  def _update_x_arm_marker(self, arm: str) -> None:
-    """Position the deck's marker for `arm` at the tracker's committed x. No-op while
-    the position is unknown or no deck is attached."""
-    tracker = self.left_x_arm_tracker if arm == "left" else self.right_x_arm_tracker
-    if tracker is None or not tracker.is_known or self._deck is None:
-      return
-    width = (
-      self.extended_conf.left_x_arm_width if arm == "left" else self.extended_conf.right_x_arm_width
-    )
-    left_edge = self._x_arm_marker_left_edge(tracker.get_x(), width)
-    cast(HamiltonSTARDeck, self.deck).update_x_arm_marker(f"{arm}_x_arm", left_edge, width)
+      deck.get_or_create_x_arm(f"{position}_x_arm", arm.width, arm.model, arm.reference_point)
+      await queries[position]()
 
   def get_x_arm_position(self) -> Tuple[Optional[float], Optional[float]]:
     """Tracked X-arm carriage reference points in mm, as (left, right).
 
-    Either element is None while that X-arm's position is unknown: no tracked
-    move or position query has completed for it yet, the last tracked move
-    failed, or that X-arm is not present. On a machine without a right X-arm the
-    right element is therefore always None.
+    Either element is None while that X-arm's position is unknown: no tracked move or
+    position query has completed for it yet, the last tracked move failed, or that
+    X-arm is not present.
     """
-    left = self.left_x_arm_tracker.get_x() if self.left_x_arm_tracker.is_known else None
-    right = (
-      self.right_x_arm_tracker.get_x()
-      if self.right_x_arm_tracker is not None and self.right_x_arm_tracker.is_known
-      else None
-    )
+    left_tracker = self.left_x_arm_tracker
+    right_tracker = self.right_x_arm_tracker
+    left = left_tracker.get_x() if left_tracker is not None and left_tracker.is_known else None
+    right = right_tracker.get_x() if right_tracker is not None and right_tracker.is_known else None
     return left, right
 
   # # # # Single-Channel Pipette Commands # # # #
@@ -6233,9 +6304,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     assert 0 <= x_position <= 30000, "x_position_ must be between 0 and 30000"
 
-    tracking = not self.left_x_arm_tracker.is_disabled
-    if tracking:
-      self.left_x_arm_tracker.set_x(x_position / 10, commit=False)
+    tracker = self.left_x_arm_tracker
+    if tracker is not None and not tracker.is_disabled:
+      tracker.set_x(x_position / 10, commit=False)
     try:
       resp = await self.send_command(
         module="C0",
@@ -6243,11 +6314,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         xs=f"{x_position:05}",
       )
     except Exception:
-      if tracking:
-        self.left_x_arm_tracker.invalidate()
+      if tracker is not None and not tracker.is_disabled:
+        tracker.invalidate()
       raise
-    if tracking:
-      self.left_x_arm_tracker.commit()
+    if tracker is not None and not tracker.is_disabled:
+      tracker.commit()
     return resp
 
   async def position_right_x_arm_(self, x_position: int = 0):
@@ -6386,8 +6457,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     """Request left X-Arm position"""
     resp_dmm = await self.send_command(module="C0", command="RX", fmt="rx#####")
     x = cast(float, resp_dmm["rx"]) / 10
-    if not self.left_x_arm_tracker.is_disabled:
-      self.left_x_arm_tracker.set_x(x)
+    tracker = self.left_x_arm_tracker
+    if tracker is not None and not tracker.is_disabled:
+      tracker.set_x(x)
     return x
 
   async def request_right_x_arm_position(self) -> float:
@@ -6399,15 +6471,34 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       self.right_x_arm_tracker.set_x(x)
     return x
 
-  async def request_maximal_ranges_of_x_drives(self):
-    """Request maximal ranges of X drives"""
+  async def request_maximal_ranges_of_x_drives(self) -> Dict[str, Tuple[float, float]]:
+    """Request the maximal travel range of each X drive.
 
-    return await self.send_command(module="C0", command="RU")
+    Returns:
+      The `(minimum, maximum)` X position in mm each drive can reach, keyed by side:
+      `{"left": (min, max), "right": (min, max)}`.
+    """
+    resp = await self.send_command(module="C0", command="RU")
+    values = [int(v) / 10 for v in resp.split("ru")[-1].strip().split()]
+    left_min, left_max, right_min, right_max = values
+    return {"left": (left_min, left_max), "right": (right_min, right_max)}
 
-  async def request_present_wrap_size_of_installed_arms(self):
-    """Request present wrap size of installed arms"""
+  async def request_present_wrap_size_of_installed_arms(
+    self,
+  ) -> Dict[str, Tuple[float, Tuple[float, float]]]:
+    """Request the wrap size and workspace of each installed arm.
 
-    return await self.send_command(module="C0", command="UA")
+    Returns:
+      Per side, `(wrap_size, (workspace_min, workspace_max))` in mm, keyed by side. A
+      `wrap_size` of 0 means that arm is not installed.
+    """
+    resp = await self.send_command(module="C0", command="UA")
+    values = [int(v) / 10 for v in resp.split("ua")[-1].strip().split()]
+    left_wrap, right_wrap, left_min, left_max, right_min, right_max = values
+    return {
+      "left": (left_wrap, (left_min, left_max)),
+      "right": (right_wrap, (right_min, right_max)),
+    }
 
   async def request_left_x_arm_last_collision_type(self):
     """Request left X-Arm last collision type (after error 27)

@@ -1,6 +1,6 @@
 import unittest
 
-from pylabrobot.liquid_handling.backends.hamilton.x_arm_tracker import XArmTracker
+from pylabrobot.resources.x_arm_tracker import XArmTracker
 
 
 class TestXArmTracker(unittest.TestCase):

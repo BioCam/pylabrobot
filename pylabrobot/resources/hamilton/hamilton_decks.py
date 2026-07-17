@@ -12,18 +12,19 @@ from pylabrobot.resources.hamilton.tip_creators import hamilton_teaching_needle_
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip_rack import TipRack, TipSpot
 from pylabrobot.resources.trash import Trash
+from pylabrobot.resources.x_arm import XArm
 
 logger = logging.getLogger("pylabrobot")
 
 
 _RAILS_WIDTH = 22.5  # space between rails (mm)
 
-# Geometry of an X-arm marker (a deck-owned Resource the Visualizer renders to show
+# Geometry of the X-arm (a deck-owned Resource the Visualizer renders to show
 # where an X-arm is): its bottom sits at z, and it is this tall in z. Its x and width
 # come from the backend (tracked position and firmware arm width); its y-height spans
 # the deck.
-_X_ARM_MARKER_Z = 248.0
-_X_ARM_MARKER_SIZE_Z = 140.0
+_X_ARM_Z = 248.0
+_X_ARM_SIZE_Z = 140.0
 
 STARLET_NUM_RAILS = 32
 STARLET_SIZE_X = 1005
@@ -550,35 +551,37 @@ class HamiltonSTARDeck(HamiltonDeck):
       "core_grippers": None,  # data encoded as child. (not very pretty to have this key though...)
     }
 
-  def update_x_arm_marker(self, name: str, left_edge_x: float, width: float) -> Resource:
-    """Create or reposition an X-arm marker owned by this deck.
+  def get_or_create_x_arm(
+    self, name: str, width: float, model: str, reference_point: Literal["center", "right"]
+  ) -> XArm:
+    """Get (or create, once) the deck-owned X-arm resource for `name`.
 
-    An X-arm marker is a full-deck-height Resource (category ``"X-arm"``) the Visualizer
-    renders to show where an X-arm is. The deck owns it: this creates it as a child the
-    first time and just repositions it thereafter, so repeated ``setup()`` calls reuse
-    the same marker instead of duplicating it.
+    The X-arm is a full-deck-height :class:`~pylabrobot.resources.x_arm.XArm` that owns
+    an ``XArmTracker``; the Visualizer draws it at the tracker's x. The deck owns it:
+    created as a child the first time and reused thereafter, so repeated ``setup()``
+    calls don't duplicate it. It is assigned at a nominal x - the backend drives its
+    tracker and the Visualizer positions it from that.
 
     Args:
-      name: unique marker name, e.g. ``"left_x_arm"``.
-      left_edge_x: deck-x of the marker's left edge (the backend applies the arm's
-        firmware reference convention before calling this).
-      width: marker width in mm (the firmware-reported arm width).
+      name: unique resource name, e.g. ``"left_x_arm"``.
+      width: arm width in mm (the firmware-reported value).
+      model: the arm variant, e.g. ``"hamilton_legacy_star_dual_rail_arm"``.
+      reference_point: where the tracked x refers to along the width.
     """
-    location = Coordinate(left_edge_x, 0.0, _X_ARM_MARKER_Z)
     if self.has_resource(name):
-      marker = self.get_resource(name)
-      marker.set_location(location)
-      return marker
-    marker = Resource(
+      return cast(XArm, self.get_resource(name))
+    x_arm = XArm(
       name=name,
       size_x=width,
       size_y=self.get_size_y(),
-      size_z=_X_ARM_MARKER_SIZE_Z,
-      category="X-arm",
-      model="x_arm",
+      size_z=_X_ARM_SIZE_Z,
+      reference_point=reference_point,
+      model=model,
     )
-    self.assign_child_resource(marker, location=location, ignore_collision=True)
-    return marker
+    self.assign_child_resource(
+      x_arm, location=Coordinate(0.0, 0.0, _X_ARM_Z), ignore_collision=True
+    )
+    return x_arm
 
   def rails_to_location(self, rails: int) -> Coordinate:
     x = 100.0 + (rails - 1) * _RAILS_WIDTH

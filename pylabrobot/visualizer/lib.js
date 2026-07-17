@@ -1349,15 +1349,6 @@ class Resource {
         this.group.rotation(this.rotation.z || 0);
       }
     }
-    // Location is shipped the same way, so `Resource.set_location(...)` (which
-    // fires `_state_updated`) repositions the resource live.
-    if (state && state.location !== undefined && state.location !== null) {
-      this.location = state.location;
-      if (this.group !== undefined) {
-        this.group.x(this.location.x);
-        this.group.y(this.location.y);
-      }
-    }
   }
 }
 
@@ -1367,15 +1358,25 @@ class Deck extends Resource {
 }
 
 class XArm extends Resource {
-  // Visual marker for an X-arm carriage reference point: a translucent dark-grey
-  // full-deck-height frame (a rectangle with a rectangular hole), with a cyan centre
-  // line marking the tracked x. Drawn as a normal resource (local [0, size_x]) so its
-  // bounding box and selection highlight stay aligned; the backend places location.x
-  // at tracked_x - size_x/2 so the centre lands on the tracked x. Fill and border
-  // carry different alphas (rgba). The x position tweens on update so moves read as
-  // motion.
+  // Visual proxy for an X-arm carriage: a translucent dark-grey full-deck-height frame
+  // (a rectangle with a rectangular hole) with a cyan reference line at the tracked x.
+  // The X-arm owns an XArmTracker (like TipSpot owns a TipTracker); its serialized
+  // tracker x drives the position - the group's left edge is placed at tracked_x minus
+  // the reference offset (the arm centre, or the right edge for a single-rail arm), so
+  // the frame is drawn as a normal resource (local [0, size_x]) and its bounding box
+  // and selection highlight stay aligned. The x glides on update so moves read as motion.
   draggable = false;
   canDelete = false;
+
+  constructor(resourceData, parent = undefined) {
+    super(resourceData, parent);
+    this.reference_point = resourceData.reference_point || "center";
+  }
+
+  // Local x of the firmware reference within the frame (also the reference line's x).
+  get referenceOffset() {
+    return this.reference_point === "center" ? this.size_x / 2 : this.size_x;
+  }
 
   drawMainShape() {
     const w = this.size_x;
@@ -1386,14 +1387,12 @@ class XArm extends Resource {
     const innerH = h - 2 * insetY;
 
     const g = new Konva.Group();
-    // Reference line at the exact firmware x. Its local position is the reference
-    // offset - the arm centre for widths > 300 mm, else the right edge - mirroring
-    // STARBackend._x_arm_marker_left_edge so the line always marks the tracked x.
-    // Added first so the frame draws on top of it, visible only through the hole.
-    const refLocalX = w > 300 ? w / 2 : w;
+    // Reference line at the exact firmware x (local = referenceOffset), so it always
+    // marks the tracked x. Added first so the frame draws on top of it, visible only
+    // through the hole.
     g.add(
       new Konva.Line({
-        points: [refLocalX, 0, refLocalX, h],
+        points: [this.referenceOffset, 0, this.referenceOffset, h],
         stroke: "rgba(0, 229, 255, 0.7)",
         strokeWidth: 2,
         listening: false,
@@ -1428,36 +1427,37 @@ class XArm extends Resource {
   }
 
   setState(state) {
-    // Rotation and y snap as usual; x glides so arm moves read as motion rather
-    // than teleports. The tracker only has commanded targets, so this interpolates
-    // between them - purely cosmetic.
-    if (state && state.rotation !== undefined && state.rotation !== null) {
-      this.rotation = state.rotation;
-      if (this.group !== undefined) {
-        this.group.rotation(this.rotation.z || 0);
-      }
+    super.setState(state); // rotation
+    if (this.group === undefined) {
+      return;
     }
-    if (state && state.location !== undefined && state.location !== null) {
-      this.location = state.location;
-      if (this.group !== undefined) {
-        this.group.y(this.location.y);
-        const reduce =
-          window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-        if (reduce) {
-          this.group.x(this.location.x);
-        } else {
-          if (this._xTween) {
-            this._xTween.destroy();
-          }
-          this._xTween = new Konva.Tween({
-            node: this.group,
-            x: this.location.x,
-            duration: 0.2,
-            easing: Konva.Easings.EaseInOut,
-          });
-          this._xTween.play();
-        }
+    // Position from the owned tracker's x. Hidden until a position is known; the
+    // group's left edge sits at tracked_x - referenceOffset. The x glides so moves
+    // read as motion rather than teleports (the tracker only has commanded targets,
+    // so this is purely cosmetic interpolation).
+    const trackerState = state && state.tracker;
+    const x = trackerState ? trackerState.x : null;
+    if (x === null || x === undefined) {
+      this.group.visible(false);
+      return;
+    }
+    this.group.visible(true);
+    const leftEdge = x - this.referenceOffset;
+    const reduce =
+      window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce) {
+      this.group.x(leftEdge);
+    } else {
+      if (this._xTween) {
+        this._xTween.destroy();
       }
+      this._xTween = new Konva.Tween({
+        node: this.group,
+        x: leftEdge,
+        duration: 0.2,
+        easing: Konva.Easings.EaseInOut,
+      });
+      this._xTween.play();
     }
   }
 }
@@ -3254,7 +3254,7 @@ function classForResourceType(type, category) {
     case "carrier":
     case "mfx_carrier":
       return Carrier;
-    case "X-arm":
+    case "x_arm":
       return XArm;
     case "deck":
       return Deck;
