@@ -7191,8 +7191,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     flow_rate: float = 249.99,
     transport_air_volume: float = 0.0,
     blow_out_air_volume: float = 0.0,
-    pre_wetting_volume: float = 37.5,
-    swap_speed: float = 10.73,
+    pre_wetting_volume: float = 0.0,
+    swap_speed: float = 12.0,
     settling_time: float = 0.0,
     mix_volume: float = 0.0,
     mix_cycles: int = 0,
@@ -7251,8 +7251,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       transport_air_volume: Transport air volume, uL. This command has no field for the height at
         which transport air is taken, unlike the level-detecting aspirate commands.
       blow_out_air_volume: Blow-out air volume, uL.
-      pre_wetting_volume: Pre-wetting volume, uL. Note the firmware default is non-zero, so
-        pre-wetting is on unless this is set to 0.
+      pre_wetting_volume: Pre-wetting volume, uL. Defaults to 0 (off). The firmware's own default
+        for this field is non-zero, so this is a deliberate no-op default, not the wire default.
       swap_speed: Z-drive speed on leaving the liquid, mm/s.
       settling_time: Time to wait in the liquid after aspirating, seconds.
       mix_volume: Mix volume, uL; 0 disables mixing and makes the rest of the mix arguments inert.
@@ -7275,10 +7275,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       z_acceleration: Z-drive acceleration, mm/s^2.
       z_current_limit: Z-drive current limit, 0-7.
       mix_volume_correction_percent: Correction applied to the mix volume during the
-        dispense/aspirate sequence, percent. The firmware documents this in one line and nothing
-        more; its exact effect is unverified.
+        dispense/aspirate sequence, percent. Varying this (50/90/100) produced no observable change
+        in the TADM pressure trace in testing, so its practical effect appears negligible here.
       last_dispense_mix_volume_correction_percent: Correction applied to the final dispense of the
-        mix sequence, percent. Unverified in the same way.
+        mix sequence, percent. No observable effect in the same testing.
       empty_cup_mode: False aspirates; True empties the cup.
       adc_algorithm_enabled: Whether the pressure ADC algorithm runs.
       requires_tip: If True, raise when the channel holds no tip. Tip presence, not tip capacity:
@@ -7502,7 +7502,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     stop_flow_rate: float = 140.63,
     stop_back_volume: float = 0.0,
     transport_air_volume: float = 0.0,
-    swap_speed: float = 10.73,
+    swap_speed: float = 12.0,
     settling_time: float = 0.0,
     mix_volume: float = 0.0,
     mix_cycles: int = 0,
@@ -7570,10 +7570,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       z_acceleration: Z-drive acceleration, mm/s^2.
       z_current_limit: Z-drive current limit, 0-7.
       mix_volume_correction_percent: Correction applied to the mix volume during the
-        dispense/aspirate sequence, percent. The firmware documents this in one line and nothing
-        more; its exact effect is unverified.
+        dispense/aspirate sequence, percent. Varying this (50/90/100) produced no observable change
+        in the TADM pressure trace in testing, so its practical effect appears negligible here.
       last_dispense_mix_volume_correction_percent: Correction applied to the final dispense of the
-        mix sequence, percent. Unverified in the same way.
+        mix sequence, percent. No observable effect in the same testing.
       adc_algorithm_enabled: Whether the pressure ADC algorithm runs.
       requires_tip: If True, raise when the channel holds no tip. Tip presence, not tip contents:
         this does not check that the tip holds `volume`.
