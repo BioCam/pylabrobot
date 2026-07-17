@@ -21,6 +21,27 @@ class TestResource(unittest.TestCase):
     self.assertEqual(r.get_absolute_size_y(), 10)
     self.assertEqual(r.get_absolute_size_z(), 10)
 
+  def test_location_in_state(self):
+    r = Resource("test", size_x=10, size_y=10, size_z=10)
+    r.location = Coordinate(1, 2, 3)
+    self.assertEqual(r.serialize_state()["location"], Coordinate(1, 2, 3).serialize())
+
+  def test_set_location_fires_state_update(self):
+    r = Resource("test", size_x=10, size_y=10, size_z=10)
+    r.location = Coordinate(0, 0, 0)
+    cb = unittest.mock.Mock()
+    r.register_state_update_callback(cb)
+    r.set_location(Coordinate(5, 6, 7))
+    self.assertEqual(r.location, Coordinate(5, 6, 7))
+    cb.assert_called_once()
+    self.assertEqual(cb.call_args.args[0]["location"], Coordinate(5, 6, 7).serialize())
+
+  def test_load_state_restores_location(self):
+    r = Resource("test", size_x=10, size_y=10, size_z=10)
+    r.location = Coordinate(0, 0, 0)
+    r.load_state({"location": Coordinate(8, 9, 10).serialize()})
+    self.assertEqual(r.location, Coordinate(8, 9, 10))
+
   def test_rotated_45(self):
     r = Resource("test", size_x=20, size_y=10, size_z=10)
     r.rotation = Rotation(z=45)
