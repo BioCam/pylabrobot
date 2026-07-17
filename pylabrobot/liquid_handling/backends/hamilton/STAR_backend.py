@@ -6603,528 +6603,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   # TODO:(command:TW) Tip Pick-up for DC wash procedure
 
-  # -------------- 3.5.3 Liquid handling commands using PIP --------------
-
-  # TODO:(command:DC) Set multiple dispense values using PIP
-
-  @need_iswap_parked
-  async def aspirate_pip(
-    self,
-    aspiration_type: List[int] = [0],
-    tip_pattern: List[bool] = [True],
-    x_positions: List[int] = [0],
-    y_positions: List[int] = [0],
-    minimum_traverse_height_at_beginning_of_a_command: int = 3600,
-    min_z_endpos: int = 3600,
-    lld_search_height: List[int] = [0],
-    clot_detection_height: List[int] = [60],
-    liquid_surface_no_lld: List[int] = [3600],
-    pull_out_distance_transport_air: List[int] = [50],
-    second_section_height: List[int] = [0],
-    second_section_ratio: List[int] = [0],
-    minimum_height: List[int] = [3600],
-    immersion_depth: List[int] = [0],
-    immersion_depth_direction: List[int] = [0],
-    surface_following_distance: List[int] = [0],
-    aspiration_volumes: List[int] = [0],
-    aspiration_speed: List[int] = [500],
-    transport_air_volume: List[int] = [0],
-    blow_out_air_volume: List[int] = [200],
-    pre_wetting_volume: List[int] = [0],
-    lld_mode: List[int] = [1],
-    gamma_lld_sensitivity: List[int] = [1],
-    dp_lld_sensitivity: List[int] = [1],
-    aspirate_position_above_z_touch_off: List[int] = [5],
-    detection_height_difference_for_dual_lld: List[int] = [0],
-    swap_speed: List[int] = [100],
-    settling_time: List[int] = [5],
-    mix_volume: List[int] = [0],
-    mix_cycles: List[int] = [0],
-    mix_position_from_liquid_surface: List[int] = [250],
-    mix_speed: List[int] = [500],
-    mix_surface_following_distance: List[int] = [0],
-    limit_curve_index: List[int] = [0],
-    tadm_algorithm: bool = False,
-    recording_mode: int = 0,
-    # For second section aspiration only
-    use_2nd_section_aspiration: List[bool] = [False],
-    retract_height_over_2nd_section_to_empty_tip: List[int] = [60],
-    dispensation_speed_during_emptying_tip: List[int] = [468],
-    dosing_drive_speed_during_2nd_section_search: List[int] = [468],
-    z_drive_speed_during_2nd_section_search: List[int] = [215],
-    cup_upper_edge: List[int] = [3600],
-    # deprecated, remove >2026-06
-    ratio_liquid_rise_to_tip_deep_in: Optional[List[int]] = None,
-    immersion_depth_2nd_section: Optional[List[int]] = None,
-  ):
-    """aspirate pip
-
-    Aspiration of liquid using PIP.
-
-    It's not really clear what second section aspiration is, but it does not seem to be used
-    very often. Probably safe to ignore it.
-
-    LLD restrictions!
-      - "dP and Dual LLD" are used in aspiration only. During dispensation LLD is set to OFF.
-      - "side touch off" turns LLD & "Z touch off" to OFF , is not available for simultaneous
-        Asp/Disp. command
-
-    Args:
-      aspiration_type: Type of aspiration (0 = simple;1 = sequence; 2 = cup emptied).
-                        Must be between 0 and 2. Default 0.
-      tip_pattern: Tip pattern (channels involved). Default True.
-      x_positions: x positions [0.1mm]. Must be between 0 and 25000. Default 0.
-      y_positions: y positions [0.1mm]. Must be between 0 and 6500. Default 0.
-      minimum_traverse_height_at_beginning_of_a_command: Minimum traverse height at beginning of
-          a command 0.1mm] (refers to all channels independent of tip pattern parameter 'tm').
-          Must be between 0 and 3600. Default 3600.
-      min_z_endpos: Minimum z-Position at end of a command [0.1 mm] (refers to all channels
-          independent of tip pattern parameter 'tm'). Must be between 0 and 3600. Default 3600.
-      lld_search_height: LLD search height [0.1 mm]. Must be between 0 and 3600. Default 0.
-      clot_detection_height: Check height of clot detection above current surface (as computed)
-          of the liquid [0.1mm]. Must be between 0 and 500. Default 60.
-      liquid_surface_no_lld: Liquid surface at function without LLD [0.1mm]. Must be between 0
-          and 3600. Default 3600.
-      pull_out_distance_transport_air: pull out distance to take transport air in function
-          without LLD [0.1mm]. Must be between 0 and 3600. Default 50.
-      second_section_height: Tube 2nd section height measured from "zx" [0.1mm]. Must be
-          between 0 and 3600. Default 0.
-      second_section_ratio: Tube 2nd section ratio (see Fig. 2 in fw guide). Must be between
-          0 and 10000. Default 0.
-      minimum_height: Minimum height (maximum immersion depth) [0.1 mm]. Must be between 0 and
-          3600. Default 3600.
-      immersion_depth: Immersion depth [0.1mm]. Must be between 0 and 3600. Default 0.
-      immersion_depth_direction: Direction of immersion depth (0 = go deeper, 1 = go up out
-          of liquid). Must be between 0 and 1. Default 0.
-      surface_following_distance: Surface following distance during aspiration [0.1mm]. Must
-          be between 0 and 3600. Default 0.
-      aspiration_volumes: Aspiration volume [0.1ul]. Must be between 0 and 12500. Default 0.
-      aspiration_speed: Aspiration speed [0.1ul/s]. Must be between 4 and 5000. Default 500.
-      transport_air_volume: Transport air volume [0.1ul]. Must be between 0 and 500. Default 0.
-      blow_out_air_volume: Blow-out air volume [0.1ul]. Must be between 0 and 9999. Default 200.
-      pre_wetting_volume: Pre-wetting volume. Must be between 0 and 999. Default 0.
-      lld_mode: LLD mode (0 = off, 1 = gamma, 2 = dP, 3 = dual, 4 = Z touch off). Must be
-            between 0 and 4. Default 1.
-      gamma_lld_sensitivity: gamma LLD sensitivity (1= high, 4=low). Must be between 1 and
-            4. Default 1.
-      dp_lld_sensitivity: delta p LLD sensitivity (1= high, 4=low). Must be between 1 and
-            4. Default 1.
-      aspirate_position_above_z_touch_off: aspirate position above Z touch off [0.1mm]. Must
-            be between 0 and 100. Default 5.
-      detection_height_difference_for_dual_lld: Difference in detection height for dual
-            LLD [0.1 mm]. Must be between 0 and 99. Default 0.
-      swap_speed: Swap speed (on leaving liquid) [0.1mm/s]. Must be between 3 and 1600.
-            Default 100.
-      settling_time: Settling time [0.1s]. Must be between 0 and 99. Default 5.
-      mix_volume: mix volume [0.1ul]. Must be between 0 and 12500. Default 0
-      mix_cycles: Number of mix cycles. Must be between 0 and 99. Default 0.
-      mix_position_from_liquid_surface: mix position in Z- direction from
-          liquid surface (LLD or absolute terms) [0.1mm]. Must be between 0 and 900. Default 250.
-      mix_speed: Speed of mix [0.1ul/s]. Must be between 4 and 5000.
-          Default 500.
-      mix_surface_following_distance: Surface following distance during
-          mix [0.1mm]. Must be between 0 and 3600. Default 0.
-      limit_curve_index: limit curve index. Must be between 0 and 999. Default 0.
-      tadm_algorithm: TADM algorithm. Default False.
-      recording_mode: Recording mode 0 : no 1 : TADM errors only 2 : all TADM measurement. Must
-          be between 0 and 2. Default 0.
-      use_2nd_section_aspiration: 2nd section aspiration. Default False.
-      retract_height_over_2nd_section_to_empty_tip: Retract height over 2nd section to empty
-          tip [0.1mm]. Must be between 0 and 3600. Default 60.
-      dispensation_speed_during_emptying_tip: Dispensation speed during emptying tip [0.1ul/s]
-            Must be between 4 and 5000. Default 468.
-      dosing_drive_speed_during_2nd_section_search: Dosing drive speed during 2nd section
-          search [0.1ul/s]. Must be between 4 and 5000. Default 468.
-      z_drive_speed_during_2nd_section_search: Z drive speed during 2nd section search [0.1mm/s].
-          Must be between 3 and 1600. Default 215.
-      cup_upper_edge: Cup upper edge [0.1mm]. Must be between 0 and 3600. Default 3600.
-    """
-
-    if ratio_liquid_rise_to_tip_deep_in is not None:
-      warnings.warn(
-        "ratio_liquid_rise_to_tip_deep_in is deprecated and will be removed in a future version.",
-        DeprecationWarning,
-        stacklevel=2,
-      )
-    if immersion_depth_2nd_section is not None:
-      warnings.warn(
-        "immersion_depth_2nd_section is deprecated and will be removed in a future version.",
-        DeprecationWarning,
-        stacklevel=2,
-      )
-
-    assert all(0 <= x <= 2 for x in aspiration_type), "aspiration_type must be between 0 and 2"
-    assert all(0 <= xp <= 25000 for xp in x_positions), "x_positions must be between 0 and 25000"
-    assert all(0 <= yp <= 6500 for yp in y_positions), "y_positions must be between 0 and 6500"
-    assert 0 <= minimum_traverse_height_at_beginning_of_a_command <= 3600, (
-      "minimum_traverse_height_at_beginning_of_a_command must be between 0 and 3600"
-    )
-    assert 0 <= min_z_endpos <= 3600, "min_z_endpos must be between 0 and 3600"
-    assert all(0 <= x <= 3600 for x in lld_search_height), (
-      "lld_search_height must be between 0 and 3600"
-    )
-    assert all(0 <= x <= 500 for x in clot_detection_height), (
-      "clot_detection_height must be between 0 and 500"
-    )
-    assert all(0 <= x <= 3600 for x in liquid_surface_no_lld), (
-      "liquid_surface_no_lld must be between 0 and 3600"
-    )
-    assert all(0 <= x <= 3600 for x in pull_out_distance_transport_air), (
-      "pull_out_distance_transport_air must be between 0 and 3600"
-    )
-    assert all(0 <= x <= 3600 for x in second_section_height), (
-      "second_section_height must be between 0 and 3600"
-    )
-    assert all(0 <= x <= 10000 for x in second_section_ratio), (
-      "second_section_ratio must be between 0 and 10000"
-    )
-    assert all(0 <= x <= 3600 for x in minimum_height), "minimum_height must be between 0 and 3600"
-    assert all(0 <= x <= 3600 for x in immersion_depth), (
-      "immersion_depth must be between 0 and 3600"
-    )
-    assert all(0 <= x <= 1 for x in immersion_depth_direction), (
-      "immersion_depth_direction must be between 0 and 1"
-    )
-    assert all(0 <= x <= 3600 for x in surface_following_distance), (
-      "surface_following_distance must be between 0 and 3600"
-    )
-    assert all(0 <= x <= 12500 for x in aspiration_volumes), (
-      "aspiration_volumes must be between 0 and 12500"
-    )
-    assert all(4 <= x <= 5000 for x in aspiration_speed), (
-      "aspiration_speed must be between 4 and 5000"
-    )
-    assert all(0 <= x <= 500 for x in transport_air_volume), (
-      "transport_air_volume must be between 0 and 500"
-    )
-    assert all(0 <= x <= 9999 for x in blow_out_air_volume), (
-      "blow_out_air_volume must be between 0 and 9999"
-    )
-    assert all(0 <= x <= 999 for x in pre_wetting_volume), (
-      "pre_wetting_volume must be between 0 and 999"
-    )
-    assert all(0 <= x <= 4 for x in lld_mode), "lld_mode must be between 0 and 4"
-    assert all(1 <= x <= 4 for x in gamma_lld_sensitivity), (
-      "gamma_lld_sensitivity must be between 1 and 4"
-    )
-    assert all(1 <= x <= 4 for x in dp_lld_sensitivity), (
-      "dp_lld_sensitivity must be between 1 and 4"
-    )
-    assert all(0 <= x <= 100 for x in aspirate_position_above_z_touch_off), (
-      "aspirate_position_above_z_touch_off must be between 0 and 100"
-    )
-    assert all(0 <= x <= 99 for x in detection_height_difference_for_dual_lld), (
-      "detection_height_difference_for_dual_lld must be between 0 and 99"
-    )
-    assert all(3 <= x <= 1600 for x in swap_speed), "swap_speed must be between 3 and 1600"
-    assert all(0 <= x <= 99 for x in settling_time), "settling_time must be between 0 and 99"
-    assert all(0 <= x <= 12500 for x in mix_volume), "mix_volume must be between 0 and 12500"
-    assert all(0 <= x <= 99 for x in mix_cycles), "mix_cycles must be between 0 and 99"
-    assert all(0 <= x <= 900 for x in mix_position_from_liquid_surface), (
-      "mix_position_from_liquid_surface must be between 0 and 900"
-    )
-    assert all(4 <= x <= 5000 for x in mix_speed), "mix_speed must be between 4 and 5000"
-    assert all(0 <= x <= 3600 for x in mix_surface_following_distance), (
-      "mix_surface_following_distance must be between 0 and 3600"
-    )
-    assert all(0 <= x <= 999 for x in limit_curve_index), (
-      "limit_curve_index must be between 0 and 999"
-    )
-    assert 0 <= recording_mode <= 2, "recording_mode must be between 0 and 2"
-    assert all(0 <= x <= 3600 for x in retract_height_over_2nd_section_to_empty_tip), (
-      "retract_height_over_2nd_section_to_empty_tip must be between 0 and 3600"
-    )
-    assert all(4 <= x <= 5000 for x in dispensation_speed_during_emptying_tip), (
-      "dispensation_speed_during_emptying_tip must be between 4 and 5000"
-    )
-    assert all(4 <= x <= 5000 for x in dosing_drive_speed_during_2nd_section_search), (
-      "dosing_drive_speed_during_2nd_section_search must be between 4 and 5000"
-    )
-    assert all(3 <= x <= 1600 for x in z_drive_speed_during_2nd_section_search), (
-      "z_drive_speed_during_2nd_section_search must be between 3 and 1600"
-    )
-    assert all(0 <= x <= 3600 for x in cup_upper_edge), "cup_upper_edge must be between 0 and 3600"
-
-    return await self.send_command(
-      module="C0",
-      command="AS",
-      tip_pattern=tip_pattern,
-      read_timeout=max(300, self.read_timeout),
-      at=[f"{at:01}" for at in aspiration_type],
-      tm=tip_pattern,
-      xp=[f"{xp:05}" for xp in x_positions],
-      yp=[f"{yp:04}" for yp in y_positions],
-      th=f"{minimum_traverse_height_at_beginning_of_a_command:04}",
-      te=f"{min_z_endpos:04}",
-      lp=[f"{lp:04}" for lp in lld_search_height],
-      ch=[f"{ch:03}" for ch in clot_detection_height],
-      zl=[f"{zl:04}" for zl in liquid_surface_no_lld],
-      po=[f"{po:04}" for po in pull_out_distance_transport_air],
-      zu=[f"{zu:04}" for zu in second_section_height],
-      zr=[f"{zr:05}" for zr in second_section_ratio],
-      zx=[f"{zx:04}" for zx in minimum_height],
-      ip=[f"{ip:04}" for ip in immersion_depth],
-      it=[f"{it}" for it in immersion_depth_direction],
-      fp=[f"{fp:04}" for fp in surface_following_distance],
-      av=[f"{av:05}" for av in aspiration_volumes],
-      as_=[f"{as_:04}" for as_ in aspiration_speed],
-      ta=[f"{ta:03}" for ta in transport_air_volume],
-      ba=[f"{ba:04}" for ba in blow_out_air_volume],
-      oa=[f"{oa:03}" for oa in pre_wetting_volume],
-      lm=[f"{lm}" for lm in lld_mode],
-      ll=[f"{ll}" for ll in gamma_lld_sensitivity],
-      lv=[f"{lv}" for lv in dp_lld_sensitivity],
-      zo=[f"{zo:03}" for zo in aspirate_position_above_z_touch_off],
-      ld=[f"{ld:02}" for ld in detection_height_difference_for_dual_lld],
-      de=[f"{de:04}" for de in swap_speed],
-      wt=[f"{wt:02}" for wt in settling_time],
-      mv=[f"{mv:05}" for mv in mix_volume],
-      mc=[f"{mc:02}" for mc in mix_cycles],
-      mp=[f"{mp:03}" for mp in mix_position_from_liquid_surface],
-      ms=[f"{ms:04}" for ms in mix_speed],
-      mh=[f"{mh:04}" for mh in mix_surface_following_distance],
-      gi=[f"{gi:03}" for gi in limit_curve_index],
-      gj=tadm_algorithm,
-      gk=recording_mode,
-      lk=[1 if lk else 0 for lk in use_2nd_section_aspiration],
-      ik=[f"{ik:04}" for ik in retract_height_over_2nd_section_to_empty_tip],
-      sd=[f"{sd:04}" for sd in dispensation_speed_during_emptying_tip],
-      se=[f"{se:04}" for se in dosing_drive_speed_during_2nd_section_search],
-      sz=[f"{sz:04}" for sz in z_drive_speed_during_2nd_section_search],
-      io=[f"{io:04}" for io in cup_upper_edge],
-    )
-
-  @need_iswap_parked
-  async def dispense_pip(
-    self,
-    tip_pattern: List[bool],
-    dispensing_mode: List[int] = [0],
-    x_positions: List[int] = [0],
-    y_positions: List[int] = [0],
-    minimum_height: List[int] = [3600],
-    lld_search_height: List[int] = [0],
-    liquid_surface_no_lld: List[int] = [3600],
-    pull_out_distance_transport_air: List[int] = [50],
-    immersion_depth: List[int] = [0],
-    immersion_depth_direction: List[int] = [0],
-    surface_following_distance: List[int] = [0],
-    second_section_height: List[int] = [0],
-    second_section_ratio: List[int] = [0],
-    minimum_traverse_height_at_beginning_of_a_command: int = 3600,
-    min_z_endpos: int = 3600,  #
-    dispense_volumes: List[int] = [0],
-    dispense_speed: List[int] = [500],
-    cut_off_speed: List[int] = [250],
-    stop_back_volume: List[int] = [0],
-    transport_air_volume: List[int] = [0],
-    blow_out_air_volume: List[int] = [200],
-    lld_mode: List[int] = [1],
-    side_touch_off_distance: int = 1,
-    dispense_position_above_z_touch_off: List[int] = [5],
-    gamma_lld_sensitivity: List[int] = [1],
-    dp_lld_sensitivity: List[int] = [1],
-    swap_speed: List[int] = [100],
-    settling_time: List[int] = [5],
-    mix_volume: List[int] = [0],
-    mix_cycles: List[int] = [0],
-    mix_position_from_liquid_surface: List[int] = [250],
-    mix_speed: List[int] = [500],
-    mix_surface_following_distance: List[int] = [0],
-    limit_curve_index: List[int] = [0],
-    tadm_algorithm: bool = False,
-    recording_mode: int = 0,
-  ):
-    """dispense pip
-
-    Dispensing of liquid using PIP.
-
-    LLD restrictions!
-      - "dP and Dual LLD" are used in aspiration only. During dispensation all pressure-based
-        LLD is set to OFF.
-      - "side touch off" turns LLD & "Z touch off" to OFF , is not available for simultaneous
-        Asp/Disp. command
-
-    Args:
-      dispensing_mode: Type of dispensing mode 0 = Partial volume in jet mode
-        1 = Blow out in jet mode 2 = Partial volume at surface
-        3 = Blow out at surface 4 = Empty tip at fix position.
-      tip_pattern: Tip pattern (channels involved). Default True.
-      x_positions: x positions [0.1mm]. Must be between 0 and 25000. Default 0.
-      y_positions: y positions [0.1mm]. Must be between 0 and 6500. Default 0.
-      minimum_height: Minimum height (maximum immersion depth) [0.1 mm]. Must be between 0 and
-        3600. Default 3600.
-      lld_search_height: LLD search height [0.1 mm]. Must be between 0 and 3600. Default 0.
-      liquid_surface_no_lld: Liquid surface at function without LLD [0.1mm]. Must be between 0 and
-        3600. Default 3600.
-      pull_out_distance_transport_air: pull out distance to take transport air in function without
-        LLD [0.1mm]. Must be between 0 and 3600. Default 50.
-      immersion_depth: Immersion depth [0.1mm]. Must be between 0 and 3600. Default 0.
-      immersion_depth_direction: Direction of immersion depth (0 = go deeper, 1 = go up out of
-        liquid). Must be between 0 and 1. Default 0.
-      surface_following_distance: Surface following distance during aspiration [0.1mm]. Must be
-        between 0 and 3600. Default 0.
-      second_section_height: Tube 2nd section height measured from "zx" [0.1mm]. Must be between
-        0 and 3600. Default 0.
-      second_section_ratio: Tube 2nd section ratio (see Fig. 2 in fw guide). Must be between 0 and
-        10000. Default 0.
-      minimum_traverse_height_at_beginning_of_a_command: Minimum traverse height at beginning of a
-        command 0.1mm] (refers to all channels independent of tip pattern parameter 'tm'). Must be
-        between 0 and 3600. Default 3600.
-      min_z_endpos: Minimum z-Position at end of a command [0.1 mm] (refers to all channels
-        independent of tip pattern parameter 'tm'). Must be between 0 and 3600.  Default 3600.
-      dispense_volumes: Dispense volume [0.1ul]. Must be between 0 and 12500. Default 0.
-      dispense_speed: Dispense speed [0.1ul/s]. Must be between 4 and 5000. Default 500.
-      cut_off_speed: Cut-off speed [0.1ul/s]. Must be between 4 and 5000. Default 250.
-      stop_back_volume: Stop back volume [0.1ul]. Must be between 0 and 180. Default 0.
-      transport_air_volume: Transport air volume [0.1ul]. Must be between 0 and 500. Default 0.
-      blow_out_air_volume: Blow-out air volume [0.1ul]. Must be between 0 and 9999. Default 200.
-      lld_mode: LLD mode (0 = off, 1 = gamma, 2 = dP, 3 = dual, 4 = Z touch off). Must be between 0
-        and 4. Default 1.
-      side_touch_off_distance: side touch off distance [0.1 mm] (0 = OFF). Must be between 0 and 45.
-        Default 1.
-      dispense_position_above_z_touch_off: dispense position above Z touch off [0.1 s] (0 = OFF)
-        Turns LLD & Z touch off to OFF if ON!. Must be between 0 and 100. Default 5.
-      gamma_lld_sensitivity: gamma LLD sensitivity (1= high, 4=low). Must be between 1 and 4.
-        Default 1.
-      dp_lld_sensitivity: delta p LLD sensitivity (1= high, 4=low). Must be between 1 and 4.
-        Default 1.
-      swap_speed: Swap speed (on leaving liquid) [0.1mm/s]. Must be between 3 and 1600.
-        Default 100.
-      settling_time: Settling time [0.1s]. Must be between 0 and 99. Default 5.
-      mix_volume: Mix volume [0.1ul]. Must be between 0 and 12500. Default 0.
-      mix_cycles: Number of mix cycles. Must be between 0 and 99. Default 0.
-      mix_position_from_liquid_surface: Mix position in Z- direction from liquid surface (LLD or
-        absolute terms) [0.1mm]. Must be between 0 and 900.  Default 250.
-      mix_speed: Speed of mixing [0.1ul/s]. Must be between 4 and 5000. Default 500.
-      mix_surface_following_distance: Surface following distance during mixing [0.1mm]. Must be
-        between 0 and 3600. Default 0.
-      limit_curve_index: limit curve index. Must be between 0 and 999. Default 0.
-      tadm_algorithm: TADM algorithm. Default False.
-      recording_mode: Recording mode 0 : no 1 : TADM errors only 2 : all TADM measurement. Must
-        be between 0 and 2. Default 0.
-    """
-
-    assert all(0 <= x <= 4 for x in dispensing_mode), "dispensing_mode must be between 0 and 4"
-    assert all(0 <= xp <= 25000 for xp in x_positions), "x_positions must be between 0 and 25000"
-    assert all(0 <= yp <= 6500 for yp in y_positions), "y_positions must be between 0 and 6500"
-    assert any(0 <= x <= 3600 for x in minimum_height), "minimum_height must be between 0 and 3600"
-    assert any(0 <= x <= 3600 for x in lld_search_height), (
-      "lld_search_height must be between 0 and 3600"
-    )
-    assert any(0 <= x <= 3600 for x in liquid_surface_no_lld), (
-      "liquid_surface_no_lld must be between 0 and 3600"
-    )
-    assert any(0 <= x <= 3600 for x in pull_out_distance_transport_air), (
-      "pull_out_distance_transport_air must be between 0 and 3600"
-    )
-    assert any(0 <= x <= 3600 for x in immersion_depth), (
-      "immersion_depth must be between 0 and 3600"
-    )
-    assert any(0 <= x <= 1 for x in immersion_depth_direction), (
-      "immersion_depth_direction must be between 0 and 1"
-    )
-    assert any(0 <= x <= 3600 for x in surface_following_distance), (
-      "surface_following_distance must be between 0 and 3600"
-    )
-    assert any(0 <= x <= 3600 for x in second_section_height), (
-      "second_section_height must be between 0 and 3600"
-    )
-    assert any(0 <= x <= 10000 for x in second_section_ratio), (
-      "second_section_ratio must be between 0 and 10000"
-    )
-    assert 0 <= minimum_traverse_height_at_beginning_of_a_command <= 3600, (
-      "minimum_traverse_height_at_beginning_of_a_command must be between 0 and 3600"
-    )
-    assert 0 <= min_z_endpos <= 3600, "min_z_endpos must be between 0 and 3600"
-    assert any(0 <= x <= 12500 for x in dispense_volumes), (
-      "dispense_volume must be between 0 and 12500"
-    )
-    assert any(4 <= x <= 5000 for x in dispense_speed), "dispense_speed must be between 4 and 5000"
-    assert any(4 <= x <= 5000 for x in cut_off_speed), "cut_off_speed must be between 4 and 5000"
-    assert any(0 <= x <= 180 for x in stop_back_volume), (
-      "stop_back_volume must be between 0 and 180"
-    )
-    assert any(0 <= x <= 500 for x in transport_air_volume), (
-      "transport_air_volume must be between 0 and 500"
-    )
-    assert any(0 <= x <= 9999 for x in blow_out_air_volume), (
-      "blow_out_air_volume must be between 0 and 9999"
-    )
-    assert any(0 <= x <= 4 for x in lld_mode), "lld_mode must be between 0 and 4"
-    assert 0 <= side_touch_off_distance <= 45, "side_touch_off_distance must be between 0 and 45"
-    assert any(0 <= x <= 100 for x in dispense_position_above_z_touch_off), (
-      "dispense_position_above_z_touch_off must be between 0 and 100"
-    )
-    assert any(1 <= x <= 4 for x in gamma_lld_sensitivity), (
-      "gamma_lld_sensitivity must be between 1 and 4"
-    )
-    assert any(1 <= x <= 4 for x in dp_lld_sensitivity), (
-      "dp_lld_sensitivity must be between 1 and 4"
-    )
-    assert any(3 <= x <= 1600 for x in swap_speed), "swap_speed must be between 3 and 1600"
-    assert any(0 <= x <= 99 for x in settling_time), "settling_time must be between 0 and 99"
-    assert any(0 <= x <= 12500 for x in mix_volume), "mix_volume must be between 0 and 12500"
-    assert any(0 <= x <= 99 for x in mix_cycles), "mix_cycles must be between 0 and 99"
-    assert any(0 <= x <= 900 for x in mix_position_from_liquid_surface), (
-      "mix_position_from_liquid_surface must be between 0 and 900"
-    )
-    assert any(4 <= x <= 5000 for x in mix_speed), "mix_speed must be between 4 and 5000"
-    assert any(0 <= x <= 3600 for x in mix_surface_following_distance), (
-      "mix_surface_following_distance must be between 0 and 3600"
-    )
-    assert any(0 <= x <= 999 for x in limit_curve_index), (
-      "limit_curve_index must be between 0 and 999"
-    )
-    assert 0 <= recording_mode <= 2, "recording_mode must be between 0 and 2"
-
-    return await self.send_command(
-      module="C0",
-      command="DS",
-      tip_pattern=tip_pattern,
-      read_timeout=max(300, self.read_timeout),
-      dm=[f"{dm:01}" for dm in dispensing_mode],
-      tm=[f"{tm:01}" for tm in tip_pattern],
-      xp=[f"{xp:05}" for xp in x_positions],
-      yp=[f"{yp:04}" for yp in y_positions],
-      zx=[f"{zx:04}" for zx in minimum_height],
-      lp=[f"{lp:04}" for lp in lld_search_height],
-      zl=[f"{zl:04}" for zl in liquid_surface_no_lld],
-      po=[f"{po:04}" for po in pull_out_distance_transport_air],
-      ip=[f"{ip:04}" for ip in immersion_depth],
-      it=[f"{it:01}" for it in immersion_depth_direction],
-      fp=[f"{fp:04}" for fp in surface_following_distance],
-      zu=[f"{zu:04}" for zu in second_section_height],
-      zr=[f"{zr:05}" for zr in second_section_ratio],
-      th=f"{minimum_traverse_height_at_beginning_of_a_command:04}",
-      te=f"{min_z_endpos:04}",
-      dv=[f"{dv:05}" for dv in dispense_volumes],
-      ds=[f"{ds:04}" for ds in dispense_speed],
-      ss=[f"{ss:04}" for ss in cut_off_speed],
-      rv=[f"{rv:03}" for rv in stop_back_volume],
-      ta=[f"{ta:03}" for ta in transport_air_volume],
-      ba=[f"{ba:04}" for ba in blow_out_air_volume],
-      lm=[f"{lm:01}" for lm in lld_mode],
-      dj=f"{side_touch_off_distance:02}",  #
-      zo=[f"{zo:03}" for zo in dispense_position_above_z_touch_off],
-      ll=[f"{ll:01}" for ll in gamma_lld_sensitivity],
-      lv=[f"{lv:01}" for lv in dp_lld_sensitivity],
-      de=[f"{de:04}" for de in swap_speed],
-      wt=[f"{wt:02}" for wt in settling_time],
-      mv=[f"{mv:05}" for mv in mix_volume],
-      mc=[f"{mc:02}" for mc in mix_cycles],
-      mp=[f"{mp:03}" for mp in mix_position_from_liquid_surface],
-      ms=[f"{ms:04}" for ms in mix_speed],
-      mh=[f"{mh:04}" for mh in mix_surface_following_distance],
-      gi=[f"{gi:03}" for gi in limit_curve_index],
-      gj=tadm_algorithm,  #
-      gk=recording_mode,  #
-    )
-
-  # TODO:(command:DA) Simultaneous aspiration & dispensation of liquid
-
-  # TODO:(command:DF) Dispense on fly using PIP (Partial volume in jet mode)
-
-  # TODO:(command:LW) DC Wash procedure using PIP
+  # -------------- Total Aspiration and Dispensation Monitoring (TADM) --------------
 
   @dataclass(frozen=True)
   class TADMParameters:
@@ -7178,6 +6657,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
           f"measurement_id={self.measurement_id!r} labels a recording, but recording_mode=0 "
           "records nothing"
         )
+
+  # -------------- 3.5.3 Liquid handling commands using PIP --------------
 
   async def _channel_aspirate_in_absolute_z(
     self,
@@ -7777,6 +7258,527 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       gk=f"{0 if tadm is None else tadm.recording_mode}",
       **tadm_measurement_id_field,
     )
+
+  # TODO:(command:DC) Set multiple dispense values using PIP
+
+  @need_iswap_parked
+  async def aspirate_pip(
+    self,
+    aspiration_type: List[int] = [0],
+    tip_pattern: List[bool] = [True],
+    x_positions: List[int] = [0],
+    y_positions: List[int] = [0],
+    minimum_traverse_height_at_beginning_of_a_command: int = 3600,
+    min_z_endpos: int = 3600,
+    lld_search_height: List[int] = [0],
+    clot_detection_height: List[int] = [60],
+    liquid_surface_no_lld: List[int] = [3600],
+    pull_out_distance_transport_air: List[int] = [50],
+    second_section_height: List[int] = [0],
+    second_section_ratio: List[int] = [0],
+    minimum_height: List[int] = [3600],
+    immersion_depth: List[int] = [0],
+    immersion_depth_direction: List[int] = [0],
+    surface_following_distance: List[int] = [0],
+    aspiration_volumes: List[int] = [0],
+    aspiration_speed: List[int] = [500],
+    transport_air_volume: List[int] = [0],
+    blow_out_air_volume: List[int] = [200],
+    pre_wetting_volume: List[int] = [0],
+    lld_mode: List[int] = [1],
+    gamma_lld_sensitivity: List[int] = [1],
+    dp_lld_sensitivity: List[int] = [1],
+    aspirate_position_above_z_touch_off: List[int] = [5],
+    detection_height_difference_for_dual_lld: List[int] = [0],
+    swap_speed: List[int] = [100],
+    settling_time: List[int] = [5],
+    mix_volume: List[int] = [0],
+    mix_cycles: List[int] = [0],
+    mix_position_from_liquid_surface: List[int] = [250],
+    mix_speed: List[int] = [500],
+    mix_surface_following_distance: List[int] = [0],
+    limit_curve_index: List[int] = [0],
+    tadm_algorithm: bool = False,
+    recording_mode: int = 0,
+    # For second section aspiration only
+    use_2nd_section_aspiration: List[bool] = [False],
+    retract_height_over_2nd_section_to_empty_tip: List[int] = [60],
+    dispensation_speed_during_emptying_tip: List[int] = [468],
+    dosing_drive_speed_during_2nd_section_search: List[int] = [468],
+    z_drive_speed_during_2nd_section_search: List[int] = [215],
+    cup_upper_edge: List[int] = [3600],
+    # deprecated, remove >2026-06
+    ratio_liquid_rise_to_tip_deep_in: Optional[List[int]] = None,
+    immersion_depth_2nd_section: Optional[List[int]] = None,
+  ):
+    """aspirate pip
+
+    Aspiration of liquid using PIP.
+
+    It's not really clear what second section aspiration is, but it does not seem to be used
+    very often. Probably safe to ignore it.
+
+    LLD restrictions!
+      - "dP and Dual LLD" are used in aspiration only. During dispensation LLD is set to OFF.
+      - "side touch off" turns LLD & "Z touch off" to OFF , is not available for simultaneous
+        Asp/Disp. command
+
+    Args:
+      aspiration_type: Type of aspiration (0 = simple;1 = sequence; 2 = cup emptied).
+                        Must be between 0 and 2. Default 0.
+      tip_pattern: Tip pattern (channels involved). Default True.
+      x_positions: x positions [0.1mm]. Must be between 0 and 25000. Default 0.
+      y_positions: y positions [0.1mm]. Must be between 0 and 6500. Default 0.
+      minimum_traverse_height_at_beginning_of_a_command: Minimum traverse height at beginning of
+          a command 0.1mm] (refers to all channels independent of tip pattern parameter 'tm').
+          Must be between 0 and 3600. Default 3600.
+      min_z_endpos: Minimum z-Position at end of a command [0.1 mm] (refers to all channels
+          independent of tip pattern parameter 'tm'). Must be between 0 and 3600. Default 3600.
+      lld_search_height: LLD search height [0.1 mm]. Must be between 0 and 3600. Default 0.
+      clot_detection_height: Check height of clot detection above current surface (as computed)
+          of the liquid [0.1mm]. Must be between 0 and 500. Default 60.
+      liquid_surface_no_lld: Liquid surface at function without LLD [0.1mm]. Must be between 0
+          and 3600. Default 3600.
+      pull_out_distance_transport_air: pull out distance to take transport air in function
+          without LLD [0.1mm]. Must be between 0 and 3600. Default 50.
+      second_section_height: Tube 2nd section height measured from "zx" [0.1mm]. Must be
+          between 0 and 3600. Default 0.
+      second_section_ratio: Tube 2nd section ratio (see Fig. 2 in fw guide). Must be between
+          0 and 10000. Default 0.
+      minimum_height: Minimum height (maximum immersion depth) [0.1 mm]. Must be between 0 and
+          3600. Default 3600.
+      immersion_depth: Immersion depth [0.1mm]. Must be between 0 and 3600. Default 0.
+      immersion_depth_direction: Direction of immersion depth (0 = go deeper, 1 = go up out
+          of liquid). Must be between 0 and 1. Default 0.
+      surface_following_distance: Surface following distance during aspiration [0.1mm]. Must
+          be between 0 and 3600. Default 0.
+      aspiration_volumes: Aspiration volume [0.1ul]. Must be between 0 and 12500. Default 0.
+      aspiration_speed: Aspiration speed [0.1ul/s]. Must be between 4 and 5000. Default 500.
+      transport_air_volume: Transport air volume [0.1ul]. Must be between 0 and 500. Default 0.
+      blow_out_air_volume: Blow-out air volume [0.1ul]. Must be between 0 and 9999. Default 200.
+      pre_wetting_volume: Pre-wetting volume. Must be between 0 and 999. Default 0.
+      lld_mode: LLD mode (0 = off, 1 = gamma, 2 = dP, 3 = dual, 4 = Z touch off). Must be
+            between 0 and 4. Default 1.
+      gamma_lld_sensitivity: gamma LLD sensitivity (1= high, 4=low). Must be between 1 and
+            4. Default 1.
+      dp_lld_sensitivity: delta p LLD sensitivity (1= high, 4=low). Must be between 1 and
+            4. Default 1.
+      aspirate_position_above_z_touch_off: aspirate position above Z touch off [0.1mm]. Must
+            be between 0 and 100. Default 5.
+      detection_height_difference_for_dual_lld: Difference in detection height for dual
+            LLD [0.1 mm]. Must be between 0 and 99. Default 0.
+      swap_speed: Swap speed (on leaving liquid) [0.1mm/s]. Must be between 3 and 1600.
+            Default 100.
+      settling_time: Settling time [0.1s]. Must be between 0 and 99. Default 5.
+      mix_volume: mix volume [0.1ul]. Must be between 0 and 12500. Default 0
+      mix_cycles: Number of mix cycles. Must be between 0 and 99. Default 0.
+      mix_position_from_liquid_surface: mix position in Z- direction from
+          liquid surface (LLD or absolute terms) [0.1mm]. Must be between 0 and 900. Default 250.
+      mix_speed: Speed of mix [0.1ul/s]. Must be between 4 and 5000.
+          Default 500.
+      mix_surface_following_distance: Surface following distance during
+          mix [0.1mm]. Must be between 0 and 3600. Default 0.
+      limit_curve_index: limit curve index. Must be between 0 and 999. Default 0.
+      tadm_algorithm: TADM algorithm. Default False.
+      recording_mode: Recording mode 0 : no 1 : TADM errors only 2 : all TADM measurement. Must
+          be between 0 and 2. Default 0.
+      use_2nd_section_aspiration: 2nd section aspiration. Default False.
+      retract_height_over_2nd_section_to_empty_tip: Retract height over 2nd section to empty
+          tip [0.1mm]. Must be between 0 and 3600. Default 60.
+      dispensation_speed_during_emptying_tip: Dispensation speed during emptying tip [0.1ul/s]
+            Must be between 4 and 5000. Default 468.
+      dosing_drive_speed_during_2nd_section_search: Dosing drive speed during 2nd section
+          search [0.1ul/s]. Must be between 4 and 5000. Default 468.
+      z_drive_speed_during_2nd_section_search: Z drive speed during 2nd section search [0.1mm/s].
+          Must be between 3 and 1600. Default 215.
+      cup_upper_edge: Cup upper edge [0.1mm]. Must be between 0 and 3600. Default 3600.
+    """
+
+    if ratio_liquid_rise_to_tip_deep_in is not None:
+      warnings.warn(
+        "ratio_liquid_rise_to_tip_deep_in is deprecated and will be removed in a future version.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
+    if immersion_depth_2nd_section is not None:
+      warnings.warn(
+        "immersion_depth_2nd_section is deprecated and will be removed in a future version.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
+
+    assert all(0 <= x <= 2 for x in aspiration_type), "aspiration_type must be between 0 and 2"
+    assert all(0 <= xp <= 25000 for xp in x_positions), "x_positions must be between 0 and 25000"
+    assert all(0 <= yp <= 6500 for yp in y_positions), "y_positions must be between 0 and 6500"
+    assert 0 <= minimum_traverse_height_at_beginning_of_a_command <= 3600, (
+      "minimum_traverse_height_at_beginning_of_a_command must be between 0 and 3600"
+    )
+    assert 0 <= min_z_endpos <= 3600, "min_z_endpos must be between 0 and 3600"
+    assert all(0 <= x <= 3600 for x in lld_search_height), (
+      "lld_search_height must be between 0 and 3600"
+    )
+    assert all(0 <= x <= 500 for x in clot_detection_height), (
+      "clot_detection_height must be between 0 and 500"
+    )
+    assert all(0 <= x <= 3600 for x in liquid_surface_no_lld), (
+      "liquid_surface_no_lld must be between 0 and 3600"
+    )
+    assert all(0 <= x <= 3600 for x in pull_out_distance_transport_air), (
+      "pull_out_distance_transport_air must be between 0 and 3600"
+    )
+    assert all(0 <= x <= 3600 for x in second_section_height), (
+      "second_section_height must be between 0 and 3600"
+    )
+    assert all(0 <= x <= 10000 for x in second_section_ratio), (
+      "second_section_ratio must be between 0 and 10000"
+    )
+    assert all(0 <= x <= 3600 for x in minimum_height), "minimum_height must be between 0 and 3600"
+    assert all(0 <= x <= 3600 for x in immersion_depth), (
+      "immersion_depth must be between 0 and 3600"
+    )
+    assert all(0 <= x <= 1 for x in immersion_depth_direction), (
+      "immersion_depth_direction must be between 0 and 1"
+    )
+    assert all(0 <= x <= 3600 for x in surface_following_distance), (
+      "surface_following_distance must be between 0 and 3600"
+    )
+    assert all(0 <= x <= 12500 for x in aspiration_volumes), (
+      "aspiration_volumes must be between 0 and 12500"
+    )
+    assert all(4 <= x <= 5000 for x in aspiration_speed), (
+      "aspiration_speed must be between 4 and 5000"
+    )
+    assert all(0 <= x <= 500 for x in transport_air_volume), (
+      "transport_air_volume must be between 0 and 500"
+    )
+    assert all(0 <= x <= 9999 for x in blow_out_air_volume), (
+      "blow_out_air_volume must be between 0 and 9999"
+    )
+    assert all(0 <= x <= 999 for x in pre_wetting_volume), (
+      "pre_wetting_volume must be between 0 and 999"
+    )
+    assert all(0 <= x <= 4 for x in lld_mode), "lld_mode must be between 0 and 4"
+    assert all(1 <= x <= 4 for x in gamma_lld_sensitivity), (
+      "gamma_lld_sensitivity must be between 1 and 4"
+    )
+    assert all(1 <= x <= 4 for x in dp_lld_sensitivity), (
+      "dp_lld_sensitivity must be between 1 and 4"
+    )
+    assert all(0 <= x <= 100 for x in aspirate_position_above_z_touch_off), (
+      "aspirate_position_above_z_touch_off must be between 0 and 100"
+    )
+    assert all(0 <= x <= 99 for x in detection_height_difference_for_dual_lld), (
+      "detection_height_difference_for_dual_lld must be between 0 and 99"
+    )
+    assert all(3 <= x <= 1600 for x in swap_speed), "swap_speed must be between 3 and 1600"
+    assert all(0 <= x <= 99 for x in settling_time), "settling_time must be between 0 and 99"
+    assert all(0 <= x <= 12500 for x in mix_volume), "mix_volume must be between 0 and 12500"
+    assert all(0 <= x <= 99 for x in mix_cycles), "mix_cycles must be between 0 and 99"
+    assert all(0 <= x <= 900 for x in mix_position_from_liquid_surface), (
+      "mix_position_from_liquid_surface must be between 0 and 900"
+    )
+    assert all(4 <= x <= 5000 for x in mix_speed), "mix_speed must be between 4 and 5000"
+    assert all(0 <= x <= 3600 for x in mix_surface_following_distance), (
+      "mix_surface_following_distance must be between 0 and 3600"
+    )
+    assert all(0 <= x <= 999 for x in limit_curve_index), (
+      "limit_curve_index must be between 0 and 999"
+    )
+    assert 0 <= recording_mode <= 2, "recording_mode must be between 0 and 2"
+    assert all(0 <= x <= 3600 for x in retract_height_over_2nd_section_to_empty_tip), (
+      "retract_height_over_2nd_section_to_empty_tip must be between 0 and 3600"
+    )
+    assert all(4 <= x <= 5000 for x in dispensation_speed_during_emptying_tip), (
+      "dispensation_speed_during_emptying_tip must be between 4 and 5000"
+    )
+    assert all(4 <= x <= 5000 for x in dosing_drive_speed_during_2nd_section_search), (
+      "dosing_drive_speed_during_2nd_section_search must be between 4 and 5000"
+    )
+    assert all(3 <= x <= 1600 for x in z_drive_speed_during_2nd_section_search), (
+      "z_drive_speed_during_2nd_section_search must be between 3 and 1600"
+    )
+    assert all(0 <= x <= 3600 for x in cup_upper_edge), "cup_upper_edge must be between 0 and 3600"
+
+    return await self.send_command(
+      module="C0",
+      command="AS",
+      tip_pattern=tip_pattern,
+      read_timeout=max(300, self.read_timeout),
+      at=[f"{at:01}" for at in aspiration_type],
+      tm=tip_pattern,
+      xp=[f"{xp:05}" for xp in x_positions],
+      yp=[f"{yp:04}" for yp in y_positions],
+      th=f"{minimum_traverse_height_at_beginning_of_a_command:04}",
+      te=f"{min_z_endpos:04}",
+      lp=[f"{lp:04}" for lp in lld_search_height],
+      ch=[f"{ch:03}" for ch in clot_detection_height],
+      zl=[f"{zl:04}" for zl in liquid_surface_no_lld],
+      po=[f"{po:04}" for po in pull_out_distance_transport_air],
+      zu=[f"{zu:04}" for zu in second_section_height],
+      zr=[f"{zr:05}" for zr in second_section_ratio],
+      zx=[f"{zx:04}" for zx in minimum_height],
+      ip=[f"{ip:04}" for ip in immersion_depth],
+      it=[f"{it}" for it in immersion_depth_direction],
+      fp=[f"{fp:04}" for fp in surface_following_distance],
+      av=[f"{av:05}" for av in aspiration_volumes],
+      as_=[f"{as_:04}" for as_ in aspiration_speed],
+      ta=[f"{ta:03}" for ta in transport_air_volume],
+      ba=[f"{ba:04}" for ba in blow_out_air_volume],
+      oa=[f"{oa:03}" for oa in pre_wetting_volume],
+      lm=[f"{lm}" for lm in lld_mode],
+      ll=[f"{ll}" for ll in gamma_lld_sensitivity],
+      lv=[f"{lv}" for lv in dp_lld_sensitivity],
+      zo=[f"{zo:03}" for zo in aspirate_position_above_z_touch_off],
+      ld=[f"{ld:02}" for ld in detection_height_difference_for_dual_lld],
+      de=[f"{de:04}" for de in swap_speed],
+      wt=[f"{wt:02}" for wt in settling_time],
+      mv=[f"{mv:05}" for mv in mix_volume],
+      mc=[f"{mc:02}" for mc in mix_cycles],
+      mp=[f"{mp:03}" for mp in mix_position_from_liquid_surface],
+      ms=[f"{ms:04}" for ms in mix_speed],
+      mh=[f"{mh:04}" for mh in mix_surface_following_distance],
+      gi=[f"{gi:03}" for gi in limit_curve_index],
+      gj=tadm_algorithm,
+      gk=recording_mode,
+      lk=[1 if lk else 0 for lk in use_2nd_section_aspiration],
+      ik=[f"{ik:04}" for ik in retract_height_over_2nd_section_to_empty_tip],
+      sd=[f"{sd:04}" for sd in dispensation_speed_during_emptying_tip],
+      se=[f"{se:04}" for se in dosing_drive_speed_during_2nd_section_search],
+      sz=[f"{sz:04}" for sz in z_drive_speed_during_2nd_section_search],
+      io=[f"{io:04}" for io in cup_upper_edge],
+    )
+
+  @need_iswap_parked
+  async def dispense_pip(
+    self,
+    tip_pattern: List[bool],
+    dispensing_mode: List[int] = [0],
+    x_positions: List[int] = [0],
+    y_positions: List[int] = [0],
+    minimum_height: List[int] = [3600],
+    lld_search_height: List[int] = [0],
+    liquid_surface_no_lld: List[int] = [3600],
+    pull_out_distance_transport_air: List[int] = [50],
+    immersion_depth: List[int] = [0],
+    immersion_depth_direction: List[int] = [0],
+    surface_following_distance: List[int] = [0],
+    second_section_height: List[int] = [0],
+    second_section_ratio: List[int] = [0],
+    minimum_traverse_height_at_beginning_of_a_command: int = 3600,
+    min_z_endpos: int = 3600,  #
+    dispense_volumes: List[int] = [0],
+    dispense_speed: List[int] = [500],
+    cut_off_speed: List[int] = [250],
+    stop_back_volume: List[int] = [0],
+    transport_air_volume: List[int] = [0],
+    blow_out_air_volume: List[int] = [200],
+    lld_mode: List[int] = [1],
+    side_touch_off_distance: int = 1,
+    dispense_position_above_z_touch_off: List[int] = [5],
+    gamma_lld_sensitivity: List[int] = [1],
+    dp_lld_sensitivity: List[int] = [1],
+    swap_speed: List[int] = [100],
+    settling_time: List[int] = [5],
+    mix_volume: List[int] = [0],
+    mix_cycles: List[int] = [0],
+    mix_position_from_liquid_surface: List[int] = [250],
+    mix_speed: List[int] = [500],
+    mix_surface_following_distance: List[int] = [0],
+    limit_curve_index: List[int] = [0],
+    tadm_algorithm: bool = False,
+    recording_mode: int = 0,
+  ):
+    """dispense pip
+
+    Dispensing of liquid using PIP.
+
+    LLD restrictions!
+      - "dP and Dual LLD" are used in aspiration only. During dispensation all pressure-based
+        LLD is set to OFF.
+      - "side touch off" turns LLD & "Z touch off" to OFF , is not available for simultaneous
+        Asp/Disp. command
+
+    Args:
+      dispensing_mode: Type of dispensing mode 0 = Partial volume in jet mode
+        1 = Blow out in jet mode 2 = Partial volume at surface
+        3 = Blow out at surface 4 = Empty tip at fix position.
+      tip_pattern: Tip pattern (channels involved). Default True.
+      x_positions: x positions [0.1mm]. Must be between 0 and 25000. Default 0.
+      y_positions: y positions [0.1mm]. Must be between 0 and 6500. Default 0.
+      minimum_height: Minimum height (maximum immersion depth) [0.1 mm]. Must be between 0 and
+        3600. Default 3600.
+      lld_search_height: LLD search height [0.1 mm]. Must be between 0 and 3600. Default 0.
+      liquid_surface_no_lld: Liquid surface at function without LLD [0.1mm]. Must be between 0 and
+        3600. Default 3600.
+      pull_out_distance_transport_air: pull out distance to take transport air in function without
+        LLD [0.1mm]. Must be between 0 and 3600. Default 50.
+      immersion_depth: Immersion depth [0.1mm]. Must be between 0 and 3600. Default 0.
+      immersion_depth_direction: Direction of immersion depth (0 = go deeper, 1 = go up out of
+        liquid). Must be between 0 and 1. Default 0.
+      surface_following_distance: Surface following distance during aspiration [0.1mm]. Must be
+        between 0 and 3600. Default 0.
+      second_section_height: Tube 2nd section height measured from "zx" [0.1mm]. Must be between
+        0 and 3600. Default 0.
+      second_section_ratio: Tube 2nd section ratio (see Fig. 2 in fw guide). Must be between 0 and
+        10000. Default 0.
+      minimum_traverse_height_at_beginning_of_a_command: Minimum traverse height at beginning of a
+        command 0.1mm] (refers to all channels independent of tip pattern parameter 'tm'). Must be
+        between 0 and 3600. Default 3600.
+      min_z_endpos: Minimum z-Position at end of a command [0.1 mm] (refers to all channels
+        independent of tip pattern parameter 'tm'). Must be between 0 and 3600.  Default 3600.
+      dispense_volumes: Dispense volume [0.1ul]. Must be between 0 and 12500. Default 0.
+      dispense_speed: Dispense speed [0.1ul/s]. Must be between 4 and 5000. Default 500.
+      cut_off_speed: Cut-off speed [0.1ul/s]. Must be between 4 and 5000. Default 250.
+      stop_back_volume: Stop back volume [0.1ul]. Must be between 0 and 180. Default 0.
+      transport_air_volume: Transport air volume [0.1ul]. Must be between 0 and 500. Default 0.
+      blow_out_air_volume: Blow-out air volume [0.1ul]. Must be between 0 and 9999. Default 200.
+      lld_mode: LLD mode (0 = off, 1 = gamma, 2 = dP, 3 = dual, 4 = Z touch off). Must be between 0
+        and 4. Default 1.
+      side_touch_off_distance: side touch off distance [0.1 mm] (0 = OFF). Must be between 0 and 45.
+        Default 1.
+      dispense_position_above_z_touch_off: dispense position above Z touch off [0.1 s] (0 = OFF)
+        Turns LLD & Z touch off to OFF if ON!. Must be between 0 and 100. Default 5.
+      gamma_lld_sensitivity: gamma LLD sensitivity (1= high, 4=low). Must be between 1 and 4.
+        Default 1.
+      dp_lld_sensitivity: delta p LLD sensitivity (1= high, 4=low). Must be between 1 and 4.
+        Default 1.
+      swap_speed: Swap speed (on leaving liquid) [0.1mm/s]. Must be between 3 and 1600.
+        Default 100.
+      settling_time: Settling time [0.1s]. Must be between 0 and 99. Default 5.
+      mix_volume: Mix volume [0.1ul]. Must be between 0 and 12500. Default 0.
+      mix_cycles: Number of mix cycles. Must be between 0 and 99. Default 0.
+      mix_position_from_liquid_surface: Mix position in Z- direction from liquid surface (LLD or
+        absolute terms) [0.1mm]. Must be between 0 and 900.  Default 250.
+      mix_speed: Speed of mixing [0.1ul/s]. Must be between 4 and 5000. Default 500.
+      mix_surface_following_distance: Surface following distance during mixing [0.1mm]. Must be
+        between 0 and 3600. Default 0.
+      limit_curve_index: limit curve index. Must be between 0 and 999. Default 0.
+      tadm_algorithm: TADM algorithm. Default False.
+      recording_mode: Recording mode 0 : no 1 : TADM errors only 2 : all TADM measurement. Must
+        be between 0 and 2. Default 0.
+    """
+
+    assert all(0 <= x <= 4 for x in dispensing_mode), "dispensing_mode must be between 0 and 4"
+    assert all(0 <= xp <= 25000 for xp in x_positions), "x_positions must be between 0 and 25000"
+    assert all(0 <= yp <= 6500 for yp in y_positions), "y_positions must be between 0 and 6500"
+    assert any(0 <= x <= 3600 for x in minimum_height), "minimum_height must be between 0 and 3600"
+    assert any(0 <= x <= 3600 for x in lld_search_height), (
+      "lld_search_height must be between 0 and 3600"
+    )
+    assert any(0 <= x <= 3600 for x in liquid_surface_no_lld), (
+      "liquid_surface_no_lld must be between 0 and 3600"
+    )
+    assert any(0 <= x <= 3600 for x in pull_out_distance_transport_air), (
+      "pull_out_distance_transport_air must be between 0 and 3600"
+    )
+    assert any(0 <= x <= 3600 for x in immersion_depth), (
+      "immersion_depth must be between 0 and 3600"
+    )
+    assert any(0 <= x <= 1 for x in immersion_depth_direction), (
+      "immersion_depth_direction must be between 0 and 1"
+    )
+    assert any(0 <= x <= 3600 for x in surface_following_distance), (
+      "surface_following_distance must be between 0 and 3600"
+    )
+    assert any(0 <= x <= 3600 for x in second_section_height), (
+      "second_section_height must be between 0 and 3600"
+    )
+    assert any(0 <= x <= 10000 for x in second_section_ratio), (
+      "second_section_ratio must be between 0 and 10000"
+    )
+    assert 0 <= minimum_traverse_height_at_beginning_of_a_command <= 3600, (
+      "minimum_traverse_height_at_beginning_of_a_command must be between 0 and 3600"
+    )
+    assert 0 <= min_z_endpos <= 3600, "min_z_endpos must be between 0 and 3600"
+    assert any(0 <= x <= 12500 for x in dispense_volumes), (
+      "dispense_volume must be between 0 and 12500"
+    )
+    assert any(4 <= x <= 5000 for x in dispense_speed), "dispense_speed must be between 4 and 5000"
+    assert any(4 <= x <= 5000 for x in cut_off_speed), "cut_off_speed must be between 4 and 5000"
+    assert any(0 <= x <= 180 for x in stop_back_volume), (
+      "stop_back_volume must be between 0 and 180"
+    )
+    assert any(0 <= x <= 500 for x in transport_air_volume), (
+      "transport_air_volume must be between 0 and 500"
+    )
+    assert any(0 <= x <= 9999 for x in blow_out_air_volume), (
+      "blow_out_air_volume must be between 0 and 9999"
+    )
+    assert any(0 <= x <= 4 for x in lld_mode), "lld_mode must be between 0 and 4"
+    assert 0 <= side_touch_off_distance <= 45, "side_touch_off_distance must be between 0 and 45"
+    assert any(0 <= x <= 100 for x in dispense_position_above_z_touch_off), (
+      "dispense_position_above_z_touch_off must be between 0 and 100"
+    )
+    assert any(1 <= x <= 4 for x in gamma_lld_sensitivity), (
+      "gamma_lld_sensitivity must be between 1 and 4"
+    )
+    assert any(1 <= x <= 4 for x in dp_lld_sensitivity), (
+      "dp_lld_sensitivity must be between 1 and 4"
+    )
+    assert any(3 <= x <= 1600 for x in swap_speed), "swap_speed must be between 3 and 1600"
+    assert any(0 <= x <= 99 for x in settling_time), "settling_time must be between 0 and 99"
+    assert any(0 <= x <= 12500 for x in mix_volume), "mix_volume must be between 0 and 12500"
+    assert any(0 <= x <= 99 for x in mix_cycles), "mix_cycles must be between 0 and 99"
+    assert any(0 <= x <= 900 for x in mix_position_from_liquid_surface), (
+      "mix_position_from_liquid_surface must be between 0 and 900"
+    )
+    assert any(4 <= x <= 5000 for x in mix_speed), "mix_speed must be between 4 and 5000"
+    assert any(0 <= x <= 3600 for x in mix_surface_following_distance), (
+      "mix_surface_following_distance must be between 0 and 3600"
+    )
+    assert any(0 <= x <= 999 for x in limit_curve_index), (
+      "limit_curve_index must be between 0 and 999"
+    )
+    assert 0 <= recording_mode <= 2, "recording_mode must be between 0 and 2"
+
+    return await self.send_command(
+      module="C0",
+      command="DS",
+      tip_pattern=tip_pattern,
+      read_timeout=max(300, self.read_timeout),
+      dm=[f"{dm:01}" for dm in dispensing_mode],
+      tm=[f"{tm:01}" for tm in tip_pattern],
+      xp=[f"{xp:05}" for xp in x_positions],
+      yp=[f"{yp:04}" for yp in y_positions],
+      zx=[f"{zx:04}" for zx in minimum_height],
+      lp=[f"{lp:04}" for lp in lld_search_height],
+      zl=[f"{zl:04}" for zl in liquid_surface_no_lld],
+      po=[f"{po:04}" for po in pull_out_distance_transport_air],
+      ip=[f"{ip:04}" for ip in immersion_depth],
+      it=[f"{it:01}" for it in immersion_depth_direction],
+      fp=[f"{fp:04}" for fp in surface_following_distance],
+      zu=[f"{zu:04}" for zu in second_section_height],
+      zr=[f"{zr:05}" for zr in second_section_ratio],
+      th=f"{minimum_traverse_height_at_beginning_of_a_command:04}",
+      te=f"{min_z_endpos:04}",
+      dv=[f"{dv:05}" for dv in dispense_volumes],
+      ds=[f"{ds:04}" for ds in dispense_speed],
+      ss=[f"{ss:04}" for ss in cut_off_speed],
+      rv=[f"{rv:03}" for rv in stop_back_volume],
+      ta=[f"{ta:03}" for ta in transport_air_volume],
+      ba=[f"{ba:04}" for ba in blow_out_air_volume],
+      lm=[f"{lm:01}" for lm in lld_mode],
+      dj=f"{side_touch_off_distance:02}",  #
+      zo=[f"{zo:03}" for zo in dispense_position_above_z_touch_off],
+      ll=[f"{ll:01}" for ll in gamma_lld_sensitivity],
+      lv=[f"{lv:01}" for lv in dp_lld_sensitivity],
+      de=[f"{de:04}" for de in swap_speed],
+      wt=[f"{wt:02}" for wt in settling_time],
+      mv=[f"{mv:05}" for mv in mix_volume],
+      mc=[f"{mc:02}" for mc in mix_cycles],
+      mp=[f"{mp:03}" for mp in mix_position_from_liquid_surface],
+      ms=[f"{ms:04}" for ms in mix_speed],
+      mh=[f"{mh:04}" for mh in mix_surface_following_distance],
+      gi=[f"{gi:03}" for gi in limit_curve_index],
+      gj=tadm_algorithm,  #
+      gk=recording_mode,  #
+    )
+
+  # TODO:(command:DA) Simultaneous aspiration & dispensation of liquid
+
+  # TODO:(command:DF) Dispense on fly using PIP (Partial volume in jet mode)
+
+  # TODO:(command:LW) DC Wash procedure using PIP
 
   # -------------- 3.5.5 CoRe gripper commands --------------
 
