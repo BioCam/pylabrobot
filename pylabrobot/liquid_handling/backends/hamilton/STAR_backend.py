@@ -100,6 +100,7 @@ from pylabrobot.resources.hamilton import (
 )
 from pylabrobot.resources.hamilton.hamilton_decks import (
   HamiltonCoreGrippers,
+  HamiltonDeck,
   rails_for_x_coordinate,
 )
 from pylabrobot.resources.liquid import Liquid
@@ -1705,6 +1706,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # configuration reports a right X-arm, and stays None otherwise.
     self.left_x_arm_tracker = XArmTracker(thing="left X-arm")
     self.right_x_arm_tracker: Optional[XArmTracker] = None
+    # Deck-resource markers that visualize each present X-arm's tracked x. Created
+    # by setup() when a deck is attached; empty otherwise.
+    self._x_arm_bars: Dict[str, Resource] = {}
 
     self._setup_done = False
 
@@ -2215,6 +2219,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # the core grippers.
     self._core_parked = True
 
+    await self._setup_x_arm_bars()
+
     self._setup_done = True
 
   async def stop(self):
@@ -2298,6 +2304,51 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         self.right_x_arm_tracker = XArmTracker(thing="right X-arm")
     else:
       self.right_x_arm_tracker = None
+
+  async def _setup_x_arm_bars(self) -> None:
+    """Assign a full-deck-height marker per present X-arm and wire it to follow the
+    tracker's x, so the Visualizer can show where each arm is. The marker is a plain
+    deck Resource (category ``"X-arm"``); the tracker callback moves it through the
+    resource state channel. No-op when no deck is attached.
+    """
+    self._x_arm_bars = {}
+    if self._deck is None:
+      return
+    deck_size_y = self.deck.get_size_y()
+    query = {"left": self.request_left_x_arm_position, "right": self.request_right_x_arm_position}
+    trackers = {"left": self.left_x_arm_tracker, "right": self.right_x_arm_tracker}
+    widths = {
+      "left": self.extended_conf.left_x_arm_width,
+      "right": self.extended_conf.right_x_arm_width,
+    }
+    for arm, tracker in trackers.items():
+      if tracker is None:
+        continue
+      bar = Resource(
+        name=f"{arm}_x_arm",
+        size_x=widths[arm],
+        size_y=deck_size_y,
+        size_z=140.0,
+        category="X-arm",
+        model="x_arm",
+      )
+      # Seed the initial position from the arm itself (its resting/home position in
+      # simulation, its true position on hardware) - never x=0, which sits in the
+      # border-crash region.
+      initial_x = await query[arm]()
+      cast(HamiltonDeck, self.deck).assign_child_resource(
+        bar, location=Coordinate(initial_x, 0.0, 248.0), ignore_collision=True
+      )
+      self._x_arm_bars[arm] = bar
+      tracker.register_callback(functools.partial(self._on_x_arm_bar_update, arm, tracker))
+
+  def _on_x_arm_bar_update(self, arm: str, tracker: XArmTracker) -> None:
+    """Move the arm's marker to the tracker's committed x. Ignores unknown positions."""
+    if not tracker.is_known:
+      return
+    bar = self._x_arm_bars[arm]
+    assert bar.location is not None
+    bar.set_location(Coordinate(tracker.get_x(), bar.location.y, bar.location.z))
 
   def get_x_arm_position(self) -> Tuple[Optional[float], Optional[float]]:
     """Tracked X-arm carriage reference points in mm, as (left, right).
