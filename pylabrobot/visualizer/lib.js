@@ -1349,12 +1349,56 @@ class Resource {
         this.group.rotation(this.rotation.z || 0);
       }
     }
+    // Location is shipped the same way, so `Resource.set_location(...)` (which
+    // fires `_state_updated`) repositions the resource live.
+    if (state && state.location !== undefined && state.location !== null) {
+      this.location = state.location;
+      if (this.group !== undefined) {
+        this.group.x(this.location.x);
+        this.group.y(this.location.y);
+      }
+    }
   }
 }
 
 class Deck extends Resource {
   draggable = false;
   canDelete = false;
+}
+
+class XArm extends Resource {
+  // Visual marker for an X-arm carriage reference point: a translucent dark-grey
+  // full-deck-height bar. Fill and border carry different alphas, so they are set
+  // as rgba rather than a single shape-level opacity.
+  draggable = false;
+  canDelete = false;
+
+  drawMainShape() {
+    // location.x is the X-arm centre, so centre the bar on it (offset by half its
+    // width) rather than drawing from the left edge like a normal resource.
+    const g = new Konva.Group();
+    g.add(
+      new Konva.Rect({
+        x: -this.size_x / 2,
+        width: this.size_x,
+        height: this.size_y,
+        fill: "rgba(64, 64, 64, 0.5)",
+        stroke: "rgba(64, 64, 64, 0.3)",
+        strokeWidth: 3,
+        listening: false,
+      })
+    );
+    // Centre line marking the exact tracked x (the arm centre, local x = 0).
+    g.add(
+      new Konva.Line({
+        points: [0, 0, 0, this.size_y],
+        stroke: "rgba(64, 64, 64, 0.7)",
+        strokeWidth: 2,
+        listening: false,
+      })
+    );
+    return g;
+  }
 }
 
 class HamiltonSTARDeck extends Deck {
@@ -3149,6 +3193,8 @@ function classForResourceType(type, category) {
     case "carrier":
     case "mfx_carrier":
       return Carrier;
+    case "X-arm":
+      return XArm;
     case "deck":
       return Deck;
     case "liquid_handler":
