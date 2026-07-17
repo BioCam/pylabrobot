@@ -7126,6 +7126,654 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   # TODO:(command:LW) DC Wash procedure using PIP
 
+  @dataclass(frozen=True)
+  class TADMParameters:
+    """Total aspiration and dispense monitoring settings for one channel command.
+
+    Pass `None` instead to leave monitoring off entirely; constructing one means opting in, so
+    `algorithm_enabled` - whether the curve is evaluated or merely recorded - is required, and
+    recording defaults to keeping every measurement. Grouped into one object because the firmware
+    treats them as one block: they take effect only while monitoring is enabled and are inert
+    otherwise. That scoping is also why the fields need no `tadm_` prefix; the class carries it.
+
+    Args:
+      algorithm_enabled: Whether the monitoring algorithm evaluates the pressure curve (`gj`).
+      recording_mode: What is recorded (`gk`): 0 nothing, 1 errors only, 2 every measurement.
+        Defaults to 2. The firmware's own default is 0, but that is a wire-level necessity - opting
+        into monitoring and then recording nothing would make this object pointless.
+      limit_curve_index: Index of the limit curve (`gi`). Evaluated against when
+        `algorithm_enabled`; recorded as metadata on the curve either way, so it is meaningful
+        even with the algorithm off.
+      measurement_id: Four-character identifier labelling the recording (`nr`). None omits the
+        field - it is the only one here with no default to fall back on.
+    """
+
+    algorithm_enabled: bool
+    recording_mode: int = 2
+    limit_curve_index: int = 0
+    measurement_id: Optional[str] = None
+
+    def __post_init__(self):
+      if not (0 <= self.recording_mode <= 2):
+        raise ValueError(f"recording_mode must be between 0 and 2, got {self.recording_mode}")
+      if not (0 <= self.limit_curve_index <= 999):
+        raise ValueError(
+          f"limit_curve_index must be between 0 and 999, got {self.limit_curve_index}"
+        )
+      if not (self.measurement_id is None or len(self.measurement_id) == 4):
+        raise ValueError(
+          f"measurement_id must be exactly 4 characters, got {self.measurement_id!r}"
+        )
+      # Combinations that cannot do what they say. Held to cases that are inert by definition:
+      # limit_curve_index is deliberately NOT tied to algorithm_enabled, because the readout
+      # (`QL`) reports the used limit curve index and name alongside every recorded curve, so
+      # tagging a recording with a curve it is not evaluated against is legitimate.
+      if self.recording_mode == 1 and not self.algorithm_enabled:
+        raise ValueError(
+          "recording_mode=1 records errors, which only the algorithm can raise; either enable "
+          "algorithm_enabled or record everything (recording_mode=2) / nothing (0)"
+        )
+      if self.measurement_id is not None and self.recording_mode == 0:
+        raise ValueError(
+          f"measurement_id={self.measurement_id!r} labels a recording, but recording_mode=0 "
+          "records nothing"
+        )
+
+  async def _channel_aspirate_in_absolute_z(
+    self,
+    channel_idx: int,
+    z: float,
+    volume: float,
+    z_position_at_end_of_command: Optional[float] = None,
+    z_position_target_on_leaving_liquid: Optional[float] = None,
+    minimum_height: Optional[float] = None,
+    surface_following_distance: float = 0.0,
+    flow_rate: float = 249.99,
+    transport_air_volume: float = 0.0,
+    blow_out_air_volume: float = 0.0,
+    pre_wetting_volume: float = 37.5,
+    swap_speed: float = 10.73,
+    settling_time: float = 0.0,
+    mix_volume: float = 0.0,
+    mix_cycles: int = 0,
+    mix_position_offset: float = 0.0,
+    mix_speed: float = 249.99,
+    mix_surface_following_distance: float = 0.0,
+    tadm: Optional["STARBackend.TADMParameters"] = None,
+    mechanical_clearance_reversing_volume: float = 4.69,
+    flow_acceleration: float = 4687.6,
+    current_limit: int = 5,
+    z_speed: float = 128.73,
+    z_acceleration: float = 804.6,
+    z_current_limit: int = 3,
+    mix_volume_correction_percent: int = 90,
+    last_dispense_mix_volume_correction_percent: int = 100,
+    empty_cup_mode: bool = False,
+    adc_algorithm_enabled: bool = False,
+    requires_tip: bool = True,
+  ) -> Any:
+    """Aspirate liquid on one channel at an absolute Z position (`MG`).
+
+    A thin, standalone wrapper on a single channel: no resource, no liquid class, no tip tracking,
+    no computed positions. The channel aspirates at the height the caller gives, optionally
+    following the liquid surface down during the stroke.
+
+    This command performs no liquid level detection - `z` is declared by the caller, which is why it
+    is required. Probe first (`ztouch_probe_z_height_using_channel`, `probe_liquid_heights`) when the
+    height is not already known.
+
+    Every field the command sends is an argument here, with its firmware default visible and
+    overridable, so the complete wire command is readable from the signature. Three groups are
+    deliberately not sent, each because its off value is what the firmware applies anyway: bottom
+    search (`zm`, `zx`, `zo`), extended touch-off (`ci` and the `c`-block it gates), and two-section
+    container geometry (`zk`, `gx`). Excluding the touch-off block additionally keeps this method
+    usable on channel firmware that predates it.
+
+    Z is measured at the tip bottom when a tip is present, matching the rest of this backend; the tip
+    overhang is added internally to reach the firmware's stop-disk frame. With no tip the overhang is
+    zero and Z is the stop-disk position directly. Note that
+    `channels_request_stop_disk_z_positions()` returns stop-disk heights, so subtract the overhang
+    before feeding one back into `z`.
+
+    Args:
+      channel_idx: Channel index (0-based, backmost = 0).
+      z: Aspiration height, mm, at the tip bottom. Required: there is no sensible default, and the
+        firmware's own default for this field is the fully retracted position.
+      volume: Piston volume to aspirate, uL; raw, not liquid-class corrected.
+      z_position_at_end_of_command: Height to finish at, mm. None retracts as far as the tip allows.
+      z_position_target_on_leaving_liquid: Height to move to on emerging from the liquid, mm. None
+        retracts as far as the tip allows.
+      minimum_height: Lowest height the tip may reach, mm. None uses the deck floor
+        (`MINIMUM_CHANNEL_Z_POSITION`).
+      surface_following_distance: Z travel during aspiration, mm; 0 holds the channel in place. A
+        distance, so the tip overhang does not apply.
+      flow_rate: Dispensing-drive speed, uL/s.
+      transport_air_volume: Transport air volume, uL. This command has no field for the height at
+        which transport air is taken, unlike the level-detecting aspirate commands.
+      blow_out_air_volume: Blow-out air volume, uL.
+      pre_wetting_volume: Pre-wetting volume, uL. Note the firmware default is non-zero, so
+        pre-wetting is on unless this is set to 0.
+      swap_speed: Z-drive speed on leaving the liquid, mm/s.
+      settling_time: Time to wait in the liquid after aspirating, seconds.
+      mix_volume: Mix volume, uL; 0 disables mixing and makes the rest of the mix arguments inert.
+      mix_cycles: Number of mix cycles.
+      mix_position_offset: Mix height relative to the aspiration position, mm. A distance, so the tip
+        overhang does not apply.
+      mix_speed: Dispensing-drive speed during mixing, uL/s.
+      mix_surface_following_distance: Z travel during the mix stroke, mm.
+      tadm_limit_curve_index: Limit curve index. Applies only when TADM is enabled.
+      tadm_algorithm_enabled: Whether the TADM algorithm runs.
+      tadm_recording_mode: 0 records nothing, 1 records TADM errors, 2 records all TADM
+        measurements. Applies only when TADM is enabled.
+      tadm_measurement_id: Four-character measurement identifier. Applies only when TADM is enabled.
+        None omits the field, which is the only field here without a documented default.
+      mechanical_clearance_reversing_volume: Piston backlash take-up, uL; the drive over-travels by
+        this so the drawn volume matches the commanded volume.
+      flow_acceleration: Dispensing-drive acceleration, uL/s^2.
+      current_limit: Dispensing-drive current limit, 0-7.
+      z_speed: Z-drive travel speed, mm/s.
+      z_acceleration: Z-drive acceleration, mm/s^2.
+      z_current_limit: Z-drive current limit, 0-7.
+      mix_volume_correction_percent: Correction applied to the mix volume during the
+        dispense/aspirate sequence, percent. The firmware documents this in one line and nothing
+        more; its exact effect is unverified.
+      last_dispense_mix_volume_correction_percent: Correction applied to the final dispense of the
+        mix sequence, percent. Unverified in the same way.
+      empty_cup_mode: False aspirates; True empties the cup.
+      adc_algorithm_enabled: Whether the pressure ADC algorithm runs.
+      requires_tip: If True, raise when the channel holds no tip. Tip presence, not tip capacity:
+        this does not check that `volume` fits.
+
+    Raises:
+      ValueError: If channel_idx is out of range, or a parameter is outside the range the
+        firmware accepts.
+      RuntimeError: If requires_tip and the channel holds no tip.
+    """
+
+    if not (0 <= channel_idx < self.num_channels):
+      raise ValueError(
+        f"channel index {channel_idx} out of range for instrument with {self.num_channels} channels"
+      )
+
+    has_tip = (await self.request_tip_presence())[channel_idx]
+    if requires_tip and not has_tip:
+      raise RuntimeError(f"channel {channel_idx} has no tip; pick up a tip before aspirating")
+    overhang = 0.0
+    if has_tip:
+      overhang = (
+        await self.request_tip_len_on_channel(channel_idx) - STARBackend.DEFAULT_TIP_FITTING_DEPTH
+      )
+
+    z_floor = STARBackend.MINIMUM_CHANNEL_Z_POSITION
+    z_ceiling = STARBackend.MAXIMUM_CHANNEL_Z_POSITION - overhang
+    if z_position_at_end_of_command is None:
+      z_position_at_end_of_command = z_ceiling
+    if z_position_target_on_leaving_liquid is None:
+      z_position_target_on_leaving_liquid = z_ceiling
+    if minimum_height is None:
+      minimum_height = z_floor
+
+    # Absolute Z positions carry the tip overhang (tip bottom -> stop disk); Z distances do not.
+    za = STARBackend.mm_to_z_drive_increment(z + overhang)
+    zb = STARBackend.mm_to_z_drive_increment(z_position_target_on_leaving_liquid + overhang)
+    zg = STARBackend.mm_to_z_drive_increment(z_position_at_end_of_command + overhang)
+    zh = STARBackend.mm_to_z_drive_increment(minimum_height + overhang)
+    zd = STARBackend.mm_to_z_drive_increment(surface_following_distance)
+    dz = STARBackend.mm_to_z_drive_increment(mix_position_offset)
+    zy = STARBackend.mm_to_z_drive_increment(mix_surface_following_distance)
+    zv = STARBackend.mm_to_z_drive_increment(z_speed)
+    zu = STARBackend.mm_to_z_drive_increment(swap_speed)
+    zr = STARBackend.mm_to_z_drive_increment(z_acceleration / 1000)
+    da = STARBackend.dispensing_drive_vol_to_increment(volume)
+    dc = STARBackend.dispensing_drive_vol_to_increment(pre_wetting_volume)
+    de = STARBackend.dispensing_drive_vol_to_increment(mechanical_clearance_reversing_volume)
+    df = STARBackend.dispensing_drive_vol_to_increment(blow_out_air_volume)
+    dg = STARBackend.dispensing_drive_vol_to_increment(transport_air_volume)
+    dm = STARBackend.dispensing_drive_vol_to_increment(mix_volume)
+    do = STARBackend.dispensing_drive_vol_to_increment(mix_speed)
+    dv = STARBackend.dispensing_drive_vol_to_increment(flow_rate)
+    dr = round(STARBackend.dispensing_drive_vol_to_increment(flow_acceleration) * 0.001)
+    to = round(settling_time * 10)
+
+    z_window = (
+      f"between {z_floor} and {round(z_ceiling, 2)} mm (tip bottom, overhang {overhang} mm)"
+    )
+    if not (9320 <= za <= 31200):
+      raise ValueError(f"z must be {z_window}, got {z} mm")
+    if not (9320 <= zb <= 31200):
+      raise ValueError(
+        f"z_position_target_on_leaving_liquid must be {z_window}, "
+        f"got {z_position_target_on_leaving_liquid} mm"
+      )
+    if not (9320 <= zg <= 31200):
+      raise ValueError(
+        f"z_position_at_end_of_command must be {z_window}, got {z_position_at_end_of_command} mm"
+      )
+    if not (9320 <= zh <= 31200):
+      raise ValueError(f"minimum_height must be {z_window}, got {minimum_height} mm")
+    if not (0 <= zd <= 9999):
+      raise ValueError(
+        f"surface_following_distance must be between 0 and "
+        f"{STARBackend.z_drive_increment_to_mm(9999)} mm, got {surface_following_distance} mm"
+      )
+    if not (0 <= dz <= 9999):
+      raise ValueError(
+        f"mix_position_offset must be between 0 and {STARBackend.z_drive_increment_to_mm(9999)} mm, "
+        f"got {mix_position_offset} mm"
+      )
+    if not (0 <= zy <= 9999):
+      raise ValueError(
+        f"mix_surface_following_distance must be between 0 and "
+        f"{STARBackend.z_drive_increment_to_mm(9999)} mm, got {mix_surface_following_distance} mm"
+      )
+    if not (20 <= zv <= 15000):
+      raise ValueError(
+        f"z_speed must be between {STARBackend.z_drive_increment_to_mm(20)} and "
+        f"{STARBackend.z_drive_increment_to_mm(15000)} mm/s, got {z_speed} mm/s"
+      )
+    if not (20 <= zu <= 15000):
+      raise ValueError(
+        f"swap_speed must be between {STARBackend.z_drive_increment_to_mm(20)} and "
+        f"{STARBackend.z_drive_increment_to_mm(15000)} mm/s, got {swap_speed} mm/s"
+      )
+    if not (5 <= zr <= 150):
+      raise ValueError(
+        f"z_acceleration must be between {STARBackend.z_drive_increment_to_mm(5 * 1000)} and "
+        f"{STARBackend.z_drive_increment_to_mm(150 * 1000)} mm/s^2, got {z_acceleration} mm/s^2"
+      )
+    if not (0 <= da <= 26666):
+      raise ValueError(
+        f"volume must be between 0 and {STARBackend.dispensing_drive_increment_to_volume(26666)} uL, "
+        f"got {volume} uL"
+      )
+    if not (0 <= dc <= 9999):
+      raise ValueError(
+        f"pre_wetting_volume must be between 0 and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(9999)} uL, got {pre_wetting_volume} uL"
+      )
+    if not (0 <= de <= 999):
+      raise ValueError(
+        f"mechanical_clearance_reversing_volume must be between 0 and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(999)} uL, "
+        f"got {mechanical_clearance_reversing_volume} uL"
+      )
+    if not (0 <= df <= 26666):
+      raise ValueError(
+        f"blow_out_air_volume must be between 0 and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(26666)} uL, got {blow_out_air_volume} uL"
+      )
+    if not (0 <= dg <= 9999):
+      raise ValueError(
+        f"transport_air_volume must be between 0 and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(9999)} uL, got {transport_air_volume} uL"
+      )
+    if not (0 <= dm <= 26666):
+      raise ValueError(
+        f"mix_volume must be between 0 and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(26666)} uL, got {mix_volume} uL"
+      )
+    if not (20 <= do <= 13500):
+      raise ValueError(
+        f"mix_speed must be between {STARBackend.dispensing_drive_increment_to_volume(20)} and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(13500)} uL/s, got {mix_speed} uL/s"
+      )
+    if not (20 <= dv <= 13500):
+      raise ValueError(
+        f"flow_rate must be between {STARBackend.dispensing_drive_increment_to_volume(20)} and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(13500)} uL/s, got {flow_rate} uL/s"
+      )
+    if not (5 <= dr <= 600):
+      raise ValueError(
+        f"flow_acceleration must be between "
+        f"{STARBackend.dispensing_drive_increment_to_volume(5 * 1000)} and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(600 * 1000)} uL/s^2, "
+        f"got {flow_acceleration} uL/s^2"
+      )
+    if not (0 <= to <= 999):
+      raise ValueError(f"settling_time must be between 0 and 99.9 s, got {settling_time} s")
+    if not (0 <= mix_cycles <= 99):
+      raise ValueError(f"mix_cycles must be between 0 and 99, got {mix_cycles}")
+    if not (0 <= mix_volume_correction_percent <= 100):
+      raise ValueError(
+        f"mix_volume_correction_percent must be between 0 and 100, "
+        f"got {mix_volume_correction_percent}"
+      )
+    if not (0 <= last_dispense_mix_volume_correction_percent <= 100):
+      raise ValueError(
+        f"last_dispense_mix_volume_correction_percent must be between 0 and 100, "
+        f"got {last_dispense_mix_volume_correction_percent}"
+      )
+    if not (0 <= current_limit <= 7):
+      raise ValueError(f"current_limit must be between 0 and 7, got {current_limit}")
+    if not (0 <= z_current_limit <= 7):
+      raise ValueError(f"z_current_limit must be between 0 and 7, got {z_current_limit}")
+
+    # `tadm=None` leaves monitoring off: the fields go out at their off values.
+    tadm_measurement_id_field: Dict[str, Any] = (
+      {} if tadm is None or tadm.measurement_id is None else {"nr": tadm.measurement_id}
+    )
+
+    return await self.send_command(
+      module=STARBackend.channel_id(channel_idx),
+      command="MG",
+      da=f"{da:05}",
+      de=f"{de:03}",
+      dc=f"{dc:04}",
+      za=f"{za:05}",
+      zb=f"{zb:05}",
+      zd=f"{zd:04}",
+      zh=f"{zh:05}",
+      zg=f"{zg:05}",
+      df=f"{df:05}",
+      dg=f"{dg:04}",
+      to=f"{to:03}",
+      dj=f"{int(empty_cup_mode)}",
+      bl=f"{int(adc_algorithm_enabled)}",
+      dm=f"{dm:05}",
+      mv=f"{mix_volume_correction_percent:03}",
+      me=f"{last_dispense_mix_volume_correction_percent:03}",
+      dn=f"{mix_cycles:02}",
+      dz=f"{dz:04}",
+      zy=f"{zy:04}",
+      do=f"{do:05}",
+      dv=f"{dv:05}",
+      dr=f"{dr:03}",
+      dw=f"{current_limit}",
+      zv=f"{zv:05}",
+      zu=f"{zu:05}",
+      zr=f"{zr:03}",
+      zw=f"{z_current_limit}",
+      gi=f"{0 if tadm is None else tadm.limit_curve_index:03}",
+      gj=f"{0 if tadm is None else int(tadm.algorithm_enabled)}",
+      gk=f"{0 if tadm is None else tadm.recording_mode}",
+      **tadm_measurement_id_field,
+    )
+
+  async def _channel_dispense_in_absolute_z(
+    self,
+    channel_idx: int,
+    z: float,
+    volume: float,
+    z_position_at_end_of_command: Optional[float] = None,
+    z_position_target_on_leaving_liquid: Optional[float] = None,
+    minimum_height: Optional[float] = None,
+    surface_following_distance: float = 0.0,
+    flow_rate: float = 249.99,
+    stop_flow_rate: float = 140.63,
+    stop_back_volume: float = 0.0,
+    transport_air_volume: float = 0.0,
+    swap_speed: float = 10.73,
+    settling_time: float = 0.0,
+    mix_volume: float = 0.0,
+    mix_cycles: int = 0,
+    mix_position_offset: float = 0.0,
+    mix_speed: float = 249.99,
+    mix_surface_following_distance: float = 0.0,
+    tadm: Optional["STARBackend.TADMParameters"] = None,
+    flow_acceleration: float = 4687.6,
+    current_limit: int = 5,
+    z_speed: float = 128.73,
+    z_acceleration: float = 804.6,
+    z_current_limit: int = 3,
+    mix_volume_correction_percent: int = 90,
+    last_dispense_mix_volume_correction_percent: int = 100,
+    adc_algorithm_enabled: bool = False,
+    requires_tip: bool = True,
+  ) -> Any:
+    """Dispense liquid on one channel at an absolute Z position (`MH`).
+
+    The dispense counterpart of `_channel_aspirate_in_absolute_z`, with the same shape, exclusions
+    and Z frame. See that method for the reasoning; only the differences are described here.
+
+    This command performs no liquid level detection - `z` is declared by the caller, which is why it
+    is required. Probe first (`ztouch_probe_z_height_using_channel`, `probe_liquid_heights`) when the
+    height is not already known.
+
+    Against the aspirate: there is no pre-wetting, no blow-out air, no mechanical-clearance reversing
+    and no empty-cup mode; it gains `stop_back_volume` and `stop_flow_rate`; and `mix_position_offset`
+    is relative to the dispense position rather than an aspiration position.
+
+    Args:
+      channel_idx: Channel index (0-based, backmost = 0).
+      z: Dispense height, mm, at the tip bottom. Required: there is no sensible default, and the
+        firmware's own default for this field is the fully retracted position.
+      volume: Piston volume to dispense, uL; raw, not liquid-class corrected.
+      z_position_at_end_of_command: Height to finish at, mm. None retracts as far as the tip allows.
+      z_position_target_on_leaving_liquid: Height to move to on emerging from the liquid, mm. None
+        retracts as far as the tip allows.
+      minimum_height: Lowest height the tip may reach, mm. None uses the deck floor
+        (`MINIMUM_CHANNEL_Z_POSITION`).
+      surface_following_distance: Z travel during dispensing, mm; 0 holds the channel in place. A
+        distance, so the tip overhang does not apply.
+      flow_rate: Dispensing-drive speed, uL/s.
+      stop_flow_rate: Dispensing-drive cut-off speed, uL/s.
+      stop_back_volume: Volume drawn back at the end of the stroke to stop dripping, uL.
+      transport_air_volume: Transport air volume, uL. This command has no field for the height at
+        which transport air is taken, unlike the level-detecting dispense command.
+      swap_speed: Z-drive speed on leaving the liquid, mm/s.
+      settling_time: Time to wait in the liquid after dispensing, seconds.
+      mix_volume: Mix volume, uL; 0 disables mixing and makes the rest of the mix arguments inert.
+      mix_cycles: Number of mix cycles.
+      mix_position_offset: Mix height relative to the dispense position, mm. A distance, so the tip
+        overhang does not apply.
+      mix_speed: Dispensing-drive speed during mixing, uL/s.
+      mix_surface_following_distance: Z travel during the mix stroke, mm.
+      tadm_limit_curve_index: Limit curve index. Applies only when TADM is enabled.
+      tadm_algorithm_enabled: Whether the TADM algorithm runs.
+      tadm_recording_mode: 0 records nothing, 1 records TADM errors, 2 records all TADM
+        measurements. Applies only when TADM is enabled.
+      tadm_measurement_id: Four-character measurement identifier. Applies only when TADM is enabled.
+        None omits the field, which is the only field here without a documented default.
+      flow_acceleration: Dispensing-drive acceleration, uL/s^2.
+      current_limit: Dispensing-drive current limit, 0-7.
+      z_speed: Z-drive travel speed, mm/s.
+      z_acceleration: Z-drive acceleration, mm/s^2.
+      z_current_limit: Z-drive current limit, 0-7.
+      mix_volume_correction_percent: Correction applied to the mix volume during the
+        dispense/aspirate sequence, percent. The firmware documents this in one line and nothing
+        more; its exact effect is unverified.
+      last_dispense_mix_volume_correction_percent: Correction applied to the final dispense of the
+        mix sequence, percent. Unverified in the same way.
+      adc_algorithm_enabled: Whether the pressure ADC algorithm runs.
+      requires_tip: If True, raise when the channel holds no tip. Tip presence, not tip contents:
+        this does not check that the tip holds `volume`.
+
+    Raises:
+      ValueError: If channel_idx is out of range, or a parameter is outside the range the
+        firmware accepts.
+      RuntimeError: If requires_tip and the channel holds no tip.
+    """
+
+    if not (0 <= channel_idx < self.num_channels):
+      raise ValueError(
+        f"channel index {channel_idx} out of range for instrument with {self.num_channels} channels"
+      )
+
+    has_tip = (await self.request_tip_presence())[channel_idx]
+    if requires_tip and not has_tip:
+      raise RuntimeError(f"channel {channel_idx} has no tip; pick up a tip before dispensing")
+    overhang = 0.0
+    if has_tip:
+      overhang = (
+        await self.request_tip_len_on_channel(channel_idx) - STARBackend.DEFAULT_TIP_FITTING_DEPTH
+      )
+
+    z_floor = STARBackend.MINIMUM_CHANNEL_Z_POSITION
+    z_ceiling = STARBackend.MAXIMUM_CHANNEL_Z_POSITION - overhang
+    if z_position_at_end_of_command is None:
+      z_position_at_end_of_command = z_ceiling
+    if z_position_target_on_leaving_liquid is None:
+      z_position_target_on_leaving_liquid = z_ceiling
+    if minimum_height is None:
+      minimum_height = z_floor
+
+    # Absolute Z positions carry the tip overhang (tip bottom -> stop disk); Z distances do not.
+    za = STARBackend.mm_to_z_drive_increment(z + overhang)
+    zb = STARBackend.mm_to_z_drive_increment(z_position_target_on_leaving_liquid + overhang)
+    zg = STARBackend.mm_to_z_drive_increment(z_position_at_end_of_command + overhang)
+    zh = STARBackend.mm_to_z_drive_increment(minimum_height + overhang)
+    ze = STARBackend.mm_to_z_drive_increment(surface_following_distance)
+    dz = STARBackend.mm_to_z_drive_increment(mix_position_offset)
+    zy = STARBackend.mm_to_z_drive_increment(mix_surface_following_distance)
+    zv = STARBackend.mm_to_z_drive_increment(z_speed)
+    zu = STARBackend.mm_to_z_drive_increment(swap_speed)
+    zr = STARBackend.mm_to_z_drive_increment(z_acceleration / 1000)
+    db = STARBackend.dispensing_drive_vol_to_increment(volume)
+    dd = STARBackend.dispensing_drive_vol_to_increment(stop_back_volume)
+    dg = STARBackend.dispensing_drive_vol_to_increment(transport_air_volume)
+    dm = STARBackend.dispensing_drive_vol_to_increment(mix_volume)
+    do = STARBackend.dispensing_drive_vol_to_increment(mix_speed)
+    dv = STARBackend.dispensing_drive_vol_to_increment(flow_rate)
+    du = STARBackend.dispensing_drive_vol_to_increment(stop_flow_rate)
+    dr = round(STARBackend.dispensing_drive_vol_to_increment(flow_acceleration) * 0.001)
+    to = round(settling_time * 10)
+
+    z_window = (
+      f"between {z_floor} and {round(z_ceiling, 2)} mm (tip bottom, overhang {overhang} mm)"
+    )
+    if not (9320 <= za <= 31200):
+      raise ValueError(f"z must be {z_window}, got {z} mm")
+    if not (9320 <= zb <= 31200):
+      raise ValueError(
+        f"z_position_target_on_leaving_liquid must be {z_window}, "
+        f"got {z_position_target_on_leaving_liquid} mm"
+      )
+    if not (9320 <= zg <= 31200):
+      raise ValueError(
+        f"z_position_at_end_of_command must be {z_window}, got {z_position_at_end_of_command} mm"
+      )
+    if not (9320 <= zh <= 31200):
+      raise ValueError(f"minimum_height must be {z_window}, got {minimum_height} mm")
+    if not (0 <= ze <= 9999):
+      raise ValueError(
+        f"surface_following_distance must be between 0 and "
+        f"{STARBackend.z_drive_increment_to_mm(9999)} mm, got {surface_following_distance} mm"
+      )
+    if not (0 <= dz <= 9999):
+      raise ValueError(
+        f"mix_position_offset must be between 0 and {STARBackend.z_drive_increment_to_mm(9999)} mm, "
+        f"got {mix_position_offset} mm"
+      )
+    if not (0 <= zy <= 9999):
+      raise ValueError(
+        f"mix_surface_following_distance must be between 0 and "
+        f"{STARBackend.z_drive_increment_to_mm(9999)} mm, got {mix_surface_following_distance} mm"
+      )
+    if not (20 <= zv <= 15000):
+      raise ValueError(
+        f"z_speed must be between {STARBackend.z_drive_increment_to_mm(20)} and "
+        f"{STARBackend.z_drive_increment_to_mm(15000)} mm/s, got {z_speed} mm/s"
+      )
+    if not (20 <= zu <= 15000):
+      raise ValueError(
+        f"swap_speed must be between {STARBackend.z_drive_increment_to_mm(20)} and "
+        f"{STARBackend.z_drive_increment_to_mm(15000)} mm/s, got {swap_speed} mm/s"
+      )
+    if not (5 <= zr <= 150):
+      raise ValueError(
+        f"z_acceleration must be between {STARBackend.z_drive_increment_to_mm(5 * 1000)} and "
+        f"{STARBackend.z_drive_increment_to_mm(150 * 1000)} mm/s^2, got {z_acceleration} mm/s^2"
+      )
+    if not (0 <= db <= 26666):
+      raise ValueError(
+        f"volume must be between 0 and {STARBackend.dispensing_drive_increment_to_volume(26666)} uL, "
+        f"got {volume} uL"
+      )
+    if not (0 <= dd <= 999):
+      raise ValueError(
+        f"stop_back_volume must be between 0 and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(999)} uL, got {stop_back_volume} uL"
+      )
+    if not (0 <= dg <= 9999):
+      raise ValueError(
+        f"transport_air_volume must be between 0 and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(9999)} uL, got {transport_air_volume} uL"
+      )
+    if not (0 <= dm <= 26666):
+      raise ValueError(
+        f"mix_volume must be between 0 and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(26666)} uL, got {mix_volume} uL"
+      )
+    if not (20 <= do <= 13500):
+      raise ValueError(
+        f"mix_speed must be between {STARBackend.dispensing_drive_increment_to_volume(20)} and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(13500)} uL/s, got {mix_speed} uL/s"
+      )
+    if not (20 <= dv <= 13500):
+      raise ValueError(
+        f"flow_rate must be between {STARBackend.dispensing_drive_increment_to_volume(20)} and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(13500)} uL/s, got {flow_rate} uL/s"
+      )
+    if not (0 <= du <= 13500):
+      raise ValueError(
+        f"stop_flow_rate must be between 0 and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(13500)} uL/s, got {stop_flow_rate} uL/s"
+      )
+    if not (5 <= dr <= 600):
+      raise ValueError(
+        f"flow_acceleration must be between "
+        f"{STARBackend.dispensing_drive_increment_to_volume(5 * 1000)} and "
+        f"{STARBackend.dispensing_drive_increment_to_volume(600 * 1000)} uL/s^2, "
+        f"got {flow_acceleration} uL/s^2"
+      )
+    if not (0 <= to <= 999):
+      raise ValueError(f"settling_time must be between 0 and 99.9 s, got {settling_time} s")
+    if not (0 <= mix_cycles <= 99):
+      raise ValueError(f"mix_cycles must be between 0 and 99, got {mix_cycles}")
+    if not (0 <= mix_volume_correction_percent <= 100):
+      raise ValueError(
+        f"mix_volume_correction_percent must be between 0 and 100, "
+        f"got {mix_volume_correction_percent}"
+      )
+    if not (0 <= last_dispense_mix_volume_correction_percent <= 100):
+      raise ValueError(
+        f"last_dispense_mix_volume_correction_percent must be between 0 and 100, "
+        f"got {last_dispense_mix_volume_correction_percent}"
+      )
+    if not (0 <= current_limit <= 7):
+      raise ValueError(f"current_limit must be between 0 and 7, got {current_limit}")
+    if not (0 <= z_current_limit <= 7):
+      raise ValueError(f"z_current_limit must be between 0 and 7, got {z_current_limit}")
+
+    # `tadm=None` leaves monitoring off: the fields go out at their off values.
+    tadm_measurement_id_field: Dict[str, Any] = (
+      {} if tadm is None or tadm.measurement_id is None else {"nr": tadm.measurement_id}
+    )
+
+    return await self.send_command(
+      module=STARBackend.channel_id(channel_idx),
+      command="MH",
+      db=f"{db:05}",
+      dd=f"{dd:03}",
+      za=f"{za:05}",
+      zb=f"{zb:05}",
+      ze=f"{ze:04}",
+      zh=f"{zh:05}",
+      zg=f"{zg:05}",
+      dg=f"{dg:04}",
+      to=f"{to:03}",
+      bl=f"{int(adc_algorithm_enabled)}",
+      dm=f"{dm:05}",
+      mv=f"{mix_volume_correction_percent:03}",
+      me=f"{last_dispense_mix_volume_correction_percent:03}",
+      dn=f"{mix_cycles:02}",
+      dz=f"{dz:04}",
+      zy=f"{zy:04}",
+      do=f"{do:05}",
+      dv=f"{dv:05}",
+      du=f"{du:05}",
+      dr=f"{dr:03}",
+      dw=f"{current_limit}",
+      zv=f"{zv:05}",
+      zu=f"{zu:05}",
+      zr=f"{zr:03}",
+      zw=f"{z_current_limit}",
+      gi=f"{0 if tadm is None else tadm.limit_curve_index:03}",
+      gj=f"{0 if tadm is None else int(tadm.algorithm_enabled)}",
+      gk=f"{0 if tadm is None else tadm.recording_mode}",
+      **tadm_measurement_id_field,
+    )
+
   # -------------- 3.5.5 CoRe gripper commands --------------
 
   def _get_core_front_back(self):
