@@ -1368,32 +1368,56 @@ class Deck extends Resource {
 
 class XArm extends Resource {
   // Visual marker for an X-arm carriage reference point: a translucent dark-grey
-  // full-deck-height bar. Fill and border carry different alphas, so they are set
-  // as rgba rather than a single shape-level opacity.
+  // full-deck-height frame (a rectangle with a rectangular hole) centred on the
+  // tracked x, with a magenta centre line marking the exact position. Fill and
+  // border carry different alphas, so they are set as rgba.
   draggable = false;
   canDelete = false;
 
   drawMainShape() {
-    // location.x is the X-arm centre, so centre the bar on it (offset by half its
-    // width) rather than drawing from the left edge like a normal resource.
+    // location.x is the X-arm centre, so centre the frame on it (offset by half
+    // its width) rather than drawing from the left edge like a normal resource.
+    const w = this.size_x;
+    const h = this.size_y;
+    const ox = -w / 2;
+    const insetX = 95; // mm from each x border to the hole
+    const insetY = 20; // mm from each y border to the hole
+    const innerW = w - 2 * insetX;
+    const innerH = h - 2 * insetY;
+
     const g = new Konva.Group();
+    // Centre line marking the exact tracked x (the arm centre, local x = 0). Added
+    // first so the frame draws on top of it, leaving it visible only through the hole.
     g.add(
-      new Konva.Rect({
-        x: -this.size_x / 2,
-        width: this.size_x,
-        height: this.size_y,
-        fill: "rgba(64, 64, 64, 0.5)",
-        stroke: "rgba(64, 64, 64, 0.3)",
-        strokeWidth: 3,
+      new Konva.Line({
+        points: [0, 0, 0, h],
+        stroke: "rgba(139, 0, 139, 0.7)",
+        strokeWidth: 2,
         listening: false,
       })
     );
-    // Centre line marking the exact tracked x (the arm centre, local x = 0).
     g.add(
-      new Konva.Line({
-        points: [0, 0, 0, this.size_y],
-        stroke: "rgba(64, 64, 64, 0.7)",
-        strokeWidth: 2,
+      new Konva.Shape({
+        sceneFunc: (ctx, shape) => {
+          ctx.beginPath();
+          ctx.rect(ox, 0, w, h); // outer, clockwise
+          if (innerW > 0 && innerH > 0) {
+            // inner rectangle wound counter-clockwise to punch a see-through hole
+            const l = ox + insetX;
+            const r = ox + w - insetX;
+            const t = insetY;
+            const b = h - insetY;
+            ctx.moveTo(l, t);
+            ctx.lineTo(l, b);
+            ctx.lineTo(r, b);
+            ctx.lineTo(r, t);
+            ctx.closePath();
+          }
+          ctx.fillStrokeShape(shape);
+        },
+        fill: "rgba(64, 64, 64, 0.5)",
+        stroke: "rgba(64, 64, 64, 0.3)",
+        strokeWidth: 3,
         listening: false,
       })
     );
