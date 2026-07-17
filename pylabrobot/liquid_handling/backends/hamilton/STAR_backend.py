@@ -1693,11 +1693,12 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     self._x_grouping_tolerance_mm: float = 0.1
 
     # X-arm carriage reference point trackers, in mm. Only the lowest-level X-arm
-    # move commands (experimental_x_arm_move, position_left_x_arm_) update them;
-    # compound commands that move the arm as a side effect do not (yet).
-    # right_x_arm_tracker stays None on machines without a right X-arm.
+    # move commands (experimental_x_arm_move, position_left_x_arm_,
+    # position_right_x_arm_) and the position queries update them; compound
+    # commands that move the arm as a side effect do not (yet). On machines
+    # without a right X-arm the right tracker simply never becomes known.
     self.left_x_arm_tracker = XArmTracker(thing="left X-arm")
-    self.right_x_arm_tracker: Optional[XArmTracker] = None
+    self.right_x_arm_tracker = XArmTracker(thing="right X-arm")
 
     self._setup_done = False
 
@@ -2277,18 +2278,17 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       self.left_x_arm_tracker.commit()
     return resp
 
-  def get_x_arm_position(self) -> Tuple[float, Optional[float]]:
+  def get_x_arm_position(self) -> Tuple[Optional[float], Optional[float]]:
     """Tracked X-arm carriage reference points in mm, as (left, right).
 
-    The right element is None on machines without a right X-arm.
-
-    Raises:
-      RuntimeError: If a present tracker has no committed position: no tracked
-        X-arm move or position query has completed yet, or the last tracked
-        move failed.
+    Either element is None while that X-arm's position is unknown: no tracked
+    move or position query has completed for it yet, the last tracked move
+    failed, or that X-arm is not present. On a machine without a right X-arm the
+    right element is therefore always None.
     """
-    right = None if self.right_x_arm_tracker is None else self.right_x_arm_tracker.get_x()
-    return self.left_x_arm_tracker.get_x(), right
+    left = self.left_x_arm_tracker.get_x() if self.left_x_arm_tracker.is_known else None
+    right = self.right_x_arm_tracker.get_x() if self.right_x_arm_tracker.is_known else None
+    return left, right
 
   # # # # Single-Channel Pipette Commands # # # #
 
@@ -6190,11 +6190,22 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     assert 0 <= x_position <= 30000, "x_position_ must be between 0 and 30000"
 
-    return await self.send_command(
-      module="C0",
-      command="JS",
-      xs=f"{x_position:05}",
-    )
+    tracking = not self.right_x_arm_tracker.is_disabled
+    if tracking:
+      self.right_x_arm_tracker.set_x(x_position / 10, commit=False)
+    try:
+      resp = await self.send_command(
+        module="C0",
+        command="JS",
+        xs=f"{x_position:05}",
+      )
+    except Exception:
+      if tracking:
+        self.right_x_arm_tracker.invalidate()
+      raise
+    if tracking:
+      self.right_x_arm_tracker.commit()
+    return resp
 
   async def move_left_x_arm_to_position_with_all_attached_components_in_z_safety_position(
     self, x_position: int = 0
@@ -6313,7 +6324,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     resp_dmm = await self.send_command(module="C0", command="QX", fmt="rx#####")
     x = cast(float, resp_dmm["rx"]) / 10
-    if self.right_x_arm_tracker is not None and not self.right_x_arm_tracker.is_disabled:
+    if not self.right_x_arm_tracker.is_disabled:
       self.right_x_arm_tracker.set_x(x)
     return x
 

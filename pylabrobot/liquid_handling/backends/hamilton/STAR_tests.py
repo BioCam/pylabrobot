@@ -597,16 +597,15 @@ class TestiSWAPYMaxBootstrap(unittest.IsolatedAsyncioTestCase):
 
 
 class TestXArmPositionTracking(unittest.IsolatedAsyncioTestCase):
-  """The lowest-level X-arm move and position-query commands feed
-  left_x_arm_tracker; no other commands update it."""
+  """The lowest-level X-arm move and position-query commands feed the left and
+  right X-arm trackers; no other commands update them."""
 
   def setUp(self):
     self.star = STARBackend()
     self.star.send_command = unittest.mock.AsyncMock(return_value={})
 
   async def test_position_unknown_before_first_tracked_command(self):
-    with self.assertRaises(RuntimeError):
-      self.star.get_x_arm_position()
+    self.assertEqual(self.star.get_x_arm_position(), (None, None))
 
   async def test_experimental_x_arm_move_updates_tracker(self):
     await self.star.experimental_x_arm_move(500.0)
@@ -625,6 +624,22 @@ class TestXArmPositionTracking(unittest.IsolatedAsyncioTestCase):
     x = await self.star.request_left_x_arm_position()
     self.assertEqual(x, 678.9)
     self.assertEqual(self.star.get_x_arm_position(), (678.9, None))
+
+  async def test_position_right_x_arm_updates_right_tracker(self):
+    await self.star.position_left_x_arm_(5000)
+    await self.star.position_right_x_arm_(11111)
+    self.star.send_command.assert_awaited_with(module="C0", command="JS", xs="11111")
+    self.assertEqual(self.star.get_x_arm_position(), (500.0, 1111.1))
+
+  async def test_request_right_x_arm_position_updates_right_tracker(self):
+    self.star.send_command.return_value = {"rx": 9876}
+    x = await self.star.request_right_x_arm_position()
+    self.assertEqual(x, 987.6)
+    self.assertEqual(self.star.right_x_arm_tracker.get_x(), 987.6)
+
+  async def test_right_unknown_reported_as_none(self):
+    await self.star.position_left_x_arm_(5000)
+    self.assertEqual(self.star.get_x_arm_position(), (500.0, None))
 
   async def test_failed_move_invalidates_position(self):
     await self.star.experimental_x_arm_move(500.0)
