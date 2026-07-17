@@ -596,6 +596,50 @@ class TestiSWAPYMaxBootstrap(unittest.IsolatedAsyncioTestCase):
     await b._iswap_rotation_drive_request_y_max()
 
 
+class TestXArmPositionTracking(unittest.IsolatedAsyncioTestCase):
+  """The lowest-level X-arm move and position-query commands feed
+  left_x_arm_tracker; no other commands update it."""
+
+  def setUp(self):
+    self.star = STARBackend()
+    self.star.send_command = unittest.mock.AsyncMock(return_value={})
+
+  async def test_position_unknown_before_first_tracked_command(self):
+    with self.assertRaises(RuntimeError):
+      self.star.get_x_arm_position()
+
+  async def test_experimental_x_arm_move_updates_tracker(self):
+    await self.star.experimental_x_arm_move(500.0)
+    self.star.send_command.assert_awaited_once_with(
+      module="X0", command="XP", la="05000", lr="3", lw="7"
+    )
+    self.assertEqual(self.star.get_x_arm_position(), (500.0, None))
+
+  async def test_position_left_x_arm_updates_tracker(self):
+    await self.star.position_left_x_arm_(12345)
+    self.star.send_command.assert_awaited_once_with(module="C0", command="JX", xs="12345")
+    self.assertEqual(self.star.get_x_arm_position(), (1234.5, None))
+
+  async def test_request_left_x_arm_position_updates_tracker(self):
+    self.star.send_command.return_value = {"rx": 6789}
+    x = await self.star.request_left_x_arm_position()
+    self.assertEqual(x, 678.9)
+    self.assertEqual(self.star.get_x_arm_position(), (678.9, None))
+
+  async def test_failed_move_invalidates_position(self):
+    await self.star.experimental_x_arm_move(500.0)
+    self.star.send_command.side_effect = TimeoutError()
+    with self.assertRaises(TimeoutError):
+      await self.star.experimental_x_arm_move(600.0)
+    self.assertFalse(self.star.left_x_arm_tracker.is_known)
+
+  async def test_disabled_tracker_is_not_updated(self):
+    self.star.left_x_arm_tracker.disable()
+    await self.star.experimental_x_arm_move(500.0)
+    self.star.left_x_arm_tracker.enable()
+    self.assertFalse(self.star.left_x_arm_tracker.is_known)
+
+
 class TestSTARUSBComms(unittest.IsolatedAsyncioTestCase):
   """Test that USB data is parsed correctly."""
 

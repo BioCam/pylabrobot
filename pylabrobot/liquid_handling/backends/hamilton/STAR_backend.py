@@ -40,6 +40,7 @@ from pylabrobot.liquid_handling.backends.hamilton.base import (
   HamiltonLiquidHandler,
 )
 from pylabrobot.liquid_handling.backends.hamilton.common import fill_in_defaults
+from pylabrobot.liquid_handling.backends.hamilton.x_arm_tracker import XArmTracker
 from pylabrobot.liquid_handling.channel_positioning import (
   get_tight_single_resource_liquid_op_offsets,
   get_wide_single_resource_liquid_op_offsets,
@@ -1691,6 +1692,13 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     self._default_1d_symbology: Barcode1DSymbology = "Code 128 (Subset B and C)"
     self._x_grouping_tolerance_mm: float = 0.1
 
+    # X-arm carriage reference point trackers, in mm. Only the lowest-level X-arm
+    # move commands (experimental_x_arm_move, position_left_x_arm_) update them;
+    # compound commands that move the arm as a side effect do not (yet).
+    # right_x_arm_tracker stays None on machines without a right X-arm.
+    self.left_x_arm_tracker = XArmTracker(thing="left X-arm")
+    self.right_x_arm_tracker: Optional[XArmTracker] = None
+
     self._setup_done = False
 
   def _min_spacing_between(self, i: int, j: int) -> float:
@@ -2250,13 +2258,37 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         f"current_protection_limiter must be between 0 and 7, is {current_protection_limiter}"
       )
 
-    return await self.send_command(
-      module="X0",
-      command="XP",
-      la=f"{round(x * 10):05}",
-      lr=str(acceleration_level),
-      lw=str(current_protection_limiter),
-    )
+    tracking = not self.left_x_arm_tracker.is_disabled
+    if tracking:
+      self.left_x_arm_tracker.set_x(x, commit=False)
+    try:
+      resp = await self.send_command(
+        module="X0",
+        command="XP",
+        la=f"{round(x * 10):05}",
+        lr=str(acceleration_level),
+        lw=str(current_protection_limiter),
+      )
+    except Exception:
+      if tracking:
+        self.left_x_arm_tracker.invalidate()
+      raise
+    if tracking:
+      self.left_x_arm_tracker.commit()
+    return resp
+
+  def get_x_arm_position(self) -> Tuple[float, Optional[float]]:
+    """Tracked X-arm carriage reference points in mm, as (left, right).
+
+    The right element is None on machines without a right X-arm.
+
+    Raises:
+      RuntimeError: If a present tracker has no committed position: no tracked
+        X-arm move or position query has completed yet, or the last tracked
+        move failed.
+    """
+    right = None if self.right_x_arm_tracker is None else self.right_x_arm_tracker.get_x()
+    return self.left_x_arm_tracker.get_x(), right
 
   # # # # Single-Channel Pipette Commands # # # #
 
@@ -6130,11 +6162,22 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     assert 0 <= x_position <= 30000, "x_position_ must be between 0 and 30000"
 
-    return await self.send_command(
-      module="C0",
-      command="JX",
-      xs=f"{x_position:05}",
-    )
+    tracking = not self.left_x_arm_tracker.is_disabled
+    if tracking:
+      self.left_x_arm_tracker.set_x(x_position / 10, commit=False)
+    try:
+      resp = await self.send_command(
+        module="C0",
+        command="JX",
+        xs=f"{x_position:05}",
+      )
+    except Exception:
+      if tracking:
+        self.left_x_arm_tracker.invalidate()
+      raise
+    if tracking:
+      self.left_x_arm_tracker.commit()
+    return resp
 
   async def position_right_x_arm_(self, x_position: int = 0):
     """Position right X-Arm
@@ -6260,13 +6303,19 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   async def request_left_x_arm_position(self) -> float:
     """Request left X-Arm position"""
     resp_dmm = await self.send_command(module="C0", command="RX", fmt="rx#####")
-    return cast(float, resp_dmm["rx"]) / 10
+    x = cast(float, resp_dmm["rx"]) / 10
+    if not self.left_x_arm_tracker.is_disabled:
+      self.left_x_arm_tracker.set_x(x)
+    return x
 
   async def request_right_x_arm_position(self) -> float:
     """Request right X-Arm position"""
 
     resp_dmm = await self.send_command(module="C0", command="QX", fmt="rx#####")
-    return cast(float, resp_dmm["rx"]) / 10
+    x = cast(float, resp_dmm["rx"]) / 10
+    if self.right_x_arm_tracker is not None and not self.right_x_arm_tracker.is_disabled:
+      self.right_x_arm_tracker.set_x(x)
+    return x
 
   async def request_maximal_ranges_of_x_drives(self):
     """Request maximal ranges of X drives"""
