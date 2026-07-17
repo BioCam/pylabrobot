@@ -2708,3 +2708,91 @@ class TestXArmRangeEnforcement(unittest.IsolatedAsyncioTestCase):
     # The default single-arm STAR has no right X-arm, so a right-arm target is rejected.
     with self.assertRaises(ValueError):
       self.star._check_x_arm_reachable(400.0, "right")
+
+
+class TestChannelAbsoluteZPipetting(unittest.IsolatedAsyncioTestCase):
+  """Wire-level tests for _channel_aspirate/dispense_in_absolute_z, at the send_command boundary."""
+
+  async def asyncSetUp(self):
+    self.star = STARBackend()
+    self.star._num_channels = 8
+    self.star.request_tip_presence = unittest.mock.AsyncMock(return_value=[True] * 8)
+    self.star.request_tip_len_on_channel = unittest.mock.AsyncMock(return_value=95.0)
+    self.star.send_command = unittest.mock.AsyncMock(return_value={})
+    # z=120 tip-bottom + (95 tip - 8 fitting) overhang = 207 mm stop-disk
+    self.overhang = 95.0 - STARBackend.DEFAULT_TIP_FITTING_DEPTH
+
+  def _sent(self):
+    return self.star.send_command.call_args.kwargs
+
+  async def test_aspirate_wire_fields(self):
+    await self.star._channel_aspirate_in_absolute_z(
+      channel_idx=0, z=120.0, volume=100.0, surface_following_distance=5.0
+    )
+    k = self._sent()
+    self.assertEqual(k["module"], "P1")
+    self.assertEqual(k["command"], "MG")
+    # z carries the tip overhang: 120 + 87 = 207 mm -> 19296 increments
+    self.assertEqual(k["za"], f"{STARBackend.mm_to_z_drive_increment(207.0):05}")
+    self.assertEqual(k["da"], f"{STARBackend.dispensing_drive_vol_to_increment(100.0):05}")
+    # surface following is a distance: no overhang
+    self.assertEqual(k["zd"], f"{STARBackend.mm_to_z_drive_increment(5.0):04}")
+
+  async def test_aspirate_defaults_prewet_off_swap_12(self):
+    await self.star._channel_aspirate_in_absolute_z(channel_idx=0, z=120.0, volume=10.0)
+    k = self._sent()
+    self.assertEqual(k["dc"], "0000")  # pre-wetting off by default
+    self.assertEqual(k["zu"], f"{STARBackend.mm_to_z_drive_increment(12.0):05}")  # swap 12 mm/s
+    self.assertEqual(k["bl"], "0")  # ADC algorithm hardcoded off
+    self.assertEqual(k["dj"], "0")  # aspirate mode hardcoded
+
+  async def test_dispense_wire_fields(self):
+    await self.star._channel_dispense_in_absolute_z(
+      channel_idx=1, z=120.0, volume=100.0, stop_back_volume=5.0, stop_flow_rate=140.63
+    )
+    k = self._sent()
+    self.assertEqual(k["module"], "P2")
+    self.assertEqual(k["command"], "MH")
+    self.assertEqual(k["db"], f"{STARBackend.dispensing_drive_vol_to_increment(100.0):05}")
+    self.assertEqual(k["dd"], f"{STARBackend.dispensing_drive_vol_to_increment(5.0):03}")
+    self.assertEqual(k["du"], f"{STARBackend.dispensing_drive_vol_to_increment(140.63):05}")
+    self.assertEqual(k["bl"], "0")
+    self.assertNotIn("dj", k)  # MH has no aspiration-mode field
+
+  async def test_tadm_none_sends_off_values(self):
+    await self.star._channel_aspirate_in_absolute_z(channel_idx=0, z=120.0, volume=10.0)
+    k = self._sent()
+    self.assertEqual((k["gi"], k["gj"], k["gk"]), ("000", "0", "0"))
+    self.assertNotIn("nr", k)
+
+  async def test_tadm_parameters_sent(self):
+    await self.star._channel_aspirate_in_absolute_z(
+      channel_idx=0,
+      z=120.0,
+      volume=10.0,
+      tadm=STARBackend.TADMParameters(
+        algorithm_enabled=True, recording_mode=2, limit_curve_index=7, measurement_id="AB01"
+      ),
+    )
+    k = self._sent()
+    self.assertEqual((k["gi"], k["gj"], k["gk"], k["nr"]), ("007", "1", "2", "AB01"))
+
+  async def test_tadm_parameters_incompatible_rejected(self):
+    with self.assertRaises(ValueError):  # errors-only recording without the algorithm
+      STARBackend.TADMParameters(algorithm_enabled=False, recording_mode=1)
+    with self.assertRaises(ValueError):  # id on a non-recording run
+      STARBackend.TADMParameters(algorithm_enabled=True, recording_mode=0, measurement_id="X001")
+
+  async def test_requires_tip_raises_when_absent(self):
+    self.star.request_tip_presence = unittest.mock.AsyncMock(return_value=[False] * 8)
+    with self.assertRaises(RuntimeError):
+      await self.star._channel_aspirate_in_absolute_z(channel_idx=0, z=120.0, volume=10.0)
+
+  async def test_no_tip_uses_stop_disk_frame(self):
+    # requires_tip=False and no tip -> overhang 0, z is the stop-disk position directly
+    self.star.request_tip_presence = unittest.mock.AsyncMock(return_value=[False] * 8)
+    await self.star._channel_aspirate_in_absolute_z(
+      channel_idx=0, z=120.0, volume=10.0, requires_tip=False
+    )
+    k = self._sent()
+    self.assertEqual(k["za"], f"{STARBackend.mm_to_z_drive_increment(120.0):05}")

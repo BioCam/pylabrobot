@@ -7208,8 +7208,6 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     z_current_limit: int = 3,
     mix_volume_correction_percent: int = 90,
     last_dispense_mix_volume_correction_percent: int = 100,
-    empty_cup_mode: bool = False,
-    adc_algorithm_enabled: bool = False,
     requires_tip: bool = True,
   ) -> Any:
     """Aspirate liquid on one channel at an absolute Z position (`MG`).
@@ -7248,9 +7246,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       surface_following_distance: Z travel during aspiration, mm; 0 holds the channel in place. A
         distance, so the tip overhang does not apply.
       flow_rate: Dispensing-drive speed, uL/s.
-      transport_air_volume: Transport air volume, uL. This command has no field for the height at
-        which transport air is taken, unlike the level-detecting aspirate commands.
-      blow_out_air_volume: Blow-out air volume, uL.
+      transport_air_volume: Transport air volume, uL. Drawn after the liquid aspiration; there is
+        no field for the height at which it is taken, unlike the level-detecting aspirate commands.
+      blow_out_air_volume: Blow-out air volume, uL. Drawn before the channel descends and held in
+        the tip through the aspiration, to be expelled on a later dispense.
       pre_wetting_volume: Pre-wetting volume, uL. Defaults to 0 (off). The firmware's own default
         for this field is non-zero, so this is a deliberate no-op default, not the wire default.
       swap_speed: Z-drive speed on leaving the liquid, mm/s.
@@ -7261,12 +7260,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         overhang does not apply.
       mix_speed: Dispensing-drive speed during mixing, uL/s.
       mix_surface_following_distance: Z travel during the mix stroke, mm.
-      tadm_limit_curve_index: Limit curve index. Applies only when TADM is enabled.
-      tadm_algorithm_enabled: Whether the TADM algorithm runs.
-      tadm_recording_mode: 0 records nothing, 1 records TADM errors, 2 records all TADM
-        measurements. Applies only when TADM is enabled.
-      tadm_measurement_id: Four-character measurement identifier. Applies only when TADM is enabled.
-        None omits the field, which is the only field here without a documented default.
+      tadm: Total aspiration and dispense monitoring settings (see `STARBackend.TADMParameters`).
+        None (default) leaves monitoring off. Monitoring also requires TADM mode enabled on the
+        channel (firmware `AF af1`); the fields on this object alone do not enable it.
       mechanical_clearance_reversing_volume: Piston backlash take-up, uL; the drive over-travels by
         this so the drawn volume matches the commanded volume.
       flow_acceleration: Dispensing-drive acceleration, uL/s^2.
@@ -7279,8 +7275,6 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         in the TADM pressure trace in testing, so its practical effect appears negligible here.
       last_dispense_mix_volume_correction_percent: Correction applied to the final dispense of the
         mix sequence, percent. No observable effect in the same testing.
-      empty_cup_mode: False aspirates; True empties the cup.
-      adc_algorithm_enabled: Whether the pressure ADC algorithm runs.
       requires_tip: If True, raise when the channel holds no tip. Tip presence, not tip capacity:
         this does not check that `volume` fits.
 
@@ -7467,8 +7461,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       df=f"{df:05}",
       dg=f"{dg:04}",
       to=f"{to:03}",
-      dj=f"{int(empty_cup_mode)}",
-      bl=f"{int(adc_algorithm_enabled)}",
+      dj="0",  # aspirate mode; empty-cup (dj1) not exposed - untested, see TODO
+      bl="0",  # ADC algorithm off; effect undocumented and untested, see TODO
       dm=f"{dm:05}",
       mv=f"{mix_volume_correction_percent:03}",
       me=f"{last_dispense_mix_volume_correction_percent:03}",
@@ -7517,7 +7511,6 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     z_current_limit: int = 3,
     mix_volume_correction_percent: int = 90,
     last_dispense_mix_volume_correction_percent: int = 100,
-    adc_algorithm_enabled: bool = False,
     requires_tip: bool = True,
   ) -> Any:
     """Dispense liquid on one channel at an absolute Z position (`MH`).
@@ -7549,7 +7542,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       stop_flow_rate: Dispensing-drive cut-off speed, uL/s.
       stop_back_volume: Volume drawn back at the end of the stroke to stop dripping, uL.
       transport_air_volume: Transport air volume, uL. This command has no field for the height at
-        which transport air is taken, unlike the level-detecting dispense command.
+        which transport air is handled, unlike the level-detecting dispense command.
       swap_speed: Z-drive speed on leaving the liquid, mm/s.
       settling_time: Time to wait in the liquid after dispensing, seconds.
       mix_volume: Mix volume, uL; 0 disables mixing and makes the rest of the mix arguments inert.
@@ -7558,12 +7551,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         overhang does not apply.
       mix_speed: Dispensing-drive speed during mixing, uL/s.
       mix_surface_following_distance: Z travel during the mix stroke, mm.
-      tadm_limit_curve_index: Limit curve index. Applies only when TADM is enabled.
-      tadm_algorithm_enabled: Whether the TADM algorithm runs.
-      tadm_recording_mode: 0 records nothing, 1 records TADM errors, 2 records all TADM
-        measurements. Applies only when TADM is enabled.
-      tadm_measurement_id: Four-character measurement identifier. Applies only when TADM is enabled.
-        None omits the field, which is the only field here without a documented default.
+      tadm: Total aspiration and dispense monitoring settings (see `STARBackend.TADMParameters`).
+        None (default) leaves monitoring off. Monitoring also requires TADM mode enabled on the
+        channel (firmware `AF af1`); the fields on this object alone do not enable it.
       flow_acceleration: Dispensing-drive acceleration, uL/s^2.
       current_limit: Dispensing-drive current limit, 0-7.
       z_speed: Z-drive travel speed, mm/s.
@@ -7574,7 +7564,6 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         in the TADM pressure trace in testing, so its practical effect appears negligible here.
       last_dispense_mix_volume_correction_percent: Correction applied to the final dispense of the
         mix sequence, percent. No observable effect in the same testing.
-      adc_algorithm_enabled: Whether the pressure ADC algorithm runs.
       requires_tip: If True, raise when the channel holds no tip. Tip presence, not tip contents:
         this does not check that the tip holds `volume`.
 
@@ -7752,7 +7741,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       zg=f"{zg:05}",
       dg=f"{dg:04}",
       to=f"{to:03}",
-      bl=f"{int(adc_algorithm_enabled)}",
+      bl="0",  # ADC algorithm off; effect undocumented and untested, see TODO
       dm=f"{dm:05}",
       mv=f"{mix_volume_correction_percent:03}",
       me=f"{last_dispense_mix_volume_correction_percent:03}",
