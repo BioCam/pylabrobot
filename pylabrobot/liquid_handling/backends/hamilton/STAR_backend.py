@@ -1250,6 +1250,11 @@ class DriveConfiguration:
   imaging_channel_installed: bool = False
   robotic_channel_installed: bool = False
 
+  @property
+  def is_present(self) -> bool:
+    """Whether this X-drive carries any module, i.e. the X-arm exists."""
+    return any(vars(self).values())
+
 
 @dataclass
 class MachineConfiguration:
@@ -1695,10 +1700,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # X-arm carriage reference point trackers, in mm. Only the lowest-level X-arm
     # move commands (experimental_x_arm_move, position_left_x_arm_,
     # position_right_x_arm_) and the position queries update them; compound
-    # commands that move the arm as a side effect do not (yet). On machines
-    # without a right X-arm the right tracker simply never becomes known.
+    # commands that move the arm as a side effect do not (yet). A STAR always has
+    # a left X-arm; the right tracker is created by setup() only when the loaded
+    # configuration reports a right X-arm, and stays None otherwise.
     self.left_x_arm_tracker = XArmTracker(thing="left X-arm")
-    self.right_x_arm_tracker = XArmTracker(thing="right X-arm")
+    self.right_x_arm_tracker: Optional[XArmTracker] = None
 
     self._setup_done = False
 
@@ -2077,6 +2083,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # Request machine information
     self._machine_conf = await self.request_machine_configuration()
     self._extended_conf = await self.request_extended_configuration()
+    self._configure_x_arm_trackers()
     self._head96_information: Optional[Head96Information] = None
 
     initialized = await self.request_instrument_initialization_status()
@@ -2278,6 +2285,20 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       self.left_x_arm_tracker.commit()
     return resp
 
+  def _configure_x_arm_trackers(self) -> None:
+    """Create or drop the right X-arm tracker to match the loaded configuration.
+
+    The left X-arm always exists on a STAR, so its tracker (created in __init__)
+    is left untouched. The right tracker exists only when `extended_conf`'s right
+    X-drive reports a module installed. Called by setup() once the configuration
+    is loaded.
+    """
+    if self.extended_conf.right_x_drive.is_present:
+      if self.right_x_arm_tracker is None:
+        self.right_x_arm_tracker = XArmTracker(thing="right X-arm")
+    else:
+      self.right_x_arm_tracker = None
+
   def get_x_arm_position(self) -> Tuple[Optional[float], Optional[float]]:
     """Tracked X-arm carriage reference points in mm, as (left, right).
 
@@ -2287,7 +2308,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     right element is therefore always None.
     """
     left = self.left_x_arm_tracker.get_x() if self.left_x_arm_tracker.is_known else None
-    right = self.right_x_arm_tracker.get_x() if self.right_x_arm_tracker.is_known else None
+    right = (
+      self.right_x_arm_tracker.get_x()
+      if self.right_x_arm_tracker is not None and self.right_x_arm_tracker.is_known
+      else None
+    )
     return left, right
 
   # # # # Single-Channel Pipette Commands # # # #
@@ -6190,9 +6215,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     assert 0 <= x_position <= 30000, "x_position_ must be between 0 and 30000"
 
-    tracking = not self.right_x_arm_tracker.is_disabled
-    if tracking:
-      self.right_x_arm_tracker.set_x(x_position / 10, commit=False)
+    tracker = self.right_x_arm_tracker
+    if tracker is not None and not tracker.is_disabled:
+      tracker.set_x(x_position / 10, commit=False)
     try:
       resp = await self.send_command(
         module="C0",
@@ -6200,11 +6225,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         xs=f"{x_position:05}",
       )
     except Exception:
-      if tracking:
-        self.right_x_arm_tracker.invalidate()
+      if tracker is not None and not tracker.is_disabled:
+        tracker.invalidate()
       raise
-    if tracking:
-      self.right_x_arm_tracker.commit()
+    if tracker is not None and not tracker.is_disabled:
+      tracker.commit()
     return resp
 
   async def move_left_x_arm_to_position_with_all_attached_components_in_z_safety_position(
@@ -6324,7 +6349,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     resp_dmm = await self.send_command(module="C0", command="QX", fmt="rx#####")
     x = cast(float, resp_dmm["rx"]) / 10
-    if not self.right_x_arm_tracker.is_disabled:
+    if self.right_x_arm_tracker is not None and not self.right_x_arm_tracker.is_disabled:
       self.right_x_arm_tracker.set_x(x)
     return x
 

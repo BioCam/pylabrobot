@@ -36,6 +36,7 @@ from pylabrobot.resources.hamilton import STARLetDeck, hamilton_96_tiprack_300uL
 
 from .STAR_backend import (
   CommandSyntaxError,
+  DriveConfiguration,
   HamiltonNoTipError,
   HardwareError,
   Head96Information,
@@ -52,6 +53,7 @@ from .STAR_chatterbox import (
   _DEFAULT_MACHINE_CONFIGURATION,
   STARChatterboxBackend,
 )
+from .x_arm_tracker import XArmTracker
 
 
 class TestSTARResponseParsing(unittest.TestCase):
@@ -626,16 +628,24 @@ class TestXArmPositionTracking(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.star.get_x_arm_position(), (678.9, None))
 
   async def test_position_right_x_arm_updates_right_tracker(self):
+    self.star.right_x_arm_tracker = XArmTracker(thing="right X-arm")
     await self.star.position_left_x_arm_(5000)
     await self.star.position_right_x_arm_(11111)
     self.star.send_command.assert_awaited_with(module="C0", command="JS", xs="11111")
     self.assertEqual(self.star.get_x_arm_position(), (500.0, 1111.1))
 
   async def test_request_right_x_arm_position_updates_right_tracker(self):
+    self.star.right_x_arm_tracker = XArmTracker(thing="right X-arm")
     self.star.send_command.return_value = {"rx": 9876}
     x = await self.star.request_right_x_arm_position()
     self.assertEqual(x, 987.6)
     self.assertEqual(self.star.right_x_arm_tracker.get_x(), 987.6)
+
+  async def test_right_arm_command_without_right_tracker_is_a_noop(self):
+    # No right X-arm configured: the command still sends, tracking is skipped.
+    await self.star.position_right_x_arm_(11111)
+    self.star.send_command.assert_awaited_with(module="C0", command="JS", xs="11111")
+    self.assertIsNone(self.star.right_x_arm_tracker)
 
   async def test_right_unknown_reported_as_none(self):
     await self.star.position_left_x_arm_(5000)
@@ -653,6 +663,32 @@ class TestXArmPositionTracking(unittest.IsolatedAsyncioTestCase):
     await self.star.experimental_x_arm_move(500.0)
     self.star.left_x_arm_tracker.enable()
     self.assertFalse(self.star.left_x_arm_tracker.is_known)
+
+
+class TestXArmTrackerConfiguration(unittest.TestCase):
+  """setup() creates the right X-arm tracker to match the loaded configuration."""
+
+  def test_left_only_config_leaves_right_tracker_none(self):
+    star = STARBackend()
+    star._extended_conf = _DEFAULT_EXTENDED_CONFIGURATION  # single left X-arm
+    star._configure_x_arm_trackers()
+    self.assertIsNotNone(star.left_x_arm_tracker)
+    self.assertIsNone(star.right_x_arm_tracker)
+
+  def test_right_x_drive_present_creates_right_tracker(self):
+    conf = copy.deepcopy(_DEFAULT_EXTENDED_CONFIGURATION)
+    conf.right_x_drive = DriveConfiguration(iswap_installed=True)
+    star = STARBackend()
+    star._extended_conf = conf
+    star._configure_x_arm_trackers()
+    self.assertIsNotNone(star.right_x_arm_tracker)
+
+  def test_reconfigure_to_left_only_drops_right_tracker(self):
+    star = STARBackend()
+    star.right_x_arm_tracker = XArmTracker(thing="right X-arm")
+    star._extended_conf = _DEFAULT_EXTENDED_CONFIGURATION
+    star._configure_x_arm_trackers()
+    self.assertIsNone(star.right_x_arm_tracker)
 
 
 class TestSTARUSBComms(unittest.IsolatedAsyncioTestCase):

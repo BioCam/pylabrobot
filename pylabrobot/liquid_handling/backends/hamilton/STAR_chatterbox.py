@@ -34,7 +34,11 @@ _DEFAULT_EXTENDED_CONFIGURATION = ExtendedConfiguration(
   instrument_size_slots=30,
   auto_load_size_slots=30,
   tip_waste_x_position=800.0,
+  # Single left X-arm, as on a standard STAR. The right drive reports no modules
+  # installed (matching a machine without a second X-arm), so the right X-arm
+  # tracker stays unknown in simulation.
   left_x_drive=DriveConfiguration(iswap_installed=True, core_96_head_installed=True),
+  right_x_drive=DriveConfiguration(),
   min_iswap_collision_free_position=350.0,
   max_iswap_collision_free_position=600.0,
 )
@@ -160,6 +164,7 @@ class STARChatterboxBackend(STARBackend):
     # Request machine information
     self._machine_conf = await self.request_machine_configuration()
     self._extended_conf = await self.request_extended_configuration()
+    self._configure_x_arm_trackers()
 
     # Mock firmware information for 96-head if installed
     if self.extended_conf.left_x_drive.core_96_head_installed and not skip_core96_head:
