@@ -28,6 +28,10 @@ _DEFAULT_MACHINE_CONFIGURATION = MachineConfiguration(
   num_pip_channels=8,
 )
 
+# Simulated X-arm carriage resting position (mm), reported by the RX queries
+# before any tracked move has committed a position.
+_SIM_X_ARM_HOME = 362.9
+
 _DEFAULT_EXTENDED_CONFIGURATION = ExtendedConfiguration(
   left_x_drive_large=True,
   iswap_gripper_wide=True,
@@ -195,6 +199,8 @@ class STARChatterboxBackend(STARBackend):
     else:
       self._iswap_information = None
 
+    await self._setup_x_arm_bars()
+
   async def stop(self):
     await LiquidHandlerBackend.stop(self)
     self._setup_done = False
@@ -281,6 +287,27 @@ class STARChatterboxBackend(STARBackend):
 
   async def move_channel_x(self, channel: int, x: float):
     logger.info("moving channel %s to x: %s", channel, x)
+    # Route through the real X-arm primitive so the X-arm tracker updates in
+    # simulation exactly as it does on hardware (position_left_x_arm_ only logs
+    # the wire command here, but commits the tracked position).
+    await self.position_left_x_arm_(round(x * 10))
+
+  async def request_left_x_arm_position(self) -> float:
+    # No hardware to read: report the tracked carriage position, or a resting
+    # home before any tracked move has committed one.
+    x = self.left_x_arm_tracker.get_x() if self.left_x_arm_tracker.is_known else _SIM_X_ARM_HOME
+    if not self.left_x_arm_tracker.is_disabled:
+      self.left_x_arm_tracker.set_x(x)
+    return x
+
+  async def request_right_x_arm_position(self) -> float:
+    tracker = self.right_x_arm_tracker
+    if tracker is None:
+      raise RuntimeError("Right X-arm is not installed.")
+    x = tracker.get_x() if tracker.is_known else _SIM_X_ARM_HOME
+    if not tracker.is_disabled:
+      tracker.set_x(x)
+    return x
 
   async def move_all_channels_in_z_safety(self):
     logger.info("moving all channels to z safety")
