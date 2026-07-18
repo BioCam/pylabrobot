@@ -42,9 +42,11 @@ from .STAR_backend import (
   HardwareError,
   Head96Information,
   PipChannelInformation,
+  SingleXArmInformation,
   STARBackend,
   STARFirmwareError,
   UnknownHamiltonError,
+  XArmInformation,
   iSWAPInformation,
   parse_star_fw_string,
 )
@@ -611,11 +613,28 @@ class TestXArmPositionTracking(unittest.IsolatedAsyncioTestCase):
     self.deck.get_or_create_x_arm(
       "left_x_arm", 370.0, "hamilton_legacy_star_dual_rail_arm", "center"
     )
+    # setup() normally resolves this from firmware; seed it so reachability checks
+    # (move_channel_x / experimental_x_arm_move) have a range to enforce against.
+    self.star._x_arm_information = XArmInformation(left=self._arm_info("left"))
     self.star.send_command = unittest.mock.AsyncMock(return_value={})
+
+  @staticmethod
+  def _arm_info(position):
+    return SingleXArmInformation(
+      position=position,
+      width=370.0,
+      model="hamilton_legacy_star_dual_rail_arm",
+      reference_point="center",
+      x_range=(95.0, 1337.5),
+      workspace_range=(-323.2, 1337.5),
+    )
 
   def _add_right_x_arm(self):
     self.deck.get_or_create_x_arm(
       "right_x_arm", 370.0, "hamilton_legacy_star_dual_rail_arm", "center"
+    )
+    self.star._x_arm_information = XArmInformation(
+      left=self._arm_info("left"), right=self._arm_info("right")
     )
 
   async def test_position_unknown_before_first_tracked_command(self):
@@ -678,6 +697,20 @@ class TestXArmPositionTracking(unittest.IsolatedAsyncioTestCase):
     await self.star.experimental_x_arm_move(500.0)
     self.star.left_x_arm_tracker.enable()
     self.assertFalse(self.star.left_x_arm_tracker.is_known)
+
+  async def test_experimental_x_arm_move_rejects_out_of_range(self):
+    # x_range is (95.0, 1337.5): both ends reject, and no wire command is sent.
+    for x in (94.0, 1400.0):
+      with self.assertRaises(ValueError):
+        await self.star.experimental_x_arm_move(x)
+    self.star.send_command.assert_not_awaited()
+    self.assertEqual(self.star.get_x_arm_position(), (None, None))
+
+  async def test_move_channel_x_rejects_out_of_range(self):
+    with self.assertRaises(ValueError):
+      await self.star.move_channel_x(0, 1400.0)
+    self.star.send_command.assert_not_awaited()
+
 
 
 class TestXArmPresence(unittest.IsolatedAsyncioTestCase):

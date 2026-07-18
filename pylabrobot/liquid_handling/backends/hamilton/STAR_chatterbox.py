@@ -288,13 +288,6 @@ class STARChatterboxBackend(STARBackend):
   async def move_channel_y(self, channel: int, y: float):
     logger.info("moving channel %s to y: %s", channel, y)
 
-  async def move_channel_x(self, channel: int, x: float):
-    logger.info("moving channel %s to x: %s", channel, x)
-    # Route through the real X-arm primitive so the X-arm tracker updates in
-    # simulation exactly as it does on hardware (position_left_x_arm_ only logs
-    # the wire command here, but commits the tracked position).
-    await self.position_left_x_arm_(round(x * 10))
-
   async def request_left_x_arm_position(self) -> float:
     # No hardware to read: report the tracked carriage position, or a resting
     # home before any tracked move has committed one.

@@ -2299,13 +2299,13 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     """Move the X-arm to an absolute X position with specified acceleration.
 
     Args:
-      x: Target X coordinate in mm. Must be between 90.0 and 1350.0.
+      x: Target X coordinate in mm. Must be within the arm's reachable X range
+        (see `x_arm_information`).
       acceleration_level: Acceleration index (hardware units), 1-5. Default 3.
       current_protection_limiter: Motor current limit (hardware units), 0-7. Default 7.
     """
 
-    if not (90.0 <= x <= 1350.0):
-      raise ValueError(f"x must be between 90.0 and 1350.0 mm, is {x}")
+    self._check_x_arm_reachable(x)
     if not (1 <= acceleration_level <= 5):
       raise ValueError(f"acceleration_level must be between 1 and 5, is {acceleration_level}")
     if not (0 <= current_protection_limiter <= 7):
@@ -2359,6 +2359,31 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return self._x_arm_information
 
   @staticmethod
+  def _check_x_arm_reachable(self, x: float, position: Literal["left", "right"] = "left") -> None:
+    """Raise if x (mm) is outside the X-arm's reachable X-drive range.
+
+    A no-op until the ranges are resolved (setup() queries them from firmware); the
+    machine's own firmware still rejects an out-of-range move in that window.
+
+    Args:
+      x: Target X coordinate in mm.
+      position: Which X-arm the move drives. Defaults to the left (main) arm.
+
+    Raises:
+      ValueError: If no such arm is installed, or x is outside its ``x_range``.
+    """
+    if self._x_arm_information is None:
+      return
+    info = self._x_arm_information
+    arm = info.left if position == "left" else info.right
+    if arm is None:
+      raise ValueError(f"No {position} X-arm is installed.")
+    x_min, x_max = arm.x_range
+    if not x_min <= x <= x_max:
+      raise ValueError(
+        f"{position} X-arm x={x}mm is outside its reachable range [{x_min}, {x_max}]mm."
+      )
+
   def _x_arm_model_and_reference(width: float) -> Tuple[str, Literal["center", "right"]]:
     """Arm variant and reference point for a given arm width.
 
@@ -5282,6 +5307,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   @need_iswap_parked
   async def move_channel_y(self, channel: int, y: float):
     """Move a channel safely in the y direction."""
+    self._check_x_arm_reachable(x)
 
     # Anti-channel-crash feature
     if channel > 0:
