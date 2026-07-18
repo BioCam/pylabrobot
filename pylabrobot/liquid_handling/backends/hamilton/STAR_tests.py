@@ -754,6 +754,89 @@ class TestLeftSidePanelPipChannelMinimum(unittest.IsolatedAsyncioTestCase):
     self.star.send_command.assert_awaited_once()
 
 
+class TestXArmTrackingDuringPipetting(unittest.IsolatedAsyncioTestCase):
+  """pick_up_tip / discard_tip / aspirate_pip / dispense_pip commit the last channel's x.
+  A failed op re-syncs the tracker from the machine (RX), falling back to unknown."""
+
+  def setUp(self):
+    self.star = STARBackend()
+    self.deck = STARLetDeck()
+    self.star.set_deck(self.deck)
+    self.deck.get_or_create_x_arm(
+      "left_x_arm", 370.0, "hamilton_legacy_star_dual_rail_arm", "center"
+    )
+    self.star._x_arm_information = XArmInformation(
+      left=SingleXArmInformation(
+        position="left",
+        width=370.0,
+        model="hamilton_legacy_star_dual_rail_arm",
+        reference_point="center",
+        x_range=(95.0, 1337.5),
+        workspace_range=(-323.2, 1337.5),
+      )
+    )
+    self.star._extended_conf = _DEFAULT_EXTENDED_CONFIGURATION
+    self.star._iswap_parked = True  # skip the need_iswap_parked park-first path
+    self.star.send_command = unittest.mock.AsyncMock(return_value={})
+
+  async def test_pick_up_tip_commits_last_x(self):
+    await self.star.pick_up_tip(
+      x_positions=[1000, 2345], y_positions=[100, 200], tip_pattern=[True, True], tip_type_idx=0
+    )
+    self.assertEqual(self.star.get_x_arm_position(), (234.5, None))
+
+  async def test_padded_x_positions_use_last_involved_channel(self):
+    # _ops_to_fw_positions pads x_positions/tip_pattern with a trailing 0/False when
+    # fewer than num_channels are involved; the tracker must ignore that padding and
+    # commit the last real channel, not the zero.
+    await self.star.pick_up_tip(
+      x_positions=[1000, 2345, 0],
+      y_positions=[100, 200, 0],
+      tip_pattern=[True, True, False],
+      tip_type_idx=0,
+    )
+    self.assertEqual(self.star.get_x_arm_position(), (234.5, None))
+
+  async def test_discard_tip_commits_last_x(self):
+    await self.star.discard_tip(
+      x_positions=[500, 1500], y_positions=[100, 200], tip_pattern=[True, True]
+    )
+    self.assertEqual(self.star.get_x_arm_position(), (150.0, None))
+
+  async def test_aspirate_pip_commits_last_x(self):
+    await self.star.aspirate_pip(tip_pattern=[True], x_positions=[3210])
+    self.assertEqual(self.star.get_x_arm_position(), (321.0, None))
+
+  async def test_dispense_pip_commits_last_x(self):
+    await self.star.dispense_pip(tip_pattern=[True], x_positions=[4567])
+    self.assertEqual(self.star.get_x_arm_position(), (456.7, None))
+
+  async def test_failed_op_resyncs_from_machine(self):
+    def send(module=None, command=None, **kwargs):
+      if command == "RX":
+        return {"rx": 9999}  # the machine reports where the arm actually stopped
+      raise TimeoutError()
+
+    self.star.send_command = unittest.mock.AsyncMock(side_effect=send)
+    with self.assertRaises(TimeoutError):
+      await self.star.pick_up_tip(
+        x_positions=[2000], y_positions=[100], tip_pattern=[True], tip_type_idx=0
+      )
+    self.assertEqual(self.star.get_x_arm_position(), (999.9, None))
+
+  async def test_failed_op_invalidates_when_read_also_fails(self):
+    await self.star.pick_up_tip(
+      x_positions=[1000], y_positions=[100], tip_pattern=[True], tip_type_idx=0
+    )  # commit a known position first
+    self.star.send_command = unittest.mock.AsyncMock(side_effect=TimeoutError())
+    with self.assertRaises(TimeoutError):
+      await self.star.pick_up_tip(
+        x_positions=[2000], y_positions=[100], tip_pattern=[True], tip_type_idx=0
+      )
+    assert self.star.left_x_arm_tracker is not None
+    self.assertFalse(self.star.left_x_arm_tracker.is_known)
+
+
 class TestXArmPresence(unittest.IsolatedAsyncioTestCase):
   """setup() creates a deck X-arm (and thus a tracker) per present arm."""
 
