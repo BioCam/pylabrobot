@@ -1462,6 +1462,118 @@ class XArm extends Resource {
   }
 }
 
+class Head96 extends Resource {
+  // The 96-head, drawn as an 8x12 channel grid with channel A1 (the reference point) at
+  // the resource origin. Assigned as a child of the XArm, so it rides the arm in x; its
+  // own y comes later. A1 is highlighted cyan to match the arm's reference line.
+  draggable = false;
+  canDelete = false;
+
+  constructor(resourceData, parent = undefined) {
+    super(resourceData, parent);
+    this.num_rows = resourceData.num_rows || 8;
+    this.num_columns = resourceData.num_columns || 12;
+    this.pitch = resourceData.pitch || 9;
+    this.channel_diameter = resourceData.channel_diameter || 7;
+  }
+
+  drawMainShape() {
+    const g = new Konva.Group();
+    const w = this.size_x;
+    const h = this.size_y;
+    const radius = this.channel_diameter / 2;
+    // Origin is the front-left corner and the body block IS the resource footprint (edges at
+    // the outer channel edges). Channels are inset by the radius: A1's centre at (radius,
+    // size_y - radius); columns extend in +x, rows A->H toward the front (decreasing y).
+    g.add(
+      new Konva.Rect({
+        x: 0,
+        y: 0,
+        width: w,
+        height: h,
+        cornerRadius: 5,
+        fill: "rgba(72, 76, 92, 0.5)",
+        stroke: "rgba(28, 31, 44, 0.95)",
+        strokeWidth: 1.5,
+        listening: false,
+      })
+    );
+    // Channels as nozzles: a light collar with a darker bore.
+    for (let r = 0; r < this.num_rows; r++) {
+      for (let c = 0; c < this.num_columns; c++) {
+        const cx = radius + c * this.pitch;
+        const cy = h - radius - r * this.pitch;
+        g.add(
+          new Konva.Circle({
+            x: cx,
+            y: cy,
+            radius: radius,
+            fill: "rgba(226, 228, 235, 0.97)",
+            stroke: "rgba(30, 33, 45, 0.9)",
+            strokeWidth: 0.6,
+            listening: false,
+          })
+        );
+        g.add(
+          new Konva.Circle({
+            x: cx,
+            y: cy,
+            radius: radius * 0.4,
+            fill: "rgba(96, 100, 116, 0.9)",
+            listening: false,
+          })
+        );
+      }
+    }
+    // A1 reference: a short x/y-centre crosshair on channel A1 (centre at (radius,
+    // size_y - radius)), marking the head's tracked A1 reference.
+    const cyan = "rgba(0, 229, 255, 0.95)";
+    const ax = radius;
+    const ay = h - radius;
+    const arm = this.pitch * 0.55;
+    g.add(
+      new Konva.Line({ points: [ax, ay + arm, ax, ay - arm], stroke: cyan, strokeWidth: 1.6, listening: false })
+    );
+    g.add(
+      new Konva.Line({ points: [ax - arm, ay, ax + arm, ay], stroke: cyan, strokeWidth: 1.6, listening: false })
+    );
+    return g;
+  }
+
+  setState(state) {
+    super.setState(state); // rotation
+    if (this.group === undefined) {
+      return;
+    }
+    // The head rides the arm in x (its group.x is fixed within the XArm group); only its
+    // independent y is driven here, from the owned tracker (which holds A1's y). The origin
+    // is the front-left corner, so it sits (size_y - radius) below A1's centre. Unknown y
+    // keeps the nominal placement. The y glides so moves read as motion.
+    const trackerState = state && state.tracker;
+    const a1y = trackerState ? trackerState.x : null;
+    if (a1y === null || a1y === undefined) {
+      return;
+    }
+    const y = a1y - (this.size_y - this.channel_diameter / 2);
+    const reduce =
+      window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    if (reduce) {
+      this.group.y(y);
+    } else {
+      if (this._yTween) {
+        this._yTween.destroy();
+      }
+      this._yTween = new Konva.Tween({
+        node: this.group,
+        y,
+        duration: 0.2,
+        easing: Konva.Easings.EaseInOut,
+      });
+      this._yTween.play();
+    }
+  }
+}
+
 class HamiltonSTARDeck extends Deck {
   constructor(resourceData) {
     super(resourceData, undefined);
@@ -3256,6 +3368,8 @@ function classForResourceType(type, category) {
       return Carrier;
     case "x_arm":
       return XArm;
+    case "head96":
+      return Head96;
     case "deck":
       return Deck;
     case "liquid_handler":

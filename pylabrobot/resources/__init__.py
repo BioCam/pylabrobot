@@ -27,6 +27,7 @@ from .eppendorf import *
 from .errors import ResourceNotFoundError
 from .greiner import *
 from .hamilton import *
+from .head96 import Head96
 from .itemized_resource import ItemizedResource
 from .lid import Lid, Liddable
 from .liquid import Liquid

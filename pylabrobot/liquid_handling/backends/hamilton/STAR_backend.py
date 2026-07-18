@@ -103,6 +103,7 @@ from pylabrobot.resources.hamilton.hamilton_decks import (
   rails_for_x_coordinate,
 )
 from pylabrobot.resources.liquid import Liquid
+from pylabrobot.resources.head96 import Head96
 from pylabrobot.resources.rotation import Rotation
 from pylabrobot.resources.tip_tracker import does_tip_tracking
 from pylabrobot.resources.trash import Trash
@@ -1405,8 +1406,9 @@ class Head96Information:
 
   fw_version: datetime.date
   x_offset: float
-  """Deck X distance from the X-arm carriage center to head channel A1 (mm), read from
-  master EEPROM at setup. Mirrors iSWAPInformation.rotation_drive_x_offset."""
+  """Deck-X distance (positive) from the X-arm carriage center to head channel A1 (mm), read
+  from master EEPROM at setup. A1 sits this far left of the carriage center, so
+  ``head_A1_x = carriage_x - x_offset``. Mirrors iSWAPInformation.rotation_drive_x_offset."""
   supports_clot_monitoring_clld: bool
   stop_disc_type: StopDiscType
   instrument_type: InstrumentType
@@ -2403,11 +2405,13 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       yield
     except Exception:
       try:
-        await self.request_left_x_arm_position()
+        await resync()
       except Exception:
-        tracker.invalidate()
+        for tracker, _ in active:
+          tracker.invalidate()
       raise
-    tracker.commit()
+    for tracker, _ in active:
+      tracker.commit()
 
   @staticmethod
   def _x_arm_model_and_reference(width: float) -> Tuple[str, Literal["center", "right"]]:
@@ -2486,6 +2490,31 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   # # # # Single-Channel Pipette Commands # # # #
 
   # # # Machine Query (MEM-READ) Commands: Single-Channel # # #
+
+    # The 96-head rides the left arm; assign it there so it moves with the arm in x.
+    if self._head96_information is not None and info.left is not None:
+      self._setup_head96(cast(XArm, deck.get_resource("left_x_arm")))
+
+  def _setup_head96(self, x_arm: XArm) -> None:
+    """Attach the 96-head to the X-arm as a child, once (idempotent).
+
+    Places channel A1 ``x_offset`` (from `Head96Information`) left of the arm's carriage
+    reference, so the head rides the arm in x. Its y is nominally centred at setup and then
+    driven by the head's own y tracker.
+    """
+    assert self._head96_information is not None
+    if any(child.name == "head96" for child in x_arm.children):
+      return
+    head = Head96(name="head96")
+    reference_offset = (
+      x_arm.get_size_x() / 2 if x_arm.reference_point == "center" else x_arm.get_size_x()
+    )
+    # Origin is the front-left corner; A1's centre sits at origin + (radius, size_y - radius).
+    # A1 rides the carriage at carriage_x - x_offset, and its y-drive home is nominally centred.
+    radius = head.channel_diameter / 2
+    x = reference_offset - self._head96_information.x_offset - radius
+    y = (x_arm.get_size_y() - head.get_size_y()) / 2  # nominal: centre the footprint in y
+    x_arm.assign_child_resource(head, location=Coordinate(x, y, 0.0))
 
   async def channel_request_y_minimum_spacing(self, channel_idx: int) -> float:
     """Request the minimum Y spacing for a given channel.
