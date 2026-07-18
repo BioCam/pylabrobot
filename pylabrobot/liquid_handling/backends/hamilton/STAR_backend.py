@@ -2384,6 +2384,31 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         f"{position} X-arm x={x}mm is outside its reachable range [{x_min}, {x_max}]mm."
       )
 
+  @asynccontextmanager
+  async def _tracking_left_x_arm(self, x_positions: List[int], tip_pattern: List[bool]):
+    """Track the left X-arm across a channel command that carries per-channel x.
+
+    On success commits the last involved channel's x - taken via ``tip_pattern`` so the
+    trailing/interior zero padding ``_ops_to_fw_positions`` appends is skipped. On
+    failure reads the true position back from the machine, marking it unknown only if
+    that read also fails; the original error propagates either way.
+    """
+    tracker = self.left_x_arm_tracker
+    involved_x = [x for x, on in zip(x_positions, tip_pattern) if on]
+    if tracker is None or tracker.is_disabled or not involved_x:
+      yield
+      return
+    tracker.set_x(involved_x[-1] / 10, commit=False)
+    try:
+      yield
+    except Exception:
+      try:
+        await self.request_left_x_arm_position()
+      except Exception:
+        tracker.invalidate()
+      raise
+    tracker.commit()
+
   @staticmethod
   def _x_arm_model_and_reference(width: float) -> Tuple[str, Literal["center", "right"]]:
     """Arm variant and reference point for a given arm width.
@@ -6677,12 +6702,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       "minimum_traverse_height_at_beginning_of_a_command must be between 0 and 3600"
     )
 
-    tracker = self.left_x_arm_tracker
-    involved_x = [x for x, on in zip(x_positions, tip_pattern) if on]
-    if tracker is not None and not tracker.is_disabled and involved_x:
-      tracker.set_x(involved_x[-1] / 10, commit=False)
-    try:
-      resp = await self.send_command(
+    async with self._tracking_left_x_arm(x_positions, tip_pattern):
+      return await self.send_command(
         module="C0",
         command="TP",
         tip_pattern=tip_pattern,
@@ -6696,16 +6717,6 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         th=f"{minimum_traverse_height_at_beginning_of_a_command:04}",
         td=pickup_method.value,
       )
-    except Exception:
-      if tracker is not None and not tracker.is_disabled and involved_x:
-        try:
-          await self.request_left_x_arm_position()
-        except Exception:
-          tracker.invalidate()
-      raise
-    if tracker is not None and not tracker.is_disabled and involved_x:
-      tracker.commit()
-    return resp
 
   @need_iswap_parked
   async def discard_tip(
@@ -6757,12 +6768,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       "z_position_at_end_of_a_command must be between 0 and 3600"
     )
 
-    tracker = self.left_x_arm_tracker
-    involved_x = [x for x, on in zip(x_positions, tip_pattern) if on]
-    if tracker is not None and not tracker.is_disabled and involved_x:
-      tracker.set_x(involved_x[-1] / 10, commit=False)
-    try:
-      resp = await self.send_command(
+    async with self._tracking_left_x_arm(x_positions, tip_pattern):
+      return await self.send_command(
         module="C0",
         command="TR",
         tip_pattern=tip_pattern,
@@ -6776,16 +6783,6 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         te=z_position_at_end_of_a_command,
         ti=discarding_method.value,
       )
-    except Exception:
-      if tracker is not None and not tracker.is_disabled and involved_x:
-        try:
-          await self.request_left_x_arm_position()
-        except Exception:
-          tracker.invalidate()
-      raise
-    if tracker is not None and not tracker.is_disabled and involved_x:
-      tracker.commit()
-    return resp
 
   # TODO:(command:TW) Tip Pick-up for DC wash procedure
 
@@ -7031,12 +7028,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
     assert all(0 <= x <= 3600 for x in cup_upper_edge), "cup_upper_edge must be between 0 and 3600"
 
-    tracker = self.left_x_arm_tracker
-    involved_x = [x for x, on in zip(x_positions, tip_pattern) if on]
-    if tracker is not None and not tracker.is_disabled and involved_x:
-      tracker.set_x(involved_x[-1] / 10, commit=False)
-    try:
-      resp = await self.send_command(
+    async with self._tracking_left_x_arm(x_positions, tip_pattern):
+      return await self.send_command(
         module="C0",
         command="AS",
         tip_pattern=tip_pattern,
@@ -7084,16 +7077,6 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         sz=[f"{sz:04}" for sz in z_drive_speed_during_2nd_section_search],
         io=[f"{io:04}" for io in cup_upper_edge],
       )
-    except Exception:
-      if tracker is not None and not tracker.is_disabled and involved_x:
-        try:
-          await self.request_left_x_arm_position()
-        except Exception:
-          tracker.invalidate()
-      raise
-    if tracker is not None and not tracker.is_disabled and involved_x:
-      tracker.commit()
-    return resp
 
   @need_iswap_parked
   async def dispense_pip(
@@ -7278,12 +7261,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
     assert 0 <= recording_mode <= 2, "recording_mode must be between 0 and 2"
 
-    tracker = self.left_x_arm_tracker
-    involved_x = [x for x, on in zip(x_positions, tip_pattern) if on]
-    if tracker is not None and not tracker.is_disabled and involved_x:
-      tracker.set_x(involved_x[-1] / 10, commit=False)
-    try:
-      resp = await self.send_command(
+    async with self._tracking_left_x_arm(x_positions, tip_pattern):
+      return await self.send_command(
         module="C0",
         command="DS",
         tip_pattern=tip_pattern,
@@ -7325,16 +7304,6 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         gj=tadm_algorithm,  #
         gk=recording_mode,  #
       )
-    except Exception:
-      if tracker is not None and not tracker.is_disabled and involved_x:
-        try:
-          await self.request_left_x_arm_position()
-        except Exception:
-          tracker.invalidate()
-      raise
-    if tracker is not None and not tracker.is_disabled and involved_x:
-      tracker.commit()
-    return resp
 
   # TODO:(command:DA) Simultaneous aspiration & dispensation of liquid
 
