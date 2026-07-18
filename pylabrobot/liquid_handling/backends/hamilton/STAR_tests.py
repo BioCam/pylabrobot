@@ -794,7 +794,7 @@ class TestXArmRangeQueries(unittest.IsolatedAsyncioTestCase):
 
   async def test_present_wrap_size_of_installed_arms(self):
     self.star.send_command.return_value = "C0UAid0001er00/00ua5952 0000 -03232 +15174 +30000 +30000"
-    wraps = await self.star.request_present_wrap_size_of_installed_arms()
+    wraps = await self.star.request_working_envelopes_per_arm()
     self.assertEqual(wraps, {"left": (595.2, (-323.2, 1517.4)), "right": (0.0, (3000.0, 3000.0))})
 
 

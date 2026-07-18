@@ -332,7 +332,7 @@ class STARChatterboxBackend(STARBackend):
     x_range = (95.0, self._simulated_x_reach_max())
     return {"left": x_range, "right": x_range}
 
-  async def request_present_wrap_size_of_installed_arms(
+  async def request_working_envelopes_per_arm(
     self,
   ) -> Dict[str, Tuple[float, Tuple[float, float]]]:
     arm = (595.2, (-323.2, self._simulated_x_reach_max()))  # wrap, workspace

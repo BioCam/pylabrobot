@@ -2377,7 +2377,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     arm. Called by setup() once the configuration is loaded.
     """
     ranges = await self.request_maximal_ranges_of_x_drives()
-    wraps = await self.request_present_wrap_size_of_installed_arms()
+    wraps = await self.request_working_envelopes_per_arm()
     widths = {
       "left": self.extended_conf.left_x_arm_width,
       "right": self.extended_conf.right_x_arm_width,
@@ -6483,10 +6483,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     left_min, left_max, right_min, right_max = values
     return {"left": (left_min, left_max), "right": (right_min, right_max)}
 
-  async def request_present_wrap_size_of_installed_arms(
+  async def request_working_envelopes_per_arm(
     self,
   ) -> Dict[str, Tuple[float, Tuple[float, float]]]:
-    """Request the wrap size and workspace of each installed arm.
+    """Request the working envelope of each installed arm.
 
     Returns:
       Per side, `(wrap_size, (workspace_min, workspace_max))` in mm, keyed by side. A
