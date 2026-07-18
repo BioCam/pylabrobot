@@ -6676,6 +6676,24 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     had_error: bool
     pressures: List[int]
 
+  async def _enter_tadm_mode_if_needed(
+    self, channel_idx: int, tadm: Optional["STARBackend.TADMParameters"]
+  ) -> bool:
+    """Ensure the channel is in TADM mode when a recording is requested, preserving caller state.
+
+    TADM recording only happens when the channel is in TADM monitoring mode (`AF af1`), which is
+    EEPROM-persistent, so `_channel_aspirate/dispense_in_absolute_z` self-manage it: if `tadm` is
+    requested and the mode is already on, nothing changes; if it is off, the caller turns it on and
+    restores it off afterward, so the command leaves the mode as it found it.
+
+    Returns:
+      True if this call turned TADM mode on (so the caller must restore it off after the stroke).
+    """
+    if tadm is None or await self.request_tadm_recording_status(channel_idx):
+      return False  # not requested, or already on - leave it as the caller set it
+    await self.set_tadm_recording(channel_idx, True)
+    return True
+
   async def set_tadm_recording(self, channel_idx: int, enabled: bool = True) -> None:
     """Turn TADM mode on or off for one channel (firmware `AF`).
 
@@ -6691,17 +6709,63 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
     logger.debug("channel %d: TADM recording %s", channel_idx, "on" if enabled else "off")
 
+  async def request_tadm_recording_status(self, channel_idx: int) -> bool:
+    """Whether the channel is in TADM monitoring mode (firmware `QF`).
+
+    Args:
+      channel_idx: Channel index (0-based, backmost = 0).
+
+    Returns:
+      True if TADM mode is on (`qf1`), False if the channel is in pressure/capacitive-LLD mode.
+    """
+    resp = str(await self.send_command(module=STARBackend.channel_id(channel_idx), command="QF"))
+    return "qf1" in resp
+
   async def clear_tadm_fifo(self, channel_idx: int) -> None:
     """Clear a channel's TADM curve FIFO (firmware `AN`), so the next read is unambiguous."""
     await self.send_command(module=STARBackend.channel_id(channel_idx), command="AN")
+
+  async def _tadm_advance_fifo(self, channel_idx: int) -> bool:
+    """`QM`: advance the FIFO pointer to the next stored curve. True if data is present (`qm1`)."""
+    resp = str(await self.send_command(module=STARBackend.channel_id(channel_idx), command="QM"))
+    return "qm1" in resp
+
+  async def _tadm_request_curve_parameters(self, channel_idx: int) -> Tuple[int, str, bool, str]:
+    """`QL`: metadata of the curve at the FIFO pointer.
+
+    Returns (n_points, operation, had_error, measurement_id); operation is
+    "aspirate"/"dispense"/"other".
+    """
+    resp = str(await self.send_command(module=STARBackend.channel_id(channel_idx), command="QL"))
+    match = re.search(r"ql([\d ]+?)nr(.*?)gd", resp)
+    if match is None:
+      raise ValueError(f"could not parse QL reply: {resp!r}")
+    fields = match.group(1).split()
+    operation = {0: "aspirate", 1: "dispense"}.get(int(fields[1]), "other")
+    return int(fields[0]), operation, int(fields[2]) != 0, match.group(2).strip()
+
+  async def _tadm_request_curve_data(
+    self, channel_idx: int, start_index: int, count: int
+  ) -> List[int]:
+    """`QN`: `count` signed pressure values (Pa) starting at `start_index`. count 1..50."""
+    resp = str(
+      await self.send_command(
+        module=STARBackend.channel_id(channel_idx),
+        command="QN",
+        li=f"{start_index:04}",
+        ln=f"{count:02}",
+      )
+    )
+    return [int(v) for v in resp.split("qn")[1].split()]
 
   async def read_tadm_curve(
     self, channel_idx: int, points_per_read: int = 50
   ) -> Optional["STARBackend.TADMCurve"]:
     """Read the next recorded TADM curve from a channel's FIFO, or None if it is empty.
 
-    Advances the FIFO pointer (`QM`), reads the metadata (`QL`), then pages the pressure values
-    (`QN`). `QN` returns up to 50 values per call, so a 2432-point curve is ~49 reads, not 2432.
+    Composes the low-level primitives: advance the pointer (`_tadm_advance_fifo`), read metadata
+    (`_tadm_request_curve_parameters`), then page the values (`_tadm_request_curve_data`). `QN`
+    returns up to 50 values per call, so a 2432-point curve is ~49 reads, not 2432.
 
     Args:
       channel_idx: Channel index (0-based, backmost = 0).
@@ -6713,28 +6777,16 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     """
     if not 1 <= points_per_read <= 50:
       raise ValueError(f"points_per_read must be between 1 and 50, got {points_per_read}")
-    module = STARBackend.channel_id(channel_idx)
-    if "qm1" not in str(await self.send_command(module=module, command="QM")):
+    if not await self._tadm_advance_fifo(channel_idx):
       logger.debug("channel %d: TADM FIFO empty", channel_idx)
       return None
-    ql = str(await self.send_command(module=module, command="QL"))
-    match = re.search(r"ql([\d ]+?)nr(.*?)gd", ql)
-    if match is None:
-      raise ValueError(f"could not parse QL reply: {ql!r}")
-    fields = match.group(1).split()
-    n_points = int(fields[0])
-    operation = {0: "aspirate", 1: "dispense"}.get(int(fields[1]), "other")
-    had_error = int(fields[2]) != 0
-    measurement_id = match.group(2).strip()
+    n_points, operation, had_error, measurement_id = await self._tadm_request_curve_parameters(
+      channel_idx
+    )
     pressures: List[int] = []
     while len(pressures) < n_points:
       count = min(points_per_read, n_points - len(pressures))
-      resp = str(
-        await self.send_command(
-          module=module, command="QN", li=f"{len(pressures):04}", ln=f"{count:02}"
-        )
-      )
-      values = [int(v) for v in resp.split("qn")[1].split()]
+      values = await self._tadm_request_curve_data(channel_idx, len(pressures), count)
       if not values:  # empty reply: stop rather than loop forever
         break
       pressures.extend(values)
@@ -6846,8 +6898,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       mix_position_offset: Mix height relative to the aspiration position, mm. A distance, so the tip
         overhang does not apply. Inert unless `mix` is set.
       tadm: Total aspiration and dispense monitoring settings (see `STARBackend.TADMParameters`).
-        None (default) leaves monitoring off. Monitoring also requires TADM mode enabled on the
-        channel (firmware `AF af1`); the fields on this object alone do not enable it.
+        None (default) records nothing. When provided, the command self-manages TADM mode: if the
+        channel is already in TADM mode it records and leaves the mode untouched; if not, it turns
+        the mode on for the stroke and restores it off afterward. Either way the caller's mode
+        setting is preserved. Read the curve back with `read_tadm_curve`.
       mechanical_clearance_reversing_volume: Piston backlash take-up, uL; the drive over-travels by
         this so the drawn volume matches the commanded volume.
       flow_acceleration: Dispensing-drive acceleration, uL/s^2.
@@ -7041,8 +7095,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       {} if tadm is None or tadm.measurement_id is None else {"nr": tadm.measurement_id}
     )
 
-    return await self.send_command(
-      module=STARBackend.channel_id(channel_idx),
+    module = STARBackend.channel_id(channel_idx)
+    tadm_enabled_here = await self._enter_tadm_mode_if_needed(channel_idx, tadm)
+    result = await self.send_command(
+      module=module,
       command="MG",
       da=f"{da:05}",
       de=f"{de:03}",
@@ -7076,6 +7132,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       gk=f"{0 if tadm is None else tadm.recording_mode}",
       **tadm_measurement_id_field,
     )
+    if tadm_enabled_here:  # this call turned TADM mode on; restore the caller's off state
+      await self.set_tadm_recording(channel_idx, False)
+    return result
 
   async def _channel_dispense_in_absolute_z(
     self,
@@ -7144,8 +7203,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       mix_position_offset: Mix height relative to the dispense position, mm. A distance, so the tip
         overhang does not apply. Inert unless `mix` is set.
       tadm: Total aspiration and dispense monitoring settings (see `STARBackend.TADMParameters`).
-        None (default) leaves monitoring off. Monitoring also requires TADM mode enabled on the
-        channel (firmware `AF af1`); the fields on this object alone do not enable it.
+        None (default) records nothing. When provided, the command self-manages TADM mode: if the
+        channel is already in TADM mode it records and leaves the mode untouched; if not, it turns
+        the mode on for the stroke and restores it off afterward. Either way the caller's mode
+        setting is preserved. Read the curve back with `read_tadm_curve`.
       flow_acceleration: Dispensing-drive acceleration, uL/s^2.
       current_limit: Dispensing-drive current limit, 0-7.
       z_speed: Z-drive travel speed, mm/s.
@@ -7330,8 +7391,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       {} if tadm is None or tadm.measurement_id is None else {"nr": tadm.measurement_id}
     )
 
-    return await self.send_command(
-      module=STARBackend.channel_id(channel_idx),
+    module = STARBackend.channel_id(channel_idx)
+    tadm_enabled_here = await self._enter_tadm_mode_if_needed(channel_idx, tadm)
+    result = await self.send_command(
+      module=module,
       command="MH",
       db=f"{db:05}",
       dd=f"{dd:03}",
@@ -7363,6 +7426,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       gk=f"{0 if tadm is None else tadm.recording_mode}",
       **tadm_measurement_id_field,
     )
+    if tadm_enabled_here:  # this call turned TADM mode on; restore the caller's off state
+      await self.set_tadm_recording(channel_idx, False)
+    return result
 
   # TODO:(command:DC) Set multiple dispense values using PIP
 

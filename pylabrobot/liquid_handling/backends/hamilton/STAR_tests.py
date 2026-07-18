@@ -2723,6 +2723,10 @@ class TestChannelAbsoluteZPipetting(unittest.IsolatedAsyncioTestCase):
     self.overhang = 95.0 - STARBackend.DEFAULT_TIP_FITTING_DEPTH
 
   def _sent(self):
+    # the pipetting command may be wrapped by QF/AF calls; return the MG/MH call's kwargs
+    for call in reversed(self.star.send_command.call_args_list):
+      if call.kwargs.get("command") in ("MG", "MH"):
+        return call.kwargs
     return self.star.send_command.call_args.kwargs
 
   async def test_aspirate_wire_fields(self):
@@ -2923,3 +2927,86 @@ class TestTADMBatchedRead(unittest.IsolatedAsyncioTestCase):
     # two QN calls (li0000 ln03, li0003 ln02), not five
     qn = [c for c in calls if c.get("command") == "QN"]
     self.assertEqual([(c["li"], c["ln"]) for c in qn], [("0000", "03"), ("0003", "02")])
+
+
+class TestChannelTADMSelfManage(unittest.IsolatedAsyncioTestCase):
+  """A tadm= aspirate/dispense preserves the channel's AF (TADM mode) state."""
+
+  async def asyncSetUp(self):
+    self.star = STARBackend()
+    self.star._num_channels = 8
+    self.star.request_tip_len_on_channel = unittest.mock.AsyncMock(return_value=95.0)
+
+  def _harness(self, qf_reply):
+    calls = []
+
+    async def send(module, command, **kw):
+      calls.append((command, kw.get("af")))
+      if command == "QF":
+        return qf_reply
+      return {}
+
+    self.star.send_command = send
+    return calls
+
+  async def test_mode_off_enables_then_restores(self):
+    calls = self._harness("P8QFid1qf0")  # TADM currently off
+    await self.star._channel_aspirate_in_absolute_z(
+      channel_idx=0,
+      z=120.0,
+      volume=10.0,
+      tadm=STARBackend.TADMParameters(algorithm_enabled=True),
+    )
+    seq = [(c, af) for c, af in calls]
+    # QF (check) -> AF af1 (enable) -> MG (record) -> AF af0 (restore)
+    self.assertEqual(seq[0], ("QF", None))
+    self.assertEqual(seq[1], ("AF", "1"))
+    self.assertIn(("MG", None), seq)
+    self.assertEqual(seq[-1], ("AF", "0"))
+
+  async def test_mode_already_on_leaves_it(self):
+    calls = self._harness("P8QFid1qf1")  # TADM already on
+    await self.star._channel_aspirate_in_absolute_z(
+      channel_idx=0,
+      z=120.0,
+      volume=10.0,
+      tadm=STARBackend.TADMParameters(algorithm_enabled=True),
+    )
+    af_writes = [af for c, af in calls if c == "AF"]
+    self.assertEqual(af_writes, [])  # no AF write at all - left as the caller set it
+
+  async def test_no_tadm_never_touches_af(self):
+    calls = self._harness("P8QFid1qf0")
+    await self.star._channel_aspirate_in_absolute_z(channel_idx=0, z=120.0, volume=10.0)
+    self.assertNotIn("QF", [c for c, _ in calls])  # no state query when tadm is not requested
+    self.assertNotIn("AF", [c for c, _ in calls])
+
+
+class TestTADMPrimitives(unittest.IsolatedAsyncioTestCase):
+  """The low-level QM/QL/QN primitives, verified against real device replies."""
+
+  async def asyncSetUp(self):
+    self.star = STARBackend()
+    self.star._num_channels = 8
+
+  async def test_advance_fifo(self):
+    self.star.send_command = unittest.mock.AsyncMock(return_value="P8QMid1qm1")
+    self.assertTrue(await self.star._tadm_advance_fifo(0))
+    self.star.send_command = unittest.mock.AsyncMock(return_value="P8QMid1qm0")
+    self.assertFalse(await self.star._tadm_advance_fifo(0))
+
+  async def test_curve_parameters(self):
+    self.star.send_command = unittest.mock.AsyncMock(
+      return_value="P8QLid2qm1ql0071 0001 0000 0000 0000nrMHD0gd00000000-0000-0000-0000-000000000000"
+    )
+    n, op, err, mid = await self.star._tadm_request_curve_parameters(0)
+    self.assertEqual((n, op, err, mid), (71, "dispense", False, "MHD0"))
+
+  async def test_curve_data_single_and_batch(self):
+    self.star.send_command = unittest.mock.AsyncMock(return_value="P8QNid3qn-0439")
+    self.assertEqual(await self.star._tadm_request_curve_data(0, 0, 1), [-439])
+    self.star.send_command = unittest.mock.AsyncMock(return_value="P8QNid4qn-0439 -0434 +0012")
+    self.assertEqual(await self.star._tadm_request_curve_data(0, 0, 3), [-439, -434, 12])
+    # wire args are zero-padded li/ln
+    self.assertEqual(self.star.send_command.call_args.kwargs["li"], "0000")
+    self.assertEqual(self.star.send_command.call_args.kwargs["ln"], "03")
