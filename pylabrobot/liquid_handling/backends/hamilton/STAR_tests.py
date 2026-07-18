@@ -2846,3 +2846,80 @@ class TestChannelAbsoluteZMix(unittest.IsolatedAsyncioTestCase):
     )
     k = self.star.send_command.call_args.kwargs
     self.assertEqual(k["zy"], "0000")  # surface_following_distance None -> 0
+
+
+class TestTADMReadout(unittest.IsolatedAsyncioTestCase):
+  """The TADM readout methods parse real recorded firmware replies."""
+
+  async def asyncSetUp(self):
+    self.star = STARBackend()
+    self.star._num_channels = 8
+
+  async def test_set_tadm_recording_wire(self):
+    self.star.send_command = unittest.mock.AsyncMock(return_value="")
+    await self.star.set_tadm_recording(channel_idx=7, enabled=True)
+    self.assertEqual(
+      self.star.send_command.call_args.kwargs, {"module": "P8", "command": "AF", "af": "1"}
+    )
+    await self.star.set_tadm_recording(channel_idx=7, enabled=False)
+    self.assertEqual(self.star.send_command.call_args.kwargs["af"], "0")
+
+  async def test_clear_tadm_fifo_wire(self):
+    self.star.send_command = unittest.mock.AsyncMock(return_value="")
+    await self.star.clear_tadm_fifo(channel_idx=7)
+    self.assertEqual(self.star.send_command.call_args.kwargs, {"module": "P8", "command": "AN"})
+
+  async def test_read_tadm_curve_parses_real_replies(self):
+    # real replies from the device log (MH dispense, MHD0): QL then per-point QN
+    replies = iter(
+      [
+        "P8QMid0001qm1",
+        "P8QLid0002qm1ql0003 0001 0000 0000 0000nrMHD0gd00000000-0000-0000-0000-000000000000",
+        "P8QNid0003qn-0439",
+        "P8QNid0004qn-0434",
+        "P8QNid0005qn+0012",
+      ]
+    )
+    self.star.send_command = unittest.mock.AsyncMock(side_effect=lambda **k: next(replies))
+    curve = await self.star.read_tadm_curve(channel_idx=7)
+    assert curve is not None
+    self.assertEqual(curve.measurement_id, "MHD0")
+    self.assertEqual(curve.operation, "dispense")  # type field 0001
+    self.assertFalse(curve.had_error)
+    self.assertEqual(curve.pressures, [-439, -434, 12])  # 3 points
+
+  async def test_read_tadm_curve_empty_fifo(self):
+    self.star.send_command = unittest.mock.AsyncMock(return_value="P8QMid0001qm0")
+    self.assertIsNone(await self.star.read_tadm_curve(channel_idx=7))
+
+  async def test_request_channel_pressure_parses(self):
+    self.star.send_command = unittest.mock.AsyncMock(return_value="P8RPid0001rp-0123")
+    self.assertEqual(await self.star.request_channel_pressure(channel_idx=7), -123)
+
+
+class TestTADMBatchedRead(unittest.IsolatedAsyncioTestCase):
+  async def test_qn_batched_multivalue_reply(self):
+    star = STARBackend()
+    star._num_channels = 8
+    # QL says 5 points; QN returns them in two space-separated replies (3 then 2)
+    replies = iter(
+      [
+        "P8QMid1qm1",
+        "P8QLid2qm1ql0005 0000 0000 0000 0000nrAAAAgd00000000-0000-0000-0000-000000000000",
+        "P8QNid3qn-0439 -0434 -0434",
+        "P8QNid4qn-0439 +0012",
+      ]
+    )
+    calls = []
+
+    async def cap(**k):
+      calls.append(k)
+      return next(replies)
+
+    star.send_command = cap
+    curve = await star.read_tadm_curve(channel_idx=7, points_per_read=3)
+    assert curve is not None
+    self.assertEqual(curve.pressures, [-439, -434, -434, -439, 12])
+    # two QN calls (li0000 ln03, li0003 ln02), not five
+    qn = [c for c in calls if c.get("command") == "QN"]
+    self.assertEqual([(c["li"], c["ln"]) for c in qn], [("0000", "03"), ("0003", "02")])

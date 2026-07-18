@@ -6658,6 +6658,113 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
           "records nothing"
         )
 
+  @dataclass(frozen=True)
+  class TADMCurve:
+    """One recorded TADM pressure curve, read back from a channel's FIFO.
+
+    Attributes:
+      measurement_id: The 4-character id stamped on the recording (firmware `nr`). Identifies which
+        pipetting step produced the curve; it is a label, not a retrieval key (curves come back in
+        recording order).
+      operation: "aspirate", "dispense", or "other" - from the firmware liquid-handling-type field.
+      had_error: Whether the firmware flagged a TADM error on this curve.
+      pressures: Signed pressure values (Pa), in time order.
+    """
+
+    measurement_id: str
+    operation: str
+    had_error: bool
+    pressures: List[int]
+
+  async def set_tadm_recording(self, channel_idx: int, enabled: bool = True) -> None:
+    """Turn TADM mode on or off for one channel (firmware `AF`).
+
+    With it on, the next aspirate/dispense that carries a `TADMParameters` records its pressure
+    curve into the channel's FIFO. Read it back with `read_tadm_curve`.
+
+    Args:
+      channel_idx: Channel index (0-based, backmost = 0).
+      enabled: True enables TADM monitoring, False restores pressure/capacitive-LLD monitoring.
+    """
+    await self.send_command(
+      module=STARBackend.channel_id(channel_idx), command="AF", af="1" if enabled else "0"
+    )
+    logger.debug("channel %d: TADM recording %s", channel_idx, "on" if enabled else "off")
+
+  async def clear_tadm_fifo(self, channel_idx: int) -> None:
+    """Clear a channel's TADM curve FIFO (firmware `AN`), so the next read is unambiguous."""
+    await self.send_command(module=STARBackend.channel_id(channel_idx), command="AN")
+
+  async def read_tadm_curve(
+    self, channel_idx: int, points_per_read: int = 50
+  ) -> Optional["STARBackend.TADMCurve"]:
+    """Read the next recorded TADM curve from a channel's FIFO, or None if it is empty.
+
+    Advances the FIFO pointer (`QM`), reads the metadata (`QL`), then pages the pressure values
+    (`QN`). `QN` returns up to 50 values per call, so a 2432-point curve is ~49 reads, not 2432.
+
+    Args:
+      channel_idx: Channel index (0-based, backmost = 0).
+      points_per_read: `QN` batch size, 1..50. 50 (the firmware max) minimises round-trips; only a
+        batch of 1 has been verified on hardware, so drop to 1 if a batched read misbehaves.
+
+    Returns:
+      A `TADMCurve`, or None if the FIFO holds no data.
+    """
+    if not 1 <= points_per_read <= 50:
+      raise ValueError(f"points_per_read must be between 1 and 50, got {points_per_read}")
+    module = STARBackend.channel_id(channel_idx)
+    if "qm1" not in str(await self.send_command(module=module, command="QM")):
+      logger.debug("channel %d: TADM FIFO empty", channel_idx)
+      return None
+    ql = str(await self.send_command(module=module, command="QL"))
+    match = re.search(r"ql([\d ]+?)nr(.*?)gd", ql)
+    if match is None:
+      raise ValueError(f"could not parse QL reply: {ql!r}")
+    fields = match.group(1).split()
+    n_points = int(fields[0])
+    operation = {0: "aspirate", 1: "dispense"}.get(int(fields[1]), "other")
+    had_error = int(fields[2]) != 0
+    measurement_id = match.group(2).strip()
+    pressures: List[int] = []
+    while len(pressures) < n_points:
+      count = min(points_per_read, n_points - len(pressures))
+      resp = str(
+        await self.send_command(
+          module=module, command="QN", li=f"{len(pressures):04}", ln=f"{count:02}"
+        )
+      )
+      values = [int(v) for v in resp.split("qn")[1].split()]
+      if not values:  # empty reply: stop rather than loop forever
+        break
+      pressures.extend(values)
+    logger.debug(
+      "channel %d: read TADM curve %r (%s, %d points%s)",
+      channel_idx,
+      measurement_id,
+      operation,
+      n_points,
+      ", ERROR" if had_error else "",
+    )
+    return STARBackend.TADMCurve(measurement_id, operation, had_error, pressures)
+
+  async def request_channel_pressure(self, channel_idx: int) -> int:
+    """Read the channel's pressure sensor right now (firmware `RP`), Pa.
+
+    Instantaneous, independent of any pipetting stroke - so it can be polled to watch a static tip
+    (e.g. liquid held between steps). Not yet validated on hardware.
+
+    Args:
+      channel_idx: Channel index (0-based, backmost = 0).
+
+    Returns:
+      Signed pressure value (Pa).
+    """
+    resp = str(await self.send_command(module=STARBackend.channel_id(channel_idx), command="RP"))
+    pressure = int(resp.split("rp")[1].strip())
+    logger.debug("channel %d: pressure %d Pa", channel_idx, pressure)
+    return pressure
+
   # -------------- 3.5.3 Liquid handling commands using PIP --------------
 
   async def _channel_aspirate_in_absolute_z(
@@ -6949,7 +7056,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       dg=f"{dg:04}",
       to=f"{to:03}",
       dj="0",  # aspirate mode. TODO: empty-cup (dj1) not exposed - untested; test on the device.
-      bl="0",  # ADC algorithm off. TODO: effect undocumented and untested; test on the device.
+      bl="0",  # Anti Droplet Control off (bl1 = ADC, prevents drops with volatile solvents). TODO: expose + test.
       dm=f"{dm:05}",
       mv=f"{mix_volume_correction_percent:03}",
       me=f"{last_dispense_mix_volume_correction_percent:03}",
@@ -7235,7 +7342,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       zg=f"{zg:05}",
       dg=f"{dg:04}",
       to=f"{to:03}",
-      bl="0",  # ADC algorithm off. TODO: effect undocumented and untested; test on the device.
+      bl="0",  # Anti Droplet Control off (bl1 = ADC, prevents drops with volatile solvents). TODO: expose + test.
       dm=f"{dm:05}",
       mv=f"{mix_volume_correction_percent:03}",
       me=f"{last_dispense_mix_volume_correction_percent:03}",
