@@ -712,6 +712,47 @@ class TestXArmPositionTracking(unittest.IsolatedAsyncioTestCase):
     self.star.send_command.assert_not_awaited()
 
 
+class TestLeftSidePanelPipChannelMinimum(unittest.IsolatedAsyncioTestCase):
+  """The 320mm PIP-channel floor applies only with the left side panel AND the 96-head;
+  the head assembly, not the panel alone, is what the channels would hit."""
+
+  def setUp(self):
+    self.star = STARBackend(left_side_panel_installed=True)
+    self.deck = STARLetDeck()
+    self.star.set_deck(self.deck)
+    self.deck.get_or_create_x_arm(
+      "left_x_arm", 370.0, "hamilton_legacy_star_dual_rail_arm", "center"
+    )
+    self.star._x_arm_information = XArmInformation(
+      left=SingleXArmInformation(
+        position="left",
+        width=370.0,
+        model="hamilton_legacy_star_dual_rail_arm",
+        reference_point="center",
+        x_range=(95.0, 1337.5),
+        workspace_range=(-323.2, 1337.5),
+      )
+    )
+    self.star.send_command = unittest.mock.AsyncMock(return_value={})
+
+  def _install_head96(self, installed: bool):
+    ext = copy.deepcopy(_DEFAULT_EXTENDED_CONFIGURATION)
+    ext.left_x_drive.core_96_head_installed = installed
+    self.star._extended_conf = ext
+
+  async def test_blocks_below_320_with_head96(self):
+    self._install_head96(True)
+    with self.assertRaises(ValueError):
+      await self.star.move_channel_x(0, 200.0)
+    self.star.send_command.assert_not_awaited()
+
+  async def test_allows_below_320_without_head96(self):
+    self._install_head96(False)
+    # 200mm is under the panel floor but above the x_range min, and with no 96-head
+    # there is nothing to collide with, so the move proceeds.
+    await self.star.move_channel_x(0, 200.0)
+    self.star.send_command.assert_awaited_once()
+
 
 class TestXArmPresence(unittest.IsolatedAsyncioTestCase):
   """setup() creates a deck X-arm (and thus a tracker) per present arm."""

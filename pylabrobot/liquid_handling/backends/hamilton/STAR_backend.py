@@ -1698,8 +1698,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       packet_read_timeout: timeout in seconds for reading a single packet.
       read_timeout: timeout in seconds for reading a full response.
       write_timeout: timeout in seconds for writing a command.
-      left_side_panel_installed: if True, restrict PIP channels to x >= 320mm and
-        the 96-head to x >= 0mm to prevent collisions with the left side panel.
+      left_side_panel_installed: if True, keep the 96-head clear of the left side panel
+        (x >= 0mm). The PIP channels are only restricted (x >= 320mm) when the 96-head is
+        also installed - the head assembly, not the panel alone, is what they would hit.
     """
 
     super().__init__(
@@ -1775,13 +1776,13 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     self, ops: Sequence[PipettingOp], use_channels: List[int]
   ) -> Tuple[List[int], List[int], List[bool]]:
     x_positions, y_positions, channels_involved = super()._ops_to_fw_positions(ops, use_channels)
-    if self.left_side_panel_installed:
+    if self.left_side_panel_installed and self.extended_conf.left_x_drive.core_96_head_installed:
       min_x = round(self.PIP_X_MIN_WITH_LEFT_SIDE_PANEL * 10)
       for x, involved in zip(x_positions, channels_involved):
         if involved and x < min_x:
           raise ValueError(
             f"PIP channel x={x / 10}mm is below the minimum "
-            f"{self.PIP_X_MIN_WITH_LEFT_SIDE_PANEL}mm (left side panel is installed)"
+            f"{self.PIP_X_MIN_WITH_LEFT_SIDE_PANEL}mm (left side panel and 96-head installed)"
           )
     return x_positions, y_positions, channels_involved
 
@@ -2358,7 +2359,6 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       raise RuntimeError("X-arm information not loaded; forgot to call `setup`?")
     return self._x_arm_information
 
-  @staticmethod
   def _check_x_arm_reachable(self, x: float, position: Literal["left", "right"] = "left") -> None:
     """Raise if x (mm) is outside the X-arm's reachable X-drive range.
 
@@ -2384,6 +2384,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         f"{position} X-arm x={x}mm is outside its reachable range [{x_min}, {x_max}]mm."
       )
 
+  @staticmethod
   def _x_arm_model_and_reference(width: float) -> Tuple[str, Literal["center", "right"]]:
     """Arm variant and reference point for a given arm width.
 
@@ -5297,17 +5298,21 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   async def move_channel_x(self, channel: int, x: float):
     """Move a channel in the x direction."""
-    if self.left_side_panel_installed and x < self.PIP_X_MIN_WITH_LEFT_SIDE_PANEL:
+    if (
+      self.left_side_panel_installed
+      and self.extended_conf.left_x_drive.core_96_head_installed
+      and x < self.PIP_X_MIN_WITH_LEFT_SIDE_PANEL
+    ):
       raise ValueError(
         f"PIP channel x={x}mm is below the minimum {self.PIP_X_MIN_WITH_LEFT_SIDE_PANEL}mm "
-        f"(left side panel is installed)"
+        f"(left side panel and 96-head installed)"
       )
+    self._check_x_arm_reachable(x)
     await self.position_left_x_arm_(round(x * 10))
 
   @need_iswap_parked
   async def move_channel_y(self, channel: int, y: float):
     """Move a channel safely in the y direction."""
-    self._check_x_arm_reachable(x)
 
     # Anti-channel-crash feature
     if channel > 0:
