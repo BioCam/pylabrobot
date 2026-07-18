@@ -16,6 +16,7 @@ from pylabrobot.liquid_handling.backends.hamilton.STAR_backend import (
   iSWAPInformation,
 )
 from pylabrobot.resources.container import Container
+from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton.hamilton_decks import HamiltonDeck
 from pylabrobot.resources.tip_tracker import does_tip_tracking
 from pylabrobot.resources.well import Well
@@ -34,6 +35,10 @@ _DEFAULT_MACHINE_CONFIGURATION = MachineConfiguration(
 # the deck instead (see _simulated_right_x_arm_home), since its reach differs sharply
 # between a STARlet (~800 mm) and a STAR (~1340 mm) and the two arms must not overlap.
 _SIM_LEFT_X_ARM_HOME = 362.9
+
+# Simulated 96-head A1 resting y (mm), reported by QI before any tracked y-move; within
+# the head's y-drive range [93.75, 562.5].
+_SIM_HEAD96_A1_Y = 300.0
 
 _DEFAULT_EXTENDED_CONFIGURATION = ExtendedConfiguration(
   left_x_drive_large=True,
@@ -178,7 +183,7 @@ class STARChatterboxBackend(STARBackend):
       instrument_type: Head96Information.InstrumentType = "FM-STAR"
       self._head96_information = Head96Information(
         fw_version=fw_version,
-        x_offset=365.0,  # factory default; hardware reads the per-machine value from EEPROM (kf)
+        x_offset=365.0,  # A1 sits x_offset left of the carriage centre. Hardware reads it from EEPROM (kf)
         supports_clot_monitoring_clld=False,
         stop_disc_type="core_ii",
         instrument_type=instrument_type,
@@ -296,6 +301,22 @@ class STARChatterboxBackend(STARBackend):
     if tracker is not None and not tracker.is_disabled:
       tracker.set_x(x)
     return x
+
+  async def head96_request_position(self) -> Coordinate:
+    # No hardware to read: derive A1 x from the tracked carriage (A1 = carriage - x_offset)
+    # and A1 y from the head's own y tracker (its resting home before any tracked y-move).
+    assert self._head96_information is not None
+    x_tracker = self.left_x_arm_tracker
+    carriage = (
+      x_tracker.get_x() if x_tracker is not None and x_tracker.is_known else _SIM_LEFT_X_ARM_HOME
+    )
+    if x_tracker is not None and not x_tracker.is_disabled:
+      x_tracker.set_x(carriage)
+    y_tracker = self.head96_y_tracker
+    y = y_tracker.get_x() if y_tracker is not None and y_tracker.is_known else _SIM_HEAD96_A1_Y
+    if y_tracker is not None and not y_tracker.is_disabled:
+      y_tracker.set_x(y)
+    return Coordinate(x=carriage - self._head96_information.x_offset, y=y, z=200.0)
 
   async def request_right_x_arm_position(self) -> float:
     tracker = self.right_x_arm_tracker

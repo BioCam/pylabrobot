@@ -103,8 +103,8 @@ from pylabrobot.resources.hamilton.hamilton_decks import (
   HamiltonSTARDeck,
   rails_for_x_coordinate,
 )
-from pylabrobot.resources.liquid import Liquid
 from pylabrobot.resources.head96 import Head96
+from pylabrobot.resources.liquid import Liquid
 from pylabrobot.resources.rotation import Rotation
 from pylabrobot.resources.tip_tracker import does_tip_tracking
 from pylabrobot.resources.trash import Trash
@@ -2356,6 +2356,19 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return None
 
   @property
+  def head96_y_tracker(self) -> Optional[XArmTracker]:
+    """The 96-head's y tracker, owned by its deck resource; None if no head, deck, or setup.
+
+    Holds A1's y (mm). The head's x is not tracked here - it rides the left arm's carriage
+    (see `left_x_arm_tracker`); only the head's independent y-drive lives on this tracker.
+    """
+    if self._deck is not None and self._deck.has_resource("head96"):
+      head = self._deck.get_resource("head96")
+      if isinstance(head, Head96):
+        return head.tracker
+    return None
+
+  @property
   def x_arm_information(self) -> XArmInformation:
     """The machine's X-arm facts, resolved at setup (widths, models, ranges)."""
     if self._x_arm_information is None:
@@ -2478,26 +2491,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       deck.get_or_create_x_arm(f"{position}_x_arm", arm.width, arm.model, arm.reference_point)
       await queries[position]()
 
-  def get_x_arm_position(self) -> Tuple[Optional[float], Optional[float]]:
-    """Tracked X-arm carriage reference points in mm, as (left, right).
-
-    Either element is None while that X-arm's position is unknown: no tracked move or
-    position query has completed for it yet, the last tracked move failed, or that
-    X-arm is not present.
-    """
-    left_tracker = self.left_x_arm_tracker
-    right_tracker = self.right_x_arm_tracker
-    left = left_tracker.get_x() if left_tracker is not None and left_tracker.is_known else None
-    right = right_tracker.get_x() if right_tracker is not None and right_tracker.is_known else None
-    return left, right
-
-  # # # # Single-Channel Pipette Commands # # # #
-
-  # # # Machine Query (MEM-READ) Commands: Single-Channel # # #
-
     # The 96-head rides the left arm; assign it there so it moves with the arm in x.
     if self._head96_information is not None and info.left is not None:
       self._setup_head96(cast(XArm, deck.get_resource("left_x_arm")))
+      await self.head96_request_position()  # seed the head's y tracker (and re-affirm carriage x)
 
   def _setup_head96(self, x_arm: XArm) -> None:
     """Attach the 96-head to the X-arm as a child, once (idempotent).
@@ -2519,6 +2516,23 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     x = reference_offset - self._head96_information.x_offset - radius
     y = (x_arm.get_size_y() - head.get_size_y()) / 2  # nominal: centre the footprint in y
     x_arm.assign_child_resource(head, location=Coordinate(x, y, 0.0))
+
+  def get_x_arm_position(self) -> Tuple[Optional[float], Optional[float]]:
+    """Tracked X-arm carriage reference points in mm, as (left, right).
+
+    Either element is None while that X-arm's position is unknown: no tracked move or
+    position query has completed for it yet, the last tracked move failed, or that
+    X-arm is not present.
+    """
+    left_tracker = self.left_x_arm_tracker
+    right_tracker = self.right_x_arm_tracker
+    left = left_tracker.get_x() if left_tracker is not None and left_tracker.is_known else None
+    right = right_tracker.get_x() if right_tracker is not None and right_tracker.is_known else None
+    return left, right
+
+  # # # # Single-Channel Pipette Commands # # # #
+
+  # # # Machine Query (MEM-READ) Commands: Single-Channel # # #
 
   async def channel_request_y_minimum_spacing(self, channel_idx: int) -> float:
     """Request the minimum Y spacing for a given channel.
@@ -8751,22 +8765,23 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     prev_speed_increment = self._head96_y_drive_mm_to_increment(prev_speed)
     prev_acceleration_increment = self._head96_y_drive_mm_to_increment(prev_acceleration)
 
-    try:
-      return await self.send_command(
-        module="H0",
-        command="YA",
-        ya=f"{y_increment:05}",
-        yv=f"{speed_increment:05}",
-        yr=f"{acceleration_increment:05}",
-        yw=f"{current_protection_limiter:02}",
-      )
-    finally:
-      # Restore the pre-command register values, skipping the AA write where the move's value
-      # already matched what was there (compared in increments, the unit actually stored).
-      if speed_increment != prev_speed_increment:
-        await self._head96_set_y_speed(prev_speed)
-      if acceleration_increment != prev_acceleration_increment:
-        await self._head96_set_y_acceleration(prev_acceleration)
+    async with self._tracking([(self.head96_y_tracker, y)], self.head96_request_position):
+      try:
+        return await self.send_command(
+          module="H0",
+          command="YA",
+          ya=f"{y_increment:05}",
+          yv=f"{speed_increment:05}",
+          yr=f"{acceleration_increment:05}",
+          yw=f"{current_protection_limiter:02}",
+        )
+      finally:
+        # Restore the pre-command register values, skipping the AA write where the move's value
+        # already matched what was there (compared in increments, the unit actually stored).
+        if speed_increment != prev_speed_increment:
+          await self._head96_set_y_speed(prev_speed)
+        if acceleration_increment != prev_acceleration_increment:
+          await self._head96_set_y_acceleration(prev_acceleration)
 
   @_requires_head96
   async def head96_move_z(
@@ -10298,15 +10313,21 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       "minimum_height_at_beginning_of_a_command must be between 0 and 342.5"
     )
 
-    return await self.send_command(
-      module="C0",
-      command="EM",
-      xs=f"{abs(round(coordinate.x * 10)):05}",
-      xd="0" if coordinate.x >= 0 else "1",
-      yh=f"{round(coordinate.y * 10):04}",
-      za=f"{round(coordinate.z * 10):04}",
-      zh=f"{round(minimum_height_at_beginning_of_a_command * 10):04}",
-    )
+    assert self._head96_information is not None
+    carriage_x = coordinate.x + self._head96_information.x_offset
+    async with self._tracking(
+      [(self.left_x_arm_tracker, carriage_x), (self.head96_y_tracker, coordinate.y)],
+      self.head96_request_position,
+    ):
+      return await self.send_command(
+        module="C0",
+        command="EM",
+        xs=f"{abs(round(coordinate.x * 10)):05}",
+        xd="0" if coordinate.x >= 0 else "1",
+        yh=f"{round(coordinate.y * 10):04}",
+        za=f"{round(coordinate.z * 10):04}",
+        zh=f"{round(minimum_height_at_beginning_of_a_command * 10):04}",
+      )
 
   HEAD96_DISPENSING_DRIVE_VOL_LIMIT_BOTTOM = 0
   HEAD96_DISPENSING_DRIVE_VOL_LIMIT_TOP = 1244.59
@@ -10483,6 +10504,16 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     z_coordinate = resp["za"] / 10
 
     x_coordinate = x_coordinate if resp["xd"] == 0 else -x_coordinate
+
+    # The read A1 x fixes the shared carriage (carriage = A1 + x_offset); the read A1 y
+    # fixes the head's independent y-drive.
+    if self._head96_information is not None:
+      x_tracker = self.left_x_arm_tracker
+      if x_tracker is not None and not x_tracker.is_disabled:
+        x_tracker.set_x(x_coordinate + self._head96_information.x_offset)
+    y_tracker = self.head96_y_tracker
+    if y_tracker is not None and not y_tracker.is_disabled:
+      y_tracker.set_x(y_coordinate)
 
     return Coordinate(x=x_coordinate, y=y_coordinate, z=z_coordinate)
 
