@@ -6669,7 +6669,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     z_position_target_on_leaving_liquid: Optional[float] = None,
     minimum_height: Optional[float] = None,
     surface_following_distance: float = 0.0,
-    flow_rate: float = 249.99,
+    flow_rate: float = 50.0,
     transport_air_volume: float = 0.0,
     blow_out_air_volume: float = 0.0,
     pre_wetting_volume: float = 0.0,
@@ -6687,7 +6687,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # mv/me: effect unknown, defaulted to 100 (no correction). See TODO to characterise.
     mix_volume_correction_percent: int = 100,
     last_dispense_mix_volume_correction_percent: int = 100,
-    requires_tip: bool = True,
+    tip_len: Optional[float] = None,
   ) -> Any:
     """Aspirate liquid on one channel at an absolute Z position (`MG`).
 
@@ -6754,13 +6754,15 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         until characterised. TODO: test on the device.
       last_dispense_mix_volume_correction_percent: Firmware `me`, percent. Same as above - effect
         not understood, no observable change in testing, defaulted to 100. TODO: test on the device.
-      requires_tip: If True, raise when the channel holds no tip. Tip presence, not tip capacity:
-        this does not check that `volume` fits.
+      tip_len: Total tip length, mm, used to convert tip-bottom Z to the firmware stop-disk frame.
+        None (default) queries it from the channel, raising if no tip is present. Pass a value to
+        skip that round-trip, or 0.0 to operate a bare channel (aspirating air). Tip presence, not
+        tip capacity: this does not check that `volume` fits.
 
     Raises:
       ValueError: If channel_idx is out of range, or a parameter is outside the range the
         firmware accepts.
-      RuntimeError: If requires_tip and the channel holds no tip.
+      RuntimeError: If tip_len is None and the channel holds no tip.
     """
 
     if not (0 <= channel_idx < self.num_channels):
@@ -6768,14 +6770,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         f"channel index {channel_idx} out of range for instrument with {self.num_channels} channels"
       )
 
-    has_tip = (await self.request_tip_presence())[channel_idx]
-    if requires_tip and not has_tip:
-      raise RuntimeError(f"channel {channel_idx} has no tip; pick up a tip before aspirating")
-    overhang = 0.0
-    if has_tip:
-      overhang = (
-        await self.request_tip_len_on_channel(channel_idx) - STARBackend.DEFAULT_TIP_FITTING_DEPTH
-      )
+    # Tip length sets the tip-bottom -> stop-disk overhang. None queries it (raising if no tip);
+    # pass a value to skip the round-trip, or 0.0 for a bare channel (aspirating air).
+    if tip_len is None:
+      tip_len = await self.request_tip_len_on_channel(channel_idx)
+    overhang = tip_len - STARBackend.DEFAULT_TIP_FITTING_DEPTH if tip_len else 0.0
 
     z_floor = STARBackend.MINIMUM_CHANNEL_Z_POSITION
     z_ceiling = STARBackend.MAXIMUM_CHANNEL_Z_POSITION - overhang
@@ -6980,7 +6979,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     z_position_target_on_leaving_liquid: Optional[float] = None,
     minimum_height: Optional[float] = None,
     surface_following_distance: float = 0.0,
-    flow_rate: float = 249.99,
+    flow_rate: float = 50.0,
     stop_flow_rate: float = 140.63,
     stop_back_volume: float = 0.0,
     transport_air_volume: float = 0.0,
@@ -6997,7 +6996,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # mv/me: effect unknown, defaulted to 100 (no correction). See TODO to characterise.
     mix_volume_correction_percent: int = 100,
     last_dispense_mix_volume_correction_percent: int = 100,
-    requires_tip: bool = True,
+    tip_len: Optional[float] = None,
   ) -> Any:
     """Dispense liquid on one channel at an absolute Z position (`MH`).
 
@@ -7051,13 +7050,15 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         until characterised. TODO: test on the device.
       last_dispense_mix_volume_correction_percent: Firmware `me`, percent. Same as above - effect
         not understood, no observable change in testing, defaulted to 100. TODO: test on the device.
-      requires_tip: If True, raise when the channel holds no tip. Tip presence, not tip contents:
-        this does not check that the tip holds `volume`.
+      tip_len: Total tip length, mm, used to convert tip-bottom Z to the firmware stop-disk frame.
+        None (default) queries it from the channel, raising if no tip is present. Pass a value to
+        skip that round-trip, or 0.0 to operate a bare channel (dispensing air). Tip presence, not
+        tip contents: this does not check that the tip holds `volume`.
 
     Raises:
       ValueError: If channel_idx is out of range, or a parameter is outside the range the
         firmware accepts.
-      RuntimeError: If requires_tip and the channel holds no tip.
+      RuntimeError: If tip_len is None and the channel holds no tip.
     """
 
     if not (0 <= channel_idx < self.num_channels):
@@ -7065,14 +7066,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         f"channel index {channel_idx} out of range for instrument with {self.num_channels} channels"
       )
 
-    has_tip = (await self.request_tip_presence())[channel_idx]
-    if requires_tip and not has_tip:
-      raise RuntimeError(f"channel {channel_idx} has no tip; pick up a tip before dispensing")
-    overhang = 0.0
-    if has_tip:
-      overhang = (
-        await self.request_tip_len_on_channel(channel_idx) - STARBackend.DEFAULT_TIP_FITTING_DEPTH
-      )
+    # Tip length sets the tip-bottom -> stop-disk overhang. None queries it (raising if no tip);
+    # pass a value to skip the round-trip, or 0.0 for a bare channel (dispensing air).
+    if tip_len is None:
+      tip_len = await self.request_tip_len_on_channel(channel_idx)
+    overhang = tip_len - STARBackend.DEFAULT_TIP_FITTING_DEPTH if tip_len else 0.0
 
     z_floor = STARBackend.MINIMUM_CHANNEL_Z_POSITION
     z_ceiling = STARBackend.MAXIMUM_CHANNEL_Z_POSITION - overhang

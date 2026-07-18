@@ -2783,19 +2783,32 @@ class TestChannelAbsoluteZPipetting(unittest.IsolatedAsyncioTestCase):
     with self.assertRaises(ValueError):  # id on a non-recording run
       STARBackend.TADMParameters(algorithm_enabled=True, recording_mode=0, measurement_id="X001")
 
-  async def test_requires_tip_raises_when_absent(self):
-    self.star.request_tip_presence = unittest.mock.AsyncMock(return_value=[False] * 8)
+  async def test_no_tip_len_queries_and_raises_when_absent(self):
+    # tip_len=None queries the length, which raises when the channel holds no tip
+    self.star.request_tip_len_on_channel = unittest.mock.AsyncMock(
+      side_effect=RuntimeError("No tip present on channel 0")
+    )
     with self.assertRaises(RuntimeError):
       await self.star._channel_aspirate_in_absolute_z(channel_idx=0, z=120.0, volume=10.0)
 
-  async def test_no_tip_uses_stop_disk_frame(self):
-    # requires_tip=False and no tip -> overhang 0, z is the stop-disk position directly
-    self.star.request_tip_presence = unittest.mock.AsyncMock(return_value=[False] * 8)
+  async def test_tip_len_zero_uses_stop_disk_frame(self):
+    # tip_len=0.0 -> overhang 0, z is the stop-disk position directly (bare channel)
     await self.star._channel_aspirate_in_absolute_z(
-      channel_idx=0, z=120.0, volume=10.0, requires_tip=False
+      channel_idx=0, z=120.0, volume=10.0, tip_len=0.0
     )
     k = self._sent()
     self.assertEqual(k["za"], f"{STARBackend.mm_to_z_drive_increment(120.0):05}")
+
+  async def test_tip_len_provided_skips_query(self):
+    # passing tip_len must not query request_tip_len_on_channel
+    self.star.request_tip_len_on_channel = unittest.mock.AsyncMock(
+      side_effect=AssertionError("should not be called")
+    )
+    await self.star._channel_aspirate_in_absolute_z(
+      channel_idx=0, z=120.0, volume=10.0, tip_len=95.0
+    )
+    k = self._sent()
+    self.assertEqual(k["za"], f"{STARBackend.mm_to_z_drive_increment(120.0 + 87.0):05}")
 
 
 class TestChannelAbsoluteZMix(unittest.IsolatedAsyncioTestCase):
