@@ -16,6 +16,7 @@ from typing import (
   Callable,
   Coroutine,
   Dict,
+  Iterable,
   List,
   Literal,
   Optional,
@@ -2387,20 +2388,23 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       )
 
   @asynccontextmanager
-  async def _tracking_left_x_arm(self, x_positions: List[int], tip_pattern: List[bool]):
-    """Track the left X-arm across a channel command that carries per-channel x.
+  async def _tracking(
+    self,
+    updates: Iterable[Tuple[Optional[XArmTracker], Optional[float]]],
+    resync: Callable[[], Awaitable[Any]],
+  ):
+    """Track one or more X/Y reference trackers across a command that moves them.
 
-    On success commits the last involved channel's x - taken via ``tip_pattern`` so the
-    trailing/interior zero padding ``_ops_to_fw_positions`` appends is skipped. On
-    failure reads the true position back from the machine, marking it unknown only if
-    that read also fails; the original error propagates either way.
+    ``updates`` is an iterable of ``(tracker, target)`` pairs, each committed on success
+    (a move that drives both the carriage and the 96-head y passes two). On failure the
+    true positions are read back via ``resync`` (a coroutine that itself updates the
+    trackers, e.g. ``request_left_x_arm_position`` or ``head96_request_position``), marking
+    them unknown only if that read also fails; the original error propagates either way.
+    Pairs with no live tracker or a None target are ignored.
     """
-    tracker = self.left_x_arm_tracker
-    involved_x = [x for x, on in zip(x_positions, tip_pattern) if on]
-    if tracker is None or tracker.is_disabled or not involved_x:
-      yield
-      return
-    tracker.set_x(involved_x[-1] / 10, commit=False)
+    active = [(t, x) for t, x in updates if t is not None and not t.is_disabled and x is not None]
+    for tracker, target in active:
+      tracker.set_x(target, commit=False)
     try:
       yield
     except Exception:
@@ -6731,7 +6735,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       "minimum_traverse_height_at_beginning_of_a_command must be between 0 and 3600"
     )
 
-    async with self._tracking_left_x_arm(x_positions, tip_pattern):
+    involved_x = [xp for xp, on in zip(x_positions, tip_pattern) if on]
+    async with self._tracking(
+      [(self.left_x_arm_tracker, involved_x[-1] / 10 if involved_x else None)],
+      self.request_left_x_arm_position,
+    ):
       return await self.send_command(
         module="C0",
         command="TP",
@@ -6797,7 +6805,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       "z_position_at_end_of_a_command must be between 0 and 3600"
     )
 
-    async with self._tracking_left_x_arm(x_positions, tip_pattern):
+    involved_x = [xp for xp, on in zip(x_positions, tip_pattern) if on]
+    async with self._tracking(
+      [(self.left_x_arm_tracker, involved_x[-1] / 10 if involved_x else None)],
+      self.request_left_x_arm_position,
+    ):
       return await self.send_command(
         module="C0",
         command="TR",
@@ -7057,7 +7069,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
     assert all(0 <= x <= 3600 for x in cup_upper_edge), "cup_upper_edge must be between 0 and 3600"
 
-    async with self._tracking_left_x_arm(x_positions, tip_pattern):
+    involved_x = [xp for xp, on in zip(x_positions, tip_pattern) if on]
+    async with self._tracking(
+      [(self.left_x_arm_tracker, involved_x[-1] / 10 if involved_x else None)],
+      self.request_left_x_arm_position,
+    ):
       return await self.send_command(
         module="C0",
         command="AS",
@@ -7290,7 +7306,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
     assert 0 <= recording_mode <= 2, "recording_mode must be between 0 and 2"
 
-    async with self._tracking_left_x_arm(x_positions, tip_pattern):
+    involved_x = [xp for xp, on in zip(x_positions, tip_pattern) if on]
+    async with self._tracking(
+      [(self.left_x_arm_tracker, involved_x[-1] / 10 if involved_x else None)],
+      self.request_left_x_arm_position,
+    ):
       return await self.send_command(
         module="C0",
         command="DS",
