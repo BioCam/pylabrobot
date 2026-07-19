@@ -38,6 +38,10 @@ class Head96(Resource):
     pitch: float = 9.0,
     channel_diameter: float = 7.0,
     size_z: float = 20.0,
+    # size_x/size_y are derived from the grid; accepted so a serialized head round-trips
+    # through Resource.deserialize (which passes them back), and ignored otherwise.
+    size_x: Optional[float] = None,
+    size_y: Optional[float] = None,
     category: str = "head96",
     model: Optional[str] = None,
   ):
@@ -47,8 +51,8 @@ class Head96(Resource):
     self.channel_diameter = channel_diameter
     super().__init__(
       name=name,
-      size_x=(num_columns - 1) * pitch + channel_diameter,
-      size_y=(num_rows - 1) * pitch + channel_diameter,
+      size_x=(num_columns - 1) * pitch + channel_diameter if size_x is None else size_x,
+      size_y=(num_rows - 1) * pitch + channel_diameter if size_y is None else size_y,
       size_z=size_z,
       category=category,
       model=model,
