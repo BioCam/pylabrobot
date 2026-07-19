@@ -3235,7 +3235,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     settling_time: Optional[List[float]] = None,
     mix_position_from_liquid_surface: Optional[List[float]] = None,
     mix_surface_following_distance: Optional[List[float]] = None,
-    limit_curve_index: Optional[List[int]] = None,
+    tadm_parameters: Optional[List["STARBackend.TADMParameters"]] = None,
     use_2nd_section_aspiration: Optional[List[bool]] = None,
     retract_height_over_2nd_section_to_empty_tip: Optional[List[float]] = None,
     dispensation_speed_during_emptying_tip: Optional[List[float]] = None,
@@ -3292,7 +3292,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       settling_time: The time to wait after mix.
       mix_position_from_liquid_surface: The height to aspirate from for mix (LLD or absolute terms).
       mix_surface_following_distance: The distance to follow the liquid surface for mix.
-      limit_curve_index: The index of the limit curve to use.
+      tadm_parameters: One TADMParameters per channel (aligned to ops/use_channels), or None for
+        no monitoring. Every entry must share enforce_limit_curve_control/storage_level (C0 AS
+        applies them command-wide); only limit_curve_index may differ per channel.
 
       use_2nd_section_aspiration: Whether to use the second section of aspiration.
       retract_height_over_2nd_section_to_empty_tip: Unknown.
@@ -3443,7 +3445,6 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     mix_position_from_liquid_surface = fill_in_defaults(mix_position_from_liquid_surface, [0.0] * n)
     mix_speed = [op.mix.flow_rate if op.mix is not None else 100.0 for op in ops]
     mix_surface_following_distance = fill_in_defaults(mix_surface_following_distance, [0.0] * n)
-    limit_curve_index = fill_in_defaults(limit_curve_index, [0] * n)
 
     use_2nd_section_aspiration = fill_in_defaults(use_2nd_section_aspiration, [False] * n)
     retract_height_over_2nd_section_to_empty_tip = fill_in_defaults(
@@ -3599,7 +3600,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         ],
         mix_speed=[round(hs * 10) for hs in mix_speed],
         mix_surface_following_distance=[round(hsd * 10) for hsd in mix_surface_following_distance],
-        limit_curve_index=limit_curve_index,
+        tadm_parameters=tadm_parameters,
         use_2nd_section_aspiration=use_2nd_section_aspiration,
         retract_height_over_2nd_section_to_empty_tip=[
           round(rh * 10) for rh in retract_height_over_2nd_section_to_empty_tip
@@ -3647,7 +3648,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     settling_time: Optional[List[float]] = None,
     mix_position_from_liquid_surface: Optional[List[float]] = None,
     mix_surface_following_distance: Optional[List[float]] = None,
-    limit_curve_index: Optional[List[int]] = None,
+    tadm_parameters: Optional[List["STARBackend.TADMParameters"]] = None,
     minimum_traverse_height_at_beginning_of_a_command: Optional[int] = None,
     min_z_endpos: Optional[float] = None,
     side_touch_off_distance: float = 0,
@@ -3696,7 +3697,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       mix_position_from_liquid_surface: The height to move above the liquid surface for
         mix.
       mix_surface_following_distance: The distance to follow the liquid surface for mix.
-      limit_curve_index: The limit curve to use for the dispense.
+      tadm_parameters: One TADMParameters per channel (aligned to ops/use_channels), or None for
+        no monitoring. Every entry must share enforce_limit_curve_control/storage_level (C0 DS
+        applies them command-wide); only limit_curve_index may differ per channel.
       minimum_traverse_height_at_beginning_of_a_command: The minimum height to move to before
         starting a dispense.
       min_z_endpos: The minimum height to move to after a dispense.
@@ -3855,7 +3858,6 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     mix_position_from_liquid_surface = fill_in_defaults(mix_position_from_liquid_surface, [0.0] * n)
     mix_speed = [op.mix.flow_rate if op.mix is not None else 1.0 for op in ops]
     mix_surface_following_distance = fill_in_defaults(mix_surface_following_distance, [0.0] * n)
-    limit_curve_index = fill_in_defaults(limit_curve_index, [0] * n)
 
     if probe_liquid_height:
       if any(op.liquid_height is not None for op in ops):
@@ -3945,7 +3947,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         mix_surface_following_distance=[
           round(msfd * 10) for msfd in mix_surface_following_distance
         ],
-        limit_curve_index=limit_curve_index,
+        tadm_parameters=tadm_parameters,
         minimum_traverse_height_at_beginning_of_a_command=round(
           (minimum_traverse_height_at_beginning_of_a_command or self._channel_traversal_height) * 10
         ),
@@ -6605,57 +6607,81 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   # -------------- Total Aspiration and Dispensation Monitoring (TADM) --------------
 
+  # storage_level -> gk wire value; the tuple index is the wire value (none=0, errors_only=1, all=2)
+  _TADM_STORAGE_LEVELS = ("none", "errors_only", "all")
+
   @dataclass(frozen=True)
   class TADMParameters:
     """Total aspiration and dispense monitoring settings for one channel command.
 
-    Pass `None` instead to leave monitoring off entirely; constructing one means opting in, so
-    `algorithm_enabled` - whether the curve is evaluated or merely recorded - is required, and
-    recording defaults to keeping every measurement. Grouped into one object because the firmware
-    treats them as one block: they take effect only while monitoring is enabled and are inert
-    otherwise. That scoping is also why the fields need no `tadm_` prefix; the class carries it.
+    Pass `None` to leave monitoring off entirely. Two independent axes, mapping to two firmware
+    fields: `enforce_limit_curve_control` (`gj`) decides whether the live pressure is compared to
+    the limit curve and the plunger aborted on a violation, and `storage_level` (`gk`) decides
+    which curves are kept in the FIFO for readback. Enforcement is a real-time safety action;
+    storage is what you read back afterwards. Grouped into one object because the firmware treats
+    them as one block. That scoping is also why the fields need no `tadm_` prefix; the class
+    carries it.
 
     Args:
-      algorithm_enabled: Whether the monitoring algorithm evaluates the pressure curve (`gj`).
-      recording_mode: What is recorded (`gk`): 0 nothing, 1 errors only, 2 every measurement.
-        Defaults to 2. The firmware's own default is 0, but that is a wire-level necessity - opting
-        into monitoring and then recording nothing would make this object pointless.
-      limit_curve_index: Index of the limit curve (`gi`). Evaluated against when
-        `algorithm_enabled`; recorded as metadata on the curve either way, so it is meaningful
-        even with the algorithm off.
+      enforce_limit_curve_control: Compare the live pressure to the limit curve and abort the
+        plunger on a violation (`gj`). Defaults False - record the trace without enforcing.
+      storage_level: Which curves are kept for readback (`gk`): "none", "errors_only" (curves that
+        violated the limit curve), or "all". Defaults to "all".
+      limit_curve_index: Index of the limit curve (`gi`, 0-999) enforcement evaluates against; also
+        recorded as metadata on the curve, reported back by the `QL` readout. Indexes the channel's
+        stored limit-curve bank, which persists in Flash EPROM (built with the limit-curve set
+        commands, reset to the default by clearing it).
       measurement_id: Four-character identifier labelling the recording (`nr`). None omits the
         field - it is the only one here with no default to fall back on.
     """
 
-    algorithm_enabled: bool
-    recording_mode: int = 2
+    enforce_limit_curve_control: bool = False
+    storage_level: Literal["none", "errors_only", "all"] = "all"
     limit_curve_index: int = 0
     measurement_id: Optional[str] = None
 
+    @property
+    def _gk(self) -> int:
+      """The `gk` wire value for this storage level."""
+      return STARBackend._TADM_STORAGE_LEVELS.index(self.storage_level)
+
     def __post_init__(self):
-      if not (0 <= self.recording_mode <= 2):
-        raise ValueError(f"recording_mode must be between 0 and 2, got {self.recording_mode}")
+      if not isinstance(self.enforce_limit_curve_control, bool):
+        raise ValueError(
+          f"enforce_limit_curve_control must be a bool, got "
+          f"{type(self.enforce_limit_curve_control).__name__}"
+        )
+      if self.storage_level not in STARBackend._TADM_STORAGE_LEVELS:
+        raise ValueError(
+          f"storage_level must be one of {STARBackend._TADM_STORAGE_LEVELS}, "
+          f"got {self.storage_level!r}"
+        )
+      # bool is a subclass of int, so reject it explicitly - a limit-curve index is not a flag
+      if isinstance(self.limit_curve_index, bool) or not isinstance(self.limit_curve_index, int):
+        raise ValueError(
+          f"limit_curve_index must be an int, got {type(self.limit_curve_index).__name__}"
+        )
       if not (0 <= self.limit_curve_index <= 999):
         raise ValueError(
           f"limit_curve_index must be between 0 and 999, got {self.limit_curve_index}"
         )
-      if not (self.measurement_id is None or len(self.measurement_id) == 4):
+      if self.measurement_id is not None and not isinstance(self.measurement_id, str):
+        raise ValueError(
+          f"measurement_id must be a str or None, got {type(self.measurement_id).__name__}"
+        )
+      if self.measurement_id is not None and len(self.measurement_id) != 4:
         raise ValueError(
           f"measurement_id must be exactly 4 characters, got {self.measurement_id!r}"
         )
-      # Combinations that cannot do what they say. Held to cases that are inert by definition:
-      # limit_curve_index is deliberately NOT tied to algorithm_enabled, because the readout
-      # (`QL`) reports the used limit curve index and name alongside every recorded curve, so
-      # tagging a recording with a curve it is not evaluated against is legitimate.
-      if self.recording_mode == 1 and not self.algorithm_enabled:
+      if self.storage_level == "errors_only" and not self.enforce_limit_curve_control:
         raise ValueError(
-          "recording_mode=1 records errors, which only the algorithm can raise; either enable "
-          "algorithm_enabled or record everything (recording_mode=2) / nothing (0)"
+          'storage_level="errors_only" keeps only limit-curve violations, which nothing raises '
+          'unless enforce_limit_curve_control is on; enable it or store "all" / "none"'
         )
-      if self.measurement_id is not None and self.recording_mode == 0:
+      if self.measurement_id is not None and self.storage_level == "none":
         raise ValueError(
-          f"measurement_id={self.measurement_id!r} labels a recording, but recording_mode=0 "
-          "records nothing"
+          f'measurement_id={self.measurement_id!r} labels a stored curve, but storage_level="none" '
+          "keeps nothing"
         )
 
   @dataclass(frozen=True)
@@ -6677,19 +6703,19 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     pressures: List[int]
 
   async def _enter_tadm_mode_if_needed(
-    self, channel_idx: int, tadm: Optional["STARBackend.TADMParameters"]
+    self, channel_idx: int, tadm_parameters: Optional["STARBackend.TADMParameters"]
   ) -> bool:
     """Ensure the channel is in TADM mode when a recording is requested, preserving caller state.
 
     TADM recording only happens when the channel is in TADM monitoring mode (`AF af1`), which is
-    EEPROM-persistent, so `_channel_aspirate/dispense_in_absolute_z` self-manage it: if `tadm` is
+    EEPROM-persistent, so `_channel_aspirate/dispense_in_absolute_z` self-manage it: if `tadm_parameters` is
     requested and the mode is already on, nothing changes; if it is off, the caller turns it on and
     restores it off afterward, so the command leaves the mode as it found it.
 
     Returns:
       True if this call turned TADM mode on (so the caller must restore it off after the stroke).
     """
-    if tadm is None or await self.request_tadm_recording_status(channel_idx):
+    if tadm_parameters is None or await self.request_tadm_recording_status(channel_idx):
       return False  # not requested, or already on - leave it as the caller set it
     await self.set_tadm_recording(channel_idx, True)
     return True
@@ -6836,7 +6862,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     settling_time: float = 0.0,
     mix: Optional["Mix"] = None,
     mix_position_offset: float = 0.0,
-    tadm: Optional["STARBackend.TADMParameters"] = None,
+    tadm_parameters: Optional["STARBackend.TADMParameters"] = None,
     mechanical_clearance_reversing_volume: float = 4.69,
     flow_acceleration: float = 4687.6,
     current_limit: int = 5,
@@ -6897,7 +6923,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         (`mix_position_offset`, and the `mix_*_correction_percent` pair).
       mix_position_offset: Mix height relative to the aspiration position, mm. A distance, so the tip
         overhang does not apply. Inert unless `mix` is set.
-      tadm: Total aspiration and dispense monitoring settings (see `STARBackend.TADMParameters`).
+      tadm_parameters: Total aspiration and dispense monitoring settings (see `STARBackend.TADMParameters`).
         None (default) records nothing. When provided, the command self-manages TADM mode: if the
         channel is already in TADM mode it records and leaves the mode untouched; if not, it turns
         the mode on for the stroke and restores it off afterward. Either way the caller's mode
@@ -7090,13 +7116,15 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     if not (0 <= z_current_limit <= 7):
       raise ValueError(f"z_current_limit must be between 0 and 7, got {z_current_limit}")
 
-    # `tadm=None` leaves monitoring off: the fields go out at their off values.
+    # `tadm_parameters=None` leaves monitoring off: the fields go out at their off values.
     tadm_measurement_id_field: Dict[str, Any] = (
-      {} if tadm is None or tadm.measurement_id is None else {"nr": tadm.measurement_id}
+      {}
+      if tadm_parameters is None or tadm_parameters.measurement_id is None
+      else {"nr": tadm_parameters.measurement_id}
     )
 
     module = STARBackend.channel_id(channel_idx)
-    tadm_enabled_here = await self._enter_tadm_mode_if_needed(channel_idx, tadm)
+    tadm_enabled_here = await self._enter_tadm_mode_if_needed(channel_idx, tadm_parameters)
     result = await self.send_command(
       module=module,
       command="MG",
@@ -7127,9 +7155,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       zu=f"{zu:05}",
       zr=f"{zr:03}",
       zw=f"{z_current_limit}",
-      gi=f"{0 if tadm is None else tadm.limit_curve_index:03}",
-      gj=f"{0 if tadm is None else int(tadm.algorithm_enabled)}",
-      gk=f"{0 if tadm is None else tadm.recording_mode}",
+      gi=f"{0 if tadm_parameters is None else tadm_parameters.limit_curve_index:03}",
+      gj="1"
+      if (tadm_parameters is not None and tadm_parameters.enforce_limit_curve_control)
+      else "0",
+      gk=f"{0 if tadm_parameters is None else tadm_parameters._gk}",
       **tadm_measurement_id_field,
     )
     if tadm_enabled_here:  # this call turned TADM mode on; restore the caller's off state
@@ -7153,7 +7183,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     settling_time: float = 0.0,
     mix: Optional["Mix"] = None,
     mix_position_offset: float = 0.0,
-    tadm: Optional["STARBackend.TADMParameters"] = None,
+    tadm_parameters: Optional["STARBackend.TADMParameters"] = None,
     flow_acceleration: float = 4687.6,
     current_limit: int = 5,
     z_speed: float = 128.73,
@@ -7202,7 +7232,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         dispense path has not been tested on hardware - see TODO.
       mix_position_offset: Mix height relative to the dispense position, mm. A distance, so the tip
         overhang does not apply. Inert unless `mix` is set.
-      tadm: Total aspiration and dispense monitoring settings (see `STARBackend.TADMParameters`).
+      tadm_parameters: Total aspiration and dispense monitoring settings (see `STARBackend.TADMParameters`).
         None (default) records nothing. When provided, the command self-manages TADM mode: if the
         channel is already in TADM mode it records and leaves the mode untouched; if not, it turns
         the mode on for the stroke and restores it off afterward. Either way the caller's mode
@@ -7386,13 +7416,15 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     if not (0 <= z_current_limit <= 7):
       raise ValueError(f"z_current_limit must be between 0 and 7, got {z_current_limit}")
 
-    # `tadm=None` leaves monitoring off: the fields go out at their off values.
+    # `tadm_parameters=None` leaves monitoring off: the fields go out at their off values.
     tadm_measurement_id_field: Dict[str, Any] = (
-      {} if tadm is None or tadm.measurement_id is None else {"nr": tadm.measurement_id}
+      {}
+      if tadm_parameters is None or tadm_parameters.measurement_id is None
+      else {"nr": tadm_parameters.measurement_id}
     )
 
     module = STARBackend.channel_id(channel_idx)
-    tadm_enabled_here = await self._enter_tadm_mode_if_needed(channel_idx, tadm)
+    tadm_enabled_here = await self._enter_tadm_mode_if_needed(channel_idx, tadm_parameters)
     result = await self.send_command(
       module=module,
       command="MH",
@@ -7421,9 +7453,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       zu=f"{zu:05}",
       zr=f"{zr:03}",
       zw=f"{z_current_limit}",
-      gi=f"{0 if tadm is None else tadm.limit_curve_index:03}",
-      gj=f"{0 if tadm is None else int(tadm.algorithm_enabled)}",
-      gk=f"{0 if tadm is None else tadm.recording_mode}",
+      gi=f"{0 if tadm_parameters is None else tadm_parameters.limit_curve_index:03}",
+      gj="1"
+      if (tadm_parameters is not None and tadm_parameters.enforce_limit_curve_control)
+      else "0",
+      gk=f"{0 if tadm_parameters is None else tadm_parameters._gk}",
       **tadm_measurement_id_field,
     )
     if tadm_enabled_here:  # this call turned TADM mode on; restore the caller's off state
@@ -7431,6 +7465,47 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return result
 
   # TODO:(command:DC) Set multiple dispense values using PIP
+
+  def _tadm_pip_command_fields(
+    self,
+    tadm_parameters: Optional[List["STARBackend.TADMParameters"]],
+    number_of_channels: int,
+  ) -> Tuple[bool, int, List[int]]:
+    """Resolve the command-wide C0 ``AS``/``DS`` TADM wire fields from a per-channel list.
+
+    The per-channel ``TADMParameters`` list is the forward-looking interface: once
+    ``aspirate_pip``/``dispense_pip`` are replaced by the per-channel absolute-Z commands each
+    channel will carry its own settings. C0 ``AS``/``DS`` today expose one enforcement flag (``gj``)
+    and one storage mode (``gk``) for the whole command, plus a per-channel limit-curve list
+    (``gi``). Both command-wide fields are taken from the first entry, and every entry must agree
+    on them.
+
+    Returns ``(gj, gk, gi)`` where ``gj`` is the limit-curve enforcement flag, ``gk`` the storage
+    mode, and ``gi`` one limit-curve index per channel.
+    """
+    if tadm_parameters is None:
+      return False, 0, [0] * number_of_channels
+    if len(tadm_parameters) != number_of_channels:
+      raise ValueError(
+        f"tadm_parameters must have one entry per channel ({number_of_channels}), "
+        f"got {len(tadm_parameters)}"
+      )
+    first = tadm_parameters[0]
+    for p in tadm_parameters[1:]:
+      if (p.enforce_limit_curve_control, p.storage_level) != (
+        first.enforce_limit_curve_control,
+        first.storage_level,
+      ):
+        raise ValueError(
+          "C0 AS/DS applies one enforce_limit_curve_control/storage_level to every channel; all "
+          "tadm_parameters entries must share those (only limit_curve_index may differ per "
+          "channel) until aspirate_pip/dispense_pip are replaced by per-channel commands"
+        )
+    return (
+      first.enforce_limit_curve_control,
+      first._gk,
+      [p.limit_curve_index for p in tadm_parameters],
+    )
 
   @need_iswap_parked
   async def aspirate_pip(
@@ -7468,9 +7543,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     mix_position_from_liquid_surface: List[int] = [250],
     mix_speed: List[int] = [500],
     mix_surface_following_distance: List[int] = [0],
-    limit_curve_index: List[int] = [0],
-    tadm_algorithm: bool = False,
-    recording_mode: int = 0,
+    tadm_parameters: Optional[List["STARBackend.TADMParameters"]] = None,
     # For second section aspiration only
     use_2nd_section_aspiration: List[bool] = [False],
     retract_height_over_2nd_section_to_empty_tip: List[int] = [60],
@@ -7549,10 +7622,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
           Default 500.
       mix_surface_following_distance: Surface following distance during
           mix [0.1mm]. Must be between 0 and 3600. Default 0.
-      limit_curve_index: limit curve index. Must be between 0 and 999. Default 0.
-      tadm_algorithm: TADM algorithm. Default False.
-      recording_mode: Recording mode 0 : no 1 : TADM errors only 2 : all TADM measurement. Must
-          be between 0 and 2. Default 0.
+      tadm_parameters: One TADMParameters per channel (aligned to tip_pattern), or None for no
+          monitoring. C0 AS applies one enforce_limit_curve_control/storage_level to the whole
+          command, so every entry must share those; only limit_curve_index may differ per channel.
       use_2nd_section_aspiration: 2nd section aspiration. Default False.
       retract_height_over_2nd_section_to_empty_tip: Retract height over 2nd section to empty
           tip [0.1mm]. Must be between 0 and 3600. Default 60.
@@ -7652,10 +7724,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     assert all(0 <= x <= 3600 for x in mix_surface_following_distance), (
       "mix_surface_following_distance must be between 0 and 3600"
     )
-    assert all(0 <= x <= 999 for x in limit_curve_index), (
-      "limit_curve_index must be between 0 and 999"
+    enforce_control, gk_value, limit_curve_index = self._tadm_pip_command_fields(
+      tadm_parameters, sum(tip_pattern)
     )
-    assert 0 <= recording_mode <= 2, "recording_mode must be between 0 and 2"
     assert all(0 <= x <= 3600 for x in retract_height_over_2nd_section_to_empty_tip), (
       "retract_height_over_2nd_section_to_empty_tip must be between 0 and 3600"
     )
@@ -7709,8 +7780,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       ms=[f"{ms:04}" for ms in mix_speed],
       mh=[f"{mh:04}" for mh in mix_surface_following_distance],
       gi=[f"{gi:03}" for gi in limit_curve_index],
-      gj=tadm_algorithm,
-      gk=recording_mode,
+      gj=enforce_control,
+      gk=gk_value,
       lk=[1 if lk else 0 for lk in use_2nd_section_aspiration],
       ik=[f"{ik:04}" for ik in retract_height_over_2nd_section_to_empty_tip],
       sd=[f"{sd:04}" for sd in dispensation_speed_during_emptying_tip],
@@ -7755,9 +7826,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     mix_position_from_liquid_surface: List[int] = [250],
     mix_speed: List[int] = [500],
     mix_surface_following_distance: List[int] = [0],
-    limit_curve_index: List[int] = [0],
-    tadm_algorithm: bool = False,
-    recording_mode: int = 0,
+    tadm_parameters: Optional[List["STARBackend.TADMParameters"]] = None,
   ):
     """dispense pip
 
@@ -7823,10 +7892,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       mix_speed: Speed of mixing [0.1ul/s]. Must be between 4 and 5000. Default 500.
       mix_surface_following_distance: Surface following distance during mixing [0.1mm]. Must be
         between 0 and 3600. Default 0.
-      limit_curve_index: limit curve index. Must be between 0 and 999. Default 0.
-      tadm_algorithm: TADM algorithm. Default False.
-      recording_mode: Recording mode 0 : no 1 : TADM errors only 2 : all TADM measurement. Must
-        be between 0 and 2. Default 0.
+      tadm_parameters: One TADMParameters per channel (aligned to tip_pattern), or None for no
+        monitoring. C0 DS applies one enforce_limit_curve_control/storage_level to the whole
+        command, so every entry must share those; only limit_curve_index may differ per channel.
     """
 
     assert all(0 <= x <= 4 for x in dispensing_mode), "dispensing_mode must be between 0 and 4"
@@ -7897,10 +7965,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     assert any(0 <= x <= 3600 for x in mix_surface_following_distance), (
       "mix_surface_following_distance must be between 0 and 3600"
     )
-    assert any(0 <= x <= 999 for x in limit_curve_index), (
-      "limit_curve_index must be between 0 and 999"
+    enforce_control, gk_value, limit_curve_index = self._tadm_pip_command_fields(
+      tadm_parameters, sum(tip_pattern)
     )
-    assert 0 <= recording_mode <= 2, "recording_mode must be between 0 and 2"
 
     return await self.send_command(
       module="C0",
@@ -7941,8 +8008,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       ms=[f"{ms:04}" for ms in mix_speed],
       mh=[f"{mh:04}" for mh in mix_surface_following_distance],
       gi=[f"{gi:03}" for gi in limit_curve_index],
-      gj=tadm_algorithm,  #
-      gk=recording_mode,  #
+      gj=enforce_control,
+      gk=gk_value,
     )
 
   # TODO:(command:DA) Simultaneous aspiration & dispensation of liquid

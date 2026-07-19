@@ -1072,6 +1072,48 @@ class TestSTARLiquidHandlerCommands(unittest.IsolatedAsyncioTestCase):
       ]
     )
 
+  async def test_multi_channel_aspiration_tadm_parameters(self):
+    self.lh.update_head_state({0: self.tip_rack.get_tip("A1"), 1: self.tip_rack.get_tip("B1")})
+    assert self.plate.lid is not None
+    self.plate.lid.unassign()
+    for well in self.plate.get_items("A1:B1"):
+      well.tracker.set_volume(100 * 1.072)
+    # limit_curve_index differs per channel; enforce/storage_level are command-wide (from entry 0)
+    await self.lh.aspirate(
+      self.plate["A1:B1"],
+      vols=[100] * 2,
+      tadm_parameters=[
+        STARBackend.TADMParameters(enforce_limit_curve_control=True, limit_curve_index=5),
+        STARBackend.TADMParameters(enforce_limit_curve_control=True, limit_curve_index=7),
+      ],
+    )
+    sent = self.STAR._write_and_read_command.call_args.kwargs["cmd"]
+    # per-channel limit curve (gi) for the two active channels; command-wide gj1 (enforce) and
+    # gk2 (storage_level="all" default) from entry 0
+    self.assertIn("gi005 007", sent)
+    self.assertIn("gj1gk2", sent)
+
+  async def test_aspirate_pip_tadm_parameters_validation(self):
+    # enforce_limit_curve_control/storage_level are command-wide, so entries must agree on them
+    with self.assertRaises(ValueError):
+      self.STAR._tadm_pip_command_fields(
+        [
+          STARBackend.TADMParameters(storage_level="all"),
+          STARBackend.TADMParameters(storage_level="none"),
+        ],
+        2,
+      )
+    # one entry required per channel
+    with self.assertRaises(ValueError):
+      self.STAR._tadm_pip_command_fields([STARBackend.TADMParameters()], 2)
+    # None disables monitoring at the off values
+    self.assertEqual(self.STAR._tadm_pip_command_fields(None, 3), (False, 0, [0, 0, 0]))
+    # defaults: no enforcement (gj False), store all (gk 2), per-channel limit curve
+    self.assertEqual(
+      self.STAR._tadm_pip_command_fields([STARBackend.TADMParameters(limit_curve_index=4)], 1),
+      (False, 2, [4]),
+    )
+
   async def test_aspirate_single_resource(self):
     self.lh.update_head_state({i: self.tip_rack.get_tip(i) for i in range(5)})
     with no_volume_tracking():
@@ -2774,18 +2816,32 @@ class TestChannelAbsoluteZPipetting(unittest.IsolatedAsyncioTestCase):
       channel_idx=0,
       z=120.0,
       volume=10.0,
-      tadm=STARBackend.TADMParameters(
-        algorithm_enabled=True, recording_mode=2, limit_curve_index=7, measurement_id="AB01"
+      tadm_parameters=STARBackend.TADMParameters(
+        enforce_limit_curve_control=True, limit_curve_index=7, measurement_id="AB01"
       ),
     )
     k = self._sent()
+    # gj1 = enforce on, gk2 = storage_level "all" (default)
     self.assertEqual((k["gi"], k["gj"], k["gk"], k["nr"]), ("007", "1", "2", "AB01"))
 
   async def test_tadm_parameters_incompatible_rejected(self):
-    with self.assertRaises(ValueError):  # errors-only recording without the algorithm
-      STARBackend.TADMParameters(algorithm_enabled=False, recording_mode=1)
-    with self.assertRaises(ValueError):  # id on a non-recording run
-      STARBackend.TADMParameters(algorithm_enabled=True, recording_mode=0, measurement_id="X001")
+    with self.assertRaises(ValueError):  # label on a curve that is never stored
+      STARBackend.TADMParameters(storage_level="none", measurement_id="X001")
+    with self.assertRaises(ValueError):  # errors_only needs enforcement to define an error
+      STARBackend.TADMParameters(storage_level="errors_only")
+
+  async def test_tadm_parameters_reject_bad_types(self):
+    for kwargs in (
+      {"enforce_limit_curve_control": 1},  # not a bool
+      {"storage_level": "everything"},  # not an allowed literal
+      {"limit_curve_index": True},  # bool is not a valid index
+      {"limit_curve_index": 1.5},  # not an int
+      {"limit_curve_index": 1000},  # out of range
+      {"measurement_id": 1234},  # not a str
+      {"measurement_id": "ABCDE"},  # wrong length
+    ):
+      with self.assertRaises(ValueError):
+        STARBackend.TADMParameters(**kwargs)
 
   async def test_no_tip_len_queries_and_raises_when_absent(self):
     # tip_len=None queries the length, which raises when the channel holds no tip
@@ -2930,7 +2986,7 @@ class TestTADMBatchedRead(unittest.IsolatedAsyncioTestCase):
 
 
 class TestChannelTADMSelfManage(unittest.IsolatedAsyncioTestCase):
-  """A tadm= aspirate/dispense preserves the channel's AF (TADM mode) state."""
+  """A tadm_parameters= aspirate/dispense preserves the channel's AF (TADM mode) state."""
 
   async def asyncSetUp(self):
     self.star = STARBackend()
@@ -2955,7 +3011,7 @@ class TestChannelTADMSelfManage(unittest.IsolatedAsyncioTestCase):
       channel_idx=0,
       z=120.0,
       volume=10.0,
-      tadm=STARBackend.TADMParameters(algorithm_enabled=True),
+      tadm_parameters=STARBackend.TADMParameters(),
     )
     seq = [(c, af) for c, af in calls]
     # QF (check) -> AF af1 (enable) -> MG (record) -> AF af0 (restore)
@@ -2970,7 +3026,7 @@ class TestChannelTADMSelfManage(unittest.IsolatedAsyncioTestCase):
       channel_idx=0,
       z=120.0,
       volume=10.0,
-      tadm=STARBackend.TADMParameters(algorithm_enabled=True),
+      tadm_parameters=STARBackend.TADMParameters(),
     )
     af_writes = [af for c, af in calls if c == "AF"]
     self.assertEqual(af_writes, [])  # no AF write at all - left as the caller set it
