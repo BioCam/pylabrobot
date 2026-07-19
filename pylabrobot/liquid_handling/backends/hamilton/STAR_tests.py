@@ -945,6 +945,32 @@ class TestHead96ZTracking(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(head.a1_z, 200.0)
 
 
+class TestHead96MoveToCoordinate(unittest.IsolatedAsyncioTestCase):
+  """head96_move_to_coordinate retracts to safe Z first, then moves X and Y in parallel."""
+
+  async def asyncSetUp(self):
+    self.lh = LiquidHandler(STARChatterboxBackend(), deck=STARLetDeck())
+    await self.lh.setup()
+    self.star = self.lh.backend
+
+  async def test_safe_z_before_parallel_xy(self):
+    order = []
+
+    def record(label):
+      async def _f(*args, **kwargs):
+        order.append(label)
+
+      return _f
+
+    self.star.head96_move_to_z_safety = record("z_safety")
+    self.star.head96_move_x = record("x")
+    self.star.head96_move_y = record("y")
+    await self.star.head96_move_to_coordinate(Coordinate(500.0, 400.0, 250.0))
+    # z-safety retract always comes first; x and y follow (order between them unspecified).
+    self.assertEqual(order[0], "z_safety")
+    self.assertEqual(set(order[1:]), {"x", "y"})
+
+
 class TestXArmInformation(unittest.IsolatedAsyncioTestCase):
   """setup() fuses QM/RU/UA firmware into XArmInformation."""
 

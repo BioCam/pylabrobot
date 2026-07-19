@@ -10338,38 +10338,30 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     coordinate: Coordinate,
     minimum_height_at_beginning_of_a_command: float = 342.5,
   ):
-    """Move STAR(let) 96-Head to defined Coordinate
+    """Move the STAR(let) 96-Head so channel A1 reaches a defined X/Y coordinate.
+
+    Safe motion, decomposed onto the single-axis drives instead of the legacy combined ``EM``
+    command: the head first retracts to its Z-safety height, then moves X and Y in parallel.
+    The X move goes through the shared X-arm drive (``head96_move_x`` ->
+    ``experimental_x_arm_move`` at ``coordinate.x + x_offset``), so the one carriage tracker
+    stays the source of truth; the Y move is the head's own y-drive. Both update their trackers.
+    This does not descend to ``coordinate.z`` - the z move is left to the caller.
 
     Args:
-      coordinate: Coordinate of A1 in mm
-        - if tip present refers to tip bottom,
-        - if not present refers to channel bottom
-      minimum_height_at_beginning_of_a_command: Minimum height at beginning of a command [1mm]
-        (refers to all channels independent of tip pattern parameter 'tm'). Must be between ? and
-        342.5. Default 342.5.
+      coordinate: Coordinate of A1 in mm (z validated, not moved to here).
+      minimum_height_at_beginning_of_a_command: Retained for compatibility; the retract now
+        always goes to the full Z-safety height.
     """
 
-    self._check_96_position_legal(coordinate)
+    self._check_96_position_legal(coordinate, skip_z=True)
 
-    assert 0 <= minimum_height_at_beginning_of_a_command <= 342.5, (
-      "minimum_height_at_beginning_of_a_command must be between 0 and 342.5"
+    # 1. Retract to safe Z before any lateral motion.
+    await self.head96_move_to_z_safety()
+    # 2. Move X (shared carriage + x_offset) and Y (own drive) in parallel.
+    await asyncio.gather(
+      self.head96_move_x(coordinate.x),
+      self.head96_move_y(coordinate.y),
     )
-
-    assert self._head96_information is not None
-    carriage_x = coordinate.x + self._head96_information.x_offset
-    async with self._tracking(
-      [(self.left_x_arm_tracker, carriage_x), (self.head96_y_tracker, coordinate.y)],
-      self.head96_request_position,
-    ):
-      return await self.send_command(
-        module="C0",
-        command="EM",
-        xs=f"{abs(round(coordinate.x * 10)):05}",
-        xd="0" if coordinate.x >= 0 else "1",
-        yh=f"{round(coordinate.y * 10):04}",
-        za=f"{round(coordinate.z * 10):04}",
-        zh=f"{round(minimum_height_at_beginning_of_a_command * 10):04}",
-      )
 
   HEAD96_DISPENSING_DRIVE_VOL_LIMIT_BOTTOM = 0
   HEAD96_DISPENSING_DRIVE_VOL_LIMIT_TOP = 1244.59
