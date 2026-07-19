@@ -40,9 +40,11 @@ from .STAR_backend import (
   HardwareError,
   Head96Information,
   PipChannelInformation,
+  SingleXArmInformation,
   STARBackend,
   STARFirmwareError,
   UnknownHamiltonError,
+  XArmInformation,
   iSWAPInformation,
   parse_star_fw_string,
 )
@@ -1955,6 +1957,18 @@ class STARFoilTests(unittest.IsolatedAsyncioTestCase):
     self.star._num_channels = 8
     self.star._machine_conf = _DEFAULT_MACHINE_CONFIGURATION
     self.star._extended_conf = _DEFAULT_EXTENDED_CONFIGURATION
+    # setup() is mocked out below, so seed the X-arm ranges it would normally resolve;
+    # the foil ops move channels in X, which is now bounds-checked against them.
+    self.star._x_arm_information = XArmInformation(
+      left=SingleXArmInformation(
+        position="left",
+        width=370.0,
+        model="hamilton_legacy_star_dual_rail_arm",
+        reference_point="center",
+        x_range=(95.0, 1337.5),
+        workspace_range=(-323.2, 1337.5),
+      )
+    )
     self.star.setup = unittest.mock.AsyncMock()
     self.star._core_parked = True
     self.star._iswap_parked = True
@@ -2635,3 +2649,42 @@ class TestXArmRangeQueries(unittest.IsolatedAsyncioTestCase):
     self.star.send_command.return_value = "C0UAid0001er00/00ua5952 0000 -03232 +15172 +30000 +30000"
     wraps = await self.star.request_working_envelopes_per_arm()
     self.assertEqual(wraps, {"left": (595.2, (-323.2, 1517.2)), "right": (0.0, (3000.0, 3000.0))})
+
+
+class TestXArmRangeEnforcement(unittest.IsolatedAsyncioTestCase):
+  """move_channel_x / experimental_x_arm_move reject targets outside the arm's x_range."""
+
+  def setUp(self):
+    self.star = STARBackend()
+    # setup() normally resolves this from firmware; seed it so the reachability checks
+    # have a range to enforce against, without needing a deck-mounted arm or tracker.
+    self.star._x_arm_information = XArmInformation(
+      left=SingleXArmInformation(
+        position="left",
+        width=370.0,
+        model="hamilton_legacy_star_dual_rail_arm",
+        reference_point="center",
+        x_range=(95.0, 1337.5),
+        workspace_range=(-323.2, 1337.5),
+      )
+    )
+    self.star.send_command = unittest.mock.AsyncMock(return_value={})
+
+  async def test_experimental_x_arm_move_rejects_out_of_range(self):
+    # x_range is (95.0, 1337.5): both ends reject, and no wire command is sent.
+    for x in (94.0, 1400.0):
+      with self.assertRaises(ValueError):
+        await self.star.experimental_x_arm_move(x)
+    self.star.send_command.assert_not_awaited()
+
+  async def test_experimental_x_arm_move_in_range_sends_command(self):
+    # A target inside x_range passes the guard and reaches the wire unchanged.
+    await self.star.experimental_x_arm_move(500.0)
+    self.star.send_command.assert_awaited_once_with(
+      module="X0", command="XP", la="05000", lr="3", lw="7"
+    )
+
+  async def test_move_channel_x_rejects_out_of_range(self):
+    with self.assertRaises(ValueError):
+      await self.star.move_channel_x(0, 1400.0)
+    self.star.send_command.assert_not_awaited()
