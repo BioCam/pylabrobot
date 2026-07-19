@@ -17,11 +17,11 @@ class Head96(Resource):
   standard state channel (like ``XArm`` owns its x-tracker). The backend drives it; the
   Visualizer positions the head in y from it.
 
-  The origin is the front-left corner (so the resource's bounding box matches the drawn
-  footprint reaches the outer channel edges - ``(n-1)*pitch + channel_diameter`` per axis).
-  Channels are on a ``pitch`` grid inset by the channel radius: A1 is the back-left nozzle,
-  its centre at local ``(radius, size_y - radius)``; columns extend in +x and rows A->H
-  toward the front (decreasing y).
+  The origin is the front-left corner, so the resource's bounding box matches the drawn
+  footprint, which reaches the outer channel edges (``(n-1)*pitch + channel_diameter`` per
+  axis). Channels are on a ``pitch`` grid inset by the channel radius: A1 is the back-left
+  nozzle, its centre at local ``(radius, size_y - radius)``; columns extend in +x and rows
+  A->H toward the front (decreasing y).
   """
 
   def __init__(
