@@ -2374,8 +2374,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   def head96_z_tracker(self) -> Optional[XArmTracker]:
     """The 96-head's z tracker, owned by its deck resource; None if no head, deck, or setup.
 
-    Holds A1's bottom z (the head's z-drive). Fed by the position read (QI); optimistic
-    updates from the individual z-move commands are not wired yet.
+    Holds A1's tip-bottom z (the tool/tip-end reference the position read reports). Updated by
+    the position read (QI) and by `head96_move_tool_z`; the stop-disk / legacy z moves use a
+    different reference and are left untracked (a1_z refreshes from the next read after them).
     """
     if self._deck is not None and self._deck.has_resource("head96"):
       head = self._deck.get_resource("head96")
@@ -9021,7 +9022,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         f"for overhang {round(tip_overhang, 1)} mm"
       )
 
-    return await self.head96_move_stop_disk_z(z + tip_overhang, speed=speed)
+    # Commit the tip-bottom z to the head's z tracker (the tool/tip-end reference QI reports),
+    # re-syncing from QI on failure. The stop-disk delegate below is left untracked - it uses
+    # a different reference - so a1_z stays the tip-bottom position.
+    async with self._tracking([(self.head96_z_tracker, z)], self.head96_request_position):
+      return await self.head96_move_stop_disk_z(z + tip_overhang, speed=speed)
 
   @need_iswap_parked
   @_requires_head96

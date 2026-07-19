@@ -33,6 +33,7 @@ from pylabrobot.resources import (
 from pylabrobot.resources.barcode import Barcode
 from pylabrobot.resources.greiner import Greiner_384_wellplate_28ul_Fb
 from pylabrobot.resources.hamilton import STARLetDeck, hamilton_96_tiprack_300uL_filter
+from pylabrobot.resources.head96 import Head96
 from pylabrobot.resources.x_arm import XArm
 
 from .STAR_backend import (
@@ -925,6 +926,23 @@ class TestHead96YRange(unittest.IsolatedAsyncioTestCase):
     _, y_max = self.star._head96_information.y_range
     with self.assertRaises(ValueError):
       await self.star.head96_move_to_coordinate(Coordinate(300.0, y_max + 5, 250.0))
+
+
+class TestHead96ZTracking(unittest.IsolatedAsyncioTestCase):
+  """head96_move_tool_z commits A1's tip-bottom z to the head's own z tracker."""
+
+  async def asyncSetUp(self):
+    self.lh = LiquidHandler(STARChatterboxBackend(), deck=STARLetDeck())
+    await self.lh.setup()
+    self.star = self.lh.backend
+
+  async def test_move_tool_z_updates_z_tracker(self):
+    self.star.head96_request_tip_presence = unittest.mock.AsyncMock(return_value=1)
+    self.star.head96_request_tip_length = unittest.mock.AsyncMock(return_value=50.0)
+    await self.star.head96_move_tool_z(200.0)
+    head = self.lh.deck.get_resource("head96")
+    assert isinstance(head, Head96)
+    self.assertEqual(head.a1_z, 200.0)
 
 
 class TestXArmInformation(unittest.IsolatedAsyncioTestCase):
