@@ -1754,6 +1754,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # `left_x_arm_tracker` / `right_x_arm_tracker` read them via property.
     # X-arm facts (widths, models, ranges) resolved from firmware at setup.
     self._x_arm_information: Optional[XArmInformation] = None
+    # 96-head facts (offsets, drive ranges) resolved from firmware at setup; None until then.
+    self._head96_information: Optional[Head96Information] = None
 
     self._setup_done = False
 
@@ -2132,7 +2134,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # Request machine information
     self._machine_conf = await self.request_machine_configuration()
     self._extended_conf = await self.request_extended_configuration()
-    self._head96_information: Optional[Head96Information] = None
+    self._head96_information = None  # re-reset each setup; initialised in __init__
 
     initialized = await self.request_instrument_initialization_status()
 
@@ -2399,6 +2401,24 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       raise ValueError(
         f"{position} X-arm x={x}mm is outside its reachable range [{x_min}, {x_max}]mm."
       )
+
+  def _check_head96_y_reachable(self, y: float) -> None:
+    """Raise if y (mm) is outside the 96-head's reachable Y-drive range.
+
+    Mirrors `_check_x_arm_reachable`: a no-op until the 96-head information is resolved at
+    setup, then bounds y to `Head96Information.y_range` (firmware-version dependent).
+
+    Args:
+      y: Target A1 Y coordinate in mm.
+
+    Raises:
+      ValueError: If y is outside the head's ``y_range``.
+    """
+    if self._head96_information is None:
+      return
+    y_min, y_max = self._head96_information.y_range
+    if not y_min <= y <= y_max:
+      raise ValueError(f"96-head y={y}mm is outside its reachable range [{y_min}, {y_max}]mm.")
 
   @asynccontextmanager
   async def _tracking(
@@ -5709,11 +5729,16 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     # TODO: these are values for a STARBackend. Find them for a STARlet.
 
     x_min = self.HEAD96_X_MIN_WITH_LEFT_SIDE_PANEL if self.left_side_panel_installed else -271.0
+    # Y uses the firmware-resolved drive range (same source as `head96_move_y`), so the two
+    # y-moving paths agree; falls back to a conservative window before setup.
+    y_min, y_max = (
+      self._head96_information.y_range if self._head96_information is not None else (108.0, 560.0)
+    )
 
     errors = []
     if not (x_min <= c.x <= 974.0):
       errors.append(f"x={c.x}")
-    if not (108.0 <= c.y <= 560.0):
+    if not (y_min <= c.y <= y_max):
       errors.append(f"y={c.y}")
     if not (180.5 <= c.z <= 342.5) and not skip_z:
       errors.append(f"z={c.z}")
@@ -5722,7 +5747,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       raise ValueError(
         "Illegal 96 head position: "
         + ", ".join(errors)
-        + f" (allowed ranges: x [{x_min}, 974], y [108, 560], z [180.5, 342.5])"
+        + f" (allowed ranges: x [{x_min}, 974], y [{y_min}, {y_max}], z [180.5, 342.5])"
       )
 
   # ============== Firmware Commands ==============
@@ -8734,12 +8759,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       acceleration = self.head96_y_drive_acceleration_default
 
     fw_version = self._head96_information.fw_version
-    y_min, y_max = self._head96_information.y_range
     y_speed_min, y_speed_max = self._head96_information.y_speed_range
     y_accel_min, y_accel_max = self._head96_information.y_acceleration_range
 
     # Validate parameters before hardware communication
-    assert y_min <= y <= y_max, f"y must be between {y_min} and {y_max} mm"
+    self._check_head96_y_reachable(y)
     assert y_speed_min <= speed <= y_speed_max, (
       f"speed must be between {y_speed_min} and {y_speed_max} mm/sec for firmware version {fw_version}. "
       f"Your firmware version: {fw_version}. "

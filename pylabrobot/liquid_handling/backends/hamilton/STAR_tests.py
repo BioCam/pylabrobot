@@ -905,6 +905,28 @@ class TestXArmVisualizerXArms(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(x_arms, ["left_x_arm"])
 
 
+class TestHead96YRange(unittest.IsolatedAsyncioTestCase):
+  """96-head y-moves enforce the firmware y_range with a ValueError, like the arm's x_range."""
+
+  async def asyncSetUp(self):
+    self.lh = LiquidHandler(STARChatterboxBackend(), deck=STARLetDeck())
+    await self.lh.setup()
+    self.star = self.lh.backend
+
+  async def test_head96_move_y_rejects_out_of_range(self):
+    y_min, y_max = self.star._head96_information.y_range
+    for y in (y_min - 1, y_max + 1):
+      with self.assertRaises(ValueError):
+        await self.star.head96_move_y(y)
+
+  async def test_head96_move_to_coordinate_rejects_out_of_range_y(self):
+    from pylabrobot.resources.coordinate import Coordinate
+
+    _, y_max = self.star._head96_information.y_range
+    with self.assertRaises(ValueError):
+      await self.star.head96_move_to_coordinate(Coordinate(300.0, y_max + 5, 250.0))
+
+
 class TestXArmInformation(unittest.IsolatedAsyncioTestCase):
   """setup() fuses QM/RU/UA firmware into XArmInformation."""
 
