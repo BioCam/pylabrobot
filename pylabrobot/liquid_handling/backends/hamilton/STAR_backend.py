@@ -2371,6 +2371,19 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     return None
 
   @property
+  def head96_z_tracker(self) -> Optional[XArmTracker]:
+    """The 96-head's z tracker, owned by its deck resource; None if no head, deck, or setup.
+
+    Holds A1's bottom z (the head's z-drive). Fed by the position read (QI); optimistic
+    updates from the individual z-move commands are not wired yet.
+    """
+    if self._deck is not None and self._deck.has_resource("head96"):
+      head = self._deck.get_resource("head96")
+      if isinstance(head, Head96):
+        return head.z_tracker
+    return None
+
+  @property
   def x_arm_information(self) -> XArmInformation:
     """The machine's X-arm facts, resolved at setup (widths, models, ranges)."""
     if self._x_arm_information is None:
@@ -10538,6 +10551,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     y_tracker = self.head96_y_tracker
     if y_tracker is not None and not y_tracker.is_disabled:
       y_tracker.set_x(y_coordinate)
+    z_tracker = self.head96_z_tracker
+    if z_tracker is not None and not z_tracker.is_disabled:
+      z_tracker.set_x(z_coordinate)
 
     return Coordinate(x=x_coordinate, y=y_coordinate, z=z_coordinate)
 

@@ -54,9 +54,11 @@ class Head96(Resource):
       model=model,
     )
     # Holds A1's tracked y (mm). XArmTracker is a generic 1-D reference tracker; here its
-    # value is a y, not an x.
+    # value is a y, not an x. A second tracker holds A1's bottom z (the head's z-drive).
     self.tracker = XArmTracker(thing=name)
+    self.z_tracker = XArmTracker(thing=f"{name}_z")
     self.tracker.register_callback(self._state_updated)
+    self.z_tracker.register_callback(self._state_updated)
 
   @property
   def x(self) -> float:
@@ -80,6 +82,39 @@ class Head96(Resource):
     x_offset``). Equals ``x`` plus the channel radius."""
     return self.x + self.channel_diameter / 2
 
+  @property
+  def a1_y(self) -> float:
+    """Live deck y of channel A1's centre - the firmware reference point. Read from the
+    head's own y tracker (its independent y-drive), which holds A1's y directly.
+
+    Raises:
+      RuntimeError: If the y position is unknown (no tracked move has committed yet).
+    """
+    return self.tracker.get_x()
+
+  @property
+  def y(self) -> float:
+    """Live deck y of the resource origin (front-left corner), from the head's y tracker.
+    A1's centre sits ``size_y - radius`` toward the back of the origin, so this is
+    ``a1_y - (size_y - radius)``."""
+    return self.a1_y - (self.get_size_y() - self.channel_diameter / 2)
+
+  @property
+  def a1_z(self) -> float:
+    """Live deck z of channel A1's bottom - the firmware reference point - from the head's
+    own z tracker (its z-drive).
+
+    Raises:
+      RuntimeError: If the z position is unknown (no tracked move has committed yet).
+    """
+    return self.z_tracker.get_x()
+
+  @property
+  def z(self) -> float:
+    """Live deck z of the resource origin (front-left-bottom corner). The origin and A1
+    share the array's bottom plane, so this equals ``a1_z``."""
+    return self.a1_z
+
   def serialize(self) -> Dict[str, Any]:
     return {
       **super().serialize(),
@@ -90,9 +125,15 @@ class Head96(Resource):
     }
 
   def serialize_state(self) -> Dict[str, Any]:
-    return {**super().serialize_state(), "tracker": self.tracker.serialize()}
+    return {
+      **super().serialize_state(),
+      "tracker": self.tracker.serialize(),
+      "z_tracker": self.z_tracker.serialize(),
+    }
 
   def load_state(self, state: Dict[str, Any]) -> None:
     super().load_state(state)
     if "tracker" in state:
       self.tracker.load_state(state["tracker"])
+    if "z_tracker" in state:
+      self.z_tracker.load_state(state["z_tracker"])

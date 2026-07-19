@@ -40,6 +40,9 @@ _SIM_LEFT_X_ARM_HOME = 362.9
 # the head's y-drive range [93.75, 562.5].
 _SIM_HEAD96_A1_Y = 300.0
 
+# Simulated 96-head A1 bottom z (mm), reported by QI before any tracked z-move.
+_SIM_HEAD96_A1_Z = 250.0
+
 _DEFAULT_EXTENDED_CONFIGURATION = ExtendedConfiguration(
   left_x_drive_large=True,
   iswap_gripper_wide=True,
@@ -316,7 +319,11 @@ class STARChatterboxBackend(STARBackend):
     y = y_tracker.get_x() if y_tracker is not None and y_tracker.is_known else _SIM_HEAD96_A1_Y
     if y_tracker is not None and not y_tracker.is_disabled:
       y_tracker.set_x(y)
-    return Coordinate(x=carriage - self._head96_information.x_offset, y=y, z=200.0)
+    z_tracker = self.head96_z_tracker
+    z = z_tracker.get_x() if z_tracker is not None and z_tracker.is_known else _SIM_HEAD96_A1_Z
+    if z_tracker is not None and not z_tracker.is_disabled:
+      z_tracker.set_x(z)
+    return Coordinate(x=carriage - self._head96_information.x_offset, y=y, z=z)
 
   async def request_right_x_arm_position(self) -> float:
     tracker = self.right_x_arm_tracker
