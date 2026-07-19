@@ -1460,6 +1460,15 @@ class XArm extends Resource {
       this._xTween.play();
     }
   }
+
+  destroy() {
+    // Stop any in-flight glide so it can't drive updates against the destroyed node.
+    if (this._xTween) {
+      this._xTween.destroy();
+      this._xTween = undefined;
+    }
+    super.destroy();
+  }
 }
 
 class Head96 extends Resource {
@@ -1588,6 +1597,15 @@ class Head96 extends Resource {
       });
       this._yTween.play();
     }
+  }
+
+  destroy() {
+    // Stop any in-flight glide so it can't drive updates against the destroyed node.
+    if (this._yTween) {
+      this._yTween.destroy();
+      this._yTween = undefined;
+    }
+    super.destroy();
   }
 }
 
