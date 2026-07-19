@@ -1475,6 +1475,9 @@ class Head96 extends Resource {
     this.num_columns = resourceData.num_columns || 12;
     this.pitch = resourceData.pitch || 9;
     this.channel_diameter = resourceData.channel_diameter || 7;
+    this._collarFill = "rgba(226, 228, 235, 0.97)"; // empty nozzle
+    this._tipFill = "#40CDA1"; // loaded nozzle - the same green the tip glyph uses
+    this._collars = {};
   }
 
   drawMainShape() {
@@ -1498,22 +1501,24 @@ class Head96 extends Resource {
         listening: false,
       })
     );
-    // Channels as nozzles: a light collar with a darker bore.
+    // Channels as nozzles: a light collar with a darker bore. Collars are kept by channel
+    // index (column-major: ch = col*num_rows + row) so setTipState can recolour loaded ones.
+    this._collars = {};
     for (let r = 0; r < this.num_rows; r++) {
       for (let c = 0; c < this.num_columns; c++) {
         const cx = radius + c * this.pitch;
         const cy = h - radius - r * this.pitch;
-        g.add(
-          new Konva.Circle({
-            x: cx,
-            y: cy,
-            radius: radius,
-            fill: "rgba(226, 228, 235, 0.97)",
-            stroke: "rgba(30, 33, 45, 0.9)",
-            strokeWidth: 0.6,
-            listening: false,
-          })
-        );
+        const collar = new Konva.Circle({
+          x: cx,
+          y: cy,
+          radius: radius,
+          fill: this._collarFill,
+          stroke: "rgba(30, 33, 45, 0.9)",
+          strokeWidth: 0.6,
+          listening: false,
+        });
+        this._collars[c * this.num_rows + r] = collar;
+        g.add(collar);
         g.add(
           new Konva.Circle({
             x: cx,
@@ -1527,7 +1532,7 @@ class Head96 extends Resource {
     }
     // A1 reference: a short x/y-centre crosshair on channel A1 (centre at (radius,
     // size_y - radius)), marking the head's tracked A1 reference.
-    const cyan = "rgba(0, 229, 255, 0.95)";
+    const cyan = "rgba(0, 229, 255, 0.7)";
     const ax = radius;
     const ay = h - radius;
     const arm = this.pitch * 0.55;
@@ -1544,6 +1549,18 @@ class Head96 extends Resource {
     super.setState(state); // rotation
     if (this.group === undefined) {
       return;
+    }
+    // Tips: `state.tips` is the existing per-channel head96_state (from the tip trackers,
+    // the same state that drives the button) - a channel is loaded when its tip != null.
+    if (state && state.tips) {
+      for (const ch in this._collars) {
+        const s = state.tips[ch] || state.tips[String(ch)];
+        const hasTip = !!(s && s.tip !== null && s.tip !== undefined);
+        this._collars[ch].fill(hasTip ? this._tipFill : this._collarFill);
+      }
+      if (this.group.getLayer()) {
+        this.group.getLayer().batchDraw();
+      }
     }
     // The head rides the arm in x (its group.x is fixed within the XArm group); only its
     // independent y is driven here, from the owned tracker (which holds A1's y). The origin
@@ -3266,6 +3283,12 @@ class LiquidHandler extends Resource {
       var panel96 = document.getElementById("multi-channel-dropdown-" + this.name);
       if (panel96) {
         fillHead96Grid(panel96, this.head96State);
+      }
+      // Route the same head96_state into the on-deck 96-head resource's standard setState,
+      // so its own setState renders the tips (no bespoke path).
+      var head96Res = resources["head96"];
+      if (head96Res) {
+        head96Res.setState({ tips: this.head96State });
       }
     }
     if ("arm_state" in state) {
