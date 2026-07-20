@@ -6746,6 +6746,40 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     """Clear a channel's TADM curve FIFO (firmware `AN`), so the next read is unambiguous."""
     await self.send_command(module=STARBackend.channel_id(channel_idx), command="AN")
 
+  async def reset_tadm_limit_curves(self, channel_idx: int) -> None:
+    """Reset a channel's TADM limit-curve bank (firmware `AQ`): erase the stored curves and load the
+    default.
+
+    The default curve (index 0) must be present before a `TADMParameters` with
+    `enforce_limit_curve_control` runs, otherwise the firmware rejects it with an invalid-limit-
+    curve-index error. Call this on the channel once before recording/enforcing.
+    """
+    await self.send_command(module=STARBackend.channel_id(channel_idx), command="AQ")
+
+  async def start_tadm_monitoring(
+    self, channel_idx: int, tadm_parameters: "STARBackend.TADMParameters"
+  ) -> None:
+    """Begin a channel-level TADM monitoring session (firmware `BG`).
+
+    An alternative to passing `tadm_parameters` per stroke: `BG` configures the monitoring fields
+    (`gi`/`gj`/`gk`/`nr`) once, and every aspirate/dispense until `stop_tadm_monitoring` (`BH`)
+    records under them. Requires TADM mode on (`set_tadm_recording`) and, for enforcement, a limit
+    curve (`reset_tadm_limit_curves`). Not required for the per-command `tadm_parameters` path,
+    which records on its own.
+    """
+    fields: Dict[str, Any] = {
+      "gi": f"{tadm_parameters.limit_curve_index:03}",
+      "gj": "1" if tadm_parameters.enforce_limit_curve_control else "0",
+      "gk": f"{tadm_parameters._gk}",
+    }
+    if tadm_parameters.measurement_id is not None:
+      fields["nr"] = tadm_parameters.measurement_id
+    await self.send_command(module=STARBackend.channel_id(channel_idx), command="BG", **fields)
+
+  async def stop_tadm_monitoring(self, channel_idx: int) -> None:
+    """End the channel-level TADM monitoring session started by `start_tadm_monitoring` (`BH`)."""
+    await self.send_command(module=STARBackend.channel_id(channel_idx), command="BH")
+
   async def _tadm_advance_fifo(self, channel_idx: int) -> bool:
     """`QM`: advance the FIFO pointer to the next stored curve. True if data is present (`qm1`)."""
     resp = str(await self.send_command(module=STARBackend.channel_id(channel_idx), command="QM"))

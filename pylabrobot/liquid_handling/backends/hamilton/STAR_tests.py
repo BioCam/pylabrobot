@@ -2929,6 +2929,29 @@ class TestTADMReadout(unittest.IsolatedAsyncioTestCase):
     await self.star.clear_tadm_fifo(channel_idx=7)
     self.assertEqual(self.star.send_command.call_args.kwargs, {"module": "P8", "command": "AN"})
 
+  async def test_reset_tadm_limit_curves_wire(self):
+    self.star.send_command = unittest.mock.AsyncMock(return_value="")
+    await self.star.reset_tadm_limit_curves(channel_idx=7)
+    self.assertEqual(self.star.send_command.call_args.kwargs, {"module": "P8", "command": "AQ"})
+
+  async def test_start_tadm_monitoring_wire(self):
+    self.star.send_command = unittest.mock.AsyncMock(return_value="")
+    await self.star.start_tadm_monitoring(
+      channel_idx=7,
+      tadm_parameters=STARBackend.TADMParameters(
+        enforce_limit_curve_control=True, limit_curve_index=5, measurement_id="REF0"
+      ),
+    )
+    self.assertEqual(
+      self.star.send_command.call_args.kwargs,
+      {"module": "P8", "command": "BG", "gi": "005", "gj": "1", "gk": "2", "nr": "REF0"},
+    )
+
+  async def test_stop_tadm_monitoring_wire(self):
+    self.star.send_command = unittest.mock.AsyncMock(return_value="")
+    await self.star.stop_tadm_monitoring(channel_idx=7)
+    self.assertEqual(self.star.send_command.call_args.kwargs, {"module": "P8", "command": "BH"})
+
   async def test_read_tadm_curve_parses_real_replies(self):
     # real replies from the device log (MH dispense, MHD0): QL then per-point QN
     replies = iter(
