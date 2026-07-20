@@ -2986,7 +2986,8 @@ class TestTADMBatchedRead(unittest.IsolatedAsyncioTestCase):
 
 
 class TestChannelTADMSelfManage(unittest.IsolatedAsyncioTestCase):
-  """A tadm_parameters= aspirate/dispense preserves the channel's AF (TADM mode) state."""
+  """A tadm_parameters= aspirate/dispense turns TADM mode on and leaves it on (the FIFO is only
+  readable while the mode is on, so it must not be restored off before the caller reads)."""
 
   async def asyncSetUp(self):
     self.star = STARBackend()
@@ -3005,7 +3006,7 @@ class TestChannelTADMSelfManage(unittest.IsolatedAsyncioTestCase):
     self.star.send_command = send
     return calls
 
-  async def test_mode_off_enables_then_restores(self):
+  async def test_mode_off_enables_and_leaves_on(self):
     calls = self._harness("P8QFid1qf0")  # TADM currently off
     await self.star._channel_aspirate_in_absolute_z(
       channel_idx=0,
@@ -3014,11 +3015,13 @@ class TestChannelTADMSelfManage(unittest.IsolatedAsyncioTestCase):
       tadm_parameters=STARBackend.TADMParameters(),
     )
     seq = [(c, af) for c, af in calls]
-    # QF (check) -> AF af1 (enable) -> MG (record) -> AF af0 (restore)
+    # QF (check) -> AF af1 (enable) -> MG (record); mode LEFT ON so the FIFO stays readable
     self.assertEqual(seq[0], ("QF", None))
     self.assertEqual(seq[1], ("AF", "1"))
     self.assertIn(("MG", None), seq)
-    self.assertEqual(seq[-1], ("AF", "0"))
+    self.assertNotIn(
+      ("AF", "0"), seq
+    )  # no restore-off: turning AF off would wipe the readable FIFO
 
   async def test_mode_already_on_leaves_it(self):
     calls = self._harness("P8QFid1qf1")  # TADM already on
@@ -3030,6 +3033,25 @@ class TestChannelTADMSelfManage(unittest.IsolatedAsyncioTestCase):
     )
     af_writes = [af for c, af in calls if c == "AF"]
     self.assertEqual(af_writes, [])  # no AF write at all - left as the caller set it
+
+  async def test_as_path_enables_af_per_channel_and_leaves_on(self):
+    # the C0 AS/DS path enables TADM mode on every recording channel and leaves it on
+    self.star._extended_conf = unittest.mock.MagicMock()
+    self.star._extended_conf.left_x_drive.iswap_installed = False  # skip need_iswap_parked
+    calls = self._harness("P8QFid1qf0")  # TADM off on the queried channels
+    await self.star.aspirate_pip(
+      tip_pattern=[True, True],
+      x_positions=[100, 100],
+      y_positions=[100, 100],
+      aspiration_volumes=[100, 100],
+      tadm_parameters=[STARBackend.TADMParameters(), STARBackend.TADMParameters()],
+    )
+    seq = [c for c, af in calls]
+    af_writes = [af for c, af in calls if c == "AF"]
+    self.assertEqual(seq.count("QF"), 2)  # checked both active channels
+    self.assertEqual(af_writes, ["1", "1"])  # enabled both, none turned off
+    self.assertIn("AS", seq)
+    self.assertLess(seq.index("AF"), seq.index("AS"))  # AF enabled before the AS command
 
   async def test_no_tadm_never_touches_af(self):
     calls = self._harness("P8QFid1qf0")

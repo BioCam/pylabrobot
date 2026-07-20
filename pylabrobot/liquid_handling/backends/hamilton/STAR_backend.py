@@ -6702,23 +6702,18 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     had_error: bool
     pressures: List[int]
 
-  async def _enter_tadm_mode_if_needed(
+  async def _ensure_tadm_mode(
     self, channel_idx: int, tadm_parameters: Optional["STARBackend.TADMParameters"]
-  ) -> bool:
-    """Ensure the channel is in TADM mode when a recording is requested, preserving caller state.
+  ) -> None:
+    """Ensure the channel is in TADM monitoring mode (`AF af1`) when a recording is requested.
 
-    TADM recording only happens when the channel is in TADM monitoring mode (`AF af1`), which is
-    EEPROM-persistent, so `_channel_aspirate/dispense_in_absolute_z` self-manage it: if `tadm_parameters` is
-    requested and the mode is already on, nothing changes; if it is off, the caller turns it on and
-    restores it off afterward, so the command leaves the mode as it found it.
-
-    Returns:
-      True if this call turned TADM mode on (so the caller must restore it off after the stroke).
+    Recording only happens while the channel is in TADM mode, and - confirmed on device - the FIFO
+    is only readable while the mode stays on: turning it off makes the just-recorded curve
+    unreadable. So the mode is turned on when a recording is requested and left on; the caller
+    turns it off with `set_tadm_recording(channel_idx, False)` once it has read the curve back.
     """
-    if tadm_parameters is None or await self.request_tadm_recording_status(channel_idx):
-      return False  # not requested, or already on - leave it as the caller set it
-    await self.set_tadm_recording(channel_idx, True)
-    return True
+    if tadm_parameters is not None and not await self.request_tadm_recording_status(channel_idx):
+      await self.set_tadm_recording(channel_idx, True)
 
   async def set_tadm_recording(self, channel_idx: int, enabled: bool = True) -> None:
     """Turn TADM mode on or off for one channel (firmware `AF`).
@@ -6924,10 +6919,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       mix_position_offset: Mix height relative to the aspiration position, mm. A distance, so the tip
         overhang does not apply. Inert unless `mix` is set.
       tadm_parameters: Total aspiration and dispense monitoring settings (see `STARBackend.TADMParameters`).
-        None (default) records nothing. When provided, the command self-manages TADM mode: if the
-        channel is already in TADM mode it records and leaves the mode untouched; if not, it turns
-        the mode on for the stroke and restores it off afterward. Either way the caller's mode
-        setting is preserved. Read the curve back with `read_tadm_curve`.
+        None (default) records nothing. When provided, the command turns TADM monitoring mode on if
+        it is not already, and leaves it on - the FIFO is only readable while the mode is on, so it
+        must not be turned off before you read. Read the curve back with `read_tadm_curve`, then
+        turn the mode off yourself with `set_tadm_recording(channel_idx, False)` when done.
       mechanical_clearance_reversing_volume: Piston backlash take-up, uL; the drive over-travels by
         this so the drawn volume matches the commanded volume.
       flow_acceleration: Dispensing-drive acceleration, uL/s^2.
@@ -7124,7 +7119,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
 
     module = STARBackend.channel_id(channel_idx)
-    tadm_enabled_here = await self._enter_tadm_mode_if_needed(channel_idx, tadm_parameters)
+    await self._ensure_tadm_mode(channel_idx, tadm_parameters)
     result = await self.send_command(
       module=module,
       command="MG",
@@ -7162,8 +7157,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       gk=f"{0 if tadm_parameters is None else tadm_parameters._gk}",
       **tadm_measurement_id_field,
     )
-    if tadm_enabled_here:  # this call turned TADM mode on; restore the caller's off state
-      await self.set_tadm_recording(channel_idx, False)
+    # recording leaves TADM mode on so the curve stays readable (the FIFO is only readable while
+    # AF is on); the caller turns it off with set_tadm_recording(channel_idx, False) once it reads.
     return result
 
   async def _channel_dispense_in_absolute_z(
@@ -7233,10 +7228,10 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       mix_position_offset: Mix height relative to the dispense position, mm. A distance, so the tip
         overhang does not apply. Inert unless `mix` is set.
       tadm_parameters: Total aspiration and dispense monitoring settings (see `STARBackend.TADMParameters`).
-        None (default) records nothing. When provided, the command self-manages TADM mode: if the
-        channel is already in TADM mode it records and leaves the mode untouched; if not, it turns
-        the mode on for the stroke and restores it off afterward. Either way the caller's mode
-        setting is preserved. Read the curve back with `read_tadm_curve`.
+        None (default) records nothing. When provided, the command turns TADM monitoring mode on if
+        it is not already, and leaves it on - the FIFO is only readable while the mode is on, so it
+        must not be turned off before you read. Read the curve back with `read_tadm_curve`, then
+        turn the mode off yourself with `set_tadm_recording(channel_idx, False)` when done.
       flow_acceleration: Dispensing-drive acceleration, uL/s^2.
       current_limit: Dispensing-drive current limit, 0-7.
       z_speed: Z-drive travel speed, mm/s.
@@ -7424,7 +7419,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
 
     module = STARBackend.channel_id(channel_idx)
-    tadm_enabled_here = await self._enter_tadm_mode_if_needed(channel_idx, tadm_parameters)
+    await self._ensure_tadm_mode(channel_idx, tadm_parameters)
     result = await self.send_command(
       module=module,
       command="MH",
@@ -7460,8 +7455,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       gk=f"{0 if tadm_parameters is None else tadm_parameters._gk}",
       **tadm_measurement_id_field,
     )
-    if tadm_enabled_here:  # this call turned TADM mode on; restore the caller's off state
-      await self.set_tadm_recording(channel_idx, False)
+    # recording leaves TADM mode on so the curve stays readable (the FIFO is only readable while
+    # AF is on); the caller turns it off with set_tadm_recording(channel_idx, False) once it reads.
     return result
 
   # TODO:(command:DC) Set multiple dispense values using PIP
@@ -7727,6 +7722,12 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     enforce_control, gk_value, limit_curve_index = self._tadm_pip_command_fields(
       tadm_parameters, sum(tip_pattern)
     )
+    # Each recording channel must be in TADM mode (AF af1, per module) for C0 AS/DS to record, and
+    # it is left on so the FIFO stays readable - turning it off wipes it. The caller turns it off
+    # with set_tadm_recording(channel_idx, False) once it has read the curves back.
+    if tadm_parameters is not None:
+      for ci, tp in zip((i for i, t in enumerate(tip_pattern) if t), tadm_parameters):
+        await self._ensure_tadm_mode(ci, tp)
     assert all(0 <= x <= 3600 for x in retract_height_over_2nd_section_to_empty_tip), (
       "retract_height_over_2nd_section_to_empty_tip must be between 0 and 3600"
     )
@@ -7968,6 +7969,12 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     enforce_control, gk_value, limit_curve_index = self._tadm_pip_command_fields(
       tadm_parameters, sum(tip_pattern)
     )
+    # Each recording channel must be in TADM mode (AF af1, per module) for C0 AS/DS to record, and
+    # it is left on so the FIFO stays readable - turning it off wipes it. The caller turns it off
+    # with set_tadm_recording(channel_idx, False) once it has read the curves back.
+    if tadm_parameters is not None:
+      for ci, tp in zip((i for i, t in enumerate(tip_pattern) if t), tadm_parameters):
+        await self._ensure_tadm_mode(ci, tp)
 
     return await self.send_command(
       module="C0",
