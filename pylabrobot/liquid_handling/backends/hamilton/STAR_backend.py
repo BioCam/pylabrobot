@@ -5244,10 +5244,14 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   async def move_channel_x(self, channel: int, x: float):
     """Move a channel in the x direction."""
-    if self.left_side_panel_installed and x < self.PIP_X_MIN_WITH_LEFT_SIDE_PANEL:
+    if (
+      self.left_side_panel_installed
+      and self.extended_conf.left_x_drive.core_96_head_installed
+      and x < self.PIP_X_MIN_WITH_LEFT_SIDE_PANEL
+    ):
       raise ValueError(
         f"PIP channel x={x}mm is below the minimum {self.PIP_X_MIN_WITH_LEFT_SIDE_PANEL}mm "
-        f"(left side panel is installed)"
+        f"(left side panel and 96-head installed)"
       )
     self._check_x_arm_reachable(x)
     await self.position_left_x_arm_(round(x * 10))
