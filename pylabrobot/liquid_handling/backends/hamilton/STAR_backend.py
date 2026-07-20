@@ -6757,16 +6757,21 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     await self.send_command(module=STARBackend.channel_id(channel_idx), command="AQ")
 
   async def start_tadm_monitoring(
-    self, channel_idx: int, tadm_parameters: "STARBackend.TADMParameters"
+    self, channel_idx: int, tadm_parameters: Optional["STARBackend.TADMParameters"] = None
   ) -> None:
     """Begin a channel-level TADM monitoring session (firmware `BG`).
 
     An alternative to passing `tadm_parameters` per stroke: `BG` configures the monitoring fields
     (`gi`/`gj`/`gk`/`nr`) once, and every aspirate/dispense until `stop_tadm_monitoring` (`BH`)
-    records under them. Requires TADM mode on (`set_tadm_recording`) and, for enforcement, a limit
-    curve (`reset_tadm_limit_curves`). Not required for the per-command `tadm_parameters` path,
-    which records on its own.
+    records under them. Requires TADM mode on (`set_tadm_recording`) and a limit curve
+    (`reset_tadm_limit_curves`). Not required for the per-command `tadm_parameters` path, which
+    records on its own.
+
+    `tadm_parameters` defaults to monitoring with every curve stored (recording needs the algorithm
+    on, so the default enables it); pass one to change the storage level, limit curve, or id.
     """
+    if tadm_parameters is None:
+      tadm_parameters = STARBackend.TADMParameters(enforce_limit_curve_control=True)
     fields: Dict[str, Any] = {
       "gi": f"{tadm_parameters.limit_curve_index:03}",
       "gj": "1" if tadm_parameters.enforce_limit_curve_control else "0",

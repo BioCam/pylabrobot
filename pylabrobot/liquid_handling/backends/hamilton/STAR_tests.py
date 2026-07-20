@@ -2946,6 +2946,12 @@ class TestTADMReadout(unittest.IsolatedAsyncioTestCase):
       self.star.send_command.call_args.kwargs,
       {"module": "P8", "command": "BG", "gi": "005", "gj": "1", "gk": "2", "nr": "REF0"},
     )
+    # default (channel only): monitor + store all, no id
+    await self.star.start_tadm_monitoring(channel_idx=7)
+    self.assertEqual(
+      self.star.send_command.call_args.kwargs,
+      {"module": "P8", "command": "BG", "gi": "000", "gj": "1", "gk": "2"},
+    )
 
   async def test_stop_tadm_monitoring_wire(self):
     self.star.send_command = unittest.mock.AsyncMock(return_value="")
