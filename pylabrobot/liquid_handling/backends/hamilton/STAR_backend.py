@@ -6614,17 +6614,20 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   class TADMParameters:
     """Total aspiration and dispense monitoring settings for one channel command.
 
-    Pass `None` to leave monitoring off entirely. Two independent axes, mapping to two firmware
-    fields: `enforce_limit_curve_control` (`gj`) decides whether the live pressure is compared to
-    the limit curve and the plunger aborted on a violation, and `storage_level` (`gk`) decides
-    which curves are kept in the FIFO for readback. Enforcement is a real-time safety action;
-    storage is what you read back afterwards. Grouped into one object because the firmware treats
-    them as one block. That scoping is also why the fields need no `tadm_` prefix; the class
-    carries it.
+    Pass `None` to leave monitoring off entirely. Two firmware fields: `enforce_limit_curve_control`
+    (`gj`) decides whether the live pressure is compared to the limit curve and the plunger aborted
+    on a violation, and `storage_level` (`gk`) decides which curves are kept in the FIFO for
+    readback. They read as independent - a real-time safety action vs. what you read back afterwards
+    - but on the tested firmware they are coupled: with `gj0` nothing is recorded regardless of
+    `storage_level`, so a curve is only stored (and later readable) when enforcement is on (`gj1`).
+    Grouped into one object because the firmware treats them as one block. That scoping is also why
+    the fields need no `tadm_` prefix; the class carries it.
 
     Args:
       enforce_limit_curve_control: Compare the live pressure to the limit curve and abort the
-        plunger on a violation (`gj`). Defaults False - record the trace without enforcing.
+        plunger on a violation (`gj`). Defaults False. Note: on the tested firmware this also gates
+        recording - with it off nothing is stored, so set it True (with a limit curve loaded) to
+        record a trace.
       storage_level: Which curves are kept for readback (`gk`): "none", "errors_only" (curves that
         violated the limit curve), or "all". Defaults to "all".
       limit_curve_index: Index of the limit curve (`gi`, 0-999) enforcement evaluates against; also
