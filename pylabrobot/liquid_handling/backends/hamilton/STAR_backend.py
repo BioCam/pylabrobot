@@ -16,6 +16,7 @@ from typing import (
   Callable,
   Coroutine,
   Dict,
+  Iterable,
   List,
   Literal,
   Optional,
@@ -2382,6 +2383,36 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         continue
       deck.get_or_create_x_arm(f"{position}_x_arm", arm.width, arm.model, arm.reference_point)
       await queries[position]()
+
+  @asynccontextmanager
+  async def _tracking(
+    self,
+    updates: Iterable[Tuple[Optional[XArmTracker], Optional[float]]],
+    resync: Callable[[], Awaitable[Any]],
+  ):
+    """Track one or more X/Y reference trackers across a command that moves them.
+
+    ``updates`` is an iterable of ``(tracker, target)`` pairs, each committed on success
+    (a move that drives both the carriage and the 96-head y passes two). On failure the
+    true positions are read back via ``resync`` (a coroutine that itself updates the
+    trackers, e.g. ``request_left_x_arm_position``), marking them unknown only if that
+    read also fails; the original error propagates either way. Pairs with no live tracker
+    or a None target are ignored.
+    """
+    active = [(t, x) for t, x in updates if t is not None and not t.is_disabled and x is not None]
+    for tracker, target in active:
+      tracker.set_x(target, commit=False)
+    try:
+      yield
+    except Exception:
+      try:
+        await resync()
+      except Exception:
+        for tracker, _ in active:
+          tracker.invalidate()
+      raise
+    for tracker, _ in active:
+      tracker.commit()
 
   def _check_x_arm_reachable(self, x: float, position: Literal["left", "right"] = "left") -> None:
     """Raise if x (mm) is outside the X-arm's reachable X-drive range.
@@ -6673,20 +6704,25 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       "minimum_traverse_height_at_beginning_of_a_command must be between 0 and 3600"
     )
 
-    return await self.send_command(
-      module="C0",
-      command="TP",
-      tip_pattern=tip_pattern,
-      read_timeout=max(120, self.read_timeout),
-      xp=[f"{x:05}" for x in x_positions],
-      yp=[f"{y:04}" for y in y_positions],
-      tm=tip_pattern,
-      tt=f"{tip_type_idx:02}",
-      tp=f"{begin_tip_pick_up_process:04}",
-      tz=f"{end_tip_pick_up_process:04}",
-      th=f"{minimum_traverse_height_at_beginning_of_a_command:04}",
-      td=pickup_method.value,
-    )
+    involved_x = [xp for xp, on in zip(x_positions, tip_pattern) if on]
+    async with self._tracking(
+      [(self.left_x_arm_tracker, involved_x[-1] / 10 if involved_x else None)],
+      self.request_left_x_arm_position,
+    ):
+      return await self.send_command(
+        module="C0",
+        command="TP",
+        tip_pattern=tip_pattern,
+        read_timeout=max(120, self.read_timeout),
+        xp=[f"{x:05}" for x in x_positions],
+        yp=[f"{y:04}" for y in y_positions],
+        tm=tip_pattern,
+        tt=f"{tip_type_idx:02}",
+        tp=f"{begin_tip_pick_up_process:04}",
+        tz=f"{end_tip_pick_up_process:04}",
+        th=f"{minimum_traverse_height_at_beginning_of_a_command:04}",
+        td=pickup_method.value,
+      )
 
   @need_iswap_parked
   async def discard_tip(
@@ -6738,20 +6774,25 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       "z_position_at_end_of_a_command must be between 0 and 3600"
     )
 
-    return await self.send_command(
-      module="C0",
-      command="TR",
-      tip_pattern=tip_pattern,
-      read_timeout=max(120, self.read_timeout),
-      xp=[f"{x:05}" for x in x_positions],
-      yp=[f"{y:04}" for y in y_positions],
-      tm=tip_pattern,
-      tp=begin_tip_deposit_process,
-      tz=end_tip_deposit_process,
-      th=minimum_traverse_height_at_beginning_of_a_command,
-      te=z_position_at_end_of_a_command,
-      ti=discarding_method.value,
-    )
+    involved_x = [xp for xp, on in zip(x_positions, tip_pattern) if on]
+    async with self._tracking(
+      [(self.left_x_arm_tracker, involved_x[-1] / 10 if involved_x else None)],
+      self.request_left_x_arm_position,
+    ):
+      return await self.send_command(
+        module="C0",
+        command="TR",
+        tip_pattern=tip_pattern,
+        read_timeout=max(120, self.read_timeout),
+        xp=[f"{x:05}" for x in x_positions],
+        yp=[f"{y:04}" for y in y_positions],
+        tm=tip_pattern,
+        tp=begin_tip_deposit_process,
+        tz=end_tip_deposit_process,
+        th=minimum_traverse_height_at_beginning_of_a_command,
+        te=z_position_at_end_of_a_command,
+        ti=discarding_method.value,
+      )
 
   # TODO:(command:TW) Tip Pick-up for DC wash procedure
 
@@ -6997,54 +7038,59 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
     assert all(0 <= x <= 3600 for x in cup_upper_edge), "cup_upper_edge must be between 0 and 3600"
 
-    return await self.send_command(
-      module="C0",
-      command="AS",
-      tip_pattern=tip_pattern,
-      read_timeout=max(300, self.read_timeout),
-      at=[f"{at:01}" for at in aspiration_type],
-      tm=tip_pattern,
-      xp=[f"{xp:05}" for xp in x_positions],
-      yp=[f"{yp:04}" for yp in y_positions],
-      th=f"{minimum_traverse_height_at_beginning_of_a_command:04}",
-      te=f"{min_z_endpos:04}",
-      lp=[f"{lp:04}" for lp in lld_search_height],
-      ch=[f"{ch:03}" for ch in clot_detection_height],
-      zl=[f"{zl:04}" for zl in liquid_surface_no_lld],
-      po=[f"{po:04}" for po in pull_out_distance_transport_air],
-      zu=[f"{zu:04}" for zu in second_section_height],
-      zr=[f"{zr:05}" for zr in second_section_ratio],
-      zx=[f"{zx:04}" for zx in minimum_height],
-      ip=[f"{ip:04}" for ip in immersion_depth],
-      it=[f"{it}" for it in immersion_depth_direction],
-      fp=[f"{fp:04}" for fp in surface_following_distance],
-      av=[f"{av:05}" for av in aspiration_volumes],
-      as_=[f"{as_:04}" for as_ in aspiration_speed],
-      ta=[f"{ta:03}" for ta in transport_air_volume],
-      ba=[f"{ba:04}" for ba in blow_out_air_volume],
-      oa=[f"{oa:03}" for oa in pre_wetting_volume],
-      lm=[f"{lm}" for lm in lld_mode],
-      ll=[f"{ll}" for ll in gamma_lld_sensitivity],
-      lv=[f"{lv}" for lv in dp_lld_sensitivity],
-      zo=[f"{zo:03}" for zo in aspirate_position_above_z_touch_off],
-      ld=[f"{ld:02}" for ld in detection_height_difference_for_dual_lld],
-      de=[f"{de:04}" for de in swap_speed],
-      wt=[f"{wt:02}" for wt in settling_time],
-      mv=[f"{mv:05}" for mv in mix_volume],
-      mc=[f"{mc:02}" for mc in mix_cycles],
-      mp=[f"{mp:03}" for mp in mix_position_from_liquid_surface],
-      ms=[f"{ms:04}" for ms in mix_speed],
-      mh=[f"{mh:04}" for mh in mix_surface_following_distance],
-      gi=[f"{gi:03}" for gi in limit_curve_index],
-      gj=tadm_algorithm,
-      gk=recording_mode,
-      lk=[1 if lk else 0 for lk in use_2nd_section_aspiration],
-      ik=[f"{ik:04}" for ik in retract_height_over_2nd_section_to_empty_tip],
-      sd=[f"{sd:04}" for sd in dispensation_speed_during_emptying_tip],
-      se=[f"{se:04}" for se in dosing_drive_speed_during_2nd_section_search],
-      sz=[f"{sz:04}" for sz in z_drive_speed_during_2nd_section_search],
-      io=[f"{io:04}" for io in cup_upper_edge],
-    )
+    involved_x = [xp for xp, on in zip(x_positions, tip_pattern) if on]
+    async with self._tracking(
+      [(self.left_x_arm_tracker, involved_x[-1] / 10 if involved_x else None)],
+      self.request_left_x_arm_position,
+    ):
+      return await self.send_command(
+        module="C0",
+        command="AS",
+        tip_pattern=tip_pattern,
+        read_timeout=max(300, self.read_timeout),
+        at=[f"{at:01}" for at in aspiration_type],
+        tm=tip_pattern,
+        xp=[f"{xp:05}" for xp in x_positions],
+        yp=[f"{yp:04}" for yp in y_positions],
+        th=f"{minimum_traverse_height_at_beginning_of_a_command:04}",
+        te=f"{min_z_endpos:04}",
+        lp=[f"{lp:04}" for lp in lld_search_height],
+        ch=[f"{ch:03}" for ch in clot_detection_height],
+        zl=[f"{zl:04}" for zl in liquid_surface_no_lld],
+        po=[f"{po:04}" for po in pull_out_distance_transport_air],
+        zu=[f"{zu:04}" for zu in second_section_height],
+        zr=[f"{zr:05}" for zr in second_section_ratio],
+        zx=[f"{zx:04}" for zx in minimum_height],
+        ip=[f"{ip:04}" for ip in immersion_depth],
+        it=[f"{it}" for it in immersion_depth_direction],
+        fp=[f"{fp:04}" for fp in surface_following_distance],
+        av=[f"{av:05}" for av in aspiration_volumes],
+        as_=[f"{as_:04}" for as_ in aspiration_speed],
+        ta=[f"{ta:03}" for ta in transport_air_volume],
+        ba=[f"{ba:04}" for ba in blow_out_air_volume],
+        oa=[f"{oa:03}" for oa in pre_wetting_volume],
+        lm=[f"{lm}" for lm in lld_mode],
+        ll=[f"{ll}" for ll in gamma_lld_sensitivity],
+        lv=[f"{lv}" for lv in dp_lld_sensitivity],
+        zo=[f"{zo:03}" for zo in aspirate_position_above_z_touch_off],
+        ld=[f"{ld:02}" for ld in detection_height_difference_for_dual_lld],
+        de=[f"{de:04}" for de in swap_speed],
+        wt=[f"{wt:02}" for wt in settling_time],
+        mv=[f"{mv:05}" for mv in mix_volume],
+        mc=[f"{mc:02}" for mc in mix_cycles],
+        mp=[f"{mp:03}" for mp in mix_position_from_liquid_surface],
+        ms=[f"{ms:04}" for ms in mix_speed],
+        mh=[f"{mh:04}" for mh in mix_surface_following_distance],
+        gi=[f"{gi:03}" for gi in limit_curve_index],
+        gj=tadm_algorithm,
+        gk=recording_mode,
+        lk=[1 if lk else 0 for lk in use_2nd_section_aspiration],
+        ik=[f"{ik:04}" for ik in retract_height_over_2nd_section_to_empty_tip],
+        sd=[f"{sd:04}" for sd in dispensation_speed_during_emptying_tip],
+        se=[f"{se:04}" for se in dosing_drive_speed_during_2nd_section_search],
+        sz=[f"{sz:04}" for sz in z_drive_speed_during_2nd_section_search],
+        io=[f"{io:04}" for io in cup_upper_edge],
+      )
 
   @need_iswap_parked
   async def dispense_pip(
@@ -7229,48 +7275,53 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
     assert 0 <= recording_mode <= 2, "recording_mode must be between 0 and 2"
 
-    return await self.send_command(
-      module="C0",
-      command="DS",
-      tip_pattern=tip_pattern,
-      read_timeout=max(300, self.read_timeout),
-      dm=[f"{dm:01}" for dm in dispensing_mode],
-      tm=[f"{tm:01}" for tm in tip_pattern],
-      xp=[f"{xp:05}" for xp in x_positions],
-      yp=[f"{yp:04}" for yp in y_positions],
-      zx=[f"{zx:04}" for zx in minimum_height],
-      lp=[f"{lp:04}" for lp in lld_search_height],
-      zl=[f"{zl:04}" for zl in liquid_surface_no_lld],
-      po=[f"{po:04}" for po in pull_out_distance_transport_air],
-      ip=[f"{ip:04}" for ip in immersion_depth],
-      it=[f"{it:01}" for it in immersion_depth_direction],
-      fp=[f"{fp:04}" for fp in surface_following_distance],
-      zu=[f"{zu:04}" for zu in second_section_height],
-      zr=[f"{zr:05}" for zr in second_section_ratio],
-      th=f"{minimum_traverse_height_at_beginning_of_a_command:04}",
-      te=f"{min_z_endpos:04}",
-      dv=[f"{dv:05}" for dv in dispense_volumes],
-      ds=[f"{ds:04}" for ds in dispense_speed],
-      ss=[f"{ss:04}" for ss in cut_off_speed],
-      rv=[f"{rv:03}" for rv in stop_back_volume],
-      ta=[f"{ta:03}" for ta in transport_air_volume],
-      ba=[f"{ba:04}" for ba in blow_out_air_volume],
-      lm=[f"{lm:01}" for lm in lld_mode],
-      dj=f"{side_touch_off_distance:02}",  #
-      zo=[f"{zo:03}" for zo in dispense_position_above_z_touch_off],
-      ll=[f"{ll:01}" for ll in gamma_lld_sensitivity],
-      lv=[f"{lv:01}" for lv in dp_lld_sensitivity],
-      de=[f"{de:04}" for de in swap_speed],
-      wt=[f"{wt:02}" for wt in settling_time],
-      mv=[f"{mv:05}" for mv in mix_volume],
-      mc=[f"{mc:02}" for mc in mix_cycles],
-      mp=[f"{mp:03}" for mp in mix_position_from_liquid_surface],
-      ms=[f"{ms:04}" for ms in mix_speed],
-      mh=[f"{mh:04}" for mh in mix_surface_following_distance],
-      gi=[f"{gi:03}" for gi in limit_curve_index],
-      gj=tadm_algorithm,  #
-      gk=recording_mode,  #
-    )
+    involved_x = [xp for xp, on in zip(x_positions, tip_pattern) if on]
+    async with self._tracking(
+      [(self.left_x_arm_tracker, involved_x[-1] / 10 if involved_x else None)],
+      self.request_left_x_arm_position,
+    ):
+      return await self.send_command(
+        module="C0",
+        command="DS",
+        tip_pattern=tip_pattern,
+        read_timeout=max(300, self.read_timeout),
+        dm=[f"{dm:01}" for dm in dispensing_mode],
+        tm=[f"{tm:01}" for tm in tip_pattern],
+        xp=[f"{xp:05}" for xp in x_positions],
+        yp=[f"{yp:04}" for yp in y_positions],
+        zx=[f"{zx:04}" for zx in minimum_height],
+        lp=[f"{lp:04}" for lp in lld_search_height],
+        zl=[f"{zl:04}" for zl in liquid_surface_no_lld],
+        po=[f"{po:04}" for po in pull_out_distance_transport_air],
+        ip=[f"{ip:04}" for ip in immersion_depth],
+        it=[f"{it:01}" for it in immersion_depth_direction],
+        fp=[f"{fp:04}" for fp in surface_following_distance],
+        zu=[f"{zu:04}" for zu in second_section_height],
+        zr=[f"{zr:05}" for zr in second_section_ratio],
+        th=f"{minimum_traverse_height_at_beginning_of_a_command:04}",
+        te=f"{min_z_endpos:04}",
+        dv=[f"{dv:05}" for dv in dispense_volumes],
+        ds=[f"{ds:04}" for ds in dispense_speed],
+        ss=[f"{ss:04}" for ss in cut_off_speed],
+        rv=[f"{rv:03}" for rv in stop_back_volume],
+        ta=[f"{ta:03}" for ta in transport_air_volume],
+        ba=[f"{ba:04}" for ba in blow_out_air_volume],
+        lm=[f"{lm:01}" for lm in lld_mode],
+        dj=f"{side_touch_off_distance:02}",  #
+        zo=[f"{zo:03}" for zo in dispense_position_above_z_touch_off],
+        ll=[f"{ll:01}" for ll in gamma_lld_sensitivity],
+        lv=[f"{lv:01}" for lv in dp_lld_sensitivity],
+        de=[f"{de:04}" for de in swap_speed],
+        wt=[f"{wt:02}" for wt in settling_time],
+        mv=[f"{mv:05}" for mv in mix_volume],
+        mc=[f"{mc:02}" for mc in mix_cycles],
+        mp=[f"{mp:03}" for mp in mix_position_from_liquid_surface],
+        ms=[f"{ms:04}" for ms in mix_speed],
+        mh=[f"{mh:04}" for mh in mix_surface_following_distance],
+        gi=[f"{gi:03}" for gi in limit_curve_index],
+        gj=tadm_algorithm,  #
+        gk=recording_mode,  #
+      )
 
   # TODO:(command:DA) Simultaneous aspiration & dispensation of liquid
 
