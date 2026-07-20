@@ -6880,6 +6880,18 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     logger.debug("channel %d: pressure %d Pa", channel_idx, pressure)
     return pressure
 
+  async def auto_adjust_pressure_sensor(self, channel_idx: int) -> None:
+    """Auto-adjust the channel's pressure sensor (gain/offset) for LLD and aspiration monitoring.
+
+    Re-running it clears a mis-adjusted sensor whose baseline otherwise saturates the recorded
+    aspirate trace at the sensor floor; device-confirmed to restore a channel that was flooring.
+
+    Args:
+      channel_idx: Channel index (0-based, backmost = 0).
+    """
+    await self.send_command(module=STARBackend.channel_id(channel_idx), command="AC")
+    logger.debug("channel %d: pressure sensor auto-adjusted", channel_idx)
+
   # -------------- 3.5.3 Liquid handling commands using PIP --------------
 
   async def _channel_aspirate_in_absolute_z(
