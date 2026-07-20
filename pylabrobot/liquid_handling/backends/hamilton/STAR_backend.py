@@ -99,12 +99,15 @@ from pylabrobot.resources.hamilton import (
 )
 from pylabrobot.resources.hamilton.hamilton_decks import (
   HamiltonCoreGrippers,
+  HamiltonSTARDeck,
   rails_for_x_coordinate,
 )
 from pylabrobot.resources.liquid import Liquid
 from pylabrobot.resources.rotation import Rotation
 from pylabrobot.resources.tip_tracker import does_tip_tracking
 from pylabrobot.resources.trash import Trash
+from pylabrobot.resources.x_arm import XArm
+from pylabrobot.resources.x_arm_tracker import XArmTracker
 
 T = TypeVar("T")
 
@@ -2257,6 +2260,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     self._core_parked = True
 
     await self._build_x_arm_information()
+    await self._setup_x_arms()
 
     self._setup_done = True
 
@@ -2309,13 +2313,75 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         f"current_protection_limiter must be between 0 and 7, is {current_protection_limiter}"
       )
 
-    return await self.send_command(
-      module="X0",
-      command="XP",
-      la=f"{round(x * 10):05}",
-      lr=str(acceleration_level),
-      lw=str(current_protection_limiter),
-    )
+    tracker = self.left_x_arm_tracker
+    if tracker is not None and not tracker.is_disabled:
+      tracker.set_x(x, commit=False)
+    try:
+      resp = await self.send_command(
+        module="X0",
+        command="XP",
+        la=f"{round(x * 10):05}",
+        lr=str(acceleration_level),
+        lw=str(current_protection_limiter),
+      )
+    except Exception:
+      if tracker is not None and not tracker.is_disabled:
+        tracker.invalidate()
+      raise
+    if tracker is not None and not tracker.is_disabled:
+      tracker.commit()
+    return resp
+
+  @property
+  def left_x_arm_tracker(self) -> Optional[XArmTracker]:
+    """The left X-arm's tracker, owned by the deck's left X-arm (created at
+    setup). None before setup or without a deck."""
+    return self._x_arm_tracker("left_x_arm")
+
+  @property
+  def right_x_arm_tracker(self) -> Optional[XArmTracker]:
+    """The right X-arm's tracker, owned by the deck's right X-arm. None when no
+    right arm is installed, or before setup."""
+    return self._x_arm_tracker("right_x_arm")
+
+  def _x_arm_tracker(self, name: str) -> Optional[XArmTracker]:
+    if self._deck is not None and self._deck.has_resource(name):
+      x_arm = self._deck.get_resource(name)
+      if isinstance(x_arm, XArm):
+        return x_arm.tracker
+    return None
+
+  def get_x_arm_position(self) -> Tuple[Optional[float], Optional[float]]:
+    """Tracked X-arm carriage reference points in mm, as (left, right).
+
+    Either element is None while that X-arm's position is unknown: no tracked move or
+    position query has completed for it yet, the last tracked move failed, or that
+    X-arm is not present.
+    """
+    left_tracker = self.left_x_arm_tracker
+    right_tracker = self.right_x_arm_tracker
+    left = left_tracker.get_x() if left_tracker is not None and left_tracker.is_known else None
+    right = right_tracker.get_x() if right_tracker is not None and right_tracker.is_known else None
+    return left, right
+
+  async def _setup_x_arms(self) -> None:
+    """Create the deck-owned X-arm for each present arm and seed its tracker.
+
+    The X-arm (an ``XArm``) owns its ``XArmTracker`` and reports it as state, so the
+    Visualizer positions it; this asks the deck to create it (sized and modelled
+    from `x_arm_information`) and seeds the tracker from a position read (its resting
+    home in simulation, its true position on hardware). No-op without a deck.
+    """
+    if self._deck is None:
+      return
+    deck = cast(HamiltonSTARDeck, self.deck)
+    info = self.x_arm_information
+    queries = {"left": self.request_left_x_arm_position, "right": self.request_right_x_arm_position}
+    for position, arm in (("left", info.left), ("right", info.right)):
+      if arm is None:
+        continue
+      deck.get_or_create_x_arm(f"{position}_x_arm", arm.width, arm.model, arm.reference_point)
+      await queries[position]()
 
   def _check_x_arm_reachable(self, x: float, position: Literal["left", "right"] = "left") -> None:
     """Raise if x (mm) is outside the X-arm's reachable X-drive range.
@@ -6211,11 +6277,22 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     assert 0 <= x_position <= 30000, "x_position_ must be between 0 and 30000"
 
-    return await self.send_command(
-      module="C0",
-      command="JX",
-      xs=f"{x_position:05}",
-    )
+    tracker = self.left_x_arm_tracker
+    if tracker is not None and not tracker.is_disabled:
+      tracker.set_x(x_position / 10, commit=False)
+    try:
+      resp = await self.send_command(
+        module="C0",
+        command="JX",
+        xs=f"{x_position:05}",
+      )
+    except Exception:
+      if tracker is not None and not tracker.is_disabled:
+        tracker.invalidate()
+      raise
+    if tracker is not None and not tracker.is_disabled:
+      tracker.commit()
+    return resp
 
   async def position_right_x_arm_(self, x_position: int = 0):
     """Position right X-Arm
@@ -6228,11 +6305,22 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     assert 0 <= x_position <= 30000, "x_position_ must be between 0 and 30000"
 
-    return await self.send_command(
-      module="C0",
-      command="JS",
-      xs=f"{x_position:05}",
-    )
+    tracker = self.right_x_arm_tracker
+    if tracker is not None and not tracker.is_disabled:
+      tracker.set_x(x_position / 10, commit=False)
+    try:
+      resp = await self.send_command(
+        module="C0",
+        command="JS",
+        xs=f"{x_position:05}",
+      )
+    except Exception:
+      if tracker is not None and not tracker.is_disabled:
+        tracker.invalidate()
+      raise
+    if tracker is not None and not tracker.is_disabled:
+      tracker.commit()
+    return resp
 
   async def move_left_x_arm_to_position_with_all_attached_components_in_z_safety_position(
     self, x_position: int = 0
@@ -6341,13 +6429,21 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   async def request_left_x_arm_position(self) -> float:
     """Request left X-Arm position"""
     resp_dmm = await self.send_command(module="C0", command="RX", fmt="rx#####")
-    return cast(float, resp_dmm["rx"]) / 10
+    x = cast(float, resp_dmm["rx"]) / 10
+    tracker = self.left_x_arm_tracker
+    if tracker is not None and not tracker.is_disabled:
+      tracker.set_x(x)
+    return x
 
   async def request_right_x_arm_position(self) -> float:
     """Request right X-Arm position"""
 
     resp_dmm = await self.send_command(module="C0", command="QX", fmt="rx#####")
-    return cast(float, resp_dmm["rx"]) / 10
+    x = cast(float, resp_dmm["rx"]) / 10
+    tracker = self.right_x_arm_tracker
+    if tracker is not None and not tracker.is_disabled:
+      tracker.set_x(x)
+    return x
 
   @property
   def x_arm_information(self) -> XArmInformation:
