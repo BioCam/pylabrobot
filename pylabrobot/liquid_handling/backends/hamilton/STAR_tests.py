@@ -10,6 +10,7 @@ from typing import Literal, cast
 
 from pylabrobot.arms.standard import CartesianCoords
 from pylabrobot.liquid_handling import LiquidHandler
+from pylabrobot.liquid_handling.liquid_classes.hamilton import star as star_liquid_classes
 from pylabrobot.liquid_handling.standard import GripDirection, Mix, Pickup
 from pylabrobot.plate_reading import PlateReader
 from pylabrobot.plate_reading.chatterbox import PlateReaderChatterboxBackend
@@ -1119,7 +1120,7 @@ class TestSTARLiquidHandlerCommands(unittest.IsolatedAsyncioTestCase):
           "1210 1210 1210 1210 1210&po0100 0100 0100 0100 0100 0100&ip0000 0000 0000 0000 0000 0000&"
           "it0 0 0 0 0 0&fp0000 0000 0000 0000 0000 0000&zu0032 0032 0032 0032 0032 0032&zr06180 06180 "
           "06180 06180 06180 06180&th2450te2450dv00116 00116 00116 00116 00116 00116&ds1800 1800 1800 "
-          "1800 1800 1800&ss0050 0050 0050 0050 0050 0050&rv000 000 000 000 000 000&ta050 050 050 050 "
+          "1800 1800 1800&ss1000 1000 1000 1000 1000 1000&rv000 000 000 000 000 000&ta050 050 050 050 "
           "050 050&ba0300 0300 0300 0300 0300 0300&lm0 0 0 0 0 0&dj00zo000 000 000 000 000 000&ll1 1 1 "
           "1 1 1&lv1 1 1 1 1 1&de0010 0010 0010 0010 0010 0010&wt00 00 00 00 00 00&mv00000 00000 00000 "
           "00000 00000 00000&mc00 00 00 00 00 00&mp000 000 000 000 000 000&ms0010 0010 0010 0010 0010 "
@@ -1127,6 +1128,50 @@ class TestSTARLiquidHandlerCommands(unittest.IsolatedAsyncioTestCase):
         )
       ]
     )
+
+  async def test_dispense_cut_off_speed_comes_from_liquid_class(self):
+    """The dispense cut-off speed defaults to the liquid class's ``dispense_stop_flow_rate``.
+
+    Most stock Hamilton classes carry a value well away from the 5.0 uL/s firmware fallback,
+    so sourcing it from the class is what makes ``ss`` reflect the class the caller passed.
+    """
+    self.lh.update_head_state({0: self.tip_rack.get_tip("A1")})
+    assert self.plate.lid is not None
+    self.plate.lid.unassign()
+    hlc = copy.deepcopy(
+      star_liquid_classes.StandardVolumeFilter_Water_DispenseJet_Empty  # type: ignore[attr-defined]
+    )
+    hlc.dispense_stop_flow_rate = 12.3
+    with no_volume_tracking():
+      await self.lh.dispense(
+        self.plate["A1"],
+        vols=[100],
+        jet=[True],
+        blow_out=[True],
+        hamilton_liquid_classes=[hlc],
+      )
+    sent = self.STAR._write_and_read_command.call_args_list[-1].kwargs["cmd"]
+    self.assertIn("ss0123", sent)
+
+  async def test_dispense_cut_off_speed_explicit_overrides_liquid_class(self):
+    self.lh.update_head_state({0: self.tip_rack.get_tip("A1")})
+    assert self.plate.lid is not None
+    self.plate.lid.unassign()
+    hlc = copy.deepcopy(
+      star_liquid_classes.StandardVolumeFilter_Water_DispenseJet_Empty  # type: ignore[attr-defined]
+    )
+    hlc.dispense_stop_flow_rate = 12.3
+    with no_volume_tracking():
+      await self.lh.dispense(
+        self.plate["A1"],
+        vols=[100],
+        jet=[True],
+        blow_out=[True],
+        hamilton_liquid_classes=[hlc],
+        cut_off_speed=[4.5],
+      )
+    sent = self.STAR._write_and_read_command.call_args_list[-1].kwargs["cmd"]
+    self.assertIn("ss0045", sent)
 
   async def test_single_channel_dispense(self):
     self.lh.update_head_state({0: self.tip_rack.get_tip("A1")})
@@ -1137,7 +1182,7 @@ class TestSTARLiquidHandlerCommands(unittest.IsolatedAsyncioTestCase):
     self.STAR._write_and_read_command.assert_has_calls(
       [
         _any_write_and_read_command_call(
-          "C0DSid0001dm1 1&tm1 0&xp02983 00000&yp1457 0000&zx1866 1866&lp2000 2000&zl1866 1866&po0100 0100&ip0000 0000&it0 0&fp0000 0000&zu0032 0032&zr06180 06180&th2450te2450dv01072 01072&ds1800 1800&ss0050 0050&rv000 000&ta050 050&ba0300 0300&lm0 0&dj00zo000 000&ll1 1&lv1 1&de0010 0010&wt00 00&mv00000 00000&mc00 00&mp000 000&ms0010 0010&mh0000 0000&gi000 000&gj0gk0",
+          "C0DSid0001dm1 1&tm1 0&xp02983 00000&yp1457 0000&zx1866 1866&lp2000 2000&zl1866 1866&po0100 0100&ip0000 0000&it0 0&fp0000 0000&zu0032 0032&zr06180 06180&th2450te2450dv01072 01072&ds1800 1800&ss1000 1000&rv000 000&ta050 050&ba0300 0300&lm0 0&dj00zo000 000&ll1 1&lv1 1&de0010 0010&wt00 00&mv00000 00000&mc00 00&mp000 000&ms0010 0010&mh0000 0000&gi000 000&gj0gk0",
         )
       ]
     )
@@ -1161,7 +1206,7 @@ class TestSTARLiquidHandlerCommands(unittest.IsolatedAsyncioTestCase):
           "C0DSid0001dm1 1 1&tm1 1 0&xp02983 02983 00000&yp1457 1367 0000&zx1866 1866 1866&lp2000 2000 "
           "2000&zl1866 1866 1866&po0100 0100 0100&ip0000 0000 0000&it0 0 0&fp0000 0000 0000&zu0032 "
           "0032 0032&zr06180 06180 06180&th2450te2450dv01072 01072 01072&ds1800 1800 1800&"
-          "ss0050 0050 0050&rv000 000 000&ta050 050 050&ba0300 0300 0300&lm0 0 0&dj00zo000 000 000&"
+          "ss1000 1000 1000&rv000 000 000&ta050 050 050&ba0300 0300 0300&lm0 0 0&dj00zo000 000 000&"
           "ll1 1 1&lv1 1 1&de0010 0010 0010&wt00 00 00&mv00000 00000 00000&mc00 00 00&mp000 000 000&"
           "ms0010 0010 0010&mh0000 0000 0000&gi000 000 000&gj0gk0",
         )

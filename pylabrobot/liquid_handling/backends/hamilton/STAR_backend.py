@@ -3683,7 +3683,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       minimum_height: The minimum height at the end of the dispense.
       immersion_depth: The distance above or below to liquid level to start dispensing.
       surface_following_distance: The distance to follow the liquid surface.
-      cut_off_speed: Unknown.
+      cut_off_speed: The dispensing-drive cut-off speed, uL/s. This is the quantity a liquid
+        class calls ``dispense_stop_flow_rate``, and defaults to it; 5.0 uL/s without a class.
       stop_back_volume: Unknown.
       transport_air_volume: The volume of air to dispense before dispensing the liquid.
       lld_mode: The liquid level detection mode to use.
@@ -3814,7 +3815,12 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       op.flow_rate or (hlc.dispense_flow_rate if hlc is not None else 120.0)
       for op, hlc in zip(ops, hamilton_liquid_classes)
     ]
-    cut_off_speed = fill_in_defaults(cut_off_speed, [5.0] * n)
+    cut_off_speed = fill_in_defaults(
+      cut_off_speed,
+      default=[
+        hlc.dispense_stop_flow_rate if hlc is not None else 5.0 for hlc in hamilton_liquid_classes
+      ],
+    )
     stop_back_volume = fill_in_defaults(
       stop_back_volume,
       default=[
@@ -4436,7 +4442,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     mix_position_from_liquid_surface: float = 0,
     mix_surface_following_distance: float = 0,
     limit_curve_index: int = 0,
-    cut_off_speed: float = 5.0,
+    cut_off_speed: Optional[float] = None,
     stop_back_volume: float = 0,
     disable_volume_correction: bool = False,
     # Deprecated parameters, to be removed in future versions
@@ -4481,7 +4487,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       mix_position_from_liquid_surface: Mixing position from liquid surface, in mm.
       mix_surface_following_distance: Surface following distance during mixing, in mm.
       limit_curve_index: Limit curve index.
-      cut_off_speed: Unknown.
+      cut_off_speed: The dispensing-drive cut-off speed, uL/s. This is the quantity a liquid
+        class calls ``dispense_stop_flow_rate``, and defaults to it; 5.0 uL/s without a class.
       stop_back_volume: Unknown.
       disable_volume_correction: Whether to disable liquid class volume correction.
     """
@@ -4646,6 +4653,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     flow_rate = dispense.flow_rate or (hlc.dispense_flow_rate if hlc is not None else 120)
     swap_speed = swap_speed or (hlc.dispense_swap_speed if hlc is not None else 100)
     settling_time = settling_time or (hlc.dispense_settling_time if hlc is not None else 5)
+    if cut_off_speed is None:
+      cut_off_speed = hlc.dispense_stop_flow_rate if hlc is not None else 5.0
 
     try:
       return await self.dispense_core_96(
