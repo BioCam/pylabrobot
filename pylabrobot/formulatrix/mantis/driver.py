@@ -131,6 +131,7 @@ class MantisDriver(Driver):
   def __init__(
     self,
     serial_number: Optional[str] = None,
+    generation: str = "v3.3",
     chip_type_map: Optional[Dict[int, str]] = None,
     robotarm_config_path: Optional[str] = None,
     homing_config: Optional[MantisHomingConfig] = None,
@@ -139,6 +140,13 @@ class MantisDriver(Driver):
   ) -> None:
     super().__init__()
     self._serial_number = serial_number
+    # Instrument generation. The arm bring-up differs by generation: "v3.3" seeks the
+    # arm hard stops (StandardHoming); "v4" has no arm hard stop and references the arm
+    # from its absolute encoder instead. Declared, not inferred (the controller firmware
+    # number is not the generation). See ``_home_all_axes``.
+    if generation not in ("v3.3", "v4"):
+      raise ValueError(f"generation must be 'v3.3' or 'v4', got {generation!r}")
+    self._generation = generation
     self._chip_type_map = chip_type_map if chip_type_map is not None else DEFAULT_CHIP_TYPE_MAP
 
     # Vendor install folder (the one containing ``Data/``). Chip-changer dock paths
@@ -848,6 +856,30 @@ class MantisDriver(Driver):
       await self._wait_for_motor_idle(1, raise_on_error=True, error_mask=crit)
 
   async def _home_all_axes(self) -> None:
+    """Bring the arm to its home/ready frame, dispatched by instrument generation.
+
+    "v3.3" seeks the arm hard stops (StandardHoming, :meth:`_home_all_axes_v33`); "v4"
+    has no arm hard stop and references from the absolute encoder instead
+    (:meth:`_home_all_axes_v4`). Both leave the arm homed and parked at the ready pose."""
+    if self._generation == "v4":
+      await self._home_all_axes_v4()
+    else:
+      await self._home_all_axes_v33()
+
+  async def _home_all_axes_v4(self) -> None:
+    """v4 arm bring-up. The v4 arm has no hard stop, so instead of seeking one it reads
+    the arm's true absolute pose from the absolute encoder (FMLX addr 11 / op30), declares
+    it, then moves to the ready pose — the vendor's declare-then-move path.
+
+    Not implemented here yet: this is the v4 branch of the generation seam, the slot the
+    absolute-encoder reference and displaced-arm recovery land in."""
+    raise NotImplementedError(
+      "v4 arm bring-up (absolute-encoder reference; the v4 arm has no hard stop) is not "
+      "implemented yet — construct the driver with generation='v3.3' for the hard-stop "
+      "homing path."
+    )
+
+  async def _home_all_axes_v33(self) -> None:
     """Phases 3-8: position-robust homing (vendor StandardHoming). Pre-home seats
     both arm motors against their hard stops and nudges them one EnforceStep off
     (computed from the live position, so it works from any start pose); home Z,

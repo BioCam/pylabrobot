@@ -4,7 +4,9 @@ These tests exercise the kinematics, map generator, FmlxPacket serialisation,
 and constants — all without requiring hardware.
 """
 
+import os
 import struct
+import tempfile
 import unittest
 
 from pylabrobot.formulatrix.mantis.fmlx_driver import FmlxPacket, decode_response
@@ -298,6 +300,46 @@ class TestStageTransform(unittest.TestCase):
 
     self.assertEqual(well_name_to_rc("A1"), (0, 0))
     self.assertEqual(well_name_to_rc("H12"), (7, 11))
+
+
+class TestGenerationSeam(unittest.IsolatedAsyncioTestCase):
+  """The arm bring-up dispatches by instrument generation (the v3.3/v4 seam)."""
+
+  def _driver(self, generation: str = "v3.3"):
+    from pylabrobot.formulatrix.mantis.driver import MantisDriver
+
+    # A chip-state path that does not exist, so construction reads nothing real.
+    return MantisDriver(
+      generation=generation,
+      chip_state_path=os.path.join(tempfile.gettempdir(), "mantis_test_absent_state.json"),
+    )
+
+  def test_default_generation_is_v33(self):
+    self.assertEqual(self._driver()._generation, "v3.3")
+
+  def test_invalid_generation_raises(self):
+    with self.assertRaises(ValueError):
+      self._driver(generation="v5")
+
+  async def test_v4_bring_up_is_not_implemented_yet(self):
+    with self.assertRaises(NotImplementedError):
+      await self._driver(generation="v4")._home_all_axes()
+
+  async def test_dispatch_selects_the_generation_branch(self):
+    for generation, expected in (("v3.3", "v33"), ("v4", "v4")):
+      driver = self._driver(generation=generation)
+      called: list[str] = []
+
+      async def _v33():
+        called.append("v33")
+
+      async def _v4():
+        called.append("v4")
+
+      driver._home_all_axes_v33 = _v33  # type: ignore[method-assign]
+      driver._home_all_axes_v4 = _v4  # type: ignore[method-assign]
+      await driver._home_all_axes()
+      self.assertEqual(called, [expected])
 
 
 if __name__ == "__main__":
