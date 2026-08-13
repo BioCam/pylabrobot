@@ -162,6 +162,9 @@ class PreciseFlex:
     super().__init__()
     self.io = Socket(human_readable_device_name="Precise Flex Arm", host=host, port=port)
     self.timeout = timeout
+    # Serializes each request->reply exchange over the single shared controller socket; the rationale
+    # (and why it is kept though uncontended today) is in _locked_exchange.
+    self._io_lock = asyncio.Lock()
     self.profile_index: int = 1
     self.location_index: int = 1
     self._rail_position_index = 1
@@ -188,30 +191,110 @@ class PreciseFlex:
 
   # -- communication ---------------------------------------------------------
 
-  async def send_command(self, command: str) -> str:
-    await self.io.write(command.encode("utf-8") + b"\n")
-    reply = await self.io.readline()
-    return self._parse_reply_ensure_successful(reply)
+  async def _locked_exchange(self, command: str) -> str:
+    """Write one command and read its single reply line as one atomic, lock-held exchange.
 
-  def _parse_reply_ensure_successful(self, reply: bytes) -> str:
-    """Parse reply from Precise Flex.
+    Why the lock: the controller exposes a single socket (port 10100 refuses a second connection), so
+    every caller shares it - arm motion and the controller-relayed vision commands (``VToolProperty``,
+    ``Vprocess``, ``StereoLocate``) alike. A request and its reply are correlated only by order on that
+    socket, so if two coroutines' write/read pairs interleave, one reads the other's reply line. This
+    lock makes each write-and-its-reply atomic, so they cannot interleave.
 
-    Expected format: b'replycode data message\r\n'
-    - replycode is an integer at the beginning
-    - data is rest of the line (excluding CRLF)
+    No caller is concurrent today (a single async flow drives the arm), so the lock is currently
+    uncontended - it is a forward guard, kept because the failure it prevents is silent
+    reply-misattribution the moment anyone runs e.g. ``asyncio.gather(arm_op, vision_relay_op)``, and an
+    uncontended ``asyncio.Lock`` is near-free. It is held per exchange, not across a whole move-wait, so
+    commands issued while a move polls for end-of-motion still slot in between polls (the move-wait's
+    emergency halt deliberately bypasses this lock - see ``_wait_for_eom``).
+
+    This is the single choke point both reply grammars share (``send_command`` and the bare
+    ``VToolProperty`` read). The trailing newline is added here; the reply line is decoded and stripped.
     """
-    text = reply.decode().strip()
-    if not text:
+    async with self._io_lock:
+      await self.io.write(command.encode("utf-8") + b"\n")
+      return (await self.io.readline()).decode("utf-8").strip()
+
+  async def send_command(self, command: str) -> str:
+    """Send a command and return the accepted ``<code> <data>`` payload.
+
+    Writes the command and reads one reply line (as one locked exchange), then applies the standard
+    acceptance gate (``_ensure_successful``): a non-zero reply code raises, otherwise the data payload
+    is returned. A reply in a different grammar (e.g. PreciseVision's bare ``VToolProperty`` value)
+    goes through the same ``_locked_exchange`` and is parsed by the caller instead.
+    """
+    return self._ensure_successful(await self._locked_exchange(command))
+
+  def _ensure_successful(self, reply: str) -> str:
+    """Acceptance gate for the standard ``<code> <data>`` reply: raise on a non-zero code, else return the data.
+
+    Verifies the controller accepted the command - the leading integer reply code is ``0`` - and
+    strips it, returning the rest of the line as the data payload. This is only the success check;
+    interpreting the payload is a separate concern left to the caller.
+
+    Args:
+      reply: one decoded, stripped reply line.
+
+    Returns:
+      The data payload (the line with its leading reply code removed).
+
+    Raises:
+      PreciseFlexError: on an empty reply or a non-zero reply code.
+    """
+    if not reply:
       raise PreciseFlexError(-1, "Empty reply from device.")
-    parts = text.split(" ", 1)
-    if len(parts) == 1:
-      replycode = int(parts[0])
-      data = ""
-    else:
-      replycode, data = int(parts[0]), parts[1]
+    code, _, data = reply.partition(" ")
+    replycode = int(code)
     if replycode != 0:
       raise PreciseFlexError(replycode, data)
     return data
+
+  # -- vision tool properties (controller relay) -----------------------------
+
+  async def request_vision_tool_property(self, tool: str, property_name: str) -> str:
+    """Read a PreciseVision tool property over the controller (``VToolProperty <tool> <prop>``).
+
+    Named ``vision_`` because this is the general controller where ``tool`` already means the robot's
+    tool frame. The controller relays the read to the vision engine and replies with the BARE value
+    (no ``<code> <data>`` prefix), so it is read raw; a negative reply is a vision error code and
+    raised. The (tool, property) split is needed because VToolProperty's wire form is two tokens;
+    direct to the engine the same read is ``PreciseVisionDriver.request_property("<tool>.<property>")``
+    (dotted, and ``None`` on error rather than raising).
+
+    Args:
+      tool: the vision tool name (e.g. ``led``, ``acq1``, or ``System`` for server properties).
+      property_name: the tool property name (e.g. ``Bank``, ``Brightness``, ``CameraCount``).
+
+    Returns:
+      The bare property value.
+
+    Raises:
+      PreciseFlexError: on a negative reply (a vision error code).
+    """
+    reply = await self._locked_exchange(f"VToolProperty {tool} {property_name}")
+    if reply.startswith("-") and reply[1:].isdigit():
+      raise PreciseFlexError(int(reply), "")
+    return reply
+
+  async def _set_vision_tool_property(self, tool: str, property_name: str, value: str) -> str:
+    """Write a PreciseVision tool property over the controller (``VToolProperty <tool> <prop> <value>``).
+
+    Private: a write changes device state, so it is reached through the vision backend's vetted
+    orchestrations, not called directly (the ``request_`` read sibling is public). Named ``vision_``
+    because this is the general controller where ``tool`` already means the robot's tool frame. The
+    (tool, property) split is needed because VToolProperty's wire form is two tokens; direct to the
+    engine the same write is ``PreciseVisionDriver._set_property("<tool>.<property>", value)``. The
+    write only stores the value; run the owning tool/process to apply it. Goes through the normal
+    ``<code> <data>`` reply parser.
+
+    Args:
+      tool: the vision tool name (e.g. ``led``, ``acq1``).
+      property_name: the tool property name (e.g. ``Bank``, ``acquiremode``).
+      value: the value to write; must not contain spaces.
+
+    Returns:
+      The write reply.
+    """
+    return await self.send_command(f"VToolProperty {tool} {property_name} {value}")
 
   # -- lifecycle -------------------------------------------------------------
 
@@ -448,7 +531,11 @@ class PreciseFlex:
 
     # On interrupt, `halt` stops the move on the now-free connection and we resync; the connection is
     # kept open. Hardware-verified: a clean halt keeps power, attach, and the link (only a collision
-    # trips -3122 and drops power, which needs explicit recovery).
+    # trips -3122 and drops power, which needs explicit recovery). The halt is deliberately NOT taken
+    # under `_io_lock`: the interrupted poll releases the lock as it unwinds, so today (single task)
+    # there is no contention, and an emergency halt must not wait on another caller's in-flight read.
+    # When concurrent socket users are introduced, the halt should pre-empt them (cancel peers) or
+    # take the lock with a short timeout rather than block on a slow transaction.
     async with halt_on_interrupt(lambda: halt_and_resync(self.io, b"halt")):
       previous = _floats(await self.send_command("wherej"))
       deadline = time.monotonic() + timeout
