@@ -5,7 +5,17 @@ import dataclasses
 import logging
 import time
 import warnings
-from typing import Callable, ClassVar, Dict, List, Literal, NamedTuple, Optional, Sequence
+from typing import (
+  TYPE_CHECKING,
+  Callable,
+  ClassVar,
+  Dict,
+  List,
+  Literal,
+  NamedTuple,
+  Optional,
+  Sequence,
+)
 
 from pylabrobot.brooks.precise_flex import kinematics
 from pylabrobot.brooks.precise_flex.config import Axis, PreciseFlexConfiguration
@@ -25,6 +35,9 @@ from .errors import OutOfRangeOfMotionError, PreciseFlexError
 from .interrupt import halt_and_resync, halt_on_interrupt
 from .kinematics import ElbowOrientation, PreciseFlexCartesianPose, Wrist
 from .tcs_modules import missing_required_modules
+
+if TYPE_CHECKING:
+  from .vision_backend import PreciseFlexVisionBackend
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +141,7 @@ class PreciseFlex:
     read_kinematics_from_device: bool = True,
     recover_out_of_range: bool = True,
     parking_position: Optional[JointPose] = None,
+    vision_host: Optional[str] = None,
   ) -> None:
     """
     Args:
@@ -158,6 +172,12 @@ class PreciseFlex:
         ``park()`` moves to. Leave None (the default) and setup fills the generic default RIGHT pose
         (planar fold, Z column at 3/4 of the discovered travel); reassign it any time to park
         elsewhere. While unset (no configuration), ``park()`` falls back to ``movetosafe``.
+      vision_host: address of the PreciseVision engine, a separate machine from the controller (its
+        own box with its own IP). Set it to connect to the engine, which powers both image fetch and
+        engine-side discovery/introspection (what tool types, tools, processes, and projects exist).
+        None leaves the engine unconnected, disabling those; the controller-side execution path
+        (running processes/tools, setting properties, lighting, barcodes, stereo locate) is
+        unaffected. Only consulted when setup discovers an IntelliGuide vision module.
     """
     super().__init__()
     self.io = Socket(human_readable_device_name="Precise Flex Arm", host=host, port=port)
@@ -165,6 +185,10 @@ class PreciseFlex:
     # Serializes each request->reply exchange over the single shared controller socket; the rationale
     # (and why it is kept though uncontended today) is in _locked_exchange.
     self._io_lock = asyncio.Lock()
+    self._vision_host = vision_host
+    # Nullable vision capability, built at setup when a camera gripper is present; its existence is
+    # the capability gate.
+    self.vision: Optional["PreciseFlexVisionBackend"] = None
     self.profile_index: int = 1
     self.location_index: int = 1
     self._rail_position_index = 1
@@ -298,14 +322,18 @@ class PreciseFlex:
 
   # -- lifecycle -------------------------------------------------------------
 
-  async def setup(self, skip_home: bool = False):
+  async def setup(self, skip_home: bool = False, skip_vision: bool = False):
     """Initialize the PreciseFlex driver.
 
     Opens the socket connection, sets response mode to PC, powers on the
-    robot, attaches it, and (optionally) homes it.
+    robot, attaches it, and (optionally) homes it. Configuration discovery then reports the loaded
+    TCS modules; when an IntelliGuide vision module is among them the vision capability is built and
+    exposed as ``self.vision``.
 
     Args:
       skip_home: If True, skip the homing step during setup.
+      skip_vision: If True, leave ``self.vision`` unset even when a vision module is detected.
+        Mirrors STAR's ``skip_*`` setup flags.
     """
     await self.io.setup()
     await self.set_response_mode("pc")
@@ -333,12 +361,48 @@ class PreciseFlex:
     self._log_configuration_summary(self._configuration)
     self._assess_configuration(self._configuration)
     await self._handle_out_of_range_axes()
+    if not skip_vision and self._configuration.has_vision_module:
+      await self._setup_vision(self._vision_host)
+
+  async def _setup_vision(self, vision_host: Optional[str]) -> None:
+    """Build the vision capability and connect its PreciseVision engine; best-effort, never raises.
+
+    Called by ``setup`` once discovery has reported a camera gripper is installed - this class owns
+    the connection, symmetric with how ``stop`` closes it. The controller side of vision always works;
+    a set, reachable ``vision_host`` additionally opens the engine for image fetch and discovery. A
+    missing or unreachable host leaves ``self.vision`` built but engine-less.
+
+    Args:
+      vision_host: address of the PreciseVision engine, or ``None`` for controller-only vision.
+    """
+    from .vision_backend import PreciseFlexVisionBackend
+    from .vision_driver import PreciseVisionDriver
+
+    vision_driver: Optional[PreciseVisionDriver] = None
+    if vision_host:
+      vision_driver = PreciseVisionDriver(vision_host)
+      try:
+        await vision_driver.setup()
+      except Exception as exc:  # noqa: BLE001 - a missing/unreachable engine just disables image fetch
+        logger.warning(
+          "[PreciseFlex %s] vision engine at %s unreachable; direct image acquisition disabled: %s",
+          self.io._host,
+          vision_host,
+          exc,
+        )
+        vision_driver = None
+    self.vision = PreciseFlexVisionBackend(
+      self, vision_host=vision_host, vision_driver=vision_driver
+    )
+    await self.vision.setup()  # discovers, caches, and logs the capability summary (best-effort)
 
   async def stop(self):
     """Stop the PreciseFlex driver."""
     await self.detach()
     await self.power_off_robot()
     await self._exit()
+    if self.vision is not None and self.vision.vision_driver is not None:
+      await self.vision.vision_driver.stop()  # close the held PreciseVision engine connection
     await self.io.stop()
     logger.info("[PreciseFlex %s] disconnected: port=%s", self.io._host, self.io._port)
 

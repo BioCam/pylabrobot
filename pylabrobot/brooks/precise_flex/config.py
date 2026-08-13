@@ -85,6 +85,15 @@ class PreciseFlexConfiguration:
     return self.soft_limits[Axis.GRIPPER]
 
   @property
+  def has_vision_module(self) -> bool:
+    """Whether the IntelliGuide vision TCS module is loaded.
+
+    It supplies ``VToolProperty``/``StereoParam``/``StereoLocate``; without it those return
+    ``-2805 *Unknown command*``. Detected from the module list reported by ``version``.
+    """
+    return any("intelliguide" in m.lower() for m in self.modules)
+
+  @property
   def z_range(self) -> tuple:
     return self.soft_limits[Axis.BASE]
 
