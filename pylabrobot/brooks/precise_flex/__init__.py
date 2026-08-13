@@ -30,7 +30,12 @@ from pylabrobot.brooks.precise_flex.config import (
   Axis,
   PreciseFlexConfiguration,
 )
-from pylabrobot.brooks.precise_flex.errors import OutOfRangeOfMotionError, PreciseFlexError
+from pylabrobot.brooks.precise_flex.errors import (
+  OutOfRangeOfMotionError,
+  PreciseFlexCollisionError,
+  PreciseFlexError,
+  PreciseFlexVisionError,
+)
 from pylabrobot.brooks.precise_flex.kinematics import (
   ElbowOrientation,
   PreciseFlexCartesianPose,
@@ -49,8 +54,10 @@ __all__ = [
   "OutOfRangeOfMotionError",
   "PreciseFlex",
   "PreciseFlexCartesianPose",
+  "PreciseFlexCollisionError",
   "PreciseFlexConfiguration",
   "PreciseFlexError",
+  "PreciseFlexVisionError",
   "WorkEnvelope",
   "Wrist",
 ]
