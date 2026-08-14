@@ -20,13 +20,14 @@ import asyncio
 import logging
 import os
 import subprocess
+import sys
 import threading
 import time
 from typing import Optional
 
 from pylabrobot.io.capture import capturer, get_capture_or_validation_active
 from pylabrobot.io.io import IOBase
-from pylabrobot.io.usb import USE_USB, USB, USBCommand
+from pylabrobot.io.usb import USB, USE_USB, USBCommand
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
 
 logger = logging.getLogger(__name__)
@@ -44,12 +45,12 @@ ID_PRODUCT = 0x8000
 
 def _com_server_registered() -> bool:
   """Whether Hamilton's HxUsbComm COM server is registered on this machine."""
-  if os.name != "nt":
+  # Guarded on sys.platform rather than os.name: type checkers treat the first as a platform
+  # check and skip the Windows-only block elsewhere, which is what makes `winreg` legal here.
+  if sys.platform != "win32":
     return False
-  try:
-    import winreg
-  except ImportError:  # pragma: no cover - Windows only
-    return False
+  import winreg
+
   for view in (winreg.KEY_WOW64_32KEY, winreg.KEY_WOW64_64KEY):
     try:
       with winreg.OpenKey(
@@ -223,7 +224,7 @@ class HamiltonComIO(IOBase):
     proc.stdin.write(line + "\n")
     proc.stdin.flush()
 
-    answer = proc.stdout.readline()
+    answer: str = proc.stdout.readline()
     if answer == "":
       raise HamiltonComBridgeError("bridge process closed its output")
     return answer.strip()
