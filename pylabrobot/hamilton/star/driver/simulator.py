@@ -20,6 +20,7 @@ from pylabrobot.hamilton.star.driver.confirmed_firmware_versions import (
   ConfirmedFirmware,
 )
 from pylabrobot.hamilton.star.driver.errors import check_fw_string_error
+from pylabrobot.hamilton.star.driver.features.pipettes import PipettesConfiguration
 from pylabrobot.hamilton.star.driver.features.x_arm import XArmConfiguration
 from pylabrobot.hamilton.star.driver.master import STARDriver
 from pylabrobot.io.io import IOBase
@@ -61,6 +62,13 @@ class _ArmGeometry(NamedTuple):
 # never be mistaken for a particular machine.
 SIMULATED_SERIAL_NUMBER = "SIM0"
 SIMULATED_INSTALLATION_DATE = "2020-01-01"
+
+# How a channel counts Y, used to report a pipette's width in the units it answers in.
+PIPETTE_Y_DRIVE_MM_PER_INCREMENT = PipettesConfiguration().y_drive_mm_per_increment
+
+# What a channel reports for the hardware fitted to it, field by field: an ML_STAR channel on an
+# ML_STAR head, a CoRe II stop disc, and a Renesas pressure ADC.
+SIMULATED_CHANNEL_HARDWARE = ("0", "0", "1", "0")
 
 # Z position a channel reports when parked at its safety height.
 CHANNEL_Z_SAFETY = 285.0
@@ -132,7 +140,7 @@ class STARSimulationDriver(STARDriver):
     tips_mounted: Optional[List[bool]] = None,
     firmware: Optional[ConfirmedFirmware] = None,
     serial_number: str = SIMULATED_SERIAL_NUMBER,
-    channels_minimum_y_spacing: Optional[List[float]] = None,
+    pipette_widths: Optional[List[float]] = None,
     initialized: bool = False,
   ):
     """
@@ -140,9 +148,11 @@ class STARSimulationDriver(STARDriver):
       configuration: the instrument to pretend to be. Defaults to `DEFAULT_STAR_CONFIGURATION`.
       tips_mounted: one entry per channel, `True` where a tip sits on the channel. Defaults to no
         tips on every channel.
-      firmware: the module firmware stack to report. Defaults to `SIMULATED_FIRMWARE`.
+      firmware: the module firmware stack the simulated machine reports. Defaults to
+        `SIMULATED_FIRMWARE`. Kept as `simulated_firmware`, beside
+        `simulated_configuration`; `firmware` is what the driver read back.
       serial_number: what the master reports for an installation-data request.
-      channels_minimum_y_spacing: per-channel minimum Y spacing in mm. Defaults to the
+      pipette_widths: how wide each pipette is, in mm. Defaults to the
         configuration's PIP raster pitch for every channel.
       initialized: whether the machine reports itself already initialized. A machine that has
         just been switched on has not been.
@@ -153,7 +163,7 @@ class STARSimulationDriver(STARDriver):
     super().__init__(io=_UnusedTransport())
 
     self.simulated_configuration = configuration or DEFAULT_STAR_CONFIGURATION
-    self.firmware = firmware or SIMULATED_FIRMWARE
+    self.simulated_firmware = firmware or SIMULATED_FIRMWARE
     self.serial_number = serial_number
 
     channels = self.simulated_configuration.num_pip_channels
@@ -164,16 +174,12 @@ class STARSimulationDriver(STARDriver):
       raise ValueError(f"tips_mounted has {len(tips_mounted)} entries, expected {channels}")
     self.tips_mounted = list(tips_mounted)
 
-    if channels_minimum_y_spacing is None:
-      channels_minimum_y_spacing = [
-        self.simulated_configuration.min_raster_pitch_pip_channels
-      ] * channels
-    if len(channels_minimum_y_spacing) != channels:
-      raise ValueError(
-        f"channels_minimum_y_spacing has {len(channels_minimum_y_spacing)} entries, "
-        f"expected {channels}"
-      )
-    self.channels_minimum_y_spacing = list(channels_minimum_y_spacing)
+    if pipette_widths is None:
+      pipette_widths = [self.simulated_configuration.min_raster_pitch_pip_channels] * channels
+    if len(pipette_widths) != channels:
+      raise ValueError(f"pipette_widths has {len(pipette_widths)} entries, expected {channels}")
+    self.pipette_widths = list(pipette_widths)
+    self.channel_hardware = [SIMULATED_CHANNEL_HARDWARE] * channels
 
     # Machine state the simulator moves as commands arrive. Nothing reads these yet - the driver
     # cannot issue the commands that would - but they are the state a real STAR carries, and each
@@ -200,11 +206,13 @@ class STARSimulationDriver(STARDriver):
 
   # -- lifecycle -------------------------------------------------------------
 
-  async def setup(self):
-    """Discover the simulated instrument. Opens no link and starts no reader."""
-    await self.discover()
+  def _describe_link(self) -> str:
+    return "simulation (no link)"
 
-  async def stop(self):
+  async def _open(self):
+    """There is no link to open and no replies to read: they are answered as they are asked."""
+
+  async def _close(self):
     pass
 
   # -- the seam --------------------------------------------------------------
@@ -270,10 +278,12 @@ class STARSimulationDriver(STARDriver):
       its firmware does not carry.
     """
     module, mnemonic = command[:2], command[2:4]
+    # Every pipetting channel runs the same firmware, so they share one handler table.
+    table = "Px" if module.startswith("P") and module[1] in "123456789ABCDEFG" else module
     id_ = parse_fw_string(command, "id####").get("id")
     prefix = f"{module}{mnemonic}id{id_:04}" if id_ is not None else f"{module}{mnemonic}"
 
-    handler = self._HANDLERS.get(module, {}).get(mnemonic)
+    handler = self._HANDLERS.get(table, {}).get(mnemonic)
     if handler is None:
       if module == "C0":
         return f"{prefix}er01/30"  # master: command syntax error / unknown command
@@ -292,7 +302,7 @@ class STARSimulationDriver(STARDriver):
   # -- answers ---------------------------------------------------------------
 
   def _firmware_version(self, command: str) -> str:
-    return f"rf{self.firmware.master_version}"
+    return f"rf{self.simulated_firmware.master_version}"
 
   def _machine_configuration(self, command: str) -> str:
     c = self.simulated_configuration
@@ -446,10 +456,35 @@ class STARSimulationDriver(STARDriver):
     return ""
 
   def _x_arm_firmware_version(self, command: str) -> str:
-    version = self.firmware.x_drives_version
+    version = self.simulated_firmware.x_drives_version
     if version is None:
       raise ValueError("the simulated firmware stack records no X-drive version")
     return f"rf{version}"
+
+  def _channel_firmware_version(self, command: str) -> str:
+    return f"rf{self.simulated_firmware.channels_version}"
+
+  def _y_drive_parameters(self, command: str) -> str:
+    """The channel's Y-drive parameters: init position offset, the distance between the channels
+    in the increments the drive counts in, and the drive's turn direction, which alternates
+    between odd and even channels."""
+    channel = self._channel_index(command)
+    distance = round(self.pipette_widths[channel] / PIPETTE_Y_DRIVE_MM_PER_INCREMENT)
+    return f"yc000 {distance:03} {channel % 2}"
+
+  def _channel_hardware(self, command: str) -> str:
+    return "vw" + " ".join(self.channel_hardware[self._channel_index(command)])
+
+  def _initialize_channels(self, command: str) -> str:
+    """Throw off whatever is mounted and leave the channels at Z safety."""
+    self.tips_mounted = [False] * len(self.tips_mounted)
+    self.channel_z_positions = [CHANNEL_Z_SAFETY] * len(self.channel_z_positions)
+    return ""
+
+  @staticmethod
+  def _channel_index(command: str) -> int:
+    """Which channel a `Px` command addresses, 0-indexed from the back."""
+    return "123456789ABCDEFG".index(command[1])
 
   def _move_x_arm(self, command: str) -> str:
     """Move the arm and acknowledge. The move is instant; there is nothing to be slow about."""
@@ -472,6 +507,12 @@ class STARSimulationDriver(STARDriver):
       "QW": _initialization_status,
       "VI": _pre_initialize,
       "ZA": _move_all_channels_to_z_safety,
+      "DI": _initialize_channels,
+    },
+    "Px": {
+      "RF": _channel_firmware_version,
+      "VY": _y_drive_parameters,
+      "VW": _channel_hardware,
     },
     "X0": {
       "RF": _x_arm_firmware_version,

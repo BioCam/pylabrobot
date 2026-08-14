@@ -43,6 +43,8 @@ class XArmConfiguration:
   wrap_size: Optional[float] = None
   """Arm wrap size in mm, from the working-envelope query. Zero means the arm is not installed,
   so a resolved arm always has a non-zero wrap."""
+  firmware_version: Optional[str] = None
+  """The X-drive board's firmware version, as reported."""
 
   @property
   def model(self) -> str:
@@ -95,16 +97,21 @@ class XArm:
       raise ValueError(f"no {self.side} X-arm is installed")
     return arm
 
+  async def discover(self):
+    """Read what this arm is. Read-only: nothing moves."""
+    version, _ = await self.request_firmware_version()
+    self.configuration.firmware_version = version
+
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
     """Request the X-drive board's firmware version and build date.
 
     Both arms run off the same board, so this reports the same for either side.
 
     Returns:
-      The version string and its build date, e.g. `("1.4S", date(2012, 4, 25))`.
+      The version string and its build date, e.g. `("1.4S 2012-04-25", date(2012, 4, 25))`.
     """
     resp = await self._driver.send_command(module="X0", command="RF")
-    return resp.split("rf")[-1].split(" ")[0], parse_firmware_version_date(resp)
+    return resp.split("rf")[-1], parse_firmware_version_date(resp)
 
   async def move_x(
     self,

@@ -4,12 +4,19 @@
 - orchestrating higher level tasks.
 """
 
+import asyncio
+import datetime
 import logging
 from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
-from pylabrobot.hamilton.protocol.text.framing import assemble_command, parse_fw_string
+from pylabrobot.hamilton.protocol.text.framing import (
+  assemble_command,
+  parse_firmware_version_date,
+  parse_fw_string,
+)
 from pylabrobot.hamilton.protocol.text.router import ReplyRouter
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
+from pylabrobot.hamilton.star.driver.confirmed_firmware_versions import ConfirmedFirmware
 from pylabrobot.hamilton.star.driver.errors import (
   STAR_MODULE_ID_LENGTH,
   check_fw_string_error,
@@ -23,6 +30,12 @@ logger = logging.getLogger(__name__)
 
 ID_VENDOR = 0x08AF
 ID_PRODUCT = 0x8000
+
+
+def _range(values: Optional[Tuple[float, float]]) -> str:
+  """A `(low, high)` range in mm, or a note that it was not resolved."""
+  return "unresolved" if values is None else f"{values[0]} to {values[1]} mm"
+
 
 # The instrument initialization procedure homes every drive, which takes minutes.
 PRE_INITIALIZE_READ_TIMEOUT = 300
@@ -79,9 +92,17 @@ class STARDriver:
 
     self._num_channels: Optional[int] = None
 
+    # Whether the link is open, and whether a full setup has run behind it. Commands gate on the
+    # link: they flow during setup, long before setup is done.
+    self._connected = False
+    self._setup_done = False
+
     self.left_side_panel_installed = left_side_panel_installed
 
     self.configuration: Optional[DeviceConfiguration] = None
+
+    # What each module reported at discovery, as one stack. `is_confirmed` takes exactly this.
+    self.firmware: Optional[ConfirmedFirmware] = None
 
     # Subsystems. Each reads what it needs off `configuration`, so they are usable once setup has
     # run and raise a clear error before that. A STAR always has a left arm; a right arm is an
@@ -93,10 +114,61 @@ class STARDriver:
   # -- connection ------------------------------------------------------------
 
   async def setup(self):
-    """Open the connection and discover what machine is on the other end."""
+    """Connect to the machine, find out what it is, and bring it up.
+
+    This moves the instrument: everything that can be initialized is. `discover` on its own is
+    the read-only half, for connecting and inspecting without anything moving.
+
+    Safe to call again: discovery re-reads the machine and initialization is a no-op on a machine
+    that is already up. A setup that fails part way closes the link rather than leaving a claimed
+    device and a reader behind.
+    """
+    logger.debug("Setting up STAR on %s ...", self._describe_link())
+    await self._open()
+    self._connected = True
+
+    try:
+      # 1. What is on the other end, and what does it carry?
+      logger.debug("[PHASE 1] Discovery")
+      await self.discover()
+
+      # 2. Bring the instrument to a known state.
+      logger.debug("[PHASE 2] Instrument initialization")
+      already_initialized = await self.initialize()
+
+      # 3. Each capability brings itself up. They sit on different modules, so they run together;
+      #    the autoload, iSWAP and 96-head join this gather as they land. The channels only need
+      #    it when the instrument procedure did not just run, or when something is still mounted.
+      logger.debug("[PHASE 3] Capability bring-up")
+      tips = await self.request_tip_presence()
+      bringing_up = []
+      if not already_initialized or any(tips):
+        logger.debug(
+          "channels: %d of %d carrying tips, instrument %s - initializing",
+          sum(tips),
+          len(tips),
+          "was already up" if already_initialized else "has just been homed",
+        )
+        bringing_up.append(self.pipettes.initialize())
+      else:
+        logger.debug("channels: already up and nothing mounted - skipped")
+      await asyncio.gather(*bringing_up)
+    except BaseException:
+      await self.stop()
+      raise
+
+    self._setup_done = True
+    logger.info("%s", self.format_setup_summary())
+
+  async def _open(self):
+    """Open the link and start reading replies."""
     await self.io.setup()
     self._replies.start()
-    await self.discover()
+
+  async def _close(self):
+    """Stop reading replies and close the link."""
+    self._replies.stop()
+    await self.io.stop()
 
   async def discover(self):
     """Read what machine is on the other end, and build the subsystems it turns out to have.
@@ -109,27 +181,126 @@ class STARDriver:
     if self.configuration.right_arm is not None:
       self.right_x_arm = XArm(self, side="right")
 
-  async def initialize(self, force: bool = False):
-    """Bring the machine to a known state, ready to be driven.
+    # Each capability reads its own modules, and they are different modules, so they read at
+    # once. Both arms run off the same X-drive board, so only one of them asks it.
+    await asyncio.gather(self.pipettes.discover(), self.left_x_arm.discover())
+    if self.right_x_arm is not None:
+      self.right_x_arm.configuration.firmware_version = (
+        self.left_x_arm.configuration.firmware_version
+      )
 
-    This moves the instrument. An uninitialized machine runs its initialization procedure, which
-    homes every drive and leaves the channels at Z safety. A machine that is already initialized
-    is left where it is, apart from raising the channels to Z safety, which the procedure would
-    otherwise have guaranteed - nothing may move laterally while a channel is low.
+    master_version, _ = await self.request_firmware_version()
+    channels = self.pipettes.configuration.channels
+    self.firmware = ConfirmedFirmware(
+      master_version=master_version,
+      channels_version=channels[0].firmware_version or "unknown",
+      x_drives_version=self.left_x_arm.configuration.firmware_version,
+    )
+
+  async def initialize(self, force: bool = False) -> bool:
+    """Bring the instrument itself to a known state.
+
+    This moves it. An uninitialized machine runs its initialization procedure, which homes every
+    drive and leaves the channels at Z safety. A machine that is already initialized is left where
+    it is, apart from raising the channels to Z safety, which the procedure would otherwise have
+    guaranteed - nothing may move laterally while a channel is low.
+
+    This is the instrument-level step only. `setup` is what brings up the capabilities behind it.
 
     Args:
       force: run the initialization procedure even if the machine reports itself initialized.
-    """
-    if force or not await self.request_initialization_status():
-      await self.pre_initialize()
-      return
 
-    await self.pipettes.move_all_to_z_safety()
-    if self.configuration is not None and self.configuration.ka_head96_installed:
-      logger.warning(
-        "the 96-head was not raised: this driver cannot move it yet. Raise it before any "
-        "lateral move, or call initialize(force=True) to run the full procedure."
+    Returns:
+      Whether the machine reported itself already initialized before this ran.
+    """
+    already_initialized = await self.request_initialization_status()
+
+    if force or not already_initialized:
+      logger.debug(
+        "machine reports %s - running the initialization procedure (up to %d s)",
+        "initialized, but the run was forced" if already_initialized else "not initialized",
+        PRE_INITIALIZE_READ_TIMEOUT,
       )
+      await self.pre_initialize()
+    else:
+      logger.debug("machine reports initialized - raising the channels to Z safety only")
+      await self.pipettes.move_to_z_safety()
+      if self.configuration is not None and self.configuration.ka_head96_installed:
+        logger.warning(
+          "the 96-head was not raised: this driver cannot move it yet. Raise it before any "
+          "lateral move, or call initialize(force=True) to run the full procedure."
+        )
+
+    return already_initialized
+
+  def _describe_link(self) -> str:
+    """How this machine is reached, in whatever terms its transport is addressed by."""
+    fields = self.io.serialize()
+    link = type(self.io).__name__
+    vendor, product = fields.get("id_vendor"), fields.get("id_product")
+    if vendor is not None and product is not None:
+      link += f" {vendor:#06x}:{product:#06x}"
+    named = [
+      f"{label} {fields[key]}"
+      for label, key in (
+        ("address", "device_address"),
+        ("serial", "serial_number"),
+        ("port", "port"),
+      )
+      if fields.get(key)
+    ]
+    return link + (f" ({', '.join(named)})" if named else "")
+
+  def format_setup_summary(self) -> str:
+    """One block describing the machine that was found: how it is reached, what firmware every
+    module runs, what is fitted to it, and each arm's dimensions.
+
+    Returns:
+      A multi-line summary, or a note that setup has not run.
+    """
+    c = self.configuration
+    if c is None:
+      return "[Hamilton STAR] not discovered yet"
+
+    firmware = "unknown"
+    if self.firmware is not None:
+      parts = [
+        f"{label} {version}"
+        for label, version in (
+          ("master", self.firmware.master_version),
+          ("channels", self.firmware.channels_version),
+          ("X drives", self.firmware.x_drives_version),
+        )
+        if version is not None
+      ]
+      firmware = ", ".join(parts)
+
+    fitted = [f"{c.instrument_size_slots} slots"]
+    fitted.append(f"{c.num_pip_channels} channels ({'1000uL' if c.pip_type_1000ul else '300uL'})")
+    if c.autoload_installed:
+      fitted.append("autoload")
+    if c.kb_iswap_installed:
+      fitted.append(f"iSWAP ({'wide' if c.iswap_gripper_wide else 'small'} gripper)")
+    if c.ka_head96_installed:
+      fitted.append("96-head")
+    for number, installed in ((1, c.wash_station_1_installed), (2, c.wash_station_2_installed)):
+      if installed:
+        fitted.append(f"wash station {number}")
+
+    lines = [
+      f"[Hamilton STAR] Connected on {self._describe_link()}",
+      f"  Firmware: {firmware}",
+      f"  Configuration: {', '.join(fitted)}",
+    ]
+    for arm in (self.left_x_arm, self.right_x_arm):
+      if arm is None:
+        continue
+      a = arm.configuration
+      lines.append(
+        f"  Arms: {arm.side}, {a.model}, {a.width} mm wide, "
+        f"travel {_range(a.x_range)}, workspace {_range(a.workspace_range)}"
+      )
+    return "\n".join(lines)
 
   async def request_initialization_status(self, module: str = "C0") -> bool:
     """Whether a module reports itself initialized.
@@ -156,8 +327,20 @@ class STARDriver:
     )
 
   async def stop(self):
-    self._replies.stop()
-    await self.io.stop()
+    """Close the link. The machine keeps its state; only this driver lets go of it."""
+    self._setup_done = False
+    self._connected = False
+    await self._close()
+
+  @property
+  def connected(self) -> bool:
+    """Whether the link is open, so commands can be sent."""
+    return self._connected
+
+  @property
+  def setup_done(self) -> bool:
+    """Whether a full setup has run: the machine discovered and initialized."""
+    return self._setup_done
 
   @property
   def num_channels(self) -> int:
@@ -165,6 +348,31 @@ class STARDriver:
     if self._num_channels is None:
       raise RuntimeError("has not loaded num_channels, forgot to call `setup`?")
     return self._num_channels
+
+  @property
+  def x_arm(self) -> XArm:
+    """The machine's X-arm, on a machine that has only one.
+
+    Most STARs carry a single arm, and naming a side there is noise. A machine with two has no
+    single X-arm, so this refuses rather than picking one.
+
+    Raises:
+      RuntimeError: If setup has not run, so it is not yet known which arms are installed.
+      ValueError: If the machine has more than one arm.
+    """
+    if self.configuration is None:
+      raise RuntimeError("no configuration read; forgot to call `setup`?")
+    installed = {
+      name: arm
+      for name, arm in (("left_x_arm", self.left_x_arm), ("right_x_arm", self.right_x_arm))
+      if arm is not None
+    }
+    if len(installed) > 1:
+      raise ValueError(
+        f"this machine has {len(installed)} X-arms ({', '.join(installed)}), so `x_arm` is "
+        f"ambiguous. Use the one you mean by name."
+      )
+    return next(iter(installed.values()))
 
   # -- sending ---------------------------------------------------------------
 
@@ -180,7 +388,12 @@ class STARDriver:
     fmt: Optional[Any] = None,
     **kwargs,
   ):
-    """Assemble a firmware command, send it, and parse the reply if a format is given."""
+    """Assemble a firmware command, send it, and parse the reply if a format is given.
+
+    Raises:
+      RuntimeError: If the link is not open.
+    """
+    self._require_connection()
     id_ = self._replies.next_id() if auto_id else None
     cmd = assemble_command(
       module=module,
@@ -208,7 +421,12 @@ class STARDriver:
     read_timeout: Optional[int] = None,
     wait: bool = True,
   ) -> Optional[str]:
-    """Send a raw command to the machine."""
+    """Send a raw command to the machine.
+
+    Raises:
+      RuntimeError: If the link is not open.
+    """
+    self._require_connection()
     return await self._replies.send_raw(
       command=command,
       write_timeout=write_timeout,
@@ -216,7 +434,21 @@ class STARDriver:
       wait=wait,
     )
 
+  def _require_connection(self) -> None:
+    """Raise unless the link is open, so a command cannot be sent into nothing."""
+    if not self._connected:
+      raise RuntimeError("not connected to a machine; call `setup` first")
+
   # -- device queries --------------------------------------------------------
+
+  async def request_firmware_version(self) -> Tuple[str, datetime.date]:
+    """Request the master's firmware version and build date.
+
+    Returns:
+      The version string and its build date, e.g. `("7.6S", date(2021, 11, 5))`.
+    """
+    resp = await self.send_command(module="C0", command="RF")
+    return resp.split("rf")[-1], parse_firmware_version_date(resp)
 
   async def request_tip_presence(self) -> List[bool]:
     """Measure tip presence on all single channels using their sleeve sensors.
