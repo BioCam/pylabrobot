@@ -1,4 +1,5 @@
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
+from pylabrobot.hamilton.star.driver.features.iswap import iSWAP, iSWAPConfiguration
 from pylabrobot.hamilton.star.driver.features.pipettes import (
   PipetteConfiguration,
   Pipettes,
@@ -14,4 +15,6 @@ __all__ = [
   "PipettesConfiguration",
   "XArm",
   "XArmConfiguration",
+  "iSWAP",
+  "iSWAPConfiguration",
 ]

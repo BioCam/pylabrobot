@@ -79,6 +79,37 @@ SIMULATED_HEAD96_HARDWARE = ("0", "1", "0", "0", "0", "0", "0", "0", "0", "0")
 SIMULATED_HEAD96_TYPE = 2
 SIMULATED_HEAD96_X_OFFSET = 368.2
 
+# What the iSWAP holds in its stored position tables, slot by slot, as read off a real arm. The
+# rotation and wrist tables end in the arm length; the Y table is all position.
+SIMULATED_ISWAP_ROTATION_SLOTS = (
+  13000,
+  -29007,
+  156,
+  29068,
+  29500,
+  29068,
+  29068,
+  29068,
+  29068,
+  1378,
+)
+SIMULATED_ISWAP_WRIST_SLOTS = (
+  -26577,
+  -26577,
+  -8860,
+  9044,
+  26858,
+  -26577,
+  -26577,
+  -26577,
+  -26577,
+  1377,
+)
+SIMULATED_ISWAP_Y_SLOTS = (9855, 7000, 9000, 13550, 12600, 9855, 9855, 9855, 9855, 9855)
+
+# Where the iSWAP's rotation drive sits relative to the arm carriage, in mm.
+SIMULATED_ISWAP_X_OFFSET = 32.8
+
 # Z position a channel reports when parked at its safety height.
 CHANNEL_Z_SAFETY = 285.0
 
@@ -87,6 +118,13 @@ CHANNEL_Z_SAFETY = 285.0
 HEAD96_DRIVE_PARAMETERS = {"yv": 25_000, "yr": 35_000, "zv": 17_000, "zr": 80_000}
 HEAD96_Z_DRIVE_MM_PER_INCREMENT = Head96Configuration().z_drive_mm_per_increment
 HEAD96_Z_SAFETY = 336.965
+
+# The iSWAP's stored tables, by the name each is asked for by.
+ISWAP_TABLES = {
+  "pw": SIMULATED_ISWAP_ROTATION_SLOTS,
+  "pt": SIMULATED_ISWAP_WRIST_SLOTS,
+  "py": SIMULATED_ISWAP_Y_SLOTS,
+}
 
 # What a bare STARSimulationDriver() pretends to be, copied field for field off a real instrument
 # so that simulated discovery matches a machine that exists: a full-size STAR, 54 slots wide, with
@@ -208,6 +246,7 @@ class STARSimulationDriver(STARDriver):
     self.head96_tips_mounted = False
     self.head96_z_position = HEAD96_Z_SAFETY
     self.head96_initialized = initialized
+    self.iswap_initialized = initialized
     self.initialized = initialized
 
     # Every command the simulator has been asked, in order. Useful for asserting what a protocol
@@ -486,6 +525,32 @@ class STARSimulationDriver(STARDriver):
   def _channel_hardware(self, command: str) -> str:
     return "vw" + " ".join(self.channel_hardware[self._channel_index(command)])
 
+  def _iswap_initialization_status(self, command: str) -> str:
+    return f"qw{int(self.iswap_initialized)}"
+
+  def _iswap_firmware_version(self, command: str) -> str:
+    version = self.simulated_firmware.iswap_version
+    if version is None:
+      raise ValueError("the simulated firmware stack records no iSWAP version")
+    return f"rf{version}"
+
+  def _iswap_stored_table(self, command: str) -> str:
+    """One of the arm's stored position tables, signed and blank-separated as it reports them."""
+    table = str(parse_fw_string(command, "ra&&")["ra"])
+    slots = ISWAP_TABLES.get(table)
+    if slots is None:
+      return ""  # a table this simulator does not hold
+    return table + " ".join(f"{slot:+06}" for slot in slots)
+
+  def _initialize_iswap(self, command: str) -> str:
+    self.iswap_initialized = True
+    self.iswap_parked = False
+    return ""
+
+  def _park_iswap(self, command: str) -> str:
+    self.iswap_parked = True
+    return ""
+
   def _head96_initialization_status(self, command: str) -> str:
     return f"qw{int(self.head96_initialized)}"
 
@@ -519,6 +584,8 @@ class STARSimulationDriver(STARDriver):
     parameter = parse_fw_string(command, "ra&&")["ra"]
     if parameter == "kf":  # 96-head x offset
       return f"kf{round(SIMULATED_HEAD96_X_OFFSET * 10):04}"
+    if parameter == "kg":  # iSWAP rotation-drive x offset
+      return f"kg{round(SIMULATED_ISWAP_X_OFFSET * 10):03}"
     return ""
 
   def _retract_head96(self, command: str) -> str:
@@ -570,6 +637,13 @@ class STARSimulationDriver(STARDriver):
       "EV": _retract_head96,
       "EI": _initialize_head96,
       "RA": _master_parameter,
+      "FI": _initialize_iswap,
+      "PG": _park_iswap,
+    },
+    "R0": {
+      "RF": _iswap_firmware_version,
+      "QW": _iswap_initialization_status,
+      "RA": _iswap_stored_table,
     },
     "H0": {
       "RF": _head96_firmware_version,

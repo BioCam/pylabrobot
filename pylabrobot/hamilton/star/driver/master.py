@@ -22,6 +22,7 @@ from pylabrobot.hamilton.star.driver.errors import (
   check_fw_string_error,
 )
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
+from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.io.io import IOBase
@@ -112,6 +113,7 @@ class STARDriver:
     self.left_x_arm = XArm(self, side="left")
     self.right_x_arm: Optional[XArm] = None
     self.head96: Optional[Head96] = None
+    self.iswap: Optional[iSWAP] = None
 
   # -- connection ------------------------------------------------------------
 
@@ -151,6 +153,8 @@ class STARDriver:
         )
       tips = await self.request_tip_presence()
       bringing_up = []
+      if self.iswap is not None:
+        bringing_up.append(self._bring_up_iswap())
       if not already_initialized or any(tips):
         logger.debug(
           "channels: %d of %d carrying tips, instrument %s - initializing",
@@ -191,12 +195,16 @@ class STARDriver:
       self.right_x_arm = XArm(self, side="right")
     if self.configuration.ka_head96_installed:
       self.head96 = Head96(self)
+    if self.configuration.left_arm.iswap_installed:
+      self.iswap = iSWAP(self)
 
     # Each capability reads its own modules, and they are different modules, so they read at
     # once. Both arms run off the same X-drive board, so only one of them asks it.
     reading = [self.pipettes.discover(), self.left_x_arm.discover()]
     if self.head96 is not None:
       reading.append(self.head96.discover())
+    if self.iswap is not None:
+      reading.append(self.iswap.discover())
     await asyncio.gather(*reading)
     if self.right_x_arm is not None:
       self.right_x_arm.configuration.firmware_version = (
@@ -210,6 +218,7 @@ class STARDriver:
       channels_version=channels[0].firmware_version or "unknown",
       x_drives_version=self.left_x_arm.configuration.firmware_version,
       head96_version=None if self.head96 is None else self.head96.configuration.firmware_version,
+      iswap_version=None if self.iswap is None else self.iswap.configuration.firmware_version,
     )
 
   async def initialize(self, force: bool = False) -> bool:
@@ -283,6 +292,7 @@ class STARDriver:
           ("channels", self.firmware.channels_version),
           ("X drives", self.firmware.x_drives_version),
           ("96-head", self.firmware.head96_version),
+          ("iSWAP", self.firmware.iswap_version),
         )
         if version is not None
       ]
@@ -317,6 +327,15 @@ class STARDriver:
         f"travel {_range(a.x_range)}, workspace {_range(a.workspace_range)}"
       )
     return "\n".join(lines)
+
+  async def _bring_up_iswap(self):
+    """Initialize the iSWAP if it needs it, then park it out of the way."""
+    if self.iswap is None:
+      return
+    if not await self.request_initialization_status("R0"):
+      logger.debug("iSWAP reports itself uninitialized - initializing")
+      await self.iswap.initialize()
+    await self.iswap.park()
 
   async def request_initialization_status(self, module: str = "C0") -> bool:
     """Whether a module reports itself initialized.
