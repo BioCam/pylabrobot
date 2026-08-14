@@ -24,6 +24,9 @@ HEAD_TYPES: Dict[int, HeadType] = {
 RETRACT_READ_TIMEOUT = 20
 INITIALIZE_READ_TIMEOUT = 60
 
+# Where the head is left when initialization finishes, in mm.
+INITIALIZE_Z_POSITION_AT_END = 245.0
+
 
 @dataclass
 class Head96Configuration:
@@ -45,6 +48,12 @@ class Head96Configuration:
   stop_disc_type: Optional[StopDiscType] = None
   instrument_type: Optional[InstrumentType] = None
   head_type: Optional[HeadType] = None
+
+  initialize_position: Optional[Tuple[float, float, float]] = None
+  """Where the head ejects when it is initialized: head channel A1, in deck mm. Initializing
+  throws off whatever is mounted, so this has to be somewhere tips may be dropped - which depends
+  on where the waste sits on the deck, and so has no default. Setup initializes the head when this
+  is set, and reports that it cannot when it is not."""
 
   z_range: Optional[Tuple[float, float]] = None
   """Z-drive position window (mm); FM-STAR extends it. Resolved at setup: the min is
@@ -275,10 +284,10 @@ class Head96:
 
   async def initialize(
     self,
-    x: float,
-    y: float,
-    z: float,
-    z_position_at_the_command_end: float = 245.0,
+    x: Optional[float] = None,
+    y: Optional[float] = None,
+    z: Optional[float] = None,
+    z_position_at_the_command_end: float = INITIALIZE_Z_POSITION_AT_END,
   ):
     """Initialize the head, discarding whatever is mounted on it.
 
@@ -286,11 +295,23 @@ class Head96:
     be somewhere tips may be dropped. The firmware wants the location of the head's channel A1.
 
     Args:
-      x: X to eject at, in mm, at head channel A1.
-      y: Y to eject at, in mm, at head channel A1.
-      z: Z to eject at, in mm.
+      x: X to eject at, in mm, at head channel A1. Defaults to `configuration.initialize_position`.
+      y: Y to eject at, in mm, at head channel A1. Defaults to the same.
+      z: Z to eject at, in mm. Defaults to the same.
       z_position_at_the_command_end: Z to leave the head at, in mm.
+
+    Raises:
+      ValueError: If no position was given and none is configured.
     """
+    if x is None or y is None or z is None:
+      configured = self.configuration.initialize_position
+      if configured is None:
+        raise ValueError(
+          "no position to eject at: initializing the head throws off whatever is mounted, so it "
+          "needs somewhere tips may be dropped. Pass x, y and z, or set "
+          "`configuration.initialize_position`."
+        )
+      x, y, z = configured
     return await self._driver.send_command(
       module="C0",
       command="EI",

@@ -172,13 +172,15 @@ class STARDriver:
     self.configuration = await self.request_device_configuration()
     self._num_channels = len(await self.request_tip_presence())
 
-    if self.configuration.right_arm is not None:
+    # Built for what the machine turns out to have, and only if not already there: a caller can
+    # hand a capability its configuration before setup, and re-running setup keeps it.
+    if self.configuration.right_arm is not None and self.right_x_arm is None:
       self.right_x_arm = XArm(self, side="right")
-    if self.configuration.ka_head96_installed:
+    if self.configuration.ka_head96_installed and self.head96 is None:
       self.head96 = Head96(self)
-    if self.configuration.left_arm.iswap_installed:
+    if self.configuration.left_arm.iswap_installed and self.iswap is None:
       self.iswap = iSWAP(self)
-    if self.configuration.autoload_installed:
+    if self.configuration.autoload_installed and self.autoload is None:
       self.autoload = Autoload(self)
 
     # Each capability reads its own modules, and they are different modules, so they read at
@@ -348,10 +350,14 @@ class STARDriver:
       if self.head96.configuration.z_range is None:
         self.head96.resolve_z_range(await self.head96.retract())
       if not await self.request_initialization_status("H0"):
-        logger.warning(
-          "the 96-head reports itself uninitialized. Initializing it ejects whatever is mounted, "
-          "so it needs the position to eject at: call head96.initialize(x, y, z)."
-        )
+        if self.head96.configuration.initialize_position is None:
+          logger.warning(
+            "the 96-head reports itself uninitialized, and there is nowhere configured to eject "
+            "at. Set head96.configuration.initialize_position, or call head96.initialize(x, y, z)."
+          )
+        else:
+          logger.debug("96-head reports itself uninitialized - initializing")
+          await self.head96.initialize()
 
   async def _bring_up_autoload(self):
     """Initialize the autoload if it needs it, then park it. It runs off the arm, so this happens
