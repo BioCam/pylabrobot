@@ -54,19 +54,17 @@ class ConfirmedFirmware:
   """Autoload (`I0`) version."""
 
 
-CONFIRMED_FIRMWARE_VERSIONS = frozenset(
-  [
-    # STAR with 8 channels, 96-head, iSWAP and autoload; read-only RF probe 2026-05-27.
-    ConfirmedFirmware(
-      master_version="7.6S 25 2021_11_05 (GRU C0)",
-      channels_version="4.0S j 2022-03-16",
-      x_drives_version="1.4S 2012-04-25",
-      head96_version="5.0S i 2021-10-22 (H0 XE167)",
-      iswap_version="4.1S 2011-12-19",
-      autoload_version="3.4S f 2017-01-09",
-    ),
-  ]
+# STAR with 8 channels, 96-head, iSWAP and autoload; read-only RF probe 2026-05-27.
+STAR_8_CHANNEL_STACK = ConfirmedFirmware(
+  master_version="7.6S 25 2021_11_05 (GRU C0)",
+  channels_version="4.0S j 2022-03-16",
+  x_drives_version="1.4S 2012-04-25",
+  head96_version="5.0S i 2021-10-22 (H0 XE167)",
+  iswap_version="4.1S 2011-12-19",
+  autoload_version="3.4S f 2017-01-09",
 )
+
+CONFIRMED_FIRMWARE_VERSIONS = frozenset([STAR_8_CHANNEL_STACK])
 
 
 def is_confirmed(master_version: str, channels_version: str) -> bool:
