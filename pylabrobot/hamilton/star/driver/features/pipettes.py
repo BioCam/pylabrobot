@@ -27,6 +27,9 @@ INITIALIZE_Z_POSITION_AT_END = 360.0
 INITIALIZE_TIP_TYPE = 4
 INITIALIZE_DISCARDING_METHOD = 0
 
+# The channels travel to the waste and eject there, so the reply is a long time coming.
+INITIALIZE_READ_TIMEOUT = 120
+
 
 @dataclass
 class PipetteConfiguration:
@@ -230,6 +233,7 @@ class Pipettes:
     return await self._driver.send_command(
       module="C0",
       command="DI",
+      read_timeout=INITIALIZE_READ_TIMEOUT,
       xp=[f"{round(x_position * 10):05}"],
       yp=[f"{round(y * 10):04}" for y in y_positions],
       tp=f"{round(begin_of_tip_deposit_process * 10):04}",
