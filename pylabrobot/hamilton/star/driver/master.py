@@ -8,11 +8,12 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import assemble_command, parse_fw_string
 from pylabrobot.hamilton.protocol.text.router import ReplyRouter
-from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration, XArmConfiguration
+from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
 from pylabrobot.hamilton.star.driver.errors import (
   STAR_MODULE_ID_LENGTH,
   check_fw_string_error,
 )
+from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.usb import USB
 
@@ -75,15 +76,27 @@ class STARDriver:
 
     self.configuration: Optional[DeviceConfiguration] = None
 
+    # Subsystems. Each reads what it needs off `configuration`, so they are usable once setup has
+    # run and raise a clear error before that. A STAR always has a left arm; a right arm is an
+    # option, so it appears only if setup finds one installed.
+    self.left_x_arm = XArm(self, side="left")
+    self.right_x_arm: Optional[XArm] = None
+
   # -- connection ------------------------------------------------------------
 
   async def setup(self):
     """Open the connection and discover what machine is on the other end."""
     await self.io.setup()
     self._replies.start()
+    await self.discover()
 
+  async def discover(self):
+    """Read what machine is on the other end, and build the subsystems it turns out to have."""
     self.configuration = await self.request_device_configuration()
     self._num_channels = len(await self.request_tip_presence())
+
+    if self.configuration.right_arm is not None:
+      self.right_x_arm = XArm(self, side="right")
 
   async def stop(self):
     self._replies.stop()
@@ -223,6 +236,7 @@ class STARDriver:
         width=width,
         x_range=ranges[side],
         workspace_range=workspace_range,
+        wrap_size=wrap,
       )
 
     left_arm = _resolve_arm(extended["xl"], extended["xn"], "left", extended["xu"] / 10)
@@ -235,7 +249,7 @@ class STARDriver:
       pip_type_1000ul=bool(kb & (1 << 0)),
       kb_iswap_installed=bool(kb & (1 << 1)),
       main_front_cover_monitoring_installed=bool(kb & (1 << 2)),
-      auto_load_installed=bool(kb & (1 << 3)),
+      autoload_installed=bool(kb & (1 << 3)),
       wash_station_1_installed=bool(kb & (1 << 4)),
       wash_station_2_installed=bool(kb & (1 << 5)),
       temp_controlled_carrier_1_installed=bool(kb & (1 << 6)),
@@ -266,7 +280,7 @@ class STARDriver:
       park_heads_with_iswap_off=bool(ka & (1 << 22)),
       configuration_data_3=extended["ke"],
       instrument_size_slots=extended["xt"],
-      auto_load_size_slots=extended["xa"],
+      autoload_size_slots=extended["xa"],
       tip_waste_x_position=extended["xw"] / 10,
       left_arm=left_arm,
       right_arm=_resolve_arm(extended["xr"], extended["xo"], "right", extended["xv"] / 10),

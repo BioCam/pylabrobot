@@ -1,52 +1,7 @@
 from dataclasses import dataclass, field
-from typing import Literal, Optional, Tuple
+from typing import Optional
 
-
-@dataclass
-class XArmConfiguration:
-  """Configuration and geometry for an X drive (left or right).
-
-  The installed-module bits combine byte 1 (xl/xr) and byte 2 (xn/xo). The arm
-  geometry - width, travel range, workspace range - comes from the X-drive range (RU)
-  and working-envelope (UA) queries, so it is None on a drive built from the module
-  bits alone (e.g. a simulated configuration) and populated when
-  `request_extended_configuration` builds the drive. `model` and `reference_point`
-  follow from `width`.
-
-  Note: the installed modules on left and right drives must be different.
-  """
-
-  pip_installed: bool = False
-  iswap_installed: bool = False
-  head96_installed: bool = False
-  nano_pipettor_installed: bool = False
-  dispensing_head_384_installed: bool = False
-  xl_channels_installed: bool = False
-  tube_gripper_installed: bool = False
-  imaging_channel_installed: bool = False
-  robotic_channel_installed: bool = False
-
-  width: Optional[float] = None
-  """Arm width (mm), from the machine configuration."""
-  x_range: Optional[Tuple[float, float]] = None
-  """Drive travel `(min, max)` in mm."""
-  workspace_range: Optional[Tuple[float, float]] = None
-  """Reachable X workspace `(min, max)` in mm."""
-
-  @property
-  def model(self) -> str:
-    """Arm variant derived from `width`: wide arms span both rails, narrow arms one."""
-    assert self.width is not None, "arm geometry not resolved"
-    if self.width > 300:
-      return "hamilton_legacy_star_dual_rail_arm"
-    return "hamilton_legacy_star_single_right_rail_arm"
-
-  @property
-  def reference_point(self) -> Literal["center", "right"]:
-    """Where along the arm's width the tracked X refers to: the arm center for a
-    dual-rail arm, the right edge for a single-rail arm."""
-    assert self.width is not None, "arm geometry not resolved"
-    return "center" if self.width > 300 else "right"
+from pylabrobot.hamilton.star.driver.features.x_arm import XArmConfiguration
 
 
 @dataclass
@@ -65,8 +20,8 @@ class DeviceConfiguration:
   """Bit 1: ISWAP. False = none, True = installed."""
   main_front_cover_monitoring_installed: bool = False
   """Bit 2: Main front cover monitoring. False = none, True = installed."""
-  auto_load_installed: bool = False
-  """Bit 3: Auto load. False = none, True = installed."""
+  autoload_installed: bool = False
+  """Bit 3: Autoload. False = none, True = installed."""
   wash_station_1_installed: bool = False
   """Bit 4: Wash station 1. False = none, True = installed."""
   wash_station_2_installed: bool = False
@@ -133,8 +88,8 @@ class DeviceConfiguration:
 
   instrument_size_slots: int = 54
   """Instrument size in slots, X range (xt). Default: 54."""
-  auto_load_size_slots: int = 54
-  """Auto load size in slots (xa). Default: 54."""
+  autoload_size_slots: int = 54
+  """Autoload size in slots (xa). Default: 54."""
   tip_waste_x_position: float = 1340.0
   """Tip waste X-position [mm] (xw). Default: 1340.0."""
   left_arm: XArmConfiguration = field(default_factory=XArmConfiguration)
