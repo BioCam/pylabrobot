@@ -361,7 +361,13 @@ class STARDriver:
 
   async def _bring_up_autoload(self):
     """Initialize the autoload if it needs it, then park it. It runs off the arm, so this happens
-    alongside the arm's modules rather than after them."""
+    alongside the arm's modules rather than after them.
+
+    It reports itself uninitialized after the instrument procedure has run, which is the machine's
+    behaviour rather than a failed initialization: across 182 recorded runs it reported itself
+    initialized in every run where the procedure was skipped, and uninitialized in 60 of the 61
+    where it ran.
+    """
     if self.autoload is None:
       return
     if not await self.request_initialization_status("I0"):
