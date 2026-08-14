@@ -1,3 +1,4 @@
+from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
 from pylabrobot.hamilton.star.driver.features.pipettes import (
   PipetteConfiguration,
   Pipettes,
@@ -6,6 +7,8 @@ from pylabrobot.hamilton.star.driver.features.pipettes import (
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 
 __all__ = [
+  "Head96",
+  "Head96Configuration",
   "PipetteConfiguration",
   "Pipettes",
   "PipettesConfiguration",

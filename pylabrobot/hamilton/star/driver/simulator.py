@@ -20,6 +20,7 @@ from pylabrobot.hamilton.star.driver.confirmed_firmware_versions import (
   ConfirmedFirmware,
 )
 from pylabrobot.hamilton.star.driver.errors import check_fw_string_error
+from pylabrobot.hamilton.star.driver.features.head96 import Head96Configuration
 from pylabrobot.hamilton.star.driver.features.pipettes import PipettesConfiguration
 from pylabrobot.hamilton.star.driver.features.x_arm import XArmConfiguration
 from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -70,14 +71,22 @@ PIPETTE_Y_DRIVE_MM_PER_INCREMENT = PipettesConfiguration().y_drive_mm_per_increm
 # ML_STAR head, a CoRe II stop disc, and a Renesas pressure ADC.
 SIMULATED_CHANNEL_HARDWARE = ("0", "0", "1", "0")
 
+# What the 96-head reports about itself, field by field: clot monitoring with cLLD, a CoRe II
+# stop disc, and a legacy (not FM-STAR) instrument.
+SIMULATED_HEAD96_HARDWARE = ("0", "1", "0", "0", "0", "0", "0", "0", "0", "0")
+
+# Which head is fitted, and where its channel A1 sits relative to the arm carriage, in mm.
+SIMULATED_HEAD96_TYPE = 2
+SIMULATED_HEAD96_X_OFFSET = 368.2
+
 # Z position a channel reports when parked at its safety height.
 CHANNEL_Z_SAFETY = 285.0
 
-# Y/Z drive speed and acceleration registers a 2013-or-later 96-head reports, in mm and mm/s.
-HEAD96_Y_SPEED_INCREMENTS = 25_000
-HEAD96_Y_ACCELERATION_INCREMENTS = 35_000
-HEAD96_Z_SPEED = 85.0
-HEAD96_Z_ACCELERATION = 400.0
+# The Y/Z drive registers a 2013-or-later 96-head holds, in the increments it counts in, and how
+# it counts Z. The Z safety height is where a retract leaves it.
+HEAD96_DRIVE_PARAMETERS = {"yv": 25_000, "yr": 35_000, "zv": 17_000, "zr": 80_000}
+HEAD96_Z_DRIVE_MM_PER_INCREMENT = Head96Configuration().z_drive_mm_per_increment
+HEAD96_Z_SAFETY = 336.965
 
 # What a bare STARSimulationDriver() pretends to be, copied field for field off a real instrument
 # so that simulated discovery matches a machine that exists: a full-size STAR, 54 slots wide, with
@@ -197,6 +206,8 @@ class STARSimulationDriver(STARDriver):
     self.dispensing_drive_positions = [0.0] * channels
     self.iswap_parked = True
     self.head96_tips_mounted = False
+    self.head96_z_position = HEAD96_Z_SAFETY
+    self.head96_initialized = initialized
     self.initialized = initialized
 
     # Every command the simulator has been asked, in order. Useful for asserting what a protocol
@@ -475,6 +486,54 @@ class STARSimulationDriver(STARDriver):
   def _channel_hardware(self, command: str) -> str:
     return "vw" + " ".join(self.channel_hardware[self._channel_index(command)])
 
+  def _head96_initialization_status(self, command: str) -> str:
+    return f"qw{int(self.head96_initialized)}"
+
+  def _head96_firmware_version(self, command: str) -> str:
+    version = self.simulated_firmware.head96_version
+    if version is None:
+      raise ValueError("the simulated firmware stack records no 96-head version")
+    return f"rf{version}"
+
+  def _head96_hardware(self, command: str) -> str:
+    return "au" + " ".join(SIMULATED_HEAD96_HARDWARE)
+
+  def _head96_type(self, command: str) -> str:
+    return f"qg{SIMULATED_HEAD96_TYPE}"
+
+  def _head96_stop_disk_z(self, command: str) -> str:
+    """The firmware and hardware counters. A real head reports them a few increments apart; the
+    simulator holds one position and reports it for both. The hardware counter is the one read."""
+    increments = round(self.head96_z_position / HEAD96_Z_DRIVE_MM_PER_INCREMENT)
+    return f"rz+{increments:05} +{increments:05}"
+
+  def _head96_drive_parameter(self, command: str) -> str:
+    parameter = parse_fw_string(command, "ra&&")["ra"]
+    value = HEAD96_DRIVE_PARAMETERS.get(parameter)
+    if value is None:
+      return ""  # a parameter this simulator does not hold
+    return f"{parameter}{value:05}"
+
+  def _master_parameter(self, command: str) -> str:
+    """A parameter held in the master's own memory."""
+    parameter = parse_fw_string(command, "ra&&")["ra"]
+    if parameter == "kf":  # 96-head x offset
+      return f"kf{round(SIMULATED_HEAD96_X_OFFSET * 10):04}"
+    return ""
+
+  def _retract_head96(self, command: str) -> str:
+    self.head96_z_position = HEAD96_Z_SAFETY
+    return ""
+
+  def _initialize_head96(self, command: str) -> str:
+    """Throw off whatever is mounted and leave the head where the command says."""
+    self.head96_tips_mounted = False
+    ending_at = parse_fw_string(command, "ze####").get("ze")
+    if ending_at is not None:
+      self.head96_z_position = ending_at / 10
+    self.head96_initialized = True
+    return ""
+
   def _initialize_channels(self, command: str) -> str:
     """Throw off whatever is mounted and leave the channels at Z safety."""
     self.tips_mounted = [False] * len(self.tips_mounted)
@@ -508,6 +567,17 @@ class STARSimulationDriver(STARDriver):
       "VI": _pre_initialize,
       "ZA": _move_all_channels_to_z_safety,
       "DI": _initialize_channels,
+      "EV": _retract_head96,
+      "EI": _initialize_head96,
+      "RA": _master_parameter,
+    },
+    "H0": {
+      "RF": _head96_firmware_version,
+      "QU": _head96_hardware,
+      "QG": _head96_type,
+      "QW": _head96_initialization_status,
+      "RZ": _head96_stop_disk_z,
+      "RA": _head96_drive_parameter,
     },
     "Px": {
       "RF": _channel_firmware_version,

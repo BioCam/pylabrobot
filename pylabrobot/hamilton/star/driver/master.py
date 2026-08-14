@@ -21,6 +21,7 @@ from pylabrobot.hamilton.star.driver.errors import (
   STAR_MODULE_ID_LENGTH,
   check_fw_string_error,
 )
+from pylabrobot.hamilton.star.driver.features.head96 import Head96
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.io.io import IOBase
@@ -110,6 +111,7 @@ class STARDriver:
     self.pipettes = Pipettes(self)
     self.left_x_arm = XArm(self, side="left")
     self.right_x_arm: Optional[XArm] = None
+    self.head96: Optional[Head96] = None
 
   # -- connection ------------------------------------------------------------
 
@@ -140,6 +142,13 @@ class STARDriver:
       #    the autoload, iSWAP and 96-head join this gather as they land. The channels only need
       #    it when the instrument procedure did not just run, or when something is still mounted.
       logger.debug("[PHASE 3] Capability bring-up")
+      if self.head96 is not None and self.head96.configuration.z_range is None:
+        self.head96.resolve_z_range(await self.head96.retract())
+      if self.head96 is not None and not await self.request_initialization_status("H0"):
+        logger.warning(
+          "the 96-head reports itself uninitialized. Initializing it ejects whatever is mounted, "
+          "so it needs the position to eject at: call head96.initialize(x, y, z)."
+        )
       tips = await self.request_tip_presence()
       bringing_up = []
       if not already_initialized or any(tips):
@@ -180,10 +189,15 @@ class STARDriver:
 
     if self.configuration.right_arm is not None:
       self.right_x_arm = XArm(self, side="right")
+    if self.configuration.ka_head96_installed:
+      self.head96 = Head96(self)
 
     # Each capability reads its own modules, and they are different modules, so they read at
     # once. Both arms run off the same X-drive board, so only one of them asks it.
-    await asyncio.gather(self.pipettes.discover(), self.left_x_arm.discover())
+    reading = [self.pipettes.discover(), self.left_x_arm.discover()]
+    if self.head96 is not None:
+      reading.append(self.head96.discover())
+    await asyncio.gather(*reading)
     if self.right_x_arm is not None:
       self.right_x_arm.configuration.firmware_version = (
         self.left_x_arm.configuration.firmware_version
@@ -195,6 +209,7 @@ class STARDriver:
       master_version=master_version,
       channels_version=channels[0].firmware_version or "unknown",
       x_drives_version=self.left_x_arm.configuration.firmware_version,
+      head96_version=None if self.head96 is None else self.head96.configuration.firmware_version,
     )
 
   async def initialize(self, force: bool = False) -> bool:
@@ -225,11 +240,8 @@ class STARDriver:
     else:
       logger.debug("machine reports initialized - raising the channels to Z safety only")
       await self.pipettes.move_to_z_safety()
-      if self.configuration is not None and self.configuration.ka_head96_installed:
-        logger.warning(
-          "the 96-head was not raised: this driver cannot move it yet. Raise it before any "
-          "lateral move, or call initialize(force=True) to run the full procedure."
-        )
+      if self.head96 is not None:
+        self.head96.resolve_z_range(await self.head96.retract())
 
     return already_initialized
 
@@ -270,6 +282,7 @@ class STARDriver:
           ("master", self.firmware.master_version),
           ("channels", self.firmware.channels_version),
           ("X drives", self.firmware.x_drives_version),
+          ("96-head", self.firmware.head96_version),
         )
         if version is not None
       ]
@@ -282,7 +295,10 @@ class STARDriver:
     if c.kb_iswap_installed:
       fitted.append(f"iSWAP ({'wide' if c.iswap_gripper_wide else 'small'} gripper)")
     if c.ka_head96_installed:
-      fitted.append("96-head")
+      head = "96-head"
+      if self.head96 is not None and self.head96.configuration.head_type is not None:
+        head += f" ({self.head96.configuration.head_type})"
+      fitted.append(head)
     for number, installed in ((1, c.wash_station_1_installed), (2, c.wash_station_2_installed)):
       if installed:
         fitted.append(f"wash station {number}")
