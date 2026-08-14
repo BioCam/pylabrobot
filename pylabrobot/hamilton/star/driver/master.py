@@ -21,6 +21,7 @@ from pylabrobot.hamilton.star.driver.errors import (
   STAR_MODULE_ID_LENGTH,
   check_fw_string_error,
 )
+from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
@@ -114,6 +115,7 @@ class STARDriver:
     self.right_x_arm: Optional[XArm] = None
     self.head96: Optional[Head96] = None
     self.iswap: Optional[iSWAP] = None
+    self.autoload: Optional[Autoload] = None
 
   # -- connection ------------------------------------------------------------
 
@@ -144,28 +146,7 @@ class STARDriver:
       #    the autoload, iSWAP and 96-head join this gather as they land. The channels only need
       #    it when the instrument procedure did not just run, or when something is still mounted.
       logger.debug("[PHASE 3] Capability bring-up")
-      if self.head96 is not None and self.head96.configuration.z_range is None:
-        self.head96.resolve_z_range(await self.head96.retract())
-      if self.head96 is not None and not await self.request_initialization_status("H0"):
-        logger.warning(
-          "the 96-head reports itself uninitialized. Initializing it ejects whatever is mounted, "
-          "so it needs the position to eject at: call head96.initialize(x, y, z)."
-        )
-      tips = await self.request_tip_presence()
-      bringing_up = []
-      if self.iswap is not None:
-        bringing_up.append(self._bring_up_iswap())
-      if not already_initialized or any(tips):
-        logger.debug(
-          "channels: %d of %d carrying tips, instrument %s - initializing",
-          sum(tips),
-          len(tips),
-          "was already up" if already_initialized else "has just been homed",
-        )
-        bringing_up.append(self.pipettes.initialize())
-      else:
-        logger.debug("channels: already up and nothing mounted - skipped")
-      await asyncio.gather(*bringing_up)
+      await asyncio.gather(self._bring_up_arm(already_initialized), self._bring_up_autoload())
     except BaseException:
       await self.stop()
       raise
@@ -197,6 +178,8 @@ class STARDriver:
       self.head96 = Head96(self)
     if self.configuration.left_arm.iswap_installed:
       self.iswap = iSWAP(self)
+    if self.configuration.autoload_installed:
+      self.autoload = Autoload(self)
 
     # Each capability reads its own modules, and they are different modules, so they read at
     # once. Both arms run off the same X-drive board, so only one of them asks it.
@@ -205,6 +188,8 @@ class STARDriver:
       reading.append(self.head96.discover())
     if self.iswap is not None:
       reading.append(self.iswap.discover())
+    if self.autoload is not None:
+      reading.append(self.autoload.discover())
     await asyncio.gather(*reading)
     if self.right_x_arm is not None:
       self.right_x_arm.configuration.firmware_version = (
@@ -219,6 +204,9 @@ class STARDriver:
       x_drives_version=self.left_x_arm.configuration.firmware_version,
       head96_version=None if self.head96 is None else self.head96.configuration.firmware_version,
       iswap_version=None if self.iswap is None else self.iswap.configuration.firmware_version,
+      autoload_version=(
+        None if self.autoload is None else self.autoload.configuration.firmware_version
+      ),
     )
 
   async def initialize(self, force: bool = False) -> bool:
@@ -293,6 +281,7 @@ class STARDriver:
           ("X drives", self.firmware.x_drives_version),
           ("96-head", self.firmware.head96_version),
           ("iSWAP", self.firmware.iswap_version),
+          ("autoload", self.firmware.autoload_version),
         )
         if version is not None
       ]
@@ -328,14 +317,51 @@ class STARDriver:
       )
     return "\n".join(lines)
 
-  async def _bring_up_iswap(self):
-    """Initialize the iSWAP if it needs it, then park it out of the way."""
-    if self.iswap is None:
+  async def _bring_up_arm(self, already_initialized: bool):
+    """Bring up everything the arm carries, one after another.
+
+    The channels, the iSWAP and the 96-head share the arm's X drive, so bringing one up while
+    another is moving is refused by the machine. They go in the order the legacy routine uses.
+
+    Args:
+      already_initialized: whether the instrument reported itself up before this setup ran.
+    """
+    tips = await self.request_tip_presence()
+    if not already_initialized or any(tips):
+      logger.debug(
+        "channels: %d of %d carrying tips, instrument %s - initializing",
+        sum(tips),
+        len(tips),
+        "was already up" if already_initialized else "has just been homed",
+      )
+      await self.pipettes.initialize()
+    else:
+      logger.debug("channels: already up and nothing mounted - skipped")
+
+    if self.iswap is not None:
+      if not await self.request_initialization_status("R0"):
+        logger.debug("iSWAP reports itself uninitialized - initializing")
+        await self.iswap.initialize()
+      await self.iswap.park()
+
+    if self.head96 is not None:
+      if self.head96.configuration.z_range is None:
+        self.head96.resolve_z_range(await self.head96.retract())
+      if not await self.request_initialization_status("H0"):
+        logger.warning(
+          "the 96-head reports itself uninitialized. Initializing it ejects whatever is mounted, "
+          "so it needs the position to eject at: call head96.initialize(x, y, z)."
+        )
+
+  async def _bring_up_autoload(self):
+    """Initialize the autoload if it needs it, then park it. It runs off the arm, so this happens
+    alongside the arm's modules rather than after them."""
+    if self.autoload is None:
       return
-    if not await self.request_initialization_status("R0"):
-      logger.debug("iSWAP reports itself uninitialized - initializing")
-      await self.iswap.initialize()
-    await self.iswap.park()
+    if not await self.request_initialization_status("I0"):
+      logger.debug("autoload reports itself uninitialized - initializing")
+      await self.autoload.initialize()
+    await self.autoload.park()
 
   async def request_initialization_status(self, module: str = "C0") -> bool:
     """Whether a module reports itself initialized.

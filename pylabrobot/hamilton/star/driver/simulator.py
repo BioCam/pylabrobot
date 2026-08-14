@@ -247,6 +247,9 @@ class STARSimulationDriver(STARDriver):
     self.head96_z_position = HEAD96_Z_SAFETY
     self.head96_initialized = initialized
     self.iswap_initialized = initialized
+    self.autoload_initialized = initialized
+    self.autoload_wheel_raised = True
+    self.autoload_track = c.instrument_size_slots
     self.initialized = initialized
 
     # Every command the simulator has been asked, in order. Useful for asserting what a protocol
@@ -525,6 +528,28 @@ class STARSimulationDriver(STARDriver):
   def _channel_hardware(self, command: str) -> str:
     return "vw" + " ".join(self.channel_hardware[self._channel_index(command)])
 
+  def _autoload_initialization_status(self, command: str) -> str:
+    return f"qw{int(self.autoload_initialized)}"
+
+  def _autoload_firmware_version(self, command: str) -> str:
+    version = self.simulated_firmware.autoload_version
+    if version is None:
+      raise ValueError("the simulated firmware stack records no autoload version")
+    return f"rf{version}"
+
+  def _move_autoload(self, command: str) -> str:
+    """Move along the deck. The autoload answers this one with an error field of its own."""
+    self.autoload_track = parse_fw_string(command, "xp##")["xp"]
+    return "er00"
+
+  def _initialize_autoload(self, command: str) -> str:
+    self.autoload_initialized = True
+    return ""
+
+  def _raise_autoload_wheel(self, command: str) -> str:
+    self.autoload_wheel_raised = True
+    return ""
+
   def _iswap_initialization_status(self, command: str) -> str:
     return f"qw{int(self.iswap_initialized)}"
 
@@ -639,6 +664,13 @@ class STARSimulationDriver(STARDriver):
       "RA": _master_parameter,
       "FI": _initialize_iswap,
       "PG": _park_iswap,
+      "II": _initialize_autoload,
+      "IV": _raise_autoload_wheel,
+    },
+    "I0": {
+      "RF": _autoload_firmware_version,
+      "QW": _autoload_initialization_status,
+      "XP": _move_autoload,
     },
     "R0": {
       "RF": _iswap_firmware_version,

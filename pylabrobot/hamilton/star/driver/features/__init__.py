@@ -1,3 +1,4 @@
+from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP, iSWAPConfiguration
 from pylabrobot.hamilton.star.driver.features.pipettes import (
@@ -8,6 +9,8 @@ from pylabrobot.hamilton.star.driver.features.pipettes import (
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 
 __all__ = [
+  "Autoload",
+  "AutoloadConfiguration",
   "Head96",
   "Head96Configuration",
   "PipetteConfiguration",
