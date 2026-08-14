@@ -1,7 +1,10 @@
 """The X-arm: the carriage that runs along a rail and carries whatever is mounted on it."""
 
+import datetime
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Optional, Tuple
+
+from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -91,6 +94,17 @@ class XArm:
     if arm is None:
       raise ValueError(f"no {self.side} X-arm is installed")
     return arm
+
+  async def request_firmware_version(self) -> Tuple[str, datetime.date]:
+    """Request the X-drive board's firmware version and build date.
+
+    Both arms run off the same board, so this reports the same for either side.
+
+    Returns:
+      The version string and its build date, e.g. `("1.4S", date(2012, 4, 25))`.
+    """
+    resp = await self._driver.send_command(module="X0", command="RF")
+    return resp.split("rf")[-1].split(" ")[0], parse_firmware_version_date(resp)
 
   async def move_x(
     self,

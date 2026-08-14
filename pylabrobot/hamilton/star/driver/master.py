@@ -4,6 +4,7 @@
 - orchestrating higher level tasks.
 """
 
+import logging
 from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import assemble_command, parse_fw_string
@@ -13,12 +14,18 @@ from pylabrobot.hamilton.star.driver.errors import (
   STAR_MODULE_ID_LENGTH,
   check_fw_string_error,
 )
+from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.usb import USB
 
+logger = logging.getLogger(__name__)
+
 ID_VENDOR = 0x08AF
 ID_PRODUCT = 0x8000
+
+# The instrument initialization procedure homes every drive, which takes minutes.
+PRE_INITIALIZE_READ_TIMEOUT = 300
 
 
 class STARDriver:
@@ -79,6 +86,7 @@ class STARDriver:
     # Subsystems. Each reads what it needs off `configuration`, so they are usable once setup has
     # run and raise a clear error before that. A STAR always has a left arm; a right arm is an
     # option, so it appears only if setup finds one installed.
+    self.pipettes = Pipettes(self)
     self.left_x_arm = XArm(self, side="left")
     self.right_x_arm: Optional[XArm] = None
 
@@ -91,12 +99,61 @@ class STARDriver:
     await self.discover()
 
   async def discover(self):
-    """Read what machine is on the other end, and build the subsystems it turns out to have."""
+    """Read what machine is on the other end, and build the subsystems it turns out to have.
+
+    Read-only: nothing moves. Call `initialize` to bring the machine up.
+    """
     self.configuration = await self.request_device_configuration()
     self._num_channels = len(await self.request_tip_presence())
 
     if self.configuration.right_arm is not None:
       self.right_x_arm = XArm(self, side="right")
+
+  async def initialize(self, force: bool = False):
+    """Bring the machine to a known state, ready to be driven.
+
+    This moves the instrument. An uninitialized machine runs its initialization procedure, which
+    homes every drive and leaves the channels at Z safety. A machine that is already initialized
+    is left where it is, apart from raising the channels to Z safety, which the procedure would
+    otherwise have guaranteed - nothing may move laterally while a channel is low.
+
+    Args:
+      force: run the initialization procedure even if the machine reports itself initialized.
+    """
+    if force or not await self.request_initialization_status():
+      await self.pre_initialize()
+      return
+
+    await self.pipettes.move_all_to_z_safety()
+    if self.configuration is not None and self.configuration.ka_head96_installed:
+      logger.warning(
+        "the 96-head was not raised: this driver cannot move it yet. Raise it before any "
+        "lateral move, or call initialize(force=True) to run the full procedure."
+      )
+
+  async def request_initialization_status(self, module: str = "C0") -> bool:
+    """Whether a module reports itself initialized.
+
+    Every module answers the same query, so this covers the master and each subsystem.
+
+    Args:
+      module: the module to ask. Defaults to the master, which reports for the instrument.
+
+    Returns:
+      True if the module is initialized.
+    """
+    resp = await self.send_command(module=module, command="QW", fmt="qw#")
+    return cast(int, resp["qw"]) == 1
+
+  async def pre_initialize(self):
+    """Run the instrument's initialization procedure.
+
+    Homes every drive and leaves the channels at Z safety. It takes minutes, hence the long read
+    timeout.
+    """
+    return await self.send_command(
+      module="C0", command="VI", read_timeout=PRE_INITIALIZE_READ_TIMEOUT
+    )
 
   async def stop(self):
     self._replies.stop()

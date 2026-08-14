@@ -15,6 +15,10 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from pylabrobot.hamilton.protocol.text.framing import assemble_command, parse_fw_string
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
+from pylabrobot.hamilton.star.driver.confirmed_firmware_versions import (
+  STAR_8_CHANNEL_STACK,
+  ConfirmedFirmware,
+)
 from pylabrobot.hamilton.star.driver.errors import check_fw_string_error
 from pylabrobot.hamilton.star.driver.features.x_arm import XArmConfiguration
 from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -34,6 +38,11 @@ NOMINAL_ARM_WRAP = 595.2
 
 # The x the machine parks the left arm at on every init.
 SIMULATED_LEFT_X_ARM_HOME = 362.9
+
+# The firmware stack the simulated instrument reports. Every module's version answer is read off
+# it, so the simulator reports one coherent stack rather than a version per module invented
+# separately - and reports a stack this driver has actually been validated against.
+SIMULATED_FIRMWARE = STAR_8_CHANNEL_STACK
 
 # What the machine reports for an arm that is not fitted: a wrap size of zero, and this position at
 # both ends of its travel and workspace.
@@ -121,19 +130,22 @@ class STARSimulationDriver(STARDriver):
     self,
     configuration: Optional[DeviceConfiguration] = None,
     tips_mounted: Optional[List[bool]] = None,
-    firmware_version: str = "7.6S 25 2021_11_05 (GRU C0)",
+    firmware: Optional[ConfirmedFirmware] = None,
     serial_number: str = SIMULATED_SERIAL_NUMBER,
     channels_minimum_y_spacing: Optional[List[float]] = None,
+    initialized: bool = False,
   ):
     """
     Args:
       configuration: the instrument to pretend to be. Defaults to `DEFAULT_STAR_CONFIGURATION`.
       tips_mounted: one entry per channel, `True` where a tip sits on the channel. Defaults to no
         tips on every channel.
-      firmware_version: what the master reports for a firmware-version request.
+      firmware: the module firmware stack to report. Defaults to `SIMULATED_FIRMWARE`.
       serial_number: what the master reports for an installation-data request.
       channels_minimum_y_spacing: per-channel minimum Y spacing in mm. Defaults to the
         configuration's PIP raster pitch for every channel.
+      initialized: whether the machine reports itself already initialized. A machine that has
+        just been switched on has not been.
 
     Raises:
       ValueError: If a per-channel list does not have one entry per channel.
@@ -141,7 +153,7 @@ class STARSimulationDriver(STARDriver):
     super().__init__(io=_UnusedTransport())
 
     self.simulated_configuration = configuration or DEFAULT_STAR_CONFIGURATION
-    self.firmware_version = firmware_version
+    self.firmware = firmware or SIMULATED_FIRMWARE
     self.serial_number = serial_number
 
     channels = self.simulated_configuration.num_pip_channels
@@ -179,6 +191,7 @@ class STARSimulationDriver(STARDriver):
     self.dispensing_drive_positions = [0.0] * channels
     self.iswap_parked = True
     self.head96_tips_mounted = False
+    self.initialized = initialized
 
     # Every command the simulator has been asked, in order. Useful for asserting what a protocol
     # would have sent.
@@ -279,7 +292,7 @@ class STARSimulationDriver(STARDriver):
   # -- answers ---------------------------------------------------------------
 
   def _firmware_version(self, command: str) -> str:
-    return f"rf{self.firmware_version}"
+    return f"rf{self.firmware.master_version}"
 
   def _machine_configuration(self, command: str) -> str:
     c = self.simulated_configuration
@@ -418,6 +431,26 @@ class STARSimulationDriver(STARDriver):
   def _tip_presence(self, command: str) -> str:
     return "rt" + " ".join("1" if mounted else "0" for mounted in self.tips_mounted)
 
+  def _initialization_status(self, command: str) -> str:
+    return f"qw{int(self.initialized)}"
+
+  def _pre_initialize(self, command: str) -> str:
+    """Home every drive. Leaves the channels at Z safety and the arms at their rest."""
+    self.initialized = True
+    self.channel_z_positions = [CHANNEL_Z_SAFETY] * len(self.channel_z_positions)
+    self.x_arm_positions["left"] = SIMULATED_LEFT_X_ARM_HOME
+    return ""
+
+  def _move_all_channels_to_z_safety(self, command: str) -> str:
+    self.channel_z_positions = [CHANNEL_Z_SAFETY] * len(self.channel_z_positions)
+    return ""
+
+  def _x_arm_firmware_version(self, command: str) -> str:
+    version = self.firmware.x_drives_version
+    if version is None:
+      raise ValueError("the simulated firmware stack records no X-drive version")
+    return f"rf{version}"
+
   def _move_x_arm(self, command: str) -> str:
     """Move the arm and acknowledge. The move is instant; there is nothing to be slow about."""
     self.x_arm_positions["left"] = parse_fw_string(command, "la#####")["la"] / 10
@@ -436,8 +469,12 @@ class STARSimulationDriver(STARDriver):
       "RU": _x_drive_ranges,
       "UA": _working_envelopes,
       "RT": _tip_presence,
+      "QW": _initialization_status,
+      "VI": _pre_initialize,
+      "ZA": _move_all_channels_to_z_safety,
     },
     "X0": {
+      "RF": _x_arm_firmware_version,
       "XP": _move_x_arm,
     },
   }
