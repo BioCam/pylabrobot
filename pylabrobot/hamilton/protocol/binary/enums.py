@@ -9,8 +9,6 @@ from __future__ import annotations
 from enum import IntEnum
 
 # Hamilton protocol version (from Piglet: version byte 0x30 = major 3, minor 0)
-HAMILTON_PROTOCOL_VERSION_MAJOR = 3
-HAMILTON_PROTOCOL_VERSION_MINOR = 0
 
 
 class HamiltonProtocol(IntEnum):

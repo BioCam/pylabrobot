@@ -4,61 +4,30 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass
 from typing import Dict, Optional, Union
 
-from pylabrobot.hamilton.transport.tcp.commands import HamiltonCommand
-from pylabrobot.hamilton.transport.tcp.messages import (
+from pylabrobot.hamilton.protocol.binary.commands import HamiltonCommand
+from pylabrobot.hamilton.protocol.binary.enums import (
+  Hoi2Action,
+  HoiRequestId,
+  RegistrationActionCode,
+  RegistrationOptionType,
+)
+from pylabrobot.hamilton.protocol.binary.messages import (
   CommandResponse,
   InitMessage,
   InitResponse,
   RegistrationMessage,
   RegistrationResponse,
 )
-from pylabrobot.hamilton.transport.tcp.packets import Address
-from pylabrobot.hamilton.transport.tcp.protocol import (
-  Hoi2Action,
-  HoiRequestId,
-  RegistrationActionCode,
-  RegistrationOptionType,
-)
+from pylabrobot.hamilton.protocol.binary.packets import Address
 from pylabrobot.io.binary import Reader
 from pylabrobot.io.socket import Socket
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class HamiltonError:
-  """Hamilton error response."""
-
-  error_code: int
-  error_message: str
-  interface_id: int
-  action_id: int
-
-
-class ErrorParser:
-  """Parse Hamilton error responses."""
-
-  @staticmethod
-  def parse_error(data: bytes) -> HamiltonError:
-    """Parse error response from Hamilton instrument."""
-    # Error responses have a specific format
-    # This is a simplified implementation - real errors may vary
-    if len(data) < 8:
-      raise ValueError("Error response too short")
-
-    # Parse error structure (simplified)
-    error_code = Reader(data).u32()
-    error_message = data[4:].decode("utf-8", errors="replace")
-
-    return HamiltonError(
-      error_code=error_code, error_message=error_message, interface_id=0, action_id=0
-    )
-
-
-class HamiltonTCPHandler:
+class HamiltonTCPConnection:
   """Base driver for all Hamilton TCP instruments.
 
   Hamilton TCP instruments include the Nimbus and the Prep, using Hoi and Harp.

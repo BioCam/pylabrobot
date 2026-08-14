@@ -11,16 +11,16 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 
-from pylabrobot.hamilton.transport.tcp.commands import HamiltonCommand
-from pylabrobot.hamilton.transport.tcp.messages import (
-  HoiParams,
-  HoiParamsParser,
-)
-from pylabrobot.hamilton.transport.tcp.packets import Address
-from pylabrobot.hamilton.transport.tcp.protocol import (
+from pylabrobot.hamilton.protocol.binary.commands import HamiltonCommand
+from pylabrobot.hamilton.protocol.binary.enums import (
   HamiltonDataType,
   HamiltonProtocol,
 )
+from pylabrobot.hamilton.protocol.binary.messages import (
+  HoiParams,
+  HoiParamsParser,
+)
+from pylabrobot.hamilton.protocol.binary.packets import Address
 
 logger = logging.getLogger(__name__)
 

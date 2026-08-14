@@ -9,13 +9,13 @@ from __future__ import annotations
 import inspect
 from typing import Optional
 
-from pylabrobot.hamilton.transport.tcp.messages import (
+from pylabrobot.hamilton.protocol.binary.enums import HamiltonProtocol
+from pylabrobot.hamilton.protocol.binary.messages import (
   CommandMessage,
   CommandResponse,
   HoiParams,
 )
-from pylabrobot.hamilton.transport.tcp.packets import Address
-from pylabrobot.hamilton.transport.tcp.protocol import HamiltonProtocol
+from pylabrobot.hamilton.protocol.binary.packets import Address
 
 
 class HamiltonCommand:

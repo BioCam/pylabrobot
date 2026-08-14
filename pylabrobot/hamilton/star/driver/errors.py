@@ -1,6 +1,7 @@
 from abc import ABCMeta
 from typing import Dict, Optional, Type
 
+from pylabrobot.hamilton.protocol.text.framing import find_error_fields
 from pylabrobot.resources.errors import (
   HasTipError,
   NoTipError,
@@ -493,42 +494,50 @@ class UnknownHamiltonError(STARModuleError):
   """Unknown error"""
 
 
+_MODULE_NAME_BY_ID = {
+  "C0": "Master",
+  "X0": "X-drives",
+  "I0": "Auto Load",
+  "W1": "Wash station 1-3",
+  "W2": "Wash station 4-6",
+  "T1": "Temperature carrier 1",
+  "T2": "Temperature carrier 2",
+  "R0": "ISWAP",
+  "P1": "Pipetting channel 1",
+  "P2": "Pipetting channel 2",
+  "P3": "Pipetting channel 3",
+  "P4": "Pipetting channel 4",
+  "P5": "Pipetting channel 5",
+  "P6": "Pipetting channel 6",
+  "P7": "Pipetting channel 7",
+  "P8": "Pipetting channel 8",
+  "P9": "Pipetting channel 9",
+  "PA": "Pipetting channel 10",
+  "PB": "Pipetting channel 11",
+  "PC": "Pipetting channel 12",
+  "PD": "Pipetting channel 13",
+  "PE": "Pipetting channel 14",
+  "PF": "Pipetting channel 15",
+  "PG": "Pipetting channel 16",
+  "H0": "CoRe 96 Head",
+  "HW": "Pump station 1 station",
+  "HU": "Pump station 2 station",
+  "HV": "Pump station 3 station",
+  "N0": "Nano dispenser",
+  "D0": "384 dispensing head",
+  "NP": "Nano disp. pressure controller",
+  "M1": "Reserved for module 1",
+}
+
+
+def _module_ids():
+  """The module identifiers the machine can report, in the order the master lists them."""
+  return tuple(_MODULE_NAME_BY_ID)
+
+
 def _module_id_to_module_name(id_):
   """Convert a module ID to a module name."""
-  return {
-    "C0": "Master",
-    "X0": "X-drives",
-    "I0": "Auto Load",
-    "W1": "Wash station 1-3",
-    "W2": "Wash station 4-6",
-    "T1": "Temperature carrier 1",
-    "T2": "Temperature carrier 2",
-    "R0": "ISWAP",
-    "P1": "Pipetting channel 1",
-    "P2": "Pipetting channel 2",
-    "P3": "Pipetting channel 3",
-    "P4": "Pipetting channel 4",
-    "P5": "Pipetting channel 5",
-    "P6": "Pipetting channel 6",
-    "P7": "Pipetting channel 7",
-    "P8": "Pipetting channel 8",
-    "P9": "Pipetting channel 9",
-    "PA": "Pipetting channel 10",
-    "PB": "Pipetting channel 11",
-    "PC": "Pipetting channel 12",
-    "PD": "Pipetting channel 13",
-    "PE": "Pipetting channel 14",
-    "PF": "Pipetting channel 15",
-    "PG": "Pipetting channel 16",
-    "H0": "CoRe 96 Head",
-    "HW": "Pump station 1 station",
-    "HU": "Pump station 2 station",
-    "HV": "Pump station 3 station",
-    "N0": "Nano dispenser",
-    "D0": "384 dispensing head",
-    "NP": "Nano disp. pressure controller",
-    "M1": "Reserved for module 1",
-  }.get(id_, "Unknown Module")
+  return _MODULE_NAME_BY_ID.get(id_, "Unknown Module")
 
 
 def error_code_to_exception(code: int) -> Type[STARModuleError]:
@@ -723,7 +732,7 @@ def trace_information_to_string(module_identifier: str, trace_information: int) 
       95: "Invalid limit curve index",
       96: "Limit curve already stored",
     }
-  elif module_identifier == "H0":  # Core 96 head
+  elif module_identifier == "H0":  # 96-head
     table = {
       0: "No error",
       20: "No communication to EEPROM",
@@ -929,3 +938,41 @@ def convert_star_module_error_to_plr_error(
     return TooLittleVolumeError(error.message)
 
   return None
+
+
+# Every module the master may report alongside itself, in the order it lists them in a reply.
+STAR_MODULE_ID_LENGTH = 2
+STAR_MASTER_MODULE_ID = "C0"
+STAR_OTHER_MODULE_IDS = tuple(m for m in _module_ids() if m != STAR_MASTER_MODULE_ID)
+
+
+def check_fw_string_error(resp: str):
+  """Raise an error if the firmware response is an error response.
+
+  Raises:
+    ValueError: if the format string is incompatible with the response.
+    HamiltonException: if the response contains an error.
+  """
+
+  errors_dict = find_error_fields(
+    resp,
+    module_id_length=STAR_MODULE_ID_LENGTH,
+    master_module_id=STAR_MASTER_MODULE_ID,
+    other_module_ids=STAR_OTHER_MODULE_IDS,
+  )
+  if len(errors_dict) == 0:
+    return
+
+  he = star_firmware_string_to_error(error_code_dict=errors_dict, raw_response=resp)
+
+  # If there is a faulty parameter error, request which parameter that is.
+  for module_name, error in he.errors.items():
+    if error.message == "Unknown parameter":
+      # temp. disabled until we figure out how to handle async in parse response (the
+      # background thread does not have an event loop, and I'm not sure if it should.)
+      # vp = await self.send_command(module=error.raw_module, command="VP", fmt="vp&&")["vp"]
+      # he[module_name].message += f" ({vp})"
+
+      he.errors[module_name].message += " (call lh.backend.request_name_of_last_faulty_parameter)"
+
+  raise he

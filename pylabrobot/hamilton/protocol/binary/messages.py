@@ -37,17 +37,17 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from pylabrobot.hamilton.transport.tcp.packets import (
+from pylabrobot.hamilton.protocol.binary.enums import (
+  HamiltonDataType,
+  HarpTransportableProtocol,
+  RegistrationOptionType,
+)
+from pylabrobot.hamilton.protocol.binary.packets import (
   Address,
   HarpPacket,
   HoiPacket,
   IpPacket,
   RegistrationPacket,
-)
-from pylabrobot.hamilton.transport.tcp.protocol import (
-  HamiltonDataType,
-  HarpTransportableProtocol,
-  RegistrationOptionType,
 )
 from pylabrobot.io.binary import Reader, Writer
 
