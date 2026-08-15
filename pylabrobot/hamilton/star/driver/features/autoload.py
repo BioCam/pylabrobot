@@ -835,6 +835,29 @@ class Autoload:
       await self.park()
     return resp
 
+  async def unload_carrier_finally(self, track: int, park_after: bool = True):
+    """Unload the carrier at a track so that it cannot be loaded again.
+
+    Where `unload_carrier` puts it back on the loading tray for the autoload to pick up again, this
+    puts it out of the machine's reach.
+
+    Args:
+      track: the track the carrier sits at, counted from 1.
+      park_after: whether to park the autoload once the carrier is out.
+
+    Raises:
+      ValueError: If the track is not one this machine has.
+      RuntimeError: If setup has not run.
+    """
+    tracks = self.track_range
+    if track not in tracks:
+      raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
+
+    resp = await self._driver.send_command(module="C0", command="CW", cp=f"{track:02}")
+    if park_after:
+      await self.park()
+    return resp
+
   # -- deck watching ---------------------------------------------------------------------------
 
   async def set_carrier_monitoring(self, should_monitor: bool):
