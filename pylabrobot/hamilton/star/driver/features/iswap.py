@@ -1,10 +1,13 @@
 """The iSWAP: the arm that picks plates up and puts them down."""
 
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, cast
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
+
+logger = logging.getLogger(__name__)
 
 # What the rotation drive's stored position table holds, slot by slot. The tenth slot is the arm
 # length, read separately. The extra slots are addressable but have no documented meaning.
@@ -46,6 +49,10 @@ Y_SLOTS = (
   "extra_4",
   "extra_5",
 )
+
+# What the arm the device facts below were recorded from reports for its firmware version. An arm
+# reporting something else is a generation those values were not taken from.
+RECORDED_FIRMWARE_PREFIX = "4."
 
 # Where the arm is left when parked, in mm: it travels at this height on the way there.
 PARK_TRAVERSAL_HEIGHT = 280.0
@@ -92,7 +99,9 @@ class iSWAPConfiguration:
   factory default is 138.0 mm."""
 
   # === Device facts of the 4th-generation iSWAP: per-drive area-of-operation ranges and encoder
-  # resolutions. The same across units of a generation, so they are defaulted. ===
+  # resolutions. The same across units of a generation, so they are defaulted - but only that
+  # generation's are held. On an arm of another generation every conversion below would be wrong,
+  # so discovery says so when the arm reports a firmware version these were not taken from. ===
 
   # -- Y --
   y_increment_range: Tuple[int, int] = (0, 14_000)
@@ -119,9 +128,51 @@ class iSWAPConfiguration:
   gripper_increment_range: Tuple[int, int] = (12_780, 24_120)  # jaw width
   gripper_mm_per_increment: float = 0.00554337
 
+  # -- conversions: the wire counts in increments, the driver speaks mm and degrees ----------
+
+  def y_increments_to_mm(self, increments: int) -> float:
+    """A Y-carriage position in mm, from the increments the drive counts in."""
+    return round(increments * self.y_mm_per_increment, 1)
+
+  def y_mm_to_increments(self, mm: float) -> int:
+    """A Y-carriage position in increments, from mm."""
+    return round(mm / self.y_mm_per_increment)
+
+  def z_increments_to_mm(self, increments: int) -> float:
+    """A Z position in mm, from increments."""
+    return round(increments * self.z_mm_per_increment, 1)
+
+  def z_mm_to_increments(self, mm: float) -> int:
+    """A Z position in increments, from mm."""
+    return round(mm / self.z_mm_per_increment)
+
+  def rotation_increments_to_deg(self, increments: int) -> float:
+    """A rotation-drive angle in degrees, from increments."""
+    return increments * self.rotation_deg_per_increment
+
+  def rotation_deg_to_increments(self, deg: float) -> int:
+    """A rotation-drive angle in increments, from degrees."""
+    return round(deg / self.rotation_deg_per_increment)
+
+  def wrist_increments_to_deg(self, increments: int) -> float:
+    """A wrist-drive angle in degrees, from increments."""
+    return increments * self.wrist_deg_per_increment
+
+  def wrist_deg_to_increments(self, deg: float) -> int:
+    """A wrist-drive angle in increments, from degrees."""
+    return round(deg / self.wrist_deg_per_increment)
+
+  def gripper_increments_to_mm(self, increments: int) -> float:
+    """A gripper jaw width in mm, from increments. One decimal, as the machine resolves it."""
+    return round(increments * self.gripper_mm_per_increment, 1)
+
+  def gripper_mm_to_increments(self, mm: float) -> int:
+    """A gripper jaw width in increments, from mm."""
+    return round(mm / self.gripper_mm_per_increment)
+
 
 class iSWAP:
-  """The iSWAP.
+  """The internal Swivel Arm Plate (iSWAP) handler.
 
   Reached as `driver.iswap`, on a machine that has one. It is addressed as `R0`, but the commands
   that move it go to the master, so this capability speaks to both.
@@ -184,8 +235,7 @@ class iSWAP:
       Each named position in mm.
     """
     slots = await self._request_slots("py")
-    resolution = self.configuration.y_mm_per_increment
-    return {name: round(slot * resolution, 2) for name, slot in zip(Y_SLOTS, slots)}
+    return {name: self.configuration.y_increments_to_mm(slot) for name, slot in zip(Y_SLOTS, slots)}
 
   async def request_link_1_length(self) -> float:
     """Request the distance from the rotation joint to the wrist joint.
@@ -237,6 +287,14 @@ class iSWAP:
     """Read this iSWAP's calibration. Read-only: nothing moves."""
     c = self.configuration
     c.firmware_version = await self.request_firmware_version()
+    if not c.firmware_version.startswith(RECORDED_FIRMWARE_PREFIX):
+      logger.warning(
+        "this iSWAP reports firmware %s; the ranges and resolutions here were recorded from an arm "
+        "reporting %sx, so every position, angle and width converted from them may be wrong. Set "
+        "them on iSWAPConfiguration to correct it.",
+        c.firmware_version,
+        RECORDED_FIRMWARE_PREFIX,
+      )
     c.rotation_drive_x_offset = await self.request_rotation_drive_x_offset()
     c.rotation_drive_y_max = (await self.request_y_positions())["parking"]
 

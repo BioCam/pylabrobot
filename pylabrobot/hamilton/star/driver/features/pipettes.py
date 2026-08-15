@@ -2,13 +2,16 @@
 
 import asyncio
 import datetime
+import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Literal, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
+
+logger = logging.getLogger(__name__)
 
 ChannelType = Literal["ML_STAR", "ML_STAR_RPC"]
 HeadType = Literal["ML_STAR", "ML_STAR_PLE", "ML_STAR_RPC"]
@@ -67,6 +70,66 @@ class PipettesConfiguration:
 
   channels: List[PipetteConfiguration] = field(default_factory=list)
   """One entry per channel, in channel order."""
+
+  # -- conversions: the wire counts in increments, the driver speaks mm and uL ---------------
+
+  def y_drive_increments_to_mm(self, increments: int) -> float:
+    """A Y-drive position in mm, from the increments the drive counts in."""
+    return round(increments * self.y_drive_mm_per_increment, 2)
+
+  def y_drive_mm_to_increments(self, mm: float) -> int:
+    """A Y-drive position in increments, from mm."""
+    return round(mm / self.y_drive_mm_per_increment)
+
+  def z_drive_increments_to_mm(self, increments: int) -> float:
+    """A Z-drive position in mm, from increments."""
+    return round(increments * self.z_drive_mm_per_increment, 2)
+
+  def z_drive_mm_to_increments(self, mm: float) -> int:
+    """A Z-drive position in increments, from mm."""
+    return round(mm / self.z_drive_mm_per_increment)
+
+  def dispensing_drive_increments_to_uL(self, increments: int) -> float:
+    """A dispensing-drive position as the volume it holds, from increments."""
+    return round(increments * self.dispensing_drive_uL_per_increment, 1)
+
+  def dispensing_drive_uL_to_increments(self, uL: float) -> int:
+    """A dispensing-drive position in increments, from the volume to hold."""
+    return round(uL / self.dispensing_drive_uL_per_increment)
+
+  def dispensing_drive_increments_to_mm(self, increments: int) -> float:
+    """A dispensing-drive position as how far the piston has travelled, from increments."""
+    return round(increments * self.dispensing_drive_mm_per_increment, 3)
+
+  def dispensing_drive_mm_to_increments(self, mm: float) -> int:
+    """A dispensing-drive position in increments, from how far the piston should travel."""
+    return round(mm / self.dispensing_drive_mm_per_increment)
+
+  def check_channels_agree(self) -> None:
+    """Warn if the channels are not all running the same firmware.
+
+    The resolutions above are held once for every channel, so they are one board's. Channels are
+    replaced individually, and a channel on different firmware may not convert the same way, so a
+    machine that has been repaired piecemeal is worth knowing about.
+    """
+    by_version: Dict[str, List[int]] = {}
+    for channel, entry in enumerate(self.channels):
+      if entry.firmware_version is not None:
+        by_version.setdefault(entry.firmware_version, []).append(channel)
+    if len(by_version) <= 1:
+      return
+    reported = "; ".join(
+      f"{version} on channel{'s' if len(channels) > 1 else ''} "
+      f"{', '.join(str(c) for c in channels)}"
+      for version, channels in by_version.items()
+    )
+    logger.warning(
+      "the pipetting channels are not all on the same firmware (%s). The conversion factors here "
+      "are held once for every channel, so a channel on different firmware may convert "
+      "differently, and the version recorded for the capability is channel %d's.",
+      reported,
+      next(iter(by_version.values()))[0],
+    )
 
   def resolve_channels(self, num_channels: int) -> None:
     """Size `channels` against the machine, once it has said how many channels it has.
@@ -146,7 +209,7 @@ class Pipettes:
       module=self.channel_id(channel), command="VY", fmt="yc### (n)"
     )
     increments = cast(List[int], resp["yc"])[1]
-    return round(increments * self.configuration.y_drive_mm_per_increment, 2)
+    return self.configuration.y_drive_increments_to_mm(increments)
 
   async def request_pipette_configuration(self, channel: int) -> PipetteConfiguration:
     """Request what hardware is fitted to a pipette.
@@ -263,6 +326,7 @@ class Pipettes:
     """
     self.configuration.resolve_channels(self.num_channels)
     await asyncio.gather(*(self._discover_channel(ch) for ch in range(self.num_channels)))
+    self.configuration.check_channels_agree()
 
   async def _discover_channel(self, channel: int):
     version, build_date = await self.request_firmware_version(channel)

@@ -1,6 +1,7 @@
 """The 96-head: the block of 96 pipettes that works a whole plate at once."""
 
 import datetime
+import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
 
@@ -8,6 +9,8 @@ from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_dat
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
+
+logger = logging.getLogger(__name__)
 
 StopDiscType = Literal["core_i", "core_ii"]
 InstrumentType = Literal["legacy", "FM-STAR"]
@@ -19,6 +22,10 @@ HEAD_TYPES: Dict[int, HeadType] = {
   2: "96 head II",
   3: "96 head TADM",
 }
+
+# The generation the dispensing and squeezer resolutions below were taken from. A head older than
+# this has different ones, and nothing here resolves them per generation.
+RESOLUTIONS_FIRST_YEAR = 2010
 
 # The retract drives the head to its Z-safety height, which takes a while.
 RETRACT_READ_TIMEOUT = 20
@@ -67,7 +74,10 @@ class Head96Configuration:
   pre-2010 encoding differs, the physical range does not)."""
 
   # === Encoder resolutions (defaulted device facts). Y/Z are unchanged across firmware; the
-  # dispensing/squeezer resolutions are the 2013+ generation values (2008-era heads differ). ===
+  # dispensing and squeezer resolutions are the 2013-or-later generation's values, and a 2008-era
+  # head's differ. Nothing resolves them per generation, so on such a head every volume and
+  # squeezer conversion here - and the windows derived from them - would be wrong. Discovery says
+  # so when it finds one. ===
   z_drive_mm_per_increment: float = 0.005
   y_drive_mm_per_increment: float = 0.015625
   dispensing_drive_mm_per_increment: float = 0.001025641026
@@ -80,6 +90,48 @@ class Head96Configuration:
   y_drive_acceleration_default: Optional[float] = None
   z_drive_speed_default: Optional[float] = None
   z_drive_acceleration_default: Optional[float] = None
+
+  # -- conversions: the wire counts in increments, the driver speaks mm and uL ---------------
+
+  def y_drive_increments_to_mm(self, increments: int) -> float:
+    """A Y-drive position in mm, from the increments the drive counts in."""
+    return round(increments * self.y_drive_mm_per_increment, 2)
+
+  def y_drive_mm_to_increments(self, mm: float) -> int:
+    """A Y-drive position in increments, from mm."""
+    return round(mm / self.y_drive_mm_per_increment)
+
+  def z_drive_increments_to_mm(self, increments: int) -> float:
+    """A Z-drive position in mm, from increments."""
+    return round(increments * self.z_drive_mm_per_increment, 2)
+
+  def z_drive_mm_to_increments(self, mm: float) -> int:
+    """A Z-drive position in increments, from mm."""
+    return round(mm / self.z_drive_mm_per_increment)
+
+  def dispensing_drive_increments_to_uL(self, increments: int) -> float:
+    """A dispensing-drive position as the volume it holds, from increments."""
+    return round(increments * self.dispensing_drive_uL_per_increment, 2)
+
+  def dispensing_drive_uL_to_increments(self, uL: float) -> int:
+    """A dispensing-drive position in increments, from the volume to hold."""
+    return round(uL / self.dispensing_drive_uL_per_increment)
+
+  def dispensing_drive_increments_to_mm(self, increments: int) -> float:
+    """A dispensing-drive position as how far the piston has travelled, from increments."""
+    return round(increments * self.dispensing_drive_mm_per_increment, 2)
+
+  def dispensing_drive_mm_to_increments(self, mm: float) -> int:
+    """A dispensing-drive position in increments, from how far the piston should travel."""
+    return round(mm / self.dispensing_drive_mm_per_increment)
+
+  def squeezer_drive_increments_to_mm(self, increments: int) -> float:
+    """A squeezer-drive position in mm, from increments."""
+    return round(increments * self.squeezer_drive_mm_per_increment, 2)
+
+  def squeezer_drive_mm_to_increments(self, mm: float) -> int:
+    """A squeezer-drive position in increments, from mm."""
+    return round(mm / self.squeezer_drive_mm_per_increment)
 
   @property
   def firmware_year(self) -> int:
@@ -98,10 +150,7 @@ class Head96Configuration:
   def y_range(self) -> Tuple[float, float]:
     """Y-drive position window (mm); 2013 firmware shifted it from the 2008 range."""
     min_inc, max_inc = (6000, 36000) if self.firmware_year >= 2010 else (7000, 36200)
-    return (
-      round(min_inc * self.y_drive_mm_per_increment, 2),
-      round(max_inc * self.y_drive_mm_per_increment, 2),
-    )
+    return (self.y_drive_increments_to_mm(min_inc), self.y_drive_increments_to_mm(max_inc))
 
   @property
   def y_speed_range(self) -> Tuple[float, float]:
@@ -115,17 +164,14 @@ class Head96Configuration:
     """Y-drive acceleration window (mm/s2). The min (5000 inc) is constant; the max rose from 32000
     inc (2008) to 50000 inc (2013+), so it tracks firmware like the Y range / speed."""
     max_inc = 50000 if self.firmware_year >= 2010 else 32000
-    return (
-      round(5000 * self.y_drive_mm_per_increment, 2),
-      round(max_inc * self.y_drive_mm_per_increment, 2),
-    )
+    return (self.y_drive_increments_to_mm(5000), self.y_drive_increments_to_mm(max_inc))
 
   @property
   def dispensing_drive_range(self) -> Tuple[float, float]:
     """Aspirate/dispense piston volume window (uL); applies to both aspirate and dispense. 2013
     firmware widened the max from 62130 inc."""
     max_inc = 64350 if self.firmware_year >= 2010 else 62130
-    return (0.0, round(max_inc * self.dispensing_drive_uL_per_increment, 2))
+    return (0.0, self.dispensing_drive_increments_to_uL(max_inc))
 
   @property
   def dispensing_drive_speed_range(self) -> Tuple[float, float]:
@@ -133,8 +179,8 @@ class Head96Configuration:
     min_inc = 5  # firmware dv minimum (00005 increments/second)
     max_inc = 55000 if self.firmware_year >= 2010 else 52000
     return (
-      round(min_inc * self.dispensing_drive_uL_per_increment, 2),
-      round(max_inc * self.dispensing_drive_uL_per_increment, 2),
+      self.dispensing_drive_increments_to_uL(min_inc),
+      self.dispensing_drive_increments_to_uL(max_inc),
     )
 
   @property
@@ -146,19 +192,19 @@ class Head96Configuration:
   def dispensing_drive_acceleration_default(self) -> float:
     """Dispensing-drive default acceleration (uL/s2); 2013 firmware raised it."""
     increments = 900000 if self.firmware_year >= 2010 else 150000
-    return round(increments * self.dispensing_drive_uL_per_increment, 2)
+    return self.dispensing_drive_increments_to_uL(increments)
 
   @property
   def squeezer_drive_speed_default(self) -> float:
     """Squeezer-drive default speed (mm/s); 2013 firmware raised it."""
     increments = 76000 if self.firmware_year >= 2010 else 16000
-    return round(increments * self.squeezer_drive_mm_per_increment, 2)
+    return self.squeezer_drive_increments_to_mm(increments)
 
   @property
   def squeezer_drive_acceleration_default(self) -> float:
     """Squeezer-drive default acceleration (mm/s2); 2013 firmware raised it."""
     increments = 300000 if self.firmware_year >= 2010 else 100000
-    return round(increments * self.squeezer_drive_mm_per_increment, 2)
+    return self.squeezer_drive_increments_to_mm(increments)
 
 
 class Head96:
@@ -238,7 +284,7 @@ class Head96:
     """
     resp = await self._driver.send_command(module="H0", command="RZ", fmt="rz##### (n)")
     increments = cast(List[int], resp["rz"])[1]  # [0] = firmware counter, [1] = hardware counter
-    return round(increments * self.configuration.z_drive_mm_per_increment, 2)
+    return self.configuration.z_drive_increments_to_mm(increments)
 
   async def request_drive_parameter(self, parameter: str) -> float:
     """Request one of the head's stored drive parameters.
@@ -253,20 +299,18 @@ class Head96:
     Raises:
       ValueError: If the parameter is not one of the four drive parameters.
     """
-    resolutions = {
-      "yv": self.configuration.y_drive_mm_per_increment,
-      "yr": self.configuration.y_drive_mm_per_increment,
-      "zv": self.configuration.z_drive_mm_per_increment,
-      "zr": self.configuration.z_drive_mm_per_increment,
+    to_mm = {
+      "yv": self.configuration.y_drive_increments_to_mm,
+      "yr": self.configuration.y_drive_increments_to_mm,
+      "zv": self.configuration.z_drive_increments_to_mm,
+      "zr": self.configuration.z_drive_increments_to_mm,
     }
-    if parameter not in resolutions:
-      raise ValueError(
-        f"unknown drive parameter {parameter!r}, expected one of {sorted(resolutions)}"
-      )
+    if parameter not in to_mm:
+      raise ValueError(f"unknown drive parameter {parameter!r}, expected one of {sorted(to_mm)}")
     resp = await self._driver.send_command(
       module="H0", command="RA", ra=parameter, fmt=f"{parameter}#####"
     )
-    return round(cast(int, resp[parameter]) * resolutions[parameter], 2)
+    return to_mm[parameter](cast(int, resp[parameter]))
 
   # -- moves: one command each, moves the head -------------------------------
 
@@ -329,6 +373,13 @@ class Head96:
     """Read what head this is and what it can do. Read-only: nothing moves."""
     c = self.configuration
     c.firmware_version, c.firmware_date = await self.request_firmware_version()
+    if c.firmware_year < RESOLUTIONS_FIRST_YEAR:
+      logger.warning(
+        "this 96-head reports %s firmware, older than the generation the dispensing and squeezer "
+        "resolutions here were taken from. Volumes and squeezer distances it reports, and the "
+        "windows derived from them, may be wrong. Set them on Head96Configuration to correct it.",
+        c.firmware_date,
+      )
 
     hardware = await self.request_hardware()
     c.supports_clot_monitoring_clld = bool(int(hardware[0]))
@@ -354,5 +405,5 @@ class Head96:
     """
     c = self.configuration
     min_increments = 24200 if c.instrument_type == "FM-STAR" else 36100
-    c.z_range = (round(min_increments * c.z_drive_mm_per_increment, 2), z_max)
+    c.z_range = (c.z_drive_increments_to_mm(min_increments), z_max)
     return c.z_range
