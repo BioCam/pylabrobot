@@ -14,7 +14,6 @@ Nothing above the transport is shared between the two.
 
 ```
 hamilton/
-  io.py                 what a driver needs from a pylabrobot.io transport
   protocol/text/        framing + reply routing
   protocol/binary/      frames, messages, commands, enums, errors + connection
   <device>/             one folder per machine
@@ -24,8 +23,22 @@ Nothing here is a transport - that is `pylabrobot.io`. The two families are told
 grammar, not their wire: the text grammar runs over USB, Ethernet and RS-232 depending on the
 machine.
 
-A text-family device is `<device>/driver/master.py` (the driver) plus `errors.py` (its own error
-vocabulary). A binary-family device follows the shape in `prep/`.
+A text-family device is a driver and the capabilities it carries:
+
+```
+star/driver/
+  master.py             the gateway: the link, the protocol, and the order things come up in
+  configuration.py      what the machine reported about itself
+  errors.py             its own error vocabulary
+  confirmed_firmware_versions.py    which firmware each capability has been driven on
+  simulator.py          the same driver, answering without a machine
+  features/             one module per capability, each with its own configuration
+```
+
+A capability is a plain subsystem reached as `driver.<name>` - `pipettes`, `left_x_arm`, `head96`,
+`iswap`, `autoload`. Each owns the commands for its module, and a `<Capability>Configuration`
+holding that module's device facts: what is fitted, the ranges it moves through, the resolutions
+its drives count in, and the conversions between those and mm, uL and degrees.
 
 ## Layers
 
@@ -61,7 +74,7 @@ inherits transport. The tilter implements neither: no id to multiplex, no handsh
 
 | Machine | Transport | Product id | Module id | Correlation | State |
 |---|---|---|---|---|---|
-| STAR / STARLet | USB | `0x8000` | 2 char | `id####` | driver + discovery |
+| STAR / STARLet | USB | `0x8000` | 2 char | `id####` | driver, six capabilities, full setup |
 | Vantage | USB | `0x8003` | 4 char | `id####` | connect and send |
 | STAR V | Ethernet | — | node-routed | `id`, wide range | connect and send, unverified |
 | Heater shaker box | USB | `0x8002` | `T<n>` | `id####` | connect and send |
@@ -70,13 +83,33 @@ inherits transport. The tilter implements neither: no id to multiplex, no handsh
 | Nimbus | TCP | `:2000` | `module:node:object` | sequence number, sequential | stub; branch only |
 | HEPA fan | FTDI | `0x0856` | — | none | stub; legacy driver only |
 
-A folder marked **stub** holds an empty `__init__.py` and nothing else. It exists so the set of
-machines is visible; the work either lives elsewhere or has not started.
+A machine marked **stub** has no folder here yet. It is listed so the set is visible; the work
+either lives elsewhere or has not started.
 
-STAR addresses only the gateway (`C0`) so far: `setup()` asks it for the installed hardware, the
-X-drive geometry and the channel count. No module has been addressed directly yet - the pipetting
-channels, 96-head, iSWAP, autoload and wash stations are nodes on the same bus reached over the
-same router, so each is a module to add rather than new plumbing.
+STAR addresses the gateway (`C0`) and five modules behind it: the pipetting channels (`P1`-`PG`),
+the X drives (`X0`), the 96-head (`H0`), the iSWAP (`R0`) and the autoload (`I0`). `setup()` runs
+three steps, in the order the machine accepts them:
+
+1. **discover** - read-only. What is fitted, the arm geometry, the channel count, and each
+   capability's own firmware and calibration, all read at once.
+2. **initialize** - the instrument's own procedure on a machine that is not up, or a raise to Z
+   safety on one that is.
+3. **capability bring-up** - the channels, iSWAP and 96-head one after another, since they share
+   the arm's X drive and the machine refuses a command to one while another is moving; the
+   autoload alongside them, on its own module.
+
+| Capability | Module | Reads at discovery | Moves |
+|---|---|---|---|
+| `pipettes` | `P1`-`PG`, `C0` | firmware, width, fitted hardware, per channel | initialize, raise to Z safety |
+| `left_x_arm` / `right_x_arm` | `X0` | firmware | absolute X move |
+| `head96` | `H0`, `C0` | firmware, fitted hardware, type, offset, drive settings | retract, initialize |
+| `iswap` | `R0`, `C0` | firmware, offset, link lengths, calibrated stops | initialize, park |
+| `autoload` | `I0`, `C0` | firmware | initialize, raise wheel, move along the deck |
+
+`star.x_arm` is the arm on a machine with only one, and refuses on a machine with two.
+
+The wash stations and pumps are nodes on the same bus reached over the same router, so each is a
+module to add rather than new plumbing.
 
 ## Writing a text-family driver
 
@@ -104,6 +137,11 @@ return parse_fw_string(resp, fmt)
 
 `setup()` opens the link then starts the router; `stop()` reverses it. The router is not a
 connection - it holds no link lifecycle of its own.
+
+A driver can be simulated by subclassing it: each capability gets a small subclass overriding the
+methods whose answers are read, and the simulated driver swaps those in. Everything above them
+runs unchanged, and a command that only moves needs no override - the send is logged and answers
+nothing. `star/driver/simulator.py` is the worked example.
 
 A device that sits behind another machine's gateway takes a router rather than opening one:
 
