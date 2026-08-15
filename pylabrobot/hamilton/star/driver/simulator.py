@@ -215,6 +215,9 @@ class SimulatedAutoload(_Simulated, Autoload):
   async def request_autoload_type(self) -> str:
     return SIMULATED_AUTOLOAD_TYPE
 
+  async def request_initialization_status(self) -> bool:
+    return self.machine.initialized["I0"]
+
   async def request_track(self) -> int:
     return self.track
 
@@ -237,11 +240,16 @@ class SimulatedAutoload(_Simulated, Autoload):
     return False
 
   async def initialize(self):
+    await super().initialize()
     self.machine.initialized["I0"] = True
 
   async def move_to_track(self, track: int, *args, **kwargs):
     await super().move_to_track(track, *args, **kwargs)
     self.track = track
+
+  async def park(self):
+    await super().park()
+    self.track = self.track_range[-1]
 
 
 class STARSimulationDriver(STARDriver):
