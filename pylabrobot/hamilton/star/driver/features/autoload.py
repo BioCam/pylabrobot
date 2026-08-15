@@ -25,6 +25,27 @@ Z_POSITIONS: Dict[str, int] = {"below": 0, "above": 1}
 ScannerRotation = Literal["vertical", "horizontal", "undefined"]
 SCANNER_ROTATIONS: Dict[int, ScannerRotation] = {0: "vertical", 1: "horizontal", 2: "undefined"}
 
+# Which barcode types the scanner will read, and the bit each holds in the mask that switching it
+# on takes. Code 93 is read whether or not its bit is set.
+BARCODE_TYPES: Dict[str, int] = {
+  "isbt_standard": 0,
+  "code_128": 1,
+  "code_39": 2,
+  "codabar": 3,
+  "code_2of5_interleaved": 4,
+  "upc_a_e": 5,
+  "jan_ean_8": 6,
+  "code_93": 7,
+}
+
+# Which way the scanner faces while it reads a carrier's containers, and the code the load takes.
+BarcodeReadingDirection = Literal["vertical", "horizontal"]
+BARCODE_READING_DIRECTIONS: Dict[str, int] = {"vertical": 0, "horizontal": 1}
+
+# Which mode the scanner runs in, and the code the command takes for each.
+BarcodeScannerMode = Literal["operating", "service"]
+BARCODE_SCANNER_MODES: Dict[str, int] = {"operating": 0, "service": 1}
+
 # What kind of autoload is fitted, by the code the master answers with. Codes outside this are
 # variants that have not been seen, and are returned as they came.
 AUTOLOAD_TYPES: Dict[int, str] = {
@@ -521,6 +542,334 @@ class Autoload:
 
     # The parameters are the command's own, not this method's arguments, hence the splat.
     return await self._driver.send_command(module="I0", command="SP", **parameters)  # type: ignore[arg-type]
+
+  # -- barcode scanner -------------------------------------------------------------------------
+
+  async def request_barcode(self) -> Optional[str]:
+    """Request the barcode the scanner last read.
+
+    Returns:
+      What it read, or None when it read nothing.
+    """
+    resp = cast(str, await self._driver.send_command(module="I0", command="RB"))
+    barcode = resp.split("rb", 1)[-1].strip().strip("'")
+    return barcode or None
+
+  async def set_barcode_scanner_enabled(
+    self, enabled: bool, barcode_types: Optional[List[str]] = None
+  ):
+    """Switch the barcode scanner on or off. Switching it on is what reads a barcode.
+
+    Args:
+      enabled: whether to switch it on.
+      barcode_types: which types to read, as named in `BARCODE_TYPES`. Left out of the command when
+        not given, so the scanner uses its own set.
+
+    Raises:
+      ValueError: If a type is not one it reads.
+    """
+    parameters: Dict[str, str] = {"ar": f"{int(enabled):01}"}
+    if barcode_types is not None:
+      unknown = [name for name in barcode_types if name not in BARCODE_TYPES]
+      if unknown:
+        raise ValueError(f"not barcode types the scanner reads: {unknown}")
+      mask = sum(1 << BARCODE_TYPES[name] for name in barcode_types)
+      parameters["bt"] = f"{mask:02X}"
+
+    # The parameters are the command's own, not this method's arguments, hence the splat.
+    return await self._driver.send_command(module="I0", command="AR", **parameters)  # type: ignore[arg-type]
+
+  async def set_barcode_scanner_mode(self, mode: BarcodeScannerMode):
+    """Set which mode the barcode scanner runs in.
+
+    Args:
+      mode: which one, as named in `BARCODE_SCANNER_MODES`.
+
+    Raises:
+      ValueError: If the mode is not one it has.
+    """
+    if mode not in BARCODE_SCANNER_MODES:
+      raise ValueError(f"mode must be one of {sorted(BARCODE_SCANNER_MODES)}, is {mode!r}")
+    return await self._driver.send_command(
+      module="I0", command="AX", ax=f"{BARCODE_SCANNER_MODES[mode]:01}"
+    )
+
+  async def reset_barcode_scanner(self):
+    """Reset the barcode scanner."""
+    return await self._driver.send_command(module="I0", command="AF")
+
+  # -- carrier identification ------------------------------------------------------------------
+
+  async def set_barcode_type(self, barcode_types: List[str]):
+    """Set which barcode types the carrier identification reads.
+
+    This is the master's own setting, kept apart from the one the scanner is switched on with.
+
+    Args:
+      barcode_types: which types to read, as named in `BARCODE_TYPES`.
+
+    Raises:
+      ValueError: If a type is not one it reads.
+    """
+    unknown = [name for name in barcode_types if name not in BARCODE_TYPES]
+    if unknown:
+      raise ValueError(f"not barcode types the scanner reads: {unknown}")
+    mask = sum(1 << BARCODE_TYPES[name] for name in barcode_types)
+    return await self._driver.send_command(module="C0", command="CB", bt=f"{mask:02X}")
+
+  async def load_carrier_from_tray_and_scan_carrier_barcode(
+    self,
+    track: int,
+    barcode_position: float = 4.3,
+    barcode_reading_window_width: float = 38.0,
+    container_distance: float = 96.0,
+    reading_speed: float = 128.1,
+  ) -> Optional[str]:
+    """Pull a carrier off the loading tray and read its barcode on the way in.
+
+    One command does both: the carrier travels in past the scanner, which reads it as it passes.
+    `unload_carrier_after_carrier_barcode_scanning` pushes it back out again.
+
+    Args:
+      track: the track the carrier ends at, counted from 1.
+      barcode_position: where along the carrier its barcode sits, in mm.
+      barcode_reading_window_width: how wide a window to read it in, in mm.
+      container_distance: the spacing of the pattern to read, in mm.
+      reading_speed: how fast to travel while reading, in mm/s.
+
+    Returns:
+      The barcode, or None when nothing was read.
+
+    Raises:
+      ValueError: If the track is not one this machine has, or an argument is outside what the
+        command accepts.
+      RuntimeError: If setup has not run.
+    """
+    tracks = self.track_range
+    if track not in tracks:
+      raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
+    if not 0 <= barcode_position <= 470:
+      raise ValueError(f"barcode_position must be between 0 and 470 mm, is {barcode_position}")
+    if not 0.1 <= barcode_reading_window_width <= 99.9:
+      raise ValueError(
+        "barcode_reading_window_width must be between 0.1 and 99.9 mm, is "
+        f"{barcode_reading_window_width}"
+      )
+    if not 1.5 <= reading_speed <= 160.0:
+      raise ValueError(f"reading_speed must be between 1.5 and 160.0 mm/s, is {reading_speed}")
+
+    try:
+      resp = cast(
+        str,
+        await self._driver.send_command(
+          module="C0",
+          command="CI",
+          cp=f"{track:02}",
+          bi=f"{round(barcode_position * 10):04}",
+          bw=f"{round(barcode_reading_window_width * 10):03}",
+          co=f"{round(container_distance * 10):04}",
+          cv=f"{round(reading_speed * 10):04}",
+        ),
+      )
+    except BaseException:
+      # The wheel is left wherever the failure stopped it, and nothing may travel with it down.
+      await self.move_to_safe_z()
+      raise
+
+    if "bb/" not in resp:
+      return None
+    # What follows the marker is the barcode's length written in two digits, then the barcode.
+    read = resp.split("bb/", 1)[1].strip().strip("'")
+    return read[2:] or None
+
+  async def unload_carrier_after_carrier_barcode_scanning(self):
+    """Push the carrier that was just identified back out to the loading tray."""
+    try:
+      return await self._driver.send_command(module="C0", command="CA")
+    except BaseException:
+      await self.move_to_safe_z()
+      raise
+
+  async def take_carrier_out_to_autoload_belt(self, track: int):
+    """Take a carrier already on the deck back out to the identification position.
+
+    Args:
+      track: the track the carrier sits at, counted from 1.
+
+    Raises:
+      ValueError: If the track is not one this machine has, or its carrier is on the loading tray
+        rather than the deck.
+      RuntimeError: If setup has not run.
+    """
+    tracks = self.track_range
+    if track not in tracks:
+      raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
+    if await self.request_carrier_on_loading_tray(track):
+      raise ValueError(f"the carrier at track {track} is on the loading tray, not the deck")
+
+    try:
+      return await self._driver.send_command(module="C0", command="CN", cp=f"{track:02}")
+    except BaseException:
+      # The wheel is left wherever the failure stopped it, and nothing may travel with it down.
+      await self.move_to_safe_z()
+      raise
+
+  async def load_carrier_from_autoload_belt(
+    self,
+    barcode_reading: bool = False,
+    barcode_reading_direction: BarcodeReadingDirection = "horizontal",
+    reading_position_of_first_barcode: float = 63.0,
+    containers_per_carrier: int = 5,
+    distance_between_containers: float = 96.0,
+    width_of_reading_window: float = 38.0,
+    reading_speed: float = 128.1,
+    park_after: bool = True,
+  ) -> Dict[int, Optional[str]]:
+    """Finish loading the carrier at the identification position, reading its containers on the way.
+
+    Which barcode types are read is whatever `set_barcode_type` last set.
+
+    Args:
+      barcode_reading: whether to read the containers at all. When False the scanner stays where it
+        is and nothing is read.
+      barcode_reading_direction: which way the scanner faces while reading, as named in
+        `BARCODE_READING_DIRECTIONS`.
+      reading_position_of_first_barcode: where along the carrier the first container's barcode
+        sits, in mm.
+      containers_per_carrier: how many containers to read.
+      distance_between_containers: how far apart they sit, in mm.
+      width_of_reading_window: how wide a window to read each in, in mm.
+      reading_speed: how fast to travel while reading, in mm/s.
+      park_after: whether to park the autoload once the carrier is in.
+
+    Returns:
+      Each container's barcode by position, counted from 0, and None where nothing was read. Empty
+      when `barcode_reading` is False.
+
+    Raises:
+      ValueError: If an argument is outside what the command accepts, or fewer barcodes come back
+        than were asked for.
+      RuntimeError: If setup has not run and the autoload has to be parked.
+    """
+    if barcode_reading_direction not in BARCODE_READING_DIRECTIONS:
+      raise ValueError(
+        f"barcode_reading_direction must be one of {sorted(BARCODE_READING_DIRECTIONS)}, is "
+        f"{barcode_reading_direction!r}"
+      )
+    if not 0 <= reading_position_of_first_barcode <= 470:
+      raise ValueError(
+        "reading_position_of_first_barcode must be between 0 and 470 mm, is "
+        f"{reading_position_of_first_barcode}"
+      )
+    if not 0 <= containers_per_carrier <= 32:
+      raise ValueError(
+        f"containers_per_carrier must be between 0 and 32, is {containers_per_carrier}"
+      )
+    if not 0 <= distance_between_containers <= 470:
+      raise ValueError(
+        f"distance_between_containers must be between 0 and 470 mm, is {distance_between_containers}"
+      )
+    if not 0.1 <= width_of_reading_window <= 99.9:
+      raise ValueError(
+        f"width_of_reading_window must be between 0.1 and 99.9 mm, is {width_of_reading_window}"
+      )
+    if not 1.5 <= reading_speed <= 160.0:
+      raise ValueError(f"reading_speed must be between 1.5 and 160.0 mm/s, is {reading_speed}")
+
+    # Reading nothing is asked for by facing the scanner away and asking for no containers, so the
+    # carrier travels in without the scanner moving.
+    direction = "vertical" if not barcode_reading else barcode_reading_direction
+    containers = containers_per_carrier if barcode_reading else 0
+
+    try:
+      resp = cast(
+        str,
+        await self._driver.send_command(
+          module="C0",
+          command="CL",
+          bd=f"{BARCODE_READING_DIRECTIONS[direction]:01}",
+          bp=f"{round(reading_position_of_first_barcode * 10):04}",
+          cn=f"{containers:02}",
+          co=f"{round(distance_between_containers * 10):04}",
+          cf=f"{round(width_of_reading_window * 10):03}",
+          cv=f"{round(reading_speed * 10):04}",
+        ),
+      )
+    except BaseException:
+      await self.move_to_safe_z()
+      raise
+
+    if park_after:
+      await self.park()
+
+    if not barcode_reading:
+      return {}
+
+    read = resp.split("bb/")[-1].split("/")
+    if len(read) < containers_per_carrier:
+      raise ValueError(
+        f"asked for {containers_per_carrier} barcodes, {len(read)} came back: {resp!r}"
+      )
+    return {
+      position: None if read[position] == "00" else read[position]
+      for position in range(containers_per_carrier)
+    }
+
+  async def unload_carrier(self, track: int, park_after: bool = True):
+    """Unload the carrier at a track, back out to the loading tray.
+
+    Args:
+      track: the track the carrier sits at, counted from 1.
+      park_after: whether to park the autoload once the carrier is out.
+
+    Raises:
+      ValueError: If the track is not one this machine has.
+      RuntimeError: If setup has not run.
+    """
+    tracks = self.track_range
+    if track not in tracks:
+      raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
+
+    resp = await self._driver.send_command(module="C0", command="CR", cp=f"{track:02}")
+    if park_after:
+      await self.park()
+    return resp
+
+  # -- deck watching ---------------------------------------------------------------------------
+
+  async def set_carrier_monitoring(self, should_monitor: bool):
+    """Set whether the instrument watches for carriers being taken off the deck.
+
+    Args:
+      should_monitor: whether to watch.
+    """
+    return await self._driver.send_command(
+      module="C0", command="CU", cu=f"{int(should_monitor):01}"
+    )
+
+  async def set_loading_indicators(self, lit: List[bool], blinking: List[bool]):
+    """Set the loading tray's indicator lights, one per track.
+
+    Args:
+      lit: whether each track's light is on, counted from track 1.
+      blinking: whether each track's light blinks rather than stays steady.
+
+    Raises:
+      ValueError: If either pattern does not have one entry per track.
+      RuntimeError: If setup has not run, so the deck size is not known.
+    """
+    tracks = len(self.track_range)
+    for name, pattern in (("lit", lit), ("blinking", blinking)):
+      if len(pattern) != tracks:
+        raise ValueError(f"{name} must have {tracks} entries, one per track, has {len(pattern)}")
+
+    def as_hex(pattern: List[bool]) -> str:
+      bits = "".join("1" if on else "0" for on in pattern)
+      return f"{int(bits, base=2):014X}"
+
+    return await self._driver.send_command(
+      module="C0", command="CP", cl=as_hex(lit), cb=as_hex(blinking)
+    )
 
   # -- higher-level sled movement --------------------------------------------------------------
 

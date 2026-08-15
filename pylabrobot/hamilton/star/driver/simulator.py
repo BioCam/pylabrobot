@@ -67,6 +67,9 @@ SIMULATED_AUTOLOAD_X_POSITION = 0.0
 SIMULATED_AUTOLOAD_Y_POSITION = 0.0
 SIMULATED_AUTOLOAD_Z_POSITION = 0.0
 
+# What its scanner has read. Nothing: a simulated deck holds no carriers to read a barcode off.
+SIMULATED_BARCODE: Optional[str] = None
+
 # The iSWAP's stored position tables, and where its rotation drive sits relative to the carriage.
 SIMULATED_ISWAP_TABLES = {
   "pw": [13000, -29007, 156, 29068, 29500, 29068, 29068, 29068, 29068, 1378],
@@ -217,6 +220,9 @@ class SimulatedAutoload(_Simulated, Autoload):
 
   async def request_initialization_status(self) -> bool:
     return self.machine.initialized["I0"]
+
+  async def request_barcode(self) -> Optional[str]:
+    return SIMULATED_BARCODE
 
   async def request_track(self) -> int:
     return self.track
