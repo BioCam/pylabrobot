@@ -6,25 +6,6 @@ from typing import TYPE_CHECKING, Dict, Optional, Tuple
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
 
-# What the sensor query reports, flag by flag, in the order it reports them.
-SENSORS = (
-  "scanner_x_drive_initialized",
-  "carrier_y_drive_initialized",
-  "carrier_z_drive_initialized",
-  "scanner_rotation_vertical",
-  "scanner_rotation_horizontal",
-  "carrier_on_loading_tray",
-  "cup_present",
-)
-
-# The scanner X drive is built in two resolutions, and which one this unit has is held in its own
-# memory as the first field of its configuration. The default is the finer of the two.
-X_DRIVE_RESOLUTIONS: Dict[int, float] = {0: 0.1, 1: 0.125}
-
-# Every drive takes the same motor current limit, and the same ramp unit.
-CURRENT_LIMIT_RANGE = (0, 7)
-ACCELERATION_RAMP_INCREMENTS_PER_SECOND_SQUARED = 2500
-
 
 @dataclass
 class AutoloadConfiguration:
@@ -41,9 +22,9 @@ class AutoloadConfiguration:
   """The autoload's firmware version, as reported."""
 
   # -- scanner X drive (along the deck) --
-  x_drive_mm_per_increment: float = 0.125
-  """How far one step moves the scanner, in mm. This unit is built in two resolutions, selected by
-  the first field of its stored configuration; this is the default one."""
+  x_drive_mm_per_increment: float = 0.1
+  """How far one step moves the scanner, in mm. Which of the two resolutions a unit has is held in
+  its own memory: 0.1 as here, or 0.125 on a pilot-lot scanner."""
   x_drive_increment_range: Tuple[int, int] = (0, 12_500)
   """Absolute position range the scanner move accepts, in steps."""
   x_drive_speed_increment_range: Tuple[int, int] = (20, 3_000)
@@ -53,7 +34,18 @@ class AutoloadConfiguration:
   """Acceleration ramp range, in multiples of the shared ramp unit."""
   x_drive_acceleration_ramp_default: int = 3
 
+  # -- carrier Z drive (the handling wheel, down or up) --
+  z_drive_mm_per_increment: float = 0.004166666666666667
+  """How far one step raises or lowers the handling wheel, in mm. The specification gives it as a
+  repeating decimal, 0.0041666..., which is 1/240 exactly; this is that value."""
+  z_drive_speed_increment_range: Tuple[int, int] = (20, 2_000)
+  z_drive_speed_default: int = 1_750
+  z_drive_acceleration_ramp_range: Tuple[int, int] = (1, 4)
+  z_drive_acceleration_ramp_default: int = 4
+
   # -- carrier Y drive (in and out of the deck) --
+  y_drive_mm_per_increment: float = 0.06404424
+  """How far one step moves a carrier in or out, in mm."""
   y_drive_increment_range: Tuple[int, int] = (0, 9_999)
   """Absolute position range the carrier move accepts, in steps."""
   y_drive_speed_increment_range: Tuple[int, int] = (20, 2_500)
@@ -61,11 +53,12 @@ class AutoloadConfiguration:
   y_drive_acceleration_ramp_range: Tuple[int, int] = (1, 6)
   y_drive_acceleration_ramp_default: int = 6
 
-  # -- carrier Z drive (the handling wheel, down or up) --
-  z_drive_speed_increment_range: Tuple[int, int] = (20, 2_000)
-  z_drive_speed_default: int = 1_750
-  z_drive_acceleration_ramp_range: Tuple[int, int] = (1, 4)
-  z_drive_acceleration_ramp_default: int = 4
+  # -- shared by all three drives --
+  current_limit_range: Tuple[int, int] = (0, 7)
+  """Motor current limit range, the same for every drive."""
+  acceleration_ramp_increments_per_second_squared: int = 2_500
+  """What one step of an acceleration ramp is worth, so a ramp setting can be read as an
+  acceleration."""
 
   # -- conversions: the wire counts in steps, the driver speaks mm ---------------------------
 
@@ -76,6 +69,22 @@ class AutoloadConfiguration:
   def x_drive_mm_to_increments(self, mm: float) -> int:
     """A scanner position in steps, from mm."""
     return round(mm / self.x_drive_mm_per_increment)
+
+  def z_drive_increments_to_mm(self, increments: int) -> float:
+    """How high the handling wheel is, in mm, from steps."""
+    return round(increments * self.z_drive_mm_per_increment, 2)
+
+  def z_drive_mm_to_increments(self, mm: float) -> int:
+    """A wheel position in steps, from mm."""
+    return round(mm / self.z_drive_mm_per_increment)
+
+  def y_drive_increments_to_mm(self, increments: int) -> float:
+    """How far in or out a carrier is, in mm, from the steps the drive counts in."""
+    return round(increments * self.y_drive_mm_per_increment, 2)
+
+  def y_drive_mm_to_increments(self, mm: float) -> int:
+    """A carrier position in steps, from mm."""
+    return round(mm / self.y_drive_mm_per_increment)
 
 
 class Autoload:
@@ -116,16 +125,6 @@ class Autoload:
     resp: str = await self._driver.send_command(module="I0", command="RF")
     return resp.split("rf")[-1]
 
-  async def request_sensors(self) -> Dict[str, bool]:
-    """Request what each of the autoload's sensors reports.
-
-    Returns:
-      Each sensor in `SENSORS`, and whether it is active.
-    """
-    resp: str = await self._driver.send_command(module="I0", command="RW")
-    flags = resp.split("rw")[-1].strip()
-    return {name: flags[i] == "1" for i, name in enumerate(SENSORS) if i < len(flags)}
-
   # -- moves: one command each, moves the autoload ---------------------------
 
   async def initialize(self):
@@ -153,8 +152,8 @@ class Autoload:
       track: which track to move to, counted from 1.
       speed: how fast to travel, in steps per second. Left out of the command when not given, so
         the drive uses its own default.
-      acceleration_ramp: how hard to accelerate, in multiples of the shared ramp unit. Left out
-        when not given.
+      acceleration_ramp: how hard to accelerate, in multiples of
+        `configuration.acceleration_ramp_increments_per_second_squared`. Left out when not given.
       current_limit: the motor current limit. Left out when not given.
 
     Raises:
@@ -173,10 +172,10 @@ class Autoload:
     for name, field, value, width, (low, high) in (
       ("speed", "xv", speed, 4, c.x_drive_speed_increment_range),
       ("acceleration_ramp", "xr", acceleration_ramp, 1, c.x_drive_acceleration_ramp_range),
-      ("current_limit", "xw", current_limit, 1, CURRENT_LIMIT_RANGE),
+      ("current_limit", "xw", current_limit, 1, c.current_limit_range),
     ):
       if value is None:
-        continue  # left out entirely, so the drive applies its own default
+        continue
       if not low <= value <= high:
         raise ValueError(f"{name} must be between {low} and {high}, is {value}")
       fields[field] = f"{value:0{width}}"

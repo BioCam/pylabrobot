@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
-from pylabrobot.hamilton.star.driver.features.autoload import SENSORS, Autoload
+from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, HeadType
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import PipetteConfiguration, Pipettes
@@ -201,11 +201,6 @@ class SimulatedAutoload(_Simulated, Autoload):
 
   async def request_firmware_version(self) -> str:
     return self.machine.simulated_firmware["autoload"]
-
-  async def request_sensors(self) -> Dict[str, bool]:
-    """Its drives up, the wheel raised, and nothing on the loading tray."""
-    active = {"scanner_rotation_horizontal"}
-    return {name: name.endswith("initialized") or name in active for name in SENSORS}
 
   async def initialize(self):
     self.machine.initialized["I0"] = True
