@@ -1,124 +1,73 @@
 """STAR firmware versions verified against hardware.
 
 A STAR is not one controller. The master (``C0``) sits on an internal bus of independently
-versioned boards, each of which answers ``RF`` with its own version string:
+versioned boards, each of which answers ``RF`` with its own version string, and each of which is
+replaced and updated on its own. So the versions are recorded per capability rather than as whole
+stacks: two machines that differ only in their 96-head would otherwise have every other version
+written down twice.
 
-* master              - ``C0``
-* X drives            - ``X0``
-* pipetting channels  - ``P1``..``PG`` (one board per channel, same firmware on each)
-* 96-head             - ``H0``
-* iSWAP               - ``R0``
-* autoload            - ``I0``
-
-So "the firmware of a STAR" is the whole set read together, not a single number, and a machine
-that has been driven successfully is a whole set that worked together. Each
-:class:`ConfirmedFirmware` entry is therefore one full stack, not a per-board list.
-
-Every STAR has a master and pipetting channels; the remaining boards depend on what is fitted, so
-they are optional and recorded for provenance. :func:`is_confirmed` gates on the pair that is
-always present, and :func:`suggest_entry` formats a newly seen stack as a literal to paste in.
+The consequence is that a combination is confirmed when each of its parts is, not as a set. That
+is the right reading for boards that are swapped independently, and it is weaker than checking
+whole stacks: a combination nobody has ever run can pass. Use it as "has this board ever been
+driven", not "has this machine ever worked".
 
 Verified readings
 -----------------
 * a STAR, 54 slots, with 8 pipetting channels, a 96-head, an iSWAP and autoload, 2026-05-27,
-  read-only ``RF`` probe of every module: master ``7.6S 25 2021_11_05 (GRU C0)``, channels
-  ``4.0S j 2022-03-16``, X drives ``1.4S 2012-04-25``, 96-head ``5.0S i 2021-10-22 (H0 XE167)``,
-  iSWAP ``4.1S 2011-12-19``, autoload ``3.4S f 2017-01-09``. The channel, 96-head and iSWAP
-  versions re-appear unchanged in every run log through 2026-08.
+  read-only ``RF`` probe of every module.
 """
 
-from dataclasses import dataclass
-from typing import Optional
+from typing import Dict, FrozenSet, Optional
+
+CONFIRMED_FIRMWARE_VERSIONS: Dict[str, FrozenSet[str]] = {
+  "master": frozenset({"7.6S 25 2021_11_05 (GRU C0)"}),
+  "pipettes": frozenset({"4.0S j 2022-03-16"}),
+  "x_arm": frozenset({"1.4S 2012-04-25"}),
+  "head96": frozenset({"5.0S i 2021-10-22 (H0 XE167)"}),
+  "iswap": frozenset({"4.1S 2011-12-19"}),
+  "autoload": frozenset({"3.4S f 2017-01-09"}),
+}
+"""What each capability has been seen running, keyed by the capability it belongs to."""
 
 
-@dataclass(frozen=True)
-class ConfirmedFirmware:
-  """One full STAR module firmware stack validated against this driver.
-
-  `master_version` and `channels_version` are present on every STAR and are what
-  :func:`is_confirmed` gates on. The rest are fitted-option boards: they are recorded when read,
-  and are `None` when the option is absent or was not probed.
-  """
-
-  master_version: str
-  """Master board (`C0`) version, as reported by `RF`."""
-  channels_version: str
-  """Pipetting channel (`P1`..`PG`) version. One board per channel, all reporting the same."""
-  x_drives_version: Optional[str] = None
-  """X drive board (`X0`) version."""
-  head96_version: Optional[str] = None
-  """96-head (`H0`) version."""
-  iswap_version: Optional[str] = None
-  """iSWAP (`R0`) version."""
-  autoload_version: Optional[str] = None
-  """Autoload (`I0`) version."""
-
-
-# STAR with 8 channels, 96-head, iSWAP and autoload; read-only RF probe 2026-05-27.
-STAR_8_CHANNEL_STACK = ConfirmedFirmware(
-  master_version="7.6S 25 2021_11_05 (GRU C0)",
-  channels_version="4.0S j 2022-03-16",
-  x_drives_version="1.4S 2012-04-25",
-  head96_version="5.0S i 2021-10-22 (H0 XE167)",
-  iswap_version="4.1S 2011-12-19",
-  autoload_version="3.4S f 2017-01-09",
-)
-
-CONFIRMED_FIRMWARE_VERSIONS = frozenset([STAR_8_CHANNEL_STACK])
-
-
-def is_confirmed(master_version: str, channels_version: str) -> bool:
-  """Whether this master and channel firmware pair has been validated together in one stack.
+def is_confirmed(capability: str, version: str) -> bool:
+  """Whether a capability has been driven on this version before.
 
   Args:
-    master_version: version reported by the master (`C0`), without the `rf` field marker.
-    channels_version: version reported by the pipetting channels (`P1`..`PG`).
+    capability: which capability reported it, as keyed in `CONFIRMED_FIRMWARE_VERSIONS`.
+    version: the version it reported, without the `rf` field marker.
 
   Returns:
-    True if a confirmed stack has exactly this pair.
+    True if that version is recorded for that capability.
   """
-  return any(
-    c.master_version == master_version and c.channels_version == channels_version
-    for c in CONFIRMED_FIRMWARE_VERSIONS
-  )
+  return version in CONFIRMED_FIRMWARE_VERSIONS.get(capability, frozenset())
 
 
-def suggest_entry(
-  master_version: str,
-  channels_version: str,
-  x_drives_version: Optional[str] = None,
-  head96_version: Optional[str] = None,
-  iswap_version: Optional[str] = None,
-  autoload_version: Optional[str] = None,
-) -> str:
-  """Format a stack read off a machine as a `ConfirmedFirmware(...)` literal.
-
-  The result is meant to be pasted into `CONFIRMED_FIRMWARE_VERSIONS` once the machine has been
-  driven successfully. Option boards are included only when they were read.
+def unconfirmed(versions: Dict[str, Optional[str]]) -> Dict[str, str]:
+  """Which of the versions a machine reported have not been driven before.
 
   Args:
-    master_version: version reported by the master (`C0`).
-    channels_version: version reported by the pipetting channels (`P1`..`PG`).
-    x_drives_version: version reported by the X drives (`X0`), if read.
-    head96_version: version reported by the 96-head (`H0`), if read.
-    iswap_version: version reported by the iSWAP (`R0`), if read.
-    autoload_version: version reported by the autoload (`I0`), if read.
+    versions: what each capability reported, keyed by capability. A capability that reported
+      nothing is ignored.
 
   Returns:
-    The literal, indented to sit inside `CONFIRMED_FIRMWARE_VERSIONS`.
+    The capabilities whose version is not recorded, and what they reported.
   """
-  lines = [
-    "    ConfirmedFirmware(",
-    f'      master_version="{master_version}",',
-    f'      channels_version="{channels_version}",',
-  ]
-  for name, value in (
-    ("x_drives_version", x_drives_version),
-    ("head96_version", head96_version),
-    ("iswap_version", iswap_version),
-    ("autoload_version", autoload_version),
-  ):
-    if value is not None:
-      lines.append(f'      {name}="{value}",')
-  lines.append("    ),")
-  return "\n".join(lines)
+  return {
+    capability: version
+    for capability, version in versions.items()
+    if version is not None and not is_confirmed(capability, version)
+  }
+
+
+def suggest_entry(capability: str, version: str) -> str:
+  """Format a version as the line to add to `CONFIRMED_FIRMWARE_VERSIONS`.
+
+  Args:
+    capability: which capability reported it.
+    version: the version it reported.
+
+  Returns:
+    The line, to paste into that capability's set once the machine has been driven successfully.
+  """
+  return f'  "{capability}": frozenset({{..., "{version}"}}),'

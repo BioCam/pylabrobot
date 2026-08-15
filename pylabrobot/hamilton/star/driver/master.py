@@ -16,7 +16,6 @@ from pylabrobot.hamilton.protocol.text.framing import (
 )
 from pylabrobot.hamilton.protocol.text.router import ReplyRouter
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
-from pylabrobot.hamilton.star.driver.confirmed_firmware_versions import ConfirmedFirmware
 from pylabrobot.hamilton.star.driver.errors import (
   STAR_MODULE_ID_LENGTH,
   check_fw_string_error,
@@ -55,8 +54,8 @@ class STARDriver:
     device_address: Optional[int] = None,
     serial_number: Optional[str] = None,
     packet_read_timeout: int = 3,
-    read_timeout: int = 30,
     write_timeout: int = 30,
+    read_timeout: int = 60,
     left_side_panel_installed: bool = False,
     io: Optional[IOBase] = None,
   ):
@@ -76,7 +75,7 @@ class STARDriver:
     """
 
     self.io: IOBase = io or USB(
-      human_readable_device_name="Hamilton",
+      human_readable_device_name=f"Hamilton {'STAR'}",
       id_vendor=ID_VENDOR,
       id_product=ID_PRODUCT,
       device_address=device_address,
@@ -104,8 +103,8 @@ class STARDriver:
 
     self.configuration: Optional[DeviceConfiguration] = None
 
-    # What each module reported at discovery, as one stack. `is_confirmed` takes exactly this.
-    self.firmware: Optional[ConfirmedFirmware] = None
+    # What each capability reported at discovery, keyed as `confirmed_firmware_versions` keys it.
+    self.firmware: Dict[str, str] = {}
 
     # Subsystems. Each reads what it needs off `configuration`, so they are usable once setup has
     # run and raise a clear error before that. A STAR always has a left arm; a right arm is an
@@ -199,17 +198,15 @@ class STARDriver:
       )
 
     master_version, _ = await self.request_firmware_version()
-    channels = self.pipettes.configuration.channels
-    self.firmware = ConfirmedFirmware(
-      master_version=master_version,
-      channels_version=channels[0].firmware_version or "unknown",
-      x_drives_version=self.left_x_arm.configuration.firmware_version,
-      head96_version=None if self.head96 is None else self.head96.configuration.firmware_version,
-      iswap_version=None if self.iswap is None else self.iswap.configuration.firmware_version,
-      autoload_version=(
-        None if self.autoload is None else self.autoload.configuration.firmware_version
-      ),
-    )
+    reported = {
+      "master": master_version,
+      "pipettes": self.pipettes.configuration.channels[0].firmware_version,
+      "x_arm": self.left_x_arm.configuration.firmware_version,
+      "head96": None if self.head96 is None else self.head96.configuration.firmware_version,
+      "iswap": None if self.iswap is None else self.iswap.configuration.firmware_version,
+      "autoload": None if self.autoload is None else self.autoload.configuration.firmware_version,
+    }
+    self.firmware = {name: v for name, v in reported.items() if v is not None}
 
   async def initialize(self, force: bool = False) -> bool:
     """Bring the instrument itself to a known state.
@@ -273,21 +270,9 @@ class STARDriver:
     if c is None:
       return "[Hamilton STAR] not discovered yet"
 
-    firmware = "unknown"
-    if self.firmware is not None:
-      parts = [
-        f"{label} {version}"
-        for label, version in (
-          ("master", self.firmware.master_version),
-          ("channels", self.firmware.channels_version),
-          ("X drives", self.firmware.x_drives_version),
-          ("96-head", self.firmware.head96_version),
-          ("iSWAP", self.firmware.iswap_version),
-          ("autoload", self.firmware.autoload_version),
-        )
-        if version is not None
-      ]
-      firmware = ", ".join(parts)
+    firmware = (
+      ", ".join(f"{name} {version}" for name, version in self.firmware.items()) or "unknown"
+    )
 
     fitted = [f"{c.instrument_size_slots} slots"]
     fitted.append(f"{c.num_pip_channels} channels ({'1000uL' if c.pip_type_1000ul else '300uL'})")

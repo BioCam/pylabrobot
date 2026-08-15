@@ -15,10 +15,6 @@ from typing import Any, Callable, Dict, List, NamedTuple, Optional, Tuple
 
 from pylabrobot.hamilton.protocol.text.framing import assemble_command, parse_fw_string
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
-from pylabrobot.hamilton.star.driver.confirmed_firmware_versions import (
-  STAR_8_CHANNEL_STACK,
-  ConfirmedFirmware,
-)
 from pylabrobot.hamilton.star.driver.errors import check_fw_string_error
 from pylabrobot.hamilton.star.driver.features.head96 import Head96Configuration
 from pylabrobot.hamilton.star.driver.features.pipettes import PipettesConfiguration
@@ -41,10 +37,18 @@ NOMINAL_ARM_WRAP = 595.2
 # The x the machine parks the left arm at on every init.
 SIMULATED_LEFT_X_ARM_HOME = 362.9
 
-# The firmware stack the simulated instrument reports. Every module's version answer is read off
-# it, so the simulator reports one coherent stack rather than a version per module invented
-# separately - and reports a stack this driver has actually been validated against.
-SIMULATED_FIRMWARE = STAR_8_CHANNEL_STACK
+# The firmware the simulated instrument reports, one version per capability. Stated here as a
+# whole rather than taken from the confirmed record: what is recorded there is which versions each
+# board has been driven on, not which combinations exist, so a simulated machine has to be given a
+# combination. This one was read off a real instrument.
+SIMULATED_FIRMWARE = {
+  "master": "7.6S 25 2021_11_05 (GRU C0)",
+  "pipettes": "4.0S j 2022-03-16",
+  "x_arm": "1.4S 2012-04-25",
+  "head96": "5.0S i 2021-10-22 (H0 XE167)",
+  "iswap": "4.1S 2011-12-19",
+  "autoload": "3.4S f 2017-01-09",
+}
 
 # What the machine reports for an arm that is not fitted: a wrap size of zero, and this position at
 # both ends of its travel and workspace.
@@ -185,7 +189,7 @@ class STARSimulationDriver(STARDriver):
     self,
     configuration: Optional[DeviceConfiguration] = None,
     tips_mounted: Optional[List[bool]] = None,
-    firmware: Optional[ConfirmedFirmware] = None,
+    firmware: Optional[Dict[str, str]] = None,
     serial_number: str = SIMULATED_SERIAL_NUMBER,
     pipette_widths: Optional[List[float]] = None,
     initialized: bool = False,
@@ -195,8 +199,8 @@ class STARSimulationDriver(STARDriver):
       configuration: the instrument to pretend to be. Defaults to `DEFAULT_STAR_CONFIGURATION`.
       tips_mounted: one entry per channel, `True` where a tip sits on the channel. Defaults to no
         tips on every channel.
-      firmware: the module firmware stack the simulated machine reports. Defaults to
-        `SIMULATED_FIRMWARE`. Kept as `simulated_firmware`, beside
+      firmware: what each capability reports, keyed as `confirmed_firmware_versions` keys it.
+        Defaults to `SIMULATED_FIRMWARE`. Kept as `simulated_firmware`, beside
         `simulated_configuration`; `firmware` is what the driver read back.
       serial_number: what the master reports for an installation-data request.
       pipette_widths: how wide each pipette is, in mm. Defaults to the
@@ -355,7 +359,7 @@ class STARSimulationDriver(STARDriver):
   # -- answers ---------------------------------------------------------------
 
   def _firmware_version(self, command: str) -> str:
-    return f"rf{self.simulated_firmware.master_version}"
+    return f"rf{self.simulated_firmware.get('master')}"
 
   def _machine_configuration(self, command: str) -> str:
     c = self.simulated_configuration
@@ -509,13 +513,13 @@ class STARSimulationDriver(STARDriver):
     return ""
 
   def _x_arm_firmware_version(self, command: str) -> str:
-    version = self.simulated_firmware.x_drives_version
+    version = self.simulated_firmware.get("x_arm")
     if version is None:
       raise ValueError("the simulated firmware stack records no X-drive version")
     return f"rf{version}"
 
   def _channel_firmware_version(self, command: str) -> str:
-    return f"rf{self.simulated_firmware.channels_version}"
+    return f"rf{self.simulated_firmware.get('pipettes')}"
 
   def _y_drive_parameters(self, command: str) -> str:
     """The channel's Y-drive parameters: init position offset, the distance between the channels
@@ -532,10 +536,23 @@ class STARSimulationDriver(STARDriver):
     return f"qw{int(self.autoload_initialized)}"
 
   def _autoload_firmware_version(self, command: str) -> str:
-    version = self.simulated_firmware.autoload_version
+    version = self.simulated_firmware.get("autoload")
     if version is None:
       raise ValueError("the simulated firmware stack records no autoload version")
     return f"rf{version}"
+
+  def _autoload_sensors(self, command: str) -> str:
+    """Both drives initialized, the wheel where it was left, and nothing on the loading tray."""
+    flags = [
+      1,
+      1,
+      1,
+      int(not self.autoload_wheel_raised),
+      int(self.autoload_wheel_raised),
+      0,
+      0,
+    ]
+    return "rw" + "".join(str(f) for f in flags)
 
   def _move_autoload(self, command: str) -> str:
     """Move along the deck. The autoload answers this one with an error field of its own."""
@@ -554,7 +571,7 @@ class STARSimulationDriver(STARDriver):
     return f"qw{int(self.iswap_initialized)}"
 
   def _iswap_firmware_version(self, command: str) -> str:
-    version = self.simulated_firmware.iswap_version
+    version = self.simulated_firmware.get("iswap")
     if version is None:
       raise ValueError("the simulated firmware stack records no iSWAP version")
     return f"rf{version}"
@@ -580,7 +597,7 @@ class STARSimulationDriver(STARDriver):
     return f"qw{int(self.head96_initialized)}"
 
   def _head96_firmware_version(self, command: str) -> str:
-    version = self.simulated_firmware.head96_version
+    version = self.simulated_firmware.get("head96")
     if version is None:
       raise ValueError("the simulated firmware stack records no 96-head version")
     return f"rf{version}"
@@ -671,6 +688,7 @@ class STARSimulationDriver(STARDriver):
       "RF": _autoload_firmware_version,
       "QW": _autoload_initialization_status,
       "XP": _move_autoload,
+      "RW": _autoload_sensors,
     },
     "R0": {
       "RF": _iswap_firmware_version,
