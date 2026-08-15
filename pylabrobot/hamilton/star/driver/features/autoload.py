@@ -1,18 +1,81 @@
 """The autoload: the belt and wheel that pull carriers onto the deck and push them back out."""
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Dict, Optional, Tuple
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
 
+# What the sensor query reports, flag by flag, in the order it reports them.
+SENSORS = (
+  "scanner_x_drive_initialized",
+  "carrier_y_drive_initialized",
+  "carrier_z_drive_initialized",
+  "scanner_rotation_vertical",
+  "scanner_rotation_horizontal",
+  "carrier_on_loading_tray",
+  "cup_present",
+)
+
+# The scanner X drive is built in two resolutions, and which one this unit has is held in its own
+# memory as the first field of its configuration. The default is the finer of the two.
+X_DRIVE_RESOLUTIONS: Dict[int, float] = {0: 0.1, 1: 0.125}
+
+# Every drive takes the same motor current limit, and the same ramp unit.
+CURRENT_LIMIT_RANGE = (0, 7)
+ACCELERATION_RAMP_INCREMENTS_PER_SECOND_SQUARED = 2500
+
 
 @dataclass
 class AutoloadConfiguration:
-  """Device facts for the installed autoload."""
+  """Device facts for the installed autoload.
+
+  Three drives: the scanner, which runs along the deck; the carrier Y drive, which pulls a carrier
+  in and pushes it out; and the carrier Z drive, which raises and lowers the handling wheel. The
+  ranges below are what each drive's move commands accept, in the steps they count in, and the
+  defaults are what the commands use when a field is not given. They are the same across the 2015,
+  2017, 2022 and 2025 firmware.
+  """
 
   firmware_version: Optional[str] = None
   """The autoload's firmware version, as reported."""
+
+  # -- scanner X drive (along the deck) --
+  x_drive_mm_per_increment: float = 0.125
+  """How far one step moves the scanner, in mm. This unit is built in two resolutions, selected by
+  the first field of its stored configuration; this is the default one."""
+  x_drive_increment_range: Tuple[int, int] = (0, 12_500)
+  """Absolute position range the scanner move accepts, in steps."""
+  x_drive_speed_increment_range: Tuple[int, int] = (20, 3_000)
+  """Speed range, in steps per second."""
+  x_drive_speed_default: int = 2_500
+  x_drive_acceleration_ramp_range: Tuple[int, int] = (1, 3)
+  """Acceleration ramp range, in multiples of the shared ramp unit."""
+  x_drive_acceleration_ramp_default: int = 3
+
+  # -- carrier Y drive (in and out of the deck) --
+  y_drive_increment_range: Tuple[int, int] = (0, 9_999)
+  """Absolute position range the carrier move accepts, in steps."""
+  y_drive_speed_increment_range: Tuple[int, int] = (20, 2_500)
+  y_drive_speed_default: int = 2_000
+  y_drive_acceleration_ramp_range: Tuple[int, int] = (1, 6)
+  y_drive_acceleration_ramp_default: int = 6
+
+  # -- carrier Z drive (the handling wheel, down or up) --
+  z_drive_speed_increment_range: Tuple[int, int] = (20, 2_000)
+  z_drive_speed_default: int = 1_750
+  z_drive_acceleration_ramp_range: Tuple[int, int] = (1, 4)
+  z_drive_acceleration_ramp_default: int = 4
+
+  # -- conversions: the wire counts in steps, the driver speaks mm ---------------------------
+
+  def x_drive_increments_to_mm(self, increments: int) -> float:
+    """How far along the deck the scanner is, in mm, from the steps the drive counts in."""
+    return round(increments * self.x_drive_mm_per_increment, 2)
+
+  def x_drive_mm_to_increments(self, mm: float) -> int:
+    """A scanner position in steps, from mm."""
+    return round(mm / self.x_drive_mm_per_increment)
 
 
 class Autoload:
@@ -53,6 +116,16 @@ class Autoload:
     resp: str = await self._driver.send_command(module="I0", command="RF")
     return resp.split("rf")[-1]
 
+  async def request_sensors(self) -> Dict[str, bool]:
+    """Request what each of the autoload's sensors reports.
+
+    Returns:
+      Each sensor in `SENSORS`, and whether it is active.
+    """
+    resp: str = await self._driver.send_command(module="I0", command="RW")
+    flags = resp.split("rw")[-1].strip()
+    return {name: flags[i] == "1" for i, name in enumerate(SENSORS) if i < len(flags)}
+
   # -- moves: one command each, moves the autoload ---------------------------
 
   async def initialize(self):
@@ -67,21 +140,50 @@ class Autoload:
     """
     return await self._driver.send_command(module="C0", command="IV")
 
-  async def move_to_track(self, track: int):
+  async def move_to_track(
+    self,
+    track: int,
+    speed: Optional[int] = None,
+    acceleration_ramp: Optional[int] = None,
+    current_limit: Optional[int] = None,
+  ):
     """Move the autoload along the deck to a track, raising the wheel first.
 
     Args:
       track: which track to move to, counted from 1.
+      speed: how fast to travel, in steps per second. Left out of the command when not given, so
+        the drive uses its own default.
+      acceleration_ramp: how hard to accelerate, in multiples of the shared ramp unit. Left out
+        when not given.
+      current_limit: the motor current limit. Left out when not given.
 
     Raises:
-      ValueError: If the track is not one this machine has.
+      ValueError: If the track is not one this machine has, or an argument is outside what the
+        drive accepts.
       RuntimeError: If setup has not run.
     """
+    c = self.configuration
     tracks = self.track_range
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
+
+    # Each field is sent only when it is given, so a plain move is the command the machine has
+    # always been sent, and the drive applies its own defaults to the rest.
+    fields: Dict[str, str] = {"xp": f"{track:02}"}
+    for name, field, value, width, (low, high) in (
+      ("speed", "xv", speed, 4, c.x_drive_speed_increment_range),
+      ("acceleration_ramp", "xr", acceleration_ramp, 1, c.x_drive_acceleration_ramp_range),
+      ("current_limit", "xw", current_limit, 1, CURRENT_LIMIT_RANGE),
+    ):
+      if value is None:
+        continue  # left out entirely, so the drive applies its own default
+      if not low <= value <= high:
+        raise ValueError(f"{name} must be between {low} and {high}, is {value}")
+      fields[field] = f"{value:0{width}}"
+
     await self.move_to_safe_z()
-    return await self._driver.send_command(module="I0", command="XP", xp=f"{track:02}")
+    # The fields are firmware parameters, not this method's own arguments, hence the splat.
+    return await self._driver.send_command(module="I0", command="XP", **fields)  # type: ignore[arg-type]
 
   # -- routines: composed of the above ---------------------------------------
 
