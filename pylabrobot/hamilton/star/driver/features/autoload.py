@@ -103,18 +103,7 @@ class Autoload:
     self._driver = driver
     self.configuration = configuration or AutoloadConfiguration()
 
-  @property
-  def track_range(self) -> range:
-    """The tracks it can be moved to, which is the deck it runs along.
-
-    Raises:
-      RuntimeError: If setup has not run, so the deck size is not known.
-    """
-    if self._driver.configuration is None:
-      raise RuntimeError("no configuration read; forgot to call `setup`?")
-    return range(1, self._driver.configuration.instrument_size_slots + 1)
-
-  # -- queries: one command each, reads only ---------------------------------
+  # -- session / discovery ---------------------------------------------------
 
   async def request_firmware_version(self) -> str:
     """Request the autoload's firmware version.
@@ -125,11 +114,28 @@ class Autoload:
     resp: str = await self._driver.send_command(module="I0", command="RF")
     return resp.split("rf")[-1]
 
-  # -- moves: one command each, moves the autoload ---------------------------
+  async def discover(self):
+    """Read what autoload this is. Read-only: nothing moves."""
+    self.configuration.firmware_version = await self.request_firmware_version()
+
+  # -- initialization --------------------------------------------------------
 
   async def initialize(self):
     """Initialize the autoload. This moves it."""
     return await self._driver.send_command(module="C0", command="II")
+
+  # -- carrier handling ------------------------------------------------------
+
+  @property
+  def track_range(self) -> range:
+    """The tracks it can be moved to, which is the deck it runs along.
+
+    Raises:
+      RuntimeError: If setup has not run, so the deck size is not known.
+    """
+    if self._driver.configuration is None:
+      raise RuntimeError("no configuration read; have you called `star.setup()`?")
+    return range(1, self._driver.configuration.instrument_size_slots + 1)
 
   async def move_to_safe_z(self):
     """Raise the carrier-handling wheel to its safe Z.
@@ -183,12 +189,6 @@ class Autoload:
     await self.move_to_safe_z()
     # The fields are firmware parameters, not this method's own arguments, hence the splat.
     return await self._driver.send_command(module="I0", command="XP", **fields)  # type: ignore[arg-type]
-
-  # -- routines: composed of the above ---------------------------------------
-
-  async def discover(self):
-    """Read what autoload this is. Read-only: nothing moves."""
-    self.configuration.firmware_version = await self.request_firmware_version()
 
   async def park(self):
     """Move the autoload out of the way, to the far end of the deck."""

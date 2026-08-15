@@ -141,7 +141,7 @@ class Head96Configuration:
       RuntimeError: If the firmware version has not been read.
     """
     if self.firmware_date is None:
-      raise RuntimeError("96-head firmware version not read; forgot to call `setup`?")
+      raise RuntimeError("96-head firmware version not read; have you called `star.setup()`?")
     return self.firmware_date.year
 
   # === Firmware/variant-derived area-of-operation windows (standard units). Pure functions of
@@ -223,7 +223,7 @@ class Head96:
     self._driver = driver
     self.configuration = configuration or Head96Configuration()
 
-  # -- queries: one command each, reads only ---------------------------------
+  # -- session / discovery ---------------------------------------------------
 
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
     """Request the head's firmware version and build date.
@@ -274,18 +274,6 @@ class Head96:
     resp = await self._driver.send_command(module="C0", command="RA", ra="kf", fmt="kf####")
     return cast(int, resp["kf"]) / 10.0
 
-  async def request_stop_disk_z(self) -> float:
-    """Request the head's Z-drive (stop disk) position.
-
-    This is the raw drive position regardless of tip state, not the tip bottom.
-
-    Returns:
-      The stop-disk Z position in mm.
-    """
-    resp = await self._driver.send_command(module="H0", command="RZ", fmt="rz##### (n)")
-    increments = cast(List[int], resp["rz"])[1]  # [0] = firmware counter, [1] = hardware counter
-    return self.configuration.z_drive_increments_to_mm(increments)
-
   async def request_drive_parameter(self, parameter: str) -> float:
     """Request one of the head's stored drive parameters.
 
@@ -312,9 +300,46 @@ class Head96:
     )
     return to_mm[parameter](cast(int, resp[parameter]))
 
-  # -- moves: one command each, moves the head -------------------------------
+  async def discover(self):
+    """Read what head this is and what it can do. Read-only: nothing moves."""
+    c = self.configuration
+    c.firmware_version, c.firmware_date = await self.request_firmware_version()
+    if c.firmware_year < RESOLUTIONS_FIRST_YEAR:
+      logger.warning(
+        "this 96-head reports %s firmware, older than the generation the dispensing and squeezer "
+        "resolutions here were taken from. Volumes and squeezer distances it reports, and the "
+        "windows derived from them, may be wrong. Set them on Head96Configuration to correct it.",
+        c.firmware_date,
+      )
 
-  async def retract(self) -> float:
+    hardware = await self.request_hardware()
+    c.supports_clot_monitoring_clld = bool(int(hardware[0]))
+    c.stop_disc_type = "core_i" if hardware[1] == "0" else "core_ii"
+    c.instrument_type = "legacy" if hardware[2] == "0" else "FM-STAR"
+    c.head_type = await self.request_head_type()
+    c.x_offset = await self.request_x_offset()
+
+    # Seed the drive defaults from what the machine currently holds.
+    c.y_drive_speed_default = await self.request_drive_parameter("yv")
+    c.y_drive_acceleration_default = await self.request_drive_parameter("yr")
+    c.z_drive_speed_default = await self.request_drive_parameter("zv")
+    c.z_drive_acceleration_default = await self.request_drive_parameter("zr")
+
+  # -- z position ------------------------------------------------------------
+
+  async def request_stop_disk_z(self) -> float:
+    """Request the head's Z-drive (stop disk) position.
+
+    This is the raw drive position regardless of tip state, not the tip bottom.
+
+    Returns:
+      The stop-disk Z position in mm.
+    """
+    resp = await self._driver.send_command(module="H0", command="RZ", fmt="rz##### (n)")
+    increments = cast(List[int], resp["rz"])[1]  # [0] = firmware counter, [1] = hardware counter
+    return self.configuration.z_drive_increments_to_mm(increments)
+
+  async def move_to_z_safety(self) -> float:
     """Drive the head to its Z-safety height and read where that put it.
 
     Doubles as the probe for how far this unit actually reaches: the generic command range can
@@ -325,6 +350,22 @@ class Head96:
     """
     await self._driver.send_command(module="C0", command="EV", read_timeout=RETRACT_READ_TIMEOUT)
     return await self.request_stop_disk_z()
+
+  def resolve_z_range(self, z_max: float) -> Tuple[float, float]:
+    """The Z window this head reaches: a variant-derived floor, and a probed ceiling.
+
+    Args:
+      z_max: the top the hardware actually reached, from `move_to_z_safety`.
+
+    Returns:
+      The `(min, max)` window in mm, also recorded on the configuration.
+    """
+    c = self.configuration
+    min_increments = 24200 if c.instrument_type == "FM-STAR" else 36100
+    c.z_range = (c.z_drive_increments_to_mm(min_increments), z_max)
+    return c.z_range
+
+  # -- initialization --------------------------------------------------------
 
   async def initialize(
     self,
@@ -366,44 +407,3 @@ class Head96:
       za=f"{round(z * 10):04}",
       ze=f"{round(z_position_at_the_command_end * 10):04}",
     )
-
-  # -- routines: composed of the above ---------------------------------------
-
-  async def discover(self):
-    """Read what head this is and what it can do. Read-only: nothing moves."""
-    c = self.configuration
-    c.firmware_version, c.firmware_date = await self.request_firmware_version()
-    if c.firmware_year < RESOLUTIONS_FIRST_YEAR:
-      logger.warning(
-        "this 96-head reports %s firmware, older than the generation the dispensing and squeezer "
-        "resolutions here were taken from. Volumes and squeezer distances it reports, and the "
-        "windows derived from them, may be wrong. Set them on Head96Configuration to correct it.",
-        c.firmware_date,
-      )
-
-    hardware = await self.request_hardware()
-    c.supports_clot_monitoring_clld = bool(int(hardware[0]))
-    c.stop_disc_type = "core_i" if hardware[1] == "0" else "core_ii"
-    c.instrument_type = "legacy" if hardware[2] == "0" else "FM-STAR"
-    c.head_type = await self.request_head_type()
-    c.x_offset = await self.request_x_offset()
-
-    # Seed the drive defaults from what the machine currently holds.
-    c.y_drive_speed_default = await self.request_drive_parameter("yv")
-    c.y_drive_acceleration_default = await self.request_drive_parameter("yr")
-    c.z_drive_speed_default = await self.request_drive_parameter("zv")
-    c.z_drive_acceleration_default = await self.request_drive_parameter("zr")
-
-  def resolve_z_range(self, z_max: float) -> Tuple[float, float]:
-    """The Z window this head reaches: a variant-derived floor, and a probed ceiling.
-
-    Args:
-      z_max: the top the hardware actually reached, from `retract`.
-
-    Returns:
-      The `(min, max)` window in mm, also recorded on the configuration.
-    """
-    c = self.configuration
-    min_increments = 24200 if c.instrument_type == "FM-STAR" else 36100
-    c.z_range = (c.z_drive_increments_to_mm(min_increments), z_max)
-    return c.z_range

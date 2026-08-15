@@ -180,7 +180,7 @@ class Pipettes:
     """How many channels are fitted, as counted at setup."""
     return self._driver.num_channels
 
-  # -- queries: one command each, reads only ---------------------------------
+  # -- session / discovery ---------------------------------------------------
 
   async def request_firmware_version(self, channel: int) -> Tuple[str, datetime.date]:
     """Request one channel's firmware version and build date.
@@ -246,16 +246,38 @@ class Pipettes:
       pressure_adc="Analog_Devices_AD5263" if field_at(3) == "1" else "Renesas_X9268",
     )
 
-  # -- moves: one command each, moves the channels ---------------------------
+  async def discover(self):
+    """Read what each channel is and what it can do.
 
-  async def move_to_z_safety(self):
-    """Move every channel up to its Z safety position.
-
-    Nothing may move in X or Y while a channel is low, so this is the precondition for any
-    lateral move. The instrument's initialization procedure does it as a side effect; on a
-    machine that is already initialized it has to be asked for.
+    Read-only, and asks every channel at once. Fills in `configuration.channels`.
     """
-    return await self._driver.send_command(module="C0", command="ZA")
+    self.configuration.resolve_channels(self.num_channels)
+    await asyncio.gather(*(self._discover_channel(ch) for ch in range(self.num_channels)))
+    self.configuration.check_channels_agree()
+
+  async def _discover_channel(self, channel: int):
+    version, build_date = await self.request_firmware_version(channel)
+    # On older firmware the hardware fields simply stay unread, rather than the query failing.
+    pipette = (
+      await self.request_pipette_configuration(channel)
+      if build_date.year >= HARDWARE_QUERY_FIRST_YEAR
+      else PipetteConfiguration()
+    )
+    pipette.firmware_version = version
+    pipette.width = await self.request_min_pipette_width(channel)
+    self.configuration.channels[channel] = pipette
+
+  # -- channel initialization ------------------------------------------------
+
+  def default_initialize_y_positions(self) -> List[float]:
+    """Where each channel sits in Y during initialization, in mm, back to front.
+
+    The channels spread evenly across the band the procedure uses, so they are clear of one
+    another whatever the channel count.
+    """
+    front, back = INITIALIZE_Y_RANGE
+    spacing = round((back - front) * 10) // (self.num_channels - 1)
+    return [(round(back * 10) - channel * spacing) / 10 for channel in range(self.num_channels)]
 
   async def initialize(
     self,
@@ -286,7 +308,7 @@ class Pipettes:
     """
     if x_position is None:
       if self._driver.configuration is None:
-        raise RuntimeError("no configuration read; forgot to call `setup`?")
+        raise RuntimeError("no configuration read; have you called `star.setup()`?")
       x_position = self._driver.configuration.tip_waste_x_position
     if y_positions is None:
       y_positions = self.default_initialize_y_positions()
@@ -307,35 +329,13 @@ class Pipettes:
       ti=discarding_method,
     )
 
-  def default_initialize_y_positions(self) -> List[float]:
-    """Where each channel sits in Y during initialization, in mm, back to front.
+  # -- z safety --------------------------------------------------------------
 
-    The channels spread evenly across the band the procedure uses, so they are clear of one
-    another whatever the channel count.
+  async def move_to_z_safety(self):
+    """Move every channel up to its Z safety position.
+
+    Nothing may move in X or Y while a channel is low, so this is the precondition for any
+    lateral move. The instrument's initialization procedure does it as a side effect; on a
+    machine that is already initialized it has to be asked for.
     """
-    front, back = INITIALIZE_Y_RANGE
-    spacing = round((back - front) * 10) // (self.num_channels - 1)
-    return [(round(back * 10) - channel * spacing) / 10 for channel in range(self.num_channels)]
-
-  # -- routines: composed of the above ---------------------------------------
-
-  async def discover(self):
-    """Read what each channel is and what it can do.
-
-    Read-only, and asks every channel at once. Fills in `configuration.channels`.
-    """
-    self.configuration.resolve_channels(self.num_channels)
-    await asyncio.gather(*(self._discover_channel(ch) for ch in range(self.num_channels)))
-    self.configuration.check_channels_agree()
-
-  async def _discover_channel(self, channel: int):
-    version, build_date = await self.request_firmware_version(channel)
-    # On older firmware the hardware fields simply stay unread, rather than the query failing.
-    pipette = (
-      await self.request_pipette_configuration(channel)
-      if build_date.year >= HARDWARE_QUERY_FIRST_YEAR
-      else PipetteConfiguration()
-    )
-    pipette.firmware_version = version
-    pipette.width = await self.request_min_pipette_width(channel)
-    self.configuration.channels[channel] = pipette
+    return await self._driver.send_command(module="C0", command="ZA")

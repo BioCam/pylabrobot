@@ -81,6 +81,8 @@ class XArm:
     self._driver = driver
     self.side = side
 
+  # -- session / discovery ---------------------------------------------------
+
   @property
   def configuration(self) -> XArmConfiguration:
     """This arm's configuration and geometry.
@@ -91,16 +93,11 @@ class XArm:
     """
     configuration = self._driver.configuration
     if configuration is None:
-      raise RuntimeError("no configuration read; forgot to call `setup`?")
+      raise RuntimeError("no configuration read; have you called `star.setup()`?")
     arm = configuration.left_arm if self.side == "left" else configuration.right_arm
     if arm is None:
       raise ValueError(f"no {self.side} X-arm is installed")
     return arm
-
-  async def discover(self):
-    """Read what this arm is. Read-only: nothing moves."""
-    version, _ = await self.request_firmware_version()
-    self.configuration.firmware_version = version
 
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
     """Request the X-drive board's firmware version and build date.
@@ -112,6 +109,13 @@ class XArm:
     """
     resp = await self._driver.send_command(module="X0", command="RF")
     return resp.split("rf")[-1], parse_firmware_version_date(resp)
+
+  async def discover(self):
+    """Read what this arm is. Read-only: nothing moves."""
+    version, _ = await self.request_firmware_version()
+    self.configuration.firmware_version = version
+
+  # -- x motion --------------------------------------------------------------
 
   async def move_x(
     self,

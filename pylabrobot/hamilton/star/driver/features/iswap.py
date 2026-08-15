@@ -187,7 +187,7 @@ class iSWAP:
     self._driver = driver
     self.configuration = configuration or iSWAPConfiguration()
 
-  # -- queries: one command each, reads only ---------------------------------
+  # -- session / discovery ---------------------------------------------------
 
   async def request_firmware_version(self) -> str:
     """Request the iSWAP's firmware version.
@@ -260,29 +260,6 @@ class iSWAP:
     )
     return cast(List[int], resp[table])
 
-  # -- moves: one command each, moves the arm ---------------------------------
-
-  async def initialize(self):
-    """Initialize the iSWAP. This moves it."""
-    return await self._driver.send_command(module="C0", command="FI")
-
-  async def park(self, traversal_height: float = PARK_TRAVERSAL_HEIGHT):
-    """Close the gripper and park the arm. This moves it.
-
-    Args:
-      traversal_height: the minimum height to travel at on the way, in mm.
-
-    Raises:
-      ValueError: If the traversal height is outside what the command accepts.
-    """
-    if not 0 <= traversal_height <= 360:
-      raise ValueError(f"traversal_height must be between 0 and 360 mm, is {traversal_height}")
-    return await self._driver.send_command(
-      module="C0", command="PG", th=round(traversal_height * 10)
-    )
-
-  # -- routines: composed of the above ---------------------------------------
-
   async def discover(self):
     """Read this iSWAP's calibration. Read-only: nothing moves."""
     c = self.configuration
@@ -305,3 +282,26 @@ class iSWAP:
     wrist = await self._request_slots("pt")
     c.wrist_drive_predefined_increments = dict(zip(WRIST_DRIVE_SLOTS, wrist))
     c.link_2_length = round(wrist[9] / 10, 1)
+
+  # -- initialization --------------------------------------------------------
+
+  async def initialize(self):
+    """Initialize the iSWAP. This moves it."""
+    return await self._driver.send_command(module="C0", command="FI")
+
+  # -- parking ---------------------------------------------------------------
+
+  async def park(self, traversal_height: float = PARK_TRAVERSAL_HEIGHT):
+    """Close the gripper and park the arm. This moves it.
+
+    Args:
+      traversal_height: the minimum height to travel at on the way, in mm.
+
+    Raises:
+      ValueError: If the traversal height is outside what the command accepts.
+    """
+    if not 0 <= traversal_height <= 360:
+      raise ValueError(f"traversal_height must be between 0 and 360 mm, is {traversal_height}")
+    return await self._driver.send_command(
+      module="C0", command="PG", th=round(traversal_height * 10)
+    )

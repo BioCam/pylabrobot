@@ -237,7 +237,7 @@ class STARDriver:
       logger.debug("machine reports initialized - raising the channels to Z safety only")
       await self.pipettes.move_to_z_safety()
       if self.head96 is not None:
-        self.head96.resolve_z_range(await self.head96.retract())
+        self.head96.resolve_z_range(await self.head96.move_to_z_safety())
 
     return already_initialized
 
@@ -333,7 +333,7 @@ class STARDriver:
 
     if self.head96 is not None:
       if self.head96.configuration.z_range is None:
-        self.head96.resolve_z_range(await self.head96.retract())
+        self.head96.resolve_z_range(await self.head96.move_to_z_safety())
       if not await self.request_initialization_status("H0"):
         if self.head96.configuration.initialize_position is None:
           logger.warning(
@@ -404,7 +404,7 @@ class STARDriver:
   def num_channels(self) -> int:
     """The number of pipette channels present on the robot."""
     if self._num_channels is None:
-      raise RuntimeError("has not loaded num_channels, forgot to call `setup`?")
+      raise RuntimeError("channel count not read; have you called `star.setup()`?")
     return self._num_channels
 
   @property
@@ -419,7 +419,7 @@ class STARDriver:
       ValueError: If the machine has more than one arm.
     """
     if self.configuration is None:
-      raise RuntimeError("no configuration read; forgot to call `setup`?")
+      raise RuntimeError("no configuration read; have you called `star.setup()`?")
     installed = {
       name: arm
       for name, arm in (("left_x_arm", self.left_x_arm), ("right_x_arm", self.right_x_arm))
