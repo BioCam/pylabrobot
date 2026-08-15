@@ -277,7 +277,10 @@ class STARDriver:
     fitted = [f"{c.instrument_size_slots} slots"]
     fitted.append(f"{c.num_pip_channels} channels ({'1000uL' if c.pip_type_1000ul else '300uL'})")
     if c.autoload_installed:
-      fitted.append("autoload")
+      autoload = "autoload"
+      if self.autoload is not None and self.autoload.configuration.autoload_type is not None:
+        autoload += f" ({self.autoload.configuration.autoload_type})"
+      fitted.append(autoload)
     if c.kb_iswap_installed:
       fitted.append(f"iSWAP ({'wide' if c.iswap_gripper_wide else 'small'} gripper)")
     if c.ka_head96_installed:

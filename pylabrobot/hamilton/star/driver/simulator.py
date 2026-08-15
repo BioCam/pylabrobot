@@ -60,6 +60,13 @@ SIMULATED_HEAD96_X_OFFSET = 368.2
 SIMULATED_HEAD96_Z_SAFETY = 336.97
 SIMULATED_HEAD96_DRIVE_PARAMETERS = {"yv": 390.62, "yr": 546.88, "zv": 85.0, "zr": 400.0}
 
+# Which kind of autoload is fitted, as the master would name it, and where its three drives report
+# themselves, in mm. Where they actually are is not modelled: each answers from its zero.
+SIMULATED_AUTOLOAD_TYPE = "1D barcode scanner"
+SIMULATED_AUTOLOAD_X_POSITION = 0.0
+SIMULATED_AUTOLOAD_Y_POSITION = 0.0
+SIMULATED_AUTOLOAD_Z_POSITION = 0.0
+
 # The iSWAP's stored position tables, and where its rotation drive sits relative to the carriage.
 SIMULATED_ISWAP_TABLES = {
   "pw": [13000, -29007, 156, 29068, 29500, 29068, 29068, 29068, 29068, 1378],
@@ -197,13 +204,44 @@ class SimulatedISWAP(_Simulated, iSWAP):
 
 
 class SimulatedAutoload(_Simulated, Autoload):
-  """The autoload, answering for itself."""
+  """The autoload, answering for itself. Its deck and its loading tray are empty."""
+
+  track = 1
+  """Where it last moved to."""
 
   async def request_firmware_version(self) -> str:
     return self.machine.simulated_firmware["autoload"]
 
+  async def request_autoload_type(self) -> str:
+    return SIMULATED_AUTOLOAD_TYPE
+
+  async def request_track(self) -> int:
+    return self.track
+
+  async def request_x_position(self) -> float:
+    return SIMULATED_AUTOLOAD_X_POSITION
+
+  async def request_y_position(self) -> float:
+    return SIMULATED_AUTOLOAD_Y_POSITION
+
+  async def request_z_position(self) -> float:
+    return SIMULATED_AUTOLOAD_Z_POSITION
+
+  async def sense_carrier_presence_on_deck(self) -> List[int]:
+    return []
+
+  async def sense_carrier_presence_on_loading_tray(self) -> List[int]:
+    return []
+
+  async def request_carrier_on_loading_tray(self, track: int) -> bool:
+    return False
+
   async def initialize(self):
     self.machine.initialized["I0"] = True
+
+  async def move_to_track(self, track: int, *args, **kwargs):
+    await super().move_to_track(track, *args, **kwargs)
+    self.track = track
 
 
 class STARSimulationDriver(STARDriver):
