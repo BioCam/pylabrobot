@@ -1,13 +1,24 @@
 """The X-arm: the carriage that runs along a rail and carries whatever is mounted on it."""
 
 import datetime
+import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
+
+logger = logging.getLogger(__name__)
+
+# The command set splits at firmware 5.0: the ranges and encodings below were recorded from an arm
+# below it, which is the generation this driver has been driven against. A 5.0 or higher arm takes
+# a wider current limiter, written in two digits rather than one, and has moves this one does not.
+RECORDED_FIRMWARE_BELOW_MAJOR = 5
+
+# Which way a relative move goes, and the code the command takes for each.
+XDirection = Literal["positive", "negative"]
 
 
 @dataclass
@@ -35,16 +46,29 @@ class XArmConfiguration:
   robotic_channel_installed: bool = False
 
   width: Optional[float] = None
-  """Arm width (mm), from the machine configuration."""
   x_range: Optional[Tuple[float, float]] = None
-  """Drive travel `(min, max)` in mm."""
   workspace_range: Optional[Tuple[float, float]] = None
-  """Reachable X workspace `(min, max)` in mm."""
-  wrap_size: Optional[float] = None
-  """Arm wrap size in mm, from the working-envelope query. Zero means the arm is not installed,
-  so a resolved arm always has a non-zero wrap."""
+  wrap_size: Optional[float] = None  # zero when no arm is installed
   firmware_version: Optional[str] = None
-  """The X-drive board's firmware version, as reported."""
+
+  # -- device facts of the drive, the same for every arm of this generation --
+  x_mm_per_increment: float = 0.1
+  x_increment_range: Tuple[int, int] = (0, 30_000)  # what the move accepts; x_range is narrower
+  x_relative_increment_range: Tuple[int, int] = (1, 30_000)
+  acceleration_level_range: Tuple[int, int] = (1, 5)  # index into five curves, not a rate
+  acceleration_level_default: int = 4
+  current_limit_range: Tuple[int, int] = (0, 7)
+  current_limit_default: int = 7
+
+  # -- conversions: the wire counts in steps, the driver speaks mm ---------------------------
+
+  def x_increments_to_mm(self, increments: int) -> float:
+    """Where along its rail the arm is, in mm, from the steps the drive counts in."""
+    return round(increments * self.x_mm_per_increment, 2)
+
+  def x_mm_to_increments(self, mm: float) -> int:
+    """An arm position in steps, from mm."""
+    return round(mm / self.x_mm_per_increment)
 
   @property
   def model(self) -> str:
@@ -110,18 +134,89 @@ class XArm:
     resp = await self._driver.send_command(module="X0", command="RF")
     return resp.split("rf")[-1], parse_firmware_version_date(resp)
 
+  async def request_initialization_status(self) -> bool:
+    """Request whether this arm's drive reports itself initialized.
+
+    Returns:
+      Whether it is initialized.
+
+    Raises:
+      NotImplementedError: If this is the right arm.
+    """
+    self._require_left()
+    resp = await self._driver.send_command(module="X0", command="QW", fmt="qw#", mn="1")
+    return cast(int, resp["qw"]) == 1
+
   async def discover(self):
     """Read what this arm is. Read-only: nothing moves."""
     version, _ = await self.request_firmware_version()
     self.configuration.firmware_version = version
+    major = version.split(".", 1)[0]
+    if major.isdigit() and int(major) >= RECORDED_FIRMWARE_BELOW_MAJOR:
+      logger.warning(
+        "this X-arm reports firmware %s; the ranges and encodings here were recorded from an arm "
+        "below %d.0, so its current limiter and the moves it accepts may differ. Set them on "
+        "XArmConfiguration to correct it.",
+        version,
+        RECORDED_FIRMWARE_BELOW_MAJOR,
+      )
+
+  def _require_left(self) -> None:
+    """Raise if this is the right arm, whose drive is a command family nothing has driven."""
+    if self.side != "left":
+      raise NotImplementedError("driving the right X-arm is not ported yet")
+
+  # -- initialization --------------------------------------------------------
+
+  async def initialize(self, current_limit: Optional[int] = None):
+    """Initialize this arm's drive. This moves it.
+
+    Args:
+      current_limit: the motor current limit. Defaults to
+        `configuration.current_limit_default`.
+
+    Raises:
+      ValueError: If the current limit is outside what the drive accepts.
+      NotImplementedError: If this is the right arm.
+    """
+    self._require_left()
+    c = self.configuration
+    # The parameter is sent, so what the drive does is written here rather than left to the drive's
+    # own default, which nothing would record.
+    current_limit = c.current_limit_default if current_limit is None else current_limit
+    low, high = c.current_limit_range
+    if not low <= current_limit <= high:
+      raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
+
+    return await self._driver.send_command(module="X0", command="XI", lw=f"{current_limit:01}")
 
   # -- x motion --------------------------------------------------------------
+
+  async def request_position(self) -> float:
+    """Request where along its rail the arm is.
+
+    The machine answers with the position twice, in tenths of a millimetre and in motor counts.
+    The first is what this returns.
+
+    Returns:
+      The position in mm.
+
+    Raises:
+      ValueError: If the machine answered without a position.
+      NotImplementedError: If this is the right arm.
+    """
+    self._require_left()
+    resp = cast(str, await self._driver.send_command(module="X0", command="RX"))
+    read = resp.split("rx", 1)[-1].strip().strip("'\u201a\u201b").split()
+    if not read:
+      raise ValueError(f"no position in the reply: {resp!r}")
+    return self.configuration.x_increments_to_mm(int(read[0]))
 
   async def move_x(
     self,
     x: float,
     acceleration_level: int = 3,
-    current_protection_limiter: int = 7,
+    current_limit: int = 7,
   ):
     """Move the arm to an absolute X position.
 
@@ -131,31 +226,93 @@ class XArm:
     Args:
       x: target X position in mm, at the arm's reference point. Must lie within the arm's travel
         range (`configuration.x_range`).
-      acceleration_level: acceleration index, 1 to 5.
-      current_protection_limiter: motor current limit, 0 to 7.
+      acceleration_level: which acceleration curve to use. The drive's own default is
+        `configuration.acceleration_level_default`; this is the gentler one legacy sends.
+      current_limit: the motor current limit.
 
     Raises:
       ValueError: If `x` is outside the arm's travel range, or an argument is out of range.
       RuntimeError: If the arm's geometry was not resolved.
       NotImplementedError: If this is the right arm.
     """
-    if self.side != "left":
-      raise NotImplementedError("moving the right X-arm is not ported yet")
+    self._require_left()
+    c = self.configuration
     self._check_reachable(x)
-    if not 1 <= acceleration_level <= 5:
-      raise ValueError(f"acceleration_level must be between 1 and 5, is {acceleration_level}")
-    if not 0 <= current_protection_limiter <= 7:
+    low, high = c.acceleration_level_range
+    if not low <= acceleration_level <= high:
       raise ValueError(
-        f"current_protection_limiter must be between 0 and 7, is {current_protection_limiter}"
+        f"acceleration_level must be between {low} and {high}, is {acceleration_level}"
       )
+    low, high = c.current_limit_range
+    if not low <= current_limit <= high:
+      raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
 
     return await self._driver.send_command(
       module="X0",
       command="XP",
-      la=f"{round(x * 10):05}",
-      lr=str(acceleration_level),
-      lw=str(current_protection_limiter),
+      la=f"{c.x_mm_to_increments(x):05}",
+      lr=f"{acceleration_level:01}",
+      lw=f"{current_limit:01}",
     )
+
+  async def move_x_relative(
+    self,
+    distance: float,
+    direction: XDirection = "positive",
+    acceleration_level: int = 3,
+    current_limit: int = 7,
+  ):
+    """Move the arm by a distance from where it is.
+
+    Collision risk: this moves the arm and everything mounted on it, with no regard for what is
+    in the way. Where it ends up is not checked against the arm's travel range, since where it
+    starts is only known by asking.
+
+    Args:
+      distance: how far to move, in mm.
+      direction: which way to go along the rail.
+      acceleration_level: which acceleration curve to use.
+      current_limit: the motor current limit.
+
+    Raises:
+      ValueError: If an argument is outside what the drive accepts.
+      NotImplementedError: If this is the right arm.
+    """
+    self._require_left()
+    c = self.configuration
+    increments = c.x_mm_to_increments(distance)
+    low, high = c.x_relative_increment_range
+    if not low <= increments <= high:
+      raise ValueError(
+        f"distance must be between {c.x_increments_to_mm(low)} and {c.x_increments_to_mm(high)} "
+        f"mm, is {distance}"
+      )
+    low, high = c.acceleration_level_range
+    if not low <= acceleration_level <= high:
+      raise ValueError(
+        f"acceleration_level must be between {low} and {high}, is {acceleration_level}"
+      )
+    low, high = c.current_limit_range
+    if not low <= current_limit <= high:
+      raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
+
+    return await self._driver.send_command(
+      module="X0",
+      command="XR",
+      ls=f"{increments:05}",
+      lt="0" if direction == "positive" else "1",
+      lr=f"{acceleration_level:01}",
+      lw=f"{current_limit:01}",
+    )
+
+  async def switch_drive_power_off(self):
+    """Switch this arm's drive power off, leaving it free to be pushed by hand.
+
+    Raises:
+      NotImplementedError: If this is the right arm.
+    """
+    self._require_left()
+    return await self._driver.send_command(module="X0", command="XO")
 
   def _check_reachable(self, x: float) -> None:
     """Raise if `x` is outside this arm's travel range.
