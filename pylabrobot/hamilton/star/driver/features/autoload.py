@@ -3,30 +3,20 @@
 import logging
 import string
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast, get_args
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
 
 logger = logging.getLogger(__name__)
 
-# Where the carrier drive can be sent by name, and the code the command takes for each. At the
-# deck it stops on the sensor rail rather than at a distance, so it ends up in the same place
-# whatever the carrier.
+# Where the carrier drive can be sent by name.
 YPosition = Literal["loading_tray", "carrier_identification", "deck"]
-Y_POSITIONS: Dict[str, int] = {"loading_tray": 0, "carrier_identification": 1, "deck": 2}
 
-# Where the handling wheel can be sent by name, and the code the command takes for each.
 ZPosition = Literal["below", "above"]
-Z_POSITIONS: Dict[str, int] = {"below": 0, "above": 1}
 
-# Which way the scanner faces, by the code the drive answers with. It reports itself undefined when
-# it is at neither stop; the move only takes the other two.
 ScannerRotation = Literal["vertical", "horizontal", "undefined"]
-SCANNER_ROTATIONS: Dict[int, ScannerRotation] = {0: "vertical", 1: "horizontal", 2: "undefined"}
 
-# Which barcode types the scanner will read, and the bit each holds in the mask that switching it
-# on takes. Code 93 is read whether or not its bit is set.
 BARCODE_TYPES: Dict[str, int] = {
   "isbt_standard": 0,
   "code_128": 1,
@@ -35,16 +25,9 @@ BARCODE_TYPES: Dict[str, int] = {
   "code_2of5_interleaved": 4,
   "upc_a_e": 5,
   "jan_ean_8": 6,
-  "code_93": 7,
 }
 
-# Which way the scanner faces while it reads a carrier's containers, and the code the load takes.
 BarcodeReadingDirection = Literal["vertical", "horizontal"]
-BARCODE_READING_DIRECTIONS: Dict[str, int] = {"vertical": 0, "horizontal": 1}
-
-# Which mode the scanner runs in, and the code the command takes for each.
-BarcodeScannerMode = Literal["operating", "service"]
-BARCODE_SCANNER_MODES: Dict[str, int] = {"operating": 0, "service": 1}
 
 # What kind of autoload is fitted, by the code the master answers with. Codes outside this are
 # variants that have not been seen, and are returned as they came.
@@ -101,7 +84,6 @@ class AutoloadConfiguration:
   x_drive_speed_increment_range: Tuple[int, int] = (20, 3_000)  # steps per second
   x_drive_speed_default: int = 2_500
   x_drive_acceleration_ramp_range: Tuple[int, int] = (1, 3)
-  """Acceleration ramp range, in multiples of the shared ramp unit."""
   x_drive_acceleration_ramp_default: int = 3
 
   # -- carrier Z drive (the handling wheel, down or up) --
@@ -237,7 +219,7 @@ class Autoload:
   # -- carrier handling ------------------------------------------------------
 
   async def request_track(self) -> int:
-    """Request which track the autoload is at.
+    """Request the current track of the autoload's carrier handler.
 
     Returns:
       The track, counted from 1, or 0 when it is at neither end of a track.
@@ -288,10 +270,7 @@ class Autoload:
     )
 
   async def move_to_safe_z(self):
-    """Raise the carrier-handling wheel to its safe Z.
-
-    Every move along the tracks is preceded by this.
-    """
+    """Move the carrier-handling wheel to its safe Z position."""
     return await self._driver.send_command(module="C0", command="IV")
 
   async def move_z(
@@ -305,11 +284,13 @@ class Autoload:
 
     Args:
       z: how high to move it, in mm from the drive's zero.
-      speed: how fast to travel, in steps per second. Left out of the command when not given, so
-        the drive uses its own default.
+      speed: how fast to travel, in steps per second. Defaults to
+        `configuration.z_drive_speed_default`.
       acceleration_ramp: how hard to accelerate, in multiples of
-        `configuration.acceleration_ramp_increments_per_second_squared`. Left out when not given.
-      current_limit: the motor current limit. Left out when not given.
+        `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
+        `configuration.z_drive_acceleration_ramp_default`.
+      current_limit: the motor current limit. Defaults to
+        `configuration.motor_current_limit_default`.
 
     Raises:
       ValueError: If the position, or an argument, is outside what the drive accepts.
@@ -323,29 +304,36 @@ class Autoload:
         f"{c.z_drive_increments_to_mm(high)} mm, is {z}"
       )
 
-    parameters: Dict[str, str] = {"za": f"{increments:04}"}
-    if speed is not None:
-      low, high = c.z_drive_speed_increment_range
-      if not low <= speed <= high:
-        raise ValueError(f"speed must be between {low} and {high}, is {speed}")
-      parameters["zv"] = f"{speed:04}"
+    # Every parameter is sent, so what the drive does is written here rather than left to the
+    # drive's own defaults, which nothing would record.
+    speed = c.z_drive_speed_default if speed is None else speed
+    acceleration_ramp = (
+      c.z_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
+    )
+    current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
-    if acceleration_ramp is not None:
-      low, high = c.z_drive_acceleration_ramp_range
-      if not low <= acceleration_ramp <= high:
-        raise ValueError(
-          f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
-        )
-      parameters["zr"] = f"{acceleration_ramp:01}"
+    low, high = c.z_drive_speed_increment_range
+    if not low <= speed <= high:
+      raise ValueError(f"speed must be between {low} and {high}, is {speed}")
 
-    if current_limit is not None:
-      low, high = c.motor_current_limit_range
-      if not low <= current_limit <= high:
-        raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
-      parameters["zw"] = f"{current_limit:01}"
+    low, high = c.z_drive_acceleration_ramp_range
+    if not low <= acceleration_ramp <= high:
+      raise ValueError(
+        f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
+      )
 
-    # The parameters are the command's own, not this method's arguments, hence the splat.
-    return await self._driver.send_command(module="I0", command="ZA", **parameters)  # type: ignore[arg-type]
+    low, high = c.motor_current_limit_range
+    if not low <= current_limit <= high:
+      raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
+
+    return await self._driver.send_command(
+      module="I0",
+      command="ZA",
+      za=f"{increments:04}",
+      zv=f"{speed:04}",
+      zr=f"{acceleration_ramp:01}",
+      zw=f"{current_limit:01}",
+    )
 
   async def move_to_z_position(
     self,
@@ -357,44 +345,53 @@ class Autoload:
     """Move the carrier-handling wheel to one of the two positions it knows.
 
     Args:
-      position: which one, as named in `Z_POSITIONS`.
-      speed: how fast to travel, in steps per second. Left out of the command when not given, so
-        the drive uses its own default.
+      position: which one: `below` or `above`.
+      speed: how fast to travel, in steps per second. Defaults to
+        `configuration.z_drive_speed_default`.
       acceleration_ramp: how hard to accelerate, in multiples of
-        `configuration.acceleration_ramp_increments_per_second_squared`. Left out when not given.
-      current_limit: the motor current limit. Left out when not given.
+        `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
+        `configuration.z_drive_acceleration_ramp_default`.
+      current_limit: the motor current limit. Defaults to
+        `configuration.motor_current_limit_default`.
 
     Raises:
       ValueError: If the position is not one it knows, or an argument is outside what the drive
         accepts.
     """
     c = self.configuration
-    if position not in Z_POSITIONS:
-      raise ValueError(f"position must be one of {sorted(Z_POSITIONS)}, is {position!r}")
+    if position not in get_args(ZPosition):
+      raise ValueError(f"position must be one of {list(get_args(ZPosition))}, is {position!r}")
 
-    parameters: Dict[str, str] = {"zp": f"{Z_POSITIONS[position]:01}"}
-    if speed is not None:
-      low, high = c.z_drive_speed_increment_range
-      if not low <= speed <= high:
-        raise ValueError(f"speed must be between {low} and {high}, is {speed}")
-      parameters["zv"] = f"{speed:04}"
+    # Every parameter is sent, so what the drive does is written here rather than left to the
+    # drive's own defaults, which nothing would record.
+    speed = c.z_drive_speed_default if speed is None else speed
+    acceleration_ramp = (
+      c.z_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
+    )
+    current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
-    if acceleration_ramp is not None:
-      low, high = c.z_drive_acceleration_ramp_range
-      if not low <= acceleration_ramp <= high:
-        raise ValueError(
-          f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
-        )
-      parameters["zr"] = f"{acceleration_ramp:01}"
+    low, high = c.z_drive_speed_increment_range
+    if not low <= speed <= high:
+      raise ValueError(f"speed must be between {low} and {high}, is {speed}")
 
-    if current_limit is not None:
-      low, high = c.motor_current_limit_range
-      if not low <= current_limit <= high:
-        raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
-      parameters["zw"] = f"{current_limit:01}"
+    low, high = c.z_drive_acceleration_ramp_range
+    if not low <= acceleration_ramp <= high:
+      raise ValueError(
+        f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
+      )
 
-    # The parameters are the command's own, not this method's arguments, hence the splat.
-    return await self._driver.send_command(module="I0", command="ZP", **parameters)  # type: ignore[arg-type]
+    low, high = c.motor_current_limit_range
+    if not low <= current_limit <= high:
+      raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
+
+    return await self._driver.send_command(
+      module="I0",
+      command="ZP",
+      zp="0" if position == "below" else "1",
+      zv=f"{speed:04}",
+      zr=f"{acceleration_ramp:01}",
+      zw=f"{current_limit:01}",
+    )
 
   async def request_y_position(self) -> float:
     """Request how far in or out the carrier drive is.
@@ -417,11 +414,13 @@ class Autoload:
 
     Args:
       y: how far to move it, in mm from the drive's zero.
-      speed: how fast to travel, in steps per second. Left out of the command when not given, so
-        the drive uses its own default.
+      speed: how fast to travel, in steps per second. Defaults to
+        `configuration.y_drive_speed_default`.
       acceleration_ramp: how hard to accelerate, in multiples of
-        `configuration.acceleration_ramp_increments_per_second_squared`. Left out when not given.
-      current_limit: the motor current limit. Left out when not given.
+        `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
+        `configuration.y_drive_acceleration_ramp_default`.
+      current_limit: the motor current limit. Defaults to
+        `configuration.motor_current_limit_default`.
 
     Raises:
       ValueError: If the position, or an argument, is outside what the drive accepts.
@@ -435,29 +434,36 @@ class Autoload:
         f"{c.y_drive_increments_to_mm(high)} mm, is {y}"
       )
 
-    parameters: Dict[str, str] = {"ya": f"{increments:04}"}
-    if speed is not None:
-      low, high = c.y_drive_speed_increment_range
-      if not low <= speed <= high:
-        raise ValueError(f"speed must be between {low} and {high}, is {speed}")
-      parameters["yv"] = f"{speed:04}"
+    # Every parameter is sent, so what the drive does is written here rather than left to the
+    # drive's own defaults, which nothing would record.
+    speed = c.y_drive_speed_default if speed is None else speed
+    acceleration_ramp = (
+      c.y_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
+    )
+    current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
-    if acceleration_ramp is not None:
-      low, high = c.y_drive_acceleration_ramp_range
-      if not low <= acceleration_ramp <= high:
-        raise ValueError(
-          f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
-        )
-      parameters["yr"] = f"{acceleration_ramp:01}"
+    low, high = c.y_drive_speed_increment_range
+    if not low <= speed <= high:
+      raise ValueError(f"speed must be between {low} and {high}, is {speed}")
 
-    if current_limit is not None:
-      low, high = c.motor_current_limit_range
-      if not low <= current_limit <= high:
-        raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
-      parameters["yw"] = f"{current_limit:01}"
+    low, high = c.y_drive_acceleration_ramp_range
+    if not low <= acceleration_ramp <= high:
+      raise ValueError(
+        f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
+      )
 
-    # The parameters are the command's own, not this method's arguments, hence the splat.
-    return await self._driver.send_command(module="I0", command="YA", **parameters)  # type: ignore[arg-type]
+    low, high = c.motor_current_limit_range
+    if not low <= current_limit <= high:
+      raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
+
+    return await self._driver.send_command(
+      module="I0",
+      command="YA",
+      ya=f"{increments:04}",
+      yv=f"{speed:04}",
+      yr=f"{acceleration_ramp:01}",
+      yw=f"{current_limit:01}",
+    )
 
   async def move_to_y_position(
     self,
@@ -469,44 +475,56 @@ class Autoload:
     """Move the carrier drive to one of the three positions it knows.
 
     Args:
-      position: which one, as named in `Y_POSITIONS`.
-      speed: how fast to travel, in steps per second. Left out of the command when not given, so
-        the drive uses its own default.
+      position: which one: `loading_tray`, `carrier_identification` or `deck`.
+      speed: how fast to travel, in steps per second. Defaults to
+        `configuration.y_drive_speed_default`.
       acceleration_ramp: how hard to accelerate, in multiples of
-        `configuration.acceleration_ramp_increments_per_second_squared`. Left out when not given.
-      current_limit: the motor current limit. Left out when not given.
+        `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
+        `configuration.y_drive_acceleration_ramp_default`.
+      current_limit: the motor current limit. Defaults to
+        `configuration.motor_current_limit_default`.
 
     Raises:
       ValueError: If the position is not one it knows, or an argument is outside what the drive
         accepts.
     """
     c = self.configuration
-    if position not in Y_POSITIONS:
-      raise ValueError(f"position must be one of {sorted(Y_POSITIONS)}, is {position!r}")
+    if position not in get_args(YPosition):
+      raise ValueError(f"position must be one of {list(get_args(YPosition))}, is {position!r}")
 
-    parameters: Dict[str, str] = {"yp": f"{Y_POSITIONS[position]:01}"}
-    if speed is not None:
-      low, high = c.y_drive_speed_increment_range
-      if not low <= speed <= high:
-        raise ValueError(f"speed must be between {low} and {high}, is {speed}")
-      parameters["yv"] = f"{speed:04}"
+    # Every parameter is sent, so what the drive does is written here rather than left to the
+    # drive's own defaults, which nothing would record.
+    speed = c.y_drive_speed_default if speed is None else speed
+    acceleration_ramp = (
+      c.y_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
+    )
+    current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
-    if acceleration_ramp is not None:
-      low, high = c.y_drive_acceleration_ramp_range
-      if not low <= acceleration_ramp <= high:
-        raise ValueError(
-          f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
-        )
-      parameters["yr"] = f"{acceleration_ramp:01}"
+    low, high = c.y_drive_speed_increment_range
+    if not low <= speed <= high:
+      raise ValueError(f"speed must be between {low} and {high}, is {speed}")
 
-    if current_limit is not None:
-      low, high = c.motor_current_limit_range
-      if not low <= current_limit <= high:
-        raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
-      parameters["yw"] = f"{current_limit:01}"
+    low, high = c.y_drive_acceleration_ramp_range
+    if not low <= acceleration_ramp <= high:
+      raise ValueError(
+        f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
+      )
 
-    # The parameters are the command's own, not this method's arguments, hence the splat.
-    return await self._driver.send_command(module="I0", command="YP", **parameters)  # type: ignore[arg-type]
+    low, high = c.motor_current_limit_range
+    if not low <= current_limit <= high:
+      raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
+    return await self._driver.send_command(
+      module="I0",
+      command="YP",
+      yp="0"
+      if position == "loading_tray"
+      else "1"
+      if position == "carrier_identification"
+      else "2",
+      yv=f"{speed:04}",
+      yr=f"{acceleration_ramp:01}",
+      yw=f"{current_limit:01}",
+    )
 
   # -- scanner rotation drive ----------------------------------------------------------------
 
@@ -514,21 +532,19 @@ class Autoload:
     """Request which way the scanner faces.
 
     Returns:
-      Its position, as named in `SCANNER_ROTATIONS`, which is `undefined` when it sits at neither
-      of the two stops.
+      Which way it faces, or `undefined` when it sits at neither of the two stops.
     """
     resp = await self._driver.send_command(module="I0", command="RS", fmt="rs#")
-    return SCANNER_ROTATIONS[cast(int, resp["rs"])]
+    code = cast(int, resp["rs"])
+    return "vertical" if code == 0 else "horizontal" if code == 1 else "undefined"
 
-  async def move_scanner_rotation(
-    self, position: ScannerRotation, stop_torque: Optional[bool] = None
-  ):
+  async def move_scanner_rotation(self, position: ScannerRotation, stop_torque: bool = False):
     """Rotate the scanner to face one way or the other.
 
     Args:
       position: which way to face. Only the two stops can be moved to, so `undefined` is refused.
-      stop_torque: whether to hold the drive there once it arrives. Left out of the command when
-        not given, so the drive uses its own default.
+      stop_torque: whether to hold the drive there once it arrives. The drive's own default is
+        not to.
 
     Raises:
       ValueError: If the position is not one that can be moved to.
@@ -536,12 +552,12 @@ class Autoload:
     if position not in ("vertical", "horizontal"):
       raise ValueError(f"position must be 'vertical' or 'horizontal', is {position!r}")
 
-    parameters: Dict[str, str] = {"sp": "0" if position == "vertical" else "1"}
-    if stop_torque is not None:
-      parameters["sh"] = f"{int(stop_torque):01}"
-
-    # The parameters are the command's own, not this method's arguments, hence the splat.
-    return await self._driver.send_command(module="I0", command="SP", **parameters)  # type: ignore[arg-type]
+    return await self._driver.send_command(
+      module="I0",
+      command="SP",
+      sp="0" if position == "vertical" else "1",
+      sh=f"{int(stop_torque):01}",
+    )
 
   # -- barcode scanner -------------------------------------------------------------------------
 
@@ -562,36 +578,20 @@ class Autoload:
 
     Args:
       enabled: whether to switch it on.
-      barcode_types: which types to read, as named in `BARCODE_TYPES`. Left out of the command when
-        not given, so the scanner uses its own set.
+      barcode_types: which types to read, as named in `BARCODE_TYPES`. Defaults to
+        `BARCODE_TYPES.keys()`.
 
     Raises:
       ValueError: If a type is not one it reads.
     """
-    parameters: Dict[str, str] = {"ar": f"{int(enabled):01}"}
-    if barcode_types is not None:
-      unknown = [name for name in barcode_types if name not in BARCODE_TYPES]
-      if unknown:
-        raise ValueError(f"not barcode types the scanner reads: {unknown}")
-      mask = sum(1 << BARCODE_TYPES[name] for name in barcode_types)
-      parameters["bt"] = f"{mask:02X}"
+    barcode_types = list(BARCODE_TYPES.keys()) if barcode_types is None else barcode_types
+    unknown = [name for name in barcode_types if name not in BARCODE_TYPES]
+    if unknown:
+      raise ValueError(f"not barcode types the scanner reads: {unknown}")
+    mask = sum(1 << BARCODE_TYPES[name] for name in barcode_types)
 
-    # The parameters are the command's own, not this method's arguments, hence the splat.
-    return await self._driver.send_command(module="I0", command="AR", **parameters)  # type: ignore[arg-type]
-
-  async def set_barcode_scanner_mode(self, mode: BarcodeScannerMode):
-    """Set which mode the barcode scanner runs in.
-
-    Args:
-      mode: which one, as named in `BARCODE_SCANNER_MODES`.
-
-    Raises:
-      ValueError: If the mode is not one it has.
-    """
-    if mode not in BARCODE_SCANNER_MODES:
-      raise ValueError(f"mode must be one of {sorted(BARCODE_SCANNER_MODES)}, is {mode!r}")
     return await self._driver.send_command(
-      module="I0", command="AX", ax=f"{BARCODE_SCANNER_MODES[mode]:01}"
+      module="I0", command="AR", ar=f"{int(enabled):01}", bt=f"{mask:02X}"
     )
 
   async def reset_barcode_scanner(self):
@@ -601,9 +601,7 @@ class Autoload:
   # -- carrier identification ------------------------------------------------------------------
 
   async def set_barcode_type(self, barcode_types: List[str]):
-    """Set which barcode types the carrier identification reads.
-
-    This is the master's own setting, kept apart from the one the scanner is switched on with.
+    """Set the barcode types for autoload barcode reading.
 
     Args:
       barcode_types: which types to read, as named in `BARCODE_TYPES`.
@@ -625,10 +623,9 @@ class Autoload:
     container_distance: float = 96.0,
     reading_speed: float = 128.1,
   ) -> Optional[str]:
-    """Pull a carrier off the loading tray and read its barcode on the way in.
+    """Load a carrier from the loading tray and scan its barcode.
 
-    One command does both: the carrier travels in past the scanner, which reads it as it passes.
-    `unload_carrier_after_carrier_barcode_scanning` pushes it back out again.
+    `unload_carrier_after_carrier_barcode_scanning` puts it back on the tray.
 
     Args:
       track: the track the carrier ends at, counted from 1.
@@ -683,7 +680,10 @@ class Autoload:
     return read[2:] or None
 
   async def unload_carrier_after_carrier_barcode_scanning(self):
-    """Push the carrier that was just identified back out to the loading tray."""
+    """Unload the carrier currently engaged with the autoload sled, back to the loading tray.
+
+    Sent after its barcode has been scanned.
+    """
     try:
       return await self._driver.send_command(module="C0", command="CA")
     except BaseException:
@@ -691,7 +691,9 @@ class Autoload:
       raise
 
   async def take_carrier_out_to_autoload_belt(self, track: int):
-    """Take a carrier already on the deck back out to the identification position.
+    """Take a carrier out to the identification position for barcode reading.
+
+    The carrier is already on the deck.
 
     Args:
       track: the track the carrier sits at, counted from 1.
@@ -725,15 +727,16 @@ class Autoload:
     reading_speed: float = 128.1,
     park_after: bool = True,
   ) -> Dict[int, Optional[str]]:
-    """Finish loading the carrier at the identification position, reading its containers on the way.
+    """Finish loading the carrier currently engaged with the autoload sled.
 
-    Which barcode types are read is whatever `set_barcode_type` last set.
+    It is the one at the identification position. Which barcode types are read is whatever
+    `set_barcode_type` last set.
 
     Args:
       barcode_reading: whether to read the containers at all. When False the scanner stays where it
         is and nothing is read.
-      barcode_reading_direction: which way the scanner faces while reading, as named in
-        `BARCODE_READING_DIRECTIONS`.
+      barcode_reading_direction: which way the scanner faces while reading: `vertical` or
+        `horizontal`.
       reading_position_of_first_barcode: where along the carrier the first container's barcode
         sits, in mm.
       containers_per_carrier: how many containers to read.
@@ -751,9 +754,9 @@ class Autoload:
         than were asked for.
       RuntimeError: If setup has not run and the autoload has to be parked.
     """
-    if barcode_reading_direction not in BARCODE_READING_DIRECTIONS:
+    if barcode_reading_direction not in get_args(BarcodeReadingDirection):
       raise ValueError(
-        f"barcode_reading_direction must be one of {sorted(BARCODE_READING_DIRECTIONS)}, is "
+        f"barcode_reading_direction must be one of {list(get_args(BarcodeReadingDirection))}, is "
         f"{barcode_reading_direction!r}"
       )
     if not 0 <= reading_position_of_first_barcode <= 470:
@@ -787,7 +790,7 @@ class Autoload:
         await self._driver.send_command(
           module="C0",
           command="CL",
-          bd=f"{BARCODE_READING_DIRECTIONS[direction]:01}",
+          bd="0" if direction == "vertical" else "1",
           bp=f"{round(reading_position_of_first_barcode * 10):04}",
           cn=f"{containers:02}",
           co=f"{round(distance_between_containers * 10):04}",
@@ -816,7 +819,7 @@ class Autoload:
     }
 
   async def unload_carrier(self, track: int, park_after: bool = True):
-    """Unload the carrier at a track, back out to the loading tray.
+    """Use the autoload to unload the carrier at a track.
 
     Args:
       track: the track the carrier sits at, counted from 1.
@@ -836,10 +839,7 @@ class Autoload:
     return resp
 
   async def unload_carrier_finally(self, track: int, park_after: bool = True):
-    """Unload the carrier at a track so that it cannot be loaded again.
-
-    Where `unload_carrier` puts it back on the loading tray for the autoload to pick up again, this
-    puts it out of the machine's reach.
+    """Unload the carrier at a track, from where it cannot be loaded again.
 
     Args:
       track: the track the carrier sits at, counted from 1.
@@ -858,20 +858,53 @@ class Autoload:
       await self.park()
     return resp
 
-  # -- deck watching ---------------------------------------------------------------------------
+  # TODO: port legacy's `load_carrier`, once the resource model is wired in. It is the sequence
+  # below, in v1 terms, and every command it needs is already here. What is missing is the first
+  # line: legacy works the end rail out of a `Carrier`'s position on the deck
+  # (`_compute_end_rail_of_carrier`), and the driver has no resource model to ask.
+  #
+  # async def load_carrier(
+  #   self,
+  #   carrier,
+  #   carrier_barcode_reading: bool = True,
+  #   barcode_reading: bool = False,
+  #   barcode_reading_direction: BarcodeReadingDirection = "horizontal",
+  #   containers_per_carrier: int = 5,
+  #   reading_position_of_first_barcode: float = 63.0,
+  #   distance_between_containers: float = 96.0,
+  #   width_of_reading_window: float = 38.0,
+  #   reading_speed: float = 128.1,
+  #   park_after: bool = True,
+  # ) -> dict:
+  #   """Use the autoload to load a carrier."""
+  #   track = ...  # the rail the carrier ends at, from where it sits on the deck
+  #   if not await self.request_carrier_on_loading_tray(track):
+  #     raise ValueError(f"no carrier at track {track}; is it on the right loading tray position?")
+  #
+  #   carrier_barcode = None
+  #   if carrier_barcode_reading:
+  #     carrier_barcode = await self.load_carrier_from_tray_and_scan_carrier_barcode(track)
+  #
+  #   container_barcodes = await self.load_carrier_from_autoload_belt(
+  #     barcode_reading=barcode_reading,
+  #     barcode_reading_direction=barcode_reading_direction,
+  #     reading_position_of_first_barcode=reading_position_of_first_barcode,
+  #     containers_per_carrier=containers_per_carrier,
+  #     distance_between_containers=distance_between_containers,
+  #     width_of_reading_window=width_of_reading_window,
+  #     reading_speed=reading_speed,
+  #     park_after=False,
+  #   )
+  #
+  #   if park_after:
+  #     await self.park()
+  #
+  #   return {"carrier_barcode": carrier_barcode, "container_barcodes": container_barcodes}
 
-  async def set_carrier_monitoring(self, should_monitor: bool):
-    """Set whether the instrument watches for carriers being taken off the deck.
-
-    Args:
-      should_monitor: whether to watch.
-    """
-    return await self._driver.send_command(
-      module="C0", command="CU", cu=f"{int(should_monitor):01}"
-    )
+  # -- loading indicators ----------------------------------------------------------------------
 
   async def set_loading_indicators(self, lit: List[bool], blinking: List[bool]):
-    """Set the loading tray's indicator lights, one per track.
+    """Set the loading indicators (LEDs), one per track.
 
     Args:
       lit: whether each track's light is on, counted from track 1.
@@ -903,15 +936,17 @@ class Autoload:
     acceleration_ramp: Optional[int] = None,
     current_limit: Optional[int] = None,
   ):
-    """Move the autoload along the deck to a track, retracting the wheel first.
+    """Move the autoload to a specific track position, raising the wheel first.
 
     Args:
       track: which track to move to, counted from 1.
-      speed: how fast to travel, in steps per second. Left out of the command when not given, so
-        the drive uses its own default.
+      speed: how fast to travel, in steps per second. Defaults to
+        `configuration.x_drive_speed_default`.
       acceleration_ramp: how hard to accelerate, in multiples of
-        `configuration.acceleration_ramp_increments_per_second_squared`. Left out when not given.
-      current_limit: the motor current limit. Left out when not given.
+        `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
+        `configuration.x_drive_acceleration_ramp_default`.
+      current_limit: the motor current limit. Defaults to
+        `configuration.motor_current_limit_default`.
 
     Raises:
       ValueError: If the track is not one this machine has, or an argument is outside what the
@@ -920,30 +955,34 @@ class Autoload:
     """
     c = self.configuration
     tracks = self.track_range
+
+    # -- precondition checks ----------------------------------------------------------------------
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
 
-    parameters: Dict[str, str] = {"xp": f"{track:02}"}
-    if speed is not None:
-      low, high = c.x_drive_speed_increment_range
-      if not low <= speed <= high:
-        raise ValueError(f"speed must be between {low} and {high}, is {speed}")
-      parameters["xv"] = f"{speed:04}"
+    # -- parameter resolution ----------------------------------------------------------------------
+    speed = c.x_drive_speed_default if speed is None else speed
+    acceleration_ramp = (
+      c.x_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
+    )
+    current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
-    if acceleration_ramp is not None:
-      low, high = c.x_drive_acceleration_ramp_range
-      if not low <= acceleration_ramp <= high:
-        raise ValueError(
-          f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
-        )
-      parameters["xr"] = f"{acceleration_ramp:01}"
+    # -- parameter validation ----------------------------------------------------------------------
+    low, high = c.x_drive_speed_increment_range
+    if not low <= speed <= high:
+      raise ValueError(f"speed must be between {low} and {high}, is {speed}")
 
-    if current_limit is not None:
-      low, high = c.motor_current_limit_range
-      if not low <= current_limit <= high:
-        raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
-      parameters["xw"] = f"{current_limit:01}"
+    low, high = c.x_drive_acceleration_ramp_range
+    if not low <= acceleration_ramp <= high:
+      raise ValueError(
+        f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
+      )
 
+    low, high = c.motor_current_limit_range
+    if not low <= current_limit <= high:
+      raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
+
+    # -- device preparation ----------------------------------------------------------------------
     current_wheel_z = await self.request_z_position()
     if c.z_drive_safety_position is not None and current_wheel_z < c.z_drive_safety_position:
       logger.debug(
@@ -952,11 +991,18 @@ class Autoload:
         track,
       )
       await self.move_to_safe_z()
-    # The parameters are the command's own, not this method's arguments, hence the splat.
-    return await self._driver.send_command(module="I0", command="XP", **parameters)  # type: ignore[arg-type]
+
+    return await self._driver.send_command(
+      module="I0",
+      command="XP",
+      xp=f"{track:02}",
+      xv=f"{speed:04}",
+      xr=f"{acceleration_ramp:01}",
+      xw=f"{current_limit:01}",
+    )
 
   async def park(self):
-    """Move the autoload out of the way, to the last track this machine has.
+    """Park the autoload at the last track this machine has.
 
     Raises:
       RuntimeError: If setup has not run, so the deck size is not known.
@@ -976,9 +1022,9 @@ class Autoload:
     return resp.split(marker, 1)[1]
 
   async def sense_carrier_presence_on_deck(self) -> List[int]:
-    """Sense which deck tracks hold a carrier.
+    """Read the rear deck sensors and return the positions where carriers are detected.
 
-    Nothing moves: the sensors along the back of the deck see all of it at once.
+    The autoload does not move.
 
     Returns:
       The tracks that hold a carrier, counted from 1.
@@ -990,10 +1036,10 @@ class Autoload:
     return _tracks_from_presence_mask(self._presence_mask(resp, "ce"))
 
   async def request_carrier_on_loading_tray(self, track: int) -> bool:
-    """Request whether one loading-tray track holds a carrier.
+    """Check whether a specific loading-tray track contains a carrier.
 
-    This moves: the autoload travels to that track and reads the sensor on its front. Reading the
-    whole tray in one pass is `sense_carrier_presence_on_loading_tray`.
+    The sled moves to that track and reads its front-facing sensor.
+    `sense_carrier_presence_on_loading_tray` scans the whole tray instead.
 
     Args:
       track: which track to look at, counted from 1.
@@ -1012,10 +1058,9 @@ class Autoload:
     return cast(int, resp["ct"]) == 1
 
   async def sense_carrier_presence_on_loading_tray(self) -> List[int]:
-    """Sense which loading-tray tracks hold a carrier.
+    """Move the autoload sled across the loading tray and read its front-facing sensors.
 
-    This moves: the autoload runs the length of the tray, reading the sensor on its front as it
-    goes.
+    This determines which tray positions contain carriers.
 
     Returns:
       The tracks that hold a carrier, counted from 1.
