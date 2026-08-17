@@ -2,8 +2,10 @@
 
 import logging
 import string
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast, get_args
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
+
+from pylabrobot.resources.barcode import Barcode1DSymbology, Barcode2DSymbology
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -17,14 +19,40 @@ ZPosition = Literal["below", "above"]
 
 ScannerRotation = Literal["vertical", "horizontal", "undefined"]
 
-BARCODE_TYPES: Dict[str, int] = {
-  "isbt_standard": 0,
-  "code_128": 1,
-  "code_39": 2,
-  "codabar": 3,
-  "code_2of5_interleaved": 4,
-  "upc_a_e": 5,
-  "jan_ean_8": 6,
+# Which way a 2D reader looks. A 1D scanner has no such setting.
+ScanDirection = Literal["vertical", "horizontal", "omnidirectional", "vertical and horizontal"]
+
+# The mask each symbology holds. `ANY 1D` is legacy's wildcard, the seven the master names.
+SYMBOLOGY_MASKS_1D: Dict[Barcode1DSymbology, int] = {
+  "ISBT Standard": 0x01,
+  "Code 128 (Subset B and C)": 0x02,
+  "Code 39": 0x04,
+  "Codebar": 0x08,
+  "Code 2of5 Interleaved": 0x10,
+  "UPC A/E": 0x20,
+  "YESN/EAN 8": 0x40,
+  "ANY 1D": 0x7F,  # bit 7 is left out: the master's table does not name it
+}
+
+# The second mask a 2D reader takes.
+SYMBOLOGY_MASKS_2D: Dict[Barcode2DSymbology, int] = {
+  "Data Matrix": 0x01,
+  "QR Code": 0x02,
+  "Maxi Code": 0x04,
+  "Aztec": 0x08,
+  "PDF 417": 0x10,
+  "Micro PDF 417": 0x20,
+  "GS1 DataBar": 0x40,
+  "EAN/UCC Comp": 0x80,
+  "ANY 2D": 0xFF,
+}
+
+# What each kind of autoload reads. One that names no scanner is absent, and is refused.
+SYMBOLOGIES_BY_AUTOLOAD: Dict[
+  str, Tuple[Dict[Barcode1DSymbology, int], Optional[Dict[Barcode2DSymbology, int]]]
+] = {
+  "1D barcode scanner": (SYMBOLOGY_MASKS_1D, None),
+  "2D barcode scanner": (SYMBOLOGY_MASKS_1D, SYMBOLOGY_MASKS_2D),
 }
 
 BarcodeReadingDirection = Literal["vertical", "horizontal"]
@@ -66,15 +94,38 @@ def _tracks_from_presence_mask(mask: str) -> List[int]:
 class AutoloadConfiguration:
   """Device facts for the installed autoload.
 
-  Three drives: the scanner, which runs along the deck; the carrier Y drive, which pulls a carrier
-  in and pushes it out; and the carrier Z drive, which raises and lowers the handling wheel. The
-  ranges below are what each drive's move commands accept, in the steps they count in, and the
-  defaults are what the commands use when a parameter is not given. They are the same across the
-  2015, 2017, 2022 and 2025 firmware.
+  Three drives:
+  - X-drive of the entire autoload sled;
+  - Y drive (carrier handling wheel), which moves a carriers in and out;
+  - Z drive (carrier handling wheel), which raises and retracts the handling wheel.
   """
 
   firmware_version: Optional[str] = None
   autoload_type: Optional[str] = None  # see AUTOLOAD_TYPES
+
+  # -- what each drive can be sent to by name, and the code it takes --
+  y_positions: Dict[YPosition, int] = field(
+    default_factory=lambda: {"loading_tray": 0, "carrier_identification": 1, "deck": 2}
+  )
+  z_positions: Dict[ZPosition, int] = field(default_factory=lambda: {"below": 0, "above": 1})
+  scanner_rotations: Dict[ScannerRotation, int] = field(
+    default_factory=lambda: {"vertical": 0, "horizontal": 1, "undefined": 2}
+  )
+  barcode_reading_directions: Dict[BarcodeReadingDirection, int] = field(
+    default_factory=lambda: {"vertical": 0, "horizontal": 1}
+  )
+  barcode_symbologies: Optional[Dict[Barcode1DSymbology, int]] = None
+  """None when this autoload's type names no scanner."""
+  barcode_2d_symbologies: Optional[Dict[Barcode2DSymbology, int]] = None
+  """None on a 1D scanner, which takes neither this mask nor a scan direction."""
+  scan_directions: Dict[ScanDirection, int] = field(
+    default_factory=lambda: {
+      "vertical": 0,
+      "horizontal": 1,
+      "omnidirectional": 2,
+      "vertical and horizontal": 3,
+    }
+  )
 
   # -- scanner X drive (along the deck) --
   x_drive_mm_per_increment: float = 0.1
@@ -86,7 +137,7 @@ class AutoloadConfiguration:
   x_drive_acceleration_ramp_range: Tuple[int, int] = (1, 3)
   x_drive_acceleration_ramp_default: int = 3
 
-  # -- carrier Z drive (the handling wheel, down or up) --
+  # -- carrier Z drive (handling wheel; the handling wheel, down or up) --
   z_drive_mm_per_increment: float = 0.004166666666666667
   z_drive_increment_range: Tuple[int, int] = (0, 3_000)
   z_drive_speed_increment_range: Tuple[int, int] = (20, 2_000)
@@ -95,7 +146,7 @@ class AutoloadConfiguration:
   z_drive_acceleration_ramp_default: int = 4
   z_drive_safety_position: Optional[float] = None
 
-  # -- carrier Y drive (in and out of the deck) --
+  # -- carrier Y drive (handling wheel; in and out of the deck) --
   y_drive_mm_per_increment: float = 0.06404424
   y_drive_increment_range: Tuple[int, int] = (0, 9_999)
   y_drive_speed_increment_range: Tuple[int, int] = (20, 2_500)
@@ -138,9 +189,7 @@ class AutoloadConfiguration:
 class Autoload:
   """The autoload.
 
-  Reached as `driver.autoload`, on a machine that has one. It is addressed as `I0`, but the
-  commands that move it and the ones that read the deck go to the master, so this capability
-  speaks to both.
+  Reached as `driver.autoload`, on a machine that has one.
   """
 
   def __init__(self, driver: "STARDriver", configuration: Optional[AutoloadConfiguration] = None):
@@ -163,7 +212,7 @@ class Autoload:
       raise RuntimeError("no configuration read; have you called `star.setup()`?")
     return range(1, self._driver.configuration.instrument_size_slots + 1)
 
-  # -- session / discovery ---------------------------------------------------
+  # -- session / discovery -------------------------------------------------------------------------
 
   async def request_firmware_version(self) -> str:
     """Request the autoload's firmware version.
@@ -200,8 +249,11 @@ class Autoload:
     c = self.configuration
     c.firmware_version = await self.request_firmware_version()
     c.autoload_type = await self.request_autoload_type()
+    c.barcode_symbologies, c.barcode_2d_symbologies = SYMBOLOGIES_BY_AUTOLOAD.get(
+      c.autoload_type or "", (None, None)
+    )
 
-  # -- initialization --------------------------------------------------------
+  # -- initialization ------------------------------------------------------------------------------
 
   async def initialize(self):
     """Initialize the autoload and everything else that makes it operational. This moves it.
@@ -216,7 +268,7 @@ class Autoload:
     await self.move_to_safe_z()
     self.configuration.z_drive_safety_position = await self.request_z_position()
 
-  # -- carrier handling ------------------------------------------------------
+  # -- scanner X drive (along the deck) ------------------------------------------------------------
 
   async def request_track(self) -> int:
     """Request the current track of the autoload's carrier handler.
@@ -257,7 +309,87 @@ class Autoload:
     _firmware_counter, hardware_counter = cast(List[int], resp[field])
     return hardware_counter
 
-  # -- (carrier) handling wheel --------------------------------------------------------------
+  async def move_to_track(
+    self,
+    track: int,
+    speed: Optional[int] = None,
+    acceleration_ramp: Optional[int] = None,
+    current_limit: Optional[int] = None,
+  ):
+    """Move the autoload to a specific track position, raising the wheel first.
+
+    Args:
+      track: which track to move to, counted from 1.
+      speed: how fast to travel, in steps per second. Defaults to
+        `configuration.x_drive_speed_default`.
+      acceleration_ramp: how hard to accelerate, in multiples of
+        `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
+        `configuration.x_drive_acceleration_ramp_default`.
+      current_limit: the motor current limit. Defaults to
+        `configuration.motor_current_limit_default`.
+
+    Raises:
+      ValueError: If the track is not one this machine has, or an argument is outside what the
+        drive accepts.
+      RuntimeError: If setup has not run.
+    """
+    c = self.configuration
+    tracks = self.track_range
+
+    # -- precondition checks ----------------------------------------------------------------------
+    if track not in tracks:
+      raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
+
+    # -- parameter resolution ----------------------------------------------------------------------
+    speed = c.x_drive_speed_default if speed is None else speed
+    acceleration_ramp = (
+      c.x_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
+    )
+    current_limit = c.motor_current_limit_default if current_limit is None else current_limit
+
+    # -- parameter validation ----------------------------------------------------------------------
+    low, high = c.x_drive_speed_increment_range
+    if not low <= speed <= high:
+      raise ValueError(f"speed must be between {low} and {high}, is {speed}")
+
+    low, high = c.x_drive_acceleration_ramp_range
+    if not low <= acceleration_ramp <= high:
+      raise ValueError(
+        f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
+      )
+
+    low, high = c.motor_current_limit_range
+    if not low <= current_limit <= high:
+      raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
+
+    # -- device preparation ----------------------------------------------------------------------
+    current_wheel_z = await self.request_z_position()
+    if c.z_drive_safety_position is not None and current_wheel_z < c.z_drive_safety_position:
+      logger.debug(
+        "retracting the handling wheel to its safe Z %.3f mm before moving to track %d",
+        c.z_drive_safety_position,
+        track,
+      )
+      await self.move_to_safe_z()
+
+    return await self._driver.send_command(
+      module="I0",
+      command="XP",
+      xp=f"{track:02}",
+      xv=f"{speed:04}",
+      xr=f"{acceleration_ramp:01}",
+      xw=f"{current_limit:01}",
+    )
+
+  async def park(self):
+    """Park the autoload at the last track this machine has.
+
+    Raises:
+      RuntimeError: If setup has not run, so the deck size is not known.
+    """
+    return await self.move_to_track(track=self.track_range[-1])
+
+  # -- carrier Z drive (the handling wheel) --------------------------------------------------------
 
   async def request_z_position(self) -> float:
     """Request how high the carrier-handling wheel is.
@@ -304,8 +436,7 @@ class Autoload:
         f"{c.z_drive_increments_to_mm(high)} mm, is {z}"
       )
 
-    # Every parameter is sent, so what the drive does is written here rather than left to the
-    # drive's own defaults, which nothing would record.
+    # Every parameter is sent: what the drive does is written here, not left to it.
     speed = c.z_drive_speed_default if speed is None else speed
     acceleration_ramp = (
       c.z_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
@@ -359,11 +490,10 @@ class Autoload:
         accepts.
     """
     c = self.configuration
-    if position not in get_args(ZPosition):
-      raise ValueError(f"position must be one of {list(get_args(ZPosition))}, is {position!r}")
+    if position not in c.z_positions:
+      raise ValueError(f"position must be one of {list(c.z_positions)}, is {position!r}")
 
-    # Every parameter is sent, so what the drive does is written here rather than left to the
-    # drive's own defaults, which nothing would record.
+    # Every parameter is sent: what the drive does is written here, not left to it.
     speed = c.z_drive_speed_default if speed is None else speed
     acceleration_ramp = (
       c.z_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
@@ -387,11 +517,13 @@ class Autoload:
     return await self._driver.send_command(
       module="I0",
       command="ZP",
-      zp="0" if position == "below" else "1",
+      zp=f"{c.z_positions[position]:01}",
       zv=f"{speed:04}",
       zr=f"{acceleration_ramp:01}",
       zw=f"{current_limit:01}",
     )
+
+  # -- carrier Y drive (in and out of the deck) ----------------------------------------------------
 
   async def request_y_position(self) -> float:
     """Request how far in or out the carrier drive is.
@@ -434,8 +566,7 @@ class Autoload:
         f"{c.y_drive_increments_to_mm(high)} mm, is {y}"
       )
 
-    # Every parameter is sent, so what the drive does is written here rather than left to the
-    # drive's own defaults, which nothing would record.
+    # Every parameter is sent: what the drive does is written here, not left to it.
     speed = c.y_drive_speed_default if speed is None else speed
     acceleration_ramp = (
       c.y_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
@@ -489,11 +620,10 @@ class Autoload:
         accepts.
     """
     c = self.configuration
-    if position not in get_args(YPosition):
-      raise ValueError(f"position must be one of {list(get_args(YPosition))}, is {position!r}")
+    if position not in c.y_positions:
+      raise ValueError(f"position must be one of {list(c.y_positions)}, is {position!r}")
 
-    # Every parameter is sent, so what the drive does is written here rather than left to the
-    # drive's own defaults, which nothing would record.
+    # Every parameter is sent: what the drive does is written here, not left to it.
     speed = c.y_drive_speed_default if speed is None else speed
     acceleration_ramp = (
       c.y_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
@@ -516,17 +646,13 @@ class Autoload:
     return await self._driver.send_command(
       module="I0",
       command="YP",
-      yp="0"
-      if position == "loading_tray"
-      else "1"
-      if position == "carrier_identification"
-      else "2",
+      yp=f"{c.y_positions[position]:01}",
       yv=f"{speed:04}",
       yr=f"{acceleration_ramp:01}",
       yw=f"{current_limit:01}",
     )
 
-  # -- scanner rotation drive ----------------------------------------------------------------
+  # -- scanner rotation drive ----------------------------------------------------------------------
 
   async def request_scanner_rotation(self) -> ScannerRotation:
     """Request which way the scanner faces.
@@ -536,7 +662,10 @@ class Autoload:
     """
     resp = await self._driver.send_command(module="I0", command="RS", fmt="rs#")
     code = cast(int, resp["rs"])
-    return "vertical" if code == 0 else "horizontal" if code == 1 else "undefined"
+    for name, value in self.configuration.scanner_rotations.items():
+      if value == code:
+        return name
+    return "undefined"
 
   async def move_scanner_rotation(self, position: ScannerRotation, stop_torque: bool = False):
     """Rotate the scanner to face one way or the other.
@@ -549,70 +678,188 @@ class Autoload:
     Raises:
       ValueError: If the position is not one that can be moved to.
     """
-    if position not in ("vertical", "horizontal"):
-      raise ValueError(f"position must be 'vertical' or 'horizontal', is {position!r}")
+    rotations = self.configuration.scanner_rotations
+    if position == "undefined" or position not in rotations:
+      raise ValueError(
+        f"position must be one of {[n for n in rotations if n != 'undefined']}, is {position!r}"
+      )
 
     return await self._driver.send_command(
       module="I0",
       command="SP",
-      sp="0" if position == "vertical" else "1",
+      sp=f"{rotations[position]:01}",
       sh=f"{int(stop_torque):01}",
     )
 
-  # -- barcode scanner -------------------------------------------------------------------------
+  # -- carrier presence sensing, using magnetic proximity sensors -------------------------------------------
 
-  async def request_barcode(self) -> Optional[str]:
+  @staticmethod
+  def _presence_mask(resp: str, marker: str) -> str:
+    """The carrier-presence mask in a reply: what is written after `marker`."""
+    if marker not in resp:
+      raise ValueError(f"no `{marker}` carrier presence mask in the reply: {resp!r}")
+    return resp.split(marker, 1)[1]
+
+  async def sense_carrier_presence_on_deck(self) -> List[int]:
+    """Read the rear deck sensors and return the positions where carriers are detected.
+
+    The autoload does not move.
+
+    Returns:
+      The tracks that hold a carrier, counted from 1.
+
+    Raises:
+      ValueError: If the machine answered without a presence mask.
+    """
+    resp = cast(str, await self._driver.send_command(module="C0", command="RC"))
+    return _tracks_from_presence_mask(self._presence_mask(resp, "ce"))
+
+  async def sense_carrier_presence_on_single_loading_tray_track(self, track: int) -> bool:
+    """Check whether a specific loading-tray track contains a carrier.
+
+    The sled moves to that track and reads its front-facing sensor.
+    `sense_carrier_presence_on_loading_tray` scans the whole tray instead.
+
+    Args:
+      track: which track to look at, counted from 1.
+
+    Returns:
+      True if a carrier is there.
+
+    Raises:
+      ValueError: If the track is not one this machine has.
+      RuntimeError: If setup has not run.
+    """
+    tracks = self.track_range
+    if track not in tracks:
+      raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
+    resp = await self._driver.send_command(module="C0", command="CT", fmt="ct#", cp=f"{track:02}")
+    return cast(int, resp["ct"]) == 1
+
+  async def sense_carrier_presence_on_loading_tray(self) -> List[int]:
+    """Move the autoload sled across the loading tray and read its front-facing sensors.
+
+    This determines which tray positions contain carriers.
+
+    Returns:
+      The tracks that hold a carrier, counted from 1.
+
+    Raises:
+      ValueError: If the machine answered without a presence mask.
+    """
+    resp = cast(str, await self._driver.send_command(module="C0", command="CS"))
+    return _tracks_from_presence_mask(self._presence_mask(resp, "cd"))
+
+  # -- barcode scanner -----------------------------------------------------------------------------
+
+  def _require_barcode_scanner(self) -> Dict[Barcode1DSymbology, int]:
+    """The symbologies the fitted scanner reads, and the mask each holds.
+
+    Raises:
+      RuntimeError: If discovery has not run, or this autoload's type names no scanner.
+    """
+    if self.configuration.barcode_symbologies is None:
+      raise RuntimeError(
+        f"no barcode scanner is recorded for this autoload ({self.configuration.autoload_type}); "
+        "have you called `star.setup()`?"
+      )
+    return self.configuration.barcode_symbologies
+
+  async def request_latest_barcode_read(self) -> Optional[str]:
     """Request the barcode the scanner last read.
 
     Returns:
       What it read, or None when it read nothing.
     """
+    self._require_barcode_scanner()
     resp = cast(str, await self._driver.send_command(module="I0", command="RB"))
     barcode = resp.split("rb", 1)[-1].strip().strip("'")
     return barcode or None
 
   async def set_barcode_scanner_enabled(
-    self, enabled: bool, barcode_types: Optional[List[str]] = None
+    self,
+    enabled: bool,
+    symbologies: Optional[List[Barcode1DSymbology]] = None,
+    symbologies_2d: Optional[List[Barcode2DSymbology]] = None,
+    scan_direction: ScanDirection = "horizontal",
   ):
     """Switch the barcode scanner on or off. Switching it on is what reads a barcode.
 
     Args:
       enabled: whether to switch it on.
-      barcode_types: which types to read, as named in `BARCODE_TYPES`. Defaults to
-        `BARCODE_TYPES.keys()`.
+      symbologies: which symbologies to read. Defaults to `ANY 1D`, every one it reads.
+      symbologies_2d: which 2D and stacked codes to read, on a reader that reads them. Defaults to
+        `ANY 2D` there, and is refused on a scanner that reads only 1D.
+      scan_direction: which way a 2D reader looks. Sent only by a reader that takes it.
 
     Raises:
-      ValueError: If a type is not one it reads.
+      ValueError: If a symbology is not one it reads, or 2D codes are asked of a 1D scanner.
+      RuntimeError: If this autoload's type names no scanner.
     """
-    barcode_types = list(BARCODE_TYPES.keys()) if barcode_types is None else barcode_types
-    unknown = [name for name in barcode_types if name not in BARCODE_TYPES]
+    c = self.configuration
+    known = self._require_barcode_scanner()
+    symbologies = ["ANY 1D"] if symbologies is None else symbologies
+    unknown = [name for name in symbologies if name not in known]
     if unknown:
-      raise ValueError(f"not barcode types the scanner reads: {unknown}")
-    mask = sum(1 << BARCODE_TYPES[name] for name in barcode_types)
+      raise ValueError(f"not symbologies this scanner reads: {unknown}; it reads {list(known)}")
+    mask = 0
+    for name in symbologies:
+      mask |= known[name]
+
+    # A 1D scanner's command has neither parameter below.
+    if c.barcode_2d_symbologies is None:
+      if symbologies_2d is not None:
+        raise ValueError(f"this scanner reads no 2D codes: {symbologies_2d}")
+      return await self._driver.send_command(
+        module="I0", command="AR", ar=f"{int(enabled):01}", bt=f"{mask:02X}"
+      )
+
+    known_2d = c.barcode_2d_symbologies
+    symbologies_2d = ["ANY 2D"] if symbologies_2d is None else symbologies_2d
+    unknown_2d = [name for name in symbologies_2d if name not in known_2d]
+    if unknown_2d:
+      raise ValueError(f"not 2D codes this reader reads: {unknown_2d}; it reads {list(known_2d)}")
+    mask_2d = 0
+    for name_2d in symbologies_2d:
+      mask_2d |= known_2d[name_2d]
+
+    if scan_direction not in c.scan_directions:
+      raise ValueError(
+        f"scan_direction must be one of {list(c.scan_directions)}, is {scan_direction!r}"
+      )
 
     return await self._driver.send_command(
-      module="I0", command="AR", ar=f"{int(enabled):01}", bt=f"{mask:02X}"
+      module="I0",
+      command="AR",
+      ar=f"{int(enabled):01}",
+      sp=f"{c.scan_directions[scan_direction]:01}",
+      bt=f"{mask:02X}",
+      mq=f"{mask_2d:02X}",
     )
 
   async def reset_barcode_scanner(self):
     """Reset the barcode scanner."""
+    self._require_barcode_scanner()
     return await self._driver.send_command(module="I0", command="AF")
 
-  # -- carrier identification ------------------------------------------------------------------
+  # -- carrier identification ----------------------------------------------------------------------
 
-  async def set_barcode_type(self, barcode_types: List[str]):
-    """Set the barcode types for autoload barcode reading.
+  async def set_barcode_symbologies(self, symbologies: List[Barcode1DSymbology]):
+    """Set the barcode symbologies for autoload barcode reading.
 
     Args:
-      barcode_types: which types to read, as named in `BARCODE_TYPES`.
+      symbologies: which symbologies to read.
 
     Raises:
       ValueError: If a type is not one it reads.
     """
-    unknown = [name for name in barcode_types if name not in BARCODE_TYPES]
+    known = self._require_barcode_scanner()
+    unknown = [name for name in symbologies if name not in known]
     if unknown:
-      raise ValueError(f"not barcode types the scanner reads: {unknown}")
-    mask = sum(1 << BARCODE_TYPES[name] for name in barcode_types)
+      raise ValueError(f"not symbologies this scanner reads: {unknown}; it reads {list(known)}")
+    mask = 0
+    for name in symbologies:
+      mask |= known[name]
     return await self._driver.send_command(module="C0", command="CB", bt=f"{mask:02X}")
 
   async def load_carrier_from_tray_and_scan_carrier_barcode(
@@ -730,7 +977,7 @@ class Autoload:
     """Finish loading the carrier currently engaged with the autoload sled.
 
     It is the one at the identification position. Which barcode types are read is whatever
-    `set_barcode_type` last set.
+    `set_barcode_symbologies` last set.
 
     Args:
       barcode_reading: whether to read the containers at all. When False the scanner stays where it
@@ -754,9 +1001,10 @@ class Autoload:
         than were asked for.
       RuntimeError: If setup has not run and the autoload has to be parked.
     """
-    if barcode_reading_direction not in get_args(BarcodeReadingDirection):
+    directions = self.configuration.barcode_reading_directions
+    if barcode_reading_direction not in directions:
       raise ValueError(
-        f"barcode_reading_direction must be one of {list(get_args(BarcodeReadingDirection))}, is "
+        f"barcode_reading_direction must be one of {list(directions)}, is "
         f"{barcode_reading_direction!r}"
       )
     if not 0 <= reading_position_of_first_barcode <= 470:
@@ -790,7 +1038,7 @@ class Autoload:
         await self._driver.send_command(
           module="C0",
           command="CL",
-          bd="0" if direction == "vertical" else "1",
+          bd=f"{directions[direction]:01}",
           bp=f"{round(reading_position_of_first_barcode * 10):04}",
           cn=f"{containers:02}",
           co=f"{round(distance_between_containers * 10):04}",
@@ -901,7 +1149,7 @@ class Autoload:
   #
   #   return {"carrier_barcode": carrier_barcode, "container_barcodes": container_barcodes}
 
-  # -- loading indicators ----------------------------------------------------------------------
+  # -- loading indicators --------------------------------------------------------------------------
 
   async def set_loading_indicators(self, lit: List[bool], blinking: List[bool]):
     """Set the loading indicators (LEDs), one per track.
@@ -926,147 +1174,3 @@ class Autoload:
     return await self._driver.send_command(
       module="C0", command="CP", cl=as_hex(lit), cb=as_hex(blinking)
     )
-
-  # -- higher-level sled movement --------------------------------------------------------------
-
-  async def move_to_track(
-    self,
-    track: int,
-    speed: Optional[int] = None,
-    acceleration_ramp: Optional[int] = None,
-    current_limit: Optional[int] = None,
-  ):
-    """Move the autoload to a specific track position, raising the wheel first.
-
-    Args:
-      track: which track to move to, counted from 1.
-      speed: how fast to travel, in steps per second. Defaults to
-        `configuration.x_drive_speed_default`.
-      acceleration_ramp: how hard to accelerate, in multiples of
-        `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
-        `configuration.x_drive_acceleration_ramp_default`.
-      current_limit: the motor current limit. Defaults to
-        `configuration.motor_current_limit_default`.
-
-    Raises:
-      ValueError: If the track is not one this machine has, or an argument is outside what the
-        drive accepts.
-      RuntimeError: If setup has not run.
-    """
-    c = self.configuration
-    tracks = self.track_range
-
-    # -- precondition checks ----------------------------------------------------------------------
-    if track not in tracks:
-      raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
-
-    # -- parameter resolution ----------------------------------------------------------------------
-    speed = c.x_drive_speed_default if speed is None else speed
-    acceleration_ramp = (
-      c.x_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
-    )
-    current_limit = c.motor_current_limit_default if current_limit is None else current_limit
-
-    # -- parameter validation ----------------------------------------------------------------------
-    low, high = c.x_drive_speed_increment_range
-    if not low <= speed <= high:
-      raise ValueError(f"speed must be between {low} and {high}, is {speed}")
-
-    low, high = c.x_drive_acceleration_ramp_range
-    if not low <= acceleration_ramp <= high:
-      raise ValueError(
-        f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
-      )
-
-    low, high = c.motor_current_limit_range
-    if not low <= current_limit <= high:
-      raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
-
-    # -- device preparation ----------------------------------------------------------------------
-    current_wheel_z = await self.request_z_position()
-    if c.z_drive_safety_position is not None and current_wheel_z < c.z_drive_safety_position:
-      logger.debug(
-        "retracting the handling wheel to its safe Z %.3f mm before moving to track %d",
-        c.z_drive_safety_position,
-        track,
-      )
-      await self.move_to_safe_z()
-
-    return await self._driver.send_command(
-      module="I0",
-      command="XP",
-      xp=f"{track:02}",
-      xv=f"{speed:04}",
-      xr=f"{acceleration_ramp:01}",
-      xw=f"{current_limit:01}",
-    )
-
-  async def park(self):
-    """Park the autoload at the last track this machine has.
-
-    Raises:
-      RuntimeError: If setup has not run, so the deck size is not known.
-    """
-    await self.move_to_safe_z()
-    return await self._driver.send_command(
-      module="I0", command="XP", xp=f"{self.track_range[-1]:02}"
-    )
-
-  # -- carrier presence sensing --------------------------------------------------------------
-
-  @staticmethod
-  def _presence_mask(resp: str, marker: str) -> str:
-    """The carrier-presence mask in a reply: what is written after `marker`."""
-    if marker not in resp:
-      raise ValueError(f"no `{marker}` carrier presence mask in the reply: {resp!r}")
-    return resp.split(marker, 1)[1]
-
-  async def sense_carrier_presence_on_deck(self) -> List[int]:
-    """Read the rear deck sensors and return the positions where carriers are detected.
-
-    The autoload does not move.
-
-    Returns:
-      The tracks that hold a carrier, counted from 1.
-
-    Raises:
-      ValueError: If the machine answered without a presence mask.
-    """
-    resp = cast(str, await self._driver.send_command(module="C0", command="RC"))
-    return _tracks_from_presence_mask(self._presence_mask(resp, "ce"))
-
-  async def request_carrier_on_loading_tray(self, track: int) -> bool:
-    """Check whether a specific loading-tray track contains a carrier.
-
-    The sled moves to that track and reads its front-facing sensor.
-    `sense_carrier_presence_on_loading_tray` scans the whole tray instead.
-
-    Args:
-      track: which track to look at, counted from 1.
-
-    Returns:
-      True if a carrier is there.
-
-    Raises:
-      ValueError: If the track is not one this machine has.
-      RuntimeError: If setup has not run.
-    """
-    tracks = self.track_range
-    if track not in tracks:
-      raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
-    resp = await self._driver.send_command(module="C0", command="CT", fmt="ct#", cp=f"{track:02}")
-    return cast(int, resp["ct"]) == 1
-
-  async def sense_carrier_presence_on_loading_tray(self) -> List[int]:
-    """Move the autoload sled across the loading tray and read its front-facing sensors.
-
-    This determines which tray positions contain carriers.
-
-    Returns:
-      The tracks that hold a carrier, counted from 1.
-
-    Raises:
-      ValueError: If the machine answered without a presence mask.
-    """
-    resp = cast(str, await self._driver.send_command(module="C0", command="CS"))
-    return _tracks_from_presence_mask(self._presence_mask(resp, "cd"))

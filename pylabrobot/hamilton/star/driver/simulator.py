@@ -221,7 +221,7 @@ class SimulatedAutoload(_Simulated, Autoload):
   async def request_initialization_status(self) -> bool:
     return self.machine.initialized["I0"]
 
-  async def request_barcode(self) -> Optional[str]:
+  async def request_latest_barcode_read(self) -> Optional[str]:
     return SIMULATED_BARCODE
 
   async def request_track(self) -> int:
