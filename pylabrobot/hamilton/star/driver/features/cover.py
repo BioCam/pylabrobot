@@ -15,12 +15,7 @@ CoverPosition = Literal["open", "closed"]
 
 @dataclass
 class FrontCoverConfiguration:
-  """Device facts for the front cover.
-
-  Whether a cover, a lock and their monitoring are fitted is not here: the master reports that in
-  its own configuration, as `left_cover_installed`, `right_cover_installed`,
-  `main_front_cover_monitoring_installed` and `additional_front_cover_monitoring_installed`.
-  """
+  """Information regarding the monitored front cover capabaility."""
 
   positions: Dict[CoverPosition, int] = field(default_factory=lambda: {"open": 0, "closed": 1})
 
@@ -28,8 +23,9 @@ class FrontCoverConfiguration:
 class FrontCover:
   """The front cover.
 
-  Reached as `driver.front_cover`. It is the master's own, with no module of its own and no
-  firmware version to report, so there is nothing to discover: every command below goes to `C0`.
+  Reached as `driver.front_cover`.
+
+  Control module(s): `C0`/master only (no module of its own and no firmware version to report).
   """
 
   def __init__(self, driver: "STARDriver", configuration: Optional[FrontCoverConfiguration] = None):
@@ -40,24 +36,6 @@ class FrontCover:
     """
     self._driver = driver
     self.configuration = configuration or FrontCoverConfiguration()
-
-  async def request_presence_of_front_cover(self) -> bool:
-    """Request the cover input, the first of the three on the cover connector.
-
-    The master documents it only as set or not set, so what it reports - a cover fitted, a cover
-    shut, a lock engaged - is not stated. `request_position` is the one that says open or shut.
-
-    Returns:
-      Whether the input is set.
-
-    Raises:
-      ValueError: If the machine answered with fewer than three inputs.
-    """
-    resp = cast(str, await self._driver.send_command(module="C0", command="RW"))
-    read = resp.split("rw", 1)[-1].strip().strip("'")
-    if len(read) < 3:
-      raise ValueError(f"expected three inputs in the reply: {resp!r}")
-    return read[0] == "1"
 
   # -- position --------------------------------------------------------------
 

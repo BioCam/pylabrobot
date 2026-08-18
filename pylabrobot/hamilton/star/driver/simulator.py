@@ -76,6 +76,9 @@ SIMULATED_AUTOLOAD_Z_POSITION = 0.0
 # Whether the front cover is shut. A simulated machine is not being reached into.
 SIMULATED_COVER_POSITION: CoverPosition = "closed"
 
+# The three inputs on the cover connector: the cover input, and two whose meaning is not known.
+SIMULATED_COVER_INPUTS = (True, False, False)
+
 # What its scanner reads. A simulated deck holds no carriers, so nothing.
 SIMULATED_BARCODE: Optional[str] = None
 
@@ -220,11 +223,6 @@ class SimulatedFrontCover(_Simulated, FrontCover):
 
   async def request_position(self) -> CoverPosition:
     return SIMULATED_COVER_POSITION
-
-  async def request_presence_of_front_cover(self) -> bool:
-    # Set, because the simulated machine's configuration is what put this capability here. What
-    # the input means on a real machine is not known, so it is not derived from the position.
-    return True
 
 
 class SimulatedAutoload(_Simulated, Autoload):
@@ -381,6 +379,9 @@ class STARSimulationDriver(STARDriver):
 
   async def request_device_configuration(self) -> DeviceConfiguration:
     return self.simulated_configuration
+
+  async def request_cover_input_status(self) -> Tuple[bool, bool, bool]:
+    return SIMULATED_COVER_INPUTS
 
   async def request_tip_presence(self) -> List[bool]:
     return list(self.tips_mounted)

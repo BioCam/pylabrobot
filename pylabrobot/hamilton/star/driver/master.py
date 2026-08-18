@@ -528,6 +528,27 @@ class STARDriver:
     resp = await self.send_command(module="C0", command="RT", fmt="rt# (n)")
     return [bool(v) for v in cast(List[int], resp.get("rt"))]
 
+  async def request_cover_input_status(self) -> Tuple[bool, bool, bool]:
+    """Request the three inputs on the cover connector.
+
+    On the master rather than on `front_cover`, because it is the one cover read that stays
+    reachable on a machine whose configuration says the cover monitoring is not installed - and
+    that machine is exactly the one worth asking.
+
+    Returns:
+      Whether each is set: the cover input, the second input - a reserve or the additional cover
+      control, depending on the board - and a second reserve. What a set cover input means is not
+      stated; `front_cover.request_position` is the one that says open or shut.
+
+    Raises:
+      ValueError: If the machine answered with fewer than three inputs.
+    """
+    resp = await self.send_command(module="C0", command="RW")
+    read = resp.split("rw", 1)[-1].strip().strip("'")
+    if len(read) < 3:
+      raise ValueError(f"expected three inputs in the reply: {resp!r}")
+    return read[0] == "1", read[1] == "1", read[2] == "1"
+
   async def request_maximal_ranges_of_x_drives(self) -> Dict[str, Tuple[float, float]]:
     """Request the maximal travel range of each X drive.
 
@@ -597,8 +618,6 @@ class STARDriver:
         wrap_size=wrap,
       )
 
-    left_arm = _resolve_arm(extended["xl"], extended["xn"], "left", extended["xu"] / 10)
-
     kb = machine["kb"]
     ka = extended["ka"]
     return DeviceConfiguration(
@@ -638,7 +657,7 @@ class STARDriver:
       instrument_size_slots=extended["xt"],
       autoload_size_slots=extended["xa"],
       tip_waste_x_position=extended["xw"] / 10,
-      left_arm=left_arm,
+      left_arm=_resolve_arm(extended["xl"], extended["xn"], "left", extended["xu"] / 10),
       right_arm=_resolve_arm(extended["xr"], extended["xo"], "right", extended["xv"] / 10),
       min_iswap_collision_free_position=extended["xm"] / 10,
       max_iswap_collision_free_position=extended["xx"] / 10,
