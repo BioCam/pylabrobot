@@ -62,6 +62,18 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
   def rails_to_location(self, rails: int) -> Coordinate:
     """Convert a rail identifier to an absolute (x, y, z) coordinate."""
 
+  def compute_right_track_of_carrier(self, carrier: Resource) -> int:
+    """The last track a carrier covers, from where it sits on this deck.
+
+    Args:
+      carrier: the carrier, which must be on this deck.
+
+    Returns:
+      The track, counted from 1.
+    """
+    end_x = carrier.get_location_wrt(self).x + carrier.get_absolute_size_x()
+    return rails_for_x_coordinate(end_x) - 1
+
   def serialize(self) -> dict:
     """Serialize this deck."""
     return {
