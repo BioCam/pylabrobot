@@ -33,6 +33,7 @@
     <link rel="stylesheet" type="text/css" href="../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../_static/mystnb.11b39860a7a0cbfd473a3ad8a317855267ff0bd372690045ca344a6b62be495e.css" />
     <link rel="stylesheet" type="text/css" href="../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../_static/plr_devices.css?v=b0ac04d7" />
     <link rel="stylesheet" type="text/css" href="../_static/plr_cards.css?v=ed9dfa64" />
   
   <!-- So that users can add custom icons -->
@@ -46,6 +47,7 @@
     <script src="../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../_static/copybutton.js?v=f281be69"></script>
+    <script src="../_static/plr_devices.js?v=2dde28f2"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'contributor_guide/contributing';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
@@ -523,6 +525,8 @@
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Adding Backends/Drivers</span></p>
 <ul class="nav bd-sidenav">
 <li class="toctree-l1"><a class="reference internal" href="device-driver-guide.html">Writing PyLabRobot Device Drivers &amp; Hello-World Guides</a></li>
+<li class="toctree-l1"><a class="reference internal" href="device-registry.html">The device registry</a></li>
+<li class="toctree-l1"><a class="reference internal" href="event-bus.html">EventBus Contributor Guide</a></li>
 </ul>
 <p aria-level="2" class="caption" role="heading"><span class="caption-text">Adding Resource Definitions</span></p>
 <ul class="nav bd-sidenav">
@@ -638,6 +642,17 @@ make<span class="w"> </span>format-check
 <p>PyLabRobot uses <a class="reference external" href="https://pre-commit.com/">pre-commit</a> to run the above commands before every commit. To install pre-commit, run <code class="docutils literal notranslate"><span class="pre">pip</span> <span class="pre">install</span> <span class="pre">pre-commit</span></code> and then <code class="docutils literal notranslate"><span class="pre">pre-commit</span> <span class="pre">install</span></code>.</p>
 </section>
 </section>
+<section id="code-conventions">
+<h2>Code conventions<a class="headerlink" href="#code-conventions" title="Link to this heading">#</a></h2>
+<p>Code and comments describe current behavior, not project history. Do not add diary or changelog comments such as “new”, “now”, or “previously”, and do not add provenance stories to code, commits, or pull requests.</p>
+<p>Do not commit one-time backfill or migration scripts. Run one-time operations ad hoc so the repository contains only permanent software.</p>
+<p>Do not use reflective attribute access. <code class="docutils literal notranslate"><span class="pre">getattr</span></code>, <code class="docutils literal notranslate"><span class="pre">setattr</span></code>, <code class="docutils literal notranslate"><span class="pre">hasattr</span></code>, <code class="docutils literal notranslate"><span class="pre">delattr</span></code>, and equivalent techniques are not allowed. Do not work around this rule with <code class="docutils literal notranslate"><span class="pre">vars</span></code>, direct <code class="docutils literal notranslate"><span class="pre">__dict__</span></code> access, <code class="docutils literal notranslate"><span class="pre">__getattribute__</span></code>, wrappers around these functions, or attribute names constructed as strings.</p>
+<p>Define explicit, typed methods and properties instead. When a value or callable must be selected by name, use a typed mapping with a fixed set of keys. Model behavioral differences with normal control flow or polymorphism so static analysis and readers can see every supported path.</p>
+</section>
+<section id="api-conventions">
+<h2>API conventions<a class="headerlink" href="#api-conventions" title="Link to this heading">#</a></h2>
+<p>Use PyLabRobot’s <a class="reference internal" href="../user_guide/getting-started/units.html"><span class="std std-doc">default units</span></a> in public APIs. Omit the unit from a parameter or attribute name when it uses the PyLabRobot default—for example, use <code class="docutils literal notranslate"><span class="pre">temperature</span></code>, not <code class="docutils literal notranslate"><span class="pre">temperature_celsius</span></code>. Deviate from the default only for a compelling reason, make the alternative unit explicit, and document why it is necessary. Convert device-native units internally.</p>
+</section>
 <section id="writing-documentation">
 <h2>Writing documentation<a class="headerlink" href="#writing-documentation" title="Link to this heading">#</a></h2>
 <p>It is important that you write documentation for your code. As a rule of thumb, all functions and classes, whether public or private, are required to have a docstring. PyLabRobot uses <a class="reference external" href="https://sphinxcontrib-napoleon.readthedocs.io/en/latest/example_google.html">Google Style Python Docstrings</a>. In addition, PyLabRobot uses <a class="reference external" href="https://docs.python.org/3/library/typing.html">type hints</a> to document the types of variables.</p>
@@ -724,6 +739,8 @@ make<span class="w"> </span>format-check
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#pre-commit-hooks">Pre-commit hooks</a></li>
 </ul>
 </li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#code-conventions">Code conventions</a></li>
+<li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#api-conventions">API conventions</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#writing-documentation">Writing documentation</a></li>
 <li class="toc-h2 nav-item toc-entry"><a class="reference internal nav-link" href="#common-tasks">Common Tasks</a><ul class="nav section-nav flex-column">
 <li class="toc-h3 nav-item toc-entry"><a class="reference internal nav-link" href="#fixing-a-bug">Fixing a bug</a></li>

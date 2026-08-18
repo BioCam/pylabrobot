@@ -33,6 +33,7 @@
     <link rel="stylesheet" type="text/css" href="../../_static/pygments.css?v=8f2a1f02" />
     <link rel="stylesheet" type="text/css" href="../../_static/mystnb.11b39860a7a0cbfd473a3ad8a317855267ff0bd372690045ca344a6b62be495e.css" />
     <link rel="stylesheet" type="text/css" href="../../_static/copybutton.css?v=76b2166b" />
+    <link rel="stylesheet" type="text/css" href="../../_static/plr_devices.css?v=b0ac04d7" />
     <link rel="stylesheet" type="text/css" href="../../_static/plr_cards.css?v=ed9dfa64" />
   
   <!-- So that users can add custom icons -->
@@ -46,6 +47,7 @@
     <script src="../../_static/sphinx_highlight.js?v=6ffebe34"></script>
     <script src="../../_static/clipboard.min.js?v=a7894cd8"></script>
     <script src="../../_static/copybutton.js?v=f281be69"></script>
+    <script src="../../_static/plr_devices.js?v=2dde28f2"></script>
     <script>DOCUMENTATION_OPTIONS.pagename = 'api/_autosummary/pylabrobot.resources.Well.assign_child_by_anchor';</script>
     <script>
         DOCUMENTATION_OPTIONS.theme_version = '0.20.0';
@@ -610,22 +612,22 @@ assigned to this resource. Defaults to <code class="code docutils literal notran
 </dl>
 <p class="rubric">Examples</p>
 <p>Align left-front-bottom (default behavior):</p>
-<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">parent</span> <span class="o">=</span> <span class="n">Resource</span><span class="p">(</span><span class="s2">&quot;parent&quot;</span><span class="p">,</span> <span class="n">size_x</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">size_y</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">size_z</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
-<span class="gp">&gt;&gt;&gt; </span><span class="n">child</span> <span class="o">=</span> <span class="n">Resource</span><span class="p">(</span><span class="s2">&quot;child&quot;</span><span class="p">,</span> <span class="n">size_x</span><span class="o">=</span><span class="mi">80</span><span class="p">,</span> <span class="n">size_y</span><span class="o">=</span><span class="mi">80</span><span class="p">,</span> <span class="n">size_z</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
+<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">parent</span> <span class="o">=</span> <span class="n">Resource</span><span class="p">(</span><span class="s2">"parent"</span><span class="p">,</span> <span class="n">size_x</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">size_y</span><span class="o">=</span><span class="mi">100</span><span class="p">,</span> <span class="n">size_z</span><span class="o">=</span><span class="mi">10</span><span class="p">)</span>
+<span class="gp">&gt;&gt;&gt; </span><span class="n">child</span> <span class="o">=</span> <span class="n">Resource</span><span class="p">(</span><span class="s2">"child"</span><span class="p">,</span> <span class="n">size_x</span><span class="o">=</span><span class="mi">80</span><span class="p">,</span> <span class="n">size_y</span><span class="o">=</span><span class="mi">80</span><span class="p">,</span> <span class="n">size_z</span><span class="o">=</span><span class="mi">5</span><span class="p">)</span>
 <span class="gp">&gt;&gt;&gt; </span><span class="n">parent</span><span class="o">.</span><span class="n">assign_child_by_anchor</span><span class="p">(</span><span class="n">child</span><span class="p">)</span>  <span class="c1"># Both default to LFB</span>
 </pre></div>
 </div>
 <p>Align the center-center-bottom using tuple syntax:</p>
-<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">parent</span><span class="o">.</span><span class="n">assign_child_by_anchor</span><span class="p">(</span><span class="n">child</span><span class="p">,</span> <span class="n">parent_anchor</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;c&quot;</span><span class="p">,</span> <span class="s2">&quot;c&quot;</span><span class="p">,</span> <span class="s2">&quot;b&quot;</span><span class="p">),</span>
-<span class="gp">... </span>                              <span class="n">child_anchor</span><span class="o">=</span><span class="p">(</span><span class="s2">&quot;c&quot;</span><span class="p">,</span> <span class="s2">&quot;c&quot;</span><span class="p">,</span> <span class="s2">&quot;b&quot;</span><span class="p">))</span>
+<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">parent</span><span class="o">.</span><span class="n">assign_child_by_anchor</span><span class="p">(</span><span class="n">child</span><span class="p">,</span> <span class="n">parent_anchor</span><span class="o">=</span><span class="p">(</span><span class="s2">"c"</span><span class="p">,</span> <span class="s2">"c"</span><span class="p">,</span> <span class="s2">"b"</span><span class="p">),</span>
+<span class="gp">... </span>                              <span class="n">child_anchor</span><span class="o">=</span><span class="p">(</span><span class="s2">"c"</span><span class="p">,</span> <span class="s2">"c"</span><span class="p">,</span> <span class="s2">"b"</span><span class="p">))</span>
 </pre></div>
 </div>
 <p>Align the center-center-bottom using string syntax:</p>
-<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">parent</span><span class="o">.</span><span class="n">assign_child_by_anchor</span><span class="p">(</span><span class="n">child</span><span class="p">,</span> <span class="n">parent_anchor</span><span class="o">=</span><span class="s2">&quot;ccb&quot;</span><span class="p">,</span> <span class="n">child_anchor</span><span class="o">=</span><span class="s2">&quot;ccb&quot;</span><span class="p">)</span>
+<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">parent</span><span class="o">.</span><span class="n">assign_child_by_anchor</span><span class="p">(</span><span class="n">child</span><span class="p">,</span> <span class="n">parent_anchor</span><span class="o">=</span><span class="s2">"ccb"</span><span class="p">,</span> <span class="n">child_anchor</span><span class="o">=</span><span class="s2">"ccb"</span><span class="p">)</span>
 </pre></div>
 </div>
 <p>Stack on top by aligning parent’s top with child’s bottom:</p>
-<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">parent</span><span class="o">.</span><span class="n">assign_child_by_anchor</span><span class="p">(</span><span class="n">child</span><span class="p">,</span> <span class="n">parent_anchor</span><span class="o">=</span><span class="s2">&quot;lft&quot;</span><span class="p">,</span> <span class="n">child_anchor</span><span class="o">=</span><span class="s2">&quot;lfb&quot;</span><span class="p">)</span>
+<div class="doctest highlight-default notranslate"><div class="highlight"><pre><span></span><span class="gp">&gt;&gt;&gt; </span><span class="n">parent</span><span class="o">.</span><span class="n">assign_child_by_anchor</span><span class="p">(</span><span class="n">child</span><span class="p">,</span> <span class="n">parent_anchor</span><span class="o">=</span><span class="s2">"lft"</span><span class="p">,</span> <span class="n">child_anchor</span><span class="o">=</span><span class="s2">"lfb"</span><span class="p">)</span>
 </pre></div>
 </div>
 </dd></dl>
