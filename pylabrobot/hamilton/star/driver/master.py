@@ -315,9 +315,13 @@ class STARDriver:
     ]
     for arm in arms:
       a = arm.configuration
+      # Read through the capability, not the arm's own bit, so the summary cannot report channels
+      # the driver did not build. The two disagree only on a machine whose configuration says both.
       channels = "none"
-      if a.pip_installed:
+      if self.pipettes is not None and a.pip_installed:
         channels = f"{c.num_pip_channels} ({'1000uL' if c.pip_type_1000ul else '300uL'})"
+      elif self.pipettes is None and a.pip_installed:
+        channels = "none, but this arm reports the module installed"
       head96 = "none"
       if a.head96_installed:
         head96 = "installed"
