@@ -9,6 +9,7 @@ import datetime
 import logging
 from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
+from pylabrobot.events import emit_event
 from pylabrobot.hamilton.protocol.text.framing import (
   assemble_command,
   parse_firmware_version_date,
@@ -496,16 +497,34 @@ class STARDriver:
       num_channels=self._num_channels,
       **kwargs,
     )
-    resp = await self._replies.send(
-      cmd=cmd,
-      id_=id_,
-      write_timeout=write_timeout,
-      read_timeout=read_timeout,
-      wait=wait,
-    )
-    if resp is not None and fmt is not None:
-      return self._parse_response(resp, fmt)
-    return resp
+    event_data = {
+      "transport": "hamilton_usb",
+      "driver": type(self).__name__,
+      "module": module,
+      "command": command,
+      "command_id": id_,
+      "raw_command": cmd,
+    }
+    emit_event("firmware.command.started", **event_data)
+    try:
+      resp = await self._replies.send(
+        cmd=cmd,
+        id_=id_,
+        write_timeout=write_timeout,
+        read_timeout=read_timeout,
+        wait=wait,
+      )
+      result = self._parse_response(resp, fmt) if resp is not None and fmt is not None else resp
+    except BaseException as error:
+      emit_event(
+        "firmware.command.failed",
+        **event_data,
+        error_type=type(error).__name__,
+        error_message=str(error),
+      )
+      raise
+    emit_event("firmware.command.completed", **event_data, response=resp)
+    return result
 
   async def send_raw_command(
     self,
