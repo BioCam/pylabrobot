@@ -109,7 +109,7 @@ class STARDriver:
 
     # Subsystems. Each reads what it needs off `configuration`, so they are usable once setup has
     # run and raise a clear error before that. Each arm appears only if setup finds one installed.
-    self.pipettes = Pipettes(self)
+    self.pipettes: Optional[Pipettes] = None
     self.front_cover: Optional[FrontCover] = None
     self.left_x_arm: Optional[XArm] = None
     self.right_x_arm: Optional[XArm] = None
@@ -178,6 +178,8 @@ class STARDriver:
       self.left_x_arm = XArm(self, side="left")
     if self.configuration.right_arm is not None and self.right_x_arm is None:
       self.right_x_arm = XArm(self, side="right")
+    if self.configuration.num_pip_channels > 0 and self.pipettes is None:
+      self.pipettes = Pipettes(self)
     if self.configuration.ka_head96_installed and self.head96 is None:
       self.head96 = Head96(self)
     if (
@@ -194,7 +196,9 @@ class STARDriver:
     # Each capability reads its own modules, and they are different modules, so they read at
     # once. Both arms run off the same X-drive board, so only one of them asks it.
     arms = [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
-    reading = [self.pipettes.discover()]
+    reading = []
+    if self.pipettes is not None:
+      reading.append(self.pipettes.discover())
     if arms:
       reading.append(arms[0].discover())
     if self.head96 is not None:
@@ -210,7 +214,9 @@ class STARDriver:
     master_version, _ = await self.request_firmware_version()
     reported = {
       "master": master_version,
-      "pipettes": self.pipettes.configuration.channels[0].firmware_version,
+      "pipettes": (
+        None if self.pipettes is None else self.pipettes.configuration.channels[0].firmware_version
+      ),
       "x_arm": None if not arms else arms[0].configuration.firmware_version,
       "head96": None if self.head96 is None else self.head96.configuration.firmware_version,
       "iswap": None if self.iswap is None else self.iswap.configuration.firmware_version,
@@ -245,7 +251,8 @@ class STARDriver:
       await self.pre_initialize()
     else:
       logger.debug("machine reports initialized - raising the channels to Z safety only")
-      await self.pipettes.move_to_z_safety()
+      if self.pipettes is not None:
+        await self.pipettes.move_to_z_safety()
       if self.head96 is not None:
         self.head96.resolve_z_range(await self.head96.move_to_z_safety())
 
@@ -271,7 +278,9 @@ class STARDriver:
 
   def format_setup_summary(self) -> str:
     """One block describing the machine that was found: how it is reached, what firmware every
-    module runs, what is fitted to it, and each arm's dimensions.
+    module runs, whether an autoload is fitted, how many arms there are, and per arm its
+    dimensions, how many channels it carries and whether it carries a 96-head, a 384-head and an
+    iSWAP.
 
     Returns:
       A multi-line summary, or a note that setup has not run.
@@ -285,36 +294,48 @@ class STARDriver:
     )
 
     fitted = [f"{c.instrument_size_slots} slots"]
-    fitted.append(f"{c.num_pip_channels} channels ({'1000uL' if c.pip_type_1000ul else '300uL'})")
-    if c.autoload_installed:
-      autoload = "autoload"
-      if self.autoload is not None and self.autoload.configuration.autoload_type is not None:
-        autoload += f" ({self.autoload.configuration.autoload_type})"
-      fitted.append(autoload)
-    if c.kb_iswap_installed:
-      fitted.append(f"iSWAP ({'wide' if c.iswap_gripper_wide else 'small'} gripper)")
-    if c.ka_head96_installed:
-      head = "96-head"
-      if self.head96 is not None and self.head96.configuration.head_type is not None:
-        head += f" ({self.head96.configuration.head_type})"
-      fitted.append(head)
     for number, installed in ((1, c.wash_station_1_installed), (2, c.wash_station_2_installed)):
       if installed:
         fitted.append(f"wash station {number}")
 
+    autoload = "none"
+    if c.autoload_installed:
+      autoload = "installed"
+      if self.autoload is not None and self.autoload.configuration.autoload_type is not None:
+        autoload = self.autoload.configuration.autoload_type
+
+    arms = [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
     lines = [
       f"[Hamilton STAR] Connected on {self._describe_link()}",
       f"  Firmware: {firmware}",
       f"  Configuration: {', '.join(fitted)}",
+      f"  Autoload: {autoload}",
+      f"  Arms: {len(arms)}",
     ]
-    for arm in (self.left_x_arm, self.right_x_arm):
-      if arm is None:
-        continue
+    for arm in arms:
       a = arm.configuration
+      channels = "none"
+      if a.pip_installed:
+        channels = f"{c.num_pip_channels} ({'1000uL' if c.pip_type_1000ul else '300uL'})"
+      head96 = "none"
+      if a.head96_installed:
+        head96 = "installed"
+        if self.head96 is not None and self.head96.configuration.head_type is not None:
+          head96 = self.head96.configuration.head_type
+      iswap = "none"
+      if a.iswap_installed:
+        iswap = f"{'wide' if c.iswap_gripper_wide else 'small'} gripper"
       lines.append(
-        f"  Arms: {arm.side}, {a.model}, {a.width} mm wide, "
+        f"    {arm.side}: {a.model}, {a.width} mm wide, "
         f"travel {_range(a.x_range)}, workspace {_range(a.workspace_range)}"
       )
+      lines.append(
+        f"      channels: {channels} | 96-head: {head96} | "
+        f"384-head: {'installed' if a.dispensing_head_384_installed else 'none'} | "
+        f"iSWAP: {iswap}"
+      )
+    if sum(arm.configuration.pip_installed for arm in arms) > 1:
+      lines.append("      (the machine reports one channel count for the instrument, not per arm)")
     return "\n".join(lines)
 
   async def _bring_up_arm(self, already_initialized: bool):
@@ -326,17 +347,20 @@ class STARDriver:
     Args:
       already_initialized: whether the instrument reported itself up before this setup ran.
     """
-    tips = await self.request_tip_presence()
-    if not already_initialized or any(tips):
-      logger.debug(
-        "channels: %d of %d carrying tips, instrument %s - initializing",
-        sum(tips),
-        len(tips),
-        "was already up" if already_initialized else "has just been homed",
-      )
-      await self.pipettes.initialize()
+    if self.pipettes is None:
+      logger.debug("channels: none installed - skipped")
     else:
-      logger.debug("channels: already up and nothing mounted - skipped")
+      tips = await self.request_tip_presence()
+      if not already_initialized or any(tips):
+        logger.debug(
+          "channels: %d of %d carrying tips, instrument %s - initializing",
+          sum(tips),
+          len(tips),
+          "was already up" if already_initialized else "has just been homed",
+        )
+        await self.pipettes.initialize()
+      else:
+        logger.debug("channels: already up and nothing mounted - skipped")
 
     if self.iswap is not None:
       if not await self.request_initialization_status("R0"):

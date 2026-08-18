@@ -350,7 +350,8 @@ class STARSimulationDriver(STARDriver):
     # The capabilities this machine has, each answering for itself. Discovery builds only the ones
     # that are not already there, so these stand in for the real ones throughout.
     c = self.simulated_configuration
-    self.pipettes = SimulatedPipettes(self)
+    if c.num_pip_channels > 0:
+      self.pipettes = SimulatedPipettes(self)
     if c.main_front_cover_monitoring_installed:
       self.front_cover = SimulatedFrontCover(self)
     if c.left_arm is not None:

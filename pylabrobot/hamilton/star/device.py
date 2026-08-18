@@ -127,8 +127,8 @@ class STARDevice(Resource):
     return self.driver.x_arm
 
   @property
-  def pipettes(self) -> Pipettes:
-    """The pipetting channels."""
+  def pipettes(self) -> Optional[Pipettes]:
+    """The pipetting channels, on a machine that has some."""
     return self.driver.pipettes
 
   @property
