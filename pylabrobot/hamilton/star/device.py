@@ -4,6 +4,7 @@ import logging
 from typing import Optional
 
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload
+from pylabrobot.hamilton.star.driver.features.cover import FrontCover
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
@@ -129,6 +130,11 @@ class STARDevice(Resource):
   def pipettes(self) -> Pipettes:
     """The pipetting channels."""
     return self.driver.pipettes
+
+  @property
+  def front_cover(self) -> Optional[FrontCover]:
+    """The front cover, on a machine whose configuration has its monitoring installed."""
+    return self.driver.front_cover
 
   @property
   def head96(self) -> Optional[Head96]:

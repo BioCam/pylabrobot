@@ -21,6 +21,7 @@ from pylabrobot.hamilton.star.driver.errors import (
   check_fw_string_error,
 )
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload
+from pylabrobot.hamilton.star.driver.features.cover import FrontCover
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
@@ -109,6 +110,7 @@ class STARDriver:
     # Subsystems. Each reads what it needs off `configuration`, so they are usable once setup has
     # run and raise a clear error before that. Each arm appears only if setup finds one installed.
     self.pipettes = Pipettes(self)
+    self.front_cover: Optional[FrontCover] = None
     self.left_x_arm: Optional[XArm] = None
     self.right_x_arm: Optional[XArm] = None
     self.head96: Optional[Head96] = None
@@ -186,6 +188,8 @@ class STARDriver:
       self.iswap = iSWAP(self)
     if self.configuration.autoload_installed and self.autoload is None:
       self.autoload = Autoload(self)
+    if self.configuration.main_front_cover_monitoring_installed and self.front_cover is None:
+      self.front_cover = FrontCover(self)
 
     # Each capability reads its own modules, and they are different modules, so they read at
     # once. Both arms run off the same X-drive board, so only one of them asks it.

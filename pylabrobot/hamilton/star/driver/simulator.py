@@ -16,6 +16,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
+from pylabrobot.hamilton.star.driver.features.cover import CoverPosition, FrontCover
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, HeadType
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import PipetteConfiguration, Pipettes
@@ -71,6 +72,9 @@ SIMULATED_AUTOLOAD = AutoloadConfiguration(
 SIMULATED_AUTOLOAD_X_POSITION = 0.0
 SIMULATED_AUTOLOAD_Y_POSITION = 0.0
 SIMULATED_AUTOLOAD_Z_POSITION = 0.0
+
+# Whether the front cover is shut. A simulated machine is not being reached into.
+SIMULATED_COVER_POSITION: CoverPosition = "closed"
 
 # What its scanner reads. A simulated deck holds no carriers, so nothing.
 SIMULATED_BARCODE: Optional[str] = None
@@ -211,6 +215,18 @@ class SimulatedISWAP(_Simulated, iSWAP):
     self.machine.initialized["R0"] = True
 
 
+class SimulatedFrontCover(_Simulated, FrontCover):
+  """The front cover, answering for itself: it is shut."""
+
+  async def request_position(self) -> CoverPosition:
+    return SIMULATED_COVER_POSITION
+
+  async def request_presence_of_front_cover(self) -> bool:
+    # Set, because the simulated machine's configuration is what put this capability here. What
+    # the input means on a real machine is not known, so it is not derived from the position.
+    return True
+
+
 class SimulatedAutoload(_Simulated, Autoload):
   """The autoload, answering for itself. Its deck and its loading tray are empty."""
 
@@ -337,6 +353,8 @@ class STARSimulationDriver(STARDriver):
     # that are not already there, so these stand in for the real ones throughout.
     c = self.simulated_configuration
     self.pipettes = SimulatedPipettes(self)
+    if c.main_front_cover_monitoring_installed:
+      self.front_cover = SimulatedFrontCover(self)
     if c.left_arm is not None:
       self.left_x_arm = SimulatedXArm(self, side="left")
     if c.right_arm is not None:
