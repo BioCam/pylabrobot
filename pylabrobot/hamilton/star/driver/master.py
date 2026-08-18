@@ -456,7 +456,7 @@ class STARDriver:
 
     Raises:
       RuntimeError: If setup has not run, so it is not yet known which arms are installed.
-      ValueError: If the machine has more than one arm.
+      ValueError: If the machine has no arm, or more than one.
     """
     if self.configuration is None:
       raise RuntimeError("no configuration read; have you called `star.setup()`?")
@@ -465,6 +465,8 @@ class STARDriver:
       for name, arm in (("left_x_arm", self.left_x_arm), ("right_x_arm", self.right_x_arm))
       if arm is not None
     }
+    if not installed:
+      raise ValueError("this machine reports no X-arm installed.")
     if len(installed) > 1:
       raise ValueError(
         f"this machine has {len(installed)} X-arms ({', '.join(installed)}), so `x_arm` is "
