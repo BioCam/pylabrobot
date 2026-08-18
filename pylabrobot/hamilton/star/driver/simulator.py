@@ -288,8 +288,8 @@ class SimulatedAutoload(_Simulated, Autoload):
     containers = kwargs.get("containers_per_carrier", 5)
     return {position: SIMULATED_BARCODE for position in range(containers)}
 
-  async def initialize(self):
-    await super().initialize()
+  async def initialize(self, park_after: bool = True):
+    await super().initialize(park_after=park_after)
     self.machine.initialized["I0"] = True
 
   async def move_to_track(self, track: int, *args, **kwargs):

@@ -147,7 +147,14 @@ class STARDriver:
       #    the autoload, iSWAP and 96-head join this gather as they land. The channels only need
       #    it when the instrument procedure did not just run, or when something is still mounted.
       logger.debug("[PHASE 3] Capability bring-up")
-      await asyncio.gather(self._bring_up_arm(already_initialized), self._bring_up_autoload())
+      bring_up = [self._bring_up_arm(already_initialized)]
+      if self.autoload is not None:
+        bring_up.append(self.autoload.initialize())
+      await asyncio.gather(*bring_up)
+
+      # Creating capability resources which are also the capability trackers - IF deck has been given to STARDriver
+
+
     except BaseException:
       await self.stop()
       raise
@@ -254,6 +261,8 @@ class STARDriver:
       logger.debug("machine reports initialized - raising the channels to Z safety only")
       if self.pipettes is not None:
         await self.pipettes.move_to_z_safety()
+      # The head is retracted whatever its own status says: the retract is what keeps it clear of
+      # the iSWAP, which shares the left X-drive and moves during capability bring-up.
       if self.head96 is not None:
         self.head96.resolve_z_range(await self.head96.move_to_z_safety())
 
@@ -374,8 +383,6 @@ class STARDriver:
       await self.iswap.park()
 
     if self.head96 is not None:
-      if self.head96.configuration.z_range is None:
-        self.head96.resolve_z_range(await self.head96.move_to_z_safety())
       if not await self.request_initialization_status("H0"):
         if self.head96.configuration.initialize_position is None:
           logger.warning(
@@ -385,20 +392,9 @@ class STARDriver:
         else:
           logger.debug("96-head reports itself uninitialized - initializing")
           await self.head96.initialize()
-
-  async def _bring_up_autoload(self):
-    """Initialize the autoload, then park it. It runs off the arm, so this happens alongside the
-    arm's modules rather than after them.
-
-    Whether its drives need homing is the capability's own decision, since it reports itself
-    uninitialized after the instrument procedure has run - the machine's behaviour rather than a
-    failed initialization: across 182 recorded runs it reported itself initialized in every run
-    where the procedure was skipped, and uninitialized in 60 of the 61 where it ran.
-    """
-    if self.autoload is None:
-      return
-    await self.autoload.initialize()
-    await self.autoload.park()
+      # Probing how far this head reaches retracts it, so it doubles as the safety retract and
+      # runs on every setup rather than only the first.
+      self.head96.resolve_z_range(await self.head96.move_to_z_safety())
 
   async def request_initialization_status(self, module: str = "C0") -> bool:
     """Whether a module reports itself initialized.
