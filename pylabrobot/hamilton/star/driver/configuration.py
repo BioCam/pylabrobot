@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 from pylabrobot.hamilton.star.driver.features.x_arm import XArmConfiguration
@@ -92,7 +92,7 @@ class DeviceConfiguration:
   """Autoload size in slots (xa). Default: 54."""
   tip_waste_x_position: float = 1340.0
   """Tip waste X-position [mm] (xw). Default: 1340.0."""
-  left_arm: XArmConfiguration = field(default_factory=XArmConfiguration)
+  left_arm: Optional[XArmConfiguration] = None
   """Left X-arm configuration (xl + xn)."""
   right_arm: Optional[XArmConfiguration] = None
   """Right X-arm configuration (xr + xo), or None when no right arm is installed."""

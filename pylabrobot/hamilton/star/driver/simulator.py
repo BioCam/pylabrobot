@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
-from pylabrobot.hamilton.star.driver.features.autoload import Autoload
+from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, HeadType
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import PipetteConfiguration, Pipettes
@@ -34,7 +34,6 @@ SIMULATED_FIRMWARE = {
   "x_arm": "1.4S 2012-04-25",
   "head96": "5.0S i 2021-10-22 (H0 XE167)",
   "iswap": "4.1S 2011-12-19",
-  "autoload": "3.4S f 2017-01-09",
 }
 
 # Made up, so a simulator is never mistaken for a particular machine.
@@ -60,14 +59,20 @@ SIMULATED_HEAD96_X_OFFSET = 368.2
 SIMULATED_HEAD96_Z_SAFETY = 336.97
 SIMULATED_HEAD96_DRIVE_PARAMETERS = {"yv": 390.62, "yr": 546.88, "zv": 85.0, "zr": 400.0}
 
-# Which kind of autoload is fitted, as the master would name it, and where its three drives report
-# themselves, in mm. Where they actually are is not modelled: each answers from its zero.
-SIMULATED_AUTOLOAD_TYPE = "1D barcode scanner"
+# The autoload this machine has. Its device facts are the defaults; what it answers about itself is
+# here, and discovery reads it as it would off a real one.
+SIMULATED_AUTOLOAD = AutoloadConfiguration(
+  firmware_version="3.4S f 2017-01-09",
+  autoload_type="1D barcode scanner",
+)
+
+# Where its three drives report themselves, in mm. Where they actually are is not modelled: each
+# answers from its zero.
 SIMULATED_AUTOLOAD_X_POSITION = 0.0
 SIMULATED_AUTOLOAD_Y_POSITION = 0.0
 SIMULATED_AUTOLOAD_Z_POSITION = 0.0
 
-# What its scanner has read. Nothing: a simulated deck holds no carriers to read a barcode off.
+# What its scanner reads. A simulated deck holds no carriers, so nothing.
 SIMULATED_BARCODE: Optional[str] = None
 
 # The iSWAP's stored position tables, and where its rotation drive sits relative to the carriage.
@@ -213,10 +218,18 @@ class SimulatedAutoload(_Simulated, Autoload):
   """Where it last moved to."""
 
   async def request_firmware_version(self) -> str:
-    return self.machine.simulated_firmware["autoload"]
+    version = self.machine.simulated_autoload.firmware_version
+    if version is None:
+      raise RuntimeError(
+        "the simulated autoload has no firmware version; set it on its configuration"
+      )
+    return version
 
   async def request_autoload_type(self) -> str:
-    return SIMULATED_AUTOLOAD_TYPE
+    autoload_type = self.machine.simulated_autoload.autoload_type
+    if autoload_type is None:
+      raise RuntimeError("the simulated autoload has no type; set it on its configuration")
+    return autoload_type
 
   async def request_initialization_status(self) -> bool:
     return self.machine.initialized["I0"]
@@ -242,8 +255,24 @@ class SimulatedAutoload(_Simulated, Autoload):
   async def sense_carrier_presence_on_loading_tray(self) -> List[int]:
     return []
 
-  async def request_carrier_on_loading_tray(self, track: int) -> bool:
+  async def sense_carrier_presence_on_single_loading_tray_track(
+    self, track: int, park_after: bool = True
+  ) -> bool:
     return False
+
+  async def load_carrier_from_tray_and_scan_carrier_barcode(
+    self, track: int, *args, **kwargs
+  ) -> Optional[str]:
+    return SIMULATED_BARCODE
+
+  async def load_carrier_from_autoload_belt(
+    self, barcode_reading: bool = False, *args, **kwargs
+  ) -> Dict[int, Optional[str]]:
+    """The containers read nothing, and there are as many as were asked for."""
+    if not barcode_reading:
+      return {}
+    containers = kwargs.get("containers_per_carrier", 5)
+    return {position: SIMULATED_BARCODE for position in range(containers)}
 
   async def initialize(self):
     await super().initialize()
@@ -266,6 +295,7 @@ class STARSimulationDriver(STARDriver):
     configuration: Optional[DeviceConfiguration] = None,
     tips_mounted: Optional[List[bool]] = None,
     firmware: Optional[Dict[str, str]] = None,
+    autoload: Optional[AutoloadConfiguration] = None,
     serial_number: str = SIMULATED_SERIAL_NUMBER,
     initialized: bool = False,
   ):
@@ -276,6 +306,9 @@ class STARSimulationDriver(STARDriver):
         tips on any of them.
       firmware: what each capability reports, keyed as `confirmed_firmware_versions` keys it.
         Defaults to `SIMULATED_FIRMWARE`.
+      autoload: the autoload this machine has, which it answers about itself. Defaults to
+        `SIMULATED_AUTOLOAD`. The capability's own configuration is filled by discovery, as on a
+        real machine, so this is what it reads rather than what it becomes.
       serial_number: what this machine calls itself.
       initialized: whether the machine and its modules report themselves already initialized. One
         that has just been switched on does not.
@@ -287,6 +320,7 @@ class STARSimulationDriver(STARDriver):
 
     self.simulated_configuration = configuration or DEFAULT_STAR_CONFIGURATION
     self.simulated_firmware = firmware or dict(SIMULATED_FIRMWARE)
+    self.simulated_autoload = autoload or SIMULATED_AUTOLOAD
     self.serial_number = serial_number
 
     channels = self.simulated_configuration.num_pip_channels
@@ -303,12 +337,13 @@ class STARSimulationDriver(STARDriver):
     # that are not already there, so these stand in for the real ones throughout.
     c = self.simulated_configuration
     self.pipettes = SimulatedPipettes(self)
-    self.left_x_arm = SimulatedXArm(self, side="left")
+    if c.left_arm is not None:
+      self.left_x_arm = SimulatedXArm(self, side="left")
     if c.right_arm is not None:
       self.right_x_arm = SimulatedXArm(self, side="right")
     if c.ka_head96_installed:
       self.head96 = SimulatedHead96(self)
-    if c.left_arm.iswap_installed:
+    if c.left_arm is not None and c.left_arm.iswap_installed:
       self.iswap = SimulatedISWAP(self)
     if c.autoload_installed:
       self.autoload = SimulatedAutoload(self)

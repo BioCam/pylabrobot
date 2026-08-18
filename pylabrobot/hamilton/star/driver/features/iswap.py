@@ -69,7 +69,6 @@ class iSWAPConfiguration:
   """
 
   firmware_version: Optional[str] = None
-  """The iSWAP's firmware version, as reported."""
 
   # -- X --
   rotation_drive_x_offset: Optional[float] = None
@@ -78,25 +77,16 @@ class iSWAPConfiguration:
 
   # -- Y --
   rotation_drive_y_max: Optional[float] = None
-  """Upper Y-axis bound of the iSWAP carriage (mm). Parking sits at this Y; anything past it is in
-  the mechanical-stop region."""
 
   # -- rotation drive --
   rotation_drive_predefined_increments: Optional[Dict[str, int]] = None
-  """Calibrated motor-increment positions for the rotation drive's named stops, read from the
-  machine. The anchor points for angle to increment conversion."""
   link_1_length: Optional[float] = None
-  """Distance from the rotation joint (joint 1) to the wrist joint (joint 2), in mm. The Hamilton
-  factory default is 138.0 mm."""
+  """rotation joint (joint 1) to the wrist joint (joint 2); default: 138.0 mm."""
 
   # -- wrist drive --
   wrist_drive_predefined_increments: Optional[Dict[str, int]] = None
-  """Calibrated motor-increment positions for the wrist drive's named stops, read from the machine.
-  These determine the per-machine STRAIGHT angle, which anchors forward kinematics: the link-2
-  angle is measured relative to it."""
   link_2_length: Optional[float] = None
-  """Distance from the wrist joint (joint 2) to the gripper finger center, in mm. The Hamilton
-  factory default is 138.0 mm."""
+  """wrist joint (joint 2) to the gripper finger center, in mm. default: 138.0 mm."""
 
   # === Device facts of the 4th-generation iSWAP: per-drive area-of-operation ranges and encoder
   # resolutions. The same across units of a generation, so they are defaulted - but only that
@@ -105,8 +95,6 @@ class iSWAPConfiguration:
 
   # -- Y --
   y_increment_range: Tuple[int, int] = (0, 14_000)
-  """Y-carriage position range the move command accepts, in motor increments. The mechanical area
-  of operation ends earlier; the per-machine parking bound is `rotation_drive_y_max`."""
   y_mm_per_increment: float = 0.046302083
   y_speed_increment_range: Tuple[int, int] = (50, 8_000)  # increments/sec
 

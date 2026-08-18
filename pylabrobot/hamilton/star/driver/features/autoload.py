@@ -714,7 +714,9 @@ class Autoload:
     resp = cast(str, await self._driver.send_command(module="C0", command="RC"))
     return _tracks_from_presence_mask(self._presence_mask(resp, "ce"))
 
-  async def sense_carrier_presence_on_single_loading_tray_track(self, track: int) -> bool:
+  async def sense_carrier_presence_on_single_loading_tray_track(
+    self, track: int, park_after: bool = True
+  ) -> bool:
     """Check whether a specific loading-tray track contains a carrier.
 
     The sled moves to that track and reads its front-facing sensor.
@@ -722,6 +724,7 @@ class Autoload:
 
     Args:
       track: which track to look at, counted from 1.
+      park_after: whether to park the sled after reading the sensor.
 
     Returns:
       True if a carrier is there.
@@ -734,6 +737,10 @@ class Autoload:
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
     resp = await self._driver.send_command(module="C0", command="CT", fmt="ct#", cp=f"{track:02}")
+
+    if park_after:
+      await self.park()
+
     return cast(int, resp["ct"]) == 1
 
   async def sense_carrier_presence_on_loading_tray(self) -> List[int]:
@@ -953,7 +960,7 @@ class Autoload:
     tracks = self.track_range
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
-    if await self.request_carrier_on_loading_tray(track):
+    if await self.sense_carrier_presence_on_single_loading_tray_track(track):
       raise ValueError(f"the carrier at track {track} is on the loading tray, not the deck")
 
     try:
@@ -1108,8 +1115,8 @@ class Autoload:
 
   # TODO: port legacy's `load_carrier`, once the resource model is wired in. It is the sequence
   # below, in v1 terms, and every command it needs is already here. What is missing is the first
-  # line: legacy works the end rail out of a `Carrier`'s position on the deck
-  # (`_compute_end_rail_of_carrier`), and the driver has no resource model to ask.
+  # line: the deck works the track out of a `Carrier`'s position on it
+  # (`compute_right_track_of_carrier`), and the driver has no resource model to ask.
   #
   # async def load_carrier(
   #   self,
@@ -1125,8 +1132,8 @@ class Autoload:
   #   park_after: bool = True,
   # ) -> dict:
   #   """Use the autoload to load a carrier."""
-  #   track = ...  # the rail the carrier ends at, from where it sits on the deck
-  #   if not await self.request_carrier_on_loading_tray(track):
+  #   track = ...  # the track the carrier ends at, from where it sits on the deck
+  #   if not await self.sense_carrier_presence_on_single_loading_tray_track(track):
   #     raise ValueError(f"no carrier at track {track}; is it on the right loading tray position?")
   #
   #   carrier_barcode = None

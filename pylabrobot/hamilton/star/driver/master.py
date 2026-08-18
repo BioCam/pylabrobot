@@ -107,10 +107,9 @@ class STARDriver:
     self.firmware: Dict[str, str] = {}
 
     # Subsystems. Each reads what it needs off `configuration`, so they are usable once setup has
-    # run and raise a clear error before that. A STAR always has a left arm; a right arm is an
-    # option, so it appears only if setup finds one installed.
+    # run and raise a clear error before that. Each arm appears only if setup finds one installed.
     self.pipettes = Pipettes(self)
-    self.left_x_arm = XArm(self, side="left")
+    self.left_x_arm: Optional[XArm] = None
     self.right_x_arm: Optional[XArm] = None
     self.head96: Optional[Head96] = None
     self.iswap: Optional[iSWAP] = None
@@ -173,18 +172,27 @@ class STARDriver:
 
     # Built for what the machine turns out to have, and only if not already there: a caller can
     # hand a capability its configuration before setup, and re-running setup keeps it.
+    if self.configuration.left_arm is not None and self.left_x_arm is None:
+      self.left_x_arm = XArm(self, side="left")
     if self.configuration.right_arm is not None and self.right_x_arm is None:
       self.right_x_arm = XArm(self, side="right")
     if self.configuration.ka_head96_installed and self.head96 is None:
       self.head96 = Head96(self)
-    if self.configuration.left_arm.iswap_installed and self.iswap is None:
+    if (
+      self.configuration.left_arm is not None
+      and self.configuration.left_arm.iswap_installed
+      and self.iswap is None
+    ):
       self.iswap = iSWAP(self)
     if self.configuration.autoload_installed and self.autoload is None:
       self.autoload = Autoload(self)
 
     # Each capability reads its own modules, and they are different modules, so they read at
     # once. Both arms run off the same X-drive board, so only one of them asks it.
-    reading = [self.pipettes.discover(), self.left_x_arm.discover()]
+    arms = [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
+    reading = [self.pipettes.discover()]
+    if arms:
+      reading.append(arms[0].discover())
     if self.head96 is not None:
       reading.append(self.head96.discover())
     if self.iswap is not None:
@@ -192,16 +200,14 @@ class STARDriver:
     if self.autoload is not None:
       reading.append(self.autoload.discover())
     await asyncio.gather(*reading)
-    if self.right_x_arm is not None:
-      self.right_x_arm.configuration.firmware_version = (
-        self.left_x_arm.configuration.firmware_version
-      )
+    for arm in arms[1:]:
+      arm.configuration.firmware_version = arms[0].configuration.firmware_version
 
     master_version, _ = await self.request_firmware_version()
     reported = {
       "master": master_version,
       "pipettes": self.pipettes.configuration.channels[0].firmware_version,
-      "x_arm": self.left_x_arm.configuration.firmware_version,
+      "x_arm": None if not arms else arms[0].configuration.firmware_version,
       "head96": None if self.head96 is None else self.head96.configuration.firmware_version,
       "iswap": None if self.iswap is None else self.iswap.configuration.firmware_version,
       "autoload": None if self.autoload is None else self.autoload.configuration.firmware_version,
@@ -588,8 +594,6 @@ class STARDriver:
       )
 
     left_arm = _resolve_arm(extended["xl"], extended["xn"], "left", extended["xu"] / 10)
-    if left_arm is None:
-      raise RuntimeError("no left X-arm reported; a STAR always has one")
 
     kb = machine["kb"]
     ka = extended["ka"]
