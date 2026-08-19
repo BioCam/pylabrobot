@@ -239,7 +239,10 @@ class XArm:
       x: target X position in mm, at the arm's reference point. Must lie within the arm's travel
         range (`configuration.x_range`).
       acceleration_level: which acceleration curve to use. The drive's own default is
-        `configuration.acceleration_level_default`; this is the gentler one legacy sends.
+        `configuration.acceleration_level_default`; this is the gentler one legacy sends. The
+        hardest curve leaves the arm oscillating about its target rather than approaching it, so it
+        takes longer to come to rest and further still with a 96-head parked forward - it arrives
+        either way, but the settling read below has more to wait for.
       current_limit: the motor current limit.
 
     Raises:
