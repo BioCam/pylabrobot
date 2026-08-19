@@ -282,10 +282,8 @@ class XArm:
         logger.warning("could not read where the %s X-arm stopped; its model is stale", self.side)
       raise
 
-    # The reply arrives when the move ends, not when the arm has stopped: driven hard it swings
-    # past the target and comes back, so a read taken now can be out by up to 0.4 mm. Wait for two
-    # reads in a row to find it at the target, which the extremes of a swing never are. Each read
-    # records where the arm is, so the model ends up holding the last of them.
+    # The reply arrives when the move ends, not when the arm stops. Two reads in a row at the
+    # target say it has: the extremes of a swing never are. Each read records where the arm is.
     self.update_location_by_reference_point(x)
     at_target = 0
     for _ in range(settle_reads):
