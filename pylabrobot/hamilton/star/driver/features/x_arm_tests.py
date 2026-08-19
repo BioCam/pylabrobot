@@ -164,8 +164,8 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(await arm.request_position(), 500.0)
 
   async def test_a_move_reads_back_where_the_arm_landed(self):
-    """The drive settles short of the target, so the model keeps what the machine reports rather
-    than what it was asked for. Driven against a stub, since a simulated read answers from the
+    """The model keeps what the machine reports rather than what it was asked for, and reads twice
+    to know the arm has stopped. Driven against a stub, since a simulated read answers from the
     model and so cannot disagree with it."""
     driver = await _both_arms()
     resource = cast(HamiltonDeck, driver.deck).get_resource("left_x_arm")
@@ -181,6 +181,29 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     )
     arm.resource = resource
     await arm.move_x(500.0)
-    self.assertEqual(sent, ["X0XPla05000lr3lw7", "X0RX"])
+    self.assertEqual(sent, ["X0XPla05000lr3lw7", "X0RX", "X0RX"])
     seated = cast(Coordinate, resource.location)
     self.assertEqual(seated.x + resource.get_anchor(x=arm.reference_anchor).x, 499.8)
+
+  async def test_a_move_waits_for_the_arm_to_stop(self):
+    """A move's reply arrives before the arm has stopped, so the position is read until two reads
+    agree - here the arm is still moving for the first three."""
+    driver = await _both_arms()
+    moving = iter(["rx +0004985 +0000049850", "rx +0005003 +0000050030", "rx +0004998 +0000049980"])
+    sent: List[str] = []
+
+    async def answer(module: str, command: str, fmt=None, **kwargs):
+      sent.append(assemble_command(module=module, command=command, id_=None, **kwargs))
+      if command != "RX":
+        return None
+      return f"{module}{command}{next(moving, 'rx +0004998 +0000049980')}"
+
+    arm = XArm(
+      SimpleNamespace(configuration=driver.configuration, send_command=answer),  # type: ignore[arg-type]
+      side="left",
+    )
+    arm.resource = cast(HamiltonDeck, driver.deck).get_resource("left_x_arm")
+    await arm.move_x(500.0)
+    self.assertEqual(sent.count("X0RX"), 4)
+    seated = cast(Coordinate, arm.resource.location)
+    self.assertEqual(seated.x + arm.resource.get_anchor(x=arm.reference_anchor).x, 499.8)
