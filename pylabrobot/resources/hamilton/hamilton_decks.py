@@ -38,11 +38,11 @@ _AUTOLOAD_WHEEL_FROM_LEFT = 200.0
 # Where the loading tray sits, measured against the two things on the deck it lines up with: its
 # left edge is 104 mm left of where the first carrier starts, and its front edge 380 mm in front of
 # where a carrier's front edge is. It reaches 104 mm short of the deck's right edge, which makes it
-# 1445 mm wide on a STAR. Its height is a placeholder until it is measured.
+# 1445 mm wide on a STAR, 250 mm deep and 92 mm tall.
 _LOADING_TRAY_FROM_FIRST_CARRIER_X = 104.0
 _LOADING_TRAY_FROM_CARRIER_Y = 380.0
 _LOADING_TRAY_SIZE_Y = 250.0
-_LOADING_TRAY_SIZE_Z = 100.0
+_LOADING_TRAY_SIZE_Z = 92.0
 # Where a carrier's own front edge sits on any Hamilton deck, in mm.
 _CARRIER_Y = 63.0
 
