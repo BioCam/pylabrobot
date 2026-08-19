@@ -13,7 +13,10 @@ import datetime
 import logging
 from typing import Any, Dict, List, Optional, Tuple, cast
 
-from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
+from pylabrobot.hamilton.protocol.text.framing import (
+  assemble_command,
+  parse_firmware_version_date,
+)
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
 from pylabrobot.hamilton.star.driver.features.cover import CoverPosition, FrontCover
@@ -40,6 +43,10 @@ SIMULATED_FIRMWARE = {
 
 # Made up, so a simulator is never mistaken for a particular machine.
 SIMULATED_SERIAL_NUMBER = "SIM0"
+
+# What stands where a transport's identity would be in the log, so simulated and recorded runs read
+# the same way.
+SIMULATED_LINK = "[simulation]"
 
 # How wide a pipette is, in mm.
 PIPETTE_WIDTH = 8.98
@@ -170,9 +177,10 @@ class SimulatedPipettes(_Simulated, Pipettes):
     self.machine.tips_mounted = [False] * len(self.machine.tips_mounted)
 
 
-# Where the left arm reports itself at rest, in mm: far enough along the rail to sit within reach
-# of any STAR deck. The right arm rests at the far end of its own travel instead, so the two do
-# not overlap on a machine that has both.
+# Where the left arm has come to rest when a simulated machine is switched on, in mm: far enough
+# along the rail to sit within reach of any STAR deck. The right arm rests at the far end of its
+# own travel instead, so the two do not overlap on a machine that has both. Setup reads this once
+# to seat each arm on the deck; every read after that answers from the deck.
 SIMULATED_LEFT_X_ARM_POSITION = 362.9
 
 
@@ -183,8 +191,8 @@ class SimulatedXArm(_Simulated, XArm):
     return self.machine.reported("x_arm")
 
   async def request_position(self) -> float:
-    # With a deck, where the arm is is what the model says, so a simulated run answers the way a
-    # real one does rather than from a remembered value. Without one, it reports where it rests.
+    # Where the arm is is what the model says: a simulated machine has no drive to ask. Until setup
+    # has put it on the deck there is nothing to read, and it answers where it powered up.
     if self.resource is not None and self.resource.location is not None:
       anchor = self.resource.get_anchor(x=self.reference_anchor)
       return self.resource.location.x + anchor.x
@@ -341,14 +349,17 @@ class STARSimulationDriver(STARDriver):
       autoload: the autoload this machine has, which it answers about itself. Defaults to
         `SIMULATED_AUTOLOAD`. The capability's own configuration is filled by discovery, as on a
         real machine, so this is what it reads rather than what it becomes.
-      deck: the deck to reflect this machine into, as on a real one.
+      deck: the deck to reflect this machine into. Required: a simulated machine has no firmware
+        to ask, so the resource model is the only thing it can answer from.
       serial_number: what this machine calls itself.
       initialized: whether the machine and its modules report themselves already initialized. One
         that has just been switched on does not.
 
     Raises:
-      ValueError: If `tips_mounted` does not have one entry per channel.
+      ValueError: If no deck is given, or `tips_mounted` does not have one entry per channel.
     """
+    if deck is None:
+      raise ValueError("a simulated STAR answers from its resource model, so it needs a deck")
     super().__init__(io=_UnusedTransport(), deck=deck)
 
     self.simulated_configuration = configuration or DEFAULT_STAR_CONFIGURATION
@@ -419,15 +430,48 @@ class STARSimulationDriver(STARDriver):
   def _describe_link(self) -> str:
     return "simulation (no link)"
 
-  async def send_command(self, module: str, command: str, *args: Any, **kwargs: Any) -> None:
+  async def send_command(
+    self,
+    module: str,
+    command: str,
+    auto_id=True,
+    tip_pattern: Optional[List[bool]] = None,
+    write_timeout: Optional[int] = None,
+    read_timeout: Optional[int] = None,
+    wait=True,
+    fmt: Optional[Any] = None,
+    **kwargs: Any,
+  ) -> None:
     """Say what would have been sent, and answer nothing.
 
     A command that only moves needs no more than this. One whose answer is read is overridden on
     the capability that reads it, so it never gets here.
+
+    What it logs is what a real link logs: the assembled command as a write, and the answer as a
+    read, so a simulated run reads like a recorded one.
     """
-    logger.log(LOG_LEVEL_IO, "%s %s %s", module, command, kwargs or "")
+    self._log_exchange(
+      assemble_command(
+        module=module,
+        command=command,
+        id_=None,
+        tip_pattern=tip_pattern,
+        num_channels=self._num_channels,
+        **kwargs,
+      ),
+      None,
+    )
     return None
 
   async def send_raw_command(self, command: str, *args: Any, **kwargs: Any) -> None:
-    logger.log(LOG_LEVEL_IO, "%s", command)
+    self._log_exchange(command, None)
     return None
+
+  def _log_exchange(self, written: str, read: Optional[str]) -> None:
+    """Log a command, and its answer where there is one, as the transport logs a real exchange.
+
+    Nothing answers in simulation unless a capability says so, so most commands log a write alone.
+    """
+    logger.log(LOG_LEVEL_IO, "%s write: %s", SIMULATED_LINK, written)
+    if read is not None:
+      logger.log(LOG_LEVEL_IO, "%s read: %s", SIMULATED_LINK, read)
