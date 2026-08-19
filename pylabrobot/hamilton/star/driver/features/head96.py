@@ -426,6 +426,15 @@ class Head96:
     written: Dict[str, Any] = {parameter: f"{to_increments[parameter](value):05}"}
     await self._driver.send_command(module="H0", command="AA", **written)
 
+  async def park(self):
+    """Send the head to its home position. This moves it in Y and in Z.
+
+    Uses the drive's own speeds and accelerations, as legacy does, rather than writing any into the
+    register. Where it comes to rest is read back afterwards.
+    """
+    await self._driver.send_command(module="H0", command="MO", read_timeout=Y_MOVE_READ_TIMEOUT)
+    await self.request_y_position()
+
   def update_location_by_reference_point(self, y: float) -> None:
     """Record where the head is on the resource that models it.
 
