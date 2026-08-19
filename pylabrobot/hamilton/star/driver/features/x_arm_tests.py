@@ -162,3 +162,25 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
       await arm.move_x_relative(5_000.0)
     self.assertEqual(sent, [])
     self.assertEqual(await arm.request_position(), 500.0)
+
+  async def test_a_move_reads_back_where_the_arm_landed(self):
+    """The drive settles short of the target, so the model keeps what the machine reports rather
+    than what it was asked for. Driven against a stub, since a simulated read answers from the
+    model and so cannot disagree with it."""
+    driver = await _both_arms()
+    resource = cast(HamiltonDeck, driver.deck).get_resource("left_x_arm")
+    sent: List[str] = []
+
+    async def answer(module: str, command: str, fmt=None, **kwargs):
+      sent.append(assemble_command(module=module, command=command, id_=None, **kwargs))
+      return f"{module}{command}rx +0004998 +0000049984" if command == "RX" else None
+
+    arm = XArm(
+      SimpleNamespace(configuration=driver.configuration, send_command=answer),  # type: ignore[arg-type]
+      side="left",
+    )
+    arm.resource = resource
+    await arm.move_x(500.0)
+    self.assertEqual(sent, ["X0XPla05000lr3lw7", "X0RX"])
+    seated = cast(Coordinate, resource.location)
+    self.assertEqual(seated.x + resource.get_anchor(x=arm.reference_anchor).x, 499.8)

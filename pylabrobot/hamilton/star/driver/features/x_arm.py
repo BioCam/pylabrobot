@@ -276,7 +276,14 @@ class XArm:
         logger.warning("could not read where the %s X-arm stopped; its model is stale", self.side)
       raise
 
+    # Where it was told to go, and then where it actually went: the drive settles short of the
+    # target by an increment or two, so the machine's own read is what the model keeps.
     self.update_location_by_reference_point(x)
+    x_reached = await self.request_position()
+    if x_reached != x:
+      logger.debug(
+        "the %s X-arm was sent to %s mm and came to rest at %s mm", self.side, x, x_reached
+      )
     return resp
 
   @property
