@@ -6,7 +6,9 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
-from pylabrobot.resources.x_arm import XArm as XArmResource
+from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.hamilton.hamilton_decks import X_ARM_REFERENCE_ANCHORS
+from pylabrobot.resources.resource import Resource
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -106,7 +108,7 @@ class XArm:
     self._driver = driver
     # The arm on the deck, when the driver was given one. Setup puts it there; moves keep it in
     # step. Without a deck it stays None and nothing is modelled.
-    self.resource: Optional[XArmResource] = None
+    self.resource: Optional[Resource] = None
     self.side = side
 
   # -- session / discovery ---------------------------------------------------
@@ -262,9 +264,26 @@ class XArm:
     )
     # Only once the machine has answered: a move that raised leaves the arm somewhere unknown, and
     # a resource that says otherwise would be worse than one that is stale.
-    if self.resource is not None:
-      self.resource.seat_reference_at(x)
+    self.update_location_by_reference_point(x)
     return resp
+
+  def update_location_by_reference_point(self, x: float) -> None:
+    """Record where this arm is on the resource that models it.
+
+    The machine positions the arm by its reference point - the centre of a dual-rail arm, the right
+    edge of a single-rail one - while a resource is located by its left front bottom corner, so the
+    two differ by the arm's own anchor. Does nothing when the driver was given no deck, and so has
+    nothing to model.
+
+    Args:
+      x: where the reference point is now, in mm.
+    """
+    if self.resource is None or self.resource.location is None:
+      return
+    anchor = self.resource.get_anchor(x=X_ARM_REFERENCE_ANCHORS[self.configuration.reference_point])
+    self.resource.location = Coordinate(
+      x - anchor.x, self.resource.location.y, self.resource.location.z
+    )
 
   async def move_x_relative(
     self,
