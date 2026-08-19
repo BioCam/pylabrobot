@@ -26,11 +26,12 @@ _X_ARM_SIZE_Z = 140.0
 # front face to back face.
 _X_ARM_SIZE_Y = 712.0
 
-# How big the autoload's sled is (mm). Its height is not modelled yet, so it takes up no room in z
-# and cannot collide with anything.
+# How big the autoload's sled is (mm). Standing on the deck's own zero it reaches exactly the height
+# a carrier seats at, which is where the machine's coordinates put the deck surface: the drive that
+# has to pass under the deck plate is as tall as the offset between the two.
 _AUTOLOAD_SLED_SIZE_X = 235.0
 _AUTOLOAD_SLED_SIZE_Y = 82.0
-_AUTOLOAD_SLED_SIZE_Z = 0.0
+_AUTOLOAD_SLED_SIZE_Z = 100.0
 # How far the carrier-handling wheel sits from the sled's left edge (mm), which is the point the
 # drive reports: parked, it reads the deck position of track 54, where the wheel then stands.
 _AUTOLOAD_WHEEL_FROM_LEFT = 200.0
