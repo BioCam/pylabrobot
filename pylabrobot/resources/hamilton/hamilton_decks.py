@@ -137,6 +137,11 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     Z_GRAB_LIMIT = 285
 
     def check_z_height(resource: Resource):
+      # The X-arm belongs up there: it rides above the deck by design, and nothing traverses or
+      # grabs it, so the warnings below say nothing about it.
+      if isinstance(resource, XArm):
+        return
+
       try:
         z_top = resource.get_location_wrt(self, z="top").z
       except NoLocationError:
