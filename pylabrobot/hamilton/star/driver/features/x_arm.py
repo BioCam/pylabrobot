@@ -229,6 +229,7 @@ class XArm:
     x: float,
     acceleration_level: int = 3,
     current_limit: int = 7,
+    settle_reads: int = 20,
   ):
     """Move the arm to an absolute X position.
 
@@ -244,6 +245,8 @@ class XArm:
         takes longer to come to rest and further still with a 96-head parked forward - it arrives
         either way, but the settling read below has more to wait for.
       current_limit: the motor current limit.
+      settle_reads: how many reads to spend waiting for the arm to come to rest. Each is a command
+        round trip, about 10 ms, against a settle of 27 to 90 ms where this was measured.
 
     Raises:
       ValueError: If `x` is outside the arm's travel range, or an argument is out of range.
@@ -279,52 +282,29 @@ class XArm:
         logger.warning("could not read where the %s X-arm stopped; its model is stale", self.side)
       raise
 
-    # Where it was told to go, and then where it actually went: the drive settles short of the
-    # target by an increment or two, so the machine's own read is what the model keeps.
+    # The reply arrives when the move ends, not when the arm has stopped: driven hard it swings
+    # past the target and comes back, so a read taken now can be out by up to 0.4 mm. Wait for two
+    # reads in a row to find it at the target, which the extremes of a swing never are. Each read
+    # records where the arm is, so the model ends up holding the last of them.
     self.update_location_by_reference_point(x)
-    x_reached = await self.request_settled_position()
-    if x_reached != x:
-      logger.debug(
-        "the %s X-arm was sent to %s mm and came to rest at %s mm", self.side, x, x_reached
-      )
+    at_target = 0
+    for _ in range(settle_reads):
+      reached = await self.request_position()
+      at_target = at_target + 1 if abs(reached - x) <= c.x_mm_per_increment else 0
+      if at_target == 2:
+        return resp
+    logger.warning(
+      "the %s X-arm was sent to %s mm and had not come to rest there after %d reads",
+      self.side,
+      x,
+      settle_reads,
+    )
     return resp
 
   @property
   def reference_anchor(self) -> Literal["l", "c", "r"]:
     """Where along its width this arm's x refers to, as a resource anchor."""
     return REFERENCE_ANCHORS[self.configuration.reference_point]
-
-  async def request_settled_position(self, stable_reads: int = 3, reads: int = 20) -> float:
-    """Read where the arm is until it has stopped, and answer that.
-
-    A move's reply arrives when the move ends, not when the arm stops: driven hard it swings past
-    its target and comes back, and read immediately it is out by up to 0.4 mm.
-
-    Two reads that agree are not enough to call it stopped. An arm reversing at the end of a swing
-    is momentarily still, so a pair of reads taken across that moment agree while the arm sits at
-    its furthest from the target - the worst reading to keep. A run of agreeing reads spans enough
-    of the swing that a reversal shows up as movement again.
-
-    Args:
-      stable_reads: how many reads in a row must agree, to within the read's own resolution, before
-        the arm counts as stopped.
-      reads: how many reads to spend in total. Each is a command round trip, about 10 ms, against a
-        settle of 27 to 90 ms where this was measured - so the default gives up well past that
-        rather than hanging on a drive that never stops.
-
-    Returns:
-      The position in mm, once it has stopped.
-    """
-    settled = await self.request_position()
-    agreed = 1
-    for _ in range(reads):
-      again = await self.request_position()
-      agreed = agreed + 1 if abs(again - settled) <= self.configuration.x_mm_per_increment else 1
-      settled = again
-      if agreed >= stable_reads:
-        return settled
-    logger.warning("the %s X-arm is still moving after %d reads", self.side, reads)
-    return settled
 
   def update_location_by_reference_point(self, x: float) -> None:
     """Record where this arm is on the resource that models it.
