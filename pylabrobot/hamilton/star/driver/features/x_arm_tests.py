@@ -181,7 +181,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     )
     arm.resource = resource
     await arm.move_x(500.0)
-    self.assertEqual(sent, ["X0XPla05000lr3lw7", "X0RX", "X0RX"])
+    self.assertEqual(sent, ["X0XPla05000lr3lw7", "X0RX", "X0RX", "X0RX"])
     seated = cast(Coordinate, resource.location)
     self.assertEqual(seated.x + resource.get_anchor(x=arm.reference_anchor).x, 499.8)
 
@@ -204,6 +204,33 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     )
     arm.resource = cast(HamiltonDeck, driver.deck).get_resource("left_x_arm")
     await arm.move_x(500.0)
-    self.assertEqual(sent.count("X0RX"), 4)
+    self.assertEqual(sent.count("X0RX"), 5)
     seated = cast(Coordinate, arm.resource.location)
     self.assertEqual(seated.x + arm.resource.get_anchor(x=arm.reference_anchor).x, 499.8)
+
+  async def test_a_reversing_arm_is_not_mistaken_for_a_stopped_one(self):
+    """An arm at the end of a swing is momentarily still, so two reads across that moment agree
+    while it sits at its furthest from the target. It has to keep reading."""
+    driver = await _both_arms()
+    # 500.4 twice - the arm reversing at the top of its overshoot - then back down to 500.0.
+    swing = iter(
+      [
+        "rx +0005004 +0000050040",
+        "rx +0005004 +0000050040",
+        "rx +0005001 +0000050010",
+        "rx +0005000 +0000050000",
+        "rx +0005000 +0000050000",
+        "rx +0005000 +0000050000",
+      ]
+    )
+
+    async def answer(module: str, command: str, fmt=None, **kwargs):
+      return (
+        f"{module}{command}{next(swing, 'rx +0005000 +0000050000')}" if command == "RX" else None
+      )
+
+    arm = XArm(
+      SimpleNamespace(configuration=driver.configuration, send_command=answer),  # type: ignore[arg-type]
+      side="left",
+    )
+    self.assertEqual(await arm.request_settled_position(), 500.0)

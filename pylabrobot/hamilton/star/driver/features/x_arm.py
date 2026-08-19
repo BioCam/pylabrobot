@@ -294,27 +294,35 @@ class XArm:
     """Where along its width this arm's x refers to, as a resource anchor."""
     return REFERENCE_ANCHORS[self.configuration.reference_point]
 
-  async def request_settled_position(self, reads: int = 20) -> float:
-    """Read where the arm is until it stops changing, and answer that.
+  async def request_settled_position(self, stable_reads: int = 3, reads: int = 20) -> float:
+    """Read where the arm is until it has stopped, and answer that.
 
-    A move's reply arrives when the move ends, not when the arm stops: driven hard it overshoots
-    and comes back, and read immediately it is out by up to 0.4 mm. Two reads that agree to within
-    an increment mean it has stopped.
+    A move's reply arrives when the move ends, not when the arm stops: driven hard it swings past
+    its target and comes back, and read immediately it is out by up to 0.4 mm.
+
+    Two reads that agree are not enough to call it stopped. An arm reversing at the end of a swing
+    is momentarily still, so a pair of reads taken across that moment agree while the arm sits at
+    its furthest from the target - the worst reading to keep. A run of agreeing reads spans enough
+    of the swing that a reversal shows up as movement again.
 
     Args:
-      reads: how many reads to spend waiting. Each is a command round trip, about 10 ms, against a
+      stable_reads: how many reads in a row must agree, to within the read's own resolution, before
+        the arm counts as stopped.
+      reads: how many reads to spend in total. Each is a command round trip, about 10 ms, against a
         settle of 27 to 90 ms where this was measured - so the default gives up well past that
         rather than hanging on a drive that never stops.
 
     Returns:
-      The position in mm, once two reads agree.
+      The position in mm, once it has stopped.
     """
     settled = await self.request_position()
+    agreed = 1
     for _ in range(reads):
       again = await self.request_position()
-      if abs(again - settled) <= self.configuration.x_mm_per_increment:
-        return again
+      agreed = agreed + 1 if abs(again - settled) <= self.configuration.x_mm_per_increment else 1
       settled = again
+      if agreed >= stable_reads:
+        return settled
     logger.warning("the %s X-arm is still moving after %d reads", self.side, reads)
     return settled
 
