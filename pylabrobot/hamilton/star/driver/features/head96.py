@@ -164,7 +164,12 @@ class Head96Configuration:
   # the firmware date and the encoder resolutions above, so they are computed on access. ===
   @property
   def y_range(self) -> Tuple[float, float]:
-    """Y-drive position window (mm); 2013 firmware shifted it from the 2008 range."""
+    """Y-drive position window (mm); 2013 firmware shifted it from the 2008 range.
+
+    What the command accepts, which is wider than what a given machine allows: a move to the low
+    end of this window was refused as outside the permitted area on a machine whose channels share
+    the arm.
+    """
     min_inc, max_inc = (6000, 36000) if self.firmware_year >= 2010 else (7000, 36200)
     return (self.y_drive_increments_to_mm(min_inc), self.y_drive_increments_to_mm(max_inc))
 
