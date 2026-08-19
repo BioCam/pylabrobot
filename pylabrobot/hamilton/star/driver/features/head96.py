@@ -3,7 +3,7 @@
 import datetime
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 
@@ -29,6 +29,10 @@ RESOLUTIONS_FIRST_YEAR = 2010
 
 # The retract drives the head to its Z-safety height, which takes a while.
 RETRACT_READ_TIMEOUT = 20
+
+# How long a Y move may take before the reply is given up on, in seconds. The drive crosses its
+# whole travel in a few seconds at the slowest acceleration the firmware accepts.
+Y_MOVE_READ_TIMEOUT = 30
 INITIALIZE_READ_TIMEOUT = 60
 
 # Where the head is left when initialization finishes, in mm.
@@ -45,9 +49,7 @@ class Head96Configuration:
   """
 
   firmware_version: Optional[str] = None
-  """The head's firmware version, as reported."""
   firmware_date: Optional[datetime.date] = None
-  """Its build date. The area-of-operation windows below are resolved from it."""
   x_offset: Optional[float] = None
   """Deck X distance from the X-arm carriage center to head channel A1 (mm), read from
   master EEPROM at setup. Mirrors the iSWAP's rotation-drive x-offset."""
@@ -324,6 +326,90 @@ class Head96:
     c.y_drive_acceleration_default = await self.request_drive_parameter("yr")
     c.z_drive_speed_default = await self.request_drive_parameter("zv")
     c.z_drive_acceleration_default = await self.request_drive_parameter("zr")
+
+  # -- y position ------------------------------------------------------------
+
+  async def set_drive_parameter(self, parameter: str, value: float) -> None:
+    """Write one of the head's stored drive parameters.
+
+    Args:
+      parameter: the parameter to write, named as `request_drive_parameter` names it.
+      value: the value in mm/s or mm/s2, converted to the increments the drive counts in.
+
+    Raises:
+      ValueError: If the parameter is not one of the four drive parameters.
+    """
+    to_increments = {
+      "yv": self.configuration.y_drive_mm_to_increments,
+      "yr": self.configuration.y_drive_mm_to_increments,
+      "zv": self.configuration.z_drive_mm_to_increments,
+      "zr": self.configuration.z_drive_mm_to_increments,
+    }
+    if parameter not in to_increments:
+      raise ValueError(
+        f"unknown drive parameter {parameter!r}, expected one of {sorted(to_increments)}"
+      )
+    written: Dict[str, Any] = {parameter: f"{to_increments[parameter](value):05}"}
+    await self._driver.send_command(module="H0", command="AA", **written)
+
+  async def move_y(
+    self,
+    y: float,
+    speed: Optional[float] = None,
+    acceleration: Optional[float] = None,
+    current_limit: int = 15,
+  ):
+    """Move the head along Y. This moves it, and nothing else on the arm.
+
+    The move writes its speed and acceleration into the drive's volatile register, where later
+    moves would inherit them, so what was there is read first and put back afterwards - skipping
+    the write where the move's value already matches.
+
+    Args:
+      y: where to move to, in mm.
+      speed: how fast, in mm/s. Defaults to `configuration.y_drive_speed_default`.
+      acceleration: how hard, in mm/s2. Defaults to `configuration.y_drive_acceleration_default`.
+      current_limit: the motor current limit.
+
+    Raises:
+      ValueError: If an argument is outside what the drive accepts.
+      RuntimeError: If the head's drive defaults were not read at discovery.
+    """
+    c = self.configuration
+    if speed is None:
+      speed = c.y_drive_speed_default
+    if acceleration is None:
+      acceleration = c.y_drive_acceleration_default
+    if speed is None or acceleration is None:
+      raise RuntimeError("the head's drive defaults were not read; have you called `star.setup()`?")
+
+    for value, (low, high), name in (
+      (y, c.y_range, "y"),
+      (speed, c.y_speed_range, "speed"),
+      (acceleration, c.y_acceleration_range, "acceleration"),
+    ):
+      if not low <= value <= high:
+        raise ValueError(f"{name} must be between {low} and {high}, is {value}")
+    if not 0 <= current_limit <= 15:
+      raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
+
+    was_speed = await self.request_drive_parameter("yv")
+    was_acceleration = await self.request_drive_parameter("yr")
+    try:
+      return await self._driver.send_command(
+        module="H0",
+        command="YA",
+        ya=f"{c.y_drive_mm_to_increments(y):05}",
+        yv=f"{c.y_drive_mm_to_increments(speed):05}",
+        yr=f"{c.y_drive_mm_to_increments(acceleration):05}",
+        yw=f"{current_limit:02}",
+        read_timeout=Y_MOVE_READ_TIMEOUT,
+      )
+    finally:
+      if c.y_drive_mm_to_increments(speed) != c.y_drive_mm_to_increments(was_speed):
+        await self.set_drive_parameter("yv", was_speed)
+      if c.y_drive_mm_to_increments(acceleration) != c.y_drive_mm_to_increments(was_acceleration):
+        await self.set_drive_parameter("yr", was_acceleration)
 
   # -- z position ------------------------------------------------------------
 
