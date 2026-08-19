@@ -19,10 +19,6 @@ logger = logging.getLogger(__name__)
 # a wider current limiter, written in two digits rather than one, and has moves this one does not.
 RECORDED_FIRMWARE_BELOW_MAJOR = 5
 
-# How many reads to spend waiting for the arm to stop. Each is a command round trip, about 10 ms,
-# and the longest settle measured was 90 ms.
-SETTLE_READ_LIMIT = 20
-
 
 @dataclass
 class XArmConfiguration:
@@ -295,24 +291,28 @@ class XArm:
     """Where along its width this arm's x refers to, as a resource anchor."""
     return REFERENCE_ANCHORS[self.configuration.reference_point]
 
-  async def request_settled_position(self) -> float:
+  async def request_settled_position(self, reads: int = 20) -> float:
     """Read where the arm is until it stops changing, and answer that.
 
     A move's reply arrives when the move ends, not when the arm stops: driven hard it overshoots
     and comes back, and read immediately it is out by up to 0.4 mm. Two reads that agree to within
-    an increment mean it has stopped. On the machine this was measured on that took between 27 and
-    90 ms; the cap is well past that, so a drive that never settles gives up rather than hangs.
+    an increment mean it has stopped.
+
+    Args:
+      reads: how many reads to spend waiting. Each is a command round trip, about 10 ms, against a
+        settle of 27 to 90 ms where this was measured - so the default gives up well past that
+        rather than hanging on a drive that never stops.
 
     Returns:
       The position in mm, once two reads agree.
     """
     settled = await self.request_position()
-    for _ in range(SETTLE_READ_LIMIT):
+    for _ in range(reads):
       again = await self.request_position()
       if abs(again - settled) <= self.configuration.x_mm_per_increment:
         return again
       settled = again
-    logger.warning("the %s X-arm is still moving after %d reads", self.side, SETTLE_READ_LIMIT)
+    logger.warning("the %s X-arm is still moving after %d reads", self.side, reads)
     return settled
 
   def update_location_by_reference_point(self, x: float) -> None:
