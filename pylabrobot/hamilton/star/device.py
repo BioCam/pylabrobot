@@ -17,17 +17,16 @@ from pylabrobot.resources.resource import Resource
 
 logger = logging.getLogger(__name__)
 
-# Where the deck sits in the instrument. It is placed at the instrument's origin, and the
-# instrument is given the deck's own footprint, until something needs either to be more than that.
-# Where the deck sits inside the instrument. Provisional, pending measurement on a rig:
-#   x  the chassis' left face read against the iSWAP's kinematic reach, 13.2 mm wider than the
-#      drawing's iSWAP areas allow, so good to about a centimetre
+# Where the deck sits inside the instrument.
+#   x  measured on a 2021 STAR: 210 mm from the left face to the first carrier, which sits at 100
 #   y  the deck origin behind the front face, on the reading that a carrier's back edge meets the
-#      back of the iSWAP area: 795 - 119 - 560 on a STAR, 790 - 124 - 560 on a STARlet
+#      back of the iSWAP area: 795 - 119 - 560 on a STAR, 790 - 124 - 560 on a STARlet. Provisional
 #   z  the deck work surface sits 100 mm above the instrument origin, which the manual states; this
 #      is the origin's own height above the instrument's base, and is not sourced
-STAR_DECK_LOCATION = Coordinate(121.8, 116.0, 78.5)
-STARLET_DECK_LOCATION = Coordinate(121.8, 106.0, 78.5)
+STAR_DECK_LOCATION = Coordinate(110.0, 116.0, 78.5)
+# The STARlet's x is not measured: its chassis leaves the same 119 mm beyond its deck as the STAR's
+# does, so it takes the same value until someone measures one.
+STARLET_DECK_LOCATION = Coordinate(110.0, 106.0, 78.5)
 
 
 class STARDevice(Resource):
