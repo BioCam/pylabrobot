@@ -6,11 +6,17 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.resources.barcode import Barcode1DSymbology, Barcode2DSymbology
+from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.resource import Resource
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
 
 logger = logging.getLogger(__name__)
+
+# Where the scanner drive's zero sits on the deck, in mm: measured as track 1, by reading the drive
+# at two tracks 10 apart and finding exactly 22.5 mm per track.
+DRIVE_ZERO_ON_THE_DECK = 100.0
 
 # Where the carrier drive can be sent by name.
 YPosition = Literal["loading_tray", "carrier_identification", "deck"]
@@ -199,6 +205,9 @@ class Autoload:
       configuration: the autoload's device facts. Defaults to `AutoloadConfiguration()`.
     """
     self._driver = driver
+    # The sled on the deck, when the driver was given one. Setup puts it there; moves keep it in
+    # step. Without a deck it stays None and nothing is modelled.
+    self.resource: Optional[Resource] = None
     self.configuration = configuration or AutoloadConfiguration()
 
   @property
@@ -294,11 +303,32 @@ class Autoload:
   async def request_x_position(self) -> float:
     """Request where along the deck the scanner is.
 
+    What the drive answers is recorded on the resource that models the sled.
+
     Returns:
       The position in mm, from the drive's zero.
     """
-    return self.configuration.x_drive_increments_to_mm(
+    x = self.configuration.x_drive_increments_to_mm(
       await self._request_drive_position("RX", digits=5)
+    )
+    self.update_location(x)
+    return x
+
+  def update_location(self, x: float) -> None:
+    """Record where the sled is on the resource that models it.
+
+    The drive counts from its own zero, which sits at track 1 - a hundred millimetres along the
+    deck - so a deck position is that much further on. Which point of the sled the drive reports is
+    not known, so the resource is placed by its left front bottom corner and the two agree only to
+    the width of the sled. Does nothing when the driver was given no deck.
+
+    Args:
+      x: where the drive says it is, in mm, counted from its own zero.
+    """
+    if self.resource is None or self.resource.location is None:
+      return
+    self.resource.location = Coordinate(
+      x + DRIVE_ZERO_ON_THE_DECK, self.resource.location.y, self.resource.location.z
     )
 
   async def _request_drive_position(self, command: str, digits: int) -> int:
@@ -384,7 +414,7 @@ class Autoload:
       )
       await self.move_to_safe_z()
 
-    return await self._driver.send_command(
+    resp = await self._driver.send_command(
       module="I0",
       command="XP",
       xp=f"{track:02}",
@@ -392,6 +422,10 @@ class Autoload:
       xr=f"{acceleration_ramp:01}",
       xw=f"{current_limit:01}",
     )
+    # Once the machine has answered: the drive says where the sled ended up, which is what the
+    # resource records. A move that raised leaves it somewhere unknown, so nothing is recorded.
+    await self.request_x_position()
+    return resp
 
   async def park(self):
     """Park the autoload at the last track this machine has.

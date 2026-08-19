@@ -431,6 +431,7 @@ class STARDriver:
         reference_anchor=arm.reference_anchor,
       )
     await self._create_head96_resource()
+    await self._create_autoload_resource()
 
   async def _create_head96_resource(self) -> None:
     """Put the 96-head on the arm it rides, where it is along Y.
@@ -450,6 +451,14 @@ class STARDriver:
     y = await self.head96.request_y_position()
     self.head96.resource = get_or_create_head96(arm.resource, self.head96.configuration.x_offset)
     self.head96.update_location_by_reference_point(y)
+
+  async def _create_autoload_resource(self) -> None:
+    """Put the autoload's sled on the deck, where it is."""
+    if self.autoload is None or self.deck is None:
+      return
+    x = await self.autoload.request_x_position()
+    self.autoload.resource = self.deck.get_or_create_autoload_sled(name="autoload_sled", x=x)
+    self.autoload.update_location(x)
 
   async def request_initialization_status(self, module: str = "C0") -> bool:
     """Whether a module reports itself initialized.

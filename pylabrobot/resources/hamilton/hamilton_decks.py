@@ -23,6 +23,12 @@ _RAILS_WIDTH = 22.5  # space between rails (mm)
 _X_ARM_Z = 334.7
 _X_ARM_SIZE_Z = 140.0
 
+# How big the autoload's sled is (mm). Its height is not modelled yet, so it takes up no room in z
+# and cannot collide with anything.
+_AUTOLOAD_SLED_SIZE_X = 235.0
+_AUTOLOAD_SLED_SIZE_Y = 82.0
+_AUTOLOAD_SLED_SIZE_Z = 0.0
+
 STARLET_NUM_RAILS = 32
 STARLET_SIZE_X = 1005
 STARLET_SIZE_Y = 653.5
@@ -118,6 +124,34 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     anchor = x_arm.get_anchor(x=reference_anchor)
     self.assign_child_resource(x_arm, location=Coordinate(x - anchor.x, 0.0, _X_ARM_Z))
     return x_arm
+
+  def get_or_create_autoload_sled(self, name: str, x: float) -> Resource:
+    """Get, or create once, the deck-owned autoload sled.
+
+    The deck owns it: created as a child the first time and reused thereafter, so repeated setups
+    do not duplicate it.
+
+    Args:
+      name: what to call it.
+      x: where the sled is, in mm, on this deck.
+
+    Returns:
+      The sled resource, whether it was just created or already there.
+    """
+    if self.has_resource(name):
+      return self.get_resource(name)
+    sled = Resource(
+      name=name,
+      size_x=_AUTOLOAD_SLED_SIZE_X,
+      size_y=_AUTOLOAD_SLED_SIZE_Y,
+      size_z=_AUTOLOAD_SLED_SIZE_Z,
+      category="autoload_sled",
+      model="hamilton_star_autoload_sled",
+    )
+    # Placed by its left front bottom corner, because which point of the sled the drive reports is
+    # not known yet - so x locates the resource, not a feature of the sled.
+    self.assign_child_resource(sled, location=Coordinate(x, 0.0, 0.0))
+    return sled
 
   def serialize(self) -> dict:
     """Serialize this deck."""
