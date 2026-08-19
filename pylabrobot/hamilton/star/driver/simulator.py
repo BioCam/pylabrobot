@@ -183,6 +183,10 @@ class SimulatedXArm(_Simulated, XArm):
     return self.machine.reported("x_arm")
 
   async def request_position(self) -> float:
+    # With a deck, where the arm is is what the model says, so a simulated run answers the way a
+    # real one does rather than from a remembered value. Without one, it reports where it rests.
+    if self.resource is not None:
+      return self.resource.reference_x
     if self.side == "left" or self.configuration.x_range is None:
       return SIMULATED_LEFT_X_ARM_POSITION
     return self.configuration.x_range[1]

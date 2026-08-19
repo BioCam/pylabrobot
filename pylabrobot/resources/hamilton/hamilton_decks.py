@@ -115,8 +115,9 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     )
     # Seat the frame so its reference point lands at the arm's current x. The arm sits above the
     # deck plane, so it does not count as occupying the footprint of the carriers beneath it.
-    reference_offset = width / 2 if reference_point == "center" else width
-    self.assign_child_resource(x_arm, location=Coordinate(x - reference_offset, 0.0, _X_ARM_Z))
+    self.assign_child_resource(
+      x_arm, location=Coordinate(x - x_arm.reference_offset, 0.0, _X_ARM_Z)
+    )
     return x_arm
 
   def serialize(self) -> dict:

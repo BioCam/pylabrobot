@@ -1,5 +1,6 @@
 from typing import Any, Dict, Literal
 
+from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
 
 
@@ -42,6 +43,39 @@ class XArm(Resource):
       model=model,
     )
     self.reference_point = reference_point
+
+  @property
+  def reference_offset(self) -> float:
+    """How far the reference point sits from the arm's left edge, in mm."""
+    return (
+      self.get_absolute_size_x() / 2
+      if self.reference_point == "center"
+      else (self.get_absolute_size_x())
+    )
+
+  @property
+  def reference_x(self) -> float:
+    """Where the reference point sits, in mm, on whatever this arm is assigned to.
+
+    Raises:
+      RuntimeError: If it is not assigned anywhere, so it is nowhere in particular.
+    """
+    if self.location is None:
+      raise RuntimeError(f"{self.name} is not assigned to anything, so it is nowhere")
+    return self.location.x + self.reference_offset
+
+  def seat_reference_at(self, x: float) -> None:
+    """Move along the deck so the reference point sits at `x`, keeping depth and height.
+
+    Args:
+      x: where the reference point should be, in mm, on whatever this arm is assigned to.
+
+    Raises:
+      RuntimeError: If it is not assigned anywhere, so there is nothing to move it along.
+    """
+    if self.location is None:
+      raise RuntimeError(f"{self.name} is not assigned to anything, so it cannot be moved")
+    self.location = Coordinate(x - self.reference_offset, self.location.y, self.location.z)
 
   def serialize(self) -> Dict[str, Any]:
     return {**super().serialize(), "reference_point": self.reference_point}

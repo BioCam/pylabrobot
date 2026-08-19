@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
+from pylabrobot.resources.x_arm import XArm as XArmResource
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -103,6 +104,9 @@ class XArm:
       side: which rail this arm runs on. A STAR always has a left arm; a right arm is an option.
     """
     self._driver = driver
+    # The arm on the deck, when the driver was given one. Setup puts it there; moves keep it in
+    # step. Without a deck it stays None and nothing is modelled.
+    self.resource: Optional[XArmResource] = None
     self.side = side
 
   # -- session / discovery ---------------------------------------------------
@@ -249,13 +253,18 @@ class XArm:
     if not low <= current_limit <= high:
       raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
 
-    return await self._driver.send_command(
+    resp = await self._driver.send_command(
       module="X0",
       command="XP",
       la=f"{c.x_mm_to_increments(x):05}",
       lr=f"{acceleration_level:01}",
       lw=f"{current_limit:01}",
     )
+    # Only once the machine has answered: a move that raised leaves the arm somewhere unknown, and
+    # a resource that says otherwise would be worse than one that is stale.
+    if self.resource is not None:
+      self.resource.seat_reference_at(x)
+    return resp
 
   async def move_x_relative(
     self,

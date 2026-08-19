@@ -423,7 +423,7 @@ class STARDriver:
       if a.width is None:
         logger.warning("the %s X-arm reported no width, so it is not modelled", arm.side)
         continue
-      self.deck.get_or_create_x_arm(
+      arm.resource = self.deck.get_or_create_x_arm(
         name=f"{arm.side}_x_arm",
         x=await arm.request_position(),
         width=a.width,
