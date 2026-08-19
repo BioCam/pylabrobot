@@ -195,18 +195,20 @@ class XArm:
   async def request_position(self) -> float:
     """Request where along its rail the arm is.
 
-    The machine answers with the position twice, in tenths of a millimetre and in motor counts.
-    The first is what this returns.
+    The left arm is read from the X-drive board, which answers with the position twice, in tenths
+    of a millimetre and in motor counts; the first is what this returns. The right arm has no such
+    read of its own and is asked of the master instead.
 
     Returns:
       The position in mm.
 
     Raises:
       ValueError: If the machine answered without a position.
-      NotImplementedError: If this is the right arm.
     """
-    self._require_left()
-    resp = cast(str, await self._driver.send_command(module="X0", command="RX"))
+    if self.side == "left":
+      resp = cast(str, await self._driver.send_command(module="X0", command="RX"))
+    else:
+      resp = cast(str, await self._driver.send_command(module="C0", command="QX"))
     read = resp.split("rx", 1)[-1].strip().strip("'\u201a\u201b").split()
     if not read:
       raise ValueError(f"no position in the reply: {resp!r}")

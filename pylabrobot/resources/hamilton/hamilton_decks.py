@@ -12,11 +12,17 @@ from pylabrobot.resources.hamilton.tip_creators import hamilton_teaching_needle_
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip_rack import TipRack, TipSpot
 from pylabrobot.resources.trash import Trash
+from pylabrobot.resources.x_arm import XArm
 
 logger = logging.getLogger(__name__)
 
 
 _RAILS_WIDTH = 22.5  # space between rails (mm)
+
+# Where a deck-owned X-arm sits and how tall it is (mm). The arm rides at the channel stop-disk
+# safety height, level with the raised stop discs so it clears them as it travels.
+_X_ARM_Z = 334.7
+_X_ARM_SIZE_Z = 140.0
 
 STARLET_NUM_RAILS = 32
 STARLET_SIZE_X = 1005
@@ -73,6 +79,45 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     """
     end_x = carrier.get_location_wrt(self).x + carrier.get_absolute_size_x()
     return rails_for_x_coordinate(end_x) - 1
+
+  def get_or_create_x_arm(
+    self,
+    name: str,
+    x: float,
+    width: float,
+    model: str,
+    reference_point: Literal["center", "right"],
+  ) -> XArm:
+    """Get, or create once, the deck-owned X-arm resource called `name`.
+
+    The deck owns it: created as a child the first time and reused thereafter, so repeated setups
+    do not duplicate it. It is seated so its reference point sits at the arm's current x.
+
+    Args:
+      name: what to call it, e.g. "left_x_arm".
+      x: where the arm is now, in mm, at its reference point.
+      width: how wide the arm is, in mm, as the machine reports it.
+      model: which arm this is.
+      reference_point: where along the width `x` refers to.
+
+    Returns:
+      The arm resource, whether it was just created or already there.
+    """
+    if self.has_resource(name):
+      return cast(XArm, self.get_resource(name))
+    x_arm = XArm(
+      name=name,
+      size_x=width,
+      size_y=self.get_absolute_size_y(),
+      size_z=_X_ARM_SIZE_Z,
+      reference_point=reference_point,
+      model=model,
+    )
+    # Seat the frame so its reference point lands at the arm's current x. The arm sits above the
+    # deck plane, so it does not count as occupying the footprint of the carriers beneath it.
+    reference_offset = width / 2 if reference_point == "center" else width
+    self.assign_child_resource(x_arm, location=Coordinate(x - reference_offset, 0.0, _X_ARM_Z))
+    return x_arm
 
   def serialize(self) -> dict:
     """Serialize this deck."""

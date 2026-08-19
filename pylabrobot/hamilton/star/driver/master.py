@@ -29,6 +29,7 @@ from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.usb import USB
+from pylabrobot.resources.hamilton.hamilton_decks import HamiltonDeck
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +56,7 @@ class STARDriver:
     self,
     device_address: Optional[int] = None,
     serial_number: Optional[str] = None,
+    deck: Optional[HamiltonDeck] = None,
     packet_read_timeout: int = 3,
     write_timeout: int = 30,
     read_timeout: int = 60,
@@ -74,6 +76,8 @@ class STARDriver:
       left_side_panel_installed: if True, restrict PIP channels to x >= 320mm and
         the 96-head to x >= 0mm to prevent collisions with the left side panel.
       io: an already-built USB handle to use instead of opening one from the arguments above.
+      deck: the deck to reflect the machine into. Optional: without one the driver still drives the
+        machine, and nothing about where things are is modelled.
     """
 
     self.io: IOBase = io or USB(
@@ -102,6 +106,10 @@ class STARDriver:
     self._setup_done = False
 
     self.left_side_panel_installed = left_side_panel_installed
+
+    # The deck to reflect the machine into, or None to drive it without a resource model. With one,
+    # setup builds a resource per capability as a child of it; without, nothing is modelled.
+    self.deck = deck
 
     self.configuration: Optional[DeviceConfiguration] = None
 
@@ -152,8 +160,11 @@ class STARDriver:
         bring_up.append(self.autoload.initialize())
       await asyncio.gather(*bring_up)
 
-      # Creating capability resources which are also the capability trackers - IF deck has been given to STARDriver
-
+      # 4. What was found, as resources on the deck - when the driver was given one to reflect
+      #    into. Each is a child of the deck, so a machine with a deck carries one tree.
+      if self.deck is not None:
+        logger.debug("[PHASE 4] Capability resources")
+        await self._create_x_arm_resources()
 
     except BaseException:
       await self.stop()
@@ -395,6 +406,30 @@ class STARDriver:
       # Probing how far this head reaches retracts it, so it doubles as the safety retract and
       # runs on every setup rather than only the first.
       self.head96.resolve_z_range(await self.head96.move_to_z_safety())
+
+  async def _create_x_arm_resources(self) -> None:
+    """Put each installed arm on the deck, where it is.
+
+    Read once, at setup: the arm reports where it came to rest, and its resource is seated there.
+    An arm already on the deck is reused rather than replaced, so repeated setups do not duplicate
+    it.
+    """
+    if self.deck is None:
+      return
+    for arm in (self.left_x_arm, self.right_x_arm):
+      if arm is None:
+        continue
+      a = arm.configuration
+      if a.width is None:
+        logger.warning("the %s X-arm reported no width, so it is not modelled", arm.side)
+        continue
+      self.deck.get_or_create_x_arm(
+        name=f"{arm.side}_x_arm",
+        x=await arm.request_position(),
+        width=a.width,
+        model=a.model,
+        reference_point=a.reference_point,
+      )
 
   async def request_initialization_status(self, module: str = "C0") -> bool:
     """Whether a module reports itself initialized.

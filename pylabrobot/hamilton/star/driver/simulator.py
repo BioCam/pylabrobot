@@ -24,6 +24,7 @@ from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfigurati
 from pylabrobot.hamilton.star.driver.master import STARDriver
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
+from pylabrobot.resources.hamilton.hamilton_decks import HamiltonDeck
 
 logger = logging.getLogger(__name__)
 
@@ -169,11 +170,22 @@ class SimulatedPipettes(_Simulated, Pipettes):
     self.machine.tips_mounted = [False] * len(self.machine.tips_mounted)
 
 
+# Where the left arm reports itself at rest, in mm: far enough along the rail to sit within reach
+# of any STAR deck. The right arm rests at the far end of its own travel instead, so the two do
+# not overlap on a machine that has both.
+SIMULATED_LEFT_X_ARM_POSITION = 362.9
+
+
 class SimulatedXArm(_Simulated, XArm):
   """An X-arm, answering for itself."""
 
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
     return self.machine.reported("x_arm")
+
+  async def request_position(self) -> float:
+    if self.side == "left" or self.configuration.x_range is None:
+      return SIMULATED_LEFT_X_ARM_POSITION
+    return self.configuration.x_range[1]
 
 
 class SimulatedHead96(_Simulated, Head96):
@@ -310,6 +322,7 @@ class STARSimulationDriver(STARDriver):
     tips_mounted: Optional[List[bool]] = None,
     firmware: Optional[Dict[str, str]] = None,
     autoload: Optional[AutoloadConfiguration] = None,
+    deck: Optional[HamiltonDeck] = None,
     serial_number: str = SIMULATED_SERIAL_NUMBER,
     initialized: bool = False,
   ):
@@ -323,6 +336,7 @@ class STARSimulationDriver(STARDriver):
       autoload: the autoload this machine has, which it answers about itself. Defaults to
         `SIMULATED_AUTOLOAD`. The capability's own configuration is filled by discovery, as on a
         real machine, so this is what it reads rather than what it becomes.
+      deck: the deck to reflect this machine into, as on a real one.
       serial_number: what this machine calls itself.
       initialized: whether the machine and its modules report themselves already initialized. One
         that has just been switched on does not.
@@ -330,7 +344,7 @@ class STARSimulationDriver(STARDriver):
     Raises:
       ValueError: If `tips_mounted` does not have one entry per channel.
     """
-    super().__init__(io=_UnusedTransport())
+    super().__init__(io=_UnusedTransport(), deck=deck)
 
     self.simulated_configuration = configuration or DEFAULT_STAR_CONFIGURATION
     self.simulated_firmware = firmware or dict(SIMULATED_FIRMWARE)
