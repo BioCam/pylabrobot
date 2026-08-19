@@ -137,9 +137,9 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     Z_GRAB_LIMIT = 285
 
     def check_z_height(resource: Resource):
-      # The X-arm belongs up there: it rides above the deck by design, and nothing traverses or
-      # grabs it, so the warnings below say nothing about it.
-      if resource.category == "x_arm":
+      # What the machine carries belongs up there: it rides above the deck by design, and nothing
+      # traverses or grabs it, so the warnings below say nothing about it.
+      if resource.category in ("x_arm", "head96"):
         return
 
       try:

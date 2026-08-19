@@ -23,7 +23,7 @@ from pylabrobot.hamilton.star.driver.errors import (
 )
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.cover import FrontCover
-from pylabrobot.hamilton.star.driver.features.head96 import Head96
+from pylabrobot.hamilton.star.driver.features.head96 import Head96, get_or_create_head96
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
@@ -164,7 +164,7 @@ class STARDriver:
       #    into. Each is a child of the deck, so a machine with a deck carries one tree.
       if self.deck is not None:
         logger.debug("[PHASE 4] Capability resources")
-        await self._create_x_arm_resources()
+        await self._create_capability_resources()
 
     except BaseException:
       await self.stop()
@@ -407,12 +407,12 @@ class STARDriver:
       # runs on every setup rather than only the first.
       self.head96.resolve_z_range(await self.head96.move_to_z_safety())
 
-  async def _create_x_arm_resources(self) -> None:
-    """Put each installed arm on the deck, where it is.
+  async def _create_capability_resources(self) -> None:
+    """Put what the machine carries on the deck, where it is.
 
-    Read once, at setup: the arm reports where it came to rest, and its resource is seated there.
-    An arm already on the deck is reused rather than replaced, so repeated setups do not duplicate
-    it.
+    Read once, at setup: each capability reports where it came to rest and its resource is placed
+    there. One already on the deck is reused rather than replaced, so repeated setups do not
+    duplicate it.
     """
     if self.deck is None:
       return
@@ -430,6 +430,26 @@ class STARDriver:
         model=a.model,
         reference_anchor=arm.reference_anchor,
       )
+    await self._create_head96_resource()
+
+  async def _create_head96_resource(self) -> None:
+    """Put the 96-head on the arm it rides, where it is along Y.
+
+    A child of the arm's resource rather than of the deck, so it follows the arm in X without
+    anything having to keep the two in step. Skipped while the head reports itself uninitialized,
+    since it has no position to report until it has been homed.
+    """
+    if self.head96 is None or self.deck is None:
+      return
+    arm = next((a for a in (self.left_x_arm, self.right_x_arm) if a is not None), None)
+    if arm is None or arm.resource is None:
+      return
+    if not await self.request_initialization_status("H0"):
+      logger.debug("the 96-head is not initialized, so where it is is unknown - not modelled")
+      return
+    y = await self.head96.request_y_position()
+    self.head96.resource = get_or_create_head96(arm.resource, self.head96.configuration.x_offset)
+    self.head96.update_location_by_reference_point(y)
 
   async def request_initialization_status(self, module: str = "C0") -> bool:
     """Whether a module reports itself initialized.

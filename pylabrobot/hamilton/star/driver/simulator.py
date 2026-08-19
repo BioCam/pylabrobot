@@ -20,7 +20,11 @@ from pylabrobot.hamilton.protocol.text.framing import (
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
 from pylabrobot.hamilton.star.driver.features.cover import CoverPosition, FrontCover
-from pylabrobot.hamilton.star.driver.features.head96 import Head96, HeadType
+from pylabrobot.hamilton.star.driver.features.head96 import (
+  HEAD96_REFERENCE_ANCHOR,
+  Head96,
+  HeadType,
+)
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import PipetteConfiguration, Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
@@ -225,6 +229,14 @@ class SimulatedHead96(_Simulated, Head96):
   async def initialize(self, *args, **kwargs):
     """Whatever was mounted on the head comes off, and it reports itself up."""
     self.machine.initialized["H0"] = True
+
+  async def request_y_position(self) -> float:
+    # From the model where there is one, as the real read reports the drive. Before setup has put
+    # the head on the arm there is nothing to read, and it answers from the middle of its travel.
+    if self.resource is not None and self.resource.location is not None:
+      return self.resource.location.y + self.resource.get_anchor(y=HEAD96_REFERENCE_ANCHOR).y
+    low, high = self.configuration.y_range
+    return (low + high) / 2
 
 
 class SimulatedISWAP(_Simulated, iSWAP):

@@ -6,6 +6,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
+from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.resource import Resource
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -29,6 +31,18 @@ RESOLUTIONS_FIRST_YEAR = 2010
 
 # The retract drives the head to its Z-safety height, which takes a while.
 RETRACT_READ_TIMEOUT = 20
+
+# The head's channels sit on a 9 mm grid, 12 across and 8 deep, so the array they cover is this
+# wide and this deep. The body around them is larger, and how much is not read from anywhere.
+CHANNEL_PITCH = 9.0
+HEAD96_SIZE_X = 11 * CHANNEL_PITCH
+HEAD96_SIZE_Y = 7 * CHANNEL_PITCH
+# How tall to draw it. Not sourced: the head's own extent is not something the machine reports.
+HEAD96_SIZE_Z = 140.0
+# Channel A1 sits at the back left of the array, so the drive's Y is the resource's back edge.
+HEAD96_REFERENCE_ANCHOR = "b"
+# What the head is called on the arm that carries it.
+HEAD96_NAME = "head96"
 
 # How long a Y move may take before the reply is given up on, in seconds. The drive crosses its
 # whole travel in a few seconds at the slowest acceleration the firmware accepts.
@@ -209,6 +223,43 @@ class Head96Configuration:
     return self.squeezer_drive_increments_to_mm(increments)
 
 
+def get_or_create_head96(arm: Resource, x_offset: Optional[float]) -> Resource:
+  """Get, or create once, the 96-head resource on the arm that carries it.
+
+  The head is a child of the arm, so it follows it along the rail. Where it sits across the arm is
+  fixed: the machine reports how far channel A1 is from the carriage centre.
+
+  Args:
+    arm: the resource modelling the arm this head rides.
+    x_offset: how far channel A1 sits from the carriage centre, in mm, as the machine reports it.
+
+  Returns:
+    The head resource, whether it was just created or already there.
+
+  Raises:
+    RuntimeError: If the offset was not read, so where the head sits across the arm is unknown.
+  """
+  existing = next((child for child in arm.children if child.name == HEAD96_NAME), None)
+  if existing is not None:
+    return existing
+  if x_offset is None:
+    raise RuntimeError("the 96-head's X offset was not read; have you called `star.setup()`?")
+  head = Resource(
+    name=HEAD96_NAME,
+    size_x=HEAD96_SIZE_X,
+    size_y=HEAD96_SIZE_Y,
+    size_z=HEAD96_SIZE_Z,
+    category="head96",
+    model="hamilton_star_core_96_head",
+  )
+  # Channel A1 sits `x_offset` left of the carriage centre, and the arm is located by its own left
+  # edge, so A1 lands that far left of the arm's centre. Y is set from the drive once it is read.
+  arm.assign_child_resource(
+    head, location=Coordinate(arm.get_absolute_size_x() / 2 - x_offset, 0.0, 0.0)
+  )
+  return head
+
+
 class Head96:
   """The 96-head.
 
@@ -223,6 +274,9 @@ class Head96:
       configuration: the head's device facts. Defaults to `Head96Configuration()`.
     """
     self._driver = driver
+    # The head on the deck, when the driver was given one. Setup puts it there, as a child of the
+    # arm it rides; moves keep it in step. Without a deck it stays None and nothing is modelled.
+    self.resource: Optional[Resource] = None
     self.configuration = configuration or Head96Configuration()
 
   # -- session / discovery ---------------------------------------------------
@@ -329,6 +383,21 @@ class Head96:
 
   # -- y position ------------------------------------------------------------
 
+  async def request_y_position(self) -> float:
+    """Request where along Y the head is.
+
+    The drive answers with two counters, the firmware's and the hardware's; the hardware's is what
+    this returns, as the Z read does.
+
+    Returns:
+      The position in mm.
+    """
+    resp = await self._driver.send_command(module="H0", command="RY", fmt="ry##### (n)")
+    increments = cast(List[int], resp["ry"])[1]
+    y = self.configuration.y_drive_increments_to_mm(increments)
+    self.update_location_by_reference_point(y=y)
+    return y
+
   async def set_drive_parameter(self, parameter: str, value: float) -> None:
     """Write one of the head's stored drive parameters.
 
@@ -351,6 +420,24 @@ class Head96:
       )
     written: Dict[str, Any] = {parameter: f"{to_increments[parameter](value):05}"}
     await self._driver.send_command(module="H0", command="AA", **written)
+
+  def update_location_by_reference_point(self, y: float) -> None:
+    """Record where the head is on the resource that models it.
+
+    Only Y: the head rides the arm, so its resource is a child of the arm's and follows it in X.
+    The drive positions the head by channel A1, while a resource is located by its left front
+    bottom corner, so the two differ by the head's own anchor. Does nothing when the driver was
+    given no deck, and so has nothing to model.
+
+    Args:
+      y: where channel A1 is now, in mm.
+    """
+    if self.resource is None or self.resource.location is None:
+      return
+    anchor = self.resource.get_anchor(y=HEAD96_REFERENCE_ANCHOR)
+    self.resource.location = Coordinate(
+      self.resource.location.x, y - anchor.y, self.resource.location.z
+    )
 
   async def move_y(
     self,
@@ -406,6 +493,9 @@ class Head96:
         read_timeout=Y_MOVE_READ_TIMEOUT,
       )
     finally:
+      # Where it was told to go, then where the drive says it went.
+      self.update_location_by_reference_point(y)
+      await self.request_y_position()
       if c.y_drive_mm_to_increments(speed) != c.y_drive_mm_to_increments(was_speed):
         await self.set_drive_parameter("yv", was_speed)
       if c.y_drive_mm_to_increments(acceleration) != c.y_drive_mm_to_increments(was_acceleration):
