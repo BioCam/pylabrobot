@@ -1,0 +1,1313 @@
+{
+  "C0": {
+    "RE": {
+      "description": "Request error code",
+      "parameters": {}
+    },
+    "RF": {
+      "description": "Request firmware version",
+      "parameters": {}
+    },
+    "RA": {
+      "description": "Request parameter value",
+      "parameters": {}
+    },
+    "QB": {
+      "description": "Request electronic board type",
+      "parameters": {}
+    },
+    "QW": {
+      "description": "Request instrument initialization status",
+      "parameters": {}
+    },
+    "VP": {
+      "description": "Request name of last faulty parameter",
+      "parameters": {}
+    },
+    "RQ": {
+      "description": "Request master status (compatible with Slaves)",
+      "parameters": {}
+    },
+    "SR": {
+      "description": "Request number of presence sensors installed",
+      "parameters": {}
+    },
+    "WL": {
+      "description": "Request instrument logo light",
+      "parameters": {}
+    },
+    "WJ": {
+      "description": "Request instrument interior light",
+      "parameters": {}
+    },
+    "QV": {
+      "description": "Request EEPROM data correctness",
+      "parameters": {}
+    },
+    "QT": {
+      "description": "Request Technical status of assemblies",
+      "parameters": {}
+    },
+    "RI": {
+      "description": "Request installation data",
+      "parameters": {}
+    },
+    "RO": {
+      "description": "Request download date",
+      "parameters": {}
+    },
+    "RV": {
+      "description": "Request verification data",
+      "parameters": {
+        "vo": "0"
+      }
+    },
+    "RS": {
+      "description": "Request additional time stamp data",
+      "parameters": {}
+    },
+    "RJ": {
+      "description": "Request PIP channel validation status",
+      "parameters": {}
+    },
+    "UJ": {
+      "description": "Request XL channel validation status",
+      "parameters": {}
+    },
+    "RM": {
+      "description": "Request machine configuration",
+      "parameters": {}
+    },
+    "QM": {
+      "description": "Request extended configuration",
+      "parameters": {}
+    },
+    "RK": {
+      "description": "Request node names",
+      "parameters": {}
+    },
+    "VD": {
+      "description": "Request deck data",
+      "parameters": {
+        "vi": "0"
+      }
+    },
+    "RX": {
+      "description": "Request left X-Arm position",
+      "parameters": {}
+    },
+    "QX": {
+      "description": "Request right X-Arm position",
+      "parameters": {}
+    },
+    "RU": {
+      "description": "Request maximal ranges of X drives",
+      "parameters": {}
+    },
+    "UA": {
+      "description": "Request present wrap size of installed arms",
+      "parameters": {}
+    },
+    "XX": {
+      "description": "Request left X-Arm last collision type (after error 27)",
+      "parameters": {}
+    },
+    "XR": {
+      "description": "Request right X-Arm last collision type (after error 27)",
+      "parameters": {}
+    },
+    "ZB": {
+      "description": "Read barcode using CoRe gripper",
+      "parameters": {
+        "cp": "1",
+        "zb": "2190",
+        "zy": "1287",
+        "th": "3600"
+      }
+    },
+    "RY": {
+      "description": "Request Y-Positions of all pipetting channels",
+      "parameters": {}
+    },
+    "RB": {
+      "description": "Request Y-Position of Pipetting channel n",
+      "parameters": {
+        "pn": "1"
+      }
+    },
+    "RZ": {
+      "description": "Request Z-Positions of all pipetting channels",
+      "parameters": {}
+    },
+    "RD": {
+      "description": "Request Z-Positions of Pipetting channel n",
+      "parameters": {
+        "pn": "1"
+      }
+    },
+    "RT": {
+      "description": "Query Tip presence",
+      "parameters": {}
+    },
+    "RL": {
+      "description": "Request PIP height of last LLD",
+      "parameters": {}
+    },
+    "QS": {
+      "description": "Request TADM Status",
+      "parameters": {}
+    },
+    "FS": {
+      "description": "Request PIP channel dispense on fly status",
+      "parameters": {
+        "pn": "1"
+      }
+    },
+    "VE": {
+      "description": "Request PIP channel 2nd section aspiration data",
+      "parameters": {}
+    },
+    "LG": {
+      "description": "Read barcode using XL CoRe gripper",
+      "parameters": {
+        "cp": "1",
+        "zb": "2190",
+        "dq": "1287",
+        "th": "3600"
+      }
+    },
+    "UY": {
+      "description": "Request Y-Positions of all XL channels",
+      "parameters": {}
+    },
+    "UB": {
+      "description": "Request Y-Position of XL channel n",
+      "parameters": {
+        "pm": "1"
+      }
+    },
+    "UZ": {
+      "description": "Request Z-Positions of all XL channels",
+      "parameters": {}
+    },
+    "UD": {
+      "description": "Request Z-Positions of XL channel n",
+      "parameters": {
+        "pm": "1"
+      }
+    },
+    "UT": {
+      "description": "Query Tip presence",
+      "parameters": {}
+    },
+    "UL": {
+      "description": "Request XL channel height of last LLD",
+      "parameters": {}
+    },
+    "US": {
+      "description": "Request XL channel TADM Status",
+      "parameters": {}
+    },
+    "UF": {
+      "description": "Request XL channel dispense on fly status",
+      "parameters": {
+        "pm": "1"
+      }
+    },
+    "FW": {
+      "description": "Read barcode using Tube gripper",
+      "parameters": {
+        "cp": "1",
+        "zj": "2190",
+        "th": "3600"
+      }
+    },
+    "FQ": {
+      "description": "Request vessel presence on Tube gripper",
+      "parameters": {}
+    },
+    "FN": {
+      "description": "Request Tube gripper position",
+      "parameters": {}
+    },
+    "IN": {
+      "description": "Request imaging channel position",
+      "parameters": {}
+    },
+    "OA": {
+      "description": "Request Y-Positions of all robotic channels",
+      "parameters": {}
+    },
+    "OB": {
+      "description": "Request Y-Position of robotic channel n",
+      "parameters": {
+        "om": "1"
+      }
+    },
+    "OC": {
+      "description": "Request Z-Positions of all robotic channels",
+      "parameters": {}
+    },
+    "OD": {
+      "description": "Request Z-Positions of robotic channel n",
+      "parameters": {
+        "om": "1"
+      }
+    },
+    "OT": {
+      "description": "Request presence sensor status of robotic channels",
+      "parameters": {}
+    },
+    "QH": {
+      "description": "Request Tip presence in CoRe 96 Head",
+      "parameters": {}
+    },
+    "QI": {
+      "description": "Request position of CoRe 96 Head (A1 considered to tip length)",
+      "parameters": {}
+    },
+    "VC": {
+      "description": "Request CoRe 96 Head channel TADM Status",
+      "parameters": {}
+    },
+    "VB": {
+      "description": "Request CoRe 96 Head channel TADM error status",
+      "parameters": {}
+    },
+    "QK": {
+      "description": "Request Tip presence in 384 Head",
+      "parameters": {}
+    },
+    "QJ": {
+      "description": "Request position of 384 Head (A1 considered to tip length)",
+      "parameters": {}
+    },
+    "QY": {
+      "description": "Request type of 384 Head",
+      "parameters": {}
+    },
+    "CT": {
+      "description": "Check presence of single carrier",
+      "parameters": {
+        "cp": "1"
+      }
+    },
+    "CS": {
+      "description": "Check for presence of carriers on loading tray",
+      "parameters": {}
+    },
+    "RC": {
+      "description": "Query Presence of carrier on deck",
+      "parameters": {}
+    },
+    "QA": {
+      "description": "Request auto load slot position",
+      "parameters": {}
+    },
+    "CQ": {
+      "description": "Request auto load module type",
+      "parameters": {}
+    },
+    "QF": {
+      "description": "Request fluid status of washer n (G3/CR Wash station)",
+      "parameters": {
+        "wn": "1"
+      }
+    },
+    "ET": {
+      "description": "Request pump settings",
+      "parameters": {
+        "ep": "1"
+      }
+    },
+    "EC": {
+      "description": "Check circulation (single chamber only)",
+      "parameters": {
+        "ep": "1"
+      }
+    },
+    "QE": {
+      "description": "Request single chamber pump station prime status",
+      "parameters": {
+        "ep": "1"
+      }
+    },
+    "QD": {
+      "description": "Request dual chamber pump station prime status",
+      "parameters": {
+        "ep": "1"
+      }
+    },
+    "RP": {
+      "description": "Request incubator temperature",
+      "parameters": {
+        "tc": "1"
+      }
+    },
+    "PB": {
+      "description": "Read barcode using iSWAP",
+      "parameters": {
+        "cp": "1",
+        "zb": "2190",
+        "yr": "200",
+        "th": "3600",
+        "ga": "1"
+      }
+    },
+    "RG": {
+      "description": "Request iSWAP in parking position",
+      "parameters": {}
+    },
+    "QP": {
+      "description": "Request plate in iSWAP",
+      "parameters": {}
+    },
+    "QG": {
+      "description": "Request iSWAP position ( grip center )",
+      "parameters": {}
+    },
+    "RW": {
+      "description": "Query input Status",
+      "parameters": {}
+    },
+    "QC": {
+      "description": "Request cover position",
+      "parameters": {}
+    }
+  },
+  "X0": {
+    "QX": {
+      "description": "Check drive positioning",
+      "parameters": {}
+    },
+    "QS": {
+      "description": "Check drive positioning",
+      "parameters": {}
+    },
+    "RA": {
+      "description": "Request parameter value",
+      "parameters": {}
+    },
+    "RQ": {
+      "description": "Request module status",
+      "parameters": {}
+    },
+    "QV": {
+      "description": "Request EEPROM data correctness",
+      "parameters": {}
+    },
+    "RE": {
+      "description": "Request last error code",
+      "parameters": {}
+    },
+    "RF": {
+      "description": "Request firmware version",
+      "parameters": {}
+    },
+    "RW": {
+      "description": "Request sensor states",
+      "parameters": {}
+    },
+    "RU": {
+      "description": "Request voltage",
+      "parameters": {}
+    },
+    "RK": {
+      "description": "Request adjustment values and control parameters",
+      "parameters": {}
+    },
+    "VP": {
+      "description": "Request last faulty parameter name",
+      "parameters": {}
+    },
+    "QW": {
+      "description": "Request initialization status",
+      "parameters": {
+        "mn": "1"
+      }
+    },
+    "RV": {
+      "description": "Request     cycle counter",
+      "parameters": {}
+    },
+    "QT": {
+      "description": "Request technical status",
+      "parameters": {}
+    },
+    "RJ": {
+      "description": "Request adjustment date and status",
+      "parameters": {}
+    },
+    "RO": {
+      "description": "Request download date",
+      "parameters": {}
+    },
+    "XK": {
+      "description": "Request CAN node name",
+      "parameters": {}
+    },
+    "VV": {
+      "description": "Request firmware name",
+      "parameters": {}
+    },
+    "QU": {
+      "description": "Request configuration of X0 module",
+      "parameters": {}
+    },
+    "VR": {
+      "description": "Request electronic board revision",
+      "parameters": {}
+    },
+    "RX": {
+      "description": "Request absolute position of X drive 1",
+      "parameters": {}
+    },
+    "RS": {
+      "description": "Request absolute position of X drive 2",
+      "parameters": {}
+    },
+    "RD": {
+      "description": "Request control data for X drive 1",
+      "parameters": {
+        "ds": "0000",
+        "dn": "01"
+      }
+    },
+    "RM": {
+      "description": "Request control data for X drive 2",
+      "parameters": {
+        "ds": "0000",
+        "dn": "01"
+      }
+    },
+    "RB": {
+      "description": "Request drives status",
+      "parameters": {}
+    },
+    "RT": {
+      "description": "Request maximum duration of an drive interrupt",
+      "parameters": {}
+    },
+    "QG": {
+      "description": "Request dispense on fly input status",
+      "parameters": {}
+    },
+    "RI": {
+      "description": "Request input port status",
+      "parameters": {}
+    }
+  },
+  "H0": {
+    "RA": {
+      "description": "Request parameter value",
+      "parameters": {}
+    },
+    "RQ": {
+      "description": "Request module status",
+      "parameters": {}
+    },
+    "QV": {
+      "description": "Request EEPROM data correctness",
+      "parameters": {}
+    },
+    "RE": {
+      "description": "Request last error code",
+      "parameters": {}
+    },
+    "RF": {
+      "description": "Request firmware version",
+      "parameters": {}
+    },
+    "RW": {
+      "description": "Request sensor states",
+      "parameters": {}
+    },
+    "RU": {
+      "description": "Request voltage",
+      "parameters": {}
+    },
+    "RK": {
+      "description": "Request adjustment values",
+      "parameters": {}
+    },
+    "VP": {
+      "description": "Request last faulty parameter name",
+      "parameters": {}
+    },
+    "QW": {
+      "description": "Request initialization status",
+      "parameters": {}
+    },
+    "RV": {
+      "description": "Request cycle counter",
+      "parameters": {}
+    },
+    "QT": {
+      "description": "Request technical status",
+      "parameters": {}
+    },
+    "RJ": {
+      "description": "Request adjustment date",
+      "parameters": {}
+    },
+    "RO": {
+      "description": "Request   download date",
+      "parameters": {}
+    },
+    "XK": {
+      "description": "Request CAN node name",
+      "parameters": {}
+    },
+    "VV": {
+      "description": "Request firmware name",
+      "parameters": {}
+    },
+    "QU": {
+      "description": "Request configuration of 96 Head II / TADM module",
+      "parameters": {}
+    },
+    "QG": {
+      "description": "Request 96 Head type",
+      "parameters": {}
+    },
+    "VR": {
+      "description": "Request electronic board revision",
+      "parameters": {}
+    },
+    "VW": {
+      "description": "Request installed hardware",
+      "parameters": {}
+    },
+    "RY": {
+      "description": "Request absolute position of y drive",
+      "parameters": {}
+    },
+    "RZ": {
+      "description": "Request absolute position of z drive",
+      "parameters": {}
+    },
+    "RD": {
+      "description": "Request absolute position of dispensing drive",
+      "parameters": {}
+    },
+    "RS": {
+      "description": "Request absolute position of squeezer drive",
+      "parameters": {}
+    },
+    "QL": {
+      "description": "Read debug buffer DCM drives",
+      "parameters": {
+        "lj": "0000",
+        "ln": "01"
+      }
+    },
+    "RT": {
+      "description": "Request tip state",
+      "parameters": {}
+    },
+    "QC": {
+      "description": "Request monitoring of volume in tip",
+      "parameters": {}
+    },
+    "RH": {
+      "description": "Request position of liquid surface found",
+      "parameters": {}
+    },
+    "RB": {
+      "description": "Request LLD parameters used",
+      "parameters": {
+        "lc": "0"
+      }
+    },
+    "RL": {
+      "description": "Read debug buffer LLD data",
+      "parameters": {
+        "lc": "0",
+        "li": "0000",
+        "ln": "01"
+      }
+    },
+    "RN": {
+      "description": "Request status of edge detection of capacitive LLD sensors",
+      "parameters": {}
+    },
+    "RG": {
+      "description": "Request max. LLD difference signal",
+      "parameters": {
+        "lc": "0"
+      }
+    },
+    "QX": {
+      "description": "Request digital potentiometer value",
+      "parameters": {}
+    },
+    "VF": {
+      "description": "Request measured LLD signal frequency",
+      "parameters": {}
+    },
+    "QM": {
+      "description": "Request data in the TADM FIFO",
+      "parameters": {
+        "ch": "01"
+      }
+    },
+    "QY": {
+      "description": "Request parameter of TADM measurement",
+      "parameters": {
+        "ch": "01"
+      }
+    },
+    "QN": {
+      "description": "Request data of TADM measurement",
+      "parameters": {
+        "ch": "01",
+        "li": "0000",
+        "ln": "01"
+      }
+    },
+    "VX": {
+      "description": "Request last measured TADM data average",
+      "parameters": {
+        "ch": "01",
+        "lx": "01"
+      }
+    },
+    "QZ": {
+      "description": "Request error of the TADM measurement",
+      "parameters": {
+        "ch": "01"
+      }
+    },
+    "QA": {
+      "description": "Request channels with TADM error",
+      "parameters": {}
+    },
+    "QO": {
+      "description": "Request number of stored limit curves",
+      "parameters": {}
+    },
+    "QP": {
+      "description": "Request names of stored limit curves",
+      "parameters": {
+        "lk": "000",
+        "lo": "01"
+      }
+    },
+    "QQ": {
+      "description": "Request parameter of stored limit curves",
+      "parameters": {}
+    },
+    "QR": {
+      "description": "Request data of stored limit curves",
+      "parameters": {
+        "ga": "0",
+        "ll": "0000",
+        "lp": "01"
+      }
+    },
+    "RP": {
+      "description": "Request measured pressure",
+      "parameters": {
+        "ch": "01"
+      }
+    },
+    "RR": {
+      "description": "Request measured pressure sensor AD value",
+      "parameters": {
+        "ch": "01"
+      }
+    },
+    "QJ": {
+      "description": "Request pressure sensor adjustment basic value",
+      "parameters": {
+        "ch": "01"
+      }
+    },
+    "QK": {
+      "description": "Request calculate pressure parameters",
+      "parameters": {
+        "ch": "01"
+      }
+    },
+    "QF": {
+      "description": "Request measured pressure for several channels",
+      "parameters": {
+        "ch": "01",
+        "cn": "01"
+      }
+    }
+  },
+  "R0": {
+    "RA": {
+      "description": "Request parameter value",
+      "parameters": {}
+    },
+    "RQ": {
+      "description": "Request module status",
+      "parameters": {}
+    },
+    "RE": {
+      "description": "Request last error code",
+      "parameters": {}
+    },
+    "RF": {
+      "description": "Request firmware version",
+      "parameters": {}
+    },
+    "RC": {
+      "description": "Request Firmware / Hardware Revision",
+      "parameters": {}
+    },
+    "GQ": {
+      "description": "Request gripping status",
+      "parameters": {}
+    },
+    "RS": {
+      "description": "Request init.-sensor status",
+      "parameters": {}
+    },
+    "QW": {
+      "description": "Request initialization status",
+      "parameters": {}
+    },
+    "RD": {
+      "description": "Request if iSWAP is in the right parking position",
+      "parameters": {}
+    },
+    "RM": {
+      "description": "Request ADC values",
+      "parameters": {
+        "mi": "3",
+        "fi": "1"
+      }
+    },
+    "RU": {
+      "description": "Request voltage",
+      "parameters": {}
+    },
+    "RV": {
+      "description": "Request cycle counter",
+      "parameters": {}
+    },
+    "QT": {
+      "description": "Request technical status",
+      "parameters": {}
+    },
+    "RJ": {
+      "description": "Request adjustment date",
+      "parameters": {}
+    },
+    "RO": {
+      "description": "Request download date",
+      "parameters": {}
+    },
+    "RY": {
+      "description": "Request absolute position of y-drive",
+      "parameters": {}
+    },
+    "RZ": {
+      "description": "Request absolute position of z-drive",
+      "parameters": {}
+    },
+    "QZ": {
+      "description": "Request absolute position of z-drive \u2013 jz(pd)",
+      "parameters": {}
+    },
+    "RW": {
+      "description": "Request absolute position of rotation drive",
+      "parameters": {}
+    },
+    "RT": {
+      "description": "Request absolute position of wrist twist drive",
+      "parameters": {}
+    },
+    "RP": {
+      "description": "Request actual logical positions",
+      "parameters": {}
+    },
+    "QP": {
+      "description": "Request theoretical logical positions",
+      "parameters": {}
+    },
+    "RG": {
+      "description": "Request absolute position of gripper drive",
+      "parameters": {}
+    },
+    "RH": {
+      "description": "Request gripper current and force sensor",
+      "parameters": {}
+    },
+    "VP": {
+      "description": "Request last faulty parameter name",
+      "parameters": {}
+    },
+    "RK": {
+      "description": "Request adjustment values",
+      "parameters": {}
+    },
+    "QV": {
+      "description": "Request EEPROM data correctness",
+      "parameters": {}
+    },
+    "QY": {
+      "description": "Request digital potentiometer data",
+      "parameters": {}
+    },
+    "QS": {
+      "description": "Request system and context Heap",
+      "parameters": {}
+    },
+    "RL": {
+      "description": "Read debug buffer",
+      "parameters": {
+        "lj": "0000",
+        "lm": "01"
+      }
+    },
+    "QM": {
+      "description": "Request last trapezoidal motion values of DC motors",
+      "parameters": {
+        "sm": "0"
+      }
+    },
+    "QN": {
+      "description": "Request controller values of DC motors",
+      "parameters": {
+        "sm": "0"
+      }
+    }
+  },
+  "I0": {
+    "RA": {
+      "description": "Request parameter value",
+      "parameters": {}
+    },
+    "RQ": {
+      "description": "Request instrument status",
+      "parameters": {}
+    },
+    "QV": {
+      "description": "Request EEPROM data correctness",
+      "parameters": {}
+    },
+    "RE": {
+      "description": "Request error number",
+      "parameters": {}
+    },
+    "RF": {
+      "description": "Request firmware version",
+      "parameters": {}
+    },
+    "RW": {
+      "description": "Request Sensor status Binary",
+      "parameters": {}
+    },
+    "RU": {
+      "description": "Request voltage supply",
+      "parameters": {}
+    },
+    "RK": {
+      "description": "Request all adjustment values",
+      "parameters": {}
+    },
+    "VP": {
+      "description": "Request last faulty parameter name",
+      "parameters": {}
+    },
+    "QW": {
+      "description": "Request initialize status",
+      "parameters": {}
+    },
+    "QS": {
+      "description": "Request system and context heap",
+      "parameters": {}
+    },
+    "RV": {
+      "description": "Request cycle counter",
+      "parameters": {}
+    },
+    "QT": {
+      "description": "Request technical status",
+      "parameters": {}
+    },
+    "RJ": {
+      "description": "Request adjustment date and status",
+      "parameters": {}
+    },
+    "RO": {
+      "description": "Request download date",
+      "parameters": {}
+    },
+    "RX": {
+      "description": "Request absolute position scanner X-drive",
+      "parameters": {}
+    },
+    "RY": {
+      "description": "Request absolute position carrier Y-drive",
+      "parameters": {}
+    },
+    "RZ": {
+      "description": "Request absolute position carrier Z-drive",
+      "parameters": {}
+    },
+    "RS": {
+      "description": "Request position of scanner rotation drive",
+      "parameters": {}
+    },
+    "QX": {
+      "description": "Request scanner x-drive parameter",
+      "parameters": {}
+    },
+    "RB": {
+      "description": "Request barcode data (already read)",
+      "parameters": {}
+    },
+    "RG": {
+      "description": "Request barcode options",
+      "parameters": {}
+    },
+    "RC": {
+      "description": "Request free definable carrier data",
+      "parameters": {}
+    },
+    "RD": {
+      "description": "Request cup presence detection data",
+      "parameters": {}
+    }
+  },
+  "PX": {
+    "RA": {
+      "description": "Request parameter value",
+      "parameters": {}
+    },
+    "RQ": {
+      "description": "Request Instrument status",
+      "parameters": {}
+    },
+    "QV": {
+      "description": "Request EEPROM data correctness",
+      "parameters": {}
+    },
+    "RE": {
+      "description": "Request error numbers",
+      "parameters": {}
+    },
+    "RF": {
+      "description": "Request firmware version",
+      "parameters": {}
+    },
+    "RW": {
+      "description": "Request sensor status binary",
+      "parameters": {}
+    },
+    "RU": {
+      "description": "Request voltages",
+      "parameters": {}
+    },
+    "RK": {
+      "description": "Request adjustment values",
+      "parameters": {}
+    },
+    "VP": {
+      "description": "Request last faulty parameter name",
+      "parameters": {}
+    },
+    "QW": {
+      "description": "Request initialize status",
+      "parameters": {}
+    },
+    "QS": {
+      "description": "Request system and context Heap",
+      "parameters": {}
+    },
+    "RV": {
+      "description": "Request cycle counter",
+      "parameters": {}
+    },
+    "QT": {
+      "description": "Request technical status",
+      "parameters": {}
+    },
+    "RJ": {
+      "description": "Request adjustment date and status",
+      "parameters": {}
+    },
+    "RO": {
+      "description": "Request download date",
+      "parameters": {}
+    },
+    "QG": {
+      "description": "Request pipetting channel type",
+      "parameters": {}
+    },
+    "RM": {
+      "description": "Request pipetting channel temperature",
+      "parameters": {}
+    },
+    "QX": {
+      "description": "Request extended adjustment values",
+      "parameters": {}
+    },
+    "VW": {
+      "description": "Request installed hardware",
+      "parameters": {}
+    },
+    "RT": {
+      "description": "Request tip presence",
+      "parameters": {}
+    },
+    "RG": {
+      "description": "Request tip pick-up height",
+      "parameters": {}
+    },
+    "QC": {
+      "description": "Request monitoring of volume in tip",
+      "parameters": {}
+    },
+    "VE": {
+      "description": "Request tip discard retries",
+      "parameters": {}
+    },
+    "VQ": {
+      "description": "Request last O-Ring squeeze position",
+      "parameters": {}
+    },
+    "VZ": {
+      "description": "Request tip pick-up counters",
+      "parameters": {}
+    },
+    "RY": {
+      "description": "Request absolute position Y-drive",
+      "parameters": {}
+    },
+    "RZ": {
+      "description": "Request absolute position Z-drive",
+      "parameters": {}
+    },
+    "RD": {
+      "description": "Request absolute position dispensing drive",
+      "parameters": {}
+    },
+    "RS": {
+      "description": "Request absolute position squezzer drive",
+      "parameters": {}
+    },
+    "RC": {
+      "description": "Request control data for dispensing drive",
+      "parameters": {
+        "lj": "0000",
+        "lm": "01"
+      }
+    },
+    "RR": {
+      "description": "Request control data for Z-drive",
+      "parameters": {
+        "lj": "0000",
+        "lm": "01"
+      }
+    },
+    "VH": {
+      "description": "Request position of plate bottom",
+      "parameters": {}
+    },
+    "VY": {
+      "description": "Request Y-drive parameters",
+      "parameters": {}
+    },
+    "VD": {
+      "description": "Request data of measurement mechanical clearance reversing",
+      "parameters": {
+        "ld": "0",
+        "le": "0"
+      }
+    },
+    "VM": {
+      "description": "Request limit stop position Z-drive",
+      "parameters": {}
+    },
+    "VU": {
+      "description": "Request Z Drive tip discard parameter",
+      "parameters": {}
+    },
+    "VT": {
+      "description": "Request tip discard Z heights",
+      "parameters": {}
+    },
+    "RH": {
+      "description": "Request position of liquid surface found",
+      "parameters": {}
+    },
+    "RI": {
+      "description": "Request difference of liquid surface found using dual Liquid Level",
+      "parameters": {}
+    },
+    "RB": {
+      "description": "Request LLD parameters used",
+      "parameters": {
+        "lc": "0"
+      }
+    },
+    "RL": {
+      "description": "Request LLD AD values measured",
+      "parameters": {
+        "lc": "0",
+        "li": "0000",
+        "ln": "01"
+      }
+    },
+    "RN": {
+      "description": "Request status of edge detection of capacitive LLD Sensors",
+      "parameters": {}
+    },
+    "VG": {
+      "description": "Request max. LLD difference signal",
+      "parameters": {
+        "lc": "0"
+      }
+    },
+    "VL": {
+      "description": "Request phase shift of the LLD clocks",
+      "parameters": {}
+    },
+    "VF": {
+      "description": "Request measured LLD signal frequency",
+      "parameters": {}
+    },
+    "VS": {
+      "description": "Request position of 2nd phase of liquid (Determined with command",
+      "parameters": {}
+    },
+    "VO": {
+      "description": "Request max. immersion position (Determined with command MO",
+      "parameters": {}
+    },
+    "QA": {
+      "description": "Request parameter on auto-adjustment pressure LLD",
+      "parameters": {}
+    },
+    "QB": {
+      "description": "Request of data measured on auto-adjustment pressure LLD",
+      "parameters": {
+        "li": "0000",
+        "ln": "01"
+      }
+    },
+    "QD": {
+      "description": "Request parameter of threshold LLD",
+      "parameters": {}
+    },
+    "QE": {
+      "description": "Request data measured on threshold LLD",
+      "parameters": {
+        "li": "0000",
+        "ln": "01"
+      }
+    },
+    "QF": {
+      "description": "Request pipetting monitoring mode",
+      "parameters": {}
+    },
+    "QH": {
+      "description": "Request parameter of aspiration monitoring",
+      "parameters": {}
+    },
+    "QI": {
+      "description": "Request of data measured on aspiration monitoring",
+      "parameters": {
+        "li": "0000",
+        "ln": "01"
+      }
+    },
+    "QJ": {
+      "description": "Request aspiration monitoring indexes where dispensing drive",
+      "parameters": {}
+    },
+    "QK": {
+      "description": "Request of aspirated volume as calculated from aspiration monitor-",
+      "parameters": {}
+    },
+    "QM": {
+      "description": "Request data in the TADM FIFO",
+      "parameters": {}
+    },
+    "QL": {
+      "description": "Request parameter of TADM measurement",
+      "parameters": {}
+    },
+    "QN": {
+      "description": "Request data of TADM measurement",
+      "parameters": {
+        "li": "0000",
+        "ln": "01"
+      }
+    },
+    "VX": {
+      "description": "Request last measured TADM data average",
+      "parameters": {
+        "lx": "01"
+      }
+    },
+    "QU": {
+      "description": "Request error of the TADM measurement",
+      "parameters": {}
+    },
+    "QO": {
+      "description": "Request number of stored limit curves",
+      "parameters": {}
+    },
+    "QP": {
+      "description": "Request names of stored limit curves",
+      "parameters": {
+        "lk": "000",
+        "lo": "01"
+      }
+    },
+    "QQ": {
+      "description": "Request parameter of stored limit curves",
+      "parameters": {}
+    },
+    "QR": {
+      "description": "Request data of stored limit curves",
+      "parameters": {
+        "ga": "0",
+        "ll": "0000",
+        "lp": "01"
+      }
+    },
+    "RP": {
+      "description": "Request measured pressure",
+      "parameters": {}
+    },
+    "QY": {
+      "description": "Request digital potentiometer data",
+      "parameters": {}
+    },
+    "QZ": {
+      "description": "Request pressure sensor AD inputs",
+      "parameters": {}
+    },
+    "VA": {
+      "description": "Request parameter of ADC algorithm",
+      "parameters": {}
+    },
+    "VB": {
+      "description": "Request data of ADC algorithm",
+      "parameters": {
+        "li": "0000",
+        "ln": "01"
+      }
+    },
+    "VC": {
+      "description": "Request error state of ADC algorithm",
+      "parameters": {}
+    },
+    "VN": {
+      "description": "Request dispense on fly errors",
+      "parameters": {}
+    },
+    "VR": {
+      "description": "Request AD Converter inputs (12 bit resolution)",
+      "parameters": {}
+    }
+  }
+}
