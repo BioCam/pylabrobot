@@ -35,11 +35,16 @@ _AUTOLOAD_SLED_SIZE_Z = 0.0
 # drive reports: parked, it reads the deck position of track 54, where the wheel then stands.
 _AUTOLOAD_WHEEL_FROM_LEFT = 200.0
 
-# The loading tray runs from track 1 to the right edge of the deck, so how wide it is follows from
-# the deck rather than being a number per machine: 1445 mm on a STAR, 905 on a STARlet. It sits in
-# front of the deck. Its height is a placeholder until it is measured.
+# Where the loading tray sits, measured against the two things on the deck it lines up with: its
+# left edge is 104 mm left of where the first carrier starts, and its front edge 380 mm in front of
+# where a carrier's front edge is. It reaches 104 mm short of the deck's right edge, which makes it
+# 1445 mm wide on a STAR. Its height is a placeholder until it is measured.
+_LOADING_TRAY_FROM_FIRST_CARRIER_X = 104.0
+_LOADING_TRAY_FROM_CARRIER_Y = 380.0
 _LOADING_TRAY_SIZE_Y = 250.0
 _LOADING_TRAY_SIZE_Z = 100.0
+# Where a carrier's own front edge sits on any Hamilton deck, in mm.
+_CARRIER_Y = 63.0
 
 STARLET_NUM_RAILS = 32
 STARLET_SIZE_X = 1005
@@ -170,9 +175,10 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
   def get_or_create_autoload_loading_tray(self, name: str) -> Resource:
     """Get, or create once, the deck-owned loading tray the autoload draws carriers from.
 
-    It runs from track 1 to the deck's right edge and sits in front of the deck, so where it is and
-    how big it is both follow from the deck. Created as a child the first time and reused
-    thereafter, so repeated setups do not duplicate it.
+    It is placed against the deck features it lines up with: its left edge sits 104 mm left of the
+    first carrier, and its front edge 380 mm in front of a carrier's. It reaches the same 104 mm
+    short of the deck's right edge, so its width follows from the deck. Created as a child the
+    first time and reused thereafter, so repeated setups do not duplicate it.
 
     Args:
       name: what to call it.
@@ -182,16 +188,18 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     """
     if self.has_resource(name):
       return self.get_resource(name)
-    track_one = self.rails_to_location(1).x
+    left = self.rails_to_location(1).x - _LOADING_TRAY_FROM_FIRST_CARRIER_X
     tray = Resource(
       name=name,
-      size_x=self.get_absolute_size_x() - track_one,
+      size_x=self.get_absolute_size_x() - _LOADING_TRAY_FROM_FIRST_CARRIER_X - left,
       size_y=_LOADING_TRAY_SIZE_Y,
       size_z=_LOADING_TRAY_SIZE_Z,
       category="autoload_loading_tray",
       model="hamilton_star_autoload_loading_tray",
     )
-    self.assign_child_resource(tray, location=Coordinate(track_one, -_LOADING_TRAY_SIZE_Y, 0.0))
+    self.assign_child_resource(
+      tray, location=Coordinate(left, _CARRIER_Y - _LOADING_TRAY_FROM_CARRIER_Y, 0.0)
+    )
     return tray
 
   def serialize(self) -> dict:
