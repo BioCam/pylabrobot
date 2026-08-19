@@ -211,6 +211,9 @@ class XArm:
     of a millimetre and in motor counts; the first is what this returns. The right arm has no such
     read of its own and is asked of the master instead.
 
+    The machine is the authority on where the arm is, so what it answers is recorded on the
+    resource that models it.
+
     Returns:
       The position in mm.
 
@@ -224,7 +227,9 @@ class XArm:
     read = resp.split("rx", 1)[-1].strip().strip("'\u201a\u201b").split()
     if not read:
       raise ValueError(f"no position in the reply: {resp!r}")
-    return self.configuration.x_increments_to_mm(int(read[0]))
+    position = self.configuration.x_increments_to_mm(int(read[0]))
+    self.update_location_by_reference_point(position)
+    return position
 
   async def move_x(
     self,
@@ -261,15 +266,23 @@ class XArm:
     if not low <= current_limit <= high:
       raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
 
-    resp = await self._driver.send_command(
-      module="X0",
-      command="XP",
-      la=f"{c.x_mm_to_increments(x):05}",
-      lr=f"{acceleration_level:01}",
-      lw=f"{current_limit:01}",
-    )
-    # Only once the machine has answered: a move that raised leaves the arm somewhere unknown, and
-    # a resource that says otherwise would be worse than one that is stale.
+    try:
+      resp = await self._driver.send_command(
+        module="X0",
+        command="XP",
+        la=f"{c.x_mm_to_increments(x):05}",
+        lr=f"{acceleration_level:01}",
+        lw=f"{current_limit:01}",
+      )
+    except Exception:
+      # The arm stopped somewhere neither the old position nor the target describes, so ask the
+      # machine where it ended up. If it will not say, the move's own error is the one to raise.
+      try:
+        await self.request_position()
+      except Exception:
+        logger.warning("could not read where the %s X-arm stopped; its model is stale", self.side)
+      raise
+
     self.update_location_by_reference_point(x)
     return resp
 
