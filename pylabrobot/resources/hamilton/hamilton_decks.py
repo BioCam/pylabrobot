@@ -30,19 +30,23 @@ _X_ARM_SIZE_Y = 712.0
 # a carrier seats at, which is where the machine's coordinates put the deck surface: the drive that
 # has to pass under the deck plate is as tall as the offset between the two.
 _AUTOLOAD_SLED_SIZE_X = 235.0
-_AUTOLOAD_SLED_SIZE_Y = 82.0
 _AUTOLOAD_SLED_SIZE_Z = 100.0
+# Where the sled sits across the deck, measured against a carrier's own front edge: it reaches 20 mm
+# behind it and 96 mm in front of it, so it straddles the deck's front edge.
+_AUTOLOAD_SLED_BEHIND_CARRIER_Y = 20.0
+_AUTOLOAD_SLED_AHEAD_OF_CARRIER_Y = 96.0
 # How far the carrier-handling wheel sits from the sled's left edge (mm), which is the point the
 # drive reports: parked, it reads the deck position of track 54, where the wheel then stands.
 _AUTOLOAD_WHEEL_FROM_LEFT = 200.0
 
 # Where the loading tray sits, measured against the two things on the deck it lines up with: its
-# left edge is 104 mm left of where the first carrier starts, and its front edge 380 mm in front of
-# where a carrier's front edge is. It reaches 104 mm short of the deck's right edge, which makes it
-# 1445 mm wide on a STAR, 250 mm deep and 92 mm tall.
+# left edge is 104 mm left of where the first carrier starts, and it spans from 380 mm in front of a
+# carrier's front edge to 132 mm in front of it - so 248 mm deep, against the 250 it was called when
+# measured on its own. It reaches 104 mm short of the deck's right edge, which makes it 1445 mm wide
+# on a STAR, and it is 92 mm tall.
 _LOADING_TRAY_FROM_FIRST_CARRIER_X = 104.0
-_LOADING_TRAY_FROM_CARRIER_Y = 380.0
-_LOADING_TRAY_SIZE_Y = 250.0
+_LOADING_TRAY_FRONT_AHEAD_OF_CARRIER_Y = 380.0
+_LOADING_TRAY_BACK_AHEAD_OF_CARRIER_Y = 132.0
 _LOADING_TRAY_SIZE_Z = 92.0
 # Where a carrier's own front edge sits on any Hamilton deck, in mm.
 _CARRIER_Y = 63.0
@@ -165,12 +169,17 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     sled = Resource(
       name=name,
       size_x=_AUTOLOAD_SLED_SIZE_X,
-      size_y=_AUTOLOAD_SLED_SIZE_Y,
+      size_y=_AUTOLOAD_SLED_BEHIND_CARRIER_Y + _AUTOLOAD_SLED_AHEAD_OF_CARRIER_Y,
       size_z=_AUTOLOAD_SLED_SIZE_Z,
       category="autoload_sled",
       model="hamilton_star_autoload_sled",
     )
-    self.assign_child_resource(sled, location=Coordinate(x - _AUTOLOAD_WHEEL_FROM_LEFT, 0.0, 0.0))
+    self.assign_child_resource(
+      sled,
+      location=Coordinate(
+        x - _AUTOLOAD_WHEEL_FROM_LEFT, _CARRIER_Y - _AUTOLOAD_SLED_AHEAD_OF_CARRIER_Y, 0.0
+      ),
+    )
     return sled
 
   def get_or_create_autoload_loading_tray(self, name: str) -> Resource:
@@ -193,13 +202,13 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     tray = Resource(
       name=name,
       size_x=self.get_absolute_size_x() - _LOADING_TRAY_FROM_FIRST_CARRIER_X - left,
-      size_y=_LOADING_TRAY_SIZE_Y,
+      size_y=_LOADING_TRAY_FRONT_AHEAD_OF_CARRIER_Y - _LOADING_TRAY_BACK_AHEAD_OF_CARRIER_Y,
       size_z=_LOADING_TRAY_SIZE_Z,
       category="autoload_loading_tray",
       model="hamilton_star_autoload_loading_tray",
     )
     self.assign_child_resource(
-      tray, location=Coordinate(left, _CARRIER_Y - _LOADING_TRAY_FROM_CARRIER_Y, 0.0)
+      tray, location=Coordinate(left, _CARRIER_Y - _LOADING_TRAY_FRONT_AHEAD_OF_CARRIER_Y, 0.0)
     )
     return tray
 
