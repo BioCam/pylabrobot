@@ -36,6 +36,11 @@ import {
   HOVER,
   ARM_COLOR,
   ARM_OPACITY,
+  SHELL_OPACITY,
+  SPACE_OPACITY,
+  ARM_EDGE,
+  ARM_EDGE_WIDTH_FLAT,
+  ARM_EDGE_WIDTH_3D,
   ARM_INSET_X,
   ARM_INSET_Y,
   REFERENCE_LINE,
@@ -192,12 +197,23 @@ function buildArms() {
     shape.lineTo(sx, sy);
     shape.lineTo(0, sy);
     shape.closePath();
-    // The opening is declared by the part when it knows its own geometry, and it need not be
-    // centred: a dual-rail arm's window sits left of centre.
+    // The opening is declared by the part when it knows its own geometry. A declared width is
+    // centred on the part unless the part also says how far its right edge sits from the end,
+    // which is the case for an opening that is deliberately off-centre.
     const window = model.window ?? {};
     const insetY = window.inset_y ?? ARM_INSET_Y;
-    const holeRight = sx - (window.right_margin ?? ARM_INSET_X);
-    const holeLeft = window.width !== undefined ? holeRight - window.width : ARM_INSET_X;
+    let holeLeft;
+    let holeRight;
+    if (window.width === undefined) {
+      holeLeft = ARM_INSET_X;
+      holeRight = sx - ARM_INSET_X;
+    } else if (window.right_margin === undefined) {
+      holeLeft = (sx - window.width) / 2;
+      holeRight = holeLeft + window.width;
+    } else {
+      holeRight = sx - window.right_margin;
+      holeLeft = holeRight - window.width;
+    }
     const innerH = sy - 2 * insetY;
     if (holeRight > holeLeft && innerH > 0) {
       const hole = new THREE.Path();
@@ -209,8 +225,9 @@ function buildArms() {
       shape.holes.push(hole);
     }
 
+    const solid = new THREE.ExtrudeGeometry(shape, { depth: sz, bevelEnabled: false });
     const frame = new THREE.Mesh(
-      new THREE.ExtrudeGeometry(shape, { depth: sz, bevelEnabled: false }),
+      solid,
       new THREE.MeshStandardMaterial({
         color: ARM_COLOR,
         roughness: 0.6,
@@ -220,6 +237,24 @@ function buildArms() {
       })
     );
     frame.renderOrder = 500;
+
+    // Struck from the same extrusion, so the stroke follows the window and the footprint both.
+    // It lives in the arm's own group, which is what moves, so there is nothing left behind to
+    // keep in step - the failure the generic box outline had.
+    const outlineEdges = new THREE.EdgesGeometry(solid);
+    const outlineGeometry = new LineSegmentsGeometry();
+    outlineGeometry.setPositions(outlineEdges.getAttribute("position").array);
+    outlineEdges.dispose();
+    const outlineMaterial = new THREE.Line2NodeMaterial({
+      color: ARM_EDGE,
+      linewidth: ARM_EDGE_WIDTH_3D,
+      worldUnits: false,
+    });
+    outlineMaterial.resolution?.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+    edgeMaterials.add(outlineMaterial);
+    const outline = new LineSegments2(outlineGeometry, outlineMaterial);
+    outline.frustumCulled = false;
+    outline.renderOrder = 510; // over the carriage it bounds
 
     const offset = referenceOffset(model);
     const line = new THREE.Mesh(
@@ -235,7 +270,7 @@ function buildArms() {
     line.renderOrder = 490;
 
     const group = new THREE.Group();
-    group.add(line, frame);
+    group.add(line, frame, outline);
     group.matrixAutoUpdate = false;
     group.matrix.copy(world.matrices[index]);
     group.matrixWorldNeedsUpdate = true;
@@ -244,6 +279,7 @@ function buildArms() {
     const parent = world.parentOf[index];
     arms.push({
       group,
+      outline,
       index,
       parentMatrix: parent >= 0 ? world.matrices[parent].clone() : new THREE.Matrix4(),
       local: world.local.slice(index * 6, index * 6 + 6),
@@ -478,7 +514,10 @@ function updateDetail() {
   // view everything is opaque and painted in order, so there is nothing to restore.
   if (axisAligned) return;
   for (const entry of meshes) {
-    if (!entry.holdsEnclosure) continue;
+    // A carrier is exempt: its walls are the surface you read the layout off, so they stay drawn
+    // at SHELL_OPACITY whether or not what it holds is on screen. Everything above it in the
+    // stack still drops to its outline, which is what keeps the layers from compounding.
+    if (!entry.holdsEnclosure || isCarrier(entry.model)) continue;
     const showsContents = entry.enclosedModels.some((m) => drawn.has(m));
     if (entry.mesh.material.visible === showsContents) entry.mesh.material.visible = !showsContents;
   }
@@ -504,7 +543,6 @@ function setRenderMode(painter) {
     // The facility is the space everything stands in, not a thing to look at. It stays barely
     // there in every mode: enough to see where the floor ends, never enough to tint what is on it.
     const isSpace = entry.model.category === "facility";
-    const SPACE_OPACITY = 0.06;
     if (painter) {
       // A part that travels over the deck is not content standing on it: drawn opaque it hides
       // whatever it happens to be above, which is the one thing you need to see. It stays
@@ -526,7 +564,7 @@ function setRenderMode(painter) {
       }
     } else {
       material.transparent = isShell || isSpace;
-      material.opacity = isSpace ? SPACE_OPACITY : isShell ? 0.3 : 1;
+      material.opacity = isSpace ? SPACE_OPACITY : isShell ? SHELL_OPACITY : 1;
       material.side = isShell || isSpace ? THREE.BackSide : THREE.FrontSide;
       material.depthTest = true;
       material.depthWrite = !(isShell || isSpace);
@@ -551,6 +589,12 @@ function setRenderMode(painter) {
     mark.traverse((o) => {
       if (o.material && o.material.depthTest !== undefined) o.material.depthTest = !painter;
     });
+  }
+
+  for (const arm of arms) {
+    arm.outline.material.depthTest = !painter;
+    arm.outline.material.linewidth = painter ? ARM_EDGE_WIDTH_FLAT : ARM_EDGE_WIDTH_3D;
+    arm.outline.material.needsUpdate = true;
   }
 
   for (const [index, line] of edgeOf) {
@@ -792,6 +836,12 @@ function treeDepth(index) {
   return depth;
 }
 
+// A carrier is the level you look at rather than through: its floor is filled in, and its walls
+// keep their fill instead of being culled when the things it holds are drawn.
+function isCarrier(model) {
+  return String(model.category).includes("carrier");
+}
+
 function enclosureDepth(index) {
   let depth = 0;
   for (let i = world.parentOf[index]; i >= 0; i = world.parentOf[i]) {
@@ -946,7 +996,7 @@ function buildMeshes() {
 
     // A carrier's base is solid, so looking into one should stop at its floor rather than carrying
     // on through to the deck. The shell stays see-through; only the bottom face is filled in.
-    if (encloses && String(model.category).includes("carrier")) {
+    if (encloses && isCarrier(model)) {
       const floor = new THREE.InstancedMesh(
         // Unit geometry: `placeInstance` supplies the real size through the instance matrix, so a
         // pre-sized plane would be scaled by its own dimensions a second time.

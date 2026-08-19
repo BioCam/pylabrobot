@@ -124,10 +124,10 @@ def declare_channel_access(star) -> None:
   if star.x_arm.resource is not None:
     star.x_arm.resource.reference_point = star.x_arm.configuration.reference_point
 
-    # The opening through the carriage. It is not centred: on this dual-rail arm it is 185 mm wide
-    # and ends 90 mm short of the right edge, which on a 354 mm arm puts it at 79 .. 264.
+    # The opening through the carriage: 185 mm wide, centred on the arm, which on a 354 mm arm
+    # puts it at 84.5 .. 269.5.
     if star.x_arm.configuration.reference_point == "center":
-      star.x_arm.resource.window = {"width": 185.0, "right_margin": 90.0, "inset_y": 20.0}
+      star.x_arm.resource.window = {"width": 185.0, "inset_y": 20.0}
 
   waste_block = next((child for child in star.deck.children if child.name == "waste_block"), None)
   if waste_block is not None:

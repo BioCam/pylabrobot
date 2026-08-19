@@ -78,6 +78,18 @@ export const HOVER = 0xbbcc33;
 // underneath, and the line sits inside it rather than crossing the whole deck.
 export const ARM_COLOR = 0x404040;
 export const ARM_OPACITY = 0.575;
+// The carriage is see-through so you can read the deck under it, which leaves its own extent hard
+// to place. A stroke noticeably heavier than a resource outline is what puts the boundary back,
+// and it follows the window as well as the footprint, so the opening reads as part of the part.
+// A carrier or a rack is a container you look into, so its walls are glass and its bottom is not:
+// the floor is drawn opaque as its own surface, and these are the five faces around it.
+export const SHELL_OPACITY = 0.5;
+// The facility is the space everything stands in, not a thing to look at.
+export const SPACE_OPACITY = 0.06;
+
+export const ARM_EDGE = 0x1a1f24;
+export const ARM_EDGE_WIDTH_FLAT = 2.2;
+export const ARM_EDGE_WIDTH_3D = 2.6;
 // Fallback opening, used when a part does not declare its own: symmetric, which is the least
 // wrong guess. A part that knows its geometry says so in `window`.
 export const ARM_INSET_X = 95;
