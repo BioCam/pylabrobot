@@ -14,9 +14,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Where the scanner drive's zero sits on the deck, in mm: measured as track 1, by reading the drive
-# at two tracks 10 apart and finding exactly 22.5 mm per track.
+# Where the drive's zero sits on the deck, in mm: track 1. Measured by reading the drive at two
+# tracks ten apart and finding exactly 22.5 mm per track, and confirmed at the park position, where
+# it reads 1192.5 mm with the carrier-handling wheel standing at track 54.
 DRIVE_ZERO_ON_THE_DECK = 100.0
+# How far the wheel sits from the sled's left edge, in mm, read off the machine with a rule.
+WHEEL_FROM_SLED_LEFT_EDGE = 200.0
 
 # Where the carrier drive can be sent by name.
 YPosition = Literal["loading_tray", "carrier_identification", "deck"]
@@ -317,18 +320,20 @@ class Autoload:
   def update_location(self, x: float) -> None:
     """Record where the sled is on the resource that models it.
 
-    The drive counts from its own zero, which sits at track 1 - a hundred millimetres along the
-    deck - so a deck position is that much further on. Which point of the sled the drive reports is
-    not known, so the resource is placed by its left front bottom corner and the two agree only to
-    the width of the sled. Does nothing when the driver was given no deck.
+    What the drive reports is where the carrier-handling wheel stands, counted from its own zero at
+    track 1 - a hundred millimetres along the deck - so a deck position is that much further on.
+    The sled is placed around the wheel, which sits back from its left edge. Does nothing when the
+    driver was given no deck.
 
     Args:
-      x: where the drive says it is, in mm, counted from its own zero.
+      x: where the drive says the wheel is, in mm, counted from its own zero.
     """
     if self.resource is None or self.resource.location is None:
       return
     self.resource.location = Coordinate(
-      x + DRIVE_ZERO_ON_THE_DECK, self.resource.location.y, self.resource.location.z
+      x + DRIVE_ZERO_ON_THE_DECK - WHEEL_FROM_SLED_LEFT_EDGE,
+      self.resource.location.y,
+      self.resource.location.z,
     )
 
   async def _request_drive_position(self, command: str, digits: int) -> int:

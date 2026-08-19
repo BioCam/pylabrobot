@@ -22,12 +22,24 @@ _RAILS_WIDTH = 22.5  # space between rails (mm)
 # safety height, level with the raised stop discs so it clears them as it travels.
 _X_ARM_Z = 334.7
 _X_ARM_SIZE_Z = 140.0
+# The arm is deeper than the deck it rides over, so it overhangs the deck's front edge. Measured
+# front face to back face.
+_X_ARM_SIZE_Y = 712.0
 
 # How big the autoload's sled is (mm). Its height is not modelled yet, so it takes up no room in z
 # and cannot collide with anything.
 _AUTOLOAD_SLED_SIZE_X = 235.0
 _AUTOLOAD_SLED_SIZE_Y = 82.0
 _AUTOLOAD_SLED_SIZE_Z = 0.0
+# How far the carrier-handling wheel sits from the sled's left edge (mm), which is the point the
+# drive reports: parked, it reads the deck position of track 54, where the wheel then stands.
+_AUTOLOAD_WHEEL_FROM_LEFT = 200.0
+
+# The loading tray runs from track 1 to the right edge of the deck, so how wide it is follows from
+# the deck rather than being a number per machine: 1445 mm on a STAR, 905 on a STARlet. It sits in
+# front of the deck. Its height is a placeholder until it is measured.
+_LOADING_TRAY_SIZE_Y = 250.0
+_LOADING_TRAY_SIZE_Z = 100.0
 
 STARLET_NUM_RAILS = 32
 STARLET_SIZE_X = 1005
@@ -114,15 +126,18 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     x_arm = Resource(
       name=name,
       size_x=width,
-      size_y=self.get_absolute_size_y(),
+      size_y=_X_ARM_SIZE_Y,
       size_z=_X_ARM_SIZE_Z,
       category="x_arm",
       model=model,
     )
-    # Place it so its reference point lands at the arm's current x. The arm sits above the deck
-    # plane, so it does not count as occupying the footprint of the carriers beneath it.
+    # Place it so its reference point lands at the arm's current x, and so its back edge lines up
+    # with the back of the deck. Being deeper than the deck, it reaches in front of the deck's front
+    # edge, which is why y is negative. The arm sits above the deck plane, so it does not count as
+    # occupying the footprint of the carriers beneath it.
     anchor = x_arm.get_anchor(x=reference_anchor)
-    self.assign_child_resource(x_arm, location=Coordinate(x - anchor.x, 0.0, _X_ARM_Z))
+    y = self.get_absolute_size_y() - _X_ARM_SIZE_Y
+    self.assign_child_resource(x_arm, location=Coordinate(x - anchor.x, y, _X_ARM_Z))
     return x_arm
 
   def get_or_create_autoload_sled(self, name: str, x: float) -> Resource:
@@ -132,8 +147,9 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     do not duplicate it.
 
     Args:
-      name: what to call it.
-      x: where the sled is, in mm, on this deck.
+      name: where the carrier-handling wheel is, in mm, on this deck. The wheel is the point the
+        drive reports, so the sled is placed around it.
+      x: where the wheel is, in mm, on this deck.
 
     Returns:
       The sled resource, whether it was just created or already there.
@@ -148,10 +164,35 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       category="autoload_sled",
       model="hamilton_star_autoload_sled",
     )
-    # Placed by its left front bottom corner, because which point of the sled the drive reports is
-    # not known yet - so x locates the resource, not a feature of the sled.
-    self.assign_child_resource(sled, location=Coordinate(x, 0.0, 0.0))
+    self.assign_child_resource(sled, location=Coordinate(x - _AUTOLOAD_WHEEL_FROM_LEFT, 0.0, 0.0))
     return sled
+
+  def get_or_create_autoload_loading_tray(self, name: str) -> Resource:
+    """Get, or create once, the deck-owned loading tray the autoload draws carriers from.
+
+    It runs from track 1 to the deck's right edge and sits in front of the deck, so where it is and
+    how big it is both follow from the deck. Created as a child the first time and reused
+    thereafter, so repeated setups do not duplicate it.
+
+    Args:
+      name: what to call it.
+
+    Returns:
+      The tray resource, whether it was just created or already there.
+    """
+    if self.has_resource(name):
+      return self.get_resource(name)
+    track_one = self.rails_to_location(1).x
+    tray = Resource(
+      name=name,
+      size_x=self.get_absolute_size_x() - track_one,
+      size_y=_LOADING_TRAY_SIZE_Y,
+      size_z=_LOADING_TRAY_SIZE_Z,
+      category="autoload_loading_tray",
+      model="hamilton_star_autoload_loading_tray",
+    )
+    self.assign_child_resource(tray, location=Coordinate(track_one, -_LOADING_TRAY_SIZE_Y, 0.0))
+    return tray
 
   def serialize(self) -> dict:
     """Serialize this deck."""
