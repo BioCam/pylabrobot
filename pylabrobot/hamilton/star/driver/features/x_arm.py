@@ -3,7 +3,7 @@
 import datetime
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, Literal, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, Dict, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 from pylabrobot.resources.coordinate import Coordinate
@@ -18,9 +18,6 @@ logger = logging.getLogger(__name__)
 # below it, which is the generation this driver has been driven against. A 5.0 or higher arm takes
 # a wider current limiter, written in two digits rather than one, and has moves this one does not.
 RECORDED_FIRMWARE_BELOW_MAJOR = 5
-
-# Which way a relative move goes, and the code the command takes for each.
-XDirection = Literal["positive", "negative"]
 
 
 @dataclass
@@ -56,7 +53,6 @@ class XArmConfiguration:
   # -- device facts of the drive, the same for every arm of this generation --
   x_mm_per_increment: float = 0.1
   x_increment_range: Tuple[int, int] = (0, 30_000)  # what the move accepts; x_range is narrower
-  x_relative_increment_range: Tuple[int, int] = (1, 30_000)
   acceleration_level_range: Tuple[int, int] = (1, 5)  # index into five curves, not a rate
   acceleration_level_default: int = 4
   current_limit_range: Tuple[int, int] = (0, 7)
@@ -117,6 +113,12 @@ class XArm:
     self.resource: Optional[Resource] = None
     self.side = side
 
+  @property
+  def parameter_prefix(self) -> str:
+    """The letter every parameter to this arm's drive starts with: `l` on the left, `s` on the
+    right. The X-drive board carries a drive per arm, each with its own commands."""
+    return "l" if self.side == "left" else "s"
+
   # -- session / discovery ---------------------------------------------------
 
   @property
@@ -151,12 +153,10 @@ class XArm:
 
     Returns:
       Whether it is initialized.
-
-    Raises:
-      NotImplementedError: If this is the right arm.
     """
-    self._require_left()
-    resp = await self._driver.send_command(module="X0", command="QW", fmt="qw#", mn="1")
+    resp = await self._driver.send_command(
+      module="X0", command="QW", fmt="qw#", mn="1" if self.side == "left" else "2"
+    )
     return cast(int, resp["qw"]) == 1
 
   async def discover(self):
@@ -173,11 +173,6 @@ class XArm:
         RECORDED_FIRMWARE_BELOW_MAJOR,
       )
 
-  def _require_left(self) -> None:
-    """Raise if this is the right arm, whose drive is a command family nothing has driven."""
-    if self.side != "left":
-      raise NotImplementedError("driving the right X-arm is not ported yet")
-
   # -- initialization --------------------------------------------------------
 
   async def initialize(self, current_limit: Optional[int] = None):
@@ -189,9 +184,7 @@ class XArm:
 
     Raises:
       ValueError: If the current limit is outside what the drive accepts.
-      NotImplementedError: If this is the right arm.
     """
-    self._require_left()
     c = self.configuration
     # The parameter is sent, so what the drive does is written here rather than left to the drive's
     # own default, which nothing would record.
@@ -200,16 +193,18 @@ class XArm:
     if not low <= current_limit <= high:
       raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
 
-    return await self._driver.send_command(module="X0", command="XI", lw=f"{current_limit:01}")
+    parameters: Dict[str, Any] = {f"{self.parameter_prefix}w": f"{current_limit:01}"}
+    return await self._driver.send_command(
+      module="X0", command="XI" if self.side == "left" else "SI", **parameters
+    )
 
   # -- x motion --------------------------------------------------------------
 
   async def request_position(self) -> float:
     """Request where along its rail the arm is.
 
-    The left arm is read from the X-drive board, which answers with the position twice, in tenths
-    of a millimetre and in motor counts; the first is what this returns. The right arm has no such
-    read of its own and is asked of the master instead.
+    Each drive has its own read, answering with the position twice - in tenths of a millimetre and
+    in motor counts. The first is what this returns.
 
     The machine is the authority on where the arm is, so what it answers is recorded on the
     resource that models it.
@@ -220,16 +215,14 @@ class XArm:
     Raises:
       ValueError: If the machine answered without a position.
     """
-    if self.side == "left":
-      resp = cast(str, await self._driver.send_command(module="X0", command="RX"))
-    else:
-      resp = cast(str, await self._driver.send_command(module="C0", command="QX"))
-    read = resp.split("rx", 1)[-1].strip().strip("'\u201a\u201b").split()
+    read_command = "RX" if self.side == "left" else "RS"
+    resp = cast(str, await self._driver.send_command(module="X0", command=read_command))
+    read = resp.split(read_command.lower(), 1)[-1].strip().strip("'\u201a\u201b").split()
     if not read:
       raise ValueError(f"no position in the reply: {resp!r}")
-    position = self.configuration.x_increments_to_mm(int(read[0]))
-    self.update_location_by_reference_point(position)
-    return position
+    x = self.configuration.x_increments_to_mm(int(read[0]))
+    self.update_location_by_reference_point(x)
+    return x
 
   async def move_x(
     self,
@@ -252,9 +245,7 @@ class XArm:
     Raises:
       ValueError: If `x` is outside the arm's travel range, or an argument is out of range.
       RuntimeError: If the arm's geometry was not resolved.
-      NotImplementedError: If this is the right arm.
     """
-    self._require_left()
     c = self.configuration
     self._check_reachable(x)
     low, high = c.acceleration_level_range
@@ -267,19 +258,21 @@ class XArm:
       raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
 
     try:
+      p = self.parameter_prefix
+      parameters: Dict[str, Any] = {
+        f"{p}a": f"{c.x_mm_to_increments(x):05}",
+        f"{p}r": f"{acceleration_level:01}",
+        f"{p}w": f"{current_limit:01}",
+      }
       resp = await self._driver.send_command(
-        module="X0",
-        command="XP",
-        la=f"{c.x_mm_to_increments(x):05}",
-        lr=f"{acceleration_level:01}",
-        lw=f"{current_limit:01}",
+        module="X0", command="XP" if self.side == "left" else "SP", **parameters
       )
-    except Exception:
+    except BaseException:
       # The arm stopped somewhere neither the old position nor the target describes, so ask the
-      # machine where it ended up. If it will not say, the move's own error is the one to raise.
+      # machine where it ended up.
       try:
         await self.request_position()
-      except Exception:
+      except BaseException:
         logger.warning("could not read where the %s X-arm stopped; its model is stale", self.side)
       raise
 
@@ -312,61 +305,40 @@ class XArm:
   async def move_x_relative(
     self,
     distance: float,
-    direction: XDirection = "positive",
     acceleration_level: int = 3,
     current_limit: int = 7,
   ):
-    """Move the arm by a distance from where it is.
+    """Move the arm by a distance from where it is now.
 
     Collision risk: this moves the arm and everything mounted on it, with no regard for what is
-    in the way. Where it ends up is not checked against the arm's travel range, since where it
-    starts is only known by asking.
+    in the way.
+
+    Where the arm is is read from the machine and the distance added to it, so a relative move is
+    an absolute move to a place worked out here - and is bounded by the arm's travel range like any
+    other.
 
     Args:
-      distance: how far to move, in mm.
-      direction: which way to go along the rail.
+      distance: how far to move, in mm. Positive moves along the rail towards higher x, negative
+        towards lower.
       acceleration_level: which acceleration curve to use.
       current_limit: the motor current limit.
 
     Raises:
-      ValueError: If an argument is outside what the drive accepts.
-      NotImplementedError: If this is the right arm.
+      ValueError: If the arm would end up outside its travel range, or an argument is outside what
+        the drive accepts.
+      RuntimeError: If the arm's geometry was not resolved.
     """
-    self._require_left()
-    c = self.configuration
-    increments = c.x_mm_to_increments(distance)
-    low, high = c.x_relative_increment_range
-    if not low <= increments <= high:
-      raise ValueError(
-        f"distance must be between {c.x_increments_to_mm(low)} and {c.x_increments_to_mm(high)} "
-        f"mm, is {distance}"
-      )
-    low, high = c.acceleration_level_range
-    if not low <= acceleration_level <= high:
-      raise ValueError(
-        f"acceleration_level must be between {low} and {high}, is {acceleration_level}"
-      )
-    low, high = c.current_limit_range
-    if not low <= current_limit <= high:
-      raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
-
-    return await self._driver.send_command(
-      module="X0",
-      command="XR",
-      ls=f"{increments:05}",
-      lt="0" if direction == "positive" else "1",
-      lr=f"{acceleration_level:01}",
-      lw=f"{current_limit:01}",
+    return await self.move_x(
+      await self.request_position() + distance,
+      acceleration_level=acceleration_level,
+      current_limit=current_limit,
     )
 
   async def switch_drive_power_off(self):
-    """Switch this arm's drive power off, leaving it free to be pushed by hand.
-
-    Raises:
-      NotImplementedError: If this is the right arm.
-    """
-    self._require_left()
-    return await self._driver.send_command(module="X0", command="XO")
+    """Switch this arm's drive power off, leaving it free to be pushed by hand."""
+    return await self._driver.send_command(
+      module="X0", command="XO" if self.side == "left" else "SO"
+    )
 
   def _check_reachable(self, x: float) -> None:
     """Raise if `x` is outside this arm's travel range.
