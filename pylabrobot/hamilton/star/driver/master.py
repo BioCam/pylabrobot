@@ -428,7 +428,7 @@ class STARDriver:
         x=await arm.request_position(),
         width=a.width,
         model=a.model,
-        reference_point=a.reference_point,
+        reference_anchor=arm.reference_anchor,
       )
 
   async def request_initialization_status(self, module: str = "C0") -> bool:

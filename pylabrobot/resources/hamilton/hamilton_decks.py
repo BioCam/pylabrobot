@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABCMeta, abstractmethod
-from typing import Dict, Literal, Optional, cast
+from typing import Literal, Optional, cast
 
 from pylabrobot.resources.carrier import ResourceHolder
 from pylabrobot.resources.coordinate import Coordinate
@@ -22,9 +22,6 @@ _RAILS_WIDTH = 22.5  # space between rails (mm)
 # safety height, level with the raised stop discs so it clears them as it travels.
 _X_ARM_Z = 334.7
 _X_ARM_SIZE_Z = 140.0
-
-# Where along an X-arm's width its x refers to, as the anchor `Resource.get_anchor` takes.
-X_ARM_REFERENCE_ANCHORS: Dict[Literal["center", "right"], str] = {"center": "c", "right": "r"}
 
 STARLET_NUM_RAILS = 32
 STARLET_SIZE_X = 1005
@@ -88,7 +85,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     x: float,
     width: float,
     model: str,
-    reference_point: Literal["center", "right"],
+    reference_anchor: Literal["l", "c", "r"],
   ) -> Resource:
     """Get, or create once, the deck-owned X-arm resource called `name`.
 
@@ -100,8 +97,8 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       x: where the arm is now, in mm, at its reference point.
       width: how wide the arm is, in mm, as the machine reports it.
       model: which arm this is.
-      reference_point: where along the width `x` refers to: the centre of a dual-rail arm, the
-        right edge of a single-rail one.
+      reference_anchor: where along the width `x` refers to, as an anchor: `"c"` for a dual-rail
+        arm, `"r"` for a single-rail one.
 
     Returns:
       The arm resource, whether it was just created or already there.
@@ -118,7 +115,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     )
     # Place it so its reference point lands at the arm's current x. The arm sits above the deck
     # plane, so it does not count as occupying the footprint of the carriers beneath it.
-    anchor = x_arm.get_anchor(x=X_ARM_REFERENCE_ANCHORS[reference_point])
+    anchor = x_arm.get_anchor(x=reference_anchor)
     self.assign_child_resource(x_arm, location=Coordinate(x - anchor.x, 0.0, _X_ARM_Z))
     return x_arm
 

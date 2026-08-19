@@ -24,10 +24,7 @@ from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfigurati
 from pylabrobot.hamilton.star.driver.master import STARDriver
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
-from pylabrobot.resources.hamilton.hamilton_decks import (
-  X_ARM_REFERENCE_ANCHORS,
-  HamiltonDeck,
-)
+from pylabrobot.resources.hamilton.hamilton_decks import HamiltonDeck
 
 logger = logging.getLogger(__name__)
 
@@ -189,9 +186,7 @@ class SimulatedXArm(_Simulated, XArm):
     # With a deck, where the arm is is what the model says, so a simulated run answers the way a
     # real one does rather than from a remembered value. Without one, it reports where it rests.
     if self.resource is not None and self.resource.location is not None:
-      anchor = self.resource.get_anchor(
-        x=X_ARM_REFERENCE_ANCHORS[self.configuration.reference_point]
-      )
+      anchor = self.resource.get_anchor(x=self.reference_anchor)
       return self.resource.location.x + anchor.x
     if self.side == "left" or self.configuration.x_range is None:
       return SIMULATED_LEFT_X_ARM_POSITION

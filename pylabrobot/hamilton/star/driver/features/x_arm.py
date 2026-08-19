@@ -3,11 +3,10 @@
 import datetime
 import logging
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Dict, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 from pylabrobot.resources.coordinate import Coordinate
-from pylabrobot.resources.hamilton.hamilton_decks import X_ARM_REFERENCE_ANCHORS
 from pylabrobot.resources.resource import Resource
 
 if TYPE_CHECKING:
@@ -89,6 +88,13 @@ class XArmConfiguration:
     if self.width is None:
       raise RuntimeError("arm geometry not resolved")
     return "center" if self.width > 300 else "right"
+
+
+# Where along an arm's width its x refers to, as the anchor `Resource.get_anchor` takes.
+REFERENCE_ANCHORS: Dict[Literal["center", "right"], Literal["l", "c", "r"]] = {
+  "center": "c",
+  "right": "r",
+}
 
 
 class XArm:
@@ -267,6 +273,11 @@ class XArm:
     self.update_location_by_reference_point(x)
     return resp
 
+  @property
+  def reference_anchor(self) -> Literal["l", "c", "r"]:
+    """Where along its width this arm's x refers to, as a resource anchor."""
+    return REFERENCE_ANCHORS[self.configuration.reference_point]
+
   def update_location_by_reference_point(self, x: float) -> None:
     """Record where this arm is on the resource that models it.
 
@@ -280,7 +291,7 @@ class XArm:
     """
     if self.resource is None or self.resource.location is None:
       return
-    anchor = self.resource.get_anchor(x=X_ARM_REFERENCE_ANCHORS[self.configuration.reference_point])
+    anchor = self.resource.get_anchor(x=self.reference_anchor)
     self.resource.location = Coordinate(
       x - anchor.x, self.resource.location.y, self.resource.location.z
     )
