@@ -190,6 +190,9 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     short of the deck's right edge, so its width follows from the deck. Created as a child the
     first time and reused thereafter, so repeated setups do not duplicate it.
 
+    Its own track markings line up with the deck's, so a carrier put on the tray at a track goes to
+    that same track on the deck.
+
     Args:
       name: what to call it.
 
