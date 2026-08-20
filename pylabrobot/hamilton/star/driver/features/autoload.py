@@ -3,7 +3,7 @@
 import logging
 import string
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.resources.barcode import Barcode1DSymbology, Barcode2DSymbology
 from pylabrobot.resources.coordinate import Coordinate
@@ -13,13 +13,6 @@ if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
 
 logger = logging.getLogger(__name__)
-
-# Where the drive's zero sits on the deck, in mm: track 1. Measured by reading the drive at two
-# tracks ten apart and finding exactly 22.5 mm per track, and confirmed at the park position, where
-# it reads 1192.5 mm with the carrier-handling wheel standing at track 54.
-DRIVE_ZERO_ON_THE_DECK = 100.0
-# How far the wheel sits from the sled's left edge, in mm, read off the machine with a rule.
-WHEEL_FROM_SLED_LEFT_EDGE = 200.0
 
 # Where the carrier drive can be sent by name.
 YPosition = Literal["loading_tray", "carrier_identification", "deck"]
@@ -54,14 +47,6 @@ SYMBOLOGY_MASKS_2D: Dict[Barcode2DSymbology, int] = {
   "GS1 DataBar": 0x40,
   "EAN/UCC Comp": 0x80,
   "ANY 2D": 0xFF,
-}
-
-# What each kind of autoload reads. One that names no scanner is absent, and is refused.
-SYMBOLOGIES_BY_AUTOLOAD: Dict[
-  str, Tuple[Dict[Barcode1DSymbology, int], Optional[Dict[Barcode2DSymbology, int]]]
-] = {
-  "1D barcode scanner": (SYMBOLOGY_MASKS_1D, None),
-  "2D barcode scanner": (SYMBOLOGY_MASKS_1D, SYMBOLOGY_MASKS_2D),
 }
 
 BarcodeReadingDirection = Literal["vertical", "horizontal"]
@@ -138,6 +123,13 @@ class AutoloadConfiguration:
 
   # -- scanner X drive (along the deck) --
   x_drive_mm_per_increment: float = 0.1
+  # Where the drive counts from, on the deck: track 1, a hundred millimetres along it. Measured by
+  # reading the drive at two tracks ten apart and finding exactly 22.5 mm per track, and confirmed
+  # at the park position, where it reads 1192.5 mm with the wheel standing at track 54.
+  drive_zero_on_the_deck: float = 100.0
+  # What the drive reports is where the carrier-handling wheel is, and the wheel sits this far from
+  # the sled's left edge. Measured on the machine.
+  wheel_from_sled_left_edge: float = 20.0
   """How far one step moves the scanner, in mm. Which of the two resolutions a unit has is held in
   its own memory: 0.1 as here, or 0.125 on a pilot-lot scanner."""
   x_drive_increment_range: Tuple[int, int] = (0, 12_500)
@@ -261,9 +253,12 @@ class Autoload:
     c = self.configuration
     c.firmware_version = await self.request_firmware_version()
     c.autoload_type = await self.request_autoload_type()
-    c.barcode_symbologies, c.barcode_2d_symbologies = SYMBOLOGIES_BY_AUTOLOAD.get(
-      c.autoload_type or "", (None, None)
-    )
+    # Both scanners read the 1D symbologies; only the 2D one also reads the 2D ones. An autoload
+    # that is neither has no scanner, and its symbologies stay unset.
+    if c.autoload_type in ("1D barcode scanner", "2D barcode scanner"):
+      c.barcode_symbologies = SYMBOLOGY_MASKS_1D
+    if c.autoload_type == "2D barcode scanner":
+      c.barcode_2d_symbologies = SYMBOLOGY_MASKS_2D
 
   # -- initialization ------------------------------------------------------------------------------
 
@@ -284,7 +279,7 @@ class Autoload:
     """
     if not await self.request_initialization_status():
       logger.debug("autoload reports itself uninitialized - homing its drives")
-      await self._driver.send_command(module="C0", command="II")
+      await self._send_and_record_position(module="C0", command="II")
     await self.move_to_safe_z()
     self.configuration.z_drive_safety_position = await self.request_z_position()
 
@@ -293,6 +288,30 @@ class Autoload:
       await self.park()
 
   # -- scanner X drive (along the deck) ------------------------------------------------------------
+
+  async def _send_and_record_position(self, **kwargs: Any) -> Any:
+    """Send a command that moves the sled, and record where the sled ended up.
+
+    Read afterwards either way: a command that failed part way leaves the sled somewhere neither
+    where it was nor where it was going, which is exactly when the model must not be trusted to
+    have stayed put. If that read also fails, the command's own error is the one to raise.
+
+    Args:
+      kwargs: what to send, as `send_command` takes it.
+
+    Returns:
+      Whatever the command answered.
+    """
+    try:
+      resp = await self._driver.send_command(**kwargs)
+    except BaseException:
+      try:
+        await self.request_x_position()
+      except BaseException:
+        logger.warning("could not read where the autoload stopped; its model is stale")
+      raise
+    await self.request_x_position()
+    return resp
 
   async def request_track(self) -> int:
     """Request the current track of the autoload's carrier handler.
@@ -330,8 +349,9 @@ class Autoload:
     """
     if self.resource is None or self.resource.location is None:
       return
+    c = self.configuration
     self.resource.location = Coordinate(
-      x + DRIVE_ZERO_ON_THE_DECK - WHEEL_FROM_SLED_LEFT_EDGE,
+      x + c.drive_zero_on_the_deck - c.wheel_from_sled_left_edge,
       self.resource.location.y,
       self.resource.location.z,
     )
@@ -419,7 +439,7 @@ class Autoload:
       )
       await self.move_to_safe_z()
 
-    resp = await self._driver.send_command(
+    return await self._send_and_record_position(
       module="I0",
       command="XP",
       xp=f"{track:02}",
@@ -427,10 +447,6 @@ class Autoload:
       xr=f"{acceleration_ramp:01}",
       xw=f"{current_limit:01}",
     )
-    # Once the machine has answered: the drive says where the sled ended up, which is what the
-    # resource records. A move that raised leaves it somewhere unknown, so nothing is recorded.
-    await self.request_x_position()
-    return resp
 
   async def park(self):
     """Park the autoload at the last track this machine has.
@@ -963,7 +979,7 @@ class Autoload:
     try:
       resp = cast(
         str,
-        await self._driver.send_command(
+        await self._send_and_record_position(
           module="C0",
           command="CI",
           cp=f"{track:02}",
@@ -990,7 +1006,7 @@ class Autoload:
     Sent after its barcode has been scanned.
     """
     try:
-      return await self._driver.send_command(module="C0", command="CA")
+      return await self._send_and_record_position(module="C0", command="CA")
     except BaseException:
       await self.move_to_safe_z()
       raise
@@ -1015,7 +1031,7 @@ class Autoload:
       raise ValueError(f"the carrier at track {track} is on the loading tray, not the deck")
 
     try:
-      return await self._driver.send_command(module="C0", command="CN", cp=f"{track:02}")
+      return await self._send_and_record_position(module="C0", command="CN", cp=f"{track:02}")
     except BaseException:
       # The wheel is left wherever the failure stopped it, and nothing may travel with it down.
       await self.move_to_safe_z()
@@ -1093,7 +1109,7 @@ class Autoload:
     try:
       resp = cast(
         str,
-        await self._driver.send_command(
+        await self._send_and_record_position(
           module="C0",
           command="CL",
           bd=f"{directions[direction]:01}",
@@ -1139,7 +1155,7 @@ class Autoload:
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
 
-    resp = await self._driver.send_command(module="C0", command="CR", cp=f"{track:02}")
+    resp = await self._send_and_record_position(module="C0", command="CR", cp=f"{track:02}")
     if park_after:
       await self.park()
     return resp
@@ -1159,7 +1175,7 @@ class Autoload:
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
 
-    resp = await self._driver.send_command(module="C0", command="CW", cp=f"{track:02}")
+    resp = await self._send_and_record_position(module="C0", command="CW", cp=f"{track:02}")
     if park_after:
       await self.park()
     return resp

@@ -457,7 +457,11 @@ class STARDriver:
     if self.autoload is None or self.deck is None:
       return
     x = await self.autoload.request_x_position()
-    self.autoload.resource = self.deck.get_or_create_autoload_sled(name="autoload_sled", x=x)
+    self.autoload.resource = self.deck.get_or_create_autoload_sled(
+      name="autoload_sled",
+      x=x,
+      wheel_from_left=self.autoload.configuration.wheel_from_sled_left_edge,
+    )
     self.autoload.update_location(x)
 
   async def request_initialization_status(self, module: str = "C0") -> bool:

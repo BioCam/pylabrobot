@@ -32,6 +32,9 @@ RESOLUTIONS_FIRST_YEAR = 2010
 # The retract drives the head to its Z-safety height, which takes a while.
 RETRACT_READ_TIMEOUT = 20
 
+# The drive parameters the head stores: each drive's speed and acceleration.
+DRIVE_PARAMETERS = ("yv", "yr", "zv", "zr")
+
 # The head's channels sit on a 9 mm grid, 12 across and 8 deep, so the array they cover is this
 # wide and this deep. The body around them is larger, and how much is not read from anywhere.
 CHANNEL_PITCH = 9.0
@@ -265,6 +268,20 @@ def get_or_create_head96(arm: Resource, x_offset: Optional[float]) -> Resource:
   return head
 
 
+def require_drive_parameter(parameter: str) -> None:
+  """Raise unless this is one of the drive parameters the head stores.
+
+  Args:
+    parameter: `yv` or `yr` for the Y drive's speed and acceleration, `zv` or `zr` for the Z
+      drive's.
+
+  Raises:
+    ValueError: If it is not one of those four.
+  """
+  if parameter not in DRIVE_PARAMETERS:
+    raise ValueError(f"unknown drive parameter {parameter!r}, expected one of {DRIVE_PARAMETERS}")
+
+
 class Head96:
   """The 96-head.
 
@@ -348,18 +365,13 @@ class Head96:
     Raises:
       ValueError: If the parameter is not one of the four drive parameters.
     """
-    to_mm = {
-      "yv": self.configuration.y_drive_increments_to_mm,
-      "yr": self.configuration.y_drive_increments_to_mm,
-      "zv": self.configuration.z_drive_increments_to_mm,
-      "zr": self.configuration.z_drive_increments_to_mm,
-    }
-    if parameter not in to_mm:
-      raise ValueError(f"unknown drive parameter {parameter!r}, expected one of {sorted(to_mm)}")
+    require_drive_parameter(parameter)
+    c = self.configuration
+    to_mm = c.y_drive_increments_to_mm if parameter[0] == "y" else c.z_drive_increments_to_mm
     resp = await self._driver.send_command(
       module="H0", command="RA", ra=parameter, fmt=f"{parameter}#####"
     )
-    return to_mm[parameter](cast(int, resp[parameter]))
+    return to_mm(cast(int, resp[parameter]))
 
   async def discover(self):
     """Read what head this is and what it can do. Read-only: nothing moves."""
@@ -413,17 +425,12 @@ class Head96:
     Raises:
       ValueError: If the parameter is not one of the four drive parameters.
     """
-    to_increments = {
-      "yv": self.configuration.y_drive_mm_to_increments,
-      "yr": self.configuration.y_drive_mm_to_increments,
-      "zv": self.configuration.z_drive_mm_to_increments,
-      "zr": self.configuration.z_drive_mm_to_increments,
-    }
-    if parameter not in to_increments:
-      raise ValueError(
-        f"unknown drive parameter {parameter!r}, expected one of {sorted(to_increments)}"
-      )
-    written: Dict[str, Any] = {parameter: f"{to_increments[parameter](value):05}"}
+    require_drive_parameter(parameter)
+    c = self.configuration
+    to_increments = (
+      c.y_drive_mm_to_increments if parameter[0] == "y" else c.z_drive_mm_to_increments
+    )
+    written: Dict[str, Any] = {parameter: f"{to_increments(value):05}"}
     await self._driver.send_command(module="H0", command="AA", **written)
 
   async def park(self):

@@ -35,10 +35,6 @@ _AUTOLOAD_SLED_SIZE_Z = 100.0
 # behind it and 96 mm in front of it, so it straddles the deck's front edge.
 _AUTOLOAD_SLED_BEHIND_CARRIER_Y = 20.0
 _AUTOLOAD_SLED_AHEAD_OF_CARRIER_Y = 96.0
-# How far the carrier-handling wheel sits from the sled's left edge (mm), which is the point the
-# drive reports: parked, it reads the deck position of track 54, where the wheel then stands.
-_AUTOLOAD_WHEEL_FROM_LEFT = 200.0
-
 # Where the loading tray sits, measured against the two things on the deck it lines up with: its
 # left edge is 104 mm left of where the first carrier starts, and it spans from 380 mm in front of a
 # carrier's front edge to 132 mm in front of it - so 248 mm deep, against the 250 it was called when
@@ -150,7 +146,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     self.assign_child_resource(x_arm, location=Coordinate(x - anchor.x, y, _X_ARM_Z))
     return x_arm
 
-  def get_or_create_autoload_sled(self, name: str, x: float) -> Resource:
+  def get_or_create_autoload_sled(self, name: str, x: float, wheel_from_left: float) -> Resource:
     """Get, or create once, the deck-owned autoload sled.
 
     The deck owns it: created as a child the first time and reused thereafter, so repeated setups
@@ -160,6 +156,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       name: where the carrier-handling wheel is, in mm, on this deck. The wheel is the point the
         drive reports, so the sled is placed around it.
       x: where the wheel is, in mm, on this deck.
+      wheel_from_left: how far the wheel sits from the sled's left edge, in mm.
 
     Returns:
       The sled resource, whether it was just created or already there.
@@ -176,9 +173,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     )
     self.assign_child_resource(
       sled,
-      location=Coordinate(
-        x - _AUTOLOAD_WHEEL_FROM_LEFT, _CARRIER_Y - _AUTOLOAD_SLED_AHEAD_OF_CARRIER_Y, 0.0
-      ),
+      location=Coordinate(x - wheel_from_left, _CARRIER_Y - _AUTOLOAD_SLED_AHEAD_OF_CARRIER_Y, 0.0),
     )
     return sled
 

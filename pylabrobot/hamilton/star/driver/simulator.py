@@ -24,6 +24,7 @@ from pylabrobot.hamilton.star.driver.features.head96 import (
   HEAD96_REFERENCE_ANCHOR,
   Head96,
   HeadType,
+  require_drive_parameter,
 )
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import PipetteConfiguration, Pipettes
@@ -224,6 +225,9 @@ class SimulatedHead96(_Simulated, Head96):
     return SIMULATED_HEAD96_Z_SAFETY
 
   async def request_drive_parameter(self, parameter: str) -> float:
+    # Guarded as the real read guards it: a name the head does not store is a caller's mistake, and
+    # should say so here as it would there rather than raising a lookup error.
+    require_drive_parameter(parameter)
     return SIMULATED_HEAD96_DRIVE_PARAMETERS[parameter]
 
   async def initialize(self, *args, **kwargs):

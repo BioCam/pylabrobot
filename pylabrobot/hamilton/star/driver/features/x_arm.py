@@ -86,13 +86,6 @@ class XArmConfiguration:
     return "center" if self.width > 300 else "right"
 
 
-# Where along an arm's width its x refers to, as the anchor `Resource.get_anchor` takes.
-REFERENCE_ANCHORS: Dict[Literal["center", "right"], Literal["l", "c", "r"]] = {
-  "center": "c",
-  "right": "r",
-}
-
-
 class XArm:
   """One X-arm, on the left or the right rail.
 
@@ -301,8 +294,9 @@ class XArm:
 
   @property
   def reference_anchor(self) -> Literal["l", "c", "r"]:
-    """Where along its width this arm's x refers to, as a resource anchor."""
-    return REFERENCE_ANCHORS[self.configuration.reference_point]
+    """Where along its width this arm's x refers to, as a resource anchor: the centre of a
+    dual-rail arm, the right edge of a single-rail one."""
+    return "c" if self.configuration.reference_point == "center" else "r"
 
   def update_location_by_reference_point(self, x: float) -> None:
     """Record where this arm is on the resource that models it.
