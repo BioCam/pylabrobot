@@ -126,8 +126,10 @@ class AutoloadConfiguration:
 
   # -- scanner X drive (along the deck) --
   x_drive_mm_per_increment: float = 0.1
-  """How far one step moves the scanner, in mm. Which of the two resolutions a unit has is held in
-  its own memory: 0.1 as here, or 0.125 on a pilot-lot scanner."""
+  """How far one step moves the scanner, in mm. Read at discovery: a unit holds either 0.1 or
+  0.125 in its own memory, and this default is only right for the units that hold the first."""
+  loading_indicators_installed: Optional[bool] = None
+  """Whether this autoload has the per-track indicator LEDs. Read at discovery."""
   drive_zero_on_the_deck: float = 100.0
   """Where the drive counts from, on the deck: track 1, a hundred millimetres along it."""
   reference_point_from_sled_left_edge: float = 20.0
@@ -172,18 +174,19 @@ class AutoloadConfiguration:
     """A scanner position in steps, from mm."""
     return round(mm / self.x_drive_mm_per_increment)
 
-  def x_drive_increments_to_deck_mm(self, increments: int) -> float:
-    """Where along the deck the wheel is, in mm, from the steps the drive counts in.
+  def to_deck_frame(self, mm: float) -> float:
+    """A position the X drive reports, in the deck's frame.
 
-    The drive counts from its own zero, which sits `drive_zero_on_the_deck` along the deck, so a
-    deck position is that much further on. Every conversion between the two frames goes through
-    here and `deck_mm_to_x_drive_increments`, so the offset is applied in one place.
+    The X drive is the one thing here that does not count in the deck's coordinates: its zero sits
+    `drive_zero_on_the_deck` along the deck. Every crossing between the two frames goes through
+    here and `from_deck_frame`, so the offset is applied in one place. The other drives, and the
+    other capabilities, need no such conversion - their axes are the deck's.
     """
-    return round(increments * self.x_drive_mm_per_increment + self.drive_zero_on_the_deck, 2)
+    return round(mm + self.drive_zero_on_the_deck, 2)
 
-  def deck_mm_to_x_drive_increments(self, mm: float) -> int:
-    """A deck position as the steps the X drive counts in."""
-    return round((mm - self.drive_zero_on_the_deck) / self.x_drive_mm_per_increment)
+  def from_deck_frame(self, mm: float) -> float:
+    """A deck position, in the frame the X drive counts in."""
+    return round(mm - self.drive_zero_on_the_deck, 2)
 
   def z_drive_increments_to_mm(self, increments: int) -> float:
     """How high the handling wheel is, in mm, from steps."""
@@ -253,6 +256,68 @@ class Autoload:
     code = cast(int, resp["cq"])
     return AUTOLOAD_TYPES.get(code, str(code))
 
+  async def request_adjustment_status(self) -> Tuple[datetime.date, bool]:
+    """Request when this autoload was adjusted, and whether it has been.
+
+    Returns:
+      The date of the adjustment, and whether the module considers itself adjusted. An unadjusted
+      module's stored values are factory defaults rather than this unit's own.
+    """
+    resp = await self._driver.send_command(module="I0", command="RJ", fmt="jd&&&&&&&&&&js#")
+    return (
+      datetime.date.fromisoformat(cast(str, resp["jd"])),
+      cast(int, resp["js"]) == 1,
+    )
+
+  async def request_init_slot(self) -> int:
+    """Request the track the X drive initializes against.
+
+    Returns:
+      The track, counted from 1.
+    """
+    resp = await self._driver.send_command(module="I0", command="QX", fmt="bx##")
+    return cast(int, resp["bx"])
+
+  async def request_adjustment_values(self) -> str:
+    """Request every adjustment value the module stores, as it writes them.
+
+    Holds each drive's initialization position and the motor PWM tables. Returned unparsed: how
+    many fields come back varies by unit, as the 96-head's equivalent read showed, and the point of
+    this is to see what a unit actually holds.
+
+    Returns:
+      The reply, as the module wrote it.
+    """
+    return cast(str, await self._driver.send_command(module="I0", command="RK"))
+
+  async def request_module_configuration(self) -> Tuple[float, bool]:
+    """Request what this autoload is built with: its scanner's step size, and its indicators.
+
+    The step size is the one thing here that differs between units and cannot be derived, so it is
+    read rather than assumed.
+
+    Returns:
+      How far one scanner step moves it, in mm, and whether the loading indicators are fitted.
+    """
+    resp = await self._driver.send_command(module="I0", command="RA", ra="au", fmt="au# (n)")
+    configuration = cast(List[int], resp["au"])
+    return 0.1 if configuration[0] == 0 else 0.125, configuration[1] == 0
+
+  async def request_parameter(self, parameter: str) -> str:
+    """Request one of the parameters the module stores, by name.
+
+    The way the iSWAP's predefined-position tables are read, and the 96-head's drive parameters.
+    Returned unparsed: each name has its own shape, and this exists to see what a unit holds rather
+    than to drive it.
+
+    Args:
+      parameter: the two-letter name, as the module's own command set writes it.
+
+    Returns:
+      The reply, as the module wrote it.
+    """
+    return cast(str, await self._driver.send_command(module="I0", command="RA", ra=parameter))
+
   async def request_initialization_status(self) -> bool:
     """Request whether the autoload reports itself initialized.
 
@@ -268,6 +333,10 @@ class Autoload:
     c = self.configuration
     c.firmware_version, c.firmware_date = await self.request_firmware_version()
     c.autoload_type = await self.request_autoload_type()
+    (
+      c.x_drive_mm_per_increment,
+      c.loading_indicators_installed,
+    ) = await self.request_module_configuration()
     # Both scanners read the 1D symbologies; only the 2D one also reads the 2D ones. An autoload
     # that is neither has no scanner, and its symbologies stay unset.
     if c.autoload_type in ("1D barcode scanner", "2D barcode scanner"):
@@ -349,8 +418,9 @@ class Autoload:
     Returns:
       The position along the deck, in mm.
     """
-    x = self.configuration.x_drive_increments_to_deck_mm(
-      await self._request_drive_position("RX", digits=5)
+    c = self.configuration
+    x = c.to_deck_frame(
+      c.x_drive_increments_to_mm(await self._request_drive_position("RX", digits=5))
     )
     self.update_location_by_reference_point(x)
     return x
@@ -407,9 +477,9 @@ class Autoload:
     c = self.configuration
     if axis == "x":
       low, high = c.x_drive_increment_range
-      low_mm = c.x_drive_increments_to_deck_mm(low)
-      high_mm = c.x_drive_increments_to_deck_mm(high)
-      increments = c.deck_mm_to_x_drive_increments(value)
+      low_mm = c.to_deck_frame(c.x_drive_increments_to_mm(low))
+      high_mm = c.to_deck_frame(c.x_drive_increments_to_mm(high))
+      increments = c.x_drive_mm_to_increments(c.from_deck_frame(value))
     elif axis == "y":
       low, high = c.y_drive_increment_range
       low_mm, high_mm = c.y_drive_increments_to_mm(low), c.y_drive_increments_to_mm(high)
@@ -533,7 +603,7 @@ class Autoload:
 
     # -- parameter validation ----------------------------------------------------------------------
     self._check_reachable("x", x)
-    increments = c.deck_mm_to_x_drive_increments(x)
+    increments = c.x_drive_mm_to_increments(c.from_deck_frame(x))
 
     low, high = c.x_drive_speed_increment_range
     speed_increments = c.x_drive_mm_to_increments(speed)

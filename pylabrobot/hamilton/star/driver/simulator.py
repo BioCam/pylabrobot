@@ -280,6 +280,10 @@ class SimulatedAutoload(_Simulated, Autoload):
       )
     return version, parse_firmware_version_date(version)
 
+  async def request_module_configuration(self) -> Tuple[float, bool]:
+    # What this machine's own autoload answered: the 0.1 mm scanner, indicators fitted.
+    return SIMULATED_AUTOLOAD.x_drive_mm_per_increment, True
+
   async def request_autoload_type(self) -> str:
     autoload_type = self.machine.simulated_autoload.autoload_type
     if autoload_type is None:
