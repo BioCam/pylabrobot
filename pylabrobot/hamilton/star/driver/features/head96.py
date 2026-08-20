@@ -35,22 +35,8 @@ RETRACT_READ_TIMEOUT = 20
 # The drive parameters the head stores: each drive's speed and acceleration.
 DRIVE_PARAMETERS = ("yv", "yr", "zv", "zr")
 
-# The head's channels sit on a 9 mm grid, 12 across and 8 deep, so the array they cover is this
-# wide and this deep. The body around them is larger, and how much is not read from anywhere.
-CHANNEL_PITCH = 9.0
-HEAD96_SIZE_X = 11 * CHANNEL_PITCH
-HEAD96_SIZE_Y = 7 * CHANNEL_PITCH
-# How tall to draw it. Not sourced: the head's own extent is not something the machine reports.
-HEAD96_SIZE_Z = 140.0
 # Channel A1 sits at the back left of the array, so the drive's Y is the resource's back edge.
 HEAD96_REFERENCE_ANCHOR = "b"
-# What the head is called on the arm that carries it.
-HEAD96_NAME = "head96"
-
-# How long a Y move may take before the reply is given up on, in seconds. The drive crosses its
-# whole travel in a few seconds at the slowest acceleration the firmware accepts.
-Y_MOVE_READ_TIMEOUT = 30
-INITIALIZE_READ_TIMEOUT = 60
 
 # Where the head is left when initialization finishes, in mm.
 INITIALIZE_Z_POSITION_AT_END = 245.0
@@ -70,6 +56,16 @@ class Head96Configuration:
   x_offset: Optional[float] = None
   """Deck X distance from the X-arm carriage center to head channel A1 (mm), read from
   master EEPROM at setup. Mirrors the iSWAP's rotation-drive x-offset."""
+
+  channel_pitch: float = 9.0
+  """Distance between neighbouring channels along both axes, in mm."""
+  channel_columns: int = 12
+  """How many channels the head carries across."""
+  channel_rows: int = 8
+  """How many channels the head carries front to back."""
+  body_size_z: float = 140.0
+  """How tall to model the head, in mm. Not read from anywhere: how far the head extends is not
+  something the machine reports."""
   supports_clot_monitoring_clld: Optional[bool] = None
   stop_disc_type: Optional[StopDiscType] = None
   instrument_type: Optional[InstrumentType] = None
@@ -109,6 +105,20 @@ class Head96Configuration:
   y_drive_acceleration_default: Optional[float] = None
   z_drive_speed_default: Optional[float] = None
   z_drive_acceleration_default: Optional[float] = None
+
+  @property
+  def channel_array_size_x(self) -> float:
+    """How wide the channel array is: the first column's centre to the last's, in mm.
+
+    What the resource modelling the head spans, so that channel A1 lands on its left back corner.
+    The body around the channels is larger, and by how much is not read from anywhere.
+    """
+    return (self.channel_columns - 1) * self.channel_pitch
+
+  @property
+  def channel_array_size_y(self) -> float:
+    """How deep the channel array is: the first row's centre to the last's, in mm."""
+    return (self.channel_rows - 1) * self.channel_pitch
 
   # -- conversions: the wire counts in increments, the driver speaks mm and uL ---------------
 
@@ -229,43 +239,6 @@ class Head96Configuration:
     """Squeezer-drive default acceleration (mm/s2); 2013 firmware raised it."""
     increments = 300000 if self.firmware_year >= 2010 else 100000
     return self.squeezer_drive_increments_to_mm(increments)
-
-
-def get_or_create_head96(arm: Resource, x_offset: Optional[float]) -> Resource:
-  """Get, or create once, the 96-head resource on the arm that carries it.
-
-  The head is a child of the arm, so it follows it along the rail. Where it sits across the arm is
-  fixed: the machine reports how far channel A1 is from the carriage centre.
-
-  Args:
-    arm: the resource modelling the arm this head rides.
-    x_offset: how far channel A1 sits from the carriage centre, in mm, as the machine reports it.
-
-  Returns:
-    The head resource, whether it was just created or already there.
-
-  Raises:
-    RuntimeError: If the offset was not read, so where the head sits across the arm is unknown.
-  """
-  existing = next((child for child in arm.children if child.name == HEAD96_NAME), None)
-  if existing is not None:
-    return existing
-  if x_offset is None:
-    raise RuntimeError("the 96-head's X offset was not read; have you called `star.setup()`?")
-  head = Resource(
-    name=HEAD96_NAME,
-    size_x=HEAD96_SIZE_X,
-    size_y=HEAD96_SIZE_Y,
-    size_z=HEAD96_SIZE_Z,
-    category="head96",
-    model="hamilton_star_core_96_head",
-  )
-  # Channel A1 sits `x_offset` left of the carriage centre, and the arm is located by its own left
-  # edge, so A1 lands that far left of the arm's centre. Y is set from the drive once it is read.
-  arm.assign_child_resource(
-    head, location=Coordinate(arm.get_absolute_size_x() / 2 - x_offset, 0.0, 0.0)
-  )
-  return head
 
 
 def require_drive_parameter(parameter: str) -> None:
@@ -415,6 +388,20 @@ class Head96:
     self.update_location_by_reference_point(y=y)
     return y
 
+  async def request_predefined_y_positions(self) -> List[float]:
+    """Request the Y positions the head has stored, in mm.
+
+    The head keeps ten of them in non-volatile memory. The first is the home position the Y drive
+    parks at; the rest are further slots this capability sends no command against, so they are
+    returned as read rather than named.
+
+    Returns:
+      The ten stored positions in mm, the first being home.
+    """
+    resp = await self._driver.send_command(module="H0", command="RA", ra="py", fmt="py##### (n)")
+    increments = cast(List[int], resp["py"])
+    return [self.configuration.y_drive_increments_to_mm(i) for i in increments]
+
   async def set_drive_parameter(self, parameter: str, value: float) -> None:
     """Write one of the head's stored drive parameters.
 
@@ -433,13 +420,13 @@ class Head96:
     written: Dict[str, Any] = {parameter: f"{to_increments(value):05}"}
     await self._driver.send_command(module="H0", command="AA", **written)
 
-  async def park(self):
+  async def park(self, read_timeout: int = 30):
     """Send the head to its home position. This moves it in Y and in Z.
 
     Uses the drive's own speeds and accelerations, as legacy does, rather than writing any into the
     register. Where it comes to rest is read back afterwards.
     """
-    await self._driver.send_command(module="H0", command="MO", read_timeout=Y_MOVE_READ_TIMEOUT)
+    await self._driver.send_command(module="H0", command="MO", read_timeout=read_timeout)
     await self.request_y_position()
 
   def update_location_by_reference_point(self, y: float) -> None:
@@ -460,12 +447,28 @@ class Head96:
       self.resource.location.x, y - anchor.y, self.resource.location.z
     )
 
+  def _check_reachable(self, y: float) -> None:
+    """Raise if `y` is outside the head's Y travel.
+
+    `y` is where channel A1 would be, which is what the drive positions by.
+
+    Args:
+      y: target Y position in mm.
+
+    Raises:
+      ValueError: If `y` is outside the travel range.
+    """
+    low, high = self.configuration.y_range
+    if not low <= y <= high:
+      raise ValueError(f"y must be between {low} and {high}, is {y}")
+
   async def move_y(
     self,
     y: float,
     speed: Optional[float] = None,
     acceleration: Optional[float] = None,
     current_limit: int = 15,
+    read_timeout: int = 30,
   ):
     """Move the head along Y. This moves it, and nothing else on the arm.
 
@@ -491,8 +494,8 @@ class Head96:
     if speed is None or acceleration is None:
       raise RuntimeError("the head's drive defaults were not read; have you called `star.setup()`?")
 
+    self._check_reachable(y)
     for value, (low, high), name in (
-      (y, c.y_range, "y"),
       (speed, c.y_speed_range, "speed"),
       (acceleration, c.y_acceleration_range, "acceleration"),
     ):
@@ -511,7 +514,7 @@ class Head96:
         yv=f"{c.y_drive_mm_to_increments(speed):05}",
         yr=f"{c.y_drive_mm_to_increments(acceleration):05}",
         yw=f"{current_limit:02}",
-        read_timeout=Y_MOVE_READ_TIMEOUT,
+        read_timeout=read_timeout,
       )
     finally:
       # Where it was told to go, then where the drive says it went.
@@ -535,6 +538,20 @@ class Head96:
     resp = await self._driver.send_command(module="H0", command="RZ", fmt="rz##### (n)")
     increments = cast(List[int], resp["rz"])[1]  # [0] = firmware counter, [1] = hardware counter
     return self.configuration.z_drive_increments_to_mm(increments)
+
+  async def request_predefined_z_positions(self) -> List[float]:
+    """Request the Z positions the head has stored, in mm.
+
+    The head keeps ten of them in non-volatile memory. The first is the home position the Z drive
+    parks at; the rest are further slots this capability sends no command against, so they are
+    returned as read rather than named. These are stop-disk positions, as `request_stop_disk_z` is.
+
+    Returns:
+      The ten stored positions in mm, the first being home.
+    """
+    resp = await self._driver.send_command(module="H0", command="RA", ra="pz", fmt="pz##### (n)")
+    increments = cast(List[int], resp["pz"])
+    return [self.configuration.z_drive_increments_to_mm(i) for i in increments]
 
   async def move_to_z_safety(self) -> float:
     """Drive the head to its Z-safety height and read where that put it.
@@ -570,6 +587,7 @@ class Head96:
     y: Optional[float] = None,
     z: Optional[float] = None,
     z_position_at_the_command_end: float = INITIALIZE_Z_POSITION_AT_END,
+    read_timeout: int = 60,
   ):
     """Initialize the head, discarding whatever is mounted on it.
 
@@ -597,7 +615,7 @@ class Head96:
     return await self._driver.send_command(
       module="C0",
       command="EI",
-      read_timeout=INITIALIZE_READ_TIMEOUT,
+      read_timeout=read_timeout,
       xs=f"{abs(round(x * 10)):05}",
       xd=0 if x >= 0 else 1,
       yh=f"{abs(round(y * 10)):04}",
