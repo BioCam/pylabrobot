@@ -440,8 +440,7 @@ class STARDriver:
 
     A child of the arm's resource rather than of the deck, so it follows the arm in X without
     anything having to keep the two in step. One already on the arm is reused rather than replaced,
-    so repeated setups do not duplicate it. Skipped while the head reports itself uninitialized,
-    since it has no position to report until it has been homed.
+    so repeated setups do not duplicate it.
 
     Raises:
       RuntimeError: If the head's X offset was not read, so where it sits across the arm is
@@ -452,11 +451,6 @@ class STARDriver:
     arm = next((a for a in (self.left_x_arm, self.right_x_arm) if a is not None), None)
     if arm is None or arm.resource is None:
       return
-    if not await self.request_initialization_status("H0"):
-      logger.debug("the 96-head is not initialized, so where it is is unknown - not modelled")
-      return
-    y = await self.head96.request_y_position()
-
     c = self.head96.configuration
     head = next((child for child in arm.resource.children if child.name == "head96"), None)
     if head is None:
@@ -476,7 +470,8 @@ class STARDriver:
         head, location=Coordinate(arm.resource.get_absolute_size_x() / 2 - c.x_offset, 0.0, 0.0)
       )
     self.head96.resource = head
-    self.head96.update_location_by_reference_point(y)
+    # Asking where it is records it, as the arm's and the sled's reads do.
+    await self.head96.request_y_position()
 
   async def _create_autoload_resource(self) -> None:
     """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.

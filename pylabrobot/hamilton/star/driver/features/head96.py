@@ -434,17 +434,27 @@ class Head96:
 
     Only Y: the head rides the arm, so its resource is a child of the arm's and follows it in X.
     The drive positions the head by channel A1, while a resource is located by its left front
-    bottom corner, so the two differ by the head's own anchor. Does nothing when the driver was
+    bottom corner, so the two differ by the head's own anchor.
+
+    The drive answers in the deck's frame, and a resource's location is measured from its parent -
+    which for the head is the arm, not the deck. The two differ by wherever the arm sits, so the
+    arm's own position is taken out before the value is recorded. Does nothing when the driver was
     given no deck, and so has nothing to model.
 
     Args:
-      y: where channel A1 is now, in mm.
+      y: where channel A1 is now, in mm on the deck.
     """
-    if self.resource is None or self.resource.location is None:
+    deck = self._driver.deck
+    if self.resource is None or self.resource.location is None or deck is None:
+      return
+    arm = self.resource.parent
+    if arm is None:
       return
     anchor = self.resource.get_anchor(y=HEAD96_REFERENCE_ANCHOR)
     self.resource.location = Coordinate(
-      self.resource.location.x, y - anchor.y, self.resource.location.z
+      self.resource.location.x,
+      y - arm.get_location_wrt(deck).y - anchor.y,
+      self.resource.location.z,
     )
 
   def _check_reachable(self, y: float) -> None:

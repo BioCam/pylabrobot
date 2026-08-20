@@ -235,10 +235,14 @@ class SimulatedHead96(_Simulated, Head96):
     self.machine.initialized["H0"] = True
 
   async def request_y_position(self) -> float:
-    # From the model where there is one, as the real read reports the drive. Before setup has put
-    # the head on the arm there is nothing to read, and it answers from the middle of its travel.
-    if self.resource is not None and self.resource.location is not None:
-      return self.resource.location.y + self.resource.get_anchor(y=HEAD96_REFERENCE_ANCHOR).y
+    # From the model where there is one, as the real read reports the drive. The drive answers in
+    # the deck's frame, so the model is read in the deck's too - the resource hangs off the arm,
+    # whose own position would otherwise come through. Before setup has put the head on the arm
+    # there is nothing to read, and it answers from the middle of its travel.
+    deck = self.machine.deck
+    if self.resource is not None and self.resource.location is not None and deck is not None:
+      anchor = self.resource.get_anchor(y=HEAD96_REFERENCE_ANCHOR)
+      return round(self.resource.get_location_wrt(deck).y + anchor.y, 2)
     low, high = self.configuration.y_range
     return (low + high) / 2
 
@@ -299,7 +303,29 @@ class SimulatedAutoload(_Simulated, Autoload):
   async def request_track(self) -> int:
     return self.track
 
+  async def move_x(
+    self,
+    x: float,
+    speed: Optional[float] = None,
+    acceleration_ramp: Optional[int] = None,
+    current_limit: Optional[int] = None,
+  ) -> Any:
+    # A simulated drive goes exactly where it is told. The real one is read back afterwards, which
+    # is what `Autoload` relies on, so the position has to be true here before that read happens or
+    # the read returns the position the sled started at and it never moves.
+    resp = await super().move_x(
+      x, speed=speed, acceleration_ramp=acceleration_ramp, current_limit=current_limit
+    )
+    self.update_location_by_reference_point(x)
+    return resp
+
   async def request_x_position(self) -> float:
+    # Where the sled is is what the model says: a simulated machine has no drive to ask. The model
+    # is placed around the carrier-handling wheel, so the wheel stands that far right of its left
+    # edge. Until setup has put it on the deck there is nothing to read, and it answers where it
+    # powered up.
+    if self.resource is not None and self.resource.location is not None:
+      return self.resource.location.x + self.configuration.reference_point_from_sled_left_edge
     return SIMULATED_AUTOLOAD_X_POSITION
 
   async def request_y_position(self) -> float:
