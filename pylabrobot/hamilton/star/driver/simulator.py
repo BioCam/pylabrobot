@@ -222,6 +222,9 @@ class SimulatedHead96(_Simulated, Head96):
     return SIMULATED_HEAD96_X_OFFSET
 
   async def request_stop_disk_z(self) -> float:
+    # Recorded as the real read records it, so a simulated head is modelled at the height it
+    # reports rather than at whatever the arm's own is.
+    self.update_location_by_reference_point(z=SIMULATED_HEAD96_Z_SAFETY)
     return SIMULATED_HEAD96_Z_SAFETY
 
   async def request_drive_parameter(self, parameter: str) -> float:

@@ -37,6 +37,8 @@ DRIVE_PARAMETERS = ("yv", "yr", "zv", "zr")
 
 # Channel A1 sits at the back left of the array, so the drive's Y is the resource's back edge.
 HEAD96_REFERENCE_ANCHOR = "b"
+# The stop disk is the head's lowest fixed feature, so the Z drive reports the resource's bottom.
+HEAD96_Z_REFERENCE_ANCHOR = "b"
 
 # Where the head is left when initialization finishes, in mm.
 INITIALIZE_Z_POSITION_AT_END = 245.0
@@ -429,20 +431,25 @@ class Head96:
     await self._driver.send_command(module="H0", command="MO", read_timeout=read_timeout)
     await self.request_y_position()
 
-  def update_location_by_reference_point(self, y: float) -> None:
+  def update_location_by_reference_point(
+    self, y: Optional[float] = None, z: Optional[float] = None
+  ) -> None:
     """Record where the head is on the resource that models it.
 
-    Only Y: the head rides the arm, so its resource is a child of the arm's and follows it in X.
-    The drive positions the head by channel A1, while a resource is located by its left front
-    bottom corner, so the two differ by the head's own anchor.
+    Y and Z only: the head rides the arm, so its resource is a child of the arm's and follows it in
+    X without anything having to record that. Each axis has its own reference point, and a resource
+    is located by its left front bottom corner, so the two differ by the head's own anchor: the
+    drive positions the head along Y by channel A1, at the array's back edge, and along Z by the
+    stop disk, at its bottom.
 
-    The drive answers in the deck's frame, and a resource's location is measured from its parent -
+    Both drives answer in the deck's frame, and a resource's location is measured from its parent -
     which for the head is the arm, not the deck. The two differ by wherever the arm sits, so the
-    arm's own position is taken out before the value is recorded. Does nothing when the driver was
-    given no deck, and so has nothing to model.
+    arm's own position is taken out before either value is recorded. Does nothing when the driver
+    was given no deck, and so has nothing to model.
 
     Args:
-      y: where channel A1 is now, in mm on the deck.
+      y: where channel A1 is now, in mm on the deck. Left as it was when None.
+      z: where the stop disk is now, in mm on the deck. Left as it was when None.
     """
     deck = self._driver.deck
     if self.resource is None or self.resource.location is None or deck is None:
@@ -450,11 +457,12 @@ class Head96:
     arm = self.resource.parent
     if arm is None:
       return
-    anchor = self.resource.get_anchor(y=HEAD96_REFERENCE_ANCHOR)
+    here, on_the_arm = self.resource.location, arm.get_location_wrt(deck)
+    anchor = self.resource.get_anchor(y=HEAD96_REFERENCE_ANCHOR, z=HEAD96_Z_REFERENCE_ANCHOR)
     self.resource.location = Coordinate(
-      self.resource.location.x,
-      y - arm.get_location_wrt(deck).y - anchor.y,
-      self.resource.location.z,
+      here.x,
+      here.y if y is None else y - on_the_arm.y - anchor.y,
+      here.z if z is None else z - on_the_arm.z - anchor.z,
     )
 
   def _check_reachable(self, y: float) -> None:
@@ -527,13 +535,18 @@ class Head96:
         read_timeout=read_timeout,
       )
     finally:
-      # Where it was told to go, then where the drive says it went.
-      self.update_location_by_reference_point(y)
-      await self.request_y_position()
-      if c.y_drive_mm_to_increments(speed) != c.y_drive_mm_to_increments(was_speed):
-        await self.set_drive_parameter("yv", was_speed)
-      if c.y_drive_mm_to_increments(acceleration) != c.y_drive_mm_to_increments(was_acceleration):
-        await self.set_drive_parameter("yr", was_acceleration)
+      # Where it was told to go, then where the drive says it went. A move that failed part way
+      # left the head somewhere neither describes, which is exactly when the read matters - but a
+      # read that fails here would replace the move's own error with its own, so it is guarded.
+      self.update_location_by_reference_point(y=y)
+      try:
+        await self.request_y_position()
+        if c.y_drive_mm_to_increments(speed) != c.y_drive_mm_to_increments(was_speed):
+          await self.set_drive_parameter("yv", was_speed)
+        if c.y_drive_mm_to_increments(acceleration) != c.y_drive_mm_to_increments(was_acceleration):
+          await self.set_drive_parameter("yr", was_acceleration)
+      except BaseException:
+        logger.warning("could not read where the 96-head stopped, or restore its drive parameters")
 
   # -- z position ------------------------------------------------------------
 
@@ -547,7 +560,9 @@ class Head96:
     """
     resp = await self._driver.send_command(module="H0", command="RZ", fmt="rz##### (n)")
     increments = cast(List[int], resp["rz"])[1]  # [0] = firmware counter, [1] = hardware counter
-    return self.configuration.z_drive_increments_to_mm(increments)
+    z = self.configuration.z_drive_increments_to_mm(increments)
+    self.update_location_by_reference_point(z=z)
+    return z
 
   async def request_predefined_z_positions(self) -> List[float]:
     """Request the Z positions the head has stored, in mm.
