@@ -1,10 +1,12 @@
 """The autoload: the belt and wheel that pull carriers onto the deck and push them back out."""
 
+import datetime
 import logging
 import string
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, cast
 
+from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 from pylabrobot.resources.barcode import Barcode1DSymbology, Barcode2DSymbology
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
@@ -95,6 +97,7 @@ class AutoloadConfiguration:
   """
 
   firmware_version: Optional[str] = None
+  firmware_date: Optional[datetime.date] = None
   autoload_type: Optional[str] = None  # see AUTOLOAD_TYPES
 
   # -- what each drive can be sent to by name, and the code it takes --
@@ -123,15 +126,14 @@ class AutoloadConfiguration:
 
   # -- scanner X drive (along the deck) --
   x_drive_mm_per_increment: float = 0.1
-  # Where the drive counts from, on the deck: track 1, a hundred millimetres along it. Measured by
-  # reading the drive at two tracks ten apart and finding exactly 22.5 mm per track, and confirmed
-  # at the park position, where it reads 1192.5 mm with the wheel standing at track 54.
-  drive_zero_on_the_deck: float = 100.0
-  # What the drive reports is where the carrier-handling wheel is, and the wheel sits this far from
-  # the sled's left edge. Measured on the machine.
-  wheel_from_sled_left_edge: float = 20.0
   """How far one step moves the scanner, in mm. Which of the two resolutions a unit has is held in
   its own memory: 0.1 as here, or 0.125 on a pilot-lot scanner."""
+  drive_zero_on_the_deck: float = 100.0
+  """Where the drive counts from, on the deck: track 1, a hundred millimetres along it."""
+  reference_point_from_sled_left_edge: float = 20.0
+  """Where on the sled the drive's position refers to, as a distance from the sled's left edge in
+  mm. The drive reports the carrier-handling wheel, and the wheel stands this far along the sled;
+  it lines up with a track's origin, not its centre. Measured on the machine."""
   x_drive_increment_range: Tuple[int, int] = (0, 12_500)
   x_drive_speed_increment_range: Tuple[int, int] = (20, 3_000)  # steps per second
   x_drive_speed_default: int = 2_500
@@ -169,6 +171,19 @@ class AutoloadConfiguration:
   def x_drive_mm_to_increments(self, mm: float) -> int:
     """A scanner position in steps, from mm."""
     return round(mm / self.x_drive_mm_per_increment)
+
+  def x_drive_increments_to_deck_mm(self, increments: int) -> float:
+    """Where along the deck the wheel is, in mm, from the steps the drive counts in.
+
+    The drive counts from its own zero, which sits `drive_zero_on_the_deck` along the deck, so a
+    deck position is that much further on. Every conversion between the two frames goes through
+    here and `deck_mm_to_x_drive_increments`, so the offset is applied in one place.
+    """
+    return round(increments * self.x_drive_mm_per_increment + self.drive_zero_on_the_deck, 2)
+
+  def deck_mm_to_x_drive_increments(self, mm: float) -> int:
+    """A deck position as the steps the X drive counts in."""
+    return round((mm - self.drive_zero_on_the_deck) / self.x_drive_mm_per_increment)
 
   def z_drive_increments_to_mm(self, increments: int) -> float:
     """How high the handling wheel is, in mm, from steps."""
@@ -218,14 +233,14 @@ class Autoload:
 
   # -- session / discovery -------------------------------------------------------------------------
 
-  async def request_firmware_version(self) -> str:
-    """Request the autoload's firmware version.
+  async def request_firmware_version(self) -> Tuple[str, datetime.date]:
+    """Request the autoload's firmware version and build date.
 
     Returns:
-      The version string, as reported.
+      The version string and its build date.
     """
     resp: str = await self._driver.send_command(module="I0", command="RF")
-    return resp.split("rf")[-1]
+    return resp.split("rf")[-1], parse_firmware_version_date(resp)
 
   async def request_autoload_type(self) -> str:
     """Request which kind of autoload is fitted.
@@ -251,7 +266,7 @@ class Autoload:
   async def discover(self):
     """Read what autoload this is. Read-only: nothing moves."""
     c = self.configuration
-    c.firmware_version = await self.request_firmware_version()
+    c.firmware_version, c.firmware_date = await self.request_firmware_version()
     c.autoload_type = await self.request_autoload_type()
     # Both scanners read the 1D symbologies; only the 2D one also reads the 2D ones. An autoload
     # that is neither has no scanner, and its symbologies stay unset.
@@ -279,7 +294,7 @@ class Autoload:
     """
     if not await self.request_initialization_status():
       logger.debug("autoload reports itself uninitialized - homing its drives")
-      await self._send_and_record_position(module="C0", command="II")
+      await self._send_command_and_update_sled_x(module="C0", command="II")
     await self.move_to_safe_z()
     self.configuration.z_drive_safety_position = await self.request_z_position()
 
@@ -289,8 +304,12 @@ class Autoload:
 
   # -- scanner X drive (along the deck) ------------------------------------------------------------
 
-  async def _send_and_record_position(self, **kwargs: Any) -> Any:
-    """Send a command that moves the sled, and record where the sled ended up.
+  async def _send_command_and_update_sled_x(self, **kwargs: Any) -> Any:
+    """Send a command that moves the sled, then read back where along X it ended up.
+
+    For the sled-moving commands that do not go through `move_to_track`, which keeps the model in
+    step itself. Every command that shifts the sled has to go through one or the other, or the
+    resource silently drifts from the machine.
 
     Read afterwards either way: a command that failed part way leaves the sled somewhere neither
     where it was nor where it was going, which is exactly when the model must not be trusted to
@@ -328,30 +347,28 @@ class Autoload:
     What the drive answers is recorded on the resource that models the sled.
 
     Returns:
-      The position in mm, from the drive's zero.
+      The position along the deck, in mm.
     """
-    x = self.configuration.x_drive_increments_to_mm(
+    x = self.configuration.x_drive_increments_to_deck_mm(
       await self._request_drive_position("RX", digits=5)
     )
-    self.update_location(x)
+    self.update_location_by_reference_point(x)
     return x
 
-  def update_location(self, x: float) -> None:
+  def update_location_by_reference_point(self, x: float) -> None:
     """Record where the sled is on the resource that models it.
 
-    What the drive reports is where the carrier-handling wheel stands, counted from its own zero at
-    track 1 - a hundred millimetres along the deck - so a deck position is that much further on.
-    The sled is placed around the wheel, which sits back from its left edge. Does nothing when the
-    driver was given no deck.
+    What the drive reports is where the carrier-handling wheel stands. The sled is placed around
+    the wheel, which sits back from its left edge. Does nothing when the driver was given no deck.
 
     Args:
-      x: where the drive says the wheel is, in mm, counted from its own zero.
+      x: where the wheel is along the deck, in mm.
     """
     if self.resource is None or self.resource.location is None:
       return
     c = self.configuration
     self.resource.location = Coordinate(
-      x + c.drive_zero_on_the_deck - c.wheel_from_sled_left_edge,
+      x - c.reference_point_from_sled_left_edge,
       self.resource.location.y,
       self.resource.location.z,
     )
@@ -376,10 +393,38 @@ class Autoload:
     _firmware_counter, hardware_counter = cast(List[int], resp[field])
     return hardware_counter
 
+  def _check_reachable(self, axis: Literal["x", "y", "z"], value: float) -> None:
+    """Raise if a drive cannot be sent where it is being asked to go.
+
+    Args:
+      axis: which drive - `x` the sled along the deck, `y` the handling wheel in and out, `z` the
+        handling wheel up and down.
+      value: where it would be sent, in mm.
+
+    Raises:
+      ValueError: If the drive's travel does not reach it.
+    """
+    c = self.configuration
+    if axis == "x":
+      low, high = c.x_drive_increment_range
+      low_mm = c.x_drive_increments_to_deck_mm(low)
+      high_mm = c.x_drive_increments_to_deck_mm(high)
+      increments = c.deck_mm_to_x_drive_increments(value)
+    elif axis == "y":
+      low, high = c.y_drive_increment_range
+      low_mm, high_mm = c.y_drive_increments_to_mm(low), c.y_drive_increments_to_mm(high)
+      increments = c.y_drive_mm_to_increments(value)
+    else:
+      low, high = c.z_drive_increment_range
+      low_mm, high_mm = c.z_drive_increments_to_mm(low), c.z_drive_increments_to_mm(high)
+      increments = c.z_drive_mm_to_increments(value)
+    if not low <= increments <= high:
+      raise ValueError(f"{axis} must be between {low_mm} and {high_mm} mm, is {value}")
+
   async def move_to_track(
     self,
     track: int,
-    speed: Optional[int] = None,
+    speed: Optional[float] = None,
     acceleration_ramp: Optional[int] = None,
     current_limit: Optional[int] = None,
   ):
@@ -387,8 +432,8 @@ class Autoload:
 
     Args:
       track: which track to move to, counted from 1.
-      speed: how fast to travel, in steps per second. Defaults to
-        `configuration.x_drive_speed_default`.
+      speed: how fast to travel, in mm/s. Defaults to what
+        `configuration.x_drive_speed_default` works out to.
       acceleration_ramp: how hard to accelerate, in multiples of
         `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
         `configuration.x_drive_acceleration_ramp_default`.
@@ -408,7 +453,7 @@ class Autoload:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
 
     # -- parameter resolution ----------------------------------------------------------------------
-    speed = c.x_drive_speed_default if speed is None else speed
+    speed = c.x_drive_increments_to_mm(c.x_drive_speed_default) if speed is None else speed
     acceleration_ramp = (
       c.x_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
     )
@@ -416,8 +461,12 @@ class Autoload:
 
     # -- parameter validation ----------------------------------------------------------------------
     low, high = c.x_drive_speed_increment_range
-    if not low <= speed <= high:
-      raise ValueError(f"speed must be between {low} and {high}, is {speed}")
+    speed_increments = c.x_drive_mm_to_increments(speed)
+    if not low <= speed_increments <= high:
+      raise ValueError(
+        f"speed must be between {c.x_drive_increments_to_mm(low)} and "
+        f"{c.x_drive_increments_to_mm(high)} mm/s, is {speed}"
+      )
 
     low, high = c.x_drive_acceleration_ramp_range
     if not low <= acceleration_ramp <= high:
@@ -439,13 +488,122 @@ class Autoload:
       )
       await self.move_to_safe_z()
 
-    return await self._send_and_record_position(
+    return await self._send_command_and_update_sled_x(
       module="I0",
       command="XP",
       xp=f"{track:02}",
-      xv=f"{speed:04}",
+      xv=f"{speed_increments:04}",
       xr=f"{acceleration_ramp:01}",
       xw=f"{current_limit:01}",
+    )
+
+  async def move_x(
+    self,
+    x: float,
+    speed: Optional[float] = None,
+    acceleration_ramp: Optional[int] = None,
+    current_limit: Optional[int] = None,
+  ):
+    """Move the sled along the deck to a position, raising the wheel first.
+
+    Where `move_to_track` can only reach the tracks, this reaches anywhere between them.
+
+    Args:
+      x: where to send the wheel along the deck, in mm, as `request_x_position` reports it.
+      speed: how fast to travel, in mm/s. Defaults to what
+        `configuration.x_drive_speed_default` works out to.
+      acceleration_ramp: how hard to accelerate, in multiples of
+        `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
+        `configuration.x_drive_acceleration_ramp_default`.
+      current_limit: the motor current limit. Defaults to
+        `configuration.motor_current_limit_default`.
+
+    Raises:
+      ValueError: If the position is outside the drive's travel, or an argument is outside what the
+        drive accepts.
+    """
+    c = self.configuration
+
+    # -- parameter resolution ----------------------------------------------------------------------
+    speed = c.x_drive_increments_to_mm(c.x_drive_speed_default) if speed is None else speed
+    acceleration_ramp = (
+      c.x_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
+    )
+    current_limit = c.motor_current_limit_default if current_limit is None else current_limit
+
+    # -- parameter validation ----------------------------------------------------------------------
+    self._check_reachable("x", x)
+    increments = c.deck_mm_to_x_drive_increments(x)
+
+    low, high = c.x_drive_speed_increment_range
+    speed_increments = c.x_drive_mm_to_increments(speed)
+    if not low <= speed_increments <= high:
+      raise ValueError(
+        f"speed must be between {c.x_drive_increments_to_mm(low)} and "
+        f"{c.x_drive_increments_to_mm(high)} mm/s, is {speed}"
+      )
+
+    low, high = c.x_drive_acceleration_ramp_range
+    if not low <= acceleration_ramp <= high:
+      raise ValueError(
+        f"acceleration_ramp must be between {low} and {high}, is {acceleration_ramp}"
+      )
+
+    low, high = c.motor_current_limit_range
+    if not low <= current_limit <= high:
+      raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
+
+    # -- device preparation ----------------------------------------------------------------------
+    current_wheel_z = await self.request_z_position()
+    if c.z_drive_safety_position is not None and current_wheel_z < c.z_drive_safety_position:
+      logger.debug(
+        "retracting the handling wheel to its safe Z %.3f mm before moving to %.3f mm",
+        c.z_drive_safety_position,
+        x,
+      )
+      await self.move_to_safe_z()
+
+    return await self._send_command_and_update_sled_x(
+      module="I0",
+      command="XA",
+      xa=f"{increments:05}",
+      xv=f"{speed_increments:04}",
+      xr=f"{acceleration_ramp:01}",
+      xw=f"{current_limit:01}",
+    )
+
+  async def move_x_relative(
+    self,
+    distance: float,
+    speed: Optional[float] = None,
+    acceleration_ramp: Optional[int] = None,
+    current_limit: Optional[int] = None,
+  ):
+    """Move the sled by a distance from where it is now.
+
+    Where the sled is is read from the machine and the distance added to it, so a relative move is
+    an absolute move to a place worked out here - and is bounded by the drive's travel like any
+    other.
+
+    Args:
+      distance: how far to move, in mm. Positive moves along the deck towards higher x, negative
+        back towards the deck's origin.
+      speed: how fast to travel, in mm/s. Defaults to what
+        `configuration.x_drive_speed_default` works out to.
+      acceleration_ramp: how hard to accelerate. Defaults to
+        `configuration.x_drive_acceleration_ramp_default`.
+      current_limit: the motor current limit. Defaults to
+        `configuration.motor_current_limit_default`.
+
+    Raises:
+      ValueError: If the sled would end up outside the drive's travel, or an argument is outside
+        what the drive accepts.
+    """
+    return await self.move_x(
+      await self.request_x_position() + distance,
+      speed=speed,
+      acceleration_ramp=acceleration_ramp,
+      current_limit=current_limit,
     )
 
   async def park(self):
@@ -475,7 +633,7 @@ class Autoload:
   async def move_z(
     self,
     z: float,
-    speed: Optional[int] = None,
+    speed: Optional[float] = None,
     acceleration_ramp: Optional[int] = None,
     current_limit: Optional[int] = None,
   ):
@@ -483,8 +641,8 @@ class Autoload:
 
     Args:
       z: how high to move it, in mm from the drive's zero.
-      speed: how fast to travel, in steps per second. Defaults to
-        `configuration.z_drive_speed_default`.
+      speed: how fast to travel, in mm/s. Defaults to what
+        `configuration.z_drive_speed_default` works out to.
       acceleration_ramp: how hard to accelerate, in multiples of
         `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
         `configuration.z_drive_acceleration_ramp_default`.
@@ -495,24 +653,23 @@ class Autoload:
       ValueError: If the position, or an argument, is outside what the drive accepts.
     """
     c = self.configuration
+    self._check_reachable("z", z)
     increments = c.z_drive_mm_to_increments(z)
-    low, high = c.z_drive_increment_range
-    if not low <= increments <= high:
-      raise ValueError(
-        f"z must be between {c.z_drive_increments_to_mm(low)} and "
-        f"{c.z_drive_increments_to_mm(high)} mm, is {z}"
-      )
 
     # Every parameter is sent: what the drive does is written here, not left to it.
-    speed = c.z_drive_speed_default if speed is None else speed
+    speed = c.z_drive_increments_to_mm(c.z_drive_speed_default) if speed is None else speed
     acceleration_ramp = (
       c.z_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
     )
     current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
     low, high = c.z_drive_speed_increment_range
-    if not low <= speed <= high:
-      raise ValueError(f"speed must be between {low} and {high}, is {speed}")
+    speed_increments = c.z_drive_mm_to_increments(speed)
+    if not low <= speed_increments <= high:
+      raise ValueError(
+        f"speed must be between {c.z_drive_increments_to_mm(low)} and "
+        f"{c.z_drive_increments_to_mm(high)} mm/s, is {speed}"
+      )
 
     low, high = c.z_drive_acceleration_ramp_range
     if not low <= acceleration_ramp <= high:
@@ -528,7 +685,7 @@ class Autoload:
       module="I0",
       command="ZA",
       za=f"{increments:04}",
-      zv=f"{speed:04}",
+      zv=f"{speed_increments:04}",
       zr=f"{acceleration_ramp:01}",
       zw=f"{current_limit:01}",
     )
@@ -536,7 +693,7 @@ class Autoload:
   async def move_to_z_position(
     self,
     position: ZPosition,
-    speed: Optional[int] = None,
+    speed: Optional[float] = None,
     acceleration_ramp: Optional[int] = None,
     current_limit: Optional[int] = None,
   ):
@@ -544,8 +701,8 @@ class Autoload:
 
     Args:
       position: which one: `below` or `above`.
-      speed: how fast to travel, in steps per second. Defaults to
-        `configuration.z_drive_speed_default`.
+      speed: how fast to travel, in mm/s. Defaults to what
+        `configuration.z_drive_speed_default` works out to.
       acceleration_ramp: how hard to accelerate, in multiples of
         `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
         `configuration.z_drive_acceleration_ramp_default`.
@@ -561,15 +718,19 @@ class Autoload:
       raise ValueError(f"position must be one of {list(c.z_positions)}, is {position!r}")
 
     # Every parameter is sent: what the drive does is written here, not left to it.
-    speed = c.z_drive_speed_default if speed is None else speed
+    speed = c.z_drive_increments_to_mm(c.z_drive_speed_default) if speed is None else speed
     acceleration_ramp = (
       c.z_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
     )
     current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
     low, high = c.z_drive_speed_increment_range
-    if not low <= speed <= high:
-      raise ValueError(f"speed must be between {low} and {high}, is {speed}")
+    speed_increments = c.z_drive_mm_to_increments(speed)
+    if not low <= speed_increments <= high:
+      raise ValueError(
+        f"speed must be between {c.z_drive_increments_to_mm(low)} and "
+        f"{c.z_drive_increments_to_mm(high)} mm/s, is {speed}"
+      )
 
     low, high = c.z_drive_acceleration_ramp_range
     if not low <= acceleration_ramp <= high:
@@ -585,7 +746,7 @@ class Autoload:
       module="I0",
       command="ZP",
       zp=f"{c.z_positions[position]:01}",
-      zv=f"{speed:04}",
+      zv=f"{speed_increments:04}",
       zr=f"{acceleration_ramp:01}",
       zw=f"{current_limit:01}",
     )
@@ -605,7 +766,7 @@ class Autoload:
   async def move_y(
     self,
     y: float,
-    speed: Optional[int] = None,
+    speed: Optional[float] = None,
     acceleration_ramp: Optional[int] = None,
     current_limit: Optional[int] = None,
   ):
@@ -613,8 +774,8 @@ class Autoload:
 
     Args:
       y: how far to move it, in mm from the drive's zero.
-      speed: how fast to travel, in steps per second. Defaults to
-        `configuration.y_drive_speed_default`.
+      speed: how fast to travel, in mm/s. Defaults to what
+        `configuration.y_drive_speed_default` works out to.
       acceleration_ramp: how hard to accelerate, in multiples of
         `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
         `configuration.y_drive_acceleration_ramp_default`.
@@ -625,24 +786,23 @@ class Autoload:
       ValueError: If the position, or an argument, is outside what the drive accepts.
     """
     c = self.configuration
+    self._check_reachable("y", y)
     increments = c.y_drive_mm_to_increments(y)
-    low, high = c.y_drive_increment_range
-    if not low <= increments <= high:
-      raise ValueError(
-        f"y must be between {c.y_drive_increments_to_mm(low)} and "
-        f"{c.y_drive_increments_to_mm(high)} mm, is {y}"
-      )
 
     # Every parameter is sent: what the drive does is written here, not left to it.
-    speed = c.y_drive_speed_default if speed is None else speed
+    speed = c.y_drive_increments_to_mm(c.y_drive_speed_default) if speed is None else speed
     acceleration_ramp = (
       c.y_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
     )
     current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
     low, high = c.y_drive_speed_increment_range
-    if not low <= speed <= high:
-      raise ValueError(f"speed must be between {low} and {high}, is {speed}")
+    speed_increments = c.y_drive_mm_to_increments(speed)
+    if not low <= speed_increments <= high:
+      raise ValueError(
+        f"speed must be between {c.y_drive_increments_to_mm(low)} and "
+        f"{c.y_drive_increments_to_mm(high)} mm/s, is {speed}"
+      )
 
     low, high = c.y_drive_acceleration_ramp_range
     if not low <= acceleration_ramp <= high:
@@ -658,7 +818,7 @@ class Autoload:
       module="I0",
       command="YA",
       ya=f"{increments:04}",
-      yv=f"{speed:04}",
+      yv=f"{speed_increments:04}",
       yr=f"{acceleration_ramp:01}",
       yw=f"{current_limit:01}",
     )
@@ -666,7 +826,7 @@ class Autoload:
   async def move_to_y_position(
     self,
     position: YPosition,
-    speed: Optional[int] = None,
+    speed: Optional[float] = None,
     acceleration_ramp: Optional[int] = None,
     current_limit: Optional[int] = None,
   ):
@@ -674,8 +834,8 @@ class Autoload:
 
     Args:
       position: which one: `loading_tray`, `carrier_identification` or `deck`.
-      speed: how fast to travel, in steps per second. Defaults to
-        `configuration.y_drive_speed_default`.
+      speed: how fast to travel, in mm/s. Defaults to what
+        `configuration.y_drive_speed_default` works out to.
       acceleration_ramp: how hard to accelerate, in multiples of
         `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
         `configuration.y_drive_acceleration_ramp_default`.
@@ -691,15 +851,19 @@ class Autoload:
       raise ValueError(f"position must be one of {list(c.y_positions)}, is {position!r}")
 
     # Every parameter is sent: what the drive does is written here, not left to it.
-    speed = c.y_drive_speed_default if speed is None else speed
+    speed = c.y_drive_increments_to_mm(c.y_drive_speed_default) if speed is None else speed
     acceleration_ramp = (
       c.y_drive_acceleration_ramp_default if acceleration_ramp is None else acceleration_ramp
     )
     current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
     low, high = c.y_drive_speed_increment_range
-    if not low <= speed <= high:
-      raise ValueError(f"speed must be between {low} and {high}, is {speed}")
+    speed_increments = c.y_drive_mm_to_increments(speed)
+    if not low <= speed_increments <= high:
+      raise ValueError(
+        f"speed must be between {c.y_drive_increments_to_mm(low)} and "
+        f"{c.y_drive_increments_to_mm(high)} mm/s, is {speed}"
+      )
 
     low, high = c.y_drive_acceleration_ramp_range
     if not low <= acceleration_ramp <= high:
@@ -714,7 +878,7 @@ class Autoload:
       module="I0",
       command="YP",
       yp=f"{c.y_positions[position]:01}",
-      yv=f"{speed:04}",
+      yv=f"{speed_increments:04}",
       yr=f"{acceleration_ramp:01}",
       yw=f"{current_limit:01}",
     )
@@ -979,7 +1143,7 @@ class Autoload:
     try:
       resp = cast(
         str,
-        await self._send_and_record_position(
+        await self._send_command_and_update_sled_x(
           module="C0",
           command="CI",
           cp=f"{track:02}",
@@ -1006,7 +1170,7 @@ class Autoload:
     Sent after its barcode has been scanned.
     """
     try:
-      return await self._send_and_record_position(module="C0", command="CA")
+      return await self._send_command_and_update_sled_x(module="C0", command="CA")
     except BaseException:
       await self.move_to_safe_z()
       raise
@@ -1031,7 +1195,7 @@ class Autoload:
       raise ValueError(f"the carrier at track {track} is on the loading tray, not the deck")
 
     try:
-      return await self._send_and_record_position(module="C0", command="CN", cp=f"{track:02}")
+      return await self._send_command_and_update_sled_x(module="C0", command="CN", cp=f"{track:02}")
     except BaseException:
       # The wheel is left wherever the failure stopped it, and nothing may travel with it down.
       await self.move_to_safe_z()
@@ -1109,7 +1273,7 @@ class Autoload:
     try:
       resp = cast(
         str,
-        await self._send_and_record_position(
+        await self._send_command_and_update_sled_x(
           module="C0",
           command="CL",
           bd=f"{directions[direction]:01}",
@@ -1155,7 +1319,7 @@ class Autoload:
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
 
-    resp = await self._send_and_record_position(module="C0", command="CR", cp=f"{track:02}")
+    resp = await self._send_command_and_update_sled_x(module="C0", command="CR", cp=f"{track:02}")
     if park_after:
       await self.park()
     return resp
@@ -1175,7 +1339,7 @@ class Autoload:
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
 
-    resp = await self._send_and_record_position(module="C0", command="CW", cp=f"{track:02}")
+    resp = await self._send_command_and_update_sled_x(module="C0", command="CW", cp=f"{track:02}")
     if park_after:
       await self.park()
     return resp

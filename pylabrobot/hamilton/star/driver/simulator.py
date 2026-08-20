@@ -82,7 +82,7 @@ SIMULATED_AUTOLOAD = AutoloadConfiguration(
 
 # Where its three drives report themselves, in mm. Where they actually are is not modelled: each
 # answers from its zero.
-SIMULATED_AUTOLOAD_X_POSITION = 0.0
+SIMULATED_AUTOLOAD_X_POSITION = 100.0  # deck mm: where the drive counts from, track 1
 SIMULATED_AUTOLOAD_Y_POSITION = 0.0
 SIMULATED_AUTOLOAD_Z_POSITION = 0.0
 
@@ -272,13 +272,13 @@ class SimulatedAutoload(_Simulated, Autoload):
   track = 1
   """Where it last moved to."""
 
-  async def request_firmware_version(self) -> str:
+  async def request_firmware_version(self) -> Tuple[str, datetime.date]:
     version = self.machine.simulated_autoload.firmware_version
     if version is None:
       raise RuntimeError(
         "the simulated autoload has no firmware version; set it on its configuration"
       )
-    return version
+    return version, parse_firmware_version_date(version)
 
   async def request_autoload_type(self) -> str:
     autoload_type = self.machine.simulated_autoload.autoload_type
