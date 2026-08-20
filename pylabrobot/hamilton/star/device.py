@@ -83,14 +83,13 @@ class STARDevice(Resource):
       category="device",
       model=model if model is not None else self.__class__.__name__,
     )
-    # The deck this instrument carries. It is a child of the instrument and every capability
-    # resource is a child of it, so the instrument is the root of one tree holding the machine and
-    # everything on it.
+
     self.deck = deck
     self.driver = driver if driver is not None else STARSimulationDriver(deck=deck)
-    # The instrument owns the tree, so its deck is the one the driver reflects the machine into.
+
     if self.driver.deck is not None and self.driver.deck is not deck:
       logger.warning("the driver was given another deck; modelling into this instrument's instead")
+
     self.driver.deck = deck
     self.assign_child_resource(
       deck, location=deck_location if deck_location is not None else Coordinate(0, 0, 0)
