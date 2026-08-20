@@ -23,13 +23,15 @@ from pylabrobot.hamilton.star.driver.errors import (
 )
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.cover import FrontCover
-from pylabrobot.hamilton.star.driver.features.head96 import Head96, get_or_create_head96
+from pylabrobot.hamilton.star.driver.features.head96 import Head96
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.usb import USB
+from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton.hamilton_decks import HamiltonDeck
+from pylabrobot.resources.resource import Resource
 
 logger = logging.getLogger(__name__)
 
@@ -437,8 +439,13 @@ class STARDriver:
     """Put the 96-head on the arm it rides, where it is along Y.
 
     A child of the arm's resource rather than of the deck, so it follows the arm in X without
-    anything having to keep the two in step. Skipped while the head reports itself uninitialized,
+    anything having to keep the two in step. One already on the arm is reused rather than replaced,
+    so repeated setups do not duplicate it. Skipped while the head reports itself uninitialized,
     since it has no position to report until it has been homed.
+
+    Raises:
+      RuntimeError: If the head's X offset was not read, so where it sits across the arm is
+        unknown.
     """
     if self.head96 is None or self.deck is None:
       return
@@ -449,20 +456,44 @@ class STARDriver:
       logger.debug("the 96-head is not initialized, so where it is is unknown - not modelled")
       return
     y = await self.head96.request_y_position()
-    self.head96.resource = get_or_create_head96(arm.resource, self.head96.configuration.x_offset)
+
+    c = self.head96.configuration
+    head = next((child for child in arm.resource.children if child.name == "head96"), None)
+    if head is None:
+      if c.x_offset is None:
+        raise RuntimeError("the 96-head's X offset was not read; have you called `star.setup()`?")
+      head = Resource(
+        name="head96",
+        size_x=c.channel_array_size_x,
+        size_y=c.channel_array_size_y,
+        size_z=c.body_size_z,
+        category="head96",
+        model="hamilton_star_head96",
+      )
+      # Channel A1 sits `x_offset` left of the carriage centre, and the arm is located by its own
+      # left edge, so A1 lands that far left of the arm's centre. Y is set from the drive below.
+      arm.resource.assign_child_resource(
+        head, location=Coordinate(arm.resource.get_absolute_size_x() / 2 - c.x_offset, 0.0, 0.0)
+      )
+    self.head96.resource = head
     self.head96.update_location_by_reference_point(y)
 
   async def _create_autoload_resource(self) -> None:
-    """Put the autoload's sled on the deck, where it is."""
+    """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.
+
+    The tray is placed from the deck's own features rather than read off the machine: it is bolted
+    to the instrument and has no drive to report where it is.
+    """
     if self.autoload is None or self.deck is None:
       return
     x = await self.autoload.request_x_position()
     self.autoload.resource = self.deck.get_or_create_autoload_sled(
       name="autoload_sled",
       x=x,
-      wheel_from_left=self.autoload.configuration.wheel_from_sled_left_edge,
+      reference_point_from_left=self.autoload.configuration.reference_point_from_sled_left_edge,
     )
-    self.autoload.update_location(x)
+    self.autoload.update_location_by_reference_point(x)
+    self.deck.get_or_create_autoload_loading_tray(name="autoload_loading_tray")
 
   async def request_initialization_status(self, module: str = "C0") -> bool:
     """Whether a module reports itself initialized.
