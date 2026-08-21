@@ -80,8 +80,14 @@ class Head96Configuration:
   is set, and reports that it cannot when it is not."""
 
   z_range: Optional[Tuple[float, float]] = None
-  """Z-drive position window (mm); FM-STAR extends it. Resolved at setup: the min is
+  """Z-drive position window (mm); FM-STAR extends it. Resolved by `move_to_safe_z`: the min is
   variant-derived, the max is read from a hardware probe."""
+
+  z_floor_increments: int = 36100
+  """How low the Z drive goes, in increments. The same floor the head's stored Z values are bounded
+  by."""
+  z_floor_increments_fm_star: int = 24200
+  """How low it goes on an FM-STAR, which reaches further down than the other variants."""
 
   z_speed_range: Tuple[float, float] = (0.25, 100.0)
   """Z-drive speed window (mm/s); unchanged across the 2008/2013/2025 firmware, unlike the
@@ -582,27 +588,23 @@ class Head96:
     """Move the head up to its safe Z, and read where that put it.
 
     Doubles as the probe for how far this unit actually reaches: the generic command range can
-    exceed it, so the top is read off the hardware rather than assumed.
+    exceed it, so the top is read off the hardware rather than assumed. Reaching the top resolves
+    the head's Z window onto `configuration.z_range` - the floor from what instrument this is, the
+    ceiling from what was just reached - so a caller need only ask for the retract.
 
     Returns:
       The stop-disk Z position at the safety height, in mm.
     """
     await self._driver.send_command(module="C0", command="EV", read_timeout=RETRACT_READ_TIMEOUT)
-    return await self.request_stop_disk_z()
-
-  def resolve_z_range(self, z_max: float) -> Tuple[float, float]:
-    """The Z window this head reaches: a variant-derived floor, and a probed ceiling.
-
-    Args:
-      z_max: the top the hardware actually reached, from `move_to_safe_z`.
-
-    Returns:
-      The `(min, max)` window in mm, also recorded on the configuration.
-    """
+    z_max = await self.request_stop_disk_z()
     c = self.configuration
-    min_increments = 24200 if c.instrument_type == "FM-STAR" else 36100
-    c.z_range = (c.z_drive_increments_to_mm(min_increments), z_max)
-    return c.z_range
+    c.z_range = (
+      c.z_drive_increments_to_mm(
+        c.z_floor_increments_fm_star if c.instrument_type == "FM-STAR" else c.z_floor_increments
+      ),
+      z_max,
+    )
+    return z_max
 
   # -- initialization --------------------------------------------------------
 
