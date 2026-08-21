@@ -364,7 +364,7 @@ class Autoload:
     if not await self.request_initialization_status():
       logger.debug("autoload reports itself uninitialized - homing its drives")
       await self._send_command_and_update_sled_x(module="C0", command="II")
-    await self.move_to_safe_z()
+    await self.move_wheel_to_safe_z()
     self.configuration.z_drive_safety_position = await self.request_z_position()
 
     if park_after:
@@ -556,7 +556,7 @@ class Autoload:
         c.z_drive_safety_position,
         track,
       )
-      await self.move_to_safe_z()
+      await self.move_wheel_to_safe_z()
 
     return await self._send_command_and_update_sled_x(
       module="I0",
@@ -631,7 +631,7 @@ class Autoload:
         c.z_drive_safety_position,
         x,
       )
-      await self.move_to_safe_z()
+      await self.move_wheel_to_safe_z()
 
     return await self._send_command_and_update_sled_x(
       module="I0",
@@ -696,7 +696,7 @@ class Autoload:
       await self._request_drive_position("RZ", digits=4)
     )
 
-  async def move_to_safe_z(self) -> float:
+  async def move_wheel_to_safe_z(self) -> float:
     """Move the carrier-handling wheel to its safe Z, and read where that put it.
 
     Returns:
@@ -1230,7 +1230,7 @@ class Autoload:
       )
     except BaseException:
       # The wheel is left wherever the failure stopped it, and nothing may travel with it down.
-      await self.move_to_safe_z()
+      await self.move_wheel_to_safe_z()
       raise
 
     if "bb/" not in resp:
@@ -1247,7 +1247,7 @@ class Autoload:
     try:
       return await self._send_command_and_update_sled_x(module="C0", command="CA")
     except BaseException:
-      await self.move_to_safe_z()
+      await self.move_wheel_to_safe_z()
       raise
 
   async def take_carrier_out_to_autoload_belt(self, track: int):
@@ -1273,7 +1273,7 @@ class Autoload:
       return await self._send_command_and_update_sled_x(module="C0", command="CN", cp=f"{track:02}")
     except BaseException:
       # The wheel is left wherever the failure stopped it, and nothing may travel with it down.
-      await self.move_to_safe_z()
+      await self.move_wheel_to_safe_z()
       raise
 
   async def load_carrier_from_autoload_belt(
@@ -1360,7 +1360,7 @@ class Autoload:
         ),
       )
     except BaseException:
-      await self.move_to_safe_z()
+      await self.move_wheel_to_safe_z()
       raise
 
     if park_after:
