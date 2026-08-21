@@ -75,31 +75,20 @@ class Head96Configuration:
   tip_discard_location: Optional[Coordinate] = None
   """Where the head ejects when it is initialized: head channel A1, in deck mm. Initializing
   throws off whatever is mounted, so this has to be somewhere tips may be dropped - which depends
-  on where the waste sits on the deck, and so has no default. Setup initializes the head when this
-  is set, and reports that it cannot when it is not."""
+  on where the waste sits on the deck, and so has no default."""
 
   z_range: Optional[Tuple[float, float]] = None
-  """Z-drive position window (mm); FM-STAR extends it. Resolved by `move_to_safe_z`: the min is
+  """Z-drive position window (mm); FM-STAR extends it. Resolved by `probe_z_max`: the min is
   variant-derived, the max is read from a hardware probe."""
 
   z_increment_range: Tuple[int, int] = (36100, 68500)
-  """What the Z drive documents itself as reaching, in increments. The same bounds the head's own
-  stored Z values are held within."""
-  z_increment_range_fm_star: Tuple[int, int] = (24200, 76200)
-  """What it documents on an FM-STAR, which reaches both further down and further up."""
-
+  z_increment_range_fm_star: Tuple[int, int] = (24200, 76200)  # increase for FM-STAR
   z_speed_range: Tuple[float, float] = (0.25, 100.0)
-  """Z-drive speed window (mm/s); unchanged across the 2008/2013/2025 firmware, unlike the
-  version-resolved `y_speed_range`."""
-  z_acceleration_range: Tuple[float, float] = (25.0, 500.0)
-  """Z-drive acceleration window (mm/s2); unchanged across the 2008/2013/2025 firmware (the
-  pre-2010 encoding differs, the physical range does not)."""
+  z_acceleration_range: Tuple[float, float] = (25.0, 500.0)  # units: mm/s**2
 
   # Encoder resolutions (defaulted device facts). Y/Z are unchanged across firmware; the
   # dispensing and squeezer resolutions are the 2013-or-later generation's values, and a 2008-era
-  # head's differ. Nothing resolves them per generation, so on such a head every volume and
-  # squeezer conversion here - and the windows derived from them - would be wrong. Discovery says
-  # so when it finds one.
+  # head's differ.
   z_drive_mm_per_increment: float = 0.005
   y_drive_mm_per_increment: float = 0.015625
   dispensing_drive_mm_per_increment: float = 0.001025641026
