@@ -25,7 +25,7 @@ from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.cover import FrontCover
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
-from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
+from pylabrobot.hamilton.star.driver.features.pipettes import CHANNEL_X_REFERENCE_ANCHOR, Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.usb import USB
@@ -433,6 +433,7 @@ class STARDriver:
         reference_anchor=arm.reference_anchor,
       )
     await self._create_head96_resource()
+    await self._create_pipette_resources()
     await self._create_autoload_resource()
 
   async def _create_head96_resource(self) -> None:
@@ -472,6 +473,52 @@ class STARDriver:
     self.head96.resource = head
     # Asking where it is records it, as the arm's and the sled's reads do.
     await self.head96.request_y_position()
+
+  async def _create_pipette_resources(self) -> None:
+    """Put a resource on the arm for each pipetting channel, where it is.
+
+    One per channel rather than one for the block: they share the arm's X, which the resource tree
+    carries for free, but each has its own Y and Z. Children of the arm's resource for the same
+    reason the 96-head is. Ones already on the arm are reused, so repeated setups do not duplicate
+    them.
+    """
+    if self.pipettes is None or self.deck is None:
+      return
+    arm = next((a for a in (self.left_x_arm, self.right_x_arm) if a is not None), None)
+    if arm is None or arm.resource is None:
+      return
+
+    # One per channel the machine reported at discovery, not a count assumed here.
+    c = self.pipettes.configuration
+    self.pipettes.resources = []
+    for channel in range(len(c.channels)):
+      name = f"pipette_channel_{channel}"
+      resource = next((r for r in arm.resource.children if r.name == name), None)
+      if resource is None:
+        width = c.channels[channel].width
+        if width is None:
+          logger.warning("channel %d reported no width, so it is not modelled", channel)
+          continue
+        resource = Resource(
+          name=name,
+          size_x=width,
+          size_y=width,
+          size_z=c.channel_size_z,
+          category="pipette_channel",
+          model="hamilton_star_pipette_channel",
+        )
+        # Along X a channel sits at the arm's own reference point, so its centre lands there.
+        anchor = resource.get_anchor(x=CHANNEL_X_REFERENCE_ANCHOR)
+        arm.resource.assign_child_resource(
+          resource,
+          location=Coordinate(arm.resource.get_absolute_size_x() / 2 - anchor.x, 0.0, 0.0),
+        )
+      self.pipettes.resources.append(resource)
+
+    # Asking where they are records them, as the arm's and the head's reads do.
+    await self.pipettes.request_y_positions()
+    for channel in range(len(self.pipettes.resources)):
+      await self.pipettes.request_stop_disk_z(channel)
 
   async def _create_autoload_resource(self) -> None:
     """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.

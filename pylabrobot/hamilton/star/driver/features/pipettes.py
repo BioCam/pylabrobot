@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
+from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.resource import Resource
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -32,6 +34,13 @@ INITIALIZE_DISCARDING_METHOD = 0
 
 # The channels travel to the waste and eject there, so the reply is a long time coming.
 INITIALIZE_READ_TIMEOUT = 120
+
+# A channel's drive positions it by its centre along Y, and by its stop disk - its lowest fixed
+# feature - along Z. Along X every channel sits at the arm's own reference point: the master and
+# the X-drive board report the same position, so a channel's X is the arm's.
+CHANNEL_Y_REFERENCE_ANCHOR = "c"
+CHANNEL_Z_REFERENCE_ANCHOR = "b"
+CHANNEL_X_REFERENCE_ANCHOR = "c"
 
 
 @dataclass
@@ -67,6 +76,10 @@ class PipettesConfiguration:
   z_drive_mm_per_increment: float = 0.01072765
   dispensing_drive_mm_per_increment: float = 0.002734375
   dispensing_drive_uL_per_increment: float = 0.046876
+
+  channel_size_z: float = 140.0
+  """How tall to model a channel, in mm. Not read from anywhere: how far a channel extends is not
+  something the machine reports."""
 
   channels: List[PipetteConfiguration] = field(default_factory=list)
   """One entry per channel, in channel order."""
@@ -166,6 +179,9 @@ class Pipettes:
       configuration: the channels' device facts. Defaults to `PipettesConfiguration()`.
     """
     self._driver = driver
+    # One resource per channel, in channel order, when the driver was given a deck. Setup puts them
+    # on the arm; the reads keep them in step. Without a deck the list stays empty.
+    self.resources: List[Resource] = []
     self.configuration = configuration or PipettesConfiguration()
 
   # -- addressing ------------------------------------------------------------
@@ -266,6 +282,74 @@ class Pipettes:
     pipette.firmware_version = version
     pipette.width = await self.request_min_pipette_width(channel)
     self.configuration.channels[channel] = pipette
+
+  # -- where the channels are ------------------------------------------------
+
+  async def request_y_positions(self) -> List[float]:
+    """Request where every channel is along Y, in one command.
+
+    The master answers for all of them at once, so this is one exchange rather than one per
+    channel. Each answer is recorded on the resource modelling that channel.
+
+    Returns:
+      The position of each channel in mm, back to front.
+    """
+    resp = await self._driver.send_command(module="C0", command="RY", fmt="ry#### (n)")
+    positions = [increments / 10 for increments in cast(List[int], resp["ry"])]
+    for channel, y in enumerate(positions):
+      self.update_location_by_reference_point(channel, y=y)
+    return positions
+
+  async def request_stop_disk_z(self, channel: int) -> float:
+    """Request where a channel's stop disk is along Z.
+
+    The raw drive position regardless of what is mounted, not the bottom of a tip. Recorded on the
+    resource modelling the channel.
+
+    Args:
+      channel: which channel to ask, 0-indexed from the back.
+
+    Returns:
+      The stop-disk Z position in mm.
+    """
+    resp = await self._driver.send_command(
+      module=self.channel_id(channel), command="RZ", fmt="rz######"
+    )
+    z = self.configuration.z_drive_increments_to_mm(cast(int, resp["rz"]))
+    self.update_location_by_reference_point(channel, z=z)
+    return z
+
+  def update_location_by_reference_point(
+    self, channel: int, y: Optional[float] = None, z: Optional[float] = None
+  ) -> None:
+    """Record where a channel is on the resource that models it.
+
+    Y and Z only: a channel rides the arm, so its resource is a child of the arm's and follows it
+    in X without anything having to record that. A resource is located by its left front bottom
+    corner, so each axis differs from what the drive reports by the channel's own anchor.
+
+    Both drives answer in the deck's frame, while a resource's location is measured from its parent
+    - the arm, not the deck - so the arm's own position is taken out before either is recorded.
+    Does nothing when the driver was given no deck, and so has nothing to model.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+      y: where it is now, in mm on the deck. Left as it was when None.
+      z: where its stop disk is now, in mm on the deck. Left as it was when None.
+    """
+    deck = self._driver.deck
+    if channel >= len(self.resources) or deck is None:
+      return
+    resource = self.resources[channel]
+    if resource.location is None or resource.parent is None:
+      return
+    here, on_the_arm = resource.location, resource.parent.get_location_wrt(deck)
+    anchor = resource.get_anchor(y=CHANNEL_Y_REFERENCE_ANCHOR, z=CHANNEL_Z_REFERENCE_ANCHOR)
+    resource.location = Coordinate(
+      here.x,
+      here.y if y is None else y - on_the_arm.y - anchor.y,
+      here.z if z is None else z - on_the_arm.z - anchor.z,
+    )
 
   # -- channel initialization ------------------------------------------------
 

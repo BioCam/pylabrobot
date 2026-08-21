@@ -27,7 +27,10 @@ from pylabrobot.hamilton.star.driver.features.head96 import (
   require_drive_parameter,
 )
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
-from pylabrobot.hamilton.star.driver.features.pipettes import PipetteConfiguration, Pipettes
+from pylabrobot.hamilton.star.driver.features.pipettes import (
+  PipetteConfiguration,
+  Pipettes,
+)
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.hamilton.star.driver.master import STARDriver
 from pylabrobot.io.io import IOBase
@@ -55,6 +58,11 @@ SIMULATED_LINK = "[simulation]"
 
 # How wide a pipette is, in mm.
 PIPETTE_WIDTH = 8.98
+
+# Where the channels rest on a simulated machine, in mm: their Z-safety height, and the Y band the
+# initialization procedure spreads them across, so a simulated machine looks like one that has been
+# brought up rather than one with every channel on top of the next.
+SIMULATED_CHANNEL_Z_SAFETY = 334.3
 
 # What each pipetting channel is: an ML_STAR channel on an ML_STAR head, with a CoRe II stop disc
 # and a Renesas pressure ADC.
@@ -180,6 +188,21 @@ class SimulatedPipettes(_Simulated, Pipettes):
   async def initialize(self, *args, **kwargs):
     """Whatever was mounted on the channels comes off."""
     self.machine.tips_mounted = [False] * len(self.machine.tips_mounted)
+
+  async def request_y_positions(self) -> List[float]:
+    # Where initialization spread them, which is where a machine that has been brought up leaves
+    # them and nothing here has since moved them. Answered from the procedure rather than from the
+    # resources, so the model can be checked against this rather than derived from it.
+    positions = self.default_initialize_y_positions()
+    for channel, y in enumerate(positions):
+      self.update_location_by_reference_point(channel, y=y)
+    return positions
+
+  async def request_stop_disk_z(self, channel: int) -> float:
+    # Recorded as the real read records it, so a simulated channel is modelled at the height it
+    # reports rather than at whatever the arm's own is.
+    self.update_location_by_reference_point(channel, z=SIMULATED_CHANNEL_Z_SAFETY)
+    return SIMULATED_CHANNEL_Z_SAFETY
 
 
 # Where the left arm has come to rest when a simulated machine is switched on, in mm: far enough
