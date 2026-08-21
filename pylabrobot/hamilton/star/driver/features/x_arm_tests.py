@@ -130,7 +130,9 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
       return f"{module}{command}rx +0006400 +0000064000"  # 640 mm, part way to the target
 
     arm = XArm(
-      SimpleNamespace(configuration=driver.configuration, send_command=refuse),  # type: ignore[arg-type]
+      SimpleNamespace(
+        left_side_panel_installed=False, configuration=driver.configuration, send_command=refuse
+      ),  # type: ignore[arg-type]
       side="left",
     )
     arm.resource = resource
@@ -146,7 +148,11 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
       raise RuntimeError("error 51: drive blocked" if command == "XP" else "no answer")
 
     arm = XArm(
-      SimpleNamespace(configuration=driver.configuration, send_command=refuse_everything),  # type: ignore[arg-type]
+      SimpleNamespace(
+        left_side_panel_installed=False,
+        configuration=driver.configuration,
+        send_command=refuse_everything,
+      ),  # type: ignore[arg-type]
       side="left",
     )
     with self.assertRaises(RuntimeError) as raised:
@@ -187,7 +193,9 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
       return f"{module}{command}{next(approach, 'rx +0005000 +0000050000')}"
 
     arm = XArm(
-      SimpleNamespace(configuration=driver.configuration, send_command=answer),  # type: ignore[arg-type]
+      SimpleNamespace(
+        left_side_panel_installed=False, configuration=driver.configuration, send_command=answer
+      ),  # type: ignore[arg-type]
       side="left",
     )
     arm.resource = resource
@@ -219,7 +227,9 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
       return f"{module}{command}{next(swing, 'rx +0005000 +0000050000')}"
 
     arm = XArm(
-      SimpleNamespace(configuration=driver.configuration, send_command=answer),  # type: ignore[arg-type]
+      SimpleNamespace(
+        left_side_panel_installed=False, configuration=driver.configuration, send_command=answer
+      ),  # type: ignore[arg-type]
       side="left",
     )
     arm.resource = cast(HamiltonDeck, driver.deck).get_resource("left_x_arm")
@@ -240,7 +250,9 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
       return f"{module}{command}rx +0004980 +0000049800"  # 498.0, and it stays there
 
     arm = XArm(
-      SimpleNamespace(configuration=driver.configuration, send_command=answer),  # type: ignore[arg-type]
+      SimpleNamespace(
+        left_side_panel_installed=False, configuration=driver.configuration, send_command=answer
+      ),  # type: ignore[arg-type]
       side="left",
     )
     arm.resource = cast(HamiltonDeck, driver.deck).get_resource("left_x_arm")

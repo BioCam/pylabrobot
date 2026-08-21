@@ -486,6 +486,7 @@ class STARSimulationDriver(STARDriver):
     deck: Optional[HamiltonDeck] = None,
     serial_number: str = SIMULATED_SERIAL_NUMBER,
     initialized: bool = False,
+    left_side_panel_installed: bool = False,
   ):
     """
     Args:
@@ -505,13 +506,17 @@ class STARSimulationDriver(STARDriver):
       serial_number: what this machine calls itself.
       initialized: whether the machine and its modules report themselves already initialized. One
         that has just been switched on does not.
+      left_side_panel_installed: whether this machine has its left side panel on. Declared rather
+        than discovered, as on a real one: the panel comes off in seconds.
 
     Raises:
       ValueError: If no deck is given, or `tips_mounted` does not have one entry per channel.
     """
     if deck is None:
       raise ValueError("a simulated STAR answers from its resource model, so it needs a deck")
-    super().__init__(io=_UnusedTransport(), deck=deck)
+    super().__init__(
+      io=_UnusedTransport(), deck=deck, left_side_panel_installed=left_side_panel_installed
+    )
 
     self.simulated_configuration = configuration or DEFAULT_STAR_CONFIGURATION
     self.simulated_firmware = firmware or dict(SIMULATED_FIRMWARE)

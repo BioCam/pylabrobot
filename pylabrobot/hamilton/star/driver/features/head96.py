@@ -60,6 +60,12 @@ class Head96Configuration:
   channel_columns: int = 12
   channel_rows: int = 8
   body_size_z: float = 140.0  # size of modelled head body; stop disk to the top of the head (mm).
+  min_x_clear_of_left_side_panel: float = -100.0
+  """The leftmost channel A1 may go without the head striking the left side panel, in deck mm.
+
+  A judgement about clearance rather than a measurement, and not read from anywhere: the panel is
+  bolted on and off in seconds, so whether one is fitted is declared, and how close the head may
+  come to it is ours to choose."""
 
   supports_clot_monitoring_clld: Optional[bool] = None
   stop_disc_type: Optional[StopDiscType] = None

@@ -178,6 +178,30 @@ class XArm:
         RECORDED_FIRMWARE_BELOW_MAJOR,
       )
 
+  def narrow_travel_for_left_side_panel(self) -> None:
+    """Take the left side panel out of this arm's travel, if one is fitted.
+
+    The drive reports the travel of an unobstructed machine, and a panel is bolted on and off in
+    seconds, so it is declared rather than discovered. What strikes it first is the head, which
+    reaches far in front of the carriage, so an arm carrying one stops while its channel A1 is
+    still clear. Called once setup has read where the head sits, since that is what decides how
+    much travel the panel costs.
+    """
+    c = self.configuration
+    if not self._driver.left_side_panel_installed or c.x_range is None:
+      return
+    if self.head96 is None or self.head96.configuration.x_offset is None:
+      return
+    x_min, x_max = c.x_range
+    clear = (
+      self.head96.configuration.min_x_clear_of_left_side_panel + self.head96.configuration.x_offset
+    )
+    if clear > x_min:
+      logger.debug(
+        "left side panel fitted: %s X-arm travel narrowed from %s to %s mm", self.side, x_min, clear
+      )
+      c.x_range = (clear, x_max)
+
   # -- initialization --------------------------------------------------------
 
   async def initialize(self, current_limit: Optional[int] = None):
@@ -229,6 +253,14 @@ class XArm:
     self.update_location_by_reference_point(x)
     return x
 
+  # TODO: on a machine with two arms, check the other arm's position before moving. They share one
+  # rail, so a move can drive one arm into the other, and neither the drive nor `_check_reachable`
+  # knows about it - the travel range is the arm's own, measured as though it were alone. What is
+  # needed is the other arm's position, the width of both (`configuration.width`) and how far each
+  # reaches around its reference point (`wrap_size`), so a move that would close the gap is refused
+  # before it starts. Add a `make_space: bool` alongside it: when the far arm is in the way, move it
+  # clear first rather than refusing - which is what an operator would do by hand, and what a
+  # protocol wants when the two arms work the same deck. Untestable here: this machine has one arm.
   async def move_x(
     self,
     x: float,
@@ -385,6 +417,4 @@ class XArm:
       raise RuntimeError(f"{self.side} X-arm geometry not resolved")
     x_min, x_max = x_range
     if not x_min <= x <= x_max:
-      raise ValueError(
-        f"{self.side} X-arm x={x}mm is outside its drive travel range [{x_min}, {x_max}]."
-      )
+      raise ValueError(f"{self.side} X-arm x={x}mm is outside its travel range [{x_min}, {x_max}].")
