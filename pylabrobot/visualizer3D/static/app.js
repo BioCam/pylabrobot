@@ -17,6 +17,8 @@ import { ViewHelper } from "three/addons/ViewHelper.js";
 import { RoomEnvironment } from "three/addons/RoomEnvironment.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
+import { GLTFLoader } from "three/addons/GLTFLoader.js";
+import { DRACOLoader } from "three/addons/DRACOLoader.js";
 
 import {
   DEG,
@@ -38,6 +40,7 @@ import {
   ARM_OPACITY,
   SHELL_OPACITY,
   SPACE_OPACITY,
+  HOLDERS,
   ARM_EDGE,
   ARM_EDGE_WIDTH_FLAT,
   ARM_EDGE_WIDTH_3D,
@@ -105,8 +108,38 @@ for (const c of [perspectiveCamera, orthographicCamera]) c.up.set(0, 0, 1); // P
 let camera = perspectiveCamera;
 let projection = "perspective";
 
+// Drawing only when something has changed. A scene with nothing moving in it costs a full core at
+// sixty frames a second otherwise, which is the wrong price for a viewer meant to sit open beside a
+// running protocol all day. Anything that changes what is on screen raises this flag; the loop
+// draws once and lowers it again.
+let renderPending = true;
+let lastRenderAt = 0;
+let looping = false;
+
+// Skipping the draw is not enough on its own: the per-frame callback alone costs a third of a core,
+// because it is still called sixty times a second to decide there is nothing to do. So the loop is
+// stopped outright when the scene settles, and started again by whatever changes it.
+//
+// Raised at the edges of the viewer rather than wherever something happens to change: a message
+// arriving, an input, a resize, a call from outside. That way adding a function that changes the
+// scene cannot forget to ask for a frame, which is a silent freeze - the failure this had five
+// times over while it was the caller's job to remember.
+function invalidate() {
+  renderPending = true;
+  if (!looping) {
+    looping = true;
+    clock.getDelta(); // discard the idle gap, or the first frame back sees a huge delta
+    // The frame-rate window restarts with the loop. Left running across the idle gap, the first
+    // frame back averages out to nothing and reads as "0 fps".
+    frames = 0;
+    lastSample = performance.now();
+    renderer.setAnimationLoop(drawFrame);
+  }
+}
+
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
+controls.addEventListener("change", invalidate);
 controls.dampingFactor = 0.12;
 
 view.add(new THREE.HemisphereLight(0xffffff, 0xc8d0d4, 1.1));
@@ -134,6 +167,9 @@ try {
 // Nothing here knows what a rail is, so a deck with slots or a nest with positions draws the same
 // way the day it declares one.
 let gridMarks = [];
+// Every rail number in the scene. They are one draw call each and the largest per-device cost the
+// viewer has, so they are the first thing to stop drawing once they are too small to read.
+let gridLabels = [];
 let surfaces = [];
 let arms = []; // { group, index, referenceOffset, targetX, currentX }
 
@@ -179,6 +215,144 @@ function referenceOffset(model) {
   const [sx] = sizeOf(model);
   return model.reference_point === "right" ? sx : sx / 2;
 }
+
+// Geometry a resource declared for itself, drawn in place of its box.
+//
+// The file is loaded once per model and shared by every instance of it, the same way one geometry
+// serves every well of a plate. Loading is asynchronous and the scene is already on screen by the
+// time it lands, so each mesh is added when it arrives rather than being waited for: the box shows
+// until then, and nothing blocks.
+const gltfLoader = new GLTFLoader();
+// Draco-compressed meshes are common in files exported for the web, and cannot be read without a
+// decoder. It is fetched only when a compressed mesh actually turns up, so a viewer that never
+// loads one pays nothing for it. Only the WebAssembly decoder is vendored; the much larger
+// JavaScript fallback is for browsers that predate WebAssembly, which cannot run this viewer anyway.
+const dracoLoader = new DRACOLoader();
+dracoLoader.setDecoderPath("./vendor/draco/");
+dracoLoader.setDecoderConfig({ type: "wasm" });
+gltfLoader.setDRACOLoader(dracoLoader);
+let meshRoots = [];
+
+function clearDeclaredMeshes() {
+  for (const root of meshRoots) view.remove(root);
+  meshRoots = [];
+}
+
+// glTF says metres and Y-up; a resource that means something else says so in its declaration.
+const MESH_UNITS = { mm: 1, cm: 10, m: 1000 };
+
+function buildDeclaredMeshes() {
+  clearDeclaredMeshes();
+
+  // One load per distinct model, however many instances stand on it. A file of several hundred
+  // thousand triangles is expensive to fetch and parse, and cloning shares both geometry and
+  // materials, so the cost is paid once no matter how many arms are in the facility.
+  const byModel = new Map();
+  for (let index = 0; index < world.names.length; index++) {
+    const declared = modelOf(index).mesh;
+    if (!declared || !declared.url) continue;
+    if (!byModel.has(world.modelOf[index])) byModel.set(world.modelOf[index], []);
+    byModel.get(world.modelOf[index]).push(index);
+  }
+
+  for (const [modelIndex, instances] of byModel) {
+    const declared = world.models[modelIndex].mesh;
+    const scale = MESH_UNITS[declared.units] ?? 1;
+    const names = instances.map((i) => world.names[i]);
+
+    gltfLoader.load(
+      declared.url,
+      (gltf) => {
+        // The scene may have been rebuilt while this was in flight. Placing it then would leave
+        // objects nothing owns, positioned by transforms that no longer apply.
+        if (!world || names.some((n, k) => world.indexOfName.get(n) !== instances[k])) return;
+
+        instances.forEach((index, k) => {
+          const scene = k === 0 ? gltf.scene : gltf.scene.clone(true);
+          scene.scale.setScalar(scale);
+          // Y-up is glTF's default; a Z-up file is already in our own convention.
+          if ((declared.up ?? "Y") === "Y") scene.rotation.x = Math.PI / 2;
+
+          const root = new THREE.Group();
+          root.add(scene);
+          root.matrixAutoUpdate = false;
+          root.matrix.copy(world.matrices[index]);
+          root.matrixWorldNeedsUpdate = true;
+          root.traverse((o) => {
+            o.frustumCulled = false;
+            if (o.isMesh) o.userData.declaredBy = index;
+          });
+
+          // A rigged file names the parts that move. The declaration says which node answers to
+          // which joint, so the viewer drives what it is told and holds no knowledge of any arm's
+          // geometry. Each node's rest transform is kept, because a joint value is a displacement
+          // from where the file was authored, not an absolute pose.
+          const joints = new Map();
+          for (const [key, spec] of Object.entries(declared.joints ?? {})) {
+            const node = scene.getObjectByName(spec.node);
+            if (!node) {
+              console.warn(`${world.names[index]} declares joint ${key} on node ${spec.node}, which the file does not have`);
+              continue;
+            }
+            joints.set(key, {
+              node,
+              spec,
+              restPosition: node.position.clone(),
+              restQuaternion: node.quaternion.clone(),
+            });
+          }
+          root.userData.joints = joints;
+          root.userData.scale = scale;
+          root.userData.index = index;
+
+          view.add(root);
+          meshRoots.push(root);
+          applyJoints(index);
+        });
+
+        // The box that stood in for it is not needed once the real geometry is here.
+        const entry = meshes.find((m) => m.modelIndex === modelIndex);
+        if (entry) entry.mesh.material.visible = false;
+      },
+      undefined,
+      (error) => console.warn(`could not load the mesh declared by ${names[0]}`, error)
+    );
+  }
+}
+
+// Move a resource's mesh to the joint values it publishes.
+//
+// A revolute joint turns about its declared axis, a prismatic one slides along it. Both are applied
+// as a displacement from the rest transform the file was authored in, so a value of zero puts the
+// arm back exactly where the file drew it.
+function applyJoints(index) {
+  const root = meshRoots.find((r) => r.userData.index === index);
+  if (!root) return;
+  const published = stateOf.get(index)?.joints;
+  if (!published) return;
+
+  for (const [key, joint] of root.userData.joints) {
+    const value = published[key];
+    if (value === undefined || value === null) continue;
+    const axis = AXIS_VECTOR[joint.spec.axis ?? "z"];
+    if (!axis) continue;
+
+    if (joint.spec.type === "prismatic") {
+      // Published in millimetres; the node lives in the file's own units.
+      const travel = value / (root.userData.scale || 1);
+      joint.node.position.copy(joint.restPosition).addScaledVector(axis, travel);
+    } else {
+      const turn = new THREE.Quaternion().setFromAxisAngle(axis, value * DEG);
+      joint.node.quaternion.copy(joint.restQuaternion).multiply(turn);
+    }
+  }
+}
+
+const AXIS_VECTOR = {
+  x: new THREE.Vector3(1, 0, 0),
+  y: new THREE.Vector3(0, 1, 0),
+  z: new THREE.Vector3(0, 0, 1),
+};
 
 function buildArms() {
   for (const arm of arms) view.remove(arm.group);
@@ -294,10 +468,14 @@ function buildArms() {
 // this interpolation is cosmetic and says nothing about where the arm physically is mid-move.
 const ARM_GLIDE_PER_SECOND = 6;
 
+const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
+
 function updateArms(delta) {
-  const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+  const reduce = reducedMotion?.matches;
+  let moved = false;
   for (const arm of arms) {
     if (Math.abs(arm.targetX - arm.currentX) < 0.01) continue;
+    moved = true;
     arm.currentX = reduce
       ? arm.targetX
       : arm.currentX + (arm.targetX - arm.currentX) * Math.min(1, delta * ARM_GLIDE_PER_SECOND);
@@ -312,15 +490,85 @@ function updateArms(delta) {
     // leave all of them quoting where the arm used to be.
     world.local[arm.index * 6] = arm.currentX;
     world.matrices[arm.index].copy(arm.group.matrix);
+    // Whatever rides the arm moves with it. Its own matrix is already set from the group, so only
+    // what is beneath it needs working out.
+    refreshSubtree(arm.index, true);
     if (selected === arm.index) {
       selectionBox.box.copy(worldBox(arm.index));
       refreshPlacement(arm.index);
     }
   }
+  return moved;
 }
 
 // The tracked X, from the arm's own tracker when it has one. The frame's left edge sits at that X
 // minus the reference offset, so the resource's box stays where the resource says it is.
+// A resource has moved. Position is published as state now, the same way rotation always has been,
+// so this is the one path by which anything that travels reaches the picture: an arm over a deck, a
+// plate put down somewhere new, a robot between workcells.
+//
+// Its own transform changes, and so does the world transform of everything standing on it, so the
+// subtree is recomputed and every instance in it repositioned.
+const _localMatrix = new THREE.Matrix4();
+const _localEuler = new THREE.Euler();
+
+// Recompute the world transform of everything at or beneath `index`, and move the drawn instances
+// to match. A resource's own transform is relative to its parent, so a parent moving carries its
+// children with it in the model for free - but the matrices the scene draws from are absolute, and
+// those have to be worked out again.
+function refreshSubtree(index, skipSelf) {
+  const stack = [index];
+  while (stack.length) {
+    const at = stack.pop();
+    if (at !== index || !skipSelf) {
+      const p = world.parentOf[at];
+      const q = at * 6;
+      _localEuler.set(
+        world.local[q + 3] * DEG, world.local[q + 4] * DEG, world.local[q + 5] * DEG, "XYZ"
+      );
+      _localMatrix.makeRotationFromEuler(_localEuler);
+      _localMatrix.setPosition(world.local[q], world.local[q + 1], world.local[q + 2]);
+      if (p < 0) world.matrices[at].copy(_localMatrix);
+      else world.matrices[at].multiplyMatrices(world.matrices[p], _localMatrix);
+
+      const placement = placementOf[at];
+      if (placement) {
+        const [sx, sy, sz] = sizeOf(modelOf(at));
+        placeInstance(placement.mesh, placement.slot, world.matrices[at], sx, sy, sz);
+        placement.mesh.instanceMatrix.needsUpdate = true;
+      }
+    }
+    for (const child of world.childrenOf[at]) stack.push(child);
+  }
+}
+
+function applyLocation(index, location) {
+  const o = index * 6;
+  if (
+    world.local[o] === location.x &&
+    world.local[o + 1] === location.y &&
+    world.local[o + 2] === location.z
+  ) {
+    return;
+  }
+  world.local[o] = location.x;
+  world.local[o + 1] = location.y;
+  world.local[o + 2] = location.z;
+
+  // A travelling part is drawn by its own group and glides there, so it is told the target rather
+  // than being moved under it. What stands on it is not part of that group, though - the 96-head
+  // rides the arm in the model but is drawn with everything else - so the glide carries it.
+  if (MOVING_PARTS.has(modelOf(index).category)) {
+    const arm = arms.find((a) => a.index === index);
+    if (arm) {
+      arm.targetX = location.x;
+      return;
+    }
+  }
+
+  refreshSubtree(index);
+}
+
 function setArmX(index, referenceX) {
   const arm = arms.find((a) => a.index === index);
   if (arm) arm.targetX = referenceX - arm.referenceOffset;
@@ -329,6 +577,7 @@ function setArmX(index, referenceX) {
 function buildGridMarks() {
   for (const mark of gridMarks) view.remove(mark);
   gridMarks = [];
+  gridLabels = [];
   surfaces = [];
 
   for (let index = 0; index < world.names.length; index++) {
@@ -369,6 +618,7 @@ function buildGridMarks() {
       const position = i + 1;
       if (position === 1 || position % grid.label_every === 0) {
         const sprite = labelSprite(String(position));
+        gridLabels.push(sprite);
         // Between this mark and the next, in the margin the tick reaches into.
         sprite.position.set(x + grid.spacing / 2, oy - GRID_TICK - GRID_LABEL_MM * 0.5, z);
         group.add(sprite);
@@ -489,6 +739,9 @@ function buildOrigin() {
 // thousand of them read as grey haze. Its parent is still drawn, so nothing vanishes without
 // something in its place.
 const DETAIL_MIN_PX = 2;
+// Below this a rail number is a smudge rather than a number. Nothing is lost by not drawing it, and
+// at facility scale it is most of what the renderer is being asked to do.
+const LABEL_MIN_PX = 7;
 let detailScale = null;
 
 function updateDetail() {
@@ -497,6 +750,12 @@ function updateDetail() {
   // Only rework when the scale has moved enough to change an answer.
   if (detailScale !== null && Math.abs(perPixel / detailScale - 1) < 0.02) return;
   detailScale = perPixel;
+
+  // A rail number is drawn in deck millimetres, so how big it lands on screen is a division away.
+  const labelsLegible = GRID_LABEL_MM / perPixel >= LABEL_MIN_PX;
+  for (const label of gridLabels) {
+    if (label.visible !== labelsLegible) label.visible = labelsLegible;
+  }
 
   const drawn = new Set();
   for (const entry of meshes) {
@@ -795,6 +1054,16 @@ const geometryFor = (model) =>
 const sizeOf = (model) => [model.size_x || 0.1, model.size_y || 0.1, model.size_z || 0.1];
 const colorFor = (model) => RESOURCE_COLORS[model.category] ?? RESOURCE_COLORS.default;
 const modelOf = (index) => world.models[world.modelOf[index]];
+// "TipRack" -> "tipracks", as the existing visualizer writes them. Deliberately naive: a count is
+// always in front of it, so "1 plates" reads as a count rather than as a mistake.
+const plural = (type) => String(type).toLowerCase() + "s";
+
+// The plural naming these resources, or "" if they are not all of one kind and so cannot be
+// counted as one thing.
+function countable(indices) {
+  const types = new Set(indices.map((i) => modelOf(i).type));
+  return types.size === 1 ? plural(modelOf(indices[0]).type) : "";
+}
 const hexOf = (n) => "#" + n.toString(16).padStart(6, "0");
 
 const IDENTITY_Q = new THREE.Quaternion();
@@ -1124,13 +1393,23 @@ function workcellOf(index) {
 
 // ---------------------------------------------------------------- live state
 
+// State arrives as a table of the distinct states in the scene, plus which of them each resource
+// holds. Empty wells and unused tip spots share a single entry, and anything that has not changed
+// since the client was last told is absent.
+//
+// Addressed by name rather than by scene index: the order instances are emitted in is not stable
+// across rebuilds, so an index can mean a different resource in the next scene. A name cannot.
 function applyState(payload) {
   const touched = new Set();
-  for (const [name, state] of Object.entries(payload)) {
+  const { states, of } = payload;
+  for (const [name, slot] of Object.entries(of ?? {})) {
     const index = world.indexOfName.get(name);
     if (index === undefined) continue;
-    stateOf.set(index, state);
+    // Shared between every resource in the same state, and only ever read.
+    stateOf.set(index, states[slot]);
+    if (states[slot]?.location) applyLocation(index, states[slot].location);
     refreshOverlays(index, touched);
+    applyJoints(index);
   }
   for (const mesh of touched) mesh.instanceMatrix.needsUpdate = true;
   if (selected >= 0 && infoPanel?.isConnected) renderInfoPanel();
@@ -1273,23 +1552,42 @@ function shortName(index) {
   return name.startsWith(prefix) ? name.slice(prefix.length) : name;
 }
 
+// What the tree says about a resource beyond its name and type: a carrier counts what it holds by
+// kind, a rack how many of its spots are taken, a plate its well count, a container its volume, and
+// a site with nothing in it says so. The existing visualizer's tree answers the same questions.
 function summaryOf(index) {
   const children = world.childrenOf[index];
+
   if (!children.length) {
     const state = stateOf.get(index);
-    if (state && state.pending_volume !== undefined) return `${state.pending_volume} uL`;
+    if (state && state.pending_volume !== undefined) return `${fmt(state.pending_volume)} uL`;
     if (state && "pending_tip" in state) return state.pending_tip ? "tip" : "";
+    // A vacant site is labelled `<empty>` in place of its name, so a summary would repeat it.
     return "";
   }
+
+  // An occupied holder needs no summary: the row directly beneath it says what is standing there.
+  if (HOLDERS.has(modelOf(index).category)) return "";
+
   const kind = modelOf(children[0]).category;
-  if (kind === "well" || kind === "tip_spot") {
-    const filled = children.filter((c) => {
-      const s = stateOf.get(c);
-      if (!s) return false;
-      return kind === "well" ? (s.pending_volume ?? 0) > 0 : !!s.pending_tip;
-    }).length;
-    return `${filled}/${children.length}`;
+
+  if (kind === "tip_spot") {
+    const filled = children.filter((c) => !!stateOf.get(c)?.pending_tip).length;
+    return `${filled}/${children.length} tips`;
   }
+  if (kind === "well") return `${children.length} wells`;
+
+  // Look through holders to what stands in them, so the count names the contents. With every site
+  // empty there is nothing to name, and the useful fact is how many positions there are.
+  if (HOLDERS.has(kind)) {
+    const held = children.map((c) => world.childrenOf[c][0]).filter((c) => c !== undefined);
+    if (!held.length) return `${children.length} sites`;
+    return `${held.length} ${countable(held)}`;
+  }
+
+  // Nothing else is counted. A deck holding carriers, a waste block and an arm has no single
+  // number worth quoting, and a device holding one deck has none either. The existing visualizer
+  // is summarised the same way: carriers, racks and plates, and nothing above them.
   return "";
 }
 
@@ -1320,15 +1618,29 @@ function addRow(index, depth, before) {
   dot.style.backgroundColor = hexOf(colorFor(model));
   row.appendChild(dot);
 
+  // A holder is a numbered position on its carrier, so it is labelled by that number rather than by
+  // a name nobody chose. Its ordinal among its parent's children is the site number.
+  const holder = HOLDERS.has(model.category);
+  if (holder) {
+    const siblings = world.childrenOf[world.parentOf[index]] ?? [];
+    const site = document.createElement("span");
+    site.className = "tree-node-site";
+    site.textContent = String(siblings.indexOf(index));
+    row.appendChild(site);
+  }
+
   const name = document.createElement("span");
   name.className = "tree-node-name";
-  name.textContent = shortName(index);
+  // An empty site has nothing worth naming, and saying so is the point of showing it at all.
+  const vacant = holder && !children.length;
+  if (vacant) name.classList.add("tree-node-vacant");
+  name.textContent = vacant ? "<empty>" : shortName(index);
   name.title = `${world.names[index]} (${model.type})`;
   row.appendChild(name);
 
   const type = document.createElement("span");
   type.className = "tree-node-type";
-  type.textContent = model.type;
+  type.textContent = vacant ? "" : model.type;
   row.appendChild(type);
 
   // Membership is shown as a tag on the member itself, not as a parent node. A workcell is a
@@ -1975,26 +2287,59 @@ function goToStartView() {
 }
 
 // A small handle on the viewer, so a notebook cell or a link can drive it.
+// The fourth and last way in: a call from outside the page, which tests and benchmarks use to drive
+// the same paths a message takes. Everything that changes something is wrapped as a group, so a
+// method added to that group is covered without anyone remembering to cover it.
+//
+// Reads are deliberately not wrapped. Asking the viewer a question must not be a reason to redraw,
+// or watching for it to settle is what stops it settling.
+function atBoundary(surface) {
+  return Object.fromEntries(
+    Object.entries(surface).map(([name, fn]) => [
+      name,
+      (...args) => {
+        const result = fn(...args);
+        invalidate();
+        return result;
+      },
+    ])
+  );
+}
+
 /** @type {any} */ (window).plrViewer = {
-  focus(name, viewName) {
-    const index = world?.indexOfName.get(name);
-    if (index === undefined) return false;
-    select(index);
-    if (viewName) setProjection(viewName === "iso" ? "perspective" : "orthographic");
-    frameBox(worldBox(index), VIEWS[viewName] ?? VIEWS.iso);
-    return true;
-  },
-  view: (name) => {
-    setProjection(name === "iso" ? "perspective" : "orthographic");
-    frame(VIEWS[name] ?? VIEWS.iso);
-  },
-  projection: (kind) => setProjection(kind),
-  hide: (name) => setHidden(name, true),
-  show: (name) => setHidden(name, false),
+  // Changes something, so asking for a frame afterwards is not the caller's job.
+  ...atBoundary({
+    focus(name, viewName) {
+      const index = world?.indexOfName.get(name);
+      if (index === undefined) return false;
+      select(index);
+      if (viewName) setProjection(viewName === "iso" ? "perspective" : "orthographic");
+      frameBox(worldBox(index), VIEWS[viewName] ?? VIEWS.iso);
+      return true;
+    },
+    view: (name) => {
+      setProjection(name === "iso" ? "perspective" : "orthographic");
+      frame(VIEWS[name] ?? VIEWS.iso);
+    },
+    projection: (kind) => setProjection(kind),
+    hide: (name) => setHidden(name, true),
+    show: (name) => setHidden(name, false),
+    // Exposed so a benchmark can drive the same path a websocket message takes.
+    applyState: (payload) => applyState(payload),
+  }),
+
+  // Only answers questions. Asking must not be a reason to redraw, or watching the viewer settle
+  // is what stops it settling.
   stats: () => stats,
   resources: () => world?.names ?? [],
-  // Exposed so a benchmark can drive the same path a websocket message takes.
-  applyState: (payload) => applyState(payload),
+  // Where a resource is drawn, in facility coordinates. The one thing a test outside the page
+  // cannot work out for itself, because it is the product of the whole parent chain.
+  worldOf: (name) => {
+    const index = world?.indexOfName.get(name);
+    if (index === undefined) return null;
+    const m = world.matrices[index].elements;
+    return [m[12], m[13], m[14]];
+  },
   timings: () => timings,
   detail: () =>
     meshes.map((e) => ({
@@ -2005,14 +2350,22 @@ function goToStartView() {
       outlineRule: !!e.holdsEnclosure,
     })),
   grid: () => {
-    const out = { groups: gridMarks.length, lines: 0, sprites: 0, at: null };
+    // Rail numbers are flat quads lying in the deck, not sprites - they were sprites once, and
+    // this counted them by that type long after they stopped being it.
+    const out = {
+      groups: gridMarks.length,
+      lines: 0,
+      labels: gridLabels.length,
+      labelsDrawn: gridLabels.filter((l) => l.visible).length,
+      at: null,
+    };
     for (const g of gridMarks) {
       g.traverse((o) => {
         if (o.type === "LineSegments") out.lines++;
-        if (o.type === "Sprite" && out.sprites++ === 0) {
-          out.at = o.getWorldPosition(new THREE.Vector3()).toArray().map((v) => +v.toFixed(1));
-        }
       });
+    }
+    if (gridLabels.length) {
+      out.at = gridLabels[0].getWorldPosition(new THREE.Vector3()).toArray().map((v) => +v.toFixed(1));
     }
     return out;
   },
@@ -2055,15 +2408,33 @@ function updateStats() {
   const fps = Math.round((frames * 1000) / (now - lastSample));
   frames = 0;
   lastSample = now;
+  drawStats(String(fps) + " fps");
+}
+
+// Quoting a frame rate while nothing is being drawn would be a lie, so an idle viewer says so. This
+// runs on a timer rather than in the loop, because the loop is exactly what has stopped.
+function reportIdle() {
+  if (performance.now() - lastRenderAt > 400) drawStats("idle");
+}
+
+let lastDrawCalls = 0;
+
+function drawStats(rate) {
+  // three zeroes its counters between frames, so an idle viewer would otherwise report no draws at
+  // all. What the scene costs when it is drawn does not change just because it is not being drawn.
   const info = renderer.info.render;
-  statsEl.innerHTML =
+  const calls = info.drawCalls ?? info.calls ?? 0;
+  if (calls > 0) lastDrawCalls = calls;
+  const text =
     `instances  <b>${(stats.instances ?? 0).toLocaleString()}</b>   ` +
     `models <b>${stats.models ?? 0}</b>   ` +
-    `draws <b>${info.drawCalls ?? info.calls ?? 0}</b>   ` +
+    `draws <b>${lastDrawCalls}</b>   ` +
     `${renderer.backend?.isWebGPUBackend ? "WebGPU" : "WebGL2"}   ` +
-    `<b>${fps}</b> fps\n` +
+    `<b>${rate}</b>\n` +
     `tree JSON ${((stats.legacy_bytes ?? 0) / 1024).toFixed(1)} kB  ` +
     `→ this scene <b>${((stats.scene_bytes ?? 0) / 1024).toFixed(1)} kB</b> (${stats.ratio ?? 0}×)`;
+  // Writing the same markup back forces layout and paint for nothing, twice a second, forever.
+  if (text !== statsEl.innerHTML) statsEl.innerHTML = text;
 }
 
 // ---------------------------------------------------------------- interaction
@@ -2296,7 +2667,10 @@ const statusLabel = document.getElementById("status-label");
 let socket = null;
 
 function showStatus(connected) {
-  statusDot.classList.toggle("connected", connected);
+  for (const el of [statusDot, statusLabel]) {
+    el.classList.toggle("connected", connected);
+    el.classList.toggle("disconnected", !connected);
+  }
   statusLabel.textContent = connected ? "Connected" : "Disconnected";
 }
 
@@ -2319,6 +2693,10 @@ function connect() {
   };
   socket.onmessage = (event) => {
     const { event: kind, data } = JSON.parse(event.data);
+    // Anything the server says is assumed to change what is on screen. Saying otherwise is a
+    // deliberate, listed exception, so a message kind added later errs towards a wasted redraw
+    // rather than towards not drawing at all.
+    if (!DOM_ONLY_MESSAGES.has(kind)) invalidate();
     if (kind === "scene") {
       const _tScene = performance.now();
       stats = data.stats ?? {};
@@ -2332,6 +2710,7 @@ function connect() {
       gridState = null;
       buildGridMarks();
       buildArms();
+      buildDeclaredMeshes();
       buildOrigin();
       timings.meshesMs = performance.now() - _tBuild;
       const _tTree = performance.now();
@@ -2359,9 +2738,23 @@ const gif = initGif({ renderer, view, camera });
 
 // ---------------------------------------------------------------- loop
 
+// Messages that only ever touch the panels around the viewport, never the scene in it.
+const DOM_ONLY_MESSAGES = new Set(["telemetry"]);
+
+let sizedTo = { w: 0, h: 0 };
+
 function resize() {
   const { clientWidth: w, clientHeight: h } = viewportEl;
-  renderer.setSize(w, h, false);
+  // `setSize` writes the canvas' CSS size, which changes layout, which wakes the ResizeObserver
+  // that called this. Without this guard the two chase each other at sixty layouts a second for as
+  // long as the page is open, drawing nothing and costing a third of a core.
+  if (w === sizedTo.w && h === sizedTo.h) return;
+  sizedTo = { w, h };
+  invalidate();
+  // three must set the canvas' CSS size as well as its drawing buffer. Told not to, it still sizes
+  // the buffer by the pixel ratio, and with no CSS size the element lays out at that buffer size -
+  // twice the viewport on a 2x display, overflowing down and right.
+  renderer.setSize(w, h);
   for (const material of edgeMaterials) material.resolution?.set(w, Math.max(h, 1));
   perspectiveCamera.aspect = w / Math.max(h, 1);
   perspectiveCamera.updateProjectionMatrix();
@@ -2370,19 +2763,47 @@ function resize() {
   }
 }
 
-window.addEventListener("resize", resize);
+// The viewport changes size without the window doing so: dragging the side panel, or toggling
+// either panel, resizes it while `window.resize` stays silent. The renderer and the camera aspect
+// then go stale, and anything that frames against them - the home button most visibly - works off
+// the wrong shape. Observing the element covers both cases, as the existing visualizer does.
+new ResizeObserver(resize).observe(viewportEl);
 
-renderer.setAnimationLoop(() => {
+// The tree, the panels and the toolbars all change the scene through their own handlers. Rather
+// than raise the flag in each one and miss the next one added, any input earns a frame: the cost is
+// one redraw per interaction, and it stops the moment the pointer does.
+for (const kind of ["pointerdown", "pointermove", "pointerup", "wheel", "keydown", "click"]) {
+  document.addEventListener(kind, invalidate, { passive: true, capture: true });
+}
+setInterval(reportIdle, 500);
+
+function drawFrame() {
   const delta = clock.getDelta();
+
+  // Three things keep drawing on their own account: the helper's snap animation, an arm gliding to
+  // a new position, and a recording that needs a frame to capture. `controls.update` reports
+  // whether damping is still carrying the camera.
+  let moving = false;
   if (viewHelper?.animating) {
     viewHelper.update(delta);
     // Every direction the helper can snap to is axis-aligned, so the view it lands on is a plan or
     // an elevation. Switch once the animation is done, not during it, since changing projection
     // rebuilds the helper.
     if (!viewHelper.animating) setProjection("orthographic");
+    moving = true;
   }
-  updateArms(delta);
-  controls.update();
+  if (updateArms(delta)) moving = true;
+  if (controls.update()) moving = true;
+  if (gif.isRecording()) moving = true;
+
+  if (!renderPending && !moving) {
+    looping = false;
+    renderer.setAnimationLoop(null);
+    return;
+  }
+  renderPending = false;
+  lastRenderAt = performance.now();
+
   renderer.render(view, camera);
   if (viewHelper) {
     // The helper renders a second pass into a corner of the same canvas. Without turning auto-clear
@@ -2398,7 +2819,7 @@ renderer.setAnimationLoop(() => {
   updateOrigin();
   updateScaleBar();
   updateStats();
-});
+}
 
 buildViewHelper();
 refreshToolUI();

@@ -103,7 +103,7 @@ class Resource(SerializableMixin):
     self.barcode = barcode
     self.preferred_pickup_location = preferred_pickup_location
 
-    self.location: Optional[Coordinate] = None
+    self._location: Optional[Coordinate] = None
     self.parent: Optional[Resource] = None
     self.children: List[Resource] = []
 
@@ -863,18 +863,43 @@ class Resource(SerializableMixin):
 
   # Developer note: this method serializes the state of this resource only. If you want to serialize
   # a custom state for a resource, override this method in the subclass.
+  @property
+  def location(self) -> Optional[Coordinate]:
+    """Where this resource sits, relative to its parent."""
+    return self._location
+
+  @location.setter
+  def location(self, location: Optional[Coordinate]) -> None:
+    """Record a new position, and tell anyone watching.
+
+    Rotation already reaches subscribers through the state channel; position is its sibling and was
+    the one thing that moved without saying so. Anything that travels - an arm over a deck, a plate
+    put down somewhere new, a robot between workcells - is a position change, so notifying here is
+    what lets a subscriber follow motion without a mechanism per moving part.
+
+    Nothing is announced while the resource is still being built or is not yet in a tree: there is
+    no one to tell, and a tree under construction would otherwise announce every placement in it.
+    """
+    changed = location != self._location
+    self._location = location
+    if changed and self.parent is not None:
+      self._state_updated()
+
   def serialize_state(self) -> Dict[str, Any]:
     """Serialize the state of this resource only.
 
     Use :meth:`pylabrobot.resources.resource.Resource.serialize_all_state` to serialize the state of
     this resource and all children.
 
-    The base implementation includes ``"rotation"`` so that subscribers
-    (e.g. the Visualizer) are notified of orientation changes through the
+    The base implementation includes ``"rotation"`` and ``"location"`` so that subscribers
+    (e.g. the Visualizer) are notified of orientation and position changes through the
     standard state channel. Subclasses overriding this method should merge
     in ``super().serialize_state()``.
     """
-    return {"rotation": self.rotation.serialize()}
+    state: Dict[str, Any] = {"rotation": self.rotation.serialize()}
+    if self._location is not None:
+      state["location"] = self._location.serialize()
+    return state
 
   # Developer note: you probably don't need to override this method. Instead, override
   # `serialize_state`.
@@ -899,11 +924,13 @@ class Resource(SerializableMixin):
   def load_state(self, state: Dict[str, Any]) -> None:
     """Load state for this resource only.
 
-    The base implementation reads ``"rotation"`` if present. Subclasses
+    The base implementation reads ``"rotation"`` and ``"location"`` if present. Subclasses
     overriding this method should call ``super().load_state(state)``.
     """
     if "rotation" in state:
       self.rotation = deserialize(state["rotation"])
+    if "location" in state:
+      self.location = deserialize(state["location"])
 
   # Developer note: you probably don't need to override this method. Instead, override `load_state`.
   def load_all_state(self, state: Dict[str, Dict[str, Any]]) -> None:

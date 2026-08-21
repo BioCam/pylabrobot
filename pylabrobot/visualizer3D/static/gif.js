@@ -9,7 +9,7 @@ import { input, button } from "./dom.js";
  * frame has been drawn.
  *
  * @param {{renderer: any, view: any, camera: any}} deps
- * @returns {{tick: () => void}}
+ * @returns {{isRecording: () => boolean, tick: () => void}}
  */
 export function initGif({ renderer, view, camera }) {
   let recording = false;
@@ -140,6 +140,7 @@ export function initGif({ renderer, view, camera }) {
   showGifBox("start");
 
   return {
+    isRecording: () => recording,
     tick() {
       if (recording && performance.now() >= captureDue) {
         captureFrame();

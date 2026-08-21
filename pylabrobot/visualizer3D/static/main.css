@@ -79,16 +79,64 @@ nav.navbar .container-fluid {
 .status-box { margin-left: auto; margin-right: 16px; display: flex; align-items: center; gap: 8px; }
 
 #status-indicator {
-  width: 13px;
-  height: 13px;
+  height: 14px;
+  width: 14px;
   border-radius: 50%;
-  border: 1px solid #adb5bd;
-  background: #dc3545;
+  display: inline-block;
+  background-color: gray;
+  border: none;
   padding: 0;
 }
 
-#status-indicator.connected { background: #198754; }
-#status-label { font-size: 15px; color: #555; }
+#status-label {
+  color: gray;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+/* Connected is the state a viewer sits in all day. `text-shadow` and `box-shadow` cannot be
+   composited, so animating them forever costs a style recalc and a repaint every frame - about a
+   third of a core, drawing nothing. The glow still plays when the status changes, which is when
+   there is anything to notice, and then stops. Disconnected keeps pulsing: that one should nag. */
+#status-indicator.connected {
+  background-color: green;
+  animation: dot-glow-connected 4s ease-in-out 2;
+}
+
+#status-indicator.disconnected {
+  background-color: red;
+  animation: dot-glow-disconnected 4s ease-in-out infinite;
+}
+
+#status-label.connected {
+  color: green;
+  animation: glow-connected 4s ease-in-out 2;
+}
+
+#status-label.disconnected {
+  color: red;
+  animation: glow-disconnected 4s ease-in-out infinite;
+}
+
+@keyframes glow-connected {
+  0%, 100% { text-shadow: none; }
+  50% { text-shadow: 0 0 9px rgba(187, 204, 51, 0.7), 0 0 19px rgba(187, 204, 51, 0.4), 0 0 25px rgba(187, 204, 51, 0.15); }
+}
+
+@keyframes glow-disconnected {
+  0%, 100% { text-shadow: none; }
+  50% { text-shadow: 0 0 9px rgba(238, 136, 102, 0.7), 0 0 19px rgba(238, 136, 102, 0.4), 0 0 25px rgba(238, 136, 102, 0.15); }
+}
+
+@keyframes dot-glow-connected {
+  0%, 100% { box-shadow: none; }
+  50% { box-shadow: 0 0 9px rgba(187, 204, 51, 0.7), 0 0 19px rgba(187, 204, 51, 0.4), 0 0 25px rgba(187, 204, 51, 0.15); }
+}
+
+@keyframes dot-glow-disconnected {
+  0%, 100% { box-shadow: none; }
+  50% { box-shadow: 0 0 9px rgba(238, 136, 102, 0.7), 0 0 19px rgba(238, 136, 102, 0.4), 0 0 25px rgba(238, 136, 102, 0.15); }
+}
 
 /* ---------------------------------------------------------------- machine tools */
 
@@ -486,7 +534,26 @@ main { position: relative; flex: 1; min-width: 0; background: #fff; }
 
 .tree-node-dot { width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; flex-shrink: 0; }
 
-.tree-node-name { flex: 1; overflow: hidden; text-overflow: ellipsis; color: #333; font-weight: 600; }
+.tree-node-name {
+  flex: 1 1 auto;
+  min-width: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: #333;
+  font-weight: 600;
+}
+.tree-node-site {
+  min-width: 14px;
+  margin-right: 4px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  color: #adb5bd;
+  flex-shrink: 0;
+}
+
+.tree-node-vacant { color: #adb5bd; font-style: italic; }
+
 .tree-node-type { margin-left: 6px; font-size: 12px; color: #999; flex-shrink: 0; }
 .tree-node-info { margin-left: 6px; font-size: 12px; color: #6c9; flex-shrink: 0; }
 

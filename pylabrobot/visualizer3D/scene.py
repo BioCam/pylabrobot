@@ -17,6 +17,7 @@ import json
 import struct
 from typing import Any, Dict, List, Optional, Tuple
 
+from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
 
 from .grids import describe_bands, describe_grid
@@ -33,7 +34,7 @@ NAME_KEYS = frozenset({"name", "parent_name"})
 # Fields a resource may declare about itself that `serialize()` does not yet carry. Upstream these
 # belong in the resource's own serialization; passing them through here keeps the viewer free of
 # any machine's constants in the meantime.
-DECLARED_FIELDS = ("reference_point", "window")
+DECLARED_FIELDS = ("reference_point", "window", "mesh")
 RESOURCE_LINK = "<resource>"
 
 
@@ -111,6 +112,8 @@ class Scene:
 
   def __init__(self, names: Optional[frozenset] = None) -> None:
     self.names_in_tree = names or frozenset()
+    # Every model derived this pass, by resource name, so the next pass can skip the work.
+    self.derived: Dict[str, Dict[str, Any]] = {}
     self.models: List[Dict[str, Any]] = []
     # Candidate models per serialized type. Interning compares dictionaries directly rather than
     # serializing each one to a key: dict equality is a C-level compare, and a tree has only a
@@ -132,6 +135,24 @@ class Scene:
     bucket.append(index)
     return index
 
+  def add_known(self, resource: Resource, parent: int, model: Dict[str, Any]) -> int:
+    """Add a resource whose model is already known, without serializing it again.
+
+    Deriving a model means serializing a resource in full and then throwing nearly all of it away:
+    profiling a facility of three hundred plates, that was over half the flattening time, and
+    twenty-eight thousand wells were serialized to produce one model. A resource that has not
+    changed has the model it had last time, and its position is readable directly.
+    """
+    index = len(self.names)
+    self.names.append(resource.name)
+    self.model_of_instance.append(self._intern(model))
+    self.parent_of_instance.append(parent)
+    location = resource.location or Coordinate.zero()
+    rotation = resource.rotation
+    self.transforms.extend((float(location.x), float(location.y), float(location.z)))
+    self.transforms.extend((float(rotation.x), float(rotation.y), float(rotation.z)))
+    return index
+
   def add(
     self,
     data: Dict[str, Any],
@@ -143,7 +164,8 @@ class Scene:
   ) -> int:
     """Add one serialized resource, returning its instance index."""
     index = len(self.names)
-    self.names.append(data["name"])
+    resource_name = data["name"]
+    self.names.append(resource_name)
     model = _model_of(data, self.names_in_tree)
     if cls is not None:
       model["methods"] = list(_public_methods(cls))
@@ -153,6 +175,7 @@ class Scene:
       model["bands"] = bands
     for field, value in (declared or {}).items():
       model[field] = value
+    self.derived[resource_name] = model
     self.model_of_instance.append(self._intern(model))
     self.parent_of_instance.append(parent)
     self.transforms.extend(_location_of(data))
@@ -188,7 +211,12 @@ class Scene:
     }
 
 
-def build_scene(root: Resource, measure_legacy: bool = False) -> Scene:
+def build_scene(
+  root: Resource,
+  measure_legacy: bool = False,
+  known: Optional[Dict[str, Dict[str, Any]]] = None,
+  known_names: Optional[frozenset] = None,
+) -> Scene:
   """Flatten `root` and every descendant into models and instances.
 
   Traversal is depth-first and parents are emitted before children, so a client can resolve world
@@ -199,10 +227,25 @@ def build_scene(root: Resource, measure_legacy: bool = False) -> Scene:
     measure_legacy: also serialize the tree the way the existing visualizer sends it, to report
       what the split saves. It costs a second full serialization, so it is off by default and
       belongs in a benchmark rather than in a running viewer.
+    known: models derived by an earlier pass, by resource name. A name found here is taken to have
+      the model it had then, which is what makes a rebuild cost only what actually changed.
+    known_names: the names that pass saw. Reuse is only sound while the tree holds the same names,
+      because whether a string in a model counts as a reference to another resource depends on
+      which names exist. Different names, and `known` is ignored and everything derived again.
   """
-  scene = Scene(names=frozenset(_all_names(root)))
+  names = frozenset(_all_names(root))
+  scene = Scene(names=names)
+  reuse = known if (known and known_names == names) else {}
 
   def walk(resource: Resource, parent: int) -> None:
+    model = reuse.get(resource.name)
+    if model is not None:
+      index = scene.add_known(resource, parent, model)
+      scene.derived[resource.name] = model
+      for child in resource.children:
+        walk(child, index)
+      return
+
     data = resource.serialize()
     data.pop("children", None)
     declared = {
@@ -235,6 +278,83 @@ def _serialize_tree(resource: Resource) -> Dict[str, Any]:
   data = resource.serialize()
   data["children"] = [_serialize_tree(child) for child in resource.children]
   return data
+
+
+# A rotation nobody has turned. It is published by every resource that publishes anything at all,
+# and on a scene of mostly unrotated geometry it is the single largest repeated value.
+IDENTITY_ROTATION = {"type": "Rotation", "x": 0, "y": 0, "z": 0}
+
+# Fields that say which resource a state came from rather than what the state is. The message
+# already answers that with its key, and a prototype cannot be shared while it carries the identity
+# of one instance - the same reason `_model_of` strips names out of models.
+STATE_IDENTITY_KEYS = frozenset({"name", "thing"})
+
+
+def _without_identity(value: Any) -> Any:
+  """A state value with the fields that name one instance taken out, at any depth."""
+  if isinstance(value, dict):
+    return {k: _without_identity(v) for k, v in value.items() if k not in STATE_IDENTITY_KEYS}
+  if isinstance(value, list):
+    return [_without_identity(v) for v in value]
+  return value
+
+
+# What a viewer can see. Firmware reports position to 0.1 mm and a tenth of a microlitre is below
+# anything a well can show, so a change smaller than this is not news. Rounding to it rather than
+# comparing against a threshold means two values that look the same *are* the same: they produce one
+# signature, so they suppress a resend and share one entry in the table below. One rule, both jobs.
+STATE_DECIMALS = 1
+
+
+def _visible(value: Any) -> Any:
+  """A state value with changes too small to see rounded away."""
+  if isinstance(value, float):
+    return round(value, STATE_DECIMALS)
+  if isinstance(value, dict):
+    return {k: _visible(v) for k, v in value.items()}
+  if isinstance(value, list):
+    return [_visible(v) for v in value]
+  return value
+
+
+def state_signature(published: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
+  """The publishable form of one resource's state, and a key that is equal when it looks equal."""
+  cleaned = _visible(
+    _without_identity(
+      {k: v for k, v in published.items() if not (k == "rotation" and v == IDENTITY_ROTATION)}
+    )
+  )
+  return cleaned, json.dumps(cleaned, sort_keys=True, default=str)
+
+
+def pack_state(states: Dict[str, Dict[str, Any]], epoch: int = 0) -> Dict[str, Any]:
+  """Pack `{name: state}` into distinct states plus an index per name.
+
+  State is overwhelmingly repetitive: every empty well publishes the same zeros, every unused tip
+  spot the same tip. Sending each one in full costs a few hundred bytes per resource and dominates
+  the message on any facility with more than a machine or two in it, so the same prototype-and-
+  instance split the geometry uses is applied here.
+
+  Every name that went in comes out, including one whose state cleans down to nothing. Dropping it
+  would leave a client that had already been told about a full well believing it was still full.
+  """
+  distinct: Dict[str, int] = {}
+  table: List[Dict[str, Any]] = []
+  index: Dict[str, int] = {}
+
+  for name, published in states.items():
+    cleaned, key = state_signature(published)
+    if key not in distinct:
+      distinct[key] = len(table)
+      table.append(cleaned)
+    index[name] = distinct[key]
+
+  # Addressed by name, deliberately. Addressing by scene index would be smaller, and was tried: it
+  # is wrong, because the order instances are emitted in is not stable. Resources are created
+  # lazily during setup and reassigned by code that has nothing to do with the viewer, which
+  # reorders a parent's children, and an index that means one resource in one scene means a
+  # different one in the next. A name means the same thing in every scene.
+  return {"epoch": epoch, "states": table, "of": index}
 
 
 def collect_state(root: Resource) -> Dict[str, Dict[str, Any]]:

@@ -4,6 +4,7 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>PyLabRobot Visualizer 3D</title>
+<link rel="icon" type="image/png" href="./img/logo.png" />
 <link href="./main.css" rel="stylesheet" />
 </head>
 <body>
@@ -26,15 +27,33 @@
       <span id="status-label">Loading...</span>
     </div>
     <div class="navbar-divider"></div>
-    <button id="toolbar-right-toggle" class="toolbar-right-toggle" title="Facility Tree">
-      <svg width="22" height="22" viewBox="0 0 20 20" fill="#333">
-        <rect x="1" y="2" width="6" height="3" rx="1"/>
-        <rect x="9" y="8" width="6" height="3" rx="1"/>
-        <rect x="9" y="14" width="6" height="3" rx="1"/>
-        <line x1="4" y1="5" x2="4" y2="9.5" stroke="#333" stroke-width="1.5" fill="none"/>
-        <line x1="4" y1="9.5" x2="9" y2="9.5" stroke="#333" stroke-width="1.5" fill="none"/>
-        <line x1="4" y1="9.5" x2="4" y2="15.5" stroke="#333" stroke-width="1.5" fill="none"/>
-        <line x1="4" y1="15.5" x2="9" y2="15.5" stroke="#333" stroke-width="1.5" fill="none"/>
+    <button id="toolbar-right-toggle" class="toolbar-right-toggle" title="Inspector Panel">
+      <svg width="30" height="30" viewBox="0 0 40 40" fill="#333" stroke="none">
+        <!-- Hat crown -->
+        <path d="M12 14c0-5 3.5-9 8-9s8 4 8 9H12z"/>
+        <!-- Hat band -->
+        <rect x="12" y="13" width="16" height="1.5" fill="#dde1e5"/>
+        <!-- Hat brim -->
+        <ellipse cx="20" cy="15" rx="13" ry="3"/>
+        <!-- Hair sides -->
+        <path d="M11 16c0 0-1 2-1 4h2c0-2 0.5-3 0.5-3z"/>
+        <path d="M29 16c0 0 1 2 1 4h-2c0-2-0.5-3-0.5-3z"/>
+        <!-- Face (blank oval) -->
+        <ellipse cx="20" cy="22" rx="6" ry="7" fill="#dde1e5"/>
+        <!-- Neck -->
+        <rect x="18" y="28" width="4" height="3" fill="#dde1e5"/>
+        <!-- Coat body -->
+        <path d="M8 40V32c0-2 2-4 5-5l7 5 7-5c3 1 5 3 5 5v8z"/>
+        <!-- Lapel left -->
+        <path d="M13 27l7 5v8H8V32c0-2 2-3.5 5-5z" fill="#333"/>
+        <path d="M13.5 27.5l6 4.5v7" fill="none" stroke="#dde1e5" stroke-width="0.8"/>
+        <!-- Lapel right -->
+        <path d="M27 27l-7 5v8h12V32c0-2-2-3.5-5-5z" fill="#333"/>
+        <path d="M26.5 27.5l-6 4.5v7" fill="none" stroke="#dde1e5" stroke-width="0.8"/>
+        <!-- Tie -->
+        <polygon points="20,30 18.5,33 20,40 21.5,33" fill="#333"/>
+        <!-- Shirt triangle -->
+        <polygon points="18,30 20,32 22,30" fill="#dde1e5"/>
       </svg>
     </button>
   </div>

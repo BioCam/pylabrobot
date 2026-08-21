@@ -87,6 +87,11 @@ export const SHELL_OPACITY = 0.5;
 // The facility is the space everything stands in, not a thing to look at.
 export const SPACE_OPACITY = 0.06;
 
+// A holder is one position on a carrier: it holds at most one thing, and what the tree needs to
+// say is what is standing in it, not that a holder exists. Counting through them is what makes a
+// tip carrier read as "5 tipracks" rather than "5 resource holders".
+export const HOLDERS = new Set(["resource_holder", "plate_holder"]);
+
 export const ARM_EDGE = 0x1a1f24;
 export const ARM_EDGE_WIDTH_FLAT = 2.2;
 export const ARM_EDGE_WIDTH_3D = 2.6;

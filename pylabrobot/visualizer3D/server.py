@@ -6,6 +6,7 @@ protocol runs on the instrument host. What changed is the payload.
 """
 
 import asyncio
+import hashlib
 import http.server
 import json
 import logging
@@ -13,13 +14,13 @@ import math
 import os
 import threading
 import webbrowser
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import websockets
 
 from pylabrobot.resources.resource import Resource
 
-from .scene import build_scene, collect_state
+from .scene import build_scene, collect_state, pack_state, state_signature
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,27 @@ class Viewer3D:
     self._loop: Optional[asyncio.AbstractEventLoop] = None
     self._stats: Dict[str, Any] = {}
     self._legacy_bytes: Optional[int] = None  # measured once; it costs a full extra serialization
+    # Files a resource declared as its own geometry, by the id the page fetches them under. Only a
+    # path that a resource named is ever served, so this doubles as the whitelist.
+    self._mesh_files: Dict[str, str] = {}
+    # Which scene the indices below belong to, and the index of every resource in it. State is
+    # addressed by index rather than by name, so both have to be current before any is sent.
+    self._epoch = 0
+    self._index_of: Dict[str, int] = {}
+    # What each resource last looked like on the wire. A resource that publishes a change too small
+    # to see produces the same signature and is not sent again.
+    self._published: Dict[str, str] = {}
+    # Models derived by the last flatten, by resource name, and the set of names that flatten saw.
+    # Reusing a model is only sound while the tree holds the same names: a model can carry a
+    # reference to another resource, and whether a string counts as such a reference depends on
+    # which names exist. Same names, same answer. A name appearing or disappearing throws the lot
+    # away and pays for one full flatten, which is the case that was going to be expensive anyway.
+    self._known_models: Dict[str, Dict[str, Any]] = {}
+    self._known_names: frozenset = frozenset()
+    # The scene as last built. A client arriving is not a change to the scene, so it is handed this
+    # rather than causing a fresh one: rebuilding would renumber everything and hand every client
+    # already watching an epoch their indices no longer match.
+    self._scene_payload: Optional[Dict[str, Any]] = None
     self._scene_dirty = False
     self._scene_timer: Optional[asyncio.TimerHandle] = None
     self.rebuilds = 0  # how many scene rebuilds a run actually cost
@@ -124,7 +146,10 @@ class Viewer3D:
     payload, self._pending = self._pending, {}
     self._flush_scheduled = False
     if payload:
-      await self._broadcast("state", payload)
+      message = self._state_message(payload)
+      # Everything in the batch may have been a change nobody could see.
+      if message["of"]:
+        await self._broadcast("state", message)
 
   # A structural change costs a whole scene, so a burst of them must not cost a scene each. Picking
   # up ninety-six tips is one operation to a user and a hundred and ninety-two callbacks here; they
@@ -169,36 +194,114 @@ class Viewer3D:
       except Exception:
         self._clients.discard(client)
 
-  def _scene_message(self) -> Dict[str, Any]:
+  def _scene_message(self, rebuild: bool = False) -> Dict[str, Any]:
     """The scene, its measurements, and any workcell groups the root records.
 
     Groups are read by duck typing rather than by importing `Facility`, so any root that records
     workcells is served, and a plain resource simply has none.
     """
+    if self._scene_payload is not None and not rebuild:
+      return self._scene_payload
+
     # The comparison against the old payload shape is measured on the first build only: it costs
     # a second full serialization of the tree and never changes for a given scene.
-    scene = build_scene(self.root, measure_legacy=self._legacy_bytes is None)
+    scene = build_scene(
+      self.root,
+      measure_legacy=self._legacy_bytes is None,
+      known=self._known_models,
+      known_names=self._known_names,
+    )
+    self._known_names = frozenset(scene.names)
+    self._known_models = scene.derived
     if self._legacy_bytes is None:
       self._legacy_bytes = scene.legacy_bytes
     scene.legacy_bytes = self._legacy_bytes
 
     payload = scene.serialize()
+    self._register_meshes(payload["models"])
+
+    # A new scene renumbers everything, so the indices change and the client knows nothing about
+    # what any resource looks like. Both have to be reset together with the epoch that names them.
+    self._epoch += 1
+    self._index_of = {name: i for i, name in enumerate(payload["instances"]["names"])}
+    self._published = {}
     self._stats = scene.stats(scene_bytes=len(json.dumps(payload)))
     serialize_workcells = getattr(self.root, "serialize_workcells", None)
-    return {
+    self._scene_payload = {
       **payload,
+      "epoch": self._epoch,
       "stats": self._stats,
       "workcells": serialize_workcells() if callable(serialize_workcells) else [],
     }
+    return self._scene_payload
+
+  def _state_message(self, states: Dict[str, Dict[str, Any]], full: bool = False) -> Dict[str, Any]:
+    """Pack state for the wire.
+
+    A broadcast goes to clients that have been following along, so anything that still looks the way
+    it last did is left out. A snapshot goes to a client that knows nothing yet and must carry
+    everything, whatever the others have already been told - suppression is about what a given
+    client has seen, and a new one has seen none of it.
+
+    A snapshot leaves out `location`, alone among the fields. The scene sent immediately before it
+    already places every resource, so repeating that here says nothing new - and because a position
+    is unique to one resource, carrying it would give every resource a state of its own and undo
+    the sharing the rest of this message depends on. A position still travels the moment it
+    changes; it just is not announced twice at the start.
+    """
+    fresh = {}
+    for name, published in states.items():
+      _, signature = state_signature(published)
+      if not full and self._published.get(name) == signature:
+        continue
+      self._published[name] = signature
+      if not full:
+        fresh[name] = published
+        continue
+      # In a snapshot, a resource with nothing left to say is left out entirely: absent already
+      # means default to a client that has just arrived. In a delta it is kept, because there it
+      # means "no longer what I last told you".
+      without_location = {k: v for k, v in published.items() if k != "location"}
+      cleaned, _ = state_signature(without_location)
+      if cleaned:
+        fresh[name] = without_location
+    return pack_state(fresh, self._epoch)
+
+  def _register_meshes(self, models: List[Dict[str, Any]]) -> None:
+    """Turn each declared mesh path into a URL the page can fetch, and remember what to serve.
+
+    A resource declares where its geometry lives on disk. The page cannot read a filesystem path,
+    and the file is often far too large to inline, so each one is given a stable id and served from
+    this viewer. The path itself never reaches the browser.
+    """
+    for model in models:
+      mesh = model.get("mesh")
+      if not isinstance(mesh, dict) or "path" not in mesh:
+        continue
+      path = os.path.abspath(os.path.expanduser(str(mesh["path"])))
+      if not os.path.isfile(path):
+        logger.warning("declared mesh not found, drawing the box instead: %s", path)
+        model.pop("mesh")
+        continue
+      mesh_id = hashlib.sha1(path.encode("utf-8")).hexdigest()[:16] + os.path.splitext(path)[1]
+      self._mesh_files[mesh_id] = path
+      model["mesh"] = {k: v for k, v in mesh.items() if k != "path"}
+      model["mesh"]["url"] = f"mesh/{mesh_id}"
 
   async def _send_scene_to_all(self) -> None:
-    await self._broadcast("scene", self._scene_message())
-    await self._broadcast("state", collect_state(self.root))
+    await self._broadcast("scene", self._scene_message(rebuild=True))
+    await self._broadcast("state", self._state_message(collect_state(self.root), full=True))
 
   async def _handler(self, websocket) -> None:
     self._clients.add(websocket)
     await websocket.send(json.dumps(_finite({"event": "scene", "data": self._scene_message()})))
-    await websocket.send(json.dumps(_finite({"event": "state", "data": collect_state(self.root)})))
+    await websocket.send(
+      json.dumps(
+        _finite(
+          {"event": "state", "data": self._state_message(collect_state(self.root), full=True)}
+        )
+      )
+    )
     try:
       async for _ in websocket:
         pass
@@ -226,6 +329,7 @@ class Viewer3D:
     directory = STATIC_DIR
     ws_port = self.ws_port
     name = self.name
+    mesh_files = self._mesh_files
 
     class Handler(http.server.SimpleHTTPRequestHandler):
       def __init__(self, *args, **kwargs):
@@ -242,6 +346,19 @@ class Viewer3D:
         # Match on the path alone: a link may carry a query string (`/?view=top`), and serving the
         # template unsubstituted in that case leaves the page with no websocket port.
         path = self.path.split("?", 1)[0].split("#", 1)[0]
+        if path.startswith("/mesh/"):
+          source = mesh_files.get(path[len("/mesh/") :])
+          if source is None:
+            self.send_error(404)
+            return
+          with open(source, "rb") as f:
+            body = f.read()
+          self.send_response(200)
+          self.send_header("Content-type", "model/gltf-binary")
+          self.send_header("Content-Length", str(len(body)))
+          self.end_headers()
+          self.wfile.write(body)
+          return
         if path in ("/", "/index.html"):
           with open(os.path.join(directory, "index.html"), "r", encoding="utf-8") as f:
             content = f.read().replace("{{ ws_port }}", str(ws_port))
@@ -269,14 +386,19 @@ class Viewer3D:
 
   async def start(self) -> None:
     self._loop = asyncio.get_running_loop()
-    self._start_file_server()
 
+    # The websocket first, because the page has to be told which port to call back on and the file
+    # server bakes that number into what it serves. Started the other way round, a viewer whose
+    # preferred port is already taken serves a page pointing at the viewer that took it, and then
+    # quietly shows someone else's facility.
     while True:
       try:
         self._ws_server = await websockets.serve(self._handler, self.host, self.ws_port)
         break
       except OSError:
         self.ws_port += 1
+
+    self._start_file_server()
 
     url = f"http://{self.host}:{self.fs_port}"
     print(f"viewer on {url}  (websocket {self.ws_port})")

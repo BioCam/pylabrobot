@@ -24,6 +24,12 @@ declare module "three/addons/RoomEnvironment.js" {
 declare module "three/addons/lines/LineSegments2.js" {
   export const LineSegments2: any;
 }
+declare module "three/addons/GLTFLoader.js" {
+  export const GLTFLoader: any;
+}
+declare module "three/addons/DRACOLoader.js" {
+  export const DRACOLoader: any;
+}
 declare module "three/addons/lines/LineSegmentsGeometry.js" {
   export const LineSegmentsGeometry: any;
 }
