@@ -89,7 +89,7 @@ batch identifiers that PLR itself cannot know.
 from pylabrobot.events import event_context
 
 with use_event_bus(event_bus), event_context(run_id="run-42", batch_id="batch-2"):
-  await incubator.fetch_plate_to_loading_tray(site)
+  await incubator.fetch_plate_to_loading_tray("plate_1")
 ```
 
 The values are inherited by nested PLR events. Keep this context application-specific; device
@@ -110,17 +110,19 @@ diagnostic events preserve controller and transport activity for debugging.
 
 ## Current event coverage
 
-EventBus adoption is incremental. The initial implementation instruments the following public
+EventBus adoption is incremental. The current implementation instruments the following public
 frontends. Each listed semantic operation emits `started`, `completed`, and `failed` lifecycle
 events.
 
-| Frontend | Operations |
+| Frontend | Canonical semantic operations |
 | --- | --- |
 | `legacy.machines.Machine` | `machine.setup`, `machine.stop` |
 | `legacy.storage.Incubator` | `incubator.fetch_plate`, `incubator.take_in_plate` |
 | `legacy.liquid_handling.LiquidHandler` | resource pickup/move/drop; tip pickup/drop; 96-head tip pickup/drop; aspirate; dispense |
 | `legacy.shaking.Shaker` | `shaker.shake`, `shaker.stop_shaking` |
 | `legacy.temperature_controlling.TemperatureController` | set temperature, wait for temperature, deactivate |
+| `legacy.centrifuge.Centrifuge` | `centrifuge.spin` |
+| `legacy.centrifuge.Loader` | `centrifuge_loader.load`, `centrifuge_loader.unload` |
 | `agilent.vspin.VSpin` | `centrifuge.spin` |
 | `agilent.vspin.Access2` | `centrifuge_loader.load`, `centrifuge_loader.unload` |
 | `brooks.precise_flex.PreciseFlex` | lifecycle, fault/home/freedrive, joint/cartesian/rail/gripper motion, pick/drop, park |
@@ -131,7 +133,9 @@ Detailed operation references:
 - [Incubator](event-bus/incubator.md)
 - [LiquidHandler](event-bus/liquid-handler.md)
 - [Shaker and temperature controller](event-bus/thermal-and-shaking.md)
+- [VSpin centrifuge and Access2 loader](../agilent/vspin/events.md)
 - [Diagnostic transports](event-bus/diagnostic-transports.md)
+- [Canonical schema for every operation above](../../contributor_guide/event-schemas.md)
 
 ```{toctree}
 :hidden:
@@ -171,7 +175,15 @@ serialized `Coordinate` in `target.location`; joint targets use axis-name-to-val
 `pick` and `drop` describe controller actions. A resource-aware wrapper should emit the separate
 resource-transfer event when it has PLR resource context.
 
+### Agilent BenchCel
+
+`benchcel.downstack`, `benchcel.upstack`, and `benchcel.move_plate_between_stacks` include the
+BenchCel in `device`, the directly moved plate in `resources`, and the actual PLR stack or loading
+tray holders in `source` and `destination`.
+
 ## More detail
 
 The [EventBus contributor guide](../../contributor_guide/event-bus.md) defines the stable naming,
-resource, and test conventions for driver authors adding coverage.
+resource, and test conventions for driver authors adding coverage. The
+[Event Schema Registry](../../contributor_guide/event-schemas.md) defines canonical operation names
+and payload fields.
