@@ -53,7 +53,7 @@ class TestSimulation(unittest.IsolatedAsyncioTestCase):
       STARSimulationDriver()
 
 
-# What each bring-up step is called in the sequences below, and where it is defined. The simulated
+# What each initialization step is called in the sequences below, and where it is defined. The simulated
 # classes override some of them, so each is recorded where a simulated run would reach it.
 MOVING_STEPS = [
   (simulator.STARSimulationDriver, "pre_initialize", "VI instrument"),
@@ -70,7 +70,7 @@ MOVING_STEPS = [
 
 @contextlib.contextmanager
 def recorded_moves():
-  """Record every bring-up step that moves the machine, in the order setup runs them."""
+  """Record every setup step that moves the machine, in the order setup runs them."""
   moves: List[str] = []
   with contextlib.ExitStack() as stack:
     for owner, name, label in MOVING_STEPS:

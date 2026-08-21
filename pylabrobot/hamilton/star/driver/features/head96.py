@@ -450,9 +450,11 @@ class Head96:
     Raises:
       RuntimeError: If no arm is installed, or the head's X offset was not read at discovery.
     """
-    arm = self._driver.arm_carrying("head96")
+    # The arm carrying this head, not whichever arm is present: on a machine with two, the head
+    # is on one of them and its X is that one's.
+    arm = next((a for a in self._driver.arms if a.head96 is self), None)
     if arm is None:
-      raise RuntimeError("no arm reports a 96-head installed, so the head has nothing to ride")
+      raise RuntimeError("this head is not on either arm; have you called `star.setup()`?")
     if self.configuration.x_offset is None:
       raise RuntimeError("the 96-head's X offset was not read; have you called `star.setup()`?")
     return round(await arm.request_position() - self.configuration.x_offset, 2)

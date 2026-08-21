@@ -132,46 +132,45 @@ class STARDriver:
     """The arms this machine has, left first."""
     return [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
 
-  def arm_carrying(self, capability: Literal["pipettes", "head96", "iswap"]) -> Optional[XArm]:
-    """The arm a capability is mounted on, or None when nothing carries it.
+  def _require_one_arm(self, reaching_for: str) -> Optional[XArm]:
+    """The machine's arm, for accessors that only make sense when it has one.
 
-    The firmware requires the two drives' capability bits to be disjoint, so at most one arm can
-    claim a capability. A machine that breaks that rule is misconfigured rather than ambiguous, and
-    says so here rather than having one of its arms picked silently.
+    A machine with two carries two of everything, so which is meant is the caller's to say. One
+    with none carries nothing, which is an answer rather than a refusal.
 
     Args:
-      capability: which of the arm-carried capabilities to look for.
+      reaching_for: what the caller was after. Used to word the refusal, nothing else.
 
     Returns:
-      The arm carrying it, or None.
+      The machine's one arm, or None when it has none.
 
     Raises:
-      ValueError: If both arms claim it.
+      ValueError: If the machine has more than one arm.
     """
-    carrying = [arm for arm in self.arms if getattr(arm, capability) is not None]
-    if len(carrying) > 1:
+    arms = self.arms
+    if len(arms) > 1:
       raise ValueError(
-        f"both arms report {capability} installed, which the instrument configuration does not "
-        "allow - reach it through `left_x_arm` or `right_x_arm` instead"
+        f"this machine has two X-arms, so `{reaching_for}` is ambiguous - reach it through "
+        f"`left_x_arm.{reaching_for}` or `right_x_arm.{reaching_for}`."
       )
-    return carrying[0] if carrying else None
+    return arms[0] if arms else None
 
   @property
   def pipettes(self) -> Optional[Pipettes]:
-    """The pipetting channels, on the arm that carries them."""
-    arm = self.arm_carrying("pipettes")
+    """The pipetting channels, on a machine with one arm."""
+    arm = self._require_one_arm("pipettes")
     return arm.pipettes if arm is not None else None
 
   @property
   def head96(self) -> Optional[Head96]:
-    """The 96-head, on the arm that carries it."""
-    arm = self.arm_carrying("head96")
+    """The 96-head, on a machine with one arm."""
+    arm = self._require_one_arm("head96")
     return arm.head96 if arm is not None else None
 
   @property
   def iswap(self) -> Optional[iSWAP]:
-    """The iSWAP, on the arm that carries it."""
-    arm = self.arm_carrying("iswap")
+    """The iSWAP, on a machine with one arm."""
+    arm = self._require_one_arm("iswap")
     return arm.iswap if arm is not None else None
 
   # -- connection ------------------------------------------------------------
@@ -202,11 +201,11 @@ class STARDriver:
       # 3. Each capability brings itself up. They sit on different modules, so they run together;
       #    the autoload, iSWAP and 96-head join this gather as they land. The channels only need
       #    it when the instrument procedure did not just run, or when something is still mounted.
-      logger.debug("[PHASE 3] Capability bring-up")
-      bring_up = [self._bring_up_arm(already_initialized)]
+      logger.debug("[PHASE 3] Capability initialization")
+      initializing = [self._initialize_arm(arm, already_initialized) for arm in self.arms]
       if self.autoload is not None:
-        bring_up.append(self.autoload.initialize())
-      await asyncio.gather(*bring_up)
+        initializing.append(self.autoload.initialize())
+      await asyncio.gather(*initializing)
 
       # 4. What was found, as resources on the deck - when the driver was given one to reflect
       #    into. Each is a child of the deck, so a machine with a deck carries one tree.
@@ -265,15 +264,17 @@ class STARDriver:
     # Each capability reads its own modules, and they are different modules, so they read at
     # once. Both arms run off the same X-drive board, so only one of them asks it.
     arms = [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
+    # Through the arms, not through the accessors above: those refuse on a machine with two, and
+    # setup has to reach every capability the machine has whichever arm holds it.
     reading = []
-    if self.pipettes is not None:
-      reading.append(self.pipettes.discover())
-    if arms:
-      reading.append(arms[0].discover())
-    if self.head96 is not None:
-      reading.append(self.head96.discover())
-    if self.iswap is not None:
-      reading.append(self.iswap.discover())
+    for arm in arms:
+      reading.append(arm.discover())
+      if arm.pipettes is not None:
+        reading.append(arm.pipettes.discover())
+      if arm.head96 is not None:
+        reading.append(arm.head96.discover())
+      if arm.iswap is not None:
+        reading.append(arm.iswap.discover())
     if self.autoload is not None:
       reading.append(self.autoload.discover())
     await asyncio.gather(*reading)
@@ -283,12 +284,12 @@ class STARDriver:
     master_version, _ = await self.request_firmware_version()
     reported = {
       "master": master_version,
-      "pipettes": (
-        None if self.pipettes is None else self.pipettes.configuration.channels[0].firmware_version
+      "pipettes": next(
+        (a.pipettes.configuration.channels[0].firmware_version for a in arms if a.pipettes), None
       ),
       "x_arm": None if not arms else arms[0].configuration.firmware_version,
-      "head96": None if self.head96 is None else self.head96.configuration.firmware_version,
-      "iswap": None if self.iswap is None else self.iswap.configuration.firmware_version,
+      "head96": next((a.head96.configuration.firmware_version for a in arms if a.head96), None),
+      "iswap": next((a.iswap.configuration.firmware_version for a in arms if a.iswap), None),
       "autoload": None if self.autoload is None else self.autoload.configuration.firmware_version,
     }
     self.firmware = {name: v for name, v in reported.items() if v is not None}
@@ -301,7 +302,7 @@ class STARDriver:
     it is, apart from raising the channels to Z safety, which the procedure would otherwise have
     guaranteed - nothing may move laterally while a channel is low.
 
-    This is the instrument-level step only. `setup` is what brings up the capabilities behind it.
+    This is the instrument-level step only. `setup` is what initializes the capabilities after it.
 
     Args:
       force: run the initialization procedure even if the machine reports itself initialized.
@@ -320,12 +321,13 @@ class STARDriver:
       await self.pre_initialize()
     else:
       logger.debug("machine reports initialized - raising the channels to Z safety only")
-      if self.pipettes is not None:
-        await self.pipettes.move_to_safe_z()
-      # The head is retracted whatever its own status says: the retract is what keeps it clear of
-      # the iSWAP, which shares the left X-drive and moves during capability bring-up.
-      if self.head96 is not None:
-        await self.head96.probe_z_max()
+      for arm in self.arms:
+        if arm.pipettes is not None:
+          await arm.pipettes.move_to_safe_z()
+        # The head is retracted whatever its own status says: the retract is what keeps it clear
+        # of the iSWAP, which shares the arm's X drive and moves while capabilities initialize.
+        if arm.head96 is not None:
+          await arm.head96.probe_z_max()
 
     return already_initialized
 
@@ -388,15 +390,15 @@ class STARDriver:
       # Read through the capability, not the arm's own bit, so the summary cannot report channels
       # the driver did not build. The two disagree only on a machine whose configuration says both.
       channels = "none"
-      if self.pipettes is not None and a.pip_installed:
+      if arm.pipettes is not None and a.pip_installed:
         channels = f"{c.num_pip_channels} ({'1000uL' if c.pip_type_1000ul else '300uL'})"
-      elif self.pipettes is None and a.pip_installed:
+      elif arm.pipettes is None and a.pip_installed:
         channels = "none, but this arm reports the module installed"
       head96 = "none"
       if a.head96_installed:
         head96 = "installed"
-        if self.head96 is not None and self.head96.configuration.head_type is not None:
-          head96 = self.head96.configuration.head_type
+        if arm.head96 is not None and arm.head96.configuration.head_type is not None:
+          head96 = arm.head96.configuration.head_type
       iswap = "none"
       if a.iswap_installed:
         iswap = f"{'wide' if c.iswap_gripper_wide else 'small'} gripper"
@@ -413,16 +415,18 @@ class STARDriver:
       lines.append("      (the machine reports one channel count for the instrument, not per arm)")
     return "\n".join(lines)
 
-  async def _bring_up_arm(self, already_initialized: bool):
-    """Bring up everything the arm carries, one after another.
+  async def _initialize_arm(self, arm: XArm, already_initialized: bool):
+    """Initialize everything one arm carries, one after another.
 
-    The channels, the iSWAP and the 96-head share the arm's X drive, so bringing one up while
+    The channels, the iSWAP and the 96-head share the arm's X drive, so initializing one while
     another is moving is refused by the machine. They go in the order the legacy routine uses.
+    Two arms have two drives, so a machine with both initializes them alongside each other.
 
     Args:
+      arm: the arm whose capabilities to initialize.
       already_initialized: whether the instrument reported itself up before this setup ran.
     """
-    if self.pipettes is None:
+    if arm.pipettes is None:
       logger.debug("channels: none installed - skipped")
     else:
       tips = await self.request_tip_presence()
@@ -433,29 +437,29 @@ class STARDriver:
           len(tips),
           "was already up" if already_initialized else "has just been homed",
         )
-        await self.pipettes.initialize()
+        await arm.pipettes.initialize()
       else:
         logger.debug("channels: already up and nothing mounted - skipped")
 
-    if self.iswap is not None:
+    if arm.iswap is not None:
       if not await self.request_initialization_status("R0"):
         logger.debug("iSWAP reports itself uninitialized - initializing")
-        await self.iswap.initialize()
-      await self.iswap.park()
+        await arm.iswap.initialize()
+      await arm.iswap.park()
 
-    if self.head96 is not None:
+    if arm.head96 is not None:
       if not await self.request_initialization_status("H0"):
-        if self.head96.configuration.tip_discard_location is None:
+        if arm.head96.configuration.tip_discard_location is None:
           logger.warning(
             "the 96-head reports itself uninitialized, and there is nowhere configured to eject "
             "at. Set head96.configuration.tip_discard_location, or pass it to head96.initialize()."
           )
         else:
           logger.debug("96-head reports itself uninitialized - initializing")
-          await self.head96.initialize()
+          await arm.head96.initialize()
       # Probing how far this head reaches retracts it, so it doubles as the safety retract and
       # runs on every setup rather than only the first.
-      await self.head96.probe_z_max()
+      await arm.head96.probe_z_max()
 
   async def _create_capability_resources(self) -> None:
     """Put what the machine carries on the deck, where it is.
@@ -494,7 +498,7 @@ class STARDriver:
     """
     if self.deck is None:
       return
-    arm = self.arm_carrying("pipettes")
+    arm = next((a for a in self.arms if a.pipettes is not None), None)
     if arm is None or arm.pipettes is None or arm.resource is None:
       return
 
@@ -560,7 +564,7 @@ class STARDriver:
     """
     if self.deck is None:
       return
-    arm = self.arm_carrying("head96")
+    arm = next((a for a in self.arms if a.head96 is not None), None)
     if arm is None or arm.head96 is None or arm.resource is None:
       return
     c = arm.head96.configuration

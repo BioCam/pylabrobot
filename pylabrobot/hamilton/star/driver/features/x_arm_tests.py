@@ -36,7 +36,7 @@ def record(arm: XArm) -> List[str]:
 
 
 async def _both_arms() -> STARSimulationDriver:
-  """A machine with an arm on each rail, brought up."""
+  """A machine with an arm on each rail, set up."""
   both = dataclasses.replace(
     DEFAULT_STAR_CONFIGURATION,
     right_arm=BARE_X_ARM,

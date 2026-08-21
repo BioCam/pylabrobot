@@ -2,7 +2,7 @@
 
 Each capability has a small subclass here that overrides the handful of methods which would
 otherwise talk to a machine, returning what one would have said. `STARSimulationDriver` swaps
-those in, so everything above them - discovery, the bring-up order, the configuration each
+those in, so everything above them - discovery, the initialization order, the configuration each
 capability resolves - runs exactly as it does against hardware.
 
 Nothing reaches the wire. `send_command` raises, which is how a command that has not been
@@ -63,7 +63,7 @@ PIPETTE_WIDTH = 8.98
 
 # Where the channels rest on a simulated machine, in mm: their Z-safety height, and the Y band the
 # initialization procedure spreads them across, so a simulated machine looks like one that has been
-# brought up rather than one with every channel on top of the next.
+# been set up rather than one with every channel on top of the next.
 SIMULATED_CHANNEL_Z_SAFETY = 334.3
 
 # What each pipetting channel is: an ML_STAR channel on an ML_STAR head, with a CoRe II stop disc
@@ -212,7 +212,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
     self.machine.tips_mounted = [False] * len(self.machine.tips_mounted)
 
   async def request_y_positions(self) -> List[float]:
-    # Where initialization spread them, which is where a machine that has been brought up leaves
+    # Where initialization spread them, which is where a machine that has been set up leaves
     # them and nothing here has since moved them. Answered from the procedure rather than from the
     # resources, so the model can be checked against this rather than derived from it.
     positions = self.default_initialize_y_positions()
