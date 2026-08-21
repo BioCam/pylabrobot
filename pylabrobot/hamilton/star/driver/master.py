@@ -51,9 +51,6 @@ PRE_INITIALIZE_READ_TIMEOUT = 300
 class STARDriver:
   """Interface for the Hamilton STARDriver."""
 
-  PIP_X_MIN_WITH_LEFT_SIDE_PANEL: float = 320.0
-  HEAD96_X_MIN_WITH_LEFT_SIDE_PANEL: float = 0.0
-
   def __init__(
     self,
     device_address: Optional[int] = None,
@@ -75,8 +72,9 @@ class STARDriver:
       packet_read_timeout: timeout in seconds for reading a single packet.
       read_timeout: timeout in seconds for reading a full response.
       write_timeout: timeout in seconds for writing a command.
-      left_side_panel_installed: if True, restrict PIP channels to x >= 320mm and
-        the 96-head to x >= 0mm to prevent collisions with the left side panel.
+      left_side_panel_installed: whether the machine has its left side panel on. Declared rather
+        than read: it comes off in seconds, so the machine's own travel report does not follow it.
+        With one fitted, an arm carrying a head stops while the head is still clear of it.
       io: an already-built USB handle to use instead of opening one from the arguments above.
       deck: the deck to reflect the machine into. Optional: without one the driver still drives the
         machine, and nothing about where things are is modelled.
@@ -102,10 +100,9 @@ class STARDriver:
 
     self._num_channels: Optional[int] = None
 
-    # Whether the link is open, and whether a full setup has run behind it. Commands gate on the
-    # link: they flow during setup, long before setup is done.
+    # Whether the link is open. Commands gate on it: they flow during setup, long before setup
+    # is done.
     self._connected = False
-    self._setup_done = False
 
     self.left_side_panel_installed = left_side_panel_installed
 
@@ -125,55 +122,9 @@ class STARDriver:
     self.right_x_arm: Optional[XArm] = None
     self.autoload: Optional[Autoload] = None
 
-  # -- what the arms carry ---------------------------------------------------------------------
-
-  @property
-  def arms(self) -> List[XArm]:
-    """The arms this machine has, left first."""
-    return [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
-
-  def _require_one_arm(self, reaching_for: str) -> Optional[XArm]:
-    """The machine's arm, for accessors that only make sense when it has one.
-
-    A machine with two carries two of everything, so which is meant is the caller's to say. One
-    with none carries nothing, which is an answer rather than a refusal.
-
-    Args:
-      reaching_for: what the caller was after. Used to word the refusal, nothing else.
-
-    Returns:
-      The machine's one arm, or None when it has none.
-
-    Raises:
-      ValueError: If the machine has more than one arm.
-    """
-    arms = self.arms
-    if len(arms) > 1:
-      raise ValueError(
-        f"this machine has two X-arms, so `{reaching_for}` is ambiguous - reach it through "
-        f"`left_x_arm.{reaching_for}` or `right_x_arm.{reaching_for}`."
-      )
-    return arms[0] if arms else None
-
-  @property
-  def pipettes(self) -> Optional[Pipettes]:
-    """The pipetting channels, on a machine with one arm."""
-    arm = self._require_one_arm("pipettes")
-    return arm.pipettes if arm is not None else None
-
-  @property
-  def head96(self) -> Optional[Head96]:
-    """The 96-head, on a machine with one arm."""
-    arm = self._require_one_arm("head96")
-    return arm.head96 if arm is not None else None
-
-  @property
-  def iswap(self) -> Optional[iSWAP]:
-    """The iSWAP, on a machine with one arm."""
-    arm = self._require_one_arm("iswap")
-    return arm.iswap if arm is not None else None
-
-  # -- connection ------------------------------------------------------------
+  # ----------------------------------------
+  # Connection and lifecycle
+  # ----------------------------------------
 
   async def setup(self):
     """Connect to the machine, find out what it is, and bring it up.
@@ -217,7 +168,6 @@ class STARDriver:
       await self.stop()
       raise
 
-    self._setup_done = True
     logger.info("%s", self.format_setup_summary())
 
   async def _open(self):
@@ -230,106 +180,15 @@ class STARDriver:
     self._replies.stop()
     await self.io.stop()
 
-  async def discover(self):
-    """Read what machine is on the other end, and build the subsystems it turns out to have.
+  async def stop(self):
+    """Close the link. The machine keeps its state; only this driver lets go of it."""
+    self._connected = False
+    await self._close()
 
-    Read-only: nothing moves. Call `initialize` to bring the machine up.
-    """
-    self.configuration = await self.request_device_configuration()
-    self._num_channels = len(await self.request_tip_presence())
-
-    # Built for what the machine turns out to have, and only if not already there: a caller can
-    # hand a capability its configuration before setup, and re-running setup keeps it.
-    if self.configuration.left_arm is not None and self.left_x_arm is None:
-      self.left_x_arm = XArm(self, side="left")
-    if self.configuration.right_arm is not None and self.right_x_arm is None:
-      self.right_x_arm = XArm(self, side="right")
-    # What an arm carries is what its own configuration bits claim. The firmware requires the two
-    # drives' bits to be disjoint, so no capability can be on both.
-    for arm in (self.left_x_arm, self.right_x_arm):
-      if arm is None:
-        continue
-      a = arm.configuration
-      if a.pip_installed and self.configuration.num_pip_channels > 0 and arm.pipettes is None:
-        arm.pipettes = Pipettes(self)
-      if a.head96_installed and arm.head96 is None:
-        arm.head96 = Head96(self)
-      if a.iswap_installed and arm.iswap is None:
-        arm.iswap = iSWAP(self)
-    if self.configuration.autoload_installed and self.autoload is None:
-      self.autoload = Autoload(self)
-    if self.configuration.main_front_cover_monitoring_installed and self.front_cover is None:
-      self.front_cover = FrontCover(self)
-
-    # Each capability reads its own modules, and they are different modules, so they read at
-    # once. Both arms run off the same X-drive board, so only one of them asks it.
-    arms = [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
-    # Through the arms, not through the accessors above: those refuse on a machine with two, and
-    # setup has to reach every capability the machine has whichever arm holds it.
-    reading = []
-    for arm in arms:
-      reading.append(arm.discover())
-      if arm.pipettes is not None:
-        reading.append(arm.pipettes.discover())
-      if arm.head96 is not None:
-        reading.append(arm.head96.discover())
-      if arm.iswap is not None:
-        reading.append(arm.iswap.discover())
-    if self.autoload is not None:
-      reading.append(self.autoload.discover())
-    await asyncio.gather(*reading)
-    for arm in arms[1:]:
-      arm.configuration.firmware_version = arms[0].configuration.firmware_version
-
-    master_version, _ = await self.request_firmware_version()
-    reported = {
-      "master": master_version,
-      "pipettes": next(
-        (a.pipettes.configuration.channels[0].firmware_version for a in arms if a.pipettes), None
-      ),
-      "x_arm": None if not arms else arms[0].configuration.firmware_version,
-      "head96": next((a.head96.configuration.firmware_version for a in arms if a.head96), None),
-      "iswap": next((a.iswap.configuration.firmware_version for a in arms if a.iswap), None),
-      "autoload": None if self.autoload is None else self.autoload.configuration.firmware_version,
-    }
-    self.firmware = {name: v for name, v in reported.items() if v is not None}
-
-  async def initialize(self, force: bool = False) -> bool:
-    """Bring the instrument itself to a known state.
-
-    This moves it. An uninitialized machine runs its initialization procedure, which homes every
-    drive and leaves the channels at Z safety. A machine that is already initialized is left where
-    it is, apart from raising the channels to Z safety, which the procedure would otherwise have
-    guaranteed - nothing may move laterally while a channel is low.
-
-    This is the instrument-level step only. `setup` is what initializes the capabilities after it.
-
-    Args:
-      force: run the initialization procedure even if the machine reports itself initialized.
-
-    Returns:
-      Whether the machine reported itself already initialized before this ran.
-    """
-    already_initialized = await self.request_initialization_status()
-
-    if force or not already_initialized:
-      logger.debug(
-        "machine reports %s - running the initialization procedure (up to %d s)",
-        "initialized, but the run was forced" if already_initialized else "not initialized",
-        PRE_INITIALIZE_READ_TIMEOUT,
-      )
-      await self.pre_initialize()
-    else:
-      logger.debug("machine reports initialized - raising the channels to Z safety only")
-      for arm in self.arms:
-        if arm.pipettes is not None:
-          await arm.pipettes.move_to_safe_z()
-        # The head is retracted whatever its own status says: the retract is what keeps it clear
-        # of the iSWAP, which shares the arm's X drive and moves while capabilities initialize.
-        if arm.head96 is not None:
-          await arm.head96.probe_z_max()
-
-    return already_initialized
+  @property
+  def connected(self) -> bool:
+    """Whether the link is open, so commands can be sent."""
+    return self._connected
 
   def _describe_link(self) -> str:
     """How this machine is reached, in whatever terms its transport is addressed by."""
@@ -349,325 +208,9 @@ class STARDriver:
     ]
     return link + (f" ({', '.join(named)})" if named else "")
 
-  def format_setup_summary(self) -> str:
-    """One block describing the machine that was found: how it is reached, what firmware every
-    module runs, whether an autoload is fitted, how many arms there are, and per arm its
-    dimensions, how many channels it carries and whether it carries a 96-head, a 384-head and an
-    iSWAP.
-
-    Returns:
-      A multi-line summary, or a note that setup has not run.
-    """
-    c = self.configuration
-    if c is None:
-      return "[Hamilton STAR] not discovered yet"
-
-    firmware = (
-      ", ".join(f"{name} {version}" for name, version in self.firmware.items()) or "unknown"
-    )
-
-    fitted = [f"{c.instrument_size_slots} slots"]
-    for number, installed in ((1, c.wash_station_1_installed), (2, c.wash_station_2_installed)):
-      if installed:
-        fitted.append(f"wash station {number}")
-
-    autoload = "none"
-    if c.autoload_installed:
-      autoload = "installed"
-      if self.autoload is not None and self.autoload.configuration.autoload_type is not None:
-        autoload = self.autoload.configuration.autoload_type
-
-    arms = [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
-    lines = [
-      f"[Hamilton STAR] Connected on {self._describe_link()}",
-      f"  Firmware: {firmware}",
-      f"  Configuration: {', '.join(fitted)}",
-      f"  Autoload: {autoload}",
-      f"  Arms: {len(arms)}",
-    ]
-    for arm in arms:
-      a = arm.configuration
-      # Read through the capability, not the arm's own bit, so the summary cannot report channels
-      # the driver did not build. The two disagree only on a machine whose configuration says both.
-      channels = "none"
-      if arm.pipettes is not None and a.pip_installed:
-        channels = f"{c.num_pip_channels} ({'1000uL' if c.pip_type_1000ul else '300uL'})"
-      elif arm.pipettes is None and a.pip_installed:
-        channels = "none, but this arm reports the module installed"
-      head96 = "none"
-      if a.head96_installed:
-        head96 = "installed"
-        if arm.head96 is not None and arm.head96.configuration.head_type is not None:
-          head96 = arm.head96.configuration.head_type
-      iswap = "none"
-      if a.iswap_installed:
-        iswap = f"{'wide' if c.iswap_gripper_wide else 'small'} gripper"
-      lines.append(
-        f"    {arm.side}: {a.model}, {a.width} mm wide, "
-        f"travel {_range(a.x_range)}, workspace {_range(a.workspace_range)}"
-      )
-      lines.append(
-        f"      channels: {channels} | 96-head: {head96} | "
-        f"384-head: {'installed' if a.head384_installed else 'none'} | "
-        f"iSWAP: {iswap}"
-      )
-    if sum(arm.configuration.pip_installed for arm in arms) > 1:
-      lines.append("      (the machine reports one channel count for the instrument, not per arm)")
-    return "\n".join(lines)
-
-  async def _initialize_arm(self, arm: XArm, already_initialized: bool):
-    """Initialize everything one arm carries, one after another.
-
-    The channels, the iSWAP and the 96-head share the arm's X drive, so initializing one while
-    another is moving is refused by the machine. They go in the order the legacy routine uses.
-    Two arms have two drives, so a machine with both initializes them alongside each other.
-
-    Args:
-      arm: the arm whose capabilities to initialize.
-      already_initialized: whether the instrument reported itself up before this setup ran.
-    """
-    if arm.pipettes is None:
-      logger.debug("channels: none installed - skipped")
-    else:
-      tips = await self.request_tip_presence()
-      if not already_initialized or any(tips):
-        logger.debug(
-          "channels: %d of %d carrying tips, instrument %s - initializing",
-          sum(tips),
-          len(tips),
-          "was already up" if already_initialized else "has just been homed",
-        )
-        await arm.pipettes.initialize()
-      else:
-        logger.debug("channels: already up and nothing mounted - skipped")
-
-    if arm.iswap is not None:
-      if not await self.request_initialization_status("R0"):
-        logger.debug("iSWAP reports itself uninitialized - initializing")
-        await arm.iswap.initialize()
-      await arm.iswap.park()
-
-    if arm.head96 is not None:
-      if not await self.request_initialization_status("H0"):
-        if arm.head96.configuration.tip_discard_location is None:
-          logger.warning(
-            "the 96-head reports itself uninitialized, and there is nowhere configured to eject "
-            "at. Set head96.configuration.tip_discard_location, or pass it to head96.initialize()."
-          )
-        else:
-          logger.debug("96-head reports itself uninitialized - initializing")
-          await arm.head96.initialize()
-      # Probing how far this head reaches retracts it, so it doubles as the safety retract and
-      # runs on every setup rather than only the first.
-      await arm.head96.probe_z_max()
-
-  async def _create_capability_resources(self) -> None:
-    """Put what the machine carries on the deck, where it is.
-
-    Read once, at setup: each capability reports where it came to rest and its resource is placed
-    there. One already on the deck is reused rather than replaced, so repeated setups do not
-    duplicate it.
-    """
-    if self.deck is None:
-      return
-    for arm in (self.left_x_arm, self.right_x_arm):
-      if arm is None:
-        continue
-      a = arm.configuration
-      if a.width is None:
-        logger.warning("the %s X-arm reported no width, so it is not modelled", arm.side)
-        continue
-      arm.resource = self.deck.get_or_create_x_arm(
-        name=f"{arm.side}_x_arm",
-        x=await arm.request_position(),
-        width=a.width,
-        model=a.model,
-        reference_anchor=arm.reference_anchor,
-      )
-    await self._create_pipette_resources()
-    await self._create_autoload_resource()
-    await self._create_head96_resource()
-
-  async def _create_pipette_resources(self) -> None:
-    """Put a resource on the arm for each pipetting channel, where it is.
-
-    One per channel rather than one for the block: they share the arm's X, which the resource tree
-    carries for free, but each has its own Y and Z. Children of the arm's resource for the same
-    reason the 96-head is. Ones already on the arm are reused, so repeated setups do not duplicate
-    them.
-    """
-    if self.deck is None:
-      return
-    arm = next((a for a in self.arms if a.pipettes is not None), None)
-    if arm is None or arm.pipettes is None or arm.resource is None:
-      return
-
-    # One per channel the machine reported at discovery, not a count assumed here.
-    c = arm.pipettes.configuration
-    arm.pipettes.resources = []
-    for channel in range(len(c.channels)):
-      name = f"pipette_channel_{channel}"
-      resource = next((r for r in arm.resource.children if r.name == name), None)
-      if resource is None:
-        width = c.channels[channel].width
-        if width is None:
-          logger.warning("channel %d reported no width, so it is not modelled", channel)
-          continue
-        resource = Resource(
-          name=name,
-          size_x=width,
-          size_y=width,
-          size_z=c.channel_size_z,
-          category="pipette_channel",
-          model="hamilton_star_pipette_channel",
-        )
-        # Along X a channel sits at the arm's own reference point, so its centre lands there.
-        anchor = resource.get_anchor(x=CHANNEL_X_REFERENCE_ANCHOR)
-        arm.resource.assign_child_resource(
-          resource,
-          location=Coordinate(arm.resource.get_absolute_size_x() / 2 - anchor.x, 0.0, 0.0),
-        )
-      arm.pipettes.resources.append(resource)
-
-    # Asking where they are records them, as the arm's and the head's reads do.
-    await arm.pipettes.request_y_positions()
-    for channel in range(len(arm.pipettes.resources)):
-      await arm.pipettes.request_stop_disk_z(channel)
-
-  async def _create_autoload_resource(self) -> None:
-    """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.
-
-    The tray is placed from the deck's own features rather than read off the machine: it is bolted
-    to the instrument and has no drive to report where it is.
-    """
-    if self.autoload is None or self.deck is None:
-      return
-    x = await self.autoload.request_x_position()
-    self.autoload.resource = self.deck.get_or_create_autoload_sled(
-      name="autoload_sled",
-      x=x,
-      reference_point_from_left=self.autoload.configuration.reference_point_from_sled_left_edge,
-    )
-    self.autoload.update_location_by_reference_point(x)
-    self.deck.get_or_create_autoload_loading_tray(name="autoload_loading_tray")
-
-  async def _create_head96_resource(self) -> None:
-    """Put the 96-head on the arm it rides, where it is along Y.
-
-    A child of the arm's resource rather than of the deck, so it follows the arm in X without
-    anything having to keep the two in step. One already on the arm is reused rather than replaced,
-    so repeated setups do not duplicate it.
-
-    Raises:
-      RuntimeError: If the head's X offset was not read, so where it sits across the arm is
-        unknown.
-    """
-    if self.deck is None:
-      return
-    arm = next((a for a in self.arms if a.head96 is not None), None)
-    if arm is None or arm.head96 is None or arm.resource is None:
-      return
-    c = arm.head96.configuration
-    head = next((child for child in arm.resource.children if child.name == "head96"), None)
-    if head is None:
-      if c.x_offset is None:
-        raise RuntimeError("the 96-head's X offset was not read; have you called `star.setup()`?")
-      head = Resource(
-        name="head96",
-        size_x=c.channel_array_size_x,
-        size_y=c.channel_array_size_y,
-        size_z=c.body_size_z,
-        category="head96",
-        model="hamilton_star_head96",
-      )
-      # Channel A1 sits `x_offset` left of the carriage centre, and the arm is located by its own
-      # left edge, so A1 lands that far left of the arm's centre. Y is set from the drive below.
-      arm.resource.assign_child_resource(
-        head, location=Coordinate(arm.resource.get_absolute_size_x() / 2 - c.x_offset, 0.0, 0.0)
-      )
-    arm.head96.resource = head
-    # Asking where it is records it, as the arm's and the sled's reads do.
-    await arm.head96.request_y_position()
-
-  async def _create_head384_resource(self) -> None:
-    """Put the 384-head on the arm it rides. Not yet written."""
-    raise NotImplementedError("modelling the 384-head is not implemented yet")
-
-  async def request_initialization_status(self, module: str = "C0") -> bool:
-    """Whether a module reports itself initialized.
-
-    Every module answers the same query, so this covers the master and each subsystem.
-
-    Args:
-      module: the module to ask. Defaults to the master, which reports for the instrument.
-
-    Returns:
-      True if the module is initialized.
-    """
-    resp = await self.send_command(module=module, command="QW", fmt="qw#")
-    return cast(int, resp["qw"]) == 1
-
-  async def pre_initialize(self):
-    """Run the instrument's initialization procedure.
-
-    Homes every drive and leaves the channels at Z safety. It takes minutes, hence the long read
-    timeout.
-    """
-    return await self.send_command(
-      module="C0", command="VI", read_timeout=PRE_INITIALIZE_READ_TIMEOUT
-    )
-
-  async def stop(self):
-    """Close the link. The machine keeps its state; only this driver lets go of it."""
-    self._setup_done = False
-    self._connected = False
-    await self._close()
-
-  @property
-  def connected(self) -> bool:
-    """Whether the link is open, so commands can be sent."""
-    return self._connected
-
-  @property
-  def setup_done(self) -> bool:
-    """Whether a full setup has run: the machine discovered and initialized."""
-    return self._setup_done
-
-  @property
-  def num_channels(self) -> int:
-    """The number of pipette channels present on the robot."""
-    if self._num_channels is None:
-      raise RuntimeError("channel count not read; have you called `star.setup()`?")
-    return self._num_channels
-
-  @property
-  def x_arm(self) -> XArm:
-    """The machine's X-arm, on a machine that has only one.
-
-    Most STARs carry a single arm, and naming a side there is noise. A machine with two has no
-    single X-arm, so this refuses rather than picking one.
-
-    Raises:
-      RuntimeError: If setup has not run, so it is not yet known which arms are installed.
-      ValueError: If the machine has no arm, or more than one.
-    """
-    if self.configuration is None:
-      raise RuntimeError("no configuration read; have you called `star.setup()`?")
-    installed = {
-      name: arm
-      for name, arm in (("left_x_arm", self.left_x_arm), ("right_x_arm", self.right_x_arm))
-      if arm is not None
-    }
-    if not installed:
-      raise ValueError("this machine reports no X-arm installed.")
-    if len(installed) > 1:
-      raise ValueError(
-        f"this machine has {len(installed)} X-arms ({', '.join(installed)}), so `x_arm` is "
-        f"ambiguous. Use the one you mean by name."
-      )
-    return next(iter(installed.values()))
-
-  # -- sending ---------------------------------------------------------------
+  # ----------------------------------------
+  # Low-level I/O
+  # ----------------------------------------
 
   async def send_command(
     self,
@@ -750,7 +293,104 @@ class STARDriver:
     if not self._connected:
       raise RuntimeError("not connected to a machine; call `setup` first")
 
-  # -- device queries --------------------------------------------------------
+  def get_id_from_fw_response(self, resp: str) -> Optional[int]:
+    """Get the id from a firmware response."""
+    parsed = parse_fw_string(resp, "id####")
+    if "id" in parsed and parsed["id"] is not None:
+      return int(parsed["id"])
+    return None
+
+  def _parse_response(self, resp: str, fmt: Any) -> Dict[str, Any]:
+    """Parse a response from the machine."""
+    return parse_fw_string(resp, fmt)
+
+  # ----------------------------------------
+  # What the arms carry
+  # ----------------------------------------
+
+  @property
+  def arms(self) -> List[XArm]:
+    """The arms this machine has, left first."""
+    return [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
+
+  def _require_one_arm(self, reaching_for: str) -> Optional[XArm]:
+    """The machine's arm, for accessors that only make sense when it has one.
+
+    A machine with two carries two of everything, so which is meant is the caller's to say. One
+    with none carries nothing, which is an answer rather than a refusal.
+
+    Args:
+      reaching_for: what the caller was after. Used to word the refusal, nothing else.
+
+    Returns:
+      The machine's one arm, or None when it has none.
+
+    Raises:
+      ValueError: If the machine has more than one arm.
+    """
+    arms = self.arms
+    if len(arms) > 1:
+      raise ValueError(
+        f"this machine has two X-arms, so `{reaching_for}` is ambiguous - reach it through "
+        f"`left_x_arm.{reaching_for}` or `right_x_arm.{reaching_for}`."
+      )
+    return arms[0] if arms else None
+
+  @property
+  def pipettes(self) -> Optional[Pipettes]:
+    """The pipetting channels, on a machine with one arm."""
+    arm = self._require_one_arm("pipettes")
+    return arm.pipettes if arm is not None else None
+
+  @property
+  def head96(self) -> Optional[Head96]:
+    """The 96-head, on a machine with one arm."""
+    arm = self._require_one_arm("head96")
+    return arm.head96 if arm is not None else None
+
+  @property
+  def iswap(self) -> Optional[iSWAP]:
+    """The iSWAP, on a machine with one arm."""
+    arm = self._require_one_arm("iswap")
+    return arm.iswap if arm is not None else None
+
+  @property
+  def x_arm(self) -> XArm:
+    """The machine's X-arm, on a machine that has only one.
+
+    Most STARs carry a single arm, and naming a side there is noise. A machine with two has no
+    single X-arm, so this refuses rather than picking one.
+
+    Raises:
+      RuntimeError: If setup has not run, so it is not yet known which arms are installed.
+      ValueError: If the machine has no arm, or more than one.
+    """
+    if self.configuration is None:
+      raise RuntimeError("no configuration read; have you called `star.setup()`?")
+    installed = {
+      name: arm
+      for name, arm in (("left_x_arm", self.left_x_arm), ("right_x_arm", self.right_x_arm))
+      if arm is not None
+    }
+    if not installed:
+      raise ValueError("this machine reports no X-arm installed.")
+    if len(installed) > 1:
+      raise ValueError(
+        f"this machine has {len(installed)} X-arms ({', '.join(installed)}), so `x_arm` is "
+        f"ambiguous. Use the one you mean by name."
+      )
+    return next(iter(installed.values()))
+
+  @property
+  def num_channels(self) -> int:
+    """The number of pipette channels present on the robot."""
+    if self._num_channels is None:
+      raise RuntimeError("channel count not read; have you called `star.setup()`?")
+    return self._num_channels
+
+  # ----------------------------------------
+  # Device queries
+  # ----------------------------------------
 
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
     """Request the master's firmware version and build date.
@@ -917,15 +557,381 @@ class STARDriver:
       right_arm_min_y_position=extended["yx"] / 10,
     )
 
-  # -- response parsing ------------------------------------------------------
+  async def request_initialization_status(self, module: str = "C0") -> bool:
+    """Whether a module reports itself initialized.
 
-  def get_id_from_fw_response(self, resp: str) -> Optional[int]:
-    """Get the id from a firmware response."""
-    parsed = parse_fw_string(resp, "id####")
-    if "id" in parsed and parsed["id"] is not None:
-      return int(parsed["id"])
-    return None
+    Every module answers the same query, so this covers the master and each subsystem.
 
-  def _parse_response(self, resp: str, fmt: Any) -> Dict[str, Any]:
-    """Parse a response from the machine."""
-    return parse_fw_string(resp, fmt)
+    Args:
+      module: the module to ask. Defaults to the master, which reports for the instrument.
+
+    Returns:
+      True if the module is initialized.
+    """
+    resp = await self.send_command(module=module, command="QW", fmt="qw#")
+    return cast(int, resp["qw"]) == 1
+
+  # ----------------------------------------
+  # Discovery and initialization
+  # ----------------------------------------
+
+  async def discover(self):
+    """Read what machine is on the other end, and build the subsystems it turns out to have.
+
+    Read-only: nothing moves. Call `initialize` to bring the machine up.
+    """
+    self.configuration = await self.request_device_configuration()
+    self._num_channels = len(await self.request_tip_presence())
+
+    # Built for what the machine turns out to have, and only if not already there: a caller can
+    # hand a capability its configuration before setup, and re-running setup keeps it.
+    if self.configuration.left_arm is not None and self.left_x_arm is None:
+      self.left_x_arm = XArm(self, side="left")
+    if self.configuration.right_arm is not None and self.right_x_arm is None:
+      self.right_x_arm = XArm(self, side="right")
+    # What an arm carries is what its own configuration bits claim. The firmware requires the two
+    # drives' bits to be disjoint, so no capability can be on both.
+    for arm in (self.left_x_arm, self.right_x_arm):
+      if arm is None:
+        continue
+      a = arm.configuration
+      if a.pip_installed and self.configuration.num_pip_channels > 0 and arm.pipettes is None:
+        arm.pipettes = Pipettes(self)
+      if a.head96_installed and arm.head96 is None:
+        arm.head96 = Head96(self)
+      if a.iswap_installed and arm.iswap is None:
+        arm.iswap = iSWAP(self)
+    if self.configuration.autoload_installed and self.autoload is None:
+      self.autoload = Autoload(self)
+    if self.configuration.main_front_cover_monitoring_installed and self.front_cover is None:
+      self.front_cover = FrontCover(self)
+
+    # Each capability reads its own modules, and they are different modules, so they read at
+    # once. Both arms run off the same X-drive board, so only one of them asks it.
+    arms = [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
+    # Through the arms, not through the accessors above: those refuse on a machine with two, and
+    # setup has to reach every capability the machine has whichever arm holds it.
+    reading = []
+    for arm in arms:
+      reading.append(arm.discover())
+      if arm.pipettes is not None:
+        reading.append(arm.pipettes.discover())
+      if arm.head96 is not None:
+        reading.append(arm.head96.discover())
+      if arm.iswap is not None:
+        reading.append(arm.iswap.discover())
+    if self.autoload is not None:
+      reading.append(self.autoload.discover())
+    await asyncio.gather(*reading)
+    # Once the head has said where it sits, an arm can take a declared side panel out of its own
+    # travel: the offset is what decides how much the panel costs.
+    for arm in arms:
+      arm.narrow_travel_for_left_side_panel()
+
+    master_version, _ = await self.request_firmware_version()
+    reported = {
+      "master": master_version,
+      "pipettes": next(
+        (a.pipettes.configuration.channels[0].firmware_version for a in arms if a.pipettes), None
+      ),
+      "x_arm": None if not arms else arms[0].configuration.firmware_version,
+      "head96": next((a.head96.configuration.firmware_version for a in arms if a.head96), None),
+      "iswap": next((a.iswap.configuration.firmware_version for a in arms if a.iswap), None),
+      "autoload": None if self.autoload is None else self.autoload.configuration.firmware_version,
+    }
+    self.firmware = {name: v for name, v in reported.items() if v is not None}
+
+  async def initialize(self, force: bool = False) -> bool:
+    """Bring the instrument itself to a known state.
+
+    This moves it. An uninitialized machine runs its initialization procedure, which homes every
+    drive and leaves the channels at Z safety. A machine that is already initialized is left where
+    it is, apart from raising the channels to Z safety, which the procedure would otherwise have
+    guaranteed - nothing may move laterally while a channel is low.
+
+    This is the instrument-level step only. `setup` is what initializes the capabilities after it.
+
+    Args:
+      force: run the initialization procedure even if the machine reports itself initialized.
+
+    Returns:
+      Whether the machine reported itself already initialized before this ran.
+    """
+    already_initialized = await self.request_initialization_status()
+
+    if force or not already_initialized:
+      logger.debug(
+        "machine reports %s - running the initialization procedure (up to %d s)",
+        "initialized, but the run was forced" if already_initialized else "not initialized",
+        PRE_INITIALIZE_READ_TIMEOUT,
+      )
+      await self.pre_initialize()
+    else:
+      logger.debug("machine reports initialized - raising the channels to Z safety only")
+      for arm in self.arms:
+        if arm.pipettes is not None:
+          await arm.pipettes.move_to_safe_z()
+        # The head is retracted whatever its own status says: the retract is what keeps it clear
+        # of the iSWAP, which shares the arm's X drive and moves while capabilities initialize.
+        if arm.head96 is not None:
+          await arm.head96.probe_z_max()
+
+    return already_initialized
+
+  async def pre_initialize(self):
+    """Run the instrument's initialization procedure.
+
+    Homes every drive and leaves the channels at Z safety. It takes minutes, hence the long read
+    timeout.
+    """
+    return await self.send_command(
+      module="C0", command="VI", read_timeout=PRE_INITIALIZE_READ_TIMEOUT
+    )
+
+  async def _initialize_arm(self, arm: XArm, already_initialized: bool):
+    """Initialize everything one arm carries, one after another.
+
+    The channels, the iSWAP and the 96-head share the arm's X drive, so initializing one while
+    another is moving is refused by the machine. They go in the order the legacy routine uses.
+    Two arms have two drives, so a machine with both initializes them alongside each other.
+
+    Args:
+      arm: the arm whose capabilities to initialize.
+      already_initialized: whether the instrument reported itself up before this setup ran.
+    """
+    if arm.pipettes is None:
+      logger.debug("channels: none installed - skipped")
+    else:
+      tips = await self.request_tip_presence()
+      if not already_initialized or any(tips):
+        logger.debug(
+          "channels: %d of %d carrying tips, instrument %s - initializing",
+          sum(tips),
+          len(tips),
+          "was already up" if already_initialized else "has just been homed",
+        )
+        await arm.pipettes.initialize()
+      else:
+        logger.debug("channels: already up and nothing mounted - skipped")
+
+    if arm.iswap is not None:
+      if not await self.request_initialization_status("R0"):
+        logger.debug("iSWAP reports itself uninitialized - initializing")
+        await arm.iswap.initialize()
+      await arm.iswap.park()
+
+    if arm.head96 is not None:
+      if not await self.request_initialization_status("H0"):
+        if arm.head96.configuration.tip_discard_location is None:
+          logger.warning(
+            "the 96-head reports itself uninitialized, and there is nowhere configured to eject "
+            "at. Set head96.configuration.tip_discard_location, or pass it to head96.initialize()."
+          )
+        else:
+          logger.debug("96-head reports itself uninitialized - initializing")
+          await arm.head96.initialize()
+      # Probing how far this head reaches retracts it, so it doubles as the safety retract and
+      # runs on every setup rather than only the first.
+      await arm.head96.probe_z_max()
+
+  def format_setup_summary(self) -> str:
+    """One block describing the machine that was found: how it is reached, what firmware every
+    module runs, whether an autoload is fitted, how many arms there are, and per arm its
+    dimensions, how many channels it carries and whether it carries a 96-head, a 384-head and an
+    iSWAP.
+
+    Returns:
+      A multi-line summary, or a note that setup has not run.
+    """
+    c = self.configuration
+    if c is None:
+      return "[Hamilton STAR] not discovered yet"
+
+    firmware = (
+      ", ".join(f"{name} {version}" for name, version in self.firmware.items()) or "unknown"
+    )
+
+    fitted = [f"{c.instrument_size_slots} slots"]
+    for number, installed in ((1, c.wash_station_1_installed), (2, c.wash_station_2_installed)):
+      if installed:
+        fitted.append(f"wash station {number}")
+
+    autoload = "none"
+    if c.autoload_installed:
+      autoload = "installed"
+      if self.autoload is not None and self.autoload.configuration.autoload_type is not None:
+        autoload = self.autoload.configuration.autoload_type
+
+    arms = [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
+    lines = [
+      f"[Hamilton STAR] Connected on {self._describe_link()}",
+      f"  Firmware: {firmware}",
+      f"  Configuration: {', '.join(fitted)}",
+      f"  Autoload: {autoload}",
+      f"  Arms: {len(arms)}",
+    ]
+    for arm in arms:
+      a = arm.configuration
+      # Read through the capability, not the arm's own bit, so the summary cannot report channels
+      # the driver did not build. The two disagree only on a machine whose configuration says both.
+      channels = "none"
+      if arm.pipettes is not None and a.pip_installed:
+        channels = f"{c.num_pip_channels} ({'1000uL' if c.pip_type_1000ul else '300uL'})"
+      elif arm.pipettes is None and a.pip_installed:
+        channels = "none, but this arm reports the module installed"
+      head96 = "none"
+      if a.head96_installed:
+        head96 = "installed"
+        if arm.head96 is not None and arm.head96.configuration.head_type is not None:
+          head96 = arm.head96.configuration.head_type
+      iswap = "none"
+      if a.iswap_installed:
+        iswap = f"{'wide' if c.iswap_gripper_wide else 'small'} gripper"
+      lines.append(
+        f"    {arm.side}: {a.model}, {a.width} mm wide, "
+        f"travel {_range(a.x_range)}, workspace {_range(a.workspace_range)}"
+      )
+      lines.append(
+        f"      channels: {channels} | 96-head: {head96} | "
+        f"384-head: {'installed' if a.head384_installed else 'none'} | "
+        f"iSWAP: {iswap}"
+      )
+    if sum(arm.configuration.pip_installed for arm in arms) > 1:
+      lines.append("      (the machine reports one channel count for the instrument, not per arm)")
+    return "\n".join(lines)
+
+  # ----------------------------------------
+  # Resource model
+  # ----------------------------------------
+
+  async def _create_capability_resources(self) -> None:
+    """Put what the machine carries on the deck, where it is.
+
+    Read once, at setup: each capability reports where it came to rest and its resource is placed
+    there. One already on the deck is reused rather than replaced, so repeated setups do not
+    duplicate it.
+    """
+    if self.deck is None:
+      return
+    for arm in (self.left_x_arm, self.right_x_arm):
+      if arm is None:
+        continue
+      a = arm.configuration
+      if a.width is None:
+        logger.warning("the %s X-arm reported no width, so it is not modelled", arm.side)
+        continue
+      arm.resource = self.deck.get_or_create_x_arm(
+        name=f"{arm.side}_x_arm",
+        x=await arm.request_position(),
+        width=a.width,
+        model=a.model,
+        reference_anchor=arm.reference_anchor,
+      )
+    await self._create_pipette_resources()
+    await self._create_autoload_resource()
+    await self._create_head96_resource()
+
+  async def _create_pipette_resources(self) -> None:
+    """Put a resource on the arm for each pipetting channel, where it is.
+
+    One per channel rather than one for the block: they share the arm's X, which the resource tree
+    carries for free, but each has its own Y and Z. Children of the arm's resource for the same
+    reason the 96-head is. Ones already on the arm are reused, so repeated setups do not duplicate
+    them.
+    """
+    if self.deck is None:
+      return
+    arm = next((a for a in self.arms if a.pipettes is not None), None)
+    if arm is None or arm.pipettes is None or arm.resource is None:
+      return
+
+    # One per channel the machine reported at discovery, not a count assumed here.
+    c = arm.pipettes.configuration
+    arm.pipettes.resources = []
+    for channel in range(len(c.channels)):
+      name = f"pipette_channel_{channel}"
+      resource = next((r for r in arm.resource.children if r.name == name), None)
+      if resource is None:
+        width = c.channels[channel].width
+        if width is None:
+          logger.warning("channel %d reported no width, so it is not modelled", channel)
+          continue
+        resource = Resource(
+          name=name,
+          size_x=width,
+          size_y=width,
+          size_z=c.channel_size_z,
+          category="pipette_channel",
+          model="hamilton_star_pipette_channel",
+        )
+        # Along X a channel sits at the arm's own reference point, so its centre lands there.
+        anchor = resource.get_anchor(x=CHANNEL_X_REFERENCE_ANCHOR)
+        arm.resource.assign_child_resource(
+          resource,
+          location=Coordinate(arm.resource.get_absolute_size_x() / 2 - anchor.x, 0.0, 0.0),
+        )
+      arm.pipettes.resources.append(resource)
+
+    # Asking where they are records them, as the arm's and the head's reads do.
+    await arm.pipettes.request_y_positions()
+    for channel in range(len(arm.pipettes.resources)):
+      await arm.pipettes.request_stop_disk_z(channel)
+
+  async def _create_head96_resource(self) -> None:
+    """Put the 96-head on the arm it rides, where it is along Y.
+
+    A child of the arm's resource rather than of the deck, so it follows the arm in X without
+    anything having to keep the two in step. One already on the arm is reused rather than replaced,
+    so repeated setups do not duplicate it.
+
+    Raises:
+      RuntimeError: If the head's X offset was not read, so where it sits across the arm is
+        unknown.
+    """
+    if self.deck is None:
+      return
+    arm = next((a for a in self.arms if a.head96 is not None), None)
+    if arm is None or arm.head96 is None or arm.resource is None:
+      return
+    c = arm.head96.configuration
+    head = next((child for child in arm.resource.children if child.name == "head96"), None)
+    if head is None:
+      if c.x_offset is None:
+        raise RuntimeError("the 96-head's X offset was not read; have you called `star.setup()`?")
+      head = Resource(
+        name="head96",
+        size_x=c.channel_array_size_x,
+        size_y=c.channel_array_size_y,
+        size_z=c.body_size_z,
+        category="head96",
+        model="hamilton_star_head96",
+      )
+      # Channel A1 sits `x_offset` left of the carriage centre, and the arm is located by its own
+      # left edge, so A1 lands that far left of the arm's centre. Y is set from the drive below.
+      arm.resource.assign_child_resource(
+        head, location=Coordinate(arm.resource.get_absolute_size_x() / 2 - c.x_offset, 0.0, 0.0)
+      )
+    arm.head96.resource = head
+    # Asking where it is records it, as the arm's and the sled's reads do.
+    await arm.head96.request_y_position()
+
+  async def _create_head384_resource(self) -> None:
+    """Put the 384-head on the arm it rides. Not yet written."""
+    raise NotImplementedError("modelling the 384-head is not implemented yet")
+
+  async def _create_autoload_resource(self) -> None:
+    """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.
+
+    The tray is placed from the deck's own features rather than read off the machine: it is bolted
+    to the instrument and has no drive to report where it is.
+    """
+    if self.autoload is None or self.deck is None:
+      return
+    x = await self.autoload.request_x_position()
+    self.autoload.resource = self.deck.get_or_create_autoload_sled(
+      name="autoload_sled",
+      x=x,
+      reference_point_from_left=self.autoload.configuration.reference_point_from_sled_left_edge,
+    )
+    self.autoload.update_location_by_reference_point(x)
+    self.deck.get_or_create_autoload_loading_tray(name="autoload_loading_tray")
