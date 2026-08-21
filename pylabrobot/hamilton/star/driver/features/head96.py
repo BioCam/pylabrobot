@@ -29,19 +29,16 @@ HEAD_TYPES: Dict[int, HeadType] = {
 # this has different ones, and nothing here resolves them per generation.
 RESOLUTIONS_FIRST_YEAR = 2010
 
-# The retract drives the head to its Z-safety height, which takes a while.
-RETRACT_READ_TIMEOUT = 20
-
 # The drive parameters the head stores: each drive's speed and acceleration.
 DRIVE_PARAMETERS = ("yv", "yr", "zv", "zr")
+
+# The firmware's own retract drives the head to its Z-safety height, which takes a while.
+RETRACT_READ_TIMEOUT = 20
 
 # Channel A1 sits at the back left of the array, so the drive's Y is the resource's back edge.
 HEAD96_REFERENCE_ANCHOR = "b"
 # The stop disk is the head's lowest fixed feature, so the Z drive reports the resource's bottom.
 HEAD96_Z_REFERENCE_ANCHOR = "b"
-
-# Where the head is left when initialization finishes, in mm.
-INITIALIZE_Z_POSITION_AT_END = 245.0
 
 
 @dataclass
@@ -60,20 +57,16 @@ class Head96Configuration:
   master EEPROM at setup. Mirrors the iSWAP's rotation-drive x-offset."""
 
   channel_pitch: float = 9.0
-  """Distance between neighbouring channels along both axes, in mm."""
   channel_columns: int = 12
-  """How many channels the head carries across."""
   channel_rows: int = 8
-  """How many channels the head carries front to back."""
-  body_size_z: float = 140.0
-  """How tall to model the head, in mm. Not read from anywhere: how far the head extends is not
-  something the machine reports."""
+  body_size_z: float = 140.0  # size of modelled head body; stop disk to the top of the head (mm).
+
   supports_clot_monitoring_clld: Optional[bool] = None
   stop_disc_type: Optional[StopDiscType] = None
   instrument_type: Optional[InstrumentType] = None
   head_type: Optional[HeadType] = None
 
-  initialize_position: Optional[Tuple[float, float, float]] = None
+  tip_discard_location: Optional[Coordinate] = None
   """Where the head ejects when it is initialized: head channel A1, in deck mm. Initializing
   throws off whatever is mounted, so this has to be somewhere tips may be dropped - which depends
   on where the waste sits on the deck, and so has no default. Setup initializes the head when this
@@ -83,11 +76,11 @@ class Head96Configuration:
   """Z-drive position window (mm); FM-STAR extends it. Resolved by `move_to_safe_z`: the min is
   variant-derived, the max is read from a hardware probe."""
 
-  z_floor_increments: int = 36100
-  """How low the Z drive goes, in increments. The same floor the head's stored Z values are bounded
-  by."""
-  z_floor_increments_fm_star: int = 24200
-  """How low it goes on an FM-STAR, which reaches further down than the other variants."""
+  z_increment_range: Tuple[int, int] = (36100, 68500)
+  """What the Z drive documents itself as reaching, in increments. The same bounds the head's own
+  stored Z values are held within."""
+  z_increment_range_fm_star: Tuple[int, int] = (24200, 76200)
+  """What it documents on an FM-STAR, which reaches both further down and further up."""
 
   z_speed_range: Tuple[float, float] = (0.25, 100.0)
   """Z-drive speed window (mm/s); unchanged across the 2008/2013/2025 firmware, unlike the
@@ -96,23 +89,37 @@ class Head96Configuration:
   """Z-drive acceleration window (mm/s2); unchanged across the 2008/2013/2025 firmware (the
   pre-2010 encoding differs, the physical range does not)."""
 
-  # === Encoder resolutions (defaulted device facts). Y/Z are unchanged across firmware; the
+  # Encoder resolutions (defaulted device facts). Y/Z are unchanged across firmware; the
   # dispensing and squeezer resolutions are the 2013-or-later generation's values, and a 2008-era
   # head's differ. Nothing resolves them per generation, so on such a head every volume and
   # squeezer conversion here - and the windows derived from them - would be wrong. Discovery says
-  # so when it finds one. ===
+  # so when it finds one.
   z_drive_mm_per_increment: float = 0.005
   y_drive_mm_per_increment: float = 0.015625
   dispensing_drive_mm_per_increment: float = 0.001025641026
   dispensing_drive_uL_per_increment: float = 0.019340933
   squeezer_drive_mm_per_increment: float = 0.0002086672009
 
-  # === Per-drive speed and acceleration, read off the machine at setup, so a run can override
-  # them from what the machine currently holds. ===
+  # Per-drive speed and acceleration, read off the machine at setup, so a run can override
+  # them from what the machine currently holds.
   y_drive_speed_default: Optional[float] = None
   y_drive_acceleration_default: Optional[float] = None
   z_drive_speed_default: Optional[float] = None
   z_drive_acceleration_default: Optional[float] = None
+
+  @property
+  def z_range_by_variant(self) -> Tuple[float, float]:
+    """The Z window this variant documents, in mm.
+
+    What the drive says it reaches, which is not the same as what a given unit does - the top is
+    probed at setup and replaces this one. Pure: it reads nothing and changes nothing.
+    """
+    low, high = (
+      self.z_increment_range_fm_star
+      if self.instrument_type == "FM-STAR"
+      else self.z_increment_range
+    )
+    return (self.z_drive_increments_to_mm(low), self.z_drive_increments_to_mm(high))
 
   @property
   def channel_array_size_x(self) -> float:
@@ -128,7 +135,7 @@ class Head96Configuration:
     """How deep the channel array is: the first row's centre to the last's, in mm."""
     return (self.channel_rows - 1) * self.channel_pitch
 
-  # -- conversions: the wire counts in increments, the driver speaks mm and uL ---------------
+  # -- conversions: the wire counts in increments, the driver speaks mm and uL -------------------
 
   def y_drive_increments_to_mm(self, increments: int) -> float:
     """A Y-drive position in mm, from the increments the drive counts in."""
@@ -181,8 +188,8 @@ class Head96Configuration:
       raise RuntimeError("96-head firmware version not read; have you called `star.setup()`?")
     return self.firmware_date.year
 
-  # === Firmware/variant-derived area-of-operation windows (standard units). Pure functions of
-  # the firmware date and the encoder resolutions above, so they are computed on access. ===
+  # Firmware/variant-derived area-of-operation windows (standard units). Pure functions of
+  # the firmware date and the encoder resolutions above, so they are computed on access.
   @property
   def y_range(self) -> Tuple[float, float]:
     """Y-drive position window (mm); 2013 firmware shifted it from the 2008 range.
@@ -282,7 +289,11 @@ class Head96:
     self.resource: Optional[Resource] = None
     self.configuration = configuration or Head96Configuration()
 
-  # -- session / discovery ---------------------------------------------------
+  # ----------------------------------------
+  # Setup
+  # ----------------------------------------
+
+  # -- discovery ---------------------------------------------------------------------------------
 
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
     """Request the head's firmware version and build date.
@@ -379,7 +390,74 @@ class Head96:
     c.z_drive_speed_default = await self.request_drive_parameter("zv")
     c.z_drive_acceleration_default = await self.request_drive_parameter("zr")
 
-  # -- y position ------------------------------------------------------------
+  # -- initialization ----------------------------------------------------------------------------
+
+  async def initialize(
+    self,
+    tip_discard_location: Optional[Coordinate] = None,
+    z_position_at_the_command_end: float = 245.0,
+    read_timeout: int = 60,
+  ):
+    """Initialize the head, discarding whatever is mounted on it.
+
+    This moves the head: it travels to the position given and ejects there, so that position must
+    be somewhere tips may be dropped. The firmware wants the location of the head's channel A1.
+
+    Args:
+      tip_discard_location: where to eject, in deck mm, at head channel A1. Defaults to
+        `configuration.tip_discard_location`.
+      z_position_at_the_command_end: Z to leave the head at, in mm.
+
+    Raises:
+      ValueError: If no position was given and none is configured.
+    """
+    if tip_discard_location is None:
+      tip_discard_location = self.configuration.tip_discard_location
+    if tip_discard_location is None:
+      raise ValueError(
+        "nowhere to discard tips: initializing the head throws off whatever is mounted, so it "
+        "needs somewhere tips may be dropped. Pass `tip_discard_location`, or set it on the "
+        "configuration."
+      )
+    return await self._driver.send_command(
+      module="C0",
+      command="EI",
+      read_timeout=read_timeout,
+      xs=f"{abs(round(tip_discard_location.x * 10)):05}",
+      xd=0 if tip_discard_location.x >= 0 else 1,
+      yh=f"{abs(round(tip_discard_location.y * 10)):04}",
+      za=f"{round(tip_discard_location.z * 10):04}",
+      ze=f"{round(z_position_at_the_command_end * 10):04}",
+    )
+
+  # ----------------------------------------
+  # Movement
+  # ----------------------------------------
+
+  # -- x position, carried by the arm the head rides ---------------------------------------------
+
+  async def request_x_position(self) -> float:
+    """Request where along X channel A1 is, in deck mm.
+
+    The head has no X drive of its own: it rides the arm, and sits `configuration.x_offset` left of
+    the carriage reference point. So this asks the arm and applies the offset, rather than reading a
+    drive. Nothing is recorded either - the resource modelling the head is a child of the arm's, so
+    its X follows the arm without anything having to write it.
+
+    Returns:
+      The position in mm.
+
+    Raises:
+      RuntimeError: If no arm is installed, or the head's X offset was not read at discovery.
+    """
+    arm = self._driver.arm_carrying("head96")
+    if arm is None:
+      raise RuntimeError("no arm reports a 96-head installed, so the head has nothing to ride")
+    if self.configuration.x_offset is None:
+      raise RuntimeError("the 96-head's X offset was not read; have you called `star.setup()`?")
+    return round(await arm.request_position() - self.configuration.x_offset, 2)
+
+  # -- y position --------------------------------------------------------------------------------
 
   async def request_y_position(self) -> float:
     """Request where along Y the head is.
@@ -471,20 +549,28 @@ class Head96:
       here.z if z is None else z - on_the_arm.z - anchor.z,
     )
 
-  def _check_reachable(self, y: float) -> None:
-    """Raise if `y` is outside the head's Y travel.
+  def _check_reachable(self, axis: Literal["y", "z"], value: float) -> None:
+    """Raise if a drive cannot be sent where it is being asked to go.
 
-    `y` is where channel A1 would be, which is what the drive positions by.
+    Each axis is bounded at its own reference point: channel A1 along Y, the stop disk along Z.
 
     Args:
-      y: target Y position in mm.
+      axis: which drive - `y` across the arm, `z` up and down.
+      value: where it would be sent, in mm.
 
     Raises:
-      ValueError: If `y` is outside the travel range.
+      ValueError: If the drive's travel does not reach it.
+      RuntimeError: If the Z window was not resolved, so how far this unit reaches is unknown.
     """
-    low, high = self.configuration.y_range
-    if not low <= y <= high:
-      raise ValueError(f"y must be between {low} and {high}, is {y}")
+    if axis == "y":
+      low, high = self.configuration.y_range
+    else:
+      z_range = self.configuration.z_range
+      if z_range is None:
+        raise RuntimeError("the head's Z window was not probed; have you called `star.setup()`?")
+      low, high = z_range
+    if not low <= value <= high:
+      raise ValueError(f"{axis} must be between {low} and {high}, is {value}")
 
   async def move_y(
     self,
@@ -518,7 +604,7 @@ class Head96:
     if speed is None or acceleration is None:
       raise RuntimeError("the head's drive defaults were not read; have you called `star.setup()`?")
 
-    self._check_reachable(y)
+    self._check_reachable("y", y)
     for value, (low, high), name in (
       (speed, c.y_speed_range, "speed"),
       (acceleration, c.y_acceleration_range, "acceleration"),
@@ -541,20 +627,15 @@ class Head96:
         read_timeout=read_timeout,
       )
     finally:
-      # Where it was told to go, then where the drive says it went. A move that failed part way
-      # left the head somewhere neither describes, which is exactly when the read matters - but a
-      # read that fails here would replace the move's own error with its own, so it is guarded.
-      self.update_location_by_reference_point(y=y)
-      try:
-        await self.request_y_position()
-        if c.y_drive_mm_to_increments(speed) != c.y_drive_mm_to_increments(was_speed):
-          await self.set_drive_parameter("yv", was_speed)
-        if c.y_drive_mm_to_increments(acceleration) != c.y_drive_mm_to_increments(was_acceleration):
-          await self.set_drive_parameter("yr", was_acceleration)
-      except BaseException:
-        logger.warning("could not read where the 96-head stopped, or restore its drive parameters")
+      # Where the drive says it went, which the read records. Asked whether the move succeeded or
+      # not: a move that failed part way left the head somewhere neither position describes.
+      await self.request_y_position()
+      if c.y_drive_mm_to_increments(speed) != c.y_drive_mm_to_increments(was_speed):
+        await self.set_drive_parameter("yv", was_speed)
+      if c.y_drive_mm_to_increments(acceleration) != c.y_drive_mm_to_increments(was_acceleration):
+        await self.set_drive_parameter("yr", was_acceleration)
 
-  # -- z position ------------------------------------------------------------
+  # -- z position --------------------------------------------------------------------------------
 
   async def request_stop_disk_z(self) -> float:
     """Request the head's Z-drive (stop disk) position.
@@ -584,68 +665,125 @@ class Head96:
     increments = cast(List[int], resp["pz"])
     return [self.configuration.z_drive_increments_to_mm(i) for i in increments]
 
-  async def move_to_safe_z(self) -> float:
-    """Move the head up to its safe Z, and read where that put it.
+  async def probe_z_max(self, read_timeout: int = RETRACT_READ_TIMEOUT) -> float:
+    """Find out how high this head reaches. Retracts the head.
 
-    Doubles as the probe for how far this unit actually reaches: the generic command range can
-    exceed it, so the top is read off the hardware rather than assumed. Reaching the top resolves
-    the head's Z window onto `configuration.z_range` - the floor from what instrument this is, the
-    ceiling from what was just reached - so a caller need only ask for the retract.
+    Not something it reports: the command range can exceed what a given unit reaches, so the top is
+    driven to and read back, using the firmware's own retract. Setup calls this once, before any
+    window exists - which is why the retract here is that command rather than `move_to_safe_z`,
+    whose target this establishes. What it finds becomes the top of `configuration.z_range`, whose
+    floor comes from what instrument this is.
+
+    Args:
+      read_timeout: how long to wait for the retract, in seconds. It drives the head the length of
+        its travel, so it takes a while.
+
+    Returns:
+      The highest stop-disk Z this head reaches, in mm.
+    """
+    await self._driver.send_command(module="C0", command="EV", read_timeout=read_timeout)
+    z_max = await self.request_stop_disk_z()
+    c = self.configuration
+    c.z_range = (c.z_range_by_variant[0], z_max)
+    return z_max
+
+  async def move_z(
+    self,
+    z: float,
+    speed: Optional[float] = None,
+    acceleration: Optional[float] = None,
+    current_limit: int = 15,
+    read_timeout: int = 30,
+  ):
+    """Move the head along Z. This moves it, and nothing else on the arm.
+
+    The move writes its speed and acceleration into the drive's volatile register, where later
+    moves would inherit them, so what was there is read first and put back afterwards - skipping
+    the write where the move's value already matches.
+
+    Args:
+      z: where to move the stop disk to, in mm.
+      speed: how fast, in mm/s. Defaults to `configuration.z_drive_speed_default`.
+      acceleration: how hard, in mm/s2. Defaults to `configuration.z_drive_acceleration_default`.
+      current_limit: the motor current limit.
+
+    Raises:
+      ValueError: If an argument is outside what the drive accepts.
+      RuntimeError: If the head's drive defaults were not read at discovery.
+    """
+    c = self.configuration
+    if speed is None:
+      speed = c.z_drive_speed_default
+    if acceleration is None:
+      acceleration = c.z_drive_acceleration_default
+    if speed is None or acceleration is None:
+      raise RuntimeError("the head's drive defaults were not read; have you called `star.setup()`?")
+
+    self._check_reachable("z", z)
+    for value, (low, high), name in (
+      (speed, c.z_speed_range, "speed"),
+      (acceleration, c.z_acceleration_range, "acceleration"),
+    ):
+      if not low <= value <= high:
+        raise ValueError(f"{name} must be between {low} and {high}, is {value}")
+    if not 0 <= current_limit <= 15:
+      raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
+
+    was_speed = await self.request_drive_parameter("zv")
+    was_acceleration = await self.request_drive_parameter("zr")
+    try:
+      return await self._driver.send_command(
+        module="H0",
+        command="ZA",
+        za=f"{c.z_drive_mm_to_increments(z):05}",
+        zv=f"{c.z_drive_mm_to_increments(speed):05}",
+        zr=f"{c.z_drive_mm_to_increments(acceleration):06}",
+        zw=f"{current_limit:02}",
+        read_timeout=read_timeout,
+      )
+    finally:
+      # Where the drive says it went, which the read records. Asked whether the move succeeded or
+      # not: a move that failed part way left the head somewhere neither position describes.
+      await self.request_stop_disk_z()
+      if c.z_drive_mm_to_increments(speed) != c.z_drive_mm_to_increments(was_speed):
+        await self.set_drive_parameter("zv", was_speed)
+      if c.z_drive_mm_to_increments(acceleration) != c.z_drive_mm_to_increments(was_acceleration):
+        await self.set_drive_parameter("zr", was_acceleration)
+
+  async def move_to_safe_z(
+    self,
+    speed: Optional[float] = None,
+    acceleration: Optional[float] = None,
+  ) -> float:
+    """Move the head up to its safe Z: the top of the window `probe_z_max` probed.
+
+    The precondition for any lateral move, so it runs often. An ordinary Z move to a known height,
+    not a command of its own - so it is bounded, and its speed and acceleration are the caller's
+    like any other move. The firmware's own retract runs once, inside `probe_z_max`, which is
+    what establishes the height this moves to.
+
+    Args:
+      speed: how fast, in mm/s. Defaults to `configuration.z_drive_speed_default`.
+      acceleration: how hard, in mm/s2. Defaults to `configuration.z_drive_acceleration_default`.
 
     Returns:
       The stop-disk Z position at the safety height, in mm.
-    """
-    await self._driver.send_command(module="C0", command="EV", read_timeout=RETRACT_READ_TIMEOUT)
-    z_max = await self.request_stop_disk_z()
-    c = self.configuration
-    c.z_range = (
-      c.z_drive_increments_to_mm(
-        c.z_floor_increments_fm_star if c.instrument_type == "FM-STAR" else c.z_floor_increments
-      ),
-      z_max,
-    )
-    return z_max
-
-  # -- initialization --------------------------------------------------------
-
-  async def initialize(
-    self,
-    x: Optional[float] = None,
-    y: Optional[float] = None,
-    z: Optional[float] = None,
-    z_position_at_the_command_end: float = INITIALIZE_Z_POSITION_AT_END,
-    read_timeout: int = 60,
-  ):
-    """Initialize the head, discarding whatever is mounted on it.
-
-    This moves the head: it travels to the position given and ejects there, so that position must
-    be somewhere tips may be dropped. The firmware wants the location of the head's channel A1.
-
-    Args:
-      x: X to eject at, in mm, at head channel A1. Defaults to `configuration.initialize_position`.
-      y: Y to eject at, in mm, at head channel A1. Defaults to the same.
-      z: Z to eject at, in mm. Defaults to the same.
-      z_position_at_the_command_end: Z to leave the head at, in mm.
 
     Raises:
-      ValueError: If no position was given and none is configured.
+      RuntimeError: If the Z window was not probed, so the safe height is unknown.
     """
-    if x is None or y is None or z is None:
-      configured = self.configuration.initialize_position
-      if configured is None:
-        raise ValueError(
-          "no position to eject at: initializing the head throws off whatever is mounted, so it "
-          "needs somewhere tips may be dropped. Pass x, y and z, or set "
-          "`configuration.initialize_position`."
-        )
-      x, y, z = configured
-    return await self._driver.send_command(
-      module="C0",
-      command="EI",
-      read_timeout=read_timeout,
-      xs=f"{abs(round(x * 10)):05}",
-      xd=0 if x >= 0 else 1,
-      yh=f"{abs(round(y * 10)):04}",
-      za=f"{round(z * 10):04}",
-      ze=f"{round(z_position_at_the_command_end * 10):04}",
-    )
+    z_range = self.configuration.z_range
+    if z_range is None:
+      raise RuntimeError("the head's Z window was not probed; have you called `star.setup()`?")
+    await self.move_z(z_range[1], speed=speed, acceleration=acceleration)
+    return await self.request_stop_disk_z()
+
+  # -- dispensing drive ----------------------------------------------------------------------
+
+  # ----------------------------------------
+  # Tip pickup and drop
+  # ----------------------------------------
+
+  # ----------------------------------------
+  # Pipetting
+  # ----------------------------------------

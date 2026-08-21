@@ -364,8 +364,8 @@ class Autoload:
     if not await self.request_initialization_status():
       logger.debug("autoload reports itself uninitialized - homing its drives")
       await self._send_command_and_update_sled_x(module="C0", command="II")
-    await self.move_wheel_to_safe_z()
-    self.configuration.z_drive_safety_position = await self.request_z_position()
+    await self.wheel_move_to_safe_z()
+    self.configuration.z_drive_safety_position = await self.wheel_request_z_position()
 
     if park_after:
       logger.debug("parking the autoload after initialization")
@@ -549,14 +549,14 @@ class Autoload:
       raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
 
     # -- device preparation ----------------------------------------------------------------------
-    current_wheel_z = await self.request_z_position()
+    current_wheel_z = await self.wheel_request_z_position()
     if c.z_drive_safety_position is not None and current_wheel_z < c.z_drive_safety_position:
       logger.debug(
         "retracting the handling wheel to its safe Z %.3f mm before moving to track %d",
         c.z_drive_safety_position,
         track,
       )
-      await self.move_wheel_to_safe_z()
+      await self.wheel_move_to_safe_z()
 
     return await self._send_command_and_update_sled_x(
       module="I0",
@@ -624,14 +624,14 @@ class Autoload:
       raise ValueError(f"current_limit must be between {low} and {high}, is {current_limit}")
 
     # -- device preparation ----------------------------------------------------------------------
-    current_wheel_z = await self.request_z_position()
+    current_wheel_z = await self.wheel_request_z_position()
     if c.z_drive_safety_position is not None and current_wheel_z < c.z_drive_safety_position:
       logger.debug(
         "retracting the handling wheel to its safe Z %.3f mm before moving to %.3f mm",
         c.z_drive_safety_position,
         x,
       )
-      await self.move_wheel_to_safe_z()
+      await self.wheel_move_to_safe_z()
 
     return await self._send_command_and_update_sled_x(
       module="I0",
@@ -684,9 +684,9 @@ class Autoload:
     """
     return await self.move_to_track(track=self.track_range[-1])
 
-  # -- carrier Z drive (the handling wheel) --------------------------------------------------------
+  # -- Z drive (the carrier handling wheel) --------------------------------------------------------
 
-  async def request_z_position(self) -> float:
+  async def wheel_request_z_position(self) -> float:
     """Request how high the carrier-handling wheel is.
 
     Returns:
@@ -696,16 +696,16 @@ class Autoload:
       await self._request_drive_position("RZ", digits=4)
     )
 
-  async def move_wheel_to_safe_z(self) -> float:
+  async def wheel_move_to_safe_z(self) -> float:
     """Move the carrier-handling wheel to its safe Z, and read where that put it.
 
     Returns:
       The wheel's Z position, in mm.
     """
     await self._driver.send_command(module="C0", command="IV")
-    return await self.request_z_position()
+    return await self.wheel_request_z_position()
 
-  async def move_z(
+  async def wheel_move_z(
     self,
     z: float,
     speed: Optional[float] = None,
@@ -765,7 +765,7 @@ class Autoload:
       zw=f"{current_limit:01}",
     )
 
-  async def move_to_z_position(
+  async def wheel_move_to_z_position(
     self,
     position: ZPosition,
     speed: Optional[float] = None,
@@ -826,9 +826,9 @@ class Autoload:
       zw=f"{current_limit:01}",
     )
 
-  # -- carrier Y drive (in and out of the deck) ----------------------------------------------------
+  # -- Y drive (handling wheel moving carriers in and out of the deck) -----------------------
 
-  async def request_y_position(self) -> float:
+  async def wheel_request_y_position(self) -> float:
     """Request how far in or out the carrier drive is.
 
     Returns:
@@ -838,7 +838,7 @@ class Autoload:
       await self._request_drive_position("RY", digits=4)
     )
 
-  async def move_y(
+  async def wheel_move_y(
     self,
     y: float,
     speed: Optional[float] = None,
@@ -898,7 +898,7 @@ class Autoload:
       yw=f"{current_limit:01}",
     )
 
-  async def move_to_y_position(
+  async def wheel_move_to_y_position(
     self,
     position: YPosition,
     speed: Optional[float] = None,
@@ -960,7 +960,7 @@ class Autoload:
 
   # -- scanner rotation drive ----------------------------------------------------------------------
 
-  async def request_scanner_rotation(self) -> ScannerRotation:
+  async def scanner_request_rotation(self) -> ScannerRotation:
     """Request which way the scanner faces.
 
     Returns:
@@ -973,7 +973,7 @@ class Autoload:
         return name
     return "undefined"
 
-  async def move_scanner_rotation(self, position: ScannerRotation, stop_torque: bool = False):
+  async def scanner_move_to_position(self, position: ScannerRotation, stop_torque: bool = False):
     """Rotate the scanner to face one way or the other.
 
     Args:
@@ -1230,7 +1230,7 @@ class Autoload:
       )
     except BaseException:
       # The wheel is left wherever the failure stopped it, and nothing may travel with it down.
-      await self.move_wheel_to_safe_z()
+      await self.wheel_move_to_safe_z()
       raise
 
     if "bb/" not in resp:
@@ -1247,7 +1247,7 @@ class Autoload:
     try:
       return await self._send_command_and_update_sled_x(module="C0", command="CA")
     except BaseException:
-      await self.move_wheel_to_safe_z()
+      await self.wheel_move_to_safe_z()
       raise
 
   async def take_carrier_out_to_autoload_belt(self, track: int):
@@ -1273,7 +1273,7 @@ class Autoload:
       return await self._send_command_and_update_sled_x(module="C0", command="CN", cp=f"{track:02}")
     except BaseException:
       # The wheel is left wherever the failure stopped it, and nothing may travel with it down.
-      await self.move_wheel_to_safe_z()
+      await self.wheel_move_to_safe_z()
       raise
 
   async def load_carrier_from_autoload_belt(
@@ -1360,7 +1360,7 @@ class Autoload:
         ),
       )
     except BaseException:
-      await self.move_wheel_to_safe_z()
+      await self.wheel_move_to_safe_z()
       raise
 
     if park_after:
