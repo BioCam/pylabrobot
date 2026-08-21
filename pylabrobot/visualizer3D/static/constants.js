@@ -55,8 +55,11 @@ export const STRUCTURE_MAX_DEPTH = 4; // depth at which the ramp reaches STRUCTU
 // An axis view is a drawing, not a lit scene: a fill is exactly its colour, and every resource is
 // stroked near-black. That flat, outlined look is most of why the 2D visualizer reads.
 export const FLAT_EDGE = 0x1f2529;
-export const EDGE_WIDTH_FLAT = 1.0; // an axis view is a drawing: hairlines, as the 2D visualizer has
-export const EDGE_WIDTH_3D = 1.2; // 20 percent thicker where the scene has depth to read
+// A translucent box on a white ground is its outline, so the outline has to carry it. Half again
+// what a hairline would be: enough to read a carrier apart from what stands in it, still well under
+// the carriage, which is heavier again so that the part that travels stays the boldest thing drawn.
+export const EDGE_WIDTH_FLAT = 1.5;
+export const EDGE_WIDTH_3D = 1.8; // 20 percent thicker where the scene has depth to read
 
 export function structureEdgeStyle(depth) {
   const t = Math.min(depth, STRUCTURE_MAX_DEPTH) / STRUCTURE_MAX_DEPTH;

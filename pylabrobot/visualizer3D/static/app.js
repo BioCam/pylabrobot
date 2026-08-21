@@ -49,11 +49,21 @@ import {
   REFERENCE_LINE,
   REFERENCE_WIDTH,
   REFERENCE_DROP,
-  PROVENANCE_COLOR,
 } from "./constants.js";
 import { initGif } from "./gif.js";
 import { initCoords } from "./coords.js";
 import { input, query } from "./dom.js";
+import {
+  buildWorld,
+  mirrorPlacement,
+  modelOf,
+  refreshTransforms,
+  setLocal,
+  setWorld,
+  sizeOf,
+  treeDepth,
+  world,
+} from "./world.js";
 import { escapeHtml, fmt, NBSP, tuple, withUnit, section } from "./format.js";
 
 
@@ -64,7 +74,6 @@ const edgeMaterials = new Set();
 
 // ---------------------------------------------------------------- state
 
-let world = null; // { names, modelOf, parentOf, matrices, childrenOf, models, indexOfName }
 let meshes = [];
 let placementOf = []; // instance index -> { mesh, slot }
 let vesselOf = new Map(); // index -> the inner body whose colour tracks what is in it
@@ -488,8 +497,7 @@ function updateArms(delta) {
     // Keep the scene model in step with what is drawn. Everything else reads position from here -
     // the info panel, the selection box, the coordinate tool - so moving only the group would
     // leave all of them quoting where the arm used to be.
-    world.local[arm.index * 6] = arm.currentX;
-    world.matrices[arm.index].copy(arm.group.matrix);
+    mirrorPlacement(arm.index, arm.currentX, arm.group.matrix);
     // Whatever rides the arm moves with it. Its own matrix is already set from the group, so only
     // what is beneath it needs working out.
     refreshSubtree(arm.index, true);
@@ -509,51 +517,28 @@ function updateArms(delta) {
 //
 // Its own transform changes, and so does the world transform of everything standing on it, so the
 // subtree is recomputed and every instance in it repositioned.
-const _localMatrix = new THREE.Matrix4();
-const _localEuler = new THREE.Euler();
-
 // Recompute the world transform of everything at or beneath `index`, and move the drawn instances
 // to match. A resource's own transform is relative to its parent, so a parent moving carries its
 // children with it in the model for free - but the matrices the scene draws from are absolute, and
 // those have to be worked out again.
-function refreshSubtree(index, skipSelf) {
-  const stack = [index];
-  while (stack.length) {
-    const at = stack.pop();
-    if (at !== index || !skipSelf) {
-      const p = world.parentOf[at];
-      const q = at * 6;
-      _localEuler.set(
-        world.local[q + 3] * DEG, world.local[q + 4] * DEG, world.local[q + 5] * DEG, "XYZ"
-      );
-      _localMatrix.makeRotationFromEuler(_localEuler);
-      _localMatrix.setPosition(world.local[q], world.local[q + 1], world.local[q + 2]);
-      if (p < 0) world.matrices[at].copy(_localMatrix);
-      else world.matrices[at].multiplyMatrices(world.matrices[p], _localMatrix);
-
-      const placement = placementOf[at];
-      if (placement) {
-        const [sx, sy, sz] = sizeOf(modelOf(at));
-        placeInstance(placement.mesh, placement.slot, world.matrices[at], sx, sy, sz);
-        placement.mesh.instanceMatrix.needsUpdate = true;
-      }
-    }
-    for (const child of world.childrenOf[at]) stack.push(child);
+// Move the drawn instances to wherever the world now says they are. The transforms are worked out
+// in `world.js`, which has no idea any of this is on screen; this is only the part that is.
+function redraw(indices) {
+  for (const at of indices) {
+    const placement = placementOf[at];
+    if (!placement) continue;
+    const [sx, sy, sz] = sizeOf(modelOf(at));
+    placeInstance(placement.mesh, placement.slot, world.matrices[at], sx, sy, sz);
+    placement.mesh.instanceMatrix.needsUpdate = true;
   }
 }
 
+function refreshSubtree(index, skipSelf) {
+  redraw(refreshTransforms(index, skipSelf));
+}
+
 function applyLocation(index, location) {
-  const o = index * 6;
-  if (
-    world.local[o] === location.x &&
-    world.local[o + 1] === location.y &&
-    world.local[o + 2] === location.z
-  ) {
-    return;
-  }
-  world.local[o] = location.x;
-  world.local[o + 1] = location.y;
-  world.local[o + 2] = location.z;
+  if (!setLocal(index, location)) return;
 
   // A travelling part is drawn by its own group and glides there, so it is told the target rather
   // than being moved under it. What stands on it is not part of that group, though - the 96-head
@@ -966,8 +951,6 @@ for (const helper of [selectionBox, hoverBox]) {
   helper.renderOrder = 950;
 }
 
-const channelGroup = new THREE.Group();
-view.add(channelGroup);
 
 // three's own view helper, in place of the hand-drawn legend: same three axes, but clickable,
 // and it animates the camera onto the axis you pick.
@@ -991,49 +974,7 @@ const EDGE_LIMIT = 160;
 
 // ---------------------------------------------------------------- scene build
 
-function decodeTransforms(b64) {
-  const binary = atob(b64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return new Float32Array(bytes.buffer);
-}
 
-function buildWorld(data) {
-  const { names, model, parent, transforms } = data.instances;
-  const xf = decodeTransforms(transforms);
-  const n = names.length;
-
-  const matrices = new Array(n);
-  const local = new THREE.Matrix4();
-  const euler = new THREE.Euler();
-
-  // Parents are emitted before children, so one forward pass resolves every world transform.
-  for (let i = 0; i < n; i++) {
-    const o = i * 6;
-    euler.set(xf[o + 3] * DEG, xf[o + 4] * DEG, xf[o + 5] * DEG, "XYZ");
-    local.makeRotationFromEuler(euler);
-    local.setPosition(xf[o], xf[o + 1], xf[o + 2]);
-    const p = parent[i];
-    matrices[i] = p < 0 ? local.clone() : matrices[p].clone().multiply(local);
-  }
-
-  const childrenOf = Array.from({ length: n }, () => []);
-  for (let i = 0; i < n; i++) if (parent[i] >= 0) childrenOf[parent[i]].push(i);
-
-  const indexOfName = new Map();
-  for (let i = 0; i < n; i++) indexOfName.set(names[i], i);
-
-  return {
-    names,
-    modelOf: model,
-    parentOf: parent,
-    matrices,
-    local: xf,
-    childrenOf,
-    models: data.models,
-    indexOfName,
-  };
-}
 
 // A resource says what shape it is through `cross_section_type`. A tip spot does not serialize
 // one, though it is plainly round, so it is special-cased here; upstream it should declare the
@@ -1051,9 +992,7 @@ function flatVariant(material) {
 
 const geometryFor = (model) =>
   model.cross_section_type === "circle" || model.category === "tip_spot" ? CYL : BOX;
-const sizeOf = (model) => [model.size_x || 0.1, model.size_y || 0.1, model.size_z || 0.1];
 const colorFor = (model) => RESOURCE_COLORS[model.category] ?? RESOURCE_COLORS.default;
-const modelOf = (index) => world.models[world.modelOf[index]];
 // "TipRack" -> "tipracks", as the existing visualizer writes them. Deliberately naive: a count is
 // always in front of it, so "1 plates" reads as a count rather than as a mistake.
 const plural = (type) => String(type).toLowerCase() + "s";
@@ -1099,11 +1038,6 @@ function collectEnclosedModels(index, into) {
   }
 }
 
-function treeDepth(index) {
-  let depth = 0;
-  for (let i = world.parentOf[index]; i >= 0; i = world.parentOf[i]) depth++;
-  return depth;
-}
 
 // A carrier is the level you look at rather than through: its floor is filled in, and its walls
 // keep their fill instead of being culled when the things it holds are drawn.
@@ -1208,12 +1142,15 @@ function buildMeshes() {
     });
 
     // The existing visualizer strokes every resource, and a translucent box on a white ground
-    // needs that stroke to read at all. Only enclosures get one, and only while there are few
-    // enough of them to stay one cheap line object each; wells are small and legible without.
+    // needs that stroke to read at all. So does a solid one that holds nothing: a 96-head, a
+    // channel, a loading tray. What decides is how many there are, not whether anything is inside -
+    // an outline is one line object per instance, and there are a thousand wells. The count is the
+    // whole of the cost control, and it already excludes exactly the things too small to read.
+    //
     // A travelling part draws its own frame and moves, so it gets no generic box outline: the box
     // would describe the slab rather than the frame, and it would be a second thing to keep in
     // step with every move - which is exactly what left a ghost behind at the old position.
-    if (encloses && !MOVING_PARTS.has(model.category) && instances.length <= EDGE_LIMIT) {
+    if (!MOVING_PARTS.has(model.category) && instances.length <= EDGE_LIMIT) {
       const boxEdges = new THREE.EdgesGeometry(geometryFor(model));
       const edgeGeometry = new LineSegmentsGeometry();
       edgeGeometry.setPositions(boxEdges.getAttribute("position").array);
@@ -1860,7 +1797,7 @@ function renderInfoPanel() {
     placement.push(["rotation", tuple(xf[o + 3], xf[o + 4], xf[o + 5], "deg")]);
   }
   placement.push(["parent", world.parentOf[index] >= 0 ? escapeHtml(world.names[world.parentOf[index]]) : "none"]);
-  placement.push(["children", world.childrenOf[index].length]);
+  placement.push(["children", String(world.childrenOf[index].length)]);
 
   const [sx, sy, sz] = sizeOf(model);
   const geometry = [["size", `${fmt(sx)}${NBSP}&#215;${NBSP}${fmt(sy)}${NBSP}&#215;${NBSP}${fmt(sz)}${NBSP}mm`]];
@@ -2028,46 +1965,18 @@ function updateMachinePanels(devices) {
 
 function applyTelemetry(devices) {
   buildMachineTools(devices);
-  channelGroup.clear();
 
   for (const device of devices) {
-    // Until the arm carries a tracker, the polled reading is the only live X there is.
+    // The arm publishes where it is through the state channel now, so this is a second opinion
+    // rather than the only one; it costs nothing and covers a device whose arm has no tracker.
     const deviceIndex = world.indexOfName.get(device.device);
     if (deviceIndex !== undefined && device.arm_x && device.arm_x.value !== null) {
       const armIndex = armIndexOf(deviceIndex);
       if (armIndex !== null) setArmX(armIndex, device.arm_x.value);
     }
-
-    const top = channelRestZ(device.device);
-    for (const channel of device.channels) {
-      if (channel.x.value === null || channel.y.value === null) continue;
-      const grades = [channel.x, channel.y, channel.z].map((r) => r.provenance);
-      const grade = grades.includes("unavailable")
-        ? "unavailable"
-        : grades.includes("derived")
-        ? "derived"
-        : "measured";
-      const mesh = new THREE.Mesh(
-        CYL,
-        new THREE.MeshStandardMaterial({
-          color: PROVENANCE_COLOR[grade],
-          roughness: 0.4,
-          transparent: true,
-          opacity: 0.72,
-        })
-      );
-      mesh.scale.set(8, 8, 90);
-      // Hanging below the arm, which is where a channel physically is.
-      mesh.position.set(channel.x.value, channel.y.value, top - 45);
-      mesh.userData.channel = { device: device.device, channel };
-      channelGroup.add(mesh);
-    }
   }
 }
 
-// Where to hang a channel whose own Z the machine does not publish. The arm it rides on is in the
-// scene and knows its height, so use that; only if there is no arm does it fall back to the top of
-// the device, which is a guess and looks like one.
 // The arm resource under a device, if it has one.
 function armIndexOf(deviceIndex) {
   let found = null;
@@ -2088,22 +1997,6 @@ function armIndexOf(deviceIndex) {
 // by its right edge - so drawing the reported X against the arm shows which it is without the
 // viewer needing to know anything about rail types.
 
-function channelRestZ(deviceName) {
-  const deviceIndex = world?.indexOfName.get(deviceName);
-  if (deviceIndex === undefined) return 0;
-
-  let armTop = null;
-  const walk = (index) => {
-    if (MOVING_PARTS.has(modelOf(index).category)) {
-      const top = world.matrices[index].elements[14] + (modelOf(index).size_z || 0);
-      armTop = armTop === null ? top : Math.max(armTop, top);
-    }
-    for (const child of world.childrenOf[index]) walk(child);
-  };
-  walk(deviceIndex);
-  if (armTop !== null) return armTop;
-  return world.matrices[deviceIndex].elements[14] + (modelOf(deviceIndex).size_z || 0);
-}
 
 // ---------------------------------------------------------------- picking
 
@@ -2116,10 +2009,9 @@ function pick(event) {
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
-  const candidates = [...meshes.map((m) => m.mesh), ...channelGroup.children];
+  const candidates = meshes.map((m) => m.mesh);
   const hits = raycaster.intersectObjects(candidates, false);
   for (const hit of hits) {
-    if (hit.object.userData.channel) return { channel: hit.object.userData.channel };
     const instances = hit.object.userData.instances;
     if (instances && hit.instanceId !== undefined) {
       const index = instances[hit.instanceId];
@@ -2701,7 +2593,7 @@ function connect() {
       const _tScene = performance.now();
       stats = data.stats ?? {};
       workcells = data.workcells ?? [];
-      world = buildWorld(data);
+      setWorld(buildWorld(data));
       timings.decodeMs = performance.now() - _tScene;
       const _tBuild = performance.now();
       buildMeshes();
