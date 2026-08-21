@@ -578,8 +578,8 @@ class Head96:
     increments = cast(List[int], resp["pz"])
     return [self.configuration.z_drive_increments_to_mm(i) for i in increments]
 
-  async def move_to_z_safety(self) -> float:
-    """Drive the head to its Z-safety height and read where that put it.
+  async def move_to_safe_z(self) -> float:
+    """Move the head up to its safe Z, and read where that put it.
 
     Doubles as the probe for how far this unit actually reaches: the generic command range can
     exceed it, so the top is read off the hardware rather than assumed.
@@ -594,7 +594,7 @@ class Head96:
     """The Z window this head reaches: a variant-derived floor, and a probed ceiling.
 
     Args:
-      z_max: the top the hardware actually reached, from `move_to_z_safety`.
+      z_max: the top the hardware actually reached, from `move_to_safe_z`.
 
     Returns:
       The `(min, max)` window in mm, also recorded on the configuration.

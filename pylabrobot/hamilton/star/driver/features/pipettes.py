@@ -415,11 +415,15 @@ class Pipettes:
 
   # -- z safety --------------------------------------------------------------
 
-  async def move_to_z_safety(self):
-    """Move every channel up to its Z safety position.
+  async def move_to_safe_z(self) -> List[float]:
+    """Move every channel up to its safe Z, and read where that put them.
 
     Nothing may move in X or Y while a channel is low, so this is the precondition for any
     lateral move. The instrument's initialization procedure does it as a side effect; on a
     machine that is already initialized it has to be asked for.
+
+    Returns:
+      Each channel's stop-disk Z, in mm, back to front.
     """
-    return await self._driver.send_command(module="C0", command="ZA")
+    await self._driver.send_command(module="C0", command="ZA")
+    return [await self.request_stop_disk_z(channel) for channel in range(len(self.resources))]

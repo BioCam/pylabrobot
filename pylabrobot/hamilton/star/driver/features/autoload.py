@@ -696,9 +696,14 @@ class Autoload:
       await self._request_drive_position("RZ", digits=4)
     )
 
-  async def move_to_safe_z(self):
-    """Move the carrier-handling wheel to its safe Z position."""
-    return await self._driver.send_command(module="C0", command="IV")
+  async def move_to_safe_z(self) -> float:
+    """Move the carrier-handling wheel to its safe Z, and read where that put it.
+
+    Returns:
+      The wheel's Z position, in mm.
+    """
+    await self._driver.send_command(module="C0", command="IV")
+    return await self.request_z_position()
 
   async def move_z(
     self,

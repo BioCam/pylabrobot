@@ -273,11 +273,11 @@ class STARDriver:
     else:
       logger.debug("machine reports initialized - raising the channels to Z safety only")
       if self.pipettes is not None:
-        await self.pipettes.move_to_z_safety()
+        await self.pipettes.move_to_safe_z()
       # The head is retracted whatever its own status says: the retract is what keeps it clear of
       # the iSWAP, which shares the left X-drive and moves during capability bring-up.
       if self.head96 is not None:
-        self.head96.resolve_z_range(await self.head96.move_to_z_safety())
+        self.head96.resolve_z_range(await self.head96.move_to_safe_z())
 
     return already_initialized
 
@@ -407,7 +407,7 @@ class STARDriver:
           await self.head96.initialize()
       # Probing how far this head reaches retracts it, so it doubles as the safety retract and
       # runs on every setup rather than only the first.
-      self.head96.resolve_z_range(await self.head96.move_to_z_safety())
+      self.head96.resolve_z_range(await self.head96.move_to_safe_z())
 
   async def _create_capability_resources(self) -> None:
     """Put what the machine carries on the deck, where it is.
