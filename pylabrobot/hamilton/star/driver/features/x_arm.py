@@ -10,6 +10,9 @@ from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
 
 if TYPE_CHECKING:
+  from pylabrobot.hamilton.star.driver.features.head96 import Head96
+  from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
+  from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
   from pylabrobot.hamilton.star.driver.master import STARDriver
 
 logger = logging.getLogger(__name__)
@@ -38,11 +41,14 @@ class XArmConfiguration:
   iswap_installed: bool = False
   head96_installed: bool = False
   nano_pipettor_installed: bool = False
-  dispensing_head_384_installed: bool = False
+  head384_installed: bool = False
   xl_channels_installed: bool = False
   tube_gripper_installed: bool = False
   imaging_channel_installed: bool = False
+  # byte 2 from here: xn on the left drive, xo on the right.
   robotic_channel_installed: bool = False
+  gel_card_gripper_installed: bool = False
+  puncher_handler_installed: bool = False
 
   width: Optional[float] = None
   x_range: Optional[Tuple[float, float]] = None
@@ -104,6 +110,12 @@ class XArm:
     # The arm on the deck, when the driver was given one. Setup puts it there; moves keep it in
     # step. Without a deck it stays None and nothing is modelled.
     self.resource: Optional[Resource] = None
+    # What this arm carries. The firmware requires the capability bits of the two drives to be
+    # disjoint, so a capability is on one arm or the other and never on both. Setup builds each
+    # from this arm's own bits.
+    self.pipettes: Optional["Pipettes"] = None
+    self.head96: Optional["Head96"] = None
+    self.iswap: Optional["iSWAP"] = None
     self.side = side
 
   @property

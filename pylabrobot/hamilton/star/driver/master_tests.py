@@ -7,9 +7,11 @@ from typing import List, cast
 import pylabrobot.hamilton.star.driver.simulator as simulator
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
 from pylabrobot.hamilton.star.driver.simulator import (
+  BARE_X_ARM,
   DEFAULT_STAR_CONFIGURATION,
   STARSimulationDriver,
 )
+from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import STARDeck
 
 
@@ -27,7 +29,8 @@ class TestXArm(unittest.IsolatedAsyncioTestCase):
 
   async def test_two_arms(self):
     both = dataclasses.replace(
-      DEFAULT_STAR_CONFIGURATION, right_arm=DEFAULT_STAR_CONFIGURATION.left_arm
+      DEFAULT_STAR_CONFIGURATION,
+      right_arm=BARE_X_ARM,
     )
     star = STARSimulationDriver(configuration=both, deck=STARDeck())
     await star.setup()
@@ -59,7 +62,7 @@ MOVING_STEPS = [
   (simulator.SimulatedISWAP, "initialize", "FI iSWAP"),
   (simulator.iSWAP, "park", "iSWAP park"),
   (simulator.SimulatedHead96, "initialize", "EI 96-head"),
-  (simulator.Head96, "move_to_safe_z", "EV 96-head retract"),
+  (simulator.SimulatedHead96, "probe_z_max", "EV 96-head probe and retract"),
   (simulator.SimulatedAutoload, "initialize", "II autoload"),
   (simulator.SimulatedAutoload, "park", "autoload park"),
 ]
@@ -94,8 +97,8 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
   async def run_setup(self, instrument_up: bool, head_up: bool, eject_position: bool) -> List[str]:
     star = simulator.STARSimulationDriver(deck=STARDeck(), initialized=instrument_up)
     star.initialized["H0"] = head_up
-    cast(Head96, star.head96).configuration.initialize_position = (
-      (-263.8, 108.3, 200.0) if eject_position else None
+    cast(Head96, star.head96).configuration.tip_discard_location = (
+      Coordinate(-263.8, 108.3, 200.0) if eject_position else None
     )
     with recorded_moves() as moves:
       await star.setup()
@@ -106,9 +109,9 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
       await self.run_setup(instrument_up=True, head_up=True, eject_position=True),
       [
         "ZA channels to safe Z",
-        "EV 96-head retract",
+        "EV 96-head probe and retract",
         "iSWAP park",
-        "EV 96-head retract",
+        "EV 96-head probe and retract",
         "II autoload",
         "autoload park",
       ],
@@ -119,10 +122,10 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
       await self.run_setup(instrument_up=True, head_up=False, eject_position=True),
       [
         "ZA channels to safe Z",
-        "EV 96-head retract",
+        "EV 96-head probe and retract",
         "iSWAP park",
         "EI 96-head",
-        "EV 96-head retract",
+        "EV 96-head probe and retract",
         "II autoload",
         "autoload park",
       ],
@@ -135,9 +138,9 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
       await self.run_setup(instrument_up=True, head_up=False, eject_position=False),
       [
         "ZA channels to safe Z",
-        "EV 96-head retract",
+        "EV 96-head probe and retract",
         "iSWAP park",
-        "EV 96-head retract",
+        "EV 96-head probe and retract",
         "II autoload",
         "autoload park",
       ],
@@ -153,7 +156,7 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
         "FI iSWAP",
         "iSWAP park",
         "EI 96-head",
-        "EV 96-head retract",
+        "EV 96-head probe and retract",
         "II autoload",
         "autoload park",
       ],

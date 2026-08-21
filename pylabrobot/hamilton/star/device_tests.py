@@ -10,6 +10,7 @@ from pylabrobot.hamilton.star.device import (
   STARLet,
 )
 from pylabrobot.hamilton.star.driver.simulator import (
+  BARE_X_ARM,
   DEFAULT_STAR_CONFIGURATION,
   STARSimulationDriver,
 )
@@ -63,11 +64,14 @@ class TestCapabilities(unittest.IsolatedAsyncioTestCase):
       self.assertIs(getattr(star, name), getattr(star.driver, name), name)
 
   async def test_absent_capabilities_are_none(self):
+    # An arm that carries nothing: what the machine reports at instrument level and what each
+    # arm reports about itself agree on a real one, so the fixture makes them agree here.
     bare = dataclasses.replace(
       DEFAULT_STAR_CONFIGURATION,
       num_pip_channels=0,
       ka_head96_installed=False,
       autoload_installed=False,
+      left_arm=BARE_X_ARM,
       right_arm=None,
     )
     star = STARDevice(

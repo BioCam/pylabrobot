@@ -120,13 +120,59 @@ class STARDriver:
 
     # Subsystems. Each reads what it needs off `configuration`, so they are usable once setup has
     # run and raise a clear error before that. Each arm appears only if setup finds one installed.
-    self.pipettes: Optional[Pipettes] = None
     self.front_cover: Optional[FrontCover] = None
     self.left_x_arm: Optional[XArm] = None
     self.right_x_arm: Optional[XArm] = None
-    self.head96: Optional[Head96] = None
-    self.iswap: Optional[iSWAP] = None
     self.autoload: Optional[Autoload] = None
+
+  # -- what the arms carry ---------------------------------------------------------------------
+
+  @property
+  def arms(self) -> List[XArm]:
+    """The arms this machine has, left first."""
+    return [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
+
+  def arm_carrying(self, capability: Literal["pipettes", "head96", "iswap"]) -> Optional[XArm]:
+    """The arm a capability is mounted on, or None when nothing carries it.
+
+    The firmware requires the two drives' capability bits to be disjoint, so at most one arm can
+    claim a capability. A machine that breaks that rule is misconfigured rather than ambiguous, and
+    says so here rather than having one of its arms picked silently.
+
+    Args:
+      capability: which of the arm-carried capabilities to look for.
+
+    Returns:
+      The arm carrying it, or None.
+
+    Raises:
+      ValueError: If both arms claim it.
+    """
+    carrying = [arm for arm in self.arms if getattr(arm, capability) is not None]
+    if len(carrying) > 1:
+      raise ValueError(
+        f"both arms report {capability} installed, which the instrument configuration does not "
+        "allow - reach it through `left_x_arm` or `right_x_arm` instead"
+      )
+    return carrying[0] if carrying else None
+
+  @property
+  def pipettes(self) -> Optional[Pipettes]:
+    """The pipetting channels, on the arm that carries them."""
+    arm = self.arm_carrying("pipettes")
+    return arm.pipettes if arm is not None else None
+
+  @property
+  def head96(self) -> Optional[Head96]:
+    """The 96-head, on the arm that carries it."""
+    arm = self.arm_carrying("head96")
+    return arm.head96 if arm is not None else None
+
+  @property
+  def iswap(self) -> Optional[iSWAP]:
+    """The iSWAP, on the arm that carries it."""
+    arm = self.arm_carrying("iswap")
+    return arm.iswap if arm is not None else None
 
   # -- connection ------------------------------------------------------------
 
@@ -199,16 +245,18 @@ class STARDriver:
       self.left_x_arm = XArm(self, side="left")
     if self.configuration.right_arm is not None and self.right_x_arm is None:
       self.right_x_arm = XArm(self, side="right")
-    if self.configuration.num_pip_channels > 0 and self.pipettes is None:
-      self.pipettes = Pipettes(self)
-    if self.configuration.ka_head96_installed and self.head96 is None:
-      self.head96 = Head96(self)
-    if (
-      self.configuration.left_arm is not None
-      and self.configuration.left_arm.iswap_installed
-      and self.iswap is None
-    ):
-      self.iswap = iSWAP(self)
+    # What an arm carries is what its own configuration bits claim. The firmware requires the two
+    # drives' bits to be disjoint, so no capability can be on both.
+    for arm in (self.left_x_arm, self.right_x_arm):
+      if arm is None:
+        continue
+      a = arm.configuration
+      if a.pip_installed and self.configuration.num_pip_channels > 0 and arm.pipettes is None:
+        arm.pipettes = Pipettes(self)
+      if a.head96_installed and arm.head96 is None:
+        arm.head96 = Head96(self)
+      if a.iswap_installed and arm.iswap is None:
+        arm.iswap = iSWAP(self)
     if self.configuration.autoload_installed and self.autoload is None:
       self.autoload = Autoload(self)
     if self.configuration.main_front_cover_monitoring_installed and self.front_cover is None:
@@ -277,7 +325,7 @@ class STARDriver:
       # The head is retracted whatever its own status says: the retract is what keeps it clear of
       # the iSWAP, which shares the left X-drive and moves during capability bring-up.
       if self.head96 is not None:
-        await self.head96.move_to_safe_z()
+        await self.head96.probe_z_max()
 
     return already_initialized
 
@@ -358,7 +406,7 @@ class STARDriver:
       )
       lines.append(
         f"      channels: {channels} | 96-head: {head96} | "
-        f"384-head: {'installed' if a.dispensing_head_384_installed else 'none'} | "
+        f"384-head: {'installed' if a.head384_installed else 'none'} | "
         f"iSWAP: {iswap}"
       )
     if sum(arm.configuration.pip_installed for arm in arms) > 1:
@@ -397,17 +445,17 @@ class STARDriver:
 
     if self.head96 is not None:
       if not await self.request_initialization_status("H0"):
-        if self.head96.configuration.initialize_position is None:
+        if self.head96.configuration.tip_discard_location is None:
           logger.warning(
             "the 96-head reports itself uninitialized, and there is nowhere configured to eject "
-            "at. Set head96.configuration.initialize_position, or call head96.initialize(x, y, z)."
+            "at. Set head96.configuration.tip_discard_location, or pass it to head96.initialize()."
           )
         else:
           logger.debug("96-head reports itself uninitialized - initializing")
           await self.head96.initialize()
       # Probing how far this head reaches retracts it, so it doubles as the safety retract and
       # runs on every setup rather than only the first.
-      await self.head96.move_to_safe_z()
+      await self.head96.probe_z_max()
 
   async def _create_capability_resources(self) -> None:
     """Put what the machine carries on the deck, where it is.
@@ -432,47 +480,9 @@ class STARDriver:
         model=a.model,
         reference_anchor=arm.reference_anchor,
       )
-    await self._create_head96_resource()
     await self._create_pipette_resources()
     await self._create_autoload_resource()
-
-  async def _create_head96_resource(self) -> None:
-    """Put the 96-head on the arm it rides, where it is along Y.
-
-    A child of the arm's resource rather than of the deck, so it follows the arm in X without
-    anything having to keep the two in step. One already on the arm is reused rather than replaced,
-    so repeated setups do not duplicate it.
-
-    Raises:
-      RuntimeError: If the head's X offset was not read, so where it sits across the arm is
-        unknown.
-    """
-    if self.head96 is None or self.deck is None:
-      return
-    arm = next((a for a in (self.left_x_arm, self.right_x_arm) if a is not None), None)
-    if arm is None or arm.resource is None:
-      return
-    c = self.head96.configuration
-    head = next((child for child in arm.resource.children if child.name == "head96"), None)
-    if head is None:
-      if c.x_offset is None:
-        raise RuntimeError("the 96-head's X offset was not read; have you called `star.setup()`?")
-      head = Resource(
-        name="head96",
-        size_x=c.channel_array_size_x,
-        size_y=c.channel_array_size_y,
-        size_z=c.body_size_z,
-        category="head96",
-        model="hamilton_star_head96",
-      )
-      # Channel A1 sits `x_offset` left of the carriage centre, and the arm is located by its own
-      # left edge, so A1 lands that far left of the arm's centre. Y is set from the drive below.
-      arm.resource.assign_child_resource(
-        head, location=Coordinate(arm.resource.get_absolute_size_x() / 2 - c.x_offset, 0.0, 0.0)
-      )
-    self.head96.resource = head
-    # Asking where it is records it, as the arm's and the sled's reads do.
-    await self.head96.request_y_position()
+    await self._create_head96_resource()
 
   async def _create_pipette_resources(self) -> None:
     """Put a resource on the arm for each pipetting channel, where it is.
@@ -482,15 +492,15 @@ class STARDriver:
     reason the 96-head is. Ones already on the arm are reused, so repeated setups do not duplicate
     them.
     """
-    if self.pipettes is None or self.deck is None:
+    if self.deck is None:
       return
-    arm = next((a for a in (self.left_x_arm, self.right_x_arm) if a is not None), None)
-    if arm is None or arm.resource is None:
+    arm = self.arm_carrying("pipettes")
+    if arm is None or arm.pipettes is None or arm.resource is None:
       return
 
     # One per channel the machine reported at discovery, not a count assumed here.
-    c = self.pipettes.configuration
-    self.pipettes.resources = []
+    c = arm.pipettes.configuration
+    arm.pipettes.resources = []
     for channel in range(len(c.channels)):
       name = f"pipette_channel_{channel}"
       resource = next((r for r in arm.resource.children if r.name == name), None)
@@ -513,12 +523,12 @@ class STARDriver:
           resource,
           location=Coordinate(arm.resource.get_absolute_size_x() / 2 - anchor.x, 0.0, 0.0),
         )
-      self.pipettes.resources.append(resource)
+      arm.pipettes.resources.append(resource)
 
     # Asking where they are records them, as the arm's and the head's reads do.
-    await self.pipettes.request_y_positions()
-    for channel in range(len(self.pipettes.resources)):
-      await self.pipettes.request_stop_disk_z(channel)
+    await arm.pipettes.request_y_positions()
+    for channel in range(len(arm.pipettes.resources)):
+      await arm.pipettes.request_stop_disk_z(channel)
 
   async def _create_autoload_resource(self) -> None:
     """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.
@@ -536,6 +546,48 @@ class STARDriver:
     )
     self.autoload.update_location_by_reference_point(x)
     self.deck.get_or_create_autoload_loading_tray(name="autoload_loading_tray")
+
+  async def _create_head96_resource(self) -> None:
+    """Put the 96-head on the arm it rides, where it is along Y.
+
+    A child of the arm's resource rather than of the deck, so it follows the arm in X without
+    anything having to keep the two in step. One already on the arm is reused rather than replaced,
+    so repeated setups do not duplicate it.
+
+    Raises:
+      RuntimeError: If the head's X offset was not read, so where it sits across the arm is
+        unknown.
+    """
+    if self.deck is None:
+      return
+    arm = self.arm_carrying("head96")
+    if arm is None or arm.head96 is None or arm.resource is None:
+      return
+    c = arm.head96.configuration
+    head = next((child for child in arm.resource.children if child.name == "head96"), None)
+    if head is None:
+      if c.x_offset is None:
+        raise RuntimeError("the 96-head's X offset was not read; have you called `star.setup()`?")
+      head = Resource(
+        name="head96",
+        size_x=c.channel_array_size_x,
+        size_y=c.channel_array_size_y,
+        size_z=c.body_size_z,
+        category="head96",
+        model="hamilton_star_head96",
+      )
+      # Channel A1 sits `x_offset` left of the carriage centre, and the arm is located by its own
+      # left edge, so A1 lands that far left of the arm's centre. Y is set from the drive below.
+      arm.resource.assign_child_resource(
+        head, location=Coordinate(arm.resource.get_absolute_size_x() / 2 - c.x_offset, 0.0, 0.0)
+      )
+    arm.head96.resource = head
+    # Asking where it is records it, as the arm's and the sled's reads do.
+    await arm.head96.request_y_position()
+
+  async def _create_head384_resource(self) -> None:
+    """Put the 384-head on the arm it rides. Not yet written."""
+    raise NotImplementedError("modelling the 384-head is not implemented yet")
 
   async def request_initialization_status(self, module: str = "C0") -> bool:
     """Whether a module reports itself initialized.
@@ -793,11 +845,13 @@ class STARDriver:
         iswap_installed=bool(byte1 & (1 << 1)),
         head96_installed=bool(byte1 & (1 << 2)),
         nano_pipettor_installed=bool(byte1 & (1 << 3)),
-        dispensing_head_384_installed=bool(byte1 & (1 << 4)),
+        head384_installed=bool(byte1 & (1 << 4)),
         xl_channels_installed=bool(byte1 & (1 << 5)),
         tube_gripper_installed=bool(byte1 & (1 << 6)),
         imaging_channel_installed=bool(byte1 & (1 << 7)),
         robotic_channel_installed=bool(byte2 & (1 << 0)),
+        gel_card_gripper_installed=bool(byte2 & (1 << 1)),
+        puncher_handler_installed=bool(byte2 & (1 << 2)),
         width=width,
         x_range=ranges[side],
         workspace_range=workspace_range,

@@ -22,7 +22,9 @@ from pylabrobot.hamilton.star.driver.features.autoload import Autoload, Autoload
 from pylabrobot.hamilton.star.driver.features.cover import CoverPosition, FrontCover
 from pylabrobot.hamilton.star.driver.features.head96 import (
   HEAD96_REFERENCE_ANCHOR,
+  HEAD96_Z_REFERENCE_ANCHOR,
   Head96,
+  Head96Configuration,
   HeadType,
   require_drive_parameter,
 )
@@ -73,13 +75,23 @@ SIMULATED_PIPETTE = PipetteConfiguration(
   pressure_adc="Renesas_X9268",
 )
 
-# The 96-head: what it is, what it reports about itself, where its channel A1 sits relative to the
-# arm carriage, the Z it rests at, and what its drives are set to. Distances in mm.
-SIMULATED_HEAD96_TYPE: HeadType = "96 head II"
-SIMULATED_HEAD96_HARDWARE = ["0", "1", "0", "0", "0", "0", "0", "0", "0", "0"]
-SIMULATED_HEAD96_X_OFFSET = 368.2
+# The 96-head this machine has, as the autoload beside it: what it answers about itself, read off a
+# real instrument. Discovery fills the capability's own configuration from these, as on a machine.
+SIMULATED_HEAD96 = Head96Configuration(
+  head_type="96 head II",
+  x_offset=368.2,
+  supports_clot_monitoring_clld=False,
+  stop_disc_type="core_ii",
+  instrument_type="legacy",
+  y_drive_speed_default=390.62,
+  y_drive_acceleration_default=546.88,
+  z_drive_speed_default=85.0,
+  z_drive_acceleration_default=400.0,
+)
+
+# Where its Z drive comes to rest when the firmware retracts it, in mm. Not a device fact but a
+# probe result, so it stands apart from the configuration, as each drive's rest position does.
 SIMULATED_HEAD96_Z_SAFETY = 336.97
-SIMULATED_HEAD96_DRIVE_PARAMETERS = {"yv": 390.62, "yr": 546.88, "zv": 85.0, "zr": 400.0}
 
 # The autoload this machine has. Its device facts are the defaults; what it answers about itself is
 # here, and discovery reads it as it would off a real one.
@@ -110,6 +122,16 @@ SIMULATED_ISWAP_TABLES = {
   "py": [9855, 7000, 9000, 13550, 12600, 9855, 9855, 9855, 9855, 9855],
 }
 SIMULATED_ISWAP_X_OFFSET = 32.8
+
+# An arm that carries nothing: the geometry of a STAR arm with none of its capability bits set.
+# The firmware requires the two drives' bits to be disjoint, so a machine with two arms has its
+# capabilities on one of them and an arm like this as the other.
+BARE_X_ARM = XArmConfiguration(
+  width=354.0,
+  x_range=(95.0, 1340.2),
+  workspace_range=(-323.2, 1517.2),
+  wrap_size=595.2,
+)
 
 # What a bare STARSimulationDriver() pretends to be, copied field for field off a real instrument:
 # a full-size STAR, 54 slots wide, with eight 1000uL channels, a wide-gripper iSWAP and a 96-head
@@ -236,25 +258,73 @@ class SimulatedHead96(_Simulated, Head96):
     return self.machine.reported("head96")
 
   async def request_hardware(self) -> List[str]:
-    return list(SIMULATED_HEAD96_HARDWARE)
+    # Rendered from what this head is, rather than written out separately: discovery parses these
+    # three back out of the reply, so a head configured differently answers differently.
+    head = self.machine.simulated_head96
+    return [
+      "1" if head.supports_clot_monitoring_clld else "0",
+      "0" if head.stop_disc_type == "core_i" else "1",
+      "0" if head.instrument_type == "legacy" else "1",
+    ] + ["0"] * 7
 
   async def request_head_type(self) -> HeadType:
-    return SIMULATED_HEAD96_TYPE
+    head_type = self.machine.simulated_head96.head_type
+    if head_type is None:
+      raise RuntimeError("the simulated 96-head has no type; set it on its configuration")
+    return head_type
 
   async def request_x_offset(self) -> float:
-    return SIMULATED_HEAD96_X_OFFSET
+    x_offset = self.machine.simulated_head96.x_offset
+    if x_offset is None:
+      raise RuntimeError("the simulated 96-head has no X offset; set it on its configuration")
+    return x_offset
 
   async def request_stop_disk_z(self) -> float:
-    # Recorded as the real read records it, so a simulated head is modelled at the height it
-    # reports rather than at whatever the arm's own is.
-    self.update_location_by_reference_point(z=SIMULATED_HEAD96_Z_SAFETY)
+    # From the model where there is one, as the real read reports the drive, and in the deck's
+    # frame as it answers in. Before setup has put the head on the arm, it rests where a retract
+    # would leave it.
+    deck = self.machine.deck
+    if self.resource is not None and self.resource.location is not None and deck is not None:
+      anchor = self.resource.get_anchor(z=HEAD96_Z_REFERENCE_ANCHOR)
+      return round(self.resource.get_location_wrt(deck).z + anchor.z, 2)
     return SIMULATED_HEAD96_Z_SAFETY
+
+  async def probe_z_max(self, *args: Any, **kwargs: Any) -> float:
+    # The firmware retract inside the probe is what puts the head at its safety height. Its own
+    # `move_to_safe_z` needs no such override: it is an ordinary move, which this already records.
+    self.update_location_by_reference_point(z=SIMULATED_HEAD96_Z_SAFETY)
+    return await super().probe_z_max(*args, **kwargs)
+
+  async def move_y(self, y: float, *args: Any, **kwargs: Any):
+    # A move is what puts the head somewhere. On the machine the drive holds that and the read
+    # reports it; here the model holds it, so the move writes it and the read finds it there.
+    # Written after the move, not before: one the real method refuses never happened, and a model
+    # updated first would put the head where it was told to go rather than where it is.
+    resp = await super().move_y(y, *args, **kwargs)
+    self.update_location_by_reference_point(y=y)
+    return resp
+
+  async def move_z(self, z: float, *args: Any, **kwargs: Any):
+    resp = await super().move_z(z, *args, **kwargs)
+    self.update_location_by_reference_point(z=z)
+    return resp
 
   async def request_drive_parameter(self, parameter: str) -> float:
     # Guarded as the real read guards it: a name the head does not store is a caller's mistake, and
     # should say so here as it would there rather than raising a lookup error.
     require_drive_parameter(parameter)
-    return SIMULATED_HEAD96_DRIVE_PARAMETERS[parameter]
+    head = self.machine.simulated_head96
+    if parameter == "yv":
+      default = head.y_drive_speed_default
+    elif parameter == "yr":
+      default = head.y_drive_acceleration_default
+    elif parameter == "zv":
+      default = head.z_drive_speed_default
+    else:
+      default = head.z_drive_acceleration_default
+    if default is None:
+      raise RuntimeError(f"the simulated 96-head has no {parameter} default; set it on its config")
+    return default
 
   async def initialize(self, *args, **kwargs):
     """Whatever was mounted on the head comes off, and it reports itself up."""
@@ -354,10 +424,10 @@ class SimulatedAutoload(_Simulated, Autoload):
       return self.resource.location.x + self.configuration.reference_point_from_sled_left_edge
     return SIMULATED_AUTOLOAD_X_POSITION
 
-  async def request_y_position(self) -> float:
+  async def wheel_request_y_position(self) -> float:
     return SIMULATED_AUTOLOAD_Y_POSITION
 
-  async def request_z_position(self) -> float:
+  async def wheel_request_z_position(self) -> float:
     return SIMULATED_AUTOLOAD_Z_POSITION
 
   async def sense_carrier_presence_on_deck(self) -> List[int]:
@@ -390,7 +460,12 @@ class SimulatedAutoload(_Simulated, Autoload):
     self.machine.initialized["I0"] = True
 
   async def move_to_track(self, track: int, *args, **kwargs):
+    # As `move_x` records where a position move put the sled, so this records where a track move
+    # did. The deck is what knows where a track is.
     await super().move_to_track(track, *args, **kwargs)
+    # A simulated machine is built with a deck or refuses to be built at all, so there is one.
+    deck = cast(HamiltonDeck, self.machine.deck)
+    self.update_location_by_reference_point(deck.rails_to_location(track).x)
     self.track = track
 
   async def park(self):
@@ -407,6 +482,7 @@ class STARSimulationDriver(STARDriver):
     tips_mounted: Optional[List[bool]] = None,
     firmware: Optional[Dict[str, str]] = None,
     autoload: Optional[AutoloadConfiguration] = None,
+    head96: Optional[Head96Configuration] = None,
     deck: Optional[HamiltonDeck] = None,
     serial_number: str = SIMULATED_SERIAL_NUMBER,
     initialized: bool = False,
@@ -421,6 +497,9 @@ class STARSimulationDriver(STARDriver):
       autoload: the autoload this machine has, which it answers about itself. Defaults to
         `SIMULATED_AUTOLOAD`. The capability's own configuration is filled by discovery, as on a
         real machine, so this is what it reads rather than what it becomes.
+      head96: the 96-head this machine has, which it answers about itself. Defaults to
+        `SIMULATED_HEAD96`. As with `autoload`, this is what discovery reads rather than what the
+        capability's own configuration becomes.
       deck: the deck to reflect this machine into. Required: a simulated machine has no firmware
         to ask, so the resource model is the only thing it can answer from.
       serial_number: what this machine calls itself.
@@ -437,6 +516,7 @@ class STARSimulationDriver(STARDriver):
     self.simulated_configuration = configuration or DEFAULT_STAR_CONFIGURATION
     self.simulated_firmware = firmware or dict(SIMULATED_FIRMWARE)
     self.simulated_autoload = autoload or SIMULATED_AUTOLOAD
+    self.simulated_head96 = head96 or SIMULATED_HEAD96
     self.serial_number = serial_number
 
     channels = self.simulated_configuration.num_pip_channels
@@ -452,20 +532,26 @@ class STARSimulationDriver(STARDriver):
     # The capabilities this machine has, each answering for itself. Discovery builds only the ones
     # that are not already there, so these stand in for the real ones throughout.
     c = self.simulated_configuration
-    if c.num_pip_channels > 0:
-      self.pipettes = SimulatedPipettes(self)
     if c.main_front_cover_monitoring_installed:
       self.front_cover = SimulatedFrontCover(self)
     if c.left_arm is not None:
       self.left_x_arm = SimulatedXArm(self, side="left")
     if c.right_arm is not None:
       self.right_x_arm = SimulatedXArm(self, side="right")
-    if c.ka_head96_installed:
-      self.head96 = SimulatedHead96(self)
-    if c.left_arm is not None and c.left_arm.iswap_installed:
-      self.iswap = SimulatedISWAP(self)
     if c.autoload_installed:
       self.autoload = SimulatedAutoload(self)
+
+    # On the arm whose bits claim them, as discovery would put them. Read off the simulated
+    # configuration rather than the arm's own: nothing has been discovered yet at this point.
+    for arm, a in ((self.left_x_arm, c.left_arm), (self.right_x_arm, c.right_arm)):
+      if arm is None or a is None:
+        continue
+      if a.pip_installed and c.num_pip_channels > 0:
+        arm.pipettes = SimulatedPipettes(self)
+      if a.head96_installed:
+        arm.head96 = SimulatedHead96(self)
+      if a.iswap_installed:
+        arm.iswap = SimulatedISWAP(self)
 
   def reported(self, capability: str) -> Tuple[str, datetime.date]:
     """What a capability reports for its firmware, and the date in it."""

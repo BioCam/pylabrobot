@@ -6,6 +6,7 @@ from typing import Any, List, Optional, cast
 from pylabrobot.hamilton.protocol.text.framing import assemble_command
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm
 from pylabrobot.hamilton.star.driver.simulator import (
+  BARE_X_ARM,
   DEFAULT_STAR_CONFIGURATION,
   STARSimulationDriver,
 )
@@ -37,7 +38,8 @@ def record(arm: XArm) -> List[str]:
 async def _both_arms() -> STARSimulationDriver:
   """A machine with an arm on each rail, brought up."""
   both = dataclasses.replace(
-    DEFAULT_STAR_CONFIGURATION, right_arm=DEFAULT_STAR_CONFIGURATION.left_arm
+    DEFAULT_STAR_CONFIGURATION,
+    right_arm=BARE_X_ARM,
   )
   driver = STARSimulationDriver(configuration=both, deck=STARDeck())
   await driver.setup()
