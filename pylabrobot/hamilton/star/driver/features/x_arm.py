@@ -34,7 +34,12 @@ class XArmConfiguration:
   `request_extended_configuration` builds the drive. `model` and `reference_point`
   follow from `width`.
 
-  Note: the installed modules on left and right drives must be different.
+  The two drives' module bits never overlap: a module occupies one fixed CAN node - the 96-head is
+  `H0`, the iSWAP `R0` - so a machine has one of it, and the bits say which arm carries it rather
+  than how many there are. Where a module genuinely can be several, the node list indexes it
+  instead (`Ln` for XL channels, `On` for robotic ones). The pipetting channels are one chain,
+  `P1` to `PG`, addressed together as `PX`, which is why the instrument reports a single channel
+  count and not one per arm.
   """
 
   pip_installed: bool = False
