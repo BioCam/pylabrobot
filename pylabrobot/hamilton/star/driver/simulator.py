@@ -20,14 +20,14 @@ from pylabrobot.hamilton.protocol.text.framing import (
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
 from pylabrobot.hamilton.star.driver.features.cover import CoverPosition, FrontCover
-from pylabrobot.hamilton.star.driver.features.head96 import (
-  HEAD96_REFERENCE_ANCHOR,
-  HEAD96_Z_REFERENCE_ANCHOR,
-  Head96,
-  Head96Configuration,
-  HeadType,
-  require_drive_parameter,
+from pylabrobot.hamilton.star.driver.features.head import (
+  HEAD_REFERENCE_ANCHOR,
+  HEAD_Z_REFERENCE_ANCHOR,
+  Head,
+  HeadConfiguration,
 )
+from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
+from pylabrobot.hamilton.star.driver.features.head384 import Head384, Head384Configuration
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import (
   PipetteConfiguration,
@@ -49,6 +49,9 @@ SIMULATED_FIRMWARE = {
   "x_arm": "1.4S 2012-04-25",
   "head96": "5.0S i 2021-10-22 (H0 XE167)",
   "iswap": "4.1S 2011-12-19",
+  # No 384-head has been read, so this is marked as simulated rather than given a version that
+  # would read as one taken off a machine. The date is the specification's.
+  "head384": "0.0S 2015-08-07 (D0 simulated)",
 }
 
 # Made up, so a simulator is never mistaken for a particular machine.
@@ -92,6 +95,23 @@ SIMULATED_HEAD96 = Head96Configuration(
 # Where its Z drive comes to rest when the firmware retracts it, in mm. Not a device fact but a
 # probe result, so it stands apart from the configuration, as each drive's rest position does.
 SIMULATED_HEAD96_Z_SAFETY = 336.97
+
+# The 384-head a machine configured for one has. Unlike the 96-head above, none of this is read off
+# an instrument: the offset and the drive defaults are the ones the drives document.
+SIMULATED_HEAD384 = Head384Configuration(
+  head_type="High volume head",
+  x_offset=260.0,
+  supports_clot_monitoring_clld=False,
+  supports_lld_absolute_threshold_check=False,
+  y_drive_speed_default=312.5,
+  y_drive_acceleration_default=500.0,
+  z_drive_speed_default=85.0,
+  z_drive_acceleration_default=400.0,
+)
+
+# Where its Z drive rests after a retract. No unit has been probed, so this is the ceiling the drive
+# documents rather than a measurement, as the 96-head's is.
+SIMULATED_HEAD384_Z_SAFETY = 336.0
 
 # The autoload this machine has. Its device facts are the defaults; what it answers about itself is
 # here, and discovery reads it as it would off a real one.
@@ -251,48 +271,57 @@ class SimulatedXArm(_Simulated, XArm):
     return self.configuration.x_range[1]
 
 
-class SimulatedHead96(_Simulated, Head96):
-  """The 96-head, answering for itself."""
+class _SimulatedHead(_Simulated, Head):
+  """What a head answers when there is no head: the same for either of them.
+
+  Each head says which simulated configuration it answers from and where a retract leaves it; what
+  its configuration bytes mean is its own, as on a machine.
+  """
+
+  _z_safety: float
+  _firmware_key: str
+  _label: str
+
+  @property
+  def _declared(self) -> HeadConfiguration:
+    """The head this machine was told it has.
+
+    Distinct from `configuration`, which discovery fills from these answers exactly as it would
+    off an instrument.
+    """
+    raise NotImplementedError("a simulated head says which configuration it answers from")
 
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
-    return self.machine.reported("head96")
+    return self.machine.reported(self._firmware_key)
 
-  async def request_hardware(self) -> List[str]:
-    # Rendered from what this head is, rather than written out separately: discovery parses these
-    # three back out of the reply, so a head configured differently answers differently.
-    head = self.machine.simulated_head96
-    return [
-      "1" if head.supports_clot_monitoring_clld else "0",
-      "0" if head.stop_disc_type == "core_i" else "1",
-      "0" if head.instrument_type == "legacy" else "1",
-    ] + ["0"] * 7
-
-  async def request_head_type(self) -> HeadType:
-    head_type = self.machine.simulated_head96.head_type
+  async def request_head_type(self) -> str:
+    head_type = self._declared.head_type
     if head_type is None:
-      raise RuntimeError("the simulated 96-head has no type; set it on its configuration")
+      raise RuntimeError(f"the simulated {self._label} has no type; set it on its configuration")
     return head_type
 
   async def request_x_offset(self) -> float:
-    x_offset = self.machine.simulated_head96.x_offset
+    x_offset = self._declared.x_offset
     if x_offset is None:
-      raise RuntimeError("the simulated 96-head has no X offset; set it on its configuration")
+      raise RuntimeError(
+        f"the simulated {self._label} has no X offset; set it on its configuration"
+      )
     return x_offset
 
-  async def request_stop_disk_z(self) -> float:
+  async def request_z_position(self) -> float:
     # From the model where there is one, as the real read reports the drive, and in the deck's
     # frame as it answers in. Before setup has put the head on the arm, it rests where a retract
     # would leave it.
     deck = self.machine.deck
     if self.resource is not None and self.resource.location is not None and deck is not None:
-      anchor = self.resource.get_anchor(z=HEAD96_Z_REFERENCE_ANCHOR)
+      anchor = self.resource.get_anchor(z=HEAD_Z_REFERENCE_ANCHOR)
       return round(self.resource.get_location_wrt(deck).z + anchor.z, 2)
-    return SIMULATED_HEAD96_Z_SAFETY
+    return self._z_safety
 
   async def probe_z_max(self, *args: Any, **kwargs: Any) -> float:
     # The firmware retract inside the probe is what puts the head at its safety height. Its own
     # `move_to_safe_z` needs no such override: it is an ordinary move, which this already records.
-    self.update_location_by_reference_point(z=SIMULATED_HEAD96_Z_SAFETY)
+    self.update_location_by_reference_point(z=self._z_safety)
     return await super().probe_z_max(*args, **kwargs)
 
   async def move_y(self, y: float, *args: Any, **kwargs: Any):
@@ -312,8 +341,8 @@ class SimulatedHead96(_Simulated, Head96):
   async def request_drive_parameter(self, parameter: str) -> float:
     # Guarded as the real read guards it: a name the head does not store is a caller's mistake, and
     # should say so here as it would there rather than raising a lookup error.
-    require_drive_parameter(parameter)
-    head = self.machine.simulated_head96
+    self.require_drive_parameter(parameter)
+    head = self._declared
     if parameter == "yv":
       default = head.y_drive_speed_default
     elif parameter == "yr":
@@ -323,12 +352,14 @@ class SimulatedHead96(_Simulated, Head96):
     else:
       default = head.z_drive_acceleration_default
     if default is None:
-      raise RuntimeError(f"the simulated 96-head has no {parameter} default; set it on its config")
+      raise RuntimeError(
+        f"the simulated {self._label} has no {parameter} default; set it on its config"
+      )
     return default
 
   async def initialize(self, *args, **kwargs):
     """Whatever was mounted on the head comes off, and it reports itself up."""
-    self.machine.initialized["H0"] = True
+    self.machine.initialized[self.configuration.module] = True
 
   async def request_y_position(self) -> float:
     # From the model where there is one, as the real read reports the drive. The drive answers in
@@ -337,10 +368,52 @@ class SimulatedHead96(_Simulated, Head96):
     # there is nothing to read, and it answers from the middle of its travel.
     deck = self.machine.deck
     if self.resource is not None and self.resource.location is not None and deck is not None:
-      anchor = self.resource.get_anchor(y=HEAD96_REFERENCE_ANCHOR)
+      anchor = self.resource.get_anchor(y=HEAD_REFERENCE_ANCHOR)
       return round(self.resource.get_location_wrt(deck).y + anchor.y, 2)
     low, high = self.configuration.y_range
     return (low + high) / 2
+
+
+class SimulatedHead96(_SimulatedHead, Head96):
+  """The 96-head, answering for itself."""
+
+  _firmware_key = "head96"
+  _label = "96-head"
+  _z_safety = SIMULATED_HEAD96_Z_SAFETY
+
+  @property
+  def _declared(self) -> Head96Configuration:
+    return self.machine.simulated_head96
+
+  async def request_hardware(self) -> List[str]:
+    # Rendered from what this head is, rather than written out separately: discovery parses these
+    # three back out of the reply, so a head configured differently answers differently.
+    head = self._declared
+    return [
+      "1" if head.supports_clot_monitoring_clld else "0",
+      "0" if head.stop_disc_type == "core_i" else "1",
+      "0" if head.instrument_type == "legacy" else "1",
+    ] + ["0"] * 7
+
+
+class SimulatedHead384(_SimulatedHead, Head384):
+  """The 384-head, answering for itself."""
+
+  _firmware_key = "head384"
+  _label = "384-head"
+  _z_safety = SIMULATED_HEAD384_Z_SAFETY
+
+  @property
+  def _declared(self) -> Head384Configuration:
+    return self.machine.simulated_head384
+
+  async def request_hardware(self) -> List[str]:
+    # Rendered as the 96-head's is, from the two flags this head reports.
+    head = self._declared
+    return [
+      "1" if head.supports_clot_monitoring_clld else "0",
+      "1" if head.supports_lld_absolute_threshold_check else "0",
+    ] + ["0"] * 8
 
 
 class SimulatedISWAP(_Simulated, iSWAP):
@@ -483,6 +556,7 @@ class STARSimulationDriver(STARDriver):
     firmware: Optional[Dict[str, str]] = None,
     autoload: Optional[AutoloadConfiguration] = None,
     head96: Optional[Head96Configuration] = None,
+    head384: Optional[Head384Configuration] = None,
     deck: Optional[HamiltonDeck] = None,
     serial_number: str = SIMULATED_SERIAL_NUMBER,
     initialized: bool = False,
@@ -501,6 +575,8 @@ class STARSimulationDriver(STARDriver):
       head96: the 96-head this machine has, which it answers about itself. Defaults to
         `SIMULATED_HEAD96`. As with `autoload`, this is what discovery reads rather than what the
         capability's own configuration becomes.
+      head384: the 384-head this machine has, read as `head96` is. Defaults to
+        `SIMULATED_HEAD384`.
       deck: the deck to reflect this machine into. Required: a simulated machine has no firmware
         to ask, so the resource model is the only thing it can answer from.
       serial_number: what this machine calls itself.
@@ -522,6 +598,7 @@ class STARSimulationDriver(STARDriver):
     self.simulated_firmware = firmware or dict(SIMULATED_FIRMWARE)
     self.simulated_autoload = autoload or SIMULATED_AUTOLOAD
     self.simulated_head96 = head96 or SIMULATED_HEAD96
+    self.simulated_head384 = head384 or SIMULATED_HEAD384
     self.serial_number = serial_number
 
     channels = self.simulated_configuration.num_pip_channels
@@ -555,6 +632,8 @@ class STARSimulationDriver(STARDriver):
         arm.pipettes = SimulatedPipettes(self)
       if a.head96_installed:
         arm.head96 = SimulatedHead96(self)
+      if a.head384_installed:
+        arm.head384 = SimulatedHead384(self)
       if a.iswap_installed:
         arm.iswap = SimulatedISWAP(self)
 

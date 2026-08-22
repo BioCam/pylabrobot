@@ -6,6 +6,7 @@ from typing import Optional
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.cover import FrontCover
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
+from pylabrobot.hamilton.star.driver.features.head384 import Head384
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm
@@ -132,6 +133,11 @@ class STARDevice(Resource):
   def head96(self) -> Optional[Head96]:
     """The 96-head, on a machine that has one."""
     return self.driver.head96
+
+  @property
+  def head384(self) -> Optional[Head384]:
+    """The 384-head, on a machine that has one."""
+    return self.driver.head384
 
   @property
   def iswap(self) -> Optional[iSWAP]:

@@ -24,6 +24,7 @@ from pylabrobot.hamilton.star.driver.errors import (
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.cover import FrontCover
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
+from pylabrobot.hamilton.star.driver.features.head384 import Head384
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import CHANNEL_X_REFERENCE_ANCHOR, Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
@@ -31,6 +32,7 @@ from pylabrobot.io.io import IOBase
 from pylabrobot.io.usb import USB
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton.hamilton_decks import HamiltonDeck
+from pylabrobot.resources.hamilton.tip_creators import HamiltonTip, TipPickupMethod, TipSize
 from pylabrobot.resources.resource import Resource
 
 logger = logging.getLogger(__name__)
@@ -114,6 +116,9 @@ class STARDriver:
 
     # What each capability reported at discovery, keyed as `confirmed_firmware_versions` keys it.
     self.firmware: Dict[str, str] = {}
+    # Which table index each tip type was written to. The table is volatile, so this is
+    # rebuilt per session as tips are first used.
+    self._tip_type_indices: Dict[int, int] = {}
 
     # Subsystems. Each reads what it needs off `configuration`, so they are usable once setup has
     # run and raise a clear error before that. Each arm appears only if setup finds one installed.
@@ -349,6 +354,12 @@ class STARDriver:
     return arm.head96 if arm is not None else None
 
   @property
+  def head384(self) -> Optional[Head384]:
+    """The 384-head, on a machine with one arm."""
+    arm = self._require_one_arm("head384")
+    return arm.head384 if arm is not None else None
+
+  @property
   def iswap(self) -> Optional[iSWAP]:
     """The iSWAP, on a machine with one arm."""
     arm = self._require_one_arm("iswap")
@@ -572,6 +583,93 @@ class STARDriver:
     return cast(int, resp["qw"]) == 1
 
   # ----------------------------------------
+  # Tip types
+  # ----------------------------------------
+
+  async def define_tip_needle(
+    self,
+    tip_type_table_index: int,
+    has_filter: bool,
+    tip_length: float,
+    maximum_tip_volume: float,
+    tip_size: TipSize,
+    pickup_method: TipPickupMethod,
+  ):
+    """Write one entry of the instrument's tip type table.
+
+    The table is volatile: it is written from scratch after every power on, so what a run defines
+    lasts only as long as the machine stays up.
+
+    Args:
+      tip_type_table_index: which entry to write, 1 to 99.
+      has_filter: whether the tip has a filter.
+      tip_length: how far the tip stands proud of what holds it, in mm - its total length past its
+        fitting depth.
+      maximum_tip_volume: what the tip holds, in uL. The firmware caps it at the channel's own
+        capacity.
+      tip_size: which collar the tip has, which is how the instrument identifies it.
+      pickup_method: whether it is collected from a rack or out of wash liquid.
+
+    Raises:
+      ValueError: If an argument is outside what the command accepts.
+    """
+    length_increments = round(tip_length * 10)
+    volume_increments = round(maximum_tip_volume * 10)
+    if not 0 <= tip_type_table_index <= 99:
+      raise ValueError(f"tip_type_table_index must be between 0 and 99, is {tip_type_table_index}")
+    if not 1 <= length_increments <= 1999:
+      raise ValueError(f"tip_length must be between 0.1 and 199.9 mm, is {tip_length}")
+    if not 1 <= volume_increments <= 56000:
+      raise ValueError(
+        f"maximum_tip_volume must be between 0.1 and 5600.0 uL, is {maximum_tip_volume}"
+      )
+
+    return await self.send_command(
+      module="C0",
+      command="TT",
+      tt=f"{tip_type_table_index:02}",
+      tf=has_filter,
+      tl=f"{length_increments:04}",
+      tv=f"{volume_increments:05}",
+      tg=tip_size.value,
+      tu=pickup_method.value,
+    )
+
+  async def get_or_assign_tip_type_index(self, tip: HamiltonTip) -> int:
+    """The table index this tip is defined at, defining it if it is new to this session.
+
+    Every command that mounts tips names one of these indices rather than the tip itself, so a tip
+    the machine has not been told about has to be written into the table first.
+
+    Args:
+      tip: the tip to look up.
+
+    Returns:
+      Its index in the instrument's tip type table.
+
+    Raises:
+      ValueError: If the table is full.
+    """
+    tip_hash = hash(tip)
+    if tip_hash not in self._tip_type_indices:
+      index = len(self._tip_type_indices) + 1
+      if index > 99:
+        raise ValueError("the tip type table is full: 99 tip types have already been defined.")
+      await self.define_tip_needle(
+        tip_type_table_index=index,
+        has_filter=tip.has_filter,
+        tip_length=tip.total_tip_length - tip.fitting_depth,
+        # Floored at 1.0 uL so a teaching or probe needle with no capacity registers the way the
+        # firmware's own non-pipetting tools do. It does not affect pickup, which goes by length
+        # and collar.
+        maximum_tip_volume=max(tip.maximal_volume, 1.0),
+        tip_size=tip.tip_size,
+        pickup_method=tip.pickup_method,
+      )
+      self._tip_type_indices[tip_hash] = index
+    return self._tip_type_indices[tip_hash]
+
+  # ----------------------------------------
   # Discovery and initialization
   # ----------------------------------------
 
@@ -599,6 +697,8 @@ class STARDriver:
         arm.pipettes = Pipettes(self)
       if a.head96_installed and arm.head96 is None:
         arm.head96 = Head96(self)
+      if a.head384_installed and arm.head384 is None:
+        arm.head384 = Head384(self)
       if a.iswap_installed and arm.iswap is None:
         arm.iswap = iSWAP(self)
     if self.configuration.autoload_installed and self.autoload is None:
@@ -618,6 +718,8 @@ class STARDriver:
         reading.append(arm.pipettes.discover())
       if arm.head96 is not None:
         reading.append(arm.head96.discover())
+      if arm.head384 is not None:
+        reading.append(arm.head384.discover())
       if arm.iswap is not None:
         reading.append(arm.iswap.discover())
     if self.autoload is not None:
@@ -636,6 +738,7 @@ class STARDriver:
       ),
       "x_arm": None if not arms else arms[0].configuration.firmware_version,
       "head96": next((a.head96.configuration.firmware_version for a in arms if a.head96), None),
+      "head384": next((a.head384.configuration.firmware_version for a in arms if a.head384), None),
       "iswap": next((a.iswap.configuration.firmware_version for a in arms if a.iswap), None),
       "autoload": None if self.autoload is None else self.autoload.configuration.firmware_version,
     }
@@ -671,10 +774,11 @@ class STARDriver:
       for arm in self.arms:
         if arm.pipettes is not None:
           await arm.pipettes.move_to_safe_z()
-        # The head is retracted whatever its own status says: the retract is what keeps it clear
+        # A head is retracted whatever its own status says: the retract is what keeps it clear
         # of the iSWAP, which shares the arm's X drive and moves while capabilities initialize.
-        if arm.head96 is not None:
-          await arm.head96.probe_z_max()
+        for head in (arm.head96, arm.head384):
+          if head is not None:
+            await head.probe_z_max()
 
     return already_initialized
 
@@ -720,19 +824,24 @@ class STARDriver:
         await arm.iswap.initialize()
       await arm.iswap.park()
 
-    if arm.head96 is not None:
-      if not await self.request_initialization_status("H0"):
-        if arm.head96.configuration.tip_discard_location is None:
+    for head, name in ((arm.head96, "head96"), (arm.head384, "head384")):
+      if head is None:
+        continue
+      if not await self.request_initialization_status(head.configuration.module):
+        if head.configuration.tip_discard_location is None:
           logger.warning(
-            "the 96-head reports itself uninitialized, and there is nowhere configured to eject "
-            "at. Set head96.configuration.tip_discard_location, or pass it to head96.initialize()."
+            "the %s reports itself uninitialized, and there is nowhere configured to eject at. "
+            "Set %s.configuration.tip_discard_location, or pass it to %s.initialize().",
+            name,
+            name,
+            name,
           )
         else:
-          logger.debug("96-head reports itself uninitialized - initializing")
-          await arm.head96.initialize()
-      # Probing how far this head reaches retracts it, so it doubles as the safety retract and
+          logger.debug("%s reports itself uninitialized - initializing", name)
+          await head.initialize()
+      # Probing how far a head reaches retracts it, so it doubles as the safety retract and
       # runs on every setup rather than only the first.
-      await arm.head96.probe_z_max()
+      await head.probe_z_max()
 
   def format_setup_summary(self) -> str:
     """One block describing the machine that was found: how it is reached, what firmware every
@@ -779,11 +888,17 @@ class STARDriver:
         channels = f"{c.num_pip_channels} ({'1000uL' if c.pip_type_1000ul else '300uL'})"
       elif arm.pipettes is None and a.pip_installed:
         channels = "none, but this arm reports the module installed"
-      head96 = "none"
-      if a.head96_installed:
-        head96 = "installed"
-        if arm.head96 is not None and arm.head96.configuration.head_type is not None:
-          head96 = arm.head96.configuration.head_type
+      heads = []
+      for head, installed, label in (
+        (arm.head96, a.head96_installed, "96-head"),
+        (arm.head384, a.head384_installed, "384-head"),
+      ):
+        described = "none"
+        if installed:
+          described = "installed"
+          if head is not None and head.configuration.head_type is not None:
+            described = head.configuration.head_type
+        heads.append(f"{label}: {described}")
       iswap = "none"
       if a.iswap_installed:
         iswap = f"{'wide' if c.iswap_gripper_wide else 'small'} gripper"
@@ -791,11 +906,7 @@ class STARDriver:
         f"    {arm.side}: {a.model}, {a.width} mm wide, "
         f"travel {_range(a.x_range)}, workspace {_range(a.workspace_range)}"
       )
-      lines.append(
-        f"      channels: {channels} | 96-head: {head96} | "
-        f"384-head: {'installed' if a.head384_installed else 'none'} | "
-        f"iSWAP: {iswap}"
-      )
+      lines.append(f"      channels: {channels} | {' | '.join(heads)} | iSWAP: {iswap}")
     if sum(arm.configuration.pip_installed for arm in arms) > 1:
       lines.append("      (the machine reports one channel count for the instrument, not per arm)")
     return "\n".join(lines)
@@ -829,7 +940,7 @@ class STARDriver:
       )
     await self._create_pipette_resources()
     await self._create_autoload_resource()
-    await self._create_head96_resource()
+    await self._create_head_resources()
 
   async def _create_pipette_resources(self) -> None:
     """Put a resource on the arm for each pipetting channel, where it is.
@@ -877,47 +988,52 @@ class STARDriver:
     for channel in range(len(arm.pipettes.resources)):
       await arm.pipettes.request_stop_disk_z(channel)
 
-  async def _create_head96_resource(self) -> None:
-    """Put the 96-head on the arm it rides, where it is along Y.
+  async def _create_head_resources(self) -> None:
+    """Put each head on the arm it rides, where it is along Y.
 
     A child of the arm's resource rather than of the deck, so it follows the arm in X without
     anything having to keep the two in step. One already on the arm is reused rather than replaced,
     so repeated setups do not duplicate it.
 
     Raises:
-      RuntimeError: If the head's X offset was not read, so where it sits across the arm is
-        unknown.
+      RuntimeError: If a head's X offset was not read, so where it sits across the arm is unknown.
     """
     if self.deck is None:
       return
-    arm = next((a for a in self.arms if a.head96 is not None), None)
-    if arm is None or arm.head96 is None or arm.resource is None:
-      return
-    c = arm.head96.configuration
-    head = next((child for child in arm.resource.children if child.name == "head96"), None)
-    if head is None:
-      if c.x_offset is None:
-        raise RuntimeError("the 96-head's X offset was not read; have you called `star.setup()`?")
-      head = Resource(
-        name="head96",
-        size_x=c.channel_array_size_x,
-        size_y=c.channel_array_size_y,
-        size_z=c.body_size_z,
-        category="head96",
-        model="hamilton_star_head96",
-      )
-      # Channel A1 sits `x_offset` left of the carriage centre, and the arm is located by its own
-      # left edge, so A1 lands that far left of the arm's centre. Y is set from the drive below.
-      arm.resource.assign_child_resource(
-        head, location=Coordinate(arm.resource.get_absolute_size_x() / 2 - c.x_offset, 0.0, 0.0)
-      )
-    arm.head96.resource = head
-    # Asking where it is records it, as the arm's and the sled's reads do.
-    await arm.head96.request_y_position()
-
-  async def _create_head384_resource(self) -> None:
-    """Put the 384-head on the arm it rides. Not yet written."""
-    raise NotImplementedError("modelling the 384-head is not implemented yet")
+    for arm in self.arms:
+      if arm.resource is None:
+        continue
+      for head, name, label in (
+        (arm.head96, "head96", "96-head"),
+        (arm.head384, "head384", "384-head"),
+      ):
+        if head is None:
+          continue
+        c = head.configuration
+        resource = next((child for child in arm.resource.children if child.name == name), None)
+        if resource is None:
+          if c.x_offset is None:
+            raise RuntimeError(
+              f"the {label}'s X offset was not read; have you called `star.setup()`?"
+            )
+          resource = Resource(
+            name=name,
+            size_x=c.channel_array_size_x,
+            size_y=c.channel_array_size_y,
+            size_z=c.body_size_z,
+            category=name,
+            model=f"hamilton_star_{name}",
+          )
+          # Channel A1 sits `x_offset` left of the carriage centre, and the arm is located by its
+          # own left edge, so A1 lands that far left of the arm's centre. Y is set from the drive
+          # below.
+          arm.resource.assign_child_resource(
+            resource,
+            location=Coordinate(arm.resource.get_absolute_size_x() / 2 - c.x_offset, 0.0, 0.0),
+          )
+        head.resource = resource
+        # Asking where it is records it, as the arm's and the sled's reads do.
+        await head.request_y_position()
 
   async def _create_autoload_resource(self) -> None:
     """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.

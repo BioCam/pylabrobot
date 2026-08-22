@@ -61,8 +61,8 @@ MOVING_STEPS = [
   (simulator.SimulatedPipettes, "initialize", "DI channels"),
   (simulator.SimulatedISWAP, "initialize", "FI iSWAP"),
   (simulator.iSWAP, "park", "iSWAP park"),
-  (simulator.SimulatedHead96, "initialize", "EI 96-head"),
-  (simulator.SimulatedHead96, "probe_z_max", "EV 96-head probe and retract"),
+  (simulator._SimulatedHead, "initialize", "EI 96-head"),
+  (simulator._SimulatedHead, "probe_z_max", "EV 96-head probe and retract"),
   (simulator.SimulatedAutoload, "initialize", "II autoload"),
   (simulator.SimulatedAutoload, "park", "autoload park"),
 ]

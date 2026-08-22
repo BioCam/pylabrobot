@@ -11,6 +11,7 @@ from pylabrobot.resources.resource import Resource
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.features.head96 import Head96
+  from pylabrobot.hamilton.star.driver.features.head384 import Head384
   from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
   from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
   from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -120,6 +121,7 @@ class XArm:
     # from this arm's own bits.
     self.pipettes: Optional["Pipettes"] = None
     self.head96: Optional["Head96"] = None
+    self.head384: Optional["Head384"] = None
     self.iswap: Optional["iSWAP"] = None
     self.side = side
 
@@ -187,20 +189,22 @@ class XArm:
     """Take the left side panel out of this arm's travel, if one is fitted.
 
     The drive reports the travel of an unobstructed machine, and a panel is bolted on and off in
-    seconds, so it is declared rather than discovered. What strikes it first is the head, which
-    reaches far in front of the carriage, so an arm carrying one stops while its channel A1 is
-    still clear. Called once setup has read where the head sits, since that is what decides how
-    much travel the panel costs.
+    seconds, so it is declared rather than discovered. What strikes it first is a head, which
+    reaches far in front of the carriage, so an arm carrying one stops while its channel A1
+    is still clear. An arm carrying both stops for whichever needs the most room. Called once setup
+    has read where the heads sit, since that is what decides how much travel the panel costs.
     """
     c = self.configuration
     if not self._driver.left_side_panel_installed or c.x_range is None:
       return
-    if self.head96 is None or self.head96.configuration.x_offset is None:
-      return
     x_min, x_max = c.x_range
-    clear = (
-      self.head96.configuration.min_x_clear_of_left_side_panel + self.head96.configuration.x_offset
-    )
+    clear = x_min
+    for head in (self.head96, self.head384):
+      if head is None or head.configuration.x_offset is None:
+        continue
+      clear = max(
+        clear, head.configuration.min_x_clear_of_left_side_panel + head.configuration.x_offset
+      )
     if clear > x_min:
       logger.debug(
         "left side panel fitted: %s X-arm travel narrowed from %s to %s mm", self.side, x_min, clear
@@ -230,6 +234,55 @@ class XArm:
     parameters: Dict[str, Any] = {f"{self.parameter_prefix}w": f"{current_limit:01}"}
     return await self._driver.send_command(
       module="X0", command="XI" if self.side == "left" else "SI", **parameters
+    )
+
+  # ----------------------------------------
+  # Movement
+  # ----------------------------------------
+
+  def _check_reachable(self, x: float) -> None:
+    """Raise if `x` is outside this arm's travel range.
+
+    `x` is the arm's position at its reference point - its center on a dual-rail arm, its right
+    edge on a single-rail arm - so the bound is that point's travel, not the wider workspace the
+    arm reaches around it.
+
+    Args:
+      x: target X position in mm.
+
+    Raises:
+      RuntimeError: If the arm's geometry was not resolved.
+      ValueError: If `x` is outside the travel range.
+    """
+    x_range = self.configuration.x_range
+    if x_range is None:
+      raise RuntimeError(f"{self.side} X-arm geometry not resolved")
+    x_min, x_max = x_range
+    if not x_min <= x <= x_max:
+      raise ValueError(f"{self.side} X-arm x={x}mm is outside its travel range [{x_min}, {x_max}].")
+
+  @property
+  def reference_anchor(self) -> Literal["l", "c", "r"]:
+    """Where along its width this arm's x refers to, as a resource anchor: the centre of a
+    dual-rail arm, the right edge of a single-rail one."""
+    return "c" if self.configuration.reference_point == "center" else "r"
+
+  def update_location_by_reference_point(self, x: float) -> None:
+    """Record where this arm is on the resource that models it.
+
+    The machine positions the arm by its reference point - the centre of a dual-rail arm, the right
+    edge of a single-rail one - while a resource is located by its left front bottom corner, so the
+    two differ by the arm's own anchor. Does nothing when the driver was given no deck, and so has
+    nothing to model.
+
+    Args:
+      x: where the reference point is now, in mm.
+    """
+    if self.resource is None or self.resource.location is None:
+      return
+    anchor = self.resource.get_anchor(x=self.reference_anchor)
+    self.resource.location = Coordinate(
+      x - anchor.x, self.resource.location.y, self.resource.location.z
     )
 
   # -- x motion --------------------------------------------------------------
@@ -341,30 +394,6 @@ class XArm:
     )
     return resp
 
-  @property
-  def reference_anchor(self) -> Literal["l", "c", "r"]:
-    """Where along its width this arm's x refers to, as a resource anchor: the centre of a
-    dual-rail arm, the right edge of a single-rail one."""
-    return "c" if self.configuration.reference_point == "center" else "r"
-
-  def update_location_by_reference_point(self, x: float) -> None:
-    """Record where this arm is on the resource that models it.
-
-    The machine positions the arm by its reference point - the centre of a dual-rail arm, the right
-    edge of a single-rail one - while a resource is located by its left front bottom corner, so the
-    two differ by the arm's own anchor. Does nothing when the driver was given no deck, and so has
-    nothing to model.
-
-    Args:
-      x: where the reference point is now, in mm.
-    """
-    if self.resource is None or self.resource.location is None:
-      return
-    anchor = self.resource.get_anchor(x=self.reference_anchor)
-    self.resource.location = Coordinate(
-      x - anchor.x, self.resource.location.y, self.resource.location.z
-    )
-
   async def move_x_relative(
     self,
     distance: float,
@@ -402,24 +431,3 @@ class XArm:
     return await self._driver.send_command(
       module="X0", command="XO" if self.side == "left" else "SO"
     )
-
-  def _check_reachable(self, x: float) -> None:
-    """Raise if `x` is outside this arm's travel range.
-
-    `x` is the arm's position at its reference point - its center on a dual-rail arm, its right
-    edge on a single-rail arm - so the bound is that point's travel, not the wider workspace the
-    arm reaches around it.
-
-    Args:
-      x: target X position in mm.
-
-    Raises:
-      RuntimeError: If the arm's geometry was not resolved.
-      ValueError: If `x` is outside the travel range.
-    """
-    x_range = self.configuration.x_range
-    if x_range is None:
-      raise RuntimeError(f"{self.side} X-arm geometry not resolved")
-    x_min, x_max = x_range
-    if not x_min <= x <= x_max:
-      raise ValueError(f"{self.side} X-arm x={x}mm is outside its travel range [{x_min}, {x_max}].")

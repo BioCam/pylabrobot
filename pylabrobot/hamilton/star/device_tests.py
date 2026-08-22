@@ -60,7 +60,15 @@ class TestCapabilities(unittest.IsolatedAsyncioTestCase):
   async def test_reads_through_to_the_driver(self):
     star = STAR(simulation=True)
     await star.setup()
-    for name in ("pipettes", "head96", "iswap", "autoload", "left_x_arm", "right_x_arm"):
+    for name in (
+      "pipettes",
+      "head96",
+      "head384",
+      "iswap",
+      "autoload",
+      "left_x_arm",
+      "right_x_arm",
+    ):
       self.assertIs(getattr(star, name), getattr(star.driver, name), name)
 
   async def test_absent_capabilities_are_none(self):
@@ -78,5 +86,5 @@ class TestCapabilities(unittest.IsolatedAsyncioTestCase):
       deck=STARDeck(), driver=STARSimulationDriver(configuration=bare, deck=STARDeck())
     )
     await star.setup()
-    for name in ("pipettes", "head96", "autoload", "right_x_arm", "front_cover"):
+    for name in ("pipettes", "head96", "head384", "autoload", "right_x_arm", "front_cover"):
       self.assertIsNone(getattr(star, name), name)
