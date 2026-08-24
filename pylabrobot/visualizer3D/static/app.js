@@ -151,6 +151,80 @@ controls.enableDamping = true;
 controls.addEventListener("change", invalidate);
 controls.dampingFactor = 0.12;
 
+// A mouse has no second finger and a laptop has no middle button, so panning is bound to whichever
+// each one has. Out of the box the middle button dollies, which the wheel already does.
+controls.mouseButtons = {
+  LEFT: THREE.MOUSE.ROTATE,
+  MIDDLE: THREE.MOUSE.PAN,
+  RIGHT: THREE.MOUSE.PAN,
+};
+
+// ---------------------------------------------------------------- two-finger pan
+
+// A two-finger swipe is not a touch as far as the page is concerned: it arrives as the same `wheel`
+// event a mouse sends, and nothing says which device sent it. OrbitControls does not try to tell
+// them apart, so every swipe read as a zoom and a trackpad could not pan at all.
+const WHEEL_NOTCH = 120; // one notch, in the units of the pre-standard `wheelDelta`
+const WHEEL_NOTCH_PX = 50; // fallback threshold, for browsers reporting no `wheelDelta`
+const GESTURE_GAP_MS = 120;
+
+let gestureEndsAt = 0;
+let gesturePans = false;
+
+function looksLikeTrackpad(event) {
+  if (event.deltaMode !== 0) return false; // lines and pages are only ever reported by a wheel
+  if (event.deltaX !== 0) return true; // no wheel has a horizontal axis to report
+  // `deltaY` cannot separate them on macOS, where it is the wheel that gets accelerated: one notch
+  // ramps 4, 10, 42, 208 and arrives fractional, while a swipe stays in whole single digits.
+  // `wheelDelta` survives that - a notch is a whole multiple of 120 in it however `deltaY` was
+  // scaled, and a swipe reports three times its own delta.
+  const legacy = Math.abs(event.wheelDeltaY ?? event.wheelDelta ?? 0);
+  if (legacy > 0) return legacy % WHEEL_NOTCH !== 0;
+  return Math.abs(event.deltaY) < WHEEL_NOTCH_PX;
+}
+
+// Once per gesture, not once per event: a swipe's momentum tail decays to deltas no wheel would
+// send, and re-reading each event would flip from panning to zooming mid-stroke.
+function wheelPans(event) {
+  const now = performance.now();
+  const fresh = now > gestureEndsAt;
+  gestureEndsAt = now + GESTURE_GAP_MS;
+  if (event.ctrlKey) return (gesturePans = false); // a pinch is a zoom, whatever came before it
+  if (fresh) gesturePans = looksLikeTrackpad(event);
+  return gesturePans;
+}
+
+const panRight = new THREE.Vector3();
+const panUp = new THREE.Vector3();
+
+// Slide the view without turning it: camera and target move by the same vector, so the angle
+// between them is untouched.
+function panByPixels(dx, dy) {
+  const perPixel = mmPerPixel();
+  if (!Number.isFinite(perPixel) || perPixel <= 0) return;
+  // Columns 0 and 1 of the camera's matrix are screen right and screen up, in world space. Moving
+  // against the scroll is what makes the scene follow the fingers.
+  panRight.setFromMatrixColumn(camera.matrix, 0).multiplyScalar(dx * perPixel);
+  panUp.setFromMatrixColumn(camera.matrix, 1).multiplyScalar(-dy * perPixel);
+  panRight.add(panUp);
+  camera.position.add(panRight);
+  controls.target.add(panRight);
+  controls.update();
+}
+
+// On the viewport rather than the canvas inside it, so a swipe can be stopped before OrbitControls
+// sees it and zooms.
+viewportEl.addEventListener(
+  "wheel",
+  (event) => {
+    if (!wheelPans(event)) return;
+    event.preventDefault();
+    event.stopPropagation();
+    panByPixels(event.deltaX, event.deltaY);
+  },
+  { capture: true, passive: false },
+);
+
 view.add(new THREE.HemisphereLight(0xffffff, 0xc8d0d4, 1.1));
 const keyLight = new THREE.DirectionalLight(0xffffff, 0.9);
 keyLight.position.set(-0.5, -1, 1.3);
@@ -2232,6 +2306,14 @@ function atBoundary(surface) {
     const m = world.matrices[index].elements;
     return [m[12], m[13], m[14]];
   },
+  // Where the view is looking from and at. Panning moves both by the same amount and zooming moves
+  // only the first, which is how the two are told apart from outside the page.
+  camera: () => ({
+    from: camera.position.toArray(),
+    at: controls.target.toArray(),
+    distance: camera.position.distanceTo(controls.target),
+    zoom: camera.zoom,
+  }),
   timings: () => timings,
   detail: () =>
     meshes.map((e) => ({
