@@ -62,9 +62,13 @@ class HeadConfiguration:
   module: str
   retract_command: str
   initialize_command: str
-  initialize_y_parameter: str
-  initialize_z_parameter: str
-  initialize_z_end_parameter: str
+  tip_presence_command: str
+  position_command: str
+  # What the master's commands for this head call its Y, its Z, and the height it leaves the head
+  # at. Shared by the commands that move it and by the query that reports where it is.
+  y_parameter: str
+  z_parameter: str
+  z_end_parameter: str
   x_offset_parameter: str
   head_types: Dict[int, str]
   """What each head-type code means."""
@@ -553,9 +557,9 @@ class Head:
     parameters: Dict[str, Any] = {
       "xs": f"{abs(round(tip_discard_location.x * 10)):05}",
       "xd": 0 if tip_discard_location.x >= 0 else 1,
-      self.configuration.initialize_y_parameter: f"{abs(round(tip_discard_location.y * 10)):04}",
-      self.configuration.initialize_z_parameter: f"{round(tip_discard_location.z * 10):04}",
-      self.configuration.initialize_z_end_parameter: f"{round(z_position_at_the_command_end * 10):04}",
+      self.configuration.y_parameter: f"{abs(round(tip_discard_location.y * 10)):04}",
+      self.configuration.z_parameter: f"{round(tip_discard_location.z * 10):04}",
+      self.configuration.z_end_parameter: f"{round(z_position_at_the_command_end * 10):04}",
     }
     return await self._driver.send_command(
       module="C0",
@@ -567,6 +571,67 @@ class Head:
   # ----------------------------------------
   # Movement
   # ----------------------------------------
+
+  # -- tips --------------------------------------------------------------------------------------
+
+  async def request_tip_presence(self) -> bool:
+    """Measure whether the head is carrying tips.
+
+    One bit for the whole head: the instrument counts tips as a rack, not as channels, so it can
+    say that some are mounted and never which. A model that tracks them per channel is finer than
+    anything this can confirm, and this is what it has to be reconciled against.
+
+    Returns:
+      Whether the head reports tips mounted.
+    """
+    command = self.configuration.tip_presence_command
+    field = command.lower()
+    resp = await self._driver.send_command(module="C0", command=command, fmt=f"{field}#")
+    return cast(int, resp[field]) == 1
+
+  async def request_position(self) -> Coordinate:
+    """Measure where head channel A1 is, with whatever it carries taken into account.
+
+    The master answers with the tip bottom rather than the drive's own reference, so with tips on
+    this reads lower than `request_z_position` by however far they stand proud of the head. With
+    none on, the two agree. Nothing is recorded: `request_z_position` is what the model follows,
+    and this is the reading it is checked against.
+
+    Returns:
+      Where channel A1 is, in deck mm, at the bottom of whatever is mounted.
+    """
+    c = self.configuration
+    resp = await self._driver.send_command(
+      module="C0",
+      command=c.position_command,
+      fmt=f"xs#####xd#{c.y_parameter}####{c.z_parameter}####",
+    )
+    x = cast(int, resp["xs"]) / 10
+    return Coordinate(
+      x=x if resp["xd"] == 0 else -x,
+      y=cast(int, resp[c.y_parameter]) / 10,
+      z=cast(int, resp[c.z_parameter]) / 10,
+    )
+
+  async def request_tip_overhang(self) -> float:
+    """Measure how far the tips the head carries stand below its own reference point.
+
+    Both readings are of the same head at the same moment, so the difference is the overhang
+    without anything having to move: `request_z_position` reports the head's lowest fixed feature,
+    `request_position` reports the bottom of what is mounted on it. This is what a Z target has to
+    be offset by for the tip end, rather than the head, to land where it is wanted.
+
+    Returns:
+      The overhang in mm. Legacy's tip length is this plus the tip's fitting depth.
+
+    Raises:
+      RuntimeError: If the head is carrying no tips, so there is nothing to measure.
+    """
+    if not await self.request_tip_presence():
+      raise RuntimeError("the head reports no tips mounted, so there is no overhang to measure")
+    reference = await self.request_z_position()
+    tip_bottom = (await self.request_position()).z
+    return round(reference - tip_bottom, 2)
 
   # -- x position, carried by the arm the head rides ---------------------------------------------
 

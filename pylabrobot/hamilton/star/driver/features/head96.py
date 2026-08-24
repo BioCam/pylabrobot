@@ -31,9 +31,11 @@ class Head96Configuration(HeadConfiguration):
   module: str = "H0"
   retract_command: str = "EV"
   initialize_command: str = "EI"
-  initialize_y_parameter: str = "yh"
-  initialize_z_parameter: str = "za"
-  initialize_z_end_parameter: str = "ze"
+  tip_presence_command: str = "QH"
+  position_command: str = "QI"
+  y_parameter: str = "yh"
+  z_parameter: str = "za"
+  z_end_parameter: str = "ze"
   x_offset_parameter: str = "kf"
   head_types: Dict[int, str] = field(
     default_factory=lambda: {
@@ -76,6 +78,19 @@ class Head96Configuration(HeadConfiguration):
   # mount tips against it.
   dispensing_drive_position_before_rack_pickup: float = 218.19
 
+  y_increment_floor: int = 6528
+  """The lowest Y the drive accepts, in increments - 102.000 mm exactly.
+
+  Found empirically, not from any document or read: the command's own window starts at 6000, but
+  the drive refuses everything below this as outside its permitted area. Bisecting on a 2021 head
+  put the edge here, with 6527 refused and 6528 accepted.
+
+  It is hardcoded because nothing on the instrument reports it. Every parameter the head and the
+  master will answer for was read - 499 of them - and none carries this value in any encoding, so a
+  head that enforces a different floor has to have it set here. That it lands on a round number of
+  millimetres, where a stored adjustment would land anywhere, is the reason to expect it constant
+  across heads rather than particular to this one."""
+
   z_increment_range_legacy: Tuple[int, int] = (36100, 68500)
   z_increment_range_fm_star: Tuple[int, int] = (24200, 76200)  # increase for FM-STAR
 
@@ -101,13 +116,14 @@ class Head96Configuration(HeadConfiguration):
 
   @property
   def y_increment_range(self) -> Tuple[int, int]:
-    """Y-drive position window in increments; 2013 firmware shifted it from the 2008 range.
+    """Y-drive position window in increments, at channel A1.
 
-    What the command accepts, which is wider than what a given machine allows: a move to the low
-    end of this window was refused as outside the permitted area on a machine whose channels share
-    the arm.
+    The floor is `y_increment_floor` rather than the 6000 the command documents, because the drive
+    refuses everything below it. The 2008 range is as documented and has not been measured.
     """
-    return (6000, 36000) if self.firmware_year >= 2010 else (7000, 36200)
+    if self.firmware_year >= 2010:
+      return (self.y_increment_floor, 36000)
+    return (7000, 36200)
 
   @property
   def y_speed_increment_range(self) -> Tuple[int, int]:

@@ -27,9 +27,11 @@ class Head384Configuration(HeadConfiguration):
   module: str = "D0"
   retract_command: str = "JV"
   initialize_command: str = "JI"
-  initialize_y_parameter: str = "yk"
-  initialize_z_parameter: str = "je"
-  initialize_z_end_parameter: str = "zg"
+  tip_presence_command: str = "QK"
+  position_command: str = "QJ"
+  y_parameter: str = "yk"
+  z_parameter: str = "je"
+  z_end_parameter: str = "zg"
   x_offset_parameter: str = "kd"
   head_types: Dict[int, str] = field(
     default_factory=lambda: {
