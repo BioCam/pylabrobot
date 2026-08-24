@@ -859,6 +859,27 @@ function updateDetail() {
 // free view goes back to depth testing, with the enclosures translucent so you can see inside.
 let axisAligned = null;
 
+// What a resource stands on, in facility mm, and then how deep it sits in the tree. Depth testing is
+// off in an axis view, so what paints last is what shows, and nesting alone decided that - which put
+// a well 100 mm up over a 96-head 400 mm up, because the well sat one level deeper. Height leads
+// now; nesting only separates things standing at the same level, where a parent still paints first.
+//
+// Where a resource stands rather than how high it reaches: a shell is as tall as everything it
+// holds, so reaching highest would have the facility paint over its own contents.
+const PAINT_LEVEL = 100;
+
+function paintOrderOf(index) {
+  return world.matrices[index].elements[14] * PAINT_LEVEL + treeDepth(index) * 2;
+}
+
+// One mesh carries every instance of a model, so they share an order: the highest of them, since
+// that is the one that covering would be wrong.
+function paintOrder(entry) {
+  let order = -Infinity;
+  for (const index of entry.instances) order = Math.max(order, paintOrderOf(index));
+  return order;
+}
+
 function setRenderMode(painter) {
   for (const entry of meshes) {
     const material = entry.mesh.material;
@@ -877,13 +898,14 @@ function setRenderMode(painter) {
       material.depthTest = false;
       material.depthWrite = false;
       material.visible = !moves;
-      entry.mesh.renderOrder = moves ? 500 : entry.depth * 2;
+      const order = paintOrder(entry);
+      entry.mesh.renderOrder = order;
       // What is inside a vessel, and the tip standing in it, paint after its rim.
       for (const overlay of entry.overlays ?? []) {
         if (overlay.userData.flat) overlay.material = overlay.userData.flat;
         overlay.material.depthTest = false;
         overlay.material.depthWrite = false;
-        overlay.renderOrder = entry.depth * 2 + 1;
+        overlay.renderOrder = order + 1;
         overlay.material.needsUpdate = true;
       }
     } else {
@@ -931,7 +953,7 @@ function setRenderMode(painter) {
     line.material.opacity = painter ? 1 : line.userData.baseOpacity;
     line.material.linewidth = painter ? EDGE_WIDTH_FLAT : EDGE_WIDTH_3D;
     line.material.color.set(painter ? FLAT_EDGE : line.userData.baseColor);
-    line.renderOrder = painter ? treeDepth(index) * 2 + 1 : 0;
+    line.renderOrder = painter ? paintOrderOf(index) + 1 : 0;
     const wanted = painter ? line.userData.footprintGeometry : line.userData.boxGeometry;
     if (wanted && line.geometry !== wanted) line.geometry = wanted;
     line.material.needsUpdate = true;
