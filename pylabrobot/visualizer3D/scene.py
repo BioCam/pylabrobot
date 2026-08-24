@@ -38,6 +38,17 @@ DECLARED_FIELDS = ("reference_point", "window", "mesh")
 RESOURCE_LINK = "<resource>"
 
 
+def _declared(value: Any) -> Any:
+  """A declared field as JSON.
+
+  Read straight off the resource rather than out of `serialize()`, so a field may still be a live
+  object - a pipette states its reference point as a `Coordinate` where an arm states one as a word.
+  Anything that knows its own serialized form is asked for it.
+  """
+  serialize = getattr(value, "serialize", None)
+  return serialize() if callable(serialize) else value
+
+
 def _model_of(data: Dict[str, Any], names: frozenset) -> Dict[str, Any]:
   """The kind-defining part of a serialized resource, with every identity removed.
 
@@ -249,7 +260,7 @@ def build_scene(
     data = resource.serialize()
     data.pop("children", None)
     declared = {
-      field: getattr(resource, field)
+      field: _declared(getattr(resource, field))
       for field in DECLARED_FIELDS
       if getattr(resource, field, None) is not None
     }
