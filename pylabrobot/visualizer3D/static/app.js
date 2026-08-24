@@ -49,6 +49,7 @@ import {
   REFERENCE_LINE,
   REFERENCE_WIDTH,
   REFERENCE_DROP,
+  ARM_REFERENCE_OPACITY,
 } from "./constants.js";
 import { initGif } from "./gif.js";
 import { initCoords } from "./coords.js";
@@ -517,7 +518,7 @@ function buildArms() {
     const line = new THREE.Mesh(
       new THREE.PlaneGeometry(REFERENCE_WIDTH, sy),
       new THREE.MeshBasicMaterial({
-        color: REFERENCE_LINE, transparent: true, opacity: 0.7, depthTest: false,
+        color: REFERENCE_LINE, transparent: true, opacity: ARM_REFERENCE_OPACITY, depthTest: false,
       })
     );
     line.position.set(offset, sy / 2, -REFERENCE_DROP);
@@ -941,10 +942,18 @@ function setRenderMode(painter) {
     arm.outline.material.depthTest = !painter;
     arm.outline.material.linewidth = painter ? ARM_EDGE_WIDTH_FLAT : ARM_EDGE_WIDTH_3D;
     arm.outline.material.needsUpdate = true;
-    // The reference line lies under the carriage, so in a 3D view the shafts hanging off it stand
-    // in front and have to hide it. Only in an axis view, where nothing is in front of anything,
-    // does it paint through regardless.
+    // The reference line lies under the carriage, so in a 3D view the channels hanging off it stand
+    // in front and have to hide it - but only those, not the deck it is well above.
+    //
+    // A transparent material always draws after every opaque one, whatever its render order, so as
+    // long as the line was transparent it could only be wholly in front or wholly behind. Opaque and
+    // drawn first, it lays down its own depth: what is nearer covers it, what is further fails
+    // against it and stays behind. In an axis view nothing is in front of anything, so there it goes
+    // back to painting through, under the carriage it marks.
+    arm.line.material.transparent = painter;
+    arm.line.material.opacity = painter ? ARM_REFERENCE_OPACITY : 1;
     arm.line.material.depthTest = !painter;
+    arm.line.renderOrder = painter ? 490 : -1;
     arm.line.material.needsUpdate = true;
   }
 

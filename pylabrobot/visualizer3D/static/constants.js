@@ -108,4 +108,5 @@ export const REFERENCE_LINE = 0x00e5ff;
 // carriage.
 export const REFERENCE_WIDTH = 4.2; // mm
 export const REFERENCE_DROP = 2; // mm below the arm's underside
+export const ARM_REFERENCE_OPACITY = 0.7;
 export const PROVENANCE_COLOR = { measured: 0x198754, derived: 0xd8a200, unavailable: 0xb02a37 };
