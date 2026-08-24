@@ -291,12 +291,12 @@ function labelSprite(text, color = GRID_LABEL, sizeMm = GRID_LABEL_MM) {
   return label;
 }
 
-// Where along its width the machine's x refers to. Declared by the resource, so the viewer needs
-// no knowledge of rail types: a dual-rail arm is positioned by its centre, a single-rail one by
-// its right edge, and the line lands in the right place either way.
+// Where the machine's x refers to, from the resource's own origin. Declared by the resource, so the
+// viewer needs no knowledge of rail types: a dual-rail arm reports its centre, a single-rail one its
+// right edge, and the line lands in the right place either way. Half the width when undeclared.
 function referenceOffset(model) {
   const [sx] = sizeOf(model);
-  return model.reference_point === "right" ? sx : sx / 2;
+  return model.reference_point?.x ?? sx / 2;
 }
 
 // Geometry a resource declared for itself, drawn in place of its box.

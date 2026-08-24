@@ -118,15 +118,20 @@ def declare_channel_access(star) -> None:
   x_from = max(0.0, low)
   x_to = min(star.deck.get_absolute_size_x(), high)
 
-  # Where along the arm's width the machine's x refers to: the centre of a dual-rail arm, the right
-  # edge of a single-rail one. The X-arm tracker branch serializes this on the resource; until that
-  # lands it is copied off the driver's configuration here.
+  # Where the machine's x refers to, as a point from the arm's own origin: the centre of a dual-rail
+  # arm, the right edge of a single-rail one. The driver names it with a word; a resource states it
+  # as a coordinate, the way a pipette states the point its drives report. The X-arm tracker branch
+  # serializes this on the resource; until that lands it is derived off the configuration here.
   if star.x_arm.resource is not None:
-    star.x_arm.resource.reference_point = star.x_arm.configuration.reference_point
+    anchor = star.x_arm.configuration.reference_point
+    width = star.x_arm.resource.get_absolute_size_x()
+    star.x_arm.resource.reference_point = Coordinate(
+      width if anchor == "right" else width / 2, 0, 0
+    )
 
     # The opening through the carriage: 185 mm wide, centred on the arm, which on a 354 mm arm
     # puts it at 84.5 .. 269.5.
-    if star.x_arm.configuration.reference_point == "center":
+    if anchor == "center":
       star.x_arm.resource.window = {"width": 185.0, "inset_y": 20.0}
 
   waste_block = next((child for child in star.deck.children if child.name == "waste_block"), None)
