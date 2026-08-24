@@ -81,15 +81,14 @@ SIMULATED_PIPETTE = PipetteConfiguration(
 # The 96-head this machine has, as the autoload beside it: what it answers about itself, read off a
 # real instrument. Discovery fills the capability's own configuration from these, as on a machine.
 SIMULATED_HEAD96 = Head96Configuration(
+  # Resolves the windows and defaults this head derives, so it has to know its own.
+  firmware_version=SIMULATED_FIRMWARE["head96"],
+  firmware_date=parse_firmware_version_date(SIMULATED_FIRMWARE["head96"]),
   head_type="96 head II",
   x_offset=368.2,
   supports_clot_monitoring_clld=False,
   stop_disc_type="core_ii",
   instrument_type="legacy",
-  y_drive_speed_default=390.62,
-  y_drive_acceleration_default=546.88,
-  z_drive_speed_default=85.0,
-  z_drive_acceleration_default=400.0,
 )
 
 # Where its Z drive comes to rest when the firmware retracts it, in mm. Not a device fact but a
@@ -99,14 +98,12 @@ SIMULATED_HEAD96_Z_SAFETY = 336.97
 # The 384-head a machine configured for one has. Unlike the 96-head above, none of this is read off
 # an instrument: the offset and the drive defaults are the ones the drives document.
 SIMULATED_HEAD384 = Head384Configuration(
+  firmware_version=SIMULATED_FIRMWARE["head384"],
+  firmware_date=parse_firmware_version_date(SIMULATED_FIRMWARE["head384"]),
   head_type="High volume head",
   x_offset=260.0,
   supports_clot_monitoring_clld=False,
   supports_lld_absolute_threshold_check=False,
-  y_drive_speed_default=312.5,
-  y_drive_acceleration_default=500.0,
-  z_drive_speed_default=85.0,
-  z_drive_acceleration_default=400.0,
 )
 
 # Where its Z drive rests after a retract. No unit has been probed, so this is the ceiling the drive
@@ -394,6 +391,19 @@ class SimulatedHead96(_SimulatedHead, Head96):
       "0" if head.stop_disc_type == "core_i" else "1",
       "0" if head.instrument_type == "legacy" else "1",
     ] + ["0"] * 7
+
+  async def request_drive_parameter(self, parameter: str) -> float:
+    # No register to read, so it answers with what this head's firmware documents.
+    head = self._declared
+    if parameter == "dv":
+      return head.dispensing_drive_speed_default
+    if parameter == "dr":
+      return head.dispensing_drive_acceleration_default
+    if parameter == "sv":
+      return head.squeezer_drive_speed_default
+    if parameter == "sr":
+      return head.squeezer_drive_acceleration_default
+    return await super().request_drive_parameter(parameter)
 
 
 class SimulatedHead384(_SimulatedHead, Head384):

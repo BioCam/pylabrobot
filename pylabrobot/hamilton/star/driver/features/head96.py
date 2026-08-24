@@ -45,12 +45,20 @@ class Head96Configuration(HeadConfiguration):
       3: "96 head TADM",
     }
   )
+  # The 2013-or-later widths. A 2008 head writes its accelerations narrower, and
+  # `_apply_firmware_generation` swaps these for that head's.
   drive_parameters: Dict[str, int] = field(
-    default_factory=lambda: {"yv": 5, "yr": 5, "zv": 5, "zr": 6}
+    default_factory=lambda: {"yv": 5, "yr": 5, "zv": 5, "zr": 6, "dv": 5, "dr": 6, "sv": 5, "sr": 6}
   )
   # The generation the dispensing and squeezer resolutions below were taken from. A head older
-  # than this has different ones, and nothing here resolves them per generation.
+  # than this has different ones, and `_apply_firmware_generation` resolves them.
   first_documented_firmware_year: int = 2010
+
+  # As on the base: what the head reported, standing in front of the derived values below.
+  dispensing_drive_speed_firmware_reported: Optional[float] = None
+  dispensing_drive_acceleration_firmware_reported: Optional[float] = None
+  squeezer_drive_speed_firmware_reported: Optional[float] = None
+  squeezer_drive_acceleration_firmware_reported: Optional[float] = None
 
   stop_disc_type: Optional[StopDiscType] = None
   instrument_type: Optional[InstrumentType] = None
@@ -160,6 +168,8 @@ class Head96Configuration(HeadConfiguration):
   @property
   def dispensing_drive_speed_default(self) -> float:
     """Dispensing-drive default speed (uL/s); constant across firmware."""
+    if self.dispensing_drive_speed_firmware_reported is not None:
+      return self.dispensing_drive_speed_firmware_reported
     return 261.1
 
   @property
@@ -174,18 +184,24 @@ class Head96Configuration(HeadConfiguration):
   @property
   def dispensing_drive_acceleration_default(self) -> float:
     """Dispensing-drive default acceleration (uL/s2); 2013 firmware raised it."""
+    if self.dispensing_drive_acceleration_firmware_reported is not None:
+      return self.dispensing_drive_acceleration_firmware_reported
     increments = 900000 if self.firmware_year >= 2010 else 150000
     return self.dispensing_drive_increments_to_uL(increments)
 
   @property
   def squeezer_drive_speed_default(self) -> float:
     """Squeezer-drive default speed (mm/s); 2013 firmware raised it."""
+    if self.squeezer_drive_speed_firmware_reported is not None:
+      return self.squeezer_drive_speed_firmware_reported
     increments = 76000 if self.firmware_year >= 2010 else 16000
     return self.squeezer_drive_increments_to_mm(increments)
 
   @property
   def squeezer_drive_acceleration_default(self) -> float:
     """Squeezer-drive default acceleration (mm/s2); 2013 firmware raised it."""
+    if self.squeezer_drive_acceleration_firmware_reported is not None:
+      return self.squeezer_drive_acceleration_firmware_reported
     increments = 300000 if self.firmware_year >= 2010 else 100000
     return self.squeezer_drive_increments_to_mm(increments)
 
@@ -212,6 +228,29 @@ class Head96(Head):
   # ----------------------------------------
 
   # -- discovery ---------------------------------------------------------------------------------
+
+  def _apply_firmware_generation(self) -> None:
+    """Put the pre-2013 encodings in place on a head that runs them.
+
+    Those heads count every drive's acceleration in thousands of increments per second squared and
+    write it in a narrower field; from 2013 the same parameter is single increments in a wider one.
+    Nothing else about the head announces which it is, so the firmware date decides.
+    """
+    c = self.configuration
+    if c.firmware_year >= 2010:
+      return
+    c.y_drive_acceleration_mm_per_increment = c.y_drive_mm_per_increment * 1000
+    c.z_drive_acceleration_mm_per_increment = c.z_drive_mm_per_increment * 1000
+    c.drive_parameters = {"yv": 5, "yr": 3, "zv": 5, "zr": 3, "dv": 5, "dr": 4, "sv": 5, "sr": 3}
+
+  async def discover(self):
+    """Read what head this is, then take its dispensing and squeezer defaults from the head."""
+    await super().discover()
+    c = self.configuration
+    c.dispensing_drive_speed_firmware_reported = await self._reported_drive_parameter("dv")
+    c.dispensing_drive_acceleration_firmware_reported = await self._reported_drive_parameter("dr")
+    c.squeezer_drive_speed_firmware_reported = await self._reported_drive_parameter("sv")
+    c.squeezer_drive_acceleration_firmware_reported = await self._reported_drive_parameter("sr")
 
   def _record_hardware(self, hardware: List[str]) -> None:
     """Record the stop disc and instrument type this head reports.

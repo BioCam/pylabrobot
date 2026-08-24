@@ -138,12 +138,19 @@ class HeadConfiguration:
   z_drive_current_limit_default: int = 15
   current_limit_range: Tuple[int, int] = (0, 15)
 
-  # Per-drive speed and acceleration, read off the machine at setup, so a run can override
-  # them from what the machine currently holds.
-  y_drive_speed_default: Optional[float] = None
-  y_drive_acceleration_default: Optional[float] = None
-  z_drive_speed_default: Optional[float] = None
-  z_drive_acceleration_default: Optional[float] = None
+  # What each drive starts from, in the increments it is written in. A head that documents
+  # something else states its own.
+  y_speed_increment_default: int = 25000
+  y_acceleration_increment_default: int = 35000
+  z_speed_increment_default: int = 17000
+  z_acceleration_increment_default: int = 80000
+
+  # What the head reported holding, which stands in front of the defaults above. None until
+  # discovery has read it, and on a simulated machine.
+  y_drive_speed_firmware_reported: Optional[float] = None
+  y_drive_acceleration_firmware_reported: Optional[float] = None
+  z_drive_speed_firmware_reported: Optional[float] = None
+  z_drive_acceleration_firmware_reported: Optional[float] = None
 
   # -- what each head supplies -------------------------------------------------------------------
 
@@ -176,6 +183,36 @@ class HeadConfiguration:
   def squeezer_drive_mm_per_increment(self) -> float:
     """How far one increment of the squeezer drive travels, in mm."""
     raise NotImplementedError("a head states how far one squeezer increment travels")
+
+  # -- what each drive starts from, preferring what the head reported over what it documents -----
+
+  @property
+  def y_drive_speed_default(self) -> float:
+    """Y-drive speed a move uses when the caller names none (mm/s)."""
+    if self.y_drive_speed_firmware_reported is not None:
+      return self.y_drive_speed_firmware_reported
+    return self.y_drive_increments_to_mm(self.y_speed_increment_default)
+
+  @property
+  def y_drive_acceleration_default(self) -> float:
+    """Y-drive acceleration a move uses when the caller names none (mm/s2)."""
+    if self.y_drive_acceleration_firmware_reported is not None:
+      return self.y_drive_acceleration_firmware_reported
+    return self.y_drive_acceleration_increments_to_mm(self.y_acceleration_increment_default)
+
+  @property
+  def z_drive_speed_default(self) -> float:
+    """Z-drive speed a move uses when the caller names none (mm/s)."""
+    if self.z_drive_speed_firmware_reported is not None:
+      return self.z_drive_speed_firmware_reported
+    return self.z_drive_increments_to_mm(self.z_speed_increment_default)
+
+  @property
+  def z_drive_acceleration_default(self) -> float:
+    """Z-drive acceleration a move uses when the caller names none (mm/s2)."""
+    if self.z_drive_acceleration_firmware_reported is not None:
+      return self.z_drive_acceleration_firmware_reported
+    return self.z_drive_acceleration_increments_to_mm(self.z_acceleration_increment_default)
 
   # -- the windows the driver works in, from the increments the drives accept --------------------
 
@@ -374,6 +411,13 @@ class Head:
     resp: str = await self._driver.send_command(module=self.configuration.module, command="QU")
     return resp.split("au")[-1].split()
 
+  def _apply_firmware_generation(self) -> None:
+    """Correct whatever depends on which firmware generation this head runs.
+
+    Called once the version is known and before any drive is read, since a generation can change
+    what an increment is worth and how wide a parameter is written.
+    """
+
   def _record_hardware(self, hardware: List[str]) -> None:
     """Record what this head's configuration bytes mean, past the clot-monitoring flag at index 0.
 
@@ -427,6 +471,10 @@ class Head:
       return c.y_drive_acceleration_increments_to_mm(increments)
     if parameter == "zv":
       return c.z_drive_increments_to_mm(increments)
+    if parameter in ("dv", "dr"):
+      return c.dispensing_drive_increments_to_uL(increments)
+    if parameter in ("sv", "sr"):
+      return c.squeezer_drive_increments_to_mm(increments)
     return c.z_drive_acceleration_increments_to_mm(increments)
 
   def _drive_parameter_to_increments(self, parameter: str, value: float) -> int:
@@ -446,6 +494,10 @@ class Head:
       return c.y_drive_acceleration_mm_to_increments(value)
     if parameter == "zv":
       return c.z_drive_mm_to_increments(value)
+    if parameter in ("dv", "dr"):
+      return c.dispensing_drive_uL_to_increments(value)
+    if parameter in ("sv", "sr"):
+      return c.squeezer_drive_mm_to_increments(value)
     return c.z_drive_acceleration_mm_to_increments(value)
 
   async def request_drive_parameter(self, parameter: str) -> float:
@@ -482,11 +534,25 @@ class Head:
     written: Dict[str, Any] = {parameter: f"{increments:0{width}}"}
     await self._driver.send_command(module=self.configuration.module, command="AA", **written)
 
+  async def _reported_drive_parameter(self, parameter: str) -> Optional[float]:
+    """What the head currently holds for one drive parameter, or None if it will not say.
+
+    A head that refuses keeps what its firmware documents rather than failing setup over a default.
+    """
+    try:
+      return await self.request_drive_parameter(parameter)
+    except Exception:
+      logger.warning("the head did not report %s; keeping what its firmware documents", parameter)
+      return None
+
   async def discover(self):
     """Read what head this is and what it can do. Read-only: nothing moves."""
     c = self.configuration
     c.firmware_version, firmware_date = await self.request_firmware_version()
     c.firmware_date = firmware_date
+    # Before anything reads a drive: what a parameter is worth, and how wide it is written, can
+    # depend on which generation this head runs, and the reads below use both.
+    self._apply_firmware_generation()
     if firmware_date.year < self.configuration.first_documented_firmware_year:
       logger.warning(
         "this head reports %s firmware, older than the generation the drive windows and encoder "
@@ -501,11 +567,10 @@ class Head:
     c.head_type = await self.request_head_type()
     c.x_offset = await self.request_x_offset()
 
-    # Seed the drive defaults from what the machine currently holds.
-    c.y_drive_speed_default = await self.request_drive_parameter("yv")
-    c.y_drive_acceleration_default = await self.request_drive_parameter("yr")
-    c.z_drive_speed_default = await self.request_drive_parameter("zv")
-    c.z_drive_acceleration_default = await self.request_drive_parameter("zr")
+    c.y_drive_speed_firmware_reported = await self._reported_drive_parameter("yv")
+    c.y_drive_acceleration_firmware_reported = await self._reported_drive_parameter("yr")
+    c.z_drive_speed_firmware_reported = await self._reported_drive_parameter("zv")
+    c.z_drive_acceleration_firmware_reported = await self._reported_drive_parameter("zr")
 
   def require_tip_discard_location(self, location: Optional[Coordinate]) -> Coordinate:
     """Where tips are to be dropped, falling back to this head's configured trash.
@@ -844,15 +909,12 @@ class Head:
 
     Raises:
       ValueError: If an argument is outside what the drive accepts.
-      RuntimeError: If the head's drive defaults were not read at discovery.
     """
     c = self.configuration
     if speed is None:
       speed = c.y_drive_speed_default
     if acceleration is None:
       acceleration = c.y_drive_acceleration_default
-    if speed is None or acceleration is None:
-      raise RuntimeError("the head's drive defaults were not read; have you called `star.setup()`?")
     if current_limit is None:
       current_limit = c.y_drive_current_limit_default
 
@@ -976,15 +1038,12 @@ class Head:
 
     Raises:
       ValueError: If an argument is outside what the drive accepts.
-      RuntimeError: If the head's drive defaults were not read at discovery.
     """
     c = self.configuration
     if speed is None:
       speed = c.z_drive_speed_default
     if acceleration is None:
       acceleration = c.z_drive_acceleration_default
-    if speed is None or acceleration is None:
-      raise RuntimeError("the head's drive defaults were not read; have you called `star.setup()`?")
     if current_limit is None:
       current_limit = c.z_drive_current_limit_default
 
