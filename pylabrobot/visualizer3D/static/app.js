@@ -537,6 +537,7 @@ function buildArms() {
     arms.push({
       group,
       outline,
+      line,
       index,
       parentMatrix: parent >= 0 ? world.matrices[parent].clone() : new THREE.Matrix4(),
       local: world.local.slice(index * 6, index * 6 + 6),
@@ -918,6 +919,11 @@ function setRenderMode(painter) {
     arm.outline.material.depthTest = !painter;
     arm.outline.material.linewidth = painter ? ARM_EDGE_WIDTH_FLAT : ARM_EDGE_WIDTH_3D;
     arm.outline.material.needsUpdate = true;
+    // The reference line lies under the carriage, so in a 3D view the shafts hanging off it stand
+    // in front and have to hide it. Only in an axis view, where nothing is in front of anything,
+    // does it paint through regardless.
+    arm.line.material.depthTest = !painter;
+    arm.line.material.needsUpdate = true;
   }
 
   for (const [index, line] of edgeOf) {
