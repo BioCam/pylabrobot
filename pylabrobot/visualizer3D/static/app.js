@@ -1052,6 +1052,9 @@ function buildViewHelper() {
 // Unit primitives, shared by every model of the same shape and scaled per instance.
 const BOX = new THREE.BoxGeometry(1, 1, 1);
 const CYL = new THREE.CylinderGeometry(0.5, 0.5, 1, 20).rotateX(Math.PI / 2);
+// Open at both ends. A shaft is a length of tube: the bottom is where a tip goes on and the top is
+// where the channel carries on, so capping either reads as a solid slug hanging off the head.
+const TUBE = new THREE.CylinderGeometry(0.5, 0.5, 1, 20, 1, true).rotateX(Math.PI / 2);
 const CONE = new THREE.ConeGeometry(0.5, 1, 14).rotateX(-Math.PI / 2);
 
 // Above this many instances of one model, outlining each stops being cheap.
@@ -1075,8 +1078,35 @@ function flatVariant(material) {
   return flat;
 }
 
-const geometryFor = (model) =>
-  model.cross_section_type === "circle" || model.category === "tip_spot" ? CYL : BOX;
+function geometryFor(model) {
+  // A shaft is open at both ends; anything else round is a vessel or a spot, which is not.
+  if (model.category === "tip_mounting_shaft") return TUBE;
+  return model.cross_section_type === "circle" || model.category === "tip_spot" ? CYL : BOX;
+}
+
+// The outline a resource drops to in an axis view. Unit-sized and scaled per instance, so there is
+// one of each shape rather than one per model.
+function ringFootprint(corners) {
+  const points = [];
+  for (let corner = 0; corner < corners; corner++) {
+    // Square from the diagonals, circle from a fine enough ring: the same walk either way.
+    const from = ((corner + 0.5) / corners) * Math.PI * 2;
+    const to = ((corner + 1.5) / corners) * Math.PI * 2;
+    const reach = corners === 4 ? Math.SQRT1_2 : 0.5;
+    points.push(
+      Math.cos(from) * reach, Math.sin(from) * reach, -0.5,
+      Math.cos(to) * reach, Math.sin(to) * reach, -0.5
+    );
+  }
+  const geometry = new LineSegmentsGeometry();
+  geometry.setPositions(new Float32Array(points));
+  return geometry;
+}
+
+const SQUARE_FOOTPRINT = ringFootprint(4);
+const ROUND_FOOTPRINT = ringFootprint(20);
+
+const footprintFor = (model) => (geometryFor(model) === BOX ? SQUARE_FOOTPRINT : ROUND_FOOTPRINT);
 const colorFor = (model) => RESOURCE_COLORS[model.category] ?? RESOURCE_COLORS.default;
 // "TipRack" -> "tipracks", as the existing visualizer writes them. Deliberately naive: a count is
 // always in front of it, so "1 plates" reads as a count rather than as a mistake.
@@ -1240,18 +1270,10 @@ function buildMeshes() {
       const edgeGeometry = new LineSegmentsGeometry();
       edgeGeometry.setPositions(boxEdges.getAttribute("position").array);
       boxEdges.dispose();
-      // Looking down an axis, all twelve edges of a box project onto its footprint anyway, and the
-      // verticals collapse to points. Keeping a footprint-only geometry to swap in removes that
-      // redundancy and, more usefully, stops stacked boxes reading as a thicket in a plan view.
-      const footprintGeometry = new LineSegmentsGeometry();
-      footprintGeometry.setPositions(
-        new Float32Array([
-            -0.5, -0.5, -0.5, 0.5, -0.5, -0.5,
-            0.5, -0.5, -0.5, 0.5, 0.5, -0.5,
-            0.5, 0.5, -0.5, -0.5, 0.5, -0.5,
-            -0.5, 0.5, -0.5, -0.5, -0.5, -0.5,
-        ])
-      );
+      // Looking down an axis, every edge projects onto the footprint anyway, and the verticals
+      // collapse to points. Keeping a footprint-only geometry to swap in removes that redundancy
+      // and, more usefully, stops stacked shapes reading as a thicket in a plan view.
+      const footprintGeometry = footprintFor(model);
       const style = structureEdgeStyle(enclosureDepth(instances[0]));
       const edgeMaterial = new THREE.Line2NodeMaterial({
         color: style.color,
