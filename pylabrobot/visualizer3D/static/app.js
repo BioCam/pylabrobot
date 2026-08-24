@@ -599,11 +599,16 @@ function updateArms(delta) {
 // in `world.js`, which has no idea any of this is on screen; this is only the part that is.
 function redraw(indices) {
   for (const at of indices) {
-    const placement = placementOf[at];
-    if (!placement) continue;
     const [sx, sy, sz] = sizeOf(modelOf(at));
-    placeInstance(placement.mesh, placement.slot, world.matrices[at], sx, sy, sz);
-    placement.mesh.instanceMatrix.needsUpdate = true;
+    const placement = placementOf[at];
+    if (placement) {
+      placeInstance(placement.mesh, placement.slot, world.matrices[at], sx, sy, sz);
+      placement.mesh.instanceMatrix.needsUpdate = true;
+    }
+    // An outline is its own object with its own baked matrix, so a move that touched only the
+    // instance left it standing at the old position - a wireframe ghost of whatever rode the arm.
+    const line = edgeOf.get(at);
+    if (line) line.matrix.copy(boxMatrix(world.matrices[at], sx, sy, sz));
   }
 }
 
