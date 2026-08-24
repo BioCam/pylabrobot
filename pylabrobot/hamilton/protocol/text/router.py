@@ -20,7 +20,7 @@ import time
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
-from pylabrobot.hamilton.protocol.text.framing import split_id
+from pylabrobot.hamilton.protocol.text.framing import read_id
 from pylabrobot.io.io import IOBase
 
 logger = logging.getLogger(__name__)
@@ -136,10 +136,9 @@ class ReplyRouter:
     wait: bool = True,
   ) -> Optional[str]:
     """Write a command string exactly as given, reading its id back out of it."""
-    cmd, id_ = split_id(command)
     return await self.send(
-      cmd=cmd,
-      id_=id_,
+      cmd=command,
+      id_=read_id(command),
       write_timeout=write_timeout,
       read_timeout=read_timeout,
       wait=wait,
