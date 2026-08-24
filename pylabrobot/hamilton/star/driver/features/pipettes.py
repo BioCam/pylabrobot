@@ -326,7 +326,11 @@ class Pipettes:
 
     Y and Z only: a channel rides the arm, so its resource is a child of the arm's and follows it
     in X without anything having to record that. A resource is located by its left front bottom
-    corner, so each axis differs from what the drive reports by the channel's own anchor.
+    corner, so each axis differs from what the drive reports by the channel's own reference point.
+
+    That point is the channel's to state, because it is not a corner of the box: the drives report
+    the stop disk, which is the shaft a tip mounts on, and that hangs below the body. A channel that
+    states nothing falls back to its own anchors, which is the same point when it carries no shaft.
 
     Both drives answer in the deck's frame, while a resource's location is measured from its parent
     - the arm, not the deck - so the arm's own position is taken out before either is recorded.
@@ -344,7 +348,9 @@ class Pipettes:
     if resource.location is None or resource.parent is None:
       return
     here, on_the_arm = resource.location, resource.parent.get_location_wrt(deck)
-    anchor = resource.get_anchor(y=CHANNEL_Y_REFERENCE_ANCHOR, z=CHANNEL_Z_REFERENCE_ANCHOR)
+    anchor = getattr(resource, "reference_point", None)
+    if anchor is None:
+      anchor = resource.get_anchor(y=CHANNEL_Y_REFERENCE_ANCHOR, z=CHANNEL_Z_REFERENCE_ANCHOR)
     resource.location = Coordinate(
       here.x,
       here.y if y is None else y - on_the_arm.y - anchor.y,
