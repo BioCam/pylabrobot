@@ -37,10 +37,21 @@ STARPLUS_SIZE_X = 2_163.5
 # everything measured from that origin including the chassis's own geometry. The same reasoning as
 # the autoload's loading tray, which stands in front at a negative y.
 #
-# It is 69.2 mm deeper than the chassis, so aligning their front faces leaves it standing that much
-# proud at the back. That overhang is real in the model; whether it is real on the machine is not
-# something the geometry here can say.
-EXTENSION_HOUSING_SIZE = (265.0, 855.0, 779.0)
+# It is aligned by its TOP and its BACK, not by the bench and the front face: 48.0 mm shorter than
+# the instrument and 6.8 mm shallower, so hanging it flush at the top leaves it clear of the bench,
+# and pushing it flush at the back leaves its front inside the instrument's.
+EXTENSION_HOUSING_SIZE = (265.0, 779.0, 855.0)
+
+# The chassis's own left side panel, which the extension housing REPLACES: the housing has no
+# machine-facing side, so on a machine that has one this panel is not there. Mutually exclusive
+# with `left_extension_housing`, and the reason both are resources rather than part of the chassis.
+# Its y, z and size are the same on all three frames; only its x differs, so each factory passes
+# its own.
+SIDE_PANEL_SIZE = (4.0, 726.0, 682.0)
+SIDE_PANEL_ORIGIN_YZ = (52.8, 180.5)
+STARLET_SIDE_PANEL_X = 5.0
+STAR_SIDE_PANEL_X = 3.5
+STARPLUS_SIDE_PANEL_X = 6.0
 # What it used to be, before there was a part to measure: an unsourced 245.0 that only widened the
 # instrument. Kept as a name because `STAR_with_extension_housing` reads it.
 EXTENSION_HOUSING_SIZE_X = EXTENSION_HOUSING_SIZE[0]
@@ -103,6 +114,7 @@ class STARDevice(Resource):
     size_z: Optional[float] = None,
     extension_housing: bool = False,
     autoload: bool = False,
+    side_panel_x: Optional[float] = None,
     deck_location: Optional[Coordinate] = None,
     model: Optional[str] = None,
   ):
@@ -126,6 +138,9 @@ class STARDevice(Resource):
         front of the chassis, so the instrument's box stays the chassis's own extent. Whether an
         autoload can be DRIVEN is discovered from the machine, through
         `configuration.autoload_installed`.
+      side_panel_x: how far the chassis's left side panel sits from the instrument's left face.
+        Given, and no extension housing fitted, the panel becomes a resource of its own. None
+        leaves it out, which is what a machine whose panel has not been measured gets.
       deck_location: where the deck sits inside it, BEFORE any extension housing. Defaults to the
         instrument's own origin.
       model: which machine this is. Defaults to the class name, which says only that it is a STAR.
@@ -161,8 +176,21 @@ class STARDevice(Resource):
       deck, location=deck_location if deck_location is not None else Coordinate(0, 0, 0)
     )
 
+    if side_panel_x is not None and not extension_housing:
+      self.assign_child_resource(
+        Resource(
+          name="left_side_panel",
+          size_x=SIDE_PANEL_SIZE[0],
+          size_y=SIDE_PANEL_SIZE[1],
+          size_z=SIDE_PANEL_SIZE[2],
+          category="left_side_panel",
+          model="hamilton_star_left_side_panel",
+        ),
+        location=Coordinate(side_panel_x, SIDE_PANEL_ORIGIN_YZ[0], SIDE_PANEL_ORIGIN_YZ[1]),
+      )
+
     if extension_housing:
-      # Front faces flush, standing on the same bench; it reaches further back than the chassis.
+      # To the left, hung so its top and its back are level with the instrument's.
       self.assign_child_resource(
         Resource(
           name="left_extension_housing",
@@ -172,7 +200,11 @@ class STARDevice(Resource):
           category="left_extension_housing",
           model="hamilton_star_left_extension_housing",
         ),
-        location=Coordinate(-EXTENSION_HOUSING_SIZE[0], 0.0, 0.0),
+        location=Coordinate(
+          -EXTENSION_HOUSING_SIZE[0],
+          self.get_absolute_size_y() - EXTENSION_HOUSING_SIZE[1],
+          self.get_absolute_size_z() - EXTENSION_HOUSING_SIZE[2],
+        ),
       )
 
   # -- what the instrument carries ------------------------------------------------------------
@@ -267,6 +299,7 @@ def STAR(
     size_z=size_z,
     extension_housing=extension_housing,
     autoload=autoload,
+    side_panel_x=STAR_SIDE_PANEL_X,
     deck_location=STAR_DECK_LOCATION,
     model=STAR.__name__,
   )
@@ -319,6 +352,7 @@ def STARLet(
     size_z=size_z,
     extension_housing=extension_housing,
     autoload=autoload,
+    side_panel_x=STARLET_SIDE_PANEL_X,
     deck_location=STARLET_DECK_LOCATION,
     model=STARLet.__name__,
   )
@@ -351,6 +385,7 @@ def STARPlus(
     size_z=size_z,
     extension_housing=extension_housing,
     autoload=autoload,
+    side_panel_x=STARPLUS_SIDE_PANEL_X,
     deck_location=STAR_DECK_LOCATION,
     model=STARPlus.__name__,
   )
