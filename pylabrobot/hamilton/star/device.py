@@ -18,16 +18,51 @@ from pylabrobot.resources.resource import Resource
 
 logger = logging.getLogger(__name__)
 
+# How big each instrument is. Measured on the manufacturer's own 3D models of the three frames,
+# with the optional front loader left off - see the factory functions below for what that excludes.
+# The envelope is the hood: it sets the width, the depth at the back and the full height, with the
+# front door setting the depth at the front. Depth and height come out the same on all three frames,
+# which is what says the frames differ in width alone.
+STAR_SIZE_X = 1_667.0
+STARLET_SIZE_X = 1_130.0
+# The left extension housing, which widens the instrument without changing anything else. Not
+# measured: this is the figure the model has always carried, kept until an extended machine is.
+EXTENSION_HOUSING_SIZE_X = 245.0
+MANUAL_SIZE_Y = 785.8
+SIZE_Z = 903.0
+# The loading tray stands 221.2 mm proud of the front face - the manufacturer's models are 1007.0
+# deep with a loader fitted against 785.8 without, on all three frames. That is NOT added to the
+# instrument here: the tray is its own resource, `autoload_loading_tray`, and a resource in front
+# of its parent is exactly what a negative y describes. Adding it would move the instrument origin
+# and with it everything measured from that origin, including the chassis's own geometry.
+AUTOLOAD_TRAY_PROUD_Y = 221.2
+
+# How far behind the instrument's front face the deck resource's origin sits.
+#
+# A carrier lands 63.0 mm behind that origin and is 497.0 mm long, and the deck ends at a full-width
+# cable duct whose front face is 654.8 mm behind the instrument's front face. That face is not what
+# a carrier stops against: it carries a row of stubs, 3.0 mm long, that reach into the back of the
+# carrier to locate it, so the carrier seats 3.0 mm further back than the face alone would allow.
+# Hence 654.8 - 497.0 - 63.0 + 3.0.
+#
+# The duct and the deck's own front edge, 181.3 mm behind the front face, read the same in the CAD
+# master and in the manufacturer's chassis models, and the same on all three frames - so STAR and
+# STARlet share this figure rather than differing as they used to.
+#
+# What this replaces: 116.0 on a STAR and 106.0 on a STARlet, derived as `795 - 119 - 560` and
+# `790 - 124 - 560` from depths that have since been measured. Those drove every carrier 21.2 mm
+# and 11.2 mm respectively into the duct.
+DECK_ORIGIN_Y = 97.8
+
 # Where the deck sits inside the instrument.
 #   x  measured on a 2021 STAR: 210 mm from the left face to the first carrier, which sits at 100
-#   y  the deck origin behind the front face, on the reading that a carrier's back edge meets the
-#      back of the iSWAP area: 795 - 119 - 560 on a STAR, 790 - 124 - 560 on a STARlet. Provisional
+#   y  see `DECK_ORIGIN_Y`
 #   z  the deck work surface sits 100 mm above the instrument origin, which the manual states; this
 #      is the origin's own height above the instrument's base, and is not sourced
-STAR_DECK_LOCATION = Coordinate(110.0, 116.0, 78.5)
+STAR_DECK_LOCATION = Coordinate(110.0, DECK_ORIGIN_Y, 78.5)
 # The STARlet's x is not measured: its chassis leaves the same 119 mm beyond its deck as the STAR's
 # does, so it takes the same value until someone measures one.
-STARLET_DECK_LOCATION = Coordinate(110.0, 106.0, 78.5)
+STARLET_DECK_LOCATION = Coordinate(110.0, DECK_ORIGIN_Y, 78.5)
 
 
 class STARDevice(Resource):
@@ -50,6 +85,8 @@ class STARDevice(Resource):
     size_x: Optional[float] = None,
     size_y: Optional[float] = None,
     size_z: Optional[float] = None,
+    extension_housing: bool = False,
+    autoload: bool = False,
     deck_location: Optional[Coordinate] = None,
     model: Optional[str] = None,
   ):
@@ -61,10 +98,20 @@ class STARDevice(Resource):
         in. Superseded by `driver`, which says exactly what to drive.
       driver: the driver to drive the instrument through.
       name: what to call this instrument in the resource tree.
-      size_x: how wide the instrument is, in mm. Defaults to the deck's own width.
+      size_x: how wide the instrument is, in mm, BEFORE any extension housing. Defaults to the
+        deck's own width.
       size_y: how deep it is, in mm. Defaults to the deck's own depth.
       size_z: how tall it is, in mm. Defaults to the deck's own height.
-      deck_location: where the deck sits inside it. Defaults to the instrument's own origin.
+      extension_housing: whether the left extension housing is fitted. It widens the instrument by
+        `EXTENSION_HOUSING_SIZE_X` and moves the deck that much further in, since the housing is
+        added on the left and the deck keeps its place relative to everything to its right.
+      autoload: whether an autoload is fitted. Recorded on the instrument as `autoload_fitted`,
+        and does NOT change its size: the tray and the sled are their own resources standing in
+        front of the chassis, so the instrument's box stays the chassis's own extent. Whether an
+        autoload can be DRIVEN is discovered from the machine, through
+        `configuration.autoload_installed`.
+      deck_location: where the deck sits inside it, BEFORE any extension housing. Defaults to the
+        instrument's own origin.
       model: which machine this is. Defaults to the class name, which says only that it is a STAR.
 
     Raises:
@@ -76,14 +123,22 @@ class STARDevice(Resource):
     if driver is not None and simulation:
       logger.warning("both a driver and simulation given; driving the driver")
 
+    # Applied here rather than by the caller so that every way of building a machine agrees on what
+    # each option does, and so that `size_x` and `size_y` keep meaning the chassis's own extent.
+    # The housing adds material to the LEFT of the chassis, so it both widens the instrument and
+    # pushes the deck the same distance in. The autoload does not: see `autoload` above.
+    housing = EXTENSION_HOUSING_SIZE_X if extension_housing else 0.0
+
     super().__init__(
       name=name,
-      size_x=deck.get_absolute_size_x() if size_x is None else size_x,
+      size_x=(deck.get_absolute_size_x() if size_x is None else size_x) + housing,
       size_y=deck.get_absolute_size_y() if size_y is None else size_y,
       size_z=deck.get_absolute_size_z() if size_z is None else size_z,
       category="device",
       model=model if model is not None else self.__class__.__name__,
     )
+    self.extension_housing = extension_housing
+    self.autoload_fitted = autoload
 
     self.deck = deck
     self.driver = driver if driver is not None else STARSimulationDriver(deck=deck)
@@ -92,9 +147,8 @@ class STARDevice(Resource):
       logger.warning("the driver was given another deck; modelling into this instrument's instead")
 
     self.driver.deck = deck
-    self.assign_child_resource(
-      deck, location=deck_location if deck_location is not None else Coordinate(0, 0, 0)
-    )
+    seated = deck_location if deck_location is not None else Coordinate(0, 0, 0)
+    self.assign_child_resource(deck, location=seated + Coordinate(housing, 0.0, 0.0))
 
   # -- what the instrument carries ------------------------------------------------------------
   # Read through: the optional ones do not exist until discovery says what is fitted.
@@ -171,9 +225,11 @@ def STAR(
   simulation: bool = False,
   driver: Optional[STARDriver] = None,
   name: str = "Hamilton STAR",
-  size_x: float = 1_664.0,
-  size_y: float = 795.0,
-  size_z: float = 903.0,
+  size_x: float = STAR_SIZE_X,
+  size_y: float = MANUAL_SIZE_Y,
+  size_z: float = SIZE_Z,
+  extension_housing: bool = False,
+  autoload: bool = False,
 ) -> STARDevice:
   """A full-size STAR, on a full-size STAR deck."""
   return STARDevice(
@@ -184,6 +240,8 @@ def STAR(
     size_x=size_x,
     size_y=size_y,
     size_z=size_z,
+    extension_housing=extension_housing,
+    autoload=autoload,
     deck_location=STAR_DECK_LOCATION,
     model=STAR.__name__,
   )
@@ -194,24 +252,23 @@ def STAR_with_extension_housing(
   simulation: bool = False,
   driver: Optional[STARDriver] = None,
   name: str = "Hamilton STAR (left extension housing)",
-  size_x: float = 1_664.0 + 245.0,
-  size_y: float = 795.0,
-  size_z: float = 903.0,
+  size_x: float = STAR_SIZE_X,
+  size_y: float = MANUAL_SIZE_Y,
+  size_z: float = SIZE_Z,
 ) -> STARDevice:
-  """A full-size STAR with the 245 mm extension housing on its left, on a full-size STAR deck.
+  """A full-size STAR with the extension housing on its left, on a full-size STAR deck.
 
-  The housing extends the instrument to the left, so the deck sits that much further into it.
+  The same machine as `STAR(extension_housing=True)`, which is now the way to ask for one.
   """
-  return STARDevice(
-    deck=deck if deck is not None else STARDeck(),
+  return STAR(
+    deck=deck,
     simulation=simulation,
     driver=driver,
     name=name,
     size_x=size_x,
     size_y=size_y,
     size_z=size_z,
-    deck_location=STAR_DECK_LOCATION + Coordinate(245.0, 0.0, 0.0),
-    model=STAR_with_extension_housing.__name__,
+    extension_housing=True,
   )
 
 
@@ -220,9 +277,11 @@ def STARLet(
   simulation: bool = False,
   driver: Optional[STARDriver] = None,
   name: str = "Hamilton STARlet",
-  size_x: float = 1_124.0,
-  size_y: float = 790.0,
-  size_z: float = 903.0,
+  size_x: float = STARLET_SIZE_X,
+  size_y: float = MANUAL_SIZE_Y,
+  size_z: float = SIZE_Z,
+  extension_housing: bool = False,
+  autoload: bool = False,
 ) -> STARDevice:
   """A STARlet, on a STARlet deck."""
   return STARDevice(
@@ -233,6 +292,8 @@ def STARLet(
     size_x=size_x,
     size_y=size_y,
     size_z=size_z,
+    extension_housing=extension_housing,
+    autoload=autoload,
     deck_location=STARLET_DECK_LOCATION,
     model=STARLet.__name__,
   )

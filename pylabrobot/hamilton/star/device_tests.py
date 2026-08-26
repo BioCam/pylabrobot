@@ -3,8 +3,10 @@ import unittest
 from typing import cast
 
 from pylabrobot.hamilton.star.device import (
+  EXTENSION_HOUSING_SIZE_X,
   STAR,
   STAR_DECK_LOCATION,
+  STAR_SIZE_X,
   STAR_with_extension_housing,
   STARDevice,
   STARLet,
@@ -48,9 +50,9 @@ class TestFactories(unittest.IsolatedAsyncioTestCase):
   def test_extension_housing_shifts_the_deck(self):
     """The housing extends the instrument to the left, so the deck sits that much further in."""
     star = STAR_with_extension_housing(simulation=True)
-    self.assertEqual(star.get_absolute_size_x(), 1_664.0 + 245.0)
+    self.assertEqual(star.get_absolute_size_x(), STAR_SIZE_X + EXTENSION_HOUSING_SIZE_X)
     seated = cast(Coordinate, star.deck.location)
-    self.assertEqual(seated.x, STAR_DECK_LOCATION.x + 245.0)
+    self.assertEqual(seated.x, STAR_DECK_LOCATION.x + EXTENSION_HOUSING_SIZE_X)
 
 
 class TestCapabilities(unittest.IsolatedAsyncioTestCase):
