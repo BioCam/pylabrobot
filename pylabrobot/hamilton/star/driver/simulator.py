@@ -14,15 +14,14 @@ import logging
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import (
-  assemble_command,
+  assemble_channel_command,
   parse_firmware_version_date,
 )
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
 from pylabrobot.hamilton.star.driver.features.cover import CoverPosition, FrontCover
 from pylabrobot.hamilton.star.driver.features.head import (
-  HEAD_REFERENCE_ANCHOR,
-  HEAD_Z_REFERENCE_ANCHOR,
+  HEAD_REFERENCE_SHAFT,
   Head,
   HeadConfiguration,
 )
@@ -91,6 +90,11 @@ SIMULATED_HEAD96 = Head96Configuration(
   instrument_type="legacy",
 )
 
+# Where a head parks along Y, and the nine further slots it stores beside that one. Read off a
+# real 96-head; the 384-head documents the same two.
+SIMULATED_HEAD_Y_PARK = 554.45
+SIMULATED_HEAD_Y_PREDEFINED = 546.88
+
 # Where its Z drive comes to rest when the firmware retracts it, in mm. Not a device fact but a
 # probe result, so it stands apart from the configuration, as each drive's rest position does.
 SIMULATED_HEAD96_Z_SAFETY = 336.97
@@ -122,6 +126,15 @@ SIMULATED_AUTOLOAD = AutoloadConfiguration(
 SIMULATED_AUTOLOAD_X_POSITION = 100.0  # deck mm: where the drive counts from, track 1
 SIMULATED_AUTOLOAD_Y_POSITION = 0.0
 SIMULATED_AUTOLOAD_Z_POSITION = 0.0
+
+# What it says about its own adjustment, and the track its X drive homes against.
+SIMULATED_AUTOLOAD_ADJUSTMENT_DATE = datetime.date(2017, 1, 9)
+SIMULATED_AUTOLOAD_INIT_TRACK = 1
+
+# The two diagnostic reads that exist to show what a real unit holds. A simulated one holds nothing,
+# and says so rather than inventing a block for a caller to read meaning into.
+SIMULATED_AUTOLOAD_ADJUSTMENT_VALUES = "[simulation] no adjustment values"
+SIMULATED_AUTOLOAD_PARAMETER_VALUE = "[simulation]"
 
 # Whether the front cover is shut. A simulated machine is not being reached into.
 SIMULATED_COVER_POSITION: CoverPosition = "closed"
@@ -311,8 +324,8 @@ class _SimulatedHead(_Simulated, Head):
     # would leave it.
     deck = self.machine.deck
     if self.resource is not None and self.resource.location is not None and deck is not None:
-      anchor = self.resource.get_anchor(z=HEAD_Z_REFERENCE_ANCHOR)
-      return round(self.resource.get_location_wrt(deck).z + anchor.z, 2)
+      shaft = self.resource.get_item(HEAD_REFERENCE_SHAFT)
+      return round(shaft.get_location_wrt(deck).z, 2)
     return self._z_safety
 
   async def probe_z_max(self, *args: Any, **kwargs: Any) -> float:
@@ -358,6 +371,10 @@ class _SimulatedHead(_Simulated, Head):
     """Whatever was mounted on the head comes off, and it reports itself up."""
     self.machine.initialized[self.configuration.module] = True
 
+  async def request_predefined_y_positions(self) -> List[float]:
+    # As a head holds them: the park position first, then nine slots nothing here commands against.
+    return [SIMULATED_HEAD_Y_PARK] + [SIMULATED_HEAD_Y_PREDEFINED] * 9
+
   async def request_y_position(self) -> float:
     # From the model where there is one, as the real read reports the drive. The drive answers in
     # the deck's frame, so the model is read in the deck's too - the resource hangs off the arm,
@@ -365,10 +382,9 @@ class _SimulatedHead(_Simulated, Head):
     # there is nothing to read, and it answers from the middle of its travel.
     deck = self.machine.deck
     if self.resource is not None and self.resource.location is not None and deck is not None:
-      anchor = self.resource.get_anchor(y=HEAD_REFERENCE_ANCHOR)
-      return round(self.resource.get_location_wrt(deck).y + anchor.y, 2)
-    low, high = self.configuration.y_range
-    return (low + high) / 2
+      shaft = self.resource.get_item(HEAD_REFERENCE_SHAFT)
+      return round(shaft.get_location_wrt(deck).y, 2)
+    return SIMULATED_HEAD_Y_PARK
 
 
 class SimulatedHead96(_SimulatedHead, Head96):
@@ -478,6 +494,29 @@ class SimulatedAutoload(_Simulated, Autoload):
 
   async def request_latest_barcode_read(self) -> Optional[str]:
     return SIMULATED_BARCODE
+
+  async def request_adjustment_status(self) -> Tuple[datetime.date, bool]:
+    """Answer that this autoload is adjusted, so its stored values are its own."""
+    return SIMULATED_AUTOLOAD_ADJUSTMENT_DATE, True
+
+  async def request_init_slot(self) -> int:
+    """Answer the track the X drive homes against."""
+    return SIMULATED_AUTOLOAD_INIT_TRACK
+
+  async def request_adjustment_values(self) -> str:
+    """Answer the adjustment block, which a simulated unit does not hold."""
+    return SIMULATED_AUTOLOAD_ADJUSTMENT_VALUES
+
+  async def request_parameter(self, parameter: str) -> str:
+    """Answer a stored parameter by name.
+
+    Args:
+      parameter: the name to read.
+
+    Returns:
+      The reply, as the module would write it.
+    """
+    return f"I0RAid0000{parameter}{SIMULATED_AUTOLOAD_PARAMETER_VALUE}"
 
   async def request_track(self) -> int:
     return self.track
@@ -703,12 +742,12 @@ class STARSimulationDriver(STARDriver):
     read, so a simulated run reads like a recorded one.
     """
     self._log_exchange(
-      assemble_command(
+      assemble_channel_command(
         module=module,
         command=command,
         id_=None,
         tip_pattern=tip_pattern,
-        num_channels=self._num_channels,
+        num_channels=self.num_channels,
         **kwargs,
       ),
       None,

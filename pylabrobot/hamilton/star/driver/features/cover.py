@@ -39,7 +39,7 @@ class FrontCover:
 
   # -- position --------------------------------------------------------------
 
-  async def request_position(self) -> CoverPosition:
+  async def request_state(self) -> CoverPosition:
     """Request whether the cover is open or shut.
 
     Returns:

@@ -1,6 +1,6 @@
 from pylabrobot.hamilton.star.resource_model.n_channel_pipettes import (
   NChannelPipette,
-  PipettingChannel,
+  TipMountingShaft,
   TipPickupMode,
   head96,
   head384,
@@ -8,7 +8,7 @@ from pylabrobot.hamilton.star.resource_model.n_channel_pipettes import (
 
 __all__ = [
   "NChannelPipette",
-  "PipettingChannel",
+  "TipMountingShaft",
   "TipPickupMode",
   "head96",
   "head384",

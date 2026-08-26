@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
+from pylabrobot.hamilton.star.resource_model import TipMountingShaft
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
 
@@ -355,6 +356,42 @@ class Pipettes:
       here.x,
       here.y if y is None else y - on_the_arm.y - anchor.y,
       here.z if z is None else z - on_the_arm.z - anchor.z,
+    )
+
+  @staticmethod
+  def add_tip_mounting_shaft(channel: Resource) -> None:
+    """Hang a tip mounting shaft off the lower end of a channel, and measure the channel from it.
+
+    Its own length below the channel's bottom rather than inside it, so the shaft is what reaches
+    lowest and the channel body starts clear of it - the arrangement a 96-head has, where the shafts
+    define the bottom of the assembly. Centred on the channel, since that is the axis a tip is
+    collected on. One already there is left alone, so repeated setups do not duplicate it.
+
+    The shaft is the stop disk the Z drive reports, so it is also where the channel is measured
+    from, which is why this states the reference point that `update_location_by_reference_point`
+    reads straight back.
+
+    Args:
+      channel: the channel resource to hang it from.
+    """
+    name = f"{channel.name}_tip_mounting_shaft"
+    if any(child.name == name for child in channel.children):
+      return
+    shaft = TipMountingShaft(name=name, tip_pickup_mode="core")
+    channel.assign_child_resource(
+      shaft,
+      location=Coordinate(
+        (channel.get_absolute_size_x() - shaft.get_absolute_size_x()) / 2,
+        (channel.get_absolute_size_y() - shaft.get_absolute_size_y()) / 2,
+        -shaft.get_absolute_size_z(),
+      ),
+    )
+    # Stated on a plain `Resource`, which does not declare the field: a channel is not yet the
+    # `NChannelPipette` that would, and that carries its own reference point as a `Coordinate`.
+    channel.reference_point = Coordinate(  # type: ignore[attr-defined]
+      channel.get_absolute_size_x() / 2,
+      channel.get_absolute_size_y() / 2,
+      -shaft.get_absolute_size_z(),
     )
 
   # -- channel initialization ------------------------------------------------

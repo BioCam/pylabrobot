@@ -11,6 +11,7 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.events import emit_event
 from pylabrobot.hamilton.protocol.text.framing import (
+  assemble_channel_command,
   assemble_command,
   parse_firmware_version_date,
   parse_fw_string,
@@ -28,6 +29,9 @@ from pylabrobot.hamilton.star.driver.features.head384 import Head384
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import CHANNEL_X_REFERENCE_ANCHOR, Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
+from pylabrobot.hamilton.star.resource_model import NChannelPipette
+from pylabrobot.hamilton.star.resource_model import head96 as head96_pipette
+from pylabrobot.hamilton.star.resource_model import head384 as head384_pipette
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.usb import USB
 from pylabrobot.resources.coordinate import Coordinate
@@ -236,14 +240,19 @@ class STARDriver:
     """
     self._require_connection()
     id_ = self._replies.next_id() if auto_id else None
-    cmd = assemble_command(
-      module=module,
-      command=command,
-      id_=id_,
-      tip_pattern=tip_pattern,
-      num_channels=self._num_channels,
-      **kwargs,
-    )
+    # The channel-aware assembler only when channels are involved: it needs the machine's channel
+    # count, which is not known until setup, and most commands carry no per-channel list.
+    if tip_pattern is None:
+      cmd = assemble_command(module=module, command=command, id_=id_, **kwargs)
+    else:
+      cmd = assemble_channel_command(
+        module=module,
+        command=command,
+        id_=id_,
+        tip_pattern=tip_pattern,
+        num_channels=self.num_channels,
+        **kwargs,
+      )
     event_data = {
       "transport": "hamilton_usb",
       "driver": type(self).__name__,
@@ -949,6 +958,10 @@ class STARDriver:
     carries for free, but each has its own Y and Z. Children of the arm's resource for the same
     reason the 96-head is. Ones already on the arm are reused, so repeated setups do not duplicate
     them.
+
+    Each carries a `TipMountingShaft` at its lower end, as the channels of a 96-head do: the channel
+    is the body that travels, the shaft is the part a tip goes onto, and a collected tip becomes a
+    child of that shaft rather than of the channel.
     """
     if self.deck is None:
       return
@@ -981,6 +994,7 @@ class STARDriver:
           resource,
           location=Coordinate(arm.resource.get_absolute_size_x() / 2 - anchor.x, 0.0, 0.0),
         )
+      arm.pipettes.add_tip_mounting_shaft(resource)
       arm.pipettes.resources.append(resource)
 
     # Asking where they are records them, as the arm's and the head's reads do.
@@ -1003,27 +1017,27 @@ class STARDriver:
     for arm in self.arms:
       if arm.resource is None:
         continue
-      for head, name, label in (
-        (arm.head96, "head96", "96-head"),
-        (arm.head384, "head384", "384-head"),
+      for head, name, label, build in (
+        (arm.head96, "head96", "96-head", head96_pipette),
+        (arm.head384, "head384", "384-head", head384_pipette),
       ):
         if head is None:
           continue
         c = head.configuration
-        resource = next((child for child in arm.resource.children if child.name == name), None)
+        # Where the head is, read before it has a resource to read from: the drive answers on a
+        # machine, and a simulated one falls back to where it rests rather than reporting back the
+        # placeholder position it is about to be given.
+        y, z = await head.request_y_position(), await head.request_z_position()
+        existing = next((child for child in arm.resource.children if child.name == name), None)
+        resource = existing if isinstance(existing, NChannelPipette) else None
         if resource is None:
           if c.x_offset is None:
             raise RuntimeError(
               f"the {label}'s X offset was not read; have you called `star.setup()`?"
             )
-          resource = Resource(
-            name=name,
-            size_x=c.channel_array_size_x,
-            size_y=c.channel_array_size_y,
-            size_z=c.body_size_z,
-            category=name,
-            model=f"hamilton_star_{name}",
-          )
+          # The definition, not a bare resource: it carries a mounting shaft per channel, which
+          # is what a collected tip becomes a child of.
+          resource = build(name=name, size_z=c.body_size_z)
           # Channel A1 sits `x_offset` left of the carriage centre, and the arm is located by its
           # own left edge, so A1 lands that far left of the arm's centre. Y is set from the drive
           # below.
@@ -1032,8 +1046,7 @@ class STARDriver:
             location=Coordinate(arm.resource.get_absolute_size_x() / 2 - c.x_offset, 0.0, 0.0),
           )
         head.resource = resource
-        # Asking where it is records it, as the arm's and the sled's reads do.
-        await head.request_y_position()
+        head.update_location_by_reference_point(y=y, z=z)
 
   async def _create_autoload_resource(self) -> None:
     """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.

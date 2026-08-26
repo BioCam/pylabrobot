@@ -24,8 +24,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
+from pylabrobot.hamilton.star.resource_model import NChannelPipette
 from pylabrobot.resources.coordinate import Coordinate
-from pylabrobot.resources.resource import Resource
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.features.x_arm import XArm
@@ -36,10 +36,8 @@ logger = logging.getLogger(__name__)
 # The firmware's own retract drives the head to its Z-safety height, which takes a while.
 RETRACT_READ_TIMEOUT = 20
 
-# Channel A1 sits at the back left of the array, so the drive's Y is the resource's back edge.
-HEAD_REFERENCE_ANCHOR = "b"
-# The Z drive positions the head by its lowest fixed feature, so it reports the resource's bottom.
-HEAD_Z_REFERENCE_ANCHOR = "b"
+# The shaft the drives report: every head is positioned by its first channel.
+HEAD_REFERENCE_SHAFT = "A1"
 
 
 @dataclass
@@ -362,7 +360,7 @@ class Head:
     self._driver = driver
     # The head on the deck, when the driver was given one. Setup puts it there, as a child of the
     # arm it rides; moves keep it in step. Without a deck it stays None and nothing is modelled.
-    self.resource: Optional[Resource] = None
+    self.resource: Optional[NChannelPipette] = None
     self.configuration = configuration
 
   def require_drive_parameter(self, parameter: str) -> int:
@@ -768,16 +766,29 @@ class Head:
     increments = cast(List[int], resp["py"])
     return [c.y_drive_increments_to_mm(i + c.predefined_y_position_origin) for i in increments]
 
-  async def park(self, read_timeout: int = 30):
-    """Send the head to its home position. This moves it in Y and in Z.
+  async def park(
+    self,
+    speed: Optional[float] = None,
+    acceleration: Optional[float] = None,
+  ) -> float:
+    """Send the head to its park position. This moves it in Z, then in Y.
 
-    Uses the drive's own speeds and accelerations, as legacy does, rather than writing any into the
-    register. Where it comes to rest is read back afterwards.
+    In that order and separately, rather than through the firmware's own home command: the head
+    crosses the deck to get there, so it is raised clear first and only then moved across. Where it
+    parks is the first of the Y positions the head has stored, read rather than assumed, since an
+    adjusted head parks where its own memory says.
+
+    Args:
+      speed: how fast to travel in Y, in mm/s. Defaults to the drive's own.
+      acceleration: how hard, in mm/s2. Defaults to the drive's own.
+
+    Returns:
+      Where it parked, in mm.
     """
-    await self._driver.send_command(
-      module=self.configuration.module, command="MO", read_timeout=read_timeout
-    )
-    await self.request_y_position()
+    await self.move_to_safe_z()
+    park_position = (await self.request_predefined_y_positions())[0]
+    await self.move_y(park_position, speed=speed, acceleration=acceleration)
+    return park_position
 
   def update_location_by_reference_point(
     self, y: Optional[float] = None, z: Optional[float] = None
@@ -785,10 +796,9 @@ class Head:
     """Record where the head is on the resource that models it.
 
     Y and Z only: the head rides the arm, so its resource is a child of the arm's and follows it in
-    X without anything having to record that. Each axis has its own reference point, and a resource
-    is located by its left front bottom corner, so the two differ by the head's own anchor: the
-    drive positions the head along Y by channel A1, at the array's back edge, and along Z by its
-    lowest fixed feature, at its bottom.
+    X without anything having to record that. Both drives report channel A1, and a resource is
+    located by its left front bottom corner, so what is recorded is offset by where A1's mounting
+    shaft sits inside the head - which is a measurement of the head, not its array's edge.
 
     Both drives answer in the deck's frame, and a resource's location is measured from its parent -
     which for the head is the arm, not the deck. The two differ by wherever the arm sits, so the
@@ -805,12 +815,14 @@ class Head:
     arm = self.resource.parent
     if arm is None:
       return
+    shaft = self.resource.get_item(HEAD_REFERENCE_SHAFT).location
+    if shaft is None:
+      return
     here, on_the_arm = self.resource.location, arm.get_location_wrt(deck)
-    anchor = self.resource.get_anchor(y=HEAD_REFERENCE_ANCHOR, z=HEAD_Z_REFERENCE_ANCHOR)
     self.resource.location = Coordinate(
       here.x,
-      here.y if y is None else y - on_the_arm.y - anchor.y,
-      here.z if z is None else z - on_the_arm.z - anchor.z,
+      here.y if y is None else y - on_the_arm.y - shaft.y,
+      here.z if z is None else z - on_the_arm.z - shaft.z,
     )
 
   def _check_reachable(self, axis: Literal["x", "y", "z"], value: float) -> None:
