@@ -159,6 +159,9 @@ from pylabrobot.resources.rotation import Rotation
 from pylabrobot.resources.tip_tracker import does_tip_tracking
 from pylabrobot.resources.trash import Trash
 
+# The name SubsystemError had before it moved here, kept so existing code still catches it.
+SlaveError = SubsystemError
+
 T = TypeVar("T")
 
 
