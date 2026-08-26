@@ -57,6 +57,17 @@ STAR_SIZE_X = 1545
 STAR_SIZE_Y = 653.5
 STAR_SIZE_Z = 900
 
+# The STARplus deck. Derived rather than read off a config file, because we have no STARplus to read
+# one from - but the two decks above fix it between them. They differ by 24 rails and 540.0 mm,
+# which is exactly the 22.5 mm track pitch, so a deck's width and its rail count are the same fact.
+# The manufacturer's own models measure the three machines at 1130.0, 1667.0 and 2163.5 mm wide, and
+# a deck sits 125.0 and 122.0 mm inside the first two. Taking the same margin for the third gives
+# 2040.0 mm, which is 78.00 rails - a whole number, which the neighbouring margins are not.
+STARPLUS_NUM_RAILS = 78
+STARPLUS_SIZE_X = 2040.0
+STARPLUS_SIZE_Y = 653.5
+STARPLUS_SIZE_Z = 900
+
 
 def rails_for_x_coordinate(x: float) -> int:
   """Convert an x coordinate to a rail identifier."""
@@ -777,6 +788,34 @@ def STARDeck(
     size_x=STAR_SIZE_X,
     size_y=STAR_SIZE_Y,
     size_z=STAR_SIZE_Z,
+    origin=origin,
+    with_trash=with_trash,
+    with_trash96=with_trash96,
+    with_teaching_rack=with_teaching_rack,
+    core_grippers=core_grippers,
+  )
+
+
+def STARPlusDeck(
+  origin: Coordinate = Coordinate.zero(),
+  with_trash: bool = True,
+  with_trash96: bool = True,
+  with_teaching_rack: bool = True,
+  core_grippers: Optional[
+    Literal["1000uL-at-waste", "1000uL-5mL-on-waste"]
+  ] = "1000uL-5mL-on-waste",
+) -> HamiltonSTARDeck:
+  """Create a new STARplus deck.
+
+  Sizes derived from the STARlet and STAR decks and the manufacturer's machine widths - see
+  `STARPLUS_NUM_RAILS`. There is no `ML_StarPlus.dck` to read them from.
+  """
+
+  return HamiltonSTARDeck(
+    num_rails=STARPLUS_NUM_RAILS,
+    size_x=STARPLUS_SIZE_X,
+    size_y=STARPLUS_SIZE_Y,
+    size_z=STARPLUS_SIZE_Z,
     origin=origin,
     with_trash=with_trash,
     with_trash96=with_trash96,

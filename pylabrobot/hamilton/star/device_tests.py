@@ -47,12 +47,26 @@ class TestFactories(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(STAR(simulation=True).deck.num_rails, STAR_NUM_RAILS)
     self.assertEqual(STARLet(simulation=True).deck.num_rails, STARLET_NUM_RAILS)
 
-  def test_extension_housing_shifts_the_deck(self):
-    """The housing extends the instrument to the left, so the deck sits that much further in."""
+  def test_extension_housing_stands_to_the_left(self):
+    """The housing is a resource beside the chassis, not something that grows the instrument.
+
+    It bolts to the left, so it sits at a negative x. Growing the instrument instead would move its
+    origin, and everything measured from that origin with it.
+    """
     star = STAR_with_extension_housing(simulation=True)
-    self.assertEqual(star.get_absolute_size_x(), STAR_SIZE_X + EXTENSION_HOUSING_SIZE_X)
-    seated = cast(Coordinate, star.deck.location)
-    self.assertEqual(seated.x, STAR_DECK_LOCATION.x + EXTENSION_HOUSING_SIZE_X)
+    self.assertEqual(star.get_absolute_size_x(), STAR_SIZE_X)
+    self.assertEqual(cast(Coordinate, star.deck.location).x, STAR_DECK_LOCATION.x)
+
+    housing = star.get_resource("left_extension_housing")
+    self.assertEqual(cast(Coordinate, housing.location).x, -EXTENSION_HOUSING_SIZE_X)
+    self.assertEqual(housing.get_absolute_size_x(), EXTENSION_HOUSING_SIZE_X)
+
+  def test_extension_housing_is_absent_unless_asked_for(self):
+    def fitted(star):
+      return any(child.name == "left_extension_housing" for child in star.children)
+
+    self.assertFalse(fitted(STAR(simulation=True)))
+    self.assertTrue(fitted(STAR(simulation=True, extension_housing=True)))
 
 
 class TestCapabilities(unittest.IsolatedAsyncioTestCase):
