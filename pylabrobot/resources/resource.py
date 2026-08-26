@@ -1110,8 +1110,8 @@ class Resource(SerializableMixin):
     put down somewhere new, a robot between workcells - is a position change, so notifying here is
     what lets a subscriber follow motion without a mechanism per moving part.
 
-    Nothing is announced while the resource is still being built or is not yet in a tree: there is
-    no one to tell, and a tree under construction would otherwise announce every placement in it.
+    Silent while the resource is being built and while it sits outside a tree, since there is no
+    one to tell, and silent when the position does not actually change.
     """
     changed = location != self._location
     self._location = location
