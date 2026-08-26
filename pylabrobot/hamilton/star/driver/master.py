@@ -12,7 +12,6 @@ from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 from pylabrobot.events import emit_event
 from pylabrobot.hamilton.protocol.text.framing import (
   assemble_channel_command,
-  assemble_command,
   parse_firmware_version_date,
   parse_fw_string,
 )
@@ -240,19 +239,17 @@ class STARDriver:
     """
     self._require_connection()
     id_ = self._replies.next_id() if auto_id else None
-    # The channel-aware assembler only when channels are involved: it needs the machine's channel
-    # count, which is not known until setup, and most commands carry no per-channel list.
-    if tip_pattern is None:
-      cmd = assemble_command(module=module, command=command, id_=id_, **kwargs)
-    else:
-      cmd = assemble_channel_command(
-        module=module,
-        command=command,
-        id_=id_,
-        tip_pattern=tip_pattern,
-        num_channels=self.num_channels,
-        **kwargs,
-      )
+    # Always the channel-aware assembler: a list parameter has to be terminated against the
+    # machine's channel count whether or not the caller named which channels are involved, and
+    # `tip_pattern=None` means each list already holds one value per channel it names.
+    cmd = assemble_channel_command(
+      module=module,
+      command=command,
+      id_=id_,
+      tip_pattern=tip_pattern,
+      num_channels=self.num_channels,
+      **kwargs,
+    )
     event_data = {
       "transport": "hamilton_usb",
       "driver": type(self).__name__,

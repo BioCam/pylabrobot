@@ -3,7 +3,7 @@
 import re
 from typing import List, Optional
 
-from pylabrobot.hamilton.protocol.text.framing import assemble_channel_command, assemble_command
+from pylabrobot.hamilton.protocol.text.framing import assemble_channel_command
 from pylabrobot.hamilton.protocol.text.router import ReplyRouter
 from pylabrobot.hamilton.vantage.driver.errors import check_fw_string_error
 from pylabrobot.io.io import IOBase
@@ -87,19 +87,17 @@ class VantageDriver:
   ) -> Optional[str]:
     """Assemble a firmware command and send it, returning the reply."""
     id_ = self._replies.next_id() if auto_id else None
-    # The channel-aware assembler only when channels are involved: it needs the machine's channel
-    # count, which is not known until setup, and most commands carry no per-channel list.
-    if tip_pattern is None:
-      cmd = assemble_command(module=module, command=command, id_=id_, **kwargs)
-    else:
-      cmd = assemble_channel_command(
-        module=module,
-        command=command,
-        id_=id_,
-        tip_pattern=tip_pattern,
-        num_channels=self.num_channels,
-        **kwargs,
-      )
+    # Always the channel-aware assembler: a list parameter has to be terminated against the
+    # machine's channel count whether or not the caller named which channels are involved, and
+    # `tip_pattern=None` means each list already holds one value per channel it names.
+    cmd = assemble_channel_command(
+      module=module,
+      command=command,
+      id_=id_,
+      tip_pattern=tip_pattern,
+      num_channels=self.num_channels,
+      **kwargs,
+    )
     return await self._replies.send(
       cmd=cmd,
       id_=id_,
