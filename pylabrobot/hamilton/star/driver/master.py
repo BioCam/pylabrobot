@@ -242,12 +242,16 @@ class STARDriver:
     # Always the channel-aware assembler: a list parameter has to be terminated against the
     # machine's channel count whether or not the caller named which channels are involved, and
     # `tip_pattern=None` means each list already holds one value per channel it names.
+    #
+    # The count is only read when there is a list to terminate. Discovery has to send commands
+    # before it knows the count, and asking for it there would refuse the reads that establish it.
+    carries_a_list = any(isinstance(value, list) for value in kwargs.values())
     cmd = assemble_channel_command(
       module=module,
       command=command,
       id_=id_,
       tip_pattern=tip_pattern,
-      num_channels=self.num_channels,
+      num_channels=self.num_channels if carries_a_list else 0,
       **kwargs,
     )
     event_data = {
