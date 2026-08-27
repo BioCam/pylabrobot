@@ -53,6 +53,8 @@ class Viewer3D:
     telemetry: optional device state readers, polled while the viewer is connected.
     host: interface to bind both servers to.
     fs_port: static file server port.
+    models_root: directory that every `Resource.reference_glb` is relative to. Without one,
+      resources that declare a model are drawn as boxes, and say so once each.
     ws_port: websocket port.
     telemetry_hz: how often to poll the telemetry readers, in Hz.
     open_browser: whether to open a browser window on start.
@@ -69,6 +71,7 @@ class Viewer3D:
     telemetry_hz: float = 5.0,
     open_browser: bool = True,
     name: str = "workcell",
+    models_root: Optional[str] = None,
   ):
     self.root = root
     self.telemetry = telemetry or []
@@ -78,6 +81,9 @@ class Viewer3D:
     self.telemetry_period = 1.0 / telemetry_hz
     self.open_browser = open_browser
     self.name = name
+    # Where a resource's `reference_glb` is resolved from. One root for the whole scene, so a
+    # resource names its model the same way wherever the tree is built and whoever runs it.
+    self.models_root = os.path.abspath(os.path.expanduser(models_root)) if models_root else None
 
     self._clients: set = set()
     self._httpd: Optional[http.server.HTTPServer] = None
@@ -267,13 +273,40 @@ class Viewer3D:
         fresh[name] = without_location
     return pack_state(fresh, self._epoch)
 
-  def _register_meshes(self, models: List[Dict[str, Any]]) -> None:
-    """Turn each declared mesh path into a URL the page can fetch, and remember what to serve.
+  # What `reference_glb` promises: the file is in the resource's own frame, metres, Z up. Stated
+  # once here rather than per resource, which is the point of having a convention.
+  REFERENCE_GLB_UNITS = "m"
+  REFERENCE_GLB_UP = "Z"
 
-    A resource declares where its geometry lives on disk. The page cannot read a filesystem path,
-    and the file is often far too large to inline, so each one is given a stable id and served from
-    this viewer. The path itself never reaches the browser.
+  def _register_meshes(self, models: List[Dict[str, Any]]) -> None:
+    """Turn each declared model into a URL the page can fetch, and remember what to serve.
+
+    A resource declares its geometry one of two ways. `reference_glb` is a path relative to
+    `models_root`, in a fixed convention, and is what most resources should use. `mesh` is the
+    long form, carrying its own absolute path, units, up axis and joint map, for a rigged model or
+    one that does not fit the convention.
+
+    Both end up in the same place, because the page only knows one way to draw a model. The page
+    cannot read a filesystem path and the file is often far too large to inline, so each is given a
+    stable id and served from this viewer; the path itself never reaches the browser.
     """
+    for model in models:
+      reference = model.pop("reference_glb", None)
+      if reference is not None and "mesh" not in model:
+        if self.models_root is None:
+          logger.warning(
+            "%s declares reference_glb=%r but the viewer was given no models_root, "
+            "so it is drawn as a box",
+            model.get("model") or model.get("type"),
+            reference,
+          )
+        else:
+          model["mesh"] = {
+            "path": os.path.join(self.models_root, reference),
+            "units": self.REFERENCE_GLB_UNITS,
+            "up": self.REFERENCE_GLB_UP,
+          }
+
     for model in models:
       mesh = model.get("mesh")
       if not isinstance(mesh, dict) or "path" not in mesh:

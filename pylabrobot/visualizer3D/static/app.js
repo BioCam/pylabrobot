@@ -41,6 +41,7 @@ import {
   SHELL_OPACITY,
   SPACE_OPACITY,
   HOLDERS,
+  TIP_RACK_OPACITY,
   ARM_EDGE,
   ARM_EDGE_WIDTH_FLAT,
   ARM_EDGE_WIDTH_3D,
@@ -105,7 +106,11 @@ renderer.toneMapping = THREE.NoToneMapping;
 viewportEl.appendChild(renderer.domElement);
 
 const view = new THREE.Scene();
-view.background = new THREE.Color(0xffffff);
+// A shade off white, so the deck has something to be brighter than. Pure white left the work
+// surface - which is very nearly white itself - with no edge against the space around it, and the
+// whole view read as washed out. The number to turn if it wants more or less separation.
+const BACKGROUND = 0xe8ecef;
+view.background = new THREE.Color(BACKGROUND);
 
 // Two projections. Perspective reads a three-dimensional scene better; orthographic is what an
 // axis view has to be, because under perspective only the point directly beneath the camera
@@ -263,6 +268,15 @@ const GRID_LIFT = 0.4; // mm above the surface, so the marks do not fight the de
 // The work surface a grid is laid out on. A resource that declares a grid is declaring that things
 // stand on it at that height, so that is where the surface goes; nothing here knows it is a deck.
 const SURFACE_COLOR = 0xfbfcfd; // the deck is the brightest thing; what stands on it is darker
+// The work surface is a lid over everything the instrument keeps below it, and drawing it hid all
+// of that. Fully transparent, what stands on the deck reads against the space around it rather than
+// against a sheet the same colour. The number to turn: above zero the surface is drawn again, and in
+// an axis view it will paint over what stands on it, because a transparent material draws after
+// every opaque one and depth testing is off there.
+const SURFACE_OPACITY = 0;
+
+// What counts as ground rather than as an object standing on it.
+const GROUND = new Set(["facility", "deck"]);
 // Bands a capability can reach across a surface, drawn as a pair of lines with the reach labelled
 // at the near edge. Blue keeps them apart from the grey position grid they cross.
 const BAND_COLOR = 0x8ba7c6;
@@ -394,9 +408,15 @@ function buildDeclaredMeshes() {
           applyJoints(index);
         });
 
-        // The box that stood in for it is not needed once the real geometry is here.
+        // The box that stood in for it is not needed once the real geometry is here. Recorded on
+        // the entry rather than only switched off, because everything that decides what is drawn
+        // runs again on every view change, and each of those would otherwise put the box back over
+        // the model it was standing in for.
         const entry = meshes.find((m) => m.modelIndex === modelIndex);
-        if (entry) entry.mesh.material.visible = false;
+        if (entry) {
+          entry.modelDrawn = true;
+          entry.mesh.material.visible = false;
+        }
       },
       undefined,
       (error) => console.warn(`could not load the mesh declared by ${names[0]}`, error)
@@ -611,6 +631,15 @@ function redraw(indices) {
     // instance left it standing at the old position - a wireframe ghost of whatever rode the arm.
     const line = edgeOf.get(at);
     if (line) line.matrix.copy(boxMatrix(world.matrices[at], sx, sy, sz));
+    // A declared mesh is its own object with a baked matrix for the same reason, and needs the same
+    // treatment: without it the model stays where it was loaded while the box it stood in for
+    // travels on without it. An autoload sled driven along its rail showed exactly that - box in
+    // one place, geometry in another.
+    const root = meshRoots.find((r) => r.userData.index === at);
+    if (root) {
+      root.matrix.copy(world.matrices[at]);
+      root.matrixWorldNeedsUpdate = true;
+    }
   }
 }
 
@@ -661,21 +690,35 @@ function buildGridMarks() {
     const z = oz + GRID_LIFT;
 
     const [footprintX, footprintY] = sizeOf(modelOf(index));
-    const surfaceMaterial = new THREE.MeshStandardMaterial({
-      color: SURFACE_COLOR,
-      metalness: 0.3,
-      roughness: 0.42,
-    });
-    const surface = new THREE.Mesh(
-      new THREE.PlaneGeometry(footprintX, footprintY),
-      surfaceMaterial
-    );
-    surface.renderOrder = treeDepth(index) * 2;
-    surface.userData.lit = surfaceMaterial;
-    surface.userData.flat = flatVariant(surfaceMaterial);
-    surfaces.push(surface);
-    surface.position.set(footprintX / 2, footprintY / 2, oz);
-    group.add(surface);
+    // Nothing to draw at all when it is fully transparent, rather than a draw call per deck that
+    // contributes no pixels. The grid, the rail numbers and the access bands are their own objects
+    // and stay either way, so the deck still reads as a deck.
+    if (SURFACE_OPACITY > 0) {
+      const surfaceMaterial = new THREE.MeshStandardMaterial({
+        color: SURFACE_COLOR,
+        metalness: 0.3,
+        roughness: 0.42,
+        transparent: true,
+        opacity: SURFACE_OPACITY,
+        // What stands on the deck is drawn opaque and so lands in the depth buffer first; the surface
+        // is below it and fails against it, which is what keeps a plate from being tinted by the deck
+        // it sits on. Writing depth as well would have the surface occlude whatever is under it.
+        depthWrite: false,
+      });
+      const surface = new THREE.Mesh(
+        new THREE.PlaneGeometry(footprintX, footprintY),
+        surfaceMaterial
+      );
+      // The deck's own top face, so it paints just after the deck's box and just before whatever
+      // stands on it. On the same height scale as everything else - left on the old tree-depth scale
+      // it sorted below the box it belongs to, and the box covered it.
+      surface.renderOrder = paintOrderOf(index) + 0.25;
+      surface.userData.lit = surfaceMaterial;
+      surface.userData.flat = flatVariant(surfaceMaterial);
+      surfaces.push(surface);
+      surface.position.set(footprintX / 2, footprintY / 2, oz);
+      group.add(surface);
+    }
     const points = [];
     for (let i = 0; i < grid.count; i++) {
       const x = ox + i * grid.spacing;
@@ -709,7 +752,7 @@ function buildGridMarks() {
         bandGeometry,
         new THREE.LineBasicMaterial({ color: BAND_COLOR, depthTest: false })
       );
-      bandLines.renderOrder = treeDepth(index) * 2 + 1;
+      bandLines.renderOrder = paintOrderOf(index) + 0.5;
       group.add(bandLines);
     }
 
@@ -724,7 +767,7 @@ function buildGridMarks() {
         new THREE.LineBasicMaterial({ color: GRID_LINE, depthTest: false })
     );
     // Just above the surface it is drawn on, and below anything standing on that surface.
-    marks.renderOrder = treeDepth(index) * 2 + 1;
+    marks.renderOrder = paintOrderOf(index) + 0.5;
     group.add(marks);
 
     group.userData.owner = index;
@@ -836,13 +879,22 @@ function updateDetail() {
 
   // In a free view an enclosure gets its fill back once nothing inside it is being drawn, so a
   // plate whose wells have been culled reads as a plate rather than an empty frame. In an axis
-  // view everything is opaque and painted in order, so there is nothing to restore.
-  if (axisAligned) return;
+  // view everything is opaque and painted in order, so an enclosure keeps its fill whatever stands
+  // in it - and the fill is put back here rather than left to the mode change that turns painting
+  // on. A fill is only ever taken away in a free view, so one missed transition used to leave a
+  // plan view drawn as bare outlines with nothing behind them, which is what it looked like.
+  if (axisAligned) {
+    for (const entry of meshes) {
+      const wanted = fillsBox(entry);
+      if (entry.mesh.material.visible !== wanted) entry.mesh.material.visible = wanted;
+    }
+    return;
+  }
   for (const entry of meshes) {
     // A carrier is exempt: its walls are the surface you read the layout off, so they stay drawn
     // at SHELL_OPACITY whether or not what it holds is on screen. Everything above it in the
     // stack still drops to its outline, which is what keeps the layers from compounding.
-    if (!entry.holdsEnclosure || isCarrier(entry.model)) continue;
+    if (!entry.holdsEnclosure || isCarrier(entry.model) || entry.modelDrawn) continue;
     const showsContents = entry.enclosedModels.some((m) => drawn.has(m));
     if (entry.mesh.material.visible === showsContents) entry.mesh.material.visible = !showsContents;
   }
@@ -881,24 +933,45 @@ function paintOrder(entry) {
   return order;
 }
 
+// Whether a model's box is drawn as a filled solid at all. A part that travels over the deck is
+// drawn see-through wherever it is, and a model whose own geometry has arrived has no use for the
+// box that stood in for it. Every mode change asks this rather than each one deciding again.
+function fillsBox(entry) {
+  return !MOVING_PARTS.has(entry.model.category) && !entry.modelDrawn;
+}
+
 function setRenderMode(painter) {
   for (const entry of meshes) {
     const material = entry.mesh.material;
     const isShell = entry.holdsEnclosure;
+    // A tip rack is read by which of its positions still hold a tip, so it is drawn see-through at
+    // its own opacity rather than at the shell's - both in a plan view and in a free one.
+    const isTipRack = entry.model.category === "tip_rack";
     const moves = MOVING_PARTS.has(entry.model.category);
-    // The facility is the space everything stands in, not a thing to look at. It stays barely
-    // there in every mode: enough to see where the floor ends, never enough to tint what is on it.
-    const isSpace = entry.model.category === "facility";
+    // Ground: the space things stand in, and the surface they stand on. Neither is a thing to look
+    // at, and drawing either solid hides what it carries - a deck drawn opaque is a sheet the same
+    // colour as the plates on it. Both stay barely there in every mode: enough to see where the
+    // floor ends and where the deck reaches, never enough to tint what is on them. What makes a
+    // deck legible is its rail grid, its numbers and its access bands, and those are their own
+    // objects.
+    const isSpace = GROUND.has(entry.model.category);
     if (painter) {
       // A part that travels over the deck is not content standing on it: drawn opaque it hides
       // whatever it happens to be above, which is the one thing you need to see. It stays
       // see-through, and paints last because that is where it physically is.
-      material.transparent = moves || isSpace;
-      material.opacity = isSpace ? SPACE_OPACITY : moves ? 0.35 : 1;
+      material.transparent = moves || isSpace || isTipRack;
+      material.opacity = isSpace ? SPACE_OPACITY : moves ? 0.35 : isTipRack ? TIP_RACK_OPACITY : 1;
       material.side = THREE.FrontSide;
-      material.depthTest = false;
-      material.depthWrite = false;
-      material.visible = !moves;
+      // Solid things sort by depth even here, so which of two overlapping ones is seen follows from
+      // where each actually stands. Render order cannot answer it: one mesh carries every instance
+      // of a model and so has one order for all of them, which let a tip rack 880 mm up on a bench
+      // lift every tip rack of its kind above a 96-head at 423 mm. Ground stays out of the depth
+      // buffer - it is a wash over the view, not a surface anything is behind.
+      material.depthTest = !isSpace;
+      material.depthWrite = !isSpace && !moves;
+      material.visible = fillsBox(entry);
+      // Still ordered, for the things depth cannot separate: coplanar fills, and the overlays and
+      // outlines below that are drawn without depth at all.
       const order = paintOrder(entry);
       entry.mesh.renderOrder = order;
       // What is inside a vessel, and the tip standing in it, paint after its rim.
@@ -910,12 +983,13 @@ function setRenderMode(painter) {
         overlay.material.needsUpdate = true;
       }
     } else {
-      material.transparent = isShell || isSpace;
-      material.opacity = isSpace ? SPACE_OPACITY : isShell ? SHELL_OPACITY : 1;
+      material.transparent = isShell || isSpace || isTipRack;
+      material.opacity = isSpace ? SPACE_OPACITY : isTipRack ? TIP_RACK_OPACITY
+        : isShell ? SHELL_OPACITY : 1;
       material.side = isShell || isSpace ? THREE.BackSide : THREE.FrontSide;
       material.depthTest = true;
       material.depthWrite = !(isShell || isSpace);
-      material.visible = !moves;
+      material.visible = fillsBox(entry);
       entry.mesh.renderOrder = 0;
       for (const overlay of entry.overlays ?? []) {
         if (overlay.userData.lit) overlay.material = overlay.userData.lit;
@@ -1283,6 +1357,8 @@ function buildMeshes() {
       flat: flatVariant(material),
       // Filled in below, once the overlays this model needs are known.
       overlays: /** @type {any[]} */ ([]),
+      // Set once this model's declared .glb has arrived and been placed.
+      modelDrawn: false,
       holdsEnclosure: false,
       enclosedModels: /** @type {any[]} */ ([]),
     });
@@ -2290,7 +2366,17 @@ function frameBox(box, direction) {
     camera.far = distance * 50;
     camera.updateProjectionMatrix();
   }
+  // A drag leaves OrbitControls holding a rotation it has not finished applying: with damping on it
+  // spends that residue over the following frames and only decays it, so it outlives the pointer
+  // going up. Framing writes the camera straight to where it belongs, and the residue then turns it
+  // back off the axis - by more than the 2.5 degrees an axis view is allowed, which is why a plan
+  // view reached through the home button came back drawn as a free one, translucent and washed out,
+  // while the same view on opening was solid. Damping off for the single update that lands the
+  // frame is what clears it; `update` zeroes the residue itself in that branch.
+  const damped = controls.enableDamping;
+  controls.enableDamping = false;
   controls.update();
+  controls.enableDamping = damped;
 }
 
 const frame = (direction) => frameBox(sceneBounds(), direction ?? VIEWS.iso);
@@ -2386,6 +2472,12 @@ function atBoundary(surface) {
       drawn: e.mesh.visible,
       filled: e.mesh.material.visible,
       outlineRule: !!e.holdsEnclosure,
+      // What decides which of two overlapping models is seen. Order alone does not: three draws
+      // every transparent material after every opaque one, so a translucent shell wins over a solid
+      // thing above it whatever its order says.
+      order: e.mesh.renderOrder,
+      transparent: e.mesh.material.transparent,
+      opacity: e.mesh.material.opacity,
     })),
   grid: () => {
     // Rail numbers are flat quads lying in the deck, not sprites - they were sprites once, and
@@ -2477,8 +2569,25 @@ function drawStats(rate) {
 
 // ---------------------------------------------------------------- interaction
 
-renderer.domElement.addEventListener("pointermove", (event) => {
-  if (!world) return;
+// Hover is answered once a frame at most, and not at all while a button is down.
+//
+// A pointer crossing the canvas fires far faster than frames are drawn, and every one of those
+// events used to raycast the whole scene to produce a readout that had not changed. Measured, it
+// cost more than panning the camera did - 12.2% of a profile against 4.5% - and none of it was our
+// own code: it was three walking every instance of every model. Coalescing to a frame throws away
+// the events nobody could have seen the result of. A pointer with a button down is driving the
+// camera rather than pointing at anything, so there is nothing to pick.
+let hoverAt = null;
+let hoverPending = false;
+
+function answerHover() {
+  hoverPending = false;
+  const at = hoverAt;
+  hoverAt = null;
+  if (at !== null && world) showHoverFor(at);
+}
+
+function showHoverFor(event) {
   const hit = pick(event);
   if (!hit) {
     readout.style.display = "none";
@@ -2499,6 +2608,20 @@ renderer.domElement.addEventListener("pointermove", (event) => {
   markTreeRow(hit.index);
   readout.textContent =
     activeTool === "coords" ? coordinateLabel(hit.index) : `${world.names[hit.index]}\n${modelOf(hit.index).type}`;
+}
+
+renderer.domElement.addEventListener("pointermove", (event) => {
+  if (!world) return;
+  if (event.buttons !== 0) {
+    // Dragging: whatever the pointer passes over on the way is not being pointed at.
+    readout.style.display = "none";
+    clearHover();
+    return;
+  }
+  hoverAt = { clientX: event.clientX, clientY: event.clientY };
+  if (hoverPending) return;
+  hoverPending = true;
+  requestAnimationFrame(answerHover);
 });
 
 renderer.domElement.addEventListener("pointerleave", () => {

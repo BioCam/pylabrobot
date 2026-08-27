@@ -148,6 +148,18 @@ class Resource(SerializableMixin):
       up this resource, relative to the resource's origin (optional).
     metadata: Free-form metadata. Treated as black box during serialisation.
       To make standard JSON serialisation work, only add JSON-compatible metadata.
+    reference_glb: Path to a glTF binary drawing this resource, relative to a model root the
+      viewer is given (optional). Purely declarative: nothing here opens it, looks for it, or
+      checks it, so a run without a viewer is unaffected by it entirely.
+
+      The file must be authored in THIS resource's own frame, in metres, Z up: the model's origin
+      is the resource's origin, which for a well-formed resource is its front-left-bottom corner.
+      A viewer can then place it by the resource's own transform, with no offset of its own, and
+      draw it in place of the bounding box.
+
+      That only reads as front-left-bottom if the resource's box actually contains the model. Where
+      it does not - a box that stands for a mounting point rather than the part on it - the model
+      still lands correctly, but the box no longer describes its extent.
   """
 
   def __init__(
@@ -162,6 +174,7 @@ class Resource(SerializableMixin):
     barcode: Optional[Barcode] = None,
     preferred_pickup_location: Optional[Coordinate] = None,
     metadata: Optional[Mapping[str, Any]] = None,
+    reference_glb: Optional[str] = None,
   ):
     self._name = name
     self._size_x = size_x
@@ -173,6 +186,7 @@ class Resource(SerializableMixin):
     self.model = model
     self.barcode = barcode
     self.preferred_pickup_location = preferred_pickup_location
+    self.reference_glb = reference_glb
     # Shallow copy: top-level keys are decoupled from the caller's mapping, but
     # nested containers/objects remain shared. Deep-copy before passing in if you
     # need full isolation of mutable metadata values.
@@ -224,6 +238,8 @@ class Resource(SerializableMixin):
       data["barcode"] = self.barcode.serialize()
     if self.preferred_pickup_location is not None:
       data["preferred_pickup_location"] = serialize(self.preferred_pickup_location)
+    if self.reference_glb is not None:
+      data["reference_glb"] = self.reference_glb
     if self.metadata:
       data["metadata"] = self.metadata.copy()
     if self.children:

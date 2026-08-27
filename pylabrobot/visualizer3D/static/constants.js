@@ -87,6 +87,10 @@ export const ARM_OPACITY = 0.575;
 // A carrier or a rack is a container you look into, so its walls are glass and its bottom is not:
 // the floor is drawn opaque as its own surface, and these are the five faces around it.
 export const SHELL_OPACITY = 0.5;
+// A resource with no model of its own is drawn as its bounding box. Slightly see-through, because
+// a box is a statement about extent rather than a picture of the thing: what it contains, and
+// what stands behind it, should still read through it. A resource that declares a
+// `reference_glb` has its box hidden entirely once the model arrives, so this never applies to it.
 // The facility is the space everything stands in, not a thing to look at.
 export const SPACE_OPACITY = 0.06;
 
@@ -94,6 +98,9 @@ export const SPACE_OPACITY = 0.06;
 // say is what is standing in it, not that a holder exists. Counting through them is what makes a
 // tip carrier read as "5 tipracks" rather than "5 resource holders".
 export const HOLDERS = new Set(["resource_holder", "plate_holder"]);
+// A tip rack is drawn see-through at this rather than at SHELL_OPACITY: you read a rack by which of
+// its positions still hold a tip, and at the shell's opacity the tips inside are hard to count.
+export const TIP_RACK_OPACITY = 0.7;
 
 export const ARM_EDGE = 0x1a1f24;
 export const ARM_EDGE_WIDTH_FLAT = 2.2;
