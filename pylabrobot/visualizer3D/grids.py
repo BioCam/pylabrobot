@@ -14,6 +14,9 @@ from typing import Any, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
+# How close a child's own y has to be to the rail line to count as standing on it, in mm.
+SEATED_TOLERANCE = 0.5
+
 # How often a rail gets a number. Legacy labels the first and then every fifth, which is dense
 # enough to count from and sparse enough to read.
 DEFAULT_LABEL_EVERY = 5
@@ -77,20 +80,34 @@ def describe_grid(resource: Any) -> Optional[Dict[str, Any]]:
   if spacing <= 0:
     return None
 
-  # A rail mark runs from where the rail starts to the back of the resource. The rail area's own
-  # depth is not something a deck currently reports, so this is the honest bound rather than a
-  # number copied out of the old drawing code.
+  # A rail mark runs from where the rail starts to the back of what the rails CARRY, not to the
+  # back of the resource - a deck runs on well past anything standing on it, and a mark that
+  # overshoots reads as a reach that is not there.
+  #
+  # What is standing on the rails is whatever shares their y: a carrier seats on the rail line, so
+  # its own y is the grid's. The deepest of those is the reach. A deck with nothing on it yet has
+  # nothing to measure, and only then does its own depth stand in.
   try:
     depth = resource.get_absolute_size_y()
   except Exception:
     return None
+
+  seated = []
+  for child in getattr(resource, "children", []):
+    location = getattr(child, "location", None)
+    if location is None or abs(location.y - first.y) > SEATED_TOLERANCE:
+      continue
+    try:
+      seated.append(child.get_absolute_size_y())
+    except Exception:
+      continue
 
   return {
     "axis": "x",
     "count": count,
     "spacing": round(spacing, 4),
     "origin": [round(first.x, 4), round(first.y, 4), round(first.z, 4)],
-    "extent": round(max(depth - first.y, 0.0), 4),
+    "extent": round(max(seated) if seated else max(depth - first.y, 0.0), 4),
     "label_every": DEFAULT_LABEL_EVERY,
     "label": "rail",
   }
