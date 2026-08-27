@@ -57,6 +57,13 @@ STARPLUS_SIDE_PANEL_X = 6.0
 EXTENSION_HOUSING_SIZE_X = EXTENSION_HOUSING_SIZE[0]
 MANUAL_SIZE_Y = 785.8
 SIZE_Z = 903.0
+# The chassis stands on feet, and `SIZE_Z` is the whole envelope with them included. This is how
+# tall they are, measured off the flat underside of the base plate - one surface, whose area scales
+# with the frame's width - and corroborated by where the chassis footprint jumps from the part of
+# the width the feet cover to the full width of the body. The same on all three frames.
+FEET_SIZE_Z = 43.0
+# What stands clear of the bench: the machine without what it stands on.
+BODY_SIZE_Z = SIZE_Z - FEET_SIZE_Z
 # The loading tray stands 221.2 mm proud of the front face - the manufacturer's models are 1007.0
 # deep with a loader fitted against 785.8 without, on all three frames. That is NOT added to the
 # instrument here: the tray is its own resource, `autoload_loading_tray`, and a resource in front
@@ -84,12 +91,16 @@ DECK_ORIGIN_Y = 97.8
 # Where the deck sits inside the instrument.
 #   x  measured on a 2021 STAR: 210 mm from the left face to the first carrier, which sits at 100
 #   y  see `DECK_ORIGIN_Y`
-#   z  the deck work surface sits 100 mm above the instrument origin, which the manual states; this
-#      is the origin's own height above the instrument's base, and is not sourced
-STAR_DECK_LOCATION = Coordinate(110.0, DECK_ORIGIN_Y, 78.5)
+#   z  the deck work surface sits 100 mm above the deck's origin, which the manual states, so the
+#      origin is 100 mm below the surface. The surface itself is measured on the manufacturer's
+#      models: the deck plate is 2.5 mm thick, its underside on the platform's top plate, and its
+#      TOP - which is what a carrier rests on - is 180.5 mm above the instrument's base. The same
+#      on all three frames. What this replaces is an unsourced 78.5, which put the work surface at
+#      178.5 and so seated every carrier 2.0 mm inside the plate it stands on.
+STAR_DECK_LOCATION = Coordinate(110.0, DECK_ORIGIN_Y, 80.5)
 # The STARlet's x is not measured: its chassis leaves the same 119 mm beyond its deck as the STAR's
 # does, so it takes the same value until someone measures one.
-STARLET_DECK_LOCATION = Coordinate(110.0, DECK_ORIGIN_Y, 78.5)
+STARLET_DECK_LOCATION = Coordinate(110.0, DECK_ORIGIN_Y, 80.5)
 
 
 class STARDevice(Resource):

@@ -29,12 +29,19 @@ _X_ARM_SIZE_Y = 712.0
 # How big the autoload's sled is (mm). Standing on the deck's own zero it reaches exactly the height
 # a carrier seats at, which is where the machine's coordinates put the deck surface: the drive that
 # has to pass under the deck plate is as tall as the offset between the two.
-_AUTOLOAD_SLED_SIZE_X = 235.0
-_AUTOLOAD_SLED_SIZE_Z = 100.0
-# Where the sled sits across the deck, measured against a carrier's own front edge: it reaches 20 mm
-# behind it and 96 mm in front of it, so it straddles the deck's front edge.
-_AUTOLOAD_SLED_BEHIND_CARRIER_Y = 20.0
-_AUTOLOAD_SLED_AHEAD_OF_CARRIER_Y = 96.0
+# The sled - the transport and the barcode reader it carries - measured on the manufacturer's own
+# model. The box wraps the whole part, so a model declared on this resource is drawn from its own
+# front-left-bottom corner and the box describes what is actually there.
+#
+# What this replaces: 235.0 x 116.0 x 100.0, which was the transport alone. The reader stands 115 mm
+# above it, so a model of the fitted sled reached half again as high as the box that positioned it.
+_AUTOLOAD_SLED_SIZE_X = 316.2
+_AUTOLOAD_SLED_SIZE_Y = 109.5
+_AUTOLOAD_SLED_SIZE_Z = 215.3
+# Where it sits across the deck and how high it stands, against a carrier's own front edge and the
+# deck's work surface.
+_AUTOLOAD_SLED_AHEAD_OF_CARRIER_Y = 92.7
+_AUTOLOAD_SLED_ABOVE_DECK_Z = 0.5
 # Where the loading tray sits, measured against the two things on the deck it lines up with: its
 # left edge is 104 mm left of where the first carrier starts, and it spans from 380 mm in front of a
 # carrier's front edge to 132 mm in front of it - so 248 mm deep, against the 250 it was called when
@@ -46,6 +53,13 @@ _LOADING_TRAY_BACK_AHEAD_OF_CARRIER_Y = 132.0
 _LOADING_TRAY_SIZE_Z = 92.0
 # Where a carrier's own front edge sits on any Hamilton deck, in mm.
 _CARRIER_Y = 63.0
+
+# Parts of the MACHINE that happen to hang off the deck, as opposed to things placed ON it. They are
+# fitted where the instrument puts them, not assigned to rails, so they cannot occupy a rail and
+# must not be treated as though they do - a fitted autoload otherwise makes rail 1 unassignable,
+# because the sled's box reaches over the deck's front edge and up past a carrier's height.
+_MACHINE_PARTS = frozenset({"autoload_sled", "autoload_loading_tray"})
+
 
 STARLET_NUM_RAILS = 32
 STARLET_SIZE_X = 1005
@@ -180,7 +194,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     sled = Resource(
       name=name,
       size_x=_AUTOLOAD_SLED_SIZE_X,
-      size_y=_AUTOLOAD_SLED_BEHIND_CARRIER_Y + _AUTOLOAD_SLED_AHEAD_OF_CARRIER_Y,
+      size_y=_AUTOLOAD_SLED_SIZE_Y,
       size_z=_AUTOLOAD_SLED_SIZE_Z,
       category="autoload_sled",
       model="hamilton_star_autoload_sled",
@@ -188,7 +202,9 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     self.assign_child_resource(
       sled,
       location=Coordinate(
-        x - reference_point_from_left, _CARRIER_Y - _AUTOLOAD_SLED_AHEAD_OF_CARRIER_Y, 0.0
+        x - reference_point_from_left,
+        _CARRIER_Y - _AUTOLOAD_SLED_AHEAD_OF_CARRIER_Y,
+        _AUTOLOAD_SLED_ABOVE_DECK_Z,
       ),
     )
     return sled
@@ -355,6 +371,8 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
 
         # Check if there is space for this new resource.
         for og_resource in self.children:
+          if og_resource.category in _MACHINE_PARTS:
+            continue
           og_x = cast(Coordinate, og_resource.location).x
           og_y = cast(Coordinate, og_resource.location).y
           og_z = cast(Coordinate, og_resource.location).z
