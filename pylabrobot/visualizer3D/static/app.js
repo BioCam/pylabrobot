@@ -458,6 +458,39 @@ const AXIS_VECTOR = {
   z: new THREE.Vector3(0, 0, 1),
 };
 
+// A resource that says where the machine's x refers to gets that point marked, whether or not it is
+// an arm. An arm draws its own inside the group that carries it; everything else is marked here -
+// the autoload's sled being the case that prompted it, since the drive reports its carrier-handling
+// wheel rather than the sled's own corner.
+let referenceMarks = [];
+
+function buildReferenceMarks() {
+  for (const mark of referenceMarks) view.remove(mark.plane);
+  referenceMarks = [];
+
+  for (let index = 0; index < world.names.length; index++) {
+    const model = modelOf(index);
+    if (!model.reference_point || MOVING_PARTS.has(model.category)) continue;
+    const [, sy, sz] = sizeOf(model);
+    const plane = new THREE.Mesh(
+      new THREE.PlaneGeometry(REFERENCE_WIDTH, sy),
+      new THREE.MeshBasicMaterial({
+        color: REFERENCE_LINE, transparent: true, opacity: ARM_REFERENCE_OPACITY,
+        depthTest: false, side: THREE.DoubleSide,
+      })
+    );
+    plane.frustumCulled = false;
+    plane.renderOrder = 495;
+    plane.matrixAutoUpdate = false;
+    plane.userData.local = new THREE.Matrix4().makeTranslation(
+      referenceOffset(model), sy / 2, sz);
+    plane.matrix.multiplyMatrices(world.matrices[index], plane.userData.local);
+    plane.matrixWorldNeedsUpdate = true;
+    view.add(plane);
+    referenceMarks.push({ plane, index });
+  }
+}
+
 function buildArms() {
   for (const arm of arms) view.remove(arm.group);
   arms = [];
@@ -631,6 +664,13 @@ function redraw(indices) {
     // instance left it standing at the old position - a wireframe ghost of whatever rode the arm.
     const line = edgeOf.get(at);
     if (line) line.matrix.copy(boxMatrix(world.matrices[at], sx, sy, sz));
+    // A reference mark is its own object too, and marks a point ON the resource - so when the
+    // resource travels, the point travels with it.
+    for (const mark of referenceMarks) {
+      if (mark.index !== at) continue;
+      mark.plane.matrix.multiplyMatrices(world.matrices[at], mark.plane.userData.local);
+      mark.plane.matrixWorldNeedsUpdate = true;
+    }
     // A declared mesh is its own object with a baked matrix for the same reason, and needs the same
     // treatment: without it the model stays where it was loaded while the box it stood in for
     // travels on without it. An autoload sled driven along its rail showed exactly that - box in
@@ -2871,6 +2911,7 @@ function connect() {
       gridState = null;
       buildGridMarks();
       buildArms();
+      buildReferenceMarks();
       buildDeclaredMeshes();
       buildOrigin();
       timings.meshesMs = performance.now() - _tBuild;

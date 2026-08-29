@@ -199,6 +199,12 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       category="autoload_sled",
       model="hamilton_star_autoload_sled",
     )
+    # What the drive's x actually refers to. The sled is placed around the carrier-handling wheel,
+    # so its own origin is not what the machine reports - saying where the wheel sits within it is
+    # what lets anything reading this resource put the two together, a viewer included.
+    sled.reference_point = {  # type: ignore[attr-defined]
+      "x": reference_point_from_left
+    }
     self.assign_child_resource(
       sled,
       location=Coordinate(
