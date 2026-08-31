@@ -121,9 +121,8 @@ SIMULATED_AUTOLOAD = AutoloadConfiguration(
   autoload_type="1D barcode scanner",
 )
 
-# Where its three drives report themselves, in mm. Where they actually are is not modelled: each
-# answers from its zero.
-SIMULATED_AUTOLOAD_X_POSITION = 100.0  # deck mm: where the drive counts from, track 1
+# Where its two undriven drives report themselves, in mm. Where they actually are is not modelled:
+# each answers from its zero. X is not among them - it answers from the deck.
 SIMULATED_AUTOLOAD_Y_POSITION = 0.0
 SIMULATED_AUTOLOAD_Z_POSITION = 0.0
 
@@ -540,11 +539,12 @@ class SimulatedAutoload(_Simulated, Autoload):
   async def request_x_position(self) -> float:
     # Where the sled is is what the model says: a simulated machine has no drive to ask. The model
     # is placed around the carrier-handling wheel, so the wheel stands that far right of its left
-    # edge. Until setup has put it on the deck there is nothing to read, and it answers where it
-    # powered up.
+    # edge. Before setup has put the sled on the deck there is no model to read, and the track it
+    # is on is what it has instead - which is how a park during initialization survives long enough
+    # to reach the resource that gets created after it.
     if self.resource is not None and self.resource.location is not None:
       return self.resource.location.x + self.configuration.reference_point_from_sled_left_edge
-    return SIMULATED_AUTOLOAD_X_POSITION
+    return cast(HamiltonDeck, self.machine.deck).rails_to_location(self.track).x
 
   async def wheel_request_y_position(self) -> float:
     return SIMULATED_AUTOLOAD_Y_POSITION
