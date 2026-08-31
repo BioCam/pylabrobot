@@ -2673,10 +2673,12 @@ function drawStats(rate) {
 // the events nobody could have seen the result of. A pointer with a button down is driving the
 // camera rather than pointing at anything, so there is nothing to pick.
 let hoverAt = null;
-let hoverPending = false;
 
+// Answered by the loop, at the start of the frame the pointer's own input asked for. Answering it
+// in a callback of its own instead put it a frame behind: the loop registers its callback first,
+// because the input that starts it is handled in the capture phase, so the hover box and the delta
+// lines were drawn one frame late and the last hover before the pointer stopped never drew at all.
 function answerHover() {
-  hoverPending = false;
   const at = hoverAt;
   hoverAt = null;
   if (at !== null && world) showHoverFor(at);
@@ -2710,9 +2712,6 @@ renderer.domElement.addEventListener("pointermove", (event) => {
     return;
   }
   hoverAt = { clientX: event.clientX, clientY: event.clientY };
-  if (hoverPending) return;
-  hoverPending = true;
-  requestAnimationFrame(answerHover);
 });
 
 renderer.domElement.addEventListener("pointerleave", () => {
@@ -3027,6 +3026,11 @@ setInterval(reportIdle, 500);
 
 function drawFrame() {
   const delta = clock.getDelta();
+
+  // At most one hover answered per frame, however many times the pointer moved in between: a
+  // pointer crosses the canvas far faster than frames are drawn, and each answer raycasts the whole
+  // scene to produce a readout nobody could have seen the previous version of.
+  if (hoverAt !== null) answerHover();
 
   // Three things keep drawing on their own account: the helper's snap animation, an arm gliding to
   // a new position, and a recording that needs a frame to capture. `controls.update` reports
