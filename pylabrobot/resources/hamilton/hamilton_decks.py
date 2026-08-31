@@ -33,8 +33,13 @@ _X_ARM_SIZE_Y = 712.0
 # model. The box wraps the whole part, so a model declared on this resource is drawn from its own
 # front-left-bottom corner and the box describes what is actually there.
 #
-# What this replaces: 235.0 x 116.0 x 100.0, which was the transport alone. The reader stands 115 mm
-# above it, so a model of the fitted sled reached half again as high as the box that positioned it.
+# What this replaces: 235.0 x 116.0 x 100.0, a figure taken before the part was modelled. The reader
+# stands 115 mm above that, so a model of the fitted sled reached half again as high as the box that
+# positioned it.
+#
+# The left edge is set by a thin tab, 1.5 mm thick, reaching 40 mm further left than anything else
+# on the part. A distance measured INTO this box - where the drive's reported x lands on the sled is
+# the one that matters - therefore starts at that tab, not at the body.
 _AUTOLOAD_SLED_SIZE_X = 316.2
 _AUTOLOAD_SLED_SIZE_Y = 109.5
 _AUTOLOAD_SLED_SIZE_Z = 215.3
