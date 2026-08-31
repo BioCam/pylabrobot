@@ -2147,104 +2147,6 @@ function clearHover() {
   markTreeRow(null);
 }
 
-// ---------------------------------------------------------------- machine tools
-
-function buildMachineTools(devices) {
-  const host = document.getElementById("navbar-machine-tools");
-  if (host.dataset.built === String(devices.length)) return updateMachinePanels(devices);
-  host.textContent = "";
-  host.dataset.built = String(devices.length);
-
-  devices.forEach((device, i) => {
-    const group = document.createElement("div");
-    group.className = "navbar-machine-group";
-
-    const label = document.createElement("button");
-    label.className = "navbar-machine-label";
-    label.textContent = device.device;
-    group.appendChild(label);
-
-    const button = document.createElement("button");
-    button.className = "navbar-machine-btn";
-    button.textContent = `${device.channels.length} ch`;
-    button.title = "Channel state";
-    group.appendChild(button);
-
-    const panel = document.createElement("div");
-    panel.className = "machine-tool-dropdown";
-    panel.style.display = "none";
-    panel.id = `machine-panel-${i}`;
-    group.appendChild(panel);
-
-    const open = () => {
-      const showing = panel.style.display !== "none";
-      panel.style.display = showing ? "none" : "block";
-      button.classList.toggle("active", !showing);
-    };
-    button.addEventListener("click", open);
-    label.addEventListener("click", open);
-
-    host.appendChild(group);
-  });
-  updateMachinePanels(devices);
-}
-
-function updateMachinePanels(devices) {
-  devices.forEach((device, i) => {
-    const panel = document.getElementById(`machine-panel-${i}`);
-    if (!panel) return;
-    const readings = [];
-    if (device.arm_x) readings.push(["arm x", device.arm_x]);
-    if (device.iswap_y) readings.push(["iSWAP y", device.iswap_y]);
-    for (const channel of device.channels) {
-      readings.push([`ch ${channel.index} x`, channel.x]);
-      readings.push([`ch ${channel.index} y`, channel.y]);
-      readings.push([`ch ${channel.index} z`, channel.z]);
-    }
-    panel.innerHTML =
-      `<div class="uml-section-title">Readings</div>` +
-      readings
-        .map(
-          ([k, r]) =>
-            `<div class="uml-row"><span class="uml-key" title="${r.note}">${k}</span>` +
-            `<span class="uml-value">${fmt(r.value)}` +
-            `<span class="prov ${r.provenance}">${r.provenance}</span></span></div>`
-        )
-        .join("") +
-      `<div class="uml-separator" style="margin:8px 0"></div>` +
-      `<div class="uml-section-title">Not published by v1</div>` +
-      device.gaps.map((g) => `<p class="gap-note">&middot; ${g}</p>`).join("");
-  });
-}
-
-function applyTelemetry(devices) {
-  buildMachineTools(devices);
-
-  for (const device of devices) {
-    // The arm publishes where it is through the state channel now, so this is a second opinion
-    // rather than the only one; it costs nothing and covers a device whose arm has no tracker.
-    const deviceIndex = world.indexOfName.get(device.device);
-    if (deviceIndex !== undefined && device.arm_x && device.arm_x.value !== null) {
-      const armIndex = armIndexOf(deviceIndex);
-      if (armIndex !== null) setArmX(armIndex, device.arm_x.value);
-    }
-  }
-}
-
-// The arm resource under a device, if it has one.
-function armIndexOf(deviceIndex) {
-  let found = null;
-  const walk = (index) => {
-    if (found !== null) return;
-    if (MOVING_PARTS.has(modelOf(index).category)) {
-      found = index;
-      return;
-    }
-    for (const child of world.childrenOf[index]) walk(child);
-  };
-  walk(deviceIndex);
-  return found;
-}
 
 // A line at the X the machine positions the arm by. Where that sits on the arm is the whole
 // difference between a dual-rail arm, positioned by its centre, and a single-rail one, positioned
@@ -2638,12 +2540,6 @@ function showHoverFor(event) {
   const rect = viewportEl.getBoundingClientRect();
   readout.style.left = `${event.clientX - rect.left + 14}px`;
   readout.style.top = `${event.clientY - rect.top + 14}px`;
-  if (hit.channel) {
-    clearHover();
-    const c = hit.channel.channel;
-    readout.textContent = `${hit.channel.device} channel ${c.index}\nx ${fmt(c.x.value)} (${c.x.provenance})\ny ${fmt(c.y.value)} (${c.y.provenance})\nz ${fmt(c.z.value)} (${c.z.provenance})`;
-    return;
-  }
   showHoverBox(hit.index);
   markTreeRow(hit.index);
   readout.textContent =
@@ -2894,10 +2790,9 @@ function connect() {
   };
   socket.onmessage = (event) => {
     const { event: kind, data } = JSON.parse(event.data);
-    // Anything the server says is assumed to change what is on screen. Saying otherwise is a
-    // deliberate, listed exception, so a message kind added later errs towards a wasted redraw
-    // rather than towards not drawing at all.
-    if (!DOM_ONLY_MESSAGES.has(kind)) invalidate();
+    // Everything the server says changes what is on screen: the scene it draws, or the state it
+    // draws it in. There is no message that only touches the panels around the viewport.
+    invalidate();
     if (kind === "scene") {
       const _tScene = performance.now();
       stats = data.stats ?? {};
@@ -2928,8 +2823,6 @@ function connect() {
       goToStartView();
     } else if (kind === "state" && world) {
       applyState(data);
-    } else if (kind === "telemetry" && world) {
-      applyTelemetry(data);
     }
   };
 }
@@ -2939,9 +2832,6 @@ statusDot.addEventListener("click", connect);
 const gif = initGif({ renderer, view, camera });
 
 // ---------------------------------------------------------------- loop
-
-// Messages that only ever touch the panels around the viewport, never the scene in it.
-const DOM_ONLY_MESSAGES = new Set(["telemetry"]);
 
 let sizedTo = { w: 0, h: 0 };
 

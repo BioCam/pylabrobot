@@ -50,13 +50,11 @@ class Viewer3D:
 
   Args:
     root: the resource that is the world. Every descendant is placed in its cartesian space.
-    telemetry: optional device state readers, polled while the viewer is connected.
     host: interface to bind both servers to.
     fs_port: static file server port.
     models_root: directory that every `Resource.reference_glb` is relative to. Without one,
       resources that declare a model are drawn as boxes, and say so once each.
     ws_port: websocket port.
-    telemetry_hz: how often to poll the telemetry readers, in Hz.
     open_browser: whether to open a browser window on start.
     name: what to show in the header, as the existing visualizer shows the calling script.
   """
@@ -64,21 +62,17 @@ class Viewer3D:
   def __init__(
     self,
     root: Resource,
-    telemetry: Optional[list] = None,
     host: str = "127.0.0.1",
     fs_port: int = 1338,
     ws_port: int = 2122,
-    telemetry_hz: float = 5.0,
     open_browser: bool = True,
     name: str = "workcell",
     models_root: Optional[str] = None,
   ):
     self.root = root
-    self.telemetry = telemetry or []
     self.host = host
     self.fs_port = fs_port
     self.ws_port = ws_port
-    self.telemetry_period = 1.0 / telemetry_hz
     self.open_browser = open_browser
     self.name = name
     # Where a resource's `reference_glb` is resolved from. One root for the whole scene, so a
@@ -343,19 +337,6 @@ class Viewer3D:
     finally:
       self._clients.discard(websocket)
 
-  async def _telemetry_loop(self) -> None:
-    while True:
-      if self._clients and self.telemetry:
-        readings = []
-        for reader in self.telemetry:
-          try:
-            readings.append((await reader.read()).serialize())
-          except Exception as e:
-            logger.warning("telemetry read failed: %s", e)
-        if readings:
-          await self._broadcast("telemetry", readings)
-      await asyncio.sleep(self.telemetry_period)
-
   # -- static files ----------------------------------------------------------
 
   def _start_file_server(self) -> None:
@@ -437,8 +418,6 @@ class Viewer3D:
     print(f"viewer on {url}  (websocket {self.ws_port})")
     if self.open_browser:
       webbrowser.open(url)
-
-    asyncio.ensure_future(self._telemetry_loop())
 
   async def stop(self) -> None:
     if self._httpd is not None:

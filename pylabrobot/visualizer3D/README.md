@@ -45,17 +45,16 @@ holds. Two general rules fix it, both in `scene.py`: a key called `name` at any 
 particular thing, and inside a nested structure a string matching a resource in this tree is a link
 to it. The rule deliberately stops at the top level, or a deck called "deck" loses its category.
 
-**Tracking information, with its provenance.** `telemetry.py` reads a `STARDevice` and labels every
-number `measured`, `derived` or `unavailable`. Against a simulated STARlet that comes out as:
+**One channel, not two.** Everything the viewer draws arrives as tracking state: a well's volume, a
+tip spot's fitting, and the position of anything that travels. A moving part reaches the picture
+because `Resource.location` publishes when it is set, so an X-arm read off the machine is on the
+same path as a well being filled.
 
-- arm X, 362.9 mm, **measured**
-- iSWAP home Y, 456.3 mm, **measured**, though it is a named constant rather than a live pose
-- channel X, **derived** from the arm, since per-channel X is not published
-- channel Y, **derived** from the initialization spread, which is not a live readout
-- channel Z, **unavailable**: there is a move-to-safety command and no way to ask where a channel is
-
-Nothing is invented to fill a gap. The viewer colours each channel by the weakest provenance it
-carries and lists what v1 does not publish, which is the point: the renderer was never the blocker.
+A polling reader sat beside that for a while, asking a device where its arm was five times a second
+and labelling each number `measured`, `derived` or `unavailable`. It was a second communication
+channel for a position state already carried, so it is gone. What is lost with it is the labelling
+of what v1 does not publish - per-channel X, Y and Z have no live readout, and saying so in the
+interface is worth doing again once state itself can carry that distinction.
 
 ## What it is not
 
@@ -70,25 +69,23 @@ carries and lists what v1 does not publish, which is the point: the renderer was
   target back (r180), so on the fallback path the control disables itself and says why rather than
   producing an empty file. Untested on WebGPU here, since the browser used to check it has no
   adapter. It captures the viewport only, not the floating panels over it.
-- No GUI editing mode, and no drag-to-reposition on the machine-tool panels.
+- No GUI editing mode.
 
 ## Interface
 
 The shell follows the existing visualizer: its palette and metrics, the navbar with the source
-name and machine-tool group, the left tool rail (select, get-location, GIF), the workcell tree
+name, the left tool rail (select, get-location, GIF), the workcell tree
 with per-item eye toggles, expand-all and show-to-depth, the search pane with its include filters,
 the floating info panel, the scale bar and the resizable side panel.
 
 Three things are new, because three dimensions asks for them: camera presets in the left rail
 (ISO, TOP, FRT), an axis legend that turns with the view instead of a fixed x/y pair, and a Z
-reference in the coordinate tool alongside X and Y. The machine-tool panel is where the telemetry
-provenance is shown, in the slot the pipette and arm popups occupy today.
+reference in the coordinate tool alongside X and Y.
 
 ## Layout
 
 ```
 scene.py      flatten any resource tree into models and instances; measure the split
-telemetry.py  read a v1 device's state, and say what it does not publish
 server.py     static files and a websocket, same two servers as today
 demo.py       a workcell with a STAR and a bench in it
 static/       index.html, main.css, and the client modules below; vendored three.js and gif.js

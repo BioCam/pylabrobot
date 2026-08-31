@@ -1,6 +1,5 @@
 /* Palette and metrics follow the existing visualizer, so the two read as the same application.
-   Only what three dimensions genuinely adds is new: the camera presets, the axis gizmo, and the
-   provenance chips in the machine-tool panel. */
+   Only what three dimensions genuinely adds is new: the camera presets and the axis gizmo. */
 
 * { box-sizing: border-box; padding: 0; margin: 0; }
 
@@ -33,7 +32,6 @@ nav.navbar .container-fluid {
 }
 
 .navbar-divider { width: 1px; height: 100%; background: #ced4da; flex-shrink: 0; }
-.navbar-divider-machine-tools { margin: 0 14px; height: 95%; }
 
 .navbar-brand {
   margin-left: 12px;
@@ -136,66 +134,6 @@ nav.navbar .container-fluid {
 @keyframes dot-glow-disconnected {
   0%, 100% { box-shadow: none; }
   50% { box-shadow: 0 0 9px rgba(238, 136, 102, 0.7), 0 0 19px rgba(238, 136, 102, 0.4), 0 0 25px rgba(238, 136, 102, 0.15); }
-}
-
-/* ---------------------------------------------------------------- machine tools */
-
-#navbar-machine-tools { display: flex; align-items: center; gap: 8px; }
-
-.navbar-machine-group {
-  display: flex;
-  align-items: center;
-  border: 1.5px solid #ced4da;
-  border-radius: 6px;
-  background: #f8f9fa;
-  position: relative;
-}
-
-.navbar-machine-label { border-radius: 5px 0 0 5px; }
-.navbar-machine-btn { border-radius: 0 5px 5px 0; }
-
-.navbar-machine-label {
-  padding: 0 10px;
-  font-size: 12px;
-  font-weight: 700;
-  color: #555;
-  white-space: nowrap;
-  border-right: 1px solid #ced4da;
-  height: 48px;
-  display: flex;
-  align-items: center;
-  background: transparent;
-  border-top: none; border-bottom: none; border-left: none;
-}
-
-.navbar-machine-btn {
-  border: none;
-  background: transparent;
-  height: 48px;
-  padding: 0 12px;
-  font-size: 12px;
-  font-weight: 700;
-  color: #555;
-  opacity: 0.8;
-}
-
-.navbar-machine-btn:hover { opacity: 1; background: #dee2e6; }
-.navbar-machine-btn.active { background: #cfe2ff; opacity: 1; }
-
-.machine-tool-dropdown {
-  position: absolute;
-  top: 62px;
-  background: rgba(255, 255, 255, 0.94);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 2px solid #999;
-  border-radius: 8px;
-  padding: 12px 14px;
-  z-index: 30;
-  min-width: 300px;
-  max-height: 70vh;
-  overflow-y: auto;
-  box-shadow: 0 6px 20px rgba(0,0,0,0.12);
 }
 
 /* ---------------------------------------------------------------- layout */
@@ -701,23 +639,5 @@ main { position: relative; flex: 1; min-width: 0; background: #fff; }
 }
 
 .uml-close-btn:hover { color: #333; }
-
-/* provenance chips: measured / derived / unavailable */
-.prov {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  padding: 1px 5px;
-  border-radius: 3px;
-  margin-left: 6px;
-  white-space: nowrap;
-}
-
-.prov.measured { background: #d1e7dd; color: #146c43; }
-.prov.derived { background: #fff3cd; color: #997404; }
-.prov.unavailable { background: #f8d7da; color: #b02a37; }
-
-.gap-note { color: #777; font-size: 12px; line-height: 1.5; padding-left: 10px; text-indent: -10px; margin-top: 3px; }
 
 @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }

@@ -35,7 +35,6 @@ from pylabrobot.resources.tip_rack import TipRack
 
 from .facility import Facility, Workcell
 from .server import Viewer3D
-from .telemetry import STARTelemetry
 
 logging.disable(logging.WARNING)
 
@@ -210,7 +209,7 @@ async def main() -> None:
   await star.setup()
   declare_channel_access(star)
 
-  viewer = Viewer3D(facility, telemetry=[STARTelemetry(star)], name="demo.py")
+  viewer = Viewer3D(facility, name="demo.py")
   await viewer.start()
 
   await asyncio.sleep(1.5)  # let a browser connect before anything moves
