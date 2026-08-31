@@ -1,4 +1,4 @@
-// A workcell viewer that knows nothing about liquid handlers.
+// A facility viewer that knows nothing about liquid handlers.
 //
 // The server sends models once and instances as a packed transform array. One InstancedMesh is
 // built per model, so a full deck draws in a couple of dozen calls no matter how many wells are
@@ -22,7 +22,6 @@ import { DRACOLoader } from "three/addons/DRACOLoader.js";
 
 import {
   DEG,
-  WORKCELL_OUTLINE,
   RESOURCE_COLORS,
   MOVING_PARTS,
   FLAT_EDGE,
@@ -85,8 +84,6 @@ let stateOf = new Map();
 let hiddenNames = new Set();
 let selected = -1;
 let stats = {};
-let workcells = []; // { name, members: [name] } - groupings, not places
-let workcellBoxes = new Map(); // name -> Box3Helper drawn from the members' own extents
 let activeTool = "cursor";
 let framed = false; // whether this connection has framed the camera on its first scene
 
@@ -469,10 +466,24 @@ function buildReferenceMarks() {
   for (const mark of referenceMarks) view.remove(mark.plane);
   referenceMarks = [];
 
+  // Draw these at the deck's working surface. A mark at the top of its own resource floats above
+  // whatever it is pointing at, which on a part as tall as the autoload sled is 215 mm of daylight.
+  // The surface is not the deck resource's origin - on a Hamilton deck that sits 100 mm below it -
+  // but the z its rail grid is measured on, which is where anything seated on the deck stands.
+  let deckZ = null;
+  for (let index = 0; index < world.names.length; index++) {
+    const deck = modelOf(index);
+    if (deck.category !== "deck" || !deck.grid) continue;
+    deckZ = world.matrices[index].elements[14] + deck.grid.origin[2];
+    break;
+  }
+
   for (let index = 0; index < world.names.length; index++) {
     const model = modelOf(index);
     if (!model.reference_point || MOVING_PARTS.has(model.category)) continue;
-    const [, sy, sz] = sizeOf(model);
+    const [, sy] = sizeOf(model);
+    // Held in the resource's own frame, so a part that only travels in x keeps it as it moves.
+    const sz = deckZ === null ? 0 : deckZ - world.matrices[index].elements[14];
     const plane = new THREE.Mesh(
       new THREE.PlaneGeometry(REFERENCE_WIDTH, sy),
       new THREE.MeshBasicMaterial({
@@ -1528,61 +1539,6 @@ function buildOverlay(instances, model) {
   return mesh;
 }
 
-// ---------------------------------------------------------------- workcells
-
-// A workcell is a grouping, not a place: no transform passes through it, so it has no box of its
-// own. What it occupies is whatever its members occupy, derived here and redrawn whenever the
-// scene changes.
-function memberIndices(workcell) {
-  return workcell.members.map((name) => world.indexOfName.get(name)).filter((i) => i !== undefined);
-}
-
-function workcellExtent(workcell) {
-  const box = new THREE.Box3();
-  for (const index of memberIndices(workcell)) {
-    const walk = (i) => {
-      box.union(worldBox(i));
-      for (const child of world.childrenOf[i]) walk(child);
-    };
-    walk(index);
-  }
-  return box;
-}
-
-function buildWorkcellBoxes() {
-  for (const helper of workcellBoxes.values()) view.remove(helper);
-  workcellBoxes = new Map();
-  for (const workcell of workcells) {
-    const box = workcellExtent(workcell);
-    if (box.isEmpty()) continue;
-    const helper = new THREE.Box3Helper(box, new THREE.Color(WORKCELL_OUTLINE));
-    helper.material.transparent = true;
-    helper.material.opacity = 0.35;
-    helper.material.depthTest = false;
-    helper.renderOrder = 940;
-    helper.visible = false; // shown on hover or selection, so it never clutters the view
-    view.add(helper);
-    workcellBoxes.set(workcell.name, helper);
-  }
-}
-
-function showWorkcellBox(name) {
-  for (const [key, helper] of workcellBoxes) helper.visible = key === name;
-}
-
-function clearWorkcellBoxes() {
-  for (const helper of workcellBoxes.values()) helper.visible = false;
-}
-
-function workcellOf(index) {
-  for (let i = index; i >= 0; i = world.parentOf[i]) {
-    const name = world.names[i];
-    const hit = workcells.find((w) => w.members.includes(name));
-    if (hit) return hit;
-  }
-  return null;
-}
-
 // ---------------------------------------------------------------- live state
 
 // State arrives as a table of the distinct states in the scene, plus which of them each resource
@@ -1724,7 +1680,7 @@ function worldBox(index) {
   return box;
 }
 
-// ---------------------------------------------------------------- workcell tree
+// ---------------------------------------------------------------- facility tree
 
 const treeEl = document.getElementById("resource-tree");
 const rowOf = new Map();
@@ -1834,22 +1790,6 @@ function addRow(index, depth, before) {
   type.className = "tree-node-type";
   type.textContent = vacant ? "" : model.type;
   row.appendChild(type);
-
-  // Membership is shown as a tag on the member itself, not as a parent node. A workcell is a
-  // grouping, so putting it in a tree of places would say the wrong thing about it.
-  const ownGroup = workcells.find((w) => w.members.includes(world.names[index]));
-  if (ownGroup) {
-    const tag = document.createElement("span");
-    tag.className = "tree-workcell-tag";
-    tag.textContent = ownGroup.name;
-    tag.title = `workcell ${ownGroup.name}: ${ownGroup.members.length} members`;
-    tag.addEventListener("mouseenter", (e) => {
-      e.stopPropagation();
-      showWorkcellBox(ownGroup.name);
-    });
-    tag.addEventListener("mouseleave", clearWorkcellBoxes);
-    row.appendChild(tag);
-  }
 
   const info = document.createElement("span");
   info.className = "tree-node-info";
@@ -1996,7 +1936,6 @@ function refreshPlacement(index) {
 function closeInfoPanel() {
   selected = -1;
   selectionBox.visible = false;
-  clearWorkcellBoxes();
   for (const [, entry] of rowOf) entry.row.classList.remove("selected");
   hideInfoPanel();
 }
@@ -2037,12 +1976,10 @@ function renderInfoPanel() {
   const o = index * 6;
   const xf = world.local;
   const state = stateOf.get(index);
-  const group = workcellOf(index);
 
   const identity = [["name", escapeHtml(world.names[index])], ["type", escapeHtml(model.type)]];
   if (model.model) identity.push(["model", escapeHtml(String(model.model))]);
   identity.push(["category", escapeHtml(model.category ?? "uncategorised")]);
-  identity.push(["workcell", group ? escapeHtml(group.name) : "none"]);
 
   const placement = [
     ["location", `<span data-live="location">${tuple(xf[o], xf[o + 1], xf[o + 2], "mm")}</span>`],
@@ -2118,9 +2055,6 @@ function select(index, openPanel = true) {
   selected = index;
   selectionBox.box.copy(worldBox(index));
   selectionBox.visible = true;
-  const group = workcellOf(index);
-  if (group) showWorkcellBox(group.name);
-  else clearWorkcellBoxes();
   revealAndHighlight(index);
   if (openPanel || infoPanel?.isConnected) renderInfoPanel();
 }
@@ -2965,12 +2899,10 @@ function connect() {
     if (kind === "scene") {
       const _tScene = performance.now();
       stats = data.stats ?? {};
-      workcells = data.workcells ?? [];
       setWorld(buildWorld(data));
       timings.decodeMs = performance.now() - _tScene;
       const _tBuild = performance.now();
       buildMeshes();
-      buildWorkcellBoxes();
       floorZ = sceneBounds().min.z;
       gridState = null;
       buildGridMarks();

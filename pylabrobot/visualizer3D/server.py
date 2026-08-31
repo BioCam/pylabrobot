@@ -66,7 +66,7 @@ class Viewer3D:
     fs_port: int = 1338,
     ws_port: int = 2122,
     open_browser: bool = True,
-    name: str = "workcell",
+    name: str = "facility",
     models_root: Optional[str] = None,
   ):
     self.root = root
@@ -195,11 +195,7 @@ class Viewer3D:
         self._clients.discard(client)
 
   def _scene_message(self, rebuild: bool = False) -> Dict[str, Any]:
-    """The scene, its measurements, and any workcell groups the root records.
-
-    Groups are read by duck typing rather than by importing `Facility`, so any root that records
-    workcells is served, and a plain resource simply has none.
-    """
+    """The scene and its measurements."""
     if self._scene_payload is not None and not rebuild:
       return self._scene_payload
 
@@ -226,12 +222,10 @@ class Viewer3D:
     self._index_of = {name: i for i, name in enumerate(payload["instances"]["names"])}
     self._published = {}
     self._stats = scene.stats(scene_bytes=len(json.dumps(payload)))
-    serialize_workcells = getattr(self.root, "serialize_workcells", None)
     self._scene_payload = {
       **payload,
       "epoch": self._epoch,
       "stats": self._stats,
-      "workcells": serialize_workcells() if callable(serialize_workcells) else [],
     }
     return self._scene_payload
 

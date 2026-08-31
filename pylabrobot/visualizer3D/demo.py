@@ -8,10 +8,6 @@ The world is a `Facility`. A simulated `STARDevice` is assigned into it at a coo
 a bench holding a plate and a tip rack that belong to no instrument. The viewer treats them
 identically, because it never asks what anything is.
 
-The STAR is recorded in a `Workcell`; the bench is in none. That is the point of the workcell being
-a grouping rather than a place: a thing can stand in the facility without one, which is what a
-shuttle moving between workcells would need.
-
 The v1 STAR has no aspirate, dispense or tip-pickup yet, so the run below drives the trackers
 directly. That is the same channel the viewer subscribes to either way: a real pipetting command
 would move these trackers rather than talk to the viewer.
@@ -33,7 +29,7 @@ from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip_rack import TipRack
 
-from .facility import Facility, Workcell
+from .facility import Facility
 from .server import Viewer3D
 
 logging.disable(logging.WARNING)
@@ -78,12 +74,8 @@ def build_facility() -> Facility:
   star.deck._size_z = DECK_HEIGHT
   star.deck._local_size_z = DECK_HEIGHT
 
-  # Everything the STAR is driven with is one workcell. Nothing moved to make that true: the
-  # grouping is recorded beside the tree, not inserted into it.
-  facility.add_workcell(Workcell("star_cell", [star]))
-
-  # A bench is not a machine, has no deck and no driver, belongs to no workcell, and still takes
-  # part in the same cartesian space. This is the case the old visualizer had no way to express.
+  # A bench is not a machine, has no deck and no driver, and still takes part in the same
+  # cartesian space. This is the case the old visualizer had no way to express.
   bench = Resource(name="bench", size_x=900, size_y=600, size_z=880, category="bench")
   facility.assign_child_resource(bench, location=Coordinate(1300, 60, 0))
   bench.assign_child_resource(

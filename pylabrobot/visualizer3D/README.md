@@ -24,7 +24,7 @@ like everything else. Nothing in the client switches on a resource type: geometr
 model's own `cross_section_type` and sizes, colour from its `category`, structure from the parent
 array, and the inspector prints whatever fields arrived.
 
-**Prototype and instance, measured.** On the demo workcell:
+**Prototype and instance, measured.** On the demo facility:
 
 | | value |
 |---|---|
@@ -74,7 +74,7 @@ interface is worth doing again once state itself can carry that distinction.
 ## Interface
 
 The shell follows the existing visualizer: its palette and metrics, the navbar with the source
-name, the left tool rail (select, get-location, GIF), the workcell tree
+name, the left tool rail (select, get-location, GIF), the facility tree
 with per-item eye toggles, expand-all and show-to-depth, the search pane with its include filters,
 the floating info panel, the scale bar and the resizable side panel.
 
@@ -87,7 +87,7 @@ reference in the coordinate tool alongside X and Y.
 ```
 scene.py      flatten any resource tree into models and instances; measure the split
 server.py     static files and a websocket, same two servers as today
-demo.py       a workcell with a STAR and a bench in it
+demo.py       a facility with a STAR and a bench in it
 static/       index.html, main.css, and the client modules below; vendored three.js and gif.js
               (no CDN, so it runs air-gapped)
 ```

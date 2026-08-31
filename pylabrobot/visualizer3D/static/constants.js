@@ -6,11 +6,8 @@ import * as THREE from "three";
 export const DEG = Math.PI / 180;
 
 // The existing visualizer's resource colours, so the same deck reads the same in both.
-export const WORKCELL_OUTLINE = 0x1a4b8c;
-
 export const RESOURCE_COLORS = {
   facility: 0xe8ebed,
-  workcell: 0xe8ebed,
   device: 0xdfe4e7,
   bench: 0xe4e8ea,
   deck: 0xf5fafc,
