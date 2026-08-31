@@ -5,7 +5,7 @@
  *
  * @param {{getWorld: () => any, referencePoint: Function, escapeHtml: (s: string) => string}} deps
  * @returns {{coordinateLabel: (i: number) => string, recordMeasurement: (i: number) => void,
- *            populateWrtDropdown: () => void}}
+ *            populateWrtDropdown: () => void, endpoints: (i: number) => {from: any, to: any}}}
  */
 import { select as selectEl } from "./dom.js";
 
@@ -14,18 +14,28 @@ export function initCoords({ getWorld, referencePoint, escapeHtml }) {
   const measurementsEl = document.getElementById("coords-measurements");
   const hintEl = document.getElementById("coords-measurements-hint");
 
-  function coordinateFor(index) {
-    const point = referencePoint(index, refValue("coords-x-ref"), refValue("coords-y-ref"), refValue("coords-z-ref"));
+  /**
+   * The two points a measurement runs between, in world millimetres. `from` is null when the
+   * measurement is absolute, which is the one case there is no second point to draw to.
+   *
+   * @param {number} index
+   * @returns {{from: any, to: any}}
+   */
+  function endpoints(index) {
+    const to = referencePoint(index, refValue("coords-x-ref"), refValue("coords-y-ref"), refValue("coords-z-ref"));
     const wrtName = refValue("coords-wrt-ref");
-    if (wrtName !== "root") {
-      const wrtIndex = getWorld().indexOfName.get(wrtName);
-      if (wrtIndex !== undefined) {
-        point.sub(
-          referencePoint(wrtIndex, refValue("coords-wrt-x-ref"), refValue("coords-wrt-y-ref"), refValue("coords-wrt-z-ref"))
-        );
-      }
-    }
-    return point;
+    if (wrtName === "root") return { from: null, to };
+    const wrtIndex = getWorld().indexOfName.get(wrtName);
+    if (wrtIndex === undefined) return { from: null, to };
+    return {
+      from: referencePoint(wrtIndex, refValue("coords-wrt-x-ref"), refValue("coords-wrt-y-ref"), refValue("coords-wrt-z-ref")),
+      to,
+    };
+  }
+
+  function coordinateFor(index) {
+    const { from, to } = endpoints(index);
+    return from ? to.sub(from) : to;
   }
 
   function coordinateLabel(index) {
@@ -73,5 +83,5 @@ export function initCoords({ getWorld, referencePoint, escapeHtml }) {
     select.value = current && [...select.options].some((o) => o.value === current) ? current : "root";
   }
 
-  return { coordinateLabel, recordMeasurement, populateWrtDropdown };
+  return { coordinateLabel, recordMeasurement, populateWrtDropdown, endpoints };
 }

@@ -250,6 +250,10 @@ main { position: relative; flex: 1; min-width: 0; background: #fff; }
 
 .tool-panel-rule { height: 1px; background: #ced4da; margin-top: 8px; width: 100%; }
 
+.tool-panel-check { display: flex; align-items: center; gap: 7px; margin-top: 8px; width: 100%; }
+.tool-panel-check input { width: 15px; height: 15px; cursor: pointer; }
+.tool-panel-check label { font-size: 15px; color: #555; cursor: pointer; user-select: none; }
+
 #coords-measurements { max-height: 240px; overflow-y: auto; width: 100%; margin-top: 4px; }
 #coords-measurements-hint { color: #aaa; font-size: 12px; line-height: 1.6; }
 

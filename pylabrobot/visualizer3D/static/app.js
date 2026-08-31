@@ -2182,7 +2182,148 @@ function pick(event) {
 }
 
 const coords = initCoords({ getWorld: () => world, referencePoint, escapeHtml });
-const { coordinateLabel, recordMeasurement, populateWrtDropdown } = coords;
+const { coordinateLabel, recordMeasurement, populateWrtDropdown, endpoints: deltaEndpoints } = coords;
+
+// ---------------------------------------------------------------- delta lines
+
+// The existing visualizer draws an L between the two points a measurement runs between, one leg per
+// axis in the axis' own colour, labelled with the distance. In three dimensions the L becomes a
+// staircase: x, then y, then z. A coordinate tells you how far apart two things are; this tells you
+// which way, which is the part a number alone never shows.
+//
+// Drawn over everything, because it annotates the scene rather than standing in it: a measurement
+// half-buried in a carrier would be worse than useless.
+const DELTA_WIDTH = 2.4;
+const DELTA_HALO_WIDTH = 6.0;
+const DELTA_HALO_OPACITY = 0.35;
+const DELTA_LABEL_MM = 26;
+const DELTA_MIN = 0.05; // mm; a leg shorter than this is a rounding artefact, not a distance
+const DELTA_AXES = ["x", "y", "z"];
+const deltaToggle = input("delta-lines-toggle");
+
+// Built once and then moved, never rebuilt. Hovering fires on every frame the pointer moves, so
+// allocating a dozen objects each time would be waste - but the reason it has to be this way is
+// harder to see: a material has no pipeline ready on the frame it is created, so an annotation
+// rebuilt per hover is permanently on its first frame and never draws at all.
+let deltaAnnotation = null;
+
+function buildDeltaAnnotation() {
+  const group = new THREE.Group();
+  group.visible = false;
+  const legs = DELTA_AXES.map((axis) => {
+    const color = AXIS_COLORS[axis];
+    // Pale and wide behind, saturated and thin in front: the halo is what keeps a thin line
+    // readable against a surface of any colour.
+    const lines = [
+      [DELTA_HALO_WIDTH, DELTA_HALO_OPACITY, 960],
+      [DELTA_WIDTH, 1, 961],
+    ].map(([linewidth, opacity, order]) => {
+      const geometry = new LineSegmentsGeometry();
+      geometry.setPositions([0, 0, 0, 0, 0, 0]);
+      const material = new THREE.Line2NodeMaterial({
+        color, linewidth, worldUnits: false, transparent: true, opacity, depthTest: false,
+      });
+      edgeMaterials.add(material);
+      const line = new LineSegments2(geometry, material);
+      line.frustumCulled = false;
+      line.renderOrder = order;
+      group.add(line);
+      return line;
+    });
+
+    const canvas = document.createElement("canvas");
+    canvas.width = 256;
+    canvas.height = 64;
+    const texture = new THREE.CanvasTexture(canvas);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    // A quad rather than a sprite, as the rail numbers are: this build draws one and not the other.
+    // It is turned to face the camera each frame instead, since a distance should read the same
+    // from wherever it is looked at.
+    const label = new THREE.Mesh(
+      new THREE.PlaneGeometry(DELTA_LABEL_MM * 4, DELTA_LABEL_MM),
+      new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false })
+    );
+    label.frustumCulled = false;
+    label.renderOrder = 962;
+    group.add(label);
+    return { axis, color: `#${color.toString(16).padStart(6, "0")}`, lines, canvas, texture, label, text: null };
+  });
+  view.add(group);
+  return { group, legs };
+}
+
+function writeDeltaLabel(leg, text) {
+  if (leg.text === text) return; // the same number, redrawn, costs a texture upload for nothing
+  leg.text = text;
+  const context = leg.canvas.getContext("2d");
+  context.clearRect(0, 0, leg.canvas.width, leg.canvas.height);
+  context.font = "bold 34px ui-monospace, Menlo, monospace";
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.lineWidth = 6;
+  context.strokeStyle = "rgba(255, 255, 255, 0.9)";
+  context.strokeText(text, 128, 34);
+  context.fillStyle = leg.color;
+  context.fillText(text, 128, 34);
+  leg.texture.needsUpdate = true;
+}
+
+function clearDeltaLines() {
+  if (deltaAnnotation) deltaAnnotation.group.visible = false;
+}
+
+function drawDeltaLines(index) {
+  if (activeTool !== "coords" || !deltaToggle.checked) return clearDeltaLines();
+  const { from, to } = deltaEndpoints(index);
+  if (!from) return clearDeltaLines(); // an absolute measurement has no second point to run to
+
+  deltaAnnotation = deltaAnnotation ?? buildDeltaAnnotation();
+  // One corner per axis taken in turn, so each leg is parallel to the axis it is coloured for.
+  const corners = [
+    from,
+    new THREE.Vector3(to.x, from.y, from.z),
+    new THREE.Vector3(to.x, to.y, from.z),
+    to,
+  ];
+  let any = false;
+  deltaAnnotation.legs.forEach((leg, i) => {
+    const start = corners[i];
+    const end = corners[i + 1];
+    const distance = to[leg.axis] - from[leg.axis];
+    const shown = Math.abs(distance) >= DELTA_MIN;
+    for (const line of leg.lines) {
+      line.visible = shown;
+      if (shown) line.geometry.setPositions([start.x, start.y, start.z, end.x, end.y, end.z]);
+    }
+    leg.label.visible = shown;
+    if (!shown) return;
+    writeDeltaLabel(leg, `\u0394${leg.axis} ${distance.toFixed(1)}`);
+    leg.label.position.copy(start).add(end).multiplyScalar(0.5);
+    any = true;
+  });
+  deltaAnnotation.group.visible = any;
+}
+
+// The labels are geometry, so left alone they turn with the scene and shrink with distance. Both
+// are wrong for a number: it is read, not looked at. Turned to face the camera and sized in pixels
+// rather than millimetres, they stay the same on screen at any zoom, as the existing visualizer's
+// do - it scales its by the stage's own zoom for the same reason.
+const DELTA_LABEL_PX = 34;
+
+function updateDeltaLabels() {
+  const perPixel = mmPerPixel();
+  if (!Number.isFinite(perPixel) || perPixel <= 0) return;
+  const scale = (DELTA_LABEL_PX * perPixel) / DELTA_LABEL_MM;
+  for (const leg of deltaAnnotation.legs) {
+    leg.label.quaternion.copy(camera.quaternion);
+    leg.label.scale.setScalar(scale);
+  }
+}
+
+// Turning them off takes the drawn one with it, rather than leaving it until the next hover.
+deltaToggle.addEventListener("change", () => {
+  if (!deltaToggle.checked) clearDeltaLines();
+});
 
 // ---------------------------------------------------------------- camera
 
@@ -2421,6 +2562,18 @@ function atBoundary(surface) {
       transparent: e.mesh.material.transparent,
       opacity: e.mesh.material.opacity,
     })),
+  // What the coordinate tool is drawing, so a test can check the annotation rather than the number
+  // the panel prints beside it.
+  deltas: () =>
+    !deltaAnnotation?.group.visible
+      ? []
+      : deltaAnnotation.legs
+          .filter((leg) => leg.label.visible)
+          .map((leg) => ({
+            axis: leg.axis,
+            text: leg.text,
+            at: leg.label.position.toArray().map((v) => +v.toFixed(1)),
+          })),
   grid: () => {
     // Rail numbers are flat quads lying in the deck, not sprites - they were sprites once, and
     // this counted them by that type long after they stopped being it.
@@ -2534,6 +2687,7 @@ function showHoverFor(event) {
   if (!hit) {
     readout.style.display = "none";
     clearHover();
+    clearDeltaLines();
     return;
   }
   readout.style.display = "block";
@@ -2542,6 +2696,7 @@ function showHoverFor(event) {
   readout.style.top = `${event.clientY - rect.top + 14}px`;
   showHoverBox(hit.index);
   markTreeRow(hit.index);
+  drawDeltaLines(hit.index);
   readout.textContent =
     activeTool === "coords" ? coordinateLabel(hit.index) : `${world.names[hit.index]}\n${modelOf(hit.index).type}`;
 }
@@ -2626,6 +2781,7 @@ function refreshToolUI() {
 
 function setTool(tool) {
   activeTool = tool;
+  if (tool !== "coords") clearDeltaLines();
   openPanel = tool === "coords" ? "coords" : openPanel === "coords" ? null : openPanel;
   refreshToolUI();
 }
@@ -2884,6 +3040,7 @@ function drawFrame() {
     if (!viewHelper.animating) setProjection("orthographic");
     moving = true;
   }
+  if (deltaAnnotation?.group.visible) updateDeltaLabels();
   if (updateArms(delta)) moving = true;
   if (controls.update()) moving = true;
   if (gif.isRecording()) moving = true;
