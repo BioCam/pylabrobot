@@ -49,9 +49,11 @@ EXTENSION_HOUSING_SIZE = (265.0, 779.0, 855.0)
 # its own.
 SIDE_PANEL_SIZE = (4.0, 726.0, 682.0)
 SIDE_PANEL_ORIGIN_YZ = (52.8, 180.5)
-STARLET_SIDE_PANEL_X = 5.0
-STAR_SIDE_PANEL_X = 3.5
-STARPLUS_SIDE_PANEL_X = 6.0
+# One panel, one place. The manufacturer's three files put it at 5.0, 3.5 and 6.0 - a 2.5 mm spread
+# on a part whose geometry is identical in all three to the last decimal, so the spread is how each
+# file was drawn rather than how the machines differ. This is the median, and the STARlet's, which
+# is the frame the rest of this is measured against.
+SIDE_PANEL_X = 5.0
 # What it used to be, before there was a part to measure: an unsourced 245.0 that only widened the
 # instrument. Kept as a name because `STAR_with_extension_housing` reads it.
 EXTENSION_HOUSING_SIZE_X = EXTENSION_HOUSING_SIZE[0]
@@ -310,7 +312,7 @@ def STAR(
     size_z=size_z,
     extension_housing=extension_housing,
     autoload=autoload,
-    side_panel_x=STAR_SIDE_PANEL_X,
+    side_panel_x=SIDE_PANEL_X,
     deck_location=STAR_DECK_LOCATION,
     model=STAR.__name__,
   )
@@ -363,7 +365,7 @@ def STARLet(
     size_z=size_z,
     extension_housing=extension_housing,
     autoload=autoload,
-    side_panel_x=STARLET_SIDE_PANEL_X,
+    side_panel_x=SIDE_PANEL_X,
     deck_location=STARLET_DECK_LOCATION,
     model=STARLet.__name__,
   )
@@ -396,7 +398,7 @@ def STARPlus(
     size_z=size_z,
     extension_housing=extension_housing,
     autoload=autoload,
-    side_panel_x=STARPLUS_SIDE_PANEL_X,
+    side_panel_x=SIDE_PANEL_X,
     deck_location=STAR_DECK_LOCATION,
     model=STARPlus.__name__,
   )
