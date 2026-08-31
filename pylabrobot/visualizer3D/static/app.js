@@ -88,6 +88,7 @@ let stats = {};
 let workcells = []; // { name, members: [name] } - groupings, not places
 let workcellBoxes = new Map(); // name -> Box3Helper drawn from the members' own extents
 let activeTool = "cursor";
+let framed = false; // whether this connection has framed the camera on its first scene
 
 // ---------------------------------------------------------------- renderer
 
@@ -2938,6 +2939,7 @@ function connect() {
     return;
   }
   socket = new WebSocket(`ws://${location.hostname}:${window.WS_PORT}`);
+  framed = false;
   socket.onopen = () => showStatus(true);
   socket.onclose = () => {
     showStatus(false);
@@ -2975,7 +2977,13 @@ function connect() {
       hideInfoPanel();
       stateOf.clear();
       resize();
-      goToStartView();
+      // Only the first scene of a connection frames the camera. A tree that is assembled while the
+      // viewer watches rebuilds on every assignment, and framing each one would throw the view away
+      // as you build. The camera holds no scene indices, so it survives a rebuild unchanged.
+      if (!framed) {
+        goToStartView();
+        framed = true;
+      }
     } else if (kind === "state" && world) {
       applyState(data);
     }
