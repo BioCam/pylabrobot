@@ -55,6 +55,7 @@ ufactory/index
 :hidden:
 
 machine-agnostic-features/using-the-visualizer
+machine-agnostic-features/using-the-3d-visualizer
 machine-agnostic-features/using-trackers
 machine-agnostic-features/event-bus
 machine-agnostic-features/writing-robot-agnostic-protocols
