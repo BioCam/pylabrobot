@@ -2845,8 +2845,20 @@ function showPane(which) {
   if (searching) searchInput.focus();
 }
 
-treeButton.addEventListener("click", () => showPane("tree"));
-searchButton.addEventListener("click", () => showPane("search"));
+// Each rail button is a toggle, as the existing visualizer's are: it opens the panel on its own
+// pane, switches panes when the other one is showing, and closes the panel when its own pane
+// already is. Closing is a class, and the stylesheet's width beats the resize handle's inline one,
+// so a panel dragged wider comes back the width it was left at.
+function pickPane(which, button) {
+  const showing = !sidepanel.classList.contains("collapsed") && button.classList.contains("active");
+  sidepanel.classList.toggle("collapsed", showing);
+  if (showing) button.classList.remove("active");
+  else showPane(which);
+  resize();
+}
+
+treeButton.addEventListener("click", () => pickPane("tree", treeButton));
+searchButton.addEventListener("click", () => pickPane("search", searchButton));
 
 function runSearch() {
   if (!world) return;
