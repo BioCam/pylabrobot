@@ -9,6 +9,7 @@ Nothing reaches the wire. `send_command` raises, which is how a command that has
 simulated makes itself known: override the method that sends it, on the capability that owns it.
 """
 
+import dataclasses
 import datetime
 import logging
 from typing import Any, Dict, List, Optional, Tuple, cast
@@ -36,7 +37,12 @@ from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfigurati
 from pylabrobot.hamilton.star.driver.master import STARDriver
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
-from pylabrobot.resources.hamilton.hamilton_decks import HamiltonDeck
+from pylabrobot.resources.hamilton.hamilton_decks import (
+  _RAILS_WIDTH,
+  STAR_NUM_RAILS,
+  STARLET_NUM_RAILS,
+  HamiltonDeck,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -190,6 +196,37 @@ DEFAULT_STAR_CONFIGURATION = DeviceConfiguration(
   max_iswap_collision_free_position=1140.0,
   left_x_arm_width=354.0,
   right_x_arm_width=370.0,
+)
+
+# How much shorter a STARlet is than the STAR above: 24 rails at the 22.5 mm track pitch, which is
+# 540.0 mm. The two decks state the same fact twice, as the file that defines them says.
+_STARLET_SHORTER_BY = (STAR_NUM_RAILS - STARLET_NUM_RAILS) * _RAILS_WIDTH
+
+# A STARlet, derived from the STAR rather than captured: there is no STARlet here to read a QM, RU
+# and UA reply from, and the STAR above is a recording of the machine we do have. Everything the
+# right-hand end of the deck sets moves left by `_STARLET_SHORTER_BY`; everything belonging to the
+# arm itself - its width, its wrap, and how far left it reaches - is the same part and does not
+# move. The slot count follows the same reading: the STAR reports two fewer slots than its deck has
+# rails, 54 against 56, which puts a 32-rail STARlet at 30.
+#
+# Replace this wholesale with a recording when there is a STARlet to take one from. It is a
+# derivation, and only the slot count is independently known to be right.
+_STAR_LEFT_ARM = cast(XArmConfiguration, DEFAULT_STAR_CONFIGURATION.left_arm)
+_STAR_X_RANGE = cast(Tuple[float, float], _STAR_LEFT_ARM.x_range)
+_STAR_WORKSPACE = cast(Tuple[float, float], _STAR_LEFT_ARM.workspace_range)
+DEFAULT_STARLET_CONFIGURATION = dataclasses.replace(
+  DEFAULT_STAR_CONFIGURATION,
+  instrument_size_slots=STARLET_NUM_RAILS - 2,
+  autoload_size_slots=STARLET_NUM_RAILS - 2,
+  tip_waste_x_position=DEFAULT_STAR_CONFIGURATION.tip_waste_x_position - _STARLET_SHORTER_BY,
+  max_iswap_collision_free_position=(
+    DEFAULT_STAR_CONFIGURATION.max_iswap_collision_free_position - _STARLET_SHORTER_BY
+  ),
+  left_arm=dataclasses.replace(
+    _STAR_LEFT_ARM,
+    x_range=(_STAR_X_RANGE[0], _STAR_X_RANGE[1] - _STARLET_SHORTER_BY),
+    workspace_range=(_STAR_WORKSPACE[0], _STAR_WORKSPACE[1] - _STARLET_SHORTER_BY),
+  ),
 )
 
 
