@@ -90,8 +90,17 @@ AUTOLOAD_TRAY_PROUD_Y = 221.2
 # and 11.2 mm respectively into the duct.
 DECK_ORIGIN_Y = 97.8
 
+# How far right the deck sits from where a 2021 STAR was measured. Two parts the manufacturer draws
+# against the rails both land right of where the measured value puts them - the autoload's 31 track
+# guides by 6.215 mm each, and the waste block's left face by 8.700 mm - so the rails themselves sit
+# further right than 210 mm from the left face. The guides set the figure: there are thirty-one of
+# them, they agree to 0.022 mm, and unlike the waste block nothing here has placed them.
+DECK_ORIGIN_X_CORRECTION = 6.215
+
 # Where the deck sits inside the instrument.
-#   x  measured on a 2021 STAR: 210 mm from the left face to the first carrier, which sits at 100
+#   x  210 mm from the left face to the first carrier, measured on a 2021 STAR, plus the correction
+#      above. The measurement and the manufacturer's own geometry disagree by that much and the
+#      geometry is what the models are drawn from.
 #   y  see `DECK_ORIGIN_Y`
 #   z  the deck work surface sits 100 mm above the deck's origin, which the manual states, so the
 #      origin is 100 mm below the surface. The surface itself is measured on the manufacturer's
@@ -99,10 +108,10 @@ DECK_ORIGIN_Y = 97.8
 #      TOP - which is what a carrier rests on - is 180.5 mm above the instrument's base. The same
 #      on all three frames. What this replaces is an unsourced 78.5, which put the work surface at
 #      178.5 and so seated every carrier 2.0 mm inside the plate it stands on.
-STAR_DECK_LOCATION = Coordinate(110.0, DECK_ORIGIN_Y, 80.5)
+STAR_DECK_LOCATION = Coordinate(110.0 + DECK_ORIGIN_X_CORRECTION, DECK_ORIGIN_Y, 80.5)
 # The STARlet's x is not measured: its chassis leaves the same 119 mm beyond its deck as the STAR's
 # does, so it takes the same value until someone measures one.
-STARLET_DECK_LOCATION = Coordinate(110.0, DECK_ORIGIN_Y, 80.5)
+STARLET_DECK_LOCATION = Coordinate(110.0 + DECK_ORIGIN_X_CORRECTION, DECK_ORIGIN_Y, 80.5)
 
 
 class STARDevice(Resource):
