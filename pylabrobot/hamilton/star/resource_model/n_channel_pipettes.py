@@ -282,6 +282,7 @@ def _rigid_head(
     reference_point=Coordinate(dx, dy, dz - SHAFT_LENGTH),
     ordered_items=create_ordered_items_2d(
       TipMountingShaft,
+      name_prefix=name,
       num_items_x=columns,
       num_items_y=rows,
       # A channel position is an axis, and these place a corner, so each shaft is set back by its
