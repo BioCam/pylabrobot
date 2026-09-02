@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, cas
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 from pylabrobot.resources.barcode import Barcode1DSymbology, Barcode2DSymbology
+from pylabrobot.resources.carrier import Carrier
 from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.hamilton.hamilton_decks import track_for_x_coordinate
 from pylabrobot.resources.resource import Resource
 
 if TYPE_CHECKING:
@@ -1393,25 +1395,94 @@ class Autoload:
       for position in range(containers_per_carrier)
     }
 
-  async def unload_carrier(self, track: int, park_after: bool = True):
-    """Use the autoload to unload the carrier at a track.
+  async def unload_carrier(
+    self,
+    carrier: Carrier,
+    use_loading_indicators: bool = True,
+    perform_deck_presence_check: bool = True,
+    perform_tray_presence_check: bool = True,
+    park_after: bool = True,
+  ):
+    """Use the autoload to unload a carrier from the deck.
 
     Args:
-      track: the track the carrier sits at, counted from 1.
+      carrier: the carrier to unload, as it sits on the deck.
+      use_loading_indicators: whether to use loading indicators during the unload process.
+      perform_deck_presence_check: whether to confirm the deck sensors see the carrier first.
+      perform_tray_presence_check: whether to confirm the loading tray is not already holding it.
       park_after: whether to park the autoload once the carrier is out.
 
     Raises:
-      ValueError: If the track is not one this machine has.
-      RuntimeError: If setup has not run.
+      ValueError: If the carrier ends outside the tracks this machine has, if the deck sensors do
+        not see it, or if it is already on the loading tray.
+      RuntimeError: If setup has not run, or the driver was given no deck, so a carrier has no
+        track to unload from.
     """
+    deck = self._driver.deck
+    if deck is None:
+      raise RuntimeError("this driver has no deck, so a carrier has no track to unload from")
+
+    # The autoload addresses a carrier by its rightmost track, which is the one the deck sensors
+    # report it at too.
+    track = deck.compute_right_track_of_carrier(carrier)
     tracks = self.track_range
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
 
-    resp = await self._send_command_and_update_sled_x(module="C0", command="CR", cp=f"{track:02}")
-    if park_after:
-      await self.park()
-    return resp
+    # The tracks the carrier covers, from the leftmost it sits over to the rightmost.
+    left_track = track_for_x_coordinate(carrier.get_location_wrt(deck).x)
+    covered_tracks = range(left_track, track + 1)
+
+    if use_loading_indicators:
+      # Blinking, not steady: the operator has to take the carrier off the tray.
+      covered = [track_idx in covered_tracks for track_idx in tracks]
+      await self.set_loading_indicators(lit=covered, blinking=covered)
+
+    try:
+      # Safety check - Is a carrier at that track?
+      if perform_deck_presence_check:
+        try:
+          carrier_presence_on_deck = await self.sense_carrier_presence_on_deck()
+        except Exception as e:
+          logger.warning(
+            "Deck's carrier sensor failed; you might require an engineer to check your sensors: %s",
+            e,
+          )
+        else:
+          if track not in carrier_presence_on_deck:
+            raise ValueError(
+              f"the deck holds no carrier ending at track {track}, is it pushed all the way in?"
+            )
+
+      # Safety check - Is the loading tray already holding a carrier at that track?
+      if perform_tray_presence_check:
+        try:
+          carrier_presence_on_tray = [
+            await self.sense_carrier_presence_on_single_loading_tray_track(
+              track=track_idx, park_after=False
+            )
+            for track_idx in covered_tracks
+          ]
+        except Exception as e:
+          logger.warning(
+            "Tray's carrier sensor failed; you might require an engineer to check your sensors: %s",
+            e,
+          )
+        else:
+          if any(carrier_presence_on_tray):
+            sensor_data = list(zip(covered_tracks, carrier_presence_on_tray))
+            raise ValueError(
+              f"sensor data indicates the tray already holds a carrier: {sensor_data}"
+            )
+
+      resp = await self._send_command_and_update_sled_x(module="C0", command="CR", cp=f"{track:02}")
+      if park_after:
+        await self.park()
+      return resp
+    finally:
+      # However this ends - raised, cancelled or done - the lights it turned on go out again.
+      if use_loading_indicators:
+        await self.set_loading_indicators(lit=[False] * len(tracks), blinking=[False] * len(tracks))
 
   async def unload_carrier_finally(self, track: int, park_after: bool = True):
     """Unload the carrier at a track, from where it cannot be loaded again.
@@ -1433,48 +1504,78 @@ class Autoload:
       await self.park()
     return resp
 
-  # TODO: port legacy's `load_carrier`, once the resource model is wired in. It is the sequence
-  # below, in v1 terms, and every command it needs is already here. What is missing is the first
-  # line: the deck works the track out of a `Carrier`'s position on it
-  # (`compute_right_track_of_carrier`), and the driver has no resource model to ask.
-  #
-  # async def load_carrier(
-  #   self,
-  #   carrier,
-  #   carrier_barcode_reading: bool = True,
-  #   barcode_reading: bool = False,
-  #   barcode_reading_direction: BarcodeReadingDirection = "horizontal",
-  #   containers_per_carrier: int = 5,
-  #   reading_position_of_first_barcode: float = 63.0,
-  #   distance_between_containers: float = 96.0,
-  #   width_of_reading_window: float = 38.0,
-  #   reading_speed: float = 128.1,
-  #   park_after: bool = True,
-  # ) -> dict:
-  #   """Use the autoload to load a carrier."""
-  #   track = ...  # the track the carrier ends at, from where it sits on the deck
-  #   if not await self.sense_carrier_presence_on_single_loading_tray_track(track):
-  #     raise ValueError(f"no carrier at track {track}; is it on the right loading tray position?")
-  #
-  #   carrier_barcode = None
-  #   if carrier_barcode_reading:
-  #     carrier_barcode = await self.load_carrier_from_tray_and_scan_carrier_barcode(track)
-  #
-  #   container_barcodes = await self.load_carrier_from_autoload_belt(
-  #     barcode_reading=barcode_reading,
-  #     barcode_reading_direction=barcode_reading_direction,
-  #     reading_position_of_first_barcode=reading_position_of_first_barcode,
-  #     containers_per_carrier=containers_per_carrier,
-  #     distance_between_containers=distance_between_containers,
-  #     width_of_reading_window=width_of_reading_window,
-  #     reading_speed=reading_speed,
-  #     park_after=False,
-  #   )
-  #
-  #   if park_after:
-  #     await self.park()
-  #
-  #   return {"carrier_barcode": carrier_barcode, "container_barcodes": container_barcodes}
+  async def load_carrier(
+    self,
+    carrier: Carrier,
+    carrier_barcode_reading: bool = True,
+    barcode_reading: bool = False,
+    barcode_reading_direction: BarcodeReadingDirection = "horizontal",
+    containers_per_carrier: int = 5,
+    reading_position_of_first_barcode: float = 63.0,
+    distance_between_containers: float = 96.0,
+    width_of_reading_window: float = 38.0,
+    reading_speed: float = 128.1,
+    park_after: bool = True,
+  ) -> dict:
+    """Load a carrier from the loading tray onto the deck, reading what it carries on the way.
+
+    The carrier goes to the track it is assigned to on the deck, so the resource model decides
+    where it lands. `unload_carrier` takes it back out again.
+
+    Args:
+      carrier: the carrier to load, as it is to sit on the deck.
+      carrier_barcode_reading: whether to read the carrier's own barcode as it comes in.
+      barcode_reading: whether to read the barcode of each container it carries.
+      barcode_reading_direction: which way the scanner looks while reading those.
+      containers_per_carrier: how many container barcodes to read.
+      reading_position_of_first_barcode: where the first container sits along the carrier, in mm.
+      distance_between_containers: the spacing of the containers, in mm.
+      width_of_reading_window: how wide a window to read each barcode in, in mm.
+      reading_speed: how fast to travel while reading, in mm/s.
+      park_after: whether to park the autoload once the carrier is in.
+
+    Returns:
+      The carrier's own barcode under "carrier_barcode", and one per container position under
+      "container_barcodes".
+
+    Raises:
+      ValueError: If the carrier ends outside the tracks this machine has, or the loading tray
+        holds no carrier at its track.
+      RuntimeError: If setup has not run, or the driver was given no deck, so a carrier has no
+        track to load to.
+    """
+    deck = self._driver.deck
+    if deck is None:
+      raise RuntimeError("this driver has no deck, so a carrier has no track to load to")
+
+    # The autoload addresses a carrier by its rightmost track, which is where it ends on the deck.
+    track = deck.compute_right_track_of_carrier(carrier)
+    tracks = self.track_range
+    if track not in tracks:
+      raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
+
+    if not await self.sense_carrier_presence_on_single_loading_tray_track(track):
+      raise ValueError(f"no carrier at track {track}; is it on the right loading tray position?")
+
+    carrier_barcode = None
+    if carrier_barcode_reading:
+      carrier_barcode = await self.load_carrier_from_tray_and_scan_carrier_barcode(track)
+
+    container_barcodes = await self.load_carrier_from_autoload_belt(
+      barcode_reading=barcode_reading,
+      barcode_reading_direction=barcode_reading_direction,
+      reading_position_of_first_barcode=reading_position_of_first_barcode,
+      containers_per_carrier=containers_per_carrier,
+      distance_between_containers=distance_between_containers,
+      width_of_reading_window=width_of_reading_window,
+      reading_speed=reading_speed,
+      park_after=False,
+    )
+
+    if park_after:
+      await self.park()
+
+    return {"carrier_barcode": carrier_barcode, "container_barcodes": container_barcodes}
 
   # -- loading indicators --------------------------------------------------------------------------
 
