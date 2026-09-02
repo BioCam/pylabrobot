@@ -354,7 +354,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       if resource_location is not None:  # collision detection
         if (
           resource_location.x + resource.get_absolute_size_x()
-          > self.rails_to_location(self.num_tracks + 3).x
+          > self.rails_to_location(self.num_tracks + 1).x
           and rails is not None
         ):
           raise ValueError(
