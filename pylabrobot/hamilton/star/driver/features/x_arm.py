@@ -426,7 +426,7 @@ class XArm:
       current_limit=current_limit,
     )
 
-  async def switch_drive_power_off(self):
+  async def _switch_drive_power_off(self):
     """Switch this arm's drive power off, leaving it free to be pushed by hand."""
     return await self._driver.send_command(
       module="X0", command="XO" if self.side == "left" else "SO"

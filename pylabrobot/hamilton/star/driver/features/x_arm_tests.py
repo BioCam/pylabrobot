@@ -59,7 +59,7 @@ class TestPerDriveCommands(unittest.IsolatedAsyncioTestCase):
     await XArm.initialize(arm)
     await XArm.move_x(arm, 500.0)
     await XArm.move_x_relative(arm, -12.5)
-    await XArm.switch_drive_power_off(arm)
+    await XArm._switch_drive_power_off(arm)
     self.assertEqual(
       sent,
       ["X0XIlw7", "X0XPla05000lr3lw7", "X0XPla04875lr3lw7", "X0XO"],
@@ -72,7 +72,7 @@ class TestPerDriveCommands(unittest.IsolatedAsyncioTestCase):
     await XArm.initialize(arm)
     await XArm.move_x(arm, 500.0)
     await XArm.move_x_relative(arm, -12.5)
-    await XArm.switch_drive_power_off(arm)
+    await XArm._switch_drive_power_off(arm)
     self.assertEqual(
       sent,
       ["X0SIsw7", "X0SPsa05000sr3sw7", "X0SPsa04875sr3sw7", "X0SO"],
