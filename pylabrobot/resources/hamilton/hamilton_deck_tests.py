@@ -18,6 +18,22 @@ from pylabrobot.resources.stanley.cups import (
 
 
 class HamiltonDeckTests(unittest.TestCase):
+  def test_rails_is_deprecated(self):
+    """`rails` still places a resource, and says it is deprecated."""
+    deck = STARLetDeck()
+    with self.assertWarns(DeprecationWarning):
+      deck.assign_child_resource(TIP_CAR_480_A00(name="tip_carrier"), rails=1)
+    self.assertEqual(
+      deck.get_resource("tip_carrier").get_location_wrt(deck).x,
+      deck.track_to_location(1).x,
+    )
+
+  def test_track_and_rails_together_is_refused(self):
+    """Passing both is a mistake rather than a preference."""
+    deck = STARLetDeck()
+    with self.assertRaises(ValueError):
+      deck.assign_child_resource(TIP_CAR_480_A00(name="tip_carrier"), track=1, rails=1)
+
   """Tests for the HamiltonDeck class."""
 
   def build_layout(self):
@@ -33,8 +49,8 @@ class HamiltonDeckTests(unittest.TestCase):
     plt_car[0] = cor_96_wellplate_360uL_Fb(name="aspiration plate")
     plt_car[2] = cor_96_wellplate_360uL_Fb(name="dispense plate")
 
-    deck.assign_child_resource(tip_car, rails=1)
-    deck.assign_child_resource(plt_car, rails=21)
+    deck.assign_child_resource(tip_car, track=1)
+    deck.assign_child_resource(plt_car, track=21)
 
     return deck
 
@@ -80,7 +96,7 @@ class HamiltonDeckTests(unittest.TestCase):
     tip_car = TIP_CAR_480_A00(name="tip_carrier")
     for i in range(5):
       tip_car[i] = hamilton_96_tiprack_300uL_filter(name=f"tip_rack_0{i}")
-    deck.assign_child_resource(tip_car, rails=1)
+    deck.assign_child_resource(tip_car, track=1)
 
     tip_racks = [r for r in deck.get_all_children() if isinstance(r, TipRack)]
     matches = [
@@ -122,7 +138,7 @@ class HamiltonDeckTests(unittest.TestCase):
     stanley_cup = StanleyCup_QUENCHER_FLOWSTATE_TUMBLER(name="HUGE")
     deck = STARLetDeck()
     with self.assertLogs("pylabrobot") as log:
-      deck.assign_child_resource(stanley_cup, rails=1)
+      deck.assign_child_resource(stanley_cup, track=1)
     self.assertEqual(
       log.output,
       [

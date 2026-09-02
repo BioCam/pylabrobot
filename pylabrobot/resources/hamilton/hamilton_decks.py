@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from abc import ABCMeta, abstractmethod
 from typing import Literal, Optional, cast
 
@@ -20,8 +21,7 @@ STAR_NUM_TRACKS = 54
 STARPLUS_NUM_TRACKS = 76
 
 
-_RAILS_WIDTH = 22.5  # space between rails (mm)
-
+_TRACK_WIDTH = 22.5  # space between rails (mm)
 
 # Where a carrier's own front edge sits on any Hamilton deck, in mm.
 _CARRIER_Y = 63.0
@@ -33,9 +33,60 @@ _CARRIER_Y = 63.0
 _MACHINE_PARTS = frozenset({"autoload_sled", "autoload_loading_tray"})
 
 
+def track_for_x_coordinate(x: float) -> int:
+  """Which track an x coordinate falls on.
+
+  Args:
+    x: the coordinate, in this deck's own frame.
+
+  Returns:
+    The track, counted from 1.
+  """
+  return int((x - 100.0) / _TRACK_WIDTH) + 1
+
+
 def rails_for_x_coordinate(x: float) -> int:
-  """Convert an x coordinate to a rail identifier."""
-  return int((x - 100.0) / _RAILS_WIDTH) + 1
+  """Deprecated. Use `track_for_x_coordinate`.
+
+  Args:
+    x: the coordinate, in this deck's own frame.
+
+  Returns:
+    What `track_for_x_coordinate` returns for it.
+  """
+  warnings.warn(
+    "`rails_for_x_coordinate` is deprecated, use `track_for_x_coordinate`: a track is the part of"
+    " the deck, and a rail is part of a carrier.",
+    DeprecationWarning,
+    stacklevel=2,
+  )
+  return track_for_x_coordinate(x)
+
+
+def _tracks_from(num_tracks: Optional[int], num_rails: Optional[int]) -> int:
+  """The track count, from whichever argument carried it.
+
+  Args:
+    num_tracks: the count.
+    num_rails: the same count under its old name.
+
+  Returns:
+    The count.
+
+  Raises:
+    TypeError: If neither was given.
+  """
+  if num_tracks is not None:
+    return num_tracks
+  if num_rails is None:
+    raise TypeError("num_tracks is required")
+  warnings.warn(
+    "`num_rails` is deprecated, use `num_tracks`: a track is the part of the deck, and a rail is"
+    " part of a carrier.",
+    DeprecationWarning,
+    stacklevel=3,
+  )
+  return num_rails
 
 
 class HamiltonDeck(Deck, metaclass=ABCMeta):
@@ -43,13 +94,14 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
 
   def __init__(
     self,
-    num_rails: int,
     size_x: float,
     size_y: float,
     size_z: float,
+    num_tracks: Optional[int] = None,
     name: str = "deck",
     category: str = "deck",
     origin: Coordinate = Coordinate.zero(),
+    num_rails: Optional[int] = None,
   ):
     super().__init__(
       name=name,
@@ -59,14 +111,37 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       category=category,
       origin=origin,
     )
-    self.num_rails = num_rails  # old term, inconsistent with OEM nomenclature, TODO: remove
-    self.num_tracks = num_rails
+    self.num_tracks = _tracks_from(num_tracks, num_rails)
 
     self.register_did_assign_resource_callback(self._check_safe_z_height)
 
   @abstractmethod
+  def track_to_location(self, track: int) -> Coordinate:
+    """Where a track starts on this deck.
+
+    Args:
+      track: the track, counted from 1.
+
+    Returns:
+      Its position, in this deck's own frame.
+    """
+
   def rails_to_location(self, rails: int) -> Coordinate:
-    """Convert a rail identifier to an absolute (x, y, z) coordinate."""
+    """Deprecated. Use `track_to_location`.
+
+    Args:
+      rails: the track, counted from 1.
+
+    Returns:
+      What `track_to_location` returns for it.
+    """
+    warnings.warn(
+      "`rails_to_location` is deprecated, use `track_to_location`: a track is the part of the deck,"
+      " and a rail is part of a carrier.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.track_to_location(rails)
 
   def compute_right_track_of_carrier(self, carrier: Resource) -> int:
     """The last track a carrier covers, from where it sits on this deck.
@@ -78,7 +153,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       The track, counted from 1.
     """
     end_x = carrier.get_location_wrt(self).x + carrier.get_absolute_size_x()
-    return rails_for_x_coordinate(end_x) - 1
+    return track_for_x_coordinate(end_x) - 1
 
   def get_carrier_at_track(self, track: int) -> Resource:
     """The carrier covering a track, from where the carriers sit on this deck.
@@ -98,7 +173,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       ValueError: If no carrier on this deck covers that track.
     """
     for carrier in self.children:
-      left = rails_for_x_coordinate(carrier.get_location_wrt(self).x)
+      left = track_for_x_coordinate(carrier.get_location_wrt(self).x)
       if left <= track <= self.compute_right_track_of_carrier(carrier):
         return carrier
     raise ValueError(f"no carrier on this deck covers track {track}")
@@ -222,7 +297,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     # and a carrier's front edge. It insets the same amount from the deck's right edge as from its
     # left, which is what sizes it.
     from_first_carrier_x, front_ahead_y, back_ahead_y, size_z = 104.0, 380.0, 132.0, 92.0
-    left = self.rails_to_location(1).x - from_first_carrier_x
+    left = self.track_to_location(1).x - from_first_carrier_x
     tray = Resource(
       name=name,
       size_x=self.get_absolute_size_x() - from_first_carrier_x - left,
@@ -238,7 +313,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     """Serialize this deck."""
     return {
       **super().serialize(),
-      "num_rails": self.num_rails,
+      "num_tracks": self.num_tracks,
       "with_trash": False,  # data encoded as child. (not very pretty to have this key though...)
       "with_trash96": False,
       "core_grippers": None,  # data encoded as child. (not very pretty to have this key though...)
@@ -288,6 +363,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     resource: Resource,
     location: Optional[Coordinate] = None,
     reassign: bool = False,
+    track: Optional[int] = None,
     rails: Optional[int] = None,
     replace=False,
     ignore_collision=False,
@@ -301,20 +377,17 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     be assigned directly to the tip or plate carrier respectively. See TipCarrier and PlateCarrier
     for details.
 
-    Based on the rails argument, the absolute (x, y, z) coordinates will be computed.
+    Given a track, the absolute (x, y, z) coordinates are computed from it.
 
     Args:
       resource: A Resource to assign to this liquid handler.
-      location: The location of the resource relative to the liquid handler. Either rails or
-        location must be `None`, but not both.
+      location: Where to put it, relative to this deck. Either this or `track`, not both.
       reassign: If True, reassign the resource if it is already assigned. If False, raise a
         `ValueError` if the resource is already assigned.
-      rails: The left most real (inclusive) of the deck resource (between and 0-30 for STARLet,
-        max 55 for STAR.) Either rails or location must be None, but not both. 1-index similar to
-        markings on the device, but you can place carriers on 0 as well (left support will not
-        touch a support rail).
-      location: The location of the resource relative to the liquid handler. Either rails or
-        location must be None, but not both.
+      track: The leftmost track the resource covers, counted from 1 as the markings on the machine
+        are, and down to -4 for the supports left of the first one. Either this or `location`, not
+        both.
+      rails: Deprecated, use `track`.
       replace: Replace the resource with the same name that was previously assigned, if it exists.
         If a resource is assigned with the same name and replace is False, a ValueError
         will be raised.
@@ -326,8 +399,19 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
 
     # TODO: many things here should be moved to Resource and Deck, instead of just STARLetDeck
 
-    if rails is not None and not -4 <= rails <= self.num_rails:
-      raise ValueError(f"Rails must be between -4 and {self.num_rails}.")
+    if rails is not None:
+      if track is not None:
+        raise ValueError("pass track, not both track and rails")
+      warnings.warn(
+        "`rails` is deprecated, use `track`: a track is the part of the deck, and a rail is part"
+        " of a carrier.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
+      track = rails
+
+    if track is not None and not -4 <= track <= self.num_tracks:
+      raise ValueError(f"Track must be between -4 and {self.num_tracks}.")
 
     # Check if resource exists.
     if self.has_resource(resource.name):
@@ -337,12 +421,12 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       else:
         raise ValueError(f"Resource with name '{resource.name}' already defined.")
 
-    if rails is not None:
-      resource_location = self.rails_to_location(rails)
+    if track is not None:
+      resource_location = self.track_to_location(track)
     elif location is not None:
       resource_location = location
     else:
-      raise ValueError("Either rails or location must be provided.")
+      raise ValueError("Either track or location must be provided.")
 
     def should_check_collision(res: Resource) -> bool:
       """Determine if collision detection should be performed for this resource."""
@@ -354,11 +438,11 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       if resource_location is not None:  # collision detection
         if (
           resource_location.x + resource.get_absolute_size_x()
-          > self.rails_to_location(self.num_tracks + 1).x
-          and rails is not None
+          > self.track_to_location(self.num_tracks + 1).x
+          and track is not None
         ):
           raise ValueError(
-            f"Resource with width {resource.get_absolute_size_x()} does not fit at rails {rails}."
+            f"Resource with width {resource.get_absolute_size_x()} does not fit at track {track}."
           )
 
         # Check if there is space for this new resource.
@@ -487,7 +571,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
 
       # Print rail
       if depth == 0:
-        rails = rails_for_x_coordinate(resource.get_location_wrt(self).x)
+        rails = track_for_x_coordinate(resource.get_location_wrt(self).x)
         r_summary += f"({rails})".ljust(rail_column_length)
       else:
         r_summary += " " * rail_column_length
@@ -615,7 +699,7 @@ class HamiltonSTARDeck(HamiltonDeck):
 
   def __init__(
     self,
-    num_rails: int,
+    num_tracks: int,
     size_x: float,
     size_y: float,
     size_z: float,
@@ -636,7 +720,7 @@ class HamiltonSTARDeck(HamiltonDeck):
     """
 
     super().__init__(
-      num_rails=num_rails,
+      num_tracks=num_tracks,
       size_x=size_x,
       size_y=size_y,
       size_z=size_z,
@@ -657,7 +741,7 @@ class HamiltonSTARDeck(HamiltonDeck):
       waste_block = Resource(name="waste_block", size_x=30, size_y=445.2, size_z=100)
       self.assign_child_resource(
         waste_block,
-        location=Coordinate(x=self.rails_to_location(self.num_tracks + 1).x, y=115.0, z=100),
+        location=Coordinate(x=self.track_to_location(self.num_tracks + 1).x, y=115.0, z=100),
       )
 
       # assign trash area, positioned 25mm to the right of the waste block
@@ -667,7 +751,7 @@ class HamiltonSTARDeck(HamiltonDeck):
           waste_block_x = self.get_resource("waste_block").get_location_wrt(self).x
         else:
           # Fallback: anchor to the rightmost rail when no waste block is present.
-          waste_block_x = self.rails_to_location(self.num_tracks + 1).x
+          waste_block_x = self.track_to_location(self.num_tracks + 1).x
 
         trash_x = waste_block_x + 25
 
@@ -709,13 +793,13 @@ class HamiltonSTARDeck(HamiltonDeck):
         raise RuntimeError("Teaching rack cannot be created when no waste block is present.")
 
     if core_grippers == "1000uL-at-waste":  # "at waste"
-      x: float = 1338 if num_rails == STAR_NUM_TRACKS else 798
+      x: float = 1338 if num_tracks == STAR_NUM_TRACKS else 798
       waste_block.assign_child_resource(
         hamilton_core_gripper_1000ul_at_waste(),
         location=Coordinate(x=x, y=105.550 - 26 - 9.5, z=205) - waste_block.location,
       )
     elif core_grippers == "1000uL-5mL-on-waste":  # "on waste"
-      x = 1337.5 if num_rails == STAR_NUM_TRACKS else 797.5
+      x = 1337.5 if num_tracks == STAR_NUM_TRACKS else 797.5
       waste_block.assign_child_resource(
         hamilton_core_gripper_1000ul_5ml_on_waste(),
         location=Coordinate(x=x, y=125 - 18 - 21.5, z=205) - waste_block.location,
@@ -729,8 +813,8 @@ class HamiltonSTARDeck(HamiltonDeck):
       "core_grippers": None,  # data encoded as child. (not very pretty to have this key though...)
     }
 
-  def rails_to_location(self, rails: int) -> Coordinate:
-    x = 100.0 + (rails - 1) * _RAILS_WIDTH
+  def track_to_location(self, track: int) -> Coordinate:
+    x = 100.0 + (track - 1) * _TRACK_WIDTH
     return Coordinate(x=x, y=63, z=100)
 
   def get_trash_area96(self) -> Trash:
@@ -764,10 +848,10 @@ def STARLetDeck(
   """Create a new STARLet deck."""
 
   return HamiltonSTARDeck(
-    num_rails=30,
+    num_tracks=30,
     size_x=1005.0,
     size_y=653.5,
-    size_z=900.0,
+    size_z=334.7,
     origin=origin,
     with_trash=with_trash,
     with_trash96=with_trash96,
@@ -788,10 +872,10 @@ def STARDeck(
   """Create a new STAR deck."""
 
   return HamiltonSTARDeck(
-    num_rails=54,
+    num_tracks=54,
     size_x=1545.0,
     size_y=653.5,
-    size_z=900.0,
+    size_z=334.7,
     origin=origin,
     with_trash=with_trash,
     with_trash96=with_trash96,
@@ -823,10 +907,10 @@ def STARPlusDeck(
   """
 
   return HamiltonSTARDeck(
-    num_rails=76,
+    num_tracks=76,
     size_x=2040.0,
     size_y=653.5,
-    size_z=900.0,
+    size_z=334.7,
     origin=origin,
     with_trash=with_trash,
     with_trash96=with_trash96,

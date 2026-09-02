@@ -38,7 +38,7 @@ from pylabrobot.hamilton.star.driver.master import STARDriver
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
 from pylabrobot.resources.hamilton.hamilton_decks import (
-  _RAILS_WIDTH,
+  _TRACK_WIDTH,
   STAR_NUM_TRACKS,
   STARLET_NUM_TRACKS,
   HamiltonDeck,
@@ -200,7 +200,7 @@ DEFAULT_STAR_CONFIGURATION = DeviceConfiguration(
 
 # How much shorter a STARlet is than the STAR above: 24 rails at the 22.5 mm track pitch, which is
 # 540.0 mm. The two decks state the same fact twice, as the file that defines them says.
-_STARLET_SHORTER_BY = (STAR_NUM_TRACKS - STARLET_NUM_TRACKS) * _RAILS_WIDTH
+_STARLET_SHORTER_BY = (STAR_NUM_TRACKS - STARLET_NUM_TRACKS) * _TRACK_WIDTH
 
 # A STARlet, derived from the STAR rather than captured: there is no STARlet here to read a QM, RU
 # and UA reply from, and the STAR above is a recording of the machine we do have. Everything the
@@ -581,7 +581,7 @@ class SimulatedAutoload(_Simulated, Autoload):
     # to reach the resource that gets created after it.
     if self.resource is not None and self.resource.location is not None:
       return self.resource.location.x + self.configuration.reference_point_from_sled_left_edge
-    return cast(HamiltonDeck, self.machine.deck).rails_to_location(self.track).x
+    return cast(HamiltonDeck, self.machine.deck).track_to_location(self.track).x
 
   async def wheel_request_y_position(self) -> float:
     return SIMULATED_AUTOLOAD_Y_POSITION
@@ -624,7 +624,7 @@ class SimulatedAutoload(_Simulated, Autoload):
     await super().move_to_track(track, *args, **kwargs)
     # A simulated machine is built with a deck or refuses to be built at all, so there is one.
     deck = cast(HamiltonDeck, self.machine.deck)
-    self.update_location_by_reference_point(deck.rails_to_location(track).x)
+    self.update_location_by_reference_point(deck.track_to_location(track).x)
     self.track = track
 
   async def park(self):

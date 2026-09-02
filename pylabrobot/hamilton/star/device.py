@@ -293,7 +293,7 @@ class STARDevice(Resource):
     await self.driver.stop()
 
   def __str__(self) -> str:
-    return f"{self.name}({self.driver.__class__.__name__}, {self.deck.num_rails}-track deck)"
+    return f"{self.name}({self.driver.__class__.__name__}, {self.deck.num_tracks}-track deck)"
 
 
 # # # # Complete STAR Devices Factory Functions, for convenience in building a configuration.
