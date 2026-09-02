@@ -5,7 +5,7 @@ import warnings
 from abc import ABCMeta, abstractmethod
 from typing import Literal, Optional, cast
 
-from pylabrobot.resources.carrier import ResourceHolder
+from pylabrobot.resources.carrier import Carrier, ResourceHolder
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.deck import Deck
 from pylabrobot.resources.errors import NoLocationError
@@ -142,7 +142,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     )
     return self.track_to_location(rails)
 
-  def compute_right_track_of_carrier(self, carrier: Resource) -> int:
+  def compute_right_track_of_carrier(self, carrier: Carrier) -> int:
     """The last track a carrier covers, from where it sits on this deck.
 
     Args:
@@ -154,7 +154,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     end_x = carrier.get_location_wrt(self).x + carrier.get_absolute_size_x()
     return track_for_x_coordinate(end_x) - 1
 
-  def get_carrier_at_track(self, track: int) -> Resource:
+  def get_carrier_at_track(self, track: int) -> Carrier:
     """The carrier covering a track, from where the carriers sit on this deck.
 
     A carrier covers every track from the one it is placed at to
@@ -171,10 +171,12 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     Raises:
       ValueError: If no carrier on this deck covers that track.
     """
-    for carrier in self.children:
-      left = track_for_x_coordinate(carrier.get_location_wrt(self).x)
-      if left <= track <= self.compute_right_track_of_carrier(carrier):
-        return carrier
+    for child in self.children:
+      if not isinstance(child, Carrier):
+        continue
+      left = track_for_x_coordinate(child.get_location_wrt(self).x)
+      if left <= track <= self.compute_right_track_of_carrier(child):
+        return child
     raise ValueError(f"no carrier on this deck covers track {track}")
 
   def get_or_create_x_arm(
