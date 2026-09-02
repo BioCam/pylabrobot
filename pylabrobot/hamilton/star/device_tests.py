@@ -18,7 +18,7 @@ from pylabrobot.hamilton.star.driver.simulator import (
 )
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import STARDeck
-from pylabrobot.resources.hamilton.hamilton_decks import STAR_NUM_RAILS, STARLET_NUM_RAILS
+from pylabrobot.resources.hamilton.hamilton_decks import STAR_NUM_TRACKS, STARLET_NUM_TRACKS
 
 
 class TestConstruction(unittest.IsolatedAsyncioTestCase):
@@ -44,8 +44,8 @@ class TestFactories(unittest.IsolatedAsyncioTestCase):
   """Each factory builds one machine, on the deck that machine has."""
 
   def test_each_factory_builds_its_own_deck(self):
-    self.assertEqual(STAR(simulation=True).deck.num_rails, STAR_NUM_RAILS)
-    self.assertEqual(STARLet(simulation=True).deck.num_rails, STARLET_NUM_RAILS)
+    self.assertEqual(STAR(simulation=True).deck.num_tracks, STAR_NUM_TRACKS)
+    self.assertEqual(STARLet(simulation=True).deck.num_tracks, STARLET_NUM_TRACKS)
 
   def test_extension_housing_stands_to_the_left(self):
     """The housing is a resource beside the chassis, not something that grows the instrument.

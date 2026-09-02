@@ -394,7 +394,7 @@ def STARPlus(
   """A STARplus, on a STARplus deck.
 
   The width is measured on the manufacturer's own model, as the other two frames are. Its deck is
-  derived rather than read off a configuration file - see `STARPLUS_NUM_RAILS` - because there is no
+  derived, as `STARPlusDeck` works through, because there is no
   STARplus here to read one from, so its 78 rails should be confirmed against a real machine.
   """
   return STARDevice(

@@ -39,8 +39,8 @@ from pylabrobot.io.io import IOBase
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
 from pylabrobot.resources.hamilton.hamilton_decks import (
   _RAILS_WIDTH,
-  STAR_NUM_RAILS,
-  STARLET_NUM_RAILS,
+  STAR_NUM_TRACKS,
+  STARLET_NUM_TRACKS,
   HamiltonDeck,
 )
 
@@ -200,7 +200,7 @@ DEFAULT_STAR_CONFIGURATION = DeviceConfiguration(
 
 # How much shorter a STARlet is than the STAR above: 24 rails at the 22.5 mm track pitch, which is
 # 540.0 mm. The two decks state the same fact twice, as the file that defines them says.
-_STARLET_SHORTER_BY = (STAR_NUM_RAILS - STARLET_NUM_RAILS) * _RAILS_WIDTH
+_STARLET_SHORTER_BY = (STAR_NUM_TRACKS - STARLET_NUM_TRACKS) * _RAILS_WIDTH
 
 # A STARlet, derived from the STAR rather than captured: there is no STARlet here to read a QM, RU
 # and UA reply from, and the STAR above is a recording of the machine we do have. Everything the
@@ -216,8 +216,8 @@ _STAR_X_RANGE = cast(Tuple[float, float], _STAR_LEFT_ARM.x_range)
 _STAR_WORKSPACE = cast(Tuple[float, float], _STAR_LEFT_ARM.workspace_range)
 DEFAULT_STARLET_CONFIGURATION = dataclasses.replace(
   DEFAULT_STAR_CONFIGURATION,
-  instrument_size_slots=STARLET_NUM_RAILS - 2,
-  autoload_size_slots=STARLET_NUM_RAILS - 2,
+  instrument_size_slots=STARLET_NUM_TRACKS,
+  autoload_size_slots=STARLET_NUM_TRACKS,
   tip_waste_x_position=DEFAULT_STAR_CONFIGURATION.tip_waste_x_position - _STARLET_SHORTER_BY,
   max_iswap_collision_free_position=(
     DEFAULT_STAR_CONFIGURATION.max_iswap_collision_free_position - _STARLET_SHORTER_BY
