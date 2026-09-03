@@ -9,7 +9,7 @@ one, which head is fitted for the other. That is the layer this holds.
 
 At the master they are not the same machine. The commands that pick up tips and move liquid carry
 about thirty parameters each, and between the two heads every one is named differently, the volumes
-are counted in units that differ by a factor of ten, and the capabilities themselves do not match -
+are counted in units that differ by a factor of ten, and the features themselves do not match -
 only the 96-head can mask individual channels, only the 384-head takes a gain and offset for its
 cLLD. Each head carries those itself. Renaming thirty parameters through here would be a
 translation table wearing a base class rather than a shared implementation.
@@ -93,6 +93,14 @@ class HeadConfiguration:
   A judgement about clearance rather than a measurement, and not read from anywhere: the panel is
   bolted on and off in seconds, so whether one is fitted is declared, and how close the head may
   come to it is ours to choose."""
+
+  min_tool_bottom_z: float = 99.98
+  """The lowest Z the head may place the bottom of what it carries at, in deck mm.
+
+  A declared limit rather than anything the head reports: its drive is commanded in stop-disk terms
+  and knows nothing about what hangs below it, so how far down a tip may be taken is ours to
+  choose. The default is the floor the channels' own Z drive documents, which is what bounded this
+  move before."""
 
   supports_clot_monitoring_clld: Optional[bool] = None
   head_type: Optional[str] = None
@@ -350,7 +358,7 @@ class Head:
   """A head: the block of channels that works a whole plate at once.
 
   A head is addressed as its own module, but the commands that move it as a whole go to the
-  master, so this capability speaks to both. What differs between heads at this level its
+  master, so this feature speaks to both. What differs between heads at this level its
   configuration states - down to which module answers for it and how wide each parameter is
   written; the commands themselves are the same. Tip handling and liquid handling are not at this
   level and are not the same between the two, so each head carries its own.
@@ -743,6 +751,41 @@ class Head:
       raise RuntimeError("the head's X offset was not read; have you called `star.setup()`?")
     return round(await arm.request_position() - self.configuration.x_offset, 2)
 
+  async def move_to_x_position(
+    self,
+    x: float,
+    acceleration_level: int = 3,
+    current_limit: int = 7,
+    settle_reads: int = 20,
+  ):
+    """Move channel A1 along X. The whole arm travels, with everything else it carries.
+
+    The head has no X drive. It rides the arm and sits `configuration.x_offset` left of the
+    carriage reference point, so the arm is sent to the carriage position that puts A1 at `x`.
+
+    Args:
+      x: where to put channel A1, in mm.
+      acceleration_level: how hard to accelerate, 1 to 4.
+      current_limit: the motor current limit, 1 to 7.
+      settle_reads: how many reads to take before calling the arm stopped.
+
+    Raises:
+      ValueError: If the head cannot reach it.
+      RuntimeError: If no arm is installed, or the head's X offset was not read at discovery.
+    """
+    self._check_reachable("x", x)
+    arm = self.arm
+    if arm is None:
+      raise RuntimeError("this head is not on either arm; have you called `star.setup()`?")
+    if self.configuration.x_offset is None:
+      raise RuntimeError("the head's X offset was not read; have you called `star.setup()`?")
+    return await arm.move_x(
+      round(x + self.configuration.x_offset, 2),
+      acceleration_level=acceleration_level,
+      current_limit=current_limit,
+      settle_reads=settle_reads,
+    )
+
   # -- y position --------------------------------------------------------------------------------
 
   async def request_y_position(self) -> float:
@@ -766,7 +809,7 @@ class Head:
     """Request the Y positions the head has stored, in mm.
 
     The head keeps ten of them in non-volatile memory. The first is the home position the Y drive
-    parks at; the rest are further slots this capability sends no command against, so they are
+    parks at; the rest are further slots this feature sends no command against, so they are
     returned as read rather than named. A head that stores them as offsets says so through
     `configuration.predefined_y_position_origin`, which is added here so what comes back is
     comparable with `request_y_position`.
@@ -802,7 +845,7 @@ class Head:
     """
     await self.move_to_safe_z()
     park_position = (await self.request_predefined_y_positions())[0]
-    await self.move_y(park_position, speed=speed, acceleration=acceleration)
+    await self.move_to_y_position(park_position, speed=speed, acceleration=acceleration)
     return park_position
 
   def update_location_by_reference_point(
@@ -913,7 +956,7 @@ class Head:
         f"current_limit must be between {low_limit} and {high_limit}, is {current_limit}"
       )
 
-  async def move_y(
+  async def move_to_y_position(
     self,
     y: float,
     speed: Optional[float] = None,
@@ -1002,7 +1045,7 @@ class Head:
     """Request the Z positions the head has stored, in mm.
 
     The head keeps ten of them in non-volatile memory. The first is the home position the Z drive
-    parks at; the rest are further slots this capability sends no command against, so they are
+    parks at; the rest are further slots this feature sends no command against, so they are
     returned as read rather than named. A head that stores them as offsets says so through
     `configuration.predefined_z_position_origin`, which is added here. These are positions of the
     head's lowest fixed feature, as `request_z_position` is.
@@ -1044,7 +1087,7 @@ class Head:
     c.z_range = (c.z_range_documented[0], z_max)
     return z_max
 
-  async def move_z(
+  async def move_stop_disk_to_z_position(
     self,
     z: float,
     speed: Optional[float] = None,
@@ -1052,7 +1095,11 @@ class Head:
     current_limit: Optional[int] = None,
     read_timeout: int = 30,
   ):
-    """Move the head along Z. This moves it, and nothing else on the arm.
+    """Move the head's stop disk along Z. This moves it, and nothing else on the arm.
+
+    The head's own drive, which is commanded in stop-disk terms whatever is mounted on it. Use it
+    for moves with nothing on the head; `move_tool_bottom_to_z_position` places the bottom of the
+    tips it carries.
 
     The move writes its speed and acceleration into the drive's volatile register, where later
     moves would inherit them, so what was there is read first and put back afterwards - skipping
@@ -1095,6 +1142,62 @@ class Head:
       await self._restore_drive_parameter("zv", speed, was_speed)
       await self._restore_drive_parameter("zr", acceleration, was_acceleration)
 
+  async def move_tool_bottom_to_z_position(
+    self,
+    z: float,
+    speed: Optional[float] = None,
+    acceleration: Optional[float] = None,
+    current_limit: Optional[int] = None,
+    read_timeout: int = 30,
+  ):
+    """Move the bottom of what the head carries along Z. This moves it, and nothing else on the arm.
+
+    The drive is commanded in stop-disk terms whatever is mounted, so this measures how far the
+    tips stand below the head and offsets the target by that: the same move as
+    `move_stop_disk_to_z_position`, named at the end that reaches into a well. It needs tips on the
+    head, which are what give it a bottom distinct from its own.
+
+    Args:
+      z: where to move the bottom of the mounted tips to, in deck mm.
+      speed: how fast, in mm/s. Defaults to `configuration.z_drive_speed_default`.
+      acceleration: how hard, in mm/s2. Defaults to `configuration.z_drive_acceleration_default`.
+      current_limit: the motor current limit. Defaults to
+        `configuration.z_drive_current_limit_default`.
+      read_timeout: how long to wait for the move, in seconds.
+
+    Raises:
+      ValueError: If the head carries no tips, or it cannot put their bottom at `z`.
+      RuntimeError: If the head's Z window was not probed, so how high it reaches is unknown.
+    """
+    c = self.configuration
+    if c.z_range is None:
+      raise RuntimeError("the head's Z window was not probed; have you called `star.setup()`?")
+
+    try:
+      overhang = await self.request_tip_overhang()
+    except RuntimeError as no_tips:
+      raise ValueError(
+        "the head carries no tips, so it has no tool bottom to place; "
+        "`move_stop_disk_to_z_position` is the move for a head with nothing on it"
+      ) from no_tips
+
+    # The drive works in stop-disk terms over `z_range`, so what the tip bottom reaches is that
+    # window shifted down by the overhang, and no lower than the head may put one.
+    low = round(max(c.z_range[0] - overhang, c.min_tool_bottom_z), 2)
+    high = round(c.z_range[1] - overhang, 2)
+    if not low <= z <= high:
+      raise ValueError(
+        f"the tool bottom reaches {low} to {high} mm with a {overhang} mm overhang, not {z}"
+      )
+
+    return await self.move_stop_disk_to_z_position(
+      z + overhang,
+      speed=speed,
+      acceleration=acceleration,
+      current_limit=current_limit,
+      read_timeout=read_timeout,
+    )
+
   async def move_to_safe_z(
     self,
     speed: Optional[float] = None,
@@ -1120,7 +1223,7 @@ class Head:
     z_range = self.configuration.z_range
     if z_range is None:
       raise RuntimeError("the head's Z window was not probed; have you called `star.setup()`?")
-    await self.move_z(z_range[1], speed=speed, acceleration=acceleration)
+    await self.move_stop_disk_to_z_position(z_range[1], speed=speed, acceleration=acceleration)
     return await self.request_z_position()
 
   # -- dispensing drive --------------------------------------------------------------------------

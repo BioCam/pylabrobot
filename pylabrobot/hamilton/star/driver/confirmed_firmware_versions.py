@@ -2,7 +2,7 @@
 
 A STAR is not one controller. The master (``C0``) sits on an internal bus of independently
 versioned boards, each of which answers ``RF`` with its own version string, and each of which is
-replaced and updated on its own. So the versions are recorded per capability rather than as whole
+replaced and updated on its own. So the versions are recorded per feature rather than as whole
 stacks: two machines that differ only in their 96-head would otherwise have every other version
 written down twice.
 
@@ -27,47 +27,47 @@ CONFIRMED_FIRMWARE_VERSIONS: Dict[str, FrozenSet[str]] = {
   "iswap": frozenset({"4.1S 2011-12-19"}),
   "autoload": frozenset({"3.4S f 2017-01-09"}),
 }
-"""What each capability has been seen running, keyed by the capability it belongs to."""
+"""What each feature has been seen running, keyed by the feature it belongs to."""
 
 
-def is_confirmed(capability: str, version: str) -> bool:
-  """Whether a capability has been driven on this version before.
+def is_confirmed(feature: str, version: str) -> bool:
+  """Whether a feature has been driven on this version before.
 
   Args:
-    capability: which capability reported it, as keyed in `CONFIRMED_FIRMWARE_VERSIONS`.
+    feature: which feature reported it, as keyed in `CONFIRMED_FIRMWARE_VERSIONS`.
     version: the version it reported, without the `rf` field marker.
 
   Returns:
-    True if that version is recorded for that capability.
+    True if that version is recorded for that feature.
   """
-  return version in CONFIRMED_FIRMWARE_VERSIONS.get(capability, frozenset())
+  return version in CONFIRMED_FIRMWARE_VERSIONS.get(feature, frozenset())
 
 
 def unconfirmed(versions: Dict[str, Optional[str]]) -> Dict[str, str]:
   """Which of the versions a machine reported have not been driven before.
 
   Args:
-    versions: what each capability reported, keyed by capability. A capability that reported
+    versions: what each feature reported, keyed by feature. A feature that reported
       nothing is ignored.
 
   Returns:
-    The capabilities whose version is not recorded, and what they reported.
+    The features whose version is not recorded, and what they reported.
   """
   return {
-    capability: version
-    for capability, version in versions.items()
-    if version is not None and not is_confirmed(capability, version)
+    feature: version
+    for feature, version in versions.items()
+    if version is not None and not is_confirmed(feature, version)
   }
 
 
-def suggest_entry(capability: str, version: str) -> str:
+def suggest_entry(feature: str, version: str) -> str:
   """Format a version as the line to add to `CONFIRMED_FIRMWARE_VERSIONS`.
 
   Args:
-    capability: which capability reported it.
+    feature: which feature reported it.
     version: the version it reported.
 
   Returns:
-    The line, to paste into that capability's set once the machine has been driven successfully.
+    The line, to paste into that feature's set once the machine has been driven successfully.
   """
-  return f'  "{capability}": frozenset({{..., "{version}"}}),'
+  return f'  "{feature}": frozenset({{..., "{version}"}}),'

@@ -70,8 +70,8 @@ class TestFactories(unittest.IsolatedAsyncioTestCase):
 
 
 class TestCapabilities(unittest.IsolatedAsyncioTestCase):
-  """The instrument reads its capabilities through the driver, which builds only what discovery
-  found. A capability the machine does not report is None rather than an object that cannot work."""
+  """The instrument reads its features through the driver, which builds only what discovery
+  found. A feature the machine does not report is None rather than an object that cannot work."""
 
   async def test_reads_through_to_the_driver(self):
     star = STAR(simulation=True)

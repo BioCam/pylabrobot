@@ -223,7 +223,7 @@ class Head96(Head):
   """The 96-head.
 
   Reached as `driver.head96`, on a machine that has one. It is addressed as `H0`, but the
-  commands that move it go to the master, so this capability speaks to both.
+  commands that move it go to the master, so this feature speaks to both.
   """
 
   configuration: Head96Configuration

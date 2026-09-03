@@ -190,7 +190,7 @@ class AutoloadConfiguration:
     The X drive is the one thing here that does not count in the deck's coordinates: its zero sits
     `drive_zero_on_the_deck` along the deck. Every crossing between the two frames goes through
     here and `from_deck_frame`, so the offset is applied in one place. The other drives, and the
-    other capabilities, need no such conversion - their axes are the deck's.
+    other features, need no such conversion - their axes are the deck's.
 
     Returns:
       The same position in the deck's frame, in mm.

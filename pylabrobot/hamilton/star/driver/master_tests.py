@@ -110,6 +110,7 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
       [
         "ZA channels to safe Z",
         "EV 96-head probe and retract",
+        "ZA channels to safe Z",
         "iSWAP park",
         "EV 96-head probe and retract",
         "II autoload",
@@ -123,6 +124,7 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
       [
         "ZA channels to safe Z",
         "EV 96-head probe and retract",
+        "ZA channels to safe Z",
         "iSWAP park",
         "EI 96-head",
         "EV 96-head probe and retract",
@@ -139,6 +141,7 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
       [
         "ZA channels to safe Z",
         "EV 96-head probe and retract",
+        "ZA channels to safe Z",
         "iSWAP park",
         "EV 96-head probe and retract",
         "II autoload",
@@ -156,6 +159,7 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
         "II autoload",
         "autoload park",
         "DI channels",
+        "ZA channels to safe Z",
         "FI iSWAP",
         "iSWAP park",
         "EI 96-head",

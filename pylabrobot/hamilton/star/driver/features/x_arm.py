@@ -119,8 +119,8 @@ class XArm:
     # The arm on the deck, when the driver was given one. Setup puts it there; moves keep it in
     # step. Without a deck it stays None and nothing is modelled.
     self.resource: Optional[Resource] = None
-    # What this arm carries. The firmware requires the capability bits of the two drives to be
-    # disjoint, so a capability is on one arm or the other and never on both. Setup builds each
+    # What this arm carries. The firmware requires the feature bits of the two drives to be
+    # disjoint, so a feature is on one arm or the other and never on both. Setup builds each
     # from this arm's own bits.
     self.pipettes: Optional["Pipettes"] = None
     self.head96: Optional["Head96"] = None

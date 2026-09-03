@@ -135,7 +135,6 @@ class STARDevice(Resource):
     size_y: Optional[float] = None,
     size_z: Optional[float] = None,
     extension_housing: bool = False,
-    autoload: bool = False,
     side_panel_x: Optional[float] = None,
     deck_location: Optional[Coordinate] = None,
     model: Optional[str] = None,
@@ -155,11 +154,6 @@ class STARDevice(Resource):
       extension_housing: whether the left extension housing is fitted. It becomes a resource of its
         own, `left_extension_housing`, standing to the LEFT of the chassis at a negative x. It does
         NOT change the instrument's size: see `EXTENSION_HOUSING_SIZE`.
-      autoload: whether an autoload is fitted. Recorded on the instrument as `autoload_fitted`,
-        and does NOT change its size: the tray and the sled are their own resources standing in
-        front of the chassis, so the instrument's box stays the chassis's own extent. Whether an
-        autoload can be DRIVEN is discovered from the machine, through
-        `configuration.autoload_installed`.
       side_panel_x: how far the chassis's left side panel sits from the instrument's left face.
         Given, and no extension housing fitted, the panel becomes a resource of its own. None
         leaves it out, which is what a machine whose panel has not been measured gets.
@@ -185,7 +179,6 @@ class STARDevice(Resource):
       model=model if model is not None else self.__class__.__name__,
     )
     self.extension_housing = extension_housing
-    self.autoload_fitted = autoload
 
     self.deck = deck
     self.driver = driver if driver is not None else STARSimulationDriver(deck=deck)
@@ -311,7 +304,6 @@ def STAR(
   size_y: float = MANUAL_SIZE_Y,
   size_z: float = SIZE_Z,
   extension_housing: bool = False,
-  autoload: bool = False,
 ) -> STARDevice:
   """A full-size STAR, on a full-size STAR deck."""
   return STARDevice(
@@ -323,7 +315,6 @@ def STAR(
     size_y=size_y,
     size_z=size_z,
     extension_housing=extension_housing,
-    autoload=autoload,
     side_panel_x=SIDE_PANEL_X,
     deck_location=STAR_DECK_LOCATION,
     model=STAR.__name__,
@@ -367,7 +358,6 @@ def STARLet(
   size_y: float = MANUAL_SIZE_Y,
   size_z: float = SIZE_Z,
   extension_housing: bool = False,
-  autoload: bool = False,
 ) -> STARDevice:
   """A STARlet, on a STARlet deck."""
   return STARDevice(
@@ -379,7 +369,6 @@ def STARLet(
     size_y=size_y,
     size_z=size_z,
     extension_housing=extension_housing,
-    autoload=autoload,
     side_panel_x=SIDE_PANEL_X,
     deck_location=STARLET_DECK_LOCATION,
     model=STARLet.__name__,
@@ -395,7 +384,6 @@ def STARPlus(
   size_y: float = MANUAL_SIZE_Y,
   size_z: float = SIZE_Z,
   extension_housing: bool = False,
-  autoload: bool = False,
 ) -> STARDevice:
   """A STARplus, on a STARplus deck.
 
@@ -415,7 +403,6 @@ def STARPlus(
     size_y=size_y,
     size_z=size_z,
     extension_housing=extension_housing,
-    autoload=autoload,
     side_panel_x=SIDE_PANEL_X,
     deck_location=STAR_DECK_LOCATION,
     model=STARPlus.__name__,
