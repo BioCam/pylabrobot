@@ -246,6 +246,9 @@ class STARDevice(Resource):
   def x_arm(self) -> XArm:
     """The X-arm, on a machine that has only one.
 
+    Returns:
+      The arm, whichever side it is installed on.
+
     Raises:
       RuntimeError: If setup has not run.
       ValueError: If the machine has more than one arm.
@@ -339,6 +342,9 @@ def STAR_with_extension_housing(
   """A full-size STAR with the extension housing on its left, on a full-size STAR deck.
 
   The same machine as `STAR(extension_housing=True)`, which is now the way to ask for one.
+
+  Returns:
+    The instrument, with the housing standing beside its chassis.
   """
   return STAR(
     deck=deck,
@@ -396,6 +402,9 @@ def STARPlus(
   The width is measured on the manufacturer's own model, as the other two frames are. Its deck is
   derived, as `STARPlusDeck` works through, because there is no
   STARplus here to read one from, so its 78 rails should be confirmed against a real machine.
+
+  Returns:
+    The instrument, on a STARplus deck.
   """
   return STARDevice(
     deck=deck if deck is not None else STARPlusDeck(),

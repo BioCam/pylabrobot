@@ -191,6 +191,9 @@ class AutoloadConfiguration:
     `drive_zero_on_the_deck` along the deck. Every crossing between the two frames goes through
     here and `from_deck_frame`, so the offset is applied in one place. The other drives, and the
     other capabilities, need no such conversion - their axes are the deck's.
+
+    Returns:
+      The same position in the deck's frame, in mm.
     """
     return round(mm + self.drive_zero_on_the_deck, 2)
 
@@ -237,6 +240,9 @@ class Autoload:
   def track_range(self) -> range:
     """The tracks it can be moved to, one for each slot the instrument has.
 
+    Returns:
+      Every track this machine has, counted from 1.
+
     Raises:
       RuntimeError: If setup has not run, so the deck size is not known.
     """
@@ -262,7 +268,7 @@ class Autoload:
       What it is, as named in `AUTOLOAD_TYPES`, or the code it answered with when that is not one
       of them.
     """
-    resp = await self._driver.send_command(module="C0", command="CQ", fmt="cq#")
+    resp = await self._driver.send_command(module="C0", command="CQ", subsystem="I0", fmt="cq#")
     code = cast(int, resp["cq"])
     return AUTOLOAD_TYPES.get(code, str(code))
 
@@ -373,7 +379,7 @@ class Autoload:
     """
     if not await self.request_initialization_status():
       logger.debug("autoload reports itself uninitialized - homing its drives")
-      await self._send_command_and_update_sled_x(module="C0", command="II")
+      await self._send_command_and_update_sled_x(module="C0", command="II", subsystem="I0")
     await self.wheel_move_to_safe_z()
     self.configuration.z_drive_safety_position = await self.wheel_request_z_position()
 
@@ -396,9 +402,6 @@ class Autoload:
 
     Args:
       kwargs: what to send, as `send_command` takes it.
-
-    Returns:
-      Whatever the command answered.
     """
     try:
       resp = await self._driver.send_command(**kwargs)
@@ -519,7 +522,6 @@ class Autoload:
         `configuration.x_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the track is not one this machine has, or an argument is outside what the
         drive accepts.
@@ -597,7 +599,6 @@ class Autoload:
         `configuration.x_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the position is outside the drive's travel, or an argument is outside what the
         drive accepts.
@@ -674,7 +675,6 @@ class Autoload:
         `configuration.x_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the sled would end up outside the drive's travel, or an argument is outside
         what the drive accepts.
@@ -688,7 +688,6 @@ class Autoload:
 
   async def park(self):
     """Park the autoload at the last track this machine has.
-
     Raises:
       RuntimeError: If setup has not run, so the deck size is not known.
     """
@@ -712,7 +711,7 @@ class Autoload:
     Returns:
       The wheel's Z position, in mm.
     """
-    await self._driver.send_command(module="C0", command="IV")
+    await self._driver.send_command(module="C0", command="IV", subsystem="I0")
     return await self.wheel_request_z_position()
 
   async def wheel_move_z(
@@ -733,7 +732,6 @@ class Autoload:
         `configuration.z_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the position, or an argument, is outside what the drive accepts.
     """
@@ -793,7 +791,6 @@ class Autoload:
         `configuration.z_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the position is not one it knows, or an argument is outside what the drive
         accepts.
@@ -866,7 +863,6 @@ class Autoload:
         `configuration.y_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the position, or an argument, is outside what the drive accepts.
     """
@@ -926,7 +922,6 @@ class Autoload:
         `configuration.y_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the position is not one it knows, or an argument is outside what the drive
         accepts.
@@ -990,7 +985,6 @@ class Autoload:
       position: which way to face. Only the two stops can be moved to, so `undefined` is refused.
       stop_torque: whether to hold the drive there once it arrives. The drive's own default is
         not to.
-
     Raises:
       ValueError: If the position is not one that can be moved to.
     """
@@ -1058,7 +1052,9 @@ class Autoload:
     tracks = self.track_range
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
-    resp = await self._driver.send_command(module="C0", command="CT", fmt="ct#", cp=f"{track:02}")
+    resp = await self._driver.send_command(
+      module="C0", command="CT", subsystem="I0", fmt="ct#", cp=f"{track:02}"
+    )
 
     if park_after:
       await self.park()
@@ -1076,7 +1072,7 @@ class Autoload:
     Raises:
       ValueError: If the machine answered without a presence mask.
     """
-    resp = cast(str, await self._driver.send_command(module="C0", command="CS"))
+    resp = cast(str, await self._driver.send_command(module="C0", command="CS", subsystem="I0"))
     return _tracks_from_presence_mask(self._presence_mask(resp, "cd"))
 
   # -- barcode scanner -----------------------------------------------------------------------------
@@ -1120,7 +1116,6 @@ class Autoload:
       symbologies_2d: which 2D and stacked codes to read, on a reader that reads them. Defaults to
         `ANY 2D` there, and is refused on a scanner that reads only 1D.
       scan_direction: which way a 2D reader looks. Sent only by a reader that takes it.
-
     Raises:
       ValueError: If a symbology is not one it reads, or 2D codes are asked of a 1D scanner.
       RuntimeError: If this autoload's type names no scanner.
@@ -1178,7 +1173,6 @@ class Autoload:
 
     Args:
       symbologies: which symbologies to read.
-
     Raises:
       ValueError: If a type is not one it reads.
     """
@@ -1189,7 +1183,9 @@ class Autoload:
     mask = 0
     for name in symbologies:
       mask |= known[name]
-    return await self._driver.send_command(module="C0", command="CB", bt=f"{mask:02X}")
+    return await self._driver.send_command(
+      module="C0", command="CB", subsystem="I0", bt=f"{mask:02X}"
+    )
 
   async def load_carrier_from_tray_and_scan_carrier_barcode(
     self,
@@ -1237,6 +1233,7 @@ class Autoload:
         await self._send_command_and_update_sled_x(
           module="C0",
           command="CI",
+          subsystem="I0",
           cp=f"{track:02}",
           bi=f"{round(barcode_position * 10):04}",
           bw=f"{round(barcode_reading_window_width * 10):03}",
@@ -1261,7 +1258,7 @@ class Autoload:
     Sent after its barcode has been scanned.
     """
     try:
-      return await self._send_command_and_update_sled_x(module="C0", command="CA")
+      return await self._send_command_and_update_sled_x(module="C0", command="CA", subsystem="I0")
     except BaseException:
       await self.wheel_move_to_safe_z()
       raise
@@ -1273,7 +1270,6 @@ class Autoload:
 
     Args:
       track: the track the carrier sits at, counted from 1.
-
     Raises:
       ValueError: If the track is not one this machine has, or its carrier is on the loading tray
         rather than the deck.
@@ -1286,7 +1282,9 @@ class Autoload:
       raise ValueError(f"the carrier at track {track} is on the loading tray, not the deck")
 
     try:
-      return await self._send_command_and_update_sled_x(module="C0", command="CN", cp=f"{track:02}")
+      return await self._send_command_and_update_sled_x(
+        module="C0", command="CN", subsystem="I0", cp=f"{track:02}"
+      )
     except BaseException:
       # The wheel is left wherever the failure stopped it, and nothing may travel with it down.
       await self.wheel_move_to_safe_z()
@@ -1367,6 +1365,7 @@ class Autoload:
         await self._send_command_and_update_sled_x(
           module="C0",
           command="CL",
+          subsystem="I0",
           bd=f"{directions[direction]:01}",
           bp=f"{round(reading_position_of_first_barcode * 10):04}",
           cn=f"{containers:02}",
@@ -1411,7 +1410,6 @@ class Autoload:
       perform_deck_presence_check: whether to confirm the deck sensors see the carrier first.
       perform_tray_presence_check: whether to confirm the loading tray is not already holding it.
       park_after: whether to park the autoload once the carrier is out.
-
     Raises:
       ValueError: If the carrier ends outside the tracks this machine has, if the deck sensors do
         not see it, or if it is already on the loading tray.
@@ -1475,7 +1473,9 @@ class Autoload:
               f"sensor data indicates the tray already holds a carrier: {sensor_data}"
             )
 
-      resp = await self._send_command_and_update_sled_x(module="C0", command="CR", cp=f"{track:02}")
+      resp = await self._send_command_and_update_sled_x(
+        module="C0", command="CR", subsystem="I0", cp=f"{track:02}"
+      )
       if park_after:
         await self.park()
       return resp
@@ -1490,7 +1490,6 @@ class Autoload:
     Args:
       track: the track the carrier sits at, counted from 1.
       park_after: whether to park the autoload once the carrier is out.
-
     Raises:
       ValueError: If the track is not one this machine has.
       RuntimeError: If setup has not run.
@@ -1499,7 +1498,9 @@ class Autoload:
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
 
-    resp = await self._send_command_and_update_sled_x(module="C0", command="CW", cp=f"{track:02}")
+    resp = await self._send_command_and_update_sled_x(
+      module="C0", command="CW", subsystem="I0", cp=f"{track:02}"
+    )
     if park_after:
       await self.park()
     return resp
@@ -1585,7 +1586,6 @@ class Autoload:
     Args:
       lit: whether each track's light is on, counted from track 1.
       blinking: whether each track's light blinks rather than stays steady.
-
     Raises:
       ValueError: If either pattern does not have one entry per track.
       RuntimeError: If setup has not run, so the deck size is not known.
@@ -1600,5 +1600,5 @@ class Autoload:
       return f"{int(bits, base=2):014X}"
 
     return await self._driver.send_command(
-      module="C0", command="CP", cl=as_hex(lit), cb=as_hex(blinking)
+      module="C0", command="CP", subsystem="I0", cl=as_hex(lit), cb=as_hex(blinking)
     )

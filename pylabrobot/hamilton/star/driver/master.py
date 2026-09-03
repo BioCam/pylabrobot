@@ -50,10 +50,6 @@ def _range(values: Optional[Tuple[float, float]]) -> str:
   return "unresolved" if values is None else f"{values[0]} to {values[1]} mm"
 
 
-# The instrument initialization procedure homes every drive, which takes minutes.
-PRE_INITIALIZE_READ_TIMEOUT = 300
-
-
 class STARDriver:
   """Interface for the Hamilton STARDriver."""
 
@@ -157,16 +153,25 @@ class STARDriver:
       logger.debug("[PHASE 1] Discovery")
       await self.discover()
 
-      # 2. Bring the instrument to a known state.
+      # 2. Bring the instrument to a known state. The autoload homes alongside it: it is its own
+      #    unit, and the instrument procedure holds every drive but its. Phase 3 reads its state
+      #    again, so a machine that does home it there loses nothing but the overlap.
       logger.debug("[PHASE 2] Instrument initialization")
-      already_initialized = await self.initialize()
+      overlap_autoload = (
+        self.autoload is not None and not await self.request_initialization_status()
+      )
+      if overlap_autoload:
+        assert self.autoload is not None
+        already_initialized, _ = await asyncio.gather(self.initialize(), self.autoload.initialize())
+      else:
+        already_initialized = await self.initialize()
 
       # 3. Each capability brings itself up. They sit on different modules, so they run together;
       #    the autoload, iSWAP and 96-head join this gather as they land. The channels only need
       #    it when the instrument procedure did not just run, or when something is still mounted.
       logger.debug("[PHASE 3] Capability initialization")
       initializing = [self._initialize_arm(arm, already_initialized) for arm in self.arms]
-      if self.autoload is not None:
+      if self.autoload is not None and not overlap_autoload:
         initializing.append(self.autoload.initialize())
       await asyncio.gather(*initializing)
 
@@ -234,13 +239,26 @@ class STARDriver:
     read_timeout: Optional[int] = None,
     wait=True,
     fmt: Optional[Any] = None,
+    subsystem: Optional[str] = None,
     **kwargs,
   ):
     """Assemble a firmware command, send it, and parse the reply if a format is given.
 
     Modules share one link, so this serializes what has to be serialized: one command at a time
-    per module, and a C0 master command alone, after the modules have drained. Commands that only
-    read - every `R` and `Q` command - take no lock and run alongside anything.
+    per physical subsystem. A command addressed to C0 drives one of those too - `C0 DI` the
+    channels, `C0 II` the autoload - so a caller names which in `subsystem`, and commands on
+    different subsystems then run together. A C0 command that names none is taken to drive the
+    whole instrument and runs alone. Commands that only read - every `R` and `Q` command - take
+    no lock and run alongside anything.
+
+    Args:
+      module: the module to address the command to.
+      command: the two-letter command code.
+      subsystem: which subsystem the command drives, when that is not the module it is addressed
+        to. Only a C0 command needs it.
+
+    Returns:
+      The parsed reply when a format was given, and the raw reply otherwise.
 
     Raises:
       RuntimeError: If the link is not open.
@@ -256,10 +274,8 @@ class STARDriver:
     )
     if command[0] in ("R", "Q"):
       return await self._send(module, command, **kwargs_)
-    if module == "C0":
-      async with self._lock.c0():
-        return await self._send(module, command, **kwargs_)
-    async with self._lock.subsystem(module):
+    key = subsystem or (_FirmwareLock.EVERY_SUBSYSTEM if module == "C0" else module)
+    async with self._lock.subsystem(key):
       return await self._send(module, command, **kwargs_)
 
   async def _send(
@@ -329,6 +345,9 @@ class STARDriver:
     wait: bool = True,
   ) -> Optional[str]:
     """Send a raw command to the machine.
+
+    Returns:
+      Whatever the machine answered, or None when nothing came back.
 
     Raises:
       RuntimeError: If the link is not open.
@@ -419,6 +438,9 @@ class STARDriver:
 
     Most STARs carry a single arm, and naming a side there is noise. A machine with two has no
     single X-arm, so this refuses rather than picking one.
+
+    Returns:
+      The machine's one arm.
 
     Raises:
       RuntimeError: If setup has not run, so it is not yet known which arms are installed.
@@ -511,7 +533,7 @@ class STARDriver:
       Per side, `(wrap_size, (workspace_min, workspace_max))` in mm, keyed by side. A
       `wrap_size` of 0 means that arm is not installed.
     """
-    resp = await self.send_command(module="C0", command="UA")
+    resp = await self.send_command(module="C0", command="UA", subsystem="C0")
     values = [int(v) / 10 for v in resp.split("ua")[-1].strip().split()]
     left_wrap, right_wrap, left_min, left_max, right_min, right_max = values
     return {
@@ -525,6 +547,9 @@ class STARDriver:
     Combines the machine configuration (RM) and the extended configuration (QM). Each installed
     X-drive's geometry is resolved from the X-drive range (RU) and working-envelope (UA) queries;
     `right_arm` is None when no second arm is installed.
+
+    Returns:
+      What the instrument reports it carries.
     """
     machine = await self.send_command(module="C0", command="RM", fmt="kb**kp##")
     extended = await self.send_command(
@@ -657,7 +682,6 @@ class STARDriver:
         capacity.
       tip_size: which collar the tip has, which is how the instrument identifies it.
       pickup_method: whether it is collected from a rack or out of wash liquid.
-
     Raises:
       ValueError: If an argument is outside what the command accepts.
     """
@@ -675,6 +699,7 @@ class STARDriver:
     return await self.send_command(
       module="C0",
       command="TT",
+      subsystem="C0",
       tt=f"{tip_type_table_index:02}",
       tf=has_filter,
       tl=f"{length_increments:04}",
@@ -792,7 +817,7 @@ class STARDriver:
     }
     self.firmware = {name: v for name, v in reported.items() if v is not None}
 
-  async def initialize(self, force: bool = False) -> bool:
+  async def initialize(self, force: bool = False, read_timeout: int = 300) -> bool:
     """Bring the instrument itself to a known state.
 
     This moves it. An uninitialized machine runs its initialization procedure, which homes every
@@ -804,6 +829,7 @@ class STARDriver:
 
     Args:
       force: run the initialization procedure even if the machine reports itself initialized.
+      read_timeout: how long to wait for the procedure, in seconds.
 
     Returns:
       Whether the machine reported itself already initialized before this ran.
@@ -814,9 +840,9 @@ class STARDriver:
       logger.debug(
         "machine reports %s - running the initialization procedure (up to %d s)",
         "initialized, but the run was forced" if already_initialized else "not initialized",
-        PRE_INITIALIZE_READ_TIMEOUT,
+        read_timeout,
       )
-      await self.pre_initialize()
+      await self.pre_initialize(read_timeout=read_timeout)
     else:
       logger.debug("machine reports initialized - raising the channels to Z safety only")
       for arm in self.arms:
@@ -830,14 +856,23 @@ class STARDriver:
 
     return already_initialized
 
-  async def pre_initialize(self):
+  async def pre_initialize(self, read_timeout: int = 300):
     """Run the instrument's initialization procedure.
 
-    Homes every drive and leaves the channels at Z safety. It takes minutes, hence the long read
-    timeout.
+    Homes every drive and leaves the channels at Z safety. The default read timeout is a wide
+    margin over what the command has been measured to take.
+
+    The autoload is a unit of its own with its own initialize, so it is left out of what this
+    holds and can be brought up alongside.
+
+    Args:
+      read_timeout: how long to wait for the procedure, in seconds.
     """
     return await self.send_command(
-      module="C0", command="VI", read_timeout=PRE_INITIALIZE_READ_TIMEOUT
+      module="C0",
+      command="VI",
+      subsystem=_FirmwareLock.EVERY_SUBSYSTEM_BUT_THE_AUTOLOAD,
+      read_timeout=read_timeout,
     )
 
   async def _initialize_arm(self, arm: XArm, already_initialized: bool):

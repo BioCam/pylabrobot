@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
+from pylabrobot.hamilton.star.driver.lock import _FirmwareLock
 from pylabrobot.hamilton.star.resource_model import TipMountingShaft
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
@@ -401,6 +402,9 @@ class Pipettes:
 
     The channels spread evenly across the band the procedure uses, so they are clear of one
     another whatever the channel count.
+
+    Returns:
+      One position per channel, in mm, back to front.
     """
     front, back = INITIALIZE_Y_RANGE
     spacing = round((back - front) * 10) // (self.num_channels - 1)
@@ -445,6 +449,7 @@ class Pipettes:
     return await self._driver.send_command(
       module="C0",
       command="DI",
+      subsystem=_FirmwareLock.CHANNELS,
       read_timeout=INITIALIZE_READ_TIMEOUT,
       xp=[f"{round(x_position * 10):05}"],
       yp=[f"{round(y * 10):04}" for y in y_positions],
@@ -468,5 +473,5 @@ class Pipettes:
     Returns:
       Each channel's stop-disk Z, in mm, back to front.
     """
-    await self._driver.send_command(module="C0", command="ZA")
+    await self._driver.send_command(module="C0", command="ZA", subsystem=_FirmwareLock.CHANNELS)
     return [await self.request_stop_disk_z(channel) for channel in range(len(self.resources))]

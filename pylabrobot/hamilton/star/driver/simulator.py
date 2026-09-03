@@ -274,7 +274,9 @@ class SimulatedPipettes(_Simulated, Pipettes):
     )
 
   async def initialize(self, *args, **kwargs):
-    """Whatever was mounted on the channels comes off."""
+    """Whatever was mounted on the channels comes off. Goes through the command path, so it is
+    coordinated like the real one."""
+    await super().initialize(*args, **kwargs)
     self.machine.tips_mounted = [False] * len(self.machine.tips_mounted)
 
   async def request_y_positions(self) -> List[float]:
@@ -404,7 +406,9 @@ class _SimulatedHead(_Simulated, Head):
     return default
 
   async def initialize(self, *args, **kwargs):
-    """Whatever was mounted on the head comes off, and it reports itself up."""
+    """Whatever was mounted on the head comes off, and it reports itself up. Goes through the
+    command path, so it is coordinated like the real one."""
+    await super().initialize(*args, **kwargs)
     self.machine.initialized[self.configuration.module] = True
 
   async def request_predefined_y_positions(self) -> List[float]:
@@ -491,6 +495,8 @@ class SimulatedISWAP(_Simulated, iSWAP):
     return list(SIMULATED_ISWAP_TABLES[table])
 
   async def initialize(self):
+    """Goes through the command path, so it is coordinated like the real one."""
+    await super().initialize()
     self.machine.initialized["R0"] = True
 
 
@@ -751,8 +757,15 @@ class STARSimulationDriver(STARDriver):
   async def request_initialization_status(self, module: str = "C0") -> bool:
     return self.initialized.get(module, False)
 
-  async def pre_initialize(self):
-    """Home every drive. The modules it de-initializes then need their own."""
+  async def pre_initialize(self, read_timeout: int = 300):
+    """Home every drive. The modules it de-initializes then need their own.
+
+    Goes through the command path, so it is coordinated like the real one.
+
+    Args:
+      read_timeout: how long the real procedure would be given, in seconds. Nothing waits here.
+    """
+    await super().pre_initialize(read_timeout=read_timeout)
     self.initialized["C0"] = True
 
   def _describe_link(self) -> str:

@@ -92,6 +92,9 @@ class XArmConfiguration:
   @property
   def reference_point(self) -> Literal["center", "right"]:
     """Where along the arm's width the tracked X refers to: the arm center for a
+
+    Returns:
+      Which point along the arm's width its X refers to.
     dual-rail arm, the right edge for a single-rail arm."""
     if self.width is None:
       raise RuntimeError("arm geometry not resolved")
@@ -128,6 +131,9 @@ class XArm:
   @property
   def parameter_prefix(self) -> str:
     """The letter every parameter to this arm's drive starts with: `l` on the left, `s` on the
+
+    Returns:
+      The letter, `l` or `s`.
     right. The X-drive board carries a drive per arm, each with its own commands."""
     return "l" if self.side == "left" else "s"
 
@@ -136,6 +142,9 @@ class XArm:
   @property
   def configuration(self) -> XArmConfiguration:
     """This arm's configuration and geometry.
+
+    Returns:
+      This arm's configuration.
 
     Raises:
       RuntimeError: If setup has not run, so no configuration has been read yet.
@@ -219,7 +228,6 @@ class XArm:
     Args:
       current_limit: the motor current limit. Defaults to
         `configuration.current_limit_default`.
-
     Raises:
       ValueError: If the current limit is outside what the drive accepts.
     """
@@ -264,6 +272,9 @@ class XArm:
   @property
   def reference_anchor(self) -> Literal["l", "c", "r"]:
     """Where along its width this arm's x refers to, as a resource anchor: the centre of a
+
+    Returns:
+      The anchor, as PyLabRobot names one.
     dual-rail arm, the right edge of a single-rail one."""
     return "c" if self.configuration.reference_point == "center" else "r"
 
@@ -342,7 +353,6 @@ class XArm:
       current_limit: the motor current limit.
       settle_reads: how many reads to spend waiting for the arm to come to rest. Each is a command
         round trip, about 10 ms, against a settle of 27 to 90 ms where this was measured.
-
     Raises:
       ValueError: If `x` is outside the arm's travel range, or an argument is out of range.
       RuntimeError: If the arm's geometry was not resolved.
@@ -414,7 +424,6 @@ class XArm:
         towards lower.
       acceleration_level: which acceleration curve to use.
       current_limit: the motor current limit.
-
     Raises:
       ValueError: If the arm would end up outside its travel range, or an argument is outside what
         the drive accepts.

@@ -147,17 +147,18 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
     )
 
   async def test_instrument_not_up(self):
-    """The instrument procedure homes every drive, so nothing is raised beforehand."""
+    """The instrument procedure homes every drive, so nothing is raised beforehand. The autoload
+    is its own unit, so it comes up alongside the procedure rather than after it."""
     self.assertEqual(
       await self.run_setup(instrument_up=False, head_up=False, eject_position=True),
       [
         "VI instrument",
+        "II autoload",
+        "autoload park",
         "DI channels",
         "FI iSWAP",
         "iSWAP park",
         "EI 96-head",
         "EV 96-head probe and retract",
-        "II autoload",
-        "autoload park",
       ],
     )

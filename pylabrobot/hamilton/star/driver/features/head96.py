@@ -104,6 +104,9 @@ class Head96Configuration(HeadConfiguration):
   def firmware_year(self) -> int:
     """The year the head's firmware was built, which resolves the windows below.
 
+    Returns:
+      The year, as the firmware's own date gives it.
+
     Raises:
       RuntimeError: If the firmware version has not been read.
     """
@@ -126,6 +129,9 @@ class Head96Configuration(HeadConfiguration):
 
     The floor is `y_increment_floor` rather than the 6000 the command documents, because the drive
     refuses everything below it. The 2008 range is as documented and has not been measured.
+
+    Returns:
+      The (lowest, highest) Y position, in increments.
     """
     if self.firmware_year >= 2010:
       return (self.y_increment_floor, 36000)
@@ -135,12 +141,18 @@ class Head96Configuration(HeadConfiguration):
   def y_speed_increment_range(self) -> Tuple[int, int]:
     """Y-drive speed window in increments. The pre-2021 max (25000, the firmware default) is an
     empirical, deck-tested cap; per firmware version the maxima are 20000 (2008) and 40000 (2013+).
+
+    Returns:
+      The (lowest, highest) speed, in increments.
     Verify on a pre-2021 head before raising it."""
     return (50, 25000 if self.firmware_year <= 2021 else 40000)
 
   @property
   def y_acceleration_increment_range(self) -> Tuple[int, int]:
     """Y-drive acceleration window in increments. The min is constant; the max rose from 32000
+
+    Returns:
+      The (lowest, highest) acceleration, in increments.
     (2008) to 50000 (2013+), so it tracks firmware like the Y range / speed."""
     return (5000, 50000 if self.firmware_year >= 2010 else 32000)
 
@@ -149,6 +161,9 @@ class Head96Configuration(HeadConfiguration):
   @property
   def dispensing_drive_range(self) -> Tuple[float, float]:
     """Aspirate/dispense piston volume window (uL); applies to both aspirate and dispense. 2013
+
+    Returns:
+      The (lowest, highest) volume, in uL.
     firmware widened the max from 62130 inc."""
     max_inc = 64350 if self.firmware_year >= 2010 else 62130
     return (0.0, self.dispensing_drive_increments_to_uL(max_inc))

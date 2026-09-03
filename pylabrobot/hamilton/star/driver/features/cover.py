@@ -57,11 +57,11 @@ class FrontCover:
   #   Raises:
   #     STARFirmwareError: If it is not shut, which the master answers as a cover close error.
   #   """
-  #   return await self._driver.send_command(module="C0", command="CO")
+  #   return await self._driver.send_command(module="C0", command="CO", subsystem="C0")
 
   # async def unlock(self):
   #   """Unlock the cover."""
-  #   return await self._driver.send_command(module="C0", command="HO")
+  #   return await self._driver.send_command(module="C0", command="HO", subsystem="C0")
 
   # -- firmware-based enforcement of cover being closed during operation ------
 
@@ -71,11 +71,11 @@ class FrontCover:
     With it enabled, a motion command sent while the cover is open is refused. Nothing reports
     whether it is on, so a caller that needs to know has to track what it set.
     """
-    return await self._driver.send_command(module="C0", command="CE")
+    return await self._driver.send_command(module="C0", command="CE", subsystem="C0")
 
   async def disable_control(self):
     """Disable cover control, so motion is no longer refused while the cover is open.
 
     This removes the interlock, and nothing reports that it is gone.
     """
-    return await self._driver.send_command(module="C0", command="CD")
+    return await self._driver.send_command(module="C0", command="CD", subsystem="C0")

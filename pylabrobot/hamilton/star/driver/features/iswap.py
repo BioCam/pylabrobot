@@ -275,7 +275,7 @@ class iSWAP:
 
   async def initialize(self):
     """Initialize the iSWAP. This moves it."""
-    return await self._driver.send_command(module="C0", command="FI")
+    return await self._driver.send_command(module="C0", command="FI", subsystem="R0")
 
   # -- parking ---------------------------------------------------------------
 
@@ -284,12 +284,11 @@ class iSWAP:
 
     Args:
       traversal_height: the minimum height to travel at on the way, in mm.
-
     Raises:
       ValueError: If the traversal height is outside what the command accepts.
     """
     if not 0 <= traversal_height <= 360:
       raise ValueError(f"traversal_height must be between 0 and 360 mm, is {traversal_height}")
     return await self._driver.send_command(
-      module="C0", command="PG", th=round(traversal_height * 10)
+      module="C0", command="PG", subsystem="R0", th=round(traversal_height * 10)
     )

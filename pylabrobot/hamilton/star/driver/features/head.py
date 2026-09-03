@@ -220,6 +220,9 @@ class HeadConfiguration:
 
     What the command accepts, which is wider than what a given machine allows: what an arm reaches
     depends on what else is mounted on it.
+
+    Returns:
+      The (lowest, highest) Y position the drive reaches, in mm.
     """
     low, high = self.y_increment_range
     return (self.y_drive_increments_to_mm(low), self.y_drive_increments_to_mm(high))
@@ -245,6 +248,9 @@ class HeadConfiguration:
 
     What the drive says it reaches, which is not the same as what a given unit does - the ceiling
     is probed at setup and replaces this one. Pure: it reads nothing and changes nothing.
+
+    Returns:
+      The (lowest, highest) Z position the drive documents, in mm.
     """
     low, high = self.z_increment_range
     return (self.z_drive_increments_to_mm(low), self.z_drive_increments_to_mm(high))
@@ -270,6 +276,9 @@ class HeadConfiguration:
 
     What the resource modelling the head spans, so that channel A1 lands on its left back corner.
     The body around the channels is larger, and by how much is not read from anywhere.
+
+    Returns:
+      The width, in mm.
     """
     return (self.channel_columns - 1) * self.channel_pitch
 
@@ -610,7 +619,6 @@ class Head:
         `configuration.tip_discard_location`.
       z_position_at_the_command_end: Z to leave the head at, in mm. Defaults to
         `configuration.traversal_z_position`.
-
     Raises:
       ValueError: If no position was given and none is configured.
     """
@@ -627,6 +635,7 @@ class Head:
     return await self._driver.send_command(
       module="C0",
       command=self.configuration.initialize_command,
+      subsystem=self.configuration.module,
       read_timeout=read_timeout,
       **parameters,
     )
@@ -649,7 +658,9 @@ class Head:
     """
     command = self.configuration.tip_presence_command
     field = command.lower()
-    resp = await self._driver.send_command(module="C0", command=command, fmt=f"{field}#")
+    resp = await self._driver.send_command(
+      module="C0", command=command, subsystem=self.configuration.module, fmt=f"{field}#"
+    )
     return cast(int, resp[field]) == 1
 
   async def request_position(self) -> Coordinate:
@@ -667,6 +678,7 @@ class Head:
     resp = await self._driver.send_command(
       module="C0",
       command=c.position_command,
+      subsystem=self.configuration.module,
       fmt=f"xs#####xd#{c.y_parameter}####{c.z_parameter}####",
     )
     x = cast(int, resp["xs"]) / 10
@@ -704,6 +716,9 @@ class Head:
 
     Not whichever arm is present: on a machine with two, the head is on one of them and its X, its
     travel and anything it might collide with are that one's.
+
+    Returns:
+      The arm carrying this head, or None when nothing carries it.
     """
     return next((a for a in self._driver.arms if a.head96 is self or a.head384 is self), None)
 
@@ -918,7 +933,6 @@ class Head:
       acceleration: how hard, in mm/s2. Defaults to `configuration.y_drive_acceleration_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.y_drive_current_limit_default`.
-
     Raises:
       ValueError: If an argument is outside what the drive accepts.
     """
@@ -1020,7 +1034,10 @@ class Head:
       The highest Z this head reaches, in mm.
     """
     await self._driver.send_command(
-      module="C0", command=self.configuration.retract_command, read_timeout=read_timeout
+      module="C0",
+      command=self.configuration.retract_command,
+      subsystem=self.configuration.module,
+      read_timeout=read_timeout,
     )
     z_max = await self.request_z_position()
     c = self.configuration
@@ -1047,7 +1064,6 @@ class Head:
       acceleration: how hard, in mm/s2. Defaults to `configuration.z_drive_acceleration_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.z_drive_current_limit_default`.
-
     Raises:
       ValueError: If an argument is outside what the drive accepts.
     """
