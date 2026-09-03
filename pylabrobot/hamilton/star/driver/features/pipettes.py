@@ -763,23 +763,51 @@ class Pipettes:
     """
     if not 0 <= channel < self.num_channels:
       raise ValueError(f"channel must be between 0 and {self.num_channels - 1}, is {channel}")
-    return await self._driver.send_command(
-      module="C0",
-      command="JP",
-      subsystem=_FirmwareLock.CHANNELS,
-      pn=f"{channel + 1:02}",  # the firmware counts channels from 1
-    )
+    try:
+      resp = await self._driver.send_command(
+        module="C0",
+        command="JP",
+        subsystem=_FirmwareLock.CHANNELS,
+        pn=f"{channel + 1:02}",  # the firmware counts channels from 1
+      )
+    except BaseException:
+      # A failed move leaves the channel Y positions unknown, so re-read them to refresh the
+      # model. The read is wrapped: its own failure must not replace the move's exception.
+      try:
+        await self.request_y_positions()
+      except BaseException:
+        logger.warning("could not read where the channels stopped; their model is stale")
+      raise
+
+    # The machine decides where the channels go, so unlike a commanded move there is nothing to
+    # write the model from: where they ended up has to be read.
+    await self.request_y_positions()
+    return resp
 
   # -- z position --------------------------------------------------------------------------------
 
-  async def request_z_positions(self) -> Dict[int, float]:
-    """Read where every channel is along Z.
+  async def _unchecked_fw_request_z_positions(self) -> Dict[int, float]:
+    """Read where every channel is along Z, without recording it.
+
+    The reading alone. `request_z_positions` is the one that also records it on the resources.
 
     Returns:
       The position of each channel in mm, keyed by channel, 0-indexed from the back.
     """
     resp = await self._driver.send_command(module="C0", command="RZ", fmt="rz#### (n)")
-    positions = {channel: increments / 10 for channel, increments in enumerate(resp["rz"])}
+    return {
+      channel: increments / 10 for channel, increments in enumerate(cast(List[int], resp["rz"]))
+    }
+
+  async def request_z_positions(self) -> Dict[int, float]:
+    """Read where every channel is along Z.
+
+    Each answer is recorded on the resource modelling that channel.
+
+    Returns:
+      The position of each channel in mm, keyed by channel, 0-indexed from the back.
+    """
+    positions = await self._unchecked_fw_request_z_positions()
     for channel, z in positions.items():
       self.update_location_by_reference_point(channel, z=z)
     return positions
@@ -812,12 +840,25 @@ class Pipettes:
     for channel_idx, z in zs.items():
       channel_locations[channel_idx] = z
 
-    return await self._driver.send_command(
-      module="C0",
-      command="JZ",
-      subsystem=_FirmwareLock.CHANNELS,
-      zp=[f"{round(z * 10):04}" for z in channel_locations.values()],
-    )
+    try:
+      resp = await self._driver.send_command(
+        module="C0",
+        command="JZ",
+        subsystem=_FirmwareLock.CHANNELS,
+        zp=[f"{round(z * 10):04}" for z in channel_locations.values()],
+      )
+    except BaseException:
+      # A failed move leaves the channel Z positions unknown, so re-read them to refresh the
+      # model. The read is wrapped: its own failure must not replace the move's exception.
+      try:
+        await self.request_z_positions()
+      except BaseException:
+        logger.warning("could not read where the channels stopped; their model is stale")
+      raise
+
+    for channel, z in channel_locations.items():
+      self.update_location_by_reference_point(channel, z=z)
+    return resp
 
   # -- z safety --------------------------------------------------------------
 
