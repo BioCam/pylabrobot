@@ -41,7 +41,9 @@ from pylabrobot.resources.hamilton.hamilton_decks import (
   _TRACK_WIDTH,
   STAR_NUM_TRACKS,
   STARLET_NUM_TRACKS,
+  STARPLUS_NUM_TRACKS,
   HamiltonDeck,
+  track_for_x_coordinate,
 )
 
 logger = logging.getLogger(__name__)
@@ -208,36 +210,80 @@ DEFAULT_STAR_CONFIGURATION = DeviceConfiguration(
   right_x_arm_width=370.0,
 )
 
-# How much shorter a STARlet is than the STAR above: 24 rails at the 22.5 mm track pitch, which is
-# 540.0 mm. The two decks state the same fact twice, as the file that defines them says.
-_STARLET_SHORTER_BY = (STAR_NUM_TRACKS - STARLET_NUM_TRACKS) * _TRACK_WIDTH
 
-# A STARlet, derived from the STAR rather than captured: there is no STARlet here to read a QM, RU
-# and UA reply from, and the STAR above is a recording of the machine we do have. Everything the
-# right-hand end of the deck sets moves left by `_STARLET_SHORTER_BY`; everything belonging to the
-# arm itself - its width, its wrap, and how far left it reaches - is the same part and does not
-# move. The slot count follows the same reading: the STAR reports two fewer slots than its deck has
-# rails, 54 against 56, which puts a 32-rail STARlet at 30.
-#
-# Replace this wholesale with a recording when there is a STARlet to take one from. It is a
-# derivation, and only the slot count is independently known to be right.
-_STAR_LEFT_ARM = cast(XArmConfiguration, DEFAULT_STAR_CONFIGURATION.left_arm)
-_STAR_X_RANGE = cast(Tuple[float, float], _STAR_LEFT_ARM.x_range)
-_STAR_WORKSPACE = cast(Tuple[float, float], _STAR_LEFT_ARM.workspace_range)
-DEFAULT_STARLET_CONFIGURATION = dataclasses.replace(
-  DEFAULT_STAR_CONFIGURATION,
-  instrument_size_slots=STARLET_NUM_TRACKS,
-  autoload_size_slots=STARLET_NUM_TRACKS,
-  tip_waste_x_position=DEFAULT_STAR_CONFIGURATION.tip_waste_x_position - _STARLET_SHORTER_BY,
-  max_iswap_collision_free_position=(
-    DEFAULT_STAR_CONFIGURATION.max_iswap_collision_free_position - _STARLET_SHORTER_BY
-  ),
-  left_arm=dataclasses.replace(
-    _STAR_LEFT_ARM,
-    x_range=(_STAR_X_RANGE[0], _STAR_X_RANGE[1] - _STARLET_SHORTER_BY),
-    workspace_range=(_STAR_WORKSPACE[0], _STAR_WORKSPACE[1] - _STARLET_SHORTER_BY),
-  ),
+# The highest track the recorded autoload's sled reaches, from its own drive window. Tracks past
+# it are on the deck but not on the sled's travel.
+_AUTOLOAD_REACHES_TRACK = track_for_x_coordinate(
+  SIMULATED_AUTOLOAD.drive_zero_on_the_deck
+  + SIMULATED_AUTOLOAD.x_drive_increment_range[1] * SIMULATED_AUTOLOAD.x_drive_mm_per_increment
 )
+
+
+def _frame_of_length(num_tracks: int) -> DeviceConfiguration:
+  """The STAR recording above, moved to a frame with a different number of tracks.
+
+  A derivation, not a capture: the STAR is the machine we have to read a QM, RU and UA reply from,
+  and every other frame is that reading shifted. Everything the right-hand end of the deck sets
+  moves by the difference in deck length; everything belonging to the arm itself - its width, its
+  wrap, and how far left it reaches - is the same part and does not move.
+
+  Replace a frame wholesale with a recording when there is one of that frame to take it from. Only
+  the track count is independently known to be right.
+
+  Args:
+    num_tracks: how many tracks the frame's deck has.
+
+  Returns:
+    The configuration a machine on that frame is taken to have.
+  """
+  # What the deck's extra or missing tracks come to in mm. Negative on a frame shorter than the
+  # STAR, which moves the right-hand end left rather than right.
+  shift = (num_tracks - STAR_NUM_TRACKS) * _TRACK_WIDTH
+  # A longer deck does not lengthen the autoload. Its sled travels as far as its own drive window
+  # reaches, which on a frame with more tracks than that stops short of the last one - so a frame
+  # the recorded sled cannot serve is derived without one rather than with one that cannot reach.
+  # A wider window may well exist for those frames; none has been read.
+  autoload = DEFAULT_STAR_CONFIGURATION.autoload_installed and num_tracks <= _AUTOLOAD_REACHES_TRACK
+  arm = cast(XArmConfiguration, DEFAULT_STAR_CONFIGURATION.left_arm)
+  x_range = cast(Tuple[float, float], arm.x_range)
+  workspace = cast(Tuple[float, float], arm.workspace_range)
+  return dataclasses.replace(
+    DEFAULT_STAR_CONFIGURATION,
+    instrument_size_slots=num_tracks,
+    autoload_installed=autoload,
+    autoload_size_slots=num_tracks if autoload else 0,
+    tip_waste_x_position=DEFAULT_STAR_CONFIGURATION.tip_waste_x_position + shift,
+    max_iswap_collision_free_position=(
+      DEFAULT_STAR_CONFIGURATION.max_iswap_collision_free_position + shift
+    ),
+    left_arm=dataclasses.replace(
+      arm,
+      x_range=(x_range[0], x_range[1] + shift),
+      workspace_range=(workspace[0], workspace[1] + shift),
+    ),
+  )
+
+
+DEFAULT_STARLET_CONFIGURATION = _frame_of_length(STARLET_NUM_TRACKS)
+DEFAULT_STARPLUS_CONFIGURATION = _frame_of_length(STARPLUS_NUM_TRACKS)
+
+
+def default_configuration_for(num_tracks: int) -> Tuple[DeviceConfiguration, bool]:
+  """What to take a machine on this frame to be, when nothing was declared.
+
+  Args:
+    num_tracks: how many tracks the frame's deck has.
+
+  Returns:
+    The configuration, and whether it was read off a machine rather than derived from one.
+  """
+  if num_tracks == STAR_NUM_TRACKS:
+    return DEFAULT_STAR_CONFIGURATION, True
+  if num_tracks == STARLET_NUM_TRACKS:
+    return DEFAULT_STARLET_CONFIGURATION, False
+  if num_tracks == STARPLUS_NUM_TRACKS:
+    return DEFAULT_STARPLUS_CONFIGURATION, False
+  return _frame_of_length(num_tracks), False
 
 
 class _UnusedTransport(IOBase):
