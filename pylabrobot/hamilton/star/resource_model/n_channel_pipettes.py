@@ -125,6 +125,9 @@ class TipMountingShaft(Resource):
 
     The shaft's own reference point when it is empty, and the end of the tip when it is not,
     which is what has to clear the deck.
+
+    Returns:
+      The offset from the channel to the bottom of what it carries.
     """
     tip = self.tip
     return Coordinate.zero() if tip is None else Coordinate(0.0, 0.0, -tip.get_absolute_size_z())
@@ -204,6 +207,9 @@ class NChannelPipette(ItemizedResource[TipMountingShaft]):
   def channel_pitch(self) -> float:
     """The centre-to-centre spacing of the channels, in mm.
 
+    Returns:
+      The spacing, in mm.
+
     Raises:
       ValueError: If the pipette has a single row or column, which has nothing to be spaced from.
     """
@@ -215,6 +221,9 @@ class NChannelPipette(ItemizedResource[TipMountingShaft]):
 
     Read from the channels rather than kept alongside them, so there is nothing to disagree with.
 
+    Returns:
+      The mode its channels use.
+
     Raises:
       ValueError: If the pipette has no channels to read it from.
     """
@@ -222,6 +231,9 @@ class NChannelPipette(ItemizedResource[TipMountingShaft]):
 
   def serialize(self) -> dict:
     """What its size and its channels do not say: where it is measured from, and whether they can
+
+    Returns:
+      The serialized resource, with those two fields added.
     be worked one at a time."""
     return {
       **super().serialize(),

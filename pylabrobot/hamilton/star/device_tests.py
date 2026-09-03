@@ -18,7 +18,7 @@ from pylabrobot.hamilton.star.driver.simulator import (
 )
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import STARDeck
-from pylabrobot.resources.hamilton.hamilton_decks import STAR_NUM_RAILS, STARLET_NUM_RAILS
+from pylabrobot.resources.hamilton.hamilton_decks import STAR_NUM_TRACKS, STARLET_NUM_TRACKS
 
 
 class TestConstruction(unittest.IsolatedAsyncioTestCase):
@@ -44,8 +44,8 @@ class TestFactories(unittest.IsolatedAsyncioTestCase):
   """Each factory builds one machine, on the deck that machine has."""
 
   def test_each_factory_builds_its_own_deck(self):
-    self.assertEqual(STAR(simulation=True).deck.num_rails, STAR_NUM_RAILS)
-    self.assertEqual(STARLet(simulation=True).deck.num_rails, STARLET_NUM_RAILS)
+    self.assertEqual(STAR(simulation=True).deck.num_tracks, STAR_NUM_TRACKS)
+    self.assertEqual(STARLet(simulation=True).deck.num_tracks, STARLET_NUM_TRACKS)
 
   def test_extension_housing_stands_to_the_left(self):
     """The housing is a resource beside the chassis, not something that grows the instrument.
@@ -61,17 +61,17 @@ class TestFactories(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(cast(Coordinate, housing.location).x, -EXTENSION_HOUSING_SIZE_X)
     self.assertEqual(housing.get_absolute_size_x(), EXTENSION_HOUSING_SIZE_X)
 
-  def test_extension_housing_is_absent_unless_asked_for(self):
+  def test_extension_housing_is_fitted_unless_declined(self):
     def fitted(star):
       return any(child.name == "left_extension_housing" for child in star.children)
 
-    self.assertFalse(fitted(STAR(simulation=True)))
-    self.assertTrue(fitted(STAR(simulation=True, extension_housing=True)))
+    self.assertTrue(fitted(STAR(simulation=True)))
+    self.assertFalse(fitted(STAR(simulation=True, extension_housing=False)))
 
 
 class TestCapabilities(unittest.IsolatedAsyncioTestCase):
-  """The instrument reads its capabilities through the driver, which builds only what discovery
-  found. A capability the machine does not report is None rather than an object that cannot work."""
+  """The instrument reads its features through the driver, which builds only what discovery
+  found. A feature the machine does not report is None rather than an object that cannot work."""
 
   async def test_reads_through_to_the_driver(self):
     star = STAR(simulation=True)

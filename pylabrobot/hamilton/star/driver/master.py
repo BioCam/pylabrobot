@@ -16,7 +16,10 @@ from pylabrobot.hamilton.protocol.text.framing import (
   parse_fw_string,
 )
 from pylabrobot.hamilton.protocol.text.router import ReplyRouter
-from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
+from pylabrobot.hamilton.star.driver.configuration import (
+  DeviceConfiguration,
+  DeviceRecording,
+)
 from pylabrobot.hamilton.star.driver.errors import (
   STAR_MODULE_ID_LENGTH,
   check_fw_string_error,
@@ -26,9 +29,14 @@ from pylabrobot.hamilton.star.driver.features.cover import FrontCover
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
 from pylabrobot.hamilton.star.driver.features.head384 import Head384
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
-from pylabrobot.hamilton.star.driver.features.pipettes import CHANNEL_X_REFERENCE_ANCHOR, Pipettes
+from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
-from pylabrobot.hamilton.star.resource_model import NChannelPipette
+from pylabrobot.hamilton.star.driver.lock import _FirmwareLock
+from pylabrobot.hamilton.star.resource_model import (
+  NChannelPipette,
+  iswap_channel,
+  iSWAPChannel,
+)
 from pylabrobot.hamilton.star.resource_model import head96 as head96_pipette
 from pylabrobot.hamilton.star.resource_model import head384 as head384_pipette
 from pylabrobot.io.io import IOBase
@@ -49,10 +57,6 @@ def _range(values: Optional[Tuple[float, float]]) -> str:
   return "unresolved" if values is None else f"{values[0]} to {values[1]} mm"
 
 
-# The instrument initialization procedure homes every drive, which takes minutes.
-PRE_INITIALIZE_READ_TIMEOUT = 300
-
-
 class STARDriver:
   """Interface for the Hamilton STARDriver."""
 
@@ -63,7 +67,7 @@ class STARDriver:
     deck: Optional[HamiltonDeck] = None,
     packet_read_timeout: int = 3,
     write_timeout: int = 30,
-    read_timeout: int = 60,
+    read_timeout: int = 120,
     left_side_panel_installed: bool = False,
     io: Optional[IOBase] = None,
   ):
@@ -77,9 +81,9 @@ class STARDriver:
       packet_read_timeout: timeout in seconds for reading a single packet.
       read_timeout: timeout in seconds for reading a full response.
       write_timeout: timeout in seconds for writing a command.
-      left_side_panel_installed: whether the machine has its left side panel on. Declared rather
-        than read: it comes off in seconds, so the machine's own travel report does not follow it.
-        With one fitted, an arm carrying a head stops while the head is still clear of it.
+      left_side_panel_installed: whether the machine has its left side panel on. Declared, not
+        read: it comes off in seconds, and the reported travel range does not follow it. With one
+        fitted, an arm carrying a head stops while the head is still clear of it.
       io: an already-built USB handle to use instead of opening one from the arguments above.
       deck: the deck to reflect the machine into. Optional: without one the driver still drives the
         machine, and nothing about where things are is modelled.
@@ -94,6 +98,9 @@ class STARDriver:
       serial_number=serial_number,
     )
 
+    # Coordinates commands on the shared link: one at a time per module, and a C0 master
+    # command alone. Read-only requests are exempt, see `send_command`.
+    self._lock = _FirmwareLock()
     self._replies = ReplyRouter(
       io=self.io,
       module_id_length=STAR_MODULE_ID_LENGTH,
@@ -105,19 +112,17 @@ class STARDriver:
 
     self._num_channels: Optional[int] = None
 
-    # Whether the link is open. Commands gate on it: they flow during setup, long before setup
-    # is done.
     self._connected = False
 
     self.left_side_panel_installed = left_side_panel_installed
 
     # The deck to reflect the machine into, or None to drive it without a resource model. With one,
-    # setup builds a resource per capability as a child of it; without, nothing is modelled.
+    # setup builds a resource per feature as a child of it; without, nothing is modelled and
+    # driver functionality is limited due to lack of information available.
     self.deck = deck
 
     self.configuration: Optional[DeviceConfiguration] = None
 
-    # What each capability reported at discovery, keyed as `confirmed_firmware_versions` keys it.
     self.firmware: Dict[str, str] = {}
     # Which table index each tip type was written to. The table is volatile, so this is
     # rebuilt per session as tips are first used.
@@ -137,12 +142,11 @@ class STARDriver:
   async def setup(self):
     """Connect to the machine, find out what it is, and bring it up.
 
-    This moves the instrument: everything that can be initialized is. `discover` on its own is
-    the read-only half, for connecting and inspecting without anything moving.
+    This moves the instrument: everything that can be initialized is. `discover` is the read-only
+    part; it reads the machine without moving it, and needs the link already open.
 
-    Safe to call again: discovery re-reads the machine and initialization is a no-op on a machine
-    that is already up. A setup that fails part way closes the link rather than leaving a claimed
-    device and a reader behind.
+    Repeatable. Discovery re-reads the machine, and initialization does nothing on a machine that
+    is already up. A setup that fails part way closes the link.
     """
     logger.debug("Setting up STAR on %s ...", self._describe_link())
     await self._open()
@@ -153,23 +157,30 @@ class STARDriver:
       logger.debug("[PHASE 1] Discovery")
       await self.discover()
 
-      # 2. Bring the instrument to a known state.
+      # 2. Bring the instrument to a known state. The autoload homes alongside it: it is its own
+      #    unit, and the instrument procedure holds every drive but its. Phase 3 reads its state
+      #    again, so a machine that does home it there loses nothing but the overlap.
       logger.debug("[PHASE 2] Instrument initialization")
-      already_initialized = await self.initialize()
+      autoload = self.autoload
+      overlap_autoload = autoload is not None and not await self.request_initialization_status()
+      if autoload is not None and overlap_autoload:
+        already_initialized, _ = await asyncio.gather(self.initialize(), autoload.initialize())
+      else:
+        already_initialized = await self.initialize()
 
-      # 3. Each capability brings itself up. They sit on different modules, so they run together;
+      # 3. Each feature brings itself up. They sit on different modules, so they run together;
       #    the autoload, iSWAP and 96-head join this gather as they land. The channels only need
       #    it when the instrument procedure did not just run, or when something is still mounted.
-      logger.debug("[PHASE 3] Capability initialization")
+      logger.debug("[PHASE 3] Feature initialization")
       initializing = [self._initialize_arm(arm, already_initialized) for arm in self.arms]
-      if self.autoload is not None:
+      if self.autoload is not None and not overlap_autoload:
         initializing.append(self.autoload.initialize())
       await asyncio.gather(*initializing)
 
       # 4. What was found, as resources on the deck - when the driver was given one to reflect
       #    into. Each is a child of the deck, so a machine with a deck carries one tree.
       if self.deck is not None:
-        logger.debug("[PHASE 4] Capability resources")
+        logger.debug("[PHASE 4] Feature resources")
         await self._create_capability_resources()
 
     except BaseException:
@@ -189,13 +200,55 @@ class STARDriver:
     await self.io.stop()
 
   async def stop(self):
-    """Close the link. The machine keeps its state; only this driver lets go of it."""
-    self._connected = False
-    await self._close()
+    """Close the link, leaving the machine safe to move laterally.
+
+    The machine keeps its state; only this driver lets go of it. Every channel and head is moved
+    up to Z safety first: a driver that let go with a channel low would leave the next lateral
+    move from anything else to crash it.
+
+    The link closes whether or not that succeeds. This also runs when setup failed part way,
+    where there may be nothing up to move yet and the failure that matters is the one about to
+    propagate.
+    """
+    try:
+      # The channels and each head take different firmware locks and drive different Z axes, so
+      # they go up together rather than one after another.
+      safe_z_moves: List[Any] = []
+      for arm in self.arms:
+        if arm.pipettes is not None:
+          safe_z_moves.append(arm.pipettes.move_to_safe_z())
+        for head in (arm.head96, arm.head384):
+          if head is not None:
+            safe_z_moves.append(head.move_to_safe_z())
+
+      # Every subsystem gets its chance to reach safe Z, so one that cannot does not leave the
+      # rest of them low.
+      results = await asyncio.gather(*safe_z_moves, return_exceptions=True)
+      failed = [result for result in results if isinstance(result, BaseException)]
+      for failure in failed:
+        logger.warning("could not move a subsystem to Z safety", exc_info=failure)
+
+      # The iSWAP parks instead: parking retracts it, which is lateral motion, so it waits until
+      # everything sharing its arm is up. If anything is still low, it stays where it is.
+      if not failed:
+        parks = [arm.iswap.park() for arm in self.arms if arm.iswap is not None]
+        for failure in await asyncio.gather(*parks, return_exceptions=True):
+          if isinstance(failure, BaseException):
+            logger.warning("could not park the iSWAP", exc_info=failure)
+    except Exception:
+      logger.warning(
+        "could not bring the instrument to a safe state; closing the link anyway", exc_info=True
+      )
+    finally:
+      self._connected = False
+      # The instrument's tip type table is volatile, so what this session wrote to it does not
+      # survive the machine going down.
+      self._tip_type_indices.clear()
+      await self._close()
 
   @property
   def connected(self) -> bool:
-    """Whether the link is open, so commands can be sent."""
+    """Whether the link is open. Commands can be sent only while it is."""
     return self._connected
 
   def _describe_link(self) -> str:
@@ -230,13 +283,56 @@ class STARDriver:
     read_timeout: Optional[int] = None,
     wait=True,
     fmt: Optional[Any] = None,
+    subsystem: Optional[str] = None,
     **kwargs,
   ):
     """Assemble a firmware command, send it, and parse the reply if a format is given.
 
+    Modules share one link. One command runs at a time per physical subsystem; commands on
+    different subsystems run together. A command addressed to C0 drives a subsystem of its own:
+    `C0 DI` the channels, `C0 II` the autoload. A C0 command naming none reaches every subsystem
+    and runs alone. Read-only `R` and `Q` commands take no lock.
+
+    Args:
+      module: the module to address the command to.
+      command: the two-letter command code.
+      subsystem: which subsystem the command drives, when that is not the module it is addressed
+        to. Only a C0 command needs it.
+
+    Returns:
+      The parsed reply when a format was given, and the raw reply otherwise.
+
     Raises:
       RuntimeError: If the link is not open.
     """
+    kwargs_ = dict(
+      auto_id=auto_id,
+      tip_pattern=tip_pattern,
+      write_timeout=write_timeout,
+      read_timeout=read_timeout,
+      wait=wait,
+      fmt=fmt,
+      **kwargs,
+    )
+    if command[0] in ("R", "Q"):
+      return await self._send(module, command, **kwargs_)
+    key = subsystem or (_FirmwareLock.EVERY_SUBSYSTEM if module == "C0" else module)
+    async with self._lock.subsystem(key):
+      return await self._send(module, command, **kwargs_)
+
+  async def _send(
+    self,
+    module: str,
+    command: str,
+    auto_id=True,
+    tip_pattern: Optional[List[bool]] = None,
+    write_timeout: Optional[int] = None,
+    read_timeout: Optional[int] = None,
+    wait=True,
+    fmt: Optional[Any] = None,
+    **kwargs,
+  ):
+    """Assemble, send and parse, without coordinating against anything else in flight."""
     self._require_connection()
     id_ = self._replies.next_id() if auto_id else None
     # Always the channel-aware assembler: a list parameter has to be terminated against the
@@ -292,6 +388,9 @@ class STARDriver:
   ) -> Optional[str]:
     """Send a raw command to the machine.
 
+    Returns:
+      Whatever the machine answered, or None when nothing came back.
+
     Raises:
       RuntimeError: If the link is not open.
     """
@@ -304,7 +403,7 @@ class STARDriver:
     )
 
   def _require_connection(self) -> None:
-    """Raise unless the link is open, so a command cannot be sent into nothing."""
+    """Raise unless the link is open. A command may not be sent into a closed link."""
     if not self._connected:
       raise RuntimeError("not connected to a machine; call `setup` first")
 
@@ -329,13 +428,15 @@ class STARDriver:
     return [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
 
   def _require_one_arm(self, reaching_for: str) -> Optional[XArm]:
-    """The machine's arm, for accessors that only make sense when it has one.
+    """Check to enable simple accessors which are only unambiguous when there is only one Xarm.
 
-    A machine with two carries two of everything, so which is meant is the caller's to say. One
-    with none carries nothing, which is an answer rather than a refusal.
+    e.g.:
+      `star.head96` is ambiguous on a machine with two arms.
+      -> requires explicit declaration of the arm that has the head:
+      `star.left_x_arm.head96` or `star.right_x_arm.head96`.
 
     Args:
-      reaching_for: what the caller was after. Used to word the refusal, nothing else.
+      reaching_for: what the caller was after. Used to word the refusal.
 
     Returns:
       The machine's one arm, or None when it has none.
@@ -379,8 +480,11 @@ class STARDriver:
   def x_arm(self) -> XArm:
     """The machine's X-arm, on a machine that has only one.
 
-    Most STARs carry a single arm, and naming a side there is noise. A machine with two has no
-    single X-arm, so this refuses rather than picking one.
+    Most STARs carry a single arm, where explicit naming can be cumbersome.
+    A machine with two has no single X-arm, and this refuses instead of picking one.
+
+    Returns:
+      The machine's one arm.
 
     Raises:
       RuntimeError: If setup has not run, so it is not yet known which arms are installed.
@@ -422,29 +526,20 @@ class STARDriver:
     resp = await self.send_command(module="C0", command="RF")
     return resp.split("rf")[-1], parse_firmware_version_date(resp)
 
-  async def request_tip_presence(self) -> List[bool]:
-    """Measure tip presence on all single channels using their sleeve sensors.
-
-    Returns:
-      A list of length `num_channels`, `True` where a tip is mounted.
-    """
-    resp = await self.send_command(module="C0", command="RT", fmt="rt# (n)")
-    return [bool(v) for v in cast(List[int], resp.get("rt"))]
-
   async def request_cover_input_status(self) -> Tuple[bool, bool, bool]:
-    """Request the three inputs on the cover connector.
+    """Read the three inputs on the cover connector.
 
-    On the master rather than on `front_cover`, because it is the one cover read that stays
-    reachable on a machine whose configuration says the cover monitoring is not installed - and
-    that machine is exactly the one worth asking.
+    An instrument-level query about the cover feature. `front_cover.request_position` reports the
+    cover's own position.
+
+    TODO: establish what each input carries. Every reading so far is 000, except during a run
+    where the operator closed the cover between two reads and it went 000 -> 100.
 
     Returns:
-      Whether each is set: the cover input, the second input - a reserve or the additional cover
-      control, depending on the board - and a second reserve. What a set cover input means is not
-      stated; `front_cover.request_position` is the one that says open or shut.
+      Whether each of the three inputs is set.
 
     Raises:
-      ValueError: If the machine answered with fewer than three inputs.
+      ValueError: If the response contains fewer than three inputs.
     """
     resp = await self.send_command(module="C0", command="RW")
     read = resp.split("rw", 1)[-1].strip().strip("'")
@@ -473,7 +568,7 @@ class STARDriver:
       Per side, `(wrap_size, (workspace_min, workspace_max))` in mm, keyed by side. A
       `wrap_size` of 0 means that arm is not installed.
     """
-    resp = await self.send_command(module="C0", command="UA")
+    resp = await self.send_command(module="C0", command="UA", subsystem="C0")
     values = [int(v) / 10 for v in resp.split("ua")[-1].strip().split()]
     left_wrap, right_wrap, left_min, left_max, right_min, right_max = values
     return {
@@ -487,6 +582,9 @@ class STARDriver:
     Combines the machine configuration (RM) and the extended configuration (QM). Each installed
     X-drive's geometry is resolved from the X-drive range (RU) and working-envelope (UA) queries;
     `right_arm` is None when no second arm is installed.
+
+    Returns:
+      What the instrument reports it carries.
     """
     machine = await self.send_command(module="C0", command="RM", fmt="kb**kp##")
     extended = await self.send_command(
@@ -581,7 +679,7 @@ class STARDriver:
   async def request_initialization_status(self, module: str = "C0") -> bool:
     """Whether a module reports itself initialized.
 
-    Every module answers the same query, so this covers the master and each subsystem.
+    Every module answers the same query: the master and each subsystem.
 
     Args:
       module: the module to ask. Defaults to the master, which reports for the instrument.
@@ -607,19 +705,18 @@ class STARDriver:
   ):
     """Write one entry of the instrument's tip type table.
 
-    The table is volatile: it is written from scratch after every power on, so what a run defines
-    lasts only as long as the machine stays up.
+    The table is volatile. It is written from scratch after every power on, and what a run defines
+    lasts only while the machine stays up.
 
     Args:
       tip_type_table_index: which entry to write, 1 to 99.
       has_filter: whether the tip has a filter.
-      tip_length: how far the tip stands proud of what holds it, in mm - its total length past its
+      tip_length: how far the tip stands proud of what holds it, in mm. Its total length past its
         fitting depth.
-      maximum_tip_volume: what the tip holds, in uL. The firmware caps it at the channel's own
+      maximum_tip_volume: what the tip holds, in uL. The firmware caps it at the channel's
         capacity.
       tip_size: which collar the tip has, which is how the instrument identifies it.
       pickup_method: whether it is collected from a rack or out of wash liquid.
-
     Raises:
       ValueError: If an argument is outside what the command accepts.
     """
@@ -637,6 +734,7 @@ class STARDriver:
     return await self.send_command(
       module="C0",
       command="TT",
+      subsystem="C0",
       tt=f"{tip_type_table_index:02}",
       tf=has_filter,
       tl=f"{length_increments:04}",
@@ -648,8 +746,8 @@ class STARDriver:
   async def get_or_assign_tip_type_index(self, tip: HamiltonTip) -> int:
     """The table index this tip is defined at, defining it if it is new to this session.
 
-    Every command that mounts tips names one of these indices rather than the tip itself, so a tip
-    the machine has not been told about has to be written into the table first.
+    Every command that mounts tips names one of these indices, not the tip itself. A tip that has
+    not been written into the table has no index to name.
 
     Args:
       tip: the tip to look up.
@@ -683,22 +781,65 @@ class STARDriver:
   # Discovery and initialization
   # ----------------------------------------
 
+  @property
+  def configurations(self) -> DeviceRecording:
+    """Every configuration this device holds, collected into one.
+
+    What discovery filled, so this is worth reading after setup. Written to a file, it is what a
+    simulated device needs to stand in for this one.
+
+    Returns:
+      The device's own configuration and that of each feature fitted to it.
+
+    Raises:
+      RuntimeError: If nothing has been read off the device yet.
+    """
+    if self.configuration is None:
+      raise RuntimeError("nothing has been read off this device; call `setup` first")
+    # One of each, whichever arm carries it: a module sits on a CAN node of its own, so a device
+    # has one 96-head and one iSWAP however many arms it has.
+    pipettes = next((arm.pipettes for arm in self.arms if arm.pipettes is not None), None)
+    head96 = next((arm.head96 for arm in self.arms if arm.head96 is not None), None)
+    head384 = next((arm.head384 for arm in self.arms if arm.head384 is not None), None)
+    iswap = next((arm.iswap for arm in self.arms if arm.iswap is not None), None)
+    return DeviceRecording(
+      device=self.configuration,
+      pipettes=None if pipettes is None else pipettes.configuration,
+      head96=None if head96 is None else head96.configuration,
+      head384=None if head384 is None else head384.configuration,
+      iswap=None if iswap is None else iswap.configuration,
+      autoload=None if self.autoload is None else self.autoload.configuration,
+      front_cover=None if self.front_cover is None else self.front_cover.configuration,
+    )
+
+  def save_configuration(self, path: str, indent: Optional[int] = 2) -> None:
+    """Write what this device reported to a file, to be simulated from later.
+
+    Args:
+      path: where to write it.
+      indent: how far to indent the JSON, or None to write it on one line.
+
+    Raises:
+      RuntimeError: If nothing has been read off the device yet.
+    """
+    self.configurations.save(path, indent=indent)
+
   async def discover(self):
     """Read what machine is on the other end, and build the subsystems it turns out to have.
 
     Read-only: nothing moves. Call `initialize` to bring the machine up.
     """
     self.configuration = await self.request_device_configuration()
-    self._num_channels = len(await self.request_tip_presence())
+    self._num_channels = self.configuration.num_pip_channels
 
     # Built for what the machine turns out to have, and only if not already there: a caller can
-    # hand a capability its configuration before setup, and re-running setup keeps it.
+    # hand a feature its configuration before setup, and re-running setup keeps it.
     if self.configuration.left_arm is not None and self.left_x_arm is None:
       self.left_x_arm = XArm(self, side="left")
     if self.configuration.right_arm is not None and self.right_x_arm is None:
       self.right_x_arm = XArm(self, side="right")
     # What an arm carries is what its own configuration bits claim. The firmware requires the two
-    # drives' bits to be disjoint, so no capability can be on both.
+    # drives' bits to be disjoint, so no feature can be on both.
     for arm in (self.left_x_arm, self.right_x_arm):
       if arm is None:
         continue
@@ -716,11 +857,11 @@ class STARDriver:
     if self.configuration.main_front_cover_monitoring_installed and self.front_cover is None:
       self.front_cover = FrontCover(self)
 
-    # Each capability reads its own modules, and they are different modules, so they read at
+    # Each feature reads its own modules, and they are different modules, so they read at
     # once. Both arms run off the same X-drive board, so only one of them asks it.
     arms = [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
     # Through the arms, not through the accessors above: those refuse on a machine with two, and
-    # setup has to reach every capability the machine has whichever arm holds it.
+    # setup has to reach every feature the machine has whichever arm holds it.
     reading = []
     for arm in arms:
       reading.append(arm.discover())
@@ -754,18 +895,19 @@ class STARDriver:
     }
     self.firmware = {name: v for name, v in reported.items() if v is not None}
 
-  async def initialize(self, force: bool = False) -> bool:
+  async def initialize(self, force: bool = False, read_timeout: int = 300) -> bool:
     """Bring the instrument itself to a known state.
 
-    This moves it. An uninitialized machine runs its initialization procedure, which homes every
+    This moves it. An uninitialized machine runs the initialization procedure, which homes every
     drive and leaves the channels at Z safety. A machine that is already initialized is left where
-    it is, apart from raising the channels to Z safety, which the procedure would otherwise have
-    guaranteed - nothing may move laterally while a channel is low.
+    it is, except that the channels are raised to Z safety. Nothing may move laterally while a
+    channel is low.
 
-    This is the instrument-level step only. `setup` is what initializes the capabilities after it.
+    This is the instrument-level step only. `setup` is what initializes the features after it.
 
     Args:
       force: run the initialization procedure even if the machine reports itself initialized.
+      read_timeout: how long to wait for the procedure, in seconds.
 
     Returns:
       Whether the machine reported itself already initialized before this ran.
@@ -776,47 +918,58 @@ class STARDriver:
       logger.debug(
         "machine reports %s - running the initialization procedure (up to %d s)",
         "initialized, but the run was forced" if already_initialized else "not initialized",
-        PRE_INITIALIZE_READ_TIMEOUT,
+        read_timeout,
       )
-      await self.pre_initialize()
+      await self.pre_initialize(read_timeout=read_timeout)
     else:
       logger.debug("machine reports initialized - raising the channels to Z safety only")
       for arm in self.arms:
         if arm.pipettes is not None:
-          await arm.pipettes.move_to_safe_z()
+          # Probing how high the channels reach raises them, so it doubles as that raise, as the
+          # head's does.
+          await arm.pipettes.probe_z_max()
         # A head is retracted whatever its own status says: the retract is what keeps it clear
-        # of the iSWAP, which shares the arm's X drive and moves while capabilities initialize.
+        # of the iSWAP, which shares the arm's X drive and moves while features initialize.
         for head in (arm.head96, arm.head384):
           if head is not None:
             await head.probe_z_max()
 
     return already_initialized
 
-  async def pre_initialize(self):
+  async def pre_initialize(self, read_timeout: int = 300):
     """Run the instrument's initialization procedure.
 
-    Homes every drive and leaves the channels at Z safety. It takes minutes, hence the long read
-    timeout.
+    Homes every drive and leaves the channels at Z safety. The default read timeout is a wide
+    margin over what the command has been measured to take.
+
+    The autoload is a separate unit with an initialize of its own. It is left out of what this
+    holds, and can be brought up alongside.
+
+    Args:
+      read_timeout: how long to wait for the procedure, in seconds.
     """
     return await self.send_command(
-      module="C0", command="VI", read_timeout=PRE_INITIALIZE_READ_TIMEOUT
+      module="C0",
+      command="VI",
+      subsystem=_FirmwareLock.EVERY_SUBSYSTEM_BUT_THE_AUTOLOAD,
+      read_timeout=read_timeout,
     )
 
   async def _initialize_arm(self, arm: XArm, already_initialized: bool):
     """Initialize everything one arm carries, one after another.
 
-    The channels, the iSWAP and the 96-head share the arm's X drive, so initializing one while
-    another is moving is refused by the machine. They go in the order the legacy routine uses.
-    Two arms have two drives, so a machine with both initializes them alongside each other.
+    The channels, the iSWAP and the 96-head share the arm's X drive. Initializing one while
+    another is moving is refused, so they go in the order the legacy routine uses. Two arms have
+    two drives, and a machine with both initializes them alongside each other.
 
     Args:
-      arm: the arm whose capabilities to initialize.
+      arm: the arm whose features to initialize.
       already_initialized: whether the instrument reported itself up before this setup ran.
     """
     if arm.pipettes is None:
       logger.debug("channels: none installed - skipped")
     else:
-      tips = await self.request_tip_presence()
+      tips = await arm.pipettes.sense_tip_presence()
       if not already_initialized or any(tips):
         logger.debug(
           "channels: %d of %d carrying tips, instrument %s - initializing",
@@ -827,6 +980,9 @@ class STARDriver:
         await arm.pipettes.initialize()
       else:
         logger.debug("channels: already up and nothing mounted - skipped")
+      # Probing how high the channels reach raises them, so it doubles as the safety raise and
+      # runs on every setup rather than only the first.
+      await arm.pipettes.probe_z_max()
 
     if arm.iswap is not None:
       if not await self.request_initialization_status("R0"):
@@ -885,13 +1041,13 @@ class STARDriver:
     lines = [
       f"[Hamilton STAR] Connected on {self._describe_link()}",
       f"  Firmware: {firmware}",
+      f"  Arms: {len(arms)}",
       f"  Configuration: {', '.join(fitted)}",
       f"  Autoload: {autoload}",
-      f"  Arms: {len(arms)}",
     ]
     for arm in arms:
       a = arm.configuration
-      # Read through the capability, not the arm's own bit, so the summary cannot report channels
+      # Read through the feature, not the arm's own bit, so the summary cannot report channels
       # the driver did not build. The two disagree only on a machine whose configuration says both.
       channels = "none"
       if arm.pipettes is not None and a.pip_installed:
@@ -928,9 +1084,8 @@ class STARDriver:
   async def _create_capability_resources(self) -> None:
     """Put what the machine carries on the deck, where it is.
 
-    Read once, at setup: each capability reports where it came to rest and its resource is placed
-    there. One already on the deck is reused rather than replaced, so repeated setups do not
-    duplicate it.
+    Read once, at setup: each feature's resource is placed at the position read back from it.
+    A resource already on the deck is reused, and repeated setups do not duplicate it.
     """
     if self.deck is None:
       return
@@ -951,18 +1106,17 @@ class STARDriver:
     await self._create_pipette_resources()
     await self._create_autoload_resource()
     await self._create_head_resources()
+    await self._create_iswap_resource()
 
   async def _create_pipette_resources(self) -> None:
     """Put a resource on the arm for each pipetting channel, where it is.
 
-    One per channel rather than one for the block: they share the arm's X, which the resource tree
-    carries for free, but each has its own Y and Z. Children of the arm's resource for the same
-    reason the 96-head is. Ones already on the arm are reused, so repeated setups do not duplicate
-    them.
+    One resource per channel, not one for the block: the channels share the arm's X but each has
+    its own Y and Z. They are children of the arm's resource, as the 96-head is. Channels already
+    on the arm are reused, and repeated setups do not duplicate them.
 
-    Each carries a `TipMountingShaft` at its lower end, as the channels of a 96-head do: the channel
-    is the body that travels, the shaft is the part a tip goes onto, and a collected tip becomes a
-    child of that shaft rather than of the channel.
+    Each carries a `TipMountingShaft` at its lower end. A collected tip becomes a child of the
+    shaft, not of the channel.
     """
     if self.deck is None:
       return
@@ -990,7 +1144,7 @@ class STARDriver:
           model="hamilton_star_pipette_channel",
         )
         # Along X a channel sits at the arm's own reference point, so its centre lands there.
-        anchor = resource.get_anchor(x=CHANNEL_X_REFERENCE_ANCHOR)
+        anchor = resource.get_anchor(x=arm.pipettes.configuration.x_reference_anchor)
         arm.resource.assign_child_resource(
           resource,
           location=Coordinate(arm.resource.get_absolute_size_x() / 2 - anchor.x, 0.0, 0.0),
@@ -998,20 +1152,22 @@ class STARDriver:
       arm.pipettes.add_tip_mounting_shaft(resource)
       arm.pipettes.resources.append(resource)
 
-    # Asking where they are records them, as the arm's and the head's reads do.
+    # Asking where they are records them, as the arm's and the head's reads do. One command per
+    # axis: the master answers for every channel, so every channel's resource is brought up to
+    # date whether or not the caller cared about all of them.
     await arm.pipettes.request_y_positions()
-    for channel in range(len(arm.pipettes.resources)):
-      await arm.pipettes.request_stop_disk_z(channel)
+    await arm.pipettes.request_z_positions()
 
   async def _create_head_resources(self) -> None:
     """Put each head on the arm it rides, where it is along Y.
 
-    A child of the arm's resource rather than of the deck, so it follows the arm in X without
-    anything having to keep the two in step. One already on the arm is reused rather than replaced,
-    so repeated setups do not duplicate it.
+    A child of the arm's resource, not of the deck. It then follows the arm in X with nothing
+    keeping the two in step. A head already on the arm is reused, and repeated setups do not
+    duplicate it.
 
     Raises:
-      RuntimeError: If a head's X offset was not read, so where it sits across the arm is unknown.
+      RuntimeError: If a head's X offset was not read, leaving its position across the arm
+        unknown.
     """
     if self.deck is None:
       return
@@ -1049,11 +1205,60 @@ class STARDriver:
         head.resource = resource
         head.update_location_by_reference_point(y=y, z=z)
 
+  async def _create_iswap_resource(self) -> None:
+    """Put each iSWAP's rotation drive on the arm it rides, where it is.
+
+    A child of the arm's resource, not of the deck, so it follows the arm in X with nothing keeping
+    the two in step. One already on the arm is reused, and repeated setups do not duplicate it.
+
+    The drive is modelled, not the gripper: where the gripper is follows from the joint state
+    rather than from where the drive sits, and `request_pose` is what resolves that.
+
+    Raises:
+      RuntimeError: If the drive's X offset was not read, leaving its position across the arm
+        unknown.
+    """
+    if self.deck is None:
+      return
+    for arm in self.arms:
+      if arm.iswap is None or arm.resource is None:
+        continue
+      iswap = arm.iswap
+      c = iswap.configuration
+      # Read before it has a resource to read into, as the head's are.
+      y = await iswap.rotation_drive_request_y_position()
+      z = await iswap.rotation_drive_request_z_position()
+      existing = next(
+        (child for child in arm.resource.children if child.name == "iswap_channel"), None
+      )
+      resource = existing if isinstance(existing, iSWAPChannel) else None
+      if resource is None:
+        if c.rotation_drive_x_offset is None:
+          raise RuntimeError(
+            "the iSWAP rotation drive's X offset was not read; have you called `star.setup()`?"
+          )
+        resource = iswap_channel(
+          name="iswap_channel",
+          diameter=c.rotation_drive_diameter,
+          size_z=c.rotation_drive_size_z,
+        )
+        # The drive sits `rotation_drive_x_offset` left of the carriage reference point, and the
+        # arm is located by its own left edge, so it lands that far left of the arm's centre.
+        anchor = resource.reference_point
+        arm.resource.assign_child_resource(
+          resource,
+          location=Coordinate(
+            arm.resource.get_absolute_size_x() / 2 - c.rotation_drive_x_offset - anchor.x, 0.0, 0.0
+          ),
+        )
+      iswap.resource = resource
+      iswap.update_location_by_reference_point(y=y, z=z)
+
   async def _create_autoload_resource(self) -> None:
     """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.
 
-    The tray is placed from the deck's own features rather than read off the machine: it is bolted
-    to the instrument and has no drive to report where it is.
+    The tray is placed from the deck's features, not read off the machine. It is bolted to the
+    instrument and has no drive to report its position.
     """
     if self.autoload is None or self.deck is None:
       return

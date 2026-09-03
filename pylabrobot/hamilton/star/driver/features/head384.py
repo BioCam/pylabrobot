@@ -103,6 +103,9 @@ class Head384Configuration(HeadConfiguration):
     The three heads share a piston travel but not a bore, so this is the head type's to decide and
     is not known until the head has said which it is - guessing would mis-volume every aspirate.
 
+    Returns:
+      The volume one increment holds, in uL.
+
     Raises:
       RuntimeError: If the head type has not been read.
     """
@@ -119,6 +122,9 @@ class Head384Configuration(HeadConfiguration):
 
     Geared differently on the low volume head, so this is the head type's to decide as the
     dispensing volume above is.
+
+    Returns:
+      The distance one increment travels, in mm.
 
     Raises:
       RuntimeError: If the head type has not been read.
@@ -168,7 +174,7 @@ class Head384(Head):
   """The 384-head.
 
   Reached as `driver.head384`, on a machine that has one. It is addressed as `D0`, but the
-  commands that move it go to the master, so this capability speaks to both.
+  commands that move it go to the master, so this feature speaks to both.
   """
 
   configuration: Head384Configuration

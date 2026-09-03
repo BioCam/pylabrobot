@@ -876,6 +876,23 @@ class Resource(SerializableMixin):
     )
     return results[0] if results else None
 
+  @property
+  def location(self) -> Optional[Coordinate]:
+    """Where this resource sits, relative to its parent."""
+    return self._location
+
+  @location.setter
+  def location(self, location: Optional[Coordinate]) -> None:
+    """Record a new position, and notify subscribers.
+
+    Silent when the position does not change, and while the resource is outside a tree, where
+    there is nobody to tell.
+    """
+    changed = location != self._location
+    self._location = location
+    if changed and self.parent is not None:
+      self._state_updated()
+
   def rotate(self, x: float = 0, y: float = 0, z: float = 0):
     """Rotate counter-clockwise by the given number of degrees."""
 

@@ -8,7 +8,9 @@ from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple, cas
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 from pylabrobot.resources.barcode import Barcode1DSymbology, Barcode2DSymbology
+from pylabrobot.resources.carrier import Carrier
 from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.hamilton.hamilton_decks import track_for_x_coordinate
 from pylabrobot.resources.resource import Resource
 
 if TYPE_CHECKING:
@@ -188,7 +190,10 @@ class AutoloadConfiguration:
     The X drive is the one thing here that does not count in the deck's coordinates: its zero sits
     `drive_zero_on_the_deck` along the deck. Every crossing between the two frames goes through
     here and `from_deck_frame`, so the offset is applied in one place. The other drives, and the
-    other capabilities, need no such conversion - their axes are the deck's.
+    other features, need no such conversion - their axes are the deck's.
+
+    Returns:
+      The same position in the deck's frame, in mm.
     """
     return round(mm + self.drive_zero_on_the_deck, 2)
 
@@ -235,6 +240,9 @@ class Autoload:
   def track_range(self) -> range:
     """The tracks it can be moved to, one for each slot the instrument has.
 
+    Returns:
+      Every track this machine has, counted from 1.
+
     Raises:
       RuntimeError: If setup has not run, so the deck size is not known.
     """
@@ -260,7 +268,7 @@ class Autoload:
       What it is, as named in `AUTOLOAD_TYPES`, or the code it answered with when that is not one
       of them.
     """
-    resp = await self._driver.send_command(module="C0", command="CQ", fmt="cq#")
+    resp = await self._driver.send_command(module="C0", command="CQ", subsystem="I0", fmt="cq#")
     code = cast(int, resp["cq"])
     return AUTOLOAD_TYPES.get(code, str(code))
 
@@ -371,7 +379,7 @@ class Autoload:
     """
     if not await self.request_initialization_status():
       logger.debug("autoload reports itself uninitialized - homing its drives")
-      await self._send_command_and_update_sled_x(module="C0", command="II")
+      await self._send_command_and_update_sled_x(module="C0", command="II", subsystem="I0")
     await self.wheel_move_to_safe_z()
     self.configuration.z_drive_safety_position = await self.wheel_request_z_position()
 
@@ -394,9 +402,6 @@ class Autoload:
 
     Args:
       kwargs: what to send, as `send_command` takes it.
-
-    Returns:
-      Whatever the command answered.
     """
     try:
       resp = await self._driver.send_command(**kwargs)
@@ -517,7 +522,6 @@ class Autoload:
         `configuration.x_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the track is not one this machine has, or an argument is outside what the
         drive accepts.
@@ -595,7 +599,6 @@ class Autoload:
         `configuration.x_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the position is outside the drive's travel, or an argument is outside what the
         drive accepts.
@@ -672,7 +675,6 @@ class Autoload:
         `configuration.x_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the sled would end up outside the drive's travel, or an argument is outside
         what the drive accepts.
@@ -686,7 +688,6 @@ class Autoload:
 
   async def park(self):
     """Park the autoload at the last track this machine has.
-
     Raises:
       RuntimeError: If setup has not run, so the deck size is not known.
     """
@@ -710,7 +711,7 @@ class Autoload:
     Returns:
       The wheel's Z position, in mm.
     """
-    await self._driver.send_command(module="C0", command="IV")
+    await self._driver.send_command(module="C0", command="IV", subsystem="I0")
     return await self.wheel_request_z_position()
 
   async def wheel_move_z(
@@ -731,7 +732,6 @@ class Autoload:
         `configuration.z_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the position, or an argument, is outside what the drive accepts.
     """
@@ -791,7 +791,6 @@ class Autoload:
         `configuration.z_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the position is not one it knows, or an argument is outside what the drive
         accepts.
@@ -864,7 +863,6 @@ class Autoload:
         `configuration.y_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the position, or an argument, is outside what the drive accepts.
     """
@@ -924,7 +922,6 @@ class Autoload:
         `configuration.y_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
-
     Raises:
       ValueError: If the position is not one it knows, or an argument is outside what the drive
         accepts.
@@ -988,7 +985,6 @@ class Autoload:
       position: which way to face. Only the two stops can be moved to, so `undefined` is refused.
       stop_torque: whether to hold the drive there once it arrives. The drive's own default is
         not to.
-
     Raises:
       ValueError: If the position is not one that can be moved to.
     """
@@ -1015,12 +1011,18 @@ class Autoload:
     return resp.split(marker, 1)[1]
 
   async def sense_carrier_presence_on_deck(self) -> List[int]:
-    """Read the rear deck sensors and return the positions where carriers are detected.
+    """Read the rear deck sensors and return where carriers are detected.
 
     The autoload does not move.
 
+    One track per carrier: the one its right rail sits over, which is the track every command here
+    addresses it by. PyLabRobot places a carrier by its front-left, so the two differ by the
+    carrier's width - a six-track carrier placed at track 15 is reported, and addressed, at 20.
+    `HamiltonDeck.compute_right_track_of_carrier` converts, since it takes the resource model to
+    know how wide a carrier is.
+
     Returns:
-      The tracks that hold a carrier, counted from 1.
+      The rightmost track of each carrier found, counted from 1, in order.
 
     Raises:
       ValueError: If the machine answered without a presence mask.
@@ -1050,7 +1052,9 @@ class Autoload:
     tracks = self.track_range
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
-    resp = await self._driver.send_command(module="C0", command="CT", fmt="ct#", cp=f"{track:02}")
+    resp = await self._driver.send_command(
+      module="C0", command="CT", subsystem="I0", fmt="ct#", cp=f"{track:02}"
+    )
 
     if park_after:
       await self.park()
@@ -1068,7 +1072,7 @@ class Autoload:
     Raises:
       ValueError: If the machine answered without a presence mask.
     """
-    resp = cast(str, await self._driver.send_command(module="C0", command="CS"))
+    resp = cast(str, await self._driver.send_command(module="C0", command="CS", subsystem="I0"))
     return _tracks_from_presence_mask(self._presence_mask(resp, "cd"))
 
   # -- barcode scanner -----------------------------------------------------------------------------
@@ -1112,7 +1116,6 @@ class Autoload:
       symbologies_2d: which 2D and stacked codes to read, on a reader that reads them. Defaults to
         `ANY 2D` there, and is refused on a scanner that reads only 1D.
       scan_direction: which way a 2D reader looks. Sent only by a reader that takes it.
-
     Raises:
       ValueError: If a symbology is not one it reads, or 2D codes are asked of a 1D scanner.
       RuntimeError: If this autoload's type names no scanner.
@@ -1170,7 +1173,6 @@ class Autoload:
 
     Args:
       symbologies: which symbologies to read.
-
     Raises:
       ValueError: If a type is not one it reads.
     """
@@ -1181,7 +1183,9 @@ class Autoload:
     mask = 0
     for name in symbologies:
       mask |= known[name]
-    return await self._driver.send_command(module="C0", command="CB", bt=f"{mask:02X}")
+    return await self._driver.send_command(
+      module="C0", command="CB", subsystem="I0", bt=f"{mask:02X}"
+    )
 
   async def load_carrier_from_tray_and_scan_carrier_barcode(
     self,
@@ -1229,6 +1233,7 @@ class Autoload:
         await self._send_command_and_update_sled_x(
           module="C0",
           command="CI",
+          subsystem="I0",
           cp=f"{track:02}",
           bi=f"{round(barcode_position * 10):04}",
           bw=f"{round(barcode_reading_window_width * 10):03}",
@@ -1253,7 +1258,7 @@ class Autoload:
     Sent after its barcode has been scanned.
     """
     try:
-      return await self._send_command_and_update_sled_x(module="C0", command="CA")
+      return await self._send_command_and_update_sled_x(module="C0", command="CA", subsystem="I0")
     except BaseException:
       await self.wheel_move_to_safe_z()
       raise
@@ -1265,7 +1270,6 @@ class Autoload:
 
     Args:
       track: the track the carrier sits at, counted from 1.
-
     Raises:
       ValueError: If the track is not one this machine has, or its carrier is on the loading tray
         rather than the deck.
@@ -1278,7 +1282,9 @@ class Autoload:
       raise ValueError(f"the carrier at track {track} is on the loading tray, not the deck")
 
     try:
-      return await self._send_command_and_update_sled_x(module="C0", command="CN", cp=f"{track:02}")
+      return await self._send_command_and_update_sled_x(
+        module="C0", command="CN", subsystem="I0", cp=f"{track:02}"
+      )
     except BaseException:
       # The wheel is left wherever the failure stopped it, and nothing may travel with it down.
       await self.wheel_move_to_safe_z()
@@ -1359,6 +1365,7 @@ class Autoload:
         await self._send_command_and_update_sled_x(
           module="C0",
           command="CL",
+          subsystem="I0",
           bd=f"{directions[direction]:01}",
           bp=f"{round(reading_position_of_first_barcode * 10):04}",
           cn=f"{containers:02}",
@@ -1387,25 +1394,95 @@ class Autoload:
       for position in range(containers_per_carrier)
     }
 
-  async def unload_carrier(self, track: int, park_after: bool = True):
-    """Use the autoload to unload the carrier at a track.
+  async def unload_carrier(
+    self,
+    carrier: Carrier,
+    use_loading_indicators: bool = True,
+    perform_deck_presence_check: bool = True,
+    perform_tray_presence_check: bool = True,
+    park_after: bool = True,
+  ):
+    """Use the autoload to unload a carrier from the deck.
 
     Args:
-      track: the track the carrier sits at, counted from 1.
+      carrier: the carrier to unload, as it sits on the deck.
+      use_loading_indicators: whether to use loading indicators during the unload process.
+      perform_deck_presence_check: whether to confirm the deck sensors see the carrier first.
+      perform_tray_presence_check: whether to confirm the loading tray is not already holding it.
       park_after: whether to park the autoload once the carrier is out.
-
     Raises:
-      ValueError: If the track is not one this machine has.
-      RuntimeError: If setup has not run.
+      ValueError: If the carrier ends outside the tracks this machine has, if the deck sensors do
+        not see it, or if it is already on the loading tray.
+      RuntimeError: If setup has not run, or the driver was given no deck, so a carrier has no
+        track to unload from.
     """
+    deck = self._driver.deck
+    if deck is None:
+      raise RuntimeError("this driver has no deck, so a carrier has no track to unload from")
+
+    # The autoload addresses a carrier by its rightmost track, which is the one the deck sensors
+    # report it at too.
+    track = deck.compute_right_track_of_carrier(carrier)
     tracks = self.track_range
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
 
-    resp = await self._send_command_and_update_sled_x(module="C0", command="CR", cp=f"{track:02}")
-    if park_after:
-      await self.park()
-    return resp
+    # The tracks the carrier covers, from the leftmost it sits over to the rightmost.
+    left_track = track_for_x_coordinate(carrier.get_location_wrt(deck).x)
+    covered_tracks = range(left_track, track + 1)
+
+    if use_loading_indicators:
+      # Blinking, not steady: the operator has to take the carrier off the tray.
+      covered = [track_idx in covered_tracks for track_idx in tracks]
+      await self.set_loading_indicators(lit=covered, blinking=covered)
+
+    try:
+      # Safety check - Is a carrier at that track?
+      if perform_deck_presence_check:
+        try:
+          carrier_presence_on_deck = await self.sense_carrier_presence_on_deck()
+        except Exception as e:
+          logger.warning(
+            "Deck's carrier sensor failed; you might require an engineer to check your sensors: %s",
+            e,
+          )
+        else:
+          if track not in carrier_presence_on_deck:
+            raise ValueError(
+              f"the deck holds no carrier ending at track {track}, is it pushed all the way in?"
+            )
+
+      # Safety check - Is the loading tray already holding a carrier at that track?
+      if perform_tray_presence_check:
+        try:
+          carrier_presence_on_tray = [
+            await self.sense_carrier_presence_on_single_loading_tray_track(
+              track=track_idx, park_after=False
+            )
+            for track_idx in covered_tracks
+          ]
+        except Exception as e:
+          logger.warning(
+            "Tray's carrier sensor failed; you might require an engineer to check your sensors: %s",
+            e,
+          )
+        else:
+          if any(carrier_presence_on_tray):
+            sensor_data = list(zip(covered_tracks, carrier_presence_on_tray))
+            raise ValueError(
+              f"sensor data indicates the tray already holds a carrier: {sensor_data}"
+            )
+
+      resp = await self._send_command_and_update_sled_x(
+        module="C0", command="CR", subsystem="I0", cp=f"{track:02}"
+      )
+      if park_after:
+        await self.park()
+      return resp
+    finally:
+      # However this ends - raised, cancelled or done - the lights it turned on go out again.
+      if use_loading_indicators:
+        await self.set_loading_indicators(lit=[False] * len(tracks), blinking=[False] * len(tracks))
 
   async def unload_carrier_finally(self, track: int, park_after: bool = True):
     """Unload the carrier at a track, from where it cannot be loaded again.
@@ -1413,7 +1490,6 @@ class Autoload:
     Args:
       track: the track the carrier sits at, counted from 1.
       park_after: whether to park the autoload once the carrier is out.
-
     Raises:
       ValueError: If the track is not one this machine has.
       RuntimeError: If setup has not run.
@@ -1422,53 +1498,85 @@ class Autoload:
     if track not in tracks:
       raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
 
-    resp = await self._send_command_and_update_sled_x(module="C0", command="CW", cp=f"{track:02}")
+    resp = await self._send_command_and_update_sled_x(
+      module="C0", command="CW", subsystem="I0", cp=f"{track:02}"
+    )
     if park_after:
       await self.park()
     return resp
 
-  # TODO: port legacy's `load_carrier`, once the resource model is wired in. It is the sequence
-  # below, in v1 terms, and every command it needs is already here. What is missing is the first
-  # line: the deck works the track out of a `Carrier`'s position on it
-  # (`compute_right_track_of_carrier`), and the driver has no resource model to ask.
-  #
-  # async def load_carrier(
-  #   self,
-  #   carrier,
-  #   carrier_barcode_reading: bool = True,
-  #   barcode_reading: bool = False,
-  #   barcode_reading_direction: BarcodeReadingDirection = "horizontal",
-  #   containers_per_carrier: int = 5,
-  #   reading_position_of_first_barcode: float = 63.0,
-  #   distance_between_containers: float = 96.0,
-  #   width_of_reading_window: float = 38.0,
-  #   reading_speed: float = 128.1,
-  #   park_after: bool = True,
-  # ) -> dict:
-  #   """Use the autoload to load a carrier."""
-  #   track = ...  # the track the carrier ends at, from where it sits on the deck
-  #   if not await self.sense_carrier_presence_on_single_loading_tray_track(track):
-  #     raise ValueError(f"no carrier at track {track}; is it on the right loading tray position?")
-  #
-  #   carrier_barcode = None
-  #   if carrier_barcode_reading:
-  #     carrier_barcode = await self.load_carrier_from_tray_and_scan_carrier_barcode(track)
-  #
-  #   container_barcodes = await self.load_carrier_from_autoload_belt(
-  #     barcode_reading=barcode_reading,
-  #     barcode_reading_direction=barcode_reading_direction,
-  #     reading_position_of_first_barcode=reading_position_of_first_barcode,
-  #     containers_per_carrier=containers_per_carrier,
-  #     distance_between_containers=distance_between_containers,
-  #     width_of_reading_window=width_of_reading_window,
-  #     reading_speed=reading_speed,
-  #     park_after=False,
-  #   )
-  #
-  #   if park_after:
-  #     await self.park()
-  #
-  #   return {"carrier_barcode": carrier_barcode, "container_barcodes": container_barcodes}
+  async def load_carrier(
+    self,
+    carrier: Carrier,
+    carrier_barcode_reading: bool = True,
+    barcode_reading: bool = False,
+    barcode_reading_direction: BarcodeReadingDirection = "horizontal",
+    containers_per_carrier: int = 5,
+    reading_position_of_first_barcode: float = 63.0,
+    distance_between_containers: float = 96.0,
+    width_of_reading_window: float = 38.0,
+    reading_speed: float = 128.1,
+    park_after: bool = True,
+  ) -> dict:
+    """Load a carrier from the loading tray onto the deck, reading what it carries on the way.
+
+    The carrier goes to the track it is assigned to on the deck, so the resource model decides
+    where it lands. `unload_carrier` takes it back out again.
+
+    Args:
+      carrier: the carrier to load, as it is to sit on the deck.
+      carrier_barcode_reading: whether to read the carrier's own barcode as it comes in.
+      barcode_reading: whether to read the barcode of each container it carries.
+      barcode_reading_direction: which way the scanner looks while reading those.
+      containers_per_carrier: how many container barcodes to read.
+      reading_position_of_first_barcode: where the first container sits along the carrier, in mm.
+      distance_between_containers: the spacing of the containers, in mm.
+      width_of_reading_window: how wide a window to read each barcode in, in mm.
+      reading_speed: how fast to travel while reading, in mm/s.
+      park_after: whether to park the autoload once the carrier is in.
+
+    Returns:
+      The carrier's own barcode under "carrier_barcode", and one per container position under
+      "container_barcodes".
+
+    Raises:
+      ValueError: If the carrier ends outside the tracks this machine has, or the loading tray
+        holds no carrier at its track.
+      RuntimeError: If setup has not run, or the driver was given no deck, so a carrier has no
+        track to load to.
+    """
+    deck = self._driver.deck
+    if deck is None:
+      raise RuntimeError("this driver has no deck, so a carrier has no track to load to")
+
+    # The autoload addresses a carrier by its rightmost track, which is where it ends on the deck.
+    track = deck.compute_right_track_of_carrier(carrier)
+    tracks = self.track_range
+    if track not in tracks:
+      raise ValueError(f"track must be between {tracks[0]} and {tracks[-1]}, is {track}")
+
+    if not await self.sense_carrier_presence_on_single_loading_tray_track(track):
+      raise ValueError(f"no carrier at track {track}; is it on the right loading tray position?")
+
+    carrier_barcode = None
+    if carrier_barcode_reading:
+      carrier_barcode = await self.load_carrier_from_tray_and_scan_carrier_barcode(track)
+
+    container_barcodes = await self.load_carrier_from_autoload_belt(
+      barcode_reading=barcode_reading,
+      barcode_reading_direction=barcode_reading_direction,
+      reading_position_of_first_barcode=reading_position_of_first_barcode,
+      containers_per_carrier=containers_per_carrier,
+      distance_between_containers=distance_between_containers,
+      width_of_reading_window=width_of_reading_window,
+      reading_speed=reading_speed,
+      park_after=False,
+    )
+
+    if park_after:
+      await self.park()
+
+    return {"carrier_barcode": carrier_barcode, "container_barcodes": container_barcodes}
 
   # -- loading indicators --------------------------------------------------------------------------
 
@@ -1478,7 +1586,6 @@ class Autoload:
     Args:
       lit: whether each track's light is on, counted from track 1.
       blinking: whether each track's light blinks rather than stays steady.
-
     Raises:
       ValueError: If either pattern does not have one entry per track.
       RuntimeError: If setup has not run, so the deck size is not known.
@@ -1493,5 +1600,5 @@ class Autoload:
       return f"{int(bits, base=2):014X}"
 
     return await self._driver.send_command(
-      module="C0", command="CP", cl=as_hex(lit), cb=as_hex(blinking)
+      module="C0", command="CP", subsystem="I0", cl=as_hex(lit), cb=as_hex(blinking)
     )

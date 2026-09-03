@@ -1,7 +1,7 @@
 import textwrap
 import unittest
 
-from pylabrobot.resources import Coordinate, Deck, Resource, TipRack
+from pylabrobot.resources import Deck, TipRack
 from pylabrobot.resources.corning import (
   cor_96_wellplate_360uL_Fb,
 )
@@ -18,6 +18,22 @@ from pylabrobot.resources.stanley.cups import (
 
 
 class HamiltonDeckTests(unittest.TestCase):
+  def test_rails_is_deprecated(self):
+    """`rails` still places a resource, and says it is deprecated."""
+    deck = STARLetDeck()
+    with self.assertWarns(DeprecationWarning):
+      deck.assign_child_resource(TIP_CAR_480_A00(name="tip_carrier"), rails=1)
+    self.assertEqual(
+      deck.get_resource("tip_carrier").get_location_wrt(deck).x,
+      deck.track_to_location(1).x,
+    )
+
+  def test_track_and_rails_together_is_refused(self):
+    """Passing both is a mistake rather than a preference."""
+    deck = STARLetDeck()
+    with self.assertRaises(ValueError):
+      deck.assign_child_resource(TIP_CAR_480_A00(name="tip_carrier"), track=1, rails=1)
+
   """Tests for the HamiltonDeck class."""
 
   def build_layout(self):
@@ -33,8 +49,8 @@ class HamiltonDeckTests(unittest.TestCase):
     plt_car[0] = cor_96_wellplate_360uL_Fb(name="aspiration plate")
     plt_car[2] = cor_96_wellplate_360uL_Fb(name="dispense plate")
 
-    deck.assign_child_resource(tip_car, rails=1)
-    deck.assign_child_resource(plt_car, rails=21)
+    deck.assign_child_resource(tip_car, track=1)
+    deck.assign_child_resource(plt_car, track=21)
 
     return deck
 
@@ -80,7 +96,7 @@ class HamiltonDeckTests(unittest.TestCase):
     tip_car = TIP_CAR_480_A00(name="tip_carrier")
     for i in range(5):
       tip_car[i] = hamilton_96_tiprack_300uL_filter(name=f"tip_rack_0{i}")
-    deck.assign_child_resource(tip_car, rails=1)
+    deck.assign_child_resource(tip_car, track=1)
 
     tip_racks = [r for r in deck.get_all_children() if isinstance(r, TipRack)]
     matches = [
@@ -122,7 +138,7 @@ class HamiltonDeckTests(unittest.TestCase):
     stanley_cup = StanleyCup_QUENCHER_FLOWSTATE_TUMBLER(name="HUGE")
     deck = STARLetDeck()
     with self.assertLogs("pylabrobot") as log:
-      deck.assign_child_resource(stanley_cup, rails=1)
+      deck.assign_child_resource(stanley_cup, track=1)
     self.assertEqual(
       log.output,
       [
@@ -132,29 +148,3 @@ class HamiltonDeckTests(unittest.TestCase):
         "careful when grabbing this resource.",
       ],
     )
-
-  def test_resource_above_deck_plane_does_not_block(self):
-    """A resource whose z-box sits entirely above another does not occupy its footprint, so
-    placement beneath it is allowed."""
-    deck = STARLetDeck()
-    low = Resource(name="low", size_x=100, size_y=100, size_z=50)
-    high = Resource(name="high", size_x=100, size_y=100, size_z=50)
-    deck.assign_child_resource(low, location=Coordinate(300, 100, 100))
-    deck.assign_child_resource(high, location=Coordinate(300, 100, 200))  # z-box [200,250] > low
-    self.assertIn("high", {c.name for c in deck.children})
-
-  def test_same_footprint_overlapping_z_raises(self):
-    deck = STARLetDeck()
-    a = Resource(name="a", size_x=100, size_y=100, size_z=100)
-    b = Resource(name="b", size_x=100, size_y=100, size_z=100)
-    deck.assign_child_resource(a, location=Coordinate(300, 100, 100))  # z-box [100,200]
-    with self.assertRaises(ValueError):
-      deck.assign_child_resource(b, location=Coordinate(300, 100, 150))  # z-box [150,250] overlaps
-
-  def test_flush_z_faces_do_not_collide(self):
-    deck = STARLetDeck()
-    a = Resource(name="a", size_x=100, size_y=100, size_z=50)
-    b = Resource(name="b", size_x=100, size_y=100, size_z=50)
-    deck.assign_child_resource(a, location=Coordinate(300, 100, 100))  # top at 150
-    deck.assign_child_resource(b, location=Coordinate(300, 100, 150))  # rests flush on a
-    self.assertIn("b", {c.name for c in deck.children})

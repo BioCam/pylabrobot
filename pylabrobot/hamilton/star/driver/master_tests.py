@@ -57,7 +57,7 @@ class TestSimulation(unittest.IsolatedAsyncioTestCase):
 # classes override some of them, so each is recorded where a simulated run would reach it.
 MOVING_STEPS = [
   (simulator.STARSimulationDriver, "pre_initialize", "VI instrument"),
-  (simulator.Pipettes, "move_to_safe_z", "ZA channels to safe Z"),
+  (simulator.Pipettes, "probe_z_max", "ZA channels to safe Z"),
   (simulator.SimulatedPipettes, "initialize", "DI channels"),
   (simulator.SimulatedISWAP, "initialize", "FI iSWAP"),
   (simulator.iSWAP, "park", "iSWAP park"),
@@ -110,6 +110,7 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
       [
         "ZA channels to safe Z",
         "EV 96-head probe and retract",
+        "ZA channels to safe Z",
         "iSWAP park",
         "EV 96-head probe and retract",
         "II autoload",
@@ -123,6 +124,7 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
       [
         "ZA channels to safe Z",
         "EV 96-head probe and retract",
+        "ZA channels to safe Z",
         "iSWAP park",
         "EI 96-head",
         "EV 96-head probe and retract",
@@ -139,6 +141,7 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
       [
         "ZA channels to safe Z",
         "EV 96-head probe and retract",
+        "ZA channels to safe Z",
         "iSWAP park",
         "EV 96-head probe and retract",
         "II autoload",
@@ -147,17 +150,19 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
     )
 
   async def test_instrument_not_up(self):
-    """The instrument procedure homes every drive, so nothing is raised beforehand."""
+    """The instrument procedure homes every drive, so nothing is raised beforehand. The autoload
+    is its own unit, so it comes up alongside the procedure rather than after it."""
     self.assertEqual(
       await self.run_setup(instrument_up=False, head_up=False, eject_position=True),
       [
         "VI instrument",
+        "II autoload",
+        "autoload park",
         "DI channels",
+        "ZA channels to safe Z",
         "FI iSWAP",
         "iSWAP park",
         "EI 96-head",
         "EV 96-head probe and retract",
-        "II autoload",
-        "autoload park",
       ],
     )

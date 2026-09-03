@@ -2,13 +2,11 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple
 
 from pylabrobot.hamilton.star.driver.features.head import Head, HeadConfiguration
 from pylabrobot.resources.coordinate import Coordinate
-from pylabrobot.resources.hamilton.tip_creators import HamiltonTip, TipSize
 from pylabrobot.resources.resource import Resource
-from pylabrobot.resources.tip_rack import TipRack
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -106,6 +104,9 @@ class Head96Configuration(HeadConfiguration):
   def firmware_year(self) -> int:
     """The year the head's firmware was built, which resolves the windows below.
 
+    Returns:
+      The year, as the firmware's own date gives it.
+
     Raises:
       RuntimeError: If the firmware version has not been read.
     """
@@ -128,6 +129,9 @@ class Head96Configuration(HeadConfiguration):
 
     The floor is `y_increment_floor` rather than the 6000 the command documents, because the drive
     refuses everything below it. The 2008 range is as documented and has not been measured.
+
+    Returns:
+      The (lowest, highest) Y position, in increments.
     """
     if self.firmware_year >= 2010:
       return (self.y_increment_floor, 36000)
@@ -137,12 +141,18 @@ class Head96Configuration(HeadConfiguration):
   def y_speed_increment_range(self) -> Tuple[int, int]:
     """Y-drive speed window in increments. The pre-2021 max (25000, the firmware default) is an
     empirical, deck-tested cap; per firmware version the maxima are 20000 (2008) and 40000 (2013+).
+
+    Returns:
+      The (lowest, highest) speed, in increments.
     Verify on a pre-2021 head before raising it."""
     return (50, 25000 if self.firmware_year <= 2021 else 40000)
 
   @property
   def y_acceleration_increment_range(self) -> Tuple[int, int]:
     """Y-drive acceleration window in increments. The min is constant; the max rose from 32000
+
+    Returns:
+      The (lowest, highest) acceleration, in increments.
     (2008) to 50000 (2013+), so it tracks firmware like the Y range / speed."""
     return (5000, 50000 if self.firmware_year >= 2010 else 32000)
 
@@ -151,6 +161,9 @@ class Head96Configuration(HeadConfiguration):
   @property
   def dispensing_drive_range(self) -> Tuple[float, float]:
     """Aspirate/dispense piston volume window (uL); applies to both aspirate and dispense. 2013
+
+    Returns:
+      The (lowest, highest) volume, in uL.
     firmware widened the max from 62130 inc."""
     max_inc = 64350 if self.firmware_year >= 2010 else 62130
     return (0.0, self.dispensing_drive_increments_to_uL(max_inc))
@@ -210,7 +223,7 @@ class Head96(Head):
   """The 96-head.
 
   Reached as `driver.head96`, on a machine that has one. It is addressed as `H0`, but the
-  commands that move it go to the master, so this capability speaks to both.
+  commands that move it go to the master, so this feature speaks to both.
   """
 
   configuration: Head96Configuration
@@ -271,59 +284,6 @@ class Head96(Head):
   # ----------------------------------------
 
   # -- dispensing drive --------------------------------------------------------------------------
-
-  async def move_dispensing_drive_to_position(
-    self,
-    volume: float,
-    speed: Optional[float] = None,
-    stop_speed: float = 0.0,
-    acceleration: Optional[float] = None,
-    current_limit: int = 15,
-    read_timeout: int = 30,
-  ):
-    """Move the dispensing drive to an absolute piston position. This moves it.
-
-    Args:
-      volume: where to send the piston, as the volume it would hold, in uL.
-      speed: how fast, in uL/s. Defaults to `configuration.dispensing_drive_speed_default`.
-      stop_speed: what to slow to at the end, in uL/s.
-      acceleration: how hard, in uL/s2. Defaults to
-        `configuration.dispensing_drive_acceleration_default`.
-      current_limit: the motor current limit.
-
-    Raises:
-      ValueError: If an argument is outside what the drive accepts.
-    """
-    c = self.configuration
-    if speed is None:
-      speed = c.dispensing_drive_speed_default
-    if acceleration is None:
-      acceleration = c.dispensing_drive_acceleration_default
-
-    for value, (low, high), name in (
-      (volume, c.dispensing_drive_range, "volume"),
-      (speed, c.dispensing_drive_speed_range, "speed"),
-      (stop_speed, (0.0, c.dispensing_drive_speed_range[1]), "stop_speed"),
-      (acceleration, c.dispensing_drive_acceleration_range, "acceleration"),
-    ):
-      if not low <= value <= high:
-        raise ValueError(f"{name} must be between {low} and {high}, is {value}")
-    low_limit, high_limit = c.current_limit_range
-    if not low_limit <= current_limit <= high_limit:
-      raise ValueError(
-        f"current_limit must be between {low_limit} and {high_limit}, is {current_limit}"
-      )
-
-    return await self._driver.send_command(
-      module=c.module,
-      command="DQ",
-      dq=f"{c.dispensing_drive_uL_to_increments(volume):05}",
-      dv=f"{c.dispensing_drive_uL_to_increments(speed):05}",
-      du=f"{c.dispensing_drive_uL_to_increments(stop_speed):05}",
-      dr=f"{c.dispensing_drive_uL_to_increments(acceleration):06}",
-      dw=f"{current_limit:02}",
-      read_timeout=read_timeout,
-    )
 
   # ----------------------------------------
   # Tip pickup and drop
@@ -412,230 +372,4 @@ class Head96(Head):
 
   # -- pickup ------------------------------------------------------------------------------------
 
-  async def pick_up_tips(
-    self,
-    location: Coordinate,
-    tip_type: int,
-    pickup_method: Literal["rack", "wash_station", "full_volume_blow_out"] = "full_volume_blow_out",
-    minimum_traverse_z_position_at_the_command_start: Optional[float] = None,
-    minimum_z_position_at_the_command_end: Optional[float] = None,
-    read_timeout: int = 30,
-  ):
-    """Pick up a rack of tips on the whole head. This moves it in X, Y and Z.
-
-    The head is rigid, so it collects every tip the rack holds - there is no per-channel selection.
-
-    Args:
-      location: where to collect from, in deck mm, at head channel A1. Its Z is how far the head
-        descends, at the stop disk.
-      tip_type: index into the instrument's tip type table.
-      pickup_method: where the tips are coming from - off a rack, out of the tip wash station, or
-        off a rack with a full-volume blow out.
-      minimum_traverse_z_position_at_the_command_start: how high the head travels to get there, in
-        mm. Defaults to `configuration.traversal_z_position`.
-      minimum_z_position_at_the_command_end: the height to leave the head at, in mm. Defaults
-        to `configuration.traversal_z_position`.
-
-    Raises:
-      ValueError: If a position is outside what the command accepts.
-    """
-    traverse_z, end_z = self._resolve_tip_command_heights(
-      minimum_traverse_z_position_at_the_command_start, minimum_z_position_at_the_command_end
-    )
-    self._check_tip_command(location, traverse_z, end_z)
-
-    if pickup_method == "rack":
-      method = 0
-    elif pickup_method == "wash_station":
-      method = 1
-    else:
-      method = 2
-
-    parameters: Dict[str, Any] = {
-      "xs": f"{abs(round(location.x * 10)):05}",
-      "xd": 0 if location.x >= 0 else 1,
-      "yh": f"{round(location.y * 10):04}",
-      "tt": f"{tip_type:02}",
-      "wu": method,
-      "za": f"{round(location.z * 10):04}",
-      "zh": f"{round(traverse_z * 10):04}",
-      "ze": f"{round(end_z * 10):04}",
-    }
-    return await self._driver.send_command(
-      module="C0", command="EP", read_timeout=read_timeout, **parameters
-    )
-
-  async def pick_up_tip_rack(
-    self,
-    tip_rack: TipRack,
-    offset: Optional[Coordinate] = None,
-    pickup_method: Literal["rack", "wash_station", "full_volume_blow_out"] = "rack",
-    minimum_traverse_z_position_at_the_command_start: Optional[float] = None,
-    minimum_z_position_at_the_command_end: Optional[float] = None,
-    alignment_tip_spot: str = "A1",
-    read_timeout: int = 30,
-  ):
-    """Collect a whole rack of tips, working out where and how deep from the rack itself.
-
-    The rack says what tip it holds, which decides both the table index the command names and how
-    far the head descends to seat them: a tip is gripped by the length that stands proud of its
-    fitting depth, with a correction for the sizes that do not seat like a standard one.
-
-    Args:
-      tip_rack: the rack to collect from.
-      offset: a shift from where the rack says it is, in mm.
-      pickup_method: where the tips are coming from - off a rack, out of the tip wash station, or
-        off a rack with a full-volume blow out.
-      minimum_traverse_z_position_at_the_command_start: how high the head travels to get there, in
-        mm. Defaults to `configuration.traversal_z_position`.
-      minimum_z_position_at_the_command_end: the height to leave the head at, in mm. Defaults
-        to `configuration.traversal_z_position`.
-      alignment_tip_spot: which tip spot the head's channel A1 lines up with.
-
-    Raises:
-      RuntimeError: If the driver was given no deck.
-      TypeError: If the rack holds a tip this instrument cannot be told about.
-      ValueError: If the rack is empty, or a position is out of reach.
-    """
-    deck = self._driver.deck
-    if deck is None:
-      raise RuntimeError("this driver has no deck, so a tip rack has no position to collect from")
-    offset = offset or Coordinate(0.0, 0.0, 0.0)
-    c = self.configuration
-
-    tip = next(
-      (spot.get_tip() for spot in tip_rack.get_all_items() if spot.has_tip()),
-      None,
-    )
-    if tip is None:
-      raise ValueError(f"{tip_rack.name} holds no tips to collect")
-    if not isinstance(tip, HamiltonTip):
-      raise TypeError(
-        f"{tip_rack.name} holds a {type(tip).__name__}, which this instrument cannot be told about"
-      )
-
-    tip_type = await self._driver.get_or_assign_tip_type_index(tip)
-
-    # How far the head descends past the tip spot to seat the tip.
-    engage_depth = tip.total_tip_length - tip.fitting_depth
-    if tip.tip_size == TipSize.LOW_VOLUME:
-      engage_depth += c.tip_engage_correction_low_volume
-    elif tip.tip_size != TipSize.STANDARD_VOLUME:
-      engage_depth += c.tip_engage_correction_other
-
-    spot = tip_rack.get_item(alignment_tip_spot)
-    spot_location = spot.get_location_wrt(deck)
-    location = spot_location + spot.center() + offset
-    location.z = round(spot_location.z + offset.z + engage_depth, 2)
-
-    if pickup_method == "rack":
-      # The instrument will not lower the dispensing drive on its own, so a head whose piston is
-      # still up would mount the tips against it.
-      await self.move_dispensing_drive_to_position(c.dispensing_drive_position_before_rack_pickup)
-
-    return await self.pick_up_tips(
-      location=location,
-      tip_type=tip_type,
-      pickup_method=pickup_method,
-      minimum_traverse_z_position_at_the_command_start=(
-        minimum_traverse_z_position_at_the_command_start
-      ),
-      minimum_z_position_at_the_command_end=minimum_z_position_at_the_command_end,
-      read_timeout=read_timeout,
-    )
-
   # -- drop --------------------------------------------------------------------------------------
-
-  async def discard_tips(
-    self,
-    location: Optional[Coordinate] = None,
-    minimum_traverse_z_position_at_the_command_start: Optional[float] = None,
-    minimum_z_position_at_the_command_end: Optional[float] = None,
-    read_timeout: int = 30,
-  ):
-    """Drop the rack of tips the head is carrying. This moves it in X, Y and Z.
-
-    The whole head empties at once, as it filled: there is no per-channel selection. Where they go
-    is the caller's - a rack to put them back on, or the waste to be rid of them.
-
-    Args:
-      location: where to drop them, in deck mm, at head channel A1, its Z being how far the head
-        descends. Defaults to `configuration.tip_discard_location` - this head's trash.
-      minimum_traverse_z_position_at_the_command_start: how high the head travels to get there, in
-        mm. Defaults to `configuration.traversal_z_position`.
-      minimum_z_position_at_the_command_end: the height to leave the head at, in mm. Defaults
-        to `configuration.traversal_z_position`.
-
-    Raises:
-      ValueError: If no location was given and none is configured, or a position is out of reach.
-    """
-    location = self.require_tip_discard_location(location)
-    traverse_z, end_z = self._resolve_tip_command_heights(
-      minimum_traverse_z_position_at_the_command_start, minimum_z_position_at_the_command_end
-    )
-    self._check_tip_command(location, traverse_z, end_z)
-
-    parameters: Dict[str, Any] = {
-      "xs": f"{abs(round(location.x * 10)):05}",
-      "xd": 0 if location.x >= 0 else 1,
-      "yh": f"{round(location.y * 10):04}",
-      "za": f"{round(location.z * 10):04}",
-      "zh": f"{round(traverse_z * 10):04}",
-      "ze": f"{round(end_z * 10):04}",
-    }
-    return await self._driver.send_command(
-      module="C0", command="ER", read_timeout=read_timeout, **parameters
-    )
-
-  async def drop_tips(
-    self,
-    resource: Resource,
-    offset: Optional[Coordinate] = None,
-    minimum_traverse_z_position_at_the_command_start: Optional[float] = None,
-    minimum_z_position_at_the_command_end: Optional[float] = None,
-    alignment_tip_spot: str = "A1",
-    read_timeout: int = 30,
-  ):
-    """Drop the rack of tips the head is carrying onto a resource.
-
-    Where the head goes depends on what it is being pointed at. A tip rack is lined up tip spot by
-    tip spot, so the tips go back where they came from. Anything else - the waste, most of the time
-    - has no spots to line up with, so the head is centred in it.
-
-    Args:
-      resource: what to drop them onto: a tip rack to put them back, or the waste to be rid of them.
-      offset: a shift from where the resource says it is, in mm.
-      minimum_traverse_z_position_at_the_command_start: how high the head travels to get there, in
-        mm. Defaults to `configuration.traversal_z_position`.
-      minimum_z_position_at_the_command_end: the height to leave the head at, in mm. Defaults
-        to `configuration.traversal_z_position`.
-      alignment_tip_spot: which tip spot the head's channel A1 lines up with, on a tip rack.
-
-    Raises:
-      RuntimeError: If the driver was given no deck.
-      ValueError: If a position is out of reach.
-    """
-    deck = self._driver.deck
-    if deck is None:
-      raise RuntimeError("this driver has no deck, so a resource has no position to drop onto")
-    offset = offset or Coordinate(0.0, 0.0, 0.0)
-
-    if isinstance(resource, TipRack):
-      spot = resource.get_item(alignment_tip_spot)
-      location = spot.get_location_wrt(deck) + spot.center() + offset
-      # The tips are released onto the rack rather than pushed into it, so the head stops just
-      # above the rack's own top rather than at the depth a pickup descends to.
-      location.z = round(
-        resource.get_location_wrt(deck).z + self.configuration.tip_drop_clearance + offset.z, 2
-      )
-    else:
-      location = self._position_centred_in(resource) + offset
-
-    return await self.discard_tips(
-      location=location,
-      minimum_traverse_z_position_at_the_command_start=(
-        minimum_traverse_z_position_at_the_command_start
-      ),
-      minimum_z_position_at_the_command_end=minimum_z_position_at_the_command_end,
-      read_timeout=read_timeout,
-    )
