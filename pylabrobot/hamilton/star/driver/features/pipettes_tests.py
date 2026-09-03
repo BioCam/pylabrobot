@@ -104,3 +104,52 @@ class TestPositionInYDirection(unittest.IsolatedAsyncioTestCase):
     at_18, sent_18 = await channels(width=18.0, positions=current)
     await at_18.move_to_y_positions({3: 150.0}, make_space=True)
     self.assertEqual(sent_18[-1], jy("4000 3000 2000 1500 1320 1140 0960 0780"))
+
+
+async def simulated_channels() -> Pipettes:
+  """The channels of a simulated machine, as setup leaves them.
+
+  Returns:
+    The feature.
+
+  Raises:
+    RuntimeError: If the simulated machine reports no channels.
+  """
+  driver = STARSimulationDriver(deck=STARDeck())
+  await driver.setup()
+  if driver.pipettes is None:
+    raise RuntimeError("the simulated machine reports no pipetting channels")
+  return driver.pipettes
+
+
+class TestPositionInZDirection(unittest.IsolatedAsyncioTestCase):
+  """What the channels' Z window does to a Z positioning command.
+
+  The window is taken from the configuration rather than written out here: what the drive counts
+  differs by arm, so a test that named the millimetres would be testing this generation only.
+  """
+
+  async def test_a_z_outside_the_window_is_refused_and_one_inside_is_not(self):
+    """The floor is the deck surface, so a Z below it would drive a stop disk into the deck."""
+    pipettes = await simulated_channels()
+    c = pipettes.configuration
+    low, high = c.z_range or c.z_range_documented
+
+    for z in (low - 0.1, high + 0.1):
+      with self.assertRaises(ValueError):
+        await pipettes.move_to_z_positions({0: z})
+
+    await pipettes.move_to_z_positions({0: round((low + high) / 2, 1)})
+
+  async def test_probing_takes_the_ceiling_from_the_machine_and_the_floor_from_the_drive(self):
+    """A machine reaching lower than the drive documents keeps the drive's floor, not its own."""
+    pipettes = await simulated_channels()
+    floor, _ = pipettes.configuration.z_range_documented
+
+    # A machine whose channels come to rest below what the drive documents, and a window whose
+    # floor is wrong, so the probe is seen to take each end from its own source.
+    reached = 300.0
+    pipettes.configuration.z_range = (floor + 10.0, reached)
+
+    self.assertEqual(await pipettes.probe_z_max(), reached)
+    self.assertEqual(pipettes.configuration.z_range, (floor, reached))
