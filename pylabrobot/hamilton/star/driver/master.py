@@ -213,9 +213,7 @@ class STARDriver:
         if arm.pipettes is not None:
           safe_z_moves.append(arm.pipettes.move_to_safe_z())
         for head in (arm.head96, arm.head384):
-          # Skipped on a head whose Z window was never probed: setup did not get that far, so
-          # there is no safe height to move to.
-          if head is not None and head.configuration.z_range is not None:
+          if head is not None:
             safe_z_moves.append(head.move_to_safe_z())
 
       # Every subsystem gets its chance to reach safe Z, so one that cannot does not leave the

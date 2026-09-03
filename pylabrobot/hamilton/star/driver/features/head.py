@@ -1207,8 +1207,8 @@ class Head:
 
     The precondition for any lateral move, so it runs often. An ordinary Z move to a known height,
     not a command of its own - so it is bounded, and its speed and acceleration are the caller's
-    like any other move. The firmware's own retract runs once, inside `probe_z_max`, which is
-    what establishes the height this moves to.
+    like any other move. The firmware's own retract, inside `probe_z_max`, is what establishes the
+    height this moves to; with no window probed yet this falls back to it.
 
     Args:
       speed: how fast, in mm/s. Defaults to `configuration.z_drive_speed_default`.
@@ -1216,13 +1216,11 @@ class Head:
 
     Returns:
       The Z position at the safety height, in mm.
-
-    Raises:
-      RuntimeError: If the Z window was not probed, so the safe height is unknown.
     """
     z_range = self.configuration.z_range
     if z_range is None:
-      raise RuntimeError("the head's Z window was not probed; have you called `star.setup()`?")
+      # No window probed yet, so there is no height to aim at; the retract establishes one.
+      return await self.probe_z_max()
     await self.move_stop_disk_to_z_position(z_range[1], speed=speed, acceleration=acceleration)
     return await self.request_z_position()
 
