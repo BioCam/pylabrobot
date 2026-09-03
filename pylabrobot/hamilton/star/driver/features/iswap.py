@@ -4,8 +4,9 @@ import enum
 import logging
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
 
+from pylabrobot.hamilton.star.resource_model import iSWAPChannel
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.rotation import Rotation
 
@@ -143,6 +144,10 @@ class iSWAPConfiguration:
   stands proud of it sweep this circle as the drive turns, so a clearance that holds at every
   rotation angle is measured against the drive's radius plus this."""
 
+  rotation_drive_size_z: float = 120.0
+  """How tall to model the rotation drive, in mm. Not read from anywhere: how far the drive extends
+  is not something the machine reports."""
+
   # -- Z --
   z_increment_range: Tuple[int, int] = (-187, 26_661)
   z_mm_per_increment: float = 0.01072765
@@ -279,6 +284,7 @@ class iSWAP:
     """
     self._driver = driver
     self.configuration = configuration or iSWAPConfiguration()
+    self.resource: Optional[iSWAPChannel] = None
 
   # -- session / discovery ---------------------------------------------------
 
@@ -387,6 +393,109 @@ class iSWAP:
 
   # -- where it is -----------------------------------------------------------
 
+  def update_location_by_reference_point(
+    self, y: Optional[float] = None, z: Optional[float] = None
+  ) -> None:
+    """Record where the rotation drive is on the resource that models it.
+
+    Y and Z only: the drive rides the arm, so its resource is a child of the arm's and follows it
+    in X without anything having to record that. The drives report the point the resource states as
+    its `reference_point`, and a resource is located by its left front bottom corner, so that point
+    is taken out before either value is recorded.
+
+    Both drives answer in the deck's frame, while a resource's location is measured from its
+    parent, which here is the arm. The arm's own position is taken out too. Does nothing when the
+    driver was given no deck, and so has nothing to model.
+
+    Args:
+      y: where the drive is now, in mm on the deck. Left as it was when None.
+      z: where its bottom is now, in mm on the deck. Left as it was when None.
+    """
+    deck = self._driver.deck
+    if self.resource is None or self.resource.location is None or deck is None:
+      return
+    arm = self.resource.parent
+    if arm is None:
+      return
+    here, on_the_arm = self.resource.location, arm.get_location_wrt(deck)
+    anchor = self.resource.reference_point
+    self.resource.location = Coordinate(
+      here.x,
+      here.y if y is None else y - on_the_arm.y - anchor.y,
+      here.z if z is None else z - on_the_arm.z - anchor.z,
+    )
+
+  def _check_reachable(
+    self,
+    axis: Literal["x", "y", "z"],
+    value: float,
+    frame: Literal["rotation_drive", "gripper"] = "rotation_drive",
+  ) -> None:
+    """Raise if the iSWAP cannot be sent where it is being asked to go.
+
+    The one gate every position passes through. What the iSWAP is allowed to do is decided in one
+    place: travel limits now, and whatever else has to hold before it moves as it is added.
+
+    Two frames, because the arm reaches past the drive that carries it. `rotation_drive` is the
+    carriage the Y and Z drives position, which is what every move here commands. `gripper` is the
+    grip centre `request_pose` reports, which the two links carry away from that carriage.
+
+    Along Z the two differ by a fixed offset, so the gripper's window is exact. Along X and Y the
+    links can point in any direction, so the gripper's window is the drive's widened by their
+    combined length: a value outside it is certainly out of reach, one inside it may still be,
+    depending on where the joints are. Bounding those exactly needs the joint state.
+
+    Args:
+      axis: which axis - `x` along the rail, `y` across the deck, `z` up.
+      value: where it would be sent, in mm.
+      frame: whether `value` is the rotation drive's position or the grip centre's.
+
+    Raises:
+      ValueError: If the iSWAP cannot reach it.
+      RuntimeError: If the limits were not read, so how far it reaches is unknown.
+    """
+    c = self.configuration
+    machine = self._driver.configuration
+    if machine is None:
+      raise RuntimeError("no configuration read; have you called `star.setup()`?")
+
+    if axis == "x":
+      x_range = self.arm.configuration.x_range
+      if x_range is None:
+        raise RuntimeError("the arm's X travel is not known; have you called `star.setup()`?")
+      if c.rotation_drive_x_offset is None:
+        raise RuntimeError("the drive's X offset was not read; have you called `star.setup()`?")
+      low = x_range[0] - c.rotation_drive_x_offset
+      high = x_range[1] - c.rotation_drive_x_offset
+    elif axis == "y":
+      if c.rotation_drive_y_max is None:
+        raise RuntimeError("the drive's Y limit was not read; have you called `star.setup()`?")
+      low = (
+        machine.left_arm_min_y_position
+        if self.arm.side == "left"
+        else machine.right_arm_min_y_position
+      )
+      high = c.rotation_drive_y_max
+    else:
+      low, high = c.rotation_drive_z_range
+
+    if frame == "gripper":
+      if axis == "z":
+        low -= c.rotation_drive_z_offset_above_finger
+        high -= c.rotation_drive_z_offset_above_finger
+      else:
+        if c.link_1_length is None or c.link_2_length is None:
+          raise RuntimeError("the link lengths were not read; have you called `star.setup()`?")
+        reach = c.link_1_length + c.link_2_length
+        low -= reach
+        high += reach
+
+    if not low <= value <= high:
+      raise ValueError(
+        f"{axis} must be between {round(low, 1)} and {round(high, 1)} mm for the "
+        f"{frame.replace('_', ' ')}, is {value}"
+      )
+
   @property
   def arm(self) -> "XArm":
     """The arm carrying this iSWAP.
@@ -434,7 +543,9 @@ class iSWAP:
     """
     resp = await self._driver.send_command(module="R0", command="RY", fmt="ry##### (n)")
     # Two counters come back, the firmware's and the hardware's. The hardware one is read.
-    return round(self.configuration.y_increments_to_mm(cast(List[int], resp["ry"])[1]), 1)
+    y = round(self.configuration.y_increments_to_mm(cast(List[int], resp["ry"])[1]), 1)
+    self.update_location_by_reference_point(y=y)
+    return y
 
   async def rotation_drive_move_to_y_position(
     self,
@@ -469,12 +580,7 @@ class iSWAP:
     machine = self._driver.configuration
     if machine is None:
       raise RuntimeError("no configuration read; have you called `star.setup()`?")
-    if c.rotation_drive_y_max is None:
-      raise RuntimeError("the drive's Y limit was not read; have you called `star.setup()`?")
-
-    low, high = machine.left_arm_min_y_position, c.rotation_drive_y_max
-    if not low <= y <= high:
-      raise ValueError(f"y must be between {low} and {high} mm, is {y}")
+    self._check_reachable("y", y)
 
     await self._clear_channels_for_y(y, make_space=make_space)
 
@@ -490,14 +596,26 @@ class iSWAP:
     if not 0 <= current_limit <= 7:
       raise ValueError(f"current_limit must be between 0 and 7, is {current_limit}")
 
-    return await self._driver.send_command(
-      module="R0",
-      command="YA",
-      ya=f"{c.y_mm_to_increments(y):05}",
-      yv=f"{speed_increments:04}",
-      yr=f"{acceleration_level}",
-      yw=f"{current_limit}",
-    )
+    try:
+      resp = await self._driver.send_command(
+        module="R0",
+        command="YA",
+        ya=f"{c.y_mm_to_increments(y):05}",
+        yv=f"{speed_increments:04}",
+        yr=f"{acceleration_level}",
+        yw=f"{current_limit}",
+      )
+    except BaseException:
+      # A failed move leaves the drive at an unknown y, so re-read to refresh the model. The
+      # read is wrapped: its own failure must not replace the move's exception.
+      try:
+        await self.rotation_drive_request_y_position()
+      except BaseException:
+        logger.warning("could not read where the rotation drive stopped; its model is stale")
+      raise
+
+    self.update_location_by_reference_point(y=y)
+    return resp
 
   async def _clear_channels_for_y(self, y: float, make_space: bool) -> None:
     """Make sure the backmost channel is out of the way before the drive travels to `y`.
@@ -557,7 +675,9 @@ class iSWAP:
     """
     resp = await self._driver.send_command(module="R0", command="RZ", fmt="rz##### (n)")
     finger_plane = self.configuration.z_increments_to_mm(cast(List[int], resp["rz"])[1])
-    return round(finger_plane + self.configuration.rotation_drive_z_offset_above_finger, 1)
+    z = round(finger_plane + self.configuration.rotation_drive_z_offset_above_finger, 1)
+    self.update_location_by_reference_point(z=z)
+    return z
 
   async def rotation_drive_move_to_z_position(
     self,
@@ -578,9 +698,7 @@ class iSWAP:
       ValueError: If any of them is outside what the drive accepts.
     """
     c = self.configuration
-    low, high = c.rotation_drive_z_range
-    if not low <= z <= high:
-      raise ValueError(f"z must be between {low} and {high} mm, is {z}")
+    self._check_reachable("z", z)
 
     speed_increments = c.z_mm_to_increments(speed)
     speed_low, speed_high = c.z_speed_increment_range
@@ -603,14 +721,26 @@ class iSWAP:
       raise ValueError(f"current_limit must be between 0 and 7, is {current_limit}")
 
     finger_plane = z - c.rotation_drive_z_offset_above_finger
-    return await self._driver.send_command(
-      module="R0",
-      command="ZA",
-      za=f"{c.z_mm_to_increments(finger_plane):+06}",
-      zv=f"{speed_increments:05}",
-      zr=f"{acceleration_increments:03}",
-      zw=f"{current_limit}",
-    )
+    try:
+      resp = await self._driver.send_command(
+        module="R0",
+        command="ZA",
+        za=f"{c.z_mm_to_increments(finger_plane):+06}",
+        zv=f"{speed_increments:05}",
+        zr=f"{acceleration_increments:03}",
+        zw=f"{current_limit}",
+      )
+    except BaseException:
+      # A failed move leaves the drive at an unknown z, so re-read to refresh the model. The
+      # read is wrapped: its own failure must not replace the move's exception.
+      try:
+        await self.rotation_drive_request_z_position()
+      except BaseException:
+        logger.warning("could not read where the rotation drive stopped; its model is stale")
+      raise
+
+    self.update_location_by_reference_point(z=z)
+    return resp
 
   async def rotation_drive_move_to_safe_z_height(
     self,

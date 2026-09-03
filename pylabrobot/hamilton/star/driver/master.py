@@ -17,6 +17,7 @@ from pylabrobot.hamilton.protocol.text.framing import (
 )
 from pylabrobot.hamilton.protocol.text.router import ReplyRouter
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
+from pylabrobot.hamilton.star.driver.configurations import InstrumentConfigurations
 from pylabrobot.hamilton.star.driver.errors import (
   STAR_MODULE_ID_LENGTH,
   check_fw_string_error,
@@ -29,7 +30,11 @@ from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.hamilton.star.driver.lock import _FirmwareLock
-from pylabrobot.hamilton.star.resource_model import NChannelPipette
+from pylabrobot.hamilton.star.resource_model import (
+  NChannelPipette,
+  iswap_channel,
+  iSWAPChannel,
+)
 from pylabrobot.hamilton.star.resource_model import head96 as head96_pipette
 from pylabrobot.hamilton.star.resource_model import head384 as head384_pipette
 from pylabrobot.io.io import IOBase
@@ -154,12 +159,10 @@ class STARDriver:
       #    unit, and the instrument procedure holds every drive but its. Phase 3 reads its state
       #    again, so a machine that does home it there loses nothing but the overlap.
       logger.debug("[PHASE 2] Instrument initialization")
-      overlap_autoload = (
-        self.autoload is not None and not await self.request_initialization_status()
-      )
-      if overlap_autoload:
-        assert self.autoload is not None
-        already_initialized, _ = await asyncio.gather(self.initialize(), self.autoload.initialize())
+      autoload = self.autoload
+      overlap_autoload = autoload is not None and not await self.request_initialization_status()
+      if autoload is not None and overlap_autoload:
+        already_initialized, _ = await asyncio.gather(self.initialize(), autoload.initialize())
       else:
         already_initialized = await self.initialize()
 
@@ -776,6 +779,49 @@ class STARDriver:
   # Discovery and initialization
   # ----------------------------------------
 
+  @property
+  def configurations(self) -> InstrumentConfigurations:
+    """Every configuration this machine holds, collected into one.
+
+    What discovery filled, so this is worth reading after setup. Written to a file, it is what a
+    simulated machine needs to stand in for this one.
+
+    Returns:
+      The instrument's own configuration and that of each feature fitted to it.
+
+    Raises:
+      RuntimeError: If nothing has been read off the machine yet.
+    """
+    if self.configuration is None:
+      raise RuntimeError("nothing has been read off this machine; call `setup` first")
+    # One of each, whichever arm carries it: a module sits on a CAN node of its own, so a machine
+    # has one 96-head and one iSWAP however many arms it has.
+    pipettes = next((arm.pipettes for arm in self.arms if arm.pipettes is not None), None)
+    head96 = next((arm.head96 for arm in self.arms if arm.head96 is not None), None)
+    head384 = next((arm.head384 for arm in self.arms if arm.head384 is not None), None)
+    iswap = next((arm.iswap for arm in self.arms if arm.iswap is not None), None)
+    return InstrumentConfigurations(
+      device=self.configuration,
+      pipettes=None if pipettes is None else pipettes.configuration,
+      head96=None if head96 is None else head96.configuration,
+      head384=None if head384 is None else head384.configuration,
+      iswap=None if iswap is None else iswap.configuration,
+      autoload=None if self.autoload is None else self.autoload.configuration,
+      front_cover=None if self.front_cover is None else self.front_cover.configuration,
+    )
+
+  def save_configuration(self, path: str, indent: Optional[int] = 2) -> None:
+    """Write what this machine reported to a file, to be simulated from later.
+
+    Args:
+      path: where to write it.
+      indent: how far to indent the JSON, or None to write it on one line.
+
+    Raises:
+      RuntimeError: If nothing has been read off the machine yet.
+    """
+    self.configurations.save(path, indent=indent)
+
   async def discover(self):
     """Read what machine is on the other end, and build the subsystems it turns out to have.
 
@@ -1058,6 +1104,7 @@ class STARDriver:
     await self._create_pipette_resources()
     await self._create_autoload_resource()
     await self._create_head_resources()
+    await self._create_iswap_resource()
 
   async def _create_pipette_resources(self) -> None:
     """Put a resource on the arm for each pipetting channel, where it is.
@@ -1155,6 +1202,55 @@ class STARDriver:
           )
         head.resource = resource
         head.update_location_by_reference_point(y=y, z=z)
+
+  async def _create_iswap_resource(self) -> None:
+    """Put each iSWAP's rotation drive on the arm it rides, where it is.
+
+    A child of the arm's resource, not of the deck, so it follows the arm in X with nothing keeping
+    the two in step. One already on the arm is reused, and repeated setups do not duplicate it.
+
+    The drive is modelled, not the gripper: where the gripper is follows from the joint state
+    rather than from where the drive sits, and `request_pose` is what resolves that.
+
+    Raises:
+      RuntimeError: If the drive's X offset was not read, leaving its position across the arm
+        unknown.
+    """
+    if self.deck is None:
+      return
+    for arm in self.arms:
+      if arm.iswap is None or arm.resource is None:
+        continue
+      iswap = arm.iswap
+      c = iswap.configuration
+      # Read before it has a resource to read into, as the head's are.
+      y = await iswap.rotation_drive_request_y_position()
+      z = await iswap.rotation_drive_request_z_position()
+      existing = next(
+        (child for child in arm.resource.children if child.name == "iswap_channel"), None
+      )
+      resource = existing if isinstance(existing, iSWAPChannel) else None
+      if resource is None:
+        if c.rotation_drive_x_offset is None:
+          raise RuntimeError(
+            "the iSWAP rotation drive's X offset was not read; have you called `star.setup()`?"
+          )
+        resource = iswap_channel(
+          name="iswap_channel",
+          diameter=c.rotation_drive_diameter,
+          size_z=c.rotation_drive_size_z,
+        )
+        # The drive sits `rotation_drive_x_offset` left of the carriage reference point, and the
+        # arm is located by its own left edge, so it lands that far left of the arm's centre.
+        anchor = resource.reference_point
+        arm.resource.assign_child_resource(
+          resource,
+          location=Coordinate(
+            arm.resource.get_absolute_size_x() / 2 - c.rotation_drive_x_offset - anchor.x, 0.0, 0.0
+          ),
+        )
+      iswap.resource = resource
+      iswap.update_location_by_reference_point(y=y, z=z)
 
   async def _create_autoload_resource(self) -> None:
     """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.

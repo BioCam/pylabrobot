@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 from pylabrobot.hamilton.star.driver.lock import _FirmwareLock
-from pylabrobot.hamilton.star.resource_model import TipMountingShaft
+from pylabrobot.hamilton.star.resource_model import NChannelPipette, TipMountingShaft
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
 
@@ -342,8 +342,9 @@ class Pipettes:
     if resource.location is None or resource.parent is None:
       return
     here, on_the_arm = resource.location, resource.parent.get_location_wrt(deck)
-    anchor = getattr(resource, "reference_point", None)
-    if anchor is None:
+    if isinstance(resource, NChannelPipette):
+      anchor = resource.reference_point
+    else:
       anchor = resource.get_anchor(
         y=self.configuration.y_reference_anchor, z=self.configuration.z_reference_anchor
       )
