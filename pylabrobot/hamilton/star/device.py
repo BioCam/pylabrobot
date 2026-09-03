@@ -3,6 +3,7 @@
 import logging
 from typing import Optional
 
+from pylabrobot.hamilton.star.driver.configuration import DeviceRecording
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.cover import FrontCover
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
@@ -11,10 +12,7 @@ from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm
 from pylabrobot.hamilton.star.driver.master import STARDriver
-from pylabrobot.hamilton.star.driver.simulator import (
-  STARSimulationDriver,
-  default_configuration_for,
-)
+from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import (
   HamiltonSTARDeck,
@@ -132,6 +130,7 @@ class STARDevice(Resource):
     self,
     deck: HamiltonSTARDeck,
     simulation: bool = False,
+    simulated_configuration: Optional[str] = None,
     driver: Optional[STARDriver] = None,
     name: str = "Generic STAR Device",
     size_x: Optional[float] = None,
@@ -148,6 +147,10 @@ class STARDevice(Resource):
         assigned to it is a descendant of this device.
       simulation: whether to build a simulated instrument, which answers without one being plugged
         in. Superseded by `driver`, which says exactly what to drive.
+      simulated_configuration: a file `STARDriver.save_configuration` wrote, for a simulated
+        instrument to answer as the machine that file records. Without one it answers as the frame
+        its deck says it is. Read only when this builds the driver itself: a driver given outright
+        brings its own.
       driver: the driver to drive the instrument through.
       name: what to call this instrument in the resource tree.
       size_x: how wide the instrument is, in mm, BEFORE any extension housing. Defaults to the
@@ -191,18 +194,28 @@ class STARDevice(Resource):
     self.left_side_panel_installed = left_side_panel_installed
 
     self.deck = deck
-    if driver is None:
-      # Nothing was declared, so the frame decides: what a machine with this many tracks is taken
-      # to be. Said out loud, because only the STAR was read off an instrument and the rest are
-      # derived from it.
-      configuration, recorded = default_configuration_for(deck.num_tracks)
-      logger.info(
-        "no driver given; simulating a %d-track machine from a %s configuration",
-        deck.num_tracks,
-        "recorded" if recorded else "derived",
+    if driver is not None:
+      if simulated_configuration is not None:
+        logger.warning("a driver was given, so the recorded configuration is not read")
+      self.driver: STARDriver = driver
+    else:
+      # What the file records, or nothing - in which case the simulated machine works out from its
+      # deck what frame it is on, and says what it assumed.
+      recorded = (
+        DeviceRecording()
+        if simulated_configuration is None
+        else DeviceRecording.load(simulated_configuration)
       )
-      driver = STARSimulationDriver(deck=deck, configuration=configuration)
-    self.driver = driver
+      self.driver = STARSimulationDriver(
+        deck=deck,
+        configuration=recorded.device,
+        pipettes=recorded.pipettes,
+        head96=recorded.head96,
+        head384=recorded.head384,
+        iswap=recorded.iswap,
+        autoload=recorded.autoload,
+        front_cover=recorded.front_cover,
+      )
 
     if self.driver.deck is not None and self.driver.deck is not deck:
       logger.warning("the driver was given another deck; modelling into this instrument's instead")
@@ -322,6 +335,7 @@ class STARDevice(Resource):
 def STAR(
   deck: Optional[HamiltonSTARDeck] = None,
   simulation: bool = False,
+  simulated_configuration: Optional[str] = None,
   driver: Optional[STARDriver] = None,
   name: str = "Hamilton STAR",
   size_x: float = STAR_SIZE_X,
@@ -334,6 +348,7 @@ def STAR(
   return STARDevice(
     deck=deck if deck is not None else STARDeck(),
     simulation=simulation,
+    simulated_configuration=simulated_configuration,
     driver=driver,
     name=name,
     size_x=size_x,
@@ -349,6 +364,7 @@ def STAR(
 def STAR_with_extension_housing(
   deck: Optional[HamiltonSTARDeck] = None,
   simulation: bool = False,
+  simulated_configuration: Optional[str] = None,
   driver: Optional[STARDriver] = None,
   name: str = "Hamilton STAR (left extension housing)",
   size_x: float = STAR_SIZE_X,
@@ -365,6 +381,7 @@ def STAR_with_extension_housing(
   return STAR(
     deck=deck,
     simulation=simulation,
+    simulated_configuration=simulated_configuration,
     driver=driver,
     name=name,
     size_x=size_x,
@@ -377,6 +394,7 @@ def STAR_with_extension_housing(
 def STARLet(
   deck: Optional[HamiltonSTARDeck] = None,
   simulation: bool = False,
+  simulated_configuration: Optional[str] = None,
   driver: Optional[STARDriver] = None,
   name: str = "Hamilton STARlet",
   size_x: float = STARLET_SIZE_X,
@@ -389,6 +407,7 @@ def STARLet(
   return STARDevice(
     deck=deck if deck is not None else STARLetDeck(),
     simulation=simulation,
+    simulated_configuration=simulated_configuration,
     driver=driver,
     name=name,
     size_x=size_x,
@@ -404,6 +423,7 @@ def STARLet(
 def STARPlus(
   deck: Optional[HamiltonSTARDeck] = None,
   simulation: bool = False,
+  simulated_configuration: Optional[str] = None,
   driver: Optional[STARDriver] = None,
   name: str = "Hamilton STARplus",
   size_x: float = STARPLUS_SIZE_X,
@@ -424,6 +444,7 @@ def STARPlus(
   return STARDevice(
     deck=deck if deck is not None else STARPlusDeck(),
     simulation=simulation,
+    simulated_configuration=simulated_configuration,
     driver=driver,
     name=name,
     size_x=size_x,

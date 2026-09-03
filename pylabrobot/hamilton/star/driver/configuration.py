@@ -1,7 +1,15 @@
-from dataclasses import dataclass
-from typing import Optional
+import json
+from dataclasses import dataclass, fields
+from typing import Any, Dict, Optional
 
+from pylabrobot.hamilton.star.driver.features.autoload import AutoloadConfiguration
+from pylabrobot.hamilton.star.driver.features.cover import FrontCoverConfiguration
+from pylabrobot.hamilton.star.driver.features.head96 import Head96Configuration
+from pylabrobot.hamilton.star.driver.features.head384 import Head384Configuration
+from pylabrobot.hamilton.star.driver.features.iswap import iSWAPConfiguration
+from pylabrobot.hamilton.star.driver.features.pipettes import PipettesConfiguration
 from pylabrobot.hamilton.star.driver.features.x_arm import XArmConfiguration
+from pylabrobot.hamilton.star.driver.serialization import from_dict, to_jsonable
 
 
 @dataclass
@@ -120,3 +128,60 @@ class DeviceConfiguration:
   """Left arm minimal Y position [mm] (yu). Default: 6.0."""
   right_arm_min_y_position: float = 6.0
   """Right arm minimal Y position [mm] (yx). Default: 6.0."""
+
+
+@dataclass
+class DeviceRecording:
+  """What one device is: its own configuration, and that of each feature fitted to it.
+
+  Flat rather than per arm: each module sits on a CAN node of its own, so a device has one 96-head,
+  one iSWAP and one set of channels whichever arm carries them. Which arm that is, is already the
+  answer `DeviceConfiguration.left_arm` and `right_arm` give.
+
+  A feature left None was not recorded. A simulated device falls back to what its frame documents
+  for that one, and says so; one read off a real device has every feature it reported.
+  """
+
+  device: Optional[DeviceConfiguration] = None
+  pipettes: Optional[PipettesConfiguration] = None
+  head96: Optional[Head96Configuration] = None
+  head384: Optional[Head384Configuration] = None
+  iswap: Optional[iSWAPConfiguration] = None
+  autoload: Optional[AutoloadConfiguration] = None
+  front_cover: Optional[FrontCoverConfiguration] = None
+
+  def recorded(self) -> Dict[str, Any]:
+    """Which features this names, and what each is.
+
+    Returns:
+      The named features, keyed as this class names them. Features left None are left out.
+    """
+    return {
+      field.name: value
+      for field in fields(self)
+      if (value := getattr(self, field.name)) is not None
+    }
+
+  def save(self, path: str, indent: Optional[int] = 2) -> None:
+    """Write this to a file.
+
+    Args:
+      path: where to write it.
+      indent: how far to indent the JSON, or None to write it on one line.
+    """
+    with open(path, "w", encoding="utf-8") as f:
+      json.dump(to_jsonable(self), f, indent=indent)
+
+  @classmethod
+  def load(cls, path: str) -> "DeviceRecording":
+    """Read one back.
+
+    Args:
+      path: the file to read.
+
+    Returns:
+      What it holds. Features the file does not name are left None, as are fields this driver no
+      longer has, so a file written by an older one still loads.
+    """
+    with open(path, encoding="utf-8") as f:
+      return from_dict(cls, json.load(f))

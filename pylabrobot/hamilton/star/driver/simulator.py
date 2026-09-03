@@ -12,15 +12,23 @@ simulated makes itself known: override the method that sends it, on the feature 
 import dataclasses
 import datetime
 import logging
+import os
 from typing import Any, Dict, List, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import (
   assemble_channel_command,
   parse_firmware_version_date,
 )
-from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
+from pylabrobot.hamilton.star.driver.configuration import (
+  DeviceConfiguration,
+  DeviceRecording,
+)
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
-from pylabrobot.hamilton.star.driver.features.cover import CoverPosition, FrontCover
+from pylabrobot.hamilton.star.driver.features.cover import (
+  CoverPosition,
+  FrontCover,
+  FrontCoverConfiguration,
+)
 from pylabrobot.hamilton.star.driver.features.head import (
   HEAD_REFERENCE_SHAFT,
   Head,
@@ -28,10 +36,11 @@ from pylabrobot.hamilton.star.driver.features.head import (
 )
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
 from pylabrobot.hamilton.star.driver.features.head384 import Head384, Head384Configuration
-from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
+from pylabrobot.hamilton.star.driver.features.iswap import iSWAP, iSWAPConfiguration
 from pylabrobot.hamilton.star.driver.features.pipettes import (
   PipetteConfiguration,
   Pipettes,
+  PipettesConfiguration,
 )
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -75,28 +84,6 @@ PIPETTE_WIDTH = 8.98
 # them across, so a simulated machine looks like one that has been set up rather than one with
 # every channel on top of the next. Their Z-safety height comes from the configured Z window.
 
-# What each pipetting channel is: an ML_STAR channel on an ML_STAR head, with a CoRe II stop disc
-# and a Renesas pressure ADC.
-SIMULATED_PIPETTE = PipetteConfiguration(
-  channel_type="ML_STAR",
-  head_type="ML_STAR",
-  stop_disc_type="core_ii",
-  pressure_adc="Renesas_X9268",
-)
-
-# The 96-head this machine has, as the autoload beside it: what it answers about itself, read off a
-# real instrument. Discovery fills the feature's own configuration from these, as on a machine.
-SIMULATED_HEAD96 = Head96Configuration(
-  # Resolves the windows and defaults this head derives, so it has to know its own.
-  firmware_version=SIMULATED_FIRMWARE["head96"],
-  firmware_date=parse_firmware_version_date(SIMULATED_FIRMWARE["head96"]),
-  head_type="96 head II",
-  x_offset=368.2,
-  supports_clot_monitoring_clld=False,
-  stop_disc_type="core_ii",
-  instrument_type="legacy",
-)
-
 # Where a head parks along Y, and the nine further slots it stores beside that one. Read off a
 # real 96-head; the 384-head documents the same two.
 SIMULATED_HEAD_Y_PARK = 554.45
@@ -106,27 +93,10 @@ SIMULATED_HEAD_Y_PREDEFINED = 546.88
 # probe result, so it stands apart from the configuration, as each drive's rest position does.
 SIMULATED_HEAD96_Z_SAFETY = 336.97
 
-# The 384-head a machine configured for one has. Unlike the 96-head above, none of this is read off
-# an instrument: the offset and the drive defaults are the ones the drives document.
-SIMULATED_HEAD384 = Head384Configuration(
-  firmware_version=SIMULATED_FIRMWARE["head384"],
-  firmware_date=parse_firmware_version_date(SIMULATED_FIRMWARE["head384"]),
-  head_type="High volume head",
-  x_offset=260.0,
-  supports_clot_monitoring_clld=False,
-  supports_lld_absolute_threshold_check=False,
-)
-
 # Where its Z drive rests after a retract. No unit has been probed, so this is the ceiling the drive
 # documents rather than a measurement, as the 96-head's is.
 SIMULATED_HEAD384_Z_SAFETY = 336.0
 
-# The autoload this machine has. Its device facts are the defaults; what it answers about itself is
-# here, and discovery reads it as it would off a real one.
-SIMULATED_AUTOLOAD = AutoloadConfiguration(
-  firmware_version="3.4S f 2017-01-09",
-  autoload_type="1D barcode scanner",
-)
 
 # Where its two undriven drives report themselves, in mm. Where they actually are is not modelled:
 # each answers from its zero. X is not among them - it answers from the deck.
@@ -180,35 +150,33 @@ BARE_X_ARM = XArmConfiguration(
   wrap_size=595.2,
 )
 
-# What a bare STARSimulationDriver() pretends to be, copied field for field off a real instrument:
-# a full-size STAR, 54 slots wide, with eight 1000uL channels, a wide-gripper iSWAP and a 96-head
-# on a dual-rail left arm, autoload fitted, no right arm. A STARlet would be the same at 30 slots.
-DEFAULT_STAR_CONFIGURATION = DeviceConfiguration(
-  pip_type_1000ul=True,
-  kb_iswap_installed=True,
-  autoload_installed=True,
-  num_pip_channels=8,
-  left_x_drive_large=True,
-  ka_head96_installed=True,
-  iswap_gripper_wide=True,
-  instrument_size_slots=54,
-  autoload_size_slots=54,
-  tip_waste_x_position=1340.0,
-  left_arm=XArmConfiguration(
-    pip_installed=True,
-    iswap_installed=True,
-    head96_installed=True,
-    width=354.0,
-    x_range=(95.0, 1340.2),
-    workspace_range=(-323.2, 1517.2),
-    wrap_size=595.2,
-  ),
-  right_arm=None,
-  min_iswap_collision_free_position=350.0,
-  max_iswap_collision_free_position=1140.0,
-  left_x_arm_width=354.0,
-  right_x_arm_width=370.0,
-)
+# What a bare STARSimulationDriver() pretends to be, and what each feature on it answers about
+# itself: a full-size STAR, 54 slots wide, with eight 1000uL channels, a wide-gripper iSWAP and a
+# 96-head on a dual-rail left arm, autoload fitted, no right arm. Read off a real instrument and
+# kept beside this module rather than written out here, so recording another machine is saving a
+# file rather than editing code. `STARDriver.save_configuration` is what writes one.
+_RECORDINGS = os.path.join(os.path.dirname(__file__), "recordings")
+RECORDED_STAR = DeviceRecording.load(os.path.join(_RECORDINGS, "star.json"))
+if (
+  RECORDED_STAR.device is None
+  or RECORDED_STAR.head96 is None
+  or RECORDED_STAR.head384 is None
+  or RECORDED_STAR.autoload is None
+  or RECORDED_STAR.pipettes is None
+  or not RECORDED_STAR.pipettes.channels
+):
+  raise RuntimeError(
+    "the recorded STAR names no instrument, head, autoload or channel; the file beside this "
+    "module is incomplete, or did not come along with the install"
+  )
+
+DEFAULT_STAR_CONFIGURATION = RECORDED_STAR.device
+SIMULATED_HEAD96 = RECORDED_STAR.head96
+SIMULATED_HEAD384 = RECORDED_STAR.head384
+SIMULATED_AUTOLOAD = RECORDED_STAR.autoload
+# One channel stands for all of them: they are the same part, and the machine holds one set of
+# resolutions for the lot.
+SIMULATED_PIPETTE = RECORDED_STAR.pipettes.channels[0]
 
 
 # The highest track the recorded autoload's sled reaches, from its own drive window. Tracks past
@@ -321,15 +289,33 @@ class SimulatedPipettes(_Simulated, Pipettes):
   async def request_firmware_version(self, channel: int) -> Tuple[str, datetime.date]:
     return self.machine.reported("pipettes")
 
+  def _declared_channel(self, channel: int) -> PipetteConfiguration:
+    """What this machine was told sits on a channel, or the channel this frame documents.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+
+    Returns:
+      The channel to answer from.
+    """
+    declared = self.machine.simulated_pipettes
+    if declared is not None and channel < len(declared.channels):
+      return declared.channels[channel]
+    return SIMULATED_PIPETTE
+
   async def request_min_pipette_width(self, channel: int) -> float:
-    return PIPETTE_WIDTH
+    width = self._declared_channel(channel).width
+    return PIPETTE_WIDTH if width is None else width
 
   async def request_pipette_configuration(self, channel: int) -> PipetteConfiguration:
+    # Only what the read reports: the rest of a channel's configuration is filled by discovery
+    # from other reads, as it is on a machine.
+    channel_configuration = self._declared_channel(channel)
     return PipetteConfiguration(
-      channel_type=SIMULATED_PIPETTE.channel_type,
-      head_type=SIMULATED_PIPETTE.head_type,
-      stop_disc_type=SIMULATED_PIPETTE.stop_disc_type,
-      pressure_adc=SIMULATED_PIPETTE.pressure_adc,
+      channel_type=channel_configuration.channel_type,
+      head_type=channel_configuration.head_type,
+      stop_disc_type=channel_configuration.stop_disc_type,
+      pressure_adc=channel_configuration.pressure_adc,
     )
 
   async def initialize(self, *args, **kwargs):
@@ -747,6 +733,9 @@ class STARSimulationDriver(STARDriver):
     autoload: Optional[AutoloadConfiguration] = None,
     head96: Optional[Head96Configuration] = None,
     head384: Optional[Head384Configuration] = None,
+    iswap: Optional[iSWAPConfiguration] = None,
+    pipettes: Optional[PipettesConfiguration] = None,
+    front_cover: Optional[FrontCoverConfiguration] = None,
     deck: Optional[HamiltonDeck] = None,
     serial_number: str = SIMULATED_SERIAL_NUMBER,
     initialized: bool = False,
@@ -754,19 +743,21 @@ class STARSimulationDriver(STARDriver):
   ):
     """
     Args:
-      configuration: the instrument to pretend to be. Defaults to `DEFAULT_STAR_CONFIGURATION`.
+      configuration: the instrument to pretend to be. Defaults to what the deck says this frame
+        is, which the machine says out loud.
       tips_mounted: one entry per channel, `True` where a tip sits on the channel. Defaults to no
         tips on any of them.
       firmware: what each feature reports, keyed as `confirmed_firmware_versions` keys it.
         Defaults to `SIMULATED_FIRMWARE`.
       autoload: the autoload this machine has, which it answers about itself. Defaults to
-        `SIMULATED_AUTOLOAD`. The feature's own configuration is filled by discovery, as on a
-        real machine, so this is what it reads rather than what it becomes.
-      head96: the 96-head this machine has, which it answers about itself. Defaults to
-        `SIMULATED_HEAD96`. As with `autoload`, this is what discovery reads rather than what the
-        feature's own configuration becomes.
-      head384: the 384-head this machine has, read as `head96` is. Defaults to
+        `SIMULATED_AUTOLOAD`. What the feature reads rather than what its own configuration
+        becomes: discovery fills that from these answers, as it does off an instrument.
+      head96: the 96-head this machine has, read as `autoload` is. Defaults to `SIMULATED_HEAD96`.
+      head384: the 384-head this machine has, read as `autoload` is. Defaults to
         `SIMULATED_HEAD384`.
+      iswap: the iSWAP this machine has. Defaults to the one its firmware documents.
+      pipettes: the channels this machine has. Defaults to the ones this frame documents.
+      front_cover: the front cover this machine has. Defaults to the one it documents.
       deck: the deck to reflect this machine into. Required: a simulated machine has no firmware
         to ask, so the resource model is the only thing it can answer from.
       serial_number: what this machine calls itself.
@@ -784,11 +775,23 @@ class STARSimulationDriver(STARDriver):
       io=_UnusedTransport(), deck=deck, left_side_panel_installed=left_side_panel_installed
     )
 
-    self.simulated_configuration = configuration or DEFAULT_STAR_CONFIGURATION
+    if configuration is not None:
+      self.simulated_configuration = configuration
+    else:
+      # Nothing said what this machine is, so the deck decides: what a frame with this many tracks
+      # is taken to be. Said out loud, because only the STAR was read off an instrument.
+      self.simulated_configuration, recorded = default_configuration_for(deck.num_tracks)
+      logger.info(
+        "no instrument declared; simulating a %d-track machine from a %s configuration",
+        deck.num_tracks,
+        "recorded" if recorded else "derived",
+      )
+
     self.simulated_firmware = firmware or dict(SIMULATED_FIRMWARE)
     self.simulated_autoload = autoload or SIMULATED_AUTOLOAD
     self.simulated_head96 = head96 or SIMULATED_HEAD96
     self.simulated_head384 = head384 or SIMULATED_HEAD384
+    self.simulated_pipettes = pipettes
     self.serial_number = serial_number
 
     channels = self.simulated_configuration.num_pip_channels
@@ -805,7 +808,7 @@ class STARSimulationDriver(STARDriver):
     # that are not already there, so these stand in for the real ones throughout.
     c = self.simulated_configuration
     if c.main_front_cover_monitoring_installed:
-      self.front_cover = SimulatedFrontCover(self)
+      self.front_cover = SimulatedFrontCover(self, configuration=front_cover)
     if c.left_arm is not None:
       self.left_x_arm = SimulatedXArm(self, side="left")
     if c.right_arm is not None:
@@ -819,13 +822,13 @@ class STARSimulationDriver(STARDriver):
       if arm is None or a is None:
         continue
       if a.pip_installed and c.num_pip_channels > 0:
-        arm.pipettes = SimulatedPipettes(self)
+        arm.pipettes = SimulatedPipettes(self, configuration=pipettes)
       if a.head96_installed:
         arm.head96 = SimulatedHead96(self)
       if a.head384_installed:
         arm.head384 = SimulatedHead384(self)
       if a.iswap_installed:
-        arm.iswap = SimulatedISWAP(self)
+        arm.iswap = SimulatedISWAP(self, configuration=iswap)
 
   def reported(self, feature: str) -> Tuple[str, datetime.date]:
     """What a feature reports for its firmware, and the date in it."""

@@ -16,8 +16,10 @@ from pylabrobot.hamilton.protocol.text.framing import (
   parse_fw_string,
 )
 from pylabrobot.hamilton.protocol.text.router import ReplyRouter
-from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
-from pylabrobot.hamilton.star.driver.configurations import InstrumentConfigurations
+from pylabrobot.hamilton.star.driver.configuration import (
+  DeviceConfiguration,
+  DeviceRecording,
+)
 from pylabrobot.hamilton.star.driver.errors import (
   STAR_MODULE_ID_LENGTH,
   check_fw_string_error,
@@ -780,27 +782,27 @@ class STARDriver:
   # ----------------------------------------
 
   @property
-  def configurations(self) -> InstrumentConfigurations:
-    """Every configuration this machine holds, collected into one.
+  def configurations(self) -> DeviceRecording:
+    """Every configuration this device holds, collected into one.
 
     What discovery filled, so this is worth reading after setup. Written to a file, it is what a
-    simulated machine needs to stand in for this one.
+    simulated device needs to stand in for this one.
 
     Returns:
-      The instrument's own configuration and that of each feature fitted to it.
+      The device's own configuration and that of each feature fitted to it.
 
     Raises:
-      RuntimeError: If nothing has been read off the machine yet.
+      RuntimeError: If nothing has been read off the device yet.
     """
     if self.configuration is None:
-      raise RuntimeError("nothing has been read off this machine; call `setup` first")
-    # One of each, whichever arm carries it: a module sits on a CAN node of its own, so a machine
+      raise RuntimeError("nothing has been read off this device; call `setup` first")
+    # One of each, whichever arm carries it: a module sits on a CAN node of its own, so a device
     # has one 96-head and one iSWAP however many arms it has.
     pipettes = next((arm.pipettes for arm in self.arms if arm.pipettes is not None), None)
     head96 = next((arm.head96 for arm in self.arms if arm.head96 is not None), None)
     head384 = next((arm.head384 for arm in self.arms if arm.head384 is not None), None)
     iswap = next((arm.iswap for arm in self.arms if arm.iswap is not None), None)
-    return InstrumentConfigurations(
+    return DeviceRecording(
       device=self.configuration,
       pipettes=None if pipettes is None else pipettes.configuration,
       head96=None if head96 is None else head96.configuration,
@@ -811,14 +813,14 @@ class STARDriver:
     )
 
   def save_configuration(self, path: str, indent: Optional[int] = 2) -> None:
-    """Write what this machine reported to a file, to be simulated from later.
+    """Write what this device reported to a file, to be simulated from later.
 
     Args:
       path: where to write it.
       indent: how far to indent the JSON, or None to write it on one line.
 
     Raises:
-      RuntimeError: If nothing has been read off the machine yet.
+      RuntimeError: If nothing has been read off the device yet.
     """
     self.configurations.save(path, indent=indent)
 
