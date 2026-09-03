@@ -134,8 +134,8 @@ class STARDevice(Resource):
     size_x: Optional[float] = None,
     size_y: Optional[float] = None,
     size_z: Optional[float] = None,
-    extension_housing: bool = False,
-    side_panel_x: Optional[float] = None,
+    extension_housing: bool = True,
+    left_side_panel_installed: bool = False,
     deck_location: Optional[Coordinate] = None,
     model: Optional[str] = None,
   ):
@@ -154,19 +154,25 @@ class STARDevice(Resource):
       extension_housing: whether the left extension housing is fitted. It becomes a resource of its
         own, `left_extension_housing`, standing to the LEFT of the chassis at a negative x. It does
         NOT change the instrument's size: see `EXTENSION_HOUSING_SIZE`.
-      side_panel_x: how far the chassis's left side panel sits from the instrument's left face.
-        Given, and no extension housing fitted, the panel becomes a resource of its own. None
-        leaves it out, which is what a machine whose panel has not been measured gets.
+      left_side_panel_installed: whether the chassis's left side panel is on. It becomes a
+        resource of its own, `left_side_panel`, at `SIDE_PANEL_X`. Declared rather than
+        discovered: the panel bolts off in seconds and the machine does not report it. Passed on
+        to the driver, which stops an arm short of a fitted one.
       deck_location: where the deck sits inside it, BEFORE any extension housing. Defaults to the
         instrument's own origin.
       model: which machine this is. Defaults to the class name, which says only that it is a STAR.
 
     Raises:
       ValueError: If neither a driver nor simulation is given, since there is then nothing to
-        drive.
+        drive, or if both the extension housing and the left side panel are declared.
     """
     if driver is None and not simulation:
       raise ValueError("pass a driver, or `simulation=True` to build a simulated one")
+    if extension_housing and left_side_panel_installed:
+      raise ValueError(
+        "an instrument has the left extension housing or the left side panel, not both: the "
+        "housing stands where the panel would be"
+      )
     if driver is not None and simulation:
       logger.warning("both a driver and simulation given; driving the driver")
 
@@ -179,6 +185,7 @@ class STARDevice(Resource):
       model=model if model is not None else self.__class__.__name__,
     )
     self.extension_housing = extension_housing
+    self.left_side_panel_installed = left_side_panel_installed
 
     self.deck = deck
     self.driver = driver if driver is not None else STARSimulationDriver(deck=deck)
@@ -187,11 +194,14 @@ class STARDevice(Resource):
       logger.warning("the driver was given another deck; modelling into this instrument's instead")
 
     self.driver.deck = deck
+    if self.driver.left_side_panel_installed != left_side_panel_installed:
+      logger.warning("the driver was told otherwise about the left side panel; taking this one's")
+    self.driver.left_side_panel_installed = left_side_panel_installed
     self.assign_child_resource(
       deck, location=deck_location if deck_location is not None else Coordinate(0, 0, 0)
     )
 
-    if side_panel_x is not None and not extension_housing:
+    if left_side_panel_installed:
       self.assign_child_resource(
         Resource(
           name="left_side_panel",
@@ -201,7 +211,7 @@ class STARDevice(Resource):
           category="left_side_panel",
           model="hamilton_star_left_side_panel",
         ),
-        location=Coordinate(side_panel_x, SIDE_PANEL_ORIGIN_YZ[0], SIDE_PANEL_ORIGIN_YZ[1]),
+        location=Coordinate(SIDE_PANEL_X, SIDE_PANEL_ORIGIN_YZ[0], SIDE_PANEL_ORIGIN_YZ[1]),
       )
 
     if extension_housing:
@@ -303,7 +313,8 @@ def STAR(
   size_x: float = STAR_SIZE_X,
   size_y: float = MANUAL_SIZE_Y,
   size_z: float = SIZE_Z,
-  extension_housing: bool = False,
+  extension_housing: bool = True,
+  left_side_panel_installed: bool = False,
 ) -> STARDevice:
   """A full-size STAR, on a full-size STAR deck."""
   return STARDevice(
@@ -315,7 +326,7 @@ def STAR(
     size_y=size_y,
     size_z=size_z,
     extension_housing=extension_housing,
-    side_panel_x=SIDE_PANEL_X,
+    left_side_panel_installed=left_side_panel_installed,
     deck_location=STAR_DECK_LOCATION,
     model=STAR.__name__,
   )
@@ -357,7 +368,8 @@ def STARLet(
   size_x: float = STARLET_SIZE_X,
   size_y: float = MANUAL_SIZE_Y,
   size_z: float = SIZE_Z,
-  extension_housing: bool = False,
+  extension_housing: bool = True,
+  left_side_panel_installed: bool = False,
 ) -> STARDevice:
   """A STARlet, on a STARlet deck."""
   return STARDevice(
@@ -369,7 +381,7 @@ def STARLet(
     size_y=size_y,
     size_z=size_z,
     extension_housing=extension_housing,
-    side_panel_x=SIDE_PANEL_X,
+    left_side_panel_installed=left_side_panel_installed,
     deck_location=STARLET_DECK_LOCATION,
     model=STARLet.__name__,
   )
@@ -383,7 +395,8 @@ def STARPlus(
   size_x: float = STARPLUS_SIZE_X,
   size_y: float = MANUAL_SIZE_Y,
   size_z: float = SIZE_Z,
-  extension_housing: bool = False,
+  extension_housing: bool = True,
+  left_side_panel_installed: bool = False,
 ) -> STARDevice:
   """A STARplus, on a STARplus deck.
 
@@ -403,7 +416,7 @@ def STARPlus(
     size_y=size_y,
     size_z=size_z,
     extension_housing=extension_housing,
-    side_panel_x=SIDE_PANEL_X,
+    left_side_panel_installed=left_side_panel_installed,
     deck_location=STAR_DECK_LOCATION,
     model=STARPlus.__name__,
   )

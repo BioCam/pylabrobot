@@ -61,12 +61,12 @@ class TestFactories(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(cast(Coordinate, housing.location).x, -EXTENSION_HOUSING_SIZE_X)
     self.assertEqual(housing.get_absolute_size_x(), EXTENSION_HOUSING_SIZE_X)
 
-  def test_extension_housing_is_absent_unless_asked_for(self):
+  def test_extension_housing_is_fitted_unless_declined(self):
     def fitted(star):
       return any(child.name == "left_extension_housing" for child in star.children)
 
-    self.assertFalse(fitted(STAR(simulation=True)))
-    self.assertTrue(fitted(STAR(simulation=True, extension_housing=True)))
+    self.assertTrue(fitted(STAR(simulation=True)))
+    self.assertFalse(fitted(STAR(simulation=True, extension_housing=False)))
 
 
 class TestCapabilities(unittest.IsolatedAsyncioTestCase):
