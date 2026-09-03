@@ -11,7 +11,10 @@ from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm
 from pylabrobot.hamilton.star.driver.master import STARDriver
-from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
+from pylabrobot.hamilton.star.driver.simulator import (
+  STARSimulationDriver,
+  default_configuration_for,
+)
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import (
   HamiltonSTARDeck,
@@ -188,7 +191,18 @@ class STARDevice(Resource):
     self.left_side_panel_installed = left_side_panel_installed
 
     self.deck = deck
-    self.driver = driver if driver is not None else STARSimulationDriver(deck=deck)
+    if driver is None:
+      # Nothing was declared, so the frame decides: what a machine with this many tracks is taken
+      # to be. Said out loud, because only the STAR was read off an instrument and the rest are
+      # derived from it.
+      configuration, recorded = default_configuration_for(deck.num_tracks)
+      logger.info(
+        "no driver given; simulating a %d-track machine from a %s configuration",
+        deck.num_tracks,
+        "recorded" if recorded else "derived",
+      )
+      driver = STARSimulationDriver(deck=deck, configuration=configuration)
+    self.driver = driver
 
     if self.driver.deck is not None and self.driver.deck is not deck:
       logger.warning("the driver was given another deck; modelling into this instrument's instead")

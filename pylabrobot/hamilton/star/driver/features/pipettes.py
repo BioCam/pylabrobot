@@ -89,9 +89,9 @@ class PipettesConfiguration:
   surface, which is as low as a stop disk goes."""
 
   z_range: Optional[Tuple[float, float]] = None
-  """The Z window the channels reach, in mm, lowest first. Defaults to `z_range_documented`, which
-  a caller may override before setup; `probe_z_max` then replaces the ceiling with what this
-  machine's channels reached."""
+  """The Z window the channels reach, in mm, lowest first. None until `probe_z_max` resolves it,
+  which is also what says the ceiling is this machine's rather than the drive's: what to gate
+  against before then is `z_range_documented`."""
   dispensing_drive_mm_per_increment: float = 0.002734375
   dispensing_drive_uL_per_increment: float = 0.046876
 
@@ -145,10 +145,6 @@ class PipettesConfiguration:
     """
     low, high = self.z_increment_range
     return (self.z_drive_increments_to_mm(low), self.z_drive_increments_to_mm(high))
-
-  def __post_init__(self):
-    if self.z_range is None:
-      self.z_range = self.z_range_documented
 
   def check_channels_agree(self) -> None:
     """Warn if the channels are not all running the same firmware.
@@ -888,7 +884,8 @@ class Pipettes:
     Returns:
       The highest Z the channels reach, in mm.
     """
-    positions = await self.move_to_safe_z()
+    await self._driver.send_command(module="C0", command="ZA", subsystem=_FirmwareLock.CHANNELS)
+    positions = list((await self.request_z_positions()).values())
     ceiling = min(positions)
     if max(positions) - ceiling > self.configuration.z_drive_increments_to_mm(1):
       logger.warning(
@@ -901,14 +898,19 @@ class Pipettes:
     return ceiling
 
   async def move_to_safe_z(self) -> List[float]:
-    """Move every channel up to its safe Z, and read where that put them.
+    """Move every channel up to its safe Z: the top of the window `probe_z_max` probed.
 
-    Nothing may move in X or Y while a channel is low. This is the precondition for any lateral
-    move. The instrument's initialization procedure does it as a side effect; on a machine that
-    is already initialized it has to be asked for.
+    Nothing may move in X or Y while a channel is low, so this is the precondition for any lateral
+    move and it runs often. An ordinary Z move to a known height, not a command of its own, so it
+    is bounded and keeps the model current like any other move. With no window probed yet there is
+    no height to aim at, and the firmware's own safety move establishes one instead.
 
     Returns:
       Each channel's stop-disk Z, in mm, back to front.
     """
-    await self._driver.send_command(module="C0", command="ZA", subsystem=_FirmwareLock.CHANNELS)
+    z_range = self.configuration.z_range
+    if z_range is None:
+      await self.probe_z_max()
+      return list((await self.request_z_positions()).values())
+    await self.move_to_z_positions({channel: z_range[1] for channel in range(self.num_channels)})
     return list((await self.request_z_positions()).values())

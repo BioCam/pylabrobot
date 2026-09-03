@@ -57,7 +57,7 @@ class TestSimulation(unittest.IsolatedAsyncioTestCase):
 # classes override some of them, so each is recorded where a simulated run would reach it.
 MOVING_STEPS = [
   (simulator.STARSimulationDriver, "pre_initialize", "VI instrument"),
-  (simulator.Pipettes, "move_to_safe_z", "ZA channels to safe Z"),
+  (simulator.Pipettes, "probe_z_max", "ZA channels to safe Z"),
   (simulator.SimulatedPipettes, "initialize", "DI channels"),
   (simulator.SimulatedISWAP, "initialize", "FI iSWAP"),
   (simulator.iSWAP, "park", "iSWAP park"),
