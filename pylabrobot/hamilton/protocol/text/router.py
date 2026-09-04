@@ -115,17 +115,27 @@ class ReplyRouter:
     Returns:
       The reply, or None when `wait` is False.
     """
-    await self.io.write(cmd.encode(), timeout=write_timeout)
-
     if not wait:
+      await self.io.write(cmd.encode(), timeout=write_timeout)
       return None
 
     if read_timeout is None:
       read_timeout = self.read_timeout
 
+    # Wait for the reply before asking for it. The reading thread runs alongside this one, and a
+    # device can answer before a task registered after the write would exist - the reply then
+    # arrives with nothing waiting for it, is dropped, and the command times out with its answer
+    # already gone past. Registering first closes that window; the task is taken back off again if
+    # the write never happens.
     loop = asyncio.get_event_loop()
     fut: asyncio.Future[str] = loop.create_future()
-    self._start_reading(id_, loop, fut, cmd, read_timeout)
+    task = self._start_reading(id_, loop, fut, cmd, read_timeout)
+    try:
+      await self.io.write(cmd.encode(), timeout=write_timeout)
+    except BaseException:
+      if task in self._waiting_tasks:
+        self._waiting_tasks.remove(task)
+      raise
     return await fut
 
   async def send_raw(
@@ -151,18 +161,23 @@ class ReplyRouter:
     fut: asyncio.Future,
     cmd: str,
     timeout: int,
-  ) -> None:
-    """Submit a task to the reading thread."""
+  ) -> HamiltonTask:
+    """Submit a task to the reading thread, and hand it back so a caller can take it off again.
+
+    Returns:
+      The task now waiting for a reply.
+    """
 
     timeout_time = time.time() + timeout
-    self._waiting_tasks.append(
-      HamiltonTask(id_=id_, loop=loop, fut=fut, cmd=cmd, timeout_time=timeout_time)
-    )
+    task = HamiltonTask(id_=id_, loop=loop, fut=fut, cmd=cmd, timeout_time=timeout_time)
+    self._waiting_tasks.append(task)
 
     if self._reading_thread is None or not self._reading_thread.is_alive():
       self._reading_thread_stop.clear()
       self._reading_thread = threading.Thread(target=self._reading_thread_main, daemon=True)
       self._reading_thread.start()
+
+    return task
 
   def _reading_thread_main(self) -> None:
     loop = asyncio.new_event_loop()
@@ -223,27 +238,9 @@ class ReplyRouter:
           break
 
       if matched is None:
-        # Nothing is waiting for that id. A module has been seen answering with the id of its own
-        # previous command while a command to another module was in flight, and matching on the id
-        # alone leaves the caller waiting for a reply that has already arrived. Where exactly one
-        # command is outstanding for this module and command code, the reply is that command's:
-        # there is nothing else it could be an answer to. Where more than one is, it is left
-        # unclaimed rather than guessed at.
-        candidates = [
-          idx
-          for idx, task in enumerate(self._waiting_tasks)
-          if task.cmd.startswith(module_and_command)
-        ]
-        if len(candidates) == 1:
-          matched = candidates[0]
-          logger.warning(
-            "%s answered with id %s while %s was outstanding; taking it as that command's reply",
-            module_and_command,
-            response_id,
-            self._waiting_tasks[matched].cmd,
-          )
-
-      if matched is None:
+        # Deliberately not guessed at. Handing it to whichever outstanding command shares its
+        # module and code answers that command with something that was never its answer, and a
+        # reply arriving with nothing waiting for it is worth seeing rather than repairing.
         logger.warning("nothing was waiting for this reply, and it was dropped: %s", resp)
         continue
 
