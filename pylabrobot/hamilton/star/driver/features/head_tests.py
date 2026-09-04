@@ -75,7 +75,12 @@ class TestDriveDefaults(unittest.IsolatedAsyncioTestCase):
   async def test_the_96_head_takes_its_dispensing_and_squeezer_defaults_too(self):
     """`Head96.discover` reads four drive parameters on top of the Y and Z ones every head shares,
     and its defaults answer with what it reported for them. Apart from the test above because it
-    covers the override rather than the base: the 384-head adds no reads of its own."""
+    covers the override rather than the base: the 384-head adds no reads of its own.
+
+    Compared to a tenth rather than exactly: the drive counts in increments, so a value that does
+    not fall on one comes back as the nearest that does - 400.0 mm/s reads back as 400.01. That is
+    what a head does, and what the simulated one does now that its answer crosses the link and is
+    decoded rather than handed over whole."""
     declared = dataclasses.replace(
       RECORDED_HEAD96,
       dispensing_drive_speed_firmware_reported=400.0,
@@ -89,7 +94,7 @@ class TestDriveDefaults(unittest.IsolatedAsyncioTestCase):
     await driver.setup()
 
     c = cast(Head96, driver.x_arm.head96).configuration
-    self.assertEqual(
+    for read, declared_value in zip(
       (
         c.dispensing_drive_speed_default,
         c.dispensing_drive_acceleration_default,
@@ -97,7 +102,8 @@ class TestDriveDefaults(unittest.IsolatedAsyncioTestCase):
         c.squeezer_drive_acceleration_default,
       ),
       (400.0, 9000.0, 12.0, 50.0),
-    )
+    ):
+      self.assertAlmostEqual(read, declared_value, places=1)
 
   async def test_a_head_that_will_not_say_keeps_what_its_firmware_documents(self):
     """A head that refuses the read leaves discovery with nothing to record, and the defaults fall

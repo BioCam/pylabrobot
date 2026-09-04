@@ -21,6 +21,7 @@ from pylabrobot.hamilton.protocol.text.framing import (
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
 from pylabrobot.hamilton.star.driver.features.cover import (
+  COVER_POSITION_CODES,
   CoverPosition,
   FrontCover,
 )
@@ -111,6 +112,9 @@ SIMULATED_AUTOLOAD_PARAMETER_VALUE = "[simulation]"
 # Whether the front cover is shut. A simulated device is not being reached into.
 SIMULATED_COVER_POSITION: CoverPosition = "closed"
 
+# The letters a channel's module is addressed by, as `Pipettes.channel_id` spells them.
+CHANNEL_MODULE_LETTERS = "123456789ABCDEFG"
+
 # The three inputs on the cover connector: the cover input, and two whose meaning is not known.
 SIMULATED_COVER_INPUTS = (True, False, False)
 
@@ -188,6 +192,25 @@ class _Simulated:
   def device(self) -> "STARSimulationDriver":
     return cast("STARSimulationDriver", self._driver)
 
+  async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
+    """What this feature would answer the command with, taken from the model.
+
+    The link asks each feature in turn, so a read assembles and logs its command exactly as a
+    move does, rather than being intercepted before it becomes one. The answer is in the shape
+    the caller's format implies - the parsed reply, or the raw one where no format was given -
+    because that is what the real read is about to work on.
+
+    Args:
+      module: the module the command was addressed to.
+      command: the two-letter command code.
+      kwargs: the command's own parameters, for the reads that vary by one.
+
+    Returns:
+      The answer, and where in the model it came from. None when this feature does not answer
+      that command, which is every command that only moves.
+    """
+    return None
+
 
 class SimulatedPipettes(_Simulated, Pipettes):
   """The pipetting channels, answering for themselves."""
@@ -203,12 +226,6 @@ class SimulatedPipettes(_Simulated, Pipettes):
     # do not share where their channels are. Filled on first use, from the configured window.
     self._simulated_z: Dict[int, float] = {}
 
-  async def sense_tip_presence(self) -> List[int]:
-    return [int(mounted) for mounted in self.device.tips_mounted]
-
-  async def request_firmware_version(self, channel: int) -> Tuple[str, datetime.date]:
-    return self.device.reported("pipettes")
-
   def _declared_channel(self, channel: int) -> PipetteConfiguration:
     """What this device was told sits on a channel, or the channel this frame documents.
 
@@ -223,26 +240,61 @@ class SimulatedPipettes(_Simulated, Pipettes):
       return declared.channels[channel]
     return PipetteConfiguration()
 
-  async def request_min_pipette_width(self, channel: int) -> float:
-    width = self._declared_channel(channel).width
-    return PIPETTE_WIDTH if width is None else width
-
-  async def request_pipette_configuration(self, channel: int) -> PipetteConfiguration:
-    # Only what the read reports: the rest of a channel's configuration is filled by discovery
-    # from other reads, as it is on a device.
-    channel_configuration = self._declared_channel(channel)
-    return PipetteConfiguration(
-      channel_type=channel_configuration.channel_type,
-      head_type=channel_configuration.head_type,
-      stop_disc_type=channel_configuration.stop_disc_type,
-      pressure_adc=channel_configuration.pressure_adc,
-    )
-
   async def initialize(self, *args, **kwargs):
     """Whatever was mounted on the channels comes off. Goes through the command path, so it is
     coordinated like the real one."""
     await super().initialize(*args, **kwargs)
     self.device.tips_mounted = [False] * len(self.device.tips_mounted)
+
+  async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
+    c = self.configuration
+    if (module, command) == ("C0", "RY"):
+      # Where initialization spread them, which is where a device that has been set up leaves
+      # them and nothing here has since moved them. Answered from the procedure rather than from
+      # the resources, so the model can be checked against this rather than derived from it.
+      positions = self.default_initialize_y_positions()
+      return {"ry": [round(y * 10) for y in positions]}, "the channels' initialize positions"
+
+    if (module, command) == ("C0", "RT"):
+      return {"rt": [int(mounted) for mounted in self.device.tips_mounted]}, "what is mounted"
+
+    if len(module) != 2 or module[0] != "P" or module[1] not in CHANNEL_MODULE_LETTERS:
+      return None
+    channel = CHANNEL_MODULE_LETTERS.index(module[1])
+    if channel >= self.num_channels:
+      return None
+    declared = self._declared_channel(channel)
+
+    if command == "RF":
+      version, _ = self.device.reported("pipettes")
+      return f"{module}RFrf{version}", "the channels' reported firmware"
+
+    if command == "VY":
+      # The drive answers twice; the read takes the second.
+      width = PIPETTE_WIDTH if declared.width is None else declared.width
+      increments = c.y_drive_mm_to_increments(width)
+      return {"yc": [increments, increments]}, f"channel {channel}'s declared width"
+
+    if command == "VW":
+      # The four hardware fields discovery parses back out. Only what the read reports: the rest
+      # of a channel's configuration is filled from other reads, as it is on a device.
+      fields = [
+        "1" if declared.channel_type == "ML_STAR_RPC" else "0",
+        {"ML_STAR_PLE": "1", "ML_STAR_RPC": "2"}.get(declared.head_type or "", "0"),
+        "0" if declared.stop_disc_type == "core_i" else "1",
+        "1" if declared.pressure_adc == "Analog_Devices_AD5263" else "0",
+      ]
+      return f"{module}VWvw{' '.join(fields)}", f"what channel {channel} is declared to be"
+
+    if command == "RZ":
+      # The channel's own drive rather than the master's read. A simulated channel carries no tip
+      # geometry, so the two answer the same height here; on a device they part company the moment
+      # a tip goes on, which is the whole reason the two reads exist.
+      return (
+        {"rz": c.z_drive_mm_to_increments(self._z[channel])},
+        f"where channel {channel}'s stop disc is modelled",
+      )
+    return None
 
   @property
   def _z(self) -> Dict[int, float]:
@@ -267,15 +319,6 @@ class SimulatedPipettes(_Simulated, Pipettes):
     for channel, z in positions.items():
       self.update_location_by_reference_point(channel, z=z)
     return positions
-
-  async def request_stop_disc_z_position(self, channel: int) -> float:
-    # The channel's own drive rather than the master's read. A simulated channel carries no tip
-    # geometry, so the two answer the same height here; on a device they part company the moment
-    # a tip goes on, which is the whole reason the two reads exist.
-    self._require_channel(channel)
-    z = self._z[channel]
-    self.update_location_by_reference_point(channel, z=z)
-    return z
 
   async def probe_z_max(self) -> float:
     # The retract inside the probe is what puts the channels at their top. On a device that is
@@ -341,32 +384,104 @@ class _SimulatedHead(_Simulated, Head):
     """
     raise NotImplementedError("a simulated head says which configuration it answers from")
 
-  async def request_firmware_version(self) -> Tuple[str, datetime.date]:
-    return self.device.reported(self._firmware_key)
+  async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
+    c = self.configuration
+    if module == "C0" and command == "RA" and kwargs.get("ra") == c.x_offset_parameter:
+      x_offset = self._declared.x_offset
+      if x_offset is None:
+        raise RuntimeError(
+          f"the simulated {self._label} has no X offset; set it on its configuration"
+        )
+      return {c.x_offset_parameter: round(x_offset * 10)}, f"the {self._label}'s declared X offset"
 
-  async def request_head_type(self) -> str:
-    head_type = self._declared.head_type
-    if head_type is None:
-      raise RuntimeError(f"the simulated {self._label} has no type; set it on its configuration")
-    return head_type
+    if module != c.module:
+      return None
 
-  async def request_x_offset(self) -> float:
-    x_offset = self._declared.x_offset
-    if x_offset is None:
-      raise RuntimeError(
-        f"the simulated {self._label} has no X offset; set it on its configuration"
+    if command == "RF":
+      version, _ = self.device.reported(self._firmware_key)
+      return f"{module}RFrf{version}", f"the {self._label}'s reported firmware"
+
+    if command == "QG":
+      head_type = self._declared.head_type
+      if head_type is None:
+        raise RuntimeError(f"the simulated {self._label} has no type; set it on its configuration")
+      code = next((k for k, name in c.head_types.items() if name == head_type), None)
+      if code is None:
+        raise RuntimeError(f"{head_type!r} is not one of the types {self._label} reports")
+      return {"qg": code}, f"the {self._label}'s declared type"
+
+    if command == "RY":
+      # From the model where there is one, as the real read reports the drive. The drive answers
+      # in the deck's frame, so the model is read in the deck's too - the resource hangs off the
+      # arm, whose own position would otherwise come through. Before setup has put the head on the
+      # arm there is nothing to read, and it answers from the middle of its travel.
+      deck = self.device.deck
+      if self.resource is not None and self.resource.location is not None and deck is not None:
+        y = round(self.resource.get_item(HEAD_REFERENCE_SHAFT).get_location_wrt(deck).y, 2)
+      else:
+        y = SIMULATED_HEAD_Y_PARK
+      increments = c.y_drive_mm_to_increments(y)
+      # The drive answers twice; the read takes the second.
+      return {"ry": [increments, increments]}, f"where the {self._label} is modelled along Y"
+
+    if command == "RZ":
+      deck = self.device.deck
+      if self.resource is not None and self.resource.location is not None and deck is not None:
+        z = round(self.resource.get_item(HEAD_REFERENCE_SHAFT).get_location_wrt(deck).z, 2)
+      else:
+        z = self._z_safety
+      increments = c.z_drive_mm_to_increments(z)
+      return {"rz": [increments, increments]}, f"where the {self._label} is modelled along Z"
+
+    if command == "RA":
+      parameter = cast(str, kwargs.get("ra"))
+      if parameter == "py":
+        # As a head holds them: the park position first, then nine slots nothing here commands
+        # against. Stored as offsets from the drive's origin, which is how they are read back.
+        positions = [SIMULATED_HEAD_Y_PARK] + [SIMULATED_HEAD_Y_PREDEFINED] * 9
+        return (
+          {
+            "py": [
+              c.y_drive_mm_to_increments(y) - c.predefined_y_position_origin for y in positions
+            ]
+          },
+          f"the {self._label}'s predefined Y slots",
+        )
+      value = self._simulated_drive_parameter(parameter)
+      return (
+        {parameter: self._drive_parameter_to_increments(parameter, value)},
+        f"the {self._label}'s {parameter} default",
       )
-    return x_offset
+    return None
 
-  async def request_z_position(self) -> float:
-    # From the model where there is one, as the real read reports the drive, and in the deck's
-    # frame as it answers in. Before setup has put the head on the arm, it rests where a retract
-    # would leave it.
-    deck = self.device.deck
-    if self.resource is not None and self.resource.location is not None and deck is not None:
-      shaft = self.resource.get_item(HEAD_REFERENCE_SHAFT)
-      return round(shaft.get_location_wrt(deck).z, 2)
-    return self._z_safety
+  def _simulated_drive_parameter(self, parameter: str) -> float:
+    """What this head holds in a drive register, for the link to answer with.
+
+    Guarded as the real read guards it: a name the head does not store is a caller's mistake, and
+    should say so here as it would there rather than raising a lookup error.
+
+    Args:
+      parameter: the two-letter register name.
+
+    Returns:
+      The value in mm/s or mm/s2.
+
+    Raises:
+      RuntimeError: If this head was declared without a default for it.
+    """
+    self.require_drive_parameter(parameter)
+    head = self._declared
+    default = {
+      "yv": head.y_drive_speed_default,
+      "yr": head.y_drive_acceleration_default,
+      "zv": head.z_drive_speed_default,
+      "zr": head.z_drive_acceleration_default,
+    }.get(parameter)
+    if default is None:
+      raise RuntimeError(
+        f"the simulated {self._label} has no {parameter} default; set it on its config"
+      )
+    return default
 
   async def probe_z_max(self, *args: Any, **kwargs: Any) -> float:
     # The firmware retract inside the probe is what puts the head at its safety height. Its own
@@ -388,45 +503,11 @@ class _SimulatedHead(_Simulated, Head):
     self.update_location_by_reference_point(z=z)
     return resp
 
-  async def request_drive_parameter(self, parameter: str) -> float:
-    # Guarded as the real read guards it: a name the head does not store is a caller's mistake, and
-    # should say so here as it would there rather than raising a lookup error.
-    self.require_drive_parameter(parameter)
-    head = self._declared
-    if parameter == "yv":
-      default = head.y_drive_speed_default
-    elif parameter == "yr":
-      default = head.y_drive_acceleration_default
-    elif parameter == "zv":
-      default = head.z_drive_speed_default
-    else:
-      default = head.z_drive_acceleration_default
-    if default is None:
-      raise RuntimeError(
-        f"the simulated {self._label} has no {parameter} default; set it on its config"
-      )
-    return default
-
   async def initialize(self, *args, **kwargs):
     """Whatever was mounted on the head comes off, and it reports itself up. Goes through the
     command path, so it is coordinated like the real one."""
     await super().initialize(*args, **kwargs)
     self.device.initialized[self.configuration.module] = True
-
-  async def request_predefined_y_positions(self) -> List[float]:
-    # As a head holds them: the park position first, then nine slots nothing here commands against.
-    return [SIMULATED_HEAD_Y_PARK] + [SIMULATED_HEAD_Y_PREDEFINED] * 9
-
-  async def request_y_position(self) -> float:
-    # From the model where there is one, as the real read reports the drive. The drive answers in
-    # the deck's frame, so the model is read in the deck's too - the resource hangs off the arm,
-    # whose own position would otherwise come through. Before setup has put the head on the arm
-    # there is nothing to read, and it answers from the middle of its travel.
-    deck = self.device.deck
-    if self.resource is not None and self.resource.location is not None and deck is not None:
-      shaft = self.resource.get_item(HEAD_REFERENCE_SHAFT)
-      return round(shaft.get_location_wrt(deck).y, 2)
-    return SIMULATED_HEAD_Y_PARK
 
 
 class SimulatedHead96(_SimulatedHead, Head96):
@@ -440,28 +521,32 @@ class SimulatedHead96(_SimulatedHead, Head96):
   def _declared(self) -> Head96Configuration:
     return self.device.simulated_head96
 
-  async def request_hardware(self) -> List[str]:
-    # Rendered from what this head is, rather than written out separately: discovery parses these
-    # three back out of the reply, so a head configured differently answers differently.
-    head = self._declared
-    return [
-      "1" if head.supports_clot_monitoring_clld else "0",
-      "0" if head.stop_disc_type == "core_i" else "1",
-      "0" if head.instrument_type == "legacy" else "1",
-    ] + ["0"] * 7
+  async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
+    if module == self.configuration.module and command == "QU":
+      # Rendered from what this head is, rather than written out separately: discovery parses
+      # these three back out of the reply, so a head configured differently answers differently.
+      head = self._declared
+      tokens = [
+        "1" if head.supports_clot_monitoring_clld else "0",
+        "0" if head.stop_disc_type == "core_i" else "1",
+        "0" if head.instrument_type == "legacy" else "1",
+      ] + ["0"] * 7
+      return f"{module}QUau{' '.join(tokens)}", "what this 96-head is declared to be"
+    return await super().answer(module, command, **kwargs)
 
-  async def request_drive_parameter(self, parameter: str) -> float:
-    # No register to read, so it answers with what this head's firmware documents.
+  def _simulated_drive_parameter(self, parameter: str) -> float:
+    # The dispensing and squeezer drives have no register to read, so they answer with what this
+    # head's firmware documents.
     head = self._declared
-    if parameter == "dv":
-      return head.dispensing_drive_speed_default
-    if parameter == "dr":
-      return head.dispensing_drive_acceleration_default
-    if parameter == "sv":
-      return head.squeezer_drive_speed_default
-    if parameter == "sr":
-      return head.squeezer_drive_acceleration_default
-    return await super().request_drive_parameter(parameter)
+    documented = {
+      "dv": head.dispensing_drive_speed_default,
+      "dr": head.dispensing_drive_acceleration_default,
+      "sv": head.squeezer_drive_speed_default,
+      "sr": head.squeezer_drive_acceleration_default,
+    }
+    if parameter in documented:
+      return documented[parameter]
+    return super()._simulated_drive_parameter(parameter)
 
 
 class SimulatedHead384(_SimulatedHead, Head384):
@@ -475,13 +560,16 @@ class SimulatedHead384(_SimulatedHead, Head384):
   def _declared(self) -> Head384Configuration:
     return self.device.simulated_head384
 
-  async def request_hardware(self) -> List[str]:
-    # Rendered as the 96-head's is, from the two flags this head reports.
-    head = self._declared
-    return [
-      "1" if head.supports_clot_monitoring_clld else "0",
-      "1" if head.supports_lld_absolute_threshold_check else "0",
-    ] + ["0"] * 8
+  async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
+    if module == self.configuration.module and command == "QU":
+      # Rendered as the 96-head's is, from the two flags this head reports.
+      head = self._declared
+      tokens = [
+        "1" if head.supports_clot_monitoring_clld else "0",
+        "1" if head.supports_lld_absolute_threshold_check else "0",
+      ] + ["0"] * 8
+      return f"{module}QUau{' '.join(tokens)}", "what this 384-head is declared to be"
+    return await super().answer(module, command, **kwargs)
 
 
 class SimulatedISWAP(_Simulated, iSWAP):
@@ -492,8 +580,28 @@ class SimulatedISWAP(_Simulated, iSWAP):
   _z: float = SIMULATED_ISWAP_Z
   _y: float = SIMULATED_ISWAP_Y
 
-  async def request_firmware_version(self) -> str:
-    return self.device.simulated_firmware["iswap"]
+  async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
+    if module == "R0":
+      if command == "RF":
+        return f"R0RFrf{self.device.simulated_firmware['iswap']}", "its reported firmware"
+      if command == "RW":
+        stops = (await self._request_slots("pw"))[: len(ROTATION_DRIVE_SLOTS)]
+        parked = dict(zip(ROTATION_DRIVE_SLOTS, stops))["parking"]
+        return {"rw": parked}, "the rotation drive's parking stop"
+      if command == "RT":
+        stops = (await self._request_slots("pt"))[: len(WRIST_DRIVE_SLOTS)]
+        straight = dict(zip(WRIST_DRIVE_SLOTS, stops))["straight"]
+        return {"rt": straight}, "the wrist drive's straight stop"
+      if command == "RG":
+        # The drive answers twice; the read takes the second.
+        width = SIMULATED_ISWAP_GRIPPER_WIDTH
+        return {"rg": [width, width]}, "the gripper's stored width"
+    if (module, command) == ("C0", "RA") and kwargs.get("ra") == "kg":
+      offset = self._declared.rotation_drive_x_offset
+      if offset is None:
+        raise RuntimeError("the simulated iSWAP has no X offset; set it on its configuration")
+      return {"kg": round(offset * 10)}, "the X offset it was declared with"
+    return None
 
   async def rotation_drive_request_z_position(self) -> float:
     return self._z
@@ -509,19 +617,6 @@ class SimulatedISWAP(_Simulated, iSWAP):
     self._y = y
     return resp
 
-  async def request_rotation_drive_angle(self) -> float:
-    stops = (await self._request_slots("pw"))[: len(ROTATION_DRIVE_SLOTS)]
-    parked = dict(zip(ROTATION_DRIVE_SLOTS, stops))["parking"]
-    return self.configuration.rotation_drive_increments_to_angle(parked)
-
-  async def request_wrist_drive_angle(self) -> float:
-    stops = (await self._request_slots("pt"))[: len(WRIST_DRIVE_SLOTS)]
-    straight = dict(zip(WRIST_DRIVE_SLOTS, stops))["straight"]
-    return self.configuration.wrist_increments_to_deg(straight)
-
-  async def request_gripper_width(self) -> float:
-    return self.configuration.gripper_increments_to_mm(SIMULATED_ISWAP_GRIPPER_WIDTH)
-
   async def rotation_drive_move_to_z_position(self, z: float, *args: Any, **kwargs: Any):
     resp = await super().rotation_drive_move_to_z_position(z, *args, **kwargs)
     self._z = z
@@ -535,12 +630,6 @@ class SimulatedISWAP(_Simulated, iSWAP):
     off an device.
     """
     return self.device.simulated_iswap
-
-  async def request_rotation_drive_x_offset(self) -> float:
-    offset = self._declared.rotation_drive_x_offset
-    if offset is None:
-      raise RuntimeError("the simulated iSWAP has no X offset; set it on its configuration")
-    return offset
 
   async def _request_slots(self, table: str) -> List[int]:
     # Rendered from what this iSWAP is, rather than written out separately: discovery reads these
@@ -570,8 +659,10 @@ class SimulatedISWAP(_Simulated, iSWAP):
 class SimulatedFrontCover(_Simulated, FrontCover):
   """The front cover, answering for itself: it is shut."""
 
-  async def request_position(self) -> CoverPosition:
-    return SIMULATED_COVER_POSITION
+  async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
+    if (module, command) == ("C0", "QC"):
+      return {"qc": COVER_POSITION_CODES[SIMULATED_COVER_POSITION]}, "the cover it is simulated at"
+    return None
 
 
 class SimulatedAutoload(_Simulated, Autoload):
@@ -873,34 +964,35 @@ class STARSimulationDriver(STARDriver):
   def _describe_link(self) -> str:
     return "simulation (no link)"
 
-  def _answer(self, module: str, command: str) -> Optional[Tuple[Any, str]]:
-    """What the device would answer, taken from the model rather than from a drive.
+  async def _answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
+    """What the device would answer, asked of the feature the command is about.
 
-    A read reaches here the same way a move does, so the command it assembles is put on the
-    simulated link and logged before this answers it. That is what a feature answering for itself
-    cannot do: the command is never built, so nothing records that it was asked.
+    Each feature answers for its own model, so the logic stays where the model is; this only
+    decides who is asked. A command addressed to a module names its feature; one addressed to C0
+    does not, so every feature is offered it and the first that answers has it.
 
     Args:
       module: the module the command was addressed to.
       command: the two-letter command code.
+      kwargs: the command's own parameters, for the reads that vary by one.
 
     Returns:
-      The answer in the shape the caller's format implies, and where in the model it came from.
-      None for a command nothing here answers, which is every command that only moves.
+      The answer and where it came from, or None when nothing here answers - every command that
+      only moves.
     """
-    if (module, command) == ("C0", "RY"):
-      # Whichever arm carries channels, rather than `self.pipettes`, which refuses to choose on a
-      # device with two arms. Answering here costs the feature's own context: a C0 command names
-      # no arm, so the answer has to find the feature the command is about.
-      pipettes = next((arm.pipettes for arm in self.arms if arm.pipettes is not None), None)
-      if pipettes is None:
-        return None
-      # Where initialization spread them, which is where a device that has been set up leaves
-      # them and nothing here has since moved them. Answered from the procedure rather than from
-      # the resources, so the model can be checked against this rather than derived from it.
-      positions = pipettes.default_initialize_y_positions()
-      return {"ry": [round(y * 10) for y in positions]}, "the channels' initialize positions"
+    for feature in self._simulated_features():
+      answered = await feature.answer(module, command, **kwargs)
+      if answered is not None:
+        return answered
     return None
+
+  def _simulated_features(self) -> List[_Simulated]:
+    """Every feature that can answer for itself, arms first."""
+    candidates: List[Any] = []
+    for arm in self.arms:
+      candidates += [arm, arm.pipettes, arm.head96, arm.head384, arm.iswap]
+    candidates += [self.autoload, self.front_cover]
+    return [feature for feature in candidates if isinstance(feature, _Simulated)]
 
   async def _send(
     self,
@@ -926,15 +1018,19 @@ class STARSimulationDriver(STARDriver):
     Replacing `_send` rather than `send_command` leaves the coordination in place, so a simulated
     run serializes what a real one serializes.
     """
+    # The count is only read when there is a list to terminate, as the real assembler reads it:
+    # discovery sends commands before it knows the count, and asking for it there would refuse
+    # the very reads that establish it.
+    carries_a_list = any(isinstance(value, list) for value in kwargs.values())
     cmd = assemble_channel_command(
       module=module,
       command=command,
       id_=None,
       tip_pattern=tip_pattern,
-      num_channels=self.num_channels,
+      num_channels=self.num_channels if carries_a_list else 0,
       **kwargs,
     )
-    answered = self._answer(module, command)
+    answered = await self._answer(module, command, **kwargs)
     if answered is None:
       self._log_exchange(cmd, None)
       return None
