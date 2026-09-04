@@ -3,7 +3,7 @@ from typing import Any, List, Optional, Tuple
 
 from pylabrobot.hamilton.protocol.text.framing import assemble_command
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
-from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
+from pylabrobot.hamilton.star.driver.simulator import RECORDING_STAR, STARSimulationDriver
 from pylabrobot.resources.hamilton import STARDeck
 
 
@@ -20,7 +20,7 @@ async def channels(width: float, positions: List[float]) -> Tuple[Pipettes, List
   Returns:
     The feature, and the list its commands are recorded in.
   """
-  driver = STARSimulationDriver(deck=STARDeck())
+  driver = STARSimulationDriver(deck=STARDeck(), declared_configuration_json=RECORDING_STAR)
   await driver.setup()
   pipettes = driver.pipettes
   assert pipettes is not None
@@ -115,7 +115,7 @@ async def simulated_channels() -> Pipettes:
   Raises:
     RuntimeError: If the simulated machine reports no channels.
   """
-  driver = STARSimulationDriver(deck=STARDeck())
+  driver = STARSimulationDriver(deck=STARDeck(), declared_configuration_json=RECORDING_STAR)
   await driver.setup()
   if driver.pipettes is None:
     raise RuntimeError("the simulated machine reports no pipetting channels")

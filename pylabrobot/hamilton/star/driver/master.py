@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import dataclasses
 import datetime
 import json
 import logging
@@ -17,7 +18,11 @@ from pylabrobot.hamilton.protocol.text.framing import (
   parse_fw_string,
 )
 from pylabrobot.hamilton.protocol.text.router import ReplyRouter
-from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
+from pylabrobot.hamilton.star.driver.configuration import (
+  DeviceConfiguration,
+  read_configuration,
+  to_jsonable,
+)
 from pylabrobot.hamilton.star.driver.errors import (
   STAR_MODULE_ID_LENGTH,
   check_fw_string_error,
@@ -30,7 +35,6 @@ from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.hamilton.star.driver.lock import _FirmwareLock
-from pylabrobot.hamilton.star.driver.serialization import to_jsonable
 from pylabrobot.hamilton.star.resource_model import (
   NChannelPipette,
   iswap_channel,
@@ -46,6 +50,21 @@ from pylabrobot.resources.hamilton.tip_creators import HamiltonTip, TipPickupMet
 from pylabrobot.resources.resource import Resource
 
 logger = logging.getLogger(__name__)
+
+# What a declaration and a device have to agree on for the one to stand for the other: what is
+# fitted and how much of it. Everything else is either identity, which is the device's own, or
+# geometry, which follows from what is fitted.
+_DECLARATION_MUST_MATCH = frozenset(
+  {
+    "num_pip_channels",
+    "instrument_size_slots",
+    "autoload_installed",
+    "kb_iswap_installed",
+    "ka_head96_installed",
+    "dispensing_head_384_installed",
+    "main_front_cover_monitoring_installed",
+  }
+)
 
 ID_VENDOR = 0x08AF
 ID_PRODUCT = 0x8000
@@ -87,10 +106,11 @@ class STARDriver:
       io: an already-built USB handle to use instead of opening one from the arguments above.
       deck: the deck to reflect the machine into. Optional: without one the driver still drives the
         machine, and nothing about where things are is modelled.
-      declared_configuration_json: directory to a JSON file representing the declared configuration
-        for the device. If given, (1) on physical device, will cross-check declared vs discovered to
-        ensure compatibility, (2) in simulation, will use the declared configuration instead
-        simulation default.
+      declared_configuration_json: path to a JSON file holding the declared configuration for the
+        device, as `save_configuration` writes one. The only way a configuration is read from a
+        file. If given, (1) against a physical device, discovery cross-checks the declaration
+        against what the device answers, (2) in simulation, the device answers as the declaration
+        says instead of from the simulation default.
     """
 
     self.io: IOBase = io or USB(
@@ -112,6 +132,13 @@ class STARDriver:
       raise_for_error=check_fw_string_error,
       packet_read_timeout=packet_read_timeout,
       read_timeout=read_timeout,
+    )
+
+    # What was declared this device is, read once here: the one place a configuration comes off a
+    # file. Empty when nothing was declared.
+    self.declared_configuration_json = declared_configuration_json
+    self.declared: Dict[str, Any] = (
+      {} if declared_configuration_json is None else read_configuration(declared_configuration_json)
     )
 
     self._num_channels: Optional[int] = None
@@ -797,6 +824,51 @@ class STARDriver:
   # Discovery and initialization
   # ----------------------------------------
 
+  def _check_declared_against(self, discovered: DeviceConfiguration) -> None:
+    """Raise if what was declared cannot stand for what the device answered.
+
+    Only what decides whether the two are the same kind of device: which features are fitted, how
+    many channels, and what each arm carries. Identity is left out, since a declaration taken off
+    one device describes another of the same build and its serial and firmware are its own. So is
+    geometry, which follows from what is fitted.
+
+    Args:
+      discovered: what the device answered.
+
+    Raises:
+      ValueError: If any of those disagree, naming each.
+    """
+    declared = self.declared.get("device")
+    if declared is None:
+      return
+
+    differences = [
+      f"{name}: declared {getattr(declared, name)!r}, device answers {getattr(discovered, name)!r}"
+      for name in _DECLARATION_MUST_MATCH
+      if getattr(declared, name) != getattr(discovered, name)
+    ]
+    for side in ("left_arm", "right_arm"):
+      declared_arm, discovered_arm = getattr(declared, side), getattr(discovered, side)
+      if (declared_arm is None) != (discovered_arm is None):
+        differences.append(
+          f"{side}: declared {'an arm' if declared_arm else 'none'}, "
+          f"device answers {'an arm' if discovered_arm else 'none'}"
+        )
+      elif declared_arm is not None and discovered_arm is not None:
+        # What the arm carries, not how big it is: geometry is the frame's, and a declaration off
+        # another frame of the same build is still a fair description of what is bolted on.
+        differences += [
+          f"{side}.{field.name}: declared {getattr(declared_arm, field.name)!r}, "
+          f"device answers {getattr(discovered_arm, field.name)!r}"
+          for field in dataclasses.fields(declared_arm)
+          if field.name.endswith("_installed")
+          and getattr(declared_arm, field.name) != getattr(discovered_arm, field.name)
+        ]
+    if differences:
+      raise ValueError(
+        "the declared configuration does not describe this device:\n  " + "\n  ".join(differences)
+      )
+
   async def discover(self):
     """Read what machine is on the other end, and build the subsystems it turns out to have.
 
@@ -818,6 +890,7 @@ class STARDriver:
       ) = await self.request_firmware_version()
     except Exception:
       logger.warning("the device did not report its firmware; leaving its version unrecorded")
+    self._check_declared_against(self.configuration)
     self._num_channels = self.configuration.num_pip_channels
 
     # Built for what the machine turns out to have, and only if not already there: a caller can

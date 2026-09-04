@@ -1,11 +1,43 @@
 import dataclasses
+import json
+import pathlib
+import tempfile
 import unittest
 from typing import cast
 
-from pylabrobot.hamilton.star.driver.features.head96 import Head96
+from pylabrobot.hamilton.star.driver.configuration import read_configuration, to_jsonable
+from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm
-from pylabrobot.hamilton.star.driver.simulator import SIMULATED_HEAD96, STARSimulationDriver
+from pylabrobot.hamilton.star.driver.simulator import RECORDING_STAR, STARSimulationDriver
 from pylabrobot.resources.hamilton import STARDeck
+
+# The 96-head on the device this package ships a recording of.
+RECORDED_HEAD96 = cast(
+  Head96Configuration, read_configuration(RECORDING_STAR)["arms"]["left"]["head96"]
+)
+
+
+def declaring(**parts: object) -> str:
+  """The shipped recording with parts swapped out, written where it can be read back.
+
+  A declaration is read from a file and nothing else, so a test that needs a device no recording
+  describes writes one. Everything not named here stays as the recorded STAR has it.
+
+  Args:
+    parts: `device` for the device itself, or a feature name for something the left arm carries.
+
+  Returns:
+    The path it was written to.
+  """
+  tree = json.loads(pathlib.Path(RECORDING_STAR).read_text())
+  for name, part in parts.items():
+    if name == "device":
+      tree["device"] = to_jsonable(part)
+    else:
+      tree["arms"]["left"][name] = to_jsonable(part)
+  written = pathlib.Path(tempfile.mkdtemp()) / "declared.json"
+  written.write_text(json.dumps(tree))
+  return str(written)
 
 
 class TestDriveDefaults(unittest.IsolatedAsyncioTestCase):
@@ -18,13 +50,15 @@ class TestDriveDefaults(unittest.IsolatedAsyncioTestCase):
     head and computed the documented one instead could not pass. Four distinct values, so a read
     stored under the wrong name fails this too."""
     declared = dataclasses.replace(
-      SIMULATED_HEAD96,
+      RECORDED_HEAD96,
       y_drive_speed_firmware_reported=200.0,
       y_drive_acceleration_firmware_reported=300.0,
       z_drive_speed_firmware_reported=50.0,
       z_drive_acceleration_firmware_reported=250.0,
     )
-    driver = STARSimulationDriver(deck=STARDeck(), head96=declared)
+    driver = STARSimulationDriver(
+      deck=STARDeck(), declared_configuration_json=declaring(head96=declared)
+    )
     await driver.setup()
 
     c = cast(Head96, driver.x_arm.head96).configuration
@@ -43,13 +77,15 @@ class TestDriveDefaults(unittest.IsolatedAsyncioTestCase):
     and its defaults answer with what it reported for them. Apart from the test above because it
     covers the override rather than the base: the 384-head adds no reads of its own."""
     declared = dataclasses.replace(
-      SIMULATED_HEAD96,
+      RECORDED_HEAD96,
       dispensing_drive_speed_firmware_reported=400.0,
       dispensing_drive_acceleration_firmware_reported=9000.0,
       squeezer_drive_speed_firmware_reported=12.0,
       squeezer_drive_acceleration_firmware_reported=50.0,
     )
-    driver = STARSimulationDriver(deck=STARDeck(), head96=declared)
+    driver = STARSimulationDriver(
+      deck=STARDeck(), declared_configuration_json=declaring(head96=declared)
+    )
     await driver.setup()
 
     c = cast(Head96, driver.x_arm.head96).configuration
@@ -68,7 +104,7 @@ class TestDriveDefaults(unittest.IsolatedAsyncioTestCase):
     back to the increments its firmware documents rather than the read failing setup. Driven
     through `discover` alone: the rest of setup moves the head, and reads these same parameters to
     do it."""
-    driver = STARSimulationDriver(deck=STARDeck())
+    driver = STARSimulationDriver(deck=STARDeck(), declared_configuration_json=RECORDING_STAR)
     head = cast(Head96, cast(XArm, driver.left_x_arm).head96)
 
     async def refuse(parameter: str) -> float:

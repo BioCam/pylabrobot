@@ -1,9 +1,8 @@
 """The STAR: the instrument, and what it knows about its own deck."""
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Optional
 
-from pylabrobot.hamilton.star.driver.configuration import read_configuration
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.cover import FrontCover
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
@@ -12,7 +11,12 @@ from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm
 from pylabrobot.hamilton.star.driver.master import STARDriver
-from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
+from pylabrobot.hamilton.star.driver.simulator import (
+  RECORDING_STAR,
+  RECORDING_STARLET,
+  RECORDING_STARPLUS,
+  STARSimulationDriver,
+)
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import (
   HamiltonSTARDeck,
@@ -130,7 +134,7 @@ class STARDevice(Resource):
     self,
     deck: HamiltonSTARDeck,
     simulation: bool = False,
-    simulated_configuration: Optional[str] = None,
+    declared_configuration_json: Optional[str] = None,
     driver: Optional[STARDriver] = None,
     name: str = "Generic STAR Device",
     size_x: Optional[float] = None,
@@ -147,10 +151,8 @@ class STARDevice(Resource):
         assigned to it is a descendant of this device.
       simulation: whether to build a simulated instrument, which answers without one being plugged
         in. Superseded by `driver`, which says exactly what to drive.
-      simulated_configuration: a file `STARDriver.save_configuration` wrote, for a simulated
-        instrument to answer as the machine that file records. Without one it answers as the frame
-        its deck says it is. Read only when this builds the driver itself: a driver given outright
-        brings its own.
+      declared_configuration_json: path to a declared configuration, passed to the driver this
+        builds. Read only when this builds one: a driver given outright brings its own.
       driver: the driver to drive the instrument through.
       name: what to call this instrument in the resource tree.
       size_x: how wide the instrument is, in mm, BEFORE any extension housing. Defaults to the
@@ -195,34 +197,14 @@ class STARDevice(Resource):
 
     self.deck = deck
     if driver is not None:
-      if simulated_configuration is not None:
-        logger.warning("a driver was given, so the recorded configuration is not read")
+      if declared_configuration_json is not None:
+        logger.warning("a driver was given, so it brings its own declared configuration")
       self.driver: STARDriver = driver
     else:
-      # What the file records, or nothing - in which case the simulated device works out from its
+      # The driver is what reads a declaration. Without one, a simulated device works out from its
       # deck what frame it is on, and says what it assumed.
-      read: Dict[str, Any] = (
-        {} if simulated_configuration is None else read_configuration(simulated_configuration)
-      )
-      # A saved configuration says which arm carries what. A simulated device takes one of each,
-      # so a file recording the same feature on both arms is refused rather than half-read.
-      carried: Dict[str, Any] = {}
-      for side, features in read.get("arms", {}).items():
-        for name, configuration in features.items():
-          if name in carried:
-            raise ValueError(
-              f"the saved configuration has a {name} on more than one arm; a simulated device "
-              f"stands in for one of each, so it cannot answer as this one (seen again on {side})"
-            )
-          carried[name] = configuration
       self.driver = STARSimulationDriver(
-        deck=deck,
-        configuration=read.get("device"),
-        pipettes=carried.get("pipettes"),
-        head96=carried.get("head96"),
-        head384=carried.get("head384"),
-        iswap=carried.get("iswap"),
-        autoload=read.get("autoload"),
+        deck=deck, declared_configuration_json=declared_configuration_json
       )
 
     if self.driver.deck is not None and self.driver.deck is not deck:
@@ -343,7 +325,7 @@ class STARDevice(Resource):
 def STAR(
   deck: Optional[HamiltonSTARDeck] = None,
   simulation: bool = False,
-  simulated_configuration: Optional[str] = None,
+  declared_configuration_json: Optional[str] = None,
   driver: Optional[STARDriver] = None,
   name: str = "Hamilton STAR",
   size_x: float = STAR_SIZE_X,
@@ -353,10 +335,14 @@ def STAR(
   left_side_panel_installed: bool = False,
 ) -> STARDevice:
   """A full-size STAR, on a full-size STAR deck."""
+  # Only a simulated device is handed this frame's recording. A physical one is whatever it
+  # answers, and a declaration given for it is cross-checked rather than stood in for.
+  if simulation and driver is None and declared_configuration_json is None:
+    declared_configuration_json = RECORDING_STAR
   return STARDevice(
     deck=deck if deck is not None else STARDeck(),
     simulation=simulation,
-    simulated_configuration=simulated_configuration,
+    declared_configuration_json=declared_configuration_json,
     driver=driver,
     name=name,
     size_x=size_x,
@@ -372,7 +358,7 @@ def STAR(
 def STARLet(
   deck: Optional[HamiltonSTARDeck] = None,
   simulation: bool = False,
-  simulated_configuration: Optional[str] = None,
+  declared_configuration_json: Optional[str] = None,
   driver: Optional[STARDriver] = None,
   name: str = "Hamilton STARlet",
   size_x: float = STARLET_SIZE_X,
@@ -382,10 +368,14 @@ def STARLet(
   left_side_panel_installed: bool = False,
 ) -> STARDevice:
   """A STARlet, on a STARlet deck."""
+  # Only a simulated device is handed this frame's recording. A physical one is whatever it
+  # answers, and a declaration given for it is cross-checked rather than stood in for.
+  if simulation and driver is None and declared_configuration_json is None:
+    declared_configuration_json = RECORDING_STARLET
   return STARDevice(
     deck=deck if deck is not None else STARLetDeck(),
     simulation=simulation,
-    simulated_configuration=simulated_configuration,
+    declared_configuration_json=declared_configuration_json,
     driver=driver,
     name=name,
     size_x=size_x,
@@ -401,7 +391,7 @@ def STARLet(
 def STARPlus(
   deck: Optional[HamiltonSTARDeck] = None,
   simulation: bool = False,
-  simulated_configuration: Optional[str] = None,
+  declared_configuration_json: Optional[str] = None,
   driver: Optional[STARDriver] = None,
   name: str = "Hamilton STARplus",
   size_x: float = STARPLUS_SIZE_X,
@@ -419,10 +409,14 @@ def STARPlus(
   Returns:
     The instrument, on a STARplus deck.
   """
+  # Only a simulated device is handed this frame's recording. A physical one is whatever it
+  # answers, and a declaration given for it is cross-checked rather than stood in for.
+  if simulation and driver is None and declared_configuration_json is None:
+    declared_configuration_json = RECORDING_STARPLUS
   return STARDevice(
     deck=deck if deck is not None else STARPlusDeck(),
     simulation=simulation,
-    simulated_configuration=simulated_configuration,
+    declared_configuration_json=declared_configuration_json,
     driver=driver,
     name=name,
     size_x=size_x,

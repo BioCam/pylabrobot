@@ -10,16 +10,35 @@ await star.setup()
 star.driver.save_configuration("star_legacy_2021_8ch_head96_autoload1D.json")
 ```
 
-and read back by pointing a simulated device at it:
+and read back through `declared_configuration_json`, which is the one way a configuration is read
+from a file:
 
 ```python
-star = STAR(simulation=True, simulated_configuration="star_legacy_2021_8ch_head96_autoload1D.json")
+star = STAR(simulation=True, declared_configuration_json="my_star.json")
 await star.setup()
 ```
 
-`star_legacy_2021_8ch_head96_autoload1D.json` is the one this package ships, named by the
-convention below. A bare `STAR(simulation=True)` answers from it, and the STARlet and STARplus are
-derived from it because neither has been read off a device.
+It means two different things depending on what is on the other end. A **simulated** device answers
+as the declaration says, standing in for the device it records. A **physical** device answers for
+itself, and the declaration is cross-checked against it: setup refuses if the two disagree on which
+features are fitted, how many channels, or what each arm carries. Identity and geometry are not
+compared, so a declaration taken off one device still describes another of the same build.
+
+Three recordings ship with this package, one per frame, and `STAR`, `STARLet` and `STARPlus` hand
+theirs to a **simulated** device when nothing else is declared. A physical device is never given
+one:
+
+| frame | recording |
+|---|---|
+| STAR | `star_legacy_2021_8ch_head96_autoload1D.json` |
+| STARlet | `starlet_legacy_2021_8ch_head96_autoload1D.json` |
+| STARplus | `starplus_legacy_2021_8ch_head96.json` |
+
+Only the STAR was read off a device. The other two are derived from it: everything the right-hand
+end of the deck sets moves by the difference in deck length, and everything belonging to the arm
+itself stays put. Replace either wholesale with a recording when there is a frame to take one from.
+The STARplus is derived without an autoload, because the recorded sled does not travel far enough
+to reach that frame's last track.
 
 ## What is in one
 

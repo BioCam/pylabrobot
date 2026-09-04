@@ -9,7 +9,6 @@ Nothing reaches the wire. `send_command` raises, which is how a command that has
 simulated makes itself known: override the method that sends it, on the feature that owns it.
 """
 
-import dataclasses
 import datetime
 import logging
 import os
@@ -19,7 +18,7 @@ from pylabrobot.hamilton.protocol.text.framing import (
   assemble_channel_command,
   parse_firmware_version_date,
 )
-from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration, read_configuration
+from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
 from pylabrobot.hamilton.star.driver.features.cover import (
   CoverPosition,
@@ -49,12 +48,7 @@ from pylabrobot.hamilton.star.driver.master import STARDriver
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
 from pylabrobot.resources.hamilton.hamilton_decks import (
-  _TRACK_WIDTH,
-  STAR_NUM_TRACKS,
-  STARLET_NUM_TRACKS,
-  STARPLUS_NUM_TRACKS,
   HamiltonDeck,
-  track_for_x_coordinate,
 )
 
 logger = logging.getLogger(__name__)
@@ -146,31 +140,16 @@ BARE_X_ARM = XArmConfiguration(
   wrap_size=595.2,
 )
 
-# What a bare STARSimulationDriver() pretends to be, and what each feature on it answers about
-# itself: a full-size STAR, 54 slots wide, with eight 1000uL channels, a wide-gripper iSWAP and a
-# 96-head on a dual-rail left arm, autoload fitted, no right arm. Read off a real instrument and
-# kept beside this module rather than written out here, so recording another machine is saving a
-# file rather than editing code. `STARDriver.save_configuration` is what writes one.
+# Where the recordings this package ships live. `STARDriver.save_configuration` writes one, so
+# recording another device is saving a file rather than editing code.
 _RECORDINGS = os.path.join(os.path.dirname(__file__), "recordings")
-RECORDED_STAR = read_configuration(
-  os.path.join(_RECORDINGS, "star_legacy_2021_8ch_head96_autoload1D.json")
-)
-_RECORDED_LEFT_ARM = RECORDED_STAR["arms"].get("left", {})
-if "device" not in RECORDED_STAR or not {"head96", "iswap"} <= set(_RECORDED_LEFT_ARM):
-  raise RuntimeError(
-    "the recorded STAR names no device, no 96-head or no iSWAP; the file beside this module is "
-    "incomplete, "
-    "or did not come along with the install"
-  )
 
-DEFAULT_STAR_CONFIGURATION: DeviceConfiguration = RECORDED_STAR["device"]
-SIMULATED_HEAD96: Head96Configuration = _RECORDED_LEFT_ARM["head96"]
-SIMULATED_AUTOLOAD: AutoloadConfiguration = RECORDED_STAR["autoload"]
-# One channel stands for all of them: they are the same part, and the device holds one set of
-# resolutions for the lot.
-SIMULATED_PIPETTE: PipetteConfiguration = _RECORDED_LEFT_ARM["pipettes"].channels[0]
-SIMULATED_ISWAP: iSWAPConfiguration = _RECORDED_LEFT_ARM["iswap"]
-
+# What each frame is taken to be when a simulated device is asked for one and nothing was declared.
+# Only ever handed to a simulated device: a physical one is whatever it answers, and a declaration
+# is cross-checked against it rather than standing in for it.
+RECORDING_STAR = os.path.join(_RECORDINGS, "star_legacy_2021_8ch_head96_autoload1D.json")
+RECORDING_STARLET = os.path.join(_RECORDINGS, "starlet_legacy_2021_8ch_head96_autoload1D.json")
+RECORDING_STARPLUS = os.path.join(_RECORDINGS, "starplus_legacy_2021_8ch_head96.json")
 # The 384-head a device configured for one has. Not in the recording above, because that device
 # has none and no 384-head has been read off any: the offset and the drive defaults here are the
 # ones the drives document. Replace this with a recording when there is one to take.
@@ -182,81 +161,6 @@ SIMULATED_HEAD384 = Head384Configuration(
   supports_clot_monitoring_clld=False,
   supports_lld_absolute_threshold_check=False,
 )
-
-
-# The highest track the recorded autoload's sled reaches, from its own drive window. Tracks past
-# it are on the deck but not on the sled's travel.
-_AUTOLOAD_REACHES_TRACK = track_for_x_coordinate(
-  SIMULATED_AUTOLOAD.drive_zero_on_the_deck
-  + SIMULATED_AUTOLOAD.x_drive_increment_range[1] * SIMULATED_AUTOLOAD.x_drive_mm_per_increment
-)
-
-
-def _frame_of_length(num_tracks: int) -> DeviceConfiguration:
-  """The STAR recording above, moved to a frame with a different number of tracks.
-
-  A derivation, not a capture: the STAR is the machine we have to read a QM, RU and UA reply from,
-  and every other frame is that reading shifted. Everything the right-hand end of the deck sets
-  moves by the difference in deck length; everything belonging to the arm itself - its width, its
-  wrap, and how far left it reaches - is the same part and does not move.
-
-  Replace a frame wholesale with a recording when there is one of that frame to take it from. Only
-  the track count is independently known to be right.
-
-  Args:
-    num_tracks: how many tracks the frame's deck has.
-
-  Returns:
-    The configuration a machine on that frame is taken to have.
-  """
-  # What the deck's extra or missing tracks come to in mm. Negative on a frame shorter than the
-  # STAR, which moves the right-hand end left rather than right.
-  shift = (num_tracks - STAR_NUM_TRACKS) * _TRACK_WIDTH
-  # A longer deck does not lengthen the autoload. Its sled travels as far as its own drive window
-  # reaches, which on a frame with more tracks than that stops short of the last one - so a frame
-  # the recorded sled cannot serve is derived without one rather than with one that cannot reach.
-  # A wider window may well exist for those frames; none has been read.
-  autoload = DEFAULT_STAR_CONFIGURATION.autoload_installed and num_tracks <= _AUTOLOAD_REACHES_TRACK
-  arm = cast(XArmConfiguration, DEFAULT_STAR_CONFIGURATION.left_arm)
-  x_range = cast(Tuple[float, float], arm.x_range)
-  workspace = cast(Tuple[float, float], arm.workspace_range)
-  return dataclasses.replace(
-    DEFAULT_STAR_CONFIGURATION,
-    instrument_size_slots=num_tracks,
-    autoload_installed=autoload,
-    autoload_size_slots=num_tracks if autoload else 0,
-    tip_waste_x_position=DEFAULT_STAR_CONFIGURATION.tip_waste_x_position + shift,
-    max_iswap_collision_free_position=(
-      DEFAULT_STAR_CONFIGURATION.max_iswap_collision_free_position + shift
-    ),
-    left_arm=dataclasses.replace(
-      arm,
-      x_range=(x_range[0], x_range[1] + shift),
-      workspace_range=(workspace[0], workspace[1] + shift),
-    ),
-  )
-
-
-DEFAULT_STARLET_CONFIGURATION = _frame_of_length(STARLET_NUM_TRACKS)
-DEFAULT_STARPLUS_CONFIGURATION = _frame_of_length(STARPLUS_NUM_TRACKS)
-
-
-def default_configuration_for(num_tracks: int) -> Tuple[DeviceConfiguration, bool]:
-  """What to take a machine on this frame to be, when nothing was declared.
-
-  Args:
-    num_tracks: how many tracks the frame's deck has.
-
-  Returns:
-    The configuration, and whether it was read off a machine rather than derived from one.
-  """
-  if num_tracks == STAR_NUM_TRACKS:
-    return DEFAULT_STAR_CONFIGURATION, True
-  if num_tracks == STARLET_NUM_TRACKS:
-    return DEFAULT_STARLET_CONFIGURATION, False
-  if num_tracks == STARPLUS_NUM_TRACKS:
-    return DEFAULT_STARPLUS_CONFIGURATION, False
-  return _frame_of_length(num_tracks), False
 
 
 class _UnusedTransport(IOBase):
@@ -306,7 +210,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
     declared = self.machine.simulated_pipettes
     if declared is not None and channel < len(declared.channels):
       return declared.channels[channel]
-    return SIMULATED_PIPETTE
+    return PipetteConfiguration()
 
   async def request_min_pipette_width(self, channel: int) -> float:
     width = self._declared_channel(channel).width
@@ -644,7 +548,8 @@ class SimulatedAutoload(_Simulated, Autoload):
 
   async def request_module_configuration(self) -> Tuple[float, bool]:
     # What this machine's own autoload answered: the 0.1 mm scanner, indicators fitted.
-    return SIMULATED_AUTOLOAD.x_drive_mm_per_increment, True
+    declared = self.machine.simulated_autoload
+    return declared.x_drive_mm_per_increment, True
 
   async def request_autoload_type(self) -> str:
     autoload_type = self.machine.simulated_autoload.autoload_type
@@ -764,42 +669,30 @@ class STARSimulationDriver(STARDriver):
 
   def __init__(
     self,
-    configuration: Optional[DeviceConfiguration] = None,
     tips_mounted: Optional[List[bool]] = None,
     firmware: Optional[Dict[str, str]] = None,
-    autoload: Optional[AutoloadConfiguration] = None,
-    head96: Optional[Head96Configuration] = None,
-    head384: Optional[Head384Configuration] = None,
-    iswap: Optional[iSWAPConfiguration] = None,
-    pipettes: Optional[PipettesConfiguration] = None,
     deck: Optional[HamiltonDeck] = None,
     serial_number: str = SIMULATED_SERIAL_NUMBER,
     initialized: bool = False,
     left_side_panel_installed: bool = False,
+    declared_configuration_json: Optional[str] = None,
   ):
     """
     Args:
-      configuration: the instrument to pretend to be. Defaults to what the deck says this frame
-        is, which the machine says out loud.
       tips_mounted: one entry per channel, `True` where a tip sits on the channel. Defaults to no
         tips on any of them.
       firmware: what each feature reports, keyed as `confirmed_firmware_versions` keys it.
         Defaults to `SIMULATED_FIRMWARE`.
-      autoload: the autoload this machine has, which it answers about itself. Defaults to
-        `SIMULATED_AUTOLOAD`. What the feature reads rather than what its own configuration
-        becomes: discovery fills that from these answers, as it does off an instrument.
-      head96: the 96-head this machine has, read as `autoload` is. Defaults to `SIMULATED_HEAD96`.
-      head384: the 384-head this machine has, read as `autoload` is. Defaults to
-        `SIMULATED_HEAD384`.
-      iswap: the iSWAP this machine has. Defaults to the one its firmware documents.
-      pipettes: the channels this machine has. Defaults to the ones this frame documents.
       deck: the deck to reflect this machine into. Required: a simulated machine has no firmware
         to ask, so the resource model is the only thing it can answer from.
       serial_number: what this machine calls itself.
       initialized: whether the machine and its modules report themselves already initialized. One
         that has just been switched on does not.
-      left_side_panel_installed: whether this machine has its left side panel on. Declared rather
+      left_side_panel_installed: whether this device has its left side panel on. Declared rather
         than discovered, as on a real one: the panel comes off in seconds.
+      declared_configuration_json: path to a declared configuration, which this device then answers
+        as. What the arguments above name takes precedence over it, and what neither names falls
+        back to what this frame documents.
 
     Raises:
       ValueError: If no deck is given, or `tips_mounted` does not have one entry per channel.
@@ -807,27 +700,40 @@ class STARSimulationDriver(STARDriver):
     if deck is None:
       raise ValueError("a simulated STAR answers from its resource model, so it needs a deck")
     super().__init__(
-      io=_UnusedTransport(), deck=deck, left_side_panel_installed=left_side_panel_installed
+      io=_UnusedTransport(),
+      deck=deck,
+      left_side_panel_installed=left_side_panel_installed,
+      declared_configuration_json=declared_configuration_json,
     )
 
-    if configuration is not None:
-      self.simulated_configuration = configuration
-    else:
-      # Nothing said what this machine is, so the deck decides: what a frame with this many tracks
-      # is taken to be. Said out loud, because only the STAR was read off an instrument.
-      self.simulated_configuration, recorded = default_configuration_for(deck.num_tracks)
-      logger.info(
-        "no instrument declared; simulating a %d-track machine from a %s configuration",
-        deck.num_tracks,
-        "recorded" if recorded else "derived",
+    # What the declaration says this device carries, whichever arm carries it. A simulated device
+    # stands in for one of each, so the same feature on two arms is refused rather than half-read.
+    carried: Dict[str, Any] = {}
+    for side, features in self.declared.get("arms", {}).items():
+      for name, feature in features.items():
+        if name in carried:
+          raise ValueError(
+            f"the declared configuration has a {name} on more than one arm; a simulated device "
+            f"stands in for one of each, so it cannot answer as this one (seen again on {side})"
+          )
+        carried[name] = feature
+
+    configuration = self.declared.get("device")
+    if configuration is None:
+      raise ValueError(
+        "a simulated device has to be told what it is simulating: pass "
+        "`declared_configuration_json`, naming a file that records one"
       )
+    self.simulated_configuration: DeviceConfiguration = configuration
 
     self.simulated_firmware = firmware or dict(SIMULATED_FIRMWARE)
-    self.simulated_autoload = autoload or SIMULATED_AUTOLOAD
-    self.simulated_head96 = head96 or SIMULATED_HEAD96
-    self.simulated_head384 = head384 or SIMULATED_HEAD384
-    self.simulated_pipettes = pipettes
-    self.simulated_iswap = iswap or SIMULATED_ISWAP
+    self.simulated_autoload: AutoloadConfiguration = (
+      self.declared.get("autoload") or AutoloadConfiguration()
+    )
+    self.simulated_head96: Head96Configuration = carried.get("head96") or Head96Configuration()
+    self.simulated_head384: Head384Configuration = carried.get("head384") or SIMULATED_HEAD384
+    self.simulated_pipettes: Optional[PipettesConfiguration] = carried.get("pipettes")
+    self.simulated_iswap: iSWAPConfiguration = carried.get("iswap") or iSWAPConfiguration()
     self.serial_number = serial_number
 
     channels = self.simulated_configuration.num_pip_channels
@@ -858,7 +764,7 @@ class STARSimulationDriver(STARDriver):
       if arm is None or a is None:
         continue
       if a.pip_installed and c.num_pip_channels > 0:
-        arm.pipettes = SimulatedPipettes(self, configuration=pipettes)
+        arm.pipettes = SimulatedPipettes(self)
       if a.head96_installed:
         arm.head96 = SimulatedHead96(self)
       if a.head384_installed:
@@ -884,6 +790,18 @@ class STARSimulationDriver(STARDriver):
 
   async def request_cover_input_status(self) -> Tuple[bool, bool, bool]:
     return SIMULATED_COVER_INPUTS
+
+  def _check_declared_against(self, discovered: DeviceConfiguration) -> None:
+    """Nothing to cross-check: a simulated device answers from the declaration.
+
+    On a physical device the declaration is a claim about what is on the other end, and discovery
+    tests it. Here it is where the answers come from, so it cannot disagree with itself. A
+    `configuration` given outright is the caller saying to simulate that instead, which is a
+    substitution rather than a disagreement.
+
+    Args:
+      discovered: what this device answered, which is what it was told to answer.
+    """
 
   async def request_device_serial_number(self) -> str:
     # What it was told it is, or what it was told to call itself when the recording did not say.

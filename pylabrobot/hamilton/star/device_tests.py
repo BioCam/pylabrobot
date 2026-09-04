@@ -1,4 +1,7 @@
 import dataclasses
+import json
+import pathlib
+import tempfile
 import unittest
 from typing import cast
 
@@ -10,14 +13,46 @@ from pylabrobot.hamilton.star.device import (
   STARDevice,
   STARLet,
 )
+from pylabrobot.hamilton.star.driver.configuration import (
+  DeviceConfiguration,
+  read_configuration,
+  to_jsonable,
+)
 from pylabrobot.hamilton.star.driver.simulator import (
   BARE_X_ARM,
-  DEFAULT_STAR_CONFIGURATION,
+  RECORDING_STAR,
   STARSimulationDriver,
 )
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import STARDeck
 from pylabrobot.resources.hamilton.hamilton_decks import STAR_NUM_TRACKS, STARLET_NUM_TRACKS
+
+# The device this package ships a recording of, read through the one reader there is: tests need a
+# device to start from, and this is the one they stand in for.
+RECORDED_DEVICE = cast(DeviceConfiguration, read_configuration(RECORDING_STAR)["device"])
+
+
+def declaring(**parts: object) -> str:
+  """The shipped recording with parts swapped out, written where it can be read back.
+
+  A declaration is read from a file and nothing else, so a test that needs a device no recording
+  describes writes one. Everything not named here stays as the recorded STAR has it.
+
+  Args:
+    parts: `device` for the device itself, or a feature name for something the left arm carries.
+
+  Returns:
+    The path it was written to.
+  """
+  tree = json.loads(pathlib.Path(RECORDING_STAR).read_text())
+  for name, part in parts.items():
+    if name == "device":
+      tree["device"] = to_jsonable(part)
+    else:
+      tree["arms"]["left"][name] = to_jsonable(part)
+  written = pathlib.Path(tempfile.mkdtemp()) / "declared.json"
+  written.write_text(json.dumps(tree))
+  return str(written)
 
 
 class TestConstruction(unittest.IsolatedAsyncioTestCase):
@@ -31,7 +66,10 @@ class TestConstruction(unittest.IsolatedAsyncioTestCase):
     self.assertIn(star.deck, star.children)
 
     deck = STARDeck()
-    supplied = STARDevice(deck=deck, driver=STARSimulationDriver(deck=STARDeck()))
+    supplied = STARDevice(
+      deck=deck,
+      driver=STARSimulationDriver(deck=STARDeck(), declared_configuration_json=RECORDING_STAR),
+    )
     self.assertIs(supplied.driver.deck, deck)
 
   def test_needs_something_to_drive(self):
@@ -90,7 +128,7 @@ class TestCapabilities(unittest.IsolatedAsyncioTestCase):
     # An arm that carries nothing: what the machine reports at instrument level and what each
     # arm reports about itself agree on a real one, so the fixture makes them agree here.
     bare = dataclasses.replace(
-      DEFAULT_STAR_CONFIGURATION,
+      RECORDED_DEVICE,
       num_pip_channels=0,
       ka_head96_installed=False,
       autoload_installed=False,
@@ -98,7 +136,11 @@ class TestCapabilities(unittest.IsolatedAsyncioTestCase):
       right_arm=None,
     )
     star = STARDevice(
-      deck=STARDeck(), driver=STARSimulationDriver(configuration=bare, deck=STARDeck())
+      deck=STARDeck(),
+      driver=STARSimulationDriver(
+        deck=STARDeck(),
+        declared_configuration_json=declaring(device=bare),
+      ),
     )
     await star.setup()
     for name in ("pipettes", "head96", "head384", "autoload", "right_x_arm", "front_cover"):
