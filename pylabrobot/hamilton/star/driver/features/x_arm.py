@@ -330,6 +330,18 @@ class XArm:
   # before it starts. Add a `make_space: bool` alongside it: when the far arm is in the way, move it
   # clear first rather than refusing - which is what an operator would do by hand, and what a
   # protocol wants when the two arms work the same deck. Untestable here: this device has one arm.
+  async def _record_where_it_stopped(self) -> None:
+    """Read where this arm came to rest, and record it.
+
+    For a move's `finally`. A move that failed part way left the arm somewhere no target describes.
+    Its own failure is logged and swallowed: it must not replace the move's exception, which is the
+    one that says what went wrong.
+    """
+    try:
+      await self.request_position()
+    except Exception:
+      logger.warning("could not read where the %s X-arm stopped; its model is stale", self.side)
+
   async def move_x(
     self,
     x: float,
@@ -378,13 +390,10 @@ class XArm:
       resp = await self._driver.send_command(
         module="X0", command="XP" if self.side == "left" else "SP", **parameters
       )
-    except BaseException:
-      # The arm stopped somewhere neither the old position nor the target describes, so ask the
-      # device where it ended up.
-      try:
-        await self.request_position()
-      except BaseException:
-        logger.warning("could not read where the %s X-arm stopped; its model is stale", self.side)
+    except Exception:
+      # Only on the way out: the settle reads below already record where the arm came to rest, so
+      # a `finally` here would ask the device a second time on every successful move.
+      await self._record_where_it_stopped()
       raise
 
     # The reply arrives when the move ends, not when the arm stops. Two reads in a row at the

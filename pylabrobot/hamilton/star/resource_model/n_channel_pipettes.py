@@ -29,7 +29,7 @@ class TipMountingShaft(Resource):
   """The end of one pipetting channel, where a tip is mounted and sealed.
 
   Named as the patent literature names it. Vendors do not agree: Hamilton's firmware names only the
-  stop disk, the collar its drive positions by, and reserves "tip cone" for the tip's own geometry.
+  stop disc, the collar its drive positions by, and reserves "tip cone" for the tip's own geometry.
   What is invariant is that the shaft carries its channel through to the tip.
 
   A device whose channels move independently carries these one each. A device whose channels move
@@ -332,7 +332,7 @@ def head96(
     name: what to call this one.
     size_x: how wide the head's body is, in mm. None spans the channel array instead.
     size_y: how deep the body is, in mm. None spans the channel array instead.
-    size_z: how tall it is, from its stop disk to its top, in mm. Zero leaves it unmodelled.
+    size_z: how tall it is, from its stop disc to its top, in mm. Zero leaves it unmodelled.
     dx: how far channel A1 sits from the body's left edge, in mm. None centres the array.
     dy: how far channel A1 sits from its front edge, in mm. None centres the array.
     dz: how far channel A1 sits above its bottom, in mm.

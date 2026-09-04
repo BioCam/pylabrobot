@@ -2,6 +2,14 @@
 
 What a real STAR reported about itself, kept as data so a simulated one can stand in for it.
 
+**None of the three shipped here says which device it came from.** Only the STAR was read off a
+device at all, and that reading predates `C0 RI`, so its `serial_number` is null and the STARlet and
+STARplus inherit its firmware strings along with everything else derived from it. The first
+recording taken with `save_configuration` on a real device will carry both, and is worth taking for
+that reason alone. A device that will not answer `C0 RI` leaves the field null too, with a warning
+at setup - so a null serial means either an old recording or a device that would not say, and the
+file cannot tell you which.
+
 A recording is written by the driver, not by hand:
 
 ```python

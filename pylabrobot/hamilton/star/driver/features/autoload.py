@@ -389,6 +389,18 @@ class Autoload:
 
   # -- scanner X drive (along the deck) ------------------------------------------------------------
 
+  async def _record_where_it_stopped(self) -> None:
+    """Read where the sled came to rest, and record it.
+
+    For a move's `finally`. A move that stopped part way left the sled somewhere no target
+    describes. Its own failure is logged and swallowed: it must not replace the move's exception,
+    which is the one that says what went wrong.
+    """
+    try:
+      await self.request_x_position()
+    except Exception:
+      logger.warning("could not read where the autoload stopped; its model is stale")
+
   async def _send_command_and_update_sled_x(self, **kwargs: Any) -> Any:
     """Send a command that moves the sled, then read back where along X it ended up.
 
@@ -404,15 +416,11 @@ class Autoload:
       kwargs: what to send, as `send_command` takes it.
     """
     try:
-      resp = await self._driver.send_command(**kwargs)
-    except BaseException:
-      try:
-        await self.request_x_position()
-      except BaseException:
-        logger.warning("could not read where the autoload stopped; its model is stale")
-      raise
-    await self.request_x_position()
-    return resp
+      return await self._driver.send_command(**kwargs)
+    finally:
+      # Whether the move succeeded or not: one that stopped part way left the sled somewhere no
+      # target describes, and this read is also how a successful move is recorded.
+      await self._record_where_it_stopped()
 
   async def request_track(self) -> int:
     """Request the current track of the autoload's carrier handler.

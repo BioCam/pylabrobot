@@ -60,7 +60,7 @@ SIDE_PANEL_ORIGIN_YZ = (52.8, 180.5)
 # is the frame the rest of this is measured against.
 SIDE_PANEL_X = 5.0
 # What it used to be, before there was a part to measure: an unsourced 245.0 that only widened the
-# device. Kept as a name because `STAR_with_extension_housing` reads it.
+# device. Kept as a name because the tests measure the housing against it.
 EXTENSION_HOUSING_SIZE_X = EXTENSION_HOUSING_SIZE[0]
 MANUAL_SIZE_Y = 785.8
 SIZE_Z = 903.0

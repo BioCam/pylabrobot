@@ -97,7 +97,7 @@ class HeadConfiguration:
   min_tool_bottom_z: float = 99.98
   """The lowest Z the head may place the bottom of what it carries at, in deck mm.
 
-  A declared limit rather than anything the head reports: its drive is commanded in stop-disk terms
+  A declared limit rather than anything the head reports: its drive is commanded in stop-disc terms
   and knows nothing about what hangs below it, so how far down a tip may be taken is ours to
   choose. The default is the floor the channels' own Z drive documents, which is what bounded this
   move before."""
@@ -961,6 +961,24 @@ class Head:
         f"current_limit must be between {low_limit} and {high_limit}, is {current_limit}"
       )
 
+  async def _record_where_it_stopped(self, axis: Literal["y", "z"]) -> None:
+    """Read where this head came to rest along one axis, and record it.
+
+    For a move's `finally`. A move that failed part way left the head somewhere no target
+    describes. Its own failure is logged and swallowed: it must not replace the move's exception,
+    which is the one that says what went wrong.
+
+    Args:
+      axis: which axis the move drove - `y` across the arm, `z` up and down.
+    """
+    try:
+      if axis == "y":
+        await self.request_y_position()
+      else:
+        await self.request_z_position()
+    except Exception:
+      logger.warning("could not read where the head stopped along %s; its model is stale", axis)
+
   async def move_to_y_position(
     self,
     y: float,
@@ -1006,9 +1024,7 @@ class Head:
         read_timeout=read_timeout,
       )
     finally:
-      # Where the drive says it went, which the read records. Asked whether the move succeeded or
-      # not: a move that failed part way left the head somewhere neither position describes.
-      await self.request_y_position()
+      await self._record_where_it_stopped("y")
       await self._restore_drive_parameter("yv", speed, was_speed)
       await self._restore_drive_parameter("yr", acceleration, was_acceleration)
 
@@ -1092,7 +1108,7 @@ class Head:
     c.z_range = (c.z_range_documented[0], z_max)
     return z_max
 
-  async def move_stop_disk_to_z_position(
+  async def move_stop_disc_to_z_position(
     self,
     z: float,
     speed: Optional[float] = None,
@@ -1100,9 +1116,9 @@ class Head:
     current_limit: Optional[int] = None,
     read_timeout: int = 30,
   ):
-    """Move the head's stop disk along Z. This moves it, and nothing else on the arm.
+    """Move the head's stop disc along Z. This moves it, and nothing else on the arm.
 
-    The head's own drive, which is commanded in stop-disk terms whatever is mounted on it. Use it
+    The head's own drive, which is commanded in stop-disc terms whatever is mounted on it. Use it
     for moves with nothing on the head; `move_tool_bottom_to_z_position` places the bottom of the
     tips it carries.
 
@@ -1141,9 +1157,7 @@ class Head:
         read_timeout=read_timeout,
       )
     finally:
-      # Where the drive says it went, which the read records. Asked whether the move succeeded or
-      # not: a move that failed part way left the head somewhere neither position describes.
-      await self.request_z_position()
+      await self._record_where_it_stopped("z")
       await self._restore_drive_parameter("zv", speed, was_speed)
       await self._restore_drive_parameter("zr", acceleration, was_acceleration)
 
@@ -1157,9 +1171,9 @@ class Head:
   ):
     """Move the bottom of what the head carries along Z. This moves it, and nothing else on the arm.
 
-    The drive is commanded in stop-disk terms whatever is mounted, so this measures how far the
+    The drive is commanded in stop-disc terms whatever is mounted, so this measures how far the
     tips stand below the head and offsets the target by that: the same move as
-    `move_stop_disk_to_z_position`, named at the end that reaches into a well. It needs tips on the
+    `move_stop_disc_to_z_position`, named at the end that reaches into a well. It needs tips on the
     head, which are what give it a bottom distinct from its own.
 
     Args:
@@ -1183,10 +1197,10 @@ class Head:
     except RuntimeError as no_tips:
       raise ValueError(
         "the head carries no tips, so it has no tool bottom to place; "
-        "`move_stop_disk_to_z_position` is the move for a head with nothing on it"
+        "`move_stop_disc_to_z_position` is the move for a head with nothing on it"
       ) from no_tips
 
-    # The drive works in stop-disk terms over `z_range`, so what the tip bottom reaches is that
+    # The drive works in stop-disc terms over `z_range`, so what the tip bottom reaches is that
     # window shifted down by the overhang, and no lower than the head may put one.
     low = round(max(c.z_range[0] - overhang, c.min_tool_bottom_z), 2)
     high = round(c.z_range[1] - overhang, 2)
@@ -1195,7 +1209,7 @@ class Head:
         f"the tool bottom reaches {low} to {high} mm with a {overhang} mm overhang, not {z}"
       )
 
-    return await self.move_stop_disk_to_z_position(
+    return await self.move_stop_disc_to_z_position(
       z + overhang,
       speed=speed,
       acceleration=acceleration,
@@ -1226,7 +1240,16 @@ class Head:
     if z_range is None:
       # No window probed yet, so there is no height to aim at; the retract establishes one.
       return await self.probe_z_max()
-    await self.move_stop_disk_to_z_position(z_range[1], speed=speed, acceleration=acceleration)
+    await self.move_stop_disc_to_z_position(z_range[1], speed=speed, acceleration=acceleration)
     return await self.request_z_position()
 
   # -- dispensing drive --------------------------------------------------------------------------
+
+  # ----------------------------------------
+  # Probing
+  # ----------------------------------------
+
+  # -- z probing (capacitive) --------------------------------------------------------------------
+
+  # TODO: _unchecked_fw_ vs tip-presence-guarded versions (caveat: the head has no sleeve sensor,
+  # so it only knows tip state based on firmware-written/stored state)

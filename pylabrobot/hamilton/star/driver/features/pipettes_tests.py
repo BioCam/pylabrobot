@@ -130,16 +130,16 @@ class TestPositionInZDirection(unittest.IsolatedAsyncioTestCase):
   """
 
   async def test_a_z_outside_the_window_is_refused_and_one_inside_is_not(self):
-    """The floor is the deck surface, so a Z below it would drive a stop disk into the deck."""
+    """The floor is the deck surface, so a Z below it would drive a stop disc into the deck."""
     pipettes = await simulated_channels()
     c = pipettes.configuration
     low, high = c.z_range or c.z_range
 
     for z in (low - 0.1, high + 0.1):
       with self.assertRaises(ValueError):
-        await pipettes.move_to_z_positions({0: z})
+        await pipettes.move_stop_disc_to_z_position(0, z)
 
-    await pipettes.move_to_z_positions({0: round((low + high) / 2, 1)})
+    await pipettes.move_stop_disc_to_z_position(0, round((low + high) / 2, 1))
 
   async def test_probing_replaces_the_ceiling_and_leaves_the_floor(self):
     """The probe says how high these channels reach, and nothing about how low they go."""

@@ -557,7 +557,11 @@ class STARDriver:
     Returns:
       The serial number the device answers.
     """
-    resp = await self.send_command(module="C0", command="RI", fmt="si####sn&&&&sn&&&&")
+    # One `sn` field, not the two the older driver named: a repeated name parses to the first
+    # match, so the second was inert there and would be here. Whether the device answers a serial
+    # in two four-character halves is unsettled - if it does, this reads the first half only, and a
+    # reading off a device is what will say.
+    resp = await self.send_command(module="C0", command="RI", fmt="si####sn&&&&")
     return cast(str, resp["sn"])
 
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:

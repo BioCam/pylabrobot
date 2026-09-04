@@ -192,6 +192,17 @@ class _Simulated:
 class SimulatedPipettes(_Simulated, Pipettes):
   """The pipetting channels, answering for themselves."""
 
+  def __init__(self, driver: STARDriver, configuration: Optional[PipettesConfiguration] = None):
+    """
+    Args:
+      driver: the driver to send commands through.
+      configuration: the channels' device facts.
+    """
+    super().__init__(driver, configuration)
+    # Where each channel's Z drive is held to be. Per device, not per class: two simulated devices
+    # do not share where their channels are. Filled on first use, from the configured window.
+    self._simulated_z: Dict[int, float] = {}
+
   async def sense_tip_presence(self) -> List[int]:
     return [int(mounted) for mounted in self.device.tips_mounted]
 
@@ -242,26 +253,57 @@ class SimulatedPipettes(_Simulated, Pipettes):
       self.update_location_by_reference_point(channel, y=y)
     return positions
 
+  @property
+  def _z(self) -> Dict[int, float]:
+    """Where each channel's drive is held to be, in mm.
+
+    A move writes it and a read finds it there, as the head's Z does. Started at the top of the
+    window the configuration carries, which is where Z safety puts them.
+
+    Returns:
+      Each channel's Z, keyed by channel.
+    """
+    if not self._simulated_z:
+      self._simulated_z = {
+        channel: self.configuration.z_range[1] for channel in range(self.num_channels)
+      }
+    return self._simulated_z
+
   async def _unchecked_fw_request_lowest_z_positions(self) -> Dict[int, float]:
-    # At the top of the window the configuration carries, which is where Z safety puts them.
-    # Taken from there rather than held here, so a configured window is what a simulated probe
-    # reads back. Recorded as the real read records it, so a simulated channel is modelled at the
-    # height it reports rather than at whatever the arm's own is.
-    c = self.configuration
-    safe_z = c.z_range[1]
-    positions = {channel: safe_z for channel in range(self.num_channels)}
+    # Recorded as the real read records it, so a simulated channel is modelled at the height it
+    # reports rather than at whatever the arm's own is.
+    positions = dict(self._z)
     for channel, z in positions.items():
       self.update_location_by_reference_point(channel, z=z)
     return positions
 
-  async def request_stop_disk_z_position(self, channel: int) -> float:
+  async def request_stop_disc_z_position(self, channel: int) -> float:
     # The channel's own drive rather than the master's read. A simulated channel carries no tip
     # geometry, so the two answer the same height here; on a device they part company the moment
     # a tip goes on, which is the whole reason the two reads exist.
     self._require_channel(channel)
-    z = (await self._unchecked_fw_request_lowest_z_positions())[channel]
+    z = self._z[channel]
     self.update_location_by_reference_point(channel, z=z)
     return z
+
+  async def probe_z_max(self) -> float:
+    # The retract inside the probe is what puts the channels at their top. On a device that is
+    # physical travel; here the configured ceiling stands for it, so a configured window is what a
+    # simulated probe reads back. `_SimulatedHead.probe_z_max` does the same for a head.
+    self._z.update({channel: self.configuration.z_range[1] for channel in range(self.num_channels)})
+    return await super().probe_z_max()
+
+  async def _unchecked_fw_move_lowest_point_to_z_positions(self, zs: Dict[int, float]):
+    # A move is what puts a channel somewhere. Written after the move, not before: one the real
+    # method refuses never happened.
+    resp = await super()._unchecked_fw_move_lowest_point_to_z_positions(zs)
+    self._z.update(zs)
+    return resp
+
+  async def move_stop_disc_to_z_position(self, channel: int, z: float, *args: Any, **kwargs: Any):
+    resp = await super().move_stop_disc_to_z_position(channel, z, *args, **kwargs)
+    self._z[channel] = z
+    return resp
 
 
 # Where the left arm has come to rest when a simulated device is switched on, in mm: far enough
@@ -350,8 +392,8 @@ class _SimulatedHead(_Simulated, Head):
     self.update_location_by_reference_point(y=y)
     return resp
 
-  async def move_stop_disk_to_z_position(self, z: float, *args: Any, **kwargs: Any):
-    resp = await super().move_stop_disk_to_z_position(z, *args, **kwargs)
+  async def move_stop_disc_to_z_position(self, z: float, *args: Any, **kwargs: Any):
+    resp = await super().move_stop_disc_to_z_position(z, *args, **kwargs)
     self.update_location_by_reference_point(z=z)
     return resp
 

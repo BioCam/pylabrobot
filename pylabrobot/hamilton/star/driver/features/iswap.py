@@ -566,6 +566,24 @@ class iSWAP:
     self.update_location_by_reference_point(y=y)
     return y
 
+  async def _record_where_it_stopped(self, axis: Literal["y", "z"]) -> None:
+    """Read where the rotation drive came to rest along one axis, and record it.
+
+    For a move's failure path. A move that stopped part way left the drive somewhere no target
+    describes. Its own failure is logged and swallowed: it must not replace the move's exception,
+    which is the one that says what went wrong.
+
+    Args:
+      axis: which axis the move drove - `y` across the deck, `z` up and down.
+    """
+    try:
+      if axis == "y":
+        await self.rotation_drive_request_y_position()
+      else:
+        await self.rotation_drive_request_z_position()
+    except Exception:
+      logger.warning("could not read where the iSWAP stopped along %s; its model is stale", axis)
+
   async def rotation_drive_move_to_y_position(
     self,
     y: float,
@@ -624,13 +642,8 @@ class iSWAP:
         yr=f"{acceleration_level}",
         yw=f"{current_limit}",
       )
-    except BaseException:
-      # A failed move leaves the drive at an unknown y, so re-read to refresh the model. The
-      # read is wrapped: its own failure must not replace the move's exception.
-      try:
-        await self.rotation_drive_request_y_position()
-      except BaseException:
-        logger.warning("could not read where the rotation drive stopped; its model is stale")
+    except Exception:
+      await self._record_where_it_stopped("y")
       raise
 
     self.update_location_by_reference_point(y=y)
@@ -749,13 +762,8 @@ class iSWAP:
         zr=f"{acceleration_increments:03}",
         zw=f"{current_limit}",
       )
-    except BaseException:
-      # A failed move leaves the drive at an unknown z, so re-read to refresh the model. The
-      # read is wrapped: its own failure must not replace the move's exception.
-      try:
-        await self.rotation_drive_request_z_position()
-      except BaseException:
-        logger.warning("could not read where the rotation drive stopped; its model is stale")
+    except Exception:
+      await self._record_where_it_stopped("z")
       raise
 
     self.update_location_by_reference_point(z=z)
