@@ -605,10 +605,15 @@ class SimulatedISWAP(_Simulated, iSWAP):
   # as the head's Z does.
   _z: float = SIMULATED_ISWAP_Z
   _y: float = SIMULATED_ISWAP_Y
+  # Where the rotation drive is held to be, in its own increments. None until something turns it,
+  # which is when the parking stop it was switched on at stops being the answer.
+  _rotation: Optional[int] = None
 
   async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
     if module == "R0":
       if command == "RW":
+        if self._rotation is not None:
+          return {"rw": self._rotation}, "where the rotation drive was last turned to"
         stops = (await self._request_slots("pw"))[: len(ROTATION_DRIVE_SLOTS)]
         parked = dict(zip(ROTATION_DRIVE_SLOTS, stops))["parking"]
         return {"rw": parked}, "the rotation drive's parking stop"
@@ -646,6 +651,16 @@ class SimulatedISWAP(_Simulated, iSWAP):
   async def rotation_drive_move_to_y_position(self, y: float, *args: Any, **kwargs: Any):
     resp = await super().rotation_drive_move_to_y_position(y, *args, **kwargs)
     self._y = y
+    return resp
+
+  async def _unchecked_fw_rotation_drive_rotate_increments(
+    self, rotation_increments: int, wrist_increments: int, *args: Any, **kwargs: Any
+  ):
+    """Turn where the drives are held to be, as the real command turns the drives."""
+    resp = await super()._unchecked_fw_rotation_drive_rotate_increments(
+      rotation_increments, wrist_increments, *args, **kwargs
+    )
+    self._rotation = rotation_increments
     return resp
 
   async def rotation_drive_move_to_z_position(self, z: float, *args: Any, **kwargs: Any):
