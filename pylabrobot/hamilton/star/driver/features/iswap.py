@@ -1,5 +1,6 @@
 """The iSWAP: the arm that picks plates up and puts them down."""
 
+import dataclasses
 import enum
 import logging
 import math
@@ -66,8 +67,12 @@ PARK_TRAVERSAL_HEIGHT = 280.0
 
 
 @dataclass
-class CartesianPose:
-  """Location and rotation of the gripper."""
+class StarFramePose:
+  """A location and a rotation, both in the STAR's deck frame.
+
+  Named for the frame because that is the only thing that makes the numbers mean anything: mm from
+  the deck's origin, and degrees counter-clockwise seen from above with 0 along +x.
+  """
 
   location: Coordinate
   rotation: Rotation
@@ -95,6 +100,31 @@ class iSWAPAxis(enum.IntEnum):
     The gripper is driven, but opening it changes what is held rather than where the gripper is.
     """
     return self is not iSWAPAxis.GRIPPER
+
+
+@dataclasses.dataclass(frozen=True)
+class iSWAPPose:
+  """Where every joint of the arm is, and which way each link lies.
+
+  One answer for the whole arm rather than for its end. The two links are what put the gripper
+  where it is, so a caller asking whether the arm clears something needs the joint between them as
+  much as the point at the end of it: a wrist folded back swings link 2 the opposite way to the
+  turn, and only the middle joint shows that.
+
+  Every coordinate and rotation here is in the STAR's deck frame, as `StarFramePose` states it.
+  """
+
+  rotation_joint: Coordinate
+  """Where the rotation drive is: the joint link 1 turns about."""
+  wrist_joint: Coordinate
+  """Link 1's far end, which is the joint link 2 turns about."""
+  gripper: StarFramePose
+  """Link 2's far end, between the fingers, and the yaw link 2 lies along."""
+  link_1_rotation: Rotation
+  """Which way link 1 lies, from the rotation joint to the wrist joint. Link 2's is the
+  gripper's."""
+  joints: Dict[iSWAPAxis, float]
+  """What each drive reported, in its own units, as `request_joint_state` returns it."""
 
 
 @dataclass
@@ -437,6 +467,23 @@ class iSWAP:
     return await self._driver.send_command(module="C0", command="FI", subsystem="R0")
 
   # -- where it is -----------------------------------------------------------
+
+  def update_rotation(self, angle: float) -> None:
+    """Record which way the arm points on the resource that models it.
+
+    The carriage is what the arm is mounted on, so the arm's angle is carried there and anything
+    hung off it - the links, and what they hold - turns with it. Stated as the deck angle link 1
+    lies along, which is the rotation drive's own angle less ninety degrees, so a resource's
+    rotation reads in the frame every other resource is placed in.
+
+    Does nothing when the driver was given no deck, and so has nothing to model.
+
+    Args:
+      angle: the rotation drive's angle, in degrees, as it reports it.
+    """
+    if self.resource is None or self._driver.deck is None:
+      return
+    self.resource.rotation = Rotation(z=angle - 90.0)
 
   def update_location_by_reference_point(
     self, y: Optional[float] = None, z: Optional[float] = None
@@ -924,14 +971,42 @@ class iSWAP:
 
     # The wrist is held where it already is: both joints go in one command, so where it is has to
     # be read before the rotation drive can be told to move without taking the wrist with it.
+    #
+    # Held, not neutral. Where the arm ends up is both joints together - a wrist folded back turns
+    # a rotation into link 2 sweeping the other way - so `reach_of` is what says where this pose
+    # puts the arm, and the caller is the one that has to have checked it.
     wrist = c.wrist_deg_to_increments(await self.request_wrist_drive_angle())
-    return await self._unchecked_fw_rotation_drive_rotate_increments(
-      rotation_increments=increments,
-      wrist_increments=wrist,
-      rotation_speed=speed,
-      rotation_acceleration=acceleration,
-      rotation_current_limit=current_limit,
-    )
+    try:
+      resp = await self._unchecked_fw_rotation_drive_rotate_increments(
+        rotation_increments=increments,
+        wrist_increments=wrist,
+        rotation_speed=speed,
+        rotation_acceleration=acceleration,
+        rotation_current_limit=current_limit,
+      )
+    except Exception:
+      await self._record_where_it_stopped_turning()
+      raise
+    self.update_rotation(c.rotation_drive_increments_to_angle(increments))
+    return resp
+
+  async def _record_where_it_stopped_turning(self) -> None:
+    """Read what angle the drives came to rest at, and log it.
+
+    For a rotation's failure path. A turn that stopped part way left the arm at an angle no target
+    describes, and nothing models where it points, so the reading is the only record there is. Its
+    own failure is logged and swallowed: it must not replace the move's exception.
+    """
+    try:
+      # The read records it too, so the model is left holding where the arm stopped rather than
+      # where it was sent.
+      rotation = await self.request_rotation_drive_angle()
+      wrist = await self.request_wrist_drive_angle()
+      logger.warning(
+        "the arm stopped turning at rotation %.2f deg, wrist %.2f deg", rotation, wrist
+      )
+    except Exception:
+      logger.warning("could not read what angle the arm stopped turning at")
 
   async def request_rotation_drive_angle(self) -> float:
     """Read the rotation drive's angle, signed from the calibrated front stop.
@@ -940,7 +1015,9 @@ class iSWAP:
       The angle in degrees.
     """
     resp = await self._driver.send_command(module="R0", command="RW", fmt="rw######")
-    return self.configuration.rotation_drive_increments_to_angle(cast(int, resp["rw"]))
+    angle = self.configuration.rotation_drive_increments_to_angle(cast(int, resp["rw"]))
+    self.update_rotation(angle)
+    return angle
 
   async def request_wrist_drive_angle(self) -> float:
     """Read the wrist drive's angle, signed from the motor's own zero.
@@ -988,7 +1065,7 @@ class iSWAP:
     link_2_length: float,
     wrist_straight_angle: float,
     rotation_drive_z_offset_above_finger: float,
-  ) -> CartesianPose:
+  ) -> iSWAPPose:
     """Where a joint state puts the gripper. Pure arithmetic: nothing is read.
 
     Two links off the rotation drive. Link 1 leaves it at the rotation angle, link 2 leaves the
@@ -1003,7 +1080,7 @@ class iSWAP:
       rotation_drive_z_offset_above_finger: how far the drive's bottom sits above the fingers.
 
     Returns:
-      The grip centre, and the yaw link 2 lies along.
+      Every joint of the arm, and the deck angle of each link.
     """
     link_1_deck_angle = joints[iSWAPAxis.ROTATION] - 90.0
     link_2_deck_angle = link_1_deck_angle + (joints[iSWAPAxis.WRIST] - wrist_straight_angle)
@@ -1011,20 +1088,29 @@ class iSWAP:
     alpha_1 = math.radians(link_1_deck_angle)
     alpha_2 = math.radians(link_2_deck_angle)
 
-    return CartesianPose(
-      location=Coordinate(
-        x=joints[iSWAPAxis.X]
-        + link_1_length * math.cos(alpha_1)
-        + link_2_length * math.cos(alpha_2),
-        y=joints[iSWAPAxis.Y]
-        + link_1_length * math.sin(alpha_1)
-        + link_2_length * math.sin(alpha_2),
-        z=joints[iSWAPAxis.Z] - rotation_drive_z_offset_above_finger,
+    # Both joints sit at the drive's own height; the fingers hang below its bottom.
+    base = Coordinate(x=joints[iSWAPAxis.X], y=joints[iSWAPAxis.Y], z=joints[iSWAPAxis.Z])
+    wrist = Coordinate(
+      x=base.x + link_1_length * math.cos(alpha_1),
+      y=base.y + link_1_length * math.sin(alpha_1),
+      z=base.z,
+    )
+    return iSWAPPose(
+      rotation_joint=base,
+      wrist_joint=wrist,
+      gripper=StarFramePose(
+        location=Coordinate(
+          x=wrist.x + link_2_length * math.cos(alpha_2),
+          y=wrist.y + link_2_length * math.sin(alpha_2),
+          z=base.z - rotation_drive_z_offset_above_finger,
+        ),
+        rotation=Rotation(z=link_2_deck_angle),
       ),
-      rotation=Rotation(z=link_2_deck_angle),
+      link_1_rotation=Rotation(z=link_1_deck_angle),
+      joints=joints,
     )
 
-  async def request_pose(self) -> CartesianPose:
+  async def request_pose(self) -> iSWAPPose:
     """Where the gripper is, worked out from the joint state.
 
     Read and computed rather than asked for: the master answers a gripper position of its own, but
@@ -1032,8 +1118,9 @@ class iSWAP:
     so it holds whenever it is called.
 
     Returns:
-      The grip centre in deck mm, and the gripper's yaw in degrees. Only yaw is set: the gripper
-      plane stays parallel to the deck.
+      Every joint of the arm and the deck angle of each link, in one answer: what a caller needs
+      to say whether the arm clears something is where its middle joint is as much as where its
+      end is.
 
     Raises:
       RuntimeError: If the link lengths or the wrist's stops were not read.
