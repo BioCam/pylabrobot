@@ -244,15 +244,6 @@ class SimulatedPipettes(_Simulated, Pipettes):
     await super().initialize(*args, **kwargs)
     self.device.tips_mounted = [False] * len(self.device.tips_mounted)
 
-  async def request_y_positions(self) -> List[float]:
-    # Where initialization spread them, which is where a device that has been set up leaves
-    # them and nothing here has since moved them. Answered from the procedure rather than from the
-    # resources, so the model can be checked against this rather than derived from it.
-    positions = self.default_initialize_y_positions()
-    for channel, y in enumerate(positions):
-      self.update_location_by_reference_point(channel, y=y)
-    return positions
-
   @property
   def _z(self) -> Dict[int, float]:
     """Where each channel's drive is held to be, in mm.
@@ -882,6 +873,35 @@ class STARSimulationDriver(STARDriver):
   def _describe_link(self) -> str:
     return "simulation (no link)"
 
+  def _answer(self, module: str, command: str) -> Optional[Tuple[Any, str]]:
+    """What the device would answer, taken from the model rather than from a drive.
+
+    A read reaches here the same way a move does, so the command it assembles is put on the
+    simulated link and logged before this answers it. That is what a feature answering for itself
+    cannot do: the command is never built, so nothing records that it was asked.
+
+    Args:
+      module: the module the command was addressed to.
+      command: the two-letter command code.
+
+    Returns:
+      The answer in the shape the caller's format implies, and where in the model it came from.
+      None for a command nothing here answers, which is every command that only moves.
+    """
+    if (module, command) == ("C0", "RY"):
+      # Whichever arm carries channels, rather than `self.pipettes`, which refuses to choose on a
+      # device with two arms. Answering here costs the feature's own context: a C0 command names
+      # no arm, so the answer has to find the feature the command is about.
+      pipettes = next((arm.pipettes for arm in self.arms if arm.pipettes is not None), None)
+      if pipettes is None:
+        return None
+      # Where initialization spread them, which is where a device that has been set up leaves
+      # them and nothing here has since moved them. Answered from the procedure rather than from
+      # the resources, so the model can be checked against this rather than derived from it.
+      positions = pipettes.default_initialize_y_positions()
+      return {"ry": [round(y * 10) for y in positions]}, "the channels' initialize positions"
+    return None
+
   async def _send(
     self,
     module: str,
@@ -893,11 +913,12 @@ class STARSimulationDriver(STARDriver):
     wait=True,
     fmt: Optional[Any] = None,
     **kwargs: Any,
-  ) -> None:
-    """Say what would have been sent, and answer nothing.
+  ) -> Any:
+    """Say what would have been sent, and answer from the model where there is an answer.
 
-    A command that only moves needs no more than this. One whose answer is read is overridden on
-    the feature that reads it, so it never gets here.
+    A command that only moves is logged and answered with nothing. One whose answer is read is
+    logged the same way and then answered by `_answer`, so a read puts its command on the link
+    exactly as a move does.
 
     What it logs is what a real link logs: the assembled command as a write, and the answer as a
     read, so a simulated run reads like a recorded one.
@@ -905,18 +926,21 @@ class STARSimulationDriver(STARDriver):
     Replacing `_send` rather than `send_command` leaves the coordination in place, so a simulated
     run serializes what a real one serializes.
     """
-    self._log_exchange(
-      assemble_channel_command(
-        module=module,
-        command=command,
-        id_=None,
-        tip_pattern=tip_pattern,
-        num_channels=self.num_channels,
-        **kwargs,
-      ),
-      None,
+    cmd = assemble_channel_command(
+      module=module,
+      command=command,
+      id_=None,
+      tip_pattern=tip_pattern,
+      num_channels=self.num_channels,
+      **kwargs,
     )
-    return None
+    answered = self._answer(module, command)
+    if answered is None:
+      self._log_exchange(cmd, None)
+      return None
+    value, source = answered
+    self._log_exchange(cmd, f"simulation: {value} from model {source}")
+    return value
 
   async def send_raw_command(self, command: str, *args: Any, **kwargs: Any) -> None:
     self._log_exchange(command, None)
