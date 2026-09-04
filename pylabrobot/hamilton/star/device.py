@@ -1,9 +1,9 @@
 """The STAR: the instrument, and what it knows about its own deck."""
 
 import logging
-from typing import Optional
+from typing import Any, Dict, Optional
 
-from pylabrobot.hamilton.star.driver.configuration import DeviceRecording
+from pylabrobot.hamilton.star.driver.configuration import read_configuration
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.cover import FrontCover
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
@@ -199,22 +199,30 @@ class STARDevice(Resource):
         logger.warning("a driver was given, so the recorded configuration is not read")
       self.driver: STARDriver = driver
     else:
-      # What the file records, or nothing - in which case the simulated machine works out from its
+      # What the file records, or nothing - in which case the simulated device works out from its
       # deck what frame it is on, and says what it assumed.
-      recorded = (
-        DeviceRecording()
-        if simulated_configuration is None
-        else DeviceRecording.load(simulated_configuration)
+      read: Dict[str, Any] = (
+        {} if simulated_configuration is None else read_configuration(simulated_configuration)
       )
+      # A saved configuration says which arm carries what. A simulated device takes one of each,
+      # so a file recording the same feature on both arms is refused rather than half-read.
+      carried: Dict[str, Any] = {}
+      for side, features in read.get("arms", {}).items():
+        for name, configuration in features.items():
+          if name in carried:
+            raise ValueError(
+              f"the saved configuration has a {name} on more than one arm; a simulated device "
+              f"stands in for one of each, so it cannot answer as this one (seen again on {side})"
+            )
+          carried[name] = configuration
       self.driver = STARSimulationDriver(
         deck=deck,
-        configuration=recorded.device,
-        pipettes=recorded.pipettes,
-        head96=recorded.head96,
-        head384=recorded.head384,
-        iswap=recorded.iswap,
-        autoload=recorded.autoload,
-        front_cover=recorded.front_cover,
+        configuration=read.get("device"),
+        pipettes=carried.get("pipettes"),
+        head96=carried.get("head96"),
+        head384=carried.get("head384"),
+        iswap=carried.get("iswap"),
+        autoload=read.get("autoload"),
       )
 
     if self.driver.deck is not None and self.driver.deck is not deck:
@@ -358,36 +366,6 @@ def STAR(
     left_side_panel_installed=left_side_panel_installed,
     deck_location=STAR_DECK_LOCATION,
     model=STAR.__name__,
-  )
-
-
-def STAR_with_extension_housing(
-  deck: Optional[HamiltonSTARDeck] = None,
-  simulation: bool = False,
-  simulated_configuration: Optional[str] = None,
-  driver: Optional[STARDriver] = None,
-  name: str = "Hamilton STAR (left extension housing)",
-  size_x: float = STAR_SIZE_X,
-  size_y: float = MANUAL_SIZE_Y,
-  size_z: float = SIZE_Z,
-) -> STARDevice:
-  """A full-size STAR with the extension housing on its left, on a full-size STAR deck.
-
-  The same machine as `STAR(extension_housing=True)`, which is now the way to ask for one.
-
-  Returns:
-    The instrument, with the housing standing beside its chassis.
-  """
-  return STAR(
-    deck=deck,
-    simulation=simulation,
-    simulated_configuration=simulated_configuration,
-    driver=driver,
-    name=name,
-    size_x=size_x,
-    size_y=size_y,
-    size_z=size_z,
-    extension_housing=True,
   )
 
 

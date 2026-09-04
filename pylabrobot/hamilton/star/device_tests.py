@@ -7,7 +7,6 @@ from pylabrobot.hamilton.star.device import (
   STAR,
   STAR_DECK_LOCATION,
   STAR_SIZE_X,
-  STAR_with_extension_housing,
   STARDevice,
   STARLet,
 )
@@ -53,7 +52,7 @@ class TestFactories(unittest.IsolatedAsyncioTestCase):
     It bolts to the left, so it sits at a negative x. Growing the instrument instead would move its
     origin, and everything measured from that origin with it.
     """
-    star = STAR_with_extension_housing(simulation=True)
+    star = STAR(simulation=True)
     self.assertEqual(star.get_absolute_size_x(), STAR_SIZE_X)
     self.assertEqual(cast(Coordinate, star.deck.location).x, STAR_DECK_LOCATION.x)
 

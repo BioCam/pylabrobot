@@ -910,8 +910,11 @@ class Pipettes:
       Each channel's stop-disk Z, in mm, back to front.
     """
     z_range = self.configuration.z_range
+
     if z_range is None:
       await self.probe_z_max()
       return list((await self.request_z_positions()).values())
+
     await self.move_to_z_positions({channel: z_range[1] for channel in range(self.num_channels)})
+
     return list((await self.request_z_positions()).values())

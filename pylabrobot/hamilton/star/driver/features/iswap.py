@@ -108,6 +108,7 @@ class iSWAPConfiguration:
   """
 
   firmware_version: Optional[str] = None
+  firmware_date: Optional[str] = None
 
   # -- X --
   rotation_drive_x_offset: Optional[float] = None
@@ -115,7 +116,11 @@ class iSWAPConfiguration:
   EEPROM. The Hamilton factory default is 34.0 mm."""
 
   # -- Y --
-  rotation_drive_y_max: Optional[float] = None
+  rotation_drive_predefined_y_positions_increments: Optional[Dict[str, int]] = None
+  """Each Y stop the carriage is calibrated against, in increments, keyed as `Y_SLOTS` names them.
+
+  The whole stored table rather than the one stop the driver bounds moves by, so what this holds is
+  what the drive reports: a recording of it answers every Y read, not just the parking one."""
 
   # -- rotation drive --
   rotation_drive_predefined_increments: Optional[Dict[str, int]] = None
@@ -171,6 +176,18 @@ class iSWAPConfiguration:
   gripper_mm_per_increment: float = 0.00554337
 
   # -- conversions: the wire counts in increments, the driver speaks mm and degrees ----------
+
+  @property
+  def rotation_drive_y_max(self) -> Optional[float]:
+    """How far back the carriage may be sent, in mm: the parking stop it is calibrated against.
+
+    Returns:
+      The parking stop in mm, or None until the stored Y table has been read.
+    """
+    stops = self.rotation_drive_predefined_y_positions_increments
+    if stops is None:
+      return None
+    return self.y_increments_to_mm(stops["parking"])
 
   def y_increments_to_mm(self, increments: int) -> float:
     """A Y-carriage position in mm, from the increments the drive counts in."""
@@ -375,7 +392,9 @@ class iSWAP:
         RECORDED_FIRMWARE_PREFIX,
       )
     c.rotation_drive_x_offset = await self.request_rotation_drive_x_offset()
-    c.rotation_drive_y_max = (await self.rotation_drive_request_y_stops())["parking"]
+    c.rotation_drive_predefined_y_positions_increments = dict(
+      zip(Y_SLOTS, await self._request_slots("py"))
+    )
 
     rotation = await self._request_slots("pw")
     c.rotation_drive_predefined_increments = dict(zip(ROTATION_DRIVE_SLOTS, rotation))

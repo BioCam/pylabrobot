@@ -6,6 +6,7 @@
 
 import asyncio
 import datetime
+import json
 import logging
 from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
@@ -16,10 +17,7 @@ from pylabrobot.hamilton.protocol.text.framing import (
   parse_fw_string,
 )
 from pylabrobot.hamilton.protocol.text.router import ReplyRouter
-from pylabrobot.hamilton.star.driver.configuration import (
-  DeviceConfiguration,
-  DeviceRecording,
-)
+from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
 from pylabrobot.hamilton.star.driver.errors import (
   STAR_MODULE_ID_LENGTH,
   check_fw_string_error,
@@ -32,6 +30,7 @@ from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.hamilton.star.driver.lock import _FirmwareLock
+from pylabrobot.hamilton.star.driver.serialization import to_jsonable
 from pylabrobot.hamilton.star.resource_model import (
   NChannelPipette,
   iswap_channel,
@@ -65,6 +64,7 @@ class STARDriver:
     device_address: Optional[int] = None,
     serial_number: Optional[str] = None,
     deck: Optional[HamiltonDeck] = None,
+    declared_configuration_json: Optional[str] = None,
     packet_read_timeout: int = 3,
     write_timeout: int = 30,
     read_timeout: int = 120,
@@ -87,6 +87,10 @@ class STARDriver:
       io: an already-built USB handle to use instead of opening one from the arguments above.
       deck: the deck to reflect the machine into. Optional: without one the driver still drives the
         machine, and nothing about where things are is modelled.
+      declared_configuration_json: directory to a JSON file representing the declared configuration
+        for the device. If given, (1) on physical device, will cross-check declared vs discovered to
+        ensure compatibility, (2) in simulation, will use the declared configuration instead
+        simulation default.
     """
 
     self.io: IOBase = io or USB(
@@ -517,6 +521,18 @@ class STARDriver:
   # Device queries
   # ----------------------------------------
 
+  async def request_device_serial_number(self) -> str:
+    """Request what the device calls itself.
+
+    Not the USB serial this driver may have picked the device off the bus with: that identifies a
+    handle, this identifies the device answering on it.
+
+    Returns:
+      The serial number the device answers.
+    """
+    resp = await self.send_command(module="C0", command="RI", fmt="si####sn&&&&sn&&&&")
+    return cast(str, resp["sn"])
+
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
     """Request the master's firmware version and build date.
 
@@ -781,55 +797,27 @@ class STARDriver:
   # Discovery and initialization
   # ----------------------------------------
 
-  @property
-  def configurations(self) -> DeviceRecording:
-    """Every configuration this device holds, collected into one.
-
-    What discovery filled, so this is worth reading after setup. Written to a file, it is what a
-    simulated device needs to stand in for this one.
-
-    Returns:
-      The device's own configuration and that of each feature fitted to it.
-
-    Raises:
-      RuntimeError: If nothing has been read off the device yet.
-    """
-    if self.configuration is None:
-      raise RuntimeError("nothing has been read off this device; call `setup` first")
-    # One of each, whichever arm carries it: a module sits on a CAN node of its own, so a device
-    # has one 96-head and one iSWAP however many arms it has.
-    pipettes = next((arm.pipettes for arm in self.arms if arm.pipettes is not None), None)
-    head96 = next((arm.head96 for arm in self.arms if arm.head96 is not None), None)
-    head384 = next((arm.head384 for arm in self.arms if arm.head384 is not None), None)
-    iswap = next((arm.iswap for arm in self.arms if arm.iswap is not None), None)
-    return DeviceRecording(
-      device=self.configuration,
-      pipettes=None if pipettes is None else pipettes.configuration,
-      head96=None if head96 is None else head96.configuration,
-      head384=None if head384 is None else head384.configuration,
-      iswap=None if iswap is None else iswap.configuration,
-      autoload=None if self.autoload is None else self.autoload.configuration,
-      front_cover=None if self.front_cover is None else self.front_cover.configuration,
-    )
-
-  def save_configuration(self, path: str, indent: Optional[int] = 2) -> None:
-    """Write what this device reported to a file, to be simulated from later.
-
-    Args:
-      path: where to write it.
-      indent: how far to indent the JSON, or None to write it on one line.
-
-    Raises:
-      RuntimeError: If nothing has been read off the device yet.
-    """
-    self.configurations.save(path, indent=indent)
-
   async def discover(self):
     """Read what machine is on the other end, and build the subsystems it turns out to have.
 
     Read-only: nothing moves. Call `initialize` to bring the machine up.
     """
     self.configuration = await self.request_device_configuration()
+    # Which device answered, and what it is running. Read into the same configuration the rest of
+    # discovery fills, so a saved one says where it came from. A device that will not answer keeps
+    # nothing rather than failing setup: the identity is for telling recordings apart, and nothing
+    # the driver does depends on it.
+    try:
+      self.configuration.serial_number = await self.request_device_serial_number()
+    except Exception:
+      logger.warning("the device did not say what it calls itself; leaving its serial unrecorded")
+    try:
+      (
+        self.configuration.firmware_version,
+        self.configuration.firmware_date,
+      ) = await self.request_firmware_version()
+    except Exception:
+      logger.warning("the device did not report its firmware; leaving its version unrecorded")
     self._num_channels = self.configuration.num_pip_channels
 
     # Built for what the machine turns out to have, and only if not already there: a caller can
@@ -881,9 +869,10 @@ class STARDriver:
     for arm in arms:
       arm.narrow_travel_for_left_side_panel()
 
-    master_version, _ = await self.request_firmware_version()
+    # Read once, at discovery, and recorded there: a device that would not say leaves None, which
+    # the confirmation below skips as it does for a feature that reported nothing.
     reported = {
-      "master": master_version,
+      "master": self.configuration.firmware_version,
       "pipettes": next(
         (a.pipettes.configuration.channels[0].firmware_version for a in arms if a.pipettes), None
       ),
@@ -1076,6 +1065,58 @@ class STARDriver:
     if sum(arm.configuration.pip_installed for arm in arms) > 1:
       lines.append("      (the machine reports one channel count for the instrument, not per arm)")
     return "\n".join(lines)
+
+  # ----------------------------------------
+  # Configuration system
+  # ----------------------------------------
+
+  def _saved_configuration(self) -> Dict[str, Any]:
+    """Every configuration this device holds, shaped as the device is.
+
+    Walked rather than listed: the device's own configuration, then whatever each arm turns out to
+    carry under the side carrying it, then whatever is fitted to the device itself. Nothing here
+    fixes how many of anything a device may have, so one that grows a second head is saved without
+    this having to change.
+
+    Returns:
+      What `save_configuration` writes.
+
+    Raises:
+      RuntimeError: If nothing has been read off the device yet.
+    """
+    if self.configuration is None:
+      raise RuntimeError("nothing has been read off this device; call `setup` first")
+
+    saved: Dict[str, Any] = {"device": to_jsonable(self.configuration), "arms": {}}
+    for arm in self.arms:
+      carried = {
+        name: to_jsonable(feature.configuration)
+        for name, feature in (
+          ("pipettes", arm.pipettes),
+          ("head96", arm.head96),
+          ("head384", arm.head384),
+          ("iswap", arm.iswap),
+        )
+        if feature is not None
+      }
+      if carried:
+        saved["arms"][arm.side] = carried
+    if self.autoload is not None:
+      saved["autoload"] = to_jsonable(self.autoload.configuration)
+    return saved
+
+  def save_configuration(self, path: str, indent: Optional[int] = 2) -> None:
+    """Write what this device reported to a file, to be simulated from later.
+
+    Args:
+      path: where to write it.
+      indent: how far to indent the JSON, or None to write it on one line.
+
+    Raises:
+      RuntimeError: If nothing has been read off the device yet.
+    """
+    with open(path, "w", encoding="utf-8") as f:
+      json.dump(self._saved_configuration(), f, indent=indent)
 
   # ----------------------------------------
   # Resource model

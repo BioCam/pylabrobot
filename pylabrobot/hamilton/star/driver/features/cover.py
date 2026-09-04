@@ -1,8 +1,7 @@
 """The front cover: the hinged window over the deck, and whether the machine may move with it open."""
 
 import logging
-from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Dict, Literal, Optional, cast
+from typing import TYPE_CHECKING, Dict, Literal, cast
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -12,12 +11,9 @@ logger = logging.getLogger(__name__)
 # Whether the cover is shut, as the master answers.
 CoverPosition = Literal["open", "closed"]
 
-
-@dataclass
-class FrontCoverConfiguration:
-  """Information regarding the monitored front cover capabaility."""
-
-  positions: Dict[CoverPosition, int] = field(default_factory=lambda: {"open": 0, "closed": 1})
+# What the master answers for each position. The master's own protocol rather than anything the
+# cover reports: it has no module of its own, so there is nothing to read and nothing to vary.
+COVER_POSITION_CODES: Dict[CoverPosition, int] = {"open": 0, "closed": 1}
 
 
 class FrontCover:
@@ -28,14 +24,12 @@ class FrontCover:
   Control module(s): `C0`/master only (no module of its own and no firmware version to report).
   """
 
-  def __init__(self, driver: "STARDriver", configuration: Optional[FrontCoverConfiguration] = None):
+  def __init__(self, driver: "STARDriver"):
     """
     Args:
       driver: the driver to send commands through.
-      configuration: the front cover's device facts. Defaults to `FrontCoverConfiguration()`.
     """
     self._driver = driver
-    self.configuration = configuration or FrontCoverConfiguration()
 
   # -- position --------------------------------------------------------------
 
@@ -43,11 +37,11 @@ class FrontCover:
     """Request whether the cover is open or shut.
 
     Returns:
-      Which one, as named in `configuration.positions`.
+      Which one, as named in `COVER_POSITION_CODES`.
     """
     resp = await self._driver.send_command(module="C0", command="QC", fmt="qc#")
     code = cast(int, resp["qc"])
-    return "closed" if code == self.configuration.positions["closed"] else "open"
+    return "closed" if code == COVER_POSITION_CODES["closed"] else "open"
 
   # -- the lock --------------------------------------------------------------
   # TODO: verify whether lock mentioned in firmware actually exists on hardware

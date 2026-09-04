@@ -19,15 +19,11 @@ from pylabrobot.hamilton.protocol.text.framing import (
   assemble_channel_command,
   parse_firmware_version_date,
 )
-from pylabrobot.hamilton.star.driver.configuration import (
-  DeviceConfiguration,
-  DeviceRecording,
-)
+from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration, read_configuration
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
 from pylabrobot.hamilton.star.driver.features.cover import (
   CoverPosition,
   FrontCover,
-  FrontCoverConfiguration,
 )
 from pylabrobot.hamilton.star.driver.features.head import (
   HEAD_REFERENCE_SHAFT,
@@ -36,7 +32,13 @@ from pylabrobot.hamilton.star.driver.features.head import (
 )
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
 from pylabrobot.hamilton.star.driver.features.head384 import Head384, Head384Configuration
-from pylabrobot.hamilton.star.driver.features.iswap import iSWAP, iSWAPConfiguration
+from pylabrobot.hamilton.star.driver.features.iswap import (
+  ROTATION_DRIVE_SLOTS,
+  WRIST_DRIVE_SLOTS,
+  Y_SLOTS,
+  iSWAP,
+  iSWAPConfiguration,
+)
 from pylabrobot.hamilton.star.driver.features.pipettes import (
   PipetteConfiguration,
   Pipettes,
@@ -126,12 +128,6 @@ SIMULATED_BARCODE: Optional[str] = None
 SIMULATED_ISWAP_Z = 299.0
 
 # The iSWAP's stored position tables, and where its rotation drive sits relative to the carriage.
-SIMULATED_ISWAP_TABLES = {
-  "pw": [13000, -29007, 156, 29068, 29500, 29068, 29068, 29068, 29068, 1378],
-  "pt": [-26577, -26577, -8860, 9044, 26858, -26577, -26577, -26577, -26577, 1377],
-  "py": [9855, 7000, 9000, 13550, 12600, 9855, 9855, 9855, 9855, 9855],
-}
-SIMULATED_ISWAP_X_OFFSET = 32.8
 
 # Where the iSWAP's rotation drive rests along Y when a simulated machine is switched on, in mm:
 # at its parking stop.
@@ -156,27 +152,36 @@ BARE_X_ARM = XArmConfiguration(
 # kept beside this module rather than written out here, so recording another machine is saving a
 # file rather than editing code. `STARDriver.save_configuration` is what writes one.
 _RECORDINGS = os.path.join(os.path.dirname(__file__), "recordings")
-RECORDED_STAR = DeviceRecording.load(os.path.join(_RECORDINGS, "star.json"))
-if (
-  RECORDED_STAR.device is None
-  or RECORDED_STAR.head96 is None
-  or RECORDED_STAR.head384 is None
-  or RECORDED_STAR.autoload is None
-  or RECORDED_STAR.pipettes is None
-  or not RECORDED_STAR.pipettes.channels
-):
+RECORDED_STAR = read_configuration(
+  os.path.join(_RECORDINGS, "star_legacy_2021_8ch_head96_autoload1D.json")
+)
+_RECORDED_LEFT_ARM = RECORDED_STAR["arms"].get("left", {})
+if "device" not in RECORDED_STAR or not {"head96", "iswap"} <= set(_RECORDED_LEFT_ARM):
   raise RuntimeError(
-    "the recorded STAR names no instrument, head, autoload or channel; the file beside this "
-    "module is incomplete, or did not come along with the install"
+    "the recorded STAR names no device, no 96-head or no iSWAP; the file beside this module is "
+    "incomplete, "
+    "or did not come along with the install"
   )
 
-DEFAULT_STAR_CONFIGURATION = RECORDED_STAR.device
-SIMULATED_HEAD96 = RECORDED_STAR.head96
-SIMULATED_HEAD384 = RECORDED_STAR.head384
-SIMULATED_AUTOLOAD = RECORDED_STAR.autoload
-# One channel stands for all of them: they are the same part, and the machine holds one set of
+DEFAULT_STAR_CONFIGURATION: DeviceConfiguration = RECORDED_STAR["device"]
+SIMULATED_HEAD96: Head96Configuration = _RECORDED_LEFT_ARM["head96"]
+SIMULATED_AUTOLOAD: AutoloadConfiguration = RECORDED_STAR["autoload"]
+# One channel stands for all of them: they are the same part, and the device holds one set of
 # resolutions for the lot.
-SIMULATED_PIPETTE = RECORDED_STAR.pipettes.channels[0]
+SIMULATED_PIPETTE: PipetteConfiguration = _RECORDED_LEFT_ARM["pipettes"].channels[0]
+SIMULATED_ISWAP: iSWAPConfiguration = _RECORDED_LEFT_ARM["iswap"]
+
+# The 384-head a device configured for one has. Not in the recording above, because that device
+# has none and no 384-head has been read off any: the offset and the drive defaults here are the
+# ones the drives document. Replace this with a recording when there is one to take.
+SIMULATED_HEAD384 = Head384Configuration(
+  firmware_version=SIMULATED_FIRMWARE["head384"],
+  firmware_date=parse_firmware_version_date(SIMULATED_FIRMWARE["head384"]),
+  head_type="High volume head",
+  x_offset=260.0,
+  supports_clot_monitoring_clld=False,
+  supports_lld_absolute_threshold_check=False,
+)
 
 
 # The highest track the recorded autoload's sled reaches, from its own drive window. Tracks past
@@ -559,10 +564,14 @@ class SimulatedISWAP(_Simulated, iSWAP):
     return resp
 
   async def request_rotation_drive_angle(self) -> float:
-    return self.configuration.rotation_drive_increments_to_angle(SIMULATED_ISWAP_TABLES["pw"][4])
+    stops = (await self._request_slots("pw"))[: len(ROTATION_DRIVE_SLOTS)]
+    parked = dict(zip(ROTATION_DRIVE_SLOTS, stops))["parking"]
+    return self.configuration.rotation_drive_increments_to_angle(parked)
 
   async def request_wrist_drive_angle(self) -> float:
-    return self.configuration.wrist_increments_to_deg(SIMULATED_ISWAP_TABLES["pt"][2])
+    stops = (await self._request_slots("pt"))[: len(WRIST_DRIVE_SLOTS)]
+    straight = dict(zip(WRIST_DRIVE_SLOTS, stops))["straight"]
+    return self.configuration.wrist_increments_to_deg(straight)
 
   async def request_gripper_width(self) -> float:
     return self.configuration.gripper_increments_to_mm(SIMULATED_ISWAP_GRIPPER_WIDTH)
@@ -572,11 +581,39 @@ class SimulatedISWAP(_Simulated, iSWAP):
     self._z = z
     return resp
 
+  @property
+  def _declared(self) -> iSWAPConfiguration:
+    """The iSWAP this machine was told it has.
+
+    Distinct from `configuration`, which discovery fills from these answers exactly as it would
+    off an instrument.
+    """
+    return self.machine.simulated_iswap
+
   async def request_rotation_drive_x_offset(self) -> float:
-    return SIMULATED_ISWAP_X_OFFSET
+    offset = self._declared.rotation_drive_x_offset
+    if offset is None:
+      raise RuntimeError("the simulated iSWAP has no X offset; set it on its configuration")
+    return offset
 
   async def _request_slots(self, table: str) -> List[int]:
-    return list(SIMULATED_ISWAP_TABLES[table])
+    # Rendered from what this iSWAP is, rather than written out separately: discovery reads these
+    # tables back into the stops and link lengths, so an iSWAP configured differently answers
+    # differently. Each table carries its drive's stops, then that link's length in tenths.
+    declared = self._declared
+    if table == "py":
+      stops, length = declared.rotation_drive_predefined_y_positions_increments, None
+      names: Tuple[str, ...] = Y_SLOTS
+    elif table == "pw":
+      stops, length = declared.rotation_drive_predefined_increments, declared.link_1_length
+      names = ROTATION_DRIVE_SLOTS
+    else:
+      stops, length = declared.wrist_drive_predefined_increments, declared.link_2_length
+      names = WRIST_DRIVE_SLOTS
+    if stops is None:
+      raise RuntimeError(f"the simulated iSWAP has no {table} table; set it on its configuration")
+    rendered = [stops[name] for name in names]
+    return rendered if length is None else rendered + [round(length * 10)]
 
   async def initialize(self):
     """Goes through the command path, so it is coordinated like the real one."""
@@ -735,7 +772,6 @@ class STARSimulationDriver(STARDriver):
     head384: Optional[Head384Configuration] = None,
     iswap: Optional[iSWAPConfiguration] = None,
     pipettes: Optional[PipettesConfiguration] = None,
-    front_cover: Optional[FrontCoverConfiguration] = None,
     deck: Optional[HamiltonDeck] = None,
     serial_number: str = SIMULATED_SERIAL_NUMBER,
     initialized: bool = False,
@@ -757,7 +793,6 @@ class STARSimulationDriver(STARDriver):
         `SIMULATED_HEAD384`.
       iswap: the iSWAP this machine has. Defaults to the one its firmware documents.
       pipettes: the channels this machine has. Defaults to the ones this frame documents.
-      front_cover: the front cover this machine has. Defaults to the one it documents.
       deck: the deck to reflect this machine into. Required: a simulated machine has no firmware
         to ask, so the resource model is the only thing it can answer from.
       serial_number: what this machine calls itself.
@@ -792,6 +827,7 @@ class STARSimulationDriver(STARDriver):
     self.simulated_head96 = head96 or SIMULATED_HEAD96
     self.simulated_head384 = head384 or SIMULATED_HEAD384
     self.simulated_pipettes = pipettes
+    self.simulated_iswap = iswap or SIMULATED_ISWAP
     self.serial_number = serial_number
 
     channels = self.simulated_configuration.num_pip_channels
@@ -808,7 +844,7 @@ class STARSimulationDriver(STARDriver):
     # that are not already there, so these stand in for the real ones throughout.
     c = self.simulated_configuration
     if c.main_front_cover_monitoring_installed:
-      self.front_cover = SimulatedFrontCover(self, configuration=front_cover)
+      self.front_cover = SimulatedFrontCover(self)
     if c.left_arm is not None:
       self.left_x_arm = SimulatedXArm(self, side="left")
     if c.right_arm is not None:
@@ -828,7 +864,7 @@ class STARSimulationDriver(STARDriver):
       if a.head384_installed:
         arm.head384 = SimulatedHead384(self)
       if a.iswap_installed:
-        arm.iswap = SimulatedISWAP(self, configuration=iswap)
+        arm.iswap = SimulatedISWAP(self)
 
   def reported(self, feature: str) -> Tuple[str, datetime.date]:
     """What a feature reports for its firmware, and the date in it."""
@@ -849,8 +885,16 @@ class STARSimulationDriver(STARDriver):
   async def request_cover_input_status(self) -> Tuple[bool, bool, bool]:
     return SIMULATED_COVER_INPUTS
 
+  async def request_device_serial_number(self) -> str:
+    # What it was told it is, or what it was told to call itself when the recording did not say.
+    declared = self.simulated_configuration.serial_number
+    return declared if declared is not None else self.serial_number
+
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
-    return self.reported("master")
+    declared = self.simulated_configuration.firmware_version
+    if declared is None:
+      return self.reported("master")
+    return declared, parse_firmware_version_date(declared)
 
   async def request_initialization_status(self, module: str = "C0") -> bool:
     return self.initialized.get(module, False)
