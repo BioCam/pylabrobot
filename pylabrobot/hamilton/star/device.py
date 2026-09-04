@@ -307,9 +307,33 @@ class STARDevice(Resource):
 
   # -- session ---------------------------------------------------------------
 
-  async def setup(self):
-    """Bring the device up."""
-    await self.driver.setup()
+  async def setup(
+    self,
+    skip_device_initialization: bool = False,
+    skip_pipettes: bool = False,
+    skip_iswap: bool = False,
+    skip_head96: bool = False,
+    skip_head384: bool = False,
+    skip_autoload: bool = False,
+  ):
+    """Bring the device up.
+
+    Args:
+      skip_device_initialization: as `STARDriver.setup` takes it.
+      skip_pipettes: as `STARDriver.setup` takes it.
+      skip_iswap: as `STARDriver.setup` takes it.
+      skip_head96: as `STARDriver.setup` takes it.
+      skip_head384: as `STARDriver.setup` takes it.
+      skip_autoload: as `STARDriver.setup` takes it.
+    """
+    await self.driver.setup(
+      skip_device_initialization=skip_device_initialization,
+      skip_pipettes=skip_pipettes,
+      skip_iswap=skip_iswap,
+      skip_head96=skip_head96,
+      skip_head384=skip_head384,
+      skip_autoload=skip_autoload,
+    )
 
   async def stop(self):
     """Put the device down."""

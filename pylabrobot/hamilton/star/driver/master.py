@@ -9,7 +9,7 @@ import dataclasses
 import datetime
 import json
 import logging
-from typing import Any, Dict, List, Literal, Optional, Tuple, cast
+from typing import Any, Dict, FrozenSet, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.events import emit_event
 from pylabrobot.hamilton.protocol.text.framing import (
@@ -170,7 +170,15 @@ class STARDriver:
   # Connection and lifecycle
   # ----------------------------------------
 
-  async def setup(self):
+  async def setup(
+    self,
+    skip_device_initialization: bool = False,
+    skip_pipettes: bool = False,
+    skip_iswap: bool = False,
+    skip_head96: bool = False,
+    skip_head384: bool = False,
+    skip_autoload: bool = False,
+  ):
     """Connect to the device, find out what it is, and bring it up.
 
     This moves the device: everything that can be initialized is. `discover` is the read-only
@@ -178,7 +186,32 @@ class STARDriver:
 
     Repeatable. Discovery re-reads the device, and initialization does nothing on a device that
     is already up. A setup that fails part way closes the link.
+
+    Every argument only ever does less. Each leaves that feature exactly as the device had it -
+    which for one that reports itself down means its drives keep no reference, and it will refuse
+    to move until something initializes it. Discovery still reads it either way, so what is
+    skipped is the moving, not the finding out.
+
+    Args:
+      skip_device_initialization: do not run the device's own initialization procedure on a device
+        that reports itself down. A device that reports itself up is still raised to Z safety,
+        which is not motion this can decline: nothing may travel laterally while a channel is low.
+      skip_pipettes: do not initialize the channels.
+      skip_iswap: do not initialize or park the iSWAP.
+      skip_head96: do not initialize the 96-head.
+      skip_head384: do not initialize the 384-head.
+      skip_autoload: do not initialize or park the autoload.
     """
+    skipped = frozenset(
+      name
+      for name, skip in (
+        ("pipettes", skip_pipettes),
+        ("iswap", skip_iswap),
+        ("head96", skip_head96),
+        ("head384", skip_head384),
+      )
+      if skip
+    )
     logger.debug("Setting up STAR on %s ...", self._describe_link())
     await self._open()
     self._connected = True
@@ -192,9 +225,14 @@ class STARDriver:
       #    unit, and the device procedure holds every drive but its. Phase 3 reads its state
       #    again, so a device that does home it there loses nothing but the overlap.
       logger.debug("[PHASE 2] Device initialization")
-      autoload = self.autoload
-      overlap_autoload = autoload is not None and not await self.request_initialization_status()
-      if autoload is not None and overlap_autoload:
+      autoload = self.autoload if not skip_autoload else None
+      already_initialized = await self.request_initialization_status()
+      overlap_autoload = autoload is not None and not already_initialized
+      if skip_device_initialization and not already_initialized:
+        logger.debug("device reports not initialized, and initializing it was skipped")
+        if autoload is not None:
+          await autoload.initialize()
+      elif autoload is not None and overlap_autoload:
         already_initialized, _ = await asyncio.gather(self.initialize(), autoload.initialize())
       else:
         already_initialized = await self.initialize()
@@ -203,9 +241,9 @@ class STARDriver:
       #    the autoload, iSWAP and 96-head join this gather as they land. The channels only need
       #    it when the device procedure did not just run, or when something is still mounted.
       logger.debug("[PHASE 3] Feature initialization")
-      initializing = [self._initialize_arm(arm, already_initialized) for arm in self.arms]
-      if self.autoload is not None and not overlap_autoload:
-        initializing.append(self.autoload.initialize())
+      initializing = [self._initialize_arm(arm, already_initialized, skipped) for arm in self.arms]
+      if autoload is not None and not overlap_autoload:
+        initializing.append(autoload.initialize())
       await asyncio.gather(*initializing)
 
       # 4. What was found, as resources on the deck - when the driver was given one to reflect
@@ -961,18 +999,21 @@ class STARDriver:
     }
     self.firmware = {name: v for name, v in reported.items() if v is not None}
 
-  async def initialize(self, force: bool = False, read_timeout: int = 300) -> bool:
+  async def initialize(self, read_timeout: int = 300) -> bool:
     """Bring the device itself to a known state.
 
-    This moves it. An uninitialized device runs the initialization procedure, which homes every
-    drive and leaves the channels at Z safety. A device that is already initialized is left where
-    it is, except that the channels are raised to Z safety. Nothing may move laterally while a
-    channel is low.
+    This moves it. A device that reports itself uninitialized runs the initialization procedure.
+    One that reports itself initialized is left where it is, except that the channels are raised
+    to Z safety. Nothing may move laterally while a channel is low.
+
+    The procedure runs only on a device that is down, and `setup` initializes the features in the
+    same call. There is deliberately no way to run it on a device that is up: it takes the
+    features' drives out of reference while the device goes on reporting itself initialized, and
+    nothing that ran afterwards could tell.
 
     This is the device-level step only. `setup` is what initializes the features after it.
 
     Args:
-      force: run the initialization procedure even if the device reports itself initialized.
       read_timeout: how long to wait for the procedure, in seconds.
 
     Returns:
@@ -980,10 +1021,9 @@ class STARDriver:
     """
     already_initialized = await self.request_initialization_status()
 
-    if force or not already_initialized:
+    if not already_initialized:
       logger.debug(
-        "device reports %s - running the initialization procedure (up to %d s)",
-        "initialized, but the run was forced" if already_initialized else "not initialized",
+        "device reports not initialized - running the initialization procedure (up to %d s)",
         read_timeout,
       )
       await self.pre_initialize(read_timeout=read_timeout)
@@ -1025,13 +1065,15 @@ class STARDriver:
       subsystem=_FirmwareLock.EVERY_SUBSYSTEM_BUT_THE_AUTOLOAD,
       read_timeout=read_timeout,
     )
-    logger.warning(
+    logger.debug(
       "the device initialization procedure has run; the features are not initialized and their "
       "drives have no reference until they are"
     )
     return resp
 
-  async def _initialize_arm(self, arm: XArm, already_initialized: bool):
+  async def _initialize_arm(
+    self, arm: XArm, already_initialized: bool, skipped: FrozenSet[str] = frozenset()
+  ):
     """Initialize everything one arm carries, one after another.
 
     The channels, the iSWAP and the 96-head share the arm's X drive. Initializing one while
@@ -1041,9 +1083,14 @@ class STARDriver:
     Args:
       arm: the arm whose features to initialize.
       already_initialized: whether the device reported itself up before this setup ran.
+      skipped: which of `pipettes`, `iswap`, `head96` and `head384` to leave as the device has
+        them. A skipped feature is not raised to safety either, so nothing else may travel
+        laterally on this arm until something brings it up.
     """
     if arm.pipettes is None:
       logger.debug("channels: none installed - skipped")
+    elif "pipettes" in skipped:
+      logger.debug("channels: initializing them was skipped")
     else:
       tips = await arm.pipettes.sense_tip_presence()
       if not already_initialized or any(tips):
@@ -1060,7 +1107,9 @@ class STARDriver:
       # runs on every setup rather than only the first.
       await arm.pipettes.probe_z_max()
 
-    if arm.iswap is not None:
+    if arm.iswap is not None and "iswap" in skipped:
+      logger.debug("iSWAP: initializing it was skipped")
+    elif arm.iswap is not None:
       if not await self.request_initialization_status("R0"):
         logger.debug("iSWAP reports itself uninitialized - initializing")
         await arm.iswap.initialize()
@@ -1068,6 +1117,9 @@ class STARDriver:
 
     for head, name in ((arm.head96, "head96"), (arm.head384, "head384")):
       if head is None:
+        continue
+      if name in skipped:
+        logger.debug("%s: initializing it was skipped", name)
         continue
       if not await self.request_initialization_status(head.configuration.module):
         if head.configuration.tip_discard_location is None:
