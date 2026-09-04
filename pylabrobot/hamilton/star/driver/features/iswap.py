@@ -4,7 +4,7 @@ import enum
 import logging
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Union, cast
 
 from pylabrobot.hamilton.star.resource_model import iSWAPChannel
 from pylabrobot.resources.coordinate import Coordinate
@@ -268,6 +268,32 @@ class iSWAPConfiguration:
     if increments < front:
       return -90.0 * (front - increments) / (front - stops["left"])
     return 90.0 * (increments - front) / (stops["right"] - front)
+
+  def rotation_drive_angle_to_increments(self, angle: float) -> int:
+    """A rotation-drive angle in increments, from degrees against the calibrated stops.
+
+    The inverse of `rotation_drive_increments_to_angle`, piecewise on the same two segments, so
+    -90, 0 and +90 land exactly on the stops this device reports and an angle beyond them
+    extrapolates on its segment's slope.
+
+    Args:
+      angle: degrees, signed from the calibrated front stop.
+
+    Returns:
+      What to send the drive.
+
+    Raises:
+      RuntimeError: If the stored stops were not read.
+    """
+    stops = self.rotation_drive_predefined_increments
+    if stops is None:
+      raise RuntimeError(
+        "the rotation drive's stops were not read; have you called `star.setup()`?"
+      )
+    front = stops["front"]
+    if angle < 0:
+      return round(front - (angle / -90.0) * (front - stops["left"]))
+    return round(front + (angle / 90.0) * (stops["right"] - front))
 
   def wrist_increments_to_deg(self, increments: int) -> float:
     """A wrist-drive angle in degrees, from increments."""
@@ -797,6 +823,111 @@ class iSWAP:
     return await self.rotation_drive_request_z_position()
 
   # -- rotation, wrist and gripper --------------------------------------------
+
+  async def _unchecked_fw_rotation_drive_rotate_increments(
+    self,
+    rotation_increments: int,
+    wrist_increments: int,
+    rotation_speed: int = 25_000,
+    wrist_speed: int = 20_000,
+    rotation_acceleration: int = 170,
+    wrist_acceleration: int = 145,
+    rotation_current_limit: int = 5,
+    wrist_current_limit: int = 5,
+  ):
+    """Drive both joints to absolute increments, without checking or recording.
+
+    The lowest command there is here: it takes what the drives count in and sends it. Both joints
+    go in one command because they move together - the wrist rides the rotation drive, so sending
+    them separately turns the arm and then corrects the wrist, sweeping a path neither target
+    describes. A caller that means to move one holds the other at where it already is.
+
+    Args:
+      rotation_increments: where the rotation drive is to go, signed.
+      wrist_increments: where the wrist drive is to go, signed.
+      rotation_speed: max velocity of the rotation drive, in increments/s.
+      wrist_speed: max velocity of the wrist drive, in increments/s.
+      rotation_acceleration: for the rotation drive, in thousands of increments/s2.
+      wrist_acceleration: for the wrist drive, in thousands of increments/s2.
+      rotation_current_limit: the rotation motor's current limit.
+      wrist_current_limit: the wrist motor's current limit.
+    """
+    return await self._driver.send_command(
+      module="R0",
+      command="PA",
+      wa=f"{rotation_increments:+06}",
+      wv=f"{rotation_speed:05}",
+      wr=f"{rotation_acceleration:03}",
+      ww=f"{rotation_current_limit}",
+      ta=f"{wrist_increments:+06}",
+      tv=f"{wrist_speed:05}",
+      tr=f"{wrist_acceleration:03}",
+      tw=f"{wrist_current_limit}",
+    )
+
+  async def rotation_drive_rotate_to_angle(
+    self,
+    angle: Union[str, float],
+    speed: int = 25_000,
+    acceleration: int = 170,
+    current_limit: int = 5,
+  ):
+    """Turn the rotation drive to an angle, holding the wrist where it is.
+
+    Collision risk: this swings the arm through everything between where it is and where it is
+    going.
+
+    Args:
+      angle: one of the stops in `ROTATION_DRIVE_SLOTS` - `left`, `front`, `right`, `parking` -
+        which goes to the increment this device stores for it, or degrees signed from the
+        calibrated front stop, which is interpolated between the stops either side of it.
+      speed: max velocity, in increments/s.
+      acceleration: in thousands of increments/s2.
+      current_limit: the motor's current limit.
+
+    Raises:
+      ValueError: If the angle lands outside the drive's travel, or an argument is out of range.
+      RuntimeError: If the stored stops were not read.
+    """
+    c = self.configuration
+    if isinstance(angle, str):
+      stops = c.rotation_drive_predefined_increments
+      if stops is None:
+        raise RuntimeError(
+          "the rotation drive's stops were not read; have you called `star.setup()`?"
+        )
+      if angle not in stops:
+        raise ValueError(f"{angle!r} is not one of the stops {tuple(stops)}")
+      increments = stops[angle]
+    else:
+      increments = c.rotation_drive_angle_to_increments(angle)
+
+    low, high = c.rotation_increment_range
+    if not low <= increments <= high:
+      degrees = c.rotation_drive_increments_to_angle(increments)
+      raise ValueError(
+        f"{angle} is {increments} increments ({degrees:.2f} deg), outside the "
+        f"[{low}, {high}] the rotation drive travels"
+      )
+    if not 20 <= speed <= 75_000:
+      raise ValueError(f"speed must be between 20 and 75000 increments/s, is {speed}")
+    if not 5 <= acceleration <= 200:
+      raise ValueError(
+        f"acceleration must be between 5 and 200 thousand increments/s2, is {acceleration}"
+      )
+    if not 0 <= current_limit <= 7:
+      raise ValueError(f"current_limit must be between 0 and 7, is {current_limit}")
+
+    # The wrist is held where it already is: both joints go in one command, so where it is has to
+    # be read before the rotation drive can be told to move without taking the wrist with it.
+    wrist = c.wrist_deg_to_increments(await self.request_wrist_drive_angle())
+    return await self._unchecked_fw_rotation_drive_rotate_increments(
+      rotation_increments=increments,
+      wrist_increments=wrist,
+      rotation_speed=speed,
+      rotation_acceleration=acceleration,
+      rotation_current_limit=current_limit,
+    )
 
   async def request_rotation_drive_angle(self) -> float:
     """Read the rotation drive's angle, signed from the calibrated front stop.
