@@ -88,7 +88,7 @@ device then sort together, and a reader can tell them apart without opening eith
 | 1 | `legacy`, `FM` | `arms.<side>.head96.instrument_type` |
 | 2 | build year, `YYYY` | `device.firmware_date` |
 | 3 | `8ch`, `12ch`, `16ch` | `device.num_pip_channels` |
-| 4 | `head96`, `head384` | `device.ka_head96_installed` / `device.dispensing_head_384_installed` |
+| 4 | `head96`, `head384` | `device.head96_installed` / `device.head384_installed` |
 | 5 | `autoload1D`, `autoload2D` | `autoload.autoload_type` |
 
 Leave a field out only when the device has none of that thing: a device with no autoload ends at

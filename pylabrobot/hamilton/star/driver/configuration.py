@@ -54,7 +54,7 @@ class DeviceConfiguration:
   # ka (configuration data 2, 24-bit)
   left_x_drive_large: bool = False
   """Bit 0: Left X drive. False = small, True = large."""
-  ka_head96_installed: bool = False
+  head96_installed: bool = False
   """Bit 1: 96-head. False = none, True = installed."""
   right_x_drive_large: bool = False
   """Bit 2: Right X drive. False = small, True = large."""
@@ -76,7 +76,7 @@ class DeviceConfiguration:
   """Bit 10: Pump station 3. False = none, True = installed."""
   multi_channel_nano_pipettor_installed: bool = False
   """Bit 11: Multi channel nano pipettor. False = none, True = installed."""
-  dispensing_head_384_installed: bool = False
+  head384_installed: bool = False
   """Bit 12: 384 dispensing head. False = none, True = installed."""
   xl_channels_installed: bool = False
   """Bit 13: XL channels. False = none, True = installed."""

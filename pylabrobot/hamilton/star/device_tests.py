@@ -130,7 +130,7 @@ class TestCapabilities(unittest.IsolatedAsyncioTestCase):
     bare = dataclasses.replace(
       RECORDED_DEVICE,
       num_pip_channels=0,
-      ka_head96_installed=False,
+      head96_installed=False,
       autoload_installed=False,
       left_arm=BARE_X_ARM,
       right_arm=None,

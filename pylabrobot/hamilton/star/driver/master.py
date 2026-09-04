@@ -1,6 +1,6 @@
 """The STAR master module, responsible for
-- carrying the transport,
-- firmware protocol
+- carrying the connection & transport,
+- firmware protocol generation and parsing,
 - orchestrating higher level tasks.
 """
 
@@ -60,8 +60,8 @@ _DECLARATION_MUST_MATCH = frozenset(
     "instrument_size_slots",
     "autoload_installed",
     "kb_iswap_installed",
-    "ka_head96_installed",
-    "dispensing_head_384_installed",
+    "head96_installed",
+    "head384_installed",
     "main_front_cover_monitoring_installed",
   }
 )
@@ -97,13 +97,6 @@ class STARDriver:
         one Hamilton device over USB.
       serial_number: the serial number of the Hamilton STAR. Only useful if using more than one
         Hamilton device over USB.
-      packet_read_timeout: timeout in seconds for reading a single packet.
-      read_timeout: timeout in seconds for reading a full response.
-      write_timeout: timeout in seconds for writing a command.
-      left_side_panel_installed: whether the device has its left side panel on. Declared, not
-        read: it comes off in seconds, and the reported travel range does not follow it. With one
-        fitted, an arm carrying a head stops while the head is still clear of it.
-      io: an already-built USB handle to use instead of opening one from the arguments above.
       deck: the deck to reflect the device into. Optional: without one the driver still drives the
         device, and nothing about where things are is modelled.
       declared_configuration_json: path to a JSON file holding the declared configuration for the
@@ -111,6 +104,13 @@ class STARDriver:
         file. If given, (1) against a physical device, discovery cross-checks the declaration
         against what the device answers, (2) in simulation, the device answers as the declaration
         says instead of from the simulation default.
+      packet_read_timeout: timeout in seconds for reading a single packet.
+      read_timeout: timeout in seconds for reading a full response.
+      write_timeout: timeout in seconds for writing a command.
+      left_side_panel_installed: whether the device has its left side panel on. Declared, not
+        read: it comes off in seconds, and the reported travel range does not follow it. With one
+        fitted, an arm carrying a head stops while the head is still clear of it.
+      io: an already-built USB handle to use instead of opening one from the arguments above.
     """
 
     self.io: IOBase = io or USB(
@@ -771,7 +771,7 @@ class STARDriver:
       temp_controlled_carrier_2_installed=bool(kb & (1 << 7)),
       num_pip_channels=device["kp"],
       left_x_drive_large=bool(ka & (1 << 0)),
-      ka_head96_installed=bool(ka & (1 << 1)),
+      head96_installed=bool(ka & (1 << 1)),
       right_x_drive_large=bool(ka & (1 << 2)),
       pump_station_1_installed=bool(ka & (1 << 3)),
       pump_station_2_installed=bool(ka & (1 << 4)),
@@ -782,7 +782,7 @@ class STARDriver:
       additional_front_cover_monitoring_installed=bool(ka & (1 << 9)),
       pump_station_3_installed=bool(ka & (1 << 10)),
       multi_channel_nano_pipettor_installed=bool(ka & (1 << 11)),
-      dispensing_head_384_installed=bool(ka & (1 << 12)),
+      head384_installed=bool(ka & (1 << 12)),
       xl_channels_installed=bool(ka & (1 << 13)),
       tube_gripper_installed=bool(ka & (1 << 14)),
       waste_direction_left=bool(ka & (1 << 15)),

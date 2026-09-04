@@ -74,8 +74,8 @@ def declaring_a_device(
 
   device["num_pip_channels"] = channels
   arm["pip_installed"] = channels > 0
-  device["ka_head96_installed"] = arm["head96_installed"] = head96
-  device["dispensing_head_384_installed"] = arm["head384_installed"] = head384
+  device["head96_installed"] = arm["head96_installed"] = head96
+  device["head384_installed"] = arm["head384_installed"] = head384
   device["kb_iswap_installed"] = arm["iswap_installed"] = iswap
   device["autoload_installed"] = autoload
 

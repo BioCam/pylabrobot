@@ -10,7 +10,6 @@
     "temp_controlled_carrier_2_installed": false,
     "num_pip_channels": 8,
     "left_x_drive_large": true,
-    "ka_head96_installed": true,
     "right_x_drive_large": false,
     "pump_station_1_installed": false,
     "pump_station_2_installed": false,
@@ -21,7 +20,6 @@
     "additional_front_cover_monitoring_installed": false,
     "pump_station_3_installed": false,
     "multi_channel_nano_pipettor_installed": false,
-    "dispensing_head_384_installed": false,
     "xl_channels_installed": false,
     "tube_gripper_installed": false,
     "waste_direction_left": false,
@@ -90,7 +88,9 @@
     "right_arm_min_y_position": 6.0,
     "firmware_version": "7.6S 25 2021_11_05 (GRU C0)",
     "firmware_date": "2021-11-05",
-    "serial_number": null
+    "serial_number": null,
+    "head96_installed": true,
+    "head384_installed": false
   },
   "arms": {
     "left": {
