@@ -322,7 +322,15 @@ class STARDriver:
     The link closes whether or not that succeeds. This also runs when setup failed part way,
     where there may be nothing up to move yet and the failure that matters is the one about to
     propagate.
+
+    Repeatable. A device already let go of is left alone: retracting through a closed link
+    fails on every subsystem, and the warnings that produces read exactly like a device that
+    would not come up.
     """
+    if not self._connected:
+      logger.debug("the link is already closed; nothing to put down")
+      return
+
     try:
       # The channels and each head take different firmware locks and drive different Z axes, so
       # they go up together rather than one after another.
