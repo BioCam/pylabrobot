@@ -554,7 +554,7 @@ class iSWAP:
     return next(a for a in self._driver.arms if a.iswap is self)
 
   # ----------------------------------------
-  # Movement
+  # Linear Movement
   # ----------------------------------------
 
   # -- x position --------------------------------------------------------------------------------
@@ -821,6 +821,10 @@ class iSWAP:
       current_limit=current_limit,
     )
     return await self.rotation_drive_request_z_position()
+
+  # ----------------------------------------
+  # Rotational Movement
+  # ----------------------------------------
 
   # -- rotation, wrist and gripper --------------------------------------------
 
