@@ -3,13 +3,13 @@
 A STAR is not one controller. The master (``C0``) sits on an internal bus of independently
 versioned boards, each of which answers ``RF`` with its own version string, and each of which is
 replaced and updated on its own. So the versions are recorded per feature rather than as whole
-stacks: two machines that differ only in their 96-head would otherwise have every other version
+stacks: two devices that differ only in their 96-head would otherwise have every other version
 written down twice.
 
 The consequence is that a combination is confirmed when each of its parts is, not as a set. That
 is the right reading for boards that are swapped independently, and it is weaker than checking
 whole stacks: a combination nobody has ever run can pass. Use it as "has this board ever been
-driven", not "has this machine ever worked".
+driven", not "has this device ever worked".
 
 Verified readings
 -----------------
@@ -44,7 +44,7 @@ def is_confirmed(feature: str, version: str) -> bool:
 
 
 def unconfirmed(versions: Dict[str, Optional[str]]) -> Dict[str, str]:
-  """Which of the versions a machine reported have not been driven before.
+  """Which of the versions a device reported have not been driven before.
 
   Args:
     versions: what each feature reported, keyed by feature. A feature that reported
@@ -68,6 +68,6 @@ def suggest_entry(feature: str, version: str) -> str:
     version: the version it reported.
 
   Returns:
-    The line, to paste into that feature's set once the machine has been driven successfully.
+    The line, to paste into that feature's set once the device has been driven successfully.
   """
   return f'  "{feature}": frozenset({{..., "{version}"}}),'

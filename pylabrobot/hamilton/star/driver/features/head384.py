@@ -173,7 +173,7 @@ class Head384Configuration(HeadConfiguration):
 class Head384(Head):
   """The 384-head.
 
-  Reached as `driver.head384`, on a machine that has one. It is addressed as `D0`, but the
+  Reached as `driver.head384`, on a device that has one. It is addressed as `D0`, but the
   commands that move it go to the master, so this feature speaks to both.
   """
 

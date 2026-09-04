@@ -1,7 +1,7 @@
 """A STAR that answers without being plugged in.
 
 Each feature has a small subclass here that overrides the handful of methods which would
-otherwise talk to a machine, returning what one would have said. `STARSimulationDriver` swaps
+otherwise talk to a device, returning what one would have said. `STARSimulationDriver` swaps
 those in, so everything above them - discovery, the initialization order, the configuration each
 feature resolves - runs exactly as it does against hardware.
 
@@ -9,7 +9,6 @@ Nothing reaches the wire. `send_command` raises, which is how a command that has
 simulated makes itself known: override the method that sends it, on the feature that owns it.
 """
 
-import dataclasses
 import datetime
 import logging
 import os
@@ -19,15 +18,11 @@ from pylabrobot.hamilton.protocol.text.framing import (
   assemble_channel_command,
   parse_firmware_version_date,
 )
-from pylabrobot.hamilton.star.driver.configuration import (
-  DeviceConfiguration,
-  DeviceRecording,
-)
+from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
 from pylabrobot.hamilton.star.driver.features.cover import (
   CoverPosition,
   FrontCover,
-  FrontCoverConfiguration,
 )
 from pylabrobot.hamilton.star.driver.features.head import (
   HEAD_REFERENCE_SHAFT,
@@ -36,7 +31,13 @@ from pylabrobot.hamilton.star.driver.features.head import (
 )
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
 from pylabrobot.hamilton.star.driver.features.head384 import Head384, Head384Configuration
-from pylabrobot.hamilton.star.driver.features.iswap import iSWAP, iSWAPConfiguration
+from pylabrobot.hamilton.star.driver.features.iswap import (
+  ROTATION_DRIVE_SLOTS,
+  WRIST_DRIVE_SLOTS,
+  Y_SLOTS,
+  iSWAP,
+  iSWAPConfiguration,
+)
 from pylabrobot.hamilton.star.driver.features.pipettes import (
   PipetteConfiguration,
   Pipettes,
@@ -47,18 +48,13 @@ from pylabrobot.hamilton.star.driver.master import STARDriver
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
 from pylabrobot.resources.hamilton.hamilton_decks import (
-  _TRACK_WIDTH,
-  STAR_NUM_TRACKS,
-  STARLET_NUM_TRACKS,
-  STARPLUS_NUM_TRACKS,
   HamiltonDeck,
-  track_for_x_coordinate,
 )
 
 logger = logging.getLogger(__name__)
 
-# What each feature reports for its firmware. Read off a real instrument, so a simulated run
-# resolves to a machine that exists.
+# What each feature reports for its firmware. Read off a real device, so a simulated run
+# resolves to a device that exists.
 SIMULATED_FIRMWARE = {
   "master": "7.6S 25 2021_11_05 (GRU C0)",
   "pipettes": "4.0S j 2022-03-16",
@@ -66,11 +62,11 @@ SIMULATED_FIRMWARE = {
   "head96": "5.0S i 2021-10-22 (H0 XE167)",
   "iswap": "4.1S 2011-12-19",
   # No 384-head has been read, so this is marked as simulated rather than given a version that
-  # would read as one taken off a machine. The date is the specification's.
+  # would read as one taken off a device. The date is the specification's.
   "head384": "0.0S 2015-08-07 (D0 simulated)",
 }
 
-# Made up, so a simulator is never mistaken for a particular machine.
+# Made up, so a simulator is never mistaken for a particular device.
 SIMULATED_SERIAL_NUMBER = "SIM0"
 
 # What stands where a transport's identity would be in the log, so simulated and recorded runs read
@@ -80,8 +76,8 @@ SIMULATED_LINK = "[simulation]"
 # How wide a pipette is, in mm.
 PIPETTE_WIDTH = 8.98
 
-# Where the channels rest on a simulated machine: the Y band the initialization procedure spreads
-# them across, so a simulated machine looks like one that has been set up rather than one with
+# Where the channels rest on a simulated device: the Y band the initialization procedure spreads
+# them across, so a simulated device looks like one that has been set up rather than one with
 # every channel on top of the next. Their Z-safety height comes from the configured Z window.
 
 # Where a head parks along Y, and the nine further slots it stores beside that one. Read off a
@@ -112,7 +108,7 @@ SIMULATED_AUTOLOAD_INIT_TRACK = 1
 SIMULATED_AUTOLOAD_ADJUSTMENT_VALUES = "[simulation] no adjustment values"
 SIMULATED_AUTOLOAD_PARAMETER_VALUE = "[simulation]"
 
-# Whether the front cover is shut. A simulated machine is not being reached into.
+# Whether the front cover is shut. A simulated device is not being reached into.
 SIMULATED_COVER_POSITION: CoverPosition = "closed"
 
 # The three inputs on the cover connector: the cover input, and two whose meaning is not known.
@@ -121,19 +117,13 @@ SIMULATED_COVER_INPUTS = (True, False, False)
 # What its scanner reads. A simulated deck holds no carriers, so nothing.
 SIMULATED_BARCODE: Optional[str] = None
 
-# Where the iSWAP's rotation drive has come to rest when a simulated machine is switched on, in
-# mm: at the top of its travel, where an initialized machine leaves it.
+# Where the iSWAP's rotation drive has come to rest when a simulated device is switched on, in
+# mm: at the top of its travel, where an initialized device leaves it.
 SIMULATED_ISWAP_Z = 299.0
 
 # The iSWAP's stored position tables, and where its rotation drive sits relative to the carriage.
-SIMULATED_ISWAP_TABLES = {
-  "pw": [13000, -29007, 156, 29068, 29500, 29068, 29068, 29068, 29068, 1378],
-  "pt": [-26577, -26577, -8860, 9044, 26858, -26577, -26577, -26577, -26577, 1377],
-  "py": [9855, 7000, 9000, 13550, 12600, 9855, 9855, 9855, 9855, 9855],
-}
-SIMULATED_ISWAP_X_OFFSET = 32.8
 
-# Where the iSWAP's rotation drive rests along Y when a simulated machine is switched on, in mm:
+# Where the iSWAP's rotation drive rests along Y when a simulated device is switched on, in mm:
 # at its parking stop.
 SIMULATED_ISWAP_Y = 627.4
 
@@ -141,7 +131,7 @@ SIMULATED_ISWAP_Y = 627.4
 SIMULATED_ISWAP_GRIPPER_WIDTH = 24_120
 
 # An arm that carries nothing: the geometry of a STAR arm with none of its feature bits set.
-# The firmware requires the two drives' bits to be disjoint, so a machine with two arms has its
+# The firmware requires the two drives' bits to be disjoint, so a device with two arms has its
 # features on one of them and an arm like this as the other.
 BARE_X_ARM = XArmConfiguration(
   width=354.0,
@@ -150,108 +140,27 @@ BARE_X_ARM = XArmConfiguration(
   wrap_size=595.2,
 )
 
-# What a bare STARSimulationDriver() pretends to be, and what each feature on it answers about
-# itself: a full-size STAR, 54 slots wide, with eight 1000uL channels, a wide-gripper iSWAP and a
-# 96-head on a dual-rail left arm, autoload fitted, no right arm. Read off a real instrument and
-# kept beside this module rather than written out here, so recording another machine is saving a
-# file rather than editing code. `STARDriver.save_configuration` is what writes one.
+# Where the recordings this package ships live. `STARDriver.save_configuration` writes one, so
+# recording another device is saving a file rather than editing code.
 _RECORDINGS = os.path.join(os.path.dirname(__file__), "recordings")
-RECORDED_STAR = DeviceRecording.load(os.path.join(_RECORDINGS, "star.json"))
-if (
-  RECORDED_STAR.device is None
-  or RECORDED_STAR.head96 is None
-  or RECORDED_STAR.head384 is None
-  or RECORDED_STAR.autoload is None
-  or RECORDED_STAR.pipettes is None
-  or not RECORDED_STAR.pipettes.channels
-):
-  raise RuntimeError(
-    "the recorded STAR names no instrument, head, autoload or channel; the file beside this "
-    "module is incomplete, or did not come along with the install"
-  )
 
-DEFAULT_STAR_CONFIGURATION = RECORDED_STAR.device
-SIMULATED_HEAD96 = RECORDED_STAR.head96
-SIMULATED_HEAD384 = RECORDED_STAR.head384
-SIMULATED_AUTOLOAD = RECORDED_STAR.autoload
-# One channel stands for all of them: they are the same part, and the machine holds one set of
-# resolutions for the lot.
-SIMULATED_PIPETTE = RECORDED_STAR.pipettes.channels[0]
-
-
-# The highest track the recorded autoload's sled reaches, from its own drive window. Tracks past
-# it are on the deck but not on the sled's travel.
-_AUTOLOAD_REACHES_TRACK = track_for_x_coordinate(
-  SIMULATED_AUTOLOAD.drive_zero_on_the_deck
-  + SIMULATED_AUTOLOAD.x_drive_increment_range[1] * SIMULATED_AUTOLOAD.x_drive_mm_per_increment
+# What each frame is taken to be when a simulated device is asked for one and nothing was declared.
+# Only ever handed to a simulated device: a physical one is whatever it answers, and a declaration
+# is cross-checked against it rather than standing in for it.
+RECORDING_STAR = os.path.join(_RECORDINGS, "star_legacy_2021_8ch_head96_autoload1D.json")
+RECORDING_STARLET = os.path.join(_RECORDINGS, "starlet_legacy_2021_8ch_head96_autoload1D.json")
+RECORDING_STARPLUS = os.path.join(_RECORDINGS, "starplus_legacy_2021_8ch_head96.json")
+# The 384-head a device configured for one has. Not in the recording above, because that device
+# has none and no 384-head has been read off any: the offset and the drive defaults here are the
+# ones the drives document. Replace this with a recording when there is one to take.
+SIMULATED_HEAD384 = Head384Configuration(
+  firmware_version=SIMULATED_FIRMWARE["head384"],
+  firmware_date=parse_firmware_version_date(SIMULATED_FIRMWARE["head384"]),
+  head_type="High volume head",
+  x_offset=260.0,
+  supports_clot_monitoring_clld=False,
+  supports_lld_absolute_threshold_check=False,
 )
-
-
-def _frame_of_length(num_tracks: int) -> DeviceConfiguration:
-  """The STAR recording above, moved to a frame with a different number of tracks.
-
-  A derivation, not a capture: the STAR is the machine we have to read a QM, RU and UA reply from,
-  and every other frame is that reading shifted. Everything the right-hand end of the deck sets
-  moves by the difference in deck length; everything belonging to the arm itself - its width, its
-  wrap, and how far left it reaches - is the same part and does not move.
-
-  Replace a frame wholesale with a recording when there is one of that frame to take it from. Only
-  the track count is independently known to be right.
-
-  Args:
-    num_tracks: how many tracks the frame's deck has.
-
-  Returns:
-    The configuration a machine on that frame is taken to have.
-  """
-  # What the deck's extra or missing tracks come to in mm. Negative on a frame shorter than the
-  # STAR, which moves the right-hand end left rather than right.
-  shift = (num_tracks - STAR_NUM_TRACKS) * _TRACK_WIDTH
-  # A longer deck does not lengthen the autoload. Its sled travels as far as its own drive window
-  # reaches, which on a frame with more tracks than that stops short of the last one - so a frame
-  # the recorded sled cannot serve is derived without one rather than with one that cannot reach.
-  # A wider window may well exist for those frames; none has been read.
-  autoload = DEFAULT_STAR_CONFIGURATION.autoload_installed and num_tracks <= _AUTOLOAD_REACHES_TRACK
-  arm = cast(XArmConfiguration, DEFAULT_STAR_CONFIGURATION.left_arm)
-  x_range = cast(Tuple[float, float], arm.x_range)
-  workspace = cast(Tuple[float, float], arm.workspace_range)
-  return dataclasses.replace(
-    DEFAULT_STAR_CONFIGURATION,
-    instrument_size_slots=num_tracks,
-    autoload_installed=autoload,
-    autoload_size_slots=num_tracks if autoload else 0,
-    tip_waste_x_position=DEFAULT_STAR_CONFIGURATION.tip_waste_x_position + shift,
-    max_iswap_collision_free_position=(
-      DEFAULT_STAR_CONFIGURATION.max_iswap_collision_free_position + shift
-    ),
-    left_arm=dataclasses.replace(
-      arm,
-      x_range=(x_range[0], x_range[1] + shift),
-      workspace_range=(workspace[0], workspace[1] + shift),
-    ),
-  )
-
-
-DEFAULT_STARLET_CONFIGURATION = _frame_of_length(STARLET_NUM_TRACKS)
-DEFAULT_STARPLUS_CONFIGURATION = _frame_of_length(STARPLUS_NUM_TRACKS)
-
-
-def default_configuration_for(num_tracks: int) -> Tuple[DeviceConfiguration, bool]:
-  """What to take a machine on this frame to be, when nothing was declared.
-
-  Args:
-    num_tracks: how many tracks the frame's deck has.
-
-  Returns:
-    The configuration, and whether it was read off a machine rather than derived from one.
-  """
-  if num_tracks == STAR_NUM_TRACKS:
-    return DEFAULT_STAR_CONFIGURATION, True
-  if num_tracks == STARLET_NUM_TRACKS:
-    return DEFAULT_STARLET_CONFIGURATION, False
-  if num_tracks == STARPLUS_NUM_TRACKS:
-    return DEFAULT_STARPLUS_CONFIGURATION, False
-  return _frame_of_length(num_tracks), False
 
 
 class _UnusedTransport(IOBase):
@@ -271,26 +180,37 @@ class _UnusedTransport(IOBase):
 
 
 class _Simulated:
-  """Reaches the machine behind a feature, which for a simulated one is the simulator."""
+  """Reaches the device behind a feature, which for a simulated one is the simulator."""
 
   _driver: STARDriver
 
   @property
-  def machine(self) -> "STARSimulationDriver":
+  def device(self) -> "STARSimulationDriver":
     return cast("STARSimulationDriver", self._driver)
 
 
 class SimulatedPipettes(_Simulated, Pipettes):
   """The pipetting channels, answering for themselves."""
 
-  async def sense_tip_presence(self) -> List[bool]:
-    return list(self.machine.tips_mounted)
+  def __init__(self, driver: STARDriver, configuration: Optional[PipettesConfiguration] = None):
+    """
+    Args:
+      driver: the driver to send commands through.
+      configuration: the channels' device facts.
+    """
+    super().__init__(driver, configuration)
+    # Where each channel's Z drive is held to be. Per device, not per class: two simulated devices
+    # do not share where their channels are. Filled on first use, from the configured window.
+    self._simulated_z: Dict[int, float] = {}
+
+  async def sense_tip_presence(self) -> List[int]:
+    return [int(mounted) for mounted in self.device.tips_mounted]
 
   async def request_firmware_version(self, channel: int) -> Tuple[str, datetime.date]:
-    return self.machine.reported("pipettes")
+    return self.device.reported("pipettes")
 
   def _declared_channel(self, channel: int) -> PipetteConfiguration:
-    """What this machine was told sits on a channel, or the channel this frame documents.
+    """What this device was told sits on a channel, or the channel this frame documents.
 
     Args:
       channel: which channel, 0-indexed from the back.
@@ -298,10 +218,10 @@ class SimulatedPipettes(_Simulated, Pipettes):
     Returns:
       The channel to answer from.
     """
-    declared = self.machine.simulated_pipettes
+    declared = self.device.simulated_pipettes
     if declared is not None and channel < len(declared.channels):
       return declared.channels[channel]
-    return SIMULATED_PIPETTE
+    return PipetteConfiguration()
 
   async def request_min_pipette_width(self, channel: int) -> float:
     width = self._declared_channel(channel).width
@@ -309,7 +229,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
 
   async def request_pipette_configuration(self, channel: int) -> PipetteConfiguration:
     # Only what the read reports: the rest of a channel's configuration is filled by discovery
-    # from other reads, as it is on a machine.
+    # from other reads, as it is on a device.
     channel_configuration = self._declared_channel(channel)
     return PipetteConfiguration(
       channel_type=channel_configuration.channel_type,
@@ -322,33 +242,64 @@ class SimulatedPipettes(_Simulated, Pipettes):
     """Whatever was mounted on the channels comes off. Goes through the command path, so it is
     coordinated like the real one."""
     await super().initialize(*args, **kwargs)
-    self.machine.tips_mounted = [False] * len(self.machine.tips_mounted)
+    self.device.tips_mounted = [False] * len(self.device.tips_mounted)
 
-  async def request_y_positions(self) -> List[float]:
-    # Where initialization spread them, which is where a machine that has been set up leaves
-    # them and nothing here has since moved them. Answered from the procedure rather than from the
-    # resources, so the model can be checked against this rather than derived from it.
-    positions = self.default_initialize_y_positions()
-    for channel, y in enumerate(positions):
-      self.update_location_by_reference_point(channel, y=y)
-    return positions
+  @property
+  def _z(self) -> Dict[int, float]:
+    """Where each channel's drive is held to be, in mm.
 
-  async def request_z_positions(self) -> Dict[int, float]:
-    # At the top of the window the configuration carries, which is where Z safety puts them.
-    # Taken from there rather than held here, so a configured window is what a simulated probe
-    # reads back. Recorded as the real read records it, so a simulated channel is modelled at the
-    # height it reports rather than at whatever the arm's own is.
-    c = self.configuration
-    safe_z = (c.z_range or c.z_range_documented)[1]
-    positions = {channel: safe_z for channel in range(self.num_channels)}
+    A move writes it and a read finds it there, as the head's Z does. Started at the top of the
+    window the configuration carries, which is where Z safety puts them.
+
+    Returns:
+      Each channel's Z, keyed by channel.
+    """
+    if not self._simulated_z:
+      self._simulated_z = {
+        channel: self.configuration.z_range[1] for channel in range(self.num_channels)
+      }
+    return self._simulated_z
+
+  async def _unchecked_fw_request_lowest_z_positions(self) -> Dict[int, float]:
+    # Recorded as the real read records it, so a simulated channel is modelled at the height it
+    # reports rather than at whatever the arm's own is.
+    positions = dict(self._z)
     for channel, z in positions.items():
       self.update_location_by_reference_point(channel, z=z)
     return positions
 
+  async def request_stop_disc_z_position(self, channel: int) -> float:
+    # The channel's own drive rather than the master's read. A simulated channel carries no tip
+    # geometry, so the two answer the same height here; on a device they part company the moment
+    # a tip goes on, which is the whole reason the two reads exist.
+    self._require_channel(channel)
+    z = self._z[channel]
+    self.update_location_by_reference_point(channel, z=z)
+    return z
 
-# Where the left arm has come to rest when a simulated machine is switched on, in mm: far enough
+  async def probe_z_max(self) -> float:
+    # The retract inside the probe is what puts the channels at their top. On a device that is
+    # physical travel; here the configured ceiling stands for it, so a configured window is what a
+    # simulated probe reads back. `_SimulatedHead.probe_z_max` does the same for a head.
+    self._z.update({channel: self.configuration.z_range[1] for channel in range(self.num_channels)})
+    return await super().probe_z_max()
+
+  async def _unchecked_fw_move_lowest_point_to_z_positions(self, zs: Dict[int, float]):
+    # A move is what puts a channel somewhere. Written after the move, not before: one the real
+    # method refuses never happened.
+    resp = await super()._unchecked_fw_move_lowest_point_to_z_positions(zs)
+    self._z.update(zs)
+    return resp
+
+  async def move_stop_disc_to_z_position(self, channel: int, z: float, *args: Any, **kwargs: Any):
+    resp = await super().move_stop_disc_to_z_position(channel, z, *args, **kwargs)
+    self._z[channel] = z
+    return resp
+
+
+# Where the left arm has come to rest when a simulated device is switched on, in mm: far enough
 # along the rail to sit within reach of any STAR deck. The right arm rests at the far end of its
-# own travel instead, so the two do not overlap on a machine that has both. Setup reads this once
+# own travel instead, so the two do not overlap on a device that has both. Setup reads this once
 # to seat each arm on the deck; every read after that answers from the deck.
 SIMULATED_LEFT_X_ARM_POSITION = 362.9
 
@@ -357,10 +308,10 @@ class SimulatedXArm(_Simulated, XArm):
   """An X-arm, answering for itself."""
 
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
-    return self.machine.reported("x_arm")
+    return self.device.reported("x_arm")
 
   async def request_position(self) -> float:
-    # Where the arm is is what the model says: a simulated machine has no drive to ask. Until setup
+    # Where the arm is is what the model says: a simulated device has no drive to ask. Until setup
     # has put it on the deck there is nothing to read, and it answers where it powered up.
     if self.resource is not None and self.resource.location is not None:
       anchor = self.resource.get_anchor(x=self.reference_anchor)
@@ -374,7 +325,7 @@ class _SimulatedHead(_Simulated, Head):
   """What a head answers when there is no head: the same for either of them.
 
   Each head says which simulated configuration it answers from and where a retract leaves it; what
-  its configuration bytes mean is its own, as on a machine.
+  its configuration bytes mean is its own, as on a device.
   """
 
   _z_safety: float
@@ -383,15 +334,15 @@ class _SimulatedHead(_Simulated, Head):
 
   @property
   def _declared(self) -> HeadConfiguration:
-    """The head this machine was told it has.
+    """The head this device was told it has.
 
     Distinct from `configuration`, which discovery fills from these answers exactly as it would
-    off an instrument.
+    off an device.
     """
     raise NotImplementedError("a simulated head says which configuration it answers from")
 
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
-    return self.machine.reported(self._firmware_key)
+    return self.device.reported(self._firmware_key)
 
   async def request_head_type(self) -> str:
     head_type = self._declared.head_type
@@ -411,7 +362,7 @@ class _SimulatedHead(_Simulated, Head):
     # From the model where there is one, as the real read reports the drive, and in the deck's
     # frame as it answers in. Before setup has put the head on the arm, it rests where a retract
     # would leave it.
-    deck = self.machine.deck
+    deck = self.device.deck
     if self.resource is not None and self.resource.location is not None and deck is not None:
       shaft = self.resource.get_item(HEAD_REFERENCE_SHAFT)
       return round(shaft.get_location_wrt(deck).z, 2)
@@ -424,7 +375,7 @@ class _SimulatedHead(_Simulated, Head):
     return await super().probe_z_max(*args, **kwargs)
 
   async def move_to_y_position(self, y: float, *args: Any, **kwargs: Any):
-    # A move is what puts the head somewhere. On the machine the drive holds that and the read
+    # A move is what puts the head somewhere. On the device the drive holds that and the read
     # reports it; here the model holds it, so the move writes it and the read finds it there.
     # Written after the move, not before: one the real method refuses never happened, and a model
     # updated first would put the head where it was told to go rather than where it is.
@@ -432,8 +383,8 @@ class _SimulatedHead(_Simulated, Head):
     self.update_location_by_reference_point(y=y)
     return resp
 
-  async def move_stop_disk_to_z_position(self, z: float, *args: Any, **kwargs: Any):
-    resp = await super().move_stop_disk_to_z_position(z, *args, **kwargs)
+  async def move_stop_disc_to_z_position(self, z: float, *args: Any, **kwargs: Any):
+    resp = await super().move_stop_disc_to_z_position(z, *args, **kwargs)
     self.update_location_by_reference_point(z=z)
     return resp
 
@@ -460,7 +411,7 @@ class _SimulatedHead(_Simulated, Head):
     """Whatever was mounted on the head comes off, and it reports itself up. Goes through the
     command path, so it is coordinated like the real one."""
     await super().initialize(*args, **kwargs)
-    self.machine.initialized[self.configuration.module] = True
+    self.device.initialized[self.configuration.module] = True
 
   async def request_predefined_y_positions(self) -> List[float]:
     # As a head holds them: the park position first, then nine slots nothing here commands against.
@@ -471,7 +422,7 @@ class _SimulatedHead(_Simulated, Head):
     # the deck's frame, so the model is read in the deck's too - the resource hangs off the arm,
     # whose own position would otherwise come through. Before setup has put the head on the arm
     # there is nothing to read, and it answers from the middle of its travel.
-    deck = self.machine.deck
+    deck = self.device.deck
     if self.resource is not None and self.resource.location is not None and deck is not None:
       shaft = self.resource.get_item(HEAD_REFERENCE_SHAFT)
       return round(shaft.get_location_wrt(deck).y, 2)
@@ -487,7 +438,7 @@ class SimulatedHead96(_SimulatedHead, Head96):
 
   @property
   def _declared(self) -> Head96Configuration:
-    return self.machine.simulated_head96
+    return self.device.simulated_head96
 
   async def request_hardware(self) -> List[str]:
     # Rendered from what this head is, rather than written out separately: discovery parses these
@@ -522,7 +473,7 @@ class SimulatedHead384(_SimulatedHead, Head384):
 
   @property
   def _declared(self) -> Head384Configuration:
-    return self.machine.simulated_head384
+    return self.device.simulated_head384
 
   async def request_hardware(self) -> List[str]:
     # Rendered as the 96-head's is, from the two flags this head reports.
@@ -542,12 +493,12 @@ class SimulatedISWAP(_Simulated, iSWAP):
   _y: float = SIMULATED_ISWAP_Y
 
   async def request_firmware_version(self) -> str:
-    return self.machine.simulated_firmware["iswap"]
+    return self.device.simulated_firmware["iswap"]
 
   async def rotation_drive_request_z_position(self) -> float:
     return self._z
 
-  # A simulated machine is switched on with its iSWAP parked: the Y carriage and the rotation
+  # A simulated device is switched on with its iSWAP parked: the Y carriage and the rotation
   # drive at their parking stops, the wrist straight, the gripper open. Answered from the same
   # stored tables the reads would have converted, so the conversions still run.
   async def rotation_drive_request_y_position(self) -> float:
@@ -559,10 +510,14 @@ class SimulatedISWAP(_Simulated, iSWAP):
     return resp
 
   async def request_rotation_drive_angle(self) -> float:
-    return self.configuration.rotation_drive_increments_to_angle(SIMULATED_ISWAP_TABLES["pw"][4])
+    stops = (await self._request_slots("pw"))[: len(ROTATION_DRIVE_SLOTS)]
+    parked = dict(zip(ROTATION_DRIVE_SLOTS, stops))["parking"]
+    return self.configuration.rotation_drive_increments_to_angle(parked)
 
   async def request_wrist_drive_angle(self) -> float:
-    return self.configuration.wrist_increments_to_deg(SIMULATED_ISWAP_TABLES["pt"][2])
+    stops = (await self._request_slots("pt"))[: len(WRIST_DRIVE_SLOTS)]
+    straight = dict(zip(WRIST_DRIVE_SLOTS, stops))["straight"]
+    return self.configuration.wrist_increments_to_deg(straight)
 
   async def request_gripper_width(self) -> float:
     return self.configuration.gripper_increments_to_mm(SIMULATED_ISWAP_GRIPPER_WIDTH)
@@ -572,16 +527,44 @@ class SimulatedISWAP(_Simulated, iSWAP):
     self._z = z
     return resp
 
+  @property
+  def _declared(self) -> iSWAPConfiguration:
+    """The iSWAP this device was told it has.
+
+    Distinct from `configuration`, which discovery fills from these answers exactly as it would
+    off an device.
+    """
+    return self.device.simulated_iswap
+
   async def request_rotation_drive_x_offset(self) -> float:
-    return SIMULATED_ISWAP_X_OFFSET
+    offset = self._declared.rotation_drive_x_offset
+    if offset is None:
+      raise RuntimeError("the simulated iSWAP has no X offset; set it on its configuration")
+    return offset
 
   async def _request_slots(self, table: str) -> List[int]:
-    return list(SIMULATED_ISWAP_TABLES[table])
+    # Rendered from what this iSWAP is, rather than written out separately: discovery reads these
+    # tables back into the stops and link lengths, so an iSWAP configured differently answers
+    # differently. Each table carries its drive's stops, then that link's length in tenths.
+    declared = self._declared
+    if table == "py":
+      stops, length = declared.rotation_drive_predefined_y_positions_increments, None
+      names: Tuple[str, ...] = Y_SLOTS
+    elif table == "pw":
+      stops, length = declared.rotation_drive_predefined_increments, declared.link_1_length
+      names = ROTATION_DRIVE_SLOTS
+    else:
+      stops, length = declared.wrist_drive_predefined_increments, declared.link_2_length
+      names = WRIST_DRIVE_SLOTS
+    if stops is None:
+      raise RuntimeError(f"the simulated iSWAP has no {table} table; set it on its configuration")
+    rendered = [stops[name] for name in names]
+    return rendered if length is None else rendered + [round(length * 10)]
 
   async def initialize(self):
     """Goes through the command path, so it is coordinated like the real one."""
     await super().initialize()
-    self.machine.initialized["R0"] = True
+    self.device.initialized["R0"] = True
 
 
 class SimulatedFrontCover(_Simulated, FrontCover):
@@ -598,7 +581,7 @@ class SimulatedAutoload(_Simulated, Autoload):
   """Where it last moved to."""
 
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
-    version = self.machine.simulated_autoload.firmware_version
+    version = self.device.simulated_autoload.firmware_version
     if version is None:
       raise RuntimeError(
         "the simulated autoload has no firmware version; set it on its configuration"
@@ -606,17 +589,18 @@ class SimulatedAutoload(_Simulated, Autoload):
     return version, parse_firmware_version_date(version)
 
   async def request_module_configuration(self) -> Tuple[float, bool]:
-    # What this machine's own autoload answered: the 0.1 mm scanner, indicators fitted.
-    return SIMULATED_AUTOLOAD.x_drive_mm_per_increment, True
+    # What this device's own autoload answered: the 0.1 mm scanner, indicators fitted.
+    declared = self.device.simulated_autoload
+    return declared.x_drive_mm_per_increment, True
 
   async def request_autoload_type(self) -> str:
-    autoload_type = self.machine.simulated_autoload.autoload_type
+    autoload_type = self.device.simulated_autoload.autoload_type
     if autoload_type is None:
       raise RuntimeError("the simulated autoload has no type; set it on its configuration")
     return autoload_type
 
   async def request_initialization_status(self) -> bool:
-    return self.machine.initialized["I0"]
+    return self.device.initialized["I0"]
 
   async def request_latest_barcode_read(self) -> Optional[str]:
     return SIMULATED_BARCODE
@@ -664,14 +648,14 @@ class SimulatedAutoload(_Simulated, Autoload):
     return resp
 
   async def request_x_position(self) -> float:
-    # Where the sled is is what the model says: a simulated machine has no drive to ask. The model
+    # Where the sled is is what the model says: a simulated device has no drive to ask. The model
     # is placed around the carrier-handling wheel, so the wheel stands that far right of its left
     # edge. Before setup has put the sled on the deck there is no model to read, and the track it
     # is on is what it has instead - which is how a park during initialization survives long enough
     # to reach the resource that gets created after it.
     if self.resource is not None and self.resource.location is not None:
       return self.resource.location.x + self.configuration.reference_point_from_sled_left_edge
-    return cast(HamiltonDeck, self.machine.deck).track_to_location(self.track).x
+    return cast(HamiltonDeck, self.device.deck).track_to_location(self.track).x
 
   async def wheel_request_y_position(self) -> float:
     return SIMULATED_AUTOLOAD_Y_POSITION
@@ -706,14 +690,14 @@ class SimulatedAutoload(_Simulated, Autoload):
 
   async def initialize(self, park_after: bool = True):
     await super().initialize(park_after=park_after)
-    self.machine.initialized["I0"] = True
+    self.device.initialized["I0"] = True
 
   async def move_to_track(self, track: int, *args, **kwargs):
     # As `move_x` records where a position move put the sled, so this records where a track move
     # did. The deck is what knows where a track is.
     await super().move_to_track(track, *args, **kwargs)
-    # A simulated machine is built with a deck or refuses to be built at all, so there is one.
-    deck = cast(HamiltonDeck, self.machine.deck)
+    # A simulated device is built with a deck or refuses to be built at all, so there is one.
+    deck = cast(HamiltonDeck, self.device.deck)
     self.update_location_by_reference_point(deck.track_to_location(track).x)
     self.track = track
 
@@ -727,44 +711,30 @@ class STARSimulationDriver(STARDriver):
 
   def __init__(
     self,
-    configuration: Optional[DeviceConfiguration] = None,
     tips_mounted: Optional[List[bool]] = None,
     firmware: Optional[Dict[str, str]] = None,
-    autoload: Optional[AutoloadConfiguration] = None,
-    head96: Optional[Head96Configuration] = None,
-    head384: Optional[Head384Configuration] = None,
-    iswap: Optional[iSWAPConfiguration] = None,
-    pipettes: Optional[PipettesConfiguration] = None,
-    front_cover: Optional[FrontCoverConfiguration] = None,
     deck: Optional[HamiltonDeck] = None,
     serial_number: str = SIMULATED_SERIAL_NUMBER,
     initialized: bool = False,
     left_side_panel_installed: bool = False,
+    declared_configuration_json: Optional[str] = None,
   ):
     """
     Args:
-      configuration: the instrument to pretend to be. Defaults to what the deck says this frame
-        is, which the machine says out loud.
       tips_mounted: one entry per channel, `True` where a tip sits on the channel. Defaults to no
         tips on any of them.
       firmware: what each feature reports, keyed as `confirmed_firmware_versions` keys it.
         Defaults to `SIMULATED_FIRMWARE`.
-      autoload: the autoload this machine has, which it answers about itself. Defaults to
-        `SIMULATED_AUTOLOAD`. What the feature reads rather than what its own configuration
-        becomes: discovery fills that from these answers, as it does off an instrument.
-      head96: the 96-head this machine has, read as `autoload` is. Defaults to `SIMULATED_HEAD96`.
-      head384: the 384-head this machine has, read as `autoload` is. Defaults to
-        `SIMULATED_HEAD384`.
-      iswap: the iSWAP this machine has. Defaults to the one its firmware documents.
-      pipettes: the channels this machine has. Defaults to the ones this frame documents.
-      front_cover: the front cover this machine has. Defaults to the one it documents.
-      deck: the deck to reflect this machine into. Required: a simulated machine has no firmware
+      deck: the deck to reflect this device into. Required: a simulated device has no firmware
         to ask, so the resource model is the only thing it can answer from.
-      serial_number: what this machine calls itself.
-      initialized: whether the machine and its modules report themselves already initialized. One
+      serial_number: what this device calls itself.
+      initialized: whether the device and its modules report themselves already initialized. One
         that has just been switched on does not.
-      left_side_panel_installed: whether this machine has its left side panel on. Declared rather
+      left_side_panel_installed: whether this device has its left side panel on. Declared rather
         than discovered, as on a real one: the panel comes off in seconds.
+      declared_configuration_json: path to a declared configuration, which this device then answers
+        as. What the arguments above name takes precedence over it, and what neither names falls
+        back to what this frame documents.
 
     Raises:
       ValueError: If no deck is given, or `tips_mounted` does not have one entry per channel.
@@ -772,26 +742,40 @@ class STARSimulationDriver(STARDriver):
     if deck is None:
       raise ValueError("a simulated STAR answers from its resource model, so it needs a deck")
     super().__init__(
-      io=_UnusedTransport(), deck=deck, left_side_panel_installed=left_side_panel_installed
+      io=_UnusedTransport(),
+      deck=deck,
+      left_side_panel_installed=left_side_panel_installed,
+      declared_configuration_json=declared_configuration_json,
     )
 
-    if configuration is not None:
-      self.simulated_configuration = configuration
-    else:
-      # Nothing said what this machine is, so the deck decides: what a frame with this many tracks
-      # is taken to be. Said out loud, because only the STAR was read off an instrument.
-      self.simulated_configuration, recorded = default_configuration_for(deck.num_tracks)
-      logger.info(
-        "no instrument declared; simulating a %d-track machine from a %s configuration",
-        deck.num_tracks,
-        "recorded" if recorded else "derived",
+    # What the declaration says this device carries, whichever arm carries it. A simulated device
+    # stands in for one of each, so the same feature on two arms is refused rather than half-read.
+    carried: Dict[str, Any] = {}
+    for side, features in self.declared.get("arms", {}).items():
+      for name, feature in features.items():
+        if name in carried:
+          raise ValueError(
+            f"the declared configuration has a {name} on more than one arm; a simulated device "
+            f"stands in for one of each, so it cannot answer as this one (seen again on {side})"
+          )
+        carried[name] = feature
+
+    configuration = self.declared.get("device")
+    if configuration is None:
+      raise ValueError(
+        "a simulated device has to be told what it is simulating: pass "
+        "`declared_configuration_json`, naming a file that records one"
       )
+    self.simulated_configuration: DeviceConfiguration = configuration
 
     self.simulated_firmware = firmware or dict(SIMULATED_FIRMWARE)
-    self.simulated_autoload = autoload or SIMULATED_AUTOLOAD
-    self.simulated_head96 = head96 or SIMULATED_HEAD96
-    self.simulated_head384 = head384 or SIMULATED_HEAD384
-    self.simulated_pipettes = pipettes
+    self.simulated_autoload: AutoloadConfiguration = (
+      self.declared.get("autoload") or AutoloadConfiguration()
+    )
+    self.simulated_head96: Head96Configuration = carried.get("head96") or Head96Configuration()
+    self.simulated_head384: Head384Configuration = carried.get("head384") or SIMULATED_HEAD384
+    self.simulated_pipettes: Optional[PipettesConfiguration] = carried.get("pipettes")
+    self.simulated_iswap: iSWAPConfiguration = carried.get("iswap") or iSWAPConfiguration()
     self.serial_number = serial_number
 
     channels = self.simulated_configuration.num_pip_channels
@@ -804,11 +788,11 @@ class STARSimulationDriver(STARDriver):
     # What each module says when asked whether it is initialized, and where things are.
     self.initialized = {module: initialized for module in ("C0", "I0", "R0", "H0")}
 
-    # The features this machine has, each answering for itself. Discovery builds only the ones
+    # The features this device has, each answering for itself. Discovery builds only the ones
     # that are not already there, so these stand in for the real ones throughout.
     c = self.simulated_configuration
     if c.main_front_cover_monitoring_installed:
-      self.front_cover = SimulatedFrontCover(self, configuration=front_cover)
+      self.front_cover = SimulatedFrontCover(self)
     if c.left_arm is not None:
       self.left_x_arm = SimulatedXArm(self, side="left")
     if c.right_arm is not None:
@@ -822,20 +806,20 @@ class STARSimulationDriver(STARDriver):
       if arm is None or a is None:
         continue
       if a.pip_installed and c.num_pip_channels > 0:
-        arm.pipettes = SimulatedPipettes(self, configuration=pipettes)
+        arm.pipettes = SimulatedPipettes(self)
       if a.head96_installed:
         arm.head96 = SimulatedHead96(self)
       if a.head384_installed:
         arm.head384 = SimulatedHead384(self)
       if a.iswap_installed:
-        arm.iswap = SimulatedISWAP(self, configuration=iswap)
+        arm.iswap = SimulatedISWAP(self)
 
   def reported(self, feature: str) -> Tuple[str, datetime.date]:
     """What a feature reports for its firmware, and the date in it."""
     version = self.simulated_firmware[feature]
     return version, parse_firmware_version_date(version)
 
-  # -- the machine itself ----------------------------------------------------
+  # -- the device itself ----------------------------------------------------
 
   async def _open(self):
     """There is no link to open, and no replies to read."""
@@ -849,13 +833,33 @@ class STARSimulationDriver(STARDriver):
   async def request_cover_input_status(self) -> Tuple[bool, bool, bool]:
     return SIMULATED_COVER_INPUTS
 
+  def _check_declared_against(self, discovered: DeviceConfiguration) -> None:
+    """Nothing to cross-check: a simulated device answers from the declaration.
+
+    On a physical device the declaration is a claim about what is on the other end, and discovery
+    tests it. Here it is where the answers come from, so it cannot disagree with itself. A
+    `configuration` given outright is the caller saying to simulate that instead, which is a
+    substitution rather than a disagreement.
+
+    Args:
+      discovered: what this device answered, which is what it was told to answer.
+    """
+
+  async def request_device_serial_number(self) -> str:
+    # What it was told it is, or what it was told to call itself when the recording did not say.
+    declared = self.simulated_configuration.serial_number
+    return declared if declared is not None else self.serial_number
+
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
-    return self.reported("master")
+    declared = self.simulated_configuration.firmware_version
+    if declared is None:
+      return self.reported("master")
+    return declared, parse_firmware_version_date(declared)
 
   async def request_initialization_status(self, module: str = "C0") -> bool:
     return self.initialized.get(module, False)
 
-  async def pre_initialize(self, read_timeout: int = 300):
+  async def _pre_initialize(self, read_timeout: int = 300):
     """Home every drive. The modules it de-initializes then need their own.
 
     Goes through the command path, so it is coordinated like the real one.
@@ -863,11 +867,40 @@ class STARSimulationDriver(STARDriver):
     Args:
       read_timeout: how long the real procedure would be given, in seconds. Nothing waits here.
     """
-    await super().pre_initialize(read_timeout=read_timeout)
+    await super()._pre_initialize(read_timeout=read_timeout)
     self.initialized["C0"] = True
 
   def _describe_link(self) -> str:
     return "simulation (no link)"
+
+  def _answer(self, module: str, command: str) -> Optional[Tuple[Any, str]]:
+    """What the device would answer, taken from the model rather than from a drive.
+
+    A read reaches here the same way a move does, so the command it assembles is put on the
+    simulated link and logged before this answers it. That is what a feature answering for itself
+    cannot do: the command is never built, so nothing records that it was asked.
+
+    Args:
+      module: the module the command was addressed to.
+      command: the two-letter command code.
+
+    Returns:
+      The answer in the shape the caller's format implies, and where in the model it came from.
+      None for a command nothing here answers, which is every command that only moves.
+    """
+    if (module, command) == ("C0", "RY"):
+      # Whichever arm carries channels, rather than `self.pipettes`, which refuses to choose on a
+      # device with two arms. Answering here costs the feature's own context: a C0 command names
+      # no arm, so the answer has to find the feature the command is about.
+      pipettes = next((arm.pipettes for arm in self.arms if arm.pipettes is not None), None)
+      if pipettes is None:
+        return None
+      # Where initialization spread them, which is where a device that has been set up leaves
+      # them and nothing here has since moved them. Answered from the procedure rather than from
+      # the resources, so the model can be checked against this rather than derived from it.
+      positions = pipettes.default_initialize_y_positions()
+      return {"ry": [round(y * 10) for y in positions]}, "the channels' initialize positions"
+    return None
 
   async def _send(
     self,
@@ -880,11 +913,12 @@ class STARSimulationDriver(STARDriver):
     wait=True,
     fmt: Optional[Any] = None,
     **kwargs: Any,
-  ) -> None:
-    """Say what would have been sent, and answer nothing.
+  ) -> Any:
+    """Say what would have been sent, and answer from the model where there is an answer.
 
-    A command that only moves needs no more than this. One whose answer is read is overridden on
-    the feature that reads it, so it never gets here.
+    A command that only moves is logged and answered with nothing. One whose answer is read is
+    logged the same way and then answered by `_answer`, so a read puts its command on the link
+    exactly as a move does.
 
     What it logs is what a real link logs: the assembled command as a write, and the answer as a
     read, so a simulated run reads like a recorded one.
@@ -892,18 +926,21 @@ class STARSimulationDriver(STARDriver):
     Replacing `_send` rather than `send_command` leaves the coordination in place, so a simulated
     run serializes what a real one serializes.
     """
-    self._log_exchange(
-      assemble_channel_command(
-        module=module,
-        command=command,
-        id_=None,
-        tip_pattern=tip_pattern,
-        num_channels=self.num_channels,
-        **kwargs,
-      ),
-      None,
+    cmd = assemble_channel_command(
+      module=module,
+      command=command,
+      id_=None,
+      tip_pattern=tip_pattern,
+      num_channels=self.num_channels,
+      **kwargs,
     )
-    return None
+    answered = self._answer(module, command)
+    if answered is None:
+      self._log_exchange(cmd, None)
+      return None
+    value, source = answered
+    self._log_exchange(cmd, f"simulation: {value} from model {source}")
+    return value
 
   async def send_raw_command(self, command: str, *args: Any, **kwargs: Any) -> None:
     self._log_exchange(command, None)

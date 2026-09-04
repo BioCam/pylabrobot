@@ -101,13 +101,14 @@ class iSWAPAxis(enum.IntEnum):
 class iSWAPConfiguration:
   """Device parameters for the installed iSWAP.
 
-  Ported from the legacy `iSWAPInformation`. Two kinds of value: per-machine calibration read from
-  the machine at setup - link lengths, calibrated stops, offsets - which is None until read; and
+  Ported from the legacy `iSWAPInformation`. Two kinds of value: per-device calibration read from
+  the device at setup - link lengths, calibrated stops, offsets - which is None until read; and
   device facts of the 4th-generation iSWAP, the only generation supported, which are defaulted.
   Neither changes at runtime.
   """
 
   firmware_version: Optional[str] = None
+  firmware_date: Optional[str] = None
 
   # -- X --
   rotation_drive_x_offset: Optional[float] = None
@@ -115,7 +116,11 @@ class iSWAPConfiguration:
   EEPROM. The Hamilton factory default is 34.0 mm."""
 
   # -- Y --
-  rotation_drive_y_max: Optional[float] = None
+  rotation_drive_predefined_y_positions_increments: Optional[Dict[str, int]] = None
+  """Each Y stop the carriage is calibrated against, in increments, keyed as `Y_SLOTS` names them.
+
+  The whole stored table rather than the one stop the driver bounds moves by, so what this holds is
+  what the drive reports: a recording of it answers every Y read, not just the parking one."""
 
   # -- rotation drive --
   rotation_drive_predefined_increments: Optional[Dict[str, int]] = None
@@ -146,7 +151,7 @@ class iSWAPConfiguration:
 
   rotation_drive_size_z: float = 120.0
   """How tall to model the rotation drive, in mm. Not read from anywhere: how far the drive extends
-  is not something the machine reports."""
+  is not something the device reports."""
 
   # -- Z --
   z_increment_range: Tuple[int, int] = (-187, 26_661)
@@ -171,6 +176,18 @@ class iSWAPConfiguration:
   gripper_mm_per_increment: float = 0.00554337
 
   # -- conversions: the wire counts in increments, the driver speaks mm and degrees ----------
+
+  @property
+  def rotation_drive_y_max(self) -> Optional[float]:
+    """How far back the carriage may be sent, in mm: the parking stop it is calibrated against.
+
+    Returns:
+      The parking stop in mm, or None until the stored Y table has been read.
+    """
+    stops = self.rotation_drive_predefined_y_positions_increments
+    if stops is None:
+      return None
+    return self.y_increments_to_mm(stops["parking"])
 
   def y_increments_to_mm(self, increments: int) -> float:
     """A Y-carriage position in mm, from the increments the drive counts in."""
@@ -229,8 +246,8 @@ class iSWAPConfiguration:
     """A rotation-drive angle in degrees, from increments, against the calibrated stops.
 
     Piecewise linear rather than one slope: `left` to `front` spans -90 to 0 degrees and `front`
-    to `right` spans 0 to +90, each against the stops this machine reports. So the stops read back
-    as exactly -90, 0 and +90 however far the machine's own calibration has drifted, and a
+    to `right` spans 0 to +90, each against the stops this device reports. So the stops read back
+    as exactly -90, 0 and +90 however far the device's own calibration has drifted, and a
     position beyond them extrapolates on its segment's slope.
 
     Args:
@@ -261,7 +278,7 @@ class iSWAPConfiguration:
     return round(deg / self.wrist_deg_per_increment)
 
   def gripper_increments_to_mm(self, increments: int) -> float:
-    """A gripper jaw width in mm, from increments. One decimal, as the machine resolves it."""
+    """A gripper jaw width in mm, from increments. One decimal, as the device resolves it."""
     return round(increments * self.gripper_mm_per_increment, 1)
 
   def gripper_mm_to_increments(self, mm: float) -> int:
@@ -272,7 +289,7 @@ class iSWAPConfiguration:
 class iSWAP:
   """The internal Swivel Arm Plate (iSWAP) handler.
 
-  Reached as `driver.iswap`, on a machine that has one. It is addressed as `R0`, but the commands
+  Reached as `driver.iswap`, on a device that has one. It is addressed as `R0`, but the commands
   that move it go to the master, so this feature speaks to both.
   """
 
@@ -311,7 +328,7 @@ class iSWAP:
   async def request_rotation_drive_positions(self) -> Dict[str, int]:
     """Request the rotation drive's stored position table.
 
-    The machine returns ten signed slots; the nine position slots are returned here, and the tenth
+    The device returns ten signed slots; the nine position slots are returned here, and the tenth
     is the arm length, which `request_link_1_length` reads.
 
     Returns:
@@ -356,7 +373,7 @@ class iSWAP:
     return round((await self._request_slots("pt"))[9] / 10, 1)
 
   async def _request_slots(self, table: str) -> List[int]:
-    """One of the iSWAP's stored tables, as the ten signed slots the machine returns."""
+    """One of the iSWAP's stored tables, as the ten signed slots the device returns."""
     resp = await self._driver.send_command(
       module="R0", command="RA", ra=table, fmt=f"{table}##### (n)"
     )
@@ -375,7 +392,9 @@ class iSWAP:
         RECORDED_FIRMWARE_PREFIX,
       )
     c.rotation_drive_x_offset = await self.request_rotation_drive_x_offset()
-    c.rotation_drive_y_max = (await self.rotation_drive_request_y_stops())["parking"]
+    c.rotation_drive_predefined_y_positions_increments = dict(
+      zip(Y_SLOTS, await self._request_slots("py"))
+    )
 
     rotation = await self._request_slots("pw")
     c.rotation_drive_predefined_increments = dict(zip(ROTATION_DRIVE_SLOTS, rotation))
@@ -455,8 +474,8 @@ class iSWAP:
       RuntimeError: If the limits were not read, so how far it reaches is unknown.
     """
     c = self.configuration
-    machine = self._driver.configuration
-    if machine is None:
+    device = self._driver.configuration
+    if device is None:
       raise RuntimeError("no configuration read; have you called `star.setup()`?")
 
     if axis == "x":
@@ -471,9 +490,9 @@ class iSWAP:
       if c.rotation_drive_y_max is None:
         raise RuntimeError("the drive's Y limit was not read; have you called `star.setup()`?")
       low = (
-        machine.left_arm_min_y_position
+        device.left_arm_min_y_position
         if self.arm.side == "left"
-        else machine.right_arm_min_y_position
+        else device.right_arm_min_y_position
       )
       high = c.rotation_drive_y_max
     else:
@@ -547,6 +566,24 @@ class iSWAP:
     self.update_location_by_reference_point(y=y)
     return y
 
+  async def _record_where_it_stopped(self, axis: Literal["y", "z"]) -> None:
+    """Read where the rotation drive came to rest along one axis, and record it.
+
+    For a move's failure path. A move that stopped part way left the drive somewhere no target
+    describes. Its own failure is logged and swallowed: it must not replace the move's exception,
+    which is the one that says what went wrong.
+
+    Args:
+      axis: which axis the move drove - `y` across the deck, `z` up and down.
+    """
+    try:
+      if axis == "y":
+        await self.rotation_drive_request_y_position()
+      else:
+        await self.rotation_drive_request_z_position()
+    except Exception:
+      logger.warning("could not read where the iSWAP stopped along %s; its model is stale", axis)
+
   async def rotation_drive_move_to_y_position(
     self,
     y: float,
@@ -574,11 +611,11 @@ class iSWAP:
     Raises:
       ValueError: If the drive cannot reach it, if any of the drive parameters is outside what it
         accepts, or if the channels are in the way and may not be moved.
-      RuntimeError: If the machine's configuration or the drive's Y limit was not read.
+      RuntimeError: If the device's configuration or the drive's Y limit was not read.
     """
     c = self.configuration
-    machine = self._driver.configuration
-    if machine is None:
+    device = self._driver.configuration
+    if device is None:
       raise RuntimeError("no configuration read; have you called `star.setup()`?")
     self._check_reachable("y", y)
 
@@ -605,13 +642,8 @@ class iSWAP:
         yr=f"{acceleration_level}",
         yw=f"{current_limit}",
       )
-    except BaseException:
-      # A failed move leaves the drive at an unknown y, so re-read to refresh the model. The
-      # read is wrapped: its own failure must not replace the move's exception.
-      try:
-        await self.rotation_drive_request_y_position()
-      except BaseException:
-        logger.warning("could not read where the rotation drive stopped; its model is stale")
+    except Exception:
+      await self._record_where_it_stopped("y")
       raise
 
     self.update_location_by_reference_point(y=y)
@@ -632,8 +664,8 @@ class iSWAP:
     if pipettes is None:
       return
 
-    machine = self._driver.configuration
-    if machine is None:
+    device = self._driver.configuration
+    if device is None:
       raise RuntimeError("no configuration read; have you called `star.setup()`?")
 
     widths = [channel.width for channel in pipettes.configuration.channels]
@@ -644,7 +676,7 @@ class iSWAP:
     # back it can get: every channel behind it packed against the front of their travel.
     backmost_y = await pipettes.request_y_position(0)
     target_y = y - cast(float, widths[0]) / 2 - self.configuration.rotation_drive_swept_radius
-    furthest_back = machine.left_arm_min_y_position + sum(cast(List[float], widths[1:]))
+    furthest_back = device.left_arm_min_y_position + sum(cast(List[float], widths[1:]))
 
     if backmost_y <= target_y:
       return
@@ -730,13 +762,8 @@ class iSWAP:
         zr=f"{acceleration_increments:03}",
         zw=f"{current_limit}",
       )
-    except BaseException:
-      # A failed move leaves the drive at an unknown z, so re-read to refresh the model. The
-      # read is wrapped: its own failure must not replace the move's exception.
-      try:
-        await self.rotation_drive_request_z_position()
-      except BaseException:
-        logger.warning("could not read where the rotation drive stopped; its model is stale")
+    except Exception:
+      await self._record_where_it_stopped("z")
       raise
 
     self.update_location_by_reference_point(z=z)

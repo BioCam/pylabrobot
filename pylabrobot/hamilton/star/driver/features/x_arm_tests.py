@@ -1,13 +1,21 @@
 import dataclasses
+import json
+import pathlib
+import tempfile
 import unittest
 from types import SimpleNamespace
 from typing import Any, List, Optional, cast
 
 from pylabrobot.hamilton.protocol.text.framing import assemble_command
+from pylabrobot.hamilton.star.driver.configuration import (
+  DeviceConfiguration,
+  read_configuration,
+  to_jsonable,
+)
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm
 from pylabrobot.hamilton.star.driver.simulator import (
   BARE_X_ARM,
-  DEFAULT_STAR_CONFIGURATION,
+  RECORDING_STAR,
   STARSimulationDriver,
 )
 from pylabrobot.resources.coordinate import Coordinate
@@ -17,6 +25,11 @@ from pylabrobot.resources.hamilton.hamilton_decks import HamiltonDeck
 # What each read answers, keyed by the command that asks: the arm at 362.9 mm, in tenths of a
 # millimetre and in motor counts, as the drive reports it.
 REPLIES = {"RX": "rx +0003629 +0000036290", "RS": "rs +0003629 +0000036290"}
+
+
+# The device this package ships a recording of, read through the one reader there is: tests need a
+# device to start from, and this is the one they stand in for.
+RECORDED_DEVICE = cast(DeviceConfiguration, read_configuration(RECORDING_STAR)["device"])
 
 
 def record(arm: XArm) -> List[str]:
@@ -36,14 +49,40 @@ def record(arm: XArm) -> List[str]:
 
 
 async def _both_arms() -> STARSimulationDriver:
-  """A machine with an arm on each rail, set up."""
+  """A device with an arm on each rail, set up."""
   both = dataclasses.replace(
-    DEFAULT_STAR_CONFIGURATION,
+    RECORDED_DEVICE,
     right_arm=BARE_X_ARM,
   )
-  driver = STARSimulationDriver(configuration=both, deck=STARDeck())
+  driver = STARSimulationDriver(
+    deck=STARDeck(),
+    declared_configuration_json=declaring(device=both),
+  )
   await driver.setup()
   return driver
+
+
+def declaring(**parts: object) -> str:
+  """The shipped recording with parts swapped out, written where it can be read back.
+
+  A declaration is read from a file and nothing else, so a test that needs a device no recording
+  describes writes one. Everything not named here stays as the recorded STAR has it.
+
+  Args:
+    parts: `device` for the device itself, or a feature name for something the left arm carries.
+
+  Returns:
+    The path it was written to.
+  """
+  tree = json.loads(pathlib.Path(RECORDING_STAR).read_text())
+  for name, part in parts.items():
+    if name == "device":
+      tree["device"] = to_jsonable(part)
+    else:
+      tree["arms"]["left"][name] = to_jsonable(part)
+  written = pathlib.Path(tempfile.mkdtemp()) / "declared.json"
+  written.write_text(json.dumps(tree))
+  return str(written)
 
 
 class TestPerDriveCommands(unittest.IsolatedAsyncioTestCase):
@@ -91,7 +130,7 @@ class TestPerDriveCommands(unittest.IsolatedAsyncioTestCase):
 
 
 class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
-  """The resource on the deck says where the arm is, and only the machine can change that."""
+  """The resource on the deck says where the arm is, and only the device can change that."""
 
   async def test_a_move_moves_the_model(self):
     driver = await _both_arms()
@@ -118,7 +157,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(sorted(arms), ["left_x_arm", "right_x_arm"])
 
   async def test_a_rejected_move_records_where_the_arm_stopped(self):
-    """The arm stops somewhere neither the old position nor the target describes, so the machine
+    """The arm stops somewhere neither the old position nor the target describes, so the device
     is asked where it ended up. Driven against a stub rather than the simulator, whose reads answer
     from the model and so cannot report a stop the model does not know about."""
     driver = await _both_arms()

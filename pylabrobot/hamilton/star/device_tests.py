@@ -1,4 +1,7 @@
 import dataclasses
+import json
+import pathlib
+import tempfile
 import unittest
 from typing import cast
 
@@ -7,32 +10,66 @@ from pylabrobot.hamilton.star.device import (
   STAR,
   STAR_DECK_LOCATION,
   STAR_SIZE_X,
-  STAR_with_extension_housing,
   STARDevice,
   STARLet,
 )
+from pylabrobot.hamilton.star.driver.configuration import (
+  DeviceConfiguration,
+  read_configuration,
+  to_jsonable,
+)
 from pylabrobot.hamilton.star.driver.simulator import (
   BARE_X_ARM,
-  DEFAULT_STAR_CONFIGURATION,
+  RECORDING_STAR,
   STARSimulationDriver,
 )
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import STARDeck
 from pylabrobot.resources.hamilton.hamilton_decks import STAR_NUM_TRACKS, STARLET_NUM_TRACKS
 
+# The device this package ships a recording of, read through the one reader there is: tests need a
+# device to start from, and this is the one they stand in for.
+RECORDED_DEVICE = cast(DeviceConfiguration, read_configuration(RECORDING_STAR)["device"])
+
+
+def declaring(**parts: object) -> str:
+  """The shipped recording with parts swapped out, written where it can be read back.
+
+  A declaration is read from a file and nothing else, so a test that needs a device no recording
+  describes writes one. Everything not named here stays as the recorded STAR has it.
+
+  Args:
+    parts: `device` for the device itself, or a feature name for something the left arm carries.
+
+  Returns:
+    The path it was written to.
+  """
+  tree = json.loads(pathlib.Path(RECORDING_STAR).read_text())
+  for name, part in parts.items():
+    if name == "device":
+      tree["device"] = to_jsonable(part)
+    else:
+      tree["arms"]["left"][name] = to_jsonable(part)
+  written = pathlib.Path(tempfile.mkdtemp()) / "declared.json"
+  written.write_text(json.dumps(tree))
+  return str(written)
+
 
 class TestConstruction(unittest.IsolatedAsyncioTestCase):
-  """What the instrument wires up when it is built."""
+  """What the device wires up when it is built."""
 
-  def test_the_instrument_deck_is_what_gets_modelled(self):
-    """The deck the instrument carries is its child and is what the driver models into, whether
+  def test_the_device_deck_is_what_gets_modelled(self):
+    """The deck the device carries is its child and is what the driver models into, whether
     the driver was built here or handed in pointing at another deck."""
     star = STAR(simulation=True)
     self.assertIs(star.driver.deck, star.deck)
     self.assertIn(star.deck, star.children)
 
     deck = STARDeck()
-    supplied = STARDevice(deck=deck, driver=STARSimulationDriver(deck=STARDeck()))
+    supplied = STARDevice(
+      deck=deck,
+      driver=STARSimulationDriver(deck=STARDeck(), declared_configuration_json=RECORDING_STAR),
+    )
     self.assertIs(supplied.driver.deck, deck)
 
   def test_needs_something_to_drive(self):
@@ -41,19 +78,19 @@ class TestConstruction(unittest.IsolatedAsyncioTestCase):
 
 
 class TestFactories(unittest.IsolatedAsyncioTestCase):
-  """Each factory builds one machine, on the deck that machine has."""
+  """Each factory builds one device, on the deck that device has."""
 
   def test_each_factory_builds_its_own_deck(self):
     self.assertEqual(STAR(simulation=True).deck.num_tracks, STAR_NUM_TRACKS)
     self.assertEqual(STARLet(simulation=True).deck.num_tracks, STARLET_NUM_TRACKS)
 
   def test_extension_housing_stands_to_the_left(self):
-    """The housing is a resource beside the chassis, not something that grows the instrument.
+    """The housing is a resource beside the chassis, not something that grows the device.
 
-    It bolts to the left, so it sits at a negative x. Growing the instrument instead would move its
+    It bolts to the left, so it sits at a negative x. Growing the device instead would move its
     origin, and everything measured from that origin with it.
     """
-    star = STAR_with_extension_housing(simulation=True)
+    star = STAR(simulation=True)
     self.assertEqual(star.get_absolute_size_x(), STAR_SIZE_X)
     self.assertEqual(cast(Coordinate, star.deck.location).x, STAR_DECK_LOCATION.x)
 
@@ -70,8 +107,8 @@ class TestFactories(unittest.IsolatedAsyncioTestCase):
 
 
 class TestCapabilities(unittest.IsolatedAsyncioTestCase):
-  """The instrument reads its features through the driver, which builds only what discovery
-  found. A feature the machine does not report is None rather than an object that cannot work."""
+  """The device reads its features through the driver, which builds only what discovery
+  found. A feature the device does not report is None rather than an object that cannot work."""
 
   async def test_reads_through_to_the_driver(self):
     star = STAR(simulation=True)
@@ -88,10 +125,10 @@ class TestCapabilities(unittest.IsolatedAsyncioTestCase):
       self.assertIs(getattr(star, name), getattr(star.driver, name), name)
 
   async def test_absent_capabilities_are_none(self):
-    # An arm that carries nothing: what the machine reports at instrument level and what each
+    # An arm that carries nothing: what the device reports at device level and what each
     # arm reports about itself agree on a real one, so the fixture makes them agree here.
     bare = dataclasses.replace(
-      DEFAULT_STAR_CONFIGURATION,
+      RECORDED_DEVICE,
       num_pip_channels=0,
       ka_head96_installed=False,
       autoload_installed=False,
@@ -99,7 +136,11 @@ class TestCapabilities(unittest.IsolatedAsyncioTestCase):
       right_arm=None,
     )
     star = STARDevice(
-      deck=STARDeck(), driver=STARSimulationDriver(configuration=bare, deck=STARDeck())
+      deck=STARDeck(),
+      driver=STARSimulationDriver(
+        deck=STARDeck(),
+        declared_configuration_json=declaring(device=bare),
+      ),
     )
     await star.setup()
     for name in ("pipettes", "head96", "head384", "autoload", "right_x_arm", "front_cover"):

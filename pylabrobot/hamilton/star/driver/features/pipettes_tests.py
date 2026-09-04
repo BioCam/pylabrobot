@@ -3,15 +3,15 @@ from typing import Any, List, Optional, Tuple
 
 from pylabrobot.hamilton.protocol.text.framing import assemble_command
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
-from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
+from pylabrobot.hamilton.star.driver.simulator import RECORDING_STAR, STARSimulationDriver
 from pylabrobot.resources.hamilton import STARDeck
 
 
 async def channels(width: float, positions: List[float]) -> Tuple[Pipettes, List[str]]:
-  """The channels of a simulated machine, of one width and at known Y positions.
+  """The channels of a simulated device, of one width and at known Y positions.
 
   Both are what the tests vary: the width decides the minimum spacing a pair must keep, and the
-  positions are what the machine answers `C0 RY` with. Everything else is the driver's own.
+  positions are what the device answers `C0 RY` with. Everything else is the driver's own.
 
   Args:
     width: what every channel reports its width to be, in mm.
@@ -20,7 +20,7 @@ async def channels(width: float, positions: List[float]) -> Tuple[Pipettes, List
   Returns:
     The feature, and the list its commands are recorded in.
   """
-  driver = STARSimulationDriver(deck=STARDeck())
+  driver = STARSimulationDriver(deck=STARDeck(), declared_configuration_json=RECORDING_STAR)
   await driver.setup()
   pipettes = driver.pipettes
   assert pipettes is not None
@@ -107,18 +107,18 @@ class TestPositionInYDirection(unittest.IsolatedAsyncioTestCase):
 
 
 async def simulated_channels() -> Pipettes:
-  """The channels of a simulated machine, as setup leaves them.
+  """The channels of a simulated device, as setup leaves them.
 
   Returns:
     The feature.
 
   Raises:
-    RuntimeError: If the simulated machine reports no channels.
+    RuntimeError: If the simulated device reports no channels.
   """
-  driver = STARSimulationDriver(deck=STARDeck())
+  driver = STARSimulationDriver(deck=STARDeck(), declared_configuration_json=RECORDING_STAR)
   await driver.setup()
   if driver.pipettes is None:
-    raise RuntimeError("the simulated machine reports no pipetting channels")
+    raise RuntimeError("the simulated device reports no pipetting channels")
   return driver.pipettes
 
 
@@ -130,26 +130,25 @@ class TestPositionInZDirection(unittest.IsolatedAsyncioTestCase):
   """
 
   async def test_a_z_outside_the_window_is_refused_and_one_inside_is_not(self):
-    """The floor is the deck surface, so a Z below it would drive a stop disk into the deck."""
+    """The floor is the deck surface, so a Z below it would drive a stop disc into the deck."""
     pipettes = await simulated_channels()
     c = pipettes.configuration
-    low, high = c.z_range or c.z_range_documented
+    low, high = c.z_range or c.z_range
 
     for z in (low - 0.1, high + 0.1):
       with self.assertRaises(ValueError):
-        await pipettes.move_to_z_positions({0: z})
+        await pipettes.move_stop_disc_to_z_position(0, z)
 
-    await pipettes.move_to_z_positions({0: round((low + high) / 2, 1)})
+    await pipettes.move_stop_disc_to_z_position(0, round((low + high) / 2, 1))
 
-  async def test_probing_takes_the_ceiling_from_the_machine_and_the_floor_from_the_drive(self):
-    """A machine reaching lower than the drive documents keeps the drive's floor, not its own."""
+  async def test_probing_replaces_the_ceiling_and_leaves_the_floor(self):
+    """The probe says how high these channels reach, and nothing about how low they go."""
     pipettes = await simulated_channels()
-    floor, _ = pipettes.configuration.z_range_documented
+    floor, _ = pipettes.configuration.z_range
 
-    # A machine whose channels come to rest below what the drive documents, and a window whose
-    # floor is wrong, so the probe is seen to take each end from its own source.
+    # A floor that is not the drive's, so a probe that touched it would be seen to.
     reached = 300.0
     pipettes.configuration.z_range = (floor + 10.0, reached)
 
     self.assertEqual(await pipettes.probe_z_max(), reached)
-    self.assertEqual(pipettes.configuration.z_range, (floor, reached))
+    self.assertEqual(pipettes.configuration.z_range, (floor + 10.0, reached))

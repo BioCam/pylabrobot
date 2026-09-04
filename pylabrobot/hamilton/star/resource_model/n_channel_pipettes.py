@@ -1,4 +1,4 @@
-"""Pipetting channels, and the rigid grids some machines carry them in."""
+"""Pipetting channels, and the rigid grids some devices carry them in."""
 
 from collections import OrderedDict
 from typing import Any, Dict, Literal, Mapping, Optional, get_args
@@ -29,10 +29,10 @@ class TipMountingShaft(Resource):
   """The end of one pipetting channel, where a tip is mounted and sealed.
 
   Named as the patent literature names it. Vendors do not agree: Hamilton's firmware names only the
-  stop disk, the collar its drive positions by, and reserves "tip cone" for the tip's own geometry.
+  stop disc, the collar its drive positions by, and reserves "tip cone" for the tip's own geometry.
   What is invariant is that the shaft carries its channel through to the tip.
 
-  A machine whose channels move independently carries these one each. A machine whose channels move
+  A device whose channels move independently carries these one each. A device whose channels move
   as one carries them inside an `NChannelPipette`.
 
   Round, and modelled as a cylinder: it is a shaft, and a tip is sealed onto it by turning around
@@ -89,7 +89,7 @@ class TipMountingShaft(Resource):
   def mount_tip(self, tip: Resource) -> None:
     """Take a tip onto this shaft, hanging below it by however far it stands proud.
 
-    Call this once the machine has confirmed the pickup: a shaft that is given a tip it did not
+    Call this once the device has confirmed the pickup: a shaft that is given a tip it did not
     manage to collect reports one it is not holding.
 
     Args:
@@ -255,9 +255,9 @@ def _rigid_head(
   dy: Optional[float],
   dz: float,
 ) -> NChannelPipette:
-  """One of the rigid heads: a grid the instrument knows, in a body it does not.
+  """One of the rigid heads: a grid the device knows, in a body it does not.
 
-  What the instrument tells us is the grid - how many channels, at what pitch. The body around it
+  What the device tells us is the grid - how many channels, at what pitch. The body around it
   is a measurement of a particular head, never derived from the pitch. Left unmeasured, the resource
   spans the array and nothing more.
 
@@ -332,7 +332,7 @@ def head96(
     name: what to call this one.
     size_x: how wide the head's body is, in mm. None spans the channel array instead.
     size_y: how deep the body is, in mm. None spans the channel array instead.
-    size_z: how tall it is, from its stop disk to its top, in mm. Zero leaves it unmodelled.
+    size_z: how tall it is, from its stop disc to its top, in mm. Zero leaves it unmodelled.
     dx: how far channel A1 sits from the body's left edge, in mm. None centres the array.
     dy: how far channel A1 sits from its front edge, in mm. None centres the array.
     dz: how far channel A1 sits above its bottom, in mm.

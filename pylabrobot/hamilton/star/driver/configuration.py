@@ -1,25 +1,34 @@
+import dataclasses
+import datetime
 import json
-from dataclasses import dataclass, fields
-from typing import Any, Dict, Optional
+import typing
+from dataclasses import dataclass
+from typing import Any, Dict, Optional, Union
 
 from pylabrobot.hamilton.star.driver.features.autoload import AutoloadConfiguration
-from pylabrobot.hamilton.star.driver.features.cover import FrontCoverConfiguration
 from pylabrobot.hamilton.star.driver.features.head96 import Head96Configuration
 from pylabrobot.hamilton.star.driver.features.head384 import Head384Configuration
 from pylabrobot.hamilton.star.driver.features.iswap import iSWAPConfiguration
 from pylabrobot.hamilton.star.driver.features.pipettes import PipettesConfiguration
 from pylabrobot.hamilton.star.driver.features.x_arm import XArmConfiguration
-from pylabrobot.hamilton.star.driver.serialization import from_dict, to_jsonable
 
 
 @dataclass
 class DeviceConfiguration:
-  """The instrument's installed hardware and geometry.
+  """The device's installed hardware and geometry.
 
-  Holds both halves of the machine's configuration: the RM (Request Machine Configuration)
-  fields and the QM (Request Extended Configuration) fields, which together match the
-  instrument-configuration parameter set.
+  Holds both halves of what the master answers about the device it is on: the device-configuration
+  fields and the extended-configuration fields.
   """
+
+  # -- which device this is, and what it is running --
+  serial_number: Optional[str] = None
+  """What the device calls itself. Distinct from the USB serial a driver picks a device off the bus
+  with: this is what the device answers."""
+  firmware_version: Optional[str] = None
+  """The master's firmware version."""
+  firmware_date: Optional[datetime.date] = None
+  """The date in that version."""
 
   # kb byte (configuration data 1)
   pip_type_1000ul: bool = False
@@ -95,7 +104,7 @@ class DeviceConfiguration:
   """Raw configuration data 3 (ke, 32-bit). Bit definitions are undocumented."""
 
   instrument_size_slots: int = 54
-  """Instrument size in slots, X range (xt). Default: 54."""
+  """Device size in slots, X range (xt). Default: 54."""
   autoload_size_slots: int = 54
   """Autoload size in slots (xa). Default: 54."""
   tip_waste_x_position: float = 1340.0
@@ -130,58 +139,123 @@ class DeviceConfiguration:
   """Right arm minimal Y position [mm] (yx). Default: 6.0."""
 
 
-@dataclass
-class DeviceRecording:
-  """What one device is: its own configuration, and that of each feature fitted to it.
+# -- reading and writing these as JSON ------------------------------------------------------------
+# JSON loses three things these configurations rely on: a tuple comes back a list, a dict key comes
+# back a string, and a date comes back its own text. What each field is declared to be is enough to
+# put all three back, so writing is `dataclasses.fields` and reading is the same walk against the
+# declared types.
 
-  Flat rather than per arm: each module sits on a CAN node of its own, so a device has one 96-head,
-  one iSWAP and one set of channels whichever arm carries them. Which arm that is, is already the
-  answer `DeviceConfiguration.left_arm` and `right_arm` give.
 
-  A feature left None was not recorded. A simulated device falls back to what its frame documents
-  for that one, and says so; one read off a real device has every feature it reported.
+def to_jsonable(value: Any) -> Any:
+  """The value as JSON holds it.
+
+  Args:
+    value: what to convert - a configuration, or anything one holds.
+
+  Returns:
+    The same value in types `json.dump` accepts.
   """
-
-  device: Optional[DeviceConfiguration] = None
-  pipettes: Optional[PipettesConfiguration] = None
-  head96: Optional[Head96Configuration] = None
-  head384: Optional[Head384Configuration] = None
-  iswap: Optional[iSWAPConfiguration] = None
-  autoload: Optional[AutoloadConfiguration] = None
-  front_cover: Optional[FrontCoverConfiguration] = None
-
-  def recorded(self) -> Dict[str, Any]:
-    """Which features this names, and what each is.
-
-    Returns:
-      The named features, keyed as this class names them. Features left None are left out.
-    """
+  if dataclasses.is_dataclass(value) and not isinstance(value, type):
     return {
-      field.name: value
-      for field in fields(self)
-      if (value := getattr(self, field.name)) is not None
+      field.name: to_jsonable(getattr(value, field.name)) for field in dataclasses.fields(value)
     }
+  if isinstance(value, datetime.date):
+    return value.isoformat()
+  if isinstance(value, (list, tuple)):
+    return [to_jsonable(item) for item in value]
+  if isinstance(value, dict):
+    # Keys are written as text because JSON has no other kind. What they were is on the field.
+    return {str(key): to_jsonable(item) for key, item in value.items()}
+  return value
 
-  def save(self, path: str, indent: Optional[int] = 2) -> None:
-    """Write this to a file.
 
-    Args:
-      path: where to write it.
-      indent: how far to indent the JSON, or None to write it on one line.
-    """
-    with open(path, "w", encoding="utf-8") as f:
-      json.dump(to_jsonable(self), f, indent=indent)
+def _restore(hint: Any, value: Any) -> Any:
+  """One value, back in the type its field is declared to hold.
 
-  @classmethod
-  def load(cls, path: str) -> "DeviceRecording":
-    """Read one back.
+  Args:
+    hint: the declared type.
+    value: the value as JSON held it.
 
-    Args:
-      path: the file to read.
+  Returns:
+    The value in the declared type.
+  """
+  if value is None:
+    return None
 
-    Returns:
-      What it holds. Features the file does not name are left None, as are fields this driver no
-      longer has, so a file written by an older one still loads.
-    """
-    with open(path, encoding="utf-8") as f:
-      return from_dict(cls, json.load(f))
+  origin = typing.get_origin(hint)
+  args = typing.get_args(hint)
+
+  if origin is Union:  # Optional[X] is Union[X, None]; the None case returned above.
+    declared = [arg for arg in args if arg is not type(None)]
+    return _restore(declared[0], value) if len(declared) == 1 else value
+  if origin is tuple:
+    # Fixed-length tuples name a type per position; `Tuple[X, ...]` names one for all of them.
+    if len(args) == 2 and args[1] is Ellipsis:
+      return tuple(_restore(args[0], item) for item in value)
+    return tuple(_restore(arg, item) for arg, item in zip(args, value))
+  if origin is list:
+    return [_restore(args[0], item) for item in value]
+  if origin is dict:
+    key_hint, value_hint = args
+    return {_restore(key_hint, key): _restore(value_hint, item) for key, item in value.items()}
+  if hint is int and isinstance(value, str):
+    # A dict keyed by int: JSON wrote the key as text, and the field says what it was.
+    return int(value)
+  if hint is datetime.date:
+    return datetime.date.fromisoformat(value)
+  if dataclasses.is_dataclass(hint) and isinstance(hint, type):
+    # A nested configuration: rebuilt field by field against what its own class declares. Names the
+    # class does not have are left out, so a file written by a driver that has since dropped a
+    # field still loads.
+    field_types = typing.get_type_hints(hint)
+    named = {field.name for field in dataclasses.fields(hint)}
+    return hint(**{n: _restore(field_types[n], v) for n, v in value.items() if n in named})
+  return value
+
+
+# What each name in a saved configuration is, so reading one back knows what to build. A feature an
+# arm carries is looked up in the first; one fitted to the device itself in the second.
+ARM_FEATURE_CONFIGURATIONS: Dict[str, type] = {
+  "pipettes": PipettesConfiguration,
+  "head96": Head96Configuration,
+  "head384": Head384Configuration,
+  "iswap": iSWAPConfiguration,
+}
+DEVICE_FEATURE_CONFIGURATIONS: Dict[str, type] = {
+  "autoload": AutoloadConfiguration,
+}
+
+
+def read_configuration(path: str) -> Dict[str, Any]:
+  """Read a saved configuration back into the dataclasses it was written from.
+
+  Shaped as the device is: the device's own configuration, the features each arm carries under the
+  side that carries them, and the features fitted to the device itself beside them. Nothing here
+  says how many of anything there may be, so a device that grows a second head reads back without
+  this having to change.
+
+  Args:
+    path: a file `STARDriver.save_configuration` wrote.
+
+  Returns:
+    `{"device": DeviceConfiguration, "arms": {side: {name: configuration}}, <name>: configuration}`.
+    Names this driver does not know are left out.
+  """
+  with open(path, encoding="utf-8") as f:
+    saved = json.load(f)
+
+  read: Dict[str, Any] = {}
+  if "device" in saved:
+    read["device"] = _restore(DeviceConfiguration, saved["device"])
+  read["arms"] = {
+    side: {
+      name: _restore(ARM_FEATURE_CONFIGURATIONS[name], value)
+      for name, value in carried.items()
+      if name in ARM_FEATURE_CONFIGURATIONS
+    }
+    for side, carried in saved.get("arms", {}).items()
+  }
+  for name, configuration in DEVICE_FEATURE_CONFIGURATIONS.items():
+    if name in saved:
+      read[name] = _restore(configuration, saved[name])
+  return read
