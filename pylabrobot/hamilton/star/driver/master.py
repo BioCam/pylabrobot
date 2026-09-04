@@ -1270,7 +1270,7 @@ class STARDriver:
     # axis: the master answers for every channel, so every channel's resource is brought up to
     # date whether or not the caller cared about all of them.
     await arm.pipettes.request_y_positions()
-    await arm.pipettes.request_z_positions()
+    await arm.pipettes._unchecked_fw_request_lowest_z_positions()
 
   async def _create_head_resources(self) -> None:
     """Put each head on the arm it rides, where it is along Y.

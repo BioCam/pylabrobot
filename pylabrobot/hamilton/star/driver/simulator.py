@@ -192,8 +192,8 @@ class _Simulated:
 class SimulatedPipettes(_Simulated, Pipettes):
   """The pipetting channels, answering for themselves."""
 
-  async def sense_tip_presence(self) -> List[bool]:
-    return list(self.machine.tips_mounted)
+  async def sense_tip_presence(self) -> List[int]:
+    return [int(mounted) for mounted in self.machine.tips_mounted]
 
   async def request_firmware_version(self, channel: int) -> Tuple[str, datetime.date]:
     return self.machine.reported("pipettes")
@@ -242,17 +242,26 @@ class SimulatedPipettes(_Simulated, Pipettes):
       self.update_location_by_reference_point(channel, y=y)
     return positions
 
-  async def request_z_positions(self) -> Dict[int, float]:
+  async def _unchecked_fw_request_lowest_z_positions(self) -> Dict[int, float]:
     # At the top of the window the configuration carries, which is where Z safety puts them.
     # Taken from there rather than held here, so a configured window is what a simulated probe
     # reads back. Recorded as the real read records it, so a simulated channel is modelled at the
     # height it reports rather than at whatever the arm's own is.
     c = self.configuration
-    safe_z = (c.z_range or c.z_range_documented)[1]
+    safe_z = c.z_range[1]
     positions = {channel: safe_z for channel in range(self.num_channels)}
     for channel, z in positions.items():
       self.update_location_by_reference_point(channel, z=z)
     return positions
+
+  async def request_stop_disk_z_position(self, channel: int) -> float:
+    # The channel's own drive rather than the master's read. A simulated channel carries no tip
+    # geometry, so the two answer the same height here; on a machine they part company the moment
+    # a tip goes on, which is the whole reason the two reads exist.
+    self._require_channel(channel)
+    z = (await self._unchecked_fw_request_lowest_z_positions())[channel]
+    self.update_location_by_reference_point(channel, z=z)
+    return z
 
 
 # Where the left arm has come to rest when a simulated machine is switched on, in mm: far enough

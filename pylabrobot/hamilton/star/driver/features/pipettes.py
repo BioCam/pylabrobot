@@ -88,10 +88,22 @@ class PipettesConfiguration:
   """The Z travel the drive counts in, in increments, lowest first. The floor is the deck
   surface, which is as low as a stop disk goes."""
 
-  z_range: Optional[Tuple[float, float]] = None
-  """The Z window the channels reach, in mm, lowest first. None until `probe_z_max` resolves it,
-  which is also what says the ceiling is this machine's rather than the drive's: what to gate
-  against before then is `z_range_documented`."""
+  # -- what a channel's own Z drive accepts, for the moves addressed to the channel itself --
+  z_drive_speed_increment_range: Tuple[int, int] = (20, 15_000)
+  z_drive_speed_default: float = 125.0
+  """How fast a channel's Z drive moves when the caller names nothing, in mm/s."""
+  z_drive_acceleration_increment_range: Tuple[int, int] = (5, 150)
+  z_drive_acceleration_default: float = 800.0
+  """How hard it accelerates when the caller names nothing, in mm/s2. Counted in thousands of
+  increments per second squared, unlike the positions and speeds beside it."""
+  z_drive_current_limit_range: Tuple[int, int] = (0, 7)
+  z_drive_current_limit_default: int = 3
+
+  z_range: Tuple[float, float] = (99.98, 334.7)
+  """The Z window the channels reach, in mm, lowest first.
+
+  What the drive counts, until `probe_z_max` replaces the ceiling with what this machine's
+  channels actually reached. The floor is the deck surface either way."""
   dispensing_drive_mm_per_increment: float = 0.002734375
   dispensing_drive_uL_per_increment: float = 0.046876
 
@@ -116,6 +128,29 @@ class PipettesConfiguration:
     """A Z-drive position in mm, from increments."""
     return round(increments * self.z_drive_mm_per_increment, 2)
 
+  def z_drive_acceleration_increments_to_mm(self, increments: int) -> float:
+    """A Z-drive acceleration in mm/s2, from the thousands of increments it is counted in."""
+    return round(increments * self.z_drive_mm_per_increment * 1000, 1)
+
+  def z_drive_acceleration_mm_to_increments(self, mm: float) -> int:
+    """A Z-drive acceleration in increments, from mm/s2."""
+    return round(mm / (self.z_drive_mm_per_increment * 1000))
+
+  @property
+  def z_speed_range(self) -> Tuple[float, float]:
+    """Z-drive speed window (mm/s)."""
+    low, high = self.z_drive_speed_increment_range
+    return (self.z_drive_increments_to_mm(low), self.z_drive_increments_to_mm(high))
+
+  @property
+  def z_acceleration_range(self) -> Tuple[float, float]:
+    """Z-drive acceleration window (mm/s2)."""
+    low, high = self.z_drive_acceleration_increment_range
+    return (
+      self.z_drive_acceleration_increments_to_mm(low),
+      self.z_drive_acceleration_increments_to_mm(high),
+    )
+
   def z_drive_mm_to_increments(self, mm: float) -> int:
     """A Z-drive position in increments, from mm."""
     return round(mm / self.z_drive_mm_per_increment)
@@ -135,16 +170,6 @@ class PipettesConfiguration:
   def dispensing_drive_mm_to_increments(self, mm: float) -> int:
     """A dispensing-drive position in increments, from how far the piston should travel."""
     return round(mm / self.dispensing_drive_mm_per_increment)
-
-  @property
-  def z_range_documented(self) -> Tuple[float, float]:
-    """The Z window `z_increment_range` describes, in mm, lowest first.
-
-    What the drive counts, which is not what a given machine's channels reach: the ceiling is
-    probed at setup and replaces this one. Pure: it reads nothing and changes nothing.
-    """
-    low, high = self.z_increment_range
-    return (self.z_drive_increments_to_mm(low), self.z_drive_increments_to_mm(high))
 
   def check_channels_agree(self) -> None:
     """Warn if the channels are not all running the same firmware.
@@ -226,6 +251,18 @@ class Pipettes:
 
   # -- session / discovery ---------------------------------------------------
 
+  def _require_channel(self, channel: int) -> None:
+    """Raise unless this device has that channel.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+
+    Raises:
+      ValueError: If it is not a whole number, or the device has no such channel.
+    """
+    if not isinstance(channel, int) or not (0 <= channel <= self.num_channels - 1):
+      raise ValueError(f"channel must be in [0, {self.num_channels - 1}], is {channel}")
+
   async def request_firmware_version(self, channel: int) -> Tuple[str, datetime.date]:
     """Request one channel's firmware version and build date.
 
@@ -235,6 +272,7 @@ class Pipettes:
     Returns:
       The version string and its build date, e.g. `("4.0S j 2022-03-16", date(2022, 3, 16))`.
     """
+    self._require_channel(channel)
     resp = await self._driver.send_command(module=self.channel_id(channel), command="RF")
     return resp.split("rf")[-1], parse_firmware_version_date(resp)
 
@@ -249,6 +287,7 @@ class Pipettes:
     Returns:
       The width in mm.
     """
+    self._require_channel(channel)
     resp = await self._driver.send_command(
       module=self.channel_id(channel), command="VY", fmt="yc### (n)"
     )
@@ -270,6 +309,7 @@ class Pipettes:
     Raises:
       ValueError: If the reply carries no hardware fields at all.
     """
+    self._require_channel(channel)
     resp = await self._driver.send_command(module=self.channel_id(channel), command="VW")
     fields = resp.split("vw")[-1].strip().split()
     if not fields:
@@ -405,14 +445,18 @@ class Pipettes:
     spacing = round((back - front) * 10) // (self.num_channels - 1)
     return [(round(back * 10) - channel * spacing) / 10 for channel in range(self.num_channels)]
 
-  async def sense_tip_presence(self) -> List[bool]:
+  async def sense_tip_presence(self) -> List[int]:
     """Sense tip presence on every channel, from their sleeve sensors.
 
+    Answered as the channels answer it, 1 where a tip is and 0 where none is, rather than narrowed
+    to True and False: the two carry the same meaning, and a value that is neither would be lost by
+    the narrowing rather than read back as it stands.
+
     Returns:
-      One value per channel, True where a tip is mounted.
+      One value per channel, 1 where a tip is mounted, 0-indexed from the back.
     """
     resp = await self._driver.send_command(module="C0", command="RT", fmt="rt# (n)")
-    return [bool(v) for v in cast(List[int], resp.get("rt"))]
+    return cast(List[int], resp.get("rt"))
 
   async def initialize(
     self,
@@ -546,7 +590,7 @@ class Pipettes:
         raise RuntimeError("the arm's X travel is not known; have you called `star.setup()`?")
       low, high = x_range
     elif axis == "z":
-      low, high = self.configuration.z_range or self.configuration.z_range_documented
+      low, high = self.configuration.z_range
     else:
       low = (
         machine.left_arm_min_y_position
@@ -621,6 +665,7 @@ class Pipettes:
     Returns:
       The position of the requested channel in mm.
     """
+    self._require_channel(channel)
     positions = await self.request_y_positions()
     return positions[channel]
 
@@ -741,6 +786,7 @@ class Pipettes:
     Raises:
       ValueError: If the channel cannot reach it, or the others cannot make room.
     """
+    self._require_channel(channel)
     return await self.move_to_y_positions({channel: y}, make_space=make_space)
 
   async def make_max_space_for_channel(self, channel: int):
@@ -783,7 +829,7 @@ class Pipettes:
 
   # -- z position --------------------------------------------------------------------------------
 
-  async def _unchecked_fw_request_z_positions(self) -> Dict[int, float]:
+  async def _unchecked_fw_request_lowest_z_positions(self) -> Dict[int, float]:
     """Read where every channel is along Z, without recording it.
 
     The reading alone. `request_z_positions` is the one that also records it on the resources.
@@ -796,33 +842,67 @@ class Pipettes:
       channel: increments / 10 for channel, increments in enumerate(cast(List[int], resp["rz"]))
     }
 
-  async def request_z_positions(self) -> Dict[int, float]:
-    """Read where every channel is along Z.
+  async def request_tool_bottom_z_positions(self) -> Dict[int, float]:
+    """Read where the bottom of the tip on every channel is.
+
+    The master answers the bottom of the tip on a channel that carries one, and the stop disc on a
+    channel that does not, so a channel with no tip has no tool bottom to report. This refuses
+    rather than quietly answering with a stop disc; `request_stop_disk_z_positions` is the read
+    that answers the stop disc, whatever is mounted.
 
     Each answer is recorded on the resource modelling that channel.
 
     Returns:
-      The position of each channel in mm, keyed by channel, 0-indexed from the back.
+      The bottom of each channel's tip in mm, keyed by channel, 0-indexed from the back.
+
+    Raises:
+      ValueError: If any channel carries no tip.
     """
-    positions = await self._unchecked_fw_request_z_positions()
-    for channel, z in positions.items():
-      self.update_location_by_reference_point(channel, z=z)
+    bare = [c for c, has_tip in enumerate(await self.sense_tip_presence()) if not has_tip]
+    if bare:
+      raise ValueError(
+        f"channels {bare} carry no tips, so they have no tool bottom to report; "
+        "`request_stop_disk_z_positions` reads the stop disc, whatever is mounted"
+      )
+    positions = await self._unchecked_fw_request_lowest_z_positions()
+    # What comes back is each tip's bottom, but the model references stop discs, so we
+    # read them for correct model update.
+    await self.request_stop_disk_z_positions()
     return positions
 
-  async def request_z_position(self, channel: int) -> float:
-    """Read where a channel is along Z.
+  async def request_tool_bottom_z_position(self, channel: int) -> float:
+    """Read where the bottom of the tip on one channel is.
+
+    A channel with no tip has no tool bottom, so this refuses rather than quietly answering with
+    its stop disc, which is what the master would do. `request_tool_bottom_z_positions` is the read that
+    answers either way, and `request_stop_disk_z_position` the one that answers the stop disc.
 
     Args:
-      channel: which channel to ask, 0-indexed from the back.
+      channel: which channel, 0-indexed from the back.
 
     Returns:
-      The position of the channel in mm.
+      Where the bottom of its tip is, in mm on the deck.
+
+    Raises:
+      ValueError: If the channel carries no tip.
     """
-    resp = await self.request_z_positions()
-    return resp[channel]
+    self._require_channel(channel)
+    if not (await self.sense_tip_presence())[channel]:
+      raise ValueError(
+        f"channel {channel} carries no tip, so it has no tool bottom to read; "
+        "`request_stop_disk_z_position` reads the stop disc, whatever is mounted"
+      )
+    tip_bottom = (await self._unchecked_fw_request_lowest_z_positions())[channel]
+    # As above: the model holds this channel's stop disc, not the bottom of what is on it.
+    await self.request_stop_disk_z_position(channel)
+    return tip_bottom
 
   async def move_to_z_positions(self, zs: Dict[int, float]):
-    """Move channels along Z.
+    """Move channels along Z, at whatever the master takes their Z to be.
+
+    Sent to the master, which reads Z as the bottom of the tip on a channel that carries one and as
+    the stop disc on a channel that does not. So what this positions depends on what is mounted.
+    Neither reference unambiguously: the channel modules are what answer for the stop disc alone.
 
     The channels not named stay where they are.
 
@@ -832,7 +912,7 @@ class Pipettes:
     for z in zs.values():
       self._check_reachable("z", z)
 
-    channel_locations = await self.request_z_positions()
+    channel_locations = await self._unchecked_fw_request_lowest_z_positions()
 
     for channel_idx, z in zs.items():
       channel_locations[channel_idx] = z
@@ -848,7 +928,7 @@ class Pipettes:
       # A failed move leaves the channel Z positions unknown, so re-read them to refresh the
       # model. The read is wrapped: its own failure must not replace the move's exception.
       try:
-        await self.request_z_positions()
+        await self._unchecked_fw_request_lowest_z_positions()
       except BaseException:
         logger.warning("could not read where the channels stopped; their model is stale")
       raise
@@ -860,7 +940,10 @@ class Pipettes:
   # -- z safety --------------------------------------------------------------
 
   async def move_to_z_position(self, channel: int, z: float):
-    """Move one channel along Z.
+    """Move one channel along Z, at whatever the master takes its Z to be.
+
+    Reads as `move_to_z_positions` does: the tip bottom where a tip is mounted, the stop disc where
+    none is.
 
     The other channels stay where they are.
 
@@ -868,6 +951,7 @@ class Pipettes:
       channel: which channel to move, 0-indexed from the back.
       z: where to put it, in mm.
     """
+    self._require_channel(channel)
     return await self.move_to_z_positions({channel: z})
 
   async def probe_z_max(self) -> float:
@@ -886,7 +970,7 @@ class Pipettes:
       The highest Z the channels reach, in mm.
     """
     await self._driver.send_command(module="C0", command="ZA", subsystem=_FirmwareLock.CHANNELS)
-    positions = list((await self.request_z_positions()).values())
+    positions = list((await self._unchecked_fw_request_lowest_z_positions()).values())
     ceiling = min(positions)
     if max(positions) - ceiling > self.configuration.z_drive_increments_to_mm(1):
       logger.warning(
@@ -895,8 +979,169 @@ class Pipettes:
         positions,
       )
     c = self.configuration
-    c.z_range = (c.z_range_documented[0], ceiling)
+    c.z_range = (c.z_range[0], ceiling)
     return ceiling
+
+  async def request_stop_disk_z_position(self, channel: int) -> float:
+    """Read where one channel's stop disc is, whatever is mounted on it.
+
+    Asked of the channel itself rather than the master, which is what makes it unambiguous: the
+    master answers the bottom of a mounted tip, the channel answers its own drive.
+
+    The answer is recorded on the resource modelling that channel, as the master's read is. This
+    is the reading that belongs there: a channel is modelled at its stop disc, which is what this
+    reports and what the master's read stops reporting the moment a tip goes on.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+
+    Returns:
+      Where its stop disc is, in mm on the deck.
+    """
+    self._require_channel(channel)
+    resp = await self._driver.send_command(
+      module=self.channel_id(channel), command="RZ", fmt="rz######"
+    )
+    z = self.configuration.z_drive_increments_to_mm(cast(int, resp["rz"]))
+    self.update_location_by_reference_point(channel, z=z)
+    return z
+
+  async def request_stop_disk_z_positions(self) -> Dict[int, float]:
+    """Read where every channel's stop disc is.
+
+    Returns:
+      Each channel's stop disc in mm, keyed by channel, 0-indexed from the back.
+    """
+    return {
+      channel: await self.request_stop_disk_z_position(channel)
+      for channel in range(self.num_channels)
+    }
+
+  async def request_tip_overhang(self, channel: int) -> float:
+    """Measure how far the tip on one channel stands below its stop disc.
+
+    Both readings are of the same channel at the same moment, so the difference is the overhang
+    without anything having to move: the channel reports its own stop disc, the master reports the
+    bottom of what is mounted. This is what a Z target has to be offset by for the tip end, rather
+    than the stop disc, to land where it is wanted.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+
+    Returns:
+      The overhang in mm.
+
+    Raises:
+      RuntimeError: If the channel carries no tip, so there is nothing to measure.
+    """
+    self._require_channel(channel)
+    if not (await self.sense_tip_presence())[channel]:
+      raise RuntimeError(f"channel {channel} reports no tip, so there is no overhang to measure")
+    stop_disc = await self.request_stop_disk_z_position(channel)
+    tip_bottom = (await self._unchecked_fw_request_lowest_z_positions())[channel]
+    return round(stop_disc - tip_bottom, 2)
+
+  async def move_stop_disk_to_z_position(
+    self,
+    channel: int,
+    z: float,
+    speed: Optional[float] = None,
+    acceleration: Optional[float] = None,
+    current_limit: Optional[int] = None,
+  ):
+    """Move one channel's stop disc along Z. The other channels stay where they are.
+
+    Addressed to the channel rather than the master, so what it positions is the stop disc whether
+    or not a tip is mounted. `move_tool_bottom_to_z_position` is the one that places a tip end.
+
+    Args:
+      channel: which channel to move, 0-indexed from the back.
+      z: where to put its stop disc, in mm on the deck.
+      speed: how fast, in mm/s. Defaults to `configuration.z_drive_speed_default`.
+      acceleration: how hard, in mm/s2. Defaults to `configuration.z_drive_acceleration_default`.
+      current_limit: the motor current limit. Defaults to
+        `configuration.z_drive_current_limit_default`.
+
+    Raises:
+      ValueError: If an argument is outside what the drive accepts.
+    """
+    self._require_channel(channel)
+    c = self.configuration
+    speed = c.z_drive_speed_default if speed is None else speed
+    acceleration = c.z_drive_acceleration_default if acceleration is None else acceleration
+    current_limit = c.z_drive_current_limit_default if current_limit is None else current_limit
+
+    self._check_reachable("z", z)
+    for checked, (low, high), name in (
+      (speed, c.z_speed_range, "speed"),
+      (acceleration, c.z_acceleration_range, "acceleration"),
+      (current_limit, c.z_drive_current_limit_range, "current_limit"),
+    ):
+      if not low <= checked <= high:
+        raise ValueError(f"{name} must be between {low} and {high}, is {checked}")
+
+    return await self._driver.send_command(
+      module=self.channel_id(channel),
+      command="ZA",
+      za=f"{c.z_drive_mm_to_increments(z):05}",
+      zv=f"{c.z_drive_mm_to_increments(speed):05}",
+      zr=f"{c.z_drive_acceleration_mm_to_increments(acceleration):03}",
+      zw=f"{current_limit:01}",
+    )
+
+  async def move_tool_bottom_to_z_position(
+    self,
+    channel: int,
+    z: float,
+    speed: Optional[float] = None,
+    acceleration: Optional[float] = None,
+    current_limit: Optional[int] = None,
+  ):
+    """Move the bottom of the tip on one channel along Z.
+
+    The drive is commanded in stop-disc terms, so this measures how far the tip stands below the
+    stop disc and offsets the target by that: the same move as `move_stop_disk_to_z_position`,
+    named at the end that reaches into a well. It needs a tip on the channel, which is what gives
+    it a bottom distinct from the stop disc's.
+
+    Args:
+      channel: which channel to move, 0-indexed from the back.
+      z: where to put the bottom of its tip, in mm on the deck.
+      speed: how fast, in mm/s. Defaults to `configuration.z_drive_speed_default`.
+      acceleration: how hard, in mm/s2. Defaults to `configuration.z_drive_acceleration_default`.
+      current_limit: the motor current limit. Defaults to
+        `configuration.z_drive_current_limit_default`.
+
+    Raises:
+      ValueError: If the channel carries no tip, or it cannot put the tip bottom at `z`.
+      RuntimeError: If the Z window was not probed, so how high the channels reach is unknown.
+    """
+    self._require_channel(channel)
+    c = self.configuration
+    try:
+      overhang = await self.request_tip_overhang(channel)
+    except RuntimeError as no_tip:
+      raise ValueError(
+        f"channel {channel} carries no tip, so it has no tool bottom to place; "
+        "`move_stop_disk_to_z_position` is the move for a channel with nothing on it"
+      ) from no_tip
+
+    # The drive works in stop-disc terms over `z_range`, so what the tip bottom reaches is that
+    # window shifted down by the overhang, and no lower than a stop disc itself may go.
+    low = round(max(c.z_range[0] - overhang, c.z_range[0]), 2)
+    high = round(c.z_range[1] - overhang, 2)
+    if not low <= z <= high:
+      raise ValueError(
+        f"the tool bottom reaches {low} to {high} mm with a {overhang} mm overhang, not {z}"
+      )
+
+    return await self.move_stop_disk_to_z_position(
+      channel,
+      z + overhang,
+      speed=speed,
+      acceleration=acceleration,
+      current_limit=current_limit,
+    )
 
   async def move_to_safe_z(self) -> List[float]:
     """Move every channel up to its safe Z: the top of the window `probe_z_max` probed.
@@ -907,14 +1152,10 @@ class Pipettes:
     no height to aim at, and the firmware's own safety move establishes one instead.
 
     Returns:
-      Each channel's stop-disk Z, in mm, back to front.
+      Where each channel came to rest, in mm, back to front, as the master reports Z.
     """
     z_range = self.configuration.z_range
 
-    if z_range is None:
-      await self.probe_z_max()
-      return list((await self.request_z_positions()).values())
-
     await self.move_to_z_positions({channel: z_range[1] for channel in range(self.num_channels)})
 
-    return list((await self.request_z_positions()).values())
+    return list((await self._unchecked_fw_request_lowest_z_positions()).values())

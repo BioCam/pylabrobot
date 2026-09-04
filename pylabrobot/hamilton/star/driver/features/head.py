@@ -655,14 +655,19 @@ class Head:
   # -- tips --------------------------------------------------------------------------------------
 
   async def request_tip_presence(self) -> bool:
-    """Measure whether the head is carrying tips.
+    """Request what the firmware holds about the head carrying tips.
+
+    Requested, not sensed: the head has no sleeve sensor, so this is the state the firmware wrote
+    for itself rather than a measurement of what is on the head. The channels have sensors and
+    `Pipettes.sense_tip_presence` measures; these two are deliberately different words for
+    deliberately different things.
 
     One bit for the whole head: the instrument counts tips as a rack, not as channels, so it can
     say that some are mounted and never which. A model that tracks them per channel is finer than
     anything this can confirm, and this is what it has to be reconciled against.
 
     Returns:
-      Whether the head reports tips mounted.
+      Whether the firmware holds that tips are mounted.
     """
     command = self.configuration.tip_presence_command
     field = command.lower()

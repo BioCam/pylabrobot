@@ -133,7 +133,7 @@ class TestPositionInZDirection(unittest.IsolatedAsyncioTestCase):
     """The floor is the deck surface, so a Z below it would drive a stop disk into the deck."""
     pipettes = await simulated_channels()
     c = pipettes.configuration
-    low, high = c.z_range or c.z_range_documented
+    low, high = c.z_range or c.z_range
 
     for z in (low - 0.1, high + 0.1):
       with self.assertRaises(ValueError):
@@ -141,15 +141,14 @@ class TestPositionInZDirection(unittest.IsolatedAsyncioTestCase):
 
     await pipettes.move_to_z_positions({0: round((low + high) / 2, 1)})
 
-  async def test_probing_takes_the_ceiling_from_the_machine_and_the_floor_from_the_drive(self):
-    """A machine reaching lower than the drive documents keeps the drive's floor, not its own."""
+  async def test_probing_replaces_the_ceiling_and_leaves_the_floor(self):
+    """The probe says how high these channels reach, and nothing about how low they go."""
     pipettes = await simulated_channels()
-    floor, _ = pipettes.configuration.z_range_documented
+    floor, _ = pipettes.configuration.z_range
 
-    # A machine whose channels come to rest below what the drive documents, and a window whose
-    # floor is wrong, so the probe is seen to take each end from its own source.
+    # A floor that is not the drive's, so a probe that touched it would be seen to.
     reached = 300.0
     pipettes.configuration.z_range = (floor + 10.0, reached)
 
     self.assertEqual(await pipettes.probe_z_max(), reached)
-    self.assertEqual(pipettes.configuration.z_range, (floor, reached))
+    self.assertEqual(pipettes.configuration.z_range, (floor + 10.0, reached))
