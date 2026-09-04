@@ -1005,8 +1005,13 @@ class STARDriver:
   async def pre_initialize(self, read_timeout: int = 300):
     """Run the device's initialization procedure.
 
-    Homes every drive and leaves the channels at Z safety. The default read timeout is a wide
-    margin over what the command has been measured to take.
+    Leaves the channels at Z safety and their Y drive without a reference: afterwards they report
+    Y positions outside the range they reach, and the firmware refuses to move them, answering
+    that the Y drive is not initialized. C0 goes on reporting the device as initialized, so no
+    status read tells the difference. `setup` brings the features back up; a caller reaching for
+    this on its own has to initialize them itself.
+
+    The default read timeout is a wide margin over what the command has been measured to take.
 
     The autoload is a separate unit with an initialize of its own. It is left out of what this
     holds, and can be brought up alongside.
@@ -1014,12 +1019,17 @@ class STARDriver:
     Args:
       read_timeout: how long to wait for the procedure, in seconds.
     """
-    return await self.send_command(
+    resp = await self.send_command(
       module="C0",
       command="VI",
       subsystem=_FirmwareLock.EVERY_SUBSYSTEM_BUT_THE_AUTOLOAD,
       read_timeout=read_timeout,
     )
+    logger.warning(
+      "the device initialization procedure has run; the features are not initialized and their "
+      "drives have no reference until they are"
+    )
+    return resp
 
   async def _initialize_arm(self, arm: XArm, already_initialized: bool):
     """Initialize everything one arm carries, one after another.
