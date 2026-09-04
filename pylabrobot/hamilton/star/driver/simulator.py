@@ -19,7 +19,11 @@ from pylabrobot.hamilton.protocol.text.framing import (
   parse_firmware_version_date,
 )
 from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
-from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
+from pylabrobot.hamilton.star.driver.features.autoload import (
+  AUTOLOAD_TYPES,
+  Autoload,
+  AutoloadConfiguration,
+)
 from pylabrobot.hamilton.star.driver.features.cover import (
   COVER_POSITION_CODES,
   CoverPosition,
@@ -48,6 +52,7 @@ from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfigurati
 from pylabrobot.hamilton.star.driver.master import STARDriver
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
+from pylabrobot.resources.carrier import Carrier
 from pylabrobot.resources.hamilton.hamilton_decks import (
   HamiltonDeck,
 )
@@ -192,6 +197,21 @@ class _Simulated:
   def device(self) -> "STARSimulationDriver":
     return cast("STARSimulationDriver", self._driver)
 
+  async def recorded(self, module: str, command: str, **kwargs: Any) -> None:
+    """Put a command on the link so it is recorded, without an answer.
+
+    For a read the model can answer outright. The command is assembled and logged exactly as a
+    move is, and the value is returned by the caller rather than written into a reply for the
+    caller to take apart again: a reply invented here would only ever be read by the parser that
+    invented it.
+
+    Args:
+      module: the module to address.
+      command: the two-letter command code.
+      kwargs: the command's own parameters, so the bytes logged are the bytes that would go.
+    """
+    await self._driver.send_command(module=module, command=command, **kwargs)
+
   async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
     """What this feature would answer the command with, taken from the model.
 
@@ -265,26 +285,11 @@ class SimulatedPipettes(_Simulated, Pipettes):
       return None
     declared = self._declared_channel(channel)
 
-    if command == "RF":
-      version, _ = self.device.reported("pipettes")
-      return f"{module}RFrf{version}", "the channels' reported firmware"
-
     if command == "VY":
       # The drive answers twice; the read takes the second.
       width = PIPETTE_WIDTH if declared.width is None else declared.width
       increments = c.y_drive_mm_to_increments(width)
       return {"yc": [increments, increments]}, f"channel {channel}'s declared width"
-
-    if command == "VW":
-      # The four hardware fields discovery parses back out. Only what the read reports: the rest
-      # of a channel's configuration is filled from other reads, as it is on a device.
-      fields = [
-        "1" if declared.channel_type == "ML_STAR_RPC" else "0",
-        {"ML_STAR_PLE": "1", "ML_STAR_RPC": "2"}.get(declared.head_type or "", "0"),
-        "0" if declared.stop_disc_type == "core_i" else "1",
-        "1" if declared.pressure_adc == "Analog_Devices_AD5263" else "0",
-      ]
-      return f"{module}VWvw{' '.join(fields)}", f"what channel {channel} is declared to be"
 
     if command == "RZ":
       # The channel's own drive rather than the master's read. A simulated channel carries no tip
@@ -295,6 +300,28 @@ class SimulatedPipettes(_Simulated, Pipettes):
         f"where channel {channel}'s stop disc is modelled",
       )
     return None
+
+  async def request_firmware_version(self, channel: int) -> Tuple[str, datetime.date]:
+    # What the channel was declared to run, where the declaration says: a recording taken with
+    # `save_configuration` carries no channel firmware, because it is a field discovery fills from
+    # this very read, so the simulator's own table stands in where it is not there.
+    await self.recorded(self.channel_id(channel), "RF")
+    declared = self._declared_channel(channel).firmware_version
+    if declared is not None:
+      return declared, parse_firmware_version_date(declared)
+    return self.device.reported("pipettes")
+
+  async def request_pipette_configuration(self, channel: int) -> PipetteConfiguration:
+    # Only what the read reports: the rest of a channel's configuration is filled by discovery
+    # from other reads, as it is on a device.
+    await self.recorded(self.channel_id(channel), "VW")
+    declared = self._declared_channel(channel)
+    return PipetteConfiguration(
+      channel_type=declared.channel_type,
+      head_type=declared.head_type,
+      stop_disc_type=declared.stop_disc_type,
+      pressure_adc=declared.pressure_adc,
+    )
 
   @property
   def _z(self) -> Dict[int, float]:
@@ -397,10 +424,6 @@ class _SimulatedHead(_Simulated, Head):
     if module != c.module:
       return None
 
-    if command == "RF":
-      version, _ = self.device.reported(self._firmware_key)
-      return f"{module}RFrf{version}", f"the {self._label}'s reported firmware"
-
     if command == "QG":
       head_type = self._declared.head_type
       if head_type is None:
@@ -453,6 +476,13 @@ class _SimulatedHead(_Simulated, Head):
         f"the {self._label}'s {parameter} default",
       )
     return None
+
+  async def request_firmware_version(self) -> Tuple[str, datetime.date]:
+    await self.recorded(self.configuration.module, "RF")
+    version = self._declared.firmware_version
+    if version is None:
+      raise RuntimeError(f"the simulated {self._label} has no firmware version declared")
+    return version, parse_firmware_version_date(version)
 
   def _simulated_drive_parameter(self, parameter: str) -> float:
     """What this head holds in a drive register, for the link to answer with.
@@ -521,18 +551,16 @@ class SimulatedHead96(_SimulatedHead, Head96):
   def _declared(self) -> Head96Configuration:
     return self.device.simulated_head96
 
-  async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
-    if module == self.configuration.module and command == "QU":
-      # Rendered from what this head is, rather than written out separately: discovery parses
-      # these three back out of the reply, so a head configured differently answers differently.
-      head = self._declared
-      tokens = [
-        "1" if head.supports_clot_monitoring_clld else "0",
-        "0" if head.stop_disc_type == "core_i" else "1",
-        "0" if head.instrument_type == "legacy" else "1",
-      ] + ["0"] * 7
-      return f"{module}QUau{' '.join(tokens)}", "what this 96-head is declared to be"
-    return await super().answer(module, command, **kwargs)
+  async def request_hardware(self) -> List[str]:
+    # Rendered from what this head is, rather than written out separately: a head configured
+    # differently answers differently.
+    await self.recorded(self.configuration.module, "QU")
+    head = self._declared
+    return [
+      "1" if head.supports_clot_monitoring_clld else "0",
+      "0" if head.stop_disc_type == "core_i" else "1",
+      "0" if head.instrument_type == "legacy" else "1",
+    ] + ["0"] * 7
 
   def _simulated_drive_parameter(self, parameter: str) -> float:
     # The dispensing and squeezer drives have no register to read, so they answer with what this
@@ -560,16 +588,14 @@ class SimulatedHead384(_SimulatedHead, Head384):
   def _declared(self) -> Head384Configuration:
     return self.device.simulated_head384
 
-  async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
-    if module == self.configuration.module and command == "QU":
-      # Rendered as the 96-head's is, from the two flags this head reports.
-      head = self._declared
-      tokens = [
-        "1" if head.supports_clot_monitoring_clld else "0",
-        "1" if head.supports_lld_absolute_threshold_check else "0",
-      ] + ["0"] * 8
-      return f"{module}QUau{' '.join(tokens)}", "what this 384-head is declared to be"
-    return await super().answer(module, command, **kwargs)
+  async def request_hardware(self) -> List[str]:
+    # Rendered as the 96-head's is, from the two flags this head reports.
+    await self.recorded(self.configuration.module, "QU")
+    head = self._declared
+    return [
+      "1" if head.supports_clot_monitoring_clld else "0",
+      "1" if head.supports_lld_absolute_threshold_check else "0",
+    ] + ["0"] * 8
 
 
 class SimulatedISWAP(_Simulated, iSWAP):
@@ -582,8 +608,6 @@ class SimulatedISWAP(_Simulated, iSWAP):
 
   async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
     if module == "R0":
-      if command == "RF":
-        return f"R0RFrf{self.device.simulated_firmware['iswap']}", "its reported firmware"
       if command == "RW":
         stops = (await self._request_slots("pw"))[: len(ROTATION_DRIVE_SLOTS)]
         parked = dict(zip(ROTATION_DRIVE_SLOTS, stops))["parking"]
@@ -602,6 +626,13 @@ class SimulatedISWAP(_Simulated, iSWAP):
         raise RuntimeError("the simulated iSWAP has no X offset; set it on its configuration")
       return {"kg": round(offset * 10)}, "the X offset it was declared with"
     return None
+
+  async def request_firmware_version(self) -> str:
+    await self.recorded("R0", "RF")
+    version = self._declared.firmware_version
+    if version is None:
+      raise RuntimeError("the simulated iSWAP has no firmware version declared")
+    return version
 
   async def rotation_drive_request_z_position(self) -> float:
     return self._z
@@ -671,7 +702,75 @@ class SimulatedAutoload(_Simulated, Autoload):
   track = 1
   """Where it last moved to."""
 
+  async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
+    declared = self.device.simulated_autoload
+    c = self.configuration
+
+    if module == "C0":
+      if command == "CQ":
+        autoload_type = declared.autoload_type
+        if autoload_type is None:
+          raise RuntimeError("the simulated autoload has no type; set it on its configuration")
+        code = next((k for k, name in AUTOLOAD_TYPES.items() if name == autoload_type), None)
+        if code is None:
+          raise RuntimeError(f"{autoload_type!r} is not a type the autoload reports")
+        return {"cq": code}, "the autoload it was declared to be"
+      if command == "QA":
+        return {"qa": self.track}, "the track the sled is modelled on"
+      return None
+
+    if module != "I0":
+      return None
+
+    if command == "QW":
+      return {"qw": int(self.device.initialized["I0"])}, "whether it has been initialized"
+
+    if command == "QX":
+      return {"bx": SIMULATED_AUTOLOAD_INIT_TRACK}, "the track its X drive homes against"
+
+    if command == "RJ":
+      # Adjusted, so the values it stores are its own.
+      return (
+        {"jd": SIMULATED_AUTOLOAD_ADJUSTMENT_DATE.isoformat(), "js": 1},
+        "an autoload that has been adjusted",
+      )
+
+    if command == "RA":
+      parameter = cast(str, kwargs.get("ra"))
+      if parameter == "au":
+        # What this device's own autoload answered: the 0.1 mm scanner, indicators fitted.
+        return (
+          {"au": [0 if declared.x_drive_mm_per_increment == 0.1 else 1, 0, 0, 0, 0]},
+          "the module configuration it was declared with",
+        )
+      return (
+        f"I0RA{parameter}{SIMULATED_AUTOLOAD_PARAMETER_VALUE}",
+        f"the {parameter} parameter it stores",
+      )
+
+    # The drives answer twice, the firmware counter then the hardware one, and the read takes the
+    # second. Where each is is what the model says: a simulated device has no drive to ask.
+    if command == "RX":
+      # The model is placed around the carrier-handling wheel, so the wheel stands that far right
+      # of its left edge. Before setup has put the sled on the deck there is no model to read, and
+      # the track it is on is what it has instead - which is how a park during initialization
+      # survives long enough to reach the resource created after it.
+      if self.resource is not None and self.resource.location is not None:
+        x = self.resource.location.x + c.reference_point_from_sled_left_edge
+      else:
+        x = cast(HamiltonDeck, self.device.deck).track_to_location(self.track).x
+      increments = c.x_drive_mm_to_increments(x)
+      return {"rx": [increments, increments]}, "where the sled is modelled"
+    if command == "RY":
+      increments = c.y_drive_mm_to_increments(SIMULATED_AUTOLOAD_Y_POSITION)
+      return {"ry": [increments, increments]}, "where the wheel is modelled along Y"
+    if command == "RZ":
+      increments = c.z_drive_mm_to_increments(SIMULATED_AUTOLOAD_Z_POSITION)
+      return {"rz": [increments, increments]}, "where the wheel is modelled along Z"
+    return None
+
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
+    await self.recorded("I0", "RF")
     version = self.device.simulated_autoload.firmware_version
     if version is None:
       raise RuntimeError(
@@ -679,33 +778,9 @@ class SimulatedAutoload(_Simulated, Autoload):
       )
     return version, parse_firmware_version_date(version)
 
-  async def request_module_configuration(self) -> Tuple[float, bool]:
-    # What this device's own autoload answered: the 0.1 mm scanner, indicators fitted.
-    declared = self.device.simulated_autoload
-    return declared.x_drive_mm_per_increment, True
-
-  async def request_autoload_type(self) -> str:
-    autoload_type = self.device.simulated_autoload.autoload_type
-    if autoload_type is None:
-      raise RuntimeError("the simulated autoload has no type; set it on its configuration")
-    return autoload_type
-
-  async def request_initialization_status(self) -> bool:
-    return self.device.initialized["I0"]
-
-  async def request_latest_barcode_read(self) -> Optional[str]:
-    return SIMULATED_BARCODE
-
-  async def request_adjustment_status(self) -> Tuple[datetime.date, bool]:
-    """Answer that this autoload is adjusted, so its stored values are its own."""
-    return SIMULATED_AUTOLOAD_ADJUSTMENT_DATE, True
-
-  async def request_init_slot(self) -> int:
-    """Answer the track the X drive homes against."""
-    return SIMULATED_AUTOLOAD_INIT_TRACK
-
   async def request_adjustment_values(self) -> str:
     """Answer the adjustment block, which a simulated unit does not hold."""
+    await self.recorded("I0", "RK")
     return SIMULATED_AUTOLOAD_ADJUSTMENT_VALUES
 
   async def request_parameter(self, parameter: str) -> str:
@@ -715,12 +790,43 @@ class SimulatedAutoload(_Simulated, Autoload):
       parameter: the name to read.
 
     Returns:
-      The reply, as the module would write it.
+      What the module holds for it.
     """
-    return f"I0RAid0000{parameter}{SIMULATED_AUTOLOAD_PARAMETER_VALUE}"
+    await self.recorded("I0", "RA", ra=parameter)
+    return SIMULATED_AUTOLOAD_PARAMETER_VALUE
 
-  async def request_track(self) -> int:
-    return self.track
+  async def request_latest_barcode_read(self) -> Optional[str]:
+    await self.recorded("I0", "RB")
+    return SIMULATED_BARCODE
+
+  def _carrier_tracks(self) -> List[int]:
+    """Which tracks hold a carrier, from the deck rather than from a sensor.
+
+    A simulated device has no sensor to read, so what is on the deck is what the resource model
+    says is on it. Each carrier is reported by the track its right rail sits over, which is the
+    track every autoload command addresses it by.
+    """
+    deck = self.device.deck
+    if deck is None:
+      return []
+    carriers = [child for child in deck.children if isinstance(child, Carrier)]
+    return sorted(deck.compute_right_track_of_carrier(carrier) for carrier in carriers)
+
+  async def sense_carrier_presence_on_deck(self) -> List[int]:
+    await self.recorded("C0", "RC")
+    return self._carrier_tracks()
+
+  async def sense_carrier_presence_on_loading_tray(self) -> List[int]:
+    # Nothing is on the tray: a carrier the model holds is on the deck, which is where it was
+    # assigned. Moving one there is a move, and moves are modelled where they happen.
+    await self.recorded("C0", "CS", subsystem="I0")
+    return []
+
+  async def sense_carrier_presence_on_single_loading_tray_track(
+    self, track: int, park_after: bool = True
+  ) -> bool:
+    await self.recorded("C0", "CT", subsystem="I0", cp=f"{track:02}")
+    return False
 
   async def move_x(
     self,
@@ -737,33 +843,6 @@ class SimulatedAutoload(_Simulated, Autoload):
     )
     self.update_location_by_reference_point(x)
     return resp
-
-  async def request_x_position(self) -> float:
-    # Where the sled is is what the model says: a simulated device has no drive to ask. The model
-    # is placed around the carrier-handling wheel, so the wheel stands that far right of its left
-    # edge. Before setup has put the sled on the deck there is no model to read, and the track it
-    # is on is what it has instead - which is how a park during initialization survives long enough
-    # to reach the resource that gets created after it.
-    if self.resource is not None and self.resource.location is not None:
-      return self.resource.location.x + self.configuration.reference_point_from_sled_left_edge
-    return cast(HamiltonDeck, self.device.deck).track_to_location(self.track).x
-
-  async def wheel_request_y_position(self) -> float:
-    return SIMULATED_AUTOLOAD_Y_POSITION
-
-  async def wheel_request_z_position(self) -> float:
-    return SIMULATED_AUTOLOAD_Z_POSITION
-
-  async def sense_carrier_presence_on_deck(self) -> List[int]:
-    return []
-
-  async def sense_carrier_presence_on_loading_tray(self) -> List[int]:
-    return []
-
-  async def sense_carrier_presence_on_single_loading_tray_track(
-    self, track: int, park_after: bool = True
-  ) -> bool:
-    return False
 
   async def load_carrier_from_tray_and_scan_carrier_barcode(
     self, track: int, *args, **kwargs
