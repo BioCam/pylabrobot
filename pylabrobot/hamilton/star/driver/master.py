@@ -224,16 +224,16 @@ class STARDriver:
       # 2. Bring the device to a known state. The autoload homes alongside it: it is its own
       #    unit, and the device procedure holds every drive but its. Phase 3 reads its state
       #    again, so a device that does home it there loses nothing but the overlap.
+      #    It runs alone. The autoload used to be brought up alongside it, to save the time the
+      #    procedure takes, and that put a C0 command and an I0 command in flight together: on
+      #    2026-09-04 the autoload answered one with the id of its own previous command, and the
+      #    caller waited for a reply that had already arrived. Legacy runs the procedure by itself
+      #    and gathers the modules afterwards; so does this.
       logger.debug("[PHASE 2] Device initialization")
       autoload = self.autoload if not skip_autoload else None
       already_initialized = await self.request_initialization_status()
-      overlap_autoload = autoload is not None and not already_initialized
       if skip_device_initialization and not already_initialized:
         logger.debug("device reports not initialized, and initializing it was skipped")
-        if autoload is not None:
-          await autoload.initialize()
-      elif autoload is not None and overlap_autoload:
-        already_initialized, _ = await asyncio.gather(self.initialize(), autoload.initialize())
       else:
         already_initialized = await self.initialize()
 
@@ -242,7 +242,7 @@ class STARDriver:
       #    it when the device procedure did not just run, or when something is still mounted.
       logger.debug("[PHASE 3] Feature initialization")
       initializing = [self._initialize_arm(arm, already_initialized, skipped) for arm in self.arms]
-      if autoload is not None and not overlap_autoload:
+      if autoload is not None:
         initializing.append(autoload.initialize())
       await asyncio.gather(*initializing)
 

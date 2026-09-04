@@ -239,20 +239,23 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
     )
 
   async def test_device_not_up(self):
-    """The device procedure homes every drive, so nothing is raised beforehand. The autoload
-    is its own unit, so it comes up alongside the procedure rather than after it."""
+    """The device procedure homes every drive, so nothing is raised beforehand. It runs alone:
+    the autoload is its own unit, but bringing it up alongside puts a C0 command and an I0 command
+    in flight together, and the device has been seen answering one of them with the id of the
+    other's predecessor. It comes up with the rest of the features afterwards, as it does in
+    legacy."""
     self.assertEqual(
       await self.run_setup(device_up=False, head_up=False, eject_position=True),
       [
         "VI device",
-        "II autoload",
-        "autoload park",
         "DI channels",
         "ZA channels to safe Z",
         "FI iSWAP",
         "iSWAP park",
         "EI 96-head",
         "EV 96-head probe and retract",
+        "II autoload",
+        "autoload park",
       ],
     )
 
