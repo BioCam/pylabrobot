@@ -245,6 +245,9 @@ class SimulatedPipettes(_Simulated, Pipettes):
     # Where each channel's Z drive is held to be. Per device, not per class: two simulated devices
     # do not share where their channels are. Filled on first use, from the configured window.
     self._simulated_z: Dict[int, float] = {}
+    # Where each channel was last sent along Y. Empty until something moves one, and then the
+    # read finds it here rather than at where initialization spread them.
+    self._simulated_y: Dict[int, float] = {}
 
   def _declared_channel(self, channel: int) -> PipetteConfiguration:
     """What this device was told sits on a channel, or the channel this frame documents.
@@ -266,14 +269,28 @@ class SimulatedPipettes(_Simulated, Pipettes):
     await super().initialize(*args, **kwargs)
     self.device.tips_mounted = [False] * len(self.device.tips_mounted)
 
+  async def move_to_y_positions(self, ys: Dict[int, float], make_space: bool = False):
+    """Remember where they were sent, as the drives remember it."""
+    resp = await super().move_to_y_positions(ys, make_space=make_space)
+    self._simulated_y.update(ys)
+    return resp
+
+  async def move_to_y_position(self, channel: int, y: float, make_space: bool = False):
+    """Remember where this one was sent."""
+    resp = await super().move_to_y_position(channel, y, make_space=make_space)
+    self._simulated_y[channel] = y
+    return resp
+
   async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
     c = self.configuration
     if (module, command) == ("C0", "RY"):
-      # Where initialization spread them, which is where a device that has been set up leaves
-      # them and nothing here has since moved them. Answered from the procedure rather than from
-      # the resources, so the model can be checked against this rather than derived from it.
-      positions = self.default_initialize_y_positions()
-      return {"ry": [round(y * 10) for y in positions]}, "the channels' initialize positions"
+      # Where initialization spread them, unless something has since moved one: a channel answers
+      # where it was sent, the way a drive does, so a move can be checked against the reading.
+      positions = [
+        self._simulated_y.get(channel, y)
+        for channel, y in enumerate(self.default_initialize_y_positions())
+      ]
+      return {"ry": [round(y * 10) for y in positions]}, "where the channels were last sent"
 
     if (module, command) == ("C0", "RT"):
       return {"rt": [int(mounted) for mounted in self.device.tips_mounted]}, "what is mounted"
