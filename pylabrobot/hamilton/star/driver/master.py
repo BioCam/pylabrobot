@@ -268,6 +268,50 @@ class STARDriver:
     self._replies.stop()
     await self.io.stop()
 
+  async def features_below_safe_z(self, tolerance: float = 0.5) -> List[str]:
+    """Which channels and heads report below the top of the window they probed.
+
+    Read back rather than taken on trust. A retract that answered without arriving leaves the
+    device looking safe while a lateral move would drive whatever is still low into whatever is in
+    the way, and the answer to the move command does not say where the drive stopped.
+
+    A feature with no window probed is not judged: there is no height to hold it to.
+
+    Args:
+      tolerance: how far below the top of the window still counts as up, in mm.
+
+    Returns:
+      One entry per channel or head that is low, naming it and where it says it is. Empty when
+      everything is up, which is the only state anything may travel laterally in.
+    """
+    low: List[str] = []
+    for arm in self.arms:
+      pipettes = arm.pipettes
+      if pipettes is not None and pipettes.configuration.z_range is not None:
+        safe = pipettes.configuration.z_range[1]
+        try:
+          positions = await pipettes.request_stop_disc_z_positions()
+        except Exception:
+          low.append(f"{arm.side} channels (where they are could not be read)")
+        else:
+          low += [
+            f"{arm.side} channel {channel} at {z:.1f} mm, safe is {safe:.1f} mm"
+            for channel, z in positions.items()
+            if z < safe - tolerance
+          ]
+      for head, name in ((arm.head96, "head96"), (arm.head384, "head384")):
+        if head is None or head.configuration.z_range is None:
+          continue
+        safe = head.configuration.z_range[1]
+        try:
+          z = await head.request_z_position()
+        except Exception:
+          low.append(f"{arm.side} {name} (where it is could not be read)")
+        else:
+          if z < safe - tolerance:
+            low.append(f"{arm.side} {name} at {z:.1f} mm, safe is {safe:.1f} mm")
+    return low
+
   async def stop(self):
     """Close the link, leaving the device safe to move laterally.
 
@@ -297,9 +341,17 @@ class STARDriver:
       for failure in failed:
         logger.warning("could not move a subsystem to Z safety", exc_info=failure)
 
+      # Asked, not assumed: a move that answers has not said where it stopped, and this is the
+      # one moment the answer decides whether anything may travel laterally.
+      low = await self.features_below_safe_z()
+      if low:
+        logger.warning(
+          "not everything is at Z safety, so the iSWAP stays where it is: %s", "; ".join(low)
+        )
+
       # The iSWAP parks instead: parking retracts it, which is lateral motion, so it waits until
       # everything sharing its arm is up. If anything is still low, it stays where it is.
-      if not failed:
+      if not failed and not low:
         parks = [arm.iswap.park() for arm in self.arms if arm.iswap is not None]
         for failure in await asyncio.gather(*parks, return_exceptions=True):
           if isinstance(failure, BaseException):
