@@ -141,7 +141,7 @@ class TestSimulation(unittest.IsolatedAsyncioTestCase):
 # What each initialization step is called in the sequences below, and where it is defined. The simulated
 # classes override some of them, so each is recorded where a simulated run would reach it.
 MOVING_STEPS = [
-  (simulator.STARSimulationDriver, "pre_initialize", "VI device"),
+  (simulator.STARSimulationDriver, "_pre_initialize", "VI device"),
   (simulator.Pipettes, "probe_z_max", "ZA channels to safe Z"),
   (simulator.SimulatedPipettes, "initialize", "DI channels"),
   (simulator.SimulatedISWAP, "initialize", "FI iSWAP"),

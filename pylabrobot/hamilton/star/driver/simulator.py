@@ -868,7 +868,7 @@ class STARSimulationDriver(STARDriver):
   async def request_initialization_status(self, module: str = "C0") -> bool:
     return self.initialized.get(module, False)
 
-  async def pre_initialize(self, read_timeout: int = 300):
+  async def _pre_initialize(self, read_timeout: int = 300):
     """Home every drive. The modules it de-initializes then need their own.
 
     Goes through the command path, so it is coordinated like the real one.
@@ -876,7 +876,7 @@ class STARSimulationDriver(STARDriver):
     Args:
       read_timeout: how long the real procedure would be given, in seconds. Nothing waits here.
     """
-    await super().pre_initialize(read_timeout=read_timeout)
+    await super()._pre_initialize(read_timeout=read_timeout)
     self.initialized["C0"] = True
 
   def _describe_link(self) -> str:

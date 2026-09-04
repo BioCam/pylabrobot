@@ -1007,9 +1007,9 @@ class STARDriver:
     to Z safety. Nothing may move laterally while a channel is low.
 
     The procedure runs only on a device that is down, and `setup` initializes the features in the
-    same call. There is deliberately no way to run it on a device that is up: it takes the
-    features' drives out of reference while the device goes on reporting itself initialized, and
-    nothing that ran afterwards could tell.
+    same call. There is deliberately no way to run it on a device that is up, and the procedure
+    itself is private for the same reason: it takes the features' drives out of reference while
+    the device goes on reporting itself initialized, and nothing that ran afterwards could tell.
 
     This is the device-level step only. `setup` is what initializes the features after it.
 
@@ -1026,7 +1026,7 @@ class STARDriver:
         "device reports not initialized - running the initialization procedure (up to %d s)",
         read_timeout,
       )
-      await self.pre_initialize(read_timeout=read_timeout)
+      await self._pre_initialize(read_timeout=read_timeout)
     else:
       logger.debug("device reports initialized - raising the channels to Z safety only")
       for arm in self.arms:
@@ -1042,7 +1042,7 @@ class STARDriver:
 
     return already_initialized
 
-  async def pre_initialize(self, read_timeout: int = 300):
+  async def _pre_initialize(self, read_timeout: int = 300):
     """Run the device's initialization procedure.
 
     Leaves the channels at Z safety and their Y drive without a reference: afterwards they report
@@ -1071,6 +1071,51 @@ class STARDriver:
     )
     return resp
 
+  async def _channels_keep_no_reference(self, arm: XArm) -> bool:
+    """Whether the channels report a Y position none of them can reach.
+
+    A device whose initialization procedure ran without its features being initialized answers
+    that it is initialized while its channels' Y drive holds no reference. The status read cannot
+    tell the difference, and a firmware that refuses the next move says so only once something
+    tries; where the channels say they are does tell, so that is what is asked.
+
+    Warns and returns. Putting the reference back means initializing the channels, which discards
+    whatever is mounted and moves them, so it is the caller's to do: `pipettes.initialize()`.
+
+    Args:
+      arm: the arm whose channels to ask.
+
+    Returns:
+      True if any channel reports outside the Y range that arm reaches. False when nothing could
+      be read, or no geometry was discovered to judge against: a reading that cannot be taken is
+      not evidence of a fault.
+    """
+    if arm.pipettes is None or self.configuration is None:
+      return False
+    low = (
+      self.configuration.left_arm_min_y_position
+      if arm.side == "left"
+      else self.configuration.right_arm_min_y_position
+    )
+    high = self.configuration.pip_maximal_y_position
+    try:
+      positions = await arm.pipettes.request_y_positions()
+    except Exception:
+      logger.warning("could not read where the channels are; taking their reference on trust")
+      return False
+    unreachable = [y for y in positions if not low <= y <= high]
+    if unreachable:
+      logger.warning(
+        "%d of %d channels report outside the %.1f to %.1f mm they reach: their Y drive keeps no "
+        "reference, whatever the device answers about being initialized. `pipettes.initialize()` "
+        "puts it back, and discards whatever is mounted doing so",
+        len(unreachable),
+        len(positions),
+        low,
+        high,
+      )
+    return bool(unreachable)
+
   async def _initialize_arm(
     self, arm: XArm, already_initialized: bool, skipped: FrozenSet[str] = frozenset()
   ):
@@ -1093,6 +1138,10 @@ class STARDriver:
       logger.debug("channels: initializing them was skipped")
     else:
       tips = await arm.pipettes.sense_tip_presence()
+      if already_initialized:
+        # Said, not acted on: initializing discards whatever is mounted and moves the channels,
+        # which is not something to do off a reading. The caller decides.
+        await self._channels_keep_no_reference(arm)
       if not already_initialized or any(tips):
         logger.debug(
           "channels: %d of %d carrying tips, device %s - initializing",
