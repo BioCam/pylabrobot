@@ -1215,6 +1215,30 @@ class Pipettes:
 
     return list((await self._unchecked_fw_request_lowest_z_positions()).values())
 
+  # -- spreading -----------------------------------------------------------------------------------
+
+  async def spread_channels(self):
+    """Spread the channels evenly across the Y band. This moves them.
+
+    One command with nothing to say where they go: the device spreads them itself, over the same
+    band the initialization procedure uses, so a caller that wants particular positions reaches
+    for `move_to_y_positions` instead.
+
+    Collision risk: every channel travels in Y, so anything between them moves with them.
+
+    Returns:
+      What the device answered.
+    """
+    try:
+      return await self._driver.send_command(
+        module="C0", command="JE", subsystem=_FirmwareLock.CHANNELS
+      )
+    finally:
+      # The device decides where they land, so unlike a commanded move there is nothing to write
+      # the model from: where they ended up has to be read, and a spread that stopped part way
+      # has to be read for the same reason.
+      await self._record_where_they_stopped("y")
+
   # ----------------------------------------
   # Probing
   # ----------------------------------------
