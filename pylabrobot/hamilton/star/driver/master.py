@@ -269,7 +269,7 @@ class STARDriver:
     await self.io.stop()
 
   async def features_below_safe_z(self, tolerance: float = 0.5) -> List[str]:
-    """Which channels and heads report below the top of the window they probed.
+    """Which channels, heads and the autoload wheel report below where they are safe.
 
     Read back rather than taken on trust. A retract that answered without arriving leaves the
     device looking safe while a lateral move would drive whatever is still low into whatever is in
@@ -281,8 +281,8 @@ class STARDriver:
       tolerance: how far below the top of the window still counts as up, in mm.
 
     Returns:
-      One entry per channel or head that is low, naming it and where it says it is. Empty when
-      everything is up, which is the only state anything may travel laterally in.
+      One entry per channel, head or wheel that is low, naming it and where it says it is. Empty
+      when everything is up, which is the only state anything may travel laterally in.
     """
     low: List[str] = []
     for arm in self.arms:
@@ -310,14 +310,25 @@ class STARDriver:
         else:
           if z < safe - tolerance:
             low.append(f"{arm.side} {name} at {z:.1f} mm, safe is {safe:.1f} mm")
+
+    autoload = self.autoload
+    if autoload is not None and autoload.configuration.z_drive_safety_position is not None:
+      safe = autoload.configuration.z_drive_safety_position
+      try:
+        z = await autoload.wheel_request_z_position()
+      except Exception:
+        low.append("autoload wheel (where it is could not be read)")
+      else:
+        if z < safe - tolerance:
+          low.append(f"autoload wheel at {z:.1f} mm, safe is {safe:.1f} mm")
     return low
 
   async def stop(self):
     """Close the link, leaving the device safe to move laterally.
 
-    The device keeps its state; only this driver lets go of it. Every channel and head is moved
-    up to Z safety first: a driver that let go with a channel low would leave the next lateral
-    move from anything else to crash it.
+    The device keeps its state; only this driver lets go of it. Every channel, head and the
+    autoload wheel are moved up to Z safety first: a driver that let go with any of them low
+    would leave the next lateral move from anything else to crash it.
 
     The link closes whether or not that succeeds. This also runs when setup failed part way,
     where there may be nothing up to move yet and the failure that matters is the one about to
@@ -332,8 +343,10 @@ class STARDriver:
       return
 
     try:
-      # The channels and each head take different firmware locks and drive different Z axes, so
-      # they go up together rather than one after another.
+      # The channels, each head and the autoload wheel take different firmware locks and drive
+      # different Z axes, so they go up together rather than one after another. The wheel is on
+      # its own unit and travels its own rail, but it is the same hazard: left down, it is what
+      # the sled carries into whatever the sled next passes.
       safe_z_moves: List[Any] = []
       for arm in self.arms:
         if arm.pipettes is not None:
@@ -341,6 +354,8 @@ class STARDriver:
         for head in (arm.head96, arm.head384):
           if head is not None:
             safe_z_moves.append(head.move_to_safe_z())
+      if self.autoload is not None:
+        safe_z_moves.append(self.autoload.wheel_move_to_safe_z())
 
       # Every subsystem gets its chance to reach safe Z, so one that cannot does not leave the
       # rest of them low.
