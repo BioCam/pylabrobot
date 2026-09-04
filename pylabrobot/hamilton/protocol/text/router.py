@@ -212,17 +212,46 @@ class ReplyRouter:
         continue
 
       module_and_command = resp[: self.module_id_length + 2]
+      matched = None
       for idx in range(len(self._waiting_tasks)):
         task = self._waiting_tasks[idx]
         # if the command has no id, we have to check the command itself
         if response_id == task.id_ or (
           task.id_ is None and task.cmd.startswith(module_and_command)
         ):
-          try:
-            self._raise_for_error(resp)
-          except Exception as e:
-            task.loop.call_soon_threadsafe(task.fut.set_exception, e)
-          else:
-            task.loop.call_soon_threadsafe(task.fut.set_result, resp)
-          del self._waiting_tasks[idx]
+          matched = idx
           break
+
+      if matched is None:
+        # Nothing is waiting for that id. A module has been seen answering with the id of its own
+        # previous command while a command to another module was in flight, and matching on the id
+        # alone leaves the caller waiting for a reply that has already arrived. Where exactly one
+        # command is outstanding for this module and command code, the reply is that command's:
+        # there is nothing else it could be an answer to. Where more than one is, it is left
+        # unclaimed rather than guessed at.
+        candidates = [
+          idx
+          for idx, task in enumerate(self._waiting_tasks)
+          if task.cmd.startswith(module_and_command)
+        ]
+        if len(candidates) == 1:
+          matched = candidates[0]
+          logger.warning(
+            "%s answered with id %s while %s was outstanding; taking it as that command's reply",
+            module_and_command,
+            response_id,
+            self._waiting_tasks[matched].cmd,
+          )
+
+      if matched is None:
+        logger.warning("nothing was waiting for this reply, and it was dropped: %s", resp)
+        continue
+
+      task = self._waiting_tasks[matched]
+      try:
+        self._raise_for_error(resp)
+      except Exception as e:
+        task.loop.call_soon_threadsafe(task.fut.set_exception, e)
+      else:
+        task.loop.call_soon_threadsafe(task.fut.set_result, resp)
+      del self._waiting_tasks[matched]
