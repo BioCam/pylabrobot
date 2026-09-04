@@ -1,13 +1,13 @@
 """What the 96-head and the 384-head share.
 
-At their own modules the 96-head and the 384-head are the same machine twice over: the same four
+At their own modules the 96-head and the 384-head are the same device twice over: the same four
 drives, the same liquid level detection down to its two channels and their and/or logic, the same
 macros, reached by commands that differ only in their constants - which module answers, how wide
 each parameter is written, how much one increment is worth. What is theirs alone at this level is
 what their configuration bytes mean, and what resolves their drive windows: firmware generation for
 one, which head is fitted for the other. That is the layer this holds.
 
-At the master they are not the same machine. The commands that pick up tips and move liquid carry
+At the master they are not the same device. The commands that pick up tips and move liquid carry
 about thirty parameters each, and between the two heads every one is named differently, the volumes
 are counted in units that differ by a factor of ten, and the features themselves do not match -
 only the 96-head can mask individual channels, only the 384-head takes a gain and offset for its
@@ -152,7 +152,7 @@ class HeadConfiguration:
   z_acceleration_increment_default: int = 80000
 
   # What the head reported holding, which stands in front of the defaults above. None until
-  # discovery has read it, and on a simulated machine.
+  # discovery has read it, and on a simulated device.
   y_drive_speed_firmware_reported: Optional[float] = None
   y_drive_acceleration_firmware_reported: Optional[float] = None
   z_drive_speed_firmware_reported: Optional[float] = None
@@ -226,7 +226,7 @@ class HeadConfiguration:
   def y_range(self) -> Tuple[float, float]:
     """Y-drive position window (mm), at channel A1.
 
-    What the command accepts, which is wider than what a given machine allows: what an arm reaches
+    What the command accepts, which is wider than what a given device allows: what an arm reaches
     depends on what else is mounted on it.
 
     Returns:
@@ -662,7 +662,7 @@ class Head:
     `Pipettes.sense_tip_presence` measures; these two are deliberately different words for
     deliberately different things.
 
-    One bit for the whole head: the instrument counts tips as a rack, not as channels, so it can
+    One bit for the whole head: the device counts tips as a rack, not as channels, so it can
     say that some are mounted and never which. A model that tracks them per channel is finer than
     anything this can confirm, and this is what it has to be reconciled against.
 
@@ -725,9 +725,9 @@ class Head:
 
   @property
   def arm(self) -> Optional["XArm"]:
-    """The arm carrying this head, on a machine that has put it on one.
+    """The arm carrying this head, on a device that has put it on one.
 
-    Not whichever arm is present: on a machine with two, the head is on one of them and its X, its
+    Not whichever arm is present: on a device with two, the head is on one of them and its X, its
     travel and anything it might collide with are that one's.
 
     Returns:

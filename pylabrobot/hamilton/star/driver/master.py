@@ -94,18 +94,18 @@ class STARDriver:
 
     Args:
       device_address: the USB device address of the Hamilton STAR. Only useful if using more than
-        one Hamilton machine over USB.
+        one Hamilton device over USB.
       serial_number: the serial number of the Hamilton STAR. Only useful if using more than one
-        Hamilton machine over USB.
+        Hamilton device over USB.
       packet_read_timeout: timeout in seconds for reading a single packet.
       read_timeout: timeout in seconds for reading a full response.
       write_timeout: timeout in seconds for writing a command.
-      left_side_panel_installed: whether the machine has its left side panel on. Declared, not
+      left_side_panel_installed: whether the device has its left side panel on. Declared, not
         read: it comes off in seconds, and the reported travel range does not follow it. With one
         fitted, an arm carrying a head stops while the head is still clear of it.
       io: an already-built USB handle to use instead of opening one from the arguments above.
-      deck: the deck to reflect the machine into. Optional: without one the driver still drives the
-        machine, and nothing about where things are is modelled.
+      deck: the deck to reflect the device into. Optional: without one the driver still drives the
+        device, and nothing about where things are is modelled.
       declared_configuration_json: path to a JSON file holding the declared configuration for the
         device, as `save_configuration` writes one. The only way a configuration is read from a
         file. If given, (1) against a physical device, discovery cross-checks the declaration
@@ -147,7 +147,7 @@ class STARDriver:
 
     self.left_side_panel_installed = left_side_panel_installed
 
-    # The deck to reflect the machine into, or None to drive it without a resource model. With one,
+    # The deck to reflect the device into, or None to drive it without a resource model. With one,
     # setup builds a resource per feature as a child of it; without, nothing is modelled and
     # driver functionality is limited due to lack of information available.
     self.deck = deck
@@ -171,12 +171,12 @@ class STARDriver:
   # ----------------------------------------
 
   async def setup(self):
-    """Connect to the machine, find out what it is, and bring it up.
+    """Connect to the device, find out what it is, and bring it up.
 
-    This moves the instrument: everything that can be initialized is. `discover` is the read-only
-    part; it reads the machine without moving it, and needs the link already open.
+    This moves the device: everything that can be initialized is. `discover` is the read-only
+    part; it reads the device without moving it, and needs the link already open.
 
-    Repeatable. Discovery re-reads the machine, and initialization does nothing on a machine that
+    Repeatable. Discovery re-reads the device, and initialization does nothing on a device that
     is already up. A setup that fails part way closes the link.
     """
     logger.debug("Setting up STAR on %s ...", self._describe_link())
@@ -188,10 +188,10 @@ class STARDriver:
       logger.debug("[PHASE 1] Discovery")
       await self.discover()
 
-      # 2. Bring the instrument to a known state. The autoload homes alongside it: it is its own
-      #    unit, and the instrument procedure holds every drive but its. Phase 3 reads its state
-      #    again, so a machine that does home it there loses nothing but the overlap.
-      logger.debug("[PHASE 2] Instrument initialization")
+      # 2. Bring the device to a known state. The autoload homes alongside it: it is its own
+      #    unit, and the device procedure holds every drive but its. Phase 3 reads its state
+      #    again, so a device that does home it there loses nothing but the overlap.
+      logger.debug("[PHASE 2] Device initialization")
       autoload = self.autoload
       overlap_autoload = autoload is not None and not await self.request_initialization_status()
       if autoload is not None and overlap_autoload:
@@ -201,7 +201,7 @@ class STARDriver:
 
       # 3. Each feature brings itself up. They sit on different modules, so they run together;
       #    the autoload, iSWAP and 96-head join this gather as they land. The channels only need
-      #    it when the instrument procedure did not just run, or when something is still mounted.
+      #    it when the device procedure did not just run, or when something is still mounted.
       logger.debug("[PHASE 3] Feature initialization")
       initializing = [self._initialize_arm(arm, already_initialized) for arm in self.arms]
       if self.autoload is not None and not overlap_autoload:
@@ -209,7 +209,7 @@ class STARDriver:
       await asyncio.gather(*initializing)
 
       # 4. What was found, as resources on the deck - when the driver was given one to reflect
-      #    into. Each is a child of the deck, so a machine with a deck carries one tree.
+      #    into. Each is a child of the deck, so a device with a deck carries one tree.
       if self.deck is not None:
         logger.debug("[PHASE 4] Feature resources")
         await self._create_capability_resources()
@@ -231,9 +231,9 @@ class STARDriver:
     await self.io.stop()
 
   async def stop(self):
-    """Close the link, leaving the machine safe to move laterally.
+    """Close the link, leaving the device safe to move laterally.
 
-    The machine keeps its state; only this driver lets go of it. Every channel and head is moved
+    The device keeps its state; only this driver lets go of it. Every channel and head is moved
     up to Z safety first: a driver that let go with a channel low would leave the next lateral
     move from anything else to crash it.
 
@@ -268,12 +268,12 @@ class STARDriver:
             logger.warning("could not park the iSWAP", exc_info=failure)
     except Exception:
       logger.warning(
-        "could not bring the instrument to a safe state; closing the link anyway", exc_info=True
+        "could not bring the device to a safe state; closing the link anyway", exc_info=True
       )
     finally:
       self._connected = False
-      # The instrument's tip type table is volatile, so what this session wrote to it does not
-      # survive the machine going down.
+      # The device's tip type table is volatile, so what this session wrote to it does not
+      # survive the device going down.
       self._tip_type_indices.clear()
       await self._close()
 
@@ -283,7 +283,7 @@ class STARDriver:
     return self._connected
 
   def _describe_link(self) -> str:
-    """How this machine is reached, in whatever terms its transport is addressed by."""
+    """How this device is reached, in whatever terms its transport is addressed by."""
     fields = self.io.serialize()
     link = type(self.io).__name__
     vendor, product = fields.get("id_vendor"), fields.get("id_product")
@@ -367,7 +367,7 @@ class STARDriver:
     self._require_connection()
     id_ = self._replies.next_id() if auto_id else None
     # Always the channel-aware assembler: a list parameter has to be terminated against the
-    # machine's channel count whether or not the caller named which channels are involved, and
+    # device's channel count whether or not the caller named which channels are involved, and
     # `tip_pattern=None` means each list already holds one value per channel it names.
     #
     # The count is only read when there is a list to terminate. Discovery has to send commands
@@ -417,10 +417,10 @@ class STARDriver:
     read_timeout: Optional[int] = None,
     wait: bool = True,
   ) -> Optional[str]:
-    """Send a raw command to the machine.
+    """Send a raw command to the device.
 
     Returns:
-      Whatever the machine answered, or None when nothing came back.
+      Whatever the device answered, or None when nothing came back.
 
     Raises:
       RuntimeError: If the link is not open.
@@ -436,7 +436,7 @@ class STARDriver:
   def _require_connection(self) -> None:
     """Raise unless the link is open. A command may not be sent into a closed link."""
     if not self._connected:
-      raise RuntimeError("not connected to a machine; call `setup` first")
+      raise RuntimeError("not connected to a device; call `setup` first")
 
   def get_id_from_fw_response(self, resp: str) -> Optional[int]:
     """Get the id from a firmware response."""
@@ -446,7 +446,7 @@ class STARDriver:
     return None
 
   def _parse_response(self, resp: str, fmt: Any) -> Dict[str, Any]:
-    """Parse a response from the machine."""
+    """Parse a response from the device."""
     return parse_fw_string(resp, fmt)
 
   # ----------------------------------------
@@ -455,14 +455,14 @@ class STARDriver:
 
   @property
   def arms(self) -> List[XArm]:
-    """The arms this machine has, left first."""
+    """The arms this device has, left first."""
     return [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
 
   def _require_one_arm(self, reaching_for: str) -> Optional[XArm]:
     """Check to enable simple accessors which are only unambiguous when there is only one Xarm.
 
     e.g.:
-      `star.head96` is ambiguous on a machine with two arms.
+      `star.head96` is ambiguous on a device with two arms.
       -> requires explicit declaration of the arm that has the head:
       `star.left_x_arm.head96` or `star.right_x_arm.head96`.
 
@@ -470,56 +470,56 @@ class STARDriver:
       reaching_for: what the caller was after. Used to word the refusal.
 
     Returns:
-      The machine's one arm, or None when it has none.
+      The device's one arm, or None when it has none.
 
     Raises:
-      ValueError: If the machine has more than one arm.
+      ValueError: If the device has more than one arm.
     """
     arms = self.arms
     if len(arms) > 1:
       raise ValueError(
-        f"this machine has two X-arms, so `{reaching_for}` is ambiguous - reach it through "
+        f"this device has two X-arms, so `{reaching_for}` is ambiguous - reach it through "
         f"`left_x_arm.{reaching_for}` or `right_x_arm.{reaching_for}`."
       )
     return arms[0] if arms else None
 
   @property
   def pipettes(self) -> Optional[Pipettes]:
-    """The pipetting channels, on a machine with one arm."""
+    """The pipetting channels, on a device with one arm."""
     arm = self._require_one_arm("pipettes")
     return arm.pipettes if arm is not None else None
 
   @property
   def head96(self) -> Optional[Head96]:
-    """The 96-head, on a machine with one arm."""
+    """The 96-head, on a device with one arm."""
     arm = self._require_one_arm("head96")
     return arm.head96 if arm is not None else None
 
   @property
   def head384(self) -> Optional[Head384]:
-    """The 384-head, on a machine with one arm."""
+    """The 384-head, on a device with one arm."""
     arm = self._require_one_arm("head384")
     return arm.head384 if arm is not None else None
 
   @property
   def iswap(self) -> Optional[iSWAP]:
-    """The iSWAP, on a machine with one arm."""
+    """The iSWAP, on a device with one arm."""
     arm = self._require_one_arm("iswap")
     return arm.iswap if arm is not None else None
 
   @property
   def x_arm(self) -> XArm:
-    """The machine's X-arm, on a machine that has only one.
+    """The device's X-arm, on a device that has only one.
 
     Most STARs carry a single arm, where explicit naming can be cumbersome.
-    A machine with two has no single X-arm, and this refuses instead of picking one.
+    A device with two has no single X-arm, and this refuses instead of picking one.
 
     Returns:
-      The machine's one arm.
+      The device's one arm.
 
     Raises:
       RuntimeError: If setup has not run, so it is not yet known which arms are installed.
-      ValueError: If the machine has no arm, or more than one.
+      ValueError: If the device has no arm, or more than one.
     """
     if self.configuration is None:
       raise RuntimeError("no configuration read; have you called `star.setup()`?")
@@ -529,10 +529,10 @@ class STARDriver:
       if arm is not None
     }
     if not installed:
-      raise ValueError("this machine reports no X-arm installed.")
+      raise ValueError("this device reports no X-arm installed.")
     if len(installed) > 1:
       raise ValueError(
-        f"this machine has {len(installed)} X-arms ({', '.join(installed)}), so `x_arm` is "
+        f"this device has {len(installed)} X-arms ({', '.join(installed)}), so `x_arm` is "
         f"ambiguous. Use the one you mean by name."
       )
     return next(iter(installed.values()))
@@ -572,7 +572,7 @@ class STARDriver:
   async def request_cover_input_status(self) -> Tuple[bool, bool, bool]:
     """Read the three inputs on the cover connector.
 
-    An instrument-level query about the cover feature. `front_cover.request_position` reports the
+    An device-level query about the cover feature. `front_cover.request_position` reports the
     cover's own position.
 
     TODO: establish what each input carries. Every reading so far is 000, except during a run
@@ -620,16 +620,16 @@ class STARDriver:
     }
 
   async def request_device_configuration(self) -> DeviceConfiguration:
-    """Request the instrument's installed hardware and geometry.
+    """Request the device's installed hardware and geometry.
 
-    Combines the machine configuration (RM) and the extended configuration (QM). Each installed
+    Combines the device configuration (RM) and the extended configuration (QM). Each installed
     X-drive's geometry is resolved from the X-drive range (RU) and working-envelope (UA) queries;
     `right_arm` is None when no second arm is installed.
 
     Returns:
-      What the instrument reports it carries.
+      What the device reports it carries.
     """
-    machine = await self.send_command(module="C0", command="RM", fmt="kb**kp##")
+    device = await self.send_command(module="C0", command="RM", fmt="kb**kp##")
     extended = await self.send_command(
       module="C0",
       command="QM",
@@ -664,7 +664,7 @@ class STARDriver:
         wrap_size=wrap,
       )
 
-    kb = machine["kb"]
+    kb = device["kb"]
     ka = extended["ka"]
     return DeviceConfiguration(
       pip_type_1000ul=bool(kb & (1 << 0)),
@@ -675,7 +675,7 @@ class STARDriver:
       wash_station_2_installed=bool(kb & (1 << 5)),
       temp_controlled_carrier_1_installed=bool(kb & (1 << 6)),
       temp_controlled_carrier_2_installed=bool(kb & (1 << 7)),
-      num_pip_channels=machine["kp"],
+      num_pip_channels=device["kp"],
       left_x_drive_large=bool(ka & (1 << 0)),
       ka_head96_installed=bool(ka & (1 << 1)),
       right_x_drive_large=bool(ka & (1 << 2)),
@@ -725,7 +725,7 @@ class STARDriver:
     Every module answers the same query: the master and each subsystem.
 
     Args:
-      module: the module to ask. Defaults to the master, which reports for the instrument.
+      module: the module to ask. Defaults to the master, which reports for the device.
 
     Returns:
       True if the module is initialized.
@@ -746,10 +746,10 @@ class STARDriver:
     tip_size: TipSize,
     pickup_method: TipPickupMethod,
   ):
-    """Write one entry of the instrument's tip type table.
+    """Write one entry of the device's tip type table.
 
     The table is volatile. It is written from scratch after every power on, and what a run defines
-    lasts only while the machine stays up.
+    lasts only while the device stays up.
 
     Args:
       tip_type_table_index: which entry to write, 1 to 99.
@@ -758,7 +758,7 @@ class STARDriver:
         fitting depth.
       maximum_tip_volume: what the tip holds, in uL. The firmware caps it at the channel's
         capacity.
-      tip_size: which collar the tip has, which is how the instrument identifies it.
+      tip_size: which collar the tip has, which is how the device identifies it.
       pickup_method: whether it is collected from a rack or out of wash liquid.
     Raises:
       ValueError: If an argument is outside what the command accepts.
@@ -796,7 +796,7 @@ class STARDriver:
       tip: the tip to look up.
 
     Returns:
-      Its index in the instrument's tip type table.
+      Its index in the device's tip type table.
 
     Raises:
       ValueError: If the table is full.
@@ -870,9 +870,9 @@ class STARDriver:
       )
 
   async def discover(self):
-    """Read what machine is on the other end, and build the subsystems it turns out to have.
+    """Read what device is on the other end, and build the subsystems it turns out to have.
 
-    Read-only: nothing moves. Call `initialize` to bring the machine up.
+    Read-only: nothing moves. Call `initialize` to bring the device up.
     """
     self.configuration = await self.request_device_configuration()
     # Which device answered, and what it is running. Read into the same configuration the rest of
@@ -893,7 +893,7 @@ class STARDriver:
     self._check_declared_against(self.configuration)
     self._num_channels = self.configuration.num_pip_channels
 
-    # Built for what the machine turns out to have, and only if not already there: a caller can
+    # Built for what the device turns out to have, and only if not already there: a caller can
     # hand a feature its configuration before setup, and re-running setup keeps it.
     if self.configuration.left_arm is not None and self.left_x_arm is None:
       self.left_x_arm = XArm(self, side="left")
@@ -921,8 +921,8 @@ class STARDriver:
     # Each feature reads its own modules, and they are different modules, so they read at
     # once. Both arms run off the same X-drive board, so only one of them asks it.
     arms = [arm for arm in (self.left_x_arm, self.right_x_arm) if arm is not None]
-    # Through the arms, not through the accessors above: those refuse on a machine with two, and
-    # setup has to reach every feature the machine has whichever arm holds it.
+    # Through the arms, not through the accessors above: those refuse on a device with two, and
+    # setup has to reach every feature the device has whichever arm holds it.
     reading = []
     for arm in arms:
       reading.append(arm.discover())
@@ -958,33 +958,33 @@ class STARDriver:
     self.firmware = {name: v for name, v in reported.items() if v is not None}
 
   async def initialize(self, force: bool = False, read_timeout: int = 300) -> bool:
-    """Bring the instrument itself to a known state.
+    """Bring the device itself to a known state.
 
-    This moves it. An uninitialized machine runs the initialization procedure, which homes every
-    drive and leaves the channels at Z safety. A machine that is already initialized is left where
+    This moves it. An uninitialized device runs the initialization procedure, which homes every
+    drive and leaves the channels at Z safety. A device that is already initialized is left where
     it is, except that the channels are raised to Z safety. Nothing may move laterally while a
     channel is low.
 
-    This is the instrument-level step only. `setup` is what initializes the features after it.
+    This is the device-level step only. `setup` is what initializes the features after it.
 
     Args:
-      force: run the initialization procedure even if the machine reports itself initialized.
+      force: run the initialization procedure even if the device reports itself initialized.
       read_timeout: how long to wait for the procedure, in seconds.
 
     Returns:
-      Whether the machine reported itself already initialized before this ran.
+      Whether the device reported itself already initialized before this ran.
     """
     already_initialized = await self.request_initialization_status()
 
     if force or not already_initialized:
       logger.debug(
-        "machine reports %s - running the initialization procedure (up to %d s)",
+        "device reports %s - running the initialization procedure (up to %d s)",
         "initialized, but the run was forced" if already_initialized else "not initialized",
         read_timeout,
       )
       await self.pre_initialize(read_timeout=read_timeout)
     else:
-      logger.debug("machine reports initialized - raising the channels to Z safety only")
+      logger.debug("device reports initialized - raising the channels to Z safety only")
       for arm in self.arms:
         if arm.pipettes is not None:
           # Probing how high the channels reach raises them, so it doubles as that raise, as the
@@ -999,7 +999,7 @@ class STARDriver:
     return already_initialized
 
   async def pre_initialize(self, read_timeout: int = 300):
-    """Run the instrument's initialization procedure.
+    """Run the device's initialization procedure.
 
     Homes every drive and leaves the channels at Z safety. The default read timeout is a wide
     margin over what the command has been measured to take.
@@ -1022,11 +1022,11 @@ class STARDriver:
 
     The channels, the iSWAP and the 96-head share the arm's X drive. Initializing one while
     another is moving is refused, so they go in the order the legacy routine uses. Two arms have
-    two drives, and a machine with both initializes them alongside each other.
+    two drives, and a device with both initializes them alongside each other.
 
     Args:
       arm: the arm whose features to initialize.
-      already_initialized: whether the instrument reported itself up before this setup ran.
+      already_initialized: whether the device reported itself up before this setup ran.
     """
     if arm.pipettes is None:
       logger.debug("channels: none installed - skipped")
@@ -1034,7 +1034,7 @@ class STARDriver:
       tips = await arm.pipettes.sense_tip_presence()
       if not already_initialized or any(tips):
         logger.debug(
-          "channels: %d of %d carrying tips, instrument %s - initializing",
+          "channels: %d of %d carrying tips, device %s - initializing",
           sum(tips),
           len(tips),
           "was already up" if already_initialized else "has just been homed",
@@ -1072,7 +1072,7 @@ class STARDriver:
       await head.probe_z_max()
 
   def format_setup_summary(self) -> str:
-    """One block describing the machine that was found: how it is reached, what firmware every
+    """One block describing the device that was found: how it is reached, what firmware every
     module runs, whether an autoload is fitted, how many arms there are, and per arm its
     dimensions, how many channels it carries and whether it carries a 96-head, a 384-head and an
     iSWAP.
@@ -1110,7 +1110,7 @@ class STARDriver:
     for arm in arms:
       a = arm.configuration
       # Read through the feature, not the arm's own bit, so the summary cannot report channels
-      # the driver did not build. The two disagree only on a machine whose configuration says both.
+      # the driver did not build. The two disagree only on a device whose configuration says both.
       channels = "none"
       if arm.pipettes is not None and a.pip_installed:
         channels = f"{c.num_pip_channels} ({'1000uL' if c.pip_type_1000ul else '300uL'})"
@@ -1136,7 +1136,7 @@ class STARDriver:
       )
       lines.append(f"      channels: {channels} | {' | '.join(heads)} | iSWAP: {iswap}")
     if sum(arm.configuration.pip_installed for arm in arms) > 1:
-      lines.append("      (the machine reports one channel count for the instrument, not per arm)")
+      lines.append("      (the device reports one channel count for the device, not per arm)")
     return "\n".join(lines)
 
   # ----------------------------------------
@@ -1196,7 +1196,7 @@ class STARDriver:
   # ----------------------------------------
 
   async def _create_capability_resources(self) -> None:
-    """Put what the machine carries on the deck, where it is.
+    """Put what the device carries on the deck, where it is.
 
     Read once, at setup: each feature's resource is placed at the position read back from it.
     A resource already on the deck is reused, and repeated setups do not duplicate it.
@@ -1238,7 +1238,7 @@ class STARDriver:
     if arm is None or arm.pipettes is None or arm.resource is None:
       return
 
-    # One per channel the machine reported at discovery, not a count assumed here.
+    # One per channel the device reported at discovery, not a count assumed here.
     c = arm.pipettes.configuration
     arm.pipettes.resources = []
     for channel in range(len(c.channels)):
@@ -1296,7 +1296,7 @@ class STARDriver:
           continue
         c = head.configuration
         # Where the head is, read before it has a resource to read from: the drive answers on a
-        # machine, and a simulated one falls back to where it rests rather than reporting back the
+        # device, and a simulated one falls back to where it rests rather than reporting back the
         # placeholder position it is about to be given.
         y, z = await head.request_y_position(), await head.request_z_position()
         existing = next((child for child in arm.resource.children if child.name == name), None)
@@ -1371,8 +1371,8 @@ class STARDriver:
   async def _create_autoload_resource(self) -> None:
     """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.
 
-    The tray is placed from the deck's features, not read off the machine. It is bolted to the
-    instrument and has no drive to report its position.
+    The tray is placed from the deck's features, not read off the device. It is bolted to the
+    device and has no drive to report its position.
     """
     if self.autoload is None or self.deck is None:
       return

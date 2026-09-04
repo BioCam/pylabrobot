@@ -7,7 +7,7 @@ class _FirmwareLock:
   """Coordinates firmware commands by the subsystem they drive.
 
   The module a command is addressed to is not what has to be serialized. The C0 master is a
-  router: `C0 II` drives the autoload and `C0 DI` drives the channels, and the instrument runs
+  router: `C0 II` drives the autoload and `C0 DI` drives the channels, and the device runs
   those two together. What cannot overlap is two commands on one physical subsystem, whether they
   are addressed to it directly or through C0.
 
@@ -20,7 +20,7 @@ class _FirmwareLock:
   """
 
   # The pipetting channels are the one subsystem that is not a single module: P1 to PG share a
-  # mutex, because the instrument drives them as a set here.
+  # mutex, because the device drives them as a set here.
   CHANNELS = "channels"
   AUTOLOAD = "I0"
 

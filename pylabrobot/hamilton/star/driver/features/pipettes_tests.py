@@ -8,10 +8,10 @@ from pylabrobot.resources.hamilton import STARDeck
 
 
 async def channels(width: float, positions: List[float]) -> Tuple[Pipettes, List[str]]:
-  """The channels of a simulated machine, of one width and at known Y positions.
+  """The channels of a simulated device, of one width and at known Y positions.
 
   Both are what the tests vary: the width decides the minimum spacing a pair must keep, and the
-  positions are what the machine answers `C0 RY` with. Everything else is the driver's own.
+  positions are what the device answers `C0 RY` with. Everything else is the driver's own.
 
   Args:
     width: what every channel reports its width to be, in mm.
@@ -107,18 +107,18 @@ class TestPositionInYDirection(unittest.IsolatedAsyncioTestCase):
 
 
 async def simulated_channels() -> Pipettes:
-  """The channels of a simulated machine, as setup leaves them.
+  """The channels of a simulated device, as setup leaves them.
 
   Returns:
     The feature.
 
   Raises:
-    RuntimeError: If the simulated machine reports no channels.
+    RuntimeError: If the simulated device reports no channels.
   """
   driver = STARSimulationDriver(deck=STARDeck(), declared_configuration_json=RECORDING_STAR)
   await driver.setup()
   if driver.pipettes is None:
-    raise RuntimeError("the simulated machine reports no pipetting channels")
+    raise RuntimeError("the simulated device reports no pipetting channels")
   return driver.pipettes
 
 

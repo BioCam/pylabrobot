@@ -531,7 +531,7 @@ _MODULE_NAME_BY_ID = {
 
 
 def _module_ids():
-  """The module identifiers the machine can report, in the order the master lists them."""
+  """The module identifiers the device can report, in the order the master lists them."""
   return tuple(_MODULE_NAME_BY_ID)
 
 

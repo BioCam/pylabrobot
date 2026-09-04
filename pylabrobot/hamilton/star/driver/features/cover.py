@@ -1,4 +1,4 @@
-"""The front cover: the hinged window over the deck, and whether the machine may move with it open."""
+"""The front cover: the hinged window over the deck, and whether the device may move with it open."""
 
 import logging
 from typing import TYPE_CHECKING, Dict, Literal, cast

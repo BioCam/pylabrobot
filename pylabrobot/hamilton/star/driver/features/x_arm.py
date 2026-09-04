@@ -36,10 +36,10 @@ class XArmConfiguration:
   follow from `width`.
 
   The two drives' module bits never overlap: a module occupies one fixed CAN node - the 96-head is
-  `H0`, the iSWAP `R0` - so a machine has one of it, and the bits say which arm carries it rather
+  `H0`, the iSWAP `R0` - so a device has one of it, and the bits say which arm carries it rather
   than how many there are. Where a module genuinely can be several, the node list indexes it
   instead (`Ln` for XL channels, `On` for robotic ones). The pipetting channels are one chain,
-  `P1` to `PG`, addressed together as `PX`, which is why the instrument reports a single channel
+  `P1` to `PG`, addressed together as `PX`, which is why the device reports a single channel
   count and not one per arm.
   """
 
@@ -105,7 +105,7 @@ class XArm:
   """One X-arm, on the left or the right rail.
 
   Reached as `driver.left_x_arm` / `driver.right_x_arm`. Its `configuration` is the arm's own
-  slice of what the driver read off the machine at setup: what is mounted on the arm, how wide it
+  slice of what the driver read off the device at setup: what is mounted on the arm, how wide it
   is, how far it travels, and the workspace that travel reaches.
   """
 
@@ -197,7 +197,7 @@ class XArm:
   def narrow_travel_for_left_side_panel(self) -> None:
     """Take the left side panel out of this arm's travel, if one is fitted.
 
-    The drive reports the travel of an unobstructed machine, and a panel is bolted on and off in
+    The drive reports the travel of an unobstructed device, and a panel is bolted on and off in
     seconds, so it is declared rather than discovered. What strikes it first is a head, which
     reaches far in front of the carriage, so an arm carrying one stops while its channel A1
     is still clear. An arm carrying both stops for whichever needs the most room. Called once setup
@@ -281,7 +281,7 @@ class XArm:
   def update_location_by_reference_point(self, x: float) -> None:
     """Record where this arm is on the resource that models it.
 
-    The machine positions the arm by its reference point - the centre of a dual-rail arm, the right
+    The device positions the arm by its reference point - the centre of a dual-rail arm, the right
     edge of a single-rail one - while a resource is located by its left front bottom corner, so the
     two differ by the arm's own anchor. Does nothing when the driver was given no deck, and so has
     nothing to model.
@@ -304,14 +304,14 @@ class XArm:
     Each drive has its own read, answering with the position twice - in tenths of a millimetre and
     in motor counts. The first is what this returns.
 
-    The machine is the authority on where the arm is, so what it answers is recorded on the
+    The device is the authority on where the arm is, so what it answers is recorded on the
     resource that models it.
 
     Returns:
       The position in mm.
 
     Raises:
-      ValueError: If the machine answered without a position.
+      ValueError: If the device answered without a position.
     """
     read_command = "RX" if self.side == "left" else "RS"
     resp = cast(str, await self._driver.send_command(module="X0", command=read_command))
@@ -322,14 +322,14 @@ class XArm:
     self.update_location_by_reference_point(x)
     return x
 
-  # TODO: on a machine with two arms, check the other arm's position before moving. They share one
+  # TODO: on a device with two arms, check the other arm's position before moving. They share one
   # rail, so a move can drive one arm into the other, and neither the drive nor `_check_reachable`
   # knows about it - the travel range is the arm's own, measured as though it were alone. What is
   # needed is the other arm's position, the width of both (`configuration.width`) and how far each
   # reaches around its reference point (`wrap_size`), so a move that would close the gap is refused
   # before it starts. Add a `make_space: bool` alongside it: when the far arm is in the way, move it
   # clear first rather than refusing - which is what an operator would do by hand, and what a
-  # protocol wants when the two arms work the same deck. Untestable here: this machine has one arm.
+  # protocol wants when the two arms work the same deck. Untestable here: this device has one arm.
   async def move_x(
     self,
     x: float,
@@ -380,7 +380,7 @@ class XArm:
       )
     except BaseException:
       # The arm stopped somewhere neither the old position nor the target describes, so ask the
-      # machine where it ended up.
+      # device where it ended up.
       try:
         await self.request_position()
       except BaseException:
@@ -415,7 +415,7 @@ class XArm:
     Collision risk: this moves the arm and everything mounted on it, with no regard for what is
     in the way.
 
-    Where the arm is is read from the machine and the distance added to it, so a relative move is
+    Where the arm is is read from the device and the distance added to it, so a relative move is
     an absolute move to a place worked out here - and is bounded by the arm's travel range like any
     other.
 

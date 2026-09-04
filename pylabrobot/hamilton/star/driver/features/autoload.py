@@ -68,7 +68,7 @@ def _tracks_from_presence_mask(mask: str) -> List[int]:
   """The tracks a carrier-presence mask marks as occupied.
 
   Args:
-    mask: the mask as the machine writes it, one hexadecimal digit per four tracks, the rightmost
+    mask: the mask as the device writes it, one hexadecimal digit per four tracks, the rightmost
       digit holding tracks 1 to 4.
 
   Returns:
@@ -221,7 +221,7 @@ class AutoloadConfiguration:
 class Autoload:
   """The autoload.
 
-  Reached as `driver.autoload`, on a machine that has one.
+  Reached as `driver.autoload`, on a device that has one.
   """
 
   def __init__(self, driver: "STARDriver", configuration: Optional[AutoloadConfiguration] = None):
@@ -238,10 +238,10 @@ class Autoload:
 
   @property
   def track_range(self) -> range:
-    """The tracks it can be moved to, one for each slot the instrument has.
+    """The tracks it can be moved to, one for each slot the device has.
 
     Returns:
-      Every track this machine has, counted from 1.
+      Every track this device has, counted from 1.
 
     Raises:
       RuntimeError: If setup has not run, so the deck size is not known.
@@ -338,7 +338,7 @@ class Autoload:
     """Request whether the autoload reports itself initialized.
 
     Returns:
-      Whether it is initialized. It reports itself uninitialized again once the instrument's own
+      Whether it is initialized. It reports itself uninitialized again once the device's own
       initialization has run.
     """
     resp = await self._driver.send_command(module="I0", command="QW", fmt="qw#")
@@ -366,10 +366,10 @@ class Autoload:
     """Initialize the autoload and everything else that makes it operational. This moves it.
 
     Homing is skipped when it already reports itself initialized, so this can be called on any
-    machine. The rest runs either way: the wheel goes to its safe Z, and the height it comes to
+    device. The rest runs either way: the wheel goes to its safe Z, and the height it comes to
     rest at is read, which no command reports directly.
 
-    Reporting itself uninitialized after the instrument procedure has run is the machine's
+    Reporting itself uninitialized after the device procedure has run is the device's
     behaviour rather than a failed initialization: across 182 recorded runs it reported itself
     initialized in every run where the procedure was skipped, and uninitialized in 60 of the 61
     where it ran.
@@ -394,7 +394,7 @@ class Autoload:
 
     For the sled-moving commands that do not go through `move_to_track`, which keeps the model in
     step itself. Every command that shifts the sled has to go through one or the other, or the
-    resource silently drifts from the machine.
+    resource silently drifts from the device.
 
     Read afterwards either way: a command that failed part way leaves the sled somewhere neither
     where it was nor where it was going, which is exactly when the model must not be trusted to
@@ -523,7 +523,7 @@ class Autoload:
       current_limit: the motor current limit. Defaults to
         `configuration.motor_current_limit_default`.
     Raises:
-      ValueError: If the track is not one this machine has, or an argument is outside what the
+      ValueError: If the track is not one this device has, or an argument is outside what the
         drive accepts.
       RuntimeError: If setup has not run.
     """
@@ -662,7 +662,7 @@ class Autoload:
   ):
     """Move the sled by a distance from where it is now.
 
-    Where the sled is is read from the machine and the distance added to it, so a relative move is
+    Where the sled is is read from the device and the distance added to it, so a relative move is
     an absolute move to a place worked out here - and is bounded by the drive's travel like any
     other.
 
@@ -687,7 +687,7 @@ class Autoload:
     )
 
   async def park(self):
-    """Park the autoload at the last track this machine has.
+    """Park the autoload at the last track this device has.
     Raises:
       RuntimeError: If setup has not run, so the deck size is not known.
     """
@@ -1025,7 +1025,7 @@ class Autoload:
       The rightmost track of each carrier found, counted from 1, in order.
 
     Raises:
-      ValueError: If the machine answered without a presence mask.
+      ValueError: If the device answered without a presence mask.
     """
     resp = cast(str, await self._driver.send_command(module="C0", command="RC"))
     return _tracks_from_presence_mask(self._presence_mask(resp, "ce"))
@@ -1046,7 +1046,7 @@ class Autoload:
       True if a carrier is there.
 
     Raises:
-      ValueError: If the track is not one this machine has.
+      ValueError: If the track is not one this device has.
       RuntimeError: If setup has not run.
     """
     tracks = self.track_range
@@ -1070,7 +1070,7 @@ class Autoload:
       The tracks that hold a carrier, counted from 1.
 
     Raises:
-      ValueError: If the machine answered without a presence mask.
+      ValueError: If the device answered without a presence mask.
     """
     resp = cast(str, await self._driver.send_command(module="C0", command="CS", subsystem="I0"))
     return _tracks_from_presence_mask(self._presence_mask(resp, "cd"))
@@ -1210,7 +1210,7 @@ class Autoload:
       The barcode, or None when nothing was read.
 
     Raises:
-      ValueError: If the track is not one this machine has, or an argument is outside what the
+      ValueError: If the track is not one this device has, or an argument is outside what the
         command accepts.
       RuntimeError: If setup has not run.
     """
@@ -1271,7 +1271,7 @@ class Autoload:
     Args:
       track: the track the carrier sits at, counted from 1.
     Raises:
-      ValueError: If the track is not one this machine has, or its carrier is on the loading tray
+      ValueError: If the track is not one this device has, or its carrier is on the loading tray
         rather than the deck.
       RuntimeError: If setup has not run.
     """
@@ -1411,7 +1411,7 @@ class Autoload:
       perform_tray_presence_check: whether to confirm the loading tray is not already holding it.
       park_after: whether to park the autoload once the carrier is out.
     Raises:
-      ValueError: If the carrier ends outside the tracks this machine has, if the deck sensors do
+      ValueError: If the carrier ends outside the tracks this device has, if the deck sensors do
         not see it, or if it is already on the loading tray.
       RuntimeError: If setup has not run, or the driver was given no deck, so a carrier has no
         track to unload from.
@@ -1491,7 +1491,7 @@ class Autoload:
       track: the track the carrier sits at, counted from 1.
       park_after: whether to park the autoload once the carrier is out.
     Raises:
-      ValueError: If the track is not one this machine has.
+      ValueError: If the track is not one this device has.
       RuntimeError: If setup has not run.
     """
     tracks = self.track_range
@@ -1540,7 +1540,7 @@ class Autoload:
       "container_barcodes".
 
     Raises:
-      ValueError: If the carrier ends outside the tracks this machine has, or the loading tray
+      ValueError: If the carrier ends outside the tracks this device has, or the loading tray
         holds no carrier at its track.
       RuntimeError: If setup has not run, or the driver was given no deck, so a carrier has no
         track to load to.

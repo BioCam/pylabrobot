@@ -1,4 +1,4 @@
-"""The STAR: the instrument, and what it knows about its own deck."""
+"""The STAR: the device, and what it knows about its own deck."""
 
 import logging
 from typing import Optional
@@ -28,7 +28,7 @@ from pylabrobot.resources.resource import Resource
 
 logger = logging.getLogger(__name__)
 
-# How big each instrument is. Measured on the manufacturer's own 3D models of the three frames,
+# How big each device is. Measured on the manufacturer's own 3D models of the three frames,
 # with the optional front loader left off - see the factory functions below for what that excludes.
 # The envelope is the hood: it sets the width, the depth at the back and the full height, with the
 # front door setting the depth at the front. Depth and height come out the same on all three frames,
@@ -38,17 +38,17 @@ STARLET_SIZE_X = 1_130.0
 STARPLUS_SIZE_X = 2_163.5
 # The left extension housing, measured on a CAD model of the part. It bolts to the left of the
 # chassis and stands on the same bench, so it is a resource of its own at a negative x rather than
-# something that grows the instrument: growing it would move the instrument origin, and with it
+# something that grows the device: growing it would move the device origin, and with it
 # everything measured from that origin including the chassis's own geometry. The same reasoning as
 # the autoload's loading tray, which stands in front at a negative y.
 #
 # It is aligned by its TOP and its BACK, not by the bench and the front face: 48.0 mm shorter than
-# the instrument and 6.8 mm shallower, so hanging it flush at the top leaves it clear of the bench,
-# and pushing it flush at the back leaves its front inside the instrument's.
+# the device and 6.8 mm shallower, so hanging it flush at the top leaves it clear of the bench,
+# and pushing it flush at the back leaves its front inside the device's.
 EXTENSION_HOUSING_SIZE = (265.0, 779.0, 855.0)
 
 # The chassis's own left side panel, which the extension housing REPLACES: the housing has no
-# machine-facing side, so on a machine that has one this panel is not there. Mutually exclusive
+# device-facing side, so on a device that has one this panel is not there. Mutually exclusive
 # with `left_extension_housing`, and the reason both are resources rather than part of the chassis.
 # Its y, z and size are the same on all three frames; only its x differs, so each factory passes
 # its own.
@@ -56,11 +56,11 @@ SIDE_PANEL_SIZE = (4.0, 726.0, 682.0)
 SIDE_PANEL_ORIGIN_YZ = (52.8, 180.5)
 # One panel, one place. The manufacturer's three files put it at 5.0, 3.5 and 6.0 - a 2.5 mm spread
 # on a part whose geometry is identical in all three to the last decimal, so the spread is how each
-# file was drawn rather than how the machines differ. This is the median, and the STARlet's, which
+# file was drawn rather than how the devices differ. This is the median, and the STARlet's, which
 # is the frame the rest of this is measured against.
 SIDE_PANEL_X = 5.0
 # What it used to be, before there was a part to measure: an unsourced 245.0 that only widened the
-# instrument. Kept as a name because `STAR_with_extension_housing` reads it.
+# device. Kept as a name because `STAR_with_extension_housing` reads it.
 EXTENSION_HOUSING_SIZE_X = EXTENSION_HOUSING_SIZE[0]
 MANUAL_SIZE_Y = 785.8
 SIZE_Z = 903.0
@@ -69,19 +69,19 @@ SIZE_Z = 903.0
 # with the frame's width - and corroborated by where the chassis footprint jumps from the part of
 # the width the feet cover to the full width of the body. The same on all three frames.
 FEET_SIZE_Z = 43.0
-# What stands clear of the bench: the machine without what it stands on.
+# What stands clear of the bench: the device without what it stands on.
 BODY_SIZE_Z = SIZE_Z - FEET_SIZE_Z
 # The loading tray stands 221.2 mm proud of the front face - the manufacturer's models are 1007.0
 # deep with a loader fitted against 785.8 without, on all three frames. That is NOT added to the
-# instrument here: the tray is its own resource, `autoload_loading_tray`, and a resource in front
-# of its parent is exactly what a negative y describes. Adding it would move the instrument origin
+# device here: the tray is its own resource, `autoload_loading_tray`, and a resource in front
+# of its parent is exactly what a negative y describes. Adding it would move the device origin
 # and with it everything measured from that origin, including the chassis's own geometry.
 AUTOLOAD_TRAY_PROUD_Y = 221.2
 
-# How far behind the instrument's front face the deck resource's origin sits.
+# How far behind the device's front face the deck resource's origin sits.
 #
 # A carrier lands 63.0 mm behind that origin and is 497.0 mm long, and the deck ends at a full-width
-# cable duct whose front face is 654.8 mm behind the instrument's front face. That face is not what
+# cable duct whose front face is 654.8 mm behind the device's front face. That face is not what
 # a carrier stops against: it carries a row of stubs, 3.0 mm long, that reach into the back of the
 # carrier to locate it, so the carrier seats 3.0 mm further back than the face alone would allow.
 # Hence 654.8 - 497.0 - 63.0 + 3.0.
@@ -102,7 +102,7 @@ DECK_ORIGIN_Y = 97.8
 # them, they agree to 0.022 mm, and unlike the waste block nothing here has placed them.
 DECK_ORIGIN_X_CORRECTION = 6.215
 
-# Where the deck sits inside the instrument.
+# Where the deck sits inside the device.
 #   x  210 mm from the left face to the first carrier, measured on a 2021 STAR, plus the correction
 #      above. The measurement and the manufacturer's own geometry disagree by that much and the
 #      geometry is what the models are drawn from.
@@ -110,7 +110,7 @@ DECK_ORIGIN_X_CORRECTION = 6.215
 #   z  the deck work surface sits 100 mm above the deck's origin, which the manual states, so the
 #      origin is 100 mm below the surface. The surface itself is measured on the manufacturer's
 #      models: the deck plate is 2.5 mm thick, its underside on the platform's top plate, and its
-#      TOP - which is what a carrier rests on - is 180.5 mm above the instrument's base. The same
+#      TOP - which is what a carrier rests on - is 180.5 mm above the device's base. The same
 #      on all three frames. What this replaces is an unsourced 78.5, which put the work surface at
 #      178.5 and so seated every carrier 2.0 mm inside the plate it stands on.
 STAR_DECK_LOCATION = Coordinate(110.0 + DECK_ORIGIN_X_CORRECTION, DECK_ORIGIN_Y, 80.5)
@@ -122,10 +122,10 @@ STARLET_DECK_LOCATION = Coordinate(110.0 + DECK_ORIGIN_X_CORRECTION, DECK_ORIGIN
 class STARDevice(Resource):
   """The complete modelling and control interface for a Hamilton Microlab STAR.
 
-  The instrument is itself a resource and its deck is its child, so everything on the deck is a
-  descendant of the machine carrying it: one tree, rooted here.
+  The device is itself a resource and its deck is its child, so everything on the deck is a
+  descendant of the device carrying it: one tree, rooted here.
 
-  Two tiers over one driver. `star.driver` speaks to the machine in its own terms - tracks,
+  Two tiers over one driver. `star.driver` speaks to the device in its own terms - tracks,
   positions, millimetres - and stays reachable whatever is built on top of it. The device adds
   what the driver cannot know: where things are, and so which of them a command is about.
   """
@@ -147,28 +147,28 @@ class STARDevice(Resource):
   ):
     """
     Args:
-      deck: the deck this instrument carries. It becomes a child of the instrument, so everything
+      deck: the deck this device carries. It becomes a child of the device, so everything
         assigned to it is a descendant of this device.
-      simulation: whether to build a simulated instrument, which answers without one being plugged
+      simulation: whether to build a simulated device, which answers without one being plugged
         in. Superseded by `driver`, which says exactly what to drive.
       declared_configuration_json: path to a declared configuration, passed to the driver this
         builds. Read only when this builds one: a driver given outright brings its own.
-      driver: the driver to drive the instrument through.
-      name: what to call this instrument in the resource tree.
-      size_x: how wide the instrument is, in mm, BEFORE any extension housing. Defaults to the
+      driver: the driver to drive the device through.
+      name: what to call this device in the resource tree.
+      size_x: how wide the device is, in mm, BEFORE any extension housing. Defaults to the
         deck's own width.
       size_y: how deep it is, in mm. Defaults to the deck's own depth.
       size_z: how tall it is, in mm. Defaults to the deck's own height.
       extension_housing: whether the left extension housing is fitted. It becomes a resource of its
         own, `left_extension_housing`, standing to the LEFT of the chassis at a negative x. It does
-        NOT change the instrument's size: see `EXTENSION_HOUSING_SIZE`.
+        NOT change the device's size: see `EXTENSION_HOUSING_SIZE`.
       left_side_panel_installed: whether the chassis's left side panel is on. It becomes a
         resource of its own, `left_side_panel`, at `SIDE_PANEL_X`. Declared rather than
-        discovered: the panel bolts off in seconds and the machine does not report it. Passed on
+        discovered: the panel bolts off in seconds and the device does not report it. Passed on
         to the driver, which stops an arm short of a fitted one.
       deck_location: where the deck sits inside it, BEFORE any extension housing. Defaults to the
-        instrument's own origin.
-      model: which machine this is. Defaults to the class name, which says only that it is a STAR.
+        device's own origin.
+      model: which device this is. Defaults to the class name, which says only that it is a STAR.
 
     Raises:
       ValueError: If neither a driver nor simulation is given, since there is then nothing to
@@ -178,7 +178,7 @@ class STARDevice(Resource):
       raise ValueError("pass a driver, or `simulation=True` to build a simulated one")
     if extension_housing and left_side_panel_installed:
       raise ValueError(
-        "an instrument has the left extension housing or the left side panel, not both: the "
+        "an device has the left extension housing or the left side panel, not both: the "
         "housing stands where the panel would be"
       )
     if driver is not None and simulation:
@@ -208,7 +208,7 @@ class STARDevice(Resource):
       )
 
     if self.driver.deck is not None and self.driver.deck is not deck:
-      logger.warning("the driver was given another deck; modelling into this instrument's instead")
+      logger.warning("the driver was given another deck; modelling into this device's instead")
 
     self.driver.deck = deck
     if self.driver.left_side_panel_installed != left_side_panel_installed:
@@ -232,7 +232,7 @@ class STARDevice(Resource):
       )
 
     if extension_housing:
-      # To the left, hung so its top and its back are level with the instrument's.
+      # To the left, hung so its top and its back are level with the device's.
       self.assign_child_resource(
         Resource(
           name="left_extension_housing",
@@ -249,70 +249,70 @@ class STARDevice(Resource):
         ),
       )
 
-  # -- what the instrument carries ------------------------------------------------------------
+  # -- what the device carries ------------------------------------------------------------
   # Read through: the optional ones do not exist until discovery says what is fitted.
 
   @property
   def left_x_arm(self) -> Optional[XArm]:
-    """The left X-arm, on a machine that has one."""
+    """The left X-arm, on a device that has one."""
     return self.driver.left_x_arm
 
   @property
   def right_x_arm(self) -> Optional[XArm]:
-    """The right X-arm, on a machine that has one."""
+    """The right X-arm, on a device that has one."""
     return self.driver.right_x_arm
 
   @property
   def x_arm(self) -> XArm:
-    """The X-arm, on a machine that has only one.
+    """The X-arm, on a device that has only one.
 
     Returns:
       The arm, whichever side it is installed on.
 
     Raises:
       RuntimeError: If setup has not run.
-      ValueError: If the machine has more than one arm.
+      ValueError: If the device has more than one arm.
     """
     return self.driver.x_arm
 
   @property
   def pipettes(self) -> Optional[Pipettes]:
-    """The pipetting channels, on a machine that has some."""
+    """The pipetting channels, on a device that has some."""
     return self.driver.pipettes
 
   @property
   def front_cover(self) -> Optional[FrontCover]:
-    """The front cover, on a machine whose configuration has its monitoring installed."""
+    """The front cover, on a device whose configuration has its monitoring installed."""
     return self.driver.front_cover
 
   @property
   def head96(self) -> Optional[Head96]:
-    """The 96-head, on a machine that has one."""
+    """The 96-head, on a device that has one."""
     return self.driver.head96
 
   @property
   def head384(self) -> Optional[Head384]:
-    """The 384-head, on a machine that has one."""
+    """The 384-head, on a device that has one."""
     return self.driver.head384
 
   @property
   def iswap(self) -> Optional[iSWAP]:
-    """The iSWAP, on a machine that has one."""
+    """The iSWAP, on a device that has one."""
     return self.driver.iswap
 
   @property
   def autoload(self) -> Optional[Autoload]:
-    """The autoload, on a machine that has one."""
+    """The autoload, on a device that has one."""
     return self.driver.autoload
 
   # -- session ---------------------------------------------------------------
 
   async def setup(self):
-    """Bring the instrument up."""
+    """Bring the device up."""
     await self.driver.setup()
 
   async def stop(self):
-    """Put the instrument down."""
+    """Put the device down."""
     await self.driver.stop()
 
   def __str__(self) -> str:
@@ -404,10 +404,10 @@ def STARPlus(
 
   The width is measured on the manufacturer's own model, as the other two frames are. Its deck is
   derived, as `STARPlusDeck` works through, because there is no
-  STARplus here to read one from, so its 78 rails should be confirmed against a real machine.
+  STARplus here to read one from, so its 78 rails should be confirmed against a real device.
 
   Returns:
-    The instrument, on a STARplus deck.
+    The device, on a STARplus deck.
   """
   # Only a simulated device is handed this frame's recording. A physical one is whatever it
   # answers, and a declaration given for it is cross-checked rather than stood in for.

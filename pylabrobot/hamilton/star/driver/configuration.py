@@ -17,7 +17,7 @@ from pylabrobot.hamilton.star.driver.features.x_arm import XArmConfiguration
 class DeviceConfiguration:
   """The device's installed hardware and geometry.
 
-  Holds both halves of what the master answers about the device it is on: the machine-configuration
+  Holds both halves of what the master answers about the device it is on: the device-configuration
   fields and the extended-configuration fields.
   """
 
@@ -104,7 +104,7 @@ class DeviceConfiguration:
   """Raw configuration data 3 (ke, 32-bit). Bit definitions are undocumented."""
 
   instrument_size_slots: int = 54
-  """Instrument size in slots, X range (xt). Default: 54."""
+  """Device size in slots, X range (xt). Default: 54."""
   autoload_size_slots: int = 54
   """Autoload size in slots (xa). Default: 54."""
   tip_waste_x_position: float = 1340.0

@@ -49,7 +49,7 @@ def record(arm: XArm) -> List[str]:
 
 
 async def _both_arms() -> STARSimulationDriver:
-  """A machine with an arm on each rail, set up."""
+  """A device with an arm on each rail, set up."""
   both = dataclasses.replace(
     RECORDED_DEVICE,
     right_arm=BARE_X_ARM,
@@ -130,7 +130,7 @@ class TestPerDriveCommands(unittest.IsolatedAsyncioTestCase):
 
 
 class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
-  """The resource on the deck says where the arm is, and only the machine can change that."""
+  """The resource on the deck says where the arm is, and only the device can change that."""
 
   async def test_a_move_moves_the_model(self):
     driver = await _both_arms()
@@ -157,7 +157,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(sorted(arms), ["left_x_arm", "right_x_arm"])
 
   async def test_a_rejected_move_records_where_the_arm_stopped(self):
-    """The arm stops somewhere neither the old position nor the target describes, so the machine
+    """The arm stops somewhere neither the old position nor the target describes, so the device
     is asked where it ended up. Driven against a stub rather than the simulator, whose reads answer
     from the model and so cannot report a stop the model does not know about."""
     driver = await _both_arms()

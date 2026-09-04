@@ -131,7 +131,7 @@ class TestXArm(unittest.IsolatedAsyncioTestCase):
 
 
 class TestSimulation(unittest.IsolatedAsyncioTestCase):
-  """A simulated machine has no firmware to ask, so the resource model is all it can answer from."""
+  """A simulated device has no firmware to ask, so the resource model is all it can answer from."""
 
   async def test_simulation_needs_a_deck(self):
     with self.assertRaises(ValueError):
@@ -141,7 +141,7 @@ class TestSimulation(unittest.IsolatedAsyncioTestCase):
 # What each initialization step is called in the sequences below, and where it is defined. The simulated
 # classes override some of them, so each is recorded where a simulated run would reach it.
 MOVING_STEPS = [
-  (simulator.STARSimulationDriver, "pre_initialize", "VI instrument"),
+  (simulator.STARSimulationDriver, "pre_initialize", "VI device"),
   (simulator.Pipettes, "probe_z_max", "ZA channels to safe Z"),
   (simulator.SimulatedPipettes, "initialize", "DI channels"),
   (simulator.SimulatedISWAP, "initialize", "FI iSWAP"),
@@ -155,7 +155,7 @@ MOVING_STEPS = [
 
 @contextlib.contextmanager
 def recorded_moves():
-  """Record every setup step that moves the machine, in the order setup runs them."""
+  """Record every setup step that moves the device, in the order setup runs them."""
   moves: List[str] = []
   with contextlib.ExitStack() as stack:
     for owner, name, label in MOVING_STEPS:
@@ -173,16 +173,16 @@ def recorded_moves():
 
 
 class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
-  """Setup moves the machine, and the order it moves it in is what keeps the arm's modules from
+  """Setup moves the device, and the order it moves it in is what keeps the arm's modules from
   driving into each other. It follows the legacy routine: the channels reach Z safety and the head
   retracts before the iSWAP moves on the shared left X-drive, and the head is only initialized once
   its own status has been asked. The 96-head retract runs on every setup, since that retract is
   what keeps it clear."""
 
-  async def run_setup(self, instrument_up: bool, head_up: bool, eject_position: bool) -> List[str]:
+  async def run_setup(self, device_up: bool, head_up: bool, eject_position: bool) -> List[str]:
     star = simulator.STARSimulationDriver(
       deck=STARDeck(),
-      initialized=instrument_up,
+      initialized=device_up,
       declared_configuration_json=RECORDING_STAR,
     )
     star.initialized["H0"] = head_up
@@ -195,7 +195,7 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
 
   async def test_everything_already_up(self):
     self.assertEqual(
-      await self.run_setup(instrument_up=True, head_up=True, eject_position=True),
+      await self.run_setup(device_up=True, head_up=True, eject_position=True),
       [
         "ZA channels to safe Z",
         "EV 96-head probe and retract",
@@ -207,9 +207,9 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
       ],
     )
 
-  async def test_head_down_on_an_instrument_that_is_up(self):
+  async def test_head_down_on_a_device_that_is_up(self):
     self.assertEqual(
-      await self.run_setup(instrument_up=True, head_up=False, eject_position=True),
+      await self.run_setup(device_up=True, head_up=False, eject_position=True),
       [
         "ZA channels to safe Z",
         "EV 96-head probe and retract",
@@ -226,7 +226,7 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
     """It is still retracted, because that is what keeps it clear of the iSWAP; it is just not
     initialized, since initializing throws off whatever is mounted and there is nowhere to drop it."""
     self.assertEqual(
-      await self.run_setup(instrument_up=True, head_up=False, eject_position=False),
+      await self.run_setup(device_up=True, head_up=False, eject_position=False),
       [
         "ZA channels to safe Z",
         "EV 96-head probe and retract",
@@ -238,13 +238,13 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
       ],
     )
 
-  async def test_instrument_not_up(self):
-    """The instrument procedure homes every drive, so nothing is raised beforehand. The autoload
+  async def test_device_not_up(self):
+    """The device procedure homes every drive, so nothing is raised beforehand. The autoload
     is its own unit, so it comes up alongside the procedure rather than after it."""
     self.assertEqual(
-      await self.run_setup(instrument_up=False, head_up=False, eject_position=True),
+      await self.run_setup(device_up=False, head_up=False, eject_position=True),
       [
-        "VI instrument",
+        "VI device",
         "II autoload",
         "autoload park",
         "DI channels",

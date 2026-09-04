@@ -47,10 +47,10 @@ class PipettesConfiguration:
 
   The encoder resolutions convert between the units a command carries on the wire (increments)
   and the units the driver speaks (mm, uL). They are properties of the channel drives and are
-  identical across a machine's channels, so they are held once, not per channel.
+  identical across a device's channels, so they are held once, not per channel.
 
   `channels` holds what each individual channel carries. It is empty until setup has counted the
-  channels; only the machine reports how many there are.
+  channels; only the device reports how many there are.
   """
 
   hardware_query_first_year: int = 2017
@@ -102,14 +102,14 @@ class PipettesConfiguration:
   z_range: Tuple[float, float] = (99.98, 334.7)
   """The Z window the channels reach, in mm, lowest first.
 
-  What the drive counts, until `probe_z_max` replaces the ceiling with what this machine's
+  What the drive counts, until `probe_z_max` replaces the ceiling with what this device's
   channels actually reached. The floor is the deck surface either way."""
   dispensing_drive_mm_per_increment: float = 0.002734375
   dispensing_drive_uL_per_increment: float = 0.046876
 
   channel_size_z: float = 140.0
   """How tall to model a channel, in mm. Not read from anywhere: how far a channel extends is not
-  something the machine reports."""
+  something the device reports."""
 
   channels: List[PipetteConfiguration] = field(default_factory=list)
   """One entry per channel, in channel order."""
@@ -176,7 +176,7 @@ class PipettesConfiguration:
 
     The resolutions above are held once for every channel, so they are one board's. Channels are
     replaced individually, and a channel on different firmware may not convert the same way. A
-    machine repaired piecemeal is the case this catches.
+    device repaired piecemeal is the case this catches.
     """
     by_version: Dict[str, List[int]] = {}
     for channel, entry in enumerate(self.channels):
@@ -198,13 +198,13 @@ class PipettesConfiguration:
     )
 
   def resolve_channels(self, num_channels: int) -> None:
-    """Size `channels` against the machine, once it has said how many channels it has.
+    """Size `channels` against the device, once it has said how many channels it has.
 
-    A list supplied up front is left as it is. A caller can configure channels before the machine
+    A list supplied up front is left as it is. A caller can configure channels before the device
     is known, and it is then checked, not overwritten.
 
     Args:
-      num_channels: how many channels the machine reported.
+      num_channels: how many channels the device reported.
 
     Raises:
       ValueError: If a supplied list does not have one entry per channel.
@@ -475,7 +475,7 @@ class Pipettes:
     eject. Anything on a channel, including a gripper, ends up in the waste.
 
     Args:
-      x_position: X to eject at, in mm. Defaults to the instrument's tip waste position.
+      x_position: X to eject at, in mm. Defaults to the device's tip waste position.
       y_positions: where to put each channel in Y, in mm, back to front. Defaults to spreading
         them evenly across the Y band the procedure uses.
       begin_of_tip_deposit_process: Z to start the eject from, in mm.
@@ -570,7 +570,7 @@ class Pipettes:
     one place: travel limits now, and whatever else has to hold before they move as it is added.
 
     X is the arm's travel as the arm reports it. A channel sits at the arm's reference point, with
-    no offset to apply. Y is the band the machine states its channels reach, which differs by the
+    no offset to apply. Y is the band the device states its channels reach, which differs by the
     side the arm is on.
 
     Args:
@@ -581,8 +581,8 @@ class Pipettes:
       ValueError: If the channels cannot reach it.
       RuntimeError: If the limits were not read, so how far they reach is unknown.
     """
-    machine = self._driver.configuration
-    if machine is None:
+    device = self._driver.configuration
+    if device is None:
       raise RuntimeError("no configuration read; have you called `star.setup()`?")
     if axis == "x":
       x_range = self.arm.configuration.x_range
@@ -593,11 +593,11 @@ class Pipettes:
       low, high = self.configuration.z_range
     else:
       low = (
-        machine.left_arm_min_y_position
+        device.left_arm_min_y_position
         if self.arm.side == "left"
-        else machine.right_arm_min_y_position
+        else device.right_arm_min_y_position
       )
-      high = machine.pip_maximal_y_position
+      high = device.pip_maximal_y_position
     if not low <= value <= high:
       raise ValueError(f"{axis} must be between {low} and {high} mm, is {value}")
 
@@ -792,7 +792,7 @@ class Pipettes:
   async def make_max_space_for_channel(self, channel: int):
     """Spread the channels to leave one of them as much free Y as the arm allows.
 
-    What a caller reaches for before working a channel by hand, and the machine decides where the
+    What a caller reaches for before working a channel by hand, and the device decides where the
     others go.
 
     TODO: park the iSWAP first when one is installed. Legacy does, skipping the move when its
@@ -802,7 +802,7 @@ class Pipettes:
       channel: which channel to free, 0-indexed from the back.
 
     Raises:
-      ValueError: If the channel is not one this machine has.
+      ValueError: If the channel is not one this device has.
     """
     if not 0 <= channel < self.num_channels:
       raise ValueError(f"channel must be between 0 and {self.num_channels - 1}, is {channel}")
@@ -822,7 +822,7 @@ class Pipettes:
         logger.warning("could not read where the channels stopped; their model is stale")
       raise
 
-    # The machine decides where the channels go, so unlike a commanded move there is nothing to
+    # The device decides where the channels go, so unlike a commanded move there is nothing to
     # write the model from: where they ended up has to be read.
     await self.request_y_positions()
     return resp
@@ -958,7 +958,7 @@ class Pipettes:
     """Find out how high the channels reach. Raises them to Z safety.
 
     Not something they report: no query carries the Z window, and the travel the drive counts can
-    exceed what a given machine reaches. So the channels are sent to Z safety and read back, and
+    exceed what a given device reaches. So the channels are sent to Z safety and read back, and
     what they report becomes the ceiling of `configuration.z_range`, whose floor is what the drive
     documents.
 

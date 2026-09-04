@@ -80,7 +80,7 @@ class Head96Configuration(HeadConfiguration):
   tip_drop_clearance: float = 1.45
 
   # Where the dispensing drive is sent before tips are collected off a rack, as a piston volume in
-  # uL. The instrument does not lower the drive itself, so a head left with its piston up would
+  # uL. The device does not lower the drive itself, so a head left with its piston up would
   # mount tips against it.
   dispensing_drive_position_before_rack_pickup: float = 218.19
 
@@ -91,7 +91,7 @@ class Head96Configuration(HeadConfiguration):
   the drive refuses everything below this as outside its permitted area. Bisecting on a 2021 head
   put the edge here, with 6527 refused and 6528 accepted.
 
-  It is hardcoded because nothing on the instrument reports it. Every parameter the head and the
+  It is hardcoded because nothing on the device reports it. Every parameter the head and the
   master will answer for was read - 499 of them - and none carries this value in any encoding, so a
   head that enforces a different floor has to have it set here. That it lands on a round number of
   millimetres, where a stored adjustment would land anywhere, is the reason to expect it constant
@@ -222,7 +222,7 @@ class Head96Configuration(HeadConfiguration):
 class Head96(Head):
   """The 96-head.
 
-  Reached as `driver.head96`, on a machine that has one. It is addressed as `H0`, but the
+  Reached as `driver.head96`, on a device that has one. It is addressed as `H0`, but the
   commands that move it go to the master, so this feature speaks to both.
   """
 
@@ -266,7 +266,7 @@ class Head96(Head):
     c.squeezer_drive_acceleration_firmware_reported = await self._reported_drive_parameter("sr")
 
   def _record_hardware(self, hardware: List[str]) -> None:
-    """Record the stop disc and instrument type this head reports.
+    """Record the stop disc and device type this head reports.
 
     Index 1 is populated on firmware at least back to 2021. Whether index 2 is reliably populated
     on every build, or on some falls back to reserve (read back as 0 -> legacy), is unverified;

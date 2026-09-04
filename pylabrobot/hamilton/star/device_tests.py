@@ -56,10 +56,10 @@ def declaring(**parts: object) -> str:
 
 
 class TestConstruction(unittest.IsolatedAsyncioTestCase):
-  """What the instrument wires up when it is built."""
+  """What the device wires up when it is built."""
 
-  def test_the_instrument_deck_is_what_gets_modelled(self):
-    """The deck the instrument carries is its child and is what the driver models into, whether
+  def test_the_device_deck_is_what_gets_modelled(self):
+    """The deck the device carries is its child and is what the driver models into, whether
     the driver was built here or handed in pointing at another deck."""
     star = STAR(simulation=True)
     self.assertIs(star.driver.deck, star.deck)
@@ -78,16 +78,16 @@ class TestConstruction(unittest.IsolatedAsyncioTestCase):
 
 
 class TestFactories(unittest.IsolatedAsyncioTestCase):
-  """Each factory builds one machine, on the deck that machine has."""
+  """Each factory builds one device, on the deck that device has."""
 
   def test_each_factory_builds_its_own_deck(self):
     self.assertEqual(STAR(simulation=True).deck.num_tracks, STAR_NUM_TRACKS)
     self.assertEqual(STARLet(simulation=True).deck.num_tracks, STARLET_NUM_TRACKS)
 
   def test_extension_housing_stands_to_the_left(self):
-    """The housing is a resource beside the chassis, not something that grows the instrument.
+    """The housing is a resource beside the chassis, not something that grows the device.
 
-    It bolts to the left, so it sits at a negative x. Growing the instrument instead would move its
+    It bolts to the left, so it sits at a negative x. Growing the device instead would move its
     origin, and everything measured from that origin with it.
     """
     star = STAR(simulation=True)
@@ -107,8 +107,8 @@ class TestFactories(unittest.IsolatedAsyncioTestCase):
 
 
 class TestCapabilities(unittest.IsolatedAsyncioTestCase):
-  """The instrument reads its features through the driver, which builds only what discovery
-  found. A feature the machine does not report is None rather than an object that cannot work."""
+  """The device reads its features through the driver, which builds only what discovery
+  found. A feature the device does not report is None rather than an object that cannot work."""
 
   async def test_reads_through_to_the_driver(self):
     star = STAR(simulation=True)
@@ -125,7 +125,7 @@ class TestCapabilities(unittest.IsolatedAsyncioTestCase):
       self.assertIs(getattr(star, name), getattr(star.driver, name), name)
 
   async def test_absent_capabilities_are_none(self):
-    # An arm that carries nothing: what the machine reports at instrument level and what each
+    # An arm that carries nothing: what the device reports at device level and what each
     # arm reports about itself agree on a real one, so the fixture makes them agree here.
     bare = dataclasses.replace(
       RECORDED_DEVICE,
