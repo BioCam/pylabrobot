@@ -80,6 +80,9 @@ class PipettesConfiguration:
   report the same position, so a channel's X is the arm's."""
   y_reference_anchor: str = "c"
   z_reference_anchor: str = "b"
+  """Along Z the drive reports the bottom of the tip mounting shaft, which is what Hamilton's
+  firmware calls the stop disc. A channel carrying a shaft is anchored on the shaft's end rather
+  than on this, which then applies only to one that carries none."""
 
   y_drive_mm_per_increment: float = 0.046302083
   z_drive_mm_per_increment: float = 0.01072765
@@ -434,6 +437,15 @@ class Pipettes:
       anchor = resource.get_anchor(
         y=self.configuration.y_reference_anchor, z=self.configuration.z_reference_anchor
       )
+      # Along Z the drive reports the centre-centre-bottom of the tip mounting shaft, and the
+      # shaft hangs below the body it is mounted on, so the point the drive names is the shaft's
+      # end rather than the body's own bottom. Taken from the shaft where the channel carries one,
+      # so a shaft of another length needs nothing changed here.
+      shaft = next(
+        (child for child in resource.children if isinstance(child, TipMountingShaft)), None
+      )
+      if shaft is not None and shaft.location is not None:
+        anchor = Coordinate(anchor.x, anchor.y, shaft.location.z)
     resource.location = Coordinate(
       here.x,
       here.y if y is None else y - on_the_arm.y - anchor.y,
