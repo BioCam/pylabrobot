@@ -8,14 +8,15 @@ import unittest.mock
 from typing import List, cast
 
 import pylabrobot.hamilton.star.driver.simulator as simulator
+from pylabrobot.hamilton.star.conftest import BARE_X_ARM
 from pylabrobot.hamilton.star.driver.configuration import (
   DeviceConfiguration,
   read_configuration,
   to_jsonable,
 )
+from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
 from pylabrobot.hamilton.star.driver.simulator import (
-  BARE_X_ARM,
   RECORDING_STAR,
   STARSimulationDriver,
 )
@@ -149,7 +150,7 @@ MOVING_STEPS = [
   (simulator._SimulatedHead, "initialize", "EI 96-head"),
   (simulator._SimulatedHead, "probe_z_max", "EV 96-head probe and retract"),
   (simulator.SimulatedAutoload, "initialize", "II autoload"),
-  (simulator.SimulatedAutoload, "park", "autoload park"),
+  (Autoload, "park", "autoload park"),
 ]
 
 

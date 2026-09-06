@@ -25,6 +25,11 @@ StopDiscType = Literal["core_i", "core_ii"]
 PressureADC = Literal["Renesas_X9268", "Analog_Devices_AD5263"]
 
 
+# The letters a channel's module is addressed by, in order from the back. `channel_id` spells an
+# address with them and `channel_from_module` reads one back.
+CHANNEL_MODULE_LETTERS = "123456789ABCDEFG"
+
+
 @dataclass
 class PipetteConfiguration:
   """The hardware fitted to a single pipetting channel.
@@ -245,7 +250,21 @@ class Pipettes:
   @staticmethod
   def channel_id(channel: int) -> str:
     """The module a channel is addressed by. Channel 0 is the one at the back."""
-    return "P" + "123456789ABCDEFG"[channel]
+    return "P" + CHANNEL_MODULE_LETTERS[channel]
+
+  @staticmethod
+  def channel_from_module(module: str) -> Optional[int]:
+    """Which channel a module address names, the other way round from `channel_id`.
+
+    Args:
+      module: the two-character module, e.g. `P1`.
+
+    Returns:
+      The channel, 0-indexed from the back, or None when the address names something else.
+    """
+    if len(module) != 2 or module[0] != "P" or module[1] not in CHANNEL_MODULE_LETTERS:
+      return None
+    return CHANNEL_MODULE_LETTERS.index(module[1])
 
   @property
   def num_channels(self) -> int:

@@ -156,8 +156,8 @@ class iSWAPConfiguration:
 
   # -- X --
   rotation_drive_x_offset: Optional[float] = None
-  """Deck X distance from the X-arm carriage center to the rotation drive (mm). Stored in master
-  EEPROM. The Hamilton factory default is 34.0 mm."""
+  """Deck X distance from the X-arm carriage reference point to the rotation drive (mm). Stored in
+  master EEPROM. The Hamilton factory default is 34.0 mm."""
 
   # -- Y --
   rotation_drive_predefined_y_positions_increments: Optional[Dict[str, int]] = None
@@ -772,7 +772,7 @@ class iSWAP:
       raise RuntimeError("no configuration read; have you called `star.setup()`?")
     self._check_reachable("y", y)
 
-    await self._clear_channels_for_y(y, make_space=make_space)
+    await self._make_space_for_y(y, make_space=make_space)
 
     speed_increments = c.y_mm_to_increments(speed)
     speed_low, speed_high = c.y_speed_increment_range
@@ -802,12 +802,12 @@ class iSWAP:
     self.update_location_by_reference_point(y=y)
     return resp
 
-  async def _clear_channels_for_y(self, y: float, make_space: bool) -> None:
+  async def _make_space_for_y(self, y: float, make_space: bool) -> None:
     """Make sure the backmost channel is out of the way before the drive travels to `y`.
 
     Args:
       y: where the rotation drive is going, in mm.
-      make_space: whether the channels may be moved to clear it.
+      make_space: whether the channels may be moved to make that space.
 
     Raises:
       ValueError: If the channel is in the way and either may not be moved, or cannot move far

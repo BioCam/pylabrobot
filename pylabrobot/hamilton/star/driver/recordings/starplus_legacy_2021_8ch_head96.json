@@ -1,6 +1,6 @@
 {
   "device": {
-    "serial_number": null,
+    "serial_number": "STARplus1",
     "firmware_version": "7.6S 25 2021_11_05 (GRU C0)",
     "firmware_date": "2021-11-05",
     "pip_type_1000ul": true,
@@ -59,7 +59,7 @@
         2012.2
       ],
       "wrap_size": 595.2,
-      "firmware_version": null,
+      "firmware_version": "1.4S 2012-04-25",
       "x_mm_per_increment": 0.1,
       "x_increment_range": [
         0,
@@ -125,8 +125,64 @@
             "head_type": "ML_STAR",
             "stop_disc_type": "core_ii",
             "pressure_adc": "Renesas_X9268",
-            "firmware_version": null,
-            "width": null
+            "firmware_version": "4.0S j 2022-03-16",
+            "width": 8.98
+          },
+          {
+            "channel_type": "ML_STAR",
+            "head_type": "ML_STAR",
+            "stop_disc_type": "core_ii",
+            "pressure_adc": "Renesas_X9268",
+            "firmware_version": "4.0S j 2022-03-16",
+            "width": 8.98
+          },
+          {
+            "channel_type": "ML_STAR",
+            "head_type": "ML_STAR",
+            "stop_disc_type": "core_ii",
+            "pressure_adc": "Renesas_X9268",
+            "firmware_version": "4.0S j 2022-03-16",
+            "width": 8.98
+          },
+          {
+            "channel_type": "ML_STAR",
+            "head_type": "ML_STAR",
+            "stop_disc_type": "core_ii",
+            "pressure_adc": "Renesas_X9268",
+            "firmware_version": "4.0S j 2022-03-16",
+            "width": 8.98
+          },
+          {
+            "channel_type": "ML_STAR",
+            "head_type": "ML_STAR",
+            "stop_disc_type": "core_ii",
+            "pressure_adc": "Renesas_X9268",
+            "firmware_version": "4.0S j 2022-03-16",
+            "width": 8.98
+          },
+          {
+            "channel_type": "ML_STAR",
+            "head_type": "ML_STAR",
+            "stop_disc_type": "core_ii",
+            "pressure_adc": "Renesas_X9268",
+            "firmware_version": "4.0S j 2022-03-16",
+            "width": 8.98
+          },
+          {
+            "channel_type": "ML_STAR",
+            "head_type": "ML_STAR",
+            "stop_disc_type": "core_ii",
+            "pressure_adc": "Renesas_X9268",
+            "firmware_version": "4.0S j 2022-03-16",
+            "width": 8.98
+          },
+          {
+            "channel_type": "ML_STAR",
+            "head_type": "ML_STAR",
+            "stop_disc_type": "core_ii",
+            "pressure_adc": "Renesas_X9268",
+            "firmware_version": "4.0S j 2022-03-16",
+            "width": 8.98
           }
         ]
       },
@@ -185,6 +241,30 @@
         ],
         "predefined_y_position_origin": 0,
         "predefined_z_position_origin": 0,
+        "predefined_y_positions_increments": {
+          "home": 35485,
+          "predefined_1": 35000,
+          "predefined_2": 35000,
+          "predefined_3": 35000,
+          "predefined_4": 35000,
+          "predefined_5": 35000,
+          "predefined_6": 35000,
+          "predefined_7": 35000,
+          "predefined_8": 35000,
+          "predefined_9": 35000
+        },
+        "predefined_z_positions_increments": {
+          "home": 67100,
+          "predefined_1": 67100,
+          "predefined_2": 67100,
+          "predefined_3": 67100,
+          "predefined_4": 67100,
+          "predefined_5": 67100,
+          "predefined_6": 67100,
+          "predefined_7": 67100,
+          "predefined_8": 67100,
+          "predefined_9": 67100
+        },
         "traversal_z_position": 245.0,
         "y_drive_current_limit_default": 15,
         "z_drive_current_limit_default": 15,

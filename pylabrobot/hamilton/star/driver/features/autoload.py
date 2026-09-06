@@ -131,6 +131,17 @@ class AutoloadConfiguration:
   """How far one step moves the scanner, in mm. Read at discovery: a unit holds either 0.1 or
   0.125 in its own memory, and this default is only right for the units that hold the first."""
   loading_indicators_installed: Optional[bool] = None
+
+  initialization_track: Optional[int] = None
+  """The track the X drive homes against, counted from 1. Where the sled initializes, not where it
+  is: `request_carrier_presence`'s track is the live one. Filled by `request_init_slot`."""
+
+  adjustment_date: Optional[datetime.date] = None
+  """When this module was last adjusted, as it reports it. Filled by
+  `request_adjustment_status`."""
+  adjusted: Optional[bool] = None
+  """Whether the module considers itself adjusted. An unadjusted one's stored values are factory
+  defaults rather than this unit's own. Filled by `request_adjustment_status`."""
   """Whether this autoload has the per-track indicator LEDs. Read at discovery."""
   drive_zero_on_the_deck: float = 100.0
   """Where the drive counts from, on the deck: track 1, a hundred millimetres along it."""
@@ -275,24 +286,29 @@ class Autoload:
   async def request_adjustment_status(self) -> Tuple[datetime.date, bool]:
     """Request when this autoload was adjusted, and whether it has been.
 
+    Records both on the configuration.
+
     Returns:
       The date of the adjustment, and whether the module considers itself adjusted. An unadjusted
       module's stored values are factory defaults rather than this unit's own.
     """
     resp = await self._driver.send_command(module="I0", command="RJ", fmt="jd&&&&&&&&&&js#")
-    return (
-      datetime.date.fromisoformat(cast(str, resp["jd"])),
-      cast(int, resp["js"]) == 1,
-    )
+    c = self.configuration
+    c.adjustment_date = datetime.date.fromisoformat(cast(str, resp["jd"]))
+    c.adjusted = cast(int, resp["js"]) == 1
+    return c.adjustment_date, c.adjusted
 
   async def request_init_slot(self) -> int:
     """Request the track the X drive initializes against.
+
+    Records it on the configuration.
 
     Returns:
       The track, counted from 1.
     """
     resp = await self._driver.send_command(module="I0", command="QX", fmt="bx##")
-    return cast(int, resp["bx"])
+    self.configuration.initialization_track = cast(int, resp["bx"])
+    return self.configuration.initialization_track
 
   async def request_adjustment_values(self) -> str:
     """Request every adjustment value the module stores, as it writes them.

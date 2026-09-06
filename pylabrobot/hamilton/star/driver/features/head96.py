@@ -27,6 +27,8 @@ class Head96Configuration(HeadConfiguration):
   """
 
   module: str = "H0"
+  z_drive_safety_position: Optional[float] = 336.97
+  """What a real 96-head reached when it was probed."""
   retract_command: str = "EV"
   initialize_command: str = "EI"
   tip_presence_command: str = "QH"

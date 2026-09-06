@@ -25,6 +25,8 @@ class Head384Configuration(HeadConfiguration):
   """
 
   module: str = "D0"
+  z_drive_safety_position: Optional[float] = 336.0
+  """What the drive documents; no 384-head has been probed."""
   retract_command: str = "JV"
   initialize_command: str = "JI"
   tip_presence_command: str = "QK"

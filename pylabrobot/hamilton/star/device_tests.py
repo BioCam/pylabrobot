@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from typing import cast
 
+from pylabrobot.hamilton.star.conftest import BARE_X_ARM
 from pylabrobot.hamilton.star.device import (
   EXTENSION_HOUSING_SIZE_X,
   STAR,
@@ -19,7 +20,6 @@ from pylabrobot.hamilton.star.driver.configuration import (
   to_jsonable,
 )
 from pylabrobot.hamilton.star.driver.simulator import (
-  BARE_X_ARM,
   RECORDING_STAR,
   STARSimulationDriver,
 )

@@ -40,6 +40,22 @@ RETRACT_READ_TIMEOUT = 20
 HEAD_REFERENCE_SHAFT = "A1"
 
 
+# What a head's stored position tables hold, slot by slot. The first is the home position its
+# drive parks at; the nine after it are further slots nothing here commands against.
+HEAD_PREDEFINED_SLOTS = (
+  "home",
+  "predefined_1",
+  "predefined_2",
+  "predefined_3",
+  "predefined_4",
+  "predefined_5",
+  "predefined_6",
+  "predefined_7",
+  "predefined_8",
+  "predefined_9",
+)
+
+
 @dataclass
 class HeadConfiguration:
   """Device facts shared by the heads.
@@ -133,6 +149,20 @@ class HeadConfiguration:
   # rather than a position in its own right. Zero where the head stores positions outright.
   predefined_y_position_origin: int = 0
   predefined_z_position_origin: int = 0
+
+  predefined_y_positions_increments: Optional[Dict[str, int]] = None
+  """Each Y position the head has stored, in increments, keyed as `HEAD_PREDEFINED_SLOTS` names
+  them. Filled by `request_predefined_y_positions`, which discovery does not call: what a head
+  parks at is read when it is needed rather than at every setup."""
+  predefined_z_positions_increments: Optional[Dict[str, int]] = None
+  """The same along Z, filled by `request_predefined_z_positions`."""
+
+  z_drive_safety_position: Optional[float] = None
+  """Where the Z drive comes to rest when the firmware retracts it, in mm.
+
+  A probe result rather than something the head reports, so each head states what its own
+  generation is documented to reach and `probe_z_max` replaces it with what this one actually
+  did. Named as `AutoloadConfiguration.z_drive_safety_position` is, which it means the same as."""
 
   traversal_z_position: float = 245.0
   """How high the head travels when a command is not told otherwise, in mm. Not a device fact: a
@@ -819,6 +849,8 @@ class Head:
     `configuration.predefined_y_position_origin`, which is added here so what comes back is
     comparable with `request_y_position`.
 
+    Records what came back on the configuration, so a head read once carries its table.
+
     Returns:
       The ten stored positions in mm, the first being home.
     """
@@ -827,6 +859,7 @@ class Head:
       module=self.configuration.module, command="RA", ra="py", fmt="py##### (n)"
     )
     increments = cast(List[int], resp["py"])
+    c.predefined_y_positions_increments = dict(zip(HEAD_PREDEFINED_SLOTS, increments))
     return [c.y_drive_increments_to_mm(i + c.predefined_y_position_origin) for i in increments]
 
   async def park(
@@ -1071,6 +1104,8 @@ class Head:
     `configuration.predefined_z_position_origin`, which is added here. These are positions of the
     head's lowest fixed feature, as `request_z_position` is.
 
+    Records what came back on the configuration, so a head read once carries its table.
+
     Returns:
       The ten stored positions in mm, the first being home.
     """
@@ -1079,6 +1114,7 @@ class Head:
       module=self.configuration.module, command="RA", ra="pz", fmt="pz##### (n)"
     )
     increments = cast(List[int], resp["pz"])
+    c.predefined_z_positions_increments = dict(zip(HEAD_PREDEFINED_SLOTS, increments))
     return [c.z_drive_increments_to_mm(i + c.predefined_z_position_origin) for i in increments]
 
   async def probe_z_max(self, read_timeout: int = RETRACT_READ_TIMEOUT) -> float:
@@ -1106,6 +1142,7 @@ class Head:
     z_max = await self.request_z_position()
     c = self.configuration
     c.z_range = (c.z_range_documented[0], z_max)
+    c.z_drive_safety_position = z_max
     return z_max
 
   async def move_stop_disc_to_z_position(

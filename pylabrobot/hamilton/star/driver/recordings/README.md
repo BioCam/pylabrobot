@@ -32,21 +32,30 @@ itself, and the declaration is cross-checked against it: setup refuses if the tw
 features are fitted, how many channels, or what each arm carries. Identity and geometry are not
 compared, so a declaration taken off one device still describes another of the same build.
 
-Three recordings ship with this package, one per frame, and `STAR`, `STARLet` and `STARPlus` hand
-theirs to a **simulated** device when nothing else is declared. A physical device is never given
-one:
+Five recordings ship with this package. `STAR`, `STARLet` and `STARPlus` hand the 96-head one for
+their frame to a **simulated** device when nothing else is declared; the two 384-head ones are
+declared by name. A physical device is never given any of them:
 
-| frame | recording |
-|---|---|
-| STAR | `star_legacy_2021_8ch_head96_autoload1D.json` |
-| STARlet | `starlet_legacy_2021_8ch_head96_autoload1D.json` |
-| STARplus | `starplus_legacy_2021_8ch_head96.json` |
+| frame | head | recording |
+|---|---|---|
+| STAR | 96 | `star_legacy_2021_8ch_head96_autoload1D.json` |
+| STARlet | 96 | `starlet_legacy_2021_8ch_head96_autoload1D.json` |
+| STARplus | 96 | `starplus_legacy_2021_8ch_head96.json` |
+| STAR | 384 | `star_legacy_2021_8ch_head384_autoload1D.json` |
+| STARlet | 384 | `starlet_legacy_2021_8ch_head384_autoload1D.json` |
 
-Only the STAR was read off a device. The other two are derived from it: everything the right-hand
-end of the deck sets moves by the difference in deck length, and everything belonging to the arm
-itself stays put. Replace either wholesale with a recording when there is a frame to take one from.
-The STARplus is derived without an autoload, because the recorded sled does not travel far enough
-to reach that frame's last track.
+Only the first was read off a device. The others are derived from it. The two other frames move
+everything the right-hand end of the deck sets by the difference in deck length, and leave
+everything belonging to the arm itself where it is; the STARplus is derived without an autoload,
+because the recorded sled does not travel far enough to reach that frame's last track. The two
+384-head ones swap the head the arm carries, flipping the bits that say which head is fitted and
+putting the 384-head's documented configuration where the 96-head's reading was. Replace any of
+them wholesale with a recording when there is a device to take one from.
+
+A 384-head device is what the 384-head's own configuration is declared through, rather than a
+fragment file: it is a device that exists, so it is described the way every other device here is.
+Field 1 of its name is carried over from the STAR it was derived from, since the convention below
+takes that field from a 96-head and one of these has none.
 
 ## What is in one
 
@@ -70,12 +79,15 @@ grows a second head is one more entry, with no change to the format.
   device reported them, stay in the code. The 384-head is the standing example: no 384-head has
   been read off any device, so its offsets and drive defaults live in `simulator.py`.
 
-  One field breaks this rule knowingly. `rotation_drive_predefined_z_positions_increments` carries
-  the iSWAP's documented defaults rather than a reading, because a simulated arm has to answer
-  where it rests and nothing else here says. It is in the file rather than the code so that the
-  first device read for it overwrites a value in the same place, instead of leaving a constant to
-  be found and deleted. Until then it is a documented default sitting where a reading belongs, and
-  the arm it describes may hold something else.
+  Some fields break this rule knowingly: the iSWAP's
+  `rotation_drive_predefined_z_positions_increments`, the 96-head's
+  `predefined_y_positions_increments` and `predefined_z_positions_increments`, and the whole of
+  the 384-head, which no device has been read for at all. Each carries its drive's documented
+  defaults rather than a reading, because a simulated device has to answer where it parks and
+  nothing else here says. They are in the file rather than the code so that the
+  first device read overwrites a value in the same place, instead of leaving a constant to be
+  found and deleted. Until then they are documented defaults sitting where readings belong, and
+  the device they describe may hold something else.
 - **Where the device is.** Rest positions, probed Z heights, which track the autoload sits on. That
   is state, not configuration, and it changes every run.
 
@@ -115,10 +127,11 @@ tokens, and whether that token is populated on every build is unverified. A devi
 may be one that does not report the token rather than one that is legacy. Confirm against the
 device before trusting the field on an FM.
 
-**One stored table is a documented default rather than a reading.** Every other table under
-`iswap` came off a device; `rotation_drive_predefined_z_positions_increments` did not, for the
-reason given above. `rotation_drive_request_predefined_z_positions` reads it, and records what
-came back, so one call on a device makes it real.
+**Three stored tables are documented defaults rather than readings.** The iSWAP's
+`rotation_drive_predefined_z_positions_increments` and the 96-head's two predefined tables were
+never read off a device, for the reason given above. Each has a reader that records what came
+back - `rotation_drive_request_predefined_z_positions`, `request_predefined_y_positions` and
+`request_predefined_z_positions` - so one call apiece on a device makes them real.
 
 **Two more identity facts are still unread.** A recording says which device answered and what it
 was running, through `device.serial_number` and `device.firmware_version`. Two things the older

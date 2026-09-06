@@ -7,6 +7,7 @@ from types import SimpleNamespace
 from typing import Any, List, Optional, cast
 
 from pylabrobot.hamilton.protocol.text.framing import assemble_command
+from pylabrobot.hamilton.star.conftest import BARE_X_ARM
 from pylabrobot.hamilton.star.driver.configuration import (
   DeviceConfiguration,
   read_configuration,
@@ -14,7 +15,6 @@ from pylabrobot.hamilton.star.driver.configuration import (
 )
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm
 from pylabrobot.hamilton.star.driver.simulator import (
-  BARE_X_ARM,
   RECORDING_STAR,
   STARSimulationDriver,
 )
