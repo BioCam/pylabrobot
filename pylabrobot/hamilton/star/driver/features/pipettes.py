@@ -402,6 +402,55 @@ class Pipettes:
 
   # -- where the channels are ------------------------------------------------
 
+  def _reference_anchor(self, resource: Resource) -> Coordinate:
+    """Where on a channel's resource the drives report, from its left front bottom corner.
+
+    Along Z the drive reports the centre-centre-bottom of the tip mounting shaft, and the shaft
+    hangs below the body it is mounted on, so the point the drive names is the shaft's end rather
+    than the body's own bottom. Taken from the shaft where the channel carries one, so a shaft of
+    another length needs nothing changed here.
+
+    Args:
+      resource: the resource modelling the channel.
+
+    Returns:
+      The offset from the resource's corner to the point the drives report.
+    """
+    if isinstance(resource, NChannelPipette):
+      return resource.reference_point
+    anchor = resource.get_anchor(
+      y=self.configuration.y_reference_anchor, z=self.configuration.z_reference_anchor
+    )
+    shaft = next(
+      (child for child in resource.children if isinstance(child, TipMountingShaft)), None
+    )
+    if shaft is None or shaft.location is None:
+      return anchor
+    return Coordinate(anchor.x, anchor.y, shaft.location.z)
+
+  def modelled_reference_point(self, channel: int) -> Optional[Coordinate]:
+    """Where the model has a channel's reference point, in mm on the deck.
+
+    The inverse of `update_location_by_reference_point`: it converts a reported position into a
+    location, and this converts a location back into the position that would be reported. X is
+    the arm's, so it is carried through unread.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+
+    Returns:
+      Where the model has it, or None when there is nothing modelling it yet.
+    """
+    deck = self._driver.deck
+    if channel >= len(self.resources) or deck is None:
+      return None
+    resource = self.resources[channel]
+    if resource.location is None or resource.parent is None:
+      return None
+    return (
+      resource.location + resource.parent.get_location_wrt(deck) + self._reference_anchor(resource)
+    )
+
   def update_location_by_reference_point(
     self, channel: int, y: Optional[float] = None, z: Optional[float] = None
   ) -> None:
@@ -431,21 +480,7 @@ class Pipettes:
     if resource.location is None or resource.parent is None:
       return
     here, on_the_arm = resource.location, resource.parent.get_location_wrt(deck)
-    if isinstance(resource, NChannelPipette):
-      anchor = resource.reference_point
-    else:
-      anchor = resource.get_anchor(
-        y=self.configuration.y_reference_anchor, z=self.configuration.z_reference_anchor
-      )
-      # Along Z the drive reports the centre-centre-bottom of the tip mounting shaft, and the
-      # shaft hangs below the body it is mounted on, so the point the drive names is the shaft's
-      # end rather than the body's own bottom. Taken from the shaft where the channel carries one,
-      # so a shaft of another length needs nothing changed here.
-      shaft = next(
-        (child for child in resource.children if isinstance(child, TipMountingShaft)), None
-      )
-      if shaft is not None and shaft.location is not None:
-        anchor = Coordinate(anchor.x, anchor.y, shaft.location.z)
+    anchor = self._reference_anchor(resource)
     resource.location = Coordinate(
       here.x,
       here.y if y is None else y - on_the_arm.y - anchor.y,

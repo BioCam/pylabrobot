@@ -1431,6 +1431,13 @@ class STARDriver:
     # One per channel the device reported at discovery, not a count assumed here.
     c = arm.pipettes.configuration
     arm.pipettes.resources = []
+
+    # Read before the resources exist, as the arm's own creation reads before it makes one. The
+    # reads record nothing while there is nothing to record on, and a simulated device answers
+    # where it powered up rather than from a resource that has not been placed yet.
+    ys = await arm.pipettes.request_y_positions()
+    zs = await arm.pipettes._unchecked_fw_request_lowest_z_positions()
+
     for channel in range(len(c.channels)):
       name = f"pipette_channel_{channel}"
       resource = next((r for r in arm.resource.children if r.name == name), None)
@@ -1456,11 +1463,10 @@ class STARDriver:
       arm.pipettes.add_tip_mounting_shaft(resource)
       arm.pipettes.resources.append(resource)
 
-    # Asking where they are records them, as the arm's and the head's reads do. One command per
-    # axis: the master answers for every channel, so every channel's resource is brought up to
-    # date whether or not the caller cared about all of them.
-    await arm.pipettes.request_y_positions()
-    await arm.pipettes._unchecked_fw_request_lowest_z_positions()
+    # Seat each one where the reads above found it. Recorded here rather than by the reads
+    # themselves, because the resources they would have recorded on did not exist yet.
+    for channel in range(len(arm.pipettes.resources)):
+      arm.pipettes.update_location_by_reference_point(channel, y=ys[channel], z=zs[channel])
 
   async def _create_head_resources(self) -> None:
     """Put each head on the arm it rides, where it is along Y.
@@ -1532,6 +1538,7 @@ class STARDriver:
       # Read before it has a resource to read into, as the head's are.
       y = await iswap.rotation_drive_request_y_position()
       z = await iswap.rotation_drive_request_z_position()
+      angle = await iswap.request_rotation_drive_angle()
       existing = next(
         (child for child in arm.resource.children if child.name == "iswap_channel"), None
       )
@@ -1557,6 +1564,7 @@ class STARDriver:
         )
       iswap.resource = resource
       iswap.update_location_by_reference_point(y=y, z=z)
+      iswap.update_rotation(angle)
 
   async def _create_autoload_resource(self) -> None:
     """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.

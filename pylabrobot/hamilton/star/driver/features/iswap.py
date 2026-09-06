@@ -483,7 +483,40 @@ class iSWAP:
     """
     if self.resource is None or self._driver.deck is None:
       return
+    self.resource.rotation_drive_angle = angle
     self.resource.rotation = Rotation(z=angle - 90.0)
+
+  def modelled_reference_point(self) -> Optional[Coordinate]:
+    """Where the model has the rotation drive's reference point, in mm on the deck.
+
+    The inverse of `update_location_by_reference_point`: it converts a reported position into a
+    location, and this converts a location back into the position that would be reported. X is
+    the arm's, so it is carried through unread.
+
+    Returns:
+      Where the model has it, or None when there is nothing modelling it yet.
+    """
+    deck = self._driver.deck
+    if self.resource is None or self.resource.location is None or deck is None:
+      return None
+    arm = self.resource.parent
+    if arm is None:
+      return None
+    return self.resource.location + arm.get_location_wrt(deck) + self.resource.reference_point
+
+  def modelled_rotation(self) -> Optional[float]:
+    """Which way the model has the arm pointing, as the rotation drive reports it.
+
+    Read from what the drive last reported, not converted back out of the resource's `rotation`:
+    that is a deck angle about a different axis, so recovering a drive angle from it would be
+    inverting a rendering rather than reading a fact.
+
+    Returns:
+      The angle in degrees, or None while nothing has read it yet.
+    """
+    if self.resource is None or self._driver.deck is None:
+      return None
+    return self.resource.rotation_drive_angle
 
   def update_location_by_reference_point(
     self, y: Optional[float] = None, z: Optional[float] = None

@@ -46,9 +46,21 @@ class iSWAPChannel(Resource):
       name=name, size_x=size_x, size_y=size_y, size_z=size_z, category=category, model=model
     )
     self.reference_point = reference_point
+    self.rotation_drive_angle: Optional[float] = None
+    """Which way the rotation drive reports the arm points, in degrees, or None until it is read.
+
+    Kept in the drive's own terms, as it reports them. `rotation` carries the same fact rendered
+    for the deck, which is neither the same reference nor the same axis: degrees there are the
+    deck angle link 1 lies along, and a resource turns about its own corner while the arm turns
+    about `reference_point`. Anything needing the angle a drive would report reads this rather
+    than converting `rotation` back."""
 
   def serialize(self) -> dict:
-    return {**super().serialize(), "reference_point": self.reference_point.serialize()}
+    return {
+      **super().serialize(),
+      "reference_point": self.reference_point.serialize(),
+      "rotation_drive_angle": self.rotation_drive_angle,
+    }
 
 
 def iswap_channel(

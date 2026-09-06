@@ -235,20 +235,6 @@ class _Simulated:
 class SimulatedPipettes(_Simulated, Pipettes):
   """The pipetting channels, answering for themselves."""
 
-  def __init__(self, driver: STARDriver, configuration: Optional[PipettesConfiguration] = None):
-    """
-    Args:
-      driver: the driver to send commands through.
-      configuration: the channels' device facts.
-    """
-    super().__init__(driver, configuration)
-    # Where each channel's Z drive is held to be. Per device, not per class: two simulated devices
-    # do not share where their channels are. Filled on first use, from the configured window.
-    self._simulated_z: Dict[int, float] = {}
-    # Where each channel was last sent along Y. Empty until something moves one, and then the
-    # read finds it here rather than at where initialization spread them.
-    self._simulated_y: Dict[int, float] = {}
-
   def _declared_channel(self, channel: int) -> PipetteConfiguration:
     """What this device was told sits on a channel, or the channel this frame documents.
 
@@ -269,53 +255,102 @@ class SimulatedPipettes(_Simulated, Pipettes):
     await super().initialize(*args, **kwargs)
     self.device.tips_mounted = [False] * len(self.device.tips_mounted)
 
-  async def move_to_y_positions(self, ys: Dict[int, float], make_space: bool = False):
-    """Remember where they were sent, as the drives remember it."""
-    resp = await super().move_to_y_positions(ys, make_space=make_space)
-    self._simulated_y.update(ys)
-    return resp
+  def _modelled_y(self, channel: int) -> float:
+    """Where the model has one channel along Y, in mm.
 
-  async def move_to_y_position(self, channel: int, y: float, make_space: bool = False):
-    """Remember where this one was sent."""
-    resp = await super().move_to_y_position(channel, y, make_space=make_space)
-    self._simulated_y[channel] = y
-    return resp
+    Args:
+      channel: which channel, 0-indexed from the back.
+
+    Returns:
+      Where the model has it, or where initialization spreads it when nothing models it yet.
+    """
+    point = self.modelled_reference_point(channel)
+    return self.default_initialize_y_positions()[channel] if point is None else point.y
+
+  def _modelled_z(self, channel: int) -> float:
+    """Where the model has one channel's stop disc along Z, in mm.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+
+    Returns:
+      Where the model has it, or the top of the drive's window when nothing models it yet, which
+      is where Z safety leaves a device that has just been switched on.
+    """
+    point = self.modelled_reference_point(channel)
+    return self.configuration.z_range[1] if point is None else point.z
 
   async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
-    c = self.configuration
-    if (module, command) == ("C0", "RY"):
-      # Where initialization spread them, unless something has since moved one: a channel answers
-      # where it was sent, the way a drive does, so a move can be checked against the reading.
-      positions = [
-        self._simulated_y.get(channel, y)
-        for channel, y in enumerate(self.default_initialize_y_positions())
-      ]
-      return {"ry": [round(y * 10) for y in positions]}, "where the channels were last sent"
+    """Answer a read from the model, and put a move into it.
 
-    if (module, command) == ("C0", "RT"):
-      return {"rt": [int(mounted) for mounted in self.device.tips_mounted]}, "what is mounted"
+    A simulated device keeps no positions of its own: the model is where a channel is, a read
+    finds it there, and a move writes it there. Both halves happen here because this runs inside
+    the command that carried them, so a move is in the model before the move's own read-back goes
+    looking - which is what keeps the two from drifting apart.
+
+    Only the moves whose caller does not already record from its target are written here. A move
+    that the driver refuses never reaches this point, so a refused move is never recorded.
+    """
+    c = self.configuration
+    if module == "C0":
+      if command == "RY":
+        return (
+          {"ry": [round(self._modelled_y(channel) * 10) for channel in range(self.num_channels)]},
+          "where the model has the channels along Y",
+        )
+
+      if command == "RT":
+        return {"rt": [int(mounted) for mounted in self.device.tips_mounted]}, "what is mounted"
+
+      if command == "RZ":
+        # The master reports the bottom of whatever a channel carries. A simulated channel has no
+        # tip geometry, so that is its stop disc, which is what the model holds; on a device the
+        # two part company the moment a tip goes on, which is why both reads exist.
+        return (
+          {"rz": [round(self._modelled_z(channel) * 10) for channel in range(self.num_channels)]},
+          "where the model has the channels along Z",
+        )
+
+      if command == "JZ":
+        for channel, tenths in enumerate(kwargs["zp"]):
+          self.update_location_by_reference_point(channel, z=int(tenths) / 10)
+        return None
+
+      if command == "ZA":
+        # The retract to Z safety, which is the top of the window the drive reports.
+        for channel in range(self.num_channels):
+          self.update_location_by_reference_point(channel, z=c.z_range[1])
+        return None
+
+      # `JY` and `JE` are not written here. A Y move records every channel from its target once
+      # the command is away, and a spread is the device's own choice of where to put them, which
+      # a simulated device has nothing to say about.
+      return None
 
     if len(module) != 2 or module[0] != "P" or module[1] not in CHANNEL_MODULE_LETTERS:
       return None
     channel = CHANNEL_MODULE_LETTERS.index(module[1])
     if channel >= self.num_channels:
       return None
-    declared = self._declared_channel(channel)
 
     if command == "VY":
       # The drive answers twice; the read takes the second.
+      declared = self._declared_channel(channel)
       width = PIPETTE_WIDTH if declared.width is None else declared.width
       increments = c.y_drive_mm_to_increments(width)
       return {"yc": [increments, increments]}, f"channel {channel}'s declared width"
 
     if command == "RZ":
-      # The channel's own drive rather than the master's read. A simulated channel carries no tip
-      # geometry, so the two answer the same height here; on a device they part company the moment
-      # a tip goes on, which is the whole reason the two reads exist.
       return (
-        {"rz": c.z_drive_mm_to_increments(self._z[channel])},
-        f"where channel {channel}'s stop disc is modelled",
+        {"rz": c.z_drive_mm_to_increments(self._modelled_z(channel))},
+        f"where the model has channel {channel}'s stop disc",
       )
+
+    if command == "ZA":
+      self.update_location_by_reference_point(
+        channel, z=c.z_drive_increments_to_mm(int(kwargs["za"]))
+      )
+      return None
     return None
 
   async def request_firmware_version(self, channel: int) -> Tuple[str, datetime.date]:
@@ -339,49 +374,6 @@ class SimulatedPipettes(_Simulated, Pipettes):
       stop_disc_type=declared.stop_disc_type,
       pressure_adc=declared.pressure_adc,
     )
-
-  @property
-  def _z(self) -> Dict[int, float]:
-    """Where each channel's drive is held to be, in mm.
-
-    A move writes it and a read finds it there, as the head's Z does. Started at the top of the
-    window the configuration carries, which is where Z safety puts them.
-
-    Returns:
-      Each channel's Z, keyed by channel.
-    """
-    if not self._simulated_z:
-      self._simulated_z = {
-        channel: self.configuration.z_range[1] for channel in range(self.num_channels)
-      }
-    return self._simulated_z
-
-  async def _unchecked_fw_request_lowest_z_positions(self) -> Dict[int, float]:
-    # Recorded as the real read records it, so a simulated channel is modelled at the height it
-    # reports rather than at whatever the arm's own is.
-    positions = dict(self._z)
-    for channel, z in positions.items():
-      self.update_location_by_reference_point(channel, z=z)
-    return positions
-
-  async def probe_z_max(self) -> float:
-    # The retract inside the probe is what puts the channels at their top. On a device that is
-    # physical travel; here the configured ceiling stands for it, so a configured window is what a
-    # simulated probe reads back. `_SimulatedHead.probe_z_max` does the same for a head.
-    self._z.update({channel: self.configuration.z_range[1] for channel in range(self.num_channels)})
-    return await super().probe_z_max()
-
-  async def _unchecked_fw_move_lowest_point_to_z_positions(self, zs: Dict[int, float]):
-    # A move is what puts a channel somewhere. Written after the move, not before: one the real
-    # method refuses never happened.
-    resp = await super()._unchecked_fw_move_lowest_point_to_z_positions(zs)
-    self._z.update(zs)
-    return resp
-
-  async def move_stop_disc_to_z_position(self, channel: int, z: float, *args: Any, **kwargs: Any):
-    resp = await super().move_stop_disc_to_z_position(channel, z, *args, **kwargs)
-    self._z[channel] = z
-    return resp
 
 
 # Where the left arm has come to rest when a simulated device is switched on, in mm: far enough
@@ -618,22 +610,38 @@ class SimulatedHead384(_SimulatedHead, Head384):
 class SimulatedISWAP(_Simulated, iSWAP):
   """The iSWAP, answering for itself."""
 
-  # Where its rotation drive is held to be, in mm. The move writes it and the read finds it there,
-  # as the head's Z does.
-  _z: float = SIMULATED_ISWAP_Z
-  _y: float = SIMULATED_ISWAP_Y
-  # Where the rotation drive is held to be, in its own increments. None until something turns it,
-  # which is when the parking stop it was switched on at stops being the answer.
-  _rotation: Optional[int] = None
-
   async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
+    """Answer a read from the model.
+
+    A simulated iSWAP keeps no positions of its own. Its moves record where they were sent once
+    the command is away, so a read finds the model already holding it; until one has, the answers
+    are where a device that has just been switched on is parked.
+    """
+    c = self.configuration
     if module == "R0":
       if command == "RW":
-        if self._rotation is not None:
-          return {"rw": self._rotation}, "where the rotation drive was last turned to"
+        angle = self.modelled_rotation()
+        if angle is not None:
+          return (
+            {"rw": c.rotation_drive_angle_to_increments(angle)},
+            "which way the model has the arm pointing",
+          )
         stops = (await self._request_slots("pw"))[: len(ROTATION_DRIVE_SLOTS)]
         parked = dict(zip(ROTATION_DRIVE_SLOTS, stops))["parking"]
         return {"rw": parked}, "the rotation drive's parking stop"
+
+      if command == "RY":
+        point = self.modelled_reference_point()
+        y = SIMULATED_ISWAP_Y if point is None else point.y
+        increments = c.y_mm_to_increments(y)
+        # Two counters come back, the firmware's and the hardware's; the read takes the hardware.
+        return {"ry": [increments, increments]}, "where the model has the rotation drive along Y"
+
+      if command == "RZ":
+        point = self.modelled_reference_point()
+        z = SIMULATED_ISWAP_Z if point is None else point.z
+        increments = c.z_mm_to_increments(z - c.rotation_drive_z_offset_above_finger)
+        return {"rz": [increments, increments]}, "where the model has the rotation drive along Z"
       if command == "RT":
         stops = (await self._request_slots("pt"))[: len(WRIST_DRIVE_SLOTS)]
         straight = dict(zip(WRIST_DRIVE_SLOTS, stops))["straight"]
@@ -655,35 +663,6 @@ class SimulatedISWAP(_Simulated, iSWAP):
     if version is None:
       raise RuntimeError("the simulated iSWAP has no firmware version declared")
     return version
-
-  async def rotation_drive_request_z_position(self) -> float:
-    return self._z
-
-  # A simulated device is switched on with its iSWAP parked: the Y carriage and the rotation
-  # drive at their parking stops, the wrist straight, the gripper open. Answered from the same
-  # stored tables the reads would have converted, so the conversions still run.
-  async def rotation_drive_request_y_position(self) -> float:
-    return self._y
-
-  async def rotation_drive_move_to_y_position(self, y: float, *args: Any, **kwargs: Any):
-    resp = await super().rotation_drive_move_to_y_position(y, *args, **kwargs)
-    self._y = y
-    return resp
-
-  async def _unchecked_fw_rotation_drive_rotate_increments(
-    self, rotation_increments: int, wrist_increments: int, *args: Any, **kwargs: Any
-  ):
-    """Turn where the drives are held to be, as the real command turns the drives."""
-    resp = await super()._unchecked_fw_rotation_drive_rotate_increments(
-      rotation_increments, wrist_increments, *args, **kwargs
-    )
-    self._rotation = rotation_increments
-    return resp
-
-  async def rotation_drive_move_to_z_position(self, z: float, *args: Any, **kwargs: Any):
-    resp = await super().rotation_drive_move_to_z_position(z, *args, **kwargs)
-    self._z = z
-    return resp
 
   @property
   def _declared(self) -> iSWAPConfiguration:
