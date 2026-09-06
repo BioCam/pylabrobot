@@ -58,6 +58,20 @@ Y_SLOTS = (
   "extra_5",
 )
 
+# And for the rotation drive's Z, whose table is all position too: ten stops, no arm length.
+Z_SLOTS = (
+  "home",
+  "parking",
+  "extra_1",
+  "extra_2",
+  "extra_3",
+  "extra_4",
+  "extra_5",
+  "extra_6",
+  "extra_7",
+  "extra_8",
+)
+
 # What the arm the device facts below were recorded from reports for its firmware version. An arm
 # reporting something else is a generation those values were not taken from.
 RECORDED_FIRMWARE_PREFIX = "4."
@@ -151,6 +165,14 @@ class iSWAPConfiguration:
 
   The whole stored table rather than the one stop the driver bounds moves by, so what this holds is
   what the drive reports: a recording of it answers every Y read, not just the parking one."""
+
+  rotation_drive_predefined_z_positions_increments: Optional[Dict[str, int]] = None
+  """Each Z stop the rotation drive is calibrated against, in increments of the finger plane,
+  keyed as `Z_SLOTS` names them.
+
+  Filled by `rotation_drive_request_predefined_z_positions` rather than by discovery, which does
+  not read this table: no device has been read for it yet, so no recording carries one and a
+  simulated arm has to be declared with it to answer."""
 
   # -- rotation drive --
   rotation_drive_predefined_increments: Optional[Dict[str, int]] = None
@@ -427,6 +449,31 @@ class iSWAP:
       The length in mm.
     """
     return round((await self._request_slots("pt"))[9] / 10, 1)
+
+  async def rotation_drive_request_predefined_z_positions(self) -> Dict[str, float]:
+    """Read the Z stops the rotation drive is calibrated against, in mm on the deck.
+
+    The stored table rather than where the drive is now. Its ten slots are all positions, unlike
+    the rotation and wrist tables whose tenth slot carries an arm length. The device holds them as
+    the finger plane, so each is offset to the drive's bottom the way
+    `rotation_drive_request_z_position` reports it, and the two are then in the same terms.
+
+    Beyond home and parking the slots are extra ones, addressable through `R0 ZP` but with no
+    documented meaning.
+
+    Records what came back on the configuration, as the other stored tables are recorded, so a
+    device read for it once carries the table from then on.
+
+    Returns:
+      Each stop in mm, keyed as `Z_SLOTS` names them.
+    """
+    c = self.configuration
+    slots = await self._request_slots("pz")
+    c.rotation_drive_predefined_z_positions_increments = dict(zip(Z_SLOTS, slots))
+    return {
+      name: round(c.z_increments_to_mm(increments) + c.rotation_drive_z_offset_above_finger, 1)
+      for name, increments in zip(Z_SLOTS, slots)
+    }
 
   async def _request_slots(self, table: str) -> List[int]:
     """One of the iSWAP's stored tables, as the ten signed slots the device returns."""

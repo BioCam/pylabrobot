@@ -306,6 +306,18 @@
           "extra_3": 9855,
           "extra_4": 9855,
           "extra_5": 9855
+        },
+        "rotation_drive_predefined_z_positions_increments": {
+          "home": 25600,
+          "parking": 25400,
+          "extra_1": 24600,
+          "extra_2": 24600,
+          "extra_3": 24600,
+          "extra_4": 24600,
+          "extra_5": 24600,
+          "extra_6": 24600,
+          "extra_7": 24600,
+          "extra_8": 24600
         }
       }
     }

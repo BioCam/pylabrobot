@@ -40,6 +40,7 @@ from pylabrobot.hamilton.star.driver.features.iswap import (
   ROTATION_DRIVE_SLOTS,
   WRIST_DRIVE_SLOTS,
   Y_SLOTS,
+  Z_SLOTS,
   iSWAP,
   iSWAPConfiguration,
 )
@@ -126,15 +127,7 @@ SIMULATED_COVER_INPUTS = (True, False, False)
 # What its scanner reads. A simulated deck holds no carriers, so nothing.
 SIMULATED_BARCODE: Optional[str] = None
 
-# Where the iSWAP's rotation drive has come to rest when a simulated device is switched on, in
-# mm: at the top of its travel, where an initialized device leaves it.
-SIMULATED_ISWAP_Z = 299.0
-
 # The iSWAP's stored position tables, and where its rotation drive sits relative to the carriage.
-
-# Where the iSWAP's rotation drive rests along Y when a simulated device is switched on, in mm:
-# at its parking stop.
-SIMULATED_ISWAP_Y = 627.4
 
 # How far the simulated gripper's jaws stand open, in increments: fully.
 SIMULATED_ISWAP_GRIPPER_WIDTH = 24_120
@@ -632,15 +625,25 @@ class SimulatedISWAP(_Simulated, iSWAP):
 
       if command == "RY":
         point = self.modelled_reference_point()
-        y = SIMULATED_ISWAP_Y if point is None else point.y
-        increments = c.y_mm_to_increments(y)
+        if point is None:
+          # Nothing models it yet, so where an initialized device leaves it: its parking stop, out
+          # of the stored table rather than a position written down here.
+          stops = (await self._request_slots("py"))[: len(Y_SLOTS)]
+          parked = dict(zip(Y_SLOTS, stops))["parking"]
+          return {"ry": [parked, parked]}, "the rotation drive's parking stop"
+        increments = c.y_mm_to_increments(point.y)
         # Two counters come back, the firmware's and the hardware's; the read takes the hardware.
         return {"ry": [increments, increments]}, "where the model has the rotation drive along Y"
 
       if command == "RZ":
         point = self.modelled_reference_point()
-        z = SIMULATED_ISWAP_Z if point is None else point.z
-        increments = c.z_mm_to_increments(z - c.rotation_drive_z_offset_above_finger)
+        if point is None:
+          # Nothing models it yet, so where an initialized device leaves it: its parking stop, out
+          # of the stored table rather than a height written down here.
+          stops = (await self._request_slots("pz"))[: len(Z_SLOTS)]
+          parked = dict(zip(Z_SLOTS, stops))["parking"]
+          return {"rz": [parked, parked]}, "the rotation drive's parking stop"
+        increments = c.z_mm_to_increments(point.z - c.rotation_drive_z_offset_above_finger)
         return {"rz": [increments, increments]}, "where the model has the rotation drive along Z"
       if command == "RT":
         stops = (await self._request_slots("pt"))[: len(WRIST_DRIVE_SLOTS)]
@@ -681,6 +684,9 @@ class SimulatedISWAP(_Simulated, iSWAP):
     if table == "py":
       stops, length = declared.rotation_drive_predefined_y_positions_increments, None
       names: Tuple[str, ...] = Y_SLOTS
+    elif table == "pz":
+      stops, length = declared.rotation_drive_predefined_z_positions_increments, None
+      names = Z_SLOTS
     elif table == "pw":
       stops, length = declared.rotation_drive_predefined_increments, declared.link_1_length
       names = ROTATION_DRIVE_SLOTS

@@ -69,6 +69,13 @@ grows a second head is one more entry, with no change to the format.
 - **Documented defaults.** Values the driver holds because a drive documents them, not because a
   device reported them, stay in the code. The 384-head is the standing example: no 384-head has
   been read off any device, so its offsets and drive defaults live in `simulator.py`.
+
+  One field breaks this rule knowingly. `rotation_drive_predefined_z_positions_increments` carries
+  the iSWAP's documented defaults rather than a reading, because a simulated arm has to answer
+  where it rests and nothing else here says. It is in the file rather than the code so that the
+  first device read for it overwrites a value in the same place, instead of leaving a constant to
+  be found and deleted. Until then it is a documented default sitting where a reading belongs, and
+  the arm it describes may hold something else.
 - **Where the device is.** Rest positions, probed Z heights, which track the autoload sits on. That
   is state, not configuration, and it changes every run.
 
@@ -107,6 +114,11 @@ star_legacy_2021_8ch_head96_autoload1D.json
 tokens, and whether that token is populated on every build is unverified. A device reading `legacy`
 may be one that does not report the token rather than one that is legacy. Confirm against the
 device before trusting the field on an FM.
+
+**One stored table is a documented default rather than a reading.** Every other table under
+`iswap` came off a device; `rotation_drive_predefined_z_positions_increments` did not, for the
+reason given above. `rotation_drive_request_predefined_z_positions` reads it, and records what
+came back, so one call on a device makes it real.
 
 **Two more identity facts are still unread.** A recording says which device answered and what it
 was running, through `device.serial_number` and `device.firmware_version`. Two things the older
