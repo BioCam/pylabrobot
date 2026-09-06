@@ -4,6 +4,8 @@ from typing import Optional
 
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
+from pylabrobot.resources.rotation import Rotation
+from pylabrobot.utils.linalg import matrix_vector_multiply_3x3
 
 
 class iSWAPChannel(Resource):
@@ -130,6 +132,84 @@ class iSWAPLinkage(Resource):
     )
     self.reference_point = reference_point
 
+  # -- turning on the joint rather than on the corner ---------------------------------------
+
+  def _turned(self, point: Coordinate) -> Coordinate:
+    """A point of this link, in the frame the link is placed in, at the angle it is turned to."""
+    matrix = self.rotation.get_rotation_matrix()
+    return Coordinate(*matrix_vector_multiply_3x3(matrix, point.vector()))
+
+  @property
+  def own_distal_joint(self) -> Coordinate:
+    """Where the far joint sits in this link's own frame, before the link is turned.
+
+    Where the next link is placed, since a child is placed in its parent's own frame and the
+    parent's rotation is applied on top of that.
+
+    Returns:
+      The far joint, from this link's left front bottom corner.
+    """
+    # The link's own length, not `get_absolute_size_x`, which is the rotated footprint: joint to
+    # joint is fixed, and a turned link would otherwise appear to shorten.
+    return self.reference_point + Coordinate(self.get_size_x(), 0.0, 0.0)
+
+  @property
+  def distal_joint(self) -> Coordinate:
+    """Where the far end of the link is, in the frame the link is placed in.
+
+    The joint the next link turns on, carried around by this one. Follows from where this link is
+    and which way it points, so it moves as the link turns.
+
+    Returns:
+      The far joint's position, relative to this link's parent.
+    """
+    if self.location is None:
+      raise RuntimeError(f"{self.name} has not been placed, so its far joint is nowhere")
+    return self.location + self._turned(self.own_distal_joint)
+
+  def rotate(
+    self,
+    x: float = 0,
+    y: float = 0,
+    z: float = 0,
+    reference: Optional[Coordinate] = None,
+  ) -> None:
+    """Turn the link further, on its joint unless another point is named.
+
+    Args:
+      x: degrees to add about X.
+      y: degrees to add about Y.
+      z: degrees to add about Z.
+      reference: the point to turn about. Its own joint when None: a link swings on the joint it
+        is mounted on, which is what makes it a link rather than a box.
+    """
+    super().rotate(
+      x=x, y=y, z=z, reference=self.reference_point if reference is None else reference
+    )
+
+  def turn_to(self, angle: float, about: Optional[Coordinate] = None) -> None:
+    """Point the link along `angle`, turning on the joint at its proximal end.
+
+    Absolute, unlike `rotate`, which turns by an amount: where the link ends up follows from the
+    angle alone rather than from every angle it has held, so a link driven to the same angle twice
+    lands in the same place both times.
+
+    Args:
+      angle: the deck angle to point along, in degrees.
+      about: where the proximal joint sits, in the frame this link is placed in. Left where it
+        already is when None.
+
+    Raises:
+      RuntimeError: If the link has not been placed and no joint is given, so there is nothing for
+        it to turn on.
+    """
+    if about is None:
+      if self.location is None:
+        raise RuntimeError(f"{self.name} is not placed, so there is nothing for it to turn on")
+      about = self.location + self._turned(self.reference_point)
+    self.rotation = Rotation(z=angle)
+    self.location = about - self._turned(self.reference_point)
+
   def serialize(self) -> dict:
     return {**super().serialize(), "reference_point": self.reference_point.serialize()}
 
@@ -168,4 +248,35 @@ def iswap_linkage_1(
     size_z=height,
     reference_point=Coordinate(0.0, width / 2, 0.0),
     model="hamilton_star_iswap_linkage_1",
+  )
+
+
+def iswap_linkage_2(
+  name: str,
+  length: float,
+  width: float = 30.5,
+  height: float = 15.0,
+) -> iSWAPLinkage:
+  """The second link: the wrist joint to the gripper finger centre.
+
+  Turns on the wrist, which link 1 carries, so it is a child of link 1 and its angle is measured
+  from link 1 rather than from the deck. Unrotated it continues along link 1.
+
+  Args:
+    name: what to call this one.
+    length: joint to finger centre, in mm. An arm reports its own through
+      `iSWAPConfiguration.link_2_length`.
+    width: how wide the link is, in mm.
+    height: how deep the link is, in mm.
+
+  Returns:
+    The link.
+  """
+  return iSWAPLinkage(
+    name=name,
+    size_x=length,
+    size_y=width,
+    size_z=height,
+    reference_point=Coordinate(0.0, width / 2, 0.0),
+    model="hamilton_star_iswap_linkage_2",
   )

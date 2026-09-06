@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Union, cast
 
-from pylabrobot.hamilton.star.resource_model import iSWAPChannel
+from pylabrobot.hamilton.star.resource_model import iSWAPChannel, iSWAPLinkage
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.rotation import Rotation
 
@@ -38,10 +38,10 @@ WRIST_DRIVE_SLOTS = (
   "straight",
   "left",
   "reverse",
+  "parking",
   "extra_1",
   "extra_2",
   "extra_3",
-  "extra_4",
 )
 
 # And for the Y carriage, whose table is all position and has no arm length.
@@ -380,6 +380,8 @@ class iSWAP:
     self._driver = driver
     self.configuration = configuration or iSWAPConfiguration()
     self.resource: Optional[iSWAPChannel] = None
+    self.link_1: Optional[iSWAPLinkage] = None
+    self.link_2: Optional[iSWAPLinkage] = None
 
   # -- session / discovery ---------------------------------------------------
 
@@ -531,7 +533,10 @@ class iSWAP:
     if self.resource is None or self._driver.deck is None:
       return
     self.resource.rotation_drive_angle = angle
-    self.resource.rotation = Rotation(z=angle - 90.0)
+    if self.link_1 is not None:
+      # The carriage does not turn; the arm mounted on it does. Link 1 leaves the drive at the
+      # drive's own angle less ninety degrees, which is the deck angle it lies along.
+      self.link_1.turn_to(angle - 90.0, about=self.resource.reference_point)
 
   def modelled_reference_point(self) -> Optional[Coordinate]:
     """Where the model has the rotation drive's reference point, in mm on the deck.
@@ -564,6 +569,25 @@ class iSWAP:
     if self.resource is None or self._driver.deck is None:
       return None
     return self.resource.rotation_drive_angle
+
+  def update_wrist(self, angle: float) -> None:
+    """Record which way the wrist is turned on the resource that models it.
+
+    Link 2 turns on the wrist, which link 1 carries, so its angle is measured from link 1 rather
+    than from the deck: a resource's rotation adds to its parent's, and link 1 is its parent. What
+    the wrist reports when it is straight is where link 2 continues link 1, so the angle here is
+    however far the wrist has turned from that.
+
+    Does nothing until the links are modelled.
+
+    Args:
+      angle: the wrist drive's angle, in degrees, as it reports it.
+    """
+    c = self.configuration
+    if self.link_1 is None or self.link_2 is None or c.wrist_drive_predefined_increments is None:
+      return
+    straight = c.wrist_increments_to_deg(c.wrist_drive_predefined_increments["straight"])
+    self.link_2.turn_to(angle - straight, about=self.link_1.own_distal_joint)
 
   def update_location_by_reference_point(
     self, y: Optional[float] = None, z: Optional[float] = None
@@ -1109,7 +1133,9 @@ class iSWAP:
       The angle in degrees.
     """
     resp = await self._driver.send_command(module="R0", command="RT", fmt="rt######")
-    return self.configuration.wrist_increments_to_deg(cast(int, resp["rt"]))
+    angle = self.configuration.wrist_increments_to_deg(cast(int, resp["rt"]))
+    self.update_wrist(angle)
+    return angle
 
   async def request_gripper_width(self) -> float:
     """Read how far the gripper jaws are open.

@@ -31,14 +31,17 @@ from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.cover import FrontCover
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
 from pylabrobot.hamilton.star.driver.features.head384 import Head384
-from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
+from pylabrobot.hamilton.star.driver.features.iswap import iSWAP, iSWAPConfiguration
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.hamilton.star.driver.lock import _FirmwareLock
 from pylabrobot.hamilton.star.resource_model import (
   NChannelPipette,
   iswap_channel,
+  iswap_linkage_1,
+  iswap_linkage_2,
   iSWAPChannel,
+  iSWAPLinkage,
 )
 from pylabrobot.hamilton.star.resource_model import head96 as head96_pipette
 from pylabrobot.hamilton.star.resource_model import head384 as head384_pipette
@@ -1563,8 +1566,40 @@ class STARDriver:
           ),
         )
       iswap.resource = resource
+      iswap.link_1, iswap.link_2 = self._create_iswap_linkages(resource, c)
       iswap.update_location_by_reference_point(y=y, z=z)
       iswap.update_rotation(angle)
+      iswap.update_wrist(await iswap.request_wrist_drive_angle())
+
+  @staticmethod
+  def _create_iswap_linkages(
+    resource: iSWAPChannel, c: iSWAPConfiguration
+  ) -> Tuple[Optional[iSWAPLinkage], Optional[iSWAPLinkage]]:
+    """Hang the arm's two links off the carriage, each as long as the arm says it is.
+
+    Link 1 turns on the rotation drive and link 2 on the wrist that link 1 carries, so link 2 is a
+    child of link 1 and its angle is measured from it. Where each points is written by
+    `update_rotation` and `update_wrist`. Links already there are reused.
+
+    Args:
+      resource: the carriage they hang from.
+      c: the arm's configuration, which carries both lengths.
+
+    Returns:
+      The two links, or `(None, None)` if the arm did not report their lengths.
+    """
+    if c.link_1_length is None or c.link_2_length is None:
+      logger.warning("the iSWAP reported no link lengths, so its arm is not modelled")
+      return None, None
+    link_1 = next((child for child in resource.children if isinstance(child, iSWAPLinkage)), None)
+    if link_1 is None:
+      link_1 = iswap_linkage_1(name="iswap_linkage_1", length=c.link_1_length)
+      resource.assign_child_resource(link_1, location=Coordinate.zero())
+    link_2 = next((child for child in link_1.children if isinstance(child, iSWAPLinkage)), None)
+    if link_2 is None:
+      link_2 = iswap_linkage_2(name="iswap_linkage_2", length=c.link_2_length)
+      link_1.assign_child_resource(link_2, location=Coordinate.zero())
+    return link_1, link_2
 
   async def _create_autoload_resource(self) -> None:
     """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.

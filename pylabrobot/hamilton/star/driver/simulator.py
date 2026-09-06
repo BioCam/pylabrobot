@@ -615,8 +615,8 @@ class SimulatedISWAP(_Simulated, iSWAP):
         return {"rz": [increments, increments]}, "where the model has the rotation drive along Z"
       if command == "RT":
         stops = (await self._request_slots("pt"))[: len(WRIST_DRIVE_SLOTS)]
-        straight = dict(zip(WRIST_DRIVE_SLOTS, stops))["straight"]
-        return {"rt": straight}, "the wrist drive's straight stop"
+        parked = dict(zip(WRIST_DRIVE_SLOTS, stops))["parking"]
+        return {"rt": parked}, "the wrist drive's parking stop"
       if command == "RG":
         # The drive answers twice; the read takes the second.
         width = SIMULATED_ISWAP_GRIPPER_WIDTH

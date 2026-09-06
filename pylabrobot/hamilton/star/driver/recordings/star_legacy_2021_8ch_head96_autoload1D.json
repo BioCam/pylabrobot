@@ -328,10 +328,10 @@
           "straight": -8860,
           "left": 9044,
           "reverse": 26858,
+          "parking": -26577,
           "extra_1": -26577,
           "extra_2": -26577,
-          "extra_3": -26577,
-          "extra_4": -26577
+          "extra_3": -26577
         },
         "link_2_length": 137.7,
         "y_increment_range": [
