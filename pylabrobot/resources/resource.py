@@ -877,12 +877,51 @@ class Resource(SerializableMixin):
     if changed and self.parent is not None:
       self._state_updated()
 
-  def rotate(self, x: float = 0, y: float = 0, z: float = 0):
-    """Rotate counter-clockwise by the given number of degrees."""
+  def rotate(
+    self,
+    x: float = 0,
+    y: float = 0,
+    z: float = 0,
+    reference: Optional[Coordinate] = None,
+  ):
+    """Rotate counter-clockwise by the given number of degrees.
 
+    A resource turns about its own left front bottom corner. `reference` names a different point
+    to turn about - a hinge, a joint, an axis the part really pivots on - and the resource is
+    moved as it turns by however far the turn carried that point, which leaves the point where it
+    was and the resource swinging on it. Left about the corner when None, which is what every
+    caller that does not ask for one gets.
+
+    Args:
+      x: degrees to turn about X.
+      y: degrees to turn about Y.
+      z: degrees to turn about Z.
+      reference: the point to turn about, from this resource's left front bottom corner. Its own
+        corner when None.
+    """
+    before = self.get_absolute_rotation().get_rotation_matrix()
     self.rotation.x = (self.rotation.x + x) % 360
     self.rotation.y = (self.rotation.y + y) % 360
     self.rotation.z = (self.rotation.z + z) % 360
+
+    if reference is not None and self.location is not None:
+      after = self.get_absolute_rotation().get_rotation_matrix()
+      was = matrix_vector_multiply_3x3(before, reference.vector())
+      now = matrix_vector_multiply_3x3(after, reference.vector())
+      carried = Coordinate(was[0] - now[0], was[1] - now[1], was[2] - now[2])
+      # `location` is measured in the parent's frame while `reference` is in this resource's, so
+      # what the turn carried has to be taken back through the parent's own rotation. A rotation
+      # matrix inverts by transposing.
+      parent = self.parent
+      if parent is not None:
+        turned = parent.get_absolute_rotation().get_rotation_matrix()
+        carried = Coordinate(
+          *matrix_vector_multiply_3x3(
+            [[turned[j][i] for j in range(3)] for i in range(3)], carried.vector()
+          )
+        )
+      self.location = self.location + carried
+
     # Rotation is part of the resource's state; notify subscribers (e.g. the
     # Visualizer) so they can re-render.
     self._state_updated()
@@ -892,11 +931,26 @@ class Resource(SerializableMixin):
     resource_copy.load_all_state(self.serialize_all_state())
     return resource_copy
 
-  def rotated(self, x: float = 0, y: float = 0, z: float = 0) -> Self:
-    """Return a copy of this resource rotated by the given number of degrees."""
+  def rotated(
+    self,
+    x: float = 0,
+    y: float = 0,
+    z: float = 0,
+    reference: Optional[Coordinate] = None,
+  ) -> Self:
+    """Return a copy of this resource rotated by the given number of degrees.
 
+    Args:
+      x: degrees to turn about X.
+      y: degrees to turn about Y.
+      z: degrees to turn about Z.
+      reference: the point to turn about, as `rotate` takes it.
+
+    Returns:
+      The rotated copy.
+    """
     new_resource = self.copy()
-    new_resource.rotate(x=x, y=y, z=z)
+    new_resource.rotate(x=x, y=y, z=z, reference=reference)
     return new_resource
 
   def at(self, location: Coordinate) -> Self:
