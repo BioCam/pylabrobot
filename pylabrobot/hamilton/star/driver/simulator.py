@@ -11,14 +11,13 @@ simulated makes itself known: override the method that sends it, on the feature 
 
 import datetime
 import logging
-import os
 from typing import Any, Dict, List, Literal, Optional, Tuple, cast
 
 from pylabrobot.hamilton.protocol.text.framing import (
   assemble_channel_command,
   parse_firmware_version_date,
 )
-from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration, read_configuration
+from pylabrobot.hamilton.star.driver.configuration import DeviceConfiguration
 from pylabrobot.hamilton.star.driver.features.autoload import (
   AUTOLOAD_TYPES,
   Autoload,
@@ -94,22 +93,6 @@ SIMULATED_BARCODE: Optional[str] = None
 
 # How far the simulated gripper's jaws stand open, in increments: fully.
 SIMULATED_ISWAP_GRIPPER_WIDTH = 24_120
-
-
-# Where the recordings this package ships live. `STARDriver.save_configuration` writes one, so
-# recording another device is saving a file rather than editing code.
-_RECORDINGS = os.path.join(os.path.dirname(__file__), "recordings")
-
-# What each frame is taken to be when a simulated device is asked for one and nothing was declared.
-# Only ever handed to a simulated device: a physical one is whatever it answers, and a declaration
-# is cross-checked against it rather than standing in for it.
-RECORDING_STAR = os.path.join(_RECORDINGS, "star_legacy_2021_8ch_head96_autoload1D.json")
-RECORDING_STARLET = os.path.join(_RECORDINGS, "starlet_legacy_2021_8ch_head96_autoload1D.json")
-RECORDING_STARPLUS = os.path.join(_RECORDINGS, "starplus_legacy_2021_8ch_head96.json")
-RECORDING_STAR_HEAD384 = os.path.join(_RECORDINGS, "star_legacy_2021_8ch_head384_autoload1D.json")
-RECORDING_STARLET_HEAD384 = os.path.join(
-  _RECORDINGS, "starlet_legacy_2021_8ch_head384_autoload1D.json"
-)
 
 
 class _UnusedTransport(IOBase):
@@ -959,10 +942,7 @@ class STARSimulationDriver(STARDriver):
       self.declared.get("autoload") or AutoloadConfiguration()
     )
     self.simulated_head96: Head96Configuration = carried.get("head96") or Head96Configuration()
-    self.simulated_head384: Head384Configuration = carried.get("head384") or cast(
-      Head384Configuration,
-      read_configuration(RECORDING_STAR_HEAD384)["arms"]["left"]["head384"],
-    )
+    self.simulated_head384: Head384Configuration = carried.get("head384") or Head384Configuration()
     self.simulated_pipettes: Optional[PipettesConfiguration] = carried.get("pipettes")
     self.simulated_iswap: iSWAPConfiguration = carried.get("iswap") or iSWAPConfiguration()
 

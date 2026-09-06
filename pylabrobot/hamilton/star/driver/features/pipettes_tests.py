@@ -2,8 +2,9 @@ import unittest
 from typing import Any, List, Optional, Tuple
 
 from pylabrobot.hamilton.protocol.text.framing import assemble_command
+from pylabrobot.hamilton.star.device import RECORDING_STAR
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
-from pylabrobot.hamilton.star.driver.simulator import RECORDING_STAR, STARSimulationDriver
+from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
 from pylabrobot.resources.hamilton import STARDeck
 
 

@@ -8,6 +8,7 @@ from typing import cast
 from pylabrobot.hamilton.star.conftest import BARE_X_ARM
 from pylabrobot.hamilton.star.device import (
   EXTENSION_HOUSING_SIZE_X,
+  RECORDING_STAR,
   STAR,
   STAR_DECK_LOCATION,
   STAR_SIZE_X,
@@ -19,10 +20,7 @@ from pylabrobot.hamilton.star.driver.configuration import (
   read_configuration,
   to_jsonable,
 )
-from pylabrobot.hamilton.star.driver.simulator import (
-  RECORDING_STAR,
-  STARSimulationDriver,
-)
+from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import STARDeck
 from pylabrobot.resources.hamilton.hamilton_decks import STAR_NUM_TRACKS, STARLET_NUM_TRACKS

@@ -5,10 +5,11 @@ import tempfile
 import unittest
 from typing import cast
 
+from pylabrobot.hamilton.star.device import RECORDING_STAR
 from pylabrobot.hamilton.star.driver.configuration import read_configuration, to_jsonable
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm
-from pylabrobot.hamilton.star.driver.simulator import RECORDING_STAR, STARSimulationDriver
+from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
 from pylabrobot.resources.hamilton import STARDeck
 
 # The 96-head on the device this package ships a recording of.

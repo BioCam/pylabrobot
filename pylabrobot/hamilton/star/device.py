@@ -1,6 +1,7 @@
 """The STAR: the device, and what it knows about its own deck."""
 
 import logging
+import os
 from typing import Optional
 
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload
@@ -11,12 +12,7 @@ from pylabrobot.hamilton.star.driver.features.iswap import iSWAP
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm
 from pylabrobot.hamilton.star.driver.master import STARDriver
-from pylabrobot.hamilton.star.driver.simulator import (
-  RECORDING_STAR,
-  RECORDING_STARLET,
-  RECORDING_STARPLUS,
-  STARSimulationDriver,
-)
+from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import (
   HamiltonSTARDeck,
@@ -25,6 +21,23 @@ from pylabrobot.resources.hamilton import (
   STARPlusDeck,
 )
 from pylabrobot.resources.resource import Resource
+
+# Where the recordings this package ships live, and which one stands for each frame. Only ever
+# handed to a simulated device: a physical one is whatever it answers, and a declaration given for
+# it is cross-checked against it rather than standing in for it. Recording another device is
+# saving a file rather than editing code.
+_RECORDINGS = os.path.join(os.path.dirname(__file__), "driver", "recordings")
+
+RECORDING_STAR = os.path.join(_RECORDINGS, "star_legacy_2021_8ch_head96_autoload1D.json")
+RECORDING_STARLET = os.path.join(_RECORDINGS, "starlet_legacy_2021_8ch_head96_autoload1D.json")
+RECORDING_STARPLUS = os.path.join(_RECORDINGS, "starplus_legacy_2021_8ch_head96.json")
+
+# The same two frames fitted with a 384-head instead. No frame function defaults to these: a
+# device that has one is declared with it.
+RECORDING_STAR_HEAD384 = os.path.join(_RECORDINGS, "star_legacy_2021_8ch_head384_autoload1D.json")
+RECORDING_STARLET_HEAD384 = os.path.join(
+  _RECORDINGS, "starlet_legacy_2021_8ch_head384_autoload1D.json"
+)
 
 logger = logging.getLogger(__name__)
 
@@ -359,14 +372,18 @@ def STAR(
   left_side_panel_installed: bool = False,
 ) -> STARDevice:
   """A full-size STAR, on a full-size STAR deck."""
-  # Only a simulated device is handed this frame's recording. A physical one is whatever it
-  # answers, and a declaration given for it is cross-checked rather than stood in for.
+  if deck is None:
+    deck = STARDeck()
   if simulation and driver is None and declared_configuration_json is None:
     declared_configuration_json = RECORDING_STAR
+  if driver is None:
+    driver = (
+      STARSimulationDriver(deck=deck, declared_configuration_json=declared_configuration_json)
+      if simulation
+      else STARDriver(deck=deck, declared_configuration_json=declared_configuration_json)
+    )
   return STARDevice(
-    deck=deck if deck is not None else STARDeck(),
-    simulation=simulation,
-    declared_configuration_json=declared_configuration_json,
+    deck=deck,
     driver=driver,
     name=name,
     size_x=size_x,
@@ -392,14 +409,18 @@ def STARLet(
   left_side_panel_installed: bool = False,
 ) -> STARDevice:
   """A STARlet, on a STARlet deck."""
-  # Only a simulated device is handed this frame's recording. A physical one is whatever it
-  # answers, and a declaration given for it is cross-checked rather than stood in for.
+  if deck is None:
+    deck = STARLetDeck()
   if simulation and driver is None and declared_configuration_json is None:
     declared_configuration_json = RECORDING_STARLET
+  if driver is None:
+    driver = (
+      STARSimulationDriver(deck=deck, declared_configuration_json=declared_configuration_json)
+      if simulation
+      else STARDriver(deck=deck, declared_configuration_json=declared_configuration_json)
+    )
   return STARDevice(
-    deck=deck if deck is not None else STARLetDeck(),
-    simulation=simulation,
-    declared_configuration_json=declared_configuration_json,
+    deck=deck,
     driver=driver,
     name=name,
     size_x=size_x,
@@ -433,14 +454,18 @@ def STARPlus(
   Returns:
     The device, on a STARplus deck.
   """
-  # Only a simulated device is handed this frame's recording. A physical one is whatever it
-  # answers, and a declaration given for it is cross-checked rather than stood in for.
+  if deck is None:
+    deck = STARPlusDeck()
   if simulation and driver is None and declared_configuration_json is None:
     declared_configuration_json = RECORDING_STARPLUS
+  if driver is None:
+    driver = (
+      STARSimulationDriver(deck=deck, declared_configuration_json=declared_configuration_json)
+      if simulation
+      else STARDriver(deck=deck, declared_configuration_json=declared_configuration_json)
+    )
   return STARDevice(
-    deck=deck if deck is not None else STARPlusDeck(),
-    simulation=simulation,
-    declared_configuration_json=declared_configuration_json,
+    deck=deck,
     driver=driver,
     name=name,
     size_x=size_x,

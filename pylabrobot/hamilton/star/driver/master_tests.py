@@ -9,6 +9,7 @@ from typing import List, cast
 
 import pylabrobot.hamilton.star.driver.simulator as simulator
 from pylabrobot.hamilton.star.conftest import BARE_X_ARM
+from pylabrobot.hamilton.star.device import RECORDING_STAR, RECORDING_STAR_HEAD384
 from pylabrobot.hamilton.star.driver.configuration import (
   DeviceConfiguration,
   read_configuration,
@@ -16,10 +17,7 @@ from pylabrobot.hamilton.star.driver.configuration import (
 )
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload
 from pylabrobot.hamilton.star.driver.features.head96 import Head96
-from pylabrobot.hamilton.star.driver.simulator import (
-  RECORDING_STAR,
-  STARSimulationDriver,
-)
+from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import STARDeck
 
@@ -80,6 +78,12 @@ def declaring_a_device(
   device["kb_iswap_installed"] = arm["iswap_installed"] = iswap
   device["autoload_installed"] = autoload
 
+  if head384:
+    # A 384-head is declared the way every other feature here is, out of the recording of a device
+    # fitted with one. Nothing stands in for a feature a declaration claims but does not describe.
+    carried["head384"] = json.loads(pathlib.Path(RECORDING_STAR_HEAD384).read_text())["arms"][
+      "left"
+    ]["head384"]
   for name, fitted in (("head96", head96), ("iswap", iswap), ("pipettes", channels > 0)):
     if not fitted:
       carried.pop(name, None)
