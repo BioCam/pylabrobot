@@ -95,6 +95,13 @@ def _nothing_was_gripped(error: STARFirmwareError) -> bool:
 # raised off the force sensor rather than off a position.
 NOTHING_GRIPPED = 94
 
+# How wide a window the drive will accept around the width a close is aimed at, in its own steps.
+GRIPPER_STOP_BAND_RANGE = (80, 1_800)
+
+# How far the gripper drive's two counters may sit apart before the gap is a drive that has lost
+# steps rather than the ordinary lag between commanding a move and finishing it, in increments.
+GRIPPER_COUNTER_DRIFT = 50
+
 # Which way the gripper drive counts when it closes: its increments fall as the jaws come
 # together, so a probe that closes travels the drive's negative direction.
 GRIPPER_CLOSING_DIRECTION = 1
@@ -1269,6 +1276,49 @@ class iSWAP:
     self.gripped = gripped
     return gripped
 
+  async def request_gripper_counters(self) -> Tuple[int, int]:
+    """Read both counters the gripper drive keeps, in its own increments.
+
+    The drive answers what the firmware believes it commanded and what the encoder reads back.
+    They part when the drive has lost steps - jammed against something, or driven into its own
+    stop - and the gap is the only sign of it: a single width read cannot show it, and a drive
+    whose counters have parted will refuse to initialize until it has been freed.
+
+    Returns:
+      The firmware's counter and the hardware's, in that order.
+    """
+    resp = await self._driver.send_command(module="R0", command="RG", fmt="rg##### (n)")
+    firmware, hardware = cast(List[int], resp["rg"])
+    if abs(firmware - hardware) > GRIPPER_COUNTER_DRIFT:
+      logger.warning(
+        "the gripper drive's counters are %d increments apart (firmware %d, hardware %d), which is "
+        "a drive that has lost steps rather than one that has moved",
+        abs(firmware - hardware),
+        firmware,
+        hardware,
+      )
+    return firmware, hardware
+
+  async def request_gripper_force(self) -> Dict[str, int]:
+    """Read what the gripper's force sensor and motor current did during the last movement.
+
+    All of it is the arm's own raw measurement, and the last entry is the only one in engineering
+    units - the arm converts it with a divisor it keeps in its own memory.
+
+    Returns:
+      The peak drive current and peak force during the last movement, the sensor's idle offset,
+      its last reading, all in the sensor's own counts, and that last reading in millinewtons.
+    """
+    resp = await self._driver.send_command(module="R0", command="RH", fmt="rh#### (n)")
+    current, peak, idle, last, millinewtons = cast(List[int], resp["rh"])
+    return {
+      "peak_current": current,
+      "peak_force": peak,
+      "idle_offset": idle,
+      "last_force": last,
+      "last_force_millinewtons": millinewtons,
+    }
+
   async def request_gripper_width(self) -> float:
     """Read how far the gripper jaws are open.
 
@@ -1430,90 +1480,264 @@ class iSWAP:
       gt=f"{width_tolerance_increments:02}",
     )
 
-  async def _unchecked_fw_gripper_probe_closing(
+  async def initialize_gripper_drive(self, current_limit: int = 15):
+    """Bring the gripper drive back to its own reference. This moves the jaws.
+
+    The arm's own initialize brings every drive up and swings the whole arm to do it. This is the
+    one drive, which is what a gripper that has lost its reference needs - and what it refuses
+    while it is jammed, since it cannot travel to find its sensor edge. `_unchecked_fw_gripper_move_relative`
+    is what frees it first.
+
+    Args:
+      current_limit: the motor current limit, 0 to 15.
+
+    Raises:
+      ValueError: If the current limit is outside what the drive accepts.
+    """
+    if not 0 <= current_limit <= 15:
+      raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
+    return await self._driver.send_command(module="R0", command="GI", gw=f"{current_limit:02}")
+
+  async def _unchecked_fw_gripper_move_relative(
     self,
-    stop_trigger: int = 200,
-    speed_increments: int = 9_000,
+    distance_increments: int,
+    opening: bool,
+    speed_increments: int = 2_000,
     acceleration_increments: int = 75,
+    current_limit: int = 15,
+  ):
+    """Move the jaws a distance, unsupervised, without checking or recording.
+
+    The one movement the drive accepts while it is uninitialized, and the only way out of a jam:
+    everything else is refused until the drive has a reference, and the initialize cannot give it
+    one while it cannot move. Unsupervised means the drive reports nothing about whether it
+    arrived, so the counters have to be read after each attempt - and a nudge that changes nothing
+    is a drive still stuck rather than one that had nowhere to go.
+
+    Args:
+      distance_increments: how far to travel, in the drive's own steps.
+      opening: whether to travel the way that opens the jaws.
+      speed_increments: max velocity, in increments/s. Slower than a normal move by default,
+        since this is used against something that is stuck.
+      acceleration_increments: in thousands of increments/s2.
+      current_limit: the motor current limit, 0 to 15.
+    """
+    return await self._driver.send_command(
+      module="R0",
+      command="GS",
+      gs=f"{distance_increments:04}",
+      gt=f"{0 if opening else GRIPPER_CLOSING_DIRECTION}",
+      gv=f"{speed_increments:04}",
+      gr=f"{acceleration_increments:03}",
+      gw=f"{current_limit:02}",
+    )
+
+  async def _switch_gripper_drive_off(self):
+    """Cut the current to the gripper drive, so the jaws can be moved by hand.
+
+    What the arm does to itself on any gripper error, and what a jam is freed by when the drive
+    cannot free itself. Whatever is held is released, and the drive keeps no reference through it -
+    `initialize_gripper_drive` is what gives it one back.
+    """
+    return await self._driver.send_command(module="R0", command="GO")
+
+  async def recover_gripper_drive(
+    self,
+    attempts: int = 4,
+    nudge_increments: int = 200,
+    current_limit: int = 15,
+  ) -> bool:
+    """Get a stuck gripper drive moving again, and back onto its own reference. This moves it.
+
+    A drive that has run into something it cannot pass stops reporting where it is: its two
+    counters part, every ordinary move answers that it is locked, and the initialize that would
+    fix the reference cannot run, because it has to travel to find its sensor edge and it cannot
+    travel. That is a state the arm cannot leave on its own.
+
+    So this works outwards. It reads the counters, tries the initialize, and when that is refused
+    it nudges the jaws open by the one movement an uninitialized drive accepts, checking after each
+    nudge whether anything actually moved - unsupervised means the drive answers whether the
+    command was taken, not whether it went anywhere. A nudge that moves nothing is met by cutting
+    the drive's current and letting it go slack before trying again, which is what frees a drive
+    holding itself against its own stop.
+
+    Args:
+      attempts: how many times to nudge and retry the initialize.
+      nudge_increments: how far to open the jaws on each nudge, in the drive's own steps.
+      current_limit: the motor current limit, 0 to 15.
+
+    Returns:
+      True when the drive initialized, False when it is still stuck and needs freeing by hand.
+
+    Raises:
+      ValueError: If any argument is outside what the drive accepts.
+    """
+    if attempts < 1:
+      raise ValueError(f"attempts must be at least 1, is {attempts}")
+    if not 0 < nudge_increments <= 9_999:
+      raise ValueError(f"nudge_increments must be between 1 and 9999, is {nudge_increments}")
+    if not 0 <= current_limit <= 15:
+      raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
+
+    for attempt in range(attempts):
+      firmware, hardware = await self.request_gripper_counters()
+      try:
+        await self.initialize_gripper_drive(current_limit=current_limit)
+      except STARFirmwareError:
+        logger.info(
+          "the gripper drive will not initialize (counters %d and %d); freeing it, attempt %d of %d",
+          firmware,
+          hardware,
+          attempt + 1,
+          attempts,
+        )
+      else:
+        _, hardware = await self.request_gripper_counters()
+        logger.info("the gripper drive is back on its reference, reading %d", hardware)
+        return True
+
+      before = hardware
+      try:
+        await self._unchecked_fw_gripper_move_relative(
+          distance_increments=nudge_increments, opening=True, current_limit=current_limit
+        )
+      except STARFirmwareError:
+        # Even unsupervised, a drive that cannot turn at all says so. That is not a reason to
+        # stop: what comes next is cutting its current, which is the thing that frees it.
+        logger.debug("the nudge was refused as well")
+      _, after = await self.request_gripper_counters()
+
+      if after == before:
+        # It did not move, so it is holding itself somewhere. Letting go is the only thing left
+        # to try, and the drive keeps no reference through it - which the initialize above will
+        # give back on the next turn of this loop.
+        logger.info("the nudge moved nothing, so the drive is being switched off to let it go")
+        await self._switch_gripper_drive_off()
+
+    firmware, hardware = await self.request_gripper_counters()
+    logger.warning(
+      "the gripper drive is still stuck after %d attempts, reading %d and %d. Its jaws have to be "
+      "freed by hand, and `initialize_gripper_drive` run afterwards",
+      attempts,
+      firmware,
+      hardware,
+    )
+    return False
+
+  async def _unchecked_fw_gripper_close_to_object(
+    self,
+    destination_increments: int,
+    stop_band_increments: int,
+    stop_trigger: int = 200,
+    speed_increments: int = 5_000,
     current_limit: int = 15,
     low_pass_filter: bool = True,
   ):
-    """Close the jaws until the force sensor trips, without checking or recording.
+    """Close the jaws toward a width, stopping on whatever they meet, without checking or
+    recording.
 
-    A search rather than a move: it takes no width at all, and stops wherever the sensor says it
-    has met something. That is what makes it a probe - nothing has to be known about what is
-    between the fingers, and nothing is refused for being the wrong size.
+    The drive's own version of the master's close, with the two things the master hides under a
+    dial: the band around the destination in which meeting something counts, and the force at
+    which meeting is declared. Unchecked here means unchecked by this driver - the arm still feels,
+    and still answers an error when it reaches the end of the band having met nothing.
 
-    The arm files this among its development commands and warns that careless use can damage it,
-    which is what a close with no end position is: with nothing between the jaws it runs them
-    into their own stop. `gripper_probe_for_object` is what bounds it.
+    It has a destination, which is what makes it safe to point at an unknown object: it stops
+    there whatever happens, rather than closing until something stops it.
 
     Args:
+      destination_increments: where the jaws are expected to meet the object, in the drive's steps.
+      stop_band_increments: how far either side of that still counts, in the drive's steps.
       stop_trigger: how hard a push counts as meeting something, in the sensor's own counts.
-      speed_increments: max velocity, in increments/s.
-      acceleration_increments: in thousands of increments/s2.
+      speed_increments: max gripping velocity, in increments/s.
       current_limit: the motor current limit, 0 to 15.
       low_pass_filter: whether to filter the current signal the trigger is read from.
     """
     return await self._driver.send_command(
       module="R0",
-      command="GC",
-      gt=f"{GRIPPER_CLOSING_DIRECTION}",
-      gv=f"{speed_increments:04}",
-      gr=f"{acceleration_increments:03}",
+      command="GB",
+      gb=f"{destination_increments:05}",
+      gu=f"{speed_increments:04}",
+      gd=f"{stop_band_increments:04}",
       gw=f"{current_limit:02}",
       gi=f"{stop_trigger:03}",
       fi=f"{int(low_pass_filter)}",
     )
 
   async def gripper_probe_for_object(
-    self, stop_trigger: int = 200, current_limit: int = 15
+    self,
+    expected_width: float,
+    band: float = 9.9,
+    stop_trigger: int = 200,
+    current_limit: int = 15,
   ) -> Optional[float]:
-    """Close the jaws until they meet something, and report how wide it is. This moves them.
+    """Close the jaws toward a width and report what they met on the way. This moves them.
 
-    What the two closes cannot do. `gripper_close_with_force_sensing` has to be told what width to
-    expect and refuses anything else; this is the search that finds out, for a gripper holding
-    something of unknown size, or to ask whether it is holding anything at all.
+    What the master's close cannot do, because its band is fixed at a couple of millimetres: this
+    one opens the window as wide as the drive allows, so something several millimetres off the
+    width expected is still found rather than reported missing.
 
-    The jaws end where they stopped, which is on the object when there is one. Nothing puts them
-    back: what was found is being held, and letting go is the caller's decision.
+    It stops at the width given whether or not it meets anything, which is what keeps it away from
+    the drive's own stop - a close with no destination runs the jaws into it and latches the drive.
+
+    The jaws are left where they stopped. What was found is being held, and letting go is the
+    caller's decision.
 
     Args:
+      expected_width: roughly how wide the thing between the jaws is, in mm.
+      band: how far either side of that to accept, in mm.
       stop_trigger: how hard a push counts as meeting something, in the sensor's own counts.
       current_limit: the motor current limit, 0 to 15.
 
     Returns:
-      How far apart the jaws stopped, in mm, or None when they reached their own shut position
-      without meeting anything.
+      How far apart the jaws stopped, in mm, or None when they reached the width given without
+      meeting anything.
 
     Raises:
-      ValueError: If either argument is outside what the drive accepts.
+      ValueError: If any argument is outside what the drive accepts.
     """
+    c = self.configuration
+    low = c.gripper_increments_to_mm(c.gripper_increment_range[0])
+    high = c.gripper_increments_to_mm(c.gripper_increment_range[1])
+    if not low <= expected_width <= high:
+      raise ValueError(f"expected_width must be between {low} and {high} mm, is {expected_width}")
+    band_increments = c.gripper_mm_to_increments(band)
+    band_low, band_high = GRIPPER_STOP_BAND_RANGE
+    if not band_low <= band_increments <= band_high:
+      raise ValueError(
+        f"band must be between {c.gripper_increments_to_mm(band_low)} and "
+        f"{c.gripper_increments_to_mm(band_high)} mm, is {band}"
+      )
     if not 0 <= stop_trigger <= 999:
       raise ValueError(f"stop_trigger must be between 0 and 999, is {stop_trigger}")
     if not 0 <= current_limit <= 15:
       raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
 
-    c = self.configuration
+    destination = min(
+      max(c.gripper_mm_to_increments(expected_width), c.gripper_increment_range[0]),
+      c.gripper_increment_range[1],
+    )
+    found = True
     try:
-      await self._unchecked_fw_gripper_probe_closing(
-        stop_trigger=stop_trigger, current_limit=current_limit
+      await self._unchecked_fw_gripper_close_to_object(
+        destination_increments=destination,
+        stop_band_increments=band_increments,
+        stop_trigger=stop_trigger,
+        current_limit=current_limit,
       )
+    except STARFirmwareError as error:
+      if not _nothing_was_gripped(error):
+        raise
+      found = False
     finally:
-      # Where the jaws stopped is the whole answer, and it can only be read - a probe has no
-      # target to record. The read is what puts it on the model.
+      # Where the jaws stopped is the answer, and it can only be read: a probe has no target.
       await self._record_where_it_stopped("gripper")
 
-    width = await self.request_gripper_width()
-    shut = c.gripper_increments_to_mm(c.gripper_increment_range[0])
-    # Reaching their own stop is the jaws finding nothing, rather than finding something that
-    # narrow: the drive cannot close past it.
-    return None if width <= shut + PROBE_FOUND_NOTHING_MARGIN else width
+    return await self.request_gripper_width() if found else None
 
   async def gripper_close_with_force_sensing(
     self,
+    width: float,
     grip_strength: int = 5,
-    width: float = 86.0,
     width_tolerance: float = 2.0,
   ):
     """Close the jaws onto whatever is between them, and hold it. This moves them.
