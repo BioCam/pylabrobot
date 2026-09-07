@@ -1,6 +1,6 @@
 """The iSWAP: the carriage its arm turns on, and the links that arm is made of."""
 
-from typing import Optional
+from typing import Optional, Tuple
 
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.end_effector import MechanicalGripper
@@ -65,6 +65,26 @@ class iSWAPChannel(Resource):
     }
 
 
+# The material each part of the arm carries, measured on the manufacturer's own model: its size,
+# how far along the link it starts from the joint the link turns on, and how high it stands. A
+# part may start behind its joint, which is why the offset is stated rather than assumed to be
+# zero.
+#
+# The heights are what makes the arm an arm rather than a flat plate: it steps down from the drive
+# to the plate it holds. They are measured against the height the Z drive reports, which is the
+# same plane `rotation_drive_z_offset_above_finger` is measured from - and the model agrees with
+# it independently, since the pads' underside comes out exactly that far below.
+LINK_1_BODY = (163.4, 25.5, 15.3, -12.7, 19.0)
+GRIPPER_BODY = (59.0, 90.0, 20.3, -13.0, -1.3)
+GRIPPER_FINGER = (135.0, 8.0, 7.0, 6.5, 4.0)
+GRIPPER_PAD = (37.0, 4.0, 17.0, 115.5, -13.0)
+
+# How far the rotation drive's own column stands above the height the Z drive reports, in mm. The
+# arm hangs below that: the drive reports where the material it carries is, not where its column
+# begins.
+ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z = 42.0
+
+
 def iswap_channel(
   name: str,
   diameter: float,
@@ -88,30 +108,26 @@ def iswap_channel(
     size_x=diameter,
     size_y=diameter,
     size_z=size_z,
-    reference_point=Coordinate(diameter / 2, diameter / 2, 0.0),
+    # The Z drive reports a point below the column's own base - the arm it carries hangs there -
+    # so the reference point states that, and the resource lands that far above what is read.
+    reference_point=Coordinate(diameter / 2, diameter / 2, -ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z),
     model="hamilton_star_iswap_channel",
   )
 
 
-# The material each part of the arm carries, measured on the manufacturer's own model: its size,
-# and how far along the link it starts from the joint the link turns on. A part may start behind
-# its joint, which is why the offset is stated rather than assumed to be zero.
-LINK_1_BODY = (163.4, 25.5, 15.3, -12.7)
-GRIPPER_BODY = (59.0, 90.0, 20.3, -13.0)
-GRIPPER_FINGER = (135.0, 8.0, 7.0, 6.5)
-GRIPPER_PAD = (37.0, 4.0, 17.0, 115.5)
-
-# How far apart the clamps hold a rack, in mm, closed and open.
-JAW_RANGE = (72.0, 106.0)
-
-
-def iswap_gripper(name: str, length: float) -> MechanicalGripper:
+def iswap_gripper(
+  name: str, length: float, jaw_range: Tuple[float, float], jaw_width: Optional[float] = None
+) -> MechanicalGripper:
   """The iSWAP's hand: the wrist joint to the centre the clamps hold a rack at.
 
   Args:
     name: what to call this one.
     length: the wrist joint to the grip centre, in mm, as `iSWAPConfiguration.link_2_length`
       reports it.
+    jaw_range: how far apart the jaws stand, closed and open, in mm, as the gripper drive's own
+      travel gives it.
+    jaw_width: how far apart they stand to begin with, in mm. The width the drive homes and parks
+      at, where the stored table has been read.
 
   Returns:
     The gripper.
@@ -122,7 +138,8 @@ def iswap_gripper(name: str, length: float) -> MechanicalGripper:
     body=GRIPPER_BODY,
     finger=GRIPPER_FINGER,
     pad=GRIPPER_PAD,
-    jaw_range=JAW_RANGE,
+    jaw_range=jaw_range,
+    jaw_width=jaw_width,
     model="hamilton_star_iswap_gripper",
   )
 

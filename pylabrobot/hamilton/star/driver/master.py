@@ -36,6 +36,7 @@ from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.hamilton.star.driver.lock import _FirmwareLock
 from pylabrobot.hamilton.star.resource_model import (
+  ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z,
   NChannelPipette,
   iswap_channel,
   iswap_gripper,
@@ -1554,7 +1555,7 @@ class STARDriver:
         resource = iswap_channel(
           name="iswap_channel",
           diameter=c.rotation_drive_diameter,
-          size_z=c.rotation_drive_size_z,
+          size_z=self._iswap_drive_size_z(arm, c),
         )
         # The drive sits `rotation_drive_x_offset` left of the carriage reference point, and the
         # arm is located by its own left edge, so it lands that far left of the arm's centre.
@@ -1573,6 +1574,37 @@ class STARDriver:
       # And how far the jaws stand open, which the read records, so the model starts in step with
       # the arm rather than at whatever width the gripper was built holding.
       await iswap.request_gripper_width()
+
+  def _iswap_drive_size_z(self, arm: XArm, c: iSWAPConfiguration) -> float:
+    """How tall to model the rotation drive, in mm.
+
+    Nothing reports how far the drive stands above what it is bolted to. What the machine shows is
+    the drive's top standing level with the tops of the channel bodies beside it when the drive is
+    fully retracted, so that is what the model is built to: the height that puts the two level.
+    Falls back to `configuration.rotation_drive_size_z` on an arm with no channels to measure
+    against.
+
+    Args:
+      arm: the arm this drive rides, whose channels give the height to match.
+      c: the iSWAP's configuration, which gives where the drive stops on the way up.
+
+    Returns:
+      The height to model it at, in mm.
+    """
+    channels = arm.pipettes.resources if arm.pipettes is not None else []
+    placed = [ch for ch in channels if ch.location is not None]
+    if not placed or arm.resource is None or self.deck is None:
+      return c.rotation_drive_size_z
+    tallest = max(cast(Coordinate, ch.location).z + ch.get_size_z() for ch in placed)
+    # Both are in the arm's own frame, which is what the drive's resource is placed in. The column
+    # stands above the height the drive reports, so that is where its base is measured from.
+    retracted = (
+      c.z_increments_to_mm(c.z_increment_range[1])
+      + c.rotation_drive_z_offset_above_finger
+      + ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z
+      - arm.resource.get_location_wrt(self.deck).z
+    )
+    return round(tallest - retracted, 1)
 
   @staticmethod
   def _create_iswap_links(
@@ -1600,7 +1632,23 @@ class STARDriver:
       resource.assign_child_resource(link_1, location=Coordinate.zero())
     link_2 = next((child for child in link_1.children if isinstance(child, Link)), None)
     if link_2 is None:
-      link_2 = iswap_gripper(name="iswap_gripper", length=c.link_2_length)
+      # How far the jaws travel is the gripper drive's own window, converted, rather than a
+      # measurement of the fingers: what the drive accepts is what the jaws do.
+      link_2 = iswap_gripper(
+        name="iswap_gripper",
+        length=c.link_2_length,
+        jaw_range=(
+          c.gripper_increments_to_mm(c.gripper_increment_range[0]),
+          c.gripper_increments_to_mm(c.gripper_increment_range[1]),
+        ),
+        # And standing where an initialized gripper stands, so the model does not start out
+        # claiming a width nothing has read. Setup reads the jaws straight after and records it.
+        jaw_width=(
+          c.gripper_increments_to_mm(c.gripper_drive_predefined_increments["home"])
+          if c.gripper_drive_predefined_increments
+          else None
+        ),
+      )
       link_1.assign_child_resource(link_2, location=Coordinate.zero())
     return link_1, link_2
 

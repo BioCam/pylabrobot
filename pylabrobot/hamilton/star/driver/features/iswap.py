@@ -258,6 +258,8 @@ class iSWAPConfiguration:
   # -- gripper --
   gripper_increment_range: Tuple[int, int] = (12_780, 24_120)  # jaw width
   gripper_mm_per_increment: float = 0.00554337
+  gripper_speed_increment_range: Tuple[int, int] = (20, 9_999)  # increments/sec
+  gripper_acceleration_increment_range: Tuple[int, int] = (5, 150)  # 1000 increments/sec^2
 
   # -- conversions: the wire counts in increments, the driver speaks mm and degrees ----------
 
@@ -831,21 +833,23 @@ class iSWAP:
     self.update_location_by_reference_point(y=y)
     return y
 
-  async def _record_where_it_stopped(self, axis: Literal["y", "z"]) -> None:
-    """Read where the rotation drive came to rest along one axis, and record it.
+  async def _record_where_it_stopped(self, axis: Literal["y", "z", "gripper"]) -> None:
+    """Read where a drive came to rest, and record it.
 
     For a move's failure path. A move that stopped part way left the drive somewhere no target
     describes. Its own failure is logged and swallowed: it must not replace the move's exception,
     which is the one that says what went wrong.
 
     Args:
-      axis: which axis the move drove - `y` across the deck, `z` up and down.
+      axis: which drive the move drove - `y` across the deck, `z` up and down, `gripper` the jaws.
     """
     try:
       if axis == "y":
         await self.rotation_drive_request_y_position()
-      else:
+      elif axis == "z":
         await self.rotation_drive_request_z_position()
+      else:
+        await self.request_gripper_width()
     except Exception:
       logger.warning("could not read where the iSWAP stopped along %s; its model is stale", axis)
 
@@ -1236,6 +1240,72 @@ class iSWAP:
     width = self.configuration.gripper_increments_to_mm(cast(List[int], resp["rg"])[1])
     self.update_jaw_width(width)
     return width
+
+  async def gripper_move_to_width(
+    self,
+    width: float,
+    speed: float = 49.9,
+    acceleration: float = 415.8,
+    current_limit: int = 15,
+  ):
+    """Open or close the jaws to a width. This moves them.
+
+    An empty move: it drives the jaws to a width and stops there, whatever is or is not between
+    them. Taking hold of a plate is a different command, which stops on what it meets.
+
+    Args:
+      width: how far apart to stand the jaws, in mm.
+      speed: how fast, in mm/s.
+      acceleration: how hard, in mm/s2.
+      current_limit: the motor current limit, 0 to 15.
+
+    Raises:
+      ValueError: If any of them is outside what the drive accepts.
+    """
+    c = self.configuration
+    increments = c.gripper_mm_to_increments(width)
+    low, high = c.gripper_increment_range
+    if not low <= increments <= high:
+      raise ValueError(
+        f"width must be between {c.gripper_increments_to_mm(low)} and "
+        f"{c.gripper_increments_to_mm(high)} mm, is {width}"
+      )
+
+    speed_increments = c.gripper_mm_to_increments(speed)
+    speed_low, speed_high = c.gripper_speed_increment_range
+    if not speed_low <= speed_increments <= speed_high:
+      raise ValueError(
+        f"speed must be between {c.gripper_increments_to_mm(speed_low)} and "
+        f"{c.gripper_increments_to_mm(speed_high)} mm/s, is {speed}"
+      )
+
+    # The drive counts acceleration in thousands of increments per second squared.
+    acceleration_increments = c.gripper_mm_to_increments(acceleration / 1000)
+    acceleration_low, acceleration_high = c.gripper_acceleration_increment_range
+    if not acceleration_low <= acceleration_increments <= acceleration_high:
+      raise ValueError(
+        f"acceleration must be between {c.gripper_increments_to_mm(acceleration_low * 1000)} and "
+        f"{c.gripper_increments_to_mm(acceleration_high * 1000)} mm/s2, is {acceleration}"
+      )
+
+    if not 0 <= current_limit <= 15:
+      raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
+
+    try:
+      resp = await self._driver.send_command(
+        module="R0",
+        command="GA",
+        ga=f"{increments:05}",
+        gv=f"{speed_increments:04}",
+        gr=f"{acceleration_increments:03}",
+        gw=f"{current_limit:02}",
+      )
+    except Exception:
+      await self._record_where_it_stopped("gripper")
+      raise
+
+    self.update_jaw_width(width)
+    return resp
 
   # -- pose ------------------------------------------------------------------
 

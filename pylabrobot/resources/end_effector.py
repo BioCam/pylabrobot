@@ -50,10 +50,11 @@ class MechanicalGripper(Link):
     self,
     name: str,
     length: float,
-    body: Tuple[float, float, float, float],
-    finger: Tuple[float, float, float, float],
-    pad: Tuple[float, float, float, float],
+    body: Tuple[float, float, float, float, float],
+    finger: Tuple[float, float, float, float, float],
+    pad: Tuple[float, float, float, float, float],
     jaw_range: Tuple[float, float],
+    jaw_width: Optional[float] = None,
     category: str = "mechanical_gripper",
     model: Optional[str] = None,
   ):
@@ -61,21 +62,27 @@ class MechanicalGripper(Link):
     Args:
       name: what to call this one.
       length: the joint it turns on to the grip centre, in mm.
-      body: the body's size and how far along the link it starts, in mm.
+      body: the body's size, how far along the link it starts, and how far above it stands, in mm.
       finger: the same for one finger. There are two, either side of the span.
       pad: the same for the pad on a finger's end, measured from the joint as the rest are.
       jaw_range: how far apart the fingers stand, closed and open, in mm.
+      jaw_width: how far apart they stand to begin with, in mm. Where a gripper is known to come
+        up at a particular width - the one it homes at, say - that is what to build it at, so the
+        model does not start out claiming a width nothing has read. Open, when not given.
     """
     super().__init__(name=name, length=length, category=category, model=model)
     self.jaw_range = jaw_range
-    self._jaw_width = jaw_range[1]
+    self._jaw_width = jaw_range[1] if jaw_width is None else jaw_width
+    low, high = jaw_range
+    if not low <= self._jaw_width <= high:
+      raise ValueError(f"the jaws open {low} to {high} mm, so cannot start at {self._jaw_width}")
 
     self.body = bolt_on(self, "body", body)
     self.fingers = [
       cast(Finger, bolt_on(self, f"finger_{side}", finger, of=Finger)) for side in ("left", "right")
     ]
     for on in self.fingers:
-      on.pad = bolt_on(on, "pad", (pad[0], pad[1], pad[2], pad[3] - finger[3]))
+      on.pad = bolt_on(on, "pad", (pad[0], pad[1], pad[2], pad[3] - finger[3], pad[4] - finger[4]))
     self.pads = [cast(Resource, on.pad) for on in self.fingers]
     self._place_the_fingers()
 

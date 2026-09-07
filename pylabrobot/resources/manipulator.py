@@ -79,15 +79,17 @@ class Link(Resource):
 def bolt_on(
   link: Resource,
   what: str,
-  part: Tuple[float, float, float, float],
+  part: Tuple[float, float, float, float, float],
   of: Type[Resource] = Resource,
 ) -> Resource:
-  """Hang material on a link, centred across it and starting where the part says.
+  """Hang material on a link, centred across it and standing where the part says.
 
   Args:
     link: the link it is bolted to.
     what: what the part is, which names it and gives it a category.
-    part: its size, and how far along the link it starts from the joint.
+    part: its size, how far along the link it starts from the joint, and how far above the link
+      it stands. A link is a line through the joints, so the material around it is rarely centred
+      on it: an arm that steps down to its gripper hangs each part at its own height.
     of: what to make it, for material that is more than a box.
 
   Returns:
@@ -100,5 +102,5 @@ def bolt_on(
     size_z=part[2],
     category=what.split("_")[0],
   )
-  link.assign_child_resource(made, location=Coordinate(part[3], -part[1] / 2, 0.0))
+  link.assign_child_resource(made, location=Coordinate(part[3], -part[1] / 2, part[4]))
   return made

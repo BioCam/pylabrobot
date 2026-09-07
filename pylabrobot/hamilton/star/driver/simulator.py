@@ -55,6 +55,7 @@ from pylabrobot.hamilton.star.driver.master import STARDriver
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
 from pylabrobot.resources.carrier import Carrier
+from pylabrobot.resources.end_effector import MechanicalGripper
 from pylabrobot.resources.hamilton.hamilton_decks import (
   HamiltonDeck,
 )
@@ -614,12 +615,16 @@ class SimulatedISWAP(_Simulated, iSWAP):
         parked = dict(zip(WRIST_DRIVE_SLOTS, stops))["parking"]
         return {"rt": parked}, "the wrist drive's parking stop"
       if command == "RG":
-        # Nothing models how far the jaws stand open yet, so where an initialized gripper leaves
-        # them: the width it homes and parks at, out of the stored table rather than written down
-        # here. The drive answers twice, a target and an actual; the read takes the second.
-        stops = (await self._request_slots("pg"))[: len(GRIPPER_DRIVE_SLOTS)]
-        home = dict(zip(GRIPPER_DRIVE_SLOTS, stops))["home"]
-        return {"rg": [home, home]}, "the gripper's home and parking width"
+        # The drive answers twice, a target and an actual; the read takes the second.
+        gripper = self.link_2
+        if not isinstance(gripper, MechanicalGripper):
+          # Nothing models the jaws, so where an initialized gripper leaves them: the width it
+          # homes and parks at, out of the stored table rather than written down here.
+          stops = (await self._request_slots("pg"))[: len(GRIPPER_DRIVE_SLOTS)]
+          home = dict(zip(GRIPPER_DRIVE_SLOTS, stops))["home"]
+          return {"rg": [home, home]}, "the gripper's home and parking width"
+        width = c.gripper_mm_to_increments(gripper.jaw_width)
+        return {"rg": [width, width]}, "how far the model has the jaws open"
     if (module, command) == ("C0", "RA") and kwargs.get("ra") == "kg":
       offset = self._declared.rotation_drive_x_offset
       if offset is None:
@@ -699,12 +704,12 @@ class SimulatedAutoload(_Simulated, Autoload):
     """
     deck = cast(HamiltonDeck, self.device.deck)
     if self.resource is None or self.resource.location is None:
-      return self.track_range[0]
+      # Nothing models it yet, so where an initialized autoload leaves it: parked, at the last
+      # track. Initialization parks the sled and only then is the model built from what this
+      # answers, so answering the first track puts the sled at the wrong end of the deck.
+      return self.track_range[-1]
     x = self.resource.location.x + self.configuration.reference_point_from_sled_left_edge
     return min(self.track_range, key=lambda t: abs(deck.track_to_location(t).x - x))
-
-  track = 1
-  """Where it last moved to."""
 
   async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
     declared = self.device.simulated_autoload
