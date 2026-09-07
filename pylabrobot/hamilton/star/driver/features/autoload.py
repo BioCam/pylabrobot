@@ -1602,6 +1602,46 @@ class Autoload:
 
   # -- loading indicators --------------------------------------------------------------------------
 
+  async def light_tracks(self, tracks: List[int], blinking: Optional[List[bool]] = None) -> None:
+    """Light the indicators over the tracks named, and leave every other one dark.
+
+    What `set_loading_indicators` takes is a pattern for the whole deck, one entry per track, which
+    a caller that knows which tracks it means has to build. This takes the tracks themselves.
+
+    Args:
+      tracks: which tracks to light, counted from 1.
+      blinking: whether each of those tracks blinks rather than holding steady, one entry per
+        track named above and in the same order. All steady when not given.
+
+    Raises:
+      ValueError: If a track is not one this device has, or the two lists are different lengths.
+      RuntimeError: If setup has not run, so the deck size is not known.
+    """
+    every = self.track_range
+    unknown = [track for track in tracks if track not in every]
+    if unknown:
+      raise ValueError(f"not tracks this device has: {unknown}; it has {every[0]} to {every[-1]}")
+    if blinking is None:
+      blinking = [False] * len(tracks)
+    if len(blinking) != len(tracks):
+      raise ValueError(
+        f"blinking must have one entry per track, {len(tracks)}, has {len(blinking)}"
+      )
+
+    blinks = dict(zip(tracks, blinking))
+    await self.set_loading_indicators(
+      lit=[track in blinks for track in every],
+      blinking=[bool(blinks.get(track, False)) for track in every],
+    )
+
+  async def clear_loading_indicators(self) -> None:
+    """Put every indicator out.
+
+    Raises:
+      RuntimeError: If setup has not run, so the deck size is not known.
+    """
+    await self.light_tracks([])
+
   async def set_loading_indicators(self, lit: List[bool], blinking: List[bool]):
     """Set the loading indicators (LEDs), one per track.
 

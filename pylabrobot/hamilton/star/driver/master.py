@@ -383,6 +383,15 @@ class STARDriver:
         for failure in await asyncio.gather(*parks, return_exceptions=True):
           if isinstance(failure, BaseException):
             logger.warning("could not park the iSWAP", exc_info=failure)
+
+      # And the deck goes dark. An indicator left lit outlives the session that lit it - it says a
+      # carrier is being handled by software that is no longer there. On its own path, and its own
+      # failure: a deck that will not go dark is not a reason to hold the link open.
+      if self.autoload is not None:
+        try:
+          await self.autoload.clear_loading_indicators()
+        except Exception:
+          logger.warning("could not put the loading indicators out", exc_info=True)
     except Exception:
       logger.warning(
         "could not bring the device to a safe state; closing the link anyway", exc_info=True
