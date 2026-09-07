@@ -633,6 +633,16 @@ class SimulatedISWAP(_Simulated, iSWAP):
           return {"rg": [home, home]}, "the gripper's home and parking width"
         width = c.gripper_mm_to_increments(gripper.jaw_width)
         return {"rg": [width, width]}, "how far the model has the jaws open"
+    if (module, command) == ("C0", "QP"):
+      # Whether the arm holds something is whether the model has anything hanging off the gripper
+      # that is not part of the gripper: its body and its two fingers are its own.
+      gripper = self.link_2
+      held = False
+      if isinstance(gripper, MechanicalGripper):
+        own = {gripper.body, *gripper.fingers}
+        held = any(child not in own for child in gripper.children)
+      return {"ph": int(held)}, "whether the model has anything in the gripper"
+
     if (module, command) == ("C0", "RA") and kwargs.get("ra") == "kg":
       offset = self._declared.rotation_drive_x_offset
       if offset is None:

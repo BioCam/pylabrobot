@@ -418,6 +418,12 @@ class iSWAP:
     self._driver = driver
     self.configuration = configuration or iSWAPConfiguration()
     self.resource: Optional[iSWAPChannel] = None
+    self.gripped: Optional[bool] = None
+    """Whether the arm is holding something, as it last reported.
+
+    None until anything has asked. Set by `request_plate_gripped`, which is the only thing that
+    knows: the arm reports it from the fingers themselves, so a plate is not something this driver
+    can infer from the commands it sent."""
     self.link_1: Optional[Link] = None
     self.link_2: Optional[Link] = None
 
@@ -983,6 +989,64 @@ class iSWAP:
     await pipettes.move_to_safe_z()
     await pipettes.move_to_y_positions({0: target_y}, make_space=True)
 
+  async def _make_space_for_pose(
+    self, rotation_angle: float, wrist_angle: float, make_space: bool
+  ) -> None:
+    """Make sure the channels are out of the way of where the arm is about to reach.
+
+    `_make_space_for_y` does this for the drive travelling across the deck, where the arm is a
+    circle about it. Here the pose is known, so the arm is where the forward kinematics say it is:
+    the frontmost of its two moving joints is what would meet a channel, and the channels have to
+    stand in front of that.
+
+    Does nothing when the arm is not modelled or the numbers it needs have not been read - a check
+    that cannot be made must not look like one that passed.
+
+    Args:
+      rotation_angle: where the rotation drive is being sent, in degrees.
+      wrist_angle: where the wrist is being sent, in degrees.
+      make_space: whether the channels may be moved to make that space.
+
+    Raises:
+      ValueError: If the arm would reach into the channels and either they may not be moved, or
+        they cannot move far enough to clear it.
+    """
+    pipettes = self.arm.pipettes
+    device = self._driver.configuration
+    pose = self._pose_at(rotation_angle, wrist_angle)
+    if pipettes is None or device is None or pose is None:
+      return
+
+    widths = [channel.width for channel in pipettes.configuration.channels]
+    if any(width is None for width in widths):
+      return
+
+    # The frontmost point the arm would put anywhere, and where that leaves the backmost channel:
+    # it has to stand in front of the arm by its own half width.
+    reaches_to = min(pose.wrist_joint.y, pose.gripper.location.y)
+    target_y = reaches_to - cast(float, widths[0]) / 2
+    backmost_y = await pipettes.request_y_position(0)
+    furthest_back = device.left_arm_min_y_position + sum(cast(List[float], widths[1:]))
+
+    if backmost_y <= target_y:
+      return
+    if target_y < furthest_back:
+      raise ValueError(
+        f"rotation {rotation_angle:.2f} deg with the wrist at {wrist_angle:.2f} reaches to y "
+        f"{reaches_to:.1f} mm, which needs the backmost channel at {target_y:.1f} mm - and the "
+        f"channels do not fit behind {furthest_back:.1f} mm"
+      )
+    if not make_space:
+      raise ValueError(
+        f"rotation {rotation_angle:.2f} deg with the wrist at {wrist_angle:.2f} reaches to y "
+        f"{reaches_to:.1f} mm, which needs the backmost channel at {target_y:.1f} mm or further "
+        f"front, and it is at {backmost_y:.1f} mm. Pass make_space=True to move the channels out "
+        f"of the way"
+      )
+    # Nothing may move in Y while a channel is low.
+    await pipettes.move_to_safe_z()
+    await pipettes.move_to_y_positions({0: target_y}, make_space=True)
+
   # -- z position --------------------------------------------------------------------------------
 
   async def rotation_drive_request_z_position(self) -> float:
@@ -1157,6 +1221,21 @@ class iSWAP:
     self.update_wrist(angle)
     return angle
 
+  async def request_plate_gripped(self) -> bool:
+    """Read whether the arm is holding something between its fingers.
+
+    The arm's own answer, not the model's: the gripper reports it, so a plate taken or dropped by
+    anything other than this driver still shows up. `gripped` is what the model says, and the two
+    disagreeing means the model has lost track of what the arm is carrying.
+
+    Returns:
+      True while it holds something.
+    """
+    resp = await self._driver.send_command(module="C0", command="QP", subsystem="R0", fmt="ph#")
+    gripped = cast(int, resp["ph"]) == 1
+    self.gripped = gripped
+    return gripped
+
   async def request_gripper_width(self) -> float:
     """Read how far the gripper jaws are open.
 
@@ -1232,12 +1311,15 @@ class iSWAP:
         gr=f"{acceleration_increments:03}",
         gw=f"{current_limit:02}",
       )
-    except Exception:
+      # What was asked for, recorded as soon as the move answers, so the model holds it even if the
+      # read below cannot be taken.
+      self.update_jaw_width(width)
+      return resp
+    finally:
+      # And then what the drive says, which is the last word. This one stalls: sent the full sweep
+      # from its open end it has locked part way and answered an error, leaving the jaws nowhere
+      # the target described - which a model taking only the target would have denied.
       await self._record_where_it_stopped("gripper")
-      raise
-
-    self.update_jaw_width(width)
-    return resp
 
   async def gripper_open(self):
     """Open the jaws all the way. This moves them.
@@ -1375,6 +1457,7 @@ class iSWAP:
     self,
     rotation_angle: Union[str, float],
     wrist_angle: Union[str, float],
+    make_space: bool = False,
     rotation_speed: int = 25_000,
     wrist_speed: int = 20_000,
     rotation_acceleration: int = 170,
@@ -1399,6 +1482,9 @@ class iSWAP:
     Args:
       rotation_angle: a stop in `ROTATION_DRIVE_SLOTS`, or degrees from the calibrated front stop.
       wrist_angle: a stop in `WRIST_DRIVE_SLOTS`, or degrees from the drive's own zero.
+      make_space: whether the channels may be moved out of the way when the arm would end up
+        reaching into them. Off by default, so a pose that does not fit raises and the caller
+        decides. Making space raises the channels to Z safety first, since it moves them in Y.
       rotation_speed: max velocity of the rotation drive, in increments/s.
       wrist_speed: max velocity of the wrist drive, in increments/s.
       rotation_acceleration: for the rotation drive, in thousands of increments/s2.
@@ -1431,9 +1517,10 @@ class iSWAP:
         raise ValueError(f"{name} must be between 0 and 7, is {value}")
 
     c = self.configuration
-    self._check_gripper_reachable(
-      c.rotation_drive_increments_to_angle(rotation), c.wrist_increments_to_deg(wrist)
-    )
+    rotation_target = c.rotation_drive_increments_to_angle(rotation)
+    wrist_target = c.wrist_increments_to_deg(wrist)
+    self._check_gripper_reachable(rotation_target, wrist_target)
+    await self._make_space_for_pose(rotation_target, wrist_target, make_space)
     try:
       resp = await self._unchecked_fw_rotation_drive_rotate_increments(
         rotation_increments=rotation,
@@ -1455,6 +1542,39 @@ class iSWAP:
       # way left the arm somewhere no target describes, and this is the only thing that finds it.
       await self._record_where_the_joints_stopped()
 
+  def _pose_at(self, rotation_angle: float, wrist_angle: float) -> Optional[iSWAPPose]:
+    """Where the arm would be with its joints at these angles. Nothing is read or moved.
+
+    Worked from where the model has the drive, so it costs no commands, and it is what both of the
+    checks below a move ask. None when the arm is not modelled or the numbers the kinematics need
+    have not been read.
+
+    Args:
+      rotation_angle: the rotation drive's angle, in degrees.
+      wrist_angle: the wrist drive's angle, in degrees.
+
+    Returns:
+      The pose, or None when it cannot be worked out.
+    """
+    c = self.configuration
+    stops = c.wrist_drive_predefined_increments
+    drive = self.modelled_reference_point()
+    if stops is None or drive is None or c.link_1_length is None or c.link_2_length is None:
+      return None
+    return self._forward_kinematics(
+      joints={
+        iSWAPAxis.X: drive.x,
+        iSWAPAxis.Y: drive.y,
+        iSWAPAxis.Z: drive.z,
+        iSWAPAxis.ROTATION: rotation_angle,
+        iSWAPAxis.WRIST: wrist_angle,
+      },
+      link_1_length=c.link_1_length,
+      link_2_length=c.link_2_length,
+      wrist_straight_angle=c.wrist_increments_to_deg(stops["straight"]),
+      rotation_drive_z_offset_above_finger=c.rotation_drive_z_offset_above_finger,
+    )
+
   def _check_gripper_reachable(self, rotation_angle: float, wrist_angle: float) -> None:
     """Raise if the arm cannot put its gripper where these angles would.
 
@@ -1474,28 +1594,10 @@ class iSWAP:
     Raises:
       ValueError: If the grip centre would land behind the drive's own back stop.
     """
-    c = self.configuration
-    y_max = c.rotation_drive_y_max
-    stops = c.wrist_drive_predefined_increments
-    drive = self.modelled_reference_point()
-    if y_max is None or stops is None or drive is None:
+    y_max = self.configuration.rotation_drive_y_max
+    pose = self._pose_at(rotation_angle, wrist_angle)
+    if y_max is None or pose is None:
       return
-    if c.link_1_length is None or c.link_2_length is None:
-      return
-
-    pose = self._forward_kinematics(
-      joints={
-        iSWAPAxis.X: drive.x,
-        iSWAPAxis.Y: drive.y,
-        iSWAPAxis.Z: drive.z,
-        iSWAPAxis.ROTATION: rotation_angle,
-        iSWAPAxis.WRIST: wrist_angle,
-      },
-      link_1_length=c.link_1_length,
-      link_2_length=c.link_2_length,
-      wrist_straight_angle=c.wrist_increments_to_deg(stops["straight"]),
-      rotation_drive_z_offset_above_finger=c.rotation_drive_z_offset_above_finger,
-    )
     # Both moving joints, not only the far one: link 1 is long enough to put the wrist behind the
     # rail while the grip centre is still clear of it.
     for what, point in (
