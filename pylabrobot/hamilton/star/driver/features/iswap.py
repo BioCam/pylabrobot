@@ -1967,7 +1967,7 @@ class iSWAP:
     c = self.configuration
     rotation_target = c.rotation_drive_increments_to_angle(rotation)
     wrist_target = c.wrist_increments_to_deg(wrist)
-    self._check_gripper_reachable(rotation_target, wrist_target)
+    self._check_pose_reachable(rotation_target, wrist_target)
     await self._make_space_for_pose(rotation_target, wrist_target, make_space)
     try:
       resp = await self._unchecked_fw_rotation_drive_rotate_increments(
@@ -2023,8 +2023,11 @@ class iSWAP:
       rotation_drive_z_offset_above_finger=c.rotation_drive_z_offset_above_finger,
     )
 
-  def _check_gripper_reachable(self, rotation_angle: float, wrist_angle: float) -> None:
+  def _check_pose_reachable(self, rotation_angle: float, wrist_angle: float) -> None:
     """Raise if the arm cannot put its gripper where these angles would.
+
+    Not what `_check_reachable` answers: that bounds one value on one axis, whichever frame it is
+    stated in. This takes the two joint angles and checks the pose they would produce.
 
     The X-arm is a rail across the back of the deck, behind the drive's own Y travel, so nothing
     the arm carries may stand further back than the drive itself reaches. A pose is worked out
