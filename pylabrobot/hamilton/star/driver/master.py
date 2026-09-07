@@ -334,6 +334,9 @@ class STARDriver:
     autoload wheel are moved up to Z safety first: a driver that let go with any of them low
     would leave the next lateral move from anything else to crash it.
 
+    An iSWAP parks after them, which retracts it, but only with empty fingers: one still holding a
+    plate would carry it home and leave it wherever the fingers next let go.
+
     The link closes whether or not that succeeds. This also runs when setup failed part way,
     where there may be nothing up to move yet and the failure that matters is the one about to
     propagate.
@@ -379,7 +382,26 @@ class STARDriver:
       # The iSWAP parks instead: parking retracts it, which is lateral motion, so it waits until
       # everything sharing its arm is up. If anything is still low, it stays where it is.
       if not failed and not low:
-        parks = [arm.iswap.park() for arm in self.arms if arm.iswap is not None]
+        parks = []
+        for arm in self.arms:
+          if arm.iswap is None:
+            continue
+          # Asked, not assumed, and asked of the arm rather than the model: parking closes the
+          # gripper and retracts it, so an arm still holding a plate carries it home and leaves it
+          # wherever the fingers next let go. An arm that cannot say counts as holding something.
+          try:
+            holding = await arm.iswap.request_plate_gripped()
+          except Exception:
+            logger.warning(
+              "could not read whether the %s iSWAP is holding a plate, so it stays where it is",
+              arm.side,
+              exc_info=True,
+            )
+            continue
+          if holding:
+            logger.warning("the %s iSWAP is holding a plate, so it stays where it is", arm.side)
+            continue
+          parks.append(arm.iswap.park())
         for failure in await asyncio.gather(*parks, return_exceptions=True):
           if isinstance(failure, BaseException):
             logger.warning("could not park the iSWAP", exc_info=failure)
