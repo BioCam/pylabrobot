@@ -611,6 +611,14 @@ class SimulatedISWAP(_Simulated, iSWAP):
         increments = c.z_mm_to_increments(point.z - c.rotation_drive_z_offset_above_finger)
         return {"rz": [increments, increments]}, "where the model has the rotation drive along Z"
       if command == "RT":
+        angle = self.modelled_wrist()
+        if angle is not None:
+          return (
+            {"rt": c.wrist_deg_to_increments(angle)},
+            "which way the model has the wrist turned",
+          )
+        # Nothing models it yet, so where an initialized arm leaves it: its parking stop, out of
+        # the stored table rather than an angle written down here.
         stops = (await self._request_slots("pt"))[: len(WRIST_DRIVE_SLOTS)]
         parked = dict(zip(WRIST_DRIVE_SLOTS, stops))["parking"]
         return {"rt": parked}, "the wrist drive's parking stop"

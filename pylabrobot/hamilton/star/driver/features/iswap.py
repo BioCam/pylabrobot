@@ -74,6 +74,10 @@ Z_SLOTS = (
   "extra_8",
 )
 
+# How far past the width it is asked for the master opens the jaws, in increments. Its own
+# command states the overshoot; asking for the drive's end would put the target past it.
+MASTER_OPEN_OVERSHOOT = 20
+
 # And for the gripper drive, whose table is all jaw width: ten slots, no arm length. One slot
 # stands for both home and parking, seven are the widths a plate type is gripped at, and the
 # second has no documented meaning - its default is the top of the drive's range.
@@ -621,6 +625,20 @@ class iSWAP:
       return None
     return self.resource.location + arm.get_location_wrt(deck) + self.resource.reference_point
 
+  def modelled_wrist(self) -> Optional[float]:
+    """Which way the model has the wrist turned, as its drive reports it.
+
+    Read from what the drive last reported, as `modelled_rotation` is: link 2's own rotation is an
+    angle from link 1 about a different axis, so recovering a drive angle from it would be
+    inverting a rendering rather than reading a fact.
+
+    Returns:
+      The angle in degrees, or None while nothing has read it yet.
+    """
+    if self.resource is None or self._driver.deck is None:
+      return None
+    return self.resource.wrist_drive_angle
+
   def modelled_rotation(self) -> Optional[float]:
     """Which way the model has the arm pointing, as the rotation drive reports it.
 
@@ -649,6 +667,8 @@ class iSWAP:
       angle: the wrist drive's angle, in degrees, as it reports it.
     """
     c = self.configuration
+    if self.resource is not None:
+      self.resource.wrist_drive_angle = angle
     if self.link_1 is None or self.link_2 is None or c.wrist_drive_predefined_increments is None:
       return
     straight = c.wrist_increments_to_deg(c.wrist_drive_predefined_increments["straight"])
@@ -1112,98 +1132,6 @@ class iSWAP:
       tw=f"{wrist_current_limit}",
     )
 
-  async def rotation_drive_rotate_to_angle(
-    self,
-    angle: Union[str, float],
-    speed: int = 25_000,
-    acceleration: int = 170,
-    current_limit: int = 5,
-  ):
-    """Turn the rotation drive to an angle, holding the wrist where it is.
-
-    Collision risk: this swings the arm through everything between where it is and where it is
-    going.
-
-    Args:
-      angle: one of the stops in `ROTATION_DRIVE_SLOTS` - `left`, `front`, `right`, `parking` -
-        which goes to the increment this device stores for it, or degrees signed from the
-        calibrated front stop, which is interpolated between the stops either side of it.
-      speed: max velocity, in increments/s.
-      acceleration: in thousands of increments/s2.
-      current_limit: the motor's current limit.
-
-    Raises:
-      ValueError: If the angle lands outside the drive's travel, or an argument is out of range.
-      RuntimeError: If the stored stops were not read.
-    """
-    c = self.configuration
-    if isinstance(angle, str):
-      stops = c.rotation_drive_predefined_increments
-      if stops is None:
-        raise RuntimeError(
-          "the rotation drive's stops were not read; have you called `star.setup()`?"
-        )
-      if angle not in stops:
-        raise ValueError(f"{angle!r} is not one of the stops {tuple(stops)}")
-      increments = stops[angle]
-    else:
-      increments = c.rotation_drive_angle_to_increments(angle)
-
-    low, high = c.rotation_increment_range
-    if not low <= increments <= high:
-      degrees = c.rotation_drive_increments_to_angle(increments)
-      raise ValueError(
-        f"{angle} is {increments} increments ({degrees:.2f} deg), outside the "
-        f"[{low}, {high}] the rotation drive travels"
-      )
-    if not 20 <= speed <= 75_000:
-      raise ValueError(f"speed must be between 20 and 75000 increments/s, is {speed}")
-    if not 5 <= acceleration <= 200:
-      raise ValueError(
-        f"acceleration must be between 5 and 200 thousand increments/s2, is {acceleration}"
-      )
-    if not 0 <= current_limit <= 7:
-      raise ValueError(f"current_limit must be between 0 and 7, is {current_limit}")
-
-    # The wrist is held where it already is: both joints go in one command, so where it is has to
-    # be read before the rotation drive can be told to move without taking the wrist with it.
-    #
-    # Held, not neutral. Where the arm ends up is both joints together - a wrist folded back turns
-    # a rotation into link 2 sweeping the other way - so `reach_of` is what says where this pose
-    # puts the arm, and the caller is the one that has to have checked it.
-    wrist = c.wrist_deg_to_increments(await self.request_wrist_drive_angle())
-    try:
-      resp = await self._unchecked_fw_rotation_drive_rotate_increments(
-        rotation_increments=increments,
-        wrist_increments=wrist,
-        rotation_speed=speed,
-        rotation_acceleration=acceleration,
-        rotation_current_limit=current_limit,
-      )
-    except Exception:
-      await self._record_where_it_stopped_turning()
-      raise
-    self.update_rotation(c.rotation_drive_increments_to_angle(increments))
-    return resp
-
-  async def _record_where_it_stopped_turning(self) -> None:
-    """Read what angle the drives came to rest at, and log it.
-
-    For a rotation's failure path. A turn that stopped part way left the arm at an angle no target
-    describes, and nothing models where it points, so the reading is the only record there is. Its
-    own failure is logged and swallowed: it must not replace the move's exception.
-    """
-    try:
-      # The read records it too, so the model is left holding where the arm stopped rather than
-      # where it was sent.
-      rotation = await self.request_rotation_drive_angle()
-      wrist = await self.request_wrist_drive_angle()
-      logger.warning(
-        "the arm stopped turning at rotation %.2f deg, wrist %.2f deg", rotation, wrist
-      )
-    except Exception:
-      logger.warning("could not read what angle the arm stopped turning at")
-
   async def request_rotation_drive_angle(self) -> float:
     """Read the rotation drive's angle, signed from the calibrated front stop.
 
@@ -1241,7 +1169,7 @@ class iSWAP:
     self.update_jaw_width(width)
     return width
 
-  async def gripper_move_to_width(
+  async def gripper_move_to_jaw_position(
     self,
     width: float,
     speed: float = 49.9,
@@ -1263,13 +1191,17 @@ class iSWAP:
       ValueError: If any of them is outside what the drive accepts.
     """
     c = self.configuration
-    increments = c.gripper_mm_to_increments(width)
-    low, high = c.gripper_increment_range
-    if not low <= increments <= high:
-      raise ValueError(
-        f"width must be between {c.gripper_increments_to_mm(low)} and "
-        f"{c.gripper_increments_to_mm(high)} mm, is {width}"
-      )
+    # Compared in mm rather than in increments: a width read off the drive and sent straight back
+    # loses a fraction of an increment on the way, and the ends of the travel are exactly the
+    # widths a caller asks for when it wants the jaws shut or wide open.
+    low = c.gripper_increments_to_mm(c.gripper_increment_range[0])
+    high = c.gripper_increments_to_mm(c.gripper_increment_range[1])
+    if not low <= width <= high:
+      raise ValueError(f"width must be between {low} and {high} mm, is {width}")
+    increments = min(
+      max(c.gripper_mm_to_increments(width), c.gripper_increment_range[0]),
+      c.gripper_increment_range[1],
+    )
 
     speed_increments = c.gripper_mm_to_increments(speed)
     speed_low, speed_high = c.gripper_speed_increment_range
@@ -1306,6 +1238,293 @@ class iSWAP:
 
     self.update_jaw_width(width)
     return resp
+
+  async def gripper_open(self):
+    """Open the jaws all the way. This moves them.
+
+    Through the master, which opens a fraction wider than it is told, so it is asked for that
+    fraction short of the drive's own end. What clears the jaws of whatever they are about to take
+    hold of; `gripper_move_to_jaw_position` is what puts them at a particular width instead.
+    """
+    c = self.configuration
+    # The master overshoots what it is asked by a fixed amount, so the ask stops short of the end.
+    widest = c.gripper_increments_to_mm(c.gripper_increment_range[1] - MASTER_OPEN_OVERSHOOT)
+    resp = await self._driver.send_command(
+      module="C0", command="GF", subsystem="R0", go=f"{round(widest * 10):04}"
+    )
+    self.update_jaw_width(c.gripper_increments_to_mm(c.gripper_increment_range[1]))
+    # And read back, since where the jaws ended is the master's decision rather than the ask.
+    await self.request_gripper_width()
+    return resp
+
+  async def gripper_close(self):
+    """Close the jaws all the way. This moves them.
+
+    Shut, on the drive's own move, which is as far as the jaws go. Closing onto something and
+    holding it is `gripper_grip`: the master's own close stops on what it meets and will not be
+    sent below a plate's width, so it cannot shut the jaws.
+    """
+    c = self.configuration
+    return await self.gripper_move_to_jaw_position(
+      c.gripper_increments_to_mm(c.gripper_increment_range[0])
+    )
+
+  async def gripper_grip(
+    self,
+    grip_strength: int = 5,
+    width: float = 86.0,
+    width_tolerance: float = 2.0,
+  ):
+    """Close the jaws onto whatever is between them, and hold it. This moves them.
+
+    Unlike `gripper_move_to_jaw_position`, which drives to a width and stops there whatever is or
+    is not in the way, this stops on what it meets and holds it at the strength given. The jaws
+    have to start clear of it - `gripper_open` is what puts them there.
+
+    Args:
+      grip_strength: how hard to hold, 0 the weakest and 9 the strongest.
+      width: how wide the thing between the jaws is, in mm.
+      width_tolerance: how far the width may be out, in mm.
+
+    Raises:
+      ValueError: If any of them is outside what the command accepts.
+    """
+    c = self.configuration
+    if not 0 <= grip_strength <= 9:
+      raise ValueError(f"grip_strength must be between 0 and 9, is {grip_strength}")
+    # The master's own floor: below it the closing ramp would run past the drive's minimum.
+    high = c.gripper_increments_to_mm(c.gripper_increment_range[1])
+    if not 76.0 < width <= high:
+      raise ValueError(f"width must be between 76.0 and {high} mm, is {width}")
+    if not 0.5 <= width_tolerance <= 9.9:
+      raise ValueError(f"width_tolerance must be between 0.5 and 9.9 mm, is {width_tolerance}")
+
+    resp = await self._driver.send_command(
+      module="C0",
+      command="GC",
+      subsystem="R0",
+      gw=f"{grip_strength}",
+      gb=f"{round(width * 10):04}",
+      gt=f"{round(width_tolerance * 10):02}",
+    )
+    # Where the jaws stopped is what they met, which no target describes.
+    await self.request_gripper_width()
+    return resp
+
+  def _resolve_rotation_increments(self, angle: Union[str, float]) -> int:
+    """A rotation stop's name or an angle, as the increments the drive counts in.
+
+    Args:
+      angle: a stop in `ROTATION_DRIVE_SLOTS`, or degrees from the calibrated front stop.
+
+    Returns:
+      Where the drive is to go, in increments.
+
+    Raises:
+      ValueError: If the name is not a stop, or the angle is outside the drive's travel.
+      RuntimeError: If the stored stops have not been read.
+    """
+    c = self.configuration
+    if isinstance(angle, str):
+      stops = c.rotation_drive_predefined_increments
+      if stops is None:
+        raise RuntimeError("the rotation drive's stops were not read; have you called `setup()`?")
+      if angle not in stops:
+        raise ValueError(f"{angle!r} is not one of the stops {tuple(stops)}")
+      increments = stops[angle]
+    else:
+      increments = c.rotation_drive_angle_to_increments(angle)
+    low, high = c.rotation_increment_range
+    if not low <= increments <= high:
+      raise ValueError(
+        f"{angle} is {increments} increments, outside the {low} to {high} the drive travels"
+      )
+    return increments
+
+  def _resolve_wrist_increments(self, angle: Union[str, float]) -> int:
+    """A wrist stop's name or an angle, as the increments the drive counts in.
+
+    Args:
+      angle: a stop in `WRIST_DRIVE_SLOTS`, or degrees from the drive's own zero.
+
+    Returns:
+      Where the drive is to go, in increments.
+
+    Raises:
+      ValueError: If the name is not a stop, or the angle is outside the drive's travel.
+      RuntimeError: If the stored stops have not been read.
+    """
+    c = self.configuration
+    if isinstance(angle, str):
+      stops = c.wrist_drive_predefined_increments
+      if stops is None:
+        raise RuntimeError("the wrist's stored stops were not read; have you called `setup()`?")
+      if angle not in stops:
+        raise ValueError(f"{angle!r} is not one of the stops {tuple(stops)}")
+      increments = stops[angle]
+    else:
+      increments = c.wrist_deg_to_increments(angle)
+    low, high = c.wrist_increment_range
+    if not low <= increments <= high:
+      raise ValueError(
+        f"{angle} is {increments} increments, outside the {low} to {high} the wrist travels"
+      )
+    return increments
+
+  async def rotate_to_angles(
+    self,
+    rotation_angle: Union[str, float],
+    wrist_angle: Union[str, float],
+    rotation_speed: int = 25_000,
+    wrist_speed: int = 20_000,
+    rotation_acceleration: int = 170,
+    wrist_acceleration: int = 145,
+    rotation_current_limit: int = 5,
+    wrist_current_limit: int = 5,
+  ):
+    """Turn both joints, each to its own angle. This moves the arm.
+
+    The only place either joint is turned. They go in one command because they move together - the
+    wrist rides the rotation drive, so turning them one after the other sweeps a path neither
+    target describes, out through a pose nobody asked for. A caller that means to move one holds
+    the other where it is, which is what `rotation_drive_rotate_to_angle` and
+    `wrist_drive_rotate_to_angle` do.
+
+    Where the joints end up is read back rather than taken from the target, whether the move
+    succeeded or not: a move that stopped part way left the arm somewhere no target describes, and
+    the model has to follow the arm rather than the intention.
+
+    Collision risk: the whole arm sweeps, and the path is neither joint's alone.
+
+    Args:
+      rotation_angle: a stop in `ROTATION_DRIVE_SLOTS`, or degrees from the calibrated front stop.
+      wrist_angle: a stop in `WRIST_DRIVE_SLOTS`, or degrees from the drive's own zero.
+      rotation_speed: max velocity of the rotation drive, in increments/s.
+      wrist_speed: max velocity of the wrist drive, in increments/s.
+      rotation_acceleration: for the rotation drive, in thousands of increments/s2.
+      wrist_acceleration: for the wrist drive, in thousands of increments/s2.
+      rotation_current_limit: the rotation motor's current limit, 0 to 7.
+      wrist_current_limit: the wrist motor's current limit, 0 to 7.
+
+    Raises:
+      ValueError: If either angle lands outside its drive's travel, or an argument is out of range.
+    """
+    rotation = self._resolve_rotation_increments(rotation_angle)
+    wrist = self._resolve_wrist_increments(wrist_angle)
+    if not 20 <= rotation_speed <= 75_000:
+      raise ValueError(
+        f"rotation_speed must be between 20 and 75000 increments/s, is {rotation_speed}"
+      )
+    if not 20 <= wrist_speed <= 65_000:
+      raise ValueError(f"wrist_speed must be between 20 and 65000 increments/s, is {wrist_speed}")
+    for name, value in (
+      ("rotation_acceleration", rotation_acceleration),
+      ("wrist_acceleration", wrist_acceleration),
+    ):
+      if not 5 <= value <= 200:
+        raise ValueError(f"{name} must be between 5 and 200 thousand increments/s2, is {value}")
+    for name, value in (
+      ("rotation_current_limit", rotation_current_limit),
+      ("wrist_current_limit", wrist_current_limit),
+    ):
+      if not 0 <= value <= 7:
+        raise ValueError(f"{name} must be between 0 and 7, is {value}")
+
+    c = self.configuration
+    try:
+      resp = await self._unchecked_fw_rotation_drive_rotate_increments(
+        rotation_increments=rotation,
+        wrist_increments=wrist,
+        rotation_speed=rotation_speed,
+        wrist_speed=wrist_speed,
+        rotation_acceleration=rotation_acceleration,
+        wrist_acceleration=wrist_acceleration,
+        rotation_current_limit=rotation_current_limit,
+        wrist_current_limit=wrist_current_limit,
+      )
+      # What was asked for, recorded before anything is read: a move that answered has arrived,
+      # and the model says so even if the reads below cannot be taken.
+      self.update_rotation(c.rotation_drive_increments_to_angle(rotation))
+      self.update_wrist(c.wrist_increments_to_deg(wrist))
+      return resp
+    finally:
+      # And then what the drives say, which is the last word either way. A move that stopped part
+      # way left the arm somewhere no target describes, and this is the only thing that finds it.
+      await self._record_where_the_joints_stopped()
+
+  async def _record_where_the_joints_stopped(self) -> None:
+    """Read both joints and record them on the model.
+
+    Its own failure is logged and swallowed: it runs on a move's failure path as well as its
+    success, and it must not replace the exception that says what went wrong.
+    """
+    try:
+      await self.request_rotation_drive_angle()
+      await self.request_wrist_drive_angle()
+    except Exception:
+      logger.warning("could not read where the iSWAP's joints stopped; its model is stale")
+
+  async def rotation_drive_rotate_to_angle(
+    self,
+    angle: Union[str, float],
+    speed: int = 25_000,
+    acceleration: int = 170,
+    current_limit: int = 5,
+  ):
+    """Turn the rotation drive to an angle, holding the wrist where it is. This moves the arm.
+
+    A caller for `rotate_to_angles`, which is where the move and the model update live: the wrist
+    is read first and sent back to itself, so one command carries both and the arm sweeps the path
+    that was asked for.
+
+    Args:
+      angle: one of the stops in `ROTATION_DRIVE_SLOTS` - `left`, `front`, `right`, `parking` -
+        which goes to the increment this arm stores for it, or degrees signed from the calibrated
+        front stop.
+      speed: max velocity, in increments/s.
+      acceleration: in thousands of increments/s2.
+      current_limit: the motor current limit, 0 to 7.
+
+    Raises:
+      ValueError: If the angle lands outside the drive's travel, or an argument is out of range.
+    """
+    return await self.rotate_to_angles(
+      rotation_angle=angle,
+      wrist_angle=await self.request_wrist_drive_angle(),
+      rotation_speed=speed,
+      rotation_acceleration=acceleration,
+      rotation_current_limit=current_limit,
+    )
+
+  async def wrist_drive_rotate_to_angle(
+    self,
+    angle: Union[str, float],
+    speed: int = 20_000,
+    acceleration: int = 145,
+    current_limit: int = 5,
+  ):
+    """Turn the wrist to an angle, holding the rotation drive where it is. This moves the arm.
+
+    The mirror of `rotation_drive_rotate_to_angle`, and the same one move underneath.
+
+    Args:
+      angle: one of the stops in `WRIST_DRIVE_SLOTS` - `straight`, `left`, `right`, `reverse`,
+        `parking` - which goes to the increment this arm stores for it, or degrees signed from the
+        drive's own zero.
+      speed: max velocity, in increments/s.
+      acceleration: in thousands of increments/s2.
+      current_limit: the motor current limit, 0 to 7.
+
+    Raises:
+      ValueError: If the angle lands outside the drive's travel, or an argument is out of range.
+    """
+    return await self.rotate_to_angles(
+      rotation_angle=await self.request_rotation_drive_angle(),
+      wrist_angle=angle,
+      wrist_speed=speed,
+      wrist_acceleration=acceleration,
+      wrist_current_limit=current_limit,
+    )
 
   # -- pose ------------------------------------------------------------------
 

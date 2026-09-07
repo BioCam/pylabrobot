@@ -49,6 +49,7 @@ class iSWAPChannel(Resource):
     )
     self.reference_point = reference_point
     self.rotation_drive_angle: Optional[float] = None
+    self.wrist_drive_angle: Optional[float] = None
     """Which way the rotation drive reports the arm points, in degrees, or None until it is read.
 
     Kept in the drive's own terms, as it reports them. `rotation` carries the same fact rendered
@@ -62,6 +63,7 @@ class iSWAPChannel(Resource):
       **super().serialize(),
       "reference_point": self.reference_point.serialize(),
       "rotation_drive_angle": self.rotation_drive_angle,
+      "wrist_drive_angle": self.wrist_drive_angle,
     }
 
 
