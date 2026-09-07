@@ -1,7 +1,8 @@
 """The front cover: the hinged window over the deck, and whether the device may move with it open."""
 
 import logging
-from typing import TYPE_CHECKING, Dict, Literal, cast
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Dict, Literal, Optional, cast
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.master import STARDriver
@@ -16,6 +17,25 @@ CoverPosition = Literal["open", "closed"]
 COVER_POSITION_CODES: Dict[CoverPosition, int] = {"open": 0, "closed": 1}
 
 
+@dataclass
+class FrontCoverConfiguration:
+  """The front cover's device facts.
+
+  None of it is read off the cover: it has no module of its own, so it reports no firmware version
+  and answers nothing about itself. What is here is the master's protocol, held on the feature the
+  way every other feature holds its own, so that a device answering differently can be declared
+  with it rather than needing this edited.
+
+  For the same reason it is not written with a saved configuration: that records what a device
+  answered, and no device answered any of this.
+  """
+
+  position_codes: Dict[CoverPosition, int] = field(
+    default_factory=lambda: dict(COVER_POSITION_CODES)
+  )
+  """Which code the master answers for each position."""
+
+
 class FrontCover:
   """The front cover.
 
@@ -24,12 +44,14 @@ class FrontCover:
   Control module(s): `C0`/master only (no module of its own and no firmware version to report).
   """
 
-  def __init__(self, driver: "STARDriver"):
+  def __init__(self, driver: "STARDriver", configuration: Optional[FrontCoverConfiguration] = None):
     """
     Args:
       driver: the driver to send commands through.
+      configuration: the cover's device facts. Defaults to `FrontCoverConfiguration()`.
     """
     self._driver = driver
+    self.configuration = configuration or FrontCoverConfiguration()
 
   # -- position --------------------------------------------------------------
 
@@ -37,11 +59,11 @@ class FrontCover:
     """Request whether the cover is open or shut.
 
     Returns:
-      Which one, as named in `COVER_POSITION_CODES`.
+      Which one, as named in `configuration.position_codes`.
     """
     resp = await self._driver.send_command(module="C0", command="QC", fmt="qc#")
     code = cast(int, resp["qc"])
-    return "closed" if code == COVER_POSITION_CODES["closed"] else "open"
+    return "closed" if code == self.configuration.position_codes["closed"] else "open"
 
   # -- the lock --------------------------------------------------------------
   # TODO: verify whether lock mentioned in firmware actually exists on hardware

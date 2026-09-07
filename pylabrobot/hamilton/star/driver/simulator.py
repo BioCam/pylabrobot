@@ -23,11 +23,7 @@ from pylabrobot.hamilton.star.driver.features.autoload import (
   Autoload,
   AutoloadConfiguration,
 )
-from pylabrobot.hamilton.star.driver.features.cover import (
-  COVER_POSITION_CODES,
-  CoverPosition,
-  FrontCover,
-)
+from pylabrobot.hamilton.star.driver.features.cover import CoverPosition, FrontCover
 from pylabrobot.hamilton.star.driver.features.head import (
   HEAD_PREDEFINED_SLOTS,
   HEAD_REFERENCE_SHAFT,
@@ -702,7 +698,8 @@ class SimulatedFrontCover(_Simulated, FrontCover):
 
   async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
     if (module, command) == ("C0", "QC"):
-      return {"qc": COVER_POSITION_CODES[SIMULATED_COVER_POSITION]}, "the cover it is simulated at"
+      codes = self.configuration.position_codes
+      return {"qc": codes[SIMULATED_COVER_POSITION]}, "the cover it is simulated at"
     return None
 
 

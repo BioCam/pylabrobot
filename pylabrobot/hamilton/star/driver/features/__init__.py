@@ -1,4 +1,5 @@
 from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
+from pylabrobot.hamilton.star.driver.features.cover import FrontCover, FrontCoverConfiguration
 from pylabrobot.hamilton.star.driver.features.head import Head, HeadConfiguration
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
 from pylabrobot.hamilton.star.driver.features.head384 import Head384, Head384Configuration
@@ -13,6 +14,8 @@ from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfigurati
 __all__ = [
   "Autoload",
   "AutoloadConfiguration",
+  "FrontCover",
+  "FrontCoverConfiguration",
   "Head",
   "HeadConfiguration",
   "Head96",
