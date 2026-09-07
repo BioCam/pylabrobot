@@ -81,8 +81,9 @@ GRIPPER_PAD = (37.0, 4.0, 17.0, 115.5, -13.0)
 
 # How far the rotation drive's own column stands above the height the Z drive reports, in mm. The
 # arm hangs below that: the drive reports where the material it carries is, not where its column
-# begins.
-ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z = 42.0
+# begins. The column stands on link 1 with nothing between them, so this follows link 1's own top
+# rather than being stated again - the two cannot drift apart.
+ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z = LINK_1_BODY[4] + LINK_1_BODY[2]
 
 
 def iswap_channel(
