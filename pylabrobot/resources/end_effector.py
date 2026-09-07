@@ -83,6 +83,12 @@ class MechanicalGripper(Link):
     ]
     for on in self.fingers:
       on.pad = bolt_on(on, "pad", (pad[0], pad[1], pad[2], pad[3] - finger[3], pad[4] - finger[4]))
+      # A pad is fixed to its finger, centred in the finger's thickness, so it sits the same way
+      # on both of them. `bolt_on` centres material across a link, and a finger is not a link: its
+      # own origin is a corner, so centring there leaves one pad inside the jaws and the other
+      # outside them.
+      where = cast(Coordinate, on.pad.location)
+      on.pad.location = Coordinate(where.x, (finger[1] - pad[1]) / 2, where.z)
     self.pads = [cast(Resource, on.pad) for on in self.fingers]
     self._place_the_fingers()
 

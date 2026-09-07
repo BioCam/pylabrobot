@@ -1552,10 +1552,23 @@ class STARDriver:
           raise RuntimeError(
             "the iSWAP rotation drive's X offset was not read; have you called `star.setup()`?"
           )
+        # How tall to model the column: nothing reports it, and what the machine shows is its top
+        # standing level with the tops of the channel bodies when the drive is fully retracted.
+        # Both heights are taken on the deck, so neither needs the arm taking out.
+        tops = [
+          ch.get_location_wrt(self.deck).z + ch.get_size_z()
+          for ch in (arm.pipettes.resources if arm.pipettes is not None else [])
+          if ch.location is not None
+        ]
+        retracted_base = (
+          c.z_increments_to_mm(c.z_increment_range[1])
+          + c.rotation_drive_z_offset_above_finger
+          + ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z
+        )
         resource = iswap_channel(
           name="iswap_channel",
           diameter=c.rotation_drive_diameter,
-          size_z=self._iswap_drive_size_z(arm, c),
+          size_z=round(max(tops) - retracted_base, 1) if tops else c.rotation_drive_size_z,
         )
         # The drive sits `rotation_drive_x_offset` left of the carriage reference point, and the
         # arm is located by its own left edge, so it lands that far left of the arm's centre.
@@ -1574,37 +1587,6 @@ class STARDriver:
       # And how far the jaws stand open, which the read records, so the model starts in step with
       # the arm rather than at whatever width the gripper was built holding.
       await iswap.request_gripper_width()
-
-  def _iswap_drive_size_z(self, arm: XArm, c: iSWAPConfiguration) -> float:
-    """How tall to model the rotation drive, in mm.
-
-    Nothing reports how far the drive stands above what it is bolted to. What the machine shows is
-    the drive's top standing level with the tops of the channel bodies beside it when the drive is
-    fully retracted, so that is what the model is built to: the height that puts the two level.
-    Falls back to `configuration.rotation_drive_size_z` on an arm with no channels to measure
-    against.
-
-    Args:
-      arm: the arm this drive rides, whose channels give the height to match.
-      c: the iSWAP's configuration, which gives where the drive stops on the way up.
-
-    Returns:
-      The height to model it at, in mm.
-    """
-    channels = arm.pipettes.resources if arm.pipettes is not None else []
-    placed = [ch for ch in channels if ch.location is not None]
-    if not placed or arm.resource is None or self.deck is None:
-      return c.rotation_drive_size_z
-    tallest = max(cast(Coordinate, ch.location).z + ch.get_size_z() for ch in placed)
-    # Both are in the arm's own frame, which is what the drive's resource is placed in. The column
-    # stands above the height the drive reports, so that is where its base is measured from.
-    retracted = (
-      c.z_increments_to_mm(c.z_increment_range[1])
-      + c.rotation_drive_z_offset_above_finger
-      + ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z
-      - arm.resource.get_location_wrt(self.deck).z
-    )
-    return round(tallest - retracted, 1)
 
   @staticmethod
   def _create_iswap_links(
