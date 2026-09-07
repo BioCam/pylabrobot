@@ -114,10 +114,11 @@ that a constant already holds are referenced by name rather than repeated.
 ## Where this is not consistent yet
 
 1. **`.configuration` has two owners.** Most features own theirs
-   (`self.configuration = configuration or XConfiguration()`). `XArm.configuration` is a
-   read-through property into `DeviceConfiguration.left_arm` / `.right_arm`, so an arm's
-   configuration lives on the device's and cannot be handed to the arm before setup. Both are
-   deliberate; only one of them can be the convention.
+   (`self.configuration = configuration or XConfiguration()`). `XArm.configuration` is a property
+   over `DeviceConfiguration.left_arm` / `.right_arm`, because the device reports both arms in one
+   reply. It reads and writes through, so the constructor takes a configuration like every other
+   feature's, but there is still nowhere to put one before the device has been read: an arm asked
+   to take a configuration before setup raises instead. That is the half of P2 an arm cannot do.
 
 2. **`FrontCover` has no `discover`,** because there is nothing to read: it has no module of its
    own and reports no firmware version. It is also the only file in the package carrying a

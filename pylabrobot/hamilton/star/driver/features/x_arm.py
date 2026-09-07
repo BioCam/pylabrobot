@@ -133,11 +133,22 @@ class XArm:
   is, how far it travels, and the workspace that travel reaches.
   """
 
-  def __init__(self, driver: "STARDriver", side: Literal["left", "right"] = "left"):
+  def __init__(
+    self,
+    driver: "STARDriver",
+    side: Literal["left", "right"] = "left",
+    configuration: Optional[XArmConfiguration] = None,
+  ):
     """
     Args:
       driver: the driver to send commands through.
       side: which rail this arm runs on. A STAR always has a left arm; a right arm is an option.
+      configuration: this arm's configuration, written where the device's holds it. Defaults to
+        whatever the device answered for this rail.
+
+    Raises:
+      RuntimeError: If a configuration is given before the device has been read, so there is
+        nowhere to put it.
     """
     self._driver = driver
     # The arm on the deck, when the driver was given one. Setup puts it there; moves keep it in
@@ -151,6 +162,8 @@ class XArm:
     self.head384: Optional["Head384"] = None
     self.iswap: Optional["iSWAP"] = None
     self.side = side
+    if configuration is not None:
+      self.configuration = configuration
 
   @property
   def parameter_prefix(self) -> str:
@@ -181,6 +194,32 @@ class XArm:
     if arm is None:
       raise ValueError(f"no {self.side} X-arm is installed")
     return arm
+
+  @configuration.setter
+  def configuration(self, configuration: XArmConfiguration) -> None:
+    """Put this arm's configuration where the device's holds it.
+
+    The arm has no configuration of its own to replace: the device reports both arms in one reply,
+    so an arm's configuration is a field of the device's and this writes into that field. What is
+    read back afterwards, here or off the device's own configuration, is what was written.
+
+    What a caller has to set is the device facts, which no device reports: an arm on firmware 5.0
+    or above takes a wider current limiter than the values here were recorded from, and this is
+    where a corrected set goes. Discovery keeps them, refreshing only what the device answers.
+
+    Args:
+      configuration: what this arm is to be configured with.
+
+    Raises:
+      RuntimeError: If the device has not been read yet, so there is nowhere to put it.
+    """
+    device = self._driver.configuration
+    if device is None:
+      raise RuntimeError("no configuration read; have you called `star.setup()`?")
+    if self.side == "left":
+      device.left_arm = configuration
+    else:
+      device.right_arm = configuration
 
   async def request_firmware_version(self) -> Tuple[str, datetime.date]:
     """Request the X-drive board's firmware version and build date.

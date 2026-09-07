@@ -305,6 +305,46 @@ class TestConfiguringAnArm(unittest.IsolatedAsyncioTestCase):
   reply. Writing to it goes through to that field, and what no device answers survives a re-read.
   """
 
+  async def test_what_is_written_is_where_the_device_holds_it(self):
+    driver = await _both_arms()
+    arm = cast(XArm, driver.left_x_arm)
+    corrected = dataclasses.replace(arm.configuration, current_limit_range=(0, 15))
+
+    arm.configuration = corrected
+
+    self.assertEqual(arm.configuration.current_limit_range, (0, 15))
+    self.assertIs(cast(DeviceConfiguration, driver.configuration).left_arm, corrected)
+
+  async def test_the_constructor_takes_one_too(self):
+    """The same write, done where every other feature takes its configuration."""
+    driver = await _both_arms()
+    corrected = dataclasses.replace(
+      cast(XArm, driver.left_x_arm).configuration, current_limit_default=3
+    )
+
+    arm = XArm(driver, side="left", configuration=corrected)
+
+    self.assertEqual(arm.configuration.current_limit_default, 3)
+    self.assertIs(cast(DeviceConfiguration, driver.configuration).left_arm, corrected)
+
+  async def test_it_refuses_before_the_device_has_been_read(self):
+    """There is nowhere to put it: the field it writes to belongs to a configuration that is only
+    built once the device has answered."""
+    driver = STARSimulationDriver(deck=STARDeck(), declared_configuration_json=RECORDING_STAR)
+    with self.assertRaises(RuntimeError):
+      XArm(driver, side="left", configuration=BARE_X_ARM)
+
+  async def test_a_simulated_device_then_answers_what_was_written(self):
+    """A simulated device answers from the configuration it was given, and that is the same object
+    this writes into - so on one of these, re-reading the device gives back what was written."""
+    driver = await _both_arms()
+    arm = cast(XArm, driver.left_x_arm)
+    arm.configuration = dataclasses.replace(arm.configuration, current_limit_default=3)
+
+    await driver.discover()
+
+    self.assertEqual(arm.configuration.current_limit_default, 3)
+
   def test_device_facts_carry_over_and_readings_do_not(self):
     """What a physical device's discovery does with a configured arm. It rebuilds one from the
     reply, then takes the device facts off the arm as it was configured: those are what no device
