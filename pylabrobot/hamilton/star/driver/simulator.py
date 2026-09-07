@@ -771,8 +771,16 @@ class SimulatedAutoload(_Simulated, Autoload):
         x = self.resource.location.x + c.reference_point_from_sled_left_edge
       else:
         x = cast(HamiltonDeck, self.device.deck).track_to_location(self._modelled_track()).x
-      increments = c.x_drive_mm_to_increments(x)
+      # The X drive is the one drive here that does not count in the deck's coordinates, so the
+      # deck position the model holds is put back into the drive's frame before it is encoded.
+      # Answered in the deck's, the read comes back a drive zero too far right - past the end of
+      # the drive's own travel, so the next absolute move is refused.
+      increments = c.x_drive_mm_to_increments(c.from_deck_frame(x))
       return {"rx": [increments, increments]}, "where the sled is modelled"
+    if command == "RS":
+      # Nothing models which way the scanner faces, and the drive has a code for exactly that: it
+      # sits at neither of its two stops. Answering one of them would be inventing a facing.
+      return {"rs": c.scanner_rotations["undefined"]}, "no modelled scanner facing"
     if command == "RY":
       increments = c.y_drive_mm_to_increments(SIMULATED_AUTOLOAD_Y_POSITION)
       return {"ry": [increments, increments]}, "where the wheel is modelled along Y"
