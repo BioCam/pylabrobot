@@ -433,6 +433,12 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       """Determine if collision detection should be performed for this resource."""
       if isinstance(res, (HamiltonCoreGrippers, Trash)):
         return False
+      # A part of the deck itself takes no part in the check, in either direction: it is already
+      # skipped as something to collide with, and it is where it is whatever stands on the deck.
+      # The autoload's sled reaches into the front of a carrier's footprint, which is how it pulls
+      # one in, so a deck with carriers on it would otherwise refuse to place its own sled.
+      if res.category in _MACHINE_PARTS:
+        return False
       return True
 
     if not ignore_collision and should_check_collision(resource):
