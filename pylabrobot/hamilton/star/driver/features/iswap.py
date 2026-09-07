@@ -192,9 +192,9 @@ class iSWAPConfiguration:
   """Each Z stop the rotation drive is calibrated against, in increments of the finger plane,
   keyed as `Z_SLOTS` names them.
 
-  Filled by `rotation_drive_request_predefined_z_positions` rather than by discovery, which does
-  not read this table. No arm has been read for it yet, so what a recording carries are the
-  documented factory values rather than one unit's calibration."""
+  Read by discovery, and again by `rotation_drive_request_predefined_z_positions`, which returns
+  the stops in mm. No arm has been read for it yet, so what a recording carries are the documented
+  factory values rather than one unit's calibration."""
 
   # -- rotation drive --
   rotation_drive_predefined_increments: Optional[Dict[str, int]] = None
@@ -206,9 +206,9 @@ class iSWAPConfiguration:
   """Each jaw width the gripper is calibrated against, in increments, keyed as
   `GRIPPER_DRIVE_SLOTS` names them.
 
-  Filled by `request_gripper_drive_widths` rather than by discovery, which does not read this
-  table. No arm has been read for it yet, so what a recording carries are the documented factory
-  values rather than one unit's calibration."""
+  Read by discovery, and again by `request_gripper_drive_widths`, which returns the widths in mm.
+  No arm has been read for it yet, so what a recording carries are the documented factory values
+  rather than one unit's calibration."""
 
   # -- wrist drive --
   wrist_drive_predefined_increments: Optional[Dict[str, int]] = None
@@ -560,6 +560,16 @@ class iSWAP:
     wrist = await self._request_slots("pt")
     c.wrist_drive_predefined_increments = dict(zip(WRIST_DRIVE_SLOTS, wrist))
     c.link_2_length = round(wrist[9] / 10, 1)
+
+    # The Z stops and the gripper widths are read here too, so a configuration saved after setup
+    # carries every stored table. Left out, they save as nothing, and a simulated arm built from
+    # that file cannot answer where its Z drive or its jaws are.
+    c.rotation_drive_predefined_z_positions_increments = dict(
+      zip(Z_SLOTS, await self._request_slots("pz"))
+    )
+    c.gripper_drive_predefined_increments = dict(
+      zip(GRIPPER_DRIVE_SLOTS, await self._request_slots("pg"))
+    )
 
   # -- initialization --------------------------------------------------------
 

@@ -617,6 +617,12 @@ class Head:
     c.z_drive_speed_firmware_reported = await self._reported_drive_parameter("zv")
     c.z_drive_acceleration_firmware_reported = await self._reported_drive_parameter("zr")
 
+    # The stored position tables are read here, not only by the two methods that return them in
+    # mm, so a configuration saved after setup carries them. Left out, they save as nothing, and
+    # a simulated head built from that file cannot answer where its drives are.
+    await self.request_predefined_y_positions()
+    await self.request_predefined_z_positions()
+
   def require_tip_discard_location(self, location: Optional[Coordinate]) -> Coordinate:
     """Where tips are to be dropped, falling back to this head's configured trash.
 
