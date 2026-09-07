@@ -3,9 +3,9 @@
 from typing import Optional
 
 from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.end_effector import MechanicalGripper
+from pylabrobot.resources.manipulator import Link, bolt_on
 from pylabrobot.resources.resource import Resource
-from pylabrobot.resources.rotation import Rotation
-from pylabrobot.utils.linalg import matrix_vector_multiply_3x3
 
 
 class iSWAPChannel(Resource):
@@ -93,190 +93,50 @@ def iswap_channel(
   )
 
 
-class iSWAPLinkage(Resource):
-  """One link of the iSWAP's arm.
+# The material each part of the arm carries, measured on the manufacturer's own model: its size,
+# and how far along the link it starts from the joint the link turns on. A part may start behind
+# its joint, which is why the offset is stated rather than assumed to be zero.
+LINK_1_BODY = (163.4, 25.5, 15.3, -12.7)
+GRIPPER_BODY = (59.0, 90.0, 20.3, -13.0)
+GRIPPER_FINGER = (135.0, 8.0, 7.0, 6.5)
+GRIPPER_PAD = (37.0, 4.0, 17.0, 115.5)
 
-  A cuboid, turning about the joint at its proximal end: link 1 about the rotation drive, carrying
-  the wrist joint at its far end. `reference_point` is that proximal joint, from the left front
-  bottom corner, so the link is placed by the joint it turns on rather than by a corner of the box.
-
-  Unrotated it lies along +X, which is where `rotation_drive_angle - 90` puts it at the front stop
-  plus ninety degrees. Its length is the distance between the two joints, which is what
-  `iSWAPConfiguration.link_1_length` holds - read off the arm, and per unit.
-
-  It carries no children. What the arm holds hangs off the gripper, which is not modelled.
-  """
-
-  def __init__(
-    self,
-    name: str,
-    size_x: float,
-    size_y: float,
-    size_z: float,
-    reference_point: Coordinate,
-    category: str = "iswap_linkage",
-    model: Optional[str] = None,
-  ):
-    """
-    Args:
-      name: what to call this one.
-      size_x: how long the link is, joint to joint, in mm.
-      size_y: how wide it is, in mm.
-      size_z: how deep it is, in mm.
-      reference_point: the joint it turns on, from the left front bottom corner.
-      category: what kind of resource this is.
-      model: which link this is.
-    """
-    super().__init__(
-      name=name, size_x=size_x, size_y=size_y, size_z=size_z, category=category, model=model
-    )
-    self.reference_point = reference_point
-
-  # -- turning on the joint rather than on the corner ---------------------------------------
-
-  def _turned(self, point: Coordinate) -> Coordinate:
-    """A point of this link, in the frame the link is placed in, at the angle it is turned to."""
-    matrix = self.rotation.get_rotation_matrix()
-    return Coordinate(*matrix_vector_multiply_3x3(matrix, point.vector()))
-
-  @property
-  def own_distal_joint(self) -> Coordinate:
-    """Where the far joint sits in this link's own frame, before the link is turned.
-
-    Where the next link is placed, since a child is placed in its parent's own frame and the
-    parent's rotation is applied on top of that.
-
-    Returns:
-      The far joint, from this link's left front bottom corner.
-    """
-    # The link's own length, not `get_absolute_size_x`, which is the rotated footprint: joint to
-    # joint is fixed, and a turned link would otherwise appear to shorten.
-    return self.reference_point + Coordinate(self.get_size_x(), 0.0, 0.0)
-
-  @property
-  def distal_joint(self) -> Coordinate:
-    """Where the far end of the link is, in the frame the link is placed in.
-
-    The joint the next link turns on, carried around by this one. Follows from where this link is
-    and which way it points, so it moves as the link turns.
-
-    Returns:
-      The far joint's position, relative to this link's parent.
-    """
-    if self.location is None:
-      raise RuntimeError(f"{self.name} has not been placed, so its far joint is nowhere")
-    return self.location + self._turned(self.own_distal_joint)
-
-  def rotate(
-    self,
-    x: float = 0,
-    y: float = 0,
-    z: float = 0,
-    reference: Optional[Coordinate] = None,
-  ) -> None:
-    """Turn the link further, on its joint unless another point is named.
-
-    Args:
-      x: degrees to add about X.
-      y: degrees to add about Y.
-      z: degrees to add about Z.
-      reference: the point to turn about. Its own joint when None: a link swings on the joint it
-        is mounted on, which is what makes it a link rather than a box.
-    """
-    super().rotate(
-      x=x, y=y, z=z, reference=self.reference_point if reference is None else reference
-    )
-
-  def turn_to(self, angle: float, about: Optional[Coordinate] = None) -> None:
-    """Point the link along `angle`, turning on the joint at its proximal end.
-
-    Absolute, unlike `rotate`, which turns by an amount: where the link ends up follows from the
-    angle alone rather than from every angle it has held, so a link driven to the same angle twice
-    lands in the same place both times.
-
-    Args:
-      angle: the deck angle to point along, in degrees.
-      about: where the proximal joint sits, in the frame this link is placed in. Left where it
-        already is when None.
-
-    Raises:
-      RuntimeError: If the link has not been placed and no joint is given, so there is nothing for
-        it to turn on.
-    """
-    if about is None:
-      if self.location is None:
-        raise RuntimeError(f"{self.name} is not placed, so there is nothing for it to turn on")
-      about = self.location + self._turned(self.reference_point)
-    self.rotation = Rotation(z=angle)
-    self.location = about - self._turned(self.reference_point)
-
-  def serialize(self) -> dict:
-    return {**super().serialize(), "reference_point": self.reference_point.serialize()}
+# How far apart the clamps hold a rack, in mm, closed and open.
+JAW_RANGE = (72.0, 106.0)
 
 
-def iswap_linkage_1(
-  name: str,
-  length: float = 138.0,
-  width: float = 30.5,
-  height: float = 15.0,
-) -> iSWAPLinkage:
-  """The first link: the rotation joint to the wrist joint.
-
-  The joint it turns on sits at the middle of its proximal end, which is what `reference_point`
-  states, so turning it about the rotation drive turns it about that point rather than about a
-  corner.
-
-  Its underside is the arm's lowest point, which stands
-  `iSWAPConfiguration.rotation_drive_z_offset_above_finger` above the gripper finger plane the Z
-  drive reports - so a link placed by its own bottom sits that far above what `R0 RZ` answers.
+def iswap_gripper(name: str, length: float) -> MechanicalGripper:
+  """The iSWAP's hand: the wrist joint to the centre the clamps hold a rack at.
 
   Args:
     name: what to call this one.
-    length: joint to joint, in mm. Only this one is read back: an arm reports its own through
-      `iSWAPConfiguration.link_1_length`, which is what to pass when it is known.
-    width: how wide the link is, in mm, measured on the arm.
-    height: how deep the link is, in mm, measured on the arm. Not the distance it stands above the
-      grip centre, which is a gap between two things rather than the size of one.
+    length: the wrist joint to the grip centre, in mm, as `iSWAPConfiguration.link_2_length`
+      reports it.
+
+  Returns:
+    The gripper.
+  """
+  return MechanicalGripper(
+    name=name,
+    length=length,
+    body=GRIPPER_BODY,
+    finger=GRIPPER_FINGER,
+    pad=GRIPPER_PAD,
+    jaw_range=JAW_RANGE,
+    model="hamilton_star_iswap_gripper",
+  )
+
+
+def iswap_link_1(name: str, length: float) -> Link:
+  """The first link: the rotation joint to the wrist joint, with the arm bolted to it.
+
+  Args:
+    name: what to call this one.
+    length: joint to joint, in mm, as `iSWAPConfiguration.link_1_length` reports it.
 
   Returns:
     The link.
   """
-  return iSWAPLinkage(
-    name=name,
-    size_x=length,
-    size_y=width,
-    size_z=height,
-    reference_point=Coordinate(0.0, width / 2, 0.0),
-    model="hamilton_star_iswap_linkage_1",
-  )
-
-
-def iswap_linkage_2(
-  name: str,
-  length: float,
-  width: float = 30.5,
-  height: float = 15.0,
-) -> iSWAPLinkage:
-  """The second link: the wrist joint to the gripper finger centre.
-
-  Turns on the wrist, which link 1 carries, so it is a child of link 1 and its angle is measured
-  from link 1 rather than from the deck. Unrotated it continues along link 1.
-
-  Args:
-    name: what to call this one.
-    length: joint to finger centre, in mm. An arm reports its own through
-      `iSWAPConfiguration.link_2_length`.
-    width: how wide the link is, in mm.
-    height: how deep the link is, in mm.
-
-  Returns:
-    The link.
-  """
-  return iSWAPLinkage(
-    name=name,
-    size_x=length,
-    size_y=width,
-    size_z=height,
-    reference_point=Coordinate(0.0, width / 2, 0.0),
-    model="hamilton_star_iswap_linkage_2",
-  )
+  link = Link(name=name, length=length, category="iswap_link", model="hamilton_star_iswap_link_1")
+  bolt_on(link, "body", LINK_1_BODY)
+  return link

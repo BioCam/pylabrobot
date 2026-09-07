@@ -1,9 +1,8 @@
 from pylabrobot.hamilton.star.resource_model.iswap import (
   iswap_channel,
-  iswap_linkage_1,
-  iswap_linkage_2,
+  iswap_gripper,
+  iswap_link_1,
   iSWAPChannel,
-  iSWAPLinkage,
 )
 from pylabrobot.hamilton.star.resource_model.n_channel_pipettes import (
   NChannelPipette,
@@ -15,10 +14,9 @@ from pylabrobot.hamilton.star.resource_model.n_channel_pipettes import (
 
 __all__ = [
   "iSWAPChannel",
-  "iSWAPLinkage",
   "iswap_channel",
-  "iswap_linkage_1",
-  "iswap_linkage_2",
+  "iswap_link_1",
+  "iswap_gripper",
   "NChannelPipette",
   "TipMountingShaft",
   "TipPickupMode",

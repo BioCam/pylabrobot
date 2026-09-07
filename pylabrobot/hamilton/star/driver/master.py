@@ -38,10 +38,9 @@ from pylabrobot.hamilton.star.driver.lock import _FirmwareLock
 from pylabrobot.hamilton.star.resource_model import (
   NChannelPipette,
   iswap_channel,
-  iswap_linkage_1,
-  iswap_linkage_2,
+  iswap_gripper,
+  iswap_link_1,
   iSWAPChannel,
-  iSWAPLinkage,
 )
 from pylabrobot.hamilton.star.resource_model import head96 as head96_pipette
 from pylabrobot.hamilton.star.resource_model import head384 as head384_pipette
@@ -50,6 +49,7 @@ from pylabrobot.io.usb import USB
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton.hamilton_decks import HamiltonDeck
 from pylabrobot.resources.hamilton.tip_creators import HamiltonTip, TipPickupMethod, TipSize
+from pylabrobot.resources.manipulator import Link
 from pylabrobot.resources.resource import Resource
 
 logger = logging.getLogger(__name__)
@@ -1566,15 +1566,15 @@ class STARDriver:
           ),
         )
       iswap.resource = resource
-      iswap.link_1, iswap.link_2 = self._create_iswap_linkages(resource, c)
+      iswap.link_1, iswap.link_2 = self._create_iswap_links(resource, c)
       iswap.update_location_by_reference_point(y=y, z=z)
       iswap.update_rotation(angle)
       iswap.update_wrist(await iswap.request_wrist_drive_angle())
 
   @staticmethod
-  def _create_iswap_linkages(
+  def _create_iswap_links(
     resource: iSWAPChannel, c: iSWAPConfiguration
-  ) -> Tuple[Optional[iSWAPLinkage], Optional[iSWAPLinkage]]:
+  ) -> Tuple[Optional[Link], Optional[Link]]:
     """Hang the arm's two links off the carriage, each as long as the arm says it is.
 
     Link 1 turns on the rotation drive and link 2 on the wrist that link 1 carries, so link 2 is a
@@ -1591,13 +1591,13 @@ class STARDriver:
     if c.link_1_length is None or c.link_2_length is None:
       logger.warning("the iSWAP reported no link lengths, so its arm is not modelled")
       return None, None
-    link_1 = next((child for child in resource.children if isinstance(child, iSWAPLinkage)), None)
+    link_1 = next((child for child in resource.children if isinstance(child, Link)), None)
     if link_1 is None:
-      link_1 = iswap_linkage_1(name="iswap_linkage_1", length=c.link_1_length)
+      link_1 = iswap_link_1(name="iswap_link_1", length=c.link_1_length)
       resource.assign_child_resource(link_1, location=Coordinate.zero())
-    link_2 = next((child for child in link_1.children if isinstance(child, iSWAPLinkage)), None)
+    link_2 = next((child for child in link_1.children if isinstance(child, Link)), None)
     if link_2 is None:
-      link_2 = iswap_linkage_2(name="iswap_linkage_2", length=c.link_2_length)
+      link_2 = iswap_gripper(name="iswap_gripper", length=c.link_2_length)
       link_1.assign_child_resource(link_2, location=Coordinate.zero())
     return link_1, link_2
 

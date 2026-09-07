@@ -7,8 +7,9 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Union, cast
 
-from pylabrobot.hamilton.star.resource_model import iSWAPChannel, iSWAPLinkage
+from pylabrobot.hamilton.star.resource_model import iSWAPChannel
 from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.manipulator import Link
 from pylabrobot.resources.rotation import Rotation
 
 if TYPE_CHECKING:
@@ -81,11 +82,11 @@ PARK_TRAVERSAL_HEIGHT = 280.0
 
 
 @dataclass
-class StarFramePose:
-  """A location and a rotation, both in the STAR's deck frame.
+class CartesianPose:
+  """Location and rotation of the gripper.
 
-  Named for the frame because that is the only thing that makes the numbers mean anything: mm from
-  the deck's origin, and degrees counter-clockwise seen from above with 0 along +x.
+  In the STAR's deck frame: mm from the deck's origin, and degrees counter-clockwise seen from
+  above with 0 along +x. Named as the other arms name theirs, since it is the same thing.
   """
 
   location: Coordinate
@@ -116,6 +117,11 @@ class iSWAPAxis(enum.IntEnum):
     return self is not iSWAPAxis.GRIPPER
 
 
+JointState = Dict[iSWAPAxis, float]
+"""Where every axis is, in its own units: the prismatic axes and the gripper in mm, the two
+revolute drives in degrees. What the arm is, rather than anything worked out from it."""
+
+
 @dataclasses.dataclass(frozen=True)
 class iSWAPPose:
   """Where every joint of the arm is, and which way each link lies.
@@ -125,19 +131,19 @@ class iSWAPPose:
   much as the point at the end of it: a wrist folded back swings link 2 the opposite way to the
   turn, and only the middle joint shows that.
 
-  Every coordinate and rotation here is in the STAR's deck frame, as `StarFramePose` states it.
+  Every coordinate and rotation here is in the STAR's deck frame, as `CartesianPose` states it.
   """
 
   rotation_joint: Coordinate
   """Where the rotation drive is: the joint link 1 turns about."""
   wrist_joint: Coordinate
   """Link 1's far end, which is the joint link 2 turns about."""
-  gripper: StarFramePose
+  gripper: CartesianPose
   """Link 2's far end, between the fingers, and the yaw link 2 lies along."""
   link_1_rotation: Rotation
   """Which way link 1 lies, from the rotation joint to the wrist joint. Link 2's is the
   gripper's."""
-  joints: Dict[iSWAPAxis, float]
+  joints: JointState
   """What each drive reported, in its own units, as `request_joint_state` returns it."""
 
 
@@ -182,7 +188,7 @@ class iSWAPConfiguration:
   # -- wrist drive --
   wrist_drive_predefined_increments: Optional[Dict[str, int]] = None
   link_2_length: Optional[float] = None
-  """wrist joint (joint 2) to the gripper finger center, in mm. default: 138.0 mm."""
+  """wrist joint (joint 2) to the gripper finger centre, in mm. default: 138.0 mm."""
 
   # === Device facts of the 4th-generation iSWAP: per-drive area-of-operation ranges and encoder
   # resolutions. The same across units of a generation, so they are defaulted - but only that
@@ -380,8 +386,8 @@ class iSWAP:
     self._driver = driver
     self.configuration = configuration or iSWAPConfiguration()
     self.resource: Optional[iSWAPChannel] = None
-    self.link_1: Optional[iSWAPLinkage] = None
-    self.link_2: Optional[iSWAPLinkage] = None
+    self.link_1: Optional[Link] = None
+    self.link_2: Optional[Link] = None
 
   # -- session / discovery ---------------------------------------------------
 
@@ -395,7 +401,7 @@ class iSWAP:
     return resp.split("rf")[-1]
 
   async def request_rotation_drive_x_offset(self) -> float:
-    """Request the X distance from the X-arm carriage center to the rotation drive.
+    """Request the X distance from the X-arm carriage centre to the rotation drive.
 
     Stored in the master's own memory, as the 96-head's offset is.
 
@@ -445,7 +451,7 @@ class iSWAP:
     return round((await self._request_slots("pw"))[9] / 10, 1)
 
   async def request_link_2_length(self) -> float:
-    """Request the distance from the wrist joint to the gripper finger center.
+    """Request the distance from the wrist joint to the gripper finger centre.
 
     Returns:
       The length in mm.
@@ -587,7 +593,7 @@ class iSWAP:
     if self.link_1 is None or self.link_2 is None or c.wrist_drive_predefined_increments is None:
       return
     straight = c.wrist_increments_to_deg(c.wrist_drive_predefined_increments["straight"])
-    self.link_2.turn_to(angle - straight, about=self.link_1.own_distal_joint)
+    self.link_2.turn_to(angle - straight, about=self.link_1.far_joint)
 
   def update_location_by_reference_point(
     self, y: Optional[float] = None, z: Optional[float] = None
@@ -1149,7 +1155,7 @@ class iSWAP:
 
   # -- pose ------------------------------------------------------------------
 
-  async def request_joint_state(self) -> Dict[iSWAPAxis, float]:
+  async def request_joint_state(self) -> JointState:
     """Read every axis at once, as the joint state the kinematics run on.
 
     Returns:
@@ -1166,7 +1172,7 @@ class iSWAP:
 
   @staticmethod
   def _forward_kinematics(
-    joints: Dict[iSWAPAxis, float],
+    joints: JointState,
     link_1_length: float,
     link_2_length: float,
     wrist_straight_angle: float,
@@ -1204,7 +1210,7 @@ class iSWAP:
     return iSWAPPose(
       rotation_joint=base,
       wrist_joint=wrist,
-      gripper=StarFramePose(
+      gripper=CartesianPose(
         location=Coordinate(
           x=wrist.x + link_2_length * math.cos(alpha_2),
           y=wrist.y + link_2_length * math.sin(alpha_2),
