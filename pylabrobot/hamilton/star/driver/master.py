@@ -798,7 +798,7 @@ class STARDriver:
       wrap, workspace_range = wraps[side]
       if wrap == 0:  # arm not installed
         return None
-      return XArmConfiguration(
+      answered = XArmConfiguration(
         pip_installed=bool(byte1 & (1 << 0)),
         iswap_installed=bool(byte1 & (1 << 1)),
         head96_installed=bool(byte1 & (1 << 2)),
@@ -815,6 +815,15 @@ class STARDriver:
         workspace_range=workspace_range,
         wrap_size=wrap,
       )
+      # Only the fields above come off the device. The rest are device facts, which nothing
+      # reports and a caller may have corrected for an arm this driver was not recorded against,
+      # so they are carried over rather than reset to what this generation documents. Every other
+      # feature keeps its configuration across a re-read because the object survives; an arm's is
+      # rebuilt here, so what was set on it is carried by hand.
+      if self.configuration is None:
+        return answered
+      carried = self.configuration.left_arm if side == "left" else self.configuration.right_arm
+      return answered if carried is None else answered.with_device_facts_of(carried)
 
     kb = device["kb"]
     ka = extended["ka"]

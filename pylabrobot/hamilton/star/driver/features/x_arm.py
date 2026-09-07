@@ -1,5 +1,6 @@
 """The X-arm: the carriage that runs along a rail and carries whatever is mounted on it."""
 
+import dataclasses
 import datetime
 import logging
 from dataclasses import dataclass
@@ -69,6 +70,29 @@ class XArmConfiguration:
   acceleration_level_default: int = 4
   current_limit_range: Tuple[int, int] = (0, 7)
   current_limit_default: int = 7
+
+  def with_device_facts_of(self, other: "XArmConfiguration") -> "XArmConfiguration":
+    """This configuration, with the device facts of another in place of its own.
+
+    What the device answers stays this one's; what no device reports is taken from the other. The
+    driver reads both arms in one reply and rebuilds their configurations from it, so this is what
+    keeps a caller's corrected device facts across a re-read.
+
+    Args:
+      other: the configuration to take the device facts from.
+
+    Returns:
+      A new configuration. Neither of these is changed.
+    """
+    return dataclasses.replace(
+      self,
+      x_mm_per_increment=other.x_mm_per_increment,
+      x_increment_range=other.x_increment_range,
+      acceleration_level_range=other.acceleration_level_range,
+      acceleration_level_default=other.acceleration_level_default,
+      current_limit_range=other.current_limit_range,
+      current_limit_default=other.current_limit_default,
+    )
 
   # -- conversions: the wire counts in steps, the driver speaks mm ---------------------------
 

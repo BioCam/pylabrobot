@@ -298,3 +298,28 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(reads, 3)
     seated = cast(Coordinate, arm.resource.location)
     self.assertEqual(seated.x + arm.resource.get_anchor(x=arm.reference_anchor).x, 498.0)
+
+
+class TestConfiguringAnArm(unittest.IsolatedAsyncioTestCase):
+  """An arm's configuration is a field of the device's, since the device reports both arms in one
+  reply. Writing to it goes through to that field, and what no device answers survives a re-read.
+  """
+
+  def test_device_facts_carry_over_and_readings_do_not(self):
+    """What a physical device's discovery does with a configured arm. It rebuilds one from the
+    reply, then takes the device facts off the arm as it was configured: those are what no device
+    answers, so a re-read must not put them back to what this generation documents."""
+    configured = dataclasses.replace(
+      BARE_X_ARM, current_limit_range=(0, 15), current_limit_default=15
+    )
+    answered = dataclasses.replace(BARE_X_ARM, width=354.0, x_range=(95.0, 1340.2))
+
+    kept = answered.with_device_facts_of(configured)
+
+    self.assertEqual(kept.current_limit_range, (0, 15))
+    self.assertEqual(kept.current_limit_default, 15)
+    self.assertEqual(kept.width, 354.0)
+    self.assertEqual(kept.x_range, (95.0, 1340.2))
+    # Neither of the two it was worked out from is changed.
+    self.assertEqual(configured.width, BARE_X_ARM.width)
+    self.assertEqual(answered.current_limit_default, BARE_X_ARM.current_limit_default)
