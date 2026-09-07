@@ -37,6 +37,7 @@ from pylabrobot.hamilton.star.driver.features.head import (
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
 from pylabrobot.hamilton.star.driver.features.head384 import Head384, Head384Configuration
 from pylabrobot.hamilton.star.driver.features.iswap import (
+  GRIPPER_DRIVE_SLOTS,
   ROTATION_DRIVE_SLOTS,
   WRIST_DRIVE_SLOTS,
   Y_SLOTS,
@@ -88,11 +89,6 @@ SIMULATED_COVER_INPUTS = (True, False, False)
 
 # What its scanner reads. A simulated deck holds no carriers, so nothing.
 SIMULATED_BARCODE: Optional[str] = None
-
-# The iSWAP's stored position tables, and where its rotation drive sits relative to the carriage.
-
-# How far the simulated gripper's jaws stand open, in increments: fully.
-SIMULATED_ISWAP_GRIPPER_WIDTH = 24_120
 
 
 class _UnusedTransport(IOBase):
@@ -618,9 +614,12 @@ class SimulatedISWAP(_Simulated, iSWAP):
         parked = dict(zip(WRIST_DRIVE_SLOTS, stops))["parking"]
         return {"rt": parked}, "the wrist drive's parking stop"
       if command == "RG":
-        # The drive answers twice; the read takes the second.
-        width = SIMULATED_ISWAP_GRIPPER_WIDTH
-        return {"rg": [width, width]}, "the gripper's stored width"
+        # Nothing models how far the jaws stand open yet, so where an initialized gripper leaves
+        # them: the width it homes and parks at, out of the stored table rather than written down
+        # here. The drive answers twice, a target and an actual; the read takes the second.
+        stops = (await self._request_slots("pg"))[: len(GRIPPER_DRIVE_SLOTS)]
+        home = dict(zip(GRIPPER_DRIVE_SLOTS, stops))["home"]
+        return {"rg": [home, home]}, "the gripper's home and parking width"
     if (module, command) == ("C0", "RA") and kwargs.get("ra") == "kg":
       offset = self._declared.rotation_drive_x_offset
       if offset is None:
@@ -655,6 +654,9 @@ class SimulatedISWAP(_Simulated, iSWAP):
     elif table == "pz":
       stops, length = declared.rotation_drive_predefined_z_positions_increments, None
       names = Z_SLOTS
+    elif table == "pg":
+      stops, length = declared.gripper_drive_predefined_increments, None
+      names = GRIPPER_DRIVE_SLOTS
     elif table == "pw":
       stops, length = declared.rotation_drive_predefined_increments, declared.link_1_length
       names = ROTATION_DRIVE_SLOTS

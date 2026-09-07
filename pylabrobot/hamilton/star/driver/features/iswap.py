@@ -73,6 +73,22 @@ Z_SLOTS = (
   "extra_8",
 )
 
+# And for the gripper drive, whose table is all jaw width: ten slots, no arm length. One slot
+# stands for both home and parking, seven are the widths a plate type is gripped at, and the
+# second has no documented meaning - its default is the top of the drive's range.
+GRIPPER_DRIVE_SLOTS = (
+  "home",
+  "extra_1",
+  "closed",
+  "plate_type_1",
+  "plate_type_2",
+  "plate_type_3",
+  "plate_type_4",
+  "plate_type_5",
+  "plate_type_6",
+  "plate_type_7",
+)
+
 # What the arm the device facts below were recorded from reports for its firmware version. An arm
 # reporting something else is a generation those values were not taken from.
 RECORDED_FIRMWARE_PREFIX = "4."
@@ -177,13 +193,22 @@ class iSWAPConfiguration:
   keyed as `Z_SLOTS` names them.
 
   Filled by `rotation_drive_request_predefined_z_positions` rather than by discovery, which does
-  not read this table: no device has been read for it yet, so no recording carries one and a
-  simulated arm has to be declared with it to answer."""
+  not read this table. No arm has been read for it yet, so what a recording carries are the
+  documented factory values rather than one unit's calibration."""
 
   # -- rotation drive --
   rotation_drive_predefined_increments: Optional[Dict[str, int]] = None
   link_1_length: Optional[float] = None
   """rotation joint (joint 1) to the wrist joint (joint 2); default: 138.0 mm."""
+
+  # -- gripper drive --
+  gripper_drive_predefined_increments: Optional[Dict[str, int]] = None
+  """Each jaw width the gripper is calibrated against, in increments, keyed as
+  `GRIPPER_DRIVE_SLOTS` names them.
+
+  Filled by `request_gripper_drive_widths` rather than by discovery, which does not read this
+  table. No arm has been read for it yet, so what a recording carries are the documented factory
+  values rather than one unit's calibration."""
 
   # -- wrist drive --
   wrist_drive_predefined_increments: Optional[Dict[str, int]] = None
@@ -481,6 +506,27 @@ class iSWAP:
     return {
       name: round(c.z_increments_to_mm(increments) + c.rotation_drive_z_offset_above_finger, 1)
       for name, increments in zip(Z_SLOTS, slots)
+    }
+
+  async def request_gripper_drive_widths(self) -> Dict[str, float]:
+    """Read the jaw widths the gripper drive is calibrated against, in mm.
+
+    The stored table rather than how far the jaws stand now, which `request_gripper_width` reads.
+    Its ten slots are all widths: the one the jaws home and park at, one with no documented
+    meaning, the width the drive treats as closed, and seven a plate type is gripped at.
+
+    Records what came back on the configuration, as the other stored tables are recorded, so an
+    arm read for it once carries the table from then on.
+
+    Returns:
+      Each width in mm, keyed as `GRIPPER_DRIVE_SLOTS` names them.
+    """
+    c = self.configuration
+    slots = await self._request_slots("pg")
+    c.gripper_drive_predefined_increments = dict(zip(GRIPPER_DRIVE_SLOTS, slots))
+    return {
+      name: c.gripper_increments_to_mm(increments)
+      for name, increments in zip(GRIPPER_DRIVE_SLOTS, slots)
     }
 
   async def _request_slots(self, table: str) -> List[int]:

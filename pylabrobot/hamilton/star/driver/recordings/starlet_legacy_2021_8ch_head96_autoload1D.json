@@ -398,6 +398,18 @@
           "extra_6": 24600,
           "extra_7": 24600,
           "extra_8": 24600
+        },
+        "gripper_drive_predefined_increments": {
+          "home": 13100,
+          "extra_1": 24120,
+          "closed": 12960,
+          "plate_type_1": 12780,
+          "plate_type_2": 13100,
+          "plate_type_3": 13100,
+          "plate_type_4": 13100,
+          "plate_type_5": 13100,
+          "plate_type_6": 13100,
+          "plate_type_7": 13100
         }
       }
     }
