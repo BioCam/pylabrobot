@@ -95,6 +95,11 @@ def _nothing_was_gripped(error: STARFirmwareError) -> bool:
 # raised off the force sensor rather than off a position.
 NOTHING_GRIPPED = 94
 
+# How far above its idle reading the force sensor has to sit for the jaws to have met something,
+# in the sensor's own counts. Measured on the arm: closing through air left the peak three counts
+# above an idle of 56, and closing onto a plate held across the fingers left it nearly a thousand.
+GRIPPER_CONTACT_FORCE = 150
+
 # How wide a window the drive will accept around the width a close is aimed at, in its own steps.
 GRIPPER_STOP_BAND_RANGE = (80, 1_800)
 
@@ -1404,12 +1409,21 @@ class iSWAP:
     closing = width < await self.request_gripper_width()
     try:
       if closing and width > MASTER_CLOSE_FLOOR:
-        # Whatever comes back, comes back. A close that reports finding nothing is not a promise
-        # that nothing is there: an arm asked for 86 mm with a plate held the long way across its
-        # fingers answered "plate not found" while its force sensor read twenty times its idle
-        # value. Driving to the width after that answer would have taken the jaws from 133.7 mm
-        # through a plate 127.8 mm wide.
-        return await self.gripper_close_with_force_sensing(grip_strength=grip_strength, width=width)
+        try:
+          return await self.gripper_close_with_force_sensing(
+            grip_strength=grip_strength, width=width
+          )
+        except STARFirmwareError as error:
+          if not _nothing_was_gripped(error):
+            raise
+          # "Plate not found" means nothing was met *inside the window* - which the arm also says
+          # when it met something well outside it. So the sensor is asked rather than the answer
+          # trusted: a close through air leaves the peak force within a few counts of idle, and a
+          # close onto a plate held the wrong way across the fingers left it a thousand above.
+          # Only the first is an empty gap the jaws may be driven into.
+          if await self._felt_something():
+            raise
+          logger.debug("nothing between the jaws and nothing felt, so the close is a move")
       resp = await self._unchecked_fw_gripper_move_to_jaw_position(increments=increments)
       # What was asked for, recorded as soon as the move answers, so the model holds it even if
       # the read below cannot be taken.
@@ -1735,6 +1749,28 @@ class iSWAP:
       await self._record_where_it_stopped("gripper")
 
     return await self.request_gripper_width() if found else None
+
+  async def _felt_something(self) -> bool:
+    """Whether the last movement pushed against anything, as the force sensor saw it.
+
+    For the one decision that cannot be made from what a command answered: the arm reports "plate
+    not found" both when the jaws closed through empty air and when they met something outside the
+    window they were given, and only the sensor tells those apart.
+
+    Its own failure is not an answer, so a sensor that cannot be read is treated as having felt
+    something - the safe way round for a caller deciding whether to drive the jaws further.
+
+    Returns:
+      True when the peak force stood clear of the sensor's idle reading.
+    """
+    try:
+      force = await self.request_gripper_force()
+    except Exception:
+      logger.warning("the gripper's force sensor could not be read; assuming it felt something")
+      return True
+    above_idle = force["peak_force"] - force["idle_offset"]
+    logger.debug("the gripper's peak force was %d above idle", above_idle)
+    return above_idle > GRIPPER_CONTACT_FORCE
 
   async def gripper_close_with_force_sensing(
     self,
