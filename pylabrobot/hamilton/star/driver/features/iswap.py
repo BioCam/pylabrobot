@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Union, c
 
 from pylabrobot.hamilton.star.resource_model import iSWAPChannel
 from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.end_effector import MechanicalGripper
 from pylabrobot.resources.manipulator import Link
 from pylabrobot.resources.rotation import Rotation
 
@@ -651,6 +652,31 @@ class iSWAP:
     straight = c.wrist_increments_to_deg(c.wrist_drive_predefined_increments["straight"])
     self.link_2.turn_to(angle - straight, about=self.link_1.far_joint)
 
+  def update_jaw_width(self, width: float) -> None:
+    """Record how far apart the jaws stand on the resource that models them.
+
+    Does nothing until the gripper is modelled, and nothing when the width is outside what the
+    model says the fingers do - it says so instead, because the two disagreeing is a question
+    about the geometry rather than something to paper over.
+
+    Args:
+      width: how far apart the jaws stand, in mm, as the drive reports it.
+    """
+    gripper = self.link_2
+    if not isinstance(gripper, MechanicalGripper):
+      return
+    low, high = gripper.jaw_range
+    if not low <= width <= high:
+      logger.warning(
+        "the gripper reports its jaws %.1f mm apart, outside the %.1f to %.1f mm the model says "
+        "they travel, so the model is left where it is",
+        width,
+        low,
+        high,
+      )
+      return
+    gripper.jaw_width = width
+
   def update_location_by_reference_point(
     self, y: Optional[float] = None, z: Optional[float] = None
   ) -> None:
@@ -1207,7 +1233,9 @@ class iSWAP:
     """
     resp = await self._driver.send_command(module="R0", command="RG", fmt="rg##### (n)")
     # A target and an actual come back, in that order. The actual is read.
-    return self.configuration.gripper_increments_to_mm(cast(List[int], resp["rg"])[1])
+    width = self.configuration.gripper_increments_to_mm(cast(List[int], resp["rg"])[1])
+    self.update_jaw_width(width)
+    return width
 
   # -- pose ------------------------------------------------------------------
 

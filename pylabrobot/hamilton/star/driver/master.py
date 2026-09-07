@@ -1570,6 +1570,9 @@ class STARDriver:
       iswap.update_location_by_reference_point(y=y, z=z)
       iswap.update_rotation(angle)
       iswap.update_wrist(await iswap.request_wrist_drive_angle())
+      # And how far the jaws stand open, which the read records, so the model starts in step with
+      # the arm rather than at whatever width the gripper was built holding.
+      await iswap.request_gripper_width()
 
   @staticmethod
   def _create_iswap_links(
