@@ -7,6 +7,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Union, cast
 
+from pylabrobot.hamilton.star.driver.errors import STARFirmwareError
 from pylabrobot.hamilton.star.resource_model import iSWAPChannel
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.end_effector import MechanicalGripper
@@ -74,9 +75,29 @@ Z_SLOTS = (
   "extra_8",
 )
 
-# How far past the width it is asked for the master opens the jaws, in increments. Its own
-# command states the overshoot; asking for the drive's end would put the target past it.
-MASTER_OPEN_OVERSHOOT = 20
+
+def _nothing_was_gripped(error: STARFirmwareError) -> bool:
+  """Whether a firmware error is the arm saying it closed and met nothing.
+
+  Args:
+    error: what a command raised.
+
+  Returns:
+    True when the arm reported that it found nothing between its fingers.
+  """
+  return any(
+    part.raw_module == "R0" and part.trace_information == NOTHING_GRIPPED
+    for part in error.errors.values()
+  )
+
+
+# What the arm answers when it closed on nothing: the error its own table calls "plate not found",
+# raised off the force sensor rather than off a position.
+NOTHING_GRIPPED = 94
+
+# The narrowest the master's own close will be sent, in mm. It closes onto a plate, so it will not
+# be aimed below one - which makes shutting the jaws entirely a move rather than a grip.
+MASTER_CLOSE_FLOOR = 76.0
 
 # And for the gripper drive, whose table is all jaw width: ten slots, no arm length. One slot
 # stands for both home and parking, seven are the widths a plate type is gripped at, and the
@@ -937,12 +958,15 @@ class iSWAP:
         yr=f"{acceleration_level}",
         yw=f"{current_limit}",
       )
-    except Exception:
+      # What was asked for, recorded as soon as the move answers, so the model holds it even if
+      # the read below cannot be taken.
+      self.update_location_by_reference_point(y=y)
+      return resp
+    finally:
+      # And then what the drive says, which is the last word either way. A move that stopped part
+      # way left the carriage somewhere no target describes, and a move that answered has still
+      # only answered.
       await self._record_where_it_stopped("y")
-      raise
-
-    self.update_location_by_reference_point(y=y)
-    return resp
 
   async def _make_space_for_y(self, y: float, make_space: bool) -> None:
     """Make sure the backmost channel is out of the way before the drive travels to `y`.
@@ -1115,12 +1139,13 @@ class iSWAP:
         zr=f"{acceleration_increments:03}",
         zw=f"{current_limit}",
       )
-    except Exception:
+      # What was asked for, recorded as soon as the move answers, so the model holds it even if
+      # the read below cannot be taken.
+      self.update_location_by_reference_point(z=z)
+      return resp
+    finally:
+      # And then what the drive says, which is the last word either way.
       await self._record_where_it_stopped("z")
-      raise
-
-    self.update_location_by_reference_point(z=z)
-    return resp
 
   async def rotation_drive_move_to_safe_z_height(
     self,
@@ -1248,26 +1273,57 @@ class iSWAP:
     self.update_jaw_width(width)
     return width
 
-  async def gripper_move_to_jaw_position(
+  async def _unchecked_fw_gripper_move_to_jaw_position(
     self,
-    width: float,
-    speed: float = 49.9,
-    acceleration: float = 415.8,
+    increments: int,
+    speed_increments: int = 9_002,
+    acceleration_increments: int = 75,
     current_limit: int = 15,
   ):
-    """Open or close the jaws to a width. This moves them.
+    """Drive the jaws to an absolute width, without checking or recording.
 
-    An empty move: it drives the jaws to a width and stops there, whatever is or is not between
-    them. Taking hold of a plate is a different command, which stops on what it meets.
+    The lowest command there is here: it takes what the drive counts in and sends it. It feels
+    nothing on the way - the drive pushes to where it is told with whatever the current limit
+    allows, and says so only once it has locked. What checks, chooses and records is
+    `gripper_move_to_jaw_position`; the drive's own knobs are here for a caller that needs them.
+
+    Args:
+      increments: where the jaws are to go, in the drive's own steps.
+      speed_increments: max velocity, in increments/s.
+      acceleration_increments: in thousands of increments/s2.
+      current_limit: the motor current limit, 0 to 15.
+    """
+    return await self._driver.send_command(
+      module="R0",
+      command="GA",
+      ga=f"{increments:05}",
+      gv=f"{speed_increments:04}",
+      gr=f"{acceleration_increments:03}",
+      gw=f"{current_limit:02}",
+    )
+
+  async def gripper_move_to_jaw_position(self, width: float, grip_strength: int = 5):
+    """Put the jaws at a width. This moves them.
+
+    The one place the jaws are driven, and it picks its command from the way they are about to
+    travel. The width they stand at now is read first - read rather than modelled, because being
+    behind here means closing blind. Opening cannot close on anything, so it is driven. Closing is
+    felt for instead, through the master's own close, which stops on whatever is between the jaws:
+    the difference between putting them somewhere and crushing what is already there.
+
+    Shutting them entirely is the one close that cannot be felt, since the master will not aim its
+    close below a plate's width. There is nothing to feel for by then.
+
+    Only what applies whichever way the jaws go is taken here. The drive's speed, acceleration and
+    current limit belong to `_unchecked_fw_gripper_move_to_jaw_position`, and the tolerance a grip
+    allows to `gripper_close_with_force_sensing`.
 
     Args:
       width: how far apart to stand the jaws, in mm.
-      speed: how fast, in mm/s.
-      acceleration: how hard, in mm/s2.
-      current_limit: the motor current limit, 0 to 15.
+      grip_strength: how hard to hold what it closes on, 0 the weakest and 9 the strongest.
 
     Raises:
-      ValueError: If any of them is outside what the drive accepts.
+      ValueError: If the width is outside what the drive travels.
     """
     c = self.configuration
     # Compared in mm rather than in increments: a width read off the drive and sent straight back
@@ -1282,37 +1338,23 @@ class iSWAP:
       c.gripper_increment_range[1],
     )
 
-    speed_increments = c.gripper_mm_to_increments(speed)
-    speed_low, speed_high = c.gripper_speed_increment_range
-    if not speed_low <= speed_increments <= speed_high:
-      raise ValueError(
-        f"speed must be between {c.gripper_increments_to_mm(speed_low)} and "
-        f"{c.gripper_increments_to_mm(speed_high)} mm/s, is {speed}"
-      )
-
-    # The drive counts acceleration in thousands of increments per second squared.
-    acceleration_increments = c.gripper_mm_to_increments(acceleration / 1000)
-    acceleration_low, acceleration_high = c.gripper_acceleration_increment_range
-    if not acceleration_low <= acceleration_increments <= acceleration_high:
-      raise ValueError(
-        f"acceleration must be between {c.gripper_increments_to_mm(acceleration_low * 1000)} and "
-        f"{c.gripper_increments_to_mm(acceleration_high * 1000)} mm/s2, is {acceleration}"
-      )
-
-    if not 0 <= current_limit <= 15:
-      raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
-
+    closing = width < await self.request_gripper_width()
     try:
-      resp = await self._driver.send_command(
-        module="R0",
-        command="GA",
-        ga=f"{increments:05}",
-        gv=f"{speed_increments:04}",
-        gr=f"{acceleration_increments:03}",
-        gw=f"{current_limit:02}",
-      )
-      # What was asked for, recorded as soon as the move answers, so the model holds it even if the
-      # read below cannot be taken.
+      if closing and width > MASTER_CLOSE_FLOOR:
+        try:
+          return await self.gripper_close_with_force_sensing(
+            grip_strength=grip_strength, width=width
+          )
+        except STARFirmwareError as error:
+          if not _nothing_was_gripped(error):
+            raise
+          # The arm felt for something, found nothing, and put the jaws back where they started.
+          # So there is nothing between them down to this width, and driving there is safe - which
+          # is what was asked for in the first place.
+          logger.debug("nothing between the jaws, so the close is a move")
+      resp = await self._unchecked_fw_gripper_move_to_jaw_position(increments=increments)
+      # What was asked for, recorded as soon as the move answers, so the model holds it even if
+      # the read below cannot be taken.
       self.update_jaw_width(width)
       return resp
     finally:
@@ -1324,34 +1366,61 @@ class iSWAP:
   async def gripper_open(self):
     """Open the jaws all the way. This moves them.
 
-    Through the master, which opens a fraction wider than it is told, so it is asked for that
-    fraction short of the drive's own end. What clears the jaws of whatever they are about to take
-    hold of; `gripper_move_to_jaw_position` is what puts them at a particular width instead.
+    Opening cannot close on anything, so it is a plain move to the far end of the drive's travel.
+    What clears the jaws of whatever they are about to take hold of.
     """
     c = self.configuration
-    # The master overshoots what it is asked by a fixed amount, so the ask stops short of the end.
-    widest = c.gripper_increments_to_mm(c.gripper_increment_range[1] - MASTER_OPEN_OVERSHOOT)
-    resp = await self._driver.send_command(
-      module="C0", command="GF", subsystem="R0", go=f"{round(widest * 10):04}"
+    return await self.gripper_move_to_jaw_position(
+      c.gripper_increments_to_mm(c.gripper_increment_range[1])
     )
-    self.update_jaw_width(c.gripper_increments_to_mm(c.gripper_increment_range[1]))
-    # And read back, since where the jaws ended is the master's decision rather than the ask.
-    await self.request_gripper_width()
-    return resp
 
   async def gripper_close(self):
     """Close the jaws all the way. This moves them.
 
-    Shut, on the drive's own move, which is as far as the jaws go. Closing onto something and
-    holding it is `gripper_grip`: the master's own close stops on what it meets and will not be
-    sent below a plate's width, so it cannot shut the jaws.
+    Shut, which is below the width the master's own close will be aimed at, so it is a plain move
+    too. Closing onto something and holding it is what `gripper_move_to_jaw_position` does at any
+    width above that floor.
     """
     c = self.configuration
     return await self.gripper_move_to_jaw_position(
       c.gripper_increments_to_mm(c.gripper_increment_range[0])
     )
 
-  async def gripper_grip(
+  async def _unchecked_fw_gripper_close_with_force_sensing(
+    self,
+    grip_strength: int,
+    width_increments: int,
+    width_tolerance_increments: int,
+  ):
+    """Close the jaws onto an object, without checking or recording.
+
+    The lowest command of the two the jaws take, and the one that feels: the master closes until
+    the arm's force sensor says it has met something, and answers an error when it meets nothing.
+    What checks and records is `gripper_close_with_force_sensing`.
+
+    Both widths are in the tenths of a millimetre the master counts in, which is not what the
+    drive counts in: a grip is stated to the master, and a position to the drive.
+
+    Args:
+      grip_strength: how hard to hold, 0 the weakest and 9 the strongest.
+      width_increments: how wide the thing between the jaws is said to be, in tenths of a
+        millimetre.
+      width_tolerance_increments: how far off that width the thing may be and still count as the
+        thing, in tenths of a millimetre. It sets the window the close searches in: meeting
+        something inside it is a grip, and closing past it without meeting anything is what the
+        arm reports as finding nothing. The jaws also have to start further apart than the width
+        and this tolerance together.
+    """
+    return await self._driver.send_command(
+      module="C0",
+      command="GC",
+      subsystem="R0",
+      gw=f"{grip_strength}",
+      gb=f"{width_increments:04}",
+      gt=f"{width_tolerance_increments:02}",
+    )
+
+  async def gripper_close_with_force_sensing(
     self,
     grip_strength: int = 5,
     width: float = 86.0,
@@ -1365,8 +1434,10 @@ class iSWAP:
 
     Args:
       grip_strength: how hard to hold, 0 the weakest and 9 the strongest.
-      width: how wide the thing between the jaws is, in mm.
-      width_tolerance: how far the width may be out, in mm.
+      width: how wide the thing between the jaws is said to be, in mm.
+      width_tolerance: how far off that width the thing may be and still count as the thing, in
+        mm. The close searches a window that wide around the width, so something met inside it is
+        gripped and a close that runs past it reports finding nothing.
 
     Raises:
       ValueError: If any of them is outside what the command accepts.
@@ -1381,17 +1452,19 @@ class iSWAP:
     if not 0.5 <= width_tolerance <= 9.9:
       raise ValueError(f"width_tolerance must be between 0.5 and 9.9 mm, is {width_tolerance}")
 
-    resp = await self._driver.send_command(
-      module="C0",
-      command="GC",
-      subsystem="R0",
-      gw=f"{grip_strength}",
-      gb=f"{round(width * 10):04}",
-      gt=f"{round(width_tolerance * 10):02}",
-    )
-    # Where the jaws stopped is what they met, which no target describes.
-    await self.request_gripper_width()
-    return resp
+    try:
+      resp = await self._unchecked_fw_gripper_close_with_force_sensing(
+        grip_strength=grip_strength,
+        width_increments=round(width * 10),
+        width_tolerance_increments=round(width_tolerance * 10),
+      )
+      # The width asked for, so the model holds something even if the read below cannot be taken.
+      self.update_jaw_width(width)
+      return resp
+    finally:
+      # And then where the jaws actually stopped, which is what they met rather than what was
+      # asked - and on the failure path, where a close that found nothing left them.
+      await self._record_where_it_stopped("gripper")
 
   def _resolve_rotation_increments(self, angle: Union[str, float]) -> int:
     """A rotation stop's name or an angle, as the increments the drive counts in.
