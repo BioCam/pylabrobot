@@ -95,6 +95,14 @@ def _nothing_was_gripped(error: STARFirmwareError) -> bool:
 # raised off the force sensor rather than off a position.
 NOTHING_GRIPPED = 94
 
+# Which way the gripper drive counts when it closes: its increments fall as the jaws come
+# together, so a probe that closes travels the drive's negative direction.
+GRIPPER_CLOSING_DIRECTION = 1
+
+# How close to their own shut position the jaws may stop and still be said to have found nothing,
+# in mm. A probe that runs the whole way has met nothing rather than met something that narrow.
+PROBE_FOUND_NOTHING_MARGIN = 0.5
+
 # The narrowest the master's own close will be sent, in mm. It closes onto a plate, so it will not
 # be aimed below one - which makes shutting the jaws entirely a move rather than a grip.
 MASTER_CLOSE_FLOOR = 76.0
@@ -1191,7 +1199,7 @@ class iSWAP:
     rotation_current_limit: int = 5,
     wrist_current_limit: int = 5,
   ):
-    """Drive both joints to absolute increments, without checking or recording.
+    """Drive both joints to absolute increments. Nothing is guarded and nothing is recorded.
 
     The lowest command there is here: it takes what the drives count in and sends it. Both joints
     go in one command because they move together - the wrist rides the rotation drive, so sending
@@ -1280,7 +1288,7 @@ class iSWAP:
     acceleration_increments: int = 75,
     current_limit: int = 15,
   ):
-    """Drive the jaws to an absolute width, without checking or recording.
+    """Drive the jaws to an absolute width. Nothing is guarded and nothing is recorded.
 
     The lowest command there is here: it takes what the drive counts in and sends it. It feels
     nothing on the way - the drive pushes to where it is told with whatever the current limit
@@ -1392,11 +1400,13 @@ class iSWAP:
     width_increments: int,
     width_tolerance_increments: int,
   ):
-    """Close the jaws onto an object, without checking or recording.
+    """Close the jaws onto an object, feeling for it. Nothing is guarded and nothing is recorded.
 
-    The lowest command of the two the jaws take, and the one that feels: the master closes until
-    the arm's force sensor says it has met something, and answers an error when it meets nothing.
-    What checks and records is `gripper_close_with_force_sensing`.
+    Unchecked here means unchecked by this driver: what is skipped is the guarding of arguments
+    and the recording of the model. The arm still feels. This is the lower of the two commands the
+    jaws take and the one that senses - the master closes until the force sensor says it has met
+    something, and answers an error when it meets nothing. What guards and records is
+    `gripper_close_with_force_sensing`.
 
     Both widths are in the tenths of a millimetre the master counts in, which is not what the
     drive counts in: a grip is stated to the master, and a position to the drive.
@@ -1419,6 +1429,86 @@ class iSWAP:
       gb=f"{width_increments:04}",
       gt=f"{width_tolerance_increments:02}",
     )
+
+  async def _unchecked_fw_gripper_probe_closing(
+    self,
+    stop_trigger: int = 200,
+    speed_increments: int = 9_000,
+    acceleration_increments: int = 75,
+    current_limit: int = 15,
+    low_pass_filter: bool = True,
+  ):
+    """Close the jaws until the force sensor trips, without checking or recording.
+
+    A search rather than a move: it takes no width at all, and stops wherever the sensor says it
+    has met something. That is what makes it a probe - nothing has to be known about what is
+    between the fingers, and nothing is refused for being the wrong size.
+
+    The arm files this among its development commands and warns that careless use can damage it,
+    which is what a close with no end position is: with nothing between the jaws it runs them
+    into their own stop. `gripper_probe_for_object` is what bounds it.
+
+    Args:
+      stop_trigger: how hard a push counts as meeting something, in the sensor's own counts.
+      speed_increments: max velocity, in increments/s.
+      acceleration_increments: in thousands of increments/s2.
+      current_limit: the motor current limit, 0 to 15.
+      low_pass_filter: whether to filter the current signal the trigger is read from.
+    """
+    return await self._driver.send_command(
+      module="R0",
+      command="GC",
+      gt=f"{GRIPPER_CLOSING_DIRECTION}",
+      gv=f"{speed_increments:04}",
+      gr=f"{acceleration_increments:03}",
+      gw=f"{current_limit:02}",
+      gi=f"{stop_trigger:03}",
+      fi=f"{int(low_pass_filter)}",
+    )
+
+  async def gripper_probe_for_object(
+    self, stop_trigger: int = 200, current_limit: int = 15
+  ) -> Optional[float]:
+    """Close the jaws until they meet something, and report how wide it is. This moves them.
+
+    What the two closes cannot do. `gripper_close_with_force_sensing` has to be told what width to
+    expect and refuses anything else; this is the search that finds out, for a gripper holding
+    something of unknown size, or to ask whether it is holding anything at all.
+
+    The jaws end where they stopped, which is on the object when there is one. Nothing puts them
+    back: what was found is being held, and letting go is the caller's decision.
+
+    Args:
+      stop_trigger: how hard a push counts as meeting something, in the sensor's own counts.
+      current_limit: the motor current limit, 0 to 15.
+
+    Returns:
+      How far apart the jaws stopped, in mm, or None when they reached their own shut position
+      without meeting anything.
+
+    Raises:
+      ValueError: If either argument is outside what the drive accepts.
+    """
+    if not 0 <= stop_trigger <= 999:
+      raise ValueError(f"stop_trigger must be between 0 and 999, is {stop_trigger}")
+    if not 0 <= current_limit <= 15:
+      raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
+
+    c = self.configuration
+    try:
+      await self._unchecked_fw_gripper_probe_closing(
+        stop_trigger=stop_trigger, current_limit=current_limit
+      )
+    finally:
+      # Where the jaws stopped is the whole answer, and it can only be read - a probe has no
+      # target to record. The read is what puts it on the model.
+      await self._record_where_it_stopped("gripper")
+
+    width = await self.request_gripper_width()
+    shut = c.gripper_increments_to_mm(c.gripper_increment_range[0])
+    # Reaching their own stop is the jaws finding nothing, rather than finding something that
+    # narrow: the drive cannot close past it.
+    return None if width <= shut + PROBE_FOUND_NOTHING_MARGIN else width
 
   async def gripper_close_with_force_sensing(
     self,
