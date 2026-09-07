@@ -1372,6 +1372,11 @@ class iSWAP:
     Shutting them entirely is the one close that cannot be felt, since the master will not aim its
     close below a plate's width. There is nothing to feel for by then.
 
+    A close that reports finding nothing raises, rather than falling back to driving the jaws
+    there. The arm says "plate not found" when it met nothing *inside the window it was given* -
+    which it also says when it met something well outside it, and the force sensor proves it did.
+    Treating that as an empty gap and driving through it is how a plate gets crushed.
+
     Only what applies whichever way the jaws go is taken here. The drive's speed, acceleration and
     current limit belong to `_unchecked_fw_gripper_move_to_jaw_position`, and the tolerance a grip
     allows to `gripper_close_with_force_sensing`.
@@ -1399,17 +1404,12 @@ class iSWAP:
     closing = width < await self.request_gripper_width()
     try:
       if closing and width > MASTER_CLOSE_FLOOR:
-        try:
-          return await self.gripper_close_with_force_sensing(
-            grip_strength=grip_strength, width=width
-          )
-        except STARFirmwareError as error:
-          if not _nothing_was_gripped(error):
-            raise
-          # The arm felt for something, found nothing, and put the jaws back where they started.
-          # So there is nothing between them down to this width, and driving there is safe - which
-          # is what was asked for in the first place.
-          logger.debug("nothing between the jaws, so the close is a move")
+        # Whatever comes back, comes back. A close that reports finding nothing is not a promise
+        # that nothing is there: an arm asked for 86 mm with a plate held the long way across its
+        # fingers answered "plate not found" while its force sensor read twenty times its idle
+        # value. Driving to the width after that answer would have taken the jaws from 133.7 mm
+        # through a plate 127.8 mm wide.
+        return await self.gripper_close_with_force_sensing(grip_strength=grip_strength, width=width)
       resp = await self._unchecked_fw_gripper_move_to_jaw_position(increments=increments)
       # What was asked for, recorded as soon as the move answers, so the model holds it even if
       # the read below cannot be taken.
@@ -1690,7 +1690,9 @@ class iSWAP:
 
     Returns:
       How far apart the jaws stopped, in mm, or None when they reached the width given without
-      meeting anything.
+      meeting anything within the band. None is not a promise that the jaws are empty: something
+      far enough outside the band is met without being reported, and the arm has answered "plate
+      not found" with its force sensor reading twenty times its idle value.
 
     Raises:
       ValueError: If any argument is outside what the drive accepts.

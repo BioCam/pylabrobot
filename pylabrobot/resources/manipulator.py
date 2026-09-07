@@ -74,6 +74,10 @@ class Link(Resource):
     if self.location is None:
       raise RuntimeError(f"{self.name} is not on a joint, so there is nothing for it to turn on")
     self.rotation = Rotation(z=angle)
+    # `rotation` is a plain attribute, unlike `location`, so nothing hears about it being set.
+    # Anything watching the model - a viewer, a collision check - learns of a joint moving here or
+    # not at all.
+    self._state_updated()
 
 
 def bolt_on(
