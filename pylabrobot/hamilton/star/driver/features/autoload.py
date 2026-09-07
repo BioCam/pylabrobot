@@ -1215,8 +1215,7 @@ class Autoload:
     self,
     track: int,
     barcode_position: float = 4.3,
-    barcode_reading_window_width: float = 38.0,
-    container_distance: float = 96.0,
+    barcode_reading_window_width: float = 8.5,
     reading_speed: float = 128.1,
   ) -> Optional[str]:
     """Load a carrier from the loading tray and scan its barcode.
@@ -1226,8 +1225,8 @@ class Autoload:
     Args:
       track: the track the carrier ends at, counted from 1.
       barcode_position: where along the carrier its barcode sits, in mm.
-      barcode_reading_window_width: how wide a window to read it in, in mm.
-      container_distance: the spacing of the pattern to read, in mm.
+      barcode_reading_window_width: how wide a window to read it in, in mm. A carrier's own label
+        is read in a narrow window, which is not the width the containers it carries are read in.
       reading_speed: how fast to travel while reading, in mm/s.
 
     Returns:
@@ -1261,7 +1260,6 @@ class Autoload:
           cp=f"{track:02}",
           bi=f"{round(barcode_position * 10):04}",
           bw=f"{round(barcode_reading_window_width * 10):03}",
-          co=f"{round(container_distance * 10):04}",
           cv=f"{round(reading_speed * 10):04}",
         ),
       )
