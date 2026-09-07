@@ -1327,6 +1327,9 @@ class iSWAP:
   async def request_gripper_width(self) -> float:
     """Read how far the gripper jaws are open.
 
+    Where the fingers are, which after a grip is not how wide the thing between them is: a close
+    stops by pressing into what it meets, so it leaves them nearer together than the object stands.
+
     Returns:
       The jaw width in mm.
     """
@@ -1373,6 +1376,10 @@ class iSWAP:
     behind here means closing blind. Opening cannot close on anything, so it is driven. Closing is
     felt for instead, through the master's own close, which stops on whatever is between the jaws:
     the difference between putting them somewhere and crushing what is already there.
+
+    So a width given here is where the jaws are put only when they are opening. Closing, it is
+    where to look, and they stop on what they meet: the model records what they answer either way,
+    which after a grip is inside the thing held rather than around it.
 
     Shutting them entirely is the one close that cannot be felt, since the master will not aim its
     close below a plate's width. There is nothing to feel for by then.
@@ -1704,9 +1711,15 @@ class iSWAP:
 
     Returns:
       How far apart the jaws stopped, in mm, or None when they reached the width given without
-      meeting anything within the band. None is not a promise that the jaws are empty: something
-      far enough outside the band is met without being reported, and the arm has answered "plate
-      not found" with its force sensor reading twenty times its idle value.
+      meeting anything within the band.
+
+      A width is where the fingers stopped pushing, not how wide what they met is: this stops on a
+      lighter push than a grip does and so stops nearer the object, but it still stops inside it.
+      A plate 85.5 mm across was found at 82.1 mm by this and held at 80.3 mm by a grip.
+
+      None is not a promise that the jaws are empty: something far enough outside the band is met
+      without being reported, and the arm has answered "plate not found" with its force sensor
+      reading twenty times its idle value.
 
     Raises:
       ValueError: If any argument is outside what the drive accepts.
@@ -1783,6 +1796,16 @@ class iSWAP:
     Unlike `gripper_move_to_jaw_position`, which drives to a width and stops there whatever is or
     is not in the way, this stops on what it meets and holds it at the strength given. The jaws
     have to start clear of it - `gripper_open` is what puts them there.
+
+    The width is where to look, not where the jaws end up. They end wherever holding the thing put
+    them, which is inside it: a plate stated at 85.5 mm was held at 80.3 mm. So what
+    `request_gripper_width` reads back after this is how far the fingers were pressed together,
+    and no width read after a close is a measurement of what is held.
+
+    Nor is the width checked against what is there. Something met before the window is reached is
+    gripped and reported as gripped - the same plate stated at 78 mm was taken without complaint.
+    Only running past the window having met nothing is reported, and that report is not proof the
+    jaws are empty either: see `_felt_something`.
 
     Args:
       grip_strength: how hard to hold, 0 the weakest and 9 the strongest.
