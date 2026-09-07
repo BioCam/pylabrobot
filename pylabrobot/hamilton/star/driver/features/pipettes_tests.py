@@ -73,7 +73,7 @@ REPORTED_WIDTH = 8.9826
 class TestPositionInYDirection(unittest.IsolatedAsyncioTestCase):
   """What the channels' minimum spacing does to a Y positioning command."""
 
-  async def test_the_limits_accept_what_the_machine_has_been_commanded(self):
+  async def test_the_limits_accept_what_the_device_has_been_commanded(self):
     """The driver's minimum spacing and front limit against the extremes of real runs.
 
     A minimum wider than 9.0 mm fails on the first, a front limit behind 6.0 mm on the second.
