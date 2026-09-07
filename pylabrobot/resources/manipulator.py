@@ -6,7 +6,7 @@ overhang either joint without the kinematics noticing. That is the split every r
 makes, and it is what lets one length stand for the geometry and another for the part.
 """
 
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Type
 
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
@@ -76,18 +76,24 @@ class Link(Resource):
     self.rotation = Rotation(z=angle)
 
 
-def bolt_on(link: Resource, what: str, part: Tuple[float, float, float, float]) -> Resource:
+def bolt_on(
+  link: Resource,
+  what: str,
+  part: Tuple[float, float, float, float],
+  of: Type[Resource] = Resource,
+) -> Resource:
   """Hang material on a link, centred across it and starting where the part says.
 
   Args:
     link: the link it is bolted to.
     what: what the part is, which names it and gives it a category.
     part: its size, and how far along the link it starts from the joint.
+    of: what to make it, for material that is more than a box.
 
   Returns:
     The part.
   """
-  made = Resource(
+  made = of(
     name=f"{link.name}_{what}",
     size_x=part[0],
     size_y=part[1],

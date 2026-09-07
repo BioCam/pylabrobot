@@ -9,6 +9,32 @@ from typing import Optional, Tuple, cast
 
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.manipulator import Link, bolt_on
+from pylabrobot.resources.resource import Resource
+
+
+class Finger(Resource):
+  """One jaw of a gripper: what closes onto a resource, carrying the pad that touches it.
+
+  A body and its pad, and no more than that yet. Two things it will carry once there is something
+  to read them from: which of its faces makes contact, so a grip can be stated against the surface
+  that holds rather than against the finger's own corner, and what the finger senses, since a
+  gripper that reports force reports it per finger.
+  """
+
+  def __init__(
+    self,
+    name: str,
+    size_x: float,
+    size_y: float,
+    size_z: float,
+    category: str = "finger",
+    model: Optional[str] = None,
+  ):
+    super().__init__(
+      name=name, size_x=size_x, size_y=size_y, size_z=size_z, category=category, model=model
+    )
+    self.pad: Optional[Resource] = None
+    """What meets the resource, when the finger has one bolted to it."""
 
 
 class MechanicalGripper(Link):
@@ -45,10 +71,12 @@ class MechanicalGripper(Link):
     self._jaw_width = jaw_range[1]
 
     self.body = bolt_on(self, "body", body)
-    self.fingers = [bolt_on(self, f"finger_{side}", finger) for side in ("left", "right")]
-    self.pads = [
-      bolt_on(on, "pad", (pad[0], pad[1], pad[2], pad[3] - finger[3])) for on in self.fingers
+    self.fingers = [
+      cast(Finger, bolt_on(self, f"finger_{side}", finger, of=Finger)) for side in ("left", "right")
     ]
+    for on in self.fingers:
+      on.pad = bolt_on(on, "pad", (pad[0], pad[1], pad[2], pad[3] - finger[3]))
+    self.pads = [cast(Resource, on.pad) for on in self.fingers]
     self._place_the_fingers()
 
   @property
