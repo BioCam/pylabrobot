@@ -1431,6 +1431,9 @@ class iSWAP:
         raise ValueError(f"{name} must be between 0 and 7, is {value}")
 
     c = self.configuration
+    self._check_gripper_reachable(
+      c.rotation_drive_increments_to_angle(rotation), c.wrist_increments_to_deg(wrist)
+    )
     try:
       resp = await self._unchecked_fw_rotation_drive_rotate_increments(
         rotation_increments=rotation,
@@ -1451,6 +1454,61 @@ class iSWAP:
       # And then what the drives say, which is the last word either way. A move that stopped part
       # way left the arm somewhere no target describes, and this is the only thing that finds it.
       await self._record_where_the_joints_stopped()
+
+  def _check_gripper_reachable(self, rotation_angle: float, wrist_angle: float) -> None:
+    """Raise if the arm cannot put its gripper where these angles would.
+
+    The X-arm is a rail across the back of the deck, behind the drive's own Y travel, so nothing
+    the arm carries may stand further back than the drive itself reaches. A pose is worked out
+    before it is commanded rather than discovered on the way into the rail.
+
+    The crudest check there is: two points, at the end of the move, against one bound. It says
+    nothing about what the arm sweeps through on the way, nor about anything else standing on the
+    deck. Skipped entirely when the arm is not modelled or the numbers it needs have not been
+    read - a check that cannot be made must not look like one that passed.
+
+    Args:
+      rotation_angle: where the rotation drive is being sent, in degrees.
+      wrist_angle: where the wrist is being sent, in degrees.
+
+    Raises:
+      ValueError: If the grip centre would land behind the drive's own back stop.
+    """
+    c = self.configuration
+    y_max = c.rotation_drive_y_max
+    stops = c.wrist_drive_predefined_increments
+    drive = self.modelled_reference_point()
+    if y_max is None or stops is None or drive is None:
+      return
+    if c.link_1_length is None or c.link_2_length is None:
+      return
+
+    pose = self._forward_kinematics(
+      joints={
+        iSWAPAxis.X: drive.x,
+        iSWAPAxis.Y: drive.y,
+        iSWAPAxis.Z: drive.z,
+        iSWAPAxis.ROTATION: rotation_angle,
+        iSWAPAxis.WRIST: wrist_angle,
+      },
+      link_1_length=c.link_1_length,
+      link_2_length=c.link_2_length,
+      wrist_straight_angle=c.wrist_increments_to_deg(stops["straight"]),
+      rotation_drive_z_offset_above_finger=c.rotation_drive_z_offset_above_finger,
+    )
+    # Both moving joints, not only the far one: link 1 is long enough to put the wrist behind the
+    # rail while the grip centre is still clear of it.
+    for what, point in (
+      ("wrist joint", pose.wrist_joint),
+      ("grip centre", pose.gripper.location),
+    ):
+      if point.y > y_max:
+        raise ValueError(
+          f"rotation {rotation_angle:.2f} deg with the wrist at {wrist_angle:.2f} would put the "
+          f"{what} at y {point.y:.1f} mm, behind the {y_max:.1f} mm the rotation drive itself "
+          f"reaches - the X-arm runs across the back of the deck there. Turn the arm the other "
+          f"way, or move the drive forward first"
+        )
 
   async def _record_where_the_joints_stopped(self) -> None:
     """Read both joints and record them on the model.
