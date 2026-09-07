@@ -1618,7 +1618,10 @@ class Autoload:
         raise ValueError(f"{name} must have {tracks} entries, one per track, has {len(pattern)}")
 
     def as_hex(pattern: List[bool]) -> str:
-      bits = "".join("1" if on else "0" for on in pattern)
+      # Track 1 is the lowest bit the master reads, so the pattern is written out backwards: given
+      # in track order it lights the mirror of what was asked for, tracks 16 to 21 coming up as
+      # 34 to 39 on a 54-track deck.
+      bits = "".join("1" if on else "0" for on in reversed(pattern))
       return f"{int(bits, base=2):014X}"
 
     return await self._driver.send_command(
