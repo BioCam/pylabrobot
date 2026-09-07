@@ -1,0 +1,34 @@
+﻿:orphan:
+
+pylabrobot.resources.corning.axygen.plates
+==========================================
+
+.. currentmodule:: pylabrobot.resources.corning.axygen
+
+.. automodule:: pylabrobot.resources.corning.axygen.plates
+
+   
+   
+   
+
+   
+   
+   .. rubric:: Functions
+
+   .. autosummary::
+      :toctree:
+   
+      Cor_Axy_24_wellplate_10mL_Vb
+      Cor_Axy_96_wellplate_500uL_Ub
+      cor_axy_24_wellplate_10mL_Vb
+      cor_axy_96_wellplate_500uL_Ub
+   
+   
+
+   
+   
+   
+
+   
+   
+   
