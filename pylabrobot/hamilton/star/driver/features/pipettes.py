@@ -110,8 +110,8 @@ class PipettesConfiguration:
   z_range: Tuple[float, float] = (99.98, 334.7)
   """The Z window the channels reach, in mm, lowest first.
 
-  What the drive counts, until `probe_z_max` replaces the ceiling with what this device's
-  channels actually reached. The floor is the deck surface either way."""
+  What the drive counts, until setup replaces the ceiling with what `probe_z_max` read off this
+  device's channels. The floor is the deck surface either way."""
   dispensing_drive_mm_per_increment: float = 0.002734375
   dispensing_drive_uL_per_increment: float = 0.046876
 
@@ -1230,40 +1230,25 @@ class Pipettes:
       # neither position describes, and this read is also how a successful move is recorded.
       await self._record_where_they_stopped("z", [channel])
 
-  async def probe_z_max(self) -> float:
-    """Find out how high the channels reach. Raises them to Z safety and performs stop disc reading
-    there.
+  async def probe_z_max(self) -> Dict[int, float]:
+    """Raises single-channel pipettes to Z safety and reads their stop discs z-positions.
 
-    Not something they report: no query carries the Z window, and the travel the drive counts can
-    exceed what a given device reaches. So the channels are sent to Z safety and read back, and
-    what they report replaces the ceiling of `configuration.z_range`. The floor is left as it
-    stands: nothing here measures how low they go.
-
-    One ceiling for every channel, since one window is what `_check_reachable` gates against. The
-    channels have separate drives, so the lowest of what they reported is taken: a ceiling that
-    holds for all of them is the one a shared check can use.
+    Informs the max of `configuration.z_range` during setup.
 
     Returns:
-      The highest Z the channels reach, in mm.
+      List[float]: The z-positions of each channel's stop disc, in mm, keyed by channel.
     """
     await self._driver.send_command(module="C0", command="ZA", subsystem=_FirmwareLock.CHANNELS)
-    # Read off the channels themselves. The master would answer the bottom of any tip that is on,
-    # and the window this sets is the one stop discs are gated against, so a probe run with tips
-    # mounted would put the ceiling low by however far they hang below.
-    positions = list((await self.request_stop_disc_z_positions()).values())
-    ceiling = min(positions)
-    if max(positions) - ceiling > self.configuration.z_drive_increments_to_mm(1):
-      logger.warning(
-        "the channels came to rest at different heights (%s); the lowest is taken as the ceiling "
-        "they all reach",
-        positions,
-      )
-    c = self.configuration
-    c.z_range = (c.z_range[0], ceiling)
-    return ceiling
+
+    positions = await self.request_stop_disc_z_positions()
+    reached = list(positions.values())
+    if max(reached) - min(reached) > self.configuration.z_drive_increments_to_mm(1):
+      logger.warning("the channels came to rest at different heights: %s", positions)
+
+    return positions
 
   async def move_to_safe_z(self) -> List[float]:
-    """Move every channel up to its safe Z: the top of the window `probe_z_max` probed.
+    """Move every channel up to its safe Z: the top of the window setup probed.
 
     Nothing may move in X or Y while a channel is low, so this is the precondition for any lateral
     move and it runs often. An ordinary Z move to a known height, not a command of its own, so it

@@ -1152,12 +1152,16 @@ class STARDriver:
         if arm.pipettes is not None:
           # Probing how high the channels reach raises them, so it doubles as that raise, as the
           # head's does.
-          await arm.pipettes.probe_z_max()
+          reached = await arm.pipettes.probe_z_max()
+          c = arm.pipettes.configuration
+          c.z_range = (c.z_range[0], min(reached.values()))
         # A head is retracted whatever its own status says: the retract is what keeps it clear
         # of the iSWAP, which shares the arm's X drive and moves while features initialize.
         for head in (arm.head96, arm.head384):
           if head is not None:
-            await head.probe_z_max()
+            head_z = await head.probe_z_max()
+            head.configuration.z_range = (head.configuration.z_range_documented[0], head_z)
+            head.configuration.z_drive_safety_position = head_z
 
     return already_initialized
 
@@ -1273,7 +1277,11 @@ class STARDriver:
         logger.debug("channels: already up and nothing mounted - skipped")
       # Probing how high the channels reach raises them, so it doubles as the safety raise and
       # runs on every setup rather than only the first.
-      await arm.pipettes.probe_z_max()
+      reached = await arm.pipettes.probe_z_max()
+      # One ceiling for all of them, since one window is what `_check_reachable` holds every
+      # channel to. The floor is left as it stands: nothing here measures how low they go.
+      c = arm.pipettes.configuration
+      c.z_range = (c.z_range[0], min(reached.values()))
 
     if arm.iswap is not None and "iswap" in skipped:
       logger.debug("iSWAP: initializing it was skipped")
@@ -1302,8 +1310,10 @@ class STARDriver:
           logger.debug("%s reports itself uninitialized - initializing", name)
           await head.initialize()
       # Probing how far a head reaches retracts it, so it doubles as the safety retract and
-      # runs on every setup rather than only the first.
-      await head.probe_z_max()
+      # runs on every setup rather than only the first. The floor is what the drive documents.
+      retracted = await head.probe_z_max()
+      head.configuration.z_range = (head.configuration.z_range_documented[0], retracted)
+      head.configuration.z_drive_safety_position = retracted
 
   def format_setup_summary(self) -> str:
     """One block describing the device that was found: how it is reached, what firmware every

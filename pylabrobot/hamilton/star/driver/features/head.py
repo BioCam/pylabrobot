@@ -130,8 +130,8 @@ class HeadConfiguration:
   moves the waste sets it again."""
 
   z_range: Optional[Tuple[float, float]] = None
-  """Z-drive position window (mm). Resolved by `probe_z_max`: the floor is what the drive
-  documents, the ceiling is read from a hardware probe."""
+  """Z-drive position window (mm). Set by setup: the floor is what the drive documents, the
+  ceiling is what `probe_z_max` read off this head."""
 
   # Encoder resolutions (defaulted device facts). A drive that counts its acceleration in
   # thousands of increments says so here, by carrying a resolution a thousand times its own.
@@ -161,8 +161,8 @@ class HeadConfiguration:
   """Where the Z drive comes to rest when the firmware retracts it, in mm.
 
   A probe result rather than something the head reports, so each head states what its own
-  generation is documented to reach and `probe_z_max` replaces it with what this one actually
-  did. Named as `AutoloadConfiguration.z_drive_safety_position` is, which it means the same as."""
+  generation is documented to reach and setup replaces it with what `probe_z_max` read off this
+  one. Named as `AutoloadConfiguration.z_drive_safety_position` is, which it means the same as."""
 
   traversal_z_position: float = 245.0
   """How high the head travels when a command is not told otherwise, in mm. Not a device fact: a
@@ -1124,20 +1124,16 @@ class Head:
     return [c.z_drive_increments_to_mm(i + c.predefined_z_position_origin) for i in increments]
 
   async def probe_z_max(self, read_timeout: int = RETRACT_READ_TIMEOUT) -> float:
-    """Find out how high this head reaches. Retracts the head.
+    """Retracts the head with the firmware's own retract and reads its stop disc z-position.
 
-    Not something it reports: the command range can exceed what a given unit reaches, so the top is
-    driven to and read back, using the firmware's own retract. Setup calls this once, before any
-    window exists - which is why the retract here is that command rather than `move_to_safe_z`,
-    whose target this establishes. What it finds becomes the ceiling of `configuration.z_range`,
-    whose floor is what the drive documents.
+    Informs the max of `configuration.z_range` and `configuration.z_drive_safety_position` during
+    setup.
 
     Args:
-      read_timeout: how long to wait for the retract, in seconds. It drives the head the length of
-        its travel, so it takes a while.
+      read_timeout: how long to wait for the retract, in seconds.
 
     Returns:
-      The highest Z this head reaches, in mm.
+      float: The z-position of the head's stop disc, in mm.
     """
     await self._driver.send_command(
       module="C0",
@@ -1265,12 +1261,12 @@ class Head:
     speed: Optional[float] = None,
     acceleration: Optional[float] = None,
   ) -> float:
-    """Move the head up to its safe Z: the top of the window `probe_z_max` probed.
+    """Move the head up to its safe Z: the top of the window setup probed.
 
     The precondition for any lateral move, so it runs often. An ordinary Z move to a known height,
     not a command of its own - so it is bounded, and its speed and acceleration are the caller's
-    like any other move. The firmware's own retract, inside `probe_z_max`, is what establishes the
-    height this moves to; with no window probed yet this falls back to it.
+    like any other move. The firmware's own retract, which `probe_z_max` sends, is what
+    establishes the height this moves to; with no window probed yet this falls back to it.
 
     Args:
       speed: how fast, in mm/s. Defaults to `configuration.z_drive_speed_default`.
@@ -1281,7 +1277,9 @@ class Head:
     """
     z_range = self.configuration.z_range
     if z_range is None:
-      # No window probed yet, so there is no height to aim at; the retract establishes one.
+      # No window probed yet, so there is no height to aim at. The retract goes to the top and
+      # says where it stopped, which is the same place; what to make of that is setup's, so
+      # nothing is recorded here.
       return await self.probe_z_max()
     await self.move_stop_disc_to_z_position(z_range[1], speed=speed, acceleration=acceleration)
     return await self.request_z_position()

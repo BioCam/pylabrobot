@@ -246,7 +246,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
 
     return None
 
-  async def probe_z_max(self) -> float:
+  async def probe_z_max(self) -> Dict[int, float]:
     # The firmware retract inside the probe is what puts the channels at their ceiling, and the
     # probe reads them back before it returns, so the model is written before the read rather
     # than after. `move_to_safe_z` needs no override: it is an ordinary move, recorded below.

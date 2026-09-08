@@ -3,7 +3,7 @@ from typing import Any, List, Optional, Tuple
 
 from pylabrobot.hamilton.protocol.text.framing import assemble_command
 from pylabrobot.hamilton.star.device import RECORDING_STAR
-from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes
+from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes, PipettesConfiguration
 from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
 from pylabrobot.resources.hamilton import STARDeck
 
@@ -142,14 +142,24 @@ class TestPositionInZDirection(unittest.IsolatedAsyncioTestCase):
 
     await pipettes.move_stop_disc_to_z_position(0, round((low + high) / 2, 1))
 
-  async def test_probing_replaces_the_ceiling_and_leaves_the_floor(self):
-    """The probe says how high these channels reach, and nothing about how low they go."""
+  async def test_setup_takes_the_ceiling_from_what_the_channels_reached(self):
+    """The probe says how high these channels reach, and setup makes that the ceiling. The floor
+    is left as it stands: nothing measures how low they go."""
+    pipettes = await simulated_channels()
+    floor, ceiling = pipettes.configuration.z_range
+
+    self.assertEqual(ceiling, min((await pipettes.probe_z_max()).values()))
+    self.assertEqual(floor, PipettesConfiguration().z_range[0])
+
+  async def test_probing_reads_the_channels_and_changes_nothing(self):
+    """It is called for the raise as much as for the reading, so it leaves the window alone: what
+    is done with what it read is setup's to decide."""
     pipettes = await simulated_channels()
     floor, _ = pipettes.configuration.z_range
+    # A window that is not the one probing would arrive at, so a probe that set it would show.
+    pipettes.configuration.z_range = (floor + 10.0, 300.0)
 
-    # A floor that is not the drive's, so a probe that touched it would be seen to.
-    reached = 300.0
-    pipettes.configuration.z_range = (floor + 10.0, reached)
+    reached = await pipettes.probe_z_max()
 
-    self.assertEqual(await pipettes.probe_z_max(), reached)
-    self.assertEqual(pipettes.configuration.z_range, (floor + 10.0, reached))
+    self.assertEqual(pipettes.configuration.z_range, (floor + 10.0, 300.0))
+    self.assertEqual(len(reached), len(pipettes.configuration.channels))
