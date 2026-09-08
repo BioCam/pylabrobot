@@ -20,32 +20,44 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class RotationDriveOrientation(str, enum.Enum):
+  """Where the rotation drive can be sent by name, in the order its stored table holds them.
+
+  A `str` enum, so a stop is its own slot name and a plain string still reaches it.
+  """
+
+  HOME = "home"
+  LEFT = "left"
+  FRONT = "front"
+  RIGHT = "right"
+  PARKING = "parking"
+  EXTRA_1 = "extra_1"
+  EXTRA_2 = "extra_2"
+  EXTRA_3 = "extra_3"
+  EXTRA_4 = "extra_4"
+
+
+class WristDriveOrientation(str, enum.Enum):
+  """The same for the wrist twist drive."""
+
+  HOME = "home"
+  RIGHT = "right"
+  STRAIGHT = "straight"
+  LEFT = "left"
+  REVERSE = "reverse"
+  PARKING = "parking"
+  EXTRA_1 = "extra_1"
+  EXTRA_2 = "extra_2"
+  EXTRA_3 = "extra_3"
+
+
 # What the rotation drive's stored position table holds, slot by slot. The tenth slot is the arm
 # length, read separately. The extra slots are addressable but have no documented meaning.
-ROTATION_DRIVE_SLOTS = (
-  "home",
-  "left",
-  "front",
-  "right",
-  "parking",
-  "extra_1",
-  "extra_2",
-  "extra_3",
-  "extra_4",
-)
+ROTATION_DRIVE_SLOTS = tuple(stop.value for stop in RotationDriveOrientation)
 
 # The same for the wrist twist drive.
-WRIST_DRIVE_SLOTS = (
-  "home",
-  "right",
-  "straight",
-  "left",
-  "reverse",
-  "parking",
-  "extra_1",
-  "extra_2",
-  "extra_3",
-)
+WRIST_DRIVE_SLOTS = tuple(stop.value for stop in WristDriveOrientation)
 
 # And for the Y carriage, whose table is all position and has no arm length.
 Y_SLOTS = (
@@ -295,10 +307,14 @@ class iSWAPConfiguration:
   # -- rotation drive (joint 1) --
   rotation_increment_range: Tuple[int, int] = (-30_032, 30_032)
   rotation_deg_per_increment: float = 0.00309619077
+  rotation_speed_increment_range: Tuple[int, int] = (20, 75_000)  # increments/sec
+  rotation_acceleration_increment_range: Tuple[int, int] = (5, 200)  # 1000 increments/sec^2
 
   # -- wrist drive (joint 2) --
   wrist_increment_range: Tuple[int, int] = (-30_000, 30_000)
   wrist_deg_per_increment: float = 0.00507968798
+  wrist_speed_increment_range: Tuple[int, int] = (20, 65_000)  # increments/sec
+  wrist_acceleration_increment_range: Tuple[int, int] = (5, 200)  # 1000 increments/sec^2
 
   # -- gripper --
   gripper_increment_range: Tuple[int, int] = (12_780, 24_120)  # jaw width
@@ -434,8 +450,43 @@ class iSWAPConfiguration:
     """A wrist-drive angle in increments, from degrees."""
     return round(deg / self.wrist_deg_per_increment)
 
+  # A rate is a plain division by the drive's resolution, unlike a rotation-drive position, which
+  # is piecewise against the stops. Acceleration is counted in thousands of increments.
+
+  def rotation_deg_per_sec_to_increments(self, deg_per_sec: float) -> int:
+    """A rotation-drive speed in increments/s, from degrees/s."""
+    return round(deg_per_sec / self.rotation_deg_per_increment)
+
+  def rotation_increments_to_deg_per_sec(self, increments: int) -> float:
+    """A rotation-drive speed in degrees/s, from increments/s."""
+    return round(increments * self.rotation_deg_per_increment, 2)
+
+  def rotation_deg_per_sec2_to_increments(self, deg_per_sec2: float) -> int:
+    """A rotation-drive acceleration in thousands of increments/s2, from degrees/s2."""
+    return round(deg_per_sec2 / self.rotation_deg_per_increment / 1000)
+
+  def rotation_increments_to_deg_per_sec2(self, increments: int) -> float:
+    """A rotation-drive acceleration in degrees/s2, from thousands of increments/s2."""
+    return round(increments * 1000 * self.rotation_deg_per_increment, 2)
+
+  def wrist_deg_per_sec_to_increments(self, deg_per_sec: float) -> int:
+    """A wrist-drive speed in increments/s, from degrees/s."""
+    return round(deg_per_sec / self.wrist_deg_per_increment)
+
+  def wrist_increments_to_deg_per_sec(self, increments: int) -> float:
+    """A wrist-drive speed in degrees/s, from increments/s."""
+    return round(increments * self.wrist_deg_per_increment, 2)
+
+  def wrist_deg_per_sec2_to_increments(self, deg_per_sec2: float) -> int:
+    """A wrist-drive acceleration in thousands of increments/s2, from degrees/s2."""
+    return round(deg_per_sec2 / self.wrist_deg_per_increment / 1000)
+
+  def wrist_increments_to_deg_per_sec2(self, increments: int) -> float:
+    """A wrist-drive acceleration in degrees/s2, from thousands of increments/s2."""
+    return round(increments * 1000 * self.wrist_deg_per_increment, 2)
+
   def gripper_increments_to_mm(self, increments: int) -> float:
-    """A gripper jaw width in mm, from increments. One decimal, as the device resolves it."""
+    """A gripper jaw width in mm, from increments."""
     return round(increments * self.gripper_mm_per_increment, 1)
 
   def gripper_mm_to_increments(self, mm: float) -> int:
@@ -1204,10 +1255,10 @@ class iSWAP:
     self,
     rotation_increments: int,
     wrist_increments: int,
-    rotation_speed: int = 25_000,
-    wrist_speed: int = 20_000,
-    rotation_acceleration: int = 170,
-    wrist_acceleration: int = 145,
+    rotation_speed_increments: int = 25_000,
+    wrist_speed_increments: int = 20_000,
+    rotation_acceleration_increments: int = 170,
+    wrist_acceleration_increments: int = 145,
     rotation_current_limit: int = 5,
     wrist_current_limit: int = 5,
   ):
@@ -1221,10 +1272,10 @@ class iSWAP:
     Args:
       rotation_increments: where the rotation drive is to go, signed.
       wrist_increments: where the wrist drive is to go, signed.
-      rotation_speed: max velocity of the rotation drive, in increments/s.
-      wrist_speed: max velocity of the wrist drive, in increments/s.
-      rotation_acceleration: for the rotation drive, in thousands of increments/s2.
-      wrist_acceleration: for the wrist drive, in thousands of increments/s2.
+      rotation_speed_increments: max velocity of the rotation drive, in increments/s.
+      wrist_speed_increments: max velocity of the wrist drive, in increments/s.
+      rotation_acceleration_increments: for the rotation drive, in thousands of increments/s2.
+      wrist_acceleration_increments: for the wrist drive, in thousands of increments/s2.
       rotation_current_limit: the rotation motor's current limit.
       wrist_current_limit: the wrist motor's current limit.
     """
@@ -1232,12 +1283,12 @@ class iSWAP:
       module="R0",
       command="PA",
       wa=f"{rotation_increments:+06}",
-      wv=f"{rotation_speed:05}",
-      wr=f"{rotation_acceleration:03}",
+      wv=f"{rotation_speed_increments:05}",
+      wr=f"{rotation_acceleration_increments:03}",
       ww=f"{rotation_current_limit}",
       ta=f"{wrist_increments:+06}",
-      tv=f"{wrist_speed:05}",
-      tr=f"{wrist_acceleration:03}",
+      tv=f"{wrist_speed_increments:05}",
+      tr=f"{wrist_acceleration_increments:03}",
       tw=f"{wrist_current_limit}",
     )
 
@@ -1247,10 +1298,20 @@ class iSWAP:
     Returns:
       The angle in degrees.
     """
-    resp = await self._driver.send_command(module="R0", command="RW", fmt="rw######")
-    angle = self.configuration.rotation_drive_increments_to_angle(cast(int, resp["rw"]))
+    angle = self.configuration.rotation_drive_increments_to_angle(
+      await self._request_rotation_drive_increments()
+    )
     self.update_rotation(angle)
     return angle
+
+  async def _request_rotation_drive_increments(self) -> int:
+    """Reads the rotation drive's position in the increments the drive counts in.
+
+    Returns:
+      int: The drive's position, in increments.
+    """
+    resp = await self._driver.send_command(module="R0", command="RW", fmt="rw######")
+    return cast(int, resp["rw"])
 
   async def request_wrist_drive_angle(self) -> float:
     """Read the wrist drive's angle, signed from the motor's own zero.
@@ -1261,10 +1322,18 @@ class iSWAP:
     Returns:
       The angle in degrees.
     """
-    resp = await self._driver.send_command(module="R0", command="RT", fmt="rt######")
-    angle = self.configuration.wrist_increments_to_deg(cast(int, resp["rt"]))
+    angle = self.configuration.wrist_increments_to_deg(await self._request_wrist_drive_increments())
     self.update_wrist(angle)
     return angle
+
+  async def _request_wrist_drive_increments(self) -> int:
+    """Reads the wrist drive's position in the increments the drive counts in.
+
+    Returns:
+      int: The drive's position, in increments.
+    """
+    resp = await self._driver.send_command(module="R0", command="RT", fmt="rt######")
+    return cast(int, resp["rt"])
 
   async def request_plate_gripped(self) -> bool:
     """Read whether the arm is holding something between its fingers.
@@ -1903,60 +1972,108 @@ class iSWAP:
 
   async def rotate_to_angles(
     self,
-    rotation_angle: Union[str, float],
-    wrist_angle: Union[str, float],
+    rotation_angle: Optional[Union[RotationDriveOrientation, float]] = None,
+    wrist_angle: Optional[Union[WristDriveOrientation, float]] = None,
     make_space: bool = False,
-    rotation_speed: int = 25_000,
-    wrist_speed: int = 20_000,
-    rotation_acceleration: int = 170,
-    wrist_acceleration: int = 145,
+    rotation_speed: float = 75.0,
+    wrist_speed: float = 100.0,
+    rotation_acceleration: float = 500.0,
+    wrist_acceleration: float = 725.0,
     rotation_current_limit: int = 5,
     wrist_current_limit: int = 5,
   ):
-    """Turn both joints, each to its own angle. This moves the arm.
+    """Rotate one or both iSWAP joints to absolute angles in a single motion. This moves the arm.
 
-    The only place either joint is turned. They go in one command because they move together - the
-    wrist rides the rotation drive, so turning them one after the other sweeps a path neither
-    target describes, out through a pose nobody asked for. A caller that means to move one holds
-    the other where it is, which is what `rotation_drive_rotate_to_angle` and
-    `wrist_drive_rotate_to_angle` do.
+    When both angles are supplied, both joints arrive together under a single motion plan so the
+    gripper sweeps a straight joint-space path; enables IK-driven trajectory execution.
 
-    Where the joints end up is read back rather than taken from the target, whether the move
-    succeeded or not: a move that stopped part way left the arm somewhere no target describes, and
-    the model has to follow the arm rather than the intention.
+    When only one angle is supplied, the other drive is requested from device (i.e. single-axis
+    rotation is covered as well). At least one of `rotation_angle` or `wrist_angle` must be
+    provided.
+
+    Each angle is either the enum stop, which lands on the increment this arm stores for it, or a
+    float in degrees: rotation floats interpolate piecewise-linearly between the LEFT / FRONT /
+    RIGHT stops, so -90, 0 and +90 land on them exactly; wrist floats are linear from motor zero.
 
     Collision risk: the whole arm sweeps, and the path is neither joint's alone.
 
     Args:
-      rotation_angle: a stop in `ROTATION_DRIVE_SLOTS`, or degrees from the calibrated front stop.
-      wrist_angle: a stop in `WRIST_DRIVE_SLOTS`, or degrees from the drive's own zero.
+      rotation_angle [deg]: predefined `RotationDriveOrientation` enum, or float signed from
+        FRONT, or None to hold current.
+      wrist_angle [deg]: predefined `WristDriveOrientation` enum, or float signed from motor zero,
+        or None to hold current.
       make_space: whether the channels may be moved out of the way when the arm would end up
         reaching into them. Off by default, so a pose that does not fit raises and the caller
         decides. Making space raises the channels to Z safety first, since it moves them in Y.
-      rotation_speed: max velocity of the rotation drive, in increments/s.
-      wrist_speed: max velocity of the wrist drive, in increments/s.
-      rotation_acceleration: for the rotation drive, in thousands of increments/s2.
-      wrist_acceleration: for the wrist drive, in thousands of increments/s2.
-      rotation_current_limit: the rotation motor's current limit, 0 to 7.
-      wrist_current_limit: the wrist motor's current limit, 0 to 7.
+      rotation_speed [deg/sec]: max angular velocity, within what
+        `configuration.rotation_speed_increment_range` accepts.
+      wrist_speed [deg/sec]: max angular velocity, within what
+        `configuration.wrist_speed_increment_range` accepts.
+      rotation_acceleration [deg/sec^2]: max angular acceleration, within what
+        `configuration.rotation_acceleration_increment_range` accepts.
+      wrist_acceleration [deg/sec^2]: max angular acceleration, within what
+        `configuration.wrist_acceleration_increment_range` accepts.
+      rotation_current_limit: motor current protection limiter, 0..7.
+      wrist_current_limit: motor current protection limiter, 0..7.
 
     Raises:
-      ValueError: If either angle lands outside its drive's travel, or an argument is out of range.
+      RuntimeError: if `setup()` has not populated the predefined-stop tables.
+      ValueError: if neither angle is provided, or if either resolved target increment is outside
+        the hardware range.
     """
-    rotation = self._resolve_rotation_increments(rotation_angle)
-    wrist = self._resolve_wrist_increments(wrist_angle)
-    if not 20 <= rotation_speed <= 75_000:
-      raise ValueError(
-        f"rotation_speed must be between 20 and 75000 increments/s, is {rotation_speed}"
-      )
-    if not 20 <= wrist_speed <= 65_000:
-      raise ValueError(f"wrist_speed must be between 20 and 65000 increments/s, is {wrist_speed}")
-    for name, value in (
-      ("rotation_acceleration", rotation_acceleration),
-      ("wrist_acceleration", wrist_acceleration),
+    if rotation_angle is None and wrist_angle is None:
+      raise ValueError("pass a rotation_angle, a wrist_angle, or both; both are None")
+    # Held in the drive's own increments rather than through its angle, so a joint that is holding
+    # is sent exactly where it already is.
+    rotation = (
+      await self._request_rotation_drive_increments()
+      if rotation_angle is None
+      else self._resolve_rotation_increments(rotation_angle)
+    )
+    wrist = (
+      await self._request_wrist_drive_increments()
+      if wrist_angle is None
+      else self._resolve_wrist_increments(wrist_angle)
+    )
+    c = self.configuration
+    rotation_speed_increments = c.rotation_deg_per_sec_to_increments(rotation_speed)
+    wrist_speed_increments = c.wrist_deg_per_sec_to_increments(wrist_speed)
+    rotation_acceleration_increments = c.rotation_deg_per_sec2_to_increments(rotation_acceleration)
+    wrist_acceleration_increments = c.wrist_deg_per_sec2_to_increments(wrist_acceleration)
+    for name, asked, increments, (low, high), in_degrees in (
+      (
+        "rotation_speed",
+        rotation_speed,
+        rotation_speed_increments,
+        c.rotation_speed_increment_range,
+        c.rotation_increments_to_deg_per_sec,
+      ),
+      (
+        "wrist_speed",
+        wrist_speed,
+        wrist_speed_increments,
+        c.wrist_speed_increment_range,
+        c.wrist_increments_to_deg_per_sec,
+      ),
+      (
+        "rotation_acceleration",
+        rotation_acceleration,
+        rotation_acceleration_increments,
+        c.rotation_acceleration_increment_range,
+        c.rotation_increments_to_deg_per_sec2,
+      ),
+      (
+        "wrist_acceleration",
+        wrist_acceleration,
+        wrist_acceleration_increments,
+        c.wrist_acceleration_increment_range,
+        c.wrist_increments_to_deg_per_sec2,
+      ),
     ):
-      if not 5 <= value <= 200:
-        raise ValueError(f"{name} must be between 5 and 200 thousand increments/s2, is {value}")
+      if not low <= increments <= high:
+        raise ValueError(
+          f"{name} must be between {in_degrees(low)} and {in_degrees(high)}, is {asked}"
+        )
     for name, value in (
       ("rotation_current_limit", rotation_current_limit),
       ("wrist_current_limit", wrist_current_limit),
@@ -1973,10 +2090,10 @@ class iSWAP:
       resp = await self._unchecked_fw_rotation_drive_rotate_increments(
         rotation_increments=rotation,
         wrist_increments=wrist,
-        rotation_speed=rotation_speed,
-        wrist_speed=wrist_speed,
-        rotation_acceleration=rotation_acceleration,
-        wrist_acceleration=wrist_acceleration,
+        rotation_speed_increments=rotation_speed_increments,
+        wrist_speed_increments=wrist_speed_increments,
+        rotation_acceleration_increments=rotation_acceleration_increments,
+        wrist_acceleration_increments=wrist_acceleration_increments,
         rotation_current_limit=rotation_current_limit,
         wrist_current_limit=wrist_current_limit,
       )
@@ -2077,31 +2194,29 @@ class iSWAP:
 
   async def rotation_drive_rotate_to_angle(
     self,
-    angle: Union[str, float],
-    speed: int = 25_000,
-    acceleration: int = 170,
+    angle: Union[RotationDriveOrientation, float],
+    speed: float = 75.0,
+    acceleration: float = 500.0,
     current_limit: int = 5,
   ):
     """Turn the rotation drive to an angle, holding the wrist where it is. This moves the arm.
 
-    A caller for `rotate_to_angles`, which is where the move and the model update live: the wrist
-    is read first and sent back to itself, so one command carries both and the arm sweeps the path
-    that was asked for.
+    A caller for `rotate_to_angles`, which is where the move and the model update live. The wrist
+    is left to hold where it is, so one command carries both joints.
 
     Args:
       angle: one of the stops in `ROTATION_DRIVE_SLOTS` - `left`, `front`, `right`, `parking` -
         which goes to the increment this arm stores for it, or degrees signed from the calibrated
         front stop.
-      speed: max velocity, in increments/s.
-      acceleration: in thousands of increments/s2.
-      current_limit: the motor current limit, 0 to 7.
+      speed [deg/sec]: max angular velocity.
+      acceleration [deg/sec^2]: max angular acceleration.
+      current_limit: motor current protection limiter, 0..7.
 
     Raises:
       ValueError: If the angle lands outside the drive's travel, or an argument is out of range.
     """
     return await self.rotate_to_angles(
       rotation_angle=angle,
-      wrist_angle=await self.request_wrist_drive_angle(),
       rotation_speed=speed,
       rotation_acceleration=acceleration,
       rotation_current_limit=current_limit,
@@ -2109,9 +2224,9 @@ class iSWAP:
 
   async def wrist_drive_rotate_to_angle(
     self,
-    angle: Union[str, float],
-    speed: int = 20_000,
-    acceleration: int = 145,
+    angle: Union[WristDriveOrientation, float],
+    speed: float = 100.0,
+    acceleration: float = 725.0,
     current_limit: int = 5,
   ):
     """Turn the wrist to an angle, holding the rotation drive where it is. This moves the arm.
@@ -2122,15 +2237,14 @@ class iSWAP:
       angle: one of the stops in `WRIST_DRIVE_SLOTS` - `straight`, `left`, `right`, `reverse`,
         `parking` - which goes to the increment this arm stores for it, or degrees signed from the
         drive's own zero.
-      speed: max velocity, in increments/s.
-      acceleration: in thousands of increments/s2.
-      current_limit: the motor current limit, 0 to 7.
+      speed [deg/sec]: max angular velocity.
+      acceleration [deg/sec^2]: max angular acceleration.
+      current_limit: motor current protection limiter, 0..7.
 
     Raises:
       ValueError: If the angle lands outside the drive's travel, or an argument is out of range.
     """
     return await self.rotate_to_angles(
-      rotation_angle=await self.request_rotation_drive_angle(),
       wrist_angle=angle,
       wrist_speed=speed,
       wrist_acceleration=acceleration,
