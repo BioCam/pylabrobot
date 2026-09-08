@@ -78,8 +78,8 @@ class iSWAPChannel(Resource):
 # it independently, since the pads' underside comes out exactly that far below.
 LINK_1_BODY = (163.4, 25.5, 15.3, -12.7, 19.0)
 GRIPPER_BODY = (59.0, 90.0, 20.3, -13.0, -1.3)
-GRIPPER_FINGER = (135.0, 7.0, 8.0, 6.5, 4.0)
-GRIPPER_PAD = (37.0, 4.0, 17.0, 115.5, -13.0)
+GRIPPER_JAW = (135.0, 7.0, 8.0, 6.5, 4.0)
+GRIPPER_FINGER = (37.0, 4.0, 17.0, 115.5, -13.0)
 
 # How far the rotation drive's own column stands above the height the Z drive reports, in mm. The
 # arm hangs below that: the drive reports where the material it carries is, not where its column
@@ -139,8 +139,8 @@ def iswap_gripper(
     name=name,
     length=length,
     body=GRIPPER_BODY,
+    jaw=GRIPPER_JAW,
     finger=GRIPPER_FINGER,
-    pad=GRIPPER_PAD,
     jaw_range=jaw_range,
     jaw_width=jaw_width,
     model="hamilton_star_iswap_gripper",
