@@ -338,7 +338,7 @@ class iSWAPConfiguration:
 
   def y_increments_to_mm(self, increments: int) -> float:
     """A Y-carriage position in mm, from the increments the drive counts in."""
-    return round(increments * self.y_mm_per_increment, 1)
+    return round(increments * self.y_mm_per_increment, 2)
 
   def y_mm_to_increments(self, mm: float) -> int:
     """A Y-carriage position in increments, from mm."""
@@ -346,7 +346,7 @@ class iSWAPConfiguration:
 
   def z_increments_to_mm(self, increments: int) -> float:
     """A Z position in mm, from increments."""
-    return round(increments * self.z_mm_per_increment, 1)
+    return round(increments * self.z_mm_per_increment, 3)
 
   def z_mm_to_increments(self, mm: float) -> int:
     """A Z position in increments, from mm."""
@@ -487,7 +487,7 @@ class iSWAPConfiguration:
 
   def gripper_increments_to_mm(self, increments: int) -> float:
     """A gripper jaw width in mm, from increments."""
-    return round(increments * self.gripper_mm_per_increment, 1)
+    return round(increments * self.gripper_mm_per_increment, 3)
 
   def gripper_mm_to_increments(self, mm: float) -> int:
     """A gripper jaw width in increments, from mm."""
