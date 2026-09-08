@@ -41,7 +41,7 @@ class MechanicalGripper(Link):
   """A gripper that holds by closing two fingers on what it takes.
 
   A link, because on an arm that is what it is: it spans the joint it turns on to the point it
-  grips at, which is `tool_centre_point`. Its body, its two fingers and the pad on each are material
+  grips at, which is `tool_center_point`. Its body, its two fingers and the pad on each are material
   bolted to that span. How far apart the fingers stand is state rather than shape, so `jaw_width`
   moves them.
   """
@@ -93,11 +93,16 @@ class MechanicalGripper(Link):
     self._place_the_fingers()
 
   @property
-  def tool_centre_point(self) -> Coordinate:
-    """The tool centre point: the point between the fingers a move is programmed against.
+  def tool_center_point(self) -> Coordinate:
+    """The tool center point: where this tool is programmed against, as an offset from where it is
+    mounted.
 
-    A gripper's far joint carries nothing, so what sits there is the point it grips at. Stated as
-    an offset from the joint the gripper turns on, as a tool centre point is.
+    A gripper's far joint carries nothing, so what sits there is the point it grips at.
+
+    In PyLabRobot a tool center point is always this offset - a property of the tool, which changes
+    when a different one is fitted and not when the arm moves. Robot controllers also use the term
+    for where that point currently is in the robot's frame; here that is a location, and something
+    an arm answers rather than a tool.
 
     Returns:
       The grip centre, from the joint this gripper turns on.

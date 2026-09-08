@@ -97,7 +97,7 @@ revolute drives in degrees. What the arm is, rather than anything worked out fro
 
 @dataclasses.dataclass(frozen=True)
 class iSWAPPose:
-  """Where every joint of the arm is, and which way each link lies.
+  """Where every joint of the arm is, and which way the gripper faces.
 
   One answer for the whole arm rather than for its end. The two links are what put the gripper
   where it is, so a caller asking whether the arm clears something needs the joint between them as
@@ -107,12 +107,16 @@ class iSWAPPose:
   Every coordinate and rotation here is in the STAR's deck frame, as `CartesianPose` states it.
   """
 
-  rotation_joint: Coordinate
+  rotation_joint_location: Coordinate
   """Where the rotation drive is: the joint link 1 turns about."""
-  wrist: CartesianPose
-  """Link 1's far end, the joint link 2 turns about, and the yaw link 1 lies along."""
-  gripper: CartesianPose
-  """Link 2's far end, between the fingers, and the yaw link 2 lies along."""
+  wrist_joint_location: Coordinate
+  """Link 1's far end, which is the joint link 2 turns about. Which way link 1 lies is not stated:
+  it is the direction from `rotation_joint_location` to here, and nothing has needed it."""
+  gripper_center_location: Coordinate
+  """Link 2's far end, between the fingers: the point a grip is programmed against."""
+  gripper_deck_orientation: Rotation
+  """Which way the gripper faces, in the deck frame - the yaw link 2 lies along, since the gripper
+  is bolted to it. Degrees counter-clockwise seen from above, 0 along +x."""
   joints: JointState
   """What each drive reported, in its own units, as `request_joint_state` returns it."""
 
@@ -1136,9 +1140,9 @@ class iSWAP:
     """
     pipettes = self.arm.pipettes
     device = self._driver.configuration
-    pose = self._compute_pose_at_angles(rotation_angle, wrist_angle)
-    if pipettes is None or device is None or pose is None:
+    if pipettes is None or device is None:
       return
+    pose = self._compute_pose_at_angles(rotation_angle, wrist_angle)
 
     widths = [channel.width for channel in pipettes.configuration.channels]
     if any(width is None for width in widths):
@@ -1146,7 +1150,7 @@ class iSWAP:
 
     # The frontmost point the arm would put anywhere, and where that leaves the backmost channel:
     # it has to stand in front of the arm by its own half width.
-    reaches_to = min(pose.wrist.location.y, pose.gripper.location.y)
+    reaches_to = min(pose.wrist_joint_location.y, pose.gripper_center_location.y)
     target_y = reaches_to - cast(float, widths[0]) / 2
     backmost_y = await pipettes.request_y_position(0)
     furthest_back = device.left_arm_min_y_position + sum(cast(List[float], widths[1:]))
@@ -1548,9 +1552,7 @@ class iSWAP:
       # way left the arm somewhere no target describes, and this is the only thing that finds it.
       await self._record_where_the_joints_stopped()
 
-  def _compute_pose_at_angles(
-    self, rotation_angle: float, wrist_angle: float
-  ) -> Optional[iSWAPPose]:
+  def _compute_pose_at_angles(self, rotation_angle: float, wrist_angle: float) -> iSWAPPose:
     """Where the arm would be with its joints at these angles. Nothing is read or moved.
 
     Worked from where the model has the drive, so it costs no commands, and it is what both of the
@@ -1562,18 +1564,22 @@ class iSWAP:
       wrist_angle: the wrist drive's angle, in degrees.
 
     Returns:
-      The pose, or None when it cannot be worked out.
+      The pose.
+
+    Raises:
+      RuntimeError: If the arm is not modelled, its gripper is not, or the kinematics' numbers
+        have not been read.
     """
     c = self.configuration
     predefined_wrist_positions = c.wrist_drive_predefined_increments
     drive = self.rotation_drive_get_reference_point_location()
-    if (
-      predefined_wrist_positions is None
-      or drive is None
-      or c.link_1_length is None
-      or c.link_2_length is None
-    ):
-      return None
+    gripper = self.link_2
+    if drive is None:
+      raise RuntimeError("the iSWAP's arm is not modelled; the driver was given no deck")
+    if not isinstance(gripper, MechanicalGripper):
+      raise RuntimeError("the iSWAP's arm is modelled but its gripper is not")
+    if c.link_1_length is None or predefined_wrist_positions is None:
+      raise RuntimeError("the arm's link length or the wrist's stops were not read")
     return self._forward_kinematics(
       joints={
         iSWAPAxis.X: drive.x,
@@ -1583,7 +1589,9 @@ class iSWAP:
         iSWAPAxis.WRIST: wrist_angle,
       },
       link_1_length=c.link_1_length,
-      link_2_length=c.link_2_length,
+      # Asked of the tool, not taken off the arm: the gripper knows how far its grip centre sits
+      # from the wrist, and a different end-effector would answer differently.
+      tool_center_point_distance=gripper.tool_center_point.x,
       wrist_straight_angle=c.wrist_increments_to_deg(predefined_wrist_positions["straight"]),
       rotation_drive_z_offset_above_finger=c.rotation_drive_z_offset_above_finger,
     )
@@ -1610,14 +1618,14 @@ class iSWAP:
       ValueError: If the grip centre would land behind the drive's own back stop.
     """
     y_max = self.configuration.rotation_drive_y_max
-    pose = self._compute_pose_at_angles(rotation_angle, wrist_angle)
-    if y_max is None or pose is None:
+    if y_max is None:
       return
+    pose = self._compute_pose_at_angles(rotation_angle, wrist_angle)
     # Both moving joints, not only the far one: link 1 is long enough to put the wrist behind the
     # rail while the grip centre is still clear of it.
     for what, point in (
-      ("wrist joint", pose.wrist.location),
-      ("grip centre", pose.gripper.location),
+      ("wrist joint", pose.wrist_joint_location),
+      ("grip centre", pose.gripper_center_location),
     ):
       if point.y > y_max:
         raise ValueError(
@@ -2024,10 +2032,8 @@ class iSWAP:
     if rotation is None or wrist is None:
       return
     pose = self._compute_pose_at_angles(rotation, wrist)
-    if pose is None:
-      return
     # The fingers stand either side of link 2, so they close across it.
-    closing = (pose.gripper.rotation.z + 90.0) % 180.0
+    closing = (pose.gripper_deck_orientation.z + 90.0) % 180.0
     if min(closing, 180.0 - closing) <= FINGER_AXIS_TOLERANCE:
       size_of = Resource.get_absolute_size_x
     elif abs(closing - 90.0) <= FINGER_AXIS_TOLERANCE:
@@ -2035,7 +2041,7 @@ class iSWAP:
     else:
       return
 
-    centre = pose.gripper.location
+    centre = pose.gripper_center_location
     low, high = gripper.jaw_range
     fits = [
       (size_of(child), child)
@@ -2351,25 +2357,27 @@ class iSWAP:
   def _forward_kinematics(
     joints: JointState,
     link_1_length: float,
-    link_2_length: float,
+    tool_center_point_distance: float,
     wrist_straight_angle: float,
     rotation_drive_z_offset_above_finger: float,
   ) -> iSWAPPose:
     """Where a joint state puts the gripper. Pure arithmetic: nothing is read.
 
-    Two links off the rotation drive. Link 1 leaves it at the rotation angle, link 2 leaves the
-    wrist at that plus however far the wrist is turned from straight. Angles are signed
+    One link off the rotation drive, and whatever is bolted to its far end. Link 1 leaves the drive
+    at the rotation angle; the tool leaves the wrist at that plus however far the wrist is turned
+    from straight. Angles are signed
     counter-clockwise seen from above, and a yaw of 0 points along +x, deck-right.
 
     Args:
       joints: the joint state, as `request_joint_state` returns it.
-      link_1_length: rotation joint to wrist joint, in mm.
-      link_2_length: wrist joint to gripper finger centre, in mm.
-      wrist_straight_angle: what the wrist reports when it is straight, in degrees.
+      link_1_length: rotation joint to wrist joint, in mm - the arm's own.
+      tool_center_point_distance: wrist joint to the point the end-effector is programmed against,
+        in mm - the tool's own, which the gripper reports as its `tool_center_point`.
+      wrist_straight_angle: what the wrist reports when it is straight, in degrees.1
       rotation_drive_z_offset_above_finger: how far the drive's bottom sits above the fingers.
 
     Returns:
-      Every joint of the arm, and the deck angle of each link.
+      Every joint of the arm, and the deck angle the gripper faces along.
     """
     link_1_deck_angle = joints[iSWAPAxis.ROTATION] - 90.0
     link_2_deck_angle = link_1_deck_angle + (joints[iSWAPAxis.WRIST] - wrist_straight_angle)
@@ -2385,16 +2393,14 @@ class iSWAP:
       z=base.z,
     )
     return iSWAPPose(
-      rotation_joint=base,
-      wrist=CartesianPose(location=wrist, rotation=Rotation(z=link_1_deck_angle)),
-      gripper=CartesianPose(
-        location=Coordinate(
-          x=wrist.x + link_2_length * math.cos(alpha_2),
-          y=wrist.y + link_2_length * math.sin(alpha_2),
-          z=base.z - rotation_drive_z_offset_above_finger,
-        ),
-        rotation=Rotation(z=link_2_deck_angle),
+      rotation_joint_location=base,
+      wrist_joint_location=wrist,
+      gripper_center_location=Coordinate(
+        x=wrist.x + tool_center_point_distance * math.cos(alpha_2),
+        y=wrist.y + tool_center_point_distance * math.sin(alpha_2),
+        z=base.z - rotation_drive_z_offset_above_finger,
       ),
+      gripper_deck_orientation=Rotation(z=link_2_deck_angle),
       joints=joints,
     )
 
@@ -2406,23 +2412,26 @@ class iSWAP:
     so it holds whenever it is called.
 
     Returns:
-      Every joint of the arm and the deck angle of each link, in one answer: what a caller needs
-      to say whether the arm clears something is where its middle joint is as much as where its
-      end is.
+      Every joint of the arm and where its tool ends up, in one answer: what a caller needs to say
+      whether the arm clears something is where its middle joint is as much as where its end is.
 
     Raises:
-      RuntimeError: If the link lengths or the wrist's stops were not read.
+      RuntimeError: If the arm's link length or the wrist's stops were not read, or the gripper is
+        not modelled.
     """
     c = self.configuration
-    if c.link_1_length is None or c.link_2_length is None:
-      raise RuntimeError("the arm's link lengths were not read; have you called `star.setup()`?")
+    gripper = self.link_2
+    if c.link_1_length is None:
+      raise RuntimeError("the arm's link length was not read; have you called `star.setup()`?")
+    if not isinstance(gripper, MechanicalGripper):
+      raise RuntimeError("the gripper is not modelled, so how far it reaches is unknown")
     if c.wrist_drive_predefined_increments is None:
       raise RuntimeError("the wrist drive's stops were not read; have you called `star.setup()`?")
 
     return self._forward_kinematics(
       joints=await self.request_joint_state(),
       link_1_length=c.link_1_length,
-      link_2_length=c.link_2_length,
+      tool_center_point_distance=gripper.tool_center_point.x,
       wrist_straight_angle=c.wrist_increments_to_deg(
         c.wrist_drive_predefined_increments["straight"]
       ),
