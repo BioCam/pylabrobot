@@ -447,7 +447,7 @@ class Pipettes:
       return anchor
     return Coordinate(anchor.x, anchor.y, shaft.location.z)
 
-  def modelled_reference_point(self, channel: int) -> Optional[Coordinate]:
+  def get_reference_point_location(self, channel: int) -> Optional[Coordinate]:
     """Where the model has a channel's reference point, in mm on the deck.
 
     The inverse of `update_location_by_reference_point`: it converts a reported position into a

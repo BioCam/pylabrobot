@@ -33,27 +33,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# The firmware's own retract drives the head to its Z-safety height, which takes a while.
-RETRACT_READ_TIMEOUT = 20
-
 # The shaft the drives report: every head is positioned by its first channel.
 HEAD_REFERENCE_SHAFT = "A1"
-
-
-# What a head's stored position tables hold, slot by slot. The first is the home position its
-# drive parks at; the nine after it are further slots nothing here commands against.
-HEAD_PREDEFINED_SLOTS = (
-  "home",
-  "predefined_1",
-  "predefined_2",
-  "predefined_3",
-  "predefined_4",
-  "predefined_5",
-  "predefined_6",
-  "predefined_7",
-  "predefined_8",
-  "predefined_9",
-)
 
 
 @dataclass
@@ -150,10 +131,38 @@ class HeadConfiguration:
   predefined_y_position_origin: int = 0
   predefined_z_position_origin: int = 0
 
+  predefined_y_slots: Tuple[str, ...] = (
+    "home",
+    "predefined_1",
+    "predefined_2",
+    "predefined_3",
+    "predefined_4",
+    "predefined_5",
+    "predefined_6",
+    "predefined_7",
+    "predefined_8",
+    "predefined_9",
+  )
+  """What the head's stored Y table holds, slot by slot."""
+
   predefined_y_positions_increments: Optional[Dict[str, int]] = None
-  """Each Y position the head has stored, in increments, keyed as `HEAD_PREDEFINED_SLOTS` names
+  """Each Y position the head has stored, in increments, keyed as `configuration.predefined_y_slots` names
   them. Filled by `request_predefined_y_positions`, which discovery does not call: what a head
   parks at is read when it is needed rather than at every setup."""
+  predefined_z_slots: Tuple[str, ...] = (
+    "home",
+    "predefined_1",
+    "predefined_2",
+    "predefined_3",
+    "predefined_4",
+    "predefined_5",
+    "predefined_6",
+    "predefined_7",
+    "predefined_8",
+    "predefined_9",
+  )
+  """The same for its Z table, which the head keeps separately."""
+
   predefined_z_positions_increments: Optional[Dict[str, int]] = None
   """The same along Z, filled by `request_predefined_z_positions`."""
 
@@ -865,7 +874,7 @@ class Head:
       module=self.configuration.module, command="RA", ra="py", fmt="py##### (n)"
     )
     increments = cast(List[int], resp["py"])
-    c.predefined_y_positions_increments = dict(zip(HEAD_PREDEFINED_SLOTS, increments))
+    c.predefined_y_positions_increments = dict(zip(c.predefined_y_slots, increments))
     return [c.y_drive_increments_to_mm(i + c.predefined_y_position_origin) for i in increments]
 
   async def park(
@@ -1120,10 +1129,10 @@ class Head:
       module=self.configuration.module, command="RA", ra="pz", fmt="pz##### (n)"
     )
     increments = cast(List[int], resp["pz"])
-    c.predefined_z_positions_increments = dict(zip(HEAD_PREDEFINED_SLOTS, increments))
+    c.predefined_z_positions_increments = dict(zip(c.predefined_z_slots, increments))
     return [c.z_drive_increments_to_mm(i + c.predefined_z_position_origin) for i in increments]
 
-  async def probe_z_max(self, read_timeout: int = RETRACT_READ_TIMEOUT) -> float:
+  async def probe_z_max(self, read_timeout: int = 30) -> float:
     """Retracts the head with the firmware's own retract and reads its stop disc z-position.
 
     Informs the max of `configuration.z_range` and `configuration.z_drive_safety_position` during

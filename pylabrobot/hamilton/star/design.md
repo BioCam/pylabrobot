@@ -154,11 +154,11 @@ that a constant already holds are referenced by name rather than repeated.
    `driver/features/__init__.py` and `resource_model/__init__.py` export their whole surface and
    `star/__init__.py` is empty. Any of these is defensible; the four together are not a convention.
 
-7. **Two prefixes are used that P10's table does not name.** `probe_*` (`probe_z_max`,
+7. **One prefix is used that P10's table does not name.** `probe_*` (`probe_z_max`,
    `gripper_probe_for_object`) is a measurement taken by moving, which the proposal has no prefix
-   for - it is neither a plain `move_` nor a `sense_` that leaves the device where it stands.
-   `modelled_*` (`modelled_reference_point`, `modelled_rotation`, `modelled_wrist`) asks the
-   resource model, which the proposal calls `get_`.
+   for - it is neither a plain `move_` nor a `sense_` that leaves the device where it stands. The
+   simulator's `_modelled_y`, `_modelled_z` and `_modelled_track` are the same question for a
+   private helper, where the table does not reach.
 
 8. **One reading is filed as memory rather than measurement.** `request_gripper_force` reads the
    force sensor, which P10's table puts under `measure_`; legacy called it

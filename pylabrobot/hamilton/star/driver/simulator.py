@@ -25,22 +25,13 @@ from pylabrobot.hamilton.star.driver.features.autoload import (
 )
 from pylabrobot.hamilton.star.driver.features.cover import CoverPosition, FrontCover
 from pylabrobot.hamilton.star.driver.features.head import (
-  HEAD_PREDEFINED_SLOTS,
   HEAD_REFERENCE_SHAFT,
   Head,
   HeadConfiguration,
 )
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
 from pylabrobot.hamilton.star.driver.features.head384 import Head384, Head384Configuration
-from pylabrobot.hamilton.star.driver.features.iswap import (
-  GRIPPER_DRIVE_SLOTS,
-  ROTATION_DRIVE_SLOTS,
-  WRIST_DRIVE_SLOTS,
-  Y_SLOTS,
-  Z_SLOTS,
-  iSWAP,
-  iSWAPConfiguration,
-)
+from pylabrobot.hamilton.star.driver.features.iswap import iSWAP, iSWAPConfiguration
 from pylabrobot.hamilton.star.driver.features.pipettes import (
   PipetteConfiguration,
   Pipettes,
@@ -180,7 +171,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
     Returns:
       Where the model has it, or where initialization spreads it when nothing models it yet.
     """
-    point = self.modelled_reference_point(channel)
+    point = self.get_reference_point_location(channel)
     return self.default_initialize_y_positions()[channel] if point is None else point.y
 
   def _modelled_z(self, channel: int) -> float:
@@ -193,7 +184,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
       Where the model has it, or the top of the drive's window when nothing models it yet, which
       is where Z safety leaves a device that has just been switched on.
     """
-    point = self.modelled_reference_point(channel)
+    point = self.get_reference_point_location(channel)
     return self.configuration.z_range[1] if point is None else point.z
 
   async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
@@ -365,7 +356,7 @@ class _SimulatedHead(_Simulated, Head):
       table: which table, `py` along Y or `pz` along Z.
 
     Returns:
-      Each slot in increments, keyed as `HEAD_PREDEFINED_SLOTS` names them.
+      Each slot in increments, keyed as `configuration.predefined_y_slots` names them.
 
     Raises:
       RuntimeError: If the head was declared without that table, so there is nothing to answer.
@@ -431,8 +422,10 @@ class _SimulatedHead(_Simulated, Head):
         # commands against. Answered as the drive stores them, offsets from its own origin
         # included, which is how the read converts them back.
         stored = self._stored(cast(Literal["py", "pz"], parameter))
+        declared = self._declared
+        names = declared.predefined_y_slots if parameter == "py" else declared.predefined_z_slots
         return (
-          {parameter: [stored[name] for name in HEAD_PREDEFINED_SLOTS]},
+          {parameter: [stored[name] for name in names]},
           f"the {self._label}'s stored {parameter} table",
         )
       value = self._simulated_drive_parameter(parameter)
@@ -574,40 +567,40 @@ class SimulatedISWAP(_Simulated, iSWAP):
     c = self.configuration
     if module == "R0":
       if command == "RW":
-        angle = self.modelled_rotation()
+        angle = self.rotation_drive_get_angle()
         if angle is not None:
           return (
             {"rw": c.rotation_drive_angle_to_increments(angle)},
             "which way the model has the arm pointing",
           )
-        stops = (await self._request_slots("pw"))[: len(ROTATION_DRIVE_SLOTS)]
-        parked = dict(zip(ROTATION_DRIVE_SLOTS, stops))["parking"]
+        stops = (await self._request_slots("pw"))[: len(c.rotation_drive_slots)]
+        parked = dict(zip(c.rotation_drive_slots, stops))["parking"]
         return {"rw": parked}, "the rotation drive's parking stop"
 
       if command == "RY":
-        point = self.modelled_reference_point()
+        point = self.rotation_drive_get_reference_point_location()
         if point is None:
           # Nothing models it yet, so where an initialized device leaves it: its parking stop, out
           # of the stored table rather than a position written down here.
-          stops = (await self._request_slots("py"))[: len(Y_SLOTS)]
-          parked = dict(zip(Y_SLOTS, stops))["parking"]
+          stops = (await self._request_slots("py"))[: len(c.rotation_drive_y_slots)]
+          parked = dict(zip(c.rotation_drive_y_slots, stops))["parking"]
           return {"ry": [parked, parked]}, "the rotation drive's parking stop"
         increments = c.y_mm_to_increments(point.y)
         # Two counters come back, the firmware's and the hardware's; the read takes the hardware.
         return {"ry": [increments, increments]}, "where the model has the rotation drive along Y"
 
       if command == "RZ":
-        point = self.modelled_reference_point()
+        point = self.rotation_drive_get_reference_point_location()
         if point is None:
           # Nothing models it yet, so where an initialized device leaves it: its parking stop, out
           # of the stored table rather than a height written down here.
-          stops = (await self._request_slots("pz"))[: len(Z_SLOTS)]
-          parked = dict(zip(Z_SLOTS, stops))["parking"]
+          stops = (await self._request_slots("pz"))[: len(c.rotation_drive_z_slots)]
+          parked = dict(zip(c.rotation_drive_z_slots, stops))["parking"]
           return {"rz": [parked, parked]}, "the rotation drive's parking stop"
         increments = c.z_mm_to_increments(point.z - c.rotation_drive_z_offset_above_finger)
         return {"rz": [increments, increments]}, "where the model has the rotation drive along Z"
       if command == "RT":
-        angle = self.modelled_wrist()
+        angle = self.wrist_drive_get_angle()
         if angle is not None:
           return (
             {"rt": c.wrist_deg_to_increments(angle)},
@@ -681,19 +674,19 @@ class SimulatedISWAP(_Simulated, iSWAP):
     declared = self._declared
     if table == "py":
       stops, length = declared.rotation_drive_predefined_y_positions_increments, None
-      names: Tuple[str, ...] = Y_SLOTS
+      names: Tuple[str, ...] = declared.rotation_drive_y_slots
     elif table == "pz":
       stops, length = declared.rotation_drive_predefined_z_positions_increments, None
-      names = Z_SLOTS
+      names = declared.rotation_drive_z_slots
     elif table == "pg":
       stops, length = declared.gripper_drive_predefined_increments, None
-      names = GRIPPER_DRIVE_SLOTS
+      names = declared.gripper_drive_slots
     elif table == "pw":
       stops, length = declared.rotation_drive_predefined_increments, declared.link_1_length
-      names = ROTATION_DRIVE_SLOTS
+      names = declared.rotation_drive_slots
     else:
       stops, length = declared.wrist_drive_predefined_increments, declared.link_2_length
-      names = WRIST_DRIVE_SLOTS
+      names = declared.wrist_drive_slots
     if stops is None:
       raise RuntimeError(f"the simulated iSWAP has no {table} table; set it on its configuration")
     rendered = [stops[name] for name in names]

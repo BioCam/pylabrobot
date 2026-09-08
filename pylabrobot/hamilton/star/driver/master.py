@@ -1592,7 +1592,7 @@ class STARDriver:
       # Read before it has a resource to read into, as the head's are.
       y = await iswap.rotation_drive_request_y_position()
       z = await iswap.rotation_drive_request_z_position()
-      angle = await iswap.request_rotation_drive_angle()
+      angle = await iswap.rotation_drive_request_angle()
       existing = next(
         (child for child in arm.resource.children if child.name == "iswap_channel"), None
       )
@@ -1633,10 +1633,10 @@ class STARDriver:
       iswap.link_1, iswap.link_2 = self._create_iswap_links(resource, c)
       iswap.update_location_by_reference_point(y=y, z=z)
       iswap.update_rotation(angle)
-      iswap.update_wrist(await iswap.request_wrist_drive_angle())
+      iswap.update_wrist(await iswap.wrist_drive_request_angle())
       # And how far the jaws stand open, which the read records, so the model starts in step with
       # the arm rather than at whatever width the gripper was built holding.
-      await iswap.request_gripper_width()
+      await iswap.gripper_request_width()
 
   @staticmethod
   def _create_iswap_links(
