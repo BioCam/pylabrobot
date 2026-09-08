@@ -45,7 +45,12 @@ Accleration = "Accleration"
 Tranformation = "Tranformation"
 tranformation = "tranformation"
 
+# three.js material vocabulary, used in the 3D viewer's own code as the library spells it.
+metalness = "metalness"
+
 [files]
 extend-exclude = [
-    "*.ipynb"
+    "*.ipynb",
+    # Third-party libraries, shipped as their authors minified them.
+    "pylabrobot/visualizer3D/static/vendor/**",
 ]
