@@ -109,13 +109,10 @@ class iSWAPPose:
 
   rotation_joint: Coordinate
   """Where the rotation drive is: the joint link 1 turns about."""
-  wrist_joint: Coordinate
-  """Link 1's far end, which is the joint link 2 turns about."""
+  wrist: CartesianPose
+  """Link 1's far end, the joint link 2 turns about, and the yaw link 1 lies along."""
   gripper: CartesianPose
   """Link 2's far end, between the fingers, and the yaw link 2 lies along."""
-  link_1_rotation: Rotation
-  """Which way link 1 lies, from the rotation joint to the wrist joint. Link 2's is the
-  gripper's."""
   joints: JointState
   """What each drive reported, in its own units, as `request_joint_state` returns it."""
 
@@ -1149,7 +1146,7 @@ class iSWAP:
 
     # The frontmost point the arm would put anywhere, and where that leaves the backmost channel:
     # it has to stand in front of the arm by its own half width.
-    reaches_to = min(pose.wrist_joint.y, pose.gripper.location.y)
+    reaches_to = min(pose.wrist.location.y, pose.gripper.location.y)
     target_y = reaches_to - cast(float, widths[0]) / 2
     backmost_y = await pipettes.request_y_position(0)
     furthest_back = device.left_arm_min_y_position + sum(cast(List[float], widths[1:]))
@@ -1619,7 +1616,7 @@ class iSWAP:
     # Both moving joints, not only the far one: link 1 is long enough to put the wrist behind the
     # rail while the grip centre is still clear of it.
     for what, point in (
-      ("wrist joint", pose.wrist_joint),
+      ("wrist joint", pose.wrist.location),
       ("grip centre", pose.gripper.location),
     ):
       if point.y > y_max:
@@ -2389,7 +2386,7 @@ class iSWAP:
     )
     return iSWAPPose(
       rotation_joint=base,
-      wrist_joint=wrist,
+      wrist=CartesianPose(location=wrist, rotation=Rotation(z=link_1_deck_angle)),
       gripper=CartesianPose(
         location=Coordinate(
           x=wrist.x + link_2_length * math.cos(alpha_2),
@@ -2398,7 +2395,6 @@ class iSWAP:
         ),
         rotation=Rotation(z=link_2_deck_angle),
       ),
-      link_1_rotation=Rotation(z=link_1_deck_angle),
       joints=joints,
     )
 

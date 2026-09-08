@@ -9,7 +9,7 @@ import dataclasses
 import datetime
 import json
 import logging
-from typing import Any, Dict, FrozenSet, List, Literal, Optional, Tuple, cast
+from typing import Any, Dict, FrozenSet, List, Literal, Optional, Tuple, cast, overload
 
 from pylabrobot.events import emit_event
 from pylabrobot.hamilton.protocol.text.framing import (
@@ -452,6 +452,35 @@ class STARDriver:
   # Low-level I/O
   # ----------------------------------------
 
+  @overload
+  async def send_command(
+    self,
+    module: str,
+    command: str,
+    auto_id: bool = True,
+    tip_pattern: Optional[List[bool]] = None,
+    write_timeout: Optional[int] = None,
+    read_timeout: Optional[int] = None,
+    *,
+    fmt: Any,
+    subsystem: Optional[str] = None,
+    **kwargs: Any,
+  ) -> Dict[str, Any]: ...
+
+  @overload
+  async def send_command(
+    self,
+    module: str,
+    command: str,
+    auto_id: bool = True,
+    tip_pattern: Optional[List[bool]] = None,
+    write_timeout: Optional[int] = None,
+    read_timeout: Optional[int] = None,
+    fmt: None = None,
+    subsystem: Optional[str] = None,
+    **kwargs: Any,
+  ) -> str: ...
+
   async def send_command(
     self,
     module: str,
@@ -460,17 +489,23 @@ class STARDriver:
     tip_pattern: Optional[List[bool]] = None,
     write_timeout: Optional[int] = None,
     read_timeout: Optional[int] = None,
-    wait=True,
     fmt: Optional[Any] = None,
     subsystem: Optional[str] = None,
     **kwargs,
   ):
     """Assemble a firmware command, send it, and parse the reply if a format is given.
 
-    Modules share one link. One command runs at a time per physical subsystem; commands on
-    different subsystems run together. A command addressed to C0 drives a subsystem of its own:
-    `C0 DI` the channels, `C0 II` the autoload. A C0 command naming none reaches every subsystem
-    and runs alone. Read-only `R` and `Q` commands take no lock.
+    Modules share one physical link between control PC and the device but due to the STAR's 
+    architecture containing multiple control boards, for different drives, we can parallelise
+    certain subsystems.
+    To prevent collisions, we use a lock system inside this method which ensures that only 
+    compatible commands are sent in parallel.
+    
+    A command addressed to C0 can drive a subsystem of its own, e.g. `C0 DI` the channels and 
+    `C0 II` the autoload, enabling parallelisation of known orthogonal C0 commands.\
+    A C0 command naming no subsystem explicitly is assumed to not allow parallelisation and
+    runs alone.
+    Read-only `R` and `Q` commands take no lock.
 
     Args:
       module: the module to address the command to.
@@ -489,7 +524,6 @@ class STARDriver:
       tip_pattern=tip_pattern,
       write_timeout=write_timeout,
       read_timeout=read_timeout,
-      wait=wait,
       fmt=fmt,
       **kwargs,
     )
@@ -507,7 +541,6 @@ class STARDriver:
     tip_pattern: Optional[List[bool]] = None,
     write_timeout: Optional[int] = None,
     read_timeout: Optional[int] = None,
-    wait=True,
     fmt: Optional[Any] = None,
     **kwargs,
   ):
@@ -539,14 +572,16 @@ class STARDriver:
     }
     emit_event("firmware.command.started", **event_data)
     try:
-      resp = await self._replies.send(
-        cmd=cmd,
-        id_=id_,
-        write_timeout=write_timeout,
-        read_timeout=read_timeout,
-        wait=wait,
+      resp = cast(
+        str,
+        await self._replies.send(
+          cmd=cmd,
+          id_=id_,
+          write_timeout=write_timeout,
+          read_timeout=read_timeout,
+        ),
       )
-      result = self._parse_response(resp, fmt) if resp is not None and fmt is not None else resp
+      result = self._parse_response(resp, fmt) if fmt is not None else resp
     except BaseException as error:
       emit_event(
         "firmware.command.failed",

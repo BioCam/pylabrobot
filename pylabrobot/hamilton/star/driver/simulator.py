@@ -54,11 +54,6 @@ logger = logging.getLogger(__name__)
 # the same way.
 SIMULATED_LINK = "[simulation]"
 
-# Where the channels rest on a simulated device: the Y band the initialization procedure spreads
-# them across, so a simulated device looks like one that has been set up rather than one with
-# every channel on top of the next. Their Z-safety height comes from the configured Z window.
-
-
 # Where its two undriven drives report themselves, in mm. Where they actually are is not modelled:
 # each answers from its zero. X is not among them - it answers from the deck.
 SIMULATED_AUTOLOAD_Y_POSITION = 0.0
@@ -611,6 +606,11 @@ class SimulatedISWAP(_Simulated, iSWAP):
         stops = (await self._request_slots("pt"))[: len(c.wrist_drive_slots)]
         parked = dict(zip(c.wrist_drive_slots, stops))["parking"]
         return {"rt": parked}, "the wrist drive's parking stop"
+      if command == "RH":
+        # Nothing models the force sensor: a simulated arm meets nothing, so its peaks are its
+        # idle reading and its last measurement is nothing at all.
+        return {"rh": [0, 0, 0, 0, 0]}, "a simulated arm meets nothing, so it feels nothing"
+
       if command == "RG":
         # The drive answers twice, a target and an actual; the read takes the second.
         gripper = self.link_2
@@ -1113,7 +1113,6 @@ class STARSimulationDriver(STARDriver):
     tip_pattern: Optional[List[bool]] = None,
     write_timeout: Optional[int] = None,
     read_timeout: Optional[int] = None,
-    wait=True,
     fmt: Optional[Any] = None,
     **kwargs: Any,
   ) -> Any:
