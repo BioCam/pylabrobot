@@ -75,10 +75,22 @@ reads already record the arm on the way out.
 one `try`/`finally` and one model update. Anything more convenient is a helper on top of that
 method, never a second path to the same drive.
 
-**P10. Names say what kind of thing they are.** `request_*` reads, `move_*` moves, `probe_*` and
-`sense_*` read by moving, and `discover` / `initialize` / `park` are the lifecycle. On a
-feature with several drives the drive's name comes first: `wheel_*`, `scanner_*`, `gripper_*`,
-`rotation_drive_*`, `wrist_*`. Arguments are ordered as the execution uses them, not by type.
+**P10. Names say what kind of thing they are.** The prefixes follow the standardised PLR command
+prefix proposal, which splits them by what is on the other end:
+
+| what it touches | prefix | here |
+|---|---|---|
+| the machine, doing work | `move_`, `aspirate_`, `dispense_`, `pickup_`, `shake_` | `move_to_y_position`, `move_to_safe_z` |
+| the machine's sensors | `read_`, `capture_`, `measure_`, `sense_` | `sense_tip_presence`, `sense_carrier_presence_on_deck` |
+| the machine's memory, reading | `request_` | `request_y_positions`, `request_gripper_width` |
+| the machine's memory, writing | `set_` | `set_drive_parameter`, `set_loading_indicators` |
+| the resource model, reading | `get_` | - |
+| the resource model, writing | `update_`, `assign_`, `unassign_` | `update_rotation`, `update_location_by_reference_point` |
+
+`get_` and `request_` are not the same question: `get_` asks this driver's model, `request_` asks
+the device. On a feature with several drives the drive's name comes first: `wheel_*`, `scanner_*`,
+`gripper_*`, `rotation_drive_*`, `wrist_*`. Arguments are ordered as the execution uses them, not
+by type. `discover` / `initialize` / `park` are the lifecycle and take no prefix.
 
 **P11. Locking is by subsystem, not by module.** The master routes: `C0 DI` drives the channels and
 `C0 II` the autoload, and the device runs those together. So a command names the subsystem it
@@ -128,10 +140,10 @@ that a constant already holds are referenced by name rather than repeated.
    device facts are documented defaults living in `simulator.py` and in the recordings rather than
    readings, which the recordings README states. Nothing is wrong with it until a 384-head is read.
 
-4. **P7 holds in two files.** `_unchecked_fw_*` exists in `iswap.py` and `pipettes.py` only.
-   `head.py`, `autoload.py` and `x_arm.py` assemble and send from inside their public methods, so
-   the line between the raw call and the guarded one is not visible there and cannot be reached by
-   a caller who needs it.
+4. **P7 is uneven.** `iswap.py` has eight `_unchecked_fw_*`, `pipettes.py` two, `head.py` and
+   `x_arm.py` one each, and `autoload.py` none: it assembles and sends from inside its public
+   methods, so the line between the raw call and the guarded one is not visible there and cannot
+   be reached by a caller who needs it.
 
 5. **Section banners come in two styles and neither is universal.** `master.py`, `head*.py`,
    `iswap.py`, `pipettes.py` and `x_arm.py` use a full-width banner for the top-level split and
@@ -142,7 +154,18 @@ that a constant already holds are referenced by name rather than repeated.
    `driver/features/__init__.py` and `resource_model/__init__.py` export their whole surface and
    `star/__init__.py` is empty. Any of these is defensible; the four together are not a convention.
 
-7. **`DeviceConfiguration` documents its fields by wire parameter and bit number**
+7. **Two prefixes are used that P10's table does not name.** `probe_*` (`probe_z_max`,
+   `gripper_probe_for_object`) is a measurement taken by moving, which the proposal has no prefix
+   for - it is neither a plain `move_` nor a `sense_` that leaves the device where it stands.
+   `modelled_*` (`modelled_reference_point`, `modelled_rotation`, `modelled_wrist`) asks the
+   resource model, which the proposal calls `get_`.
+
+8. **One reading is filed as memory rather than measurement.** `request_gripper_force` reads the
+   force sensor, which P10's table puts under `measure_`; legacy called it
+   `measure_iswap_gripper_force`. It is `request_` here because the arm answers it out of the
+   register it recorded the peak in, not from the sensor at the moment of asking.
+
+9. **`DeviceConfiguration` documents its fields by wire parameter and bit number**
    (`"Bit 1: ISWAP. False = none, True = installed."`), which no feature configuration does. It is
    the oldest of the configurations and reads like the document it was transcribed from rather than
    like the rest of them.

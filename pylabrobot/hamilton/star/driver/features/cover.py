@@ -21,13 +21,8 @@ COVER_POSITION_CODES: Dict[CoverPosition, int] = {"open": 0, "closed": 1}
 class FrontCoverConfiguration:
   """The front cover's device facts.
 
-  None of it is read off the cover: it has no module of its own, so it reports no firmware version
-  and answers nothing about itself. What is here is the master's protocol, held on the feature the
-  way every other feature holds its own, so that a device answering differently can be declared
-  with it rather than needing this edited.
-
-  For the same reason it is not written with a saved configuration: that records what a device
-  answered, and no device answered any of this.
+  The master's protocol, not the cover's: it has no module of its own and answers nothing about
+  itself, so none of this is read off it and none of it is saved with a configuration.
   """
 
   position_codes: Dict[CoverPosition, int] = field(

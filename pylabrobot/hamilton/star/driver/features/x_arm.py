@@ -74,15 +74,14 @@ class XArmConfiguration:
   def with_device_facts_of(self, other: "XArmConfiguration") -> "XArmConfiguration":
     """This configuration, with the device facts of another in place of its own.
 
-    What the device answers stays this one's; what no device reports is taken from the other. The
-    driver reads both arms in one reply and rebuilds their configurations from it, so this is what
-    keeps a caller's corrected device facts across a re-read.
+    What keeps a corrected device fact across a re-read, since discovery rebuilds an arm's
+    configuration from the device's reply.
 
     Args:
       other: the configuration to take the device facts from.
 
     Returns:
-      A new configuration. Neither of these is changed.
+      XArmConfiguration: A new one. Neither of these is changed.
     """
     return dataclasses.replace(
       self,
@@ -147,8 +146,7 @@ class XArm:
         whatever the device answered for this rail.
 
     Raises:
-      RuntimeError: If a configuration is given before the device has been read, so there is
-        nowhere to put it.
+      RuntimeError: If a configuration is given before the device has been read.
     """
     self._driver = driver
     # The arm on the deck, when the driver was given one. Setup puts it there; moves keep it in
@@ -199,13 +197,8 @@ class XArm:
   def configuration(self, configuration: XArmConfiguration) -> None:
     """Put this arm's configuration where the device's holds it.
 
-    The arm has no configuration of its own to replace: the device reports both arms in one reply,
-    so an arm's configuration is a field of the device's and this writes into that field. What is
-    read back afterwards, here or off the device's own configuration, is what was written.
-
-    What a caller has to set is the device facts, which no device reports: an arm on firmware 5.0
-    or above takes a wider current limiter than the values here were recorded from, and this is
-    where a corrected set goes. Discovery keeps them, refreshing only what the device answers.
+    The device reports both arms in one reply, so an arm's configuration is a field of the
+    device's and this writes into that field.
 
     Args:
       configuration: what this arm is to be configured with.
