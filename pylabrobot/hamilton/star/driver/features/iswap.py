@@ -7,7 +7,7 @@ import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Union, cast
 
-from pylabrobot.hamilton.star.driver.errors import STARFirmwareError
+from pylabrobot.hamilton.star.driver.errors import NoElementError, STARFirmwareError
 from pylabrobot.hamilton.star.resource_model import iSWAPChannel
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.end_effector import MechanicalGripper
@@ -48,21 +48,6 @@ def _contains(resource: Resource, point: Coordinate) -> bool:
     )
   )
 
-
-# What the arm answers when it closed on nothing: the error its own table calls "plate not found",
-# raised off the force sensor rather than off a position.
-NOTHING_GRIPPED = 94
-
-# How wide a window the drive will accept around the width a close is aimed at, in its own steps.
-GRIPPER_STOP_BAND_RANGE = (80, 1_800)
-
-# How far the gripper drive's two counters may sit apart before the gap is a drive that has lost
-# steps rather than the ordinary lag between commanding a move and finishing it, in increments.
-GRIPPER_COUNTER_DRIFT = 50
-
-# How close to their own shut position the jaws may stop and still be said to have found nothing,
-# in mm. A probe that runs the whole way has met nothing rather than met something that narrow.
-PROBE_FOUND_NOTHING_MARGIN = 0.5
 
 # What the arm the device facts below were recorded from reports for its firmware version. An arm
 # reporting something else is a generation those values were not taken from.
@@ -308,6 +293,11 @@ class iSWAPConfiguration:
   gripper_mm_per_increment: float = 0.00554337
   gripper_speed_increment_range: Tuple[int, int] = (20, 9_999)  # increments/sec
   gripper_acceleration_increment_range: Tuple[int, int] = (5, 150)  # 1000 increments/sec^2
+  gripper_stop_band_increment_range: Tuple[int, int] = (80, 1_800)
+  """How wide a window the drive accepts around the width a close is aimed at, in its own steps."""
+  gripper_counter_drift_increments: int = 50
+  """How far the drive's two counters may sit apart before the gap is a drive that has lost steps
+  rather than the ordinary lag between commanding a move and finishing it."""
 
   # -- conversions: the wire counts in increments, the driver speaks mm and degrees ----------
 
@@ -1773,7 +1763,7 @@ class iSWAP:
     """
     resp = await self._driver.send_command(module="R0", command="RG", fmt="rg##### (n)")
     firmware, hardware = cast(List[int], resp["rg"])
-    if abs(firmware - hardware) > GRIPPER_COUNTER_DRIFT:
+    if abs(firmware - hardware) > self.configuration.gripper_counter_drift_increments:
       logger.warning(
         "the gripper drive's counters are %d increments apart (firmware %d, hardware %d), which is "
         "a drive that has lost steps rather than one that has moved",
@@ -2157,7 +2147,7 @@ class iSWAP:
     if not low <= expected_width <= high:
       raise ValueError(f"expected_width must be between {low} and {high} mm, is {expected_width}")
     band_increments = c.gripper_mm_to_increments(band)
-    band_low, band_high = GRIPPER_STOP_BAND_RANGE
+    band_low, band_high = c.gripper_stop_band_increment_range
     if not band_low <= band_increments <= band_high:
       raise ValueError(
         f"band must be between {c.gripper_increments_to_mm(band_low)} and "
@@ -2184,7 +2174,7 @@ class iSWAP:
       # An error is one per module, so the arm's own part is what says it met nothing: the master
       # reports a failure alongside it, and the dict is keyed by display name rather than by id.
       met_nothing = any(
-        part.raw_module == "R0" and part.trace_information == NOTHING_GRIPPED
+        part.raw_module == "R0" and isinstance(part, NoElementError)
         for part in error.errors.values()
       )
       if not met_nothing:

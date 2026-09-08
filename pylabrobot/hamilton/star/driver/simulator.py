@@ -608,8 +608,8 @@ class SimulatedISWAP(_Simulated, iSWAP):
           )
         # Nothing models it yet, so where an initialized arm leaves it: its parking stop, out of
         # the stored table rather than an angle written down here.
-        stops = (await self._request_slots("pt"))[: len(WRIST_DRIVE_SLOTS)]
-        parked = dict(zip(WRIST_DRIVE_SLOTS, stops))["parking"]
+        stops = (await self._request_slots("pt"))[: len(c.wrist_drive_slots)]
+        parked = dict(zip(c.wrist_drive_slots, stops))["parking"]
         return {"rt": parked}, "the wrist drive's parking stop"
       if command == "RG":
         # The drive answers twice, a target and an actual; the read takes the second.
@@ -617,8 +617,8 @@ class SimulatedISWAP(_Simulated, iSWAP):
         if not isinstance(gripper, MechanicalGripper):
           # Nothing models the jaws, so where an initialized gripper leaves them: the width it
           # homes and parks at, out of the stored table rather than written down here.
-          stops = (await self._request_slots("pg"))[: len(GRIPPER_DRIVE_SLOTS)]
-          home = dict(zip(GRIPPER_DRIVE_SLOTS, stops))["home"]
+          stops = (await self._request_slots("pg"))[: len(c.gripper_drive_slots)]
+          home = dict(zip(c.gripper_drive_slots, stops))["home"]
           return {"rg": [home, home]}, "the gripper's home and parking width"
         width = c.gripper_mm_to_increments(gripper.jaw_width)
         return {"rg": [width, width]}, "how far the model has the jaws open"
