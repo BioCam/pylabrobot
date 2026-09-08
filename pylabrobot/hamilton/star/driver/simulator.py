@@ -646,6 +646,18 @@ class SimulatedISWAP(_Simulated, iSWAP):
       return {"kg": round(offset * 10)}, "the X offset it was declared with"
     return None
 
+  async def _unchecked_fw_position_components_for_free_y_range(self):
+    # The master packs the channels as far forward as they fit. Written before the command, as
+    # the retract inside a probe is.
+    pipettes = self.arm.pipettes
+    widths = [] if pipettes is None else [c.width for c in pipettes.configuration.channels]
+    if pipettes is not None and not any(w is None for w in widths):
+      floor = cast(DeviceConfiguration, self.device.configuration).left_arm_min_y_position
+      for channel in range(len(widths)):
+        packed = floor + sum(cast(List[float], widths[channel + 1 :]))
+        pipettes.update_location_by_reference_point(channel, y=packed)
+    return await super()._unchecked_fw_position_components_for_free_y_range()
+
   async def request_firmware_version(self) -> str:
     await self.recorded("R0", "RF")
     version = self._declared.firmware_version

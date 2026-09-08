@@ -1039,6 +1039,37 @@ class iSWAP:
       # only answered.
       await self._record_where_it_stopped("y")
 
+  async def _unchecked_fw_position_components_for_free_y_range(self):
+    """Position all components so that there is maximum free Y range for the iSWAP. Nothing is
+    guarded and nothing is recorded. This moves the channels.
+    """
+    return await self._driver.send_command(module="C0", command="FY")
+
+  async def _unchecked_fw_release_brake(self):
+    """Release the arm's brake. Nothing is guarded and nothing is recorded.
+
+    Dangerous: the brake is what holds the arm up, so releasing it drops whatever it is holding.
+    """
+    return await self._driver.send_command(module="R0", command="BA")
+
+  async def _unchecked_fw_reengage_brake(self):
+    """Re-engage the arm's brake. Nothing is guarded and nothing is recorded."""
+    return await self._driver.send_command(module="R0", command="BO")
+
+  async def make_space(self) -> None:
+    """Move everything else out of the arm's Y range. This moves the channels.
+
+    The master's own, which positions every component for the widest free Y range there is, rather
+    than this driver working out where each channel should stand. It does not say where it left
+    them, so they are read back either way.
+    """
+    pipettes = self.arm.pipettes
+    try:
+      await self._unchecked_fw_position_components_for_free_y_range()
+    finally:
+      if pipettes is not None:
+        await pipettes.request_y_positions()
+
   async def _make_space_for_y(self, y: float, make_space: bool) -> None:
     """Make sure the backmost channel is out of the way before the drive travels to `y`.
 
@@ -1080,9 +1111,7 @@ class iSWAP:
         f"y={y} mm needs the backmost channel at {round(target_y, 1)} mm or further front, and it "
         f"is at {backmost_y} mm. Pass make_space=True to move the channels out of the way"
       )
-    # Nothing may move in Y while a channel is low.
-    await pipettes.move_to_safe_z()
-    await pipettes.move_to_y_positions({0: target_y}, make_space=True)
+    await self.make_space()
 
   async def _make_space_for_pose(
     self, rotation_angle: float, wrist_angle: float, make_space: bool
@@ -1138,9 +1167,7 @@ class iSWAP:
         f"front, and it is at {backmost_y:.1f} mm. Pass make_space=True to move the channels out "
         f"of the way"
       )
-    # Nothing may move in Y while a channel is low.
-    await pipettes.move_to_safe_z()
-    await pipettes.move_to_y_positions({0: target_y}, make_space=True)
+    await self.make_space()
 
   # -- z position --------------------------------------------------------------------------------
 

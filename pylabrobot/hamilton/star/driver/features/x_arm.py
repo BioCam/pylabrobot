@@ -476,6 +476,22 @@ class XArm:
     )
     return resp
 
+  async def _unchecked_fw_move_x_with_attached_components_at_z_safety(self, x: float):
+    """Move this arm to an X position with all attached components in Z-safety position. Nothing is
+    guarded and nothing is recorded.
+
+    The master raises what the arm carries before it travels, where `move_x` travels with the arm
+    as it stands and leaves getting to Z safety to the caller.
+
+    Args:
+      x: where to send the arm, in mm at its reference point.
+    """
+    return await self._driver.send_command(
+      module="C0",
+      command="KX" if self.side == "left" else "KR",
+      xs=self.configuration.x_mm_to_increments(x),
+    )
+
   async def move_x_relative(
     self,
     distance: float,

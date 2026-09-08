@@ -1141,11 +1141,33 @@ class Head:
       subsystem=self.configuration.module,
       read_timeout=read_timeout,
     )
-    z_max = await self.request_z_position()
-    c = self.configuration
-    c.z_range = (c.z_range_documented[0], z_max)
-    c.z_drive_safety_position = z_max
-    return z_max
+    return await self.request_z_position()
+
+  async def _unchecked_fw_move_to_coordinate(
+    self,
+    coordinate: Coordinate,
+    minimum_height_at_beginning_of_a_command: float = 342.5,
+  ):
+    """Move the head to a defined coordinate. Nothing is guarded and nothing is recorded.
+
+    One command for all three axes, where this driver sends one per axis. Kept for cross-testing
+    the two against each other on a device.
+
+    Args:
+      coordinate: coordinate of A1 in mm - the tip bottom on a head carrying tips, the channel
+        bottom on one that is not.
+      minimum_height_at_beginning_of_a_command: the height every channel is at before it travels,
+        in mm, whatever the tip pattern says.
+    """
+    return await self._driver.send_command(
+      module="C0",
+      command="EM",
+      xs=f"{abs(round(coordinate.x * 10)):05}",
+      xd="0" if coordinate.x >= 0 else "1",
+      yh=f"{round(coordinate.y * 10):04}",
+      za=f"{round(coordinate.z * 10):04}",
+      zh=f"{round(minimum_height_at_beginning_of_a_command * 10):04}",
+    )
 
   async def move_stop_disc_to_z_position(
     self,
