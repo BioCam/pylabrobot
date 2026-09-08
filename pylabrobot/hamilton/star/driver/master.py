@@ -795,7 +795,7 @@ class STARDriver:
     def _resolve_arm(
       byte1: int, byte2: int, side: Literal["left", "right"], width: float
     ) -> Optional[XArmConfiguration]:
-      wrap, workspace_range = wraps[side]
+      wrap, workspace_x_range = wraps[side]
       if wrap == 0:  # arm not installed
         return None
       answered = XArmConfiguration(
@@ -812,7 +812,7 @@ class STARDriver:
         puncher_handler_installed=bool(byte2 & (1 << 2)),
         width=width,
         x_range=ranges[side],
-        workspace_range=workspace_range,
+        workspace_x_range=workspace_x_range,
         wrap_size=wrap,
       )
       # Only the fields above come off the device. The rest are device facts, which nothing
@@ -1376,7 +1376,7 @@ class STARDriver:
         iswap = f"{'wide' if c.iswap_gripper_wide else 'small'} gripper"
       lines.append(
         f"    {arm.side}: {a.model}, {a.width} mm wide, "
-        f"travel {_range(a.x_range)}, workspace {_range(a.workspace_range)}"
+        f"travel {_range(a.x_range)}, workspace {_range(a.workspace_x_range)}"
       )
       lines.append(f"      channels: {channels} | {' | '.join(heads)} | iSWAP: {iswap}")
     if sum(arm.configuration.pip_installed for arm in arms) > 1:

@@ -712,7 +712,7 @@ class Head:
     )
     return cast(int, resp[field]) == 1
 
-  async def request_position(self) -> Coordinate:
+  async def request_location(self) -> Coordinate:
     """Measure where head channel A1 is, with whatever it carries taken into account.
 
     The master answers with the tip bottom rather than the drive's own reference, so with tips on
@@ -742,7 +742,7 @@ class Head:
 
     Both readings are of the same head at the same moment, so the difference is the overhang
     without anything having to move: `request_z_position` reports the head's lowest fixed feature,
-    `request_position` reports the bottom of what is mounted on it. This is what a Z target has to
+    `request_location` reports the bottom of what is mounted on it. This is what a Z target has to
     be offset by for the tip end, rather than the head, to land where it is wanted.
 
     Returns:
@@ -754,7 +754,7 @@ class Head:
     if not await self.request_tip_presence():
       raise RuntimeError("the head reports no tips mounted, so there is no overhang to measure")
     reference = await self.request_z_position()
-    tip_bottom = (await self.request_position()).z
+    tip_bottom = (await self.request_location()).z
     return round(reference - tip_bottom, 2)
 
   # -- x position, carried by the arm the head rides ---------------------------------------------

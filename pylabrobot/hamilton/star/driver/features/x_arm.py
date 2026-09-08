@@ -30,7 +30,7 @@ class XArmConfiguration:
   """Configuration and geometry for an X drive (left or right).
 
   The installed-module bits combine byte 1 (xl/xr) and byte 2 (xn/xo). The arm
-  geometry - width, travel range, workspace range - comes from the X-drive range (RU)
+  geometry - width, travel range, workspace X range - comes from the X-drive range (RU)
   and working-envelope (UA) queries, so it is None on a drive built from the module
   bits alone (e.g. a simulated configuration) and populated when
   `request_extended_configuration` builds the drive. `model` and `reference_point`
@@ -59,7 +59,7 @@ class XArmConfiguration:
 
   width: Optional[float] = None
   x_range: Optional[Tuple[float, float]] = None
-  workspace_range: Optional[Tuple[float, float]] = None
+  workspace_x_range: Optional[Tuple[float, float]] = None
   wrap_size: Optional[float] = None  # zero when no arm is installed
   firmware_version: Optional[str] = None
 
@@ -129,7 +129,7 @@ class XArm:
 
   Reached as `driver.left_x_arm` / `driver.right_x_arm`. Its `configuration` is the arm's own
   slice of what the driver read off the device at setup: what is mounted on the arm, how wide it
-  is, how far it travels, and the workspace that travel reaches.
+  is, how far it travels, and how far along X what it carries reaches.
   """
 
   def __init__(
@@ -308,7 +308,7 @@ class XArm:
     """Raise if `x` is outside this arm's travel range.
 
     `x` is the arm's position at its reference point - its center on a dual-rail arm, its right
-    edge on a single-rail arm - so the bound is that point's travel, not the wider workspace the
+    edge on a single-rail arm - so the bound is that point's travel, not the wider span the
     arm reaches around it.
 
     Args:

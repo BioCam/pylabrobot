@@ -14,6 +14,6 @@ BARE_X_ARM = XArmConfiguration(
   firmware_version="1.4S 2012-04-25",
   width=354.0,
   x_range=(95.0, 1340.2),
-  workspace_range=(-323.2, 1517.2),
+  workspace_x_range=(-323.2, 1517.2),
   wrap_size=595.2,
 )
