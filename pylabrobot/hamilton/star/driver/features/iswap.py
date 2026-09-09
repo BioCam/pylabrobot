@@ -1520,6 +1520,36 @@ class iSWAP:
       )
     return increments
 
+  def _resolve_rotation_absolute_increments(self, angle: Union[str, float]) -> int:
+    """Where link 1 is to point on the deck, as the increments the rotation drive counts in.
+
+    The drive turns link 1 and nothing else, so the deck angle and the drive's own differ by the
+    quarter turn between the drive's front stop and the deck's +x, and a stop's name means the
+    same in either frame.
+
+    Args:
+      angle: a stop in `configuration.rotation_drive_slots`, or degrees on the deck.
+
+    Returns:
+      Where the drive is to go, in increments.
+
+    Raises:
+      ValueError: If the name is not a stop, or the deck angle is outside the drive's travel.
+      RuntimeError: If the stored stops have not been read.
+    """
+    if isinstance(angle, str):
+      return self._resolve_rotation_increments(angle)
+    c = self.configuration
+    drive_angle = (angle + 90.0 + 180.0) % 360.0 - 180.0
+    increments = c.rotation_drive_angle_to_increments(drive_angle)
+    low, high = c.rotation_range_increments
+    if not low <= increments <= high:
+      raise ValueError(
+        f"pointing link 1 at {angle} deg on the deck needs the drive at {drive_angle} deg, which "
+        f"is {increments} increments, outside the {low} to {high} it travels"
+      )
+    return increments
+
   def _resolve_gripper_direction_increments(
     self, angle: Union[str, float], rotation_increments: int
   ) -> int:
@@ -1624,7 +1654,8 @@ class iSWAP:
 
   async def rotate_to_angles(
     self,
-    rotation_angle: Optional[Union[str, float]] = None,
+    rotation_relative_angle: Optional[Union[str, float]] = None,
+    rotation_absolute_angle: Optional[Union[str, float]] = None,
     gripper_relative_angle: Optional[Union[str, float]] = None,
     gripper_absolute_angle: Optional[Union[str, float]] = None,
     make_space: bool = False,
@@ -1637,27 +1668,26 @@ class iSWAP:
   ):
     """Rotate one or both iSWAP joints to absolute angles in a single motion. This moves the arm.
 
-    When both angles are supplied, both joints arrive together under a single motion plan so the
-    gripper sweeps a straight joint-space path; enables IK-driven trajectory execution.
+    Each joint takes either angle, and a stop's name means the same in both: `relative` is the
+    drive's own frame, `absolute` is the deck. They differ for a float - the rotation drive reads
+    zero at its front stop, a quarter turn from the deck's +x, and the wrist reads from its own
+    zero and turns with link 1 under it. A joint given neither angle holds where it is, read from
+    the drive rather than assumed.
 
-    When only one angle is supplied, the other drive is requested from device (i.e. single-axis
-    rotation is covered as well). At least one of `rotation_angle` or `gripper_relative_angle` must be
-    provided.
-
-    Each angle is either the enum stop, which lands on the increment this arm stores for it, or a
-    float in degrees: rotation floats interpolate piecewise-linearly between the LEFT / FRONT /
-    RIGHT stops, so -90, 0 and +90 land on them exactly; wrist floats are linear from motor zero.
+    Both joints arrive together under a single motion plan, so the gripper sweeps a straight
+    joint-space path and IK-driven trajectories can be executed.
 
     Collision risk: the whole arm sweeps, and the path is neither joint's alone.
 
     Args:
-      rotation_angle: where link 1 is to point - `left`, `front` or `right` - or degrees signed
-        from
-        FRONT, or None to hold current.
-      gripper_relative_angle: where the wrist drive is to sit in its own frame - `right`, `straight`, `left`
-        or `reverse` - or degrees from the drive's zero. Mutually exclusive with `gripper_absolute_angle`.
-      gripper_absolute_angle: where the gripper is to point on the deck - `right`, `front`, `left` or
-        `back` - or degrees on the deck. Mutually exclusive with `gripper_relative_angle`.
+      rotation_relative_angle: where the rotation drive is to sit - `left`, `front` or `right` - or
+        degrees signed from its front stop. Mutually exclusive with `rotation_absolute_angle`.
+      rotation_absolute_angle: where link 1 is to point on the deck - `left`, `front` or `right` -
+        or degrees on the deck. Mutually exclusive with `rotation_relative_angle`.
+      gripper_relative_angle: where the wrist drive is to sit - `right`, `straight`, `left` or
+        `reverse` - or degrees from its own zero. Mutually exclusive with `gripper_absolute_angle`.
+      gripper_absolute_angle: where the gripper is to point on the deck - `right`, `front`, `left`
+        or `back` - or degrees on the deck. Mutually exclusive with `gripper_relative_angle`.
       make_space: whether to clear the deck volume before rotating. Off by default. See
         `make_space`, which raises the channels and any head and then moves them aside.
       rotation_speed [deg/sec]: max angular velocity, within what
@@ -1673,8 +1703,8 @@ class iSWAP:
 
     Raises:
       RuntimeError: if `setup()` has not populated the predefined-stop tables.
-      ValueError: if neither angle is provided, or if either resolved target increment is outside
-        the hardware range.
+      ValueError: if no angle is provided, if a joint is given both of its angles, or if either
+        resolved target increment is outside the hardware range.
     """
     c = self.configuration
     if rotation_speed is None:
@@ -1689,22 +1719,33 @@ class iSWAP:
       rotation_current_limit = c.rotation_current_limit_default
     if wrist_current_limit is None:
       wrist_current_limit = c.wrist_current_limit_default
-    if gripper_relative_angle is not None and gripper_absolute_angle is not None:
-      raise ValueError(
-        "pass gripper_relative_angle or gripper_absolute_angle, not both: they name the same joint, one in the wrist "
-        "drive's own frame and one on the deck"
+    for relative, absolute, joint, own_frame in (
+      (rotation_relative_angle, rotation_absolute_angle, "rotation", "rotation drive"),
+      (gripper_relative_angle, gripper_absolute_angle, "gripper", "wrist drive"),
+    ):
+      if relative is not None and absolute is not None:
+        raise ValueError(
+          f"pass {joint}_relative_angle or {joint}_absolute_angle, not both: they name the same "
+          f"joint, one in the {own_frame}'s own frame and one on the deck"
+        )
+    if all(
+      angle is None
+      for angle in (
+        rotation_relative_angle,
+        rotation_absolute_angle,
+        gripper_relative_angle,
+        gripper_absolute_angle,
       )
-    if rotation_angle is None and gripper_relative_angle is None and gripper_absolute_angle is None:
-      raise ValueError(
-        "pass a rotation_angle, a gripper_relative_angle or a gripper_absolute_angle; all are None"
-      )
+    ):
+      raise ValueError("pass at least one angle; all four are None")
     # Held in the drive's own increments rather than through its angle, so a joint that is holding
     # is sent exactly where it already is.
-    rotation = (
-      await self._rotation_drive_request_increments()
-      if rotation_angle is None
-      else self._resolve_rotation_increments(rotation_angle)
-    )
+    if rotation_absolute_angle is not None:
+      rotation = self._resolve_rotation_absolute_increments(rotation_absolute_angle)
+    elif rotation_relative_angle is not None:
+      rotation = self._resolve_rotation_increments(rotation_relative_angle)
+    else:
+      rotation = await self._rotation_drive_request_increments()
     if gripper_absolute_angle is not None:
       wrist = self._resolve_gripper_direction_increments(gripper_absolute_angle, rotation)
     elif gripper_relative_angle is not None:
@@ -1941,7 +1982,7 @@ class iSWAP:
     if current_limit is None:
       current_limit = c.rotation_current_limit_default
     return await self.rotate_to_angles(
-      rotation_angle=angle,
+      rotation_relative_angle=angle,
       rotation_speed=speed,
       rotation_acceleration=acceleration,
       rotation_current_limit=current_limit,

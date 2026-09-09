@@ -215,7 +215,7 @@ async def work_the_iswap(star) -> None:
     gripper = gripper_directions[step % len(gripper_directions)]
     try:
       await iswap.rotate_to_angles(
-        rotation_angle=rotation, gripper_absolute_angle=gripper, make_space=True
+        rotation_absolute_angle=rotation, gripper_absolute_angle=gripper, make_space=True
       )
     except ValueError as refused:
       # The guards stand between the arm and the channels, and a demo is not a reason to talk
