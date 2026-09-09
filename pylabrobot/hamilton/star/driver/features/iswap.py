@@ -1658,6 +1658,7 @@ class iSWAP:
     rotation_absolute_angle: Optional[Union[str, float]] = None,
     gripper_relative_angle: Optional[Union[str, float]] = None,
     gripper_absolute_angle: Optional[Union[str, float]] = None,
+    raise_features: bool = True,
     make_space: bool = False,
     rotation_speed: Optional[float] = None,
     wrist_speed: Optional[float] = None,
@@ -1688,8 +1689,11 @@ class iSWAP:
         `reverse` - or degrees from its own zero. Mutually exclusive with `gripper_absolute_angle`.
       gripper_absolute_angle: where the gripper is to point on the deck - `right`, `front`, `left`
         or `back` - or degrees on the deck. Mutually exclusive with `gripper_relative_angle`.
-      make_space: whether to clear the deck volume before rotating. Off by default. See
-        `make_space`, which raises the channels and any head and then moves them aside.
+      raise_features: whether to raise the channels and any head to safe Z before rotating. On by
+        default, since the arm sweeps over whatever they are standing in.
+      make_space: whether to clear the deck volume of the pose being commanded. Not built yet, so
+        passing True refuses rather than rotating without the clearance it promises. `make_space`
+        is the blanket clearance in the meantime.
       rotation_speed [deg/sec]: max angular velocity, within what
         `configuration.rotation_speed_range_increments` accepts.
       wrist_speed [deg/sec]: max angular velocity, within what
@@ -1705,6 +1709,7 @@ class iSWAP:
       RuntimeError: if `setup()` has not populated the predefined-stop tables.
       ValueError: if no angle is provided, if a joint is given both of its angles, or if either
         resolved target increment is outside the hardware range.
+      NotImplementedError: if `make_space` is True, which is not built for a rotation yet.
     """
     c = self.configuration
     if rotation_speed is None:
@@ -1799,17 +1804,35 @@ class iSWAP:
 
     rotation_target = c.rotation_drive_increments_to_angle(rotation)
     wrist_target = c.wrist_increments_to_deg(wrist)
-    self._check_pose_reachable(rotation_target, wrist_target)
-    if make_space:
-      await self.make_space()
 
-    # consistent z-safety moves of other features
-    arm = self.arm
-    if arm.pipettes is not None:
-      await arm.pipettes.move_to_safe_z()
-    for head in (arm.head96, arm.head384):
-      if head is not None:
-        await head.move_to_safe_z()
+    # Check 1 - drive compliance: is the pose itself reachable? Says nothing about what else
+    # stands on the deck.
+    self._check_pose_reachable(rotation_target, wrist_target)
+
+    if raise_features:
+      arm = self.arm
+      if arm.pipettes is not None:
+        await arm.pipettes.move_to_safe_z()
+      for head in (arm.head96, arm.head384):
+        if head is not None:
+          await head.move_to_safe_z()
+
+    # Check 2 - collision detection:
+
+    # channels
+
+    # head
+
+    # if collision_detection is not None and make_space:
+
+    # TODO: clear the deck volume for the pose being commanded, in the shape `_make_space_for_y`
+    # uses - the frontmost point the arm would reach, and channel 0 moved in front of it.
+    if make_space:
+      raise NotImplementedError(
+        "make_space is not built for a rotation yet. Rotating anyway would sweep the arm while the "
+        "caller believes the deck was cleared, so this refuses instead. Clear the deck volume "
+        "first with `make_space()`, or pass make_space=False to accept the pose unchecked"
+      )
 
     try:
       resp = await self._unchecked_fw_rotation_drive_rotate_increments(
