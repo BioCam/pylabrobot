@@ -6,6 +6,7 @@ protocol runs on the instrument host. What changed is the payload.
 """
 
 import asyncio
+import functools
 import hashlib
 import http.server
 import json
@@ -44,6 +45,46 @@ def _finite(obj: Any) -> Any:
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
+# Where a resource's geometry is looked for when it does not say. A file named after the model it
+# belongs to, anywhere under the package, is that model's geometry - so a resource ships with its
+# own geometry beside the code that describes it, and neither the resource nor the caller has to
+# name a path. Model names are already namespaced by manufacturer and machine, which is what lets
+# one flat index be unambiguous across every package.
+PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+MODEL_SUFFIX = ".glb"
+
+
+@functools.lru_cache(maxsize=None)
+def _models_on_disk(root: str) -> Dict[str, str]:
+  """Every model file under `root`, by the model name it is named after.
+
+  Walked once per root and remembered: a viewer is started per run, but a test suite starts many,
+  and the answer only changes when files do.
+
+  A name found twice is ambiguous - two packages cannot both own one model name - so neither is
+  offered, and the collision is reported rather than silently resolved by walk order.
+  """
+  found: Dict[str, str] = {}
+  clashes: Dict[str, List[str]] = {}
+  for directory, _, files in os.walk(root):
+    for file in files:
+      if not file.endswith(MODEL_SUFFIX):
+        continue
+      model = file[: -len(MODEL_SUFFIX)]
+      path = os.path.join(directory, file)
+      if model in found and found[model] != path:
+        clashes.setdefault(model, [found[model]]).append(path)
+        continue
+      found[model] = path
+  for model, paths in clashes.items():
+    logger.warning(
+      "%s is named by more than one model file, so it is drawn as a box: %s",
+      model,
+      ", ".join(sorted(paths)),
+    )
+    found.pop(model, None)
+  return found
+
 
 class Viewer3D:
   """A parallel visualizer that takes any resource as its world.
@@ -52,8 +93,8 @@ class Viewer3D:
     root: the resource that is the world. Every descendant is placed in its cartesian space.
     host: interface to bind both servers to.
     fs_port: static file server port.
-    models_root: directory that every `Resource.reference_glb` is relative to. Without one,
-      resources that declare a model are drawn as boxes, and say so once each.
+    models_root: directory that every `Resource.reference_glb` is relative to. Only resources that
+      declare one need it; a model shipped under the package is found without it.
     ws_port: websocket port.
     open_browser: whether to open a browser window on start.
     name: what to show in the header, as the existing visualizer shows the calling script.
@@ -269,17 +310,29 @@ class Viewer3D:
   def _register_meshes(self, models: List[Dict[str, Any]]) -> None:
     """Turn each declared model into a URL the page can fetch, and remember what to serve.
 
-    A resource declares its geometry one of two ways. `reference_glb` is a path relative to
-    `models_root`, in a fixed convention, and is what most resources should use. `mesh` is the
-    long form, carrying its own absolute path, units, up axis and joint map, for a rigged model or
-    one that does not fit the convention.
+    A resource gets its geometry one of three ways, in this order. `mesh` is the long form,
+    carrying its own absolute path, units, up axis and joint map, for a rigged model or one that
+    does not fit the convention. `reference_glb` is a path relative to `models_root`, for a file
+    that lives outside the package. And a resource that says neither is looked up by the model it
+    is: a file named after it, shipped anywhere under the package, is drawn without anyone having
+    to declare or pass anything. A resource with no model name, or one no file is named after,
+    keeps its box.
 
-    Both end up in the same place, because the page only knows one way to draw a model. The page
-    cannot read a filesystem path and the file is often far too large to inline, so each is given a
-    stable id and served from this viewer; the path itself never reaches the browser.
+    All three end up in the same place, because the page only knows one way to draw a model. The
+    page cannot read a filesystem path and the file is often far too large to inline, so each is
+    given a stable id and served from this viewer; the path itself never reaches the browser.
     """
+    on_disk = _models_on_disk(PACKAGE_ROOT)
     for model in models:
       reference = model.pop("reference_glb", None)
+      if reference is None and "mesh" not in model:
+        found = on_disk.get(str(model.get("model") or ""))
+        if found is not None:
+          model["mesh"] = {
+            "path": found,
+            "units": self.REFERENCE_GLB_UNITS,
+            "up": self.REFERENCE_GLB_UP,
+          }
       if reference is not None and "mesh" not in model:
         if self.models_root is None:
           logger.warning(
