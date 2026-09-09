@@ -19,6 +19,17 @@ STARLET_NUM_TRACKS = 30
 STAR_NUM_TRACKS = 54
 STARPLUS_NUM_TRACKS = 76
 
+# Which frame a deck belongs to, from how many tracks it has. The three are the same deck at three
+# lengths, built by three factories rather than three classes, so the track count is the only thing
+# that tells them apart - and parts that are cut to the frame's length differ between them and need
+# saying which one they are. A count nobody has named leaves those parts unnamed rather than
+# claiming to be a frame they are not.
+FRAME_BY_NUM_TRACKS = {
+  STARLET_NUM_TRACKS: "starlet",
+  STAR_NUM_TRACKS: "star",
+  STARPLUS_NUM_TRACKS: "starplus",
+}
+
 
 _TRACK_WIDTH = 22.5  # space between rails (mm)
 
@@ -300,13 +311,17 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     # left, which is what sizes it.
     from_first_carrier_x, front_ahead_y, back_ahead_y, size_z = 104.0, 380.0, 132.0, 92.0
     left = self.track_to_location(1).x - from_first_carrier_x
+    # The tray runs the length of the deck, so it is a different part on each frame rather than one
+    # part fitted to all three, and it says which frame it is. The sled that runs along it is one
+    # part everywhere and does not.
+    frame = FRAME_BY_NUM_TRACKS.get(self.num_tracks)
     tray = Resource(
       name=name,
       size_x=self.get_absolute_size_x() - from_first_carrier_x - left,
       size_y=front_ahead_y - back_ahead_y,
       size_z=size_z,
       category="autoload_loading_tray",
-      model="hamilton_star_autoload_loading_tray",
+      model=f"hamilton_{frame}_autoload_loading_tray" if frame else None,
     )
     self.assign_child_resource(tray, location=Coordinate(left, _CARRIER_Y - front_ahead_y, 0.0))
     return tray
