@@ -12,7 +12,6 @@ from pylabrobot.hamilton.star.resource_model import iSWAPChannel
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.end_effector import MechanicalGripper
 from pylabrobot.resources.manipulator import Link
-from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.rotation import Rotation
 
 if TYPE_CHECKING:
@@ -25,32 +24,6 @@ logger = logging.getLogger(__name__)
 # How far off a deck axis the fingers may close and the model still be able to measure what is
 # between them, in degrees. Beyond it the thing's extent across the fingers is not a size it
 # states. Wide enough for the calibrated stops, which sit a degree or so off the square.
-FINGER_AXIS_TOLERANCE = 5.0
-
-
-def _contains(resource: Resource, point: Coordinate) -> bool:
-  """Whether a resource's own box holds a point, both in deck mm.
-
-  Args:
-    resource: the resource to ask about.
-    point: the point, in the deck's frame.
-
-  Returns:
-    True when the point is inside the box.
-  """
-  here = resource.get_absolute_location()
-  return all(
-    start <= value <= start + size
-    for start, value, size in (
-      (here.x, point.x, resource.get_absolute_size_x()),
-      (here.y, point.y, resource.get_absolute_size_y()),
-      (here.z, point.z, resource.get_absolute_size_z()),
-    )
-  )
-
-
-# What the arm the device facts below were recorded from reports for its firmware version. An arm
-# reporting something else is a generation those values were not taken from.
 RECORDED_FIRMWARE_PREFIX = "4."
 
 
@@ -252,9 +225,9 @@ class iSWAPConfiguration:
   # so discovery says so when the arm reports a firmware version these were not taken from. ===
 
   # -- Y --
-  y_increment_range: Tuple[int, int] = (0, 14_000)
+  y_range_increments: Tuple[int, int] = (0, 14_000)
   y_mm_per_increment: float = 0.046302083
-  y_speed_increment_range: Tuple[int, int] = (50, 8_000)  # increments/sec
+  y_speed_range_increments: Tuple[int, int] = (50, 8_000)  # increments/sec
   rotation_drive_diameter: float = 30.5
   """How wide the rotation drive is, in mm."""
 
@@ -268,33 +241,33 @@ class iSWAPConfiguration:
   is not something the device reports."""
 
   # -- Z --
-  z_increment_range: Tuple[int, int] = (-187, 26_661)
+  z_range_increments: Tuple[int, int] = (-187, 26_661)
   z_mm_per_increment: float = 0.01072765
-  z_speed_increment_range: Tuple[int, int] = (50, 15_000)  # increments/sec
-  z_acceleration_increment_range: Tuple[int, int] = (5, 999)  # 1000 increments/sec^2
+  z_speed_range_increments: Tuple[int, int] = (50, 15_000)  # increments/sec
+  z_acceleration_range_increments: Tuple[int, int] = (5, 999)  # 1000 increments/sec^2
   rotation_drive_z_offset_above_finger: float = 13.0
   """How far the rotation drive's lowest point sits above the gripper finger plane, in mm. The Z
   drive is calibrated to the finger plane, so a position read or commanded here is that plane's
   plus this."""
 
   # -- rotation drive (joint 1) --
-  rotation_increment_range: Tuple[int, int] = (-30_032, 30_032)
+  rotation_range_increments: Tuple[int, int] = (-30_032, 30_032)
   rotation_deg_per_increment: float = 0.00309619077
-  rotation_speed_increment_range: Tuple[int, int] = (20, 75_000)  # increments/sec
-  rotation_acceleration_increment_range: Tuple[int, int] = (5, 200)  # 1000 increments/sec^2
+  rotation_speed_range_increments: Tuple[int, int] = (20, 75_000)  # increments/sec
+  rotation_acceleration_range_increments: Tuple[int, int] = (5, 200)  # 1000 increments/sec^2
 
   # -- wrist drive (joint 2) --
-  wrist_increment_range: Tuple[int, int] = (-30_000, 30_000)
+  wrist_range_increments: Tuple[int, int] = (-30_000, 30_000)
   wrist_deg_per_increment: float = 0.00507968798
-  wrist_speed_increment_range: Tuple[int, int] = (20, 65_000)  # increments/sec
-  wrist_acceleration_increment_range: Tuple[int, int] = (5, 200)  # 1000 increments/sec^2
+  wrist_speed_range_increments: Tuple[int, int] = (20, 65_000)  # increments/sec
+  wrist_acceleration_range_increments: Tuple[int, int] = (5, 200)  # 1000 increments/sec^2
 
   # -- gripper --
-  gripper_increment_range: Tuple[int, int] = (12_780, 24_120)  # jaw width
+  gripper_range_increments: Tuple[int, int] = (12_780, 24_120)  # jaw width
   gripper_mm_per_increment: float = 0.00554337
-  gripper_speed_increment_range: Tuple[int, int] = (20, 9_999)  # increments/sec
-  gripper_acceleration_increment_range: Tuple[int, int] = (5, 150)  # 1000 increments/sec^2
-  gripper_stop_band_increment_range: Tuple[int, int] = (80, 1_800)
+  gripper_speed_range_increments: Tuple[int, int] = (20, 9_999)  # increments/sec
+  gripper_acceleration_range_increments: Tuple[int, int] = (5, 150)  # 1000 increments/sec^2
+  gripper_stop_band_range_increments: Tuple[int, int] = (80, 1_800)
   """How wide a window the drive accepts around the width a close is aimed at, in its own steps."""
   gripper_counter_drift_increments: int = 50
   """How far the drive's two counters may sit apart before the gap is a drive that has lost steps
@@ -347,12 +320,12 @@ class iSWAPConfiguration:
     """
     return (
       round(
-        self.z_increments_to_mm(self.z_increment_range[0])
+        self.z_increments_to_mm(self.z_range_increments[0])
         + self.rotation_drive_z_offset_above_finger,
         1,
       ),
       round(
-        self.z_increments_to_mm(self.z_increment_range[1])
+        self.z_increments_to_mm(self.z_range_increments[1])
         + self.rotation_drive_z_offset_above_finger,
         1,
       ),
@@ -470,6 +443,22 @@ class iSWAPConfiguration:
   def gripper_mm_to_increments(self, mm: float) -> int:
     """A gripper jaw width in increments, from mm."""
     return round(mm / self.gripper_mm_per_increment)
+
+  def gripper_mm_per_sec_to_increments(self, mm_per_sec: float) -> int:
+    """A gripper-drive speed in increments/s, from mm/s."""
+    return round(mm_per_sec / self.gripper_mm_per_increment)
+
+  def gripper_increments_to_mm_per_sec(self, increments: int) -> float:
+    """A gripper-drive speed in mm/s, from increments/s."""
+    return round(increments * self.gripper_mm_per_increment, 2)
+
+  def gripper_mm_per_sec2_to_increments(self, mm_per_sec2: float) -> int:
+    """A gripper-drive acceleration in thousands of increments/s2, from mm/s2."""
+    return round(mm_per_sec2 / self.gripper_mm_per_increment / 1000)
+
+  def gripper_increments_to_mm_per_sec2(self, increments: int) -> float:
+    """A gripper-drive acceleration in mm/s2, from thousands of increments/s2."""
+    return round(increments * 1000 * self.gripper_mm_per_increment, 2)
 
 
 class iSWAP:
@@ -952,7 +941,7 @@ class iSWAP:
     except Exception:
       logger.warning("could not read where the iSWAP stopped along %s; its model is stale", axis)
 
-  async def _unchecked_fw_rotation_drive_move_to_y_position(
+  async def _unchecked_fw_rotation_drive_move_to_y_position_increments(
     self,
     y_increments: int,
     speed_increments: int = 4751,
@@ -1014,7 +1003,7 @@ class iSWAP:
     await self._make_space_for_y(y, make_space=make_space)
 
     speed_increments = c.y_mm_to_increments(speed)
-    speed_low, speed_high = c.y_speed_increment_range
+    speed_low, speed_high = c.y_speed_range_increments
     if not speed_low <= speed_increments <= speed_high:
       raise ValueError(
         f"speed must be between {c.y_increments_to_mm(speed_low)} and "
@@ -1026,7 +1015,7 @@ class iSWAP:
       raise ValueError(f"current_limit must be between 0 and 7, is {current_limit}")
 
     try:
-      resp = await self._unchecked_fw_rotation_drive_move_to_y_position(
+      resp = await self._unchecked_fw_rotation_drive_move_to_y_position_increments(
         y_increments=c.y_mm_to_increments(y),
         speed_increments=speed_increments,
         acceleration_level=acceleration_level,
@@ -1189,7 +1178,7 @@ class iSWAP:
     self.update_location_by_reference_point(z=z)
     return z
 
-  async def _unchecked_fw_rotation_drive_move_to_z_position(
+  async def _unchecked_fw_rotation_drive_move_to_z_position_increments(
     self,
     z_increments: int,
     speed_increments: int = 11000,
@@ -1238,7 +1227,7 @@ class iSWAP:
     self._check_reachable("z", z)
 
     speed_increments = c.z_mm_to_increments(speed)
-    speed_low, speed_high = c.z_speed_increment_range
+    speed_low, speed_high = c.z_speed_range_increments
     if not speed_low <= speed_increments <= speed_high:
       raise ValueError(
         f"speed must be between {c.z_increments_to_mm(speed_low)} and "
@@ -1247,7 +1236,7 @@ class iSWAP:
 
     # The drive counts acceleration in thousands of increments per second squared.
     acceleration_increments = c.z_mm_to_increments(acceleration / 1000)
-    acceleration_low, acceleration_high = c.z_acceleration_increment_range
+    acceleration_low, acceleration_high = c.z_acceleration_range_increments
     if not acceleration_low <= acceleration_increments <= acceleration_high:
       raise ValueError(
         f"acceleration must be between {c.z_increments_to_mm(acceleration_low * 1000)} and "
@@ -1259,7 +1248,7 @@ class iSWAP:
 
     finger_plane = z - c.rotation_drive_z_offset_above_finger
     try:
-      resp = await self._unchecked_fw_rotation_drive_move_to_z_position(
+      resp = await self._unchecked_fw_rotation_drive_move_to_z_position_increments(
         z_increments=c.z_mm_to_increments(finger_plane),
         speed_increments=speed_increments,
         acceleration_increments=acceleration_increments,
@@ -1375,7 +1364,7 @@ class iSWAP:
       increments = predefined_positions[angle]
     else:
       increments = c.rotation_drive_angle_to_increments(angle)
-    low, high = c.rotation_increment_range
+    low, high = c.rotation_range_increments
     if not low <= increments <= high:
       raise ValueError(
         f"{angle} is {increments} increments, outside the {low} to {high} the drive travels"
@@ -1409,7 +1398,7 @@ class iSWAP:
       increments = predefined_wrist_positions[angle]
     else:
       increments = c.wrist_deg_to_increments(angle)
-    low, high = c.wrist_increment_range
+    low, high = c.wrist_range_increments
     if not low <= increments <= high:
       raise ValueError(
         f"{angle} is {increments} increments, outside the {low} to {high} the wrist travels"
@@ -1452,13 +1441,13 @@ class iSWAP:
         reaching into them. Off by default, so a pose that does not fit raises and the caller
         decides. Making space raises the channels to Z safety first, since it moves them in Y.
       rotation_speed [deg/sec]: max angular velocity, within what
-        `configuration.rotation_speed_increment_range` accepts.
+        `configuration.rotation_speed_range_increments` accepts.
       wrist_speed [deg/sec]: max angular velocity, within what
-        `configuration.wrist_speed_increment_range` accepts.
+        `configuration.wrist_speed_range_increments` accepts.
       rotation_acceleration [deg/sec^2]: max angular acceleration, within what
-        `configuration.rotation_acceleration_increment_range` accepts.
+        `configuration.rotation_acceleration_range_increments` accepts.
       wrist_acceleration [deg/sec^2]: max angular acceleration, within what
-        `configuration.wrist_acceleration_increment_range` accepts.
+        `configuration.wrist_acceleration_range_increments` accepts.
       rotation_current_limit: motor current protection limiter, 0..7.
       wrist_current_limit: motor current protection limiter, 0..7.
 
@@ -1491,28 +1480,28 @@ class iSWAP:
         "rotation_speed",
         rotation_speed,
         rotation_speed_increments,
-        c.rotation_speed_increment_range,
+        c.rotation_speed_range_increments,
         c.rotation_increments_to_deg_per_sec,
       ),
       (
         "wrist_speed",
         wrist_speed,
         wrist_speed_increments,
-        c.wrist_speed_increment_range,
+        c.wrist_speed_range_increments,
         c.wrist_increments_to_deg_per_sec,
       ),
       (
         "rotation_acceleration",
         rotation_acceleration,
         rotation_acceleration_increments,
-        c.rotation_acceleration_increment_range,
+        c.rotation_acceleration_range_increments,
         c.rotation_increments_to_deg_per_sec2,
       ),
       (
         "wrist_acceleration",
         wrist_acceleration,
         wrist_acceleration_increments,
-        c.wrist_acceleration_increment_range,
+        c.wrist_acceleration_range_increments,
         c.wrist_increments_to_deg_per_sec2,
       ),
     ):
@@ -1828,7 +1817,7 @@ class iSWAP:
     self.gripped = gripped
     return gripped
 
-  async def _unchecked_fw_gripper_move_to_jaw_position(
+  async def _unchecked_fw_gripper_move_to_jaw_position_increments(
     self,
     increments: int,
     speed_increments: int = 9_002,
@@ -1857,37 +1846,88 @@ class iSWAP:
       gw=f"{current_limit:02}",
     )
 
-  async def gripper_move_to_jaw_position(self, width: float):
-    """Put the jaws at a width. This moves them.
+  async def gripper_move_to_jaw_position(
+    self,
+    width: float,
+    speed: float = 49.90,
+    acceleration: float = 415.75,
+    current_limit: int = 15,
+  ):
+    """Open the jaws to a width. This moves them.
 
-    A position, driven: the jaws go where they are told whether or not something is in the way.
-    Closing onto a thing and holding it is `gripper_close_with_force_sensed_width_window`, which is a different
-    command and a different outcome.
+    A position, driven: the jaws go where they are told whether or not something is in the way, and
+    the drive says nothing until it has locked. Only opening is allowed here. Closing onto a thing
+    is `gripper_close_with_force_sensed_width_window`, which watches the force sensor on the way in
+    and reports what it met; this command watches nothing, so a close would drive the fingers into
+    whatever is between them with the current limit as its only stop.
 
-    The drive's speed, acceleration and current limit belong to
-    `_unchecked_fw_gripper_move_to_jaw_position`.
+    The jaws are read before anything is sent, so the direction is known rather than assumed.
 
     Args:
       width: how far apart to stand the jaws, in mm.
+      speed: how fast to drive them, in mm/s.
+      acceleration: how hard to accelerate, in mm/s2.
+      current_limit: the motor current limit, 0 the weakest and 15 the strongest.
 
     Raises:
-      ValueError: If the width is outside what the drive travels.
+      ValueError: If the width is outside the drive's travel, if the speed, acceleration or
+        current limit is outside what the drive accepts, or if the move would close the jaws.
     """
     c = self.configuration
     # Compared in mm rather than in increments: a width read off the drive and sent straight back
     # loses a fraction of an increment on the way, and the ends of the travel are exactly the
     # widths a caller asks for when it wants the jaws shut or wide open.
-    low = c.gripper_increments_to_mm(c.gripper_increment_range[0])
-    high = c.gripper_increments_to_mm(c.gripper_increment_range[1])
+    low = c.gripper_increments_to_mm(c.gripper_range_increments[0])
+    high = c.gripper_increments_to_mm(c.gripper_range_increments[1])
     if not low <= width <= high:
       raise ValueError(f"width must be between {low} and {high} mm, is {width}")
+    if not 0 <= current_limit <= 15:
+      raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
+
+    speed_increments = c.gripper_mm_per_sec_to_increments(speed)
+    acceleration_increments = c.gripper_mm_per_sec2_to_increments(acceleration)
+    for name, asked, increments, (limit_low, limit_high), in_mm in (
+      (
+        "speed",
+        speed,
+        speed_increments,
+        c.gripper_speed_range_increments,
+        c.gripper_increments_to_mm_per_sec,
+      ),
+      (
+        "acceleration",
+        acceleration,
+        acceleration_increments,
+        c.gripper_acceleration_range_increments,
+        c.gripper_increments_to_mm_per_sec2,
+      ),
+    ):
+      if not limit_low <= increments <= limit_high:
+        raise ValueError(
+          f"{name} must be between {in_mm(limit_low)} and {in_mm(limit_high)}, is {asked}"
+        )
+
     increments = min(
-      max(c.gripper_mm_to_increments(width), c.gripper_increment_range[0]),
-      c.gripper_increment_range[1],
+      max(c.gripper_mm_to_increments(width), c.gripper_range_increments[0]),
+      c.gripper_range_increments[1],
     )
+    # Where they stand now, asked before anything is sent. Compared as the drive counts rather
+    # than in mm, so a width that converts to the position they already hold is not a close.
+    standing = c.gripper_mm_to_increments(await self.gripper_request_width())
+    if increments < standing:
+      raise ValueError(
+        f"the jaws stand at {c.gripper_increments_to_mm(standing)} mm and this would close them to "
+        f"{width} mm. This command drives blind; use gripper_close_with_force_sensed_width_window "
+        f"to close onto something"
+      )
 
     try:
-      resp = await self._unchecked_fw_gripper_move_to_jaw_position(increments=increments)
+      resp = await self._unchecked_fw_gripper_move_to_jaw_position_increments(
+        increments=increments,
+        speed_increments=speed_increments,
+        acceleration_increments=acceleration_increments,
+        current_limit=current_limit,
+      )
       # What was asked for, recorded as soon as the move answers, so the model holds it even if
       # the read below cannot be taken.
       self.update_jaw_width(width)
@@ -1906,7 +1946,7 @@ class iSWAP:
     """
     c = self.configuration
     return await self.gripper_move_to_jaw_position(
-      c.gripper_increments_to_mm(c.gripper_increment_range[1])
+      c.gripper_increments_to_mm(c.gripper_range_increments[1])
     )
 
   async def gripper_close(self):
@@ -1918,10 +1958,10 @@ class iSWAP:
     """
     c = self.configuration
     return await self.gripper_move_to_jaw_position(
-      c.gripper_increments_to_mm(c.gripper_increment_range[0])
+      c.gripper_increments_to_mm(c.gripper_range_increments[0])
     )
 
-  async def _unchecked_fw_gripper_close_with_force_sensed_width_window(
+  async def _unchecked_fw_gripper_close_with_force_sensed_width_window_increments(
     self,
     grip_strength: int,
     width_increments: int,
@@ -1962,7 +2002,6 @@ class iSWAP:
     width: float,
     grip_strength: int = 5,
     width_tolerance: float = 2.0,
-    perform_model_check: bool = True,
   ):
     """Close the jaws onto whatever is between them and hold it. This moves them.
 
@@ -1975,8 +2014,6 @@ class iSWAP:
       grip_strength: how hard to hold, 0 the weakest and 9 the strongest.
       width_tolerance: how far off that width the thing may be, in mm. Something met inside that
         window is gripped; a close that runs past it reports finding nothing.
-      perform_model_check: whether to ask the deck what stands at the grip centre first, and refuse
-        a width that does not describe it. Nothing is refused when nothing is modelled there.
 
     Raises:
       ValueError: If any of them is outside what the command accepts.
@@ -1985,16 +2022,20 @@ class iSWAP:
     if not 0 <= grip_strength <= 9:
       raise ValueError(f"grip_strength must be between 0 and 9, is {grip_strength}")
     # The master's own floor: below it the closing ramp would run past the drive's minimum.
-    high = c.gripper_increments_to_mm(c.gripper_increment_range[1])
+    high = c.gripper_increments_to_mm(c.gripper_range_increments[1])
     if not 76.0 < width <= high:
       raise ValueError(f"width must be between 76.0 and {high} mm, is {width}")
     if not 0.5 <= width_tolerance <= 9.9:
       raise ValueError(f"width_tolerance must be between 0.5 and 9.9 mm, is {width_tolerance}")
-    if perform_model_check:
-      self._check_model_between_fingers(width, width_tolerance)
+    # TODO: compute what is actually between the fingers before closing, and refuse a width that
+    # does not describe it. Doing that needs a `Resource.contains(point)` that respects rotation
+    # - the arm turns, and a corner plus a bounding-box extent is not a rotated box - and a deck
+    # query that answers it without sweeping every well and tip. Neither exists yet, and the
+    # version removed here was wrong on rotated resources, silently skipped unless the fingers
+    # lay within a few degrees of a deck axis, and cost 72 ms per grip on a loaded deck.
 
     try:
-      resp = await self._unchecked_fw_gripper_close_with_force_sensed_width_window(
+      resp = await self._unchecked_fw_gripper_close_with_force_sensed_width_window_increments(
         grip_strength=grip_strength,
         width_increments=round(width * 10),
         width_tolerance_increments=round(width_tolerance * 10),
@@ -2005,67 +2046,7 @@ class iSWAP:
       # so nothing here knows the width until the drive is read.
       await self._record_where_it_stopped("gripper")
 
-  def _check_model_between_fingers(self, width: float, width_tolerance: float) -> None:
-    """Raise if the model has something between the fingers that this close would not take.
-
-    The deck is asked what stands at the grip centre, and the widest thing there that would fit
-    between the jaws at all is taken to be what is about to be gripped - which passes over the
-    wells inside a plate and the carrier under it. Its size is measured along the axis the fingers
-    close on, which is across link 2 rather than along it.
-
-    Skipped when the arm is not modelled, when the fingers do not close along a deck axis, or when
-    nothing is modelled at the grip centre: a plate put between the fingers by hand is not in the
-    model, and a check that cannot be made must not look like one that passed.
-
-    Args:
-      width: the width the close is about to be told, in mm.
-      width_tolerance: how far off it the thing may be, in mm.
-
-    Raises:
-      ValueError: If what the model has there is outside the jaws' travel, or outside the window
-        the close searches.
-    """
-    gripper, deck = self.link_2, self._driver.deck
-    rotation, wrist = self.rotation_drive_get_angle(), self.wrist_drive_get_angle()
-    if not isinstance(gripper, MechanicalGripper) or deck is None:
-      return
-    if rotation is None or wrist is None:
-      return
-    pose = self._compute_pose_at_angles(rotation, wrist)
-    # The fingers stand either side of link 2, so they close across it.
-    closing = (pose.gripper_deck_orientation.z + 90.0) % 180.0
-    if min(closing, 180.0 - closing) <= FINGER_AXIS_TOLERANCE:
-      size_of = Resource.get_absolute_size_x
-    elif abs(closing - 90.0) <= FINGER_AXIS_TOLERANCE:
-      size_of = Resource.get_absolute_size_y
-    else:
-      return
-
-    centre = pose.gripper_center_location
-    low, high = gripper.jaw_range
-    fits = [
-      (size_of(child), child)
-      for child in deck.get_all_children()
-      if self.resource not in (child, *child.get_all_children())
-      and _contains(child, centre)
-      and size_of(child) <= high
-    ]
-    if not fits:
-      return
-    size, held = max(fits, key=lambda found: found[0])
-    if size < low:
-      raise ValueError(
-        f"the model has {held.name} at the grip centre, {size:.1f} mm across, and the jaws close "
-        f"only to {low:.1f} mm"
-      )
-    if abs(size - width) > width_tolerance:
-      raise ValueError(
-        f"the model has {held.name} at the grip centre, {size:.1f} mm across, and this close "
-        f"searches {width - width_tolerance:.1f} to {width + width_tolerance:.1f} mm. Pass its "
-        f"width, widen width_tolerance, or perform_model_check=False to close anyway"
-      )
-
-  async def _unchecked_fw_gripper_close_to_object(
+  async def _unchecked_fw_gripper_close_to_object_increments(
     self,
     destination_increments: int,
     stop_band_increments: int,
@@ -2145,12 +2126,12 @@ class iSWAP:
       ValueError: If any argument is outside what the drive accepts.
     """
     c = self.configuration
-    low = c.gripper_increments_to_mm(c.gripper_increment_range[0])
-    high = c.gripper_increments_to_mm(c.gripper_increment_range[1])
+    low = c.gripper_increments_to_mm(c.gripper_range_increments[0])
+    high = c.gripper_increments_to_mm(c.gripper_range_increments[1])
     if not low <= expected_width <= high:
       raise ValueError(f"expected_width must be between {low} and {high} mm, is {expected_width}")
     band_increments = c.gripper_mm_to_increments(band)
-    band_low, band_high = c.gripper_stop_band_increment_range
+    band_low, band_high = c.gripper_stop_band_range_increments
     if not band_low <= band_increments <= band_high:
       raise ValueError(
         f"band must be between {c.gripper_increments_to_mm(band_low)} and "
@@ -2162,12 +2143,12 @@ class iSWAP:
       raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
 
     destination = min(
-      max(c.gripper_mm_to_increments(expected_width), c.gripper_increment_range[0]),
-      c.gripper_increment_range[1],
+      max(c.gripper_mm_to_increments(expected_width), c.gripper_range_increments[0]),
+      c.gripper_range_increments[1],
     )
     found = True
     try:
-      await self._unchecked_fw_gripper_close_to_object(
+      await self._unchecked_fw_gripper_close_to_object_increments(
         destination_increments=destination,
         stop_band_increments=band_increments,
         stop_trigger=stop_trigger,
@@ -2194,7 +2175,7 @@ class iSWAP:
 
     The arm's own initialize brings every drive up and swings the whole arm to do it. This is the
     one drive, which is what a gripper that has lost its reference needs - and what it refuses
-    while it is jammed, since it cannot travel to find its sensor edge. `_unchecked_fw_gripper_move_relative`
+    while it is jammed, since it cannot travel to find its sensor edge. `_unchecked_fw_gripper_move_relative_increments`
     is what frees it first.
 
     Args:
@@ -2207,7 +2188,7 @@ class iSWAP:
       raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
     return await self._driver.send_command(module="R0", command="GI", gw=f"{current_limit:02}")
 
-  async def _unchecked_fw_gripper_move_relative(
+  async def _unchecked_fw_gripper_move_relative_increments(
     self,
     distance_increments: int,
     opening: bool,
@@ -2307,7 +2288,7 @@ class iSWAP:
 
       before = hardware
       try:
-        await self._unchecked_fw_gripper_move_relative(
+        await self._unchecked_fw_gripper_move_relative_increments(
           distance_increments=nudge_increments, opening=True, current_limit=current_limit
         )
       except STARFirmwareError:
