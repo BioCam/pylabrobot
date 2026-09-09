@@ -245,10 +245,11 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     """
     if self.has_resource(name):
       return self.get_resource(name)
-    # The whole part, transport and barcode reader, off the manufacturer's model. Its left edge is
-    # a thin tab reaching 40 mm further left than the body, so a distance measured into this box
-    # starts at the tab.
-    size_x, size_y, size_z = 316.2, 109.5, 215.3
+    # The whole part, transport and barcode reader. The 316.2 this replaces came off the
+    # manufacturer's model, whose left end carried a thin tab that the sled does not have; the
+    # extra 35.3 mm put the part's own corner that far left of where it stands, and everything
+    # measured from that corner with it.
+    size_x, size_y, size_z = 280.9, 109.5, 215.3
     # Against a carrier's own front edge, and the deck's work surface.
     ahead_of_carrier_y, above_deck_z = 92.7, 0.5
     sled = Resource(

@@ -145,18 +145,19 @@ class AutoloadConfiguration:
   """Whether this autoload has the per-track indicator LEDs. Read at discovery."""
   drive_zero_on_the_deck: float = 100.0
   """Where the drive counts from, on the deck: track 1, a hundred millimetres along it."""
-  reference_point_from_sled_left_edge: float = 109.0
+  reference_point_from_sled_left_edge: float = 73.7
   """Where on the sled the drive's position refers to, as a distance from the sled's left edge in
   mm. The drive reports the carrier-handling wheels, and their left edge stands this far along the
   sled; it lines up with a track's origin, not its centre.
 
-  Measured on the manufacturer's model, against the box that wraps the whole part: the wheels are a
-  pair of 26 mm discs 7 mm thick, one at each face, spanning 109.0 to 116.1 mm from the box's left
-  edge. They turn about x, which is the axis a carrier is drawn in along.
+  Measured on the sled as modelled: the wheels are a pair of discs 7.1 mm thick, one at each face,
+  spanning 73.68 to 80.78 mm from the part's left edge. They turn about x, which is the axis a
+  carrier is drawn in along.
 
-  This is a distance from the box's left edge, so it only means anything against the box it was
-  measured in. The 20.0 it replaces was measured against a narrower one, and the left 40 mm of the
-  part as now modelled is a thin tab with nothing on it."""
+  This is a distance from the part's left edge, so it only means anything against the part it was
+  measured on. The 109.0 it replaces is the same feature measured on the manufacturer's model,
+  whose left end carried a thin tab the sled does not have - 35.3 mm of one, which is exactly what
+  separates the two readings. The 20.0 before that was measured on a narrower part again."""
   x_drive_range_increments: Tuple[int, int] = (0, 12_500)
   x_drive_speed_range_increments: Tuple[int, int] = (20, 3_000)  # steps per second
   x_drive_speed_default: int = 2_500
