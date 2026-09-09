@@ -37,6 +37,8 @@ import {
   HOVER,
   ARM_COLOR,
   ARM_OPACITY,
+  BOX_OPACITY,
+  MODEL_EDGE_OPACITY,
   SHELL_OPACITY,
   SPACE_OPACITY,
   HOLDERS,
@@ -81,6 +83,11 @@ let placementOf = []; // instance index -> { mesh, slot }
 let vesselOf = new Map(); // index -> the inner body whose colour tracks what is in it
 let tipOf = new Map();
 let edgeOf = new Map();
+// The instances whose model arrived as a file. Their box is not drawn at all and its border is
+// only just there, and both have to be decided from here rather than at the moment the file
+// landed: everything that says what is drawn runs again on every view change, so a one-off switch
+// would be undone by the next orbit past an axis.
+let drawnFromFile = new Set();
 let stateOf = new Map();
 let hiddenNames = new Set();
 let selected = -1;
@@ -375,9 +382,22 @@ function buildDeclaredMeshes() {
           root.matrixAutoUpdate = false;
           root.matrix.copy(world.matrices[index]);
           root.matrixWorldNeedsUpdate = true;
+          // Where the part stands, on the same scale the boxes use, and set on each object rather
+          // than the group: three reads render order off the object it draws, and does not inherit
+          // it down a hierarchy. Without it a real model sits at zero, under every edge and rail
+          // mark in an axis view, and disappears beneath the deck it stands over.
+          const order = paintOrderOf(index) + ARM_FRAME_OFFSET;
           root.traverse((o) => {
             o.frustumCulled = false;
-            if (o.isMesh) o.userData.declaredBy = index;
+            o.renderOrder = order;
+            if (o.isMesh) {
+              o.userData.declaredBy = index;
+              // The same unlit twin the boxes keep. A model has more shape to lose than a box
+              // does, but in a plan view what is wanted from it is its outline and its colour,
+              // and shading it from above gives neither.
+              o.userData.lit = o.material;
+              o.userData.flat = flatVariant(o.material);
+            }
           });
 
           // A rigged file names the parts that move. The declaration says which node answers to
@@ -415,6 +435,10 @@ function buildDeclaredMeshes() {
         if (entry) {
           entry.modelDrawn = true;
           entry.mesh.material.visible = false;
+          for (const i of entry.instances) drawnFromFile.add(i);
+          // The view is not going to change just because a file finished loading, so the border
+          // has to be faded here as well as in the rule that keeps it faded.
+          setRenderMode(axisAligned ?? false);
         }
       },
       undefined,
@@ -463,6 +487,19 @@ const AXIS_VECTOR = {
 // wheel rather than the sled's own corner.
 let referenceMarks = [];
 
+// A moving part is drawn as three objects rather than one instanced box - a reference line, the
+// carriage, and the stroke that bounds it - so they need ordering against each other as well as
+// against the scene. These are the three offsets, applied to whatever order the part is at: the
+// line reads under the carriage, and the stroke over it. They match the offsets a static resource
+// uses for its own surface and edge, so the two schemes interleave.
+const ARM_LINE_OFFSET = -0.5;
+const ARM_FRAME_OFFSET = 0;
+const ARM_OUTLINE_OFFSET = 1;
+
+// The reference mark on a resource that does not travel, drawn over its own resource but under the
+// edge line that bounds it.
+const REFERENCE_MARK_OFFSET = 0.75;
+
 function buildReferenceMarks() {
   for (const mark of referenceMarks) view.remove(mark.plane);
   referenceMarks = [];
@@ -493,7 +530,7 @@ function buildReferenceMarks() {
       })
     );
     plane.frustumCulled = false;
-    plane.renderOrder = 495;
+    plane.renderOrder = paintOrderOf(index) + REFERENCE_MARK_OFFSET;
     plane.matrixAutoUpdate = false;
     plane.userData.local = new THREE.Matrix4().makeTranslation(
       referenceOffset(model), sy / 2, sz);
@@ -560,7 +597,7 @@ function buildArms() {
         depthWrite: false,
       })
     );
-    frame.renderOrder = 500;
+    frame.renderOrder = paintOrderOf(index) + ARM_FRAME_OFFSET;
 
     // Struck from the same extrusion, so the stroke follows the window and the footprint both.
     // It lives in the arm's own group, which is what moves, so there is nothing left behind to
@@ -578,7 +615,7 @@ function buildArms() {
     edgeMaterials.add(outlineMaterial);
     const outline = new LineSegments2(outlineGeometry, outlineMaterial);
     outline.frustumCulled = false;
-    outline.renderOrder = 510; // over the carriage it bounds
+    outline.renderOrder = paintOrderOf(index) + ARM_OUTLINE_OFFSET;
 
     const offset = referenceOffset(model);
     const line = new THREE.Mesh(
@@ -591,7 +628,7 @@ function buildArms() {
     // Under the frame in paint order as well as in z, so it reads through the window and is tinted
     // by the carriage everywhere else. Ordering, not position, is what decides this: depth testing
     // is off in an axis view, so a lower render order is the only thing that puts it underneath.
-    line.renderOrder = 490;
+    line.renderOrder = paintOrderOf(index) + ARM_LINE_OFFSET;
 
     const group = new THREE.Group();
     group.add(line, frame, outline);
@@ -603,6 +640,7 @@ function buildArms() {
     const parent = world.parentOf[index];
     arms.push({
       group,
+      frame,
       outline,
       line,
       index,
@@ -896,7 +934,7 @@ function buildOrigin() {
     if (o.material) {
       o.material.depthTest = false;
       o.material.depthWrite = false;
-      o.renderOrder = 920;
+      o.renderOrder = OVERLAY_ORDER;
     }
   });
   view.add(originMarker);
@@ -994,6 +1032,12 @@ function paintOrder(entry) {
   return order;
 }
 
+// Anything drawn over the scene rather than in it - the origin marker, the highlight boxes, the
+// measurement legs - orders above every paint order a resource can reach. A fixed number cannot do
+// that on its own: paint order is a height in millimetres times PAINT_LEVEL, so the band has to
+// start past the tallest facility anyone will draw. Ten metres of stacked equipment is that.
+const OVERLAY_ORDER = 10_000 * PAINT_LEVEL;
+
 // Whether a model's box is drawn as a filled solid at all. A part that travels over the deck is
 // drawn see-through wherever it is, and a model whose own geometry has arrived has no use for the
 // box that stood in for it. Every mode change asks this rather than each one deciding again.
@@ -1003,6 +1047,9 @@ function fillsBox(entry) {
 
 function setRenderMode(painter) {
   for (const entry of meshes) {
+    const lit = entry.mesh.material.userData.lit ?? entry.mesh.material;
+    const wanted = painter ? (lit.userData.flat ?? lit) : lit;
+    if (entry.mesh.material !== wanted) entry.mesh.material = wanted;
     const material = entry.mesh.material;
     const isShell = entry.holdsEnclosure;
     // A tip rack is read by which of its positions still hold a tip, so it is drawn see-through at
@@ -1030,7 +1077,12 @@ function setRenderMode(painter) {
       // buffer - it is a wash over the view, not a surface anything is behind.
       material.depthTest = !isSpace;
       material.depthWrite = !isSpace && !moves;
-      material.visible = fillsBox(entry);
+      // A thing that holds other enclosures shows its outline and nothing else, which is the rule
+      // the fill was built with - "only the level you are actually looking into keeps a fill" -
+      // and which only the free view was applying. Drawn opaque, as everything is here, a device
+      // is a solid sheet the size of the machine under everything standing on it, and the deck's
+      // contents have to read against that rather than against the page.
+      material.visible = fillsBox(entry) && !isShell;
       // Still ordered, for the things depth cannot separate: coplanar fills, and the overlays and
       // outlines below that are drawn without depth at all.
       const order = paintOrder(entry);
@@ -1044,9 +1096,9 @@ function setRenderMode(painter) {
         overlay.material.needsUpdate = true;
       }
     } else {
-      material.transparent = isShell || isSpace || isTipRack;
+      material.transparent = true;
       material.opacity = isSpace ? SPACE_OPACITY : isTipRack ? TIP_RACK_OPACITY
-        : isShell ? SHELL_OPACITY : 1;
+        : isShell ? SHELL_OPACITY : BOX_OPACITY;
       material.side = isShell || isSpace ? THREE.BackSide : THREE.FrontSide;
       material.depthTest = true;
       material.depthWrite = !(isShell || isSpace);
@@ -1067,6 +1119,14 @@ function setRenderMode(painter) {
     surface.material = painter ? surface.userData.flat : surface.userData.lit;
   }
 
+  for (const root of meshRoots) {
+    root.traverse((o) => {
+      if (o.isMesh && o.userData.flat) {
+        o.material = painter ? o.userData.flat : o.userData.lit;
+      }
+    });
+  }
+
   for (const mark of gridMarks) {
     mark.traverse((o) => {
       if (o.material && o.material.depthTest !== undefined) o.material.depthTest = !painter;
@@ -1074,6 +1134,12 @@ function setRenderMode(painter) {
   }
 
   for (const arm of arms) {
+    // Where the part stands now. An arm is the one thing in the scene that travels, so the order it
+    // was built with is the order it had when it was somewhere else - and in an axis view, where
+    // depth testing is off, that order is the whole of what puts it over the deck it passes above.
+    const order = paintOrderOf(arm.index);
+    arm.frame.renderOrder = order + ARM_FRAME_OFFSET;
+    arm.outline.renderOrder = order + ARM_OUTLINE_OFFSET;
     arm.outline.material.depthTest = !painter;
     arm.outline.material.linewidth = painter ? ARM_EDGE_WIDTH_FLAT : ARM_EDGE_WIDTH_3D;
     arm.outline.material.needsUpdate = true;
@@ -1088,13 +1154,19 @@ function setRenderMode(painter) {
     arm.line.material.transparent = painter;
     arm.line.material.opacity = painter ? ARM_REFERENCE_OPACITY : 1;
     arm.line.material.depthTest = !painter;
-    arm.line.renderOrder = painter ? 490 : -1;
+    arm.line.renderOrder = painter ? order + ARM_LINE_OFFSET : -1;
     arm.line.material.needsUpdate = true;
   }
 
   for (const [index, line] of edgeOf) {
+    // All that is left of a box whose model is being drawn: its border, and only just.
+    const stoodIn = drawnFromFile.has(index);
     line.material.depthTest = !painter;
-    line.material.opacity = painter ? 1 : line.userData.baseOpacity;
+    line.material.opacity = stoodIn
+      ? MODEL_EDGE_OPACITY
+      : painter
+        ? 1
+        : line.userData.baseOpacity;
     line.material.linewidth = painter ? EDGE_WIDTH_FLAT : EDGE_WIDTH_3D;
     line.material.color.set(painter ? FLAT_EDGE : line.userData.baseColor);
     line.renderOrder = painter ? paintOrderOf(index) + 1 : 0;
@@ -1199,7 +1271,7 @@ view.add(hoverBox);
 for (const helper of [selectionBox, hoverBox]) {
   helper.material.depthTest = false;
   helper.material.transparent = true;
-  helper.renderOrder = 950;
+  helper.renderOrder = OVERLAY_ORDER + 30;
 }
 
 
@@ -1355,6 +1427,7 @@ function buildMeshes() {
   vesselOf = new Map();
   tipOf = new Map();
   edgeOf = new Map();
+  drawnFromFile = new Set();
 
   const byModel = new Map();
   for (let i = 0; i < world.names.length; i++) {
@@ -1399,6 +1472,12 @@ function buildMeshes() {
     });
 
     if (isVessel) material.color.setHex(VESSEL_RIM);
+    // Looking down an axis, a lit material reports the light rather than the resource: horizontal
+    // top faces take the environment's ceiling head-on and wash out, which is what took the colour
+    // out of a plan view. The overlays and the deck surfaces already switch to an unlit twin
+    // there; the box that carries most of the picture was the one thing that did not.
+    material.userData.flat = flatVariant(material);
+    material.userData.lit = material;
 
     if (MOVING_PARTS.has(model.category)) material.visible = false;
 
@@ -2163,8 +2242,8 @@ function buildDeltaAnnotation() {
     // Pale and wide behind, saturated and thin in front: the halo is what keeps a thin line
     // readable against a surface of any colour.
     const lines = [
-      [DELTA_HALO_WIDTH, DELTA_HALO_OPACITY, 960],
-      [DELTA_WIDTH, 1, 961],
+      [DELTA_HALO_WIDTH, DELTA_HALO_OPACITY, OVERLAY_ORDER + 40],
+      [DELTA_WIDTH, 1, OVERLAY_ORDER + 41],
     ].map(([linewidth, opacity, order]) => {
       const geometry = new LineSegmentsGeometry();
       geometry.setPositions([0, 0, 0, 0, 0, 0]);
@@ -2192,7 +2271,7 @@ function buildDeltaAnnotation() {
       new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false })
     );
     label.frustumCulled = false;
-    label.renderOrder = 962;
+    label.renderOrder = OVERLAY_ORDER + 42;
     group.add(label);
     return { axis, color: `#${color.toString(16).padStart(6, "0")}`, lines, canvas, texture, label, text: null };
   });
@@ -2496,6 +2575,25 @@ function atBoundary(surface) {
     zoom: camera.zoom,
   }),
   timings: () => timings,
+  // The models that arrived as files, and what is being done with each. A box that is not drawn
+  // and a model that is not either leaves nothing on screen, and from outside the page the two
+  // are indistinguishable - so the model has to be able to say so itself.
+  models: () =>
+    meshRoots.map((root) => {
+      const drawn = [];
+      root.traverse((o) => {
+        if (o.isMesh) {
+          drawn.push({
+            visible: o.visible && o.material.visible,
+            order: o.renderOrder,
+            depthTest: o.material.depthTest,
+            transparent: o.material.transparent,
+            opacity: o.material.opacity,
+          });
+        }
+      });
+      return { name: world?.names[root.userData.index], parts: drawn };
+    }),
   detail: () =>
     meshes.map((e) => ({
       type: e.model.type,

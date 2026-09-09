@@ -94,8 +94,13 @@ export const ARM_OPACITY = 0.575;
 export const SHELL_OPACITY = 0.5;
 // A resource with no model of its own is drawn as its bounding box. Slightly see-through, because
 // a box is a statement about extent rather than a picture of the thing: what it contains, and
-// what stands behind it, should still read through it. A resource that declares a
-// `reference_glb` has its box hidden entirely once the model arrives, so this never applies to it.
+// what stands behind it, should still read through it. A resource whose model file has arrived has
+// its box hidden entirely, so this never applies to it.
+export const BOX_OPACITY = 0.4;
+// What is left of a box once the model it stood in for is being drawn: its border, and only just.
+// The extent is still worth being able to find - it is what the collision model uses - but it is
+// no longer what says where the thing is, so it must not compete with the geometry inside it.
+export const MODEL_EDGE_OPACITY = 0.22;
 // The facility is the space everything stands in, not a thing to look at.
 export const SPACE_OPACITY = 0.06;
 
