@@ -138,5 +138,24 @@ class TestPosesAgainstTheRail(unittest.IsolatedAsyncioTestCase):
       iswap._check_pose_reachable(angle, wrist)
 
 
+class TestLostSteps(unittest.IsolatedAsyncioTestCase):
+  """What a drive whose counters have parted tells whoever asks."""
+
+  async def test_a_width_read_says_when_the_drive_has_lost_steps(self):
+    """The two counters part when the drive has been driven into something, and that is the only
+    sign of it. A width read goes through them rather than off the wire on its own, so a caller who
+    only ever asks how wide the jaws are is still told."""
+    iswap, _ = await gripper()
+    parted = iswap.configuration.gripper_counter_drift_increments + 100
+
+    async def counters_apart(**kwargs):
+      return {"rg": [13100, 13100 - parted]}
+
+    iswap._driver.send_command = counters_apart  # type: ignore[assignment]
+    with self.assertLogs("pylabrobot.hamilton.star.driver.features.iswap", "WARNING") as logged:
+      await iswap.gripper_request_width()
+    self.assertIn("lost steps", "".join(logged.output))
+
+
 if __name__ == "__main__":
   unittest.main()

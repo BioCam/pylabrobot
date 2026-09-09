@@ -2069,7 +2069,7 @@ class iSWAP:
     whose counters have parted will refuse to initialize until it has been freed.
 
     Returns:
-      The firmware's counter and the hardware's, in that order.
+      The counter the firmware keeps and the one the encoder reads, in that order.
     """
     resp = await self._driver.send_command(module="R0", command="RG", fmt="rg##### (n)")
     firmware, hardware = cast(List[int], resp["rg"])
@@ -2112,9 +2112,11 @@ class iSWAP:
     Returns:
       The jaw width in mm.
     """
-    resp = await self._driver.send_command(module="R0", command="RG", fmt="rg##### (n)")
-    # A target and an actual come back, in that order. The actual is read.
-    width = self.configuration.gripper_increments_to_mm(cast(List[int], resp["rg"])[1])
+    # Through the counters rather than off the wire again: it is the same command, and reading it
+    # there is what says whether the drive has lost steps. A width taken on its own cannot show
+    # that, and a caller who only ever asks how wide the jaws are would never be told.
+    _, hardware = await self.gripper_request_counters()
+    width = self.configuration.gripper_increments_to_mm(hardware)
     self.gripper_update_width(width)
     return width
 
