@@ -797,12 +797,12 @@ class iSWAP:
     lies along, which is the rotation drive's own angle less ninety degrees, so a resource's
     rotation reads in the frame every other resource is placed in.
 
-    Does nothing when the driver was given no deck, and so has nothing to model.
+    Does nothing until there is a resource to record it on.
 
     Args:
       angle: the rotation drive's angle, in degrees, as it reports it.
     """
-    if self.resource is None or self._driver.deck is None:
+    if self.resource is None:
       return
     self.resource.rotation_drive_angle = angle
     if self.link_1 is not None:
@@ -838,9 +838,7 @@ class iSWAP:
     Returns:
       The angle in degrees, or None while nothing has read it yet.
     """
-    if self.resource is None or self._driver.deck is None:
-      return None
-    return self.resource.wrist_drive_angle
+    return None if self.resource is None else self.resource.wrist_drive_angle
 
   def rotation_drive_get_angle(self) -> Optional[float]:
     """Which way the model has the arm pointing, as the rotation drive reports it.
@@ -852,9 +850,7 @@ class iSWAP:
     Returns:
       The angle in degrees, or None while nothing has read it yet.
     """
-    if self.resource is None or self._driver.deck is None:
-      return None
-    return self.resource.rotation_drive_angle
+    return None if self.resource is None else self.resource.rotation_drive_angle
 
   def wrist_drive_update_angle(self, angle: float) -> None:
     """Record which way the wrist is turned on the resource that models it.
@@ -1592,20 +1588,16 @@ class iSWAP:
 
     Raises:
       ValueError: If the name is not a stop, or the angle is outside the drive's travel.
-      RuntimeError: If the stored predefined_wrist_positions have not been read.
+      RuntimeError: If the stored stops have not been read.
     """
     c = self.configuration
     if isinstance(angle, str):
-      predefined_wrist_positions = c.wrist_drive_predefined_increments
-      if predefined_wrist_positions is None:
-        raise RuntimeError(
-          "the wrist's stored predefined_wrist_positions were not read; have you called `setup()`?"
-        )
-      if angle not in predefined_wrist_positions:
-        raise ValueError(
-          f"{angle!r} is not one of the predefined_wrist_positions {tuple(predefined_wrist_positions)}"
-        )
-      increments = predefined_wrist_positions[angle]
+      stops = c.wrist_drive_predefined_increments
+      if stops is None:
+        raise RuntimeError("the wrist drive's stops were not read; have you called `setup()`?")
+      if angle not in stops:
+        raise ValueError(f"{angle!r} is not one of the stops {tuple(stops)}")
+      increments = stops[angle]
     else:
       increments = c.wrist_deg_to_increments(angle)
     low, high = c.wrist_range_increments
