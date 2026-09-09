@@ -204,7 +204,7 @@ async def work_the_iswap(star) -> None:
 
   c = iswap.configuration
   rotation_stops = ["front", "left", "front", "right"]
-  wrist_stops = ["straight", "left", "straight", "right"]
+  gripper_directions = ["front", "back", "front", "back"]
   jaws = [
     c.gripper_increments_to_mm(c.gripper_range_increments[1]),
     c.gripper_increments_to_mm(c.gripper_range_increments[0]),
@@ -212,13 +212,17 @@ async def work_the_iswap(star) -> None:
 
   for step in range(10_000):
     rotation = rotation_stops[step % len(rotation_stops)]
-    wrist = wrist_stops[step % len(wrist_stops)]
+    gripper = gripper_directions[step % len(gripper_directions)]
     try:
-      await iswap.rotate_to_angles(rotation, wrist, make_space=True)
+      await iswap.rotate_to_angles(
+        rotation_angle=rotation, gripper_absolute_angle=gripper, make_space=True
+      )
     except ValueError as refused:
       # The guards stand between the arm and the channels, and a demo is not a reason to talk
       # past them: what they refuse is what a real caller would be refused.
-      logging.getLogger(__name__).info("the arm may not go to %s/%s: %s", rotation, wrist, refused)
+      logging.getLogger(__name__).info(
+        "the arm may not go to %s/%s: %s", rotation, gripper, refused
+      )
     await asyncio.sleep(2.5)
 
     await iswap.gripper_move_to_jaw_position(jaws[step % len(jaws)])

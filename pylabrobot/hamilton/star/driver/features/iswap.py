@@ -23,6 +23,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+# A gripper direction: where the gripper looks - the way its fingers point - in the driver's own
+# angles, 0 along +x, deck-right, turning counter-clockwise seen from above. Hamilton's `pd` codes
+# name a position rather than a direction, the side of the resource the gripper stands on, so the
+# two differ by half a turn.
+GRIPPER_DECK_DIRECTIONS: Dict[str, float] = {
+  "right": 0.0,
+  "back": 90.0,
+  "left": 180.0,
+  "front": -90.0,
+}
+
 RECORDED_FIRMWARE_PREFIX = "4."
 
 
@@ -401,16 +412,72 @@ class iSWAPConfiguration:
       return round(front - (angle / -90.0) * (front - predefined_positions["left"]))
     return round(front + (angle / 90.0) * (predefined_positions["right"] - front))
 
+  # The wrist's four stops, in the drive's own degrees. The drive is zeroed between `straight` and
+  # `left`, which is what puts these at a quarter turn either side of +/-45 rather than at 0 and 90.
+  WRIST_STOP_ANGLES = (("right", -135.0), ("straight", -45.0), ("left", 45.0), ("reverse", 135.0))
+
+  def _wrist_calibrated_stops(self) -> List[Tuple[int, float]]:
+    """The wrist's stops as increment/degree pairs, in increasing order.
+
+    Returns:
+      What this device reports for each stop, against the angle that stop stands at.
+
+    Raises:
+      RuntimeError: If the stored stops were not read.
+    """
+    predefined_positions = self.wrist_drive_predefined_increments
+    if predefined_positions is None:
+      raise RuntimeError("the wrist drive's stops were not read; have you called `star.setup()`?")
+    return [(predefined_positions[name], angle) for name, angle in self.WRIST_STOP_ANGLES]
+
   def wrist_increments_to_deg(self, increments: int) -> float:
-    """A wrist-drive angle in degrees, from increments."""
-    return increments * self.wrist_deg_per_increment
+    """A wrist-drive angle in degrees, from increments, against the calibrated stops.
+
+    Piecewise linear across the three segments the four stops divide the travel into, so the stops
+    read back exactly however far calibration has drifted, and an angle between two of them is
+    measured against the span this device actually reports rather than against a nominal
+    resolution. Past the outer stops the end segment's slope carries on.
+
+    Args:
+      increments: what the drive reports.
+
+    Returns:
+      The angle in degrees, signed from the drive's own zero.
+
+    Raises:
+      RuntimeError: If the stored stops were not read.
+    """
+    stops = self._wrist_calibrated_stops()
+    segment = next(
+      (i for i in range(len(stops) - 1) if increments < stops[i + 1][0]), len(stops) - 2
+    )
+    (low_increments, low_angle), (high_increments, high_angle) = stops[segment], stops[segment + 1]
+    span = (increments - low_increments) / (high_increments - low_increments)
+    return low_angle + span * (high_angle - low_angle)
 
   def wrist_deg_to_increments(self, deg: float) -> int:
-    """A wrist-drive angle in increments, from degrees."""
-    return round(deg / self.wrist_deg_per_increment)
+    """A wrist-drive angle in increments, from degrees, against the calibrated stops.
 
-  # A rate is a plain division by the drive's resolution, unlike a rotation-drive position, which
-  # is piecewise against the stops. Acceleration is counted in thousands of increments.
+    The inverse of `wrist_increments_to_deg`, piecewise on the same three segments, so a stop's
+    angle lands exactly on the increments this device reports for it.
+
+    Args:
+      deg: degrees, signed from the drive's own zero.
+
+    Returns:
+      What to send the drive.
+
+    Raises:
+      RuntimeError: If the stored stops were not read.
+    """
+    stops = self._wrist_calibrated_stops()
+    segment = next((i for i in range(len(stops) - 1) if deg < stops[i + 1][1]), len(stops) - 2)
+    (low_increments, low_angle), (high_increments, high_angle) = stops[segment], stops[segment + 1]
+    span = (deg - low_angle) / (high_angle - low_angle)
+    return round(low_increments + span * (high_increments - low_increments))
+
+  # A rate is a plain division by the drive's resolution, unlike a position, which is piecewise
+  # against the stops. Acceleration is counted in thousands of increments.
 
   def rotation_deg_per_sec_to_increments(self, deg_per_sec: float) -> int:
     """A rotation-drive speed in increments/s, from degrees/s."""
@@ -624,15 +691,15 @@ class iSWAP:
     """Request the distance from the rotation joint to the wrist joint.
 
     Returns:
-      The length in mm.
+      Length in mm.
     """
     return round((await self._request_slots("pw"))[9] / 10, 1)
 
-  async def request_link_2_length(self) -> float:
-    """Request the distance from the wrist joint to the gripper finger centre.
+  async def request_tool_center_point_xy_length(self) -> float:
+    """Request the distance from the wrist joint to the gripper finger centre in the x-y plane.
 
     Returns:
-      The length in mm.
+      Length in mm.
     """
     return round((await self._request_slots("pt"))[9] / 10, 1)
 
@@ -1216,64 +1283,6 @@ class iSWAP:
         await head.move_to_safe_z()
     await pipettes.move_to_y_positions({0: target_y}, make_space=True)
 
-  async def _make_space_for_pose(
-    self, rotation_angle: float, wrist_angle: float, make_space: bool
-  ) -> None:
-    """Make sure the channels are out of the way of where the arm is about to reach.
-
-    `_make_space_for_y` does this for the drive travelling across the deck, where the arm is a
-    circle about it. Here the pose is known, so the arm is where the forward kinematics say it is:
-    the frontmost of its two moving joints is what would meet a channel, and the channels have to
-    stand in front of that.
-
-    Does nothing when the arm is not modelled or the numbers it needs have not been read - a check
-    that cannot be made must not look like one that passed.
-
-    Args:
-      rotation_angle: where the rotation drive is being sent, in degrees.
-      wrist_angle: where the wrist is being sent, in degrees.
-      make_space: whether the channels may be moved to make that space.
-
-    Raises:
-      ValueError: If the arm would reach into the channels and either they may not be moved, or
-        they cannot move far enough to clear it.
-    """
-    pipettes = self.arm.pipettes
-    device = self._driver.configuration
-    if pipettes is None or device is None:
-      return
-    pose = self._compute_pose_at_angles(rotation_angle, wrist_angle)
-
-    widths = [channel.width for channel in pipettes.configuration.channels]
-    if any(width is None for width in widths):
-      return
-
-    # The frontmost point the arm would put anywhere, and where that leaves the backmost channel:
-    # it has to stand in front of the arm by its own half width.
-    reaches_to = min(pose.wrist_joint_location.y, pose.gripper_center_location.y)
-    target_y = reaches_to - cast(float, widths[0]) / 2
-    backmost_y = await pipettes.request_y_position(0)
-    furthest_back = device.left_arm_min_y_position + sum(cast(List[float], widths[1:]))
-
-    if backmost_y <= target_y:
-      return
-    if target_y < furthest_back:
-      raise ValueError(
-        f"rotation {rotation_angle:.2f} deg with the wrist at {wrist_angle:.2f} reaches to y "
-        f"{reaches_to:.1f} mm, which needs the backmost channel at {target_y:.1f} mm - and the "
-        f"channels do not fit behind {furthest_back:.1f} mm"
-      )
-    if not make_space:
-      raise ValueError(
-        f"rotation {rotation_angle:.2f} deg with the wrist at {wrist_angle:.2f} reaches to y "
-        f"{reaches_to:.1f} mm, which needs the backmost channel at {target_y:.1f} mm or further "
-        f"front, and it is at {backmost_y:.1f} mm. Pass make_space=True to move the channels out "
-        f"of the way"
-      )
-    await self.make_space()
-
-  # -- z position --------------------------------------------------------------------------------
-
   async def rotation_drive_request_z_position(self) -> float:
     """Read where the rotation drive's lowest point is along Z.
 
@@ -1511,6 +1520,74 @@ class iSWAP:
       )
     return increments
 
+  def _resolve_gripper_direction_increments(
+    self, angle: Union[str, float], rotation_increments: int
+  ) -> int:
+    """A gripper direction, as the increments the wrist drive counts in.
+
+    The wrist carries link 2 on link 1, so where the gripper ends up pointing is both joints
+    together. Given where link 1 will be, this is the wrist that points it where it is asked to.
+
+    Args:
+      angle: a direction in `GRIPPER_DECK_DIRECTIONS`, or degrees on the deck.
+      rotation_increments: where the rotation drive will be, in its own increments.
+
+    Returns:
+      Where the wrist drive is to go, in increments.
+
+    Raises:
+      ValueError: If the name is not a direction, or the fold it asks of the wrist is outside its
+        travel.
+      RuntimeError: If the wrist's stored stops were not read.
+    """
+    c = self.configuration
+    named = isinstance(angle, str)
+    if isinstance(angle, str):
+      if angle not in GRIPPER_DECK_DIRECTIONS:
+        raise ValueError(f"{angle!r} is not one of {tuple(GRIPPER_DECK_DIRECTIONS)}")
+      deck_angle = GRIPPER_DECK_DIRECTIONS[angle]
+    else:
+      deck_angle = angle
+    if c.wrist_drive_predefined_increments is None:
+      raise RuntimeError("the wrist's stored stops were not read; have you called `setup()`?")
+
+    link_1_deck_angle = c.rotation_drive_increments_to_angle(rotation_increments) - 90.0
+    straight = c.wrist_increments_to_deg(c.wrist_drive_predefined_increments["straight"])
+    # A direction is the same direction a turn either way round, so the fold is taken to the
+    # half-turn nearest zero before it is asked of the drive: +225 and -135 point the same way,
+    # and only one of them is inside the travel.
+    wrist_deg = (deck_angle - link_1_deck_angle + straight + 180.0) % 360.0 - 180.0
+    increments = c.wrist_deg_to_increments(wrist_deg)
+    quarter_turns = [
+      stored
+      for name, stored in c.wrist_drive_predefined_increments.items()
+      if name in ("right", "straight", "left", "reverse")
+    ]
+    on_a_rotation_stop = c.rotation_drive_predefined_increments is not None and any(
+      rotation_increments == stored for stored in c.rotation_drive_predefined_increments.values()
+    )
+    if named and on_a_rotation_stop:
+      # Both joints on their own stops is one of the arm's standard poses, so the wrist goes to the
+      # increment this arm stores for it rather than the one the arithmetic lands on. That is the
+      # whole point of the stored table: it carries this unit's calibration, a degree or so off the
+      # documented quarter turns.
+      increments = min(quarter_turns, key=lambda stored: abs(stored - increments))
+    else:
+      # Otherwise the caller asked for an angle, so it gets that angle - snapped only if it is
+      # already on a stop bar rounding, which is the tolerance legacy used.
+      for stored in quarter_turns:
+        if abs(wrist_deg - c.wrist_increments_to_deg(stored)) <= c.wrist_deg_per_increment:
+          increments = stored
+          break
+    low, high = c.wrist_range_increments
+    if not low <= increments <= high:
+      raise ValueError(
+        f"pointing the gripper at {angle} deg with link 1 at {link_1_deck_angle} deg needs the "
+        f"wrist at {wrist_deg} deg, outside its travel of "
+        f"{c.wrist_increments_to_deg(low)} to {c.wrist_increments_to_deg(high)} deg"
+      )
+    return increments
+
   def _resolve_wrist_increments(self, angle: Union[str, float]) -> int:
     """A wrist stop's name or an angle, as the increments the drive counts in.
 
@@ -1548,7 +1625,8 @@ class iSWAP:
   async def rotate_to_angles(
     self,
     rotation_angle: Optional[Union[str, float]] = None,
-    wrist_angle: Optional[Union[str, float]] = None,
+    gripper_relative_angle: Optional[Union[str, float]] = None,
+    gripper_absolute_angle: Optional[Union[str, float]] = None,
     make_space: bool = False,
     rotation_speed: Optional[float] = None,
     wrist_speed: Optional[float] = None,
@@ -1563,7 +1641,7 @@ class iSWAP:
     gripper sweeps a straight joint-space path; enables IK-driven trajectory execution.
 
     When only one angle is supplied, the other drive is requested from device (i.e. single-axis
-    rotation is covered as well). At least one of `rotation_angle` or `wrist_angle` must be
+    rotation is covered as well). At least one of `rotation_angle` or `gripper_relative_angle` must be
     provided.
 
     Each angle is either the enum stop, which lands on the increment this arm stores for it, or a
@@ -1573,12 +1651,15 @@ class iSWAP:
     Collision risk: the whole arm sweeps, and the path is neither joint's alone.
 
     Args:
-      rotation_angle [deg]: a stop in `configuration.rotation_drive_slots`, or float signed from
+      rotation_angle: where link 1 is to point - `left`, `front` or `right` - or degrees signed
+        from
         FRONT, or None to hold current.
-      wrist_angle [deg]: a stop in `configuration.wrist_drive_slots`, or float signed from motor zero,
-        or None to hold current.
-      make_space: whether the channels may be moved aside when the arm would reach into them.
-        Off by default; making space raises them to Z safety first, since it moves them in Y.
+      gripper_relative_angle: where the wrist drive is to sit in its own frame - `right`, `straight`, `left`
+        or `reverse` - or degrees from the drive's zero. Mutually exclusive with `gripper_absolute_angle`.
+      gripper_absolute_angle: where the gripper is to point on the deck - `right`, `front`, `left` or
+        `back` - or degrees on the deck. Mutually exclusive with `gripper_relative_angle`.
+      make_space: whether to clear the deck volume before rotating. Off by default. See
+        `make_space`, which raises the channels and any head and then moves them aside.
       rotation_speed [deg/sec]: max angular velocity, within what
         `configuration.rotation_speed_range_increments` accepts.
       wrist_speed [deg/sec]: max angular velocity, within what
@@ -1608,8 +1689,15 @@ class iSWAP:
       rotation_current_limit = c.rotation_current_limit_default
     if wrist_current_limit is None:
       wrist_current_limit = c.wrist_current_limit_default
-    if rotation_angle is None and wrist_angle is None:
-      raise ValueError("pass a rotation_angle, a wrist_angle, or both; both are None")
+    if gripper_relative_angle is not None and gripper_absolute_angle is not None:
+      raise ValueError(
+        "pass gripper_relative_angle or gripper_absolute_angle, not both: they name the same joint, one in the wrist "
+        "drive's own frame and one on the deck"
+      )
+    if rotation_angle is None and gripper_relative_angle is None and gripper_absolute_angle is None:
+      raise ValueError(
+        "pass a rotation_angle, a gripper_relative_angle or a gripper_absolute_angle; all are None"
+      )
     # Held in the drive's own increments rather than through its angle, so a joint that is holding
     # is sent exactly where it already is.
     rotation = (
@@ -1617,11 +1705,12 @@ class iSWAP:
       if rotation_angle is None
       else self._resolve_rotation_increments(rotation_angle)
     )
-    wrist = (
-      await self._wrist_drive_request_increments()
-      if wrist_angle is None
-      else self._resolve_wrist_increments(wrist_angle)
-    )
+    if gripper_absolute_angle is not None:
+      wrist = self._resolve_gripper_direction_increments(gripper_absolute_angle, rotation)
+    elif gripper_relative_angle is not None:
+      wrist = self._resolve_wrist_increments(gripper_relative_angle)
+    else:
+      wrist = await self._wrist_drive_request_increments()
     rotation_speed_increments = c.rotation_deg_per_sec_to_increments(rotation_speed)
     wrist_speed_increments = c.wrist_deg_per_sec_to_increments(wrist_speed)
     rotation_acceleration_increments = c.rotation_deg_per_sec2_to_increments(rotation_acceleration)
@@ -1670,7 +1759,17 @@ class iSWAP:
     rotation_target = c.rotation_drive_increments_to_angle(rotation)
     wrist_target = c.wrist_increments_to_deg(wrist)
     self._check_pose_reachable(rotation_target, wrist_target)
-    await self._make_space_for_pose(rotation_target, wrist_target, make_space)
+    if make_space:
+      await self.make_space()
+
+    # consistent z-safety moves of other features
+    arm = self.arm
+    if arm.pipettes is not None:
+      await arm.pipettes.move_to_safe_z()
+    for head in (arm.head96, arm.head384):
+      if head is not None:
+        await head.move_to_safe_z()
+
     try:
       resp = await self._unchecked_fw_rotation_drive_rotate_increments(
         rotation_increments=rotation,
@@ -1692,7 +1791,9 @@ class iSWAP:
       # way left the arm somewhere no target describes, and this is the only thing that finds it.
       await self._record_where_the_joints_stopped()
 
-  def _compute_pose_at_angles(self, rotation_angle: float, wrist_angle: float) -> iSWAPPose:
+  def _compute_pose_at_angles(
+    self, rotation_angle: float, gripper_relative_angle: float
+  ) -> iSWAPPose:
     """Where the arm would be with its joints at these angles. Nothing is read or moved.
 
     Worked from where the model has the drive, so it costs no commands, and it is what both of the
@@ -1701,7 +1802,7 @@ class iSWAP:
 
     Args:
       rotation_angle: the rotation drive's angle, in degrees.
-      wrist_angle: the wrist drive's angle, in degrees.
+      gripper_relative_angle: the wrist drive's angle, in degrees.
 
     Returns:
       The pose.
@@ -1726,7 +1827,7 @@ class iSWAP:
         iSWAPAxis.Y: drive.y,
         iSWAPAxis.Z: drive.z,
         iSWAPAxis.ROTATION: rotation_angle,
-        iSWAPAxis.WRIST: wrist_angle,
+        iSWAPAxis.WRIST: gripper_relative_angle,
       },
       link_1_length=c.link_1_length,
       # Asked of the tool, not taken off the arm: the gripper knows how far its grip centre sits
@@ -1736,7 +1837,7 @@ class iSWAP:
       rotation_drive_z_offset_above_finger=c.rotation_drive_z_offset_above_finger,
     )
 
-  def _check_pose_reachable(self, rotation_angle: float, wrist_angle: float) -> None:
+  def _check_pose_reachable(self, rotation_angle: float, gripper_relative_angle: float) -> None:
     """Raise if the arm cannot put its gripper where these angles would.
 
     Not what `_check_reachable` answers: that bounds one value on one axis.
@@ -1752,7 +1853,7 @@ class iSWAP:
 
     Args:
       rotation_angle: where the rotation drive is being sent, in degrees.
-      wrist_angle: where the wrist is being sent, in degrees.
+      gripper_relative_angle: where the wrist is being sent, in degrees.
 
     Raises:
       ValueError: If the grip centre would land behind the drive's own back stop.
@@ -1760,7 +1861,7 @@ class iSWAP:
     y_max = self.configuration.rotation_drive_y_max
     if y_max is None:
       return
-    pose = self._compute_pose_at_angles(rotation_angle, wrist_angle)
+    pose = self._compute_pose_at_angles(rotation_angle, gripper_relative_angle)
     # Both moving joints, not only the far one: link 1 is long enough to put the wrist behind the
     # rail while the grip centre is still clear of it.
     for what, point in (
@@ -1769,7 +1870,7 @@ class iSWAP:
     ):
       if point.y > y_max:
         raise ValueError(
-          f"rotation {rotation_angle:.2f} deg with the wrist at {wrist_angle:.2f} would put the "
+          f"rotation {rotation_angle:.2f} deg with the wrist at {gripper_relative_angle:.2f} would put the "
           f"{what} at y {point.y:.1f} mm, behind the {y_max:.1f} mm the rotation drive itself "
           f"reaches - the X-arm runs across the back of the deck there. Turn the arm the other "
           f"way, or move the drive forward first"
@@ -1899,8 +2000,16 @@ class iSWAP:
       acceleration = c.wrist_acceleration_default
     if current_limit is None:
       current_limit = c.wrist_current_limit_default
+    # This one is named for its drive, so it stays in the drive's terms: the wrist angle is turned
+    # into the deck direction it points the gripper, which is what `rotate_to_angles` takes.
+    wrist = self._resolve_wrist_increments(angle)
+    rotation = await self._rotation_drive_request_increments()
+    link_1_deck_angle = c.rotation_drive_increments_to_angle(rotation) - 90.0
+    if c.wrist_drive_predefined_increments is None:
+      raise RuntimeError("the wrist's stored stops were not read; have you called `setup()`?")
+    straight = c.wrist_increments_to_deg(c.wrist_drive_predefined_increments["straight"])
     return await self.rotate_to_angles(
-      wrist_angle=angle,
+      gripper_absolute_angle=link_1_deck_angle + (c.wrist_increments_to_deg(wrist) - straight),
       wrist_speed=speed,
       wrist_acceleration=acceleration,
       wrist_current_limit=current_limit,
