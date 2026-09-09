@@ -1398,7 +1398,11 @@ class iSWAP:
       acceleration=acceleration,
       current_limit=current_limit,
     )
-    return await self.rotation_drive_request_z_position()
+    # The move read the drive back and recorded it on the way out, so the model holds where it
+    # stopped. Asking again would be a second `RZ` for the same answer, on the one method every
+    # lateral move goes through. Without a deck there is no model to hold it, and then it is read.
+    here = self.rotation_drive_get_reference_point_location()
+    return here.z if here is not None else await self.rotation_drive_request_z_position()
 
   # ----------------------------------------
   # Rotational Movement

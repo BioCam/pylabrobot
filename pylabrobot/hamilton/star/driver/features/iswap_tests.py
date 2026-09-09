@@ -180,5 +180,21 @@ class TestGripperDirections(unittest.IsolatedAsyncioTestCase):
         self.assertIn(increments, stored, f"{rotation}/{direction}")
 
 
+class TestSafeZ(unittest.IsolatedAsyncioTestCase):
+  """What the move every lateral move waits on costs."""
+
+  async def test_going_to_safe_z_reads_the_drive_once(self):
+    """The Z move reads the drive back and records it, so the height comes off the model rather
+    than from a second `RZ` for the same answer. Asserted on the count because that is the whole
+    of it, and on the value because a model read that had drifted would be worse than the read it
+    saves."""
+    iswap, sent = await gripper()
+
+    height = await iswap.rotation_drive_move_to_safe_z_height()
+
+    self.assertEqual(len([command for command in sent if command.startswith("R0RZ")]), 1)
+    self.assertEqual(height, await iswap.rotation_drive_request_z_position())
+
+
 if __name__ == "__main__":
   unittest.main()
