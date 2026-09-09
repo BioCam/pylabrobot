@@ -1126,18 +1126,43 @@ class iSWAP:
     return await self._driver.send_command(module="R0", command="BO")
 
   async def make_space(self) -> None:
-    """Move everything else out of the arm's Y range. This moves the channels.
+    """Clear the deck volume for the iSWAP. This moves the channels and any head.
 
-    The master's own, which positions every component for the widest free Y range there is, rather
-    than this driver working out where each channel should stand. It does not say where it left
-    them, so they are read back either way.
+    The channels are raised to Z safety and then moved aside; a head is only raised. Nothing may
+    travel in Y while one of them is low. The raises are commanded here, not left to
+    `_unchecked_fw_position_components_for_free_y_range` to arrange on the way.
+
+    What each carries is read before it is moved. A tip hangs below the drive that holds it, so
+    the volume cleared here is not the one a bare channel or head occupies, and the reads are what
+    put that on the record. The channels sense theirs; a head only reports what its firmware holds.
+
+    The Y positioning is the master's own, which places every component for the widest free Y
+    range there is, rather than this driver working out where each channel should stand. It does
+    not say where it left them, so they are read back afterwards either way.
     """
-    pipettes = self.arm.pipettes
+    arm = self.arm
+    if arm.pipettes is not None:
+      tips = await arm.pipettes.sense_tip_presence()
+      mounted = [channel for channel, tip in enumerate(tips) if tip]
+      if mounted:
+        logger.info("the deck volume is being cleared with tips on channels %s", mounted)
+      await arm.pipettes.move_to_safe_z()
+    for head in (arm.head96, arm.head384):
+      if head is None:
+        continue
+      # TODO: warn when the head is clearing the deck volume with tips on it. The head has no
+      # sleeve sensor, so this has to come from the model rather than from a read, and nothing
+      # models what a head carries until tip handling is integrated.
+      # if await head.request_tip_presence():
+      #   logger.info(
+      #     "the deck volume is being cleared with the head's firmware holding that it carries tips"
+      #   )
+      await head.move_to_safe_z()
     try:
       await self._unchecked_fw_position_components_for_free_y_range()
     finally:
-      if pipettes is not None:
-        await pipettes.request_y_positions()
+      if arm.pipettes is not None:
+        await arm.pipettes.request_y_positions()
       await self.rotation_drive_request_y_position()
 
   async def _make_space_for_y(self, y: float, make_space: bool) -> None:
@@ -1181,7 +1206,15 @@ class iSWAP:
         f"y={y} mm needs the backmost channel at {round(target_y, 1)} mm or further front, and it "
         f"is at {backmost_y} mm. Pass make_space=True to move the channels out of the way"
       )
-    await self.make_space()
+
+    # Channel 0 goes exactly as far forward as this y needs, and the channels behind it follow by
+    # their own minimum spacing. Everything is raised first: the channels are about to travel in
+    # Y, and the iSWAP is about to travel past whatever a head would leave in its path.
+    await pipettes.move_to_safe_z()
+    for head in (self.arm.head96, self.arm.head384):
+      if head is not None:
+        await head.move_to_safe_z()
+    await pipettes.move_to_y_positions({0: target_y}, make_space=True)
 
   async def _make_space_for_pose(
     self, rotation_angle: float, wrist_angle: float, make_space: bool
