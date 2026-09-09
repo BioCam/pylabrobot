@@ -650,21 +650,31 @@ class iSWAP:
   async def rotation_drive_request_positions(self) -> Dict[str, int]:
     """Request the rotation drive's stored position table.
 
-    The device returns ten signed slots; the nine position slots are returned here, and the tenth
-    is the arm length, which `request_link_1_length` reads.
+    The device returns ten signed slots. Nine are positions and the tenth is link 1's length, so
+    both are recorded here rather than costing a second read of the same table.
 
     Returns:
       Each named stop's motor increments.
     """
-    return dict(zip(self.configuration.rotation_drive_slots, await self._request_slots("pw")))
+    c = self.configuration
+    slots = await self._request_slots("pw")
+    c.rotation_drive_predefined_increments = dict(zip(c.rotation_drive_slots, slots))
+    c.link_1_length = round(slots[9] / 10, 1)
+    return c.rotation_drive_predefined_increments
 
   async def wrist_drive_request_positions(self) -> Dict[str, int]:
     """Request the wrist twist drive's stored position table.
 
+    Its tenth slot carries link 2's length, recorded here alongside the stops.
+
     Returns:
       Each named stop's motor increments.
     """
-    return dict(zip(self.configuration.wrist_drive_slots, await self._request_slots("pt")))
+    c = self.configuration
+    slots = await self._request_slots("pt")
+    c.wrist_drive_predefined_increments = dict(zip(c.wrist_drive_slots, slots))
+    c.link_2_length = round(slots[9] / 10, 1)
+    return c.wrist_drive_predefined_increments
 
   async def rotation_drive_request_y_stops(self) -> Dict[str, float]:
     """Request the stored Y stops the carriage is calibrated against.
@@ -677,6 +687,7 @@ class iSWAP:
     """
     c = self.configuration
     slots = await self._request_slots("py")
+    c.rotation_drive_predefined_y_positions_increments = dict(zip(c.rotation_drive_y_slots, slots))
     return {name: c.y_increments_to_mm(slot) for name, slot in zip(c.rotation_drive_y_slots, slots)}
 
   async def request_link_1_length(self) -> float:
@@ -758,29 +769,15 @@ class iSWAP:
         RECORDED_FIRMWARE_PREFIX,
       )
     c.rotation_drive_x_offset = await self.rotation_drive_request_x_offset()
-    c.rotation_drive_predefined_y_positions_increments = dict(
-      zip(c.rotation_drive_y_slots, await self._request_slots("py"))
-    )
-
-    rotation = await self._request_slots("pw")
-    c.rotation_drive_predefined_increments = dict(
-      zip(self.configuration.rotation_drive_slots, rotation)
-    )
-    c.link_1_length = round(rotation[9] / 10, 1)
-
-    wrist = await self._request_slots("pt")
-    c.wrist_drive_predefined_increments = dict(zip(self.configuration.wrist_drive_slots, wrist))
-    c.link_2_length = round(wrist[9] / 10, 1)
-
-    # The Z stops and the gripper widths are read here too, so a configuration saved after setup
-    # carries every stored table. Left out, they save as nothing, and a simulated arm built from
-    # that file cannot answer where its Z drive or its jaws are.
-    c.rotation_drive_predefined_z_positions_increments = dict(
-      zip(c.rotation_drive_z_slots, await self._request_slots("pz"))
-    )
-    c.gripper_drive_predefined_increments = dict(
-      zip(c.gripper_drive_slots, await self._request_slots("pg"))
-    )
+    # Every stored table, through the one reader each has: a table read two ways is a table whose
+    # two ways drift. Each records what it read, so a configuration saved after setup carries all
+    # of them - left out, they save as nothing, and a simulated arm built from that file cannot
+    # answer where its Z drive or its jaws are.
+    await self.rotation_drive_request_y_stops()
+    await self.rotation_drive_request_positions()
+    await self.wrist_drive_request_positions()
+    await self.rotation_drive_request_predefined_z_positions()
+    await self.gripper_drive_request_widths()
 
   # -- initialization --------------------------------------------------------
 
