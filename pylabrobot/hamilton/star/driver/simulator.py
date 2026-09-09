@@ -628,7 +628,7 @@ class SimulatedISWAP(_Simulated, iSWAP):
       gripper = self.link_2
       held = False
       if isinstance(gripper, MechanicalGripper):
-        own = {gripper.body, *gripper.jaws, *gripper.fingers}
+        own = {gripper.body, *gripper.fingers}
         held = any(child not in own for child in gripper.children)
       return {"ph": int(held)}, "whether the model has anything in the gripper"
 
