@@ -110,9 +110,13 @@ class HeadConfiguration:
   be dropped. Depends on where the waste sits on the deck, so it has no default, and a run that
   moves the waste sets it again."""
 
-  z_range: Optional[Tuple[float, float]] = None
-  """Z-drive position window (mm). Set by setup: the floor is what the drive documents, the
-  ceiling is what `probe_z_max` read off this head."""
+  z_range: Tuple[float, float] = (180.5, 336.0)
+  """Z-drive position window (mm).
+
+  Conservative across both heads and both generations: the highest floor any of them documents
+  and the lowest ceiling, so a head is never commanded past what its own drive reaches before
+  setup has read it. Setup replaces the ceiling with what `probe_z_max` measured off this head
+  and keeps the floor, as it does for the channels."""
 
   # Encoder resolutions (defaulted device facts). A drive that counts its acceleration in
   # thousands of increments says so here, by carrying a resolution a thousand times its own.
@@ -123,8 +127,8 @@ class HeadConfiguration:
   dispensing_drive_mm_per_increment: float = 0.001025641026
 
   # The Z windows both heads share. The Y ones differ, so each head states its own.
-  z_speed_increment_range: Tuple[int, int] = (50, 20000)
-  z_acceleration_increment_range: Tuple[int, int] = (5000, 100000)
+  z_speed_range_increments: Tuple[int, int] = (50, 20000)
+  z_acceleration_range_increments: Tuple[int, int] = (5000, 100000)
 
   # What the drive adds to each position it has stored, so a stored value is an offset from here
   # rather than a position in its own right. Zero where the head stores positions outright.
@@ -185,10 +189,10 @@ class HeadConfiguration:
 
   # What each drive starts from, in the increments it is written in. A head that documents
   # something else states its own.
-  y_speed_increment_default: int = 25000
-  y_acceleration_increment_default: int = 35000
-  z_speed_increment_default: int = 17000
-  z_acceleration_increment_default: int = 80000
+  y_speed_default_increments: int = 25000
+  y_acceleration_default_increments: int = 35000
+  z_speed_default_increments: int = 17000
+  z_acceleration_default_increments: int = 80000
 
   # What the head reported holding, which stands in front of the defaults above. None until
   # discovery has read it, and on a simulated device.
@@ -200,22 +204,22 @@ class HeadConfiguration:
   # -- what each head supplies -------------------------------------------------------------------
 
   @property
-  def y_increment_range(self) -> Tuple[int, int]:
+  def y_range_increments(self) -> Tuple[int, int]:
     """Y-drive position window in increments, at channel A1."""
     raise NotImplementedError("a head states the Y positions its drive accepts")
 
   @property
-  def y_speed_increment_range(self) -> Tuple[int, int]:
+  def y_speed_range_increments(self) -> Tuple[int, int]:
     """Y-drive speed window, in the increments per second the drive counts in."""
     raise NotImplementedError("a head states the Y speeds its drive accepts")
 
   @property
-  def y_acceleration_increment_range(self) -> Tuple[int, int]:
+  def y_acceleration_range_increments(self) -> Tuple[int, int]:
     """Y-drive acceleration window, in the increments the drive counts acceleration in."""
     raise NotImplementedError("a head states the Y accelerations its drive accepts")
 
   @property
-  def z_increment_range(self) -> Tuple[int, int]:
+  def z_range_increments(self) -> Tuple[int, int]:
     """Z-drive position window in increments, at the head's lowest fixed feature."""
     raise NotImplementedError("a head states the Z positions its drive accepts")
 
@@ -236,28 +240,28 @@ class HeadConfiguration:
     """Y-drive speed a move uses when the caller names none (mm/s)."""
     if self.y_drive_speed_firmware_reported is not None:
       return self.y_drive_speed_firmware_reported
-    return self.y_drive_increments_to_mm(self.y_speed_increment_default)
+    return self.y_drive_increments_to_mm(self.y_speed_default_increments)
 
   @property
   def y_drive_acceleration_default(self) -> float:
     """Y-drive acceleration a move uses when the caller names none (mm/s2)."""
     if self.y_drive_acceleration_firmware_reported is not None:
       return self.y_drive_acceleration_firmware_reported
-    return self.y_drive_acceleration_increments_to_mm(self.y_acceleration_increment_default)
+    return self.y_drive_acceleration_increments_to_mm(self.y_acceleration_default_increments)
 
   @property
   def z_drive_speed_default(self) -> float:
     """Z-drive speed a move uses when the caller names none (mm/s)."""
     if self.z_drive_speed_firmware_reported is not None:
       return self.z_drive_speed_firmware_reported
-    return self.z_drive_increments_to_mm(self.z_speed_increment_default)
+    return self.z_drive_increments_to_mm(self.z_speed_default_increments)
 
   @property
   def z_drive_acceleration_default(self) -> float:
     """Z-drive acceleration a move uses when the caller names none (mm/s2)."""
     if self.z_drive_acceleration_firmware_reported is not None:
       return self.z_drive_acceleration_firmware_reported
-    return self.z_drive_acceleration_increments_to_mm(self.z_acceleration_increment_default)
+    return self.z_drive_acceleration_increments_to_mm(self.z_acceleration_default_increments)
 
   # -- the windows the driver works in, from the increments the drives accept --------------------
 
@@ -271,47 +275,34 @@ class HeadConfiguration:
     Returns:
       The (lowest, highest) Y position the drive reaches, in mm.
     """
-    low, high = self.y_increment_range
+    low, high = self.y_range_increments
     return (self.y_drive_increments_to_mm(low), self.y_drive_increments_to_mm(high))
 
   @property
   def y_speed_range(self) -> Tuple[float, float]:
     """Y-drive speed window (mm/s)."""
-    low, high = self.y_speed_increment_range
+    low, high = self.y_speed_range_increments
     return (self.y_drive_increments_to_mm(low), self.y_drive_increments_to_mm(high))
 
   @property
   def y_acceleration_range(self) -> Tuple[float, float]:
     """Y-drive acceleration window (mm/s2)."""
-    low, high = self.y_acceleration_increment_range
+    low, high = self.y_acceleration_range_increments
     return (
       self.y_drive_acceleration_increments_to_mm(low),
       self.y_drive_acceleration_increments_to_mm(high),
     )
 
   @property
-  def z_range_documented(self) -> Tuple[float, float]:
-    """The Z window the drive documents, in mm.
-
-    What the drive says it reaches, which is not the same as what a given unit does - the ceiling
-    is probed at setup and replaces this one. Pure: it reads nothing and changes nothing.
-
-    Returns:
-      The (lowest, highest) Z position the drive documents, in mm.
-    """
-    low, high = self.z_increment_range
-    return (self.z_drive_increments_to_mm(low), self.z_drive_increments_to_mm(high))
-
-  @property
   def z_speed_range(self) -> Tuple[float, float]:
     """Z-drive speed window (mm/s)."""
-    low, high = self.z_speed_increment_range
+    low, high = self.z_speed_range_increments
     return (self.z_drive_increments_to_mm(low), self.z_drive_increments_to_mm(high))
 
   @property
   def z_acceleration_range(self) -> Tuple[float, float]:
     """Z-drive acceleration window (mm/s2)."""
-    low, high = self.z_acceleration_increment_range
+    low, high = self.z_acceleration_range_increments
     return (
       self.z_drive_acceleration_increments_to_mm(low),
       self.z_drive_acceleration_increments_to_mm(high),
@@ -965,10 +956,7 @@ class Head:
     elif axis == "y":
       low, high = self.configuration.y_range
     else:
-      z_range = self.configuration.z_range
-      if z_range is None:
-        raise RuntimeError("the head's Z window was not probed; have you called `star.setup()`?")
-      low, high = z_range
+      low, high = self.configuration.z_range
     if not low <= value <= high:
       raise ValueError(f"{axis} must be between {low} and {high}, is {value}")
 
@@ -1256,12 +1244,8 @@ class Head:
 
     Raises:
       ValueError: If the head carries no tips, or it cannot put their bottom at `z`.
-      RuntimeError: If the head's Z window was not probed, so how high it reaches is unknown.
     """
     c = self.configuration
-    if c.z_range is None:
-      raise RuntimeError("the head's Z window was not probed; have you called `star.setup()`?")
-
     try:
       overhang = await self.request_tip_overhang()
     except RuntimeError as no_tips:
@@ -1307,11 +1291,6 @@ class Head:
       The Z position at the safety height, in mm.
     """
     z_range = self.configuration.z_range
-    if z_range is None:
-      # No window probed yet, so there is no height to aim at. The retract goes to the top and
-      # says where it stopped, which is the same place; what to make of that is setup's, so
-      # nothing is recorded here.
-      return await self.probe_z_max()
     await self.move_stop_disc_to_z_position(z_range[1], speed=speed, acceleration=acceleration)
     return await self.request_z_position()
 

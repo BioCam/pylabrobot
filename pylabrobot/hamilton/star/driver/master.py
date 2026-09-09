@@ -304,7 +304,7 @@ class STARDriver:
             if z < safe - tolerance
           ]
       for head, name in ((arm.head96, "head96"), (arm.head384, "head384")):
-        if head is None or head.configuration.z_range is None:
+        if head is None:
           continue
         safe = head.configuration.z_range[1]
         try:
@@ -1195,7 +1195,7 @@ class STARDriver:
         for head in (arm.head96, arm.head384):
           if head is not None:
             head_z = await head.probe_z_max()
-            head.configuration.z_range = (head.configuration.z_range_documented[0], head_z)
+            head.configuration.z_range = (head.configuration.z_range[0], head_z)
             head.configuration.z_drive_safety_position = head_z
 
     return already_initialized
@@ -1347,7 +1347,7 @@ class STARDriver:
       # Probing how far a head reaches retracts it, so it doubles as the safety retract and
       # runs on every setup rather than only the first. The floor is what the drive documents.
       retracted = await head.probe_z_max()
-      head.configuration.z_range = (head.configuration.z_range_documented[0], retracted)
+      head.configuration.z_range = (head.configuration.z_range[0], retracted)
       head.configuration.z_drive_safety_position = retracted
 
   def format_setup_summary(self) -> str:
@@ -1646,7 +1646,7 @@ class STARDriver:
           if ch.location is not None
         ]
         retracted_base = (
-          c.z_increments_to_mm(c.z_increment_range[1])
+          c.z_increments_to_mm(c.z_range_increments[1])
           + c.rotation_drive_z_offset_above_finger
           + ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z
         )
@@ -1705,8 +1705,8 @@ class STARDriver:
         name="iswap_gripper",
         length=c.link_2_length,
         jaw_range=(
-          c.gripper_increments_to_mm(c.gripper_increment_range[0]),
-          c.gripper_increments_to_mm(c.gripper_increment_range[1]),
+          c.gripper_increments_to_mm(c.gripper_range_increments[0]),
+          c.gripper_increments_to_mm(c.gripper_range_increments[1]),
         ),
         # And standing where an initialized gripper stands, so the model does not start out
         # claiming a width nothing has read. Setup reads the jaws straight after and records it.

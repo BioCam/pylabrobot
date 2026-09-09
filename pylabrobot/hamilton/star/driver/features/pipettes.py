@@ -92,15 +92,15 @@ class PipettesConfiguration:
   y_drive_mm_per_increment: float = 0.046302083
   z_drive_mm_per_increment: float = 0.01072765
 
-  z_increment_range: Tuple[int, int] = (9_320, 31_200)
+  z_range_increments: Tuple[int, int] = (9_320, 31_200)
   """The Z travel the drive counts in, in increments, lowest first. The floor is the deck
   surface, which is as low as a stop disc goes."""
 
   # -- what a channel's own Z drive accepts, for the moves addressed to the channel itself --
-  z_drive_speed_increment_range: Tuple[int, int] = (20, 15_000)
+  z_drive_speed_range_increments: Tuple[int, int] = (20, 15_000)
   z_drive_speed_default: float = 125.0
   """How fast a channel's Z drive moves when the caller names nothing, in mm/s."""
-  z_drive_acceleration_increment_range: Tuple[int, int] = (5, 150)
+  z_drive_acceleration_range_increments: Tuple[int, int] = (5, 150)
   z_drive_acceleration_default: float = 800.0
   """How hard it accelerates when the caller names nothing, in mm/s2. Counted in thousands of
   increments per second squared, unlike the positions and speeds beside it."""
@@ -147,13 +147,13 @@ class PipettesConfiguration:
   @property
   def z_speed_range(self) -> Tuple[float, float]:
     """Z-drive speed window (mm/s)."""
-    low, high = self.z_drive_speed_increment_range
+    low, high = self.z_drive_speed_range_increments
     return (self.z_drive_increments_to_mm(low), self.z_drive_increments_to_mm(high))
 
   @property
   def z_acceleration_range(self) -> Tuple[float, float]:
     """Z-drive acceleration window (mm/s2)."""
-    low, high = self.z_drive_acceleration_increment_range
+    low, high = self.z_drive_acceleration_range_increments
     return (
       self.z_drive_acceleration_increments_to_mm(low),
       self.z_drive_acceleration_increments_to_mm(high),
@@ -1119,7 +1119,6 @@ class Pipettes:
 
     Raises:
       ValueError: If the channel carries no tip, or it cannot put the tip bottom at `z`.
-      RuntimeError: If the Z window was not probed, so how high the channels reach is unknown.
     """
     self._require_channel(channel)
     c = self.configuration

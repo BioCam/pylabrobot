@@ -99,9 +99,6 @@ class Head96Configuration(HeadConfiguration):
   millimetres, where a stored adjustment would land anywhere, is the reason to expect it constant
   across heads rather than particular to this one."""
 
-  z_increment_range_legacy: Tuple[int, int] = (36100, 68500)
-  z_increment_range_fm_star: Tuple[int, int] = (24200, 76200)  # increase for FM-STAR
-
   @property
   def firmware_year(self) -> int:
     """The year the head's firmware was built, which resolves the windows below.
@@ -119,14 +116,18 @@ class Head96Configuration(HeadConfiguration):
   # -- what the head supplies to the shared windows ----------------------------------------------
 
   @property
-  def z_increment_range(self) -> Tuple[int, int]:
-    """Z-drive position window in increments; FM-STAR reaches both further down and further up."""
+  def z_range_increments(self) -> Tuple[int, int]:
+    """Z-drive position window in increments; FM-STAR reaches both further down and further up.
+
+    Returns:
+      The (lowest, highest) Z position, in increments.
+    """
     if self.instrument_type == "FM-STAR":
-      return self.z_increment_range_fm_star
-    return self.z_increment_range_legacy
+      return (24200, 76200)
+    return (36100, 68500)
 
   @property
-  def y_increment_range(self) -> Tuple[int, int]:
+  def y_range_increments(self) -> Tuple[int, int]:
     """Y-drive position window in increments, at channel A1.
 
     The floor is `y_increment_floor` rather than the 6000 the command documents, because the drive
@@ -140,7 +141,7 @@ class Head96Configuration(HeadConfiguration):
     return (7000, 36200)
 
   @property
-  def y_speed_increment_range(self) -> Tuple[int, int]:
+  def y_speed_range_increments(self) -> Tuple[int, int]:
     """Y-drive speed window in increments. The pre-2021 max (25000, the firmware default) is an
     empirical, deck-tested cap; per firmware version the maxima are 20000 (2008) and 40000 (2013+).
 
@@ -150,7 +151,7 @@ class Head96Configuration(HeadConfiguration):
     return (50, 25000 if self.firmware_year <= 2021 else 40000)
 
   @property
-  def y_acceleration_increment_range(self) -> Tuple[int, int]:
+  def y_acceleration_range_increments(self) -> Tuple[int, int]:
     """Y-drive acceleration window in increments. The min is constant; the max rose from 32000
 
     Returns:

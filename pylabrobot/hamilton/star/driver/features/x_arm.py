@@ -65,7 +65,7 @@ class XArmConfiguration:
 
   # -- device facts of the drive, the same for every arm of this generation --
   x_mm_per_increment: float = 0.1
-  x_increment_range: Tuple[int, int] = (0, 30_000)  # what the move accepts; x_range is narrower
+  x_range_increments: Tuple[int, int] = (0, 30_000)  # what the move accepts; x_range is narrower
   acceleration_level_range: Tuple[int, int] = (1, 5)  # index into five curves, not a rate
   acceleration_level_default: int = 4
   current_limit_range: Tuple[int, int] = (0, 7)
@@ -86,7 +86,7 @@ class XArmConfiguration:
     return dataclasses.replace(
       self,
       x_mm_per_increment=other.x_mm_per_increment,
-      x_increment_range=other.x_increment_range,
+      x_range_increments=other.x_range_increments,
       acceleration_level_range=other.acceleration_level_range,
       acceleration_level_default=other.acceleration_level_default,
       current_limit_range=other.current_limit_range,

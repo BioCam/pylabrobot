@@ -157,16 +157,16 @@ class AutoloadConfiguration:
   This is a distance from the box's left edge, so it only means anything against the box it was
   measured in. The 20.0 it replaces was measured against a narrower one, and the left 40 mm of the
   part as now modelled is a thin tab with nothing on it."""
-  x_drive_increment_range: Tuple[int, int] = (0, 12_500)
-  x_drive_speed_increment_range: Tuple[int, int] = (20, 3_000)  # steps per second
+  x_drive_range_increments: Tuple[int, int] = (0, 12_500)
+  x_drive_speed_range_increments: Tuple[int, int] = (20, 3_000)  # steps per second
   x_drive_speed_default: int = 2_500
   x_drive_acceleration_ramp_range: Tuple[int, int] = (1, 3)
   x_drive_acceleration_ramp_default: int = 3
 
   # -- carrier Z drive (handling wheel; the handling wheel, down or up) --
   z_drive_mm_per_increment: float = 0.004166666666666667
-  z_drive_increment_range: Tuple[int, int] = (0, 3_000)
-  z_drive_speed_increment_range: Tuple[int, int] = (20, 2_000)
+  z_drive_range_increments: Tuple[int, int] = (0, 3_000)
+  z_drive_speed_range_increments: Tuple[int, int] = (20, 2_000)
   z_drive_speed_default: int = 1_750
   z_drive_acceleration_ramp_range: Tuple[int, int] = (1, 4)
   z_drive_acceleration_ramp_default: int = 4
@@ -174,8 +174,8 @@ class AutoloadConfiguration:
 
   # -- carrier Y drive (handling wheel; in and out of the deck) --
   y_drive_mm_per_increment: float = 0.06404424
-  y_drive_increment_range: Tuple[int, int] = (0, 9_999)
-  y_drive_speed_increment_range: Tuple[int, int] = (20, 2_500)
+  y_drive_range_increments: Tuple[int, int] = (0, 9_999)
+  y_drive_speed_range_increments: Tuple[int, int] = (20, 2_500)
   y_drive_speed_default: int = 2_000
   y_drive_acceleration_ramp_range: Tuple[int, int] = (1, 6)
   y_drive_acceleration_ramp_default: int = 6
@@ -513,16 +513,16 @@ class Autoload:
     """
     c = self.configuration
     if axis == "x":
-      low, high = c.x_drive_increment_range
+      low, high = c.x_drive_range_increments
       low_mm = c.to_deck_frame(c.x_drive_increments_to_mm(low))
       high_mm = c.to_deck_frame(c.x_drive_increments_to_mm(high))
       increments = c.x_drive_mm_to_increments(c.from_deck_frame(value))
     elif axis == "y":
-      low, high = c.y_drive_increment_range
+      low, high = c.y_drive_range_increments
       low_mm, high_mm = c.y_drive_increments_to_mm(low), c.y_drive_increments_to_mm(high)
       increments = c.y_drive_mm_to_increments(value)
     else:
-      low, high = c.z_drive_increment_range
+      low, high = c.z_drive_range_increments
       low_mm, high_mm = c.z_drive_increments_to_mm(low), c.z_drive_increments_to_mm(high)
       increments = c.z_drive_mm_to_increments(value)
     if not low <= increments <= high:
@@ -566,7 +566,7 @@ class Autoload:
     current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
     # -- parameter validation ----------------------------------------------------------------------
-    low, high = c.x_drive_speed_increment_range
+    low, high = c.x_drive_speed_range_increments
     speed_increments = c.x_drive_mm_to_increments(speed)
     if not low <= speed_increments <= high:
       raise ValueError(
@@ -640,7 +640,7 @@ class Autoload:
     self._check_reachable("x", x)
     increments = c.x_drive_mm_to_increments(c.from_deck_frame(x))
 
-    low, high = c.x_drive_speed_increment_range
+    low, high = c.x_drive_speed_range_increments
     speed_increments = c.x_drive_mm_to_increments(speed)
     if not low <= speed_increments <= high:
       raise ValueError(
@@ -770,7 +770,7 @@ class Autoload:
     )
     current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
-    low, high = c.z_drive_speed_increment_range
+    low, high = c.z_drive_speed_range_increments
     speed_increments = c.z_drive_mm_to_increments(speed)
     if not low <= speed_increments <= high:
       raise ValueError(
@@ -830,7 +830,7 @@ class Autoload:
     )
     current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
-    low, high = c.z_drive_speed_increment_range
+    low, high = c.z_drive_speed_range_increments
     speed_increments = c.z_drive_mm_to_increments(speed)
     if not low <= speed_increments <= high:
       raise ValueError(
@@ -901,7 +901,7 @@ class Autoload:
     )
     current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
-    low, high = c.y_drive_speed_increment_range
+    low, high = c.y_drive_speed_range_increments
     speed_increments = c.y_drive_mm_to_increments(speed)
     if not low <= speed_increments <= high:
       raise ValueError(
@@ -961,7 +961,7 @@ class Autoload:
     )
     current_limit = c.motor_current_limit_default if current_limit is None else current_limit
 
-    low, high = c.y_drive_speed_increment_range
+    low, high = c.y_drive_speed_range_increments
     speed_increments = c.y_drive_mm_to_increments(speed)
     if not low <= speed_increments <= high:
       raise ValueError(

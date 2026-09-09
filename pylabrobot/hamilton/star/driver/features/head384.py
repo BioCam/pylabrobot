@@ -63,17 +63,17 @@ class Head384Configuration(HeadConfiguration):
   y_drive_acceleration_mm_per_increment: float = 15.625
   z_drive_acceleration_mm_per_increment: float = 5.0
 
-  y_increment_range: Tuple[int, int] = (7100, 36100)  # type: ignore[assignment]
-  y_speed_increment_range: Tuple[int, int] = (50, 20000)  # type: ignore[assignment]
-  y_acceleration_increment_range: Tuple[int, int] = (5, 32)  # type: ignore[assignment]
-  z_increment_range: Tuple[int, int] = (33200, 67200)  # type: ignore[assignment]
-  z_acceleration_increment_range: Tuple[int, int] = (5, 100)
+  y_range_increments: Tuple[int, int] = (7100, 36100)  # type: ignore[assignment]
+  y_speed_range_increments: Tuple[int, int] = (50, 20000)  # type: ignore[assignment]
+  y_acceleration_range_increments: Tuple[int, int] = (5, 32)  # type: ignore[assignment]
+  z_range_increments: Tuple[int, int] = (33200, 67200)  # type: ignore[assignment]
+  z_acceleration_range_increments: Tuple[int, int] = (5, 100)
 
   # What this head's drives start from. Its accelerations are counted in thousands, so those two
   # are written small where the 96-head's are not.
-  y_speed_increment_default: int = 20000
-  y_acceleration_increment_default: int = 32
-  z_acceleration_increment_default: int = 80
+  y_speed_default_increments: int = 20000
+  y_acceleration_default_increments: int = 32
+  z_acceleration_default_increments: int = 80
 
   predefined_y_position_origin: int = 22000
   predefined_z_position_origin: int = 35000

@@ -206,8 +206,8 @@ async def work_the_iswap(star) -> None:
   rotation_stops = ["front", "left", "front", "right"]
   wrist_stops = ["straight", "left", "straight", "right"]
   jaws = [
-    c.gripper_increments_to_mm(c.gripper_increment_range[1]),
-    c.gripper_increments_to_mm(c.gripper_increment_range[0]),
+    c.gripper_increments_to_mm(c.gripper_range_increments[1]),
+    c.gripper_increments_to_mm(c.gripper_range_increments[0]),
   ]
 
   for step in range(10_000):
