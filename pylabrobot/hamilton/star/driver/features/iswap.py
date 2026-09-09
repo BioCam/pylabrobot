@@ -324,14 +324,6 @@ class iSWAPConfiguration:
     """A Z position in increments, from mm."""
     return round(mm / self.z_mm_per_increment)
 
-  def rotation_increments_to_deg(self, increments: int) -> float:
-    """A rotation-drive angle in degrees, from increments."""
-    return increments * self.rotation_deg_per_increment
-
-  def rotation_deg_to_increments(self, deg: float) -> int:
-    """A rotation-drive angle in increments, from degrees."""
-    return round(deg / self.rotation_deg_per_increment)
-
   @property
   def rotation_drive_z_range(self) -> Tuple[float, float]:
     """How far the rotation drive's bottom travels along Z, in mm, lowest first.
