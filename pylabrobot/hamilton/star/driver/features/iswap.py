@@ -1,4 +1,6 @@
-"""The iSWAP: the arm that picks plates up and puts them down."""
+"""The iSWAP: a P(x)+P(y)+P(z)+R(elbow)+R(wrist) SCARA
+with a mechanical gripper as end-effector that moves resources.
+"""
 
 import dataclasses
 import enum
@@ -21,9 +23,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# How far off a deck axis the fingers may close and the model still be able to measure what is
-# between them, in degrees. Beyond it the thing's extent across the fingers is not a size it
-# states. Wide enough for the calibrated stops, which sit a degree or so off the square.
 RECORDED_FIRMWARE_PREFIX = "4."
 
 
@@ -133,10 +132,9 @@ class iSWAPConfiguration:
   """What the Y carriage's stored table holds, slot by slot. All position, and no arm length."""
 
   rotation_drive_predefined_y_positions_increments: Optional[Dict[str, int]] = None
-  """Each Y stop the carriage is calibrated against, in increments, keyed as `configuration.rotation_drive_y_slots` names them.
-
-  The whole stored table rather than the one stop the driver bounds moves by, so what this holds is
-  what the drive reports: a recording of it answers every Y read, not just the parking one."""
+  """Each Y stop the carriage is calibrated against, in increments, keyed as
+  `configuration.rotation_drive_y_slots` names them. The whole stored table, not just the parking
+  stop."""
 
   # -- Z --
   rotation_drive_z_slots: Tuple[str, ...] = (
@@ -155,11 +153,8 @@ class iSWAPConfiguration:
 
   rotation_drive_predefined_z_positions_increments: Optional[Dict[str, int]] = None
   """Each Z stop the rotation drive is calibrated against, in increments of the finger plane,
-  keyed as `configuration.rotation_drive_z_slots` names them.
-
-  Read by discovery, and again by `rotation_drive_request_predefined_z_positions`, which returns
-  the stops in mm. No arm has been read for it yet, so what a recording carries are the documented
-  factory values rather than one unit's calibration."""
+  keyed as `configuration.rotation_drive_z_slots` names them. Read by discovery; the defaults are
+  factory values, not one unit's calibration."""
 
   # -- rotation drive --
   rotation_drive_slots: Tuple[str, ...] = (
@@ -178,6 +173,21 @@ class iSWAPConfiguration:
 
   rotation_drive_predefined_increments: Optional[Dict[str, int]] = None
 
+  # -- wrist drive --
+  wrist_drive_slots: Tuple[str, ...] = (
+    "home",
+    "right",
+    "straight",
+    "left",
+    "reverse",
+    "parking",
+    "extra_1",
+    "extra_2",
+    "extra_3",
+  )
+  """The same for the wrist twist drive."""
+
+  wrist_drive_predefined_increments: Optional[Dict[str, int]] = None
   # -- gripper drive --
   gripper_drive_slots: Tuple[str, ...] = (
     "home",
@@ -197,27 +207,8 @@ class iSWAPConfiguration:
 
   gripper_drive_predefined_increments: Optional[Dict[str, int]] = None
   """Each jaw width the gripper is calibrated against, in increments, keyed as
-  `configuration.gripper_drive_slots` names them.
-
-  Read by discovery, and again by `gripper_drive_request_widths`, which returns the widths in mm.
-  No arm has been read for it yet, so what a recording carries are the documented factory values
-  rather than one unit's calibration."""
-
-  # -- wrist drive --
-  wrist_drive_slots: Tuple[str, ...] = (
-    "home",
-    "right",
-    "straight",
-    "left",
-    "reverse",
-    "parking",
-    "extra_1",
-    "extra_2",
-    "extra_3",
-  )
-  """The same for the wrist twist drive."""
-
-  wrist_drive_predefined_increments: Optional[Dict[str, int]] = None
+  `configuration.gripper_drive_slots` names them. Read by discovery; the defaults are factory
+  values, not one unit's calibration."""
 
   # === Device facts of the 4th-generation iSWAP: per-drive area-of-operation ranges and encoder
   # resolutions. The same across units of a generation, so they are defaulted - but only that
@@ -228,13 +219,16 @@ class iSWAPConfiguration:
   y_range_increments: Tuple[int, int] = (0, 14_000)
   y_mm_per_increment: float = 0.046302083
   y_speed_range_increments: Tuple[int, int] = (50, 8_000)  # increments/sec
+  # Speeds run under the documented defaults - Y 68%, rotation 44%, wrist 41% - these swing a plate.
+  y_speed_default_increments: int = 4_751
+  y_current_limit_default: int = 7
+  y_acceleration_level_default: int = 2
   rotation_drive_diameter: float = 30.5
   """How wide the rotation drive is, in mm."""
 
   rotation_drive_safety_radius: float = 90.0
-  """How far past the drive's own edge anything it carries can reach, in mm. Link 1 and what
-  stands proud of it sweep this circle as the drive turns, so a clearance that holds at every
-  rotation angle is measured against the drive's radius plus this."""
+  """How far past the drive's own edge anything it carries reaches, in mm. A clearance that holds
+  at every rotation angle is the drive's radius plus this."""
 
   rotation_drive_size_z: float = 120.0
   """How tall to model the rotation drive, in mm. Not read from anywhere: how far the drive extends
@@ -245,33 +239,45 @@ class iSWAPConfiguration:
   z_mm_per_increment: float = 0.01072765
   z_speed_range_increments: Tuple[int, int] = (50, 15_000)  # increments/sec
   z_acceleration_range_increments: Tuple[int, int] = (5, 999)  # 1000 increments/sec^2
+  z_speed_default_increments: int = 11_000
+  z_acceleration_default_increments: int = 60
+  z_current_limit_default: int = 6
   rotation_drive_z_offset_above_finger: float = 13.0
-  """How far the rotation drive's lowest point sits above the gripper finger plane, in mm. The Z
-  drive is calibrated to the finger plane, so a position read or commanded here is that plane's
-  plus this."""
+  """How far the rotation drive's lowest point sits above the finger plane, in mm. Z is calibrated
+  to the finger plane, so a position read or commanded is that plane's plus this."""
 
   # -- rotation drive (joint 1) --
   rotation_range_increments: Tuple[int, int] = (-30_032, 30_032)
   rotation_deg_per_increment: float = 0.00309619077
   rotation_speed_range_increments: Tuple[int, int] = (20, 75_000)  # increments/sec
   rotation_acceleration_range_increments: Tuple[int, int] = (5, 200)  # 1000 increments/sec^2
+  rotation_speed_default_increments: int = 24_223
+  rotation_acceleration_default_increments: int = 161
+  rotation_current_limit_default: int = 5
 
   # -- wrist drive (joint 2) --
   wrist_range_increments: Tuple[int, int] = (-30_000, 30_000)
   wrist_deg_per_increment: float = 0.00507968798
   wrist_speed_range_increments: Tuple[int, int] = (20, 65_000)  # increments/sec
   wrist_acceleration_range_increments: Tuple[int, int] = (5, 200)  # 1000 increments/sec^2
+  wrist_speed_default_increments: int = 19_686
+  wrist_acceleration_default_increments: int = 143
+  wrist_current_limit_default: int = 5
 
   # -- gripper --
   gripper_range_increments: Tuple[int, int] = (12_780, 24_120)  # jaw width
   gripper_mm_per_increment: float = 0.00554337
   gripper_speed_range_increments: Tuple[int, int] = (20, 9_999)  # increments/sec
   gripper_acceleration_range_increments: Tuple[int, int] = (5, 150)  # 1000 increments/sec^2
+  gripper_current_limit_range: Tuple[int, int] = (0, 15)
+  gripper_speed_default_increments: int = 8_659
+  gripper_acceleration_default_increments: int = 75
+  gripper_current_limit_default: int = 15
   gripper_stop_band_range_increments: Tuple[int, int] = (80, 1_800)
   """How wide a window the drive accepts around the width a close is aimed at, in its own steps."""
   gripper_counter_drift_increments: int = 50
-  """How far the drive's two counters may sit apart before the gap is a drive that has lost steps
-  rather than the ordinary lag between commanding a move and finishing it."""
+  """How far the drive's two counters may sit apart before the gap means lost steps rather than
+  the ordinary lag between commanding a move and finishing it."""
 
   # -- conversions: the wire counts in increments, the driver speaks mm and degrees ----------
 
@@ -436,6 +442,51 @@ class iSWAPConfiguration:
     """A wrist-drive acceleration in degrees/s2, from thousands of increments/s2."""
     return round(increments * 1000 * self.wrist_deg_per_increment, 2)
 
+  @property
+  def y_speed_default(self) -> float:
+    """Y speed a move uses when the caller names none (mm/s)."""
+    return self.y_increments_to_mm(self.y_speed_default_increments)
+
+  @property
+  def z_speed_default(self) -> float:
+    """Z speed a move uses when the caller names none (mm/s)."""
+    return self.z_increments_to_mm(self.z_speed_default_increments)
+
+  @property
+  def z_acceleration_default(self) -> float:
+    """Z acceleration a move uses when the caller names none (mm/s2)."""
+    return round(self.z_acceleration_default_increments * 1000 * self.z_mm_per_increment, 2)
+
+  @property
+  def rotation_speed_default(self) -> float:
+    """Rotation-drive speed a move uses when the caller names none (deg/s)."""
+    return self.rotation_increments_to_deg_per_sec(self.rotation_speed_default_increments)
+
+  @property
+  def rotation_acceleration_default(self) -> float:
+    """Rotation-drive acceleration a move uses when the caller names none (deg/s2)."""
+    return self.rotation_increments_to_deg_per_sec2(self.rotation_acceleration_default_increments)
+
+  @property
+  def wrist_speed_default(self) -> float:
+    """Wrist-drive speed a move uses when the caller names none (deg/s)."""
+    return self.wrist_increments_to_deg_per_sec(self.wrist_speed_default_increments)
+
+  @property
+  def wrist_acceleration_default(self) -> float:
+    """Wrist-drive acceleration a move uses when the caller names none (deg/s2)."""
+    return self.wrist_increments_to_deg_per_sec2(self.wrist_acceleration_default_increments)
+
+  @property
+  def gripper_speed_default(self) -> float:
+    """Gripper speed a move uses when the caller names none (mm/s)."""
+    return self.gripper_increments_to_mm_per_sec(self.gripper_speed_default_increments)
+
+  @property
+  def gripper_acceleration_default(self) -> float:
+    """Gripper acceleration a move uses when the caller names none (mm/s2)."""
+    return self.gripper_increments_to_mm_per_sec2(self.gripper_acceleration_default_increments)
+
   def gripper_increments_to_mm(self, increments: int) -> float:
     """A gripper jaw width in mm, from increments."""
     return round(increments * self.gripper_mm_per_increment, 3)
@@ -485,6 +536,18 @@ class iSWAP:
     can infer from the commands it sent."""
     self.link_1: Optional[Link] = None
     self.link_2: Optional[Link] = None
+
+  @property
+  def arm(self) -> "XArm":
+    """The arm carrying this iSWAP.
+
+    It has no X drive of its own: it rides the arm, offset from the carriage reference point by
+    `configuration.rotation_drive_x_offset`.
+
+    Returns:
+      The arm.
+    """
+    return next(a for a in self._driver.arms if a.iswap is self)
 
   # -- session / discovery ---------------------------------------------------
 
@@ -654,7 +717,7 @@ class iSWAP:
 
   # -- where it is -----------------------------------------------------------
 
-  def update_rotation(self, angle: float) -> None:
+  def rotation_drive_update_angle(self, angle: float) -> None:
     """Record which way the arm points on the resource that models it.
 
     The carriage is what the arm is mounted on, so the arm's angle is carried there and anything
@@ -721,7 +784,7 @@ class iSWAP:
       return None
     return self.resource.rotation_drive_angle
 
-  def update_wrist(self, angle: float) -> None:
+  def wrist_drive_update_angle(self, angle: float) -> None:
     """Record which way the wrist is turned on the resource that models it.
 
     Link 2 turns on the wrist, which link 1 carries, so its angle is measured from link 1 rather
@@ -742,7 +805,7 @@ class iSWAP:
     straight = c.wrist_increments_to_deg(c.wrist_drive_predefined_increments["straight"])
     self.link_2.turn_to(angle - straight, about=self.link_1.far_joint)
 
-  def update_jaw_width(self, width: float) -> None:
+  def gripper_update_width(self, width: float) -> None:
     """Record how far apart the jaws stand on the resource that models them.
 
     Does nothing until the gripper is modelled, and nothing when the width is outside what the
@@ -870,18 +933,6 @@ class iSWAP:
         f"{frame.replace('_', ' ')}, is {value}"
       )
 
-  @property
-  def arm(self) -> "XArm":
-    """The arm carrying this iSWAP.
-
-    It has no X drive of its own: it rides the arm, offset from the carriage reference point by
-    `configuration.rotation_drive_x_offset`.
-
-    Returns:
-      The arm.
-    """
-    return next(a for a in self._driver.arms if a.iswap is self)
-
   # ----------------------------------------
   # Linear Movement
   # ----------------------------------------
@@ -944,9 +995,9 @@ class iSWAP:
   async def _unchecked_fw_rotation_drive_move_to_y_position_increments(
     self,
     y_increments: int,
-    speed_increments: int = 4751,
-    acceleration_level: int = 2,
-    current_limit: int = 7,
+    speed_increments: Optional[int] = None,
+    acceleration_level: Optional[int] = None,
+    current_limit: Optional[int] = None,
   ):
     """Drive the rotation drive to an absolute Y. Nothing is guarded and nothing is recorded.
 
@@ -956,6 +1007,13 @@ class iSWAP:
       acceleration_level: which acceleration curve to use, 1 or 2.
       current_limit: the motor current limit, 0 to 7.
     """
+    c = self.configuration
+    if speed_increments is None:
+      speed_increments = c.y_speed_default_increments
+    if acceleration_level is None:
+      acceleration_level = c.y_acceleration_level_default
+    if current_limit is None:
+      current_limit = c.y_current_limit_default
     return await self._driver.send_command(
       module="R0",
       command="YA",
@@ -969,9 +1027,9 @@ class iSWAP:
     self,
     y: float,
     make_space: bool = False,
-    speed: float = 220.0,
-    acceleration_level: int = 2,
-    current_limit: int = 7,
+    speed: Optional[float] = None,
+    acceleration_level: Optional[int] = None,
+    current_limit: Optional[int] = None,
   ):
     """Move the rotation drive along Y. This moves it.
 
@@ -995,6 +1053,12 @@ class iSWAP:
       RuntimeError: If the device's configuration or the drive's Y limit was not read.
     """
     c = self.configuration
+    if speed is None:
+      speed = c.y_speed_default
+    if acceleration_level is None:
+      acceleration_level = c.y_acceleration_level_default
+    if current_limit is None:
+      current_limit = c.y_current_limit_default
     device = self._driver.configuration
     if device is None:
       raise RuntimeError("no configuration read; have you called `star.setup()`?")
@@ -1181,9 +1245,9 @@ class iSWAP:
   async def _unchecked_fw_rotation_drive_move_to_z_position_increments(
     self,
     z_increments: int,
-    speed_increments: int = 11000,
-    acceleration_increments: int = 60,
-    current_limit: int = 6,
+    speed_increments: Optional[int] = None,
+    acceleration_increments: Optional[int] = None,
+    current_limit: Optional[int] = None,
   ):
     """Drive the rotation drive to an absolute Z. Nothing is guarded and nothing is recorded.
 
@@ -1196,6 +1260,13 @@ class iSWAP:
       acceleration_increments: in thousands of increments/s2.
       current_limit: the motor current limit, 0 to 7.
     """
+    c = self.configuration
+    if speed_increments is None:
+      speed_increments = c.z_speed_default_increments
+    if acceleration_increments is None:
+      acceleration_increments = c.z_acceleration_default_increments
+    if current_limit is None:
+      current_limit = c.z_current_limit_default
     return await self._driver.send_command(
       module="R0",
       command="ZA",
@@ -1208,9 +1279,9 @@ class iSWAP:
   async def rotation_drive_move_to_z_position(
     self,
     z: float,
-    speed: float = 118.0,
-    acceleration: float = 643.66,
-    current_limit: int = 6,
+    speed: Optional[float] = None,
+    acceleration: Optional[float] = None,
+    current_limit: Optional[int] = None,
   ):
     """Move the rotation drive's lowest point to a Z position. This moves it.
 
@@ -1224,6 +1295,12 @@ class iSWAP:
       ValueError: If any of them is outside what the drive accepts.
     """
     c = self.configuration
+    if speed is None:
+      speed = c.z_speed_default
+    if acceleration is None:
+      acceleration = c.z_acceleration_default
+    if current_limit is None:
+      current_limit = c.z_current_limit_default
     self._check_reachable("z", z)
 
     speed_increments = c.z_mm_to_increments(speed)
@@ -1264,9 +1341,9 @@ class iSWAP:
 
   async def rotation_drive_move_to_safe_z_height(
     self,
-    speed: float = 118.0,
-    acceleration: float = 643.66,
-    current_limit: int = 6,
+    speed: Optional[float] = None,
+    acceleration: Optional[float] = None,
+    current_limit: Optional[int] = None,
   ) -> float:
     """Move the iSWAP up to the top of its Z travel, and read where that put it. This moves it.
 
@@ -1281,6 +1358,13 @@ class iSWAP:
     Returns:
       The rotation drive's bottom Z once there, in mm.
     """
+    c = self.configuration
+    if speed is None:
+      speed = c.z_speed_default
+    if acceleration is None:
+      acceleration = c.z_acceleration_default
+    if current_limit is None:
+      current_limit = c.z_current_limit_default
     await self.rotation_drive_move_to_z_position(
       self.configuration.rotation_drive_z_range[1],
       speed=speed,
@@ -1300,12 +1384,12 @@ class iSWAP:
     self,
     rotation_increments: int,
     wrist_increments: int,
-    rotation_speed_increments: int = 25_000,
-    wrist_speed_increments: int = 20_000,
-    rotation_acceleration_increments: int = 170,
-    wrist_acceleration_increments: int = 145,
-    rotation_current_limit: int = 5,
-    wrist_current_limit: int = 5,
+    rotation_speed_increments: Optional[int] = None,
+    wrist_speed_increments: Optional[int] = None,
+    rotation_acceleration_increments: Optional[int] = None,
+    wrist_acceleration_increments: Optional[int] = None,
+    rotation_current_limit: Optional[int] = None,
+    wrist_current_limit: Optional[int] = None,
   ):
     """Drive both joints to absolute increments. Nothing is guarded and nothing is recorded.
 
@@ -1324,6 +1408,19 @@ class iSWAP:
       rotation_current_limit: the rotation motor's current limit.
       wrist_current_limit: the wrist motor's current limit.
     """
+    c = self.configuration
+    if rotation_speed_increments is None:
+      rotation_speed_increments = c.rotation_speed_default_increments
+    if wrist_speed_increments is None:
+      wrist_speed_increments = c.wrist_speed_default_increments
+    if rotation_acceleration_increments is None:
+      rotation_acceleration_increments = c.rotation_acceleration_default_increments
+    if wrist_acceleration_increments is None:
+      wrist_acceleration_increments = c.wrist_acceleration_default_increments
+    if rotation_current_limit is None:
+      rotation_current_limit = c.rotation_current_limit_default
+    if wrist_current_limit is None:
+      wrist_current_limit = c.wrist_current_limit_default
     return await self._driver.send_command(
       module="R0",
       command="PA",
@@ -1410,12 +1507,12 @@ class iSWAP:
     rotation_angle: Optional[Union[str, float]] = None,
     wrist_angle: Optional[Union[str, float]] = None,
     make_space: bool = False,
-    rotation_speed: float = 75.0,
-    wrist_speed: float = 100.0,
-    rotation_acceleration: float = 500.0,
-    wrist_acceleration: float = 725.0,
-    rotation_current_limit: int = 5,
-    wrist_current_limit: int = 5,
+    rotation_speed: Optional[float] = None,
+    wrist_speed: Optional[float] = None,
+    rotation_acceleration: Optional[float] = None,
+    wrist_acceleration: Optional[float] = None,
+    rotation_current_limit: Optional[int] = None,
+    wrist_current_limit: Optional[int] = None,
   ):
     """Rotate one or both iSWAP joints to absolute angles in a single motion. This moves the arm.
 
@@ -1456,6 +1553,19 @@ class iSWAP:
       ValueError: if neither angle is provided, or if either resolved target increment is outside
         the hardware range.
     """
+    c = self.configuration
+    if rotation_speed is None:
+      rotation_speed = c.rotation_speed_default
+    if wrist_speed is None:
+      wrist_speed = c.wrist_speed_default
+    if rotation_acceleration is None:
+      rotation_acceleration = c.rotation_acceleration_default
+    if wrist_acceleration is None:
+      wrist_acceleration = c.wrist_acceleration_default
+    if rotation_current_limit is None:
+      rotation_current_limit = c.rotation_current_limit_default
+    if wrist_current_limit is None:
+      wrist_current_limit = c.wrist_current_limit_default
     if rotation_angle is None and wrist_angle is None:
       raise ValueError("pass a rotation_angle, a wrist_angle, or both; both are None")
     # Held in the drive's own increments rather than through its angle, so a joint that is holding
@@ -1470,7 +1580,6 @@ class iSWAP:
       if wrist_angle is None
       else self._resolve_wrist_increments(wrist_angle)
     )
-    c = self.configuration
     rotation_speed_increments = c.rotation_deg_per_sec_to_increments(rotation_speed)
     wrist_speed_increments = c.wrist_deg_per_sec_to_increments(wrist_speed)
     rotation_acceleration_increments = c.rotation_deg_per_sec2_to_increments(rotation_acceleration)
@@ -1533,8 +1642,8 @@ class iSWAP:
       )
       # What was asked for, recorded before anything is read: a move that answered has arrived,
       # and the model says so even if the reads below cannot be taken.
-      self.update_rotation(c.rotation_drive_increments_to_angle(rotation))
-      self.update_wrist(c.wrist_increments_to_deg(wrist))
+      self.rotation_drive_update_angle(c.rotation_drive_increments_to_angle(rotation))
+      self.wrist_drive_update_angle(c.wrist_increments_to_deg(wrist))
       return resp
     finally:
       # And then what the drives say, which is the last word either way. A move that stopped part
@@ -1647,7 +1756,7 @@ class iSWAP:
     angle = self.configuration.rotation_drive_increments_to_angle(
       await self._rotation_drive_request_increments()
     )
-    self.update_rotation(angle)
+    self.rotation_drive_update_angle(angle)
     return angle
 
   async def _rotation_drive_request_increments(self) -> int:
@@ -1662,9 +1771,9 @@ class iSWAP:
   async def rotation_drive_rotate_to_angle(
     self,
     angle: Union[str, float],
-    speed: float = 75.0,
-    acceleration: float = 500.0,
-    current_limit: int = 5,
+    speed: Optional[float] = None,
+    acceleration: Optional[float] = None,
+    current_limit: Optional[int] = None,
   ):
     """Turn the rotation drive to an angle, holding the wrist where it is. This moves the arm.
 
@@ -1682,6 +1791,13 @@ class iSWAP:
     Raises:
       ValueError: If the angle lands outside the drive's travel, or an argument is out of range.
     """
+    c = self.configuration
+    if speed is None:
+      speed = c.rotation_speed_default
+    if acceleration is None:
+      acceleration = c.rotation_acceleration_default
+    if current_limit is None:
+      current_limit = c.rotation_current_limit_default
     return await self.rotate_to_angles(
       rotation_angle=angle,
       rotation_speed=speed,
@@ -1701,7 +1817,7 @@ class iSWAP:
       The angle in degrees.
     """
     angle = self.configuration.wrist_increments_to_deg(await self._wrist_drive_request_increments())
-    self.update_wrist(angle)
+    self.wrist_drive_update_angle(angle)
     return angle
 
   async def _wrist_drive_request_increments(self) -> int:
@@ -1716,9 +1832,9 @@ class iSWAP:
   async def wrist_drive_rotate_to_angle(
     self,
     angle: Union[str, float],
-    speed: float = 100.0,
-    acceleration: float = 725.0,
-    current_limit: int = 5,
+    speed: Optional[float] = None,
+    acceleration: Optional[float] = None,
+    current_limit: Optional[int] = None,
   ):
     """Turn the wrist to an angle, holding the rotation drive where it is. This moves the arm.
 
@@ -1735,6 +1851,13 @@ class iSWAP:
     Raises:
       ValueError: If the angle lands outside the drive's travel, or an argument is out of range.
     """
+    c = self.configuration
+    if speed is None:
+      speed = c.wrist_speed_default
+    if acceleration is None:
+      acceleration = c.wrist_acceleration_default
+    if current_limit is None:
+      current_limit = c.wrist_current_limit_default
     return await self.rotate_to_angles(
       wrist_angle=angle,
       wrist_speed=speed,
@@ -1799,7 +1922,7 @@ class iSWAP:
     resp = await self._driver.send_command(module="R0", command="RG", fmt="rg##### (n)")
     # A target and an actual come back, in that order. The actual is read.
     width = self.configuration.gripper_increments_to_mm(cast(List[int], resp["rg"])[1])
-    self.update_jaw_width(width)
+    self.gripper_update_width(width)
     return width
 
   async def request_plate_gripped(self) -> bool:
@@ -1820,9 +1943,9 @@ class iSWAP:
   async def _unchecked_fw_gripper_move_to_jaw_position_increments(
     self,
     increments: int,
-    speed_increments: int = 9_002,
-    acceleration_increments: int = 75,
-    current_limit: int = 15,
+    speed_increments: Optional[int] = None,
+    acceleration_increments: Optional[int] = None,
+    current_limit: Optional[int] = None,
   ):
     """Drive the jaws to an absolute width. Nothing is guarded and nothing is recorded.
 
@@ -1833,10 +1956,17 @@ class iSWAP:
 
     Args:
       increments: where the jaws are to go, in the drive's own steps.
-      speed_increments: max velocity, in increments/s.
-      acceleration_increments: in thousands of increments/s2.
-      current_limit: the motor current limit, 0 to 15.
+      speed_increments: max velocity, in increments/s. The drive's own default when None.
+      acceleration_increments: in thousands of increments/s2. The drive's own default when None.
+      current_limit: the motor current limit. The drive's own default when None.
     """
+    c = self.configuration
+    if speed_increments is None:
+      speed_increments = c.gripper_speed_default_increments
+    if acceleration_increments is None:
+      acceleration_increments = c.gripper_acceleration_default_increments
+    if current_limit is None:
+      current_limit = c.gripper_current_limit_default
     return await self._driver.send_command(
       module="R0",
       command="GA",
@@ -1849,29 +1979,33 @@ class iSWAP:
   async def gripper_move_to_jaw_position(
     self,
     width: float,
-    speed: float = 49.90,
-    acceleration: float = 415.75,
-    current_limit: int = 15,
+    speed: Optional[float] = None,
+    acceleration: Optional[float] = None,
+    current_limit: Optional[int] = None,
   ):
     """Open the jaws to a width. This moves them.
 
     A position, driven: the jaws go where they are told whether or not something is in the way, and
-    the drive says nothing until it has locked. Only opening is allowed here. Closing onto a thing
-    is `gripper_close_with_force_sensed_width_window`, which watches the force sensor on the way in
-    and reports what it met; this command watches nothing, so a close would drive the fingers into
-    whatever is between them with the current limit as its only stop.
+    the drive says nothing until it has locked. It feels nothing on the way, so closing onto a
+    thing is `gripper_close_with_force_sensed_width_window`, which watches the force sensor and
+    reports what it met.
 
-    The jaws are read before anything is sent, so the direction is known rather than assumed.
+    The jaws are read first, so which way this move goes is known rather than assumed. A close the
+    caller named no speed for is driven at half the configured default, since whatever the jaws
+    meet is met at whatever they were driven at.
 
     Args:
       width: how far apart to stand the jaws, in mm.
-      speed: how fast to drive them, in mm/s.
+      speed: how fast to drive them, in mm/s. `configuration.gripper_speed_default_increments`
+        when None, halved for a close.
       acceleration: how hard to accelerate, in mm/s2.
+        `configuration.gripper_acceleration_default_increments` when None.
       current_limit: the motor current limit, 0 the weakest and 15 the strongest.
+        `configuration.gripper_current_limit_default` when None.
 
     Raises:
-      ValueError: If the width is outside the drive's travel, if the speed, acceleration or
-        current limit is outside what the drive accepts, or if the move would close the jaws.
+      ValueError: If the width is outside the drive's travel, or the speed, acceleration or
+        current limit is outside what the drive accepts.
     """
     c = self.configuration
     # Compared in mm rather than in increments: a width read off the drive and sent straight back
@@ -1881,11 +2015,36 @@ class iSWAP:
     high = c.gripper_increments_to_mm(c.gripper_range_increments[1])
     if not low <= width <= high:
       raise ValueError(f"width must be between {low} and {high} mm, is {width}")
-    if not 0 <= current_limit <= 15:
-      raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
+    increments = min(
+      max(c.gripper_mm_to_increments(width), c.gripper_range_increments[0]),
+      c.gripper_range_increments[1],
+    )
 
-    speed_increments = c.gripper_mm_per_sec_to_increments(speed)
-    acceleration_increments = c.gripper_mm_per_sec2_to_increments(acceleration)
+    # Read the jaws before anything is chosen: which way this move goes decides what it is driven
+    # at, and a width that happens to equal the default is not the same as a caller naming none.
+    closing = width < await self.gripper_request_width()
+
+    if current_limit is None:
+      current_limit = c.gripper_current_limit_default
+    limit_low, limit_high = c.gripper_current_limit_range
+    if not limit_low <= current_limit <= limit_high:
+      raise ValueError(
+        f"current_limit must be between {limit_low} and {limit_high}, is {current_limit}"
+      )
+
+    if speed is not None:
+      speed_increments = c.gripper_mm_per_sec_to_increments(speed)
+    else:
+      # Half speed into a close the caller did not set a speed for: this command feels nothing, so
+      # whatever the jaws meet is met at whatever they were driven at.
+      speed_increments = c.gripper_speed_default_increments
+      if closing:
+        speed_increments //= 2
+    acceleration_increments = (
+      c.gripper_acceleration_default_increments
+      if acceleration is None
+      else c.gripper_mm_per_sec2_to_increments(acceleration)
+    )
     for name, asked, increments, (limit_low, limit_high), in_mm in (
       (
         "speed",
@@ -1907,20 +2066,6 @@ class iSWAP:
           f"{name} must be between {in_mm(limit_low)} and {in_mm(limit_high)}, is {asked}"
         )
 
-    increments = min(
-      max(c.gripper_mm_to_increments(width), c.gripper_range_increments[0]),
-      c.gripper_range_increments[1],
-    )
-    # Where they stand now, asked before anything is sent. Compared as the drive counts rather
-    # than in mm, so a width that converts to the position they already hold is not a close.
-    standing = c.gripper_mm_to_increments(await self.gripper_request_width())
-    if increments < standing:
-      raise ValueError(
-        f"the jaws stand at {c.gripper_increments_to_mm(standing)} mm and this would close them to "
-        f"{width} mm. This command drives blind; use gripper_close_with_force_sensed_width_window "
-        f"to close onto something"
-      )
-
     try:
       resp = await self._unchecked_fw_gripper_move_to_jaw_position_increments(
         increments=increments,
@@ -1930,7 +2075,7 @@ class iSWAP:
       )
       # What was asked for, recorded as soon as the move answers, so the model holds it even if
       # the read below cannot be taken.
-      self.update_jaw_width(width)
+      self.gripper_update_width(width)
       return resp
     finally:
       # And then what the drive says, which is the last word. This one stalls: sent the full sweep

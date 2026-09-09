@@ -539,8 +539,8 @@ class Autoload:
 
     Args:
       track: which track to move to, counted from 1.
-      speed: how fast to travel, in mm/s. Defaults to what
-        `configuration.x_drive_speed_default` works out to.
+      speed: how fast to travel, in mm/s. Defaults to
+        `configuration.x_drive_speed_default`.
       acceleration_ramp: how hard to accelerate, in multiples of
         `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
         `configuration.x_drive_acceleration_ramp_default`.
@@ -616,8 +616,8 @@ class Autoload:
 
     Args:
       x: where to send the wheel along the deck, in mm, as `request_x_position` reports it.
-      speed: how fast to travel, in mm/s. Defaults to what
-        `configuration.x_drive_speed_default` works out to.
+      speed: how fast to travel, in mm/s. Defaults to
+        `configuration.x_drive_speed_default`.
       acceleration_ramp: how hard to accelerate, in multiples of
         `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
         `configuration.x_drive_acceleration_ramp_default`.
@@ -693,8 +693,8 @@ class Autoload:
     Args:
       distance: how far to move, in mm. Positive moves along the deck towards higher x, negative
         back towards the deck's origin.
-      speed: how fast to travel, in mm/s. Defaults to what
-        `configuration.x_drive_speed_default` works out to.
+      speed: how fast to travel, in mm/s. Defaults to
+        `configuration.x_drive_speed_default`.
       acceleration_ramp: how hard to accelerate. Defaults to
         `configuration.x_drive_acceleration_ramp_default`.
       current_limit: the motor current limit. Defaults to
@@ -749,8 +749,8 @@ class Autoload:
 
     Args:
       z: how high to move it, in mm from the drive's zero.
-      speed: how fast to travel, in mm/s. Defaults to what
-        `configuration.z_drive_speed_default` works out to.
+      speed: how fast to travel, in mm/s. Defaults to
+        `configuration.z_drive_speed_default`.
       acceleration_ramp: how hard to accelerate, in multiples of
         `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
         `configuration.z_drive_acceleration_ramp_default`.
@@ -808,8 +808,8 @@ class Autoload:
 
     Args:
       position: which one: `below` or `above`.
-      speed: how fast to travel, in mm/s. Defaults to what
-        `configuration.z_drive_speed_default` works out to.
+      speed: how fast to travel, in mm/s. Defaults to
+        `configuration.z_drive_speed_default`.
       acceleration_ramp: how hard to accelerate, in multiples of
         `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
         `configuration.z_drive_acceleration_ramp_default`.
@@ -880,8 +880,8 @@ class Autoload:
 
     Args:
       y: how far to move it, in mm from the drive's zero.
-      speed: how fast to travel, in mm/s. Defaults to what
-        `configuration.y_drive_speed_default` works out to.
+      speed: how fast to travel, in mm/s. Defaults to
+        `configuration.y_drive_speed_default`.
       acceleration_ramp: how hard to accelerate, in multiples of
         `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
         `configuration.y_drive_acceleration_ramp_default`.
@@ -939,8 +939,8 @@ class Autoload:
 
     Args:
       position: which one: `loading_tray`, `carrier_identification` or `deck`.
-      speed: how fast to travel, in mm/s. Defaults to what
-        `configuration.y_drive_speed_default` works out to.
+      speed: how fast to travel, in mm/s. Defaults to
+        `configuration.y_drive_speed_default`.
       acceleration_ramp: how hard to accelerate, in multiples of
         `configuration.acceleration_ramp_increments_per_second_squared`. Defaults to
         `configuration.y_drive_acceleration_ramp_default`.

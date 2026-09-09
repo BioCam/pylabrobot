@@ -84,8 +84,8 @@ prefix proposal, which splits them by what is on the other end:
 | the machine's sensors | `read_`, `capture_`, `measure_`, `sense_` | `sense_tip_presence`, `sense_carrier_presence_on_deck` |
 | the machine's memory, reading | `request_` | `request_y_positions`, `request_gripper_width` |
 | the machine's memory, writing | `set_` | `set_drive_parameter`, `set_loading_indicators` |
-| the resource model, reading | `get_` | - |
-| the resource model, writing | `update_`, `assign_`, `unassign_` | `update_rotation`, `update_location_by_reference_point` |
+| the resource model, reading | `get_` | `rotation_drive_get_angle`, `wrist_drive_get_angle` |
+| the resource model, writing | `update_`, `assign_`, `unassign_` | `rotation_drive_update_angle`, `update_location_by_reference_point` |
 
 `get_` and `request_` are not the same question: `get_` asks this driver's model, `request_` asks
 the device. On a feature with several drives the drive's name comes first: `wheel_*`, `scanner_*`,
