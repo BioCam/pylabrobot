@@ -170,13 +170,6 @@ class HeadConfiguration:
   predefined_z_positions_increments: Optional[Dict[str, int]] = None
   """The same along Z, filled by `request_predefined_z_positions`."""
 
-  z_drive_safety_position: Optional[float] = None
-  """Where the Z drive comes to rest when the firmware retracts it, in mm.
-
-  A probe result rather than something the head reports, so each head states what its own
-  generation is documented to reach and setup replaces it with what `probe_z_max` read off this
-  one. Named as `AutoloadConfiguration.z_drive_safety_position` is, which it means the same as."""
-
   traversal_z_position: float = 245.0
   """How high the head travels when a command is not told otherwise, in mm. Not a device fact: a
   height chosen to clear what sits on the deck, which is why every command that uses it takes it as
@@ -311,9 +304,6 @@ class HeadConfiguration:
   @property
   def channel_array_size_x(self) -> float:
     """How wide the channel array is: the first column's centre to the last's, in mm.
-
-    What the resource modelling the head spans, so that channel A1 lands on its left back corner.
-    The body around the channels is larger, and by how much is not read from anywhere.
 
     Returns:
       The width, in mm.
@@ -1123,8 +1113,7 @@ class Head:
   async def probe_z_max(self, read_timeout: int = 30) -> float:
     """Retracts the head with the firmware's own retract and reads its stop disc z-position.
 
-    Informs the max of `configuration.z_range` and `configuration.z_drive_safety_position` during
-    setup.
+    Informs the max of `configuration.z_range` during setup.
 
     Args:
       read_timeout: how long to wait for the retract, in seconds.

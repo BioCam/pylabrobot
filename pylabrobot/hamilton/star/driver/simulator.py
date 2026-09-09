@@ -320,20 +320,12 @@ class _SimulatedHead(_Simulated, Head):
 
   @property
   def _z_safety(self) -> float:
-    """Where a retract leaves this head, in mm, as its configuration states it.
+    """Where a retract leaves this head, in mm: the top of the window its configuration states.
 
     Returns:
       The Z its drive comes to rest at.
-
-    Raises:
-      RuntimeError: If the head was declared without one, so where a retract leaves it is unknown.
     """
-    z = self.configuration.z_drive_safety_position
-    if z is None:
-      raise RuntimeError(
-        f"the simulated {self._label} has no z_drive_safety_position; set it on its configuration"
-      )
-    return z
+    return self.configuration.z_range[1]
 
   @property
   def _declared(self) -> HeadConfiguration:

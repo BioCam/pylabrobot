@@ -1196,7 +1196,6 @@ class STARDriver:
           if head is not None:
             head_z = await head.probe_z_max()
             head.configuration.z_range = (head.configuration.z_range[0], head_z)
-            head.configuration.z_drive_safety_position = head_z
 
     return already_initialized
 
@@ -1348,7 +1347,6 @@ class STARDriver:
       # runs on every setup rather than only the first. The floor is what the drive documents.
       retracted = await head.probe_z_max()
       head.configuration.z_range = (head.configuration.z_range[0], retracted)
-      head.configuration.z_drive_safety_position = retracted
 
   def format_setup_summary(self) -> str:
     """One block describing the device that was found: how it is reached, what firmware every
@@ -1667,8 +1665,8 @@ class STARDriver:
       iswap.resource = resource
       iswap.link_1, iswap.link_2 = self._create_iswap_links(resource, c)
       iswap.update_location_by_reference_point(y=y, z=z)
-      iswap.update_rotation(angle)
-      iswap.update_wrist(await iswap.wrist_drive_request_angle())
+      iswap.rotation_drive_update_angle(angle)
+      iswap.wrist_drive_update_angle(await iswap.wrist_drive_request_angle())
       # And how far the jaws stand open, which the read records, so the model starts in step with
       # the arm rather than at whatever width the gripper was built holding.
       await iswap.gripper_request_width()
@@ -1681,7 +1679,7 @@ class STARDriver:
 
     Link 1 turns on the rotation drive and link 2 on the wrist that link 1 carries, so link 2 is a
     child of link 1 and its angle is measured from it. Where each points is written by
-    `update_rotation` and `update_wrist`. Links already there are reused.
+    `rotation_drive_update_angle` and `wrist_drive_update_angle`. Links already there are reused.
 
     Args:
       resource: the carriage they hang from.
