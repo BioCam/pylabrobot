@@ -88,6 +88,13 @@ def bolt_on(
 ) -> Resource:
   """Hang material on a link, centred across it and standing where the part says.
 
+  The part is a model in its own right, named for the link it hangs on and what it is: a link is a
+  line through its joints and carries no material itself, so anything to be said about the material
+  - what it is made of, what it looks like - is said about the part rather than about the link.
+  Two parts that are the same thing on either side of a span share the name, because they are one
+  model mounted twice: the category is what the part is, where the name distinguishes the copies.
+  A link with no model of its own has nothing to name its parts after, and they get none either.
+
   Args:
     link: the link it is bolted to.
     what: what the part is, which names it and gives it a category.
@@ -99,12 +106,14 @@ def bolt_on(
   Returns:
     The part.
   """
+  category = what.split("_")[0]
   made = of(
     name=f"{link.name}_{what}",
     size_x=part[0],
     size_y=part[1],
     size_z=part[2],
-    category=what.split("_")[0],
+    category=category,
+    model=f"{link.model}_{category}" if link.model else None,
   )
   link.assign_child_resource(made, location=Coordinate(part[3], -part[1] / 2, part[4]))
   return made
