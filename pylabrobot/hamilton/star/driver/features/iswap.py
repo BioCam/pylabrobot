@@ -2586,7 +2586,7 @@ class iSWAP:
   async def recover_gripper_drive(
     self,
     attempts: int = 4,
-    nudge_increments: int = 200,
+    nudge: float = 1.1,
     current_limit: Optional[int] = None,
   ) -> bool:
     """Get a stuck gripper drive moving again, and back onto its own reference. This moves it.
@@ -2605,7 +2605,7 @@ class iSWAP:
 
     Args:
       attempts: how many times to nudge and retry the initialize.
-      nudge_increments: how far to open the jaws on each nudge, in the drive's own steps.
+      nudge: how far to open the jaws on each nudge, in mm.
       current_limit: the motor current limit, 0 to 15.
 
     Returns:
@@ -2619,8 +2619,12 @@ class iSWAP:
       current_limit = c.gripper_current_limit_default
     if attempts < 1:
       raise ValueError(f"attempts must be at least 1, is {attempts}")
+    nudge_increments = c.gripper_mm_to_increments(nudge)
     if not 0 < nudge_increments <= 9_999:
-      raise ValueError(f"nudge_increments must be between 1 and 9999, is {nudge_increments}")
+      raise ValueError(
+        f"nudge must be between {c.gripper_increments_to_mm(1)} and "
+        f"{c.gripper_increments_to_mm(9_999)} mm, is {nudge}"
+      )
     if not 0 <= current_limit <= 15:
       raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
 
