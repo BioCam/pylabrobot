@@ -943,33 +943,22 @@ class iSWAP:
       here.z if z is None else z - on_the_arm.z - anchor.z,
     )
 
-  def _check_reachable(
-    self,
-    axis: Literal["x", "y", "z"],
-    value: float,
-    frame: Literal["rotation_drive", "gripper"] = "rotation_drive",
-  ) -> None:
-    """Raise if the iSWAP cannot be sent where it is being asked to go.
+  def _check_reachable(self, axis: Literal["x", "y", "z"], value: float) -> None:
+    """Raise if the rotation drive cannot be sent where it is being asked to go.
 
     The one gate every position passes through. What the iSWAP is allowed to do is decided in one
     place: travel limits now, and whatever else has to hold before it moves as it is added.
 
-    Two frames, because the arm reaches past the drive that carries it. `rotation_drive` is the
-    carriage the Y and Z drives position, which is what every move here commands. `gripper` is the
-    grip centre `request_pose` reports, which the two links carry away from that carriage.
-
-    Along Z the two differ by a fixed offset, so the gripper's window is exact. Along X and Y the
-    links can point in any direction, so the gripper's window is the drive's widened by their
-    combined length: a value outside it is certainly out of reach, one inside it may still be,
-    depending on where the joints are. Bounding those exactly needs the joint state.
+    The carriage the Y and Z drives position, which is what every move here commands. Where the
+    gripper ends up is `_check_pose_reachable`, which works it out from the joint angles: the arm
+    reaches past the carriage, and how far and in which direction is what the joints decide.
 
     Args:
       axis: which axis - `x` along the rail, `y` across the deck, `z` up.
-      value: where it would be sent, in mm.
-      frame: whether `value` is the rotation drive's position or the grip centre's.
+      value: where the rotation drive would be sent, in mm.
 
     Raises:
-      ValueError: If the iSWAP cannot reach it.
+      ValueError: If the drive cannot reach it.
       RuntimeError: If the limits were not read, so how far it reaches is unknown.
     """
     c = self.configuration
@@ -997,21 +986,10 @@ class iSWAP:
     else:
       low, high = c.rotation_drive_z_range
 
-    if frame == "gripper":
-      if axis == "z":
-        low -= c.rotation_drive_z_offset_above_finger
-        high -= c.rotation_drive_z_offset_above_finger
-      else:
-        if c.link_1_length is None or c.link_2_length is None:
-          raise RuntimeError("the link lengths were not read; have you called `star.setup()`?")
-        reach = c.link_1_length + c.link_2_length
-        low -= reach
-        high += reach
-
     if not low <= value <= high:
       raise ValueError(
-        f"{axis} must be between {round(low, 1)} and {round(high, 1)} mm for the "
-        f"{frame.replace('_', ' ')}, is {value}"
+        f"{axis} must be between {round(low, 1)} and {round(high, 1)} mm for the rotation drive, "
+        f"is {value}"
       )
 
   # ----------------------------------------
