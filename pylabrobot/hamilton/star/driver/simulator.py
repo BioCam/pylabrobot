@@ -301,8 +301,7 @@ class SimulatedXArm(_Simulated, XArm):
     # Where the arm is is what the model says: a simulated device has no drive to ask. Until setup
     # has put it on the deck there is nothing to read, and it answers where it powered up.
     if self.resource is not None and self.resource.location is not None:
-      anchor = self.resource.get_anchor(x=self.reference_anchor)
-      return self.resource.location.x + anchor.x
+      return self.resource.location.x + self.configuration.reference_point_from_left
     if self.side == "left" or self.configuration.x_range is None:
       return SIMULATED_LEFT_X_ARM_POSITION
     return self.configuration.x_range[1]

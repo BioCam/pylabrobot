@@ -63,6 +63,7 @@ class XArmConfiguration:
   puncher_handler_installed: bool = False
 
   width: Optional[float] = None
+  large: Optional[bool] = None
   x_range: Optional[Tuple[float, float]] = None
   workspace_x_range: Optional[Tuple[float, float]] = None
   wrap_size: Optional[float] = None  # zero when no arm is installed
@@ -108,25 +109,96 @@ class XArmConfiguration:
     """An arm position in steps, from mm."""
     return round(mm / self.x_mm_per_increment)
 
+  # How wide the large arm is, in mm, end to end. Measured on the part, because the drive does not
+  # say: what it reports is a reach measured from the point it tracks, not a size, and the two
+  # differ by tens of millimetres. A tape across one reads 400; the manufacturer's model of the
+  # same part gives 400.49.
+  #
+  # One arm, measured once. A second one is what would show whether this belongs to the arm or to
+  # the device it was measured on.
+  large_arm_size_x: float = 400.49
+
+  # Where the drive's tracked point sits on the large arm, in mm from its left edge. Measured on
+  # the part two ways that agree to the hundredth: the midpoint of the two rails the channels hang
+  # from - odd channels at 141.35, even at 304.64 - and the centre of the opening between them.
+  #
+  # A property of the arm, so it is stated rather than derived from the reported width. The two do
+  # agree: half the reported width is the reach from this point to the arm's right edge, which
+  # comes to 2 x (400.49 - 223.00) = 354.98, against the 354.0 a device answers.
+  large_arm_reference_from_left: float = 223.00
+
+  @property
+  def is_large(self) -> Optional[bool]:
+    """Whether this is the large arm, spanning both rails.
+
+    The device says so outright, in the drive-size bit read with the rest of its configuration. A
+    configuration that predates that bit - a declaration written before it was carried - has only
+    the reported width to go on, and a large arm reports far more than a small one, so the width
+    stands in. It is a fallback and not the answer: the width is settable, and two devices with
+    the same arm report different ones.
+    """
+    if self.large is not None:
+      return self.large
+    return None if self.width is None else self.width > 300
+
+  @property
+  def size_x(self) -> float:
+    """How wide the arm is, in mm, end to end.
+
+    Not what it reports. The reported width is a reach measured from the point the drive tracks,
+    so it says nothing about how much room the part takes.
+    """
+    if self.is_large is None:
+      raise RuntimeError("arm geometry not resolved")
+    if not self.is_large:
+      raise RuntimeError("no small arm has been measured, so how wide one is is not known")
+    return self.large_arm_size_x
+
   @property
   def model(self) -> str:
-    """Arm variant derived from `width`: wide arms span both rails, narrow arms one."""
-    if self.width is None:
+    """Arm variant: a large drive spans both rails, a small one a single rail.
+
+    Taken from the drive-size bit the device sets, not from `width`. The width is a value written
+    into the instrument rather than measured off it - two devices with the same arm answer 354.0
+    and 370.0 - so a variant derived from it follows whatever someone configured.
+    """
+    if self.is_large is None:
       raise RuntimeError("arm geometry not resolved")
-    if self.width > 300:
-      return "hamilton_legacy_star_dual_rail_arm"
-    return "hamilton_legacy_star_single_right_rail_arm"
+    return (
+      "hamilton_legacy_star_dual_rail_arm"
+      if self.is_large
+      else "hamilton_legacy_star_single_right_rail_arm"
+    )
 
   @property
   def reference_point(self) -> Literal["center", "right"]:
-    """Where along the arm's width the tracked X refers to: the arm center for a
+    """Where along the reported width the tracked X refers to.
+
+    The middle of it for a large arm, its right end for a small one. Measured along the width the
+    drive reports, not along the arm: what stands beyond that width is not part of what it is
+    counting from.
 
     Returns:
-      Which point along the arm's width its X refers to.
-    dual-rail arm, the right edge for a single-rail arm."""
-    if self.width is None:
+      Which point along the arm's reported width its X refers to.
+    """
+    if self.is_large is None:
       raise RuntimeError("arm geometry not resolved")
-    return "center" if self.width > 300 else "right"
+    return "center" if self.is_large else "right"
+
+  @property
+  def reference_point_from_left(self) -> float:
+    """Where the tracked X sits, in mm from the arm's left edge.
+
+    Measured on the arm rather than derived from what it reports. The reported width is a reach
+    from this point to the arm's right edge, doubled, so it does answer the question - but it is a
+    value someone wrote into the instrument, and a device left at the default answers 370.0 for an
+    arm whose reach is 354.98. The part does not move when that number does.
+    """
+    if self.is_large is None:
+      raise RuntimeError("arm geometry not resolved")
+    if not self.is_large:
+      raise RuntimeError("no small arm has been measured, so where it is tracked is not known")
+    return self.large_arm_reference_from_left
 
 
 class XArm:
@@ -342,19 +414,22 @@ class XArm:
   def update_location_by_reference_point(self, x: float) -> None:
     """Record where this arm is on the resource that models it.
 
-    The device positions the arm by its reference point - the centre of a dual-rail arm, the right
-    edge of a single-rail one - while a resource is located by its left front bottom corner, so the
-    two differ by the arm's own anchor. Does nothing when the driver was given no deck, and so has
-    nothing to model.
+    The device positions the arm by its reference point - the middle of the width it reports for a
+    large arm, the right end of it for a small one - while a resource is located by its left front
+    bottom corner, so the two differ by how far along the arm that point sits. Measured along the
+    reported width rather than taken as an anchor on the box: the box is the whole arm, which
+    reaches further right than the drive counts. Does nothing when the driver was given no deck,
+    and so has nothing to model.
 
     Args:
       x: where the reference point is now, in mm.
     """
     if self.resource is None or self.resource.location is None:
       return
-    anchor = self.resource.get_anchor(x=self.reference_anchor)
     self.resource.location = Coordinate(
-      x - anchor.x, self.resource.location.y, self.resource.location.z
+      x - self.configuration.reference_point_from_left,
+      self.resource.location.y,
+      self.resource.location.z,
     )
 
   # -- x motion --------------------------------------------------------------

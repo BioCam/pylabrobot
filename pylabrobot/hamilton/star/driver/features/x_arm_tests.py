@@ -14,7 +14,7 @@ from pylabrobot.hamilton.star.driver.configuration import (
   read_configuration,
   to_jsonable,
 )
-from pylabrobot.hamilton.star.driver.features.x_arm import XArm
+from pylabrobot.hamilton.star.driver.features.x_arm import XArm, XArmConfiguration
 from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import STARDeck
@@ -176,7 +176,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     with self.assertRaises(RuntimeError):
       await arm.move_x(900.0)
     seated = cast(Coordinate, resource.location)
-    self.assertEqual(seated.x + resource.get_anchor(x=arm.reference_anchor).x, 640.0)
+    self.assertEqual(seated.x + arm.configuration.reference_point_from_left, 640.0)
 
   async def test_a_failed_recovery_leaves_the_moves_own_error(self):
     driver = await _both_arms()
@@ -239,7 +239,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     await arm.move_x(500.0)
     self.assertEqual(sent.count("X0RX"), 4)
     seated = cast(Coordinate, resource.location)
-    self.assertEqual(seated.x + resource.get_anchor(x=arm.reference_anchor).x, 500.0)
+    self.assertEqual(seated.x + arm.configuration.reference_point_from_left, 500.0)
 
   async def test_an_arm_reversing_is_not_mistaken_for_one_at_the_target(self):
     """An arm at the end of a swing is momentarily still, so reads across that moment agree with
@@ -273,7 +273,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     await arm.move_x(500.0)
     self.assertEqual(reads, 5)
     seated = cast(Coordinate, arm.resource.location)
-    self.assertEqual(seated.x + arm.resource.get_anchor(x=arm.reference_anchor).x, 500.0)
+    self.assertEqual(seated.x + arm.configuration.reference_point_from_left, 500.0)
 
   async def test_an_arm_that_never_arrives_gives_up_and_keeps_what_it_read(self):
     driver = await _both_arms()
@@ -297,7 +297,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
       await arm.move_x(500.0, settle_reads=3)
     self.assertEqual(reads, 3)
     seated = cast(Coordinate, arm.resource.location)
-    self.assertEqual(seated.x + arm.resource.get_anchor(x=arm.reference_anchor).x, 498.0)
+    self.assertEqual(seated.x + arm.configuration.reference_point_from_left, 498.0)
 
 
 class TestConfiguringAnArm(unittest.IsolatedAsyncioTestCase):
@@ -363,3 +363,53 @@ class TestConfiguringAnArm(unittest.IsolatedAsyncioTestCase):
     # Neither of the two it was worked out from is changed.
     self.assertEqual(configured.width, BARE_X_ARM.width)
     self.assertEqual(answered.current_limit_default, BARE_X_ARM.current_limit_default)
+
+
+class TestGeometryDoesNotFollowTheReportedWidth(unittest.TestCase):
+  """The arm is a part; the width a drive reports about it is a setting.
+
+  `xu` is written into the instrument rather than measured off it, and a device left at the
+  default answers 370.0 for the same arm another answers 354.0 for. So nothing about the arm's
+  geometry may move when that number does.
+  """
+
+  # Every width a real device has answered for a large arm, plus the field's own default. The last
+  # is nonsense for a large arm and is here on purpose: a misconfigured device must not shrink the
+  # part it is describing.
+  REPORTED_WIDTHS = (354.0, 370.0, 246.0, 999.9)
+
+  def test_a_large_arm_is_the_same_part_whatever_width_it_reports(self):
+    for width in self.REPORTED_WIDTHS:
+      with self.subTest(width=width):
+        arm = XArmConfiguration(width=width, large=True)
+        self.assertEqual(arm.size_x, 400.49)
+        self.assertEqual(arm.reference_point_from_left, 223.00)
+
+  def test_the_reported_width_is_the_reach_to_the_right_edge_doubled(self):
+    """What the number does mean, checked against the part rather than assumed."""
+    reported = 354.0
+    arm = XArmConfiguration(width=reported, large=True)
+    reach = arm.size_x - arm.reference_point_from_left
+    self.assertAlmostEqual(2 * reach, reported, delta=1.0)
+
+  def test_the_variant_comes_from_the_drive_size_bit_not_the_width(self):
+    wide_but_small = XArmConfiguration(width=370.0, large=False)
+    narrow_but_large = XArmConfiguration(width=246.0, large=True)
+    self.assertEqual(wide_but_small.model, "hamilton_legacy_star_single_right_rail_arm")
+    self.assertEqual(narrow_but_large.model, "hamilton_legacy_star_dual_rail_arm")
+    self.assertEqual(wide_but_small.reference_point, "right")
+    self.assertEqual(narrow_but_large.reference_point, "center")
+
+  def test_a_configuration_without_the_bit_falls_back_to_the_width(self):
+    """A declaration written before the bit was carried has only the width to go on."""
+    self.assertIs(XArmConfiguration(width=354.0).is_large, True)
+    self.assertIs(XArmConfiguration(width=246.0).is_large, False)
+    self.assertIsNone(XArmConfiguration().is_large)
+
+  def test_a_small_arm_has_not_been_measured(self):
+    """It refuses rather than answering with the large arm's numbers."""
+    small = XArmConfiguration(width=246.0, large=False)
+    with self.assertRaises(RuntimeError):
+      _ = small.size_x
+    with self.assertRaises(RuntimeError):
+      _ = small.reference_point_from_left

@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import warnings
 from abc import ABCMeta, abstractmethod
-from typing import Literal, Optional, cast
+from typing import Optional, cast
 
 from pylabrobot.resources.carrier import Carrier, ResourceHolder
 from pylabrobot.resources.coordinate import Coordinate
@@ -194,22 +194,26 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     self,
     name: str,
     x: float,
-    width: float,
+    size_x: float,
+    reference_point_from_left: float,
     model: str,
-    reference_anchor: Literal["l", "c", "r"],
   ) -> Resource:
     """Get, or create once, the deck-owned X-arm resource called `name`.
 
     The deck owns it: created as a child the first time and reused thereafter, so repeated setups
     do not duplicate it. It is placed so its reference point sits at the arm's current x.
 
+    The arm is wider than the width its drive reports, which begins at the arm's left edge and
+    stops short of its right end. So the two are given separately: how much room the part takes,
+    and where along it the drive's position refers to.
+
     Args:
       name: what to call it, e.g. "left_x_arm".
       x: where the arm is now, in mm, at its reference point.
-      width: how wide the arm is, in mm, as the machine reports it.
+      size_x: how wide the arm is, in mm, end to end.
+      reference_point_from_left: how far along it, from its left edge in mm, the drive's position
+        refers to - the middle of the reported width on a large arm, its right end on a small one.
       model: which arm this is.
-      reference_anchor: where along the width `x` refers to, as an anchor: `"c"` for a dual-rail
-        arm, `"r"` for a single-rail one.
 
     Returns:
       The arm resource, whether it was just created or already there.
@@ -221,19 +225,22 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     arm_z, size_z, size_y = 334.7, 140.0, 712.0
     x_arm = Resource(
       name=name,
-      size_x=width,
+      size_x=size_x,
       size_y=size_y,
       size_z=size_z,
       category="x_arm",
       model=model,
     )
+    # What the drive's x actually refers to. Stated on the resource so anything reading it - the
+    # placement below, and a viewer drawing where the arm is reported to be - works from the arm's
+    # own frame rather than assuming the middle of the box.
+    x_arm.reference_point = {"x": reference_point_from_left}  # type: ignore[attr-defined]
     # Place it so its reference point lands at the arm's current x, and so its back edge lines up
     # with the back of the deck. Being deeper than the deck, it reaches in front of the deck's front
     # edge, which is why y is negative. The arm sits above the deck plane, so it does not count as
     # occupying the footprint of the carriers beneath it.
-    anchor = x_arm.get_anchor(x=reference_anchor)
     y = self.get_absolute_size_y() - size_y
-    self.assign_child_resource(x_arm, location=Coordinate(x - anchor.x, y, arm_z))
+    self.assign_child_resource(x_arm, location=Coordinate(x - reference_point_from_left, y, arm_z))
     return x_arm
 
   def get_or_create_autoload_sled(

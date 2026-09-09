@@ -828,7 +828,7 @@ class STARDriver:
     wraps = await self.request_working_envelopes_per_arm()
 
     def _resolve_arm(
-      byte1: int, byte2: int, side: Literal["left", "right"], width: float
+      byte1: int, byte2: int, side: Literal["left", "right"], width: float, large: bool
     ) -> Optional[XArmConfiguration]:
       wrap, workspace_x_range = wraps[side]
       if wrap == 0:  # arm not installed
@@ -846,6 +846,7 @@ class STARDriver:
         gel_card_gripper_installed=bool(byte2 & (1 << 1)),
         puncher_handler_installed=bool(byte2 & (1 << 2)),
         width=width,
+        large=large,
         x_range=ranges[side],
         workspace_x_range=workspace_x_range,
         wrap_size=wrap,
@@ -899,8 +900,12 @@ class STARDriver:
       instrument_size_slots=extended["xt"],
       autoload_size_slots=extended["xa"],
       tip_waste_x_position=extended["xw"] / 10,
-      left_arm=_resolve_arm(extended["xl"], extended["xn"], "left", extended["xu"] / 10),
-      right_arm=_resolve_arm(extended["xr"], extended["xo"], "right", extended["xv"] / 10),
+      left_arm=_resolve_arm(
+        extended["xl"], extended["xn"], "left", extended["xu"] / 10, bool(ka & (1 << 0))
+      ),
+      right_arm=_resolve_arm(
+        extended["xr"], extended["xo"], "right", extended["xv"] / 10, bool(ka & (1 << 2))
+      ),
       min_iswap_collision_free_position=extended["xm"] / 10,
       max_iswap_collision_free_position=extended["xx"] / 10,
       left_x_arm_width=extended["xu"] / 10,
@@ -1490,9 +1495,9 @@ class STARDriver:
       arm.resource = self.deck.get_or_create_x_arm(
         name=f"{arm.side}_x_arm",
         x=await arm.request_position(),
-        width=a.width,
+        size_x=a.size_x,
+        reference_point_from_left=a.reference_point_from_left,
         model=a.model,
-        reference_anchor=arm.reference_anchor,
       )
     await self._create_pipette_resources()
     await self._create_autoload_resource()
