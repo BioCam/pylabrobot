@@ -30,11 +30,16 @@ class XArmConfiguration:
   """Configuration and geometry for an X drive (left or right).
 
   The installed-module bits combine byte 1 (xl/xr) and byte 2 (xn/xo). The arm
-  geometry - width, travel range, workspace X range - comes from the X-drive range (RU)
-  and working-envelope (UA) queries, so it is None on a drive built from the module
-  bits alone (e.g. a simulated configuration) and populated when
-  `request_extended_configuration` builds the drive. `model` and `reference_point`
+  geometry comes from three queries, one per field: `width` from the extended
+  configuration (QM), as `xu` for the left drive and `xv` for the right, in tenths
+  of a millimetre; `x_range` from the X-drive range (RU); and `workspace_x_range`
+  and `wrap_size` from the working envelope (UA). All are None on a drive built
+  from the module bits alone (e.g. a simulated configuration) and populated when
+  `request_device_configuration` builds the drive. `model` and `reference_point`
   follow from `width`.
+
+  `width` is read per drive, and the two drives on one device do not have to agree:
+  it is what a drive says about itself, not a figure a kind of arm has.
 
   The two drives' module bits never overlap: a module occupies one fixed CAN node - the 96-head is
   `H0`, the iSWAP `R0` - so a device has one of it, and the bits say which arm carries it rather
