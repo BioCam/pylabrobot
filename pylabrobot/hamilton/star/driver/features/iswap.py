@@ -3,12 +3,14 @@ with a mechanical gripper as end-effector that moves resources.
 """
 
 import dataclasses
+import datetime
 import enum
 import logging
 import math
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Union, cast
 
+from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 from pylabrobot.hamilton.star.driver.errors import NoElementError, STARFirmwareError
 from pylabrobot.hamilton.star.resource_model import iSWAPChannel
 from pylabrobot.resources.coordinate import Coordinate
@@ -115,7 +117,7 @@ class iSWAPConfiguration:
   """
 
   firmware_version: Optional[str] = None
-  firmware_date: Optional[str] = None
+  firmware_date: Optional[datetime.date] = None
 
   link_1_length: Optional[float] = None
   """rotation joint (joint 1) to the wrist joint (joint 2); default: 138.0 mm."""
@@ -627,14 +629,14 @@ class iSWAP:
 
   # -- session / discovery ---------------------------------------------------
 
-  async def request_firmware_version(self) -> str:
-    """Request the iSWAP's firmware version.
+  async def request_firmware_version(self) -> Tuple[str, datetime.date]:
+    """Request the iSWAP's firmware version and build date.
 
     Returns:
-      The version string, as reported.
+      The version string as reported, and the date in it.
     """
     resp: str = await self._driver.send_command(module="R0", command="RF")
-    return resp.split("rf")[-1]
+    return resp.split("rf")[-1], parse_firmware_version_date(resp)
 
   async def rotation_drive_request_x_offset(self) -> float:
     """Request the X distance from the X-arm carriage centre to the rotation drive.
@@ -759,7 +761,7 @@ class iSWAP:
   async def discover(self):
     """Read this iSWAP's calibration. Read-only: nothing moves."""
     c = self.configuration
-    c.firmware_version = await self.request_firmware_version()
+    c.firmware_version, c.firmware_date = await self.request_firmware_version()
     if not c.firmware_version.startswith(RECORDED_FIRMWARE_PREFIX):
       logger.warning(
         "this iSWAP reports firmware %s; the ranges and resolutions here were recorded from an arm "

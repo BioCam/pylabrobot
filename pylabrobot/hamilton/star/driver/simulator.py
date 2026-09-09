@@ -643,12 +643,12 @@ class SimulatedISWAP(_Simulated, iSWAP):
         pipettes.update_location_by_reference_point(channel, y=packed)
     return await super()._unchecked_fw_position_components_for_free_y_range()
 
-  async def request_firmware_version(self) -> str:
+  async def request_firmware_version(self) -> Tuple[str, datetime.date]:
     await self.recorded("R0", "RF")
     version = self._declared.firmware_version
     if version is None:
       raise RuntimeError("the simulated iSWAP has no firmware version declared")
-    return version
+    return version, parse_firmware_version_date(version)
 
   @property
   def _declared(self) -> iSWAPConfiguration:
