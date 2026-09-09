@@ -1144,8 +1144,6 @@ class iSWAP:
       raise RuntimeError("no configuration read; have you called `star.setup()`?")
     self._check_reachable("y", y)
 
-    await self._make_space_for_y(y, make_space=make_space)
-
     speed_increments = c.y_mm_to_increments(speed)
     speed_low, speed_high = c.y_speed_range_increments
     if not speed_low <= speed_increments <= speed_high:
@@ -1157,6 +1155,10 @@ class iSWAP:
       raise ValueError(f"acceleration_level must be 1 or 2, is {acceleration_level}")
     if not 0 <= current_limit <= 7:
       raise ValueError(f"current_limit must be between 0 and 7, is {current_limit}")
+
+    # Every argument is checked before this: making space moves the channels, and a move refused
+    # afterwards would leave the deck rearranged for a command that never ran.
+    await self._make_space_for_y(y, make_space=make_space)
 
     try:
       resp = await self._unchecked_fw_rotation_drive_move_to_y_position_increments(

@@ -43,6 +43,15 @@ def jaw_moves(sent: List[str]) -> List[str]:
   return [command for command in sent if command.startswith("R0GA")]
 
 
+def moves(sent: List[str]) -> List[str]:
+  """Every command in what was sent that puts something somewhere."""
+  return [
+    command
+    for command in sent
+    if command[:4] in ("R0YA", "R0ZA", "R0PA", "R0GA") or command[:4] in ("C0JY", "C0JZ")
+  ]
+
+
 class TestJawMoves(unittest.IsolatedAsyncioTestCase):
   """What a jaw move puts on the wire."""
 
@@ -74,6 +83,26 @@ class TestJawMoves(unittest.IsolatedAsyncioTestCase):
     opening, closing = jaw_moves(sent)
     self.assertIn(f"gv{c.gripper_speed_default_increments:04}", opening)
     self.assertIn(f"gv{c.gripper_speed_default_increments // 2:04}", closing)
+
+
+class TestYMoves(unittest.IsolatedAsyncioTestCase):
+  """What a Y move does before it is sure it can run."""
+
+  async def test_a_refused_y_move_leaves_the_deck_alone(self):
+    """Making space moves the channels, so every argument is checked before it runs: a speed the
+    drive will not take has to be refused with nothing moved, rather than with the deck rearranged
+    for a command that never went out. Driven with a target the channels are in the way of, since
+    one they already clear makes space without moving anything and would pass either way."""
+    iswap, sent = await gripper()
+    pipettes = iswap.arm.pipettes
+    assert pipettes is not None
+    before = (await pipettes.request_y_positions())[0]
+
+    with self.assertRaises(ValueError):
+      await iswap.rotation_drive_move_to_y_position(460.0, make_space=True, speed=500.0)
+
+    self.assertEqual((await pipettes.request_y_positions())[0], before)
+    self.assertEqual(moves(sent), [])
 
 
 if __name__ == "__main__":
