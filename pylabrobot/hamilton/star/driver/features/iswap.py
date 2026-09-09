@@ -273,6 +273,10 @@ class iSWAPConfiguration:
   gripper_speed_default_increments: int = 8_659
   gripper_acceleration_default_increments: int = 75
   gripper_current_limit_default: int = 15
+  gripper_close_speed_default_increments: int = 5_000
+  gripper_nudge_speed_default_increments: int = 2_000  # slow: used against a stuck drive
+  gripper_stop_trigger_default: int = 200
+  gripper_low_pass_filter_default: bool = True
   gripper_stop_band_range_increments: Tuple[int, int] = (80, 1_800)
   """How wide a window the drive accepts around the width a close is aimed at, in its own steps."""
   gripper_counter_drift_increments: int = 50
@@ -347,12 +351,11 @@ class iSWAPConfiguration:
     return self.rotation_drive_diameter / 2 + self.rotation_drive_safety_radius
 
   def rotation_drive_increments_to_angle(self, increments: int) -> float:
-    """A rotation-drive angle in degrees, from increments, against the calibrated predefined_positions.
+    """A rotation-drive angle in degrees, from increments, against the calibrated stops.
 
     Piecewise linear rather than one slope: `left` to `front` spans -90 to 0 degrees and `front`
-    to `right` spans 0 to +90, each against the predefined_positions this device reports. So the predefined_positions read back
-    as exactly -90, 0 and +90 however far the device's own calibration has drifted, and a
-    position beyond them extrapolates on its segment's slope.
+    to `right` spans 0 to +90, each against the stops this device reports, so they read back as
+    exactly -90, 0 and +90 however far calibration has drifted.
 
     Args:
       increments: what the drive reports.
@@ -361,12 +364,12 @@ class iSWAPConfiguration:
       The angle in degrees, signed from the calibrated front stop.
 
     Raises:
-      RuntimeError: If the stored predefined_positions were not read.
+      RuntimeError: If the stored stops were not read.
     """
     predefined_positions = self.rotation_drive_predefined_increments
     if predefined_positions is None:
       raise RuntimeError(
-        "the rotation drive's predefined_positions were not read; have you called `star.setup()`?"
+        "the rotation drive's stops were not read; have you called `star.setup()`?"
       )
     front = predefined_positions["front"]
     if increments < front:
@@ -374,11 +377,10 @@ class iSWAPConfiguration:
     return 90.0 * (increments - front) / (predefined_positions["right"] - front)
 
   def rotation_drive_angle_to_increments(self, angle: float) -> int:
-    """A rotation-drive angle in increments, from degrees against the calibrated predefined_positions.
+    """A rotation-drive angle in increments, from degrees, against the calibrated stops.
 
     The inverse of `rotation_drive_increments_to_angle`, piecewise on the same two segments, so
-    -90, 0 and +90 land exactly on the predefined_positions this device reports and an angle beyond them
-    extrapolates on its segment's slope.
+    -90, 0 and +90 land exactly on the stops this device reports.
 
     Args:
       angle: degrees, signed from the calibrated front stop.
@@ -387,12 +389,12 @@ class iSWAPConfiguration:
       What to send the drive.
 
     Raises:
-      RuntimeError: If the stored predefined_positions were not read.
+      RuntimeError: If the stored stops were not read.
     """
     predefined_positions = self.rotation_drive_predefined_increments
     if predefined_positions is None:
       raise RuntimeError(
-        "the rotation drive's predefined_positions were not read; have you called `star.setup()`?"
+        "the rotation drive's stops were not read; have you called `star.setup()`?"
       )
     front = predefined_positions["front"]
     if angle < 0:
@@ -481,6 +483,21 @@ class iSWAPConfiguration:
   def gripper_speed_default(self) -> float:
     """Gripper speed a move uses when the caller names none (mm/s)."""
     return self.gripper_increments_to_mm_per_sec(self.gripper_speed_default_increments)
+
+  @property
+  def gripper_close_speed_default(self) -> float:
+    """Gripper speed a close uses when the caller names none (mm/s)."""
+    return self.gripper_increments_to_mm_per_sec(self.gripper_close_speed_default_increments)
+
+  @property
+  def gripper_nudge_speed_default(self) -> float:
+    """Gripper speed a nudge uses when the caller names none (mm/s)."""
+    return self.gripper_increments_to_mm_per_sec(self.gripper_nudge_speed_default_increments)
+
+  @property
+  def gripper_stop_band_max(self) -> float:
+    """The widest window a close may search either side of its target (mm)."""
+    return self.gripper_increments_to_mm(self.gripper_stop_band_range_increments[1])
 
   @property
   def gripper_acceleration_default(self) -> float:
@@ -629,9 +646,6 @@ class iSWAP:
 
     Beyond home and parking the slots are extra ones, addressable through `R0 ZP` but with no
     documented meaning.
-
-    Records what came back on the configuration, as the other stored tables are recorded, so a
-    device read for it once carries the table from then on.
 
     Returns:
       Each stop in mm, keyed as `configuration.rotation_drive_z_slots` names them.
@@ -1040,9 +1054,8 @@ class iSWAP:
 
     Args:
       y: where to put the rotation drive, in mm.
-      make_space: whether the channels may be moved out of the way when the backmost one is where
-        the drive needs to be. Off by default, so a move that does not fit raises and the caller
-        decides. Making space raises the channels to Z safety first, since it moves them in Y.
+      make_space: whether the channels may be moved aside when the backmost is where the drive
+        needs to be. Off by default; making space raises them to Z safety first.
       speed: how fast, in mm/s.
       acceleration_level: how hard to accelerate, 1 or 2.
       current_limit: the motor current limit, 0 to 7.
@@ -1125,6 +1138,7 @@ class iSWAP:
     finally:
       if pipettes is not None:
         await pipettes.request_y_positions()
+      await self.rotation_drive_request_y_position()
 
   async def _make_space_for_y(self, y: float, make_space: bool) -> None:
     """Make sure the backmost channel is out of the way before the drive travels to `y`.
@@ -1445,19 +1459,15 @@ class iSWAP:
 
     Raises:
       ValueError: If the name is not a stop, or the angle is outside the drive's travel.
-      RuntimeError: If the stored predefined_positions have not been read.
+      RuntimeError: If the stored stops have not been read.
     """
     c = self.configuration
     if isinstance(angle, str):
       predefined_positions = c.rotation_drive_predefined_increments
       if predefined_positions is None:
-        raise RuntimeError(
-          "the rotation drive's predefined_positions were not read; have you called `setup()`?"
-        )
+        raise RuntimeError("the rotation drive's stops were not read; have you called `setup()`?")
       if angle not in predefined_positions:
-        raise ValueError(
-          f"{angle!r} is not one of the predefined_positions {tuple(predefined_positions)}"
-        )
+        raise ValueError(f"{angle!r} is not one of the stops {tuple(predefined_positions)}")
       increments = predefined_positions[angle]
     else:
       increments = c.rotation_drive_angle_to_increments(angle)
@@ -1534,9 +1544,8 @@ class iSWAP:
         FRONT, or None to hold current.
       wrist_angle [deg]: a stop in `configuration.wrist_drive_slots`, or float signed from motor zero,
         or None to hold current.
-      make_space: whether the channels may be moved out of the way when the arm would end up
-        reaching into them. Off by default, so a pose that does not fit raises and the caller
-        decides. Making space raises the channels to Z safety first, since it moves them in Y.
+      make_space: whether the channels may be moved aside when the arm would reach into them.
+        Off by default; making space raises them to Z safety first, since it moves them in Y.
       rotation_speed [deg/sec]: max angular velocity, within what
         `configuration.rotation_speed_range_increments` accepts.
       wrist_speed [deg/sec]: max angular velocity, within what
@@ -1781,9 +1790,8 @@ class iSWAP:
     is left to hold where it is, so one command carries both joints.
 
     Args:
-      angle: one of the stops in `configuration.rotation_drive_slots` - `left`, `front`, `right`, `parking` -
-        which goes to the increment this arm stores for it, or degrees signed from the calibrated
-        front stop.
+      angle: a stop named in `configuration.rotation_drive_slots`, or degrees signed from the
+        calibrated front stop.
       speed [deg/sec]: max angular velocity.
       acceleration [deg/sec^2]: max angular acceleration.
       current_limit: motor current protection limiter, 0..7.
@@ -2114,11 +2122,9 @@ class iSWAP:
   ):
     """Close the jaws onto an object, feeling for it. Nothing is guarded and nothing is recorded.
 
-    Unchecked here means unchecked by this driver: what is skipped is the guarding of arguments
-    and the recording of the model. The arm still feels. This is the lower of the two commands the
-    jaws take and the one that senses - the master closes until the force sensor says it has met
-    something, and answers an error when it meets nothing. What guards and records is
-    `gripper_close_with_force_sensed_width_window`.
+    The lower of the two commands the jaws take and the one that senses: the master closes until
+    the force sensor says it has met something, and answers an error when it meets nothing. What
+    guards and records is `gripper_close_with_force_sensed_width_window`.
 
     Both widths are in the tenths of a millimetre the master counts in, which is not what the
     drive counts in: a grip is stated to the master, and a position to the drive.
@@ -2127,11 +2133,8 @@ class iSWAP:
       grip_strength: how hard to hold, 0 the weakest and 9 the strongest.
       width_increments: how wide the thing between the jaws is said to be, in tenths of a
         millimetre.
-      width_tolerance_increments: how far off that width the thing may be and still count as the
-        thing, in tenths of a millimetre. It sets the window the close searches in: meeting
-        something inside it is a grip, and closing past it without meeting anything is what the
-        arm reports as finding nothing. The jaws also have to start further apart than the width
-        and this tolerance together.
+      width_tolerance_increments: how far off that width the thing may be, in tenths of a
+        millimetre. The jaws must start further apart than the width and this together.
     """
     return await self._driver.send_command(
       module="C0",
@@ -2195,18 +2198,18 @@ class iSWAP:
     self,
     destination_increments: int,
     stop_band_increments: int,
-    stop_trigger: int = 200,
-    speed_increments: int = 5_000,
-    current_limit: int = 15,
-    low_pass_filter: bool = True,
+    stop_trigger: Optional[int] = None,
+    speed_increments: Optional[int] = None,
+    current_limit: Optional[int] = None,
+    low_pass_filter: Optional[bool] = None,
   ):
     """Close the jaws toward a width, stopping on whatever they meet, without checking or
     recording.
 
     The drive's own version of the master's close, with the two things the master hides under a
     dial: the band around the destination in which meeting something counts, and the force at
-    which meeting is declared. Unchecked here means unchecked by this driver - the arm still feels,
-    and still answers an error when it reaches the end of the band having met nothing.
+    which meeting is declared. The arm still feels, and still answers an error when it reaches the
+    end of the band having met nothing.
 
     It has a destination, which is what makes it safe to point at an unknown object: it stops
     there whatever happens, rather than closing until something stops it.
@@ -2219,6 +2222,15 @@ class iSWAP:
       current_limit: the motor current limit, 0 to 15.
       low_pass_filter: whether to filter the current signal the trigger is read from.
     """
+    c = self.configuration
+    if stop_trigger is None:
+      stop_trigger = c.gripper_stop_trigger_default
+    if speed_increments is None:
+      speed_increments = c.gripper_close_speed_default_increments
+    if current_limit is None:
+      current_limit = c.gripper_current_limit_default
+    if low_pass_filter is None:
+      low_pass_filter = c.gripper_low_pass_filter_default
     return await self._driver.send_command(
       module="R0",
       command="GB",
@@ -2233,9 +2245,9 @@ class iSWAP:
   async def gripper_probe_for_object(
     self,
     expected_width: float,
-    band: float = 9.9,
-    stop_trigger: int = 200,
-    current_limit: int = 15,
+    band: Optional[float] = None,
+    stop_trigger: Optional[int] = None,
+    current_limit: Optional[int] = None,
   ) -> Optional[float]:
     """Close the jaws toward a width and report what they met on the way. This moves them.
 
@@ -2271,6 +2283,12 @@ class iSWAP:
       ValueError: If any argument is outside what the drive accepts.
     """
     c = self.configuration
+    if band is None:
+      band = c.gripper_stop_band_max
+    if stop_trigger is None:
+      stop_trigger = c.gripper_stop_trigger_default
+    if current_limit is None:
+      current_limit = c.gripper_current_limit_default
     low = c.gripper_increments_to_mm(c.gripper_range_increments[0])
     high = c.gripper_increments_to_mm(c.gripper_range_increments[1])
     if not low <= expected_width <= high:
@@ -2315,7 +2333,7 @@ class iSWAP:
 
     return await self.gripper_request_width() if found else None
 
-  async def initialize_gripper_drive(self, current_limit: int = 15):
+  async def initialize_gripper_drive(self, current_limit: Optional[int] = None):
     """Bring the gripper drive back to its own reference. This moves the jaws.
 
     The arm's own initialize brings every drive up and swings the whole arm to do it. This is the
@@ -2329,17 +2347,25 @@ class iSWAP:
     Raises:
       ValueError: If the current limit is outside what the drive accepts.
     """
+    c = self.configuration
+    if current_limit is None:
+      current_limit = c.gripper_current_limit_default
     if not 0 <= current_limit <= 15:
       raise ValueError(f"current_limit must be between 0 and 15, is {current_limit}")
-    return await self._driver.send_command(module="R0", command="GI", gw=f"{current_limit:02}")
+
+    try:
+      return await self._driver.send_command(module="R0", command="GI", gw=f"{current_limit:02}")
+    finally:
+      # Finding the sensor edge is a travel, so where the jaws end up is only known by reading.
+      await self._record_where_it_stopped("gripper")
 
   async def _unchecked_fw_gripper_move_relative_increments(
     self,
     distance_increments: int,
     opening: bool,
-    speed_increments: int = 2_000,
-    acceleration_increments: int = 75,
-    current_limit: int = 15,
+    speed_increments: Optional[int] = None,
+    acceleration_increments: Optional[int] = None,
+    current_limit: Optional[int] = None,
   ):
     """Move the jaws a distance, unsupervised, without checking or recording.
 
@@ -2357,6 +2383,13 @@ class iSWAP:
       acceleration_increments: in thousands of increments/s2.
       current_limit: the motor current limit, 0 to 15.
     """
+    c = self.configuration
+    if speed_increments is None:
+      speed_increments = c.gripper_nudge_speed_default_increments
+    if acceleration_increments is None:
+      acceleration_increments = c.gripper_acceleration_default_increments
+    if current_limit is None:
+      current_limit = c.gripper_current_limit_default
     return await self._driver.send_command(
       module="R0",
       command="GS",
@@ -2374,13 +2407,17 @@ class iSWAP:
     cannot free itself. Whatever is held is released, and the drive keeps no reference through it -
     `initialize_gripper_drive` is what gives it one back.
     """
-    return await self._driver.send_command(module="R0", command="GO")
+    try:
+      return await self._driver.send_command(module="R0", command="GO")
+    finally:
+      # Letting go moves the jaws under whatever load is on them.
+      await self._record_where_it_stopped("gripper")
 
   async def recover_gripper_drive(
     self,
     attempts: int = 4,
     nudge_increments: int = 200,
-    current_limit: int = 15,
+    current_limit: Optional[int] = None,
   ) -> bool:
     """Get a stuck gripper drive moving again, and back onto its own reference. This moves it.
 
@@ -2407,6 +2444,9 @@ class iSWAP:
     Raises:
       ValueError: If any argument is outside what the drive accepts.
     """
+    c = self.configuration
+    if current_limit is None:
+      current_limit = c.gripper_current_limit_default
     if attempts < 1:
       raise ValueError(f"attempts must be at least 1, is {attempts}")
     if not 0 < nudge_increments <= 9_999:
@@ -2450,6 +2490,8 @@ class iSWAP:
         await self._switch_gripper_drive_off()
 
     firmware, hardware = await self.gripper_request_counters()
+    # Nudges move the jaws without reporting where to, so the last one leaves the model stale.
+    await self._record_where_it_stopped("gripper")
     logger.warning(
       "the gripper drive is still stuck after %d attempts, reading %d and %d. Its jaws have to be "
       "freed by hand, and `initialize_gripper_drive` run afterwards",
