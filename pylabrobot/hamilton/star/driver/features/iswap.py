@@ -1545,7 +1545,6 @@ class iSWAP:
       RuntimeError: If the wrist's stored stops were not read.
     """
     c = self.configuration
-    named = isinstance(angle, str)
     if isinstance(angle, str):
       if angle not in GRIPPER_DECK_DIRECTIONS:
         raise ValueError(f"{angle!r} is not one of {tuple(GRIPPER_DECK_DIRECTIONS)}")
@@ -1562,27 +1561,14 @@ class iSWAP:
     # and only one of them is inside the travel.
     wrist_deg = (deck_angle - link_1_deck_angle + straight + 180.0) % 360.0 - 180.0
     increments = c.wrist_deg_to_increments(wrist_deg)
-    quarter_turns = [
-      stored
-      for name, stored in c.wrist_drive_predefined_increments.items()
-      if name in ("right", "straight", "left", "reverse")
-    ]
-    on_a_rotation_stop = c.rotation_drive_predefined_increments is not None and any(
-      rotation_increments == stored for stored in c.rotation_drive_predefined_increments.values()
-    )
-    if named and on_a_rotation_stop:
-      # Both joints on their own stops is one of the arm's standard poses, so the wrist goes to the
-      # increment this arm stores for it rather than the one the arithmetic lands on. That is the
-      # whole point of the stored table: it carries this unit's calibration, a degree or so off the
-      # documented quarter turns.
-      increments = min(quarter_turns, key=lambda stored: abs(stored - increments))
-    else:
-      # Otherwise the caller asked for an angle, so it gets that angle - snapped only if it is
-      # already on a stop bar rounding, which is the tolerance legacy used.
-      for stored in quarter_turns:
-        if abs(wrist_deg - c.wrist_increments_to_deg(stored)) <= c.wrist_deg_per_increment:
-          increments = stored
-          break
+    # A stop's own angle converts back to the increment this arm stores for it, so a named
+    # direction off a named rotation lands there without being pushed. What is left is rounding:
+    # an angle a hair off a stop takes the stop, which is the tolerance legacy used.
+    for name, _ in c.WRIST_STOP_ANGLES:
+      stored = c.wrist_drive_predefined_increments[name]
+      if abs(wrist_deg - c.wrist_increments_to_deg(stored)) <= c.wrist_deg_per_increment:
+        increments = stored
+        break
     low, high = c.wrist_range_increments
     if not low <= increments <= high:
       raise ValueError(

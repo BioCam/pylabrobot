@@ -157,5 +157,28 @@ class TestLostSteps(unittest.IsolatedAsyncioTestCase):
     self.assertIn("lost steps", "".join(logged.output))
 
 
+class TestGripperDirections(unittest.IsolatedAsyncioTestCase):
+  """Where a named gripper direction sends the wrist."""
+
+  async def test_every_named_pose_lands_on_a_stored_stop(self):
+    """Three rotation stops against four directions, each resolving to one of the four increments
+    this arm stores for its wrist. Nothing is pushed there: the conversion interpolates against the
+    same stops, so a stop's own angle converts back to its own increment. A conversion anchored on
+    the motor's zero instead would miss two of the four by around a degree, which is more than a
+    rounding tolerance would carry."""
+    iswap, _ = await gripper()
+    c = iswap.configuration
+    assert c.rotation_drive_predefined_increments is not None
+    assert c.wrist_drive_predefined_increments is not None
+    stored = {c.wrist_drive_predefined_increments[name] for name, _ in c.WRIST_STOP_ANGLES}
+
+    for rotation in ("left", "front", "right"):
+      for direction in ("right", "back", "left", "front"):
+        increments = iswap._resolve_gripper_direction_increments(
+          direction, c.rotation_drive_predefined_increments[rotation]
+        )
+        self.assertIn(increments, stored, f"{rotation}/{direction}")
+
+
 if __name__ == "__main__":
   unittest.main()
