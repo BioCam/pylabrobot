@@ -1565,7 +1565,10 @@ function applyState(payload) {
     // Shared between every resource in the same state, and only ever read.
     stateOf.set(index, states[slot]);
     if (states[slot]?.location) applyLocation(index, states[slot].location);
-    if (states[slot]?.rotation) applyRotation(index, states[slot].rotation);
+    // A state carries the whole of what a resource publishes, so a rotation that is not in it is
+    // one that has come back to zero - the sender drops the identity to keep the message small.
+    // Taking absence as "unchanged" leaves a joint drawn at the last angle it was turned to.
+    applyRotation(index, states[slot]?.rotation ?? { x: 0, y: 0, z: 0 });
     refreshOverlays(index, touched);
     applyJoints(index);
   }
