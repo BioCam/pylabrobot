@@ -105,5 +105,38 @@ class TestYMoves(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(moves(sent), [])
 
 
+class TestPosesAgainstTheRail(unittest.IsolatedAsyncioTestCase):
+  """What the X-arm at the back of the deck lets the arm reach."""
+
+  async def test_a_carriage_on_its_own_back_stop_may_still_turn_sideways(self):
+    """Parked at the back, the arm lying along the deck reaches nothing behind the carriage, so the
+    pose stands. It used to be refused: the limit came from a conversion rounded to two places and
+    the position from one rounded again to a single place, leaving the carriage a hundredth of a
+    millimetre past its own maximum."""
+    iswap, _ = await gripper()
+    c = iswap.configuration
+    assert c.rotation_drive_predefined_increments is not None
+    assert c.wrist_drive_predefined_increments is not None
+
+    self.assertEqual(await iswap.rotation_drive_request_y_position(), c.rotation_drive_y_max)
+    for stop in ("left", "right"):
+      angle = c.rotation_drive_increments_to_angle(c.rotation_drive_predefined_increments[stop])
+      straight = c.wrist_increments_to_deg(c.wrist_drive_predefined_increments["straight"])
+      iswap._check_pose_reachable(angle, straight)
+
+  async def test_a_pose_that_reaches_behind_the_rail_is_still_refused(self):
+    """The slack is half an increment, not a licence: link 2 folded square backwards puts the grip
+    centre 137.7 mm behind the carriage, where the X-arm is."""
+    iswap, _ = await gripper()
+    c = iswap.configuration
+    assert c.rotation_drive_predefined_increments is not None
+    assert c.wrist_drive_predefined_increments is not None
+
+    angle = c.rotation_drive_increments_to_angle(c.rotation_drive_predefined_increments["right"])
+    wrist = c.wrist_increments_to_deg(c.wrist_drive_predefined_increments["left"])
+    with self.assertRaises(ValueError):
+      iswap._check_pose_reachable(angle, wrist)
+
+
 if __name__ == "__main__":
   unittest.main()

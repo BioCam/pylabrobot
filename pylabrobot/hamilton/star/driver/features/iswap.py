@@ -1048,8 +1048,10 @@ class iSWAP:
       The rotation drive's Y in mm.
     """
     resp = await self._driver.send_command(module="R0", command="RY", fmt="ry##### (n)")
-    # Two counters come back, the firmware's and the hardware's. The hardware one is read.
-    y = round(self.configuration.y_increments_to_mm(cast(List[int], resp["ry"])[1]), 1)
+    # Two counters come back, the firmware's and the hardware's. The hardware one is read. Rounded
+    # once, by the conversion: rounding again here left a position coarser than the limits it is
+    # compared against, and a carriage at its own back stop reading past it.
+    y = self.configuration.y_increments_to_mm(cast(List[int], resp["ry"])[1])
     self.update_location_by_reference_point(y=y)
     return y
 
@@ -1296,7 +1298,7 @@ class iSWAP:
     """
     resp = await self._driver.send_command(module="R0", command="RZ", fmt="rz##### (n)")
     finger_plane = self.configuration.z_increments_to_mm(cast(List[int], resp["rz"])[1])
-    z = round(finger_plane + self.configuration.rotation_drive_z_offset_above_finger, 1)
+    z = round(finger_plane + self.configuration.rotation_drive_z_offset_above_finger, 3)
     self.update_location_by_reference_point(z=z)
     return z
 
@@ -1930,11 +1932,16 @@ class iSWAP:
     pose = self._compute_pose_at_angles(rotation_angle, gripper_relative_angle)
     # Both moving joints, not only the far one: link 1 is long enough to put the wrist behind the
     # rail while the grip centre is still clear of it.
+    # Half an increment of slack: the drive counts in steps of `y_mm_per_increment`, so a point
+    # that close to the limit is at the limit, and refusing it refuses on arithmetic noise. Without
+    # it a carriage parked on its own back stop turns down every pose that reaches nowhere behind
+    # it.
+    slack = self.configuration.y_mm_per_increment / 2
     for what, point in (
       ("wrist joint", pose.wrist_joint_location),
       ("grip centre", pose.gripper_center_location),
     ):
-      if point.y > y_max:
+      if point.y > y_max + slack:
         raise ValueError(
           f"rotation {rotation_angle:.2f} deg with the wrist at {gripper_relative_angle:.2f} would put the "
           f"{what} at y {point.y:.1f} mm, behind the {y_max:.1f} mm the rotation drive itself "
