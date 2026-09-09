@@ -16,6 +16,11 @@ in its own resource's frame - the origin at the resource's own corner, in metres
 The arm turns and the jaws open and close while it runs, so the models can be watched following
 their joints rather than sitting where the boxes used to be. Nothing here moves geometry: the
 drives move resources, and a model is drawn wherever its resource is.
+
+The X-arm is drawn like everything else, and its box is the part rather than what the drive
+reports: what a drive reports is a reach measured from the point it tracks, so the arm runs on
+past it to the left. The cyan line marks that point, and lands where the arm's own opening is
+centred - which is where the channels hang from it.
 """
 
 import asyncio

@@ -436,6 +436,16 @@ function buildDeclaredMeshes() {
           entry.modelDrawn = true;
           entry.mesh.material.visible = false;
           for (const i of entry.instances) drawnFromFile.add(i);
+          // A part that travels is drawn twice over: once as the open frame `buildArms` extrudes
+          // for it, and now as itself. The frame and the stroke around it were standing in for
+          // geometry nobody had, so they go the way the box does. The reference line stays: it
+          // marks where the drive reports this part to be, which is not a fact about the shape
+          // and is the one thing the geometry cannot say for itself.
+          for (const arm of arms) {
+            if (!entry.instances.includes(arm.index)) continue;
+            arm.frame.visible = false;
+            arm.outline.visible = false;
+          }
           // The view is not going to change just because a file finished loading, so the border
           // has to be faded here as well as in the rule that keeps it faded.
           setRenderMode(axisAligned ?? false);
