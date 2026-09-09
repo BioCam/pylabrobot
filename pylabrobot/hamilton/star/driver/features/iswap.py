@@ -2229,7 +2229,7 @@ class iSWAP:
     high = c.gripper_increments_to_mm(c.gripper_range_increments[1])
     if not low <= width <= high:
       raise ValueError(f"width must be between {low} and {high} mm, is {width}")
-    increments = min(
+    width_increments = min(
       max(c.gripper_mm_to_increments(width), c.gripper_range_increments[0]),
       c.gripper_range_increments[1],
     )
@@ -2282,7 +2282,7 @@ class iSWAP:
 
     try:
       resp = await self._unchecked_fw_gripper_move_to_jaw_position_increments(
-        increments=increments,
+        increments=width_increments,
         speed_increments=speed_increments,
         acceleration_increments=acceleration_increments,
         current_limit=current_limit,
