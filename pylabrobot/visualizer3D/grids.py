@@ -65,9 +65,29 @@ def describe_grid(resource: Any) -> Optional[Dict[str, Any]]:
     label_every   label the first, then every nth
     label         what one position is called
   """
-  locate = getattr(resource, "rails_to_location", None)
-  count = getattr(resource, "num_rails", None)
-  if not callable(locate) or not isinstance(count, int) or count < 2:
+  # A deck says where its positions are, under whatever it calls them. Hamilton's are tracks now
+  # and were rails before; both are asked for, newest first, so a deck that has not been renamed
+  # yet still draws its marks and one that has draws them under the name it uses.
+  named = next(
+    (
+      (word, getattr(resource, f"{word}_to_location"))
+      for word in ("track", "rail")
+      if callable(getattr(resource, f"{word}_to_location", None))
+    ),
+    None,
+  )
+  if named is None:
+    return None
+  word, locate = named
+  count = next(
+    (
+      value
+      for attribute in (f"num_{word}s", f"num_{word}es")
+      if isinstance(value := getattr(resource, attribute, None), int)
+    ),
+    None,
+  )
+  if not isinstance(count, int) or count < 2:
     return None
 
   try:
@@ -80,13 +100,13 @@ def describe_grid(resource: Any) -> Optional[Dict[str, Any]]:
   if spacing <= 0:
     return None
 
-  # A rail mark runs from where the rail starts to the back of what the rails CARRY, not to the
+  # A mark runs from where the position starts to the back of what the positions CARRY, not to the
   # back of the resource - a deck runs on well past anything standing on it, and a mark that
   # overshoots reads as a reach that is not there.
   #
-  # What is standing on the rails is whatever shares their y: a carrier seats on the rail line, so
-  # its own y is the grid's. The deepest of those is the reach. A deck with nothing on it yet has
-  # nothing to measure, and only then does its own depth stand in.
+  # What is standing on them is whatever shares their y: a carrier seats on the line, so its own y
+  # is the grid's. The deepest of those is the reach. A deck with nothing on it yet has nothing to
+  # measure, and only then does its own depth stand in.
   try:
     depth = resource.get_absolute_size_y()
   except Exception:
@@ -109,5 +129,5 @@ def describe_grid(resource: Any) -> Optional[Dict[str, Any]]:
     "origin": [round(first.x, 4), round(first.y, 4), round(first.z, 4)],
     "extent": round(max(seated) if seated else max(depth - first.y, 0.0), 4),
     "label_every": DEFAULT_LABEL_EVERY,
-    "label": "rail",
+    "label": word,
   }
