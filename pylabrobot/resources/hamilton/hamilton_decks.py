@@ -46,6 +46,13 @@ DEFAULT_TRACK_LABEL_EVERY = 5
 # Where a carrier's own front edge sits on any Hamilton deck, in mm.
 _CARRIER_Y = 63.0
 
+# What closes the front of the deck, in front of the first carrier row. A deck has one or the other:
+# the panel is what is fitted where there is no autoload, and an autoload's belt frame stands in the
+# same band and takes its place. A resource carries one mesh, so which of the two a deck shows is a
+# fact about the deck rather than a part standing on it.
+FRONT_PANEL_MODEL = "{frame}_deck_front_top_cover"
+AUTOLOAD_BELT_MODEL = "{frame}_autoload_tray_belt_frame"
+
 # Parts of the DEVICE that happen to hang off the deck, as opposed to things placed ON it. They are
 # fitted where the instrument puts them, not assigned to rails, so they cannot occupy a rail and
 # must not be treated as though they do - a fitted autoload otherwise makes rail 1 unassignable,
@@ -122,6 +129,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     category: str = "deck",
     origin: Coordinate = Coordinate.zero(),
     num_rails: Optional[int] = None,
+    model: Optional[str] = None,
   ):
     super().__init__(
       name=name,
@@ -131,9 +139,29 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       category=category,
       origin=origin,
     )
+    # `Deck` takes no model, so it is set here rather than passed up.
+    self.model = model
     self.num_tracks = _tracks_from(num_tracks, num_rails)
+    # A deck restored from a serialization arrives with the panel it was saved with; one built from
+    # scratch works out which it is. Either way, fitting an autoload swaps it.
+    if model is None:
+      self._declare_front_panel()
 
     self.register_did_assign_resource_callback(self._check_safe_z_height)
+
+  def _declare_front_panel(self) -> None:
+    """Say which mesh closes the front of this deck: the panel, or the belt that replaces it.
+
+    Called when the deck is built and again when an autoload is fitted to it, since fitting one is
+    what swaps the two. A frame nobody has named leaves the deck without a model, as it leaves any
+    other part cut to a frame's length unnamed.
+    """
+    frame = FRAME_BY_NUM_TRACKS.get(self.num_tracks)
+    if frame is None:
+      self.model = None
+      return
+    fitted = any(child.category in _DEVICE_PARTS for child in self.children)
+    self.model = (AUTOLOAD_BELT_MODEL if fitted else FRONT_PANEL_MODEL).format(frame=frame)
 
   @abstractmethod
   def track_to_location(self, track: int) -> Coordinate:
@@ -312,6 +340,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
         above_deck_z,
       ),
     )
+    self._declare_front_panel()
     return sled
 
   def get_or_create_autoload_loading_tray(self, name: str) -> Resource:
@@ -371,12 +400,17 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       "label": "track",
     }
     self.assign_child_resource(tray, location=Coordinate(left, _CARRIER_Y - front_ahead_y, 0.0))
+    self._declare_front_panel()
     return tray
 
   def serialize(self) -> dict:
     """Serialize this deck."""
     return {
       **super().serialize(),
+      # `Deck` drops the model on the way past, on the grounds that a deck does not usually have
+      # one. This one does: the strip that closes the front of it is a part like any other, and
+      # which part it is depends on whether an autoload is fitted.
+      **({"model": self.model} if self.model is not None else {}),
       "num_tracks": self.num_tracks,
       "with_trash": False,  # data encoded as child. (not very pretty to have this key though...)
       "with_trash96": False,

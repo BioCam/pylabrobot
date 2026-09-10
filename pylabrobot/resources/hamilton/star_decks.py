@@ -37,6 +37,7 @@ class HamiltonSTARDeck(HamiltonDeck):
     core_grippers: Optional[
       Literal["1000uL-at-waste", "1000uL-5mL-on-waste"]
     ] = "1000uL-5mL-on-waste",
+    model: Optional[str] = None,
   ) -> None:
     """Create a new STAR(let) deck of the given size.
 
@@ -51,6 +52,7 @@ class HamiltonSTARDeck(HamiltonDeck):
       name=name,
       category=category,
       origin=origin,
+      model=model,
     )
 
     if with_trash96:
