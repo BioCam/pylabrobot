@@ -24,7 +24,7 @@ from pylabrobot.resources.plate_adapter import PlateAdapter
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.rotation import Rotation
 from pylabrobot.resources.tip import Tip
-from pylabrobot.utils.linalg import matrix_vector_multiply_3x3
+from pylabrobot.utils.linalg import matrix_multiply_3x3, matrix_vector_multiply_3x3
 
 
 def _make_test_deck() -> Deck:
@@ -375,6 +375,47 @@ class TestResource(unittest.TestCase):
     bar.rotate_to(z=90)
     self.assertEqual((bar.rotation.x, bar.rotation.z), (15, 90))
 
+  def test_rotate_to_lands_on_any_axis_it_is_given(self):
+    for axis in ("x", "y", "z"):
+      for start in ((0, 0, 15), (90, 0, 90), (15, 90, 200)):
+        parent = Resource("parent", size_x=500, size_y=500, size_z=10)
+        parent.location = Coordinate.zero()
+        bar = Resource("bar", size_x=100, size_y=10, size_z=10)
+        parent.assign_child_resource(bar, location=Coordinate.zero())
+        bar.rotate(x=start[0], y=start[1], z=start[2])
+        bar.rotate_to(
+          x=30.0 if axis == "x" else None,
+          y=30.0 if axis == "y" else None,
+          z=30.0 if axis == "z" else None,
+        )
+        self.assertAlmostEqual(getattr(bar.rotation, axis) % 360, 30, places=9)
+
+  def test_rotate_keeps_every_axis_normalized(self):
+    resource = Resource("resource", size_x=10, size_y=10, size_z=10)
+    resource.rotate(x=350, y=350, z=350)
+    resource.rotate(x=20, y=20, z=20)
+    for axis in (resource.rotation.x, resource.rotation.y, resource.rotation.z):
+      self.assertGreaterEqual(axis, 0)
+      self.assertLess(axis, 360)
+
+  def test_a_pivot_inside_a_turned_parent_still_holds(self):
+    parent = Resource("parent", size_x=500, size_y=500, size_z=10)
+    parent.location = Coordinate.zero()
+    bar = Resource("bar", size_x=100, size_y=10, size_z=10)
+    parent.assign_child_resource(bar, location=Coordinate(30, 40, 0))
+    parent.rotate(z=90)
+    far_end = Coordinate(100, 0, 0)
+
+    def where() -> Coordinate:
+      carried = matrix_vector_multiply_3x3(
+        bar.get_absolute_rotation().get_rotation_matrix(), far_end.vector()
+      )
+      return bar.get_absolute_location() + Coordinate(*carried)
+
+    before = where()
+    bar.rotate(z=90, reference=far_end)
+    self.assertEqual(where(), before)
+
   def test_rotate_to_turns_about_a_reference_point(self):
     parent = Resource("parent", size_x=500, size_y=500, size_z=10)
     parent.location = Coordinate.zero()
@@ -493,6 +534,45 @@ class TestResource(unittest.TestCase):
             node = child
           for anchors in (("l", "f", "b"), ("c", "c", "c"), ("r", "b", "t")):
             self.assertEqual(node.get_absolute_location(*anchors), level_by_level(node, *anchors))
+
+  def test_rotate_composes_around_fixed_axes(self):
+    resource = Resource("resource", size_x=10, size_y=10, size_z=10, rotation=Rotation(z=90))
+    expected = matrix_multiply_3x3(
+      Rotation(x=90).get_rotation_matrix(),
+      resource.rotation.get_rotation_matrix(),
+    )
+
+    resource.rotate(x=90)
+
+    actual = resource.rotation.get_rotation_matrix()
+    for actual_row, expected_row in zip(actual, expected):
+      for actual_value, expected_value in zip(actual_row, expected_row):
+        self.assertAlmostEqual(actual_value, expected_value)
+
+  def test_rotate_keeps_angles_normalized(self):
+    resource = Resource("resource", size_x=10, size_y=10, size_z=10)
+    rotation = resource.rotation
+
+    resource.rotate(z=270)
+    self.assertIs(resource.rotation, rotation)
+    self.assertEqual(resource.rotation.z, 270)
+
+    resource.rotate(z=90)
+    self.assertEqual(resource.rotation.z, 0)
+
+  def test_absolute_rotation_composes_parent_and_child(self):
+    parent = Resource("parent", size_x=10, size_y=10, size_z=10, rotation=Rotation(x=90))
+    child = Resource("child", size_x=5, size_y=5, size_z=5, rotation=Rotation(z=90))
+    parent.assign_child_resource(child, location=Coordinate.zero())
+    expected = matrix_multiply_3x3(
+      parent.rotation.get_rotation_matrix(),
+      child.rotation.get_rotation_matrix(),
+    )
+
+    actual = child.get_absolute_rotation().get_rotation_matrix()
+    for actual_row, expected_row in zip(actual, expected):
+      for actual_value, expected_value in zip(actual_row, expected_row):
+        self.assertAlmostEqual(actual_value, expected_value)
 
 
 class TestResourceCallback(unittest.TestCase):
