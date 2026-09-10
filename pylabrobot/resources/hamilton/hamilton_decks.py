@@ -33,6 +33,12 @@ FRAME_BY_NUM_TRACKS = {
 
 _TRACK_WIDTH = 22.5  # space between rails (mm)
 
+# How far in front of the back of the machine the X-arm's own back edge stands, in mm. Measured on
+# the manufacturer's model: the chassis reaches to 51.06 and the arm's carriage to 35.56, and the
+# chassis's depth there - 785.79 - is what the device resource says to the decimal, so the two
+# frames line up and the difference is the arm's own setback.
+ARM_BACK_FROM_MACHINE_BACK = 15.5
+
 # Where a carrier's own front edge sits on any Hamilton deck, in mm.
 _CARRIER_Y = 63.0
 
@@ -235,11 +241,21 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     # placement below, and a viewer drawing where the arm is reported to be - works from the arm's
     # own frame rather than assuming the middle of the box.
     x_arm.reference_point = {"x": reference_point_from_left}  # type: ignore[attr-defined]
-    # Place it so its reference point lands at the arm's current x, and so its back edge lines up
-    # with the back of the deck. Being deeper than the deck, it reaches in front of the deck's front
-    # edge, which is why y is negative. The arm sits above the deck plane, so it does not count as
-    # occupying the footprint of the carriers beneath it.
-    y = self.get_absolute_size_y() - size_y
+    # Place it so its reference point lands at the arm's current x, and its back edge where the arm
+    # actually stands: a fixed distance in front of the back of the machine carrying the deck. It
+    # used to line up with the back of the DECK, which is not the same thing - the deck resource is
+    # 653.5 mm deep where the deck it models is 773 - and that put the arm 19 mm too far forward.
+    # Being deeper than the deck, the arm reaches in front of the deck's front edge, which is why y
+    # comes out negative. It sits above the deck plane, so it does not occupy the footprint of the
+    # carriers beneath it.
+    #
+    # A deck standing on its own has no machine to measure from, and keeps its own back edge.
+    machine = self.parent
+    if machine is None:
+      y = self.get_absolute_size_y() - size_y
+    else:
+      back_of_machine = (machine.get_absolute_size_y() - self.location.y) if self.location else 0.0
+      y = back_of_machine - ARM_BACK_FROM_MACHINE_BACK - size_y
     self.assign_child_resource(x_arm, location=Coordinate(x - reference_point_from_left, y, arm_z))
     return x_arm
 
