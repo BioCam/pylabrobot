@@ -2727,6 +2727,12 @@ function setProjection(kind) {
 
   projection = kind;
   camera = kind === "orthographic" ? orthographicCamera : perspectiveCamera;
+  // The lights ride the camera, and there are two cameras with only one ever in use. Whichever
+  // that is has to be carrying them: left on the other, they keep the pose it was last at, and the
+  // scene goes on being lit from a direction the view no longer has - which is the one thing
+  // putting the lights on the camera exists to prevent.
+  camera.add(lights);
+  view.add(camera);
   camera.position.copy(position);
   camera.up.set(0, 0, 1);
   if (kind === "orthographic") {
