@@ -1238,11 +1238,45 @@ function updateEdgeMode() {
 // vanishing from a wide one.
 const ORIGIN_PX = 90;
 
+// How close to the edge of the viewport an origin that has left it is brought, in normalised
+// device coordinates. Inside 1.0 so the whole marker shows rather than half of it.
+const ORIGIN_EDGE = 0.92;
+
+const _originAt = new THREE.Vector3();
+const _originNdc = new THREE.Vector3();
+const _originDepth = new THREE.Vector3();
+
 function updateOrigin() {
   if (!originMarker) return;
   const perPixel = mmPerPixel();
   if (!Number.isFinite(perPixel) || perPixel <= 0) return;
   originMarker.scale.setScalar(perPixel * ORIGIN_PX);
+
+  // The frame every coordinate in the panel is measured against, so it is the one marker that must
+  // not be able to go missing: panned or zoomed far enough, the facility's own corner leaves the
+  // viewport entirely. It is held at the edge instead, in the direction the origin actually lies,
+  // which keeps both the frame and the way back to it on screen.
+  _originAt.setFromMatrixPosition(world.matrices[0]);
+  _originNdc.copy(_originAt).project(camera);
+  // A point behind the camera projects mirrored through the centre, so it would be pinned to the
+  // opposite edge from the one it lies towards.
+  if (_originAt.clone().applyMatrix4(camera.matrixWorldInverse).z > 0) {
+    _originNdc.x *= -1;
+    _originNdc.y *= -1;
+  }
+  if (Math.abs(_originNdc.x) <= ORIGIN_EDGE && Math.abs(_originNdc.y) <= ORIGIN_EDGE) {
+    originMarker.position.copy(_originAt);
+    return;
+  }
+  // Held at the depth the camera is looking at, so it is drawn at the size the scale above gives it.
+  const depth = _originDepth.copy(controls.target).project(camera).z;
+  originMarker.position
+    .set(
+      Math.max(-ORIGIN_EDGE, Math.min(ORIGIN_EDGE, _originNdc.x)),
+      Math.max(-ORIGIN_EDGE, Math.min(ORIGIN_EDGE, _originNdc.y)),
+      depth
+    )
+    .unproject(camera);
 }
 
 // The floor grid follows the view, the way the existing visualizer's does: its spacing is chosen
