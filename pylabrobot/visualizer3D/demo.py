@@ -188,6 +188,11 @@ async def sweep_arm(star) -> None:
     await asyncio.sleep(3.0)
 
 
+# How far forward to bring the rotation drive before turning it, in mm. Enough to clear link 1's
+# own length, so the whole swing has room.
+ROOM_TO_TURN = 200.0
+
+
 async def work_the_iswap(star) -> None:
   """Turn the arm's two joints and work its jaws, so the viewer has the whole linkage moving.
 
@@ -198,6 +203,17 @@ async def work_the_iswap(star) -> None:
   iswap = star.iswap
   if iswap is None:
     return
+
+  # Cleared once, up front. Parked at the back of its travel the arm cannot turn far: a quarter
+  # turn puts the grip centre further back than the drive itself reaches, and the guard refuses it -
+  # which is right, and which left half of the poses below doing nothing at all. Clearing more than
+  # link 1's length leaves room for the whole swing.
+  await iswap.make_space()
+  parked = await iswap.rotation_drive_request_y_position()
+  try:
+    await iswap.rotation_drive_move_to_y_position(parked - ROOM_TO_TURN)
+  except ValueError as refused:
+    print(f"  the drive stays where it is, so the arm will not turn far: {refused}")
 
   c = iswap.configuration
   rotation_stops = ["front", "left", "front", "right"]
@@ -217,9 +233,10 @@ async def work_the_iswap(star) -> None:
     except ValueError as refused:
       # The guards stand between the arm and the channels, and a demo is not a reason to talk
       # past them: what they refuse is what a real caller would be refused.
-      logging.getLogger(__name__).info(
-        "the arm may not go to %s/%s: %s", rotation, gripper, refused
-      )
+      # Printed rather than logged: nothing configures logging here, so an `info` call is a
+      # refusal nobody sees - and a pose silently not happening looks like a viewer that has
+      # stopped drawing.
+      print(f"  the arm may not go to {rotation}/{gripper}: {refused}")
     await asyncio.sleep(2.5)
 
     await iswap.gripper_move_to_jaw_position(jaws[step % len(jaws)])
