@@ -912,15 +912,20 @@ class Resource(SerializableMixin):
       reference: the point to turn about, from this resource's left front bottom corner. Its own
         corner when None.
     """
-    before = self.get_absolute_rotation().get_rotation_matrix()
+    # Only a turn about another point needs to know which way this was already facing, and
+    # building a rotation matrix is twelve trigonometry calls: without a reference this stays out
+    # of the way, since `rotate` is on the path every placement takes.
+    turning_on = reference if self.location is not None else None
+    before = self.get_absolute_rotation().get_rotation_matrix() if turning_on is not None else None
+
     self.rotation.x = (self.rotation.x + x) % 360
     self.rotation.y = (self.rotation.y + y) % 360
     self.rotation.z = (self.rotation.z + z) % 360
 
-    if reference is not None and self.location is not None:
+    if turning_on is not None and before is not None:
       after = self.get_absolute_rotation().get_rotation_matrix()
-      was = matrix_vector_multiply_3x3(before, reference.vector())
-      now = matrix_vector_multiply_3x3(after, reference.vector())
+      was = matrix_vector_multiply_3x3(before, turning_on.vector())
+      now = matrix_vector_multiply_3x3(after, turning_on.vector())
       carried = Coordinate(was[0] - now[0], was[1] - now[1], was[2] - now[2])
       # `location` is measured in the parent's frame while `reference` is in this resource's, so
       # what the turn carried has to be taken back through the parent's own rotation. A rotation
@@ -933,7 +938,7 @@ class Resource(SerializableMixin):
             [[turned[j][i] for j in range(3)] for i in range(3)], carried.vector()
           )
         )
-      self.location = self.location + carried
+      self.location = cast(Coordinate, self.location) + carried
 
     # Rotation is part of the resource's state; notify subscribers (e.g. the
     # Visualizer) so they can re-render.
