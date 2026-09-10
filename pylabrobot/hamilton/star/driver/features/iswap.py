@@ -1,4 +1,4 @@
-"""The iSWAP: a P(x)+P(y)+P(z)+R(elbow)+R(wrist) SCARA
+"""The iSWAP: a P(x)+P(y)+P(z)+R(elbow)+R(wrist)+EE(gripper) SCARA
 with a mechanical gripper as end-effector that moves resources.
 """
 
@@ -613,7 +613,7 @@ class iSWAP:
     knows: the arm reports it from the fingers themselves, so a plate is not something this driver
     can infer from the commands it sent."""
     self.link_1: Optional[Link] = None
-    self.link_2: Optional[Link] = None
+    self.gripper: Optional[MechanicalGripper] = None
 
   @property
   def arm(self) -> "XArm":
@@ -868,10 +868,11 @@ class iSWAP:
     c = self.configuration
     if self.resource is not None:
       self.resource.wrist_drive_angle = angle
-    if self.link_1 is None or self.link_2 is None or c.wrist_drive_predefined_increments is None:
+    if self.link_1 is None or self.gripper is None or c.wrist_drive_predefined_increments is None:
       return
     straight = c.wrist_increments_to_deg(c.wrist_drive_predefined_increments["straight"])
-    self.link_2.turn_to(angle - straight, about=self.link_1.far_joint)
+    # The gripper is bolted to link 1's far end, which is link 1's length along its own span.
+    self.gripper.turn_to(angle - straight, about=Coordinate(self.link_1.get_size_x(), 0.0, 0.0))
 
   def gripper_update_width(self, width: float) -> None:
     """Record how far apart the jaws stand on the resource that models them.
@@ -883,8 +884,8 @@ class iSWAP:
     Args:
       width: how far apart the jaws stand, in mm, as the drive reports it.
     """
-    gripper = self.link_2
-    if not isinstance(gripper, MechanicalGripper):
+    gripper = self.gripper
+    if gripper is None:
       return
     low, high = gripper.jaw_range
     if not low <= width <= high:
@@ -1833,10 +1834,10 @@ class iSWAP:
     c = self.configuration
     predefined_wrist_positions = c.wrist_drive_predefined_increments
     drive = self.rotation_drive_get_reference_point_location()
-    gripper = self.link_2
+    gripper = self.gripper
     if drive is None:
       raise RuntimeError("the iSWAP's arm is not modelled; the driver was given no deck")
-    if not isinstance(gripper, MechanicalGripper):
+    if gripper is None:
       raise RuntimeError("the iSWAP's arm is modelled but its gripper is not")
     if c.link_1_length is None or predefined_wrist_positions is None:
       raise RuntimeError("the arm's link length or the wrist's stops were not read")
@@ -1883,16 +1884,11 @@ class iSWAP:
     pose = self._compute_pose_at_angles(rotation_angle, gripper_relative_angle)
     # Both moving joints, not only the far one: link 1 is long enough to put the wrist behind the
     # rail while the grip centre is still clear of it.
-    # Half an increment of slack: the drive counts in steps of `y_mm_per_increment`, so a point
-    # that close to the limit is at the limit, and refusing it refuses on arithmetic noise. Without
-    # it a carriage parked on its own back stop turns down every pose that reaches nowhere behind
-    # it.
-    slack = self.configuration.y_mm_per_increment / 2
     for what, point in (
       ("wrist joint", pose.wrist_joint_location),
       ("grip centre", pose.gripper_center_location),
     ):
-      if point.y > y_max + slack:
+      if point.y > y_max:
         raise ValueError(
           f"rotation {rotation_angle:.2f} deg with the wrist at {gripper_relative_angle:.2f} would put the "
           f"{what} at y {point.y:.1f} mm, behind the {y_max:.1f} mm the rotation drive itself "
@@ -2720,10 +2716,10 @@ class iSWAP:
       Every joint of the arm, and the deck angle the gripper faces along.
     """
     link_1_deck_angle = joints[iSWAPAxis.ROTATION] - 90.0
-    link_2_deck_angle = link_1_deck_angle + (joints[iSWAPAxis.WRIST] - wrist_straight_angle)
+    gripper_deck_angle = link_1_deck_angle + (joints[iSWAPAxis.WRIST] - wrist_straight_angle)
 
     alpha_1 = math.radians(link_1_deck_angle)
-    alpha_2 = math.radians(link_2_deck_angle)
+    alpha_2 = math.radians(gripper_deck_angle)
 
     # Both joints sit at the drive's own height; the fingers hang below its bottom.
     base = Coordinate(x=joints[iSWAPAxis.X], y=joints[iSWAPAxis.Y], z=joints[iSWAPAxis.Z])
@@ -2740,7 +2736,7 @@ class iSWAP:
         y=wrist.y + tool_center_point_distance * math.sin(alpha_2),
         z=base.z - rotation_drive_z_offset_above_finger,
       ),
-      gripper_deck_orientation=Rotation(z=link_2_deck_angle),
+      gripper_deck_orientation=Rotation(z=gripper_deck_angle),
       joints=joints,
     )
 
@@ -2760,10 +2756,10 @@ class iSWAP:
         not modelled.
     """
     c = self.configuration
-    gripper = self.link_2
+    gripper = self.gripper
     if c.link_1_length is None:
       raise RuntimeError("the arm's link length was not read; have you called `star.setup()`?")
-    if not isinstance(gripper, MechanicalGripper):
+    if gripper is None:
       raise RuntimeError("the gripper is not modelled, so how far it reaches is unknown")
     if c.wrist_drive_predefined_increments is None:
       raise RuntimeError("the wrist drive's stops were not read; have you called `star.setup()`?")

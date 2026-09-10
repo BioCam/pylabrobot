@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.end_effector import MechanicalGripper
-from pylabrobot.resources.manipulator import Link, bolt_on
+from pylabrobot.resources.manipulator import Link
 from pylabrobot.resources.resource import Resource
 
 
@@ -76,16 +76,22 @@ class iSWAPChannel(Resource):
 # to the plate it holds. They are measured against the height the Z drive reports, which is the
 # same plane `rotation_drive_z_offset_above_finger` is measured from - and the model agrees with
 # it independently, since the pads' underside comes out exactly that far below.
-LINK_1_BODY = (163.4, 25.5, 15.3, -12.7, 19.0)
-GRIPPER_BODY = (59.0, 90.0, 20.3, -13.0, -1.3)
-GRIPPER_FINGER = (135.0, 7.0, 8.0, 6.5, 4.0)
-GRIPPER_PAD = (37.0, 4.0, 17.0, 115.5, -13.0)
+LINK_1_BODY_SIZE = (163.4, 25.5, 15.3)
+LINK_1_BODY_LOCATION = Coordinate(-12.7, -12.75, 19.0)
+GRIPPER_BODY_SIZE = (59.0, 90.0, 20.3)
+GRIPPER_BODY_LOCATION = Coordinate(-13.0, -45.0, -1.3)
+# A finger has no Y of its own: the jaw width stands it where it stands.
+GRIPPER_FINGER_SIZE = (135.0, 7.0, 8.0)
+GRIPPER_FINGER_LOCATION = Coordinate(6.5, 0.0, 4.0)
+# From the finger it is fixed to, as a child's location always is.
+GRIPPER_PAD_SIZE = (37.0, 4.0, 17.0)
+GRIPPER_PAD_LOCATION = Coordinate(109.0, 1.5, -17.0)
 
 # How far the rotation drive's own column stands above the height the Z drive reports, in mm. The
 # arm hangs below that: the drive reports where the material it carries is, not where its column
 # begins. The column stands on link 1 with nothing between them, so this follows link 1's own top
 # rather than being stated again - the two cannot drift apart.
-ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z = LINK_1_BODY[4] + LINK_1_BODY[2]
+ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z = LINK_1_BODY_LOCATION.z + LINK_1_BODY_SIZE[2]
 
 
 def iswap_channel(
@@ -135,15 +141,48 @@ def iswap_gripper(
   Returns:
     The gripper.
   """
+  model = "hamilton_star_iswap_gripper"
+  fingers = tuple(
+    Resource(
+      name=f"{name}_finger_{side}",
+      size_x=GRIPPER_FINGER_SIZE[0],
+      size_y=GRIPPER_FINGER_SIZE[1],
+      size_z=GRIPPER_FINGER_SIZE[2],
+      category="finger",
+      model=f"{model}_finger",
+    )
+    for side in ("left", "right")
+  )
+  pads = tuple(
+    Resource(
+      name=f"{jaw.name}_pad",
+      size_x=GRIPPER_PAD_SIZE[0],
+      size_y=GRIPPER_PAD_SIZE[1],
+      size_z=GRIPPER_PAD_SIZE[2],
+      category="pad",
+      model=f"{jaw.model}_pad",
+    )
+    for jaw in fingers
+  )
   return MechanicalGripper(
     name=name,
     length=length,
-    body=GRIPPER_BODY,
-    finger=GRIPPER_FINGER,
-    pad=GRIPPER_PAD,
+    body=Resource(
+      name=f"{name}_body",
+      size_x=GRIPPER_BODY_SIZE[0],
+      size_y=GRIPPER_BODY_SIZE[1],
+      size_z=GRIPPER_BODY_SIZE[2],
+      category="body",
+      model=f"{model}_body",
+    ),
+    body_location=GRIPPER_BODY_LOCATION,
+    fingers=fingers,
+    finger_location=GRIPPER_FINGER_LOCATION,
+    pads=pads,
+    pad_location=GRIPPER_PAD_LOCATION,
     jaw_range=jaw_range,
     jaw_width=jaw_width,
-    model="hamilton_star_iswap_gripper",
+    model=model,
   )
 
 
@@ -158,5 +197,13 @@ def iswap_link_1(name: str, length: float) -> Link:
     The link.
   """
   link = Link(name=name, length=length, category="iswap_link", model="hamilton_star_iswap_link_1")
-  bolt_on(link, "body", LINK_1_BODY)
+  body = Resource(
+    name=f"{link.name}_body",
+    size_x=LINK_1_BODY_SIZE[0],
+    size_y=LINK_1_BODY_SIZE[1],
+    size_z=LINK_1_BODY_SIZE[2],
+    category="body",
+    model=f"{link.model}_body" if link.model else None,
+  )
+  link.assign_child_resource(body, location=LINK_1_BODY_LOCATION)
   return link

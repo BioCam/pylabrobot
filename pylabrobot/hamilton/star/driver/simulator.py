@@ -42,7 +42,6 @@ from pylabrobot.hamilton.star.driver.master import STARDriver
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.validation_utils import LOG_LEVEL_IO
 from pylabrobot.resources.carrier import Carrier
-from pylabrobot.resources.end_effector import MechanicalGripper
 from pylabrobot.resources.hamilton.hamilton_decks import (
   HamiltonDeck,
 )
@@ -604,8 +603,8 @@ class SimulatedISWAP(_Simulated, iSWAP):
 
       if command == "RG":
         # The drive answers twice, a target and an actual; the read takes the second.
-        gripper = self.link_2
-        if not isinstance(gripper, MechanicalGripper):
+        gripper = self.gripper
+        if gripper is None:
           # Nothing models the jaws, so where an initialized gripper leaves them: the width it
           # homes and parks at, out of the stored table rather than written down here.
           stops = (await self._request_slots("pg"))[: len(c.gripper_drive_slots)]
@@ -616,9 +615,9 @@ class SimulatedISWAP(_Simulated, iSWAP):
     if (module, command) == ("C0", "QP"):
       # Whether the arm holds something is whether the model has anything hanging off the gripper
       # that is not part of the gripper: its body and its two fingers are its own.
-      gripper = self.link_2
+      gripper = self.gripper
       held = False
-      if isinstance(gripper, MechanicalGripper):
+      if gripper is not None:
         own = {gripper.body, *gripper.fingers}
         held = any(child not in own for child in gripper.children)
       return {"ph": int(held)}, "whether the model has anything in the gripper"

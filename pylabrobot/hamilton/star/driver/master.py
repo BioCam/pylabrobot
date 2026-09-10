@@ -48,6 +48,7 @@ from pylabrobot.hamilton.star.resource_model import head384 as head384_pipette
 from pylabrobot.io.io import IOBase
 from pylabrobot.io.usb import USB
 from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.end_effector import MechanicalGripper
 from pylabrobot.resources.hamilton.hamilton_decks import HamiltonDeck
 from pylabrobot.resources.hamilton.tip_creators import HamiltonTip, TipPickupMethod, TipSize
 from pylabrobot.resources.manipulator import Link
@@ -1679,7 +1680,7 @@ class STARDriver:
           ),
         )
       iswap.resource = resource
-      iswap.link_1, iswap.link_2 = self._create_iswap_links(resource, c)
+      iswap.link_1, iswap.gripper = self._create_iswap_arm(resource, c)
       iswap.update_location_by_reference_point(y=y, z=z)
       iswap.rotation_drive_update_angle(angle)
       iswap.wrist_drive_update_angle(await iswap.wrist_drive_request_angle())
@@ -1688,21 +1689,21 @@ class STARDriver:
       await iswap.gripper_request_width()
 
   @staticmethod
-  def _create_iswap_links(
+  def _create_iswap_arm(
     resource: iSWAPChannel, c: iSWAPConfiguration
-  ) -> Tuple[Optional[Link], Optional[Link]]:
-    """Hang the arm's two links off the carriage, each as long as the arm says it is.
+  ) -> Tuple[Optional[Link], Optional[MechanicalGripper]]:
+    """Hang the arm off the carriage: one link, and the gripper it carries.
 
-    Link 1 turns on the rotation drive and link 2 on the wrist that link 1 carries, so link 2 is a
-    child of link 1 and its angle is measured from it. Where each points is written by
-    `rotation_drive_update_angle` and `wrist_drive_update_angle`. Links already there are reused.
+    Link 1 turns on the rotation drive; the gripper turns on the wrist that link 1 carries, so it
+    is a child of link 1 and its angle is measured from it. Where each points is written by
+    `rotation_drive_update_angle` and `wrist_drive_update_angle`. What is already there is reused.
 
     Args:
       resource: the carriage they hang from.
       c: the arm's configuration, which carries both lengths.
 
     Returns:
-      The two links, or `(None, None)` if the arm did not report their lengths.
+      The link and the gripper, or `(None, None)` if the arm did not report its lengths.
     """
     if c.link_1_length is None or c.link_2_length is None:
       logger.warning("the iSWAP reported no link lengths, so its arm is not modelled")
@@ -1711,11 +1712,13 @@ class STARDriver:
     if link_1 is None:
       link_1 = iswap_link_1(name="iswap_link_1", length=c.link_1_length)
       resource.assign_child_resource(link_1, location=Coordinate.zero())
-    link_2 = next((child for child in link_1.children if isinstance(child, Link)), None)
-    if link_2 is None:
+    gripper = next(
+      (child for child in link_1.children if isinstance(child, MechanicalGripper)), None
+    )
+    if gripper is None:
       # How far the jaws travel is the gripper drive's own window, converted, rather than a
       # measurement of the fingers: what the drive accepts is what the jaws do.
-      link_2 = iswap_gripper(
+      gripper = iswap_gripper(
         name="iswap_gripper",
         length=c.link_2_length,
         jaw_range=(
@@ -1730,8 +1733,8 @@ class STARDriver:
           else None
         ),
       )
-      link_1.assign_child_resource(link_2, location=Coordinate.zero())
-    return link_1, link_2
+      link_1.assign_child_resource(gripper, location=Coordinate.zero())
+    return link_1, gripper
 
   async def _create_autoload_resource(self) -> None:
     """Put the autoload's sled on the deck, where it is, and the tray it draws carriers from.
