@@ -332,7 +332,11 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     # Measured against the two things on the deck it lines up with: where the first carrier starts,
     # and a carrier's front edge. It insets the same amount from the deck's right edge as from its
     # left, which is what sizes it.
-    from_first_carrier_x, front_ahead_y, back_ahead_y, size_z = 104.0, 380.0, 132.0, 92.0
+    # The height is the tray plate's own top - what a carrier stands on, and what its track
+    # markings are cut into. Read off the part: the plate tops out 98.0 mm above the tray's floor
+    # on all three frames, and the track guides stand on it from there. It is 2 mm below the deck's
+    # own work surface, which is what lets a carrier come off the tray and onto the deck.
+    from_first_carrier_x, front_ahead_y, back_ahead_y, size_z = 104.0, 380.0, 132.0, 98.0
     left = self.track_to_location(1).x - from_first_carrier_x
     # The tray runs the length of the deck, so it is a different part on each frame rather than one
     # part fitted to all three, and it says which frame it is. The sled that runs along it is one
