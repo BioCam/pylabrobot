@@ -1546,11 +1546,13 @@ class STARDriver:
           category="pipette_channel",
           model="hamilton_star_pipette_channel",
         )
-        # Along X a channel sits at the arm's own reference point, so its centre lands there.
+        # Along X a channel sits at the arm's own reference point, so its centre lands there. The
+        # arm's reference point is not the middle of it: the part is wider than the width the drive
+        # reports, and reaches further right than the point it counts from.
         anchor = resource.get_anchor(x=arm.pipettes.configuration.x_reference_anchor)
         arm.resource.assign_child_resource(
           resource,
-          location=Coordinate(arm.resource.get_absolute_size_x() / 2 - anchor.x, 0.0, 0.0),
+          location=Coordinate(arm.configuration.reference_point_from_left - anchor.x, 0.0, 0.0),
         )
       arm.pipettes.add_tip_mounting_shaft(resource)
       arm.pipettes.resources.append(resource)
@@ -1597,12 +1599,18 @@ class STARDriver:
           # The definition, not a bare resource: it carries a mounting shaft per channel, which
           # is what a collected tip becomes a child of.
           resource = build(name=name, size_z=c.body_size_z)
-          # Channel A1 sits `x_offset` left of the carriage centre, and the arm is located by its
-          # own left edge, so A1 lands that far left of the arm's centre. Y is set from the drive
-          # below.
+          # Channel A1 sits `x_offset` left of the point the drive tracks the arm by, and the arm
+          # is located by its own left edge, so A1 lands that far left of the reference point. What
+          # is placed is the head, whose own A1 stands inside it, so that inset comes off too - the
+          # head is measured from A1 the way a channel is measured from its axis. Y is set from the
+          # drive below.
           arm.resource.assign_child_resource(
             resource,
-            location=Coordinate(arm.resource.get_absolute_size_x() / 2 - c.x_offset, 0.0, 0.0),
+            location=Coordinate(
+              arm.configuration.reference_point_from_left - c.x_offset - resource.reference_point.x,
+              0.0,
+              0.0,
+            ),
           )
         head.resource = resource
         head.update_location_by_reference_point(y=y, z=z)
@@ -1658,13 +1666,16 @@ class STARDriver:
           diameter=c.rotation_drive_diameter,
           size_z=round(max(tops) - retracted_base, 1) if tops else c.rotation_drive_size_z,
         )
-        # The drive sits `rotation_drive_x_offset` left of the carriage reference point, and the
-        # arm is located by its own left edge, so it lands that far left of the arm's centre.
+        # The drive sits `rotation_drive_x_offset` left of the point the drive tracks the arm by,
+        # and the arm is located by its own left edge, so it lands that far left of the reference
+        # point.
         anchor = resource.reference_point
         arm.resource.assign_child_resource(
           resource,
           location=Coordinate(
-            arm.resource.get_absolute_size_x() / 2 - c.rotation_drive_x_offset - anchor.x, 0.0, 0.0
+            arm.configuration.reference_point_from_left - c.rotation_drive_x_offset - anchor.x,
+            0.0,
+            0.0,
           ),
         )
       iswap.resource = resource
