@@ -23,6 +23,10 @@ import { DRACOLoader } from "three/addons/DRACOLoader.js";
 import {
   DEG,
   RESOURCE_COLORS,
+  CONTAINERS,
+  CONTENTS,
+  TREE_HIDDEN,
+  GLAZED_MAX_OPACITY,
   MOVING_PARTS,
   NO_REFERENCE_MARK,
   FLAT_EDGE,
@@ -1175,7 +1179,7 @@ function setRenderMode(painter) {
         if (overlay.userData.lit) overlay.material = overlay.userData.lit;
         overlay.material.depthTest = false;
         overlay.material.depthWrite = false;
-        overlay.renderOrder = order + 1;
+        overlay.renderOrder = order + (overlay.userData.behind ? 0.5 : 1);
         overlay.material.needsUpdate = true;
       }
     } else {
@@ -1184,7 +1188,7 @@ function setRenderMode(painter) {
       material.side = isShell || isSpace ? THREE.BackSide : THREE.FrontSide;
       material.depthTest = true;
       material.depthWrite = !(isShell || isSpace);
-      material.visible = fillsBox(entry) && !isShell;
+      material.visible = fillsBox(entry) && (!isShell || keepsWalls(entry));
       entry.mesh.renderOrder = 0;
       for (const overlay of entry.overlays ?? []) {
         if (overlay.userData.lit) overlay.material = overlay.userData.lit;
@@ -1270,13 +1274,35 @@ function setRenderMode(painter) {
   }
 }
 
+// Whether the camera is looking straight down. An axis view can be a plan or an elevation, and the
+// two want different things: a mark shows through what is standing on it only from above, where the
+// mark and the thing are in the same plane and one is simply on top of the other. From the front,
+// a line crossing a carrier is a line through it.
+let planView = null;
+
 function updateEdgeMode() {
   const direction = camera.position.clone().sub(controls.target).normalize();
   const aligned =
     Math.abs(direction.x) > 0.999 || Math.abs(direction.y) > 0.999 || Math.abs(direction.z) > 0.999;
+
+  const plan = aligned && Math.abs(direction.z) > 0.999;
+  // No frame is asked for: this runs inside one, and the camera only reaches an axis through an
+  // input, which has asked for frames already and is still damping to a stop.
+  if (plan !== planView) {
+    planView = plan;
+    for (const mark of gridMarks) showThroughMarks(mark);
+  }
+
   if (aligned === axisAligned) return;
   axisAligned = aligned;
   setRenderMode(aligned);
+}
+
+/** Show or hide the faint copies of a grid's marks, which belong to a plan view alone. */
+function showThroughMarks(group) {
+  group.traverse((o) => {
+    if (o.userData.mark === "through") o.visible = planView === true;
+  });
 }
 
 // Held at a constant size on screen, so it marks the origin without swamping a close view or
