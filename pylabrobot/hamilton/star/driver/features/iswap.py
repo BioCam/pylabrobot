@@ -38,6 +38,10 @@ GRIPPER_DECK_DIRECTIONS: Dict[str, float] = {
 
 RECORDED_FIRMWARE_PREFIX = "4."
 
+# The front of the deck, in the deck's own frame, which is the frame every position here is in.
+# Zero by definition rather than by measurement: it is where the deck's coordinates start.
+DECK_FRONT_EDGE_Y = 0.0
+
 
 @dataclass
 class CartesianPose:
@@ -1876,7 +1880,8 @@ class iSWAP:
       gripper_relative_angle: where the wrist is being sent, in degrees.
 
     Raises:
-      ValueError: If the grip centre would land behind the drive's own back stop.
+      ValueError: If either joint would land behind the drive's own back stop, or in front of the
+        deck.
     """
     y_max = self.configuration.rotation_drive_y_max
     if y_max is None:
@@ -1894,6 +1899,16 @@ class iSWAP:
           f"{what} at y {point.y:.1f} mm, behind the {y_max:.1f} mm the rotation drive itself "
           f"reaches - the X-arm runs across the back of the deck there. Turn the arm the other "
           f"way, or move the drive forward first"
+        )
+      # And the other end of the same window. The drive's own travel stops at the deck's front
+      # edge, and the arm it carries reaches a long way past the drive: turned to the front with
+      # the carriage well forward, the grip centre swings off the front of the deck entirely -
+      # a pose the drive's Y limits say nothing about, since the drive itself never goes there.
+      if point.y < DECK_FRONT_EDGE_Y:
+        raise ValueError(
+          f"rotation {rotation_angle:.2f} deg with the wrist at {gripper_relative_angle:.2f} would put the "
+          f"{what} at y {point.y:.1f} mm, in front of the deck, which starts at "
+          f"{DECK_FRONT_EDGE_Y:.1f} mm. Turn the arm the other way, or move the drive back first"
         )
 
   async def _record_where_the_joints_stopped(self) -> None:
