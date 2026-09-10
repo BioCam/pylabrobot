@@ -1789,6 +1789,10 @@ function setHidden(name, hidden) {
     }
     const line = edgeOf.get(index);
     if (line) line.visible = isVisible(index);
+    // A resource drawn from a file is drawn outside the instanced pipeline, so switching off the
+    // box it stood in for leaves the geometry on screen unless it is told too.
+    const model = meshRoots.find((r) => r.userData.index === index);
+    if (model) model.visible = isVisible(index);
     for (const mark of gridMarks) {
       if (mark.userData.owner === index) mark.visible = isVisible(index);
     }
