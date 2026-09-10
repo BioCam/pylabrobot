@@ -310,6 +310,12 @@ const GRID_TICK = 30; // mm the mark runs forward of the grid, into the margin w
 // resource has no margin to give: a deck runs on well ahead of its first carrier, and a loading
 // tray's grid starts at the tray's own front edge.
 const GRID_MARGIN = 4;
+// How strongly a track mark shows through what is standing on it. A carrier with a solid base hides
+// the very mark that says which track it is on, and which track a carrier is on is most of what a
+// person reads a deck for - but a line at full strength over an opaque part reads as an error
+// rather than as a reference. Faint, it reads the way a hidden line does on a drawing: behind the
+// thing, and still there.
+const GRID_GHOST_OPACITY = 0.3;
 // A number is drawn inside its quad with room above and below it, so the quad's edge is not where
 // the ink stops. This is how much of the quad's height the digits actually take - a bold face's
 // cap height against the canvas the label is drawn on - and it is what a margin has to be measured
@@ -905,15 +911,27 @@ function buildGridMarks() {
     geometry.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
     const marks = new THREE.LineSegments(
         geometry,
-        // Drawn without a depth test, like the underlay on a drawing: a rail is a reference for
-        // where things sit, so it has to stay readable with a carrier standing on it.
         // Opaque, so it sorts with everything else: a transparent line renders after all opaque
         // geometry no matter its render order, which is what kept these on top of the carriers.
         new THREE.LineBasicMaterial({ color: GRID_LINE, depthTest: false })
     );
     // Just above the surface it is drawn on, and below anything standing on that surface.
     marks.renderOrder = paintOrderOf(index) + 0.5;
+    marks.userData.mark = "solid";
     group.add(marks);
+
+    // The same marks again, faint and over the top of whatever is standing on them, so the track a
+    // carrier occupies can still be read off. Shares the geometry - this is a second material, not
+    // a second set of lines.
+    const showThrough = new THREE.LineSegments(
+      geometry,
+      new THREE.LineBasicMaterial({
+        color: GRID_LINE, transparent: true, opacity: GRID_GHOST_OPACITY, depthTest: false,
+      })
+    );
+    showThrough.userData.mark = "through";
+    showThrough.renderOrder = OVERLAY_ORDER - 1;
+    group.add(showThrough);
 
     group.userData.owner = index;
     view.add(group);
@@ -1185,13 +1203,27 @@ function setRenderMode(painter) {
 
   for (const root of meshRoots) {
     root.traverse((o) => {
-      if (o.isMesh && o.userData.lit) o.material = o.userData.lit;
+      if (!o.isMesh) return;
+      if (o.userData.lit) o.material = o.userData.lit;
+      // Glazing comes out of an axis view. A part that travels keeps whatever it was modelled with,
+      // see-through included: it is drawn that way so the deck under it can be read.
+      const carried = MOVING_PARTS.has(modelOf(o.userData.declaredBy).category);
+      const glazed = o.material.transparent && o.material.opacity <= GLAZED_MAX_OPACITY;
+      o.material.visible = !(painter && glazed && !carried);
     });
   }
 
   for (const mark of gridMarks) {
     mark.traverse((o) => {
-      if (o.material && o.material.depthTest !== undefined) o.material.depthTest = !painter;
+      if (!o.material) return;
+      // The faint copy belongs to a plan alone, and which view that is follows the camera rather
+      // than the mode: an elevation is axis-aligned too, and from the front a line over a carrier
+      // is a line through it.
+      if (o.userData.mark === "through") {
+        o.visible = planView === true;
+        return;
+      }
+      if (o.material.depthTest !== undefined) o.material.depthTest = !painter;
     });
   }
 
@@ -2922,6 +2954,15 @@ function atBoundary(surface) {
     }
     return out;
   },
+  // What a travelling part is doing: where it is drawn, where it has been told to go, and where
+  // along it the drive's position refers to. A part that will not move is one of those three.
+  arms: () =>
+    arms.map((arm) => ({
+      name: world?.names[arm.index],
+      currentX: +arm.currentX.toFixed(2),
+      targetX: +arm.targetX.toFixed(2),
+      referenceOffset: arm.referenceOffset,
+    })),
   hover: () => ({
     visible: hoverBox.visible,
     empty: hoverBox.box.isEmpty(),
@@ -3316,6 +3357,7 @@ function connect() {
       buildMeshes();
       floorZ = sceneBounds().min.z;
       gridState = null;
+      planView = null;
       buildGridMarks();
       buildArms();
       buildReferenceMarks();
