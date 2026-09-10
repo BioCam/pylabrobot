@@ -1449,11 +1449,16 @@ function updateGrid() {
 
   // Already in PLR's XY: the lines are built in the plane rather than laid down from another one.
   const half = (divisions * cell) / 2;
-  const runs = [[], []]; // ordinary lines, then the two through the centre
+  const runs = [[], []]; // ordinary lines, then the two the world's own axes fall on
+  // A line is an axis when it lands on zero IN THE WORLD, which is not the middle of the patch: the
+  // patch follows the camera, so its middle is wherever you happen to be looking. The geometry is
+  // built around the patch's centre and drawn at (cx, cy), so a local t sits at t + cx or t + cy.
+  // Where the origin is off the patch entirely, neither axis is drawn, which is the truth.
+  const axis = (at) => (Math.abs(at) < cell * 1e-6 ? 1 : 0);
   for (let i = 0; i <= divisions; i++) {
     const t = -half + i * cell;
-    const into = runs[Math.abs(t) < cell * 1e-6 ? 1 : 0];
-    into.push(-half, t, 0, half, t, 0, t, -half, 0, t, half, 0);
+    runs[axis(t + cy)].push(-half, t, 0, half, t, 0);
+    runs[axis(t + cx)].push(t, -half, 0, t, half, 0);
   }
 
   grid = runs
