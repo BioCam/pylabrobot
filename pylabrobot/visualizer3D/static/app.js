@@ -24,6 +24,7 @@ import {
   DEG,
   RESOURCE_COLORS,
   MOVING_PARTS,
+  NO_REFERENCE_MARK,
   FLAT_EDGE,
   EDGE_WIDTH_FLAT,
   EDGE_WIDTH_3D,
@@ -550,6 +551,7 @@ function buildReferenceMarks() {
   for (let index = 0; index < world.names.length; index++) {
     const model = modelOf(index);
     if (!model.reference_point || MOVING_PARTS.has(model.category)) continue;
+    if (NO_REFERENCE_MARK.has(model.category)) continue;
     const [, sy] = sizeOf(model);
     // Held in the resource's own frame, so a part that only travels in x keeps it as it moves.
     const sz = deckZ === null ? 0 : deckZ - world.matrices[index].elements[14];

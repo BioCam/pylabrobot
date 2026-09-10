@@ -48,6 +48,13 @@ export const RESOURCE_COLORS = {
 // part, and this list is a stand-in until that exists.
 export const MOVING_PARTS = new Set(["x_arm", "arm", "gripper", "head", "channel"]);
 
+// Parts whose reference point says nothing the picture does not already. A single pipetting channel
+// is measured from its own axis, which is where it visibly is, and eight of them side by side turn
+// one useful line into a thicket over the deck. A head is a different case and keeps its mark: it
+// is measured from channel A1, in a corner of a block a hundred millimetres across, which is not
+// somewhere anyone would read off the shape.
+export const NO_REFERENCE_MARK = new Set(["pipette_channel"]);
+
 // Structure, reference and content, in that order of prominence. With the fills gone, outlines
 // carry the information about what is on the deck, so they are the darkest thing; rails, bands and
 // grid are references and recede; only live contents are saturated.
