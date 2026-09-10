@@ -39,6 +39,7 @@ import {
   ARM_OPACITY,
   BOX_OPACITY,
   MODEL_EDGE_OPACITY,
+  MOVING_OPACITY,
   SHELL_OPACITY,
   SPACE_OPACITY,
   HOLDERS,
@@ -1055,10 +1056,24 @@ function fillsBox(entry) {
   return !MOVING_PARTS.has(entry.model.category) && !entry.modelDrawn;
 }
 
+// How see-through a resource is drawn, whatever the angle it is seen from. A part that travels is
+// the see-through one, because drawn solid it hides whatever it happens to be above.
+function OPACITY_OF(isSpace, moves, isTipRack, isShell) {
+  if (isSpace) return SPACE_OPACITY;
+  if (moves) return MOVING_OPACITY;
+  if (isTipRack) return TIP_RACK_OPACITY;
+  if (isShell) return SHELL_OPACITY;
+  return BOX_OPACITY;
+}
+
 function setRenderMode(painter) {
   for (const entry of meshes) {
+    // Unlit at every angle. A lit material reports the light as much as the resource, so the same
+    // box read one colour from the side and another from above - the view changed what a thing
+    // looked like, which is the one thing a view must not do. What follows the view is depth and
+    // paint order, below; colour does not.
     const lit = entry.mesh.material.userData.lit ?? entry.mesh.material;
-    const wanted = painter ? (lit.userData.flat ?? lit) : lit;
+    const wanted = lit.userData.flat ?? lit;
     if (entry.mesh.material !== wanted) entry.mesh.material = wanted;
     const material = entry.mesh.material;
     const isShell = entry.holdsEnclosure;
@@ -1077,9 +1092,9 @@ function setRenderMode(painter) {
       // A part that travels over the deck is not content standing on it: drawn opaque it hides
       // whatever it happens to be above, which is the one thing you need to see. It stays
       // see-through, and paints last because that is where it physically is.
-      material.transparent = moves || isSpace || isTipRack;
-      material.opacity = isSpace ? SPACE_OPACITY : moves ? 0.35 : isTipRack ? TIP_RACK_OPACITY : 1;
-      material.side = THREE.FrontSide;
+      material.transparent = true;
+      material.opacity = OPACITY_OF(isSpace, moves, isTipRack, isShell);
+      material.side = isShell || isSpace ? THREE.BackSide : THREE.FrontSide;
       // Solid things sort by depth even here, so which of two overlapping ones is seen follows from
       // where each actually stands. Render order cannot answer it: one mesh carries every instance
       // of a model and so has one order for all of them, which let a tip rack 880 mm up on a bench
@@ -1107,15 +1122,14 @@ function setRenderMode(painter) {
       }
     } else {
       material.transparent = true;
-      material.opacity = isSpace ? SPACE_OPACITY : isTipRack ? TIP_RACK_OPACITY
-        : isShell ? SHELL_OPACITY : BOX_OPACITY;
+      material.opacity = OPACITY_OF(isSpace, moves, isTipRack, isShell);
       material.side = isShell || isSpace ? THREE.BackSide : THREE.FrontSide;
       material.depthTest = true;
       material.depthWrite = !(isShell || isSpace);
-      material.visible = fillsBox(entry);
+      material.visible = fillsBox(entry) && !isShell;
       entry.mesh.renderOrder = 0;
       for (const overlay of entry.overlays ?? []) {
-        if (overlay.userData.lit) overlay.material = overlay.userData.lit;
+        if (overlay.userData.flat) overlay.material = overlay.userData.flat;
         overlay.material.depthTest = true;
         overlay.material.depthWrite = true;
         overlay.renderOrder = 0;
@@ -1126,14 +1140,12 @@ function setRenderMode(painter) {
   }
 
   for (const surface of surfaces) {
-    surface.material = painter ? surface.userData.flat : surface.userData.lit;
+    surface.material = surface.userData.flat;
   }
 
   for (const root of meshRoots) {
     root.traverse((o) => {
-      if (o.isMesh && o.userData.flat) {
-        o.material = painter ? o.userData.flat : o.userData.lit;
-      }
+      if (o.isMesh && o.userData.flat) o.material = o.userData.flat;
     });
   }
 
@@ -1323,6 +1335,14 @@ function flatVariant(material) {
   flat.opacity = material.opacity;
   flat.side = material.side;
   flat.visible = material.visible;
+  // What is printed on a part is part of it. A model's maps carry the branding, the door labels
+  // and the biohazard mark, and a twin built from the colour alone drops all of them - the part
+  // arrives blank, which reads as the print having been removed rather than the light changed.
+  flat.map = material.map ?? null;
+  flat.alphaMap = material.alphaMap ?? null;
+  flat.alphaTest = material.alphaTest;
+  flat.aoMap = material.aoMap ?? null;
+  if (material.emissiveMap) flat.map = flat.map ?? material.emissiveMap;
   return flat;
 }
 

@@ -97,6 +97,9 @@ export const SHELL_OPACITY = 0.5;
 // what stands behind it, should still read through it. A resource whose model file has arrived has
 // its box hidden entirely, so this never applies to it.
 export const BOX_OPACITY = 0.4;
+// A part that travels over the deck, drawn see-through wherever it is. Solid it would hide
+// whatever it happens to be above, which is the one thing you need to see under an arm.
+export const MOVING_OPACITY = 0.35;
 // What is left of a box once the model it stood in for is being drawn: its border, and only just.
 // The extent is still worth being able to find - it is what the collision model uses - but it is
 // no longer what says where the thing is, so it must not compete with the geometry inside it.
