@@ -2084,7 +2084,7 @@ function buildTree() {
 
 function addRow(index, depth, before) {
   const model = modelOf(index);
-  const children = world.childrenOf[index];
+  const children = treeChildren(index);
 
   const row = document.createElement("div");
   row.className = "tree-node-row";
@@ -2168,13 +2168,13 @@ function addRow(index, depth, before) {
 // build thousands of rows to show four carriers.
 function toggle(index, open) {
   const entry = rowOf.get(index);
-  if (!entry || !world.childrenOf[index].length || open === expanded.has(index)) return;
+  if (!entry || !treeChildren(index).length || open === expanded.has(index)) return;
 
   if (open) {
     expanded.add(index);
     entry.arrow.textContent = "▼";
     const before = entry.row.nextSibling;
-    const order = siteOrder(index)?.sorted ?? world.childrenOf[index];
+    const order = siteOrder(index)?.sorted ?? treeChildren(index);
     for (const child of order) addRow(child, entry.depth + 1, before);
   } else {
     expanded.delete(index);
@@ -2194,11 +2194,26 @@ function toggle(index, open) {
   }
 }
 
+// What the tree lists below a row. The positions inside a container are left out: a plate already
+// says how many wells it has, and the rows would be a wall to scroll past. Nothing about the
+// viewport changes - this decides the panel and nothing else.
+function treeChildren(index) {
+  return world.childrenOf[index].filter((c) => !TREE_HIDDEN.has(modelOf(c).category));
+}
+
+// Whether opening this row would open a grid of positions rather than a level of the deck. Those
+// rows exist - a mounting shaft is a real part - but a depth should not spend itself on ninety-six
+// of them, so they open when they are asked for by name.
+function holdsContentsOnly(index) {
+  const children = treeChildren(index);
+  return children.length > 0 && children.every((c) => CONTENTS.has(modelOf(c).category));
+}
+
 function showToDepth(maxDepth) {
   const walk = (index, depth) => {
-    if (depth < maxDepth) {
+    if (depth < maxDepth && !holdsContentsOnly(index)) {
       toggle(index, true);
-      for (const child of world.childrenOf[index]) walk(child, depth + 1);
+      for (const child of treeChildren(index)) walk(child, depth + 1);
     } else {
       toggle(index, false);
     }
@@ -2213,7 +2228,7 @@ function expandAll(open) {
   }
   const walk = (index) => {
     toggle(index, true);
-    for (const child of world.childrenOf[index]) walk(child);
+    for (const child of treeChildren(index)) walk(child);
   };
   for (let i = 0; i < world.names.length; i++) if (world.parentOf[i] < 0) walk(i);
 }
@@ -2236,11 +2251,16 @@ function refreshTreeInfo() {
 }
 
 function revealAndHighlight(index) {
+  // A position inside a container has no row of its own, so the row to land on is the container
+  // that names it - which is where a reader would look for it anyway.
+  let at = index;
+  while (at >= 0 && TREE_HIDDEN.has(modelOf(at).category)) at = world.parentOf[at];
+  if (at < 0) at = index;
   const chain = [];
-  for (let i = world.parentOf[index]; i >= 0; i = world.parentOf[i]) chain.unshift(i);
+  for (let i = world.parentOf[at]; i >= 0; i = world.parentOf[i]) chain.unshift(i);
   for (const ancestor of chain) toggle(ancestor, true);
   for (const [, entry] of rowOf) entry.row.classList.remove("selected");
-  const entry = rowOf.get(index);
+  const entry = rowOf.get(at);
   if (entry) {
     entry.row.classList.add("selected");
     entry.row.scrollIntoView({ block: "nearest" });
