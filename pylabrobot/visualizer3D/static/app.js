@@ -726,6 +726,13 @@ function updateArms(delta) {
     // the info panel, the selection box, the coordinate tool - so moving only the group would
     // leave all of them quoting where the arm used to be.
     mirrorPlacement(arm.index, arm.currentX, arm.group.matrix);
+    // What the arm itself is drawn from. Its frame and outline ride the group and have moved
+    // already, but everything else the arm owns is a separate object with a baked matrix - its
+    // declared model above all, which hangs off the view rather than off the group - and the line
+    // below deliberately skips the arm while it works out the subtree beneath it. Without this a
+    // part drawn from a file stays where it was loaded while the arm travels out from under it,
+    // which is what a model-drawn X-arm did: the reference line moved and the geometry did not.
+    redraw([arm.index]);
     // Whatever rides the arm moves with it. Its own matrix is already set from the group, so only
     // what is beneath it needs working out.
     refreshSubtree(arm.index, true);
