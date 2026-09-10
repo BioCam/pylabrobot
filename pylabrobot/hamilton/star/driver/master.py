@@ -1711,7 +1711,7 @@ class STARDriver:
     link_1 = next((child for child in resource.children if isinstance(child, Link)), None)
     if link_1 is None:
       link_1 = iswap_link_1(name="iswap_link_1", length=c.link_1_length)
-      resource.assign_child_resource(link_1, location=Coordinate.zero())
+      resource.assign_child_resource(link_1, location=resource.reference_point)
     gripper = next(
       (child for child in link_1.children if isinstance(child, MechanicalGripper)), None
     )
@@ -1733,7 +1733,7 @@ class STARDriver:
           else None
         ),
       )
-      link_1.assign_child_resource(gripper, location=Coordinate.zero())
+      link_1.assign_child_resource(gripper, location=Coordinate(link_1.get_size_x(), 0.0, 0.0))
     return link_1, gripper
 
   async def _create_autoload_resource(self) -> None:
