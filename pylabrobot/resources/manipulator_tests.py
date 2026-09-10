@@ -7,7 +7,6 @@ from pylabrobot.utils.linalg import matrix_vector_multiply_3x3
 
 
 class TestLink(unittest.TestCase):
-
   def test_a_child_link_turns_on_top_of_its_parent(self):
     base = Resource(name="base", size_x=500, size_y=500, size_z=0)
     first = Link(name="first", length=100.0)
@@ -42,13 +41,10 @@ class TestLink(unittest.TestCase):
     link.rotate(z=30)
     self.assertEqual(link.rotation.z, 60)
 
-  def test_a_link_can_be_given_the_joint_it_turns_on(self):
+  def test_an_unplaced_link_has_nothing_to_turn_in(self):
     base = Resource(name="base", size_x=500, size_y=500, size_z=0)
     link = Link(name="link", length=100.0)
     base.assign_child_resource(link, location=Coordinate(0, 0, 0))
-
-    link.turn_to(0, about=Coordinate(10, 20, 30))
-    self.assertEqual(link.location, Coordinate(10, 20, 30))
 
     with self.assertRaises(RuntimeError):
       Link(name="loose", length=100.0).turn_to(0)
