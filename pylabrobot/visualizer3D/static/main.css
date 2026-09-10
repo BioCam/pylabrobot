@@ -743,6 +743,14 @@ main { position: relative; flex: 1; min-width: 0; background: #fff; }
   letter-spacing: 0;
 }
 
+/* Shut by default: the signatures are a reference to open when you want them, not the first thing
+   a panel should say about a resource. */
+.uml-methods-block > summary { cursor: pointer; list-style: none; }
+.uml-methods-block > summary::-webkit-details-marker { display: none; }
+.uml-methods-block > summary::before { content: "\25B8"; margin-right: 5px; font-size: 9px; }
+.uml-methods-block[open] > summary::before { content: "\25BE"; }
+.uml-methods-block > summary:hover { color: #1a4b8c; }
+
 .uml-methods { max-height: 190px; overflow-y: auto; margin-top: 2px; }
 
 .uml-method {

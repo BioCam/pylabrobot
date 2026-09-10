@@ -2398,10 +2398,14 @@ function renderInfoPanel() {
     section("Specifics", specifics) +
     section("Tracker state", tracker) +
     section("Construction", construction, contributed.note) +
+    // The one section that is a list rather than a fact about the part. Sixty signatures push
+    // everything a reader came for off the top of the panel, so it opens shut and says how many are
+    // behind it.
     (methods
       ? `<div class="uml-separator"></div><div class="uml-section">` +
-        `<div class="uml-section-title">Methods <span class="uml-count">${model.methods.length}</span></div>` +
-        `<div class="uml-methods">${methods}</div></div>`
+        `<details class="uml-methods-block"><summary class="uml-section-title">` +
+        `Methods <span class="uml-count">${model.methods.length}</span></summary>` +
+        `<div class="uml-methods">${methods}</div></details></div>`
       : "");
 
   panel.querySelector(".uml-close-btn").addEventListener("click", closeInfoPanel);
