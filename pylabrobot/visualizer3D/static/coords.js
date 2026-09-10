@@ -35,21 +35,32 @@ export function initCoords({ getWorld, referencePoint, escapeHtml }) {
 
   function coordinateFor(index) {
     const { from, to } = endpoints(index);
-    return from ? to.sub(from) : to;
+    // A difference is only as known as the two points it runs between: measuring against a
+    // reference whose own height is unavailable leaves the height unavailable.
+    const zKnown = to.zKnown && (!from || from.zKnown);
+    const point = from ? to.sub(from) : to;
+    point.zKnown = zKnown;
+    return point;
   }
+
+  /** A height, or "na" where the resource cannot answer for the reference asked of it. */
+  const height = (point) => (point.zKnown ? point.z.toFixed(1) : "na");
 
   function coordinateLabel(index) {
     const p = coordinateFor(index);
     const wrtName = refValue("coords-wrt-ref");
     const wrt = wrtName === "root" ? "abs" : `wrt ${wrtName}`;
-    return `${getWorld().names[index]}\n${wrt}: (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)}) mm`;
+    return `${getWorld().names[index]}\n${wrt}: (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${height(p)}) mm`;
   }
 
   function recordMeasurement(index) {
     const p = coordinateFor(index);
     hintEl.remove();
 
-    const initials = (...ids) => ids.map((id) => (refValue(id) || "?")[0]).join(", ");
+    // First letters, except that "center" and "cavity_bottom" share one: the compact row has to
+    // say which of the two was asked for.
+    const short = (value) => (value === "cavity_bottom" ? "cb" : (value || "?")[0]);
+    const initials = (...ids) => ids.map((id) => short(refValue(id))).join(", ");
     const wrtName = refValue("coords-wrt-ref");
 
     const row = document.createElement("div");
@@ -60,7 +71,7 @@ export function initCoords({ getWorld, referencePoint, escapeHtml }) {
       `(${initials("coords-x-ref", "coords-y-ref", "coords-z-ref")})</div>` +
       `<div class="m-wrt">wrt ${escapeHtml(wrtName)} ` +
       `(${initials("coords-wrt-x-ref", "coords-wrt-y-ref", "coords-wrt-z-ref")})</div>` +
-      `<div class="m-val">(${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${p.z.toFixed(1)})</div>` +
+      `<div class="m-val">(${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${height(p)})</div>` +
       `</div><button class="m-remove" title="Remove">&times;</button>`;
     row.querySelector(".m-remove").addEventListener("click", () => row.remove());
     measurementsEl.appendChild(row);

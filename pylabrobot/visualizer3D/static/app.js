@@ -1807,12 +1807,29 @@ function setHidden(name, hidden) {
 // ---------------------------------------------------------------- reference points
 
 // PLR's own reference semantics: a resource's origin is its left, front, bottom corner.
+//
+// `cavity_bottom` is the one reference a resource may be unable to answer: it is the floor of what
+// a container holds, standing its base's thickness above the outside of that base, and only a
+// container states a thickness. The point still comes back, so x and y read as they always do,
+// with `zKnown` false so a caller can say the height is unavailable rather than print the bottom
+// of the box as though it were the cavity's.
 function referencePoint(index, xRef, yRef, zRef) {
-  const [sx, sy, sz] = sizeOf(modelOf(index));
+  const model = modelOf(index);
+  const [sx, sy, sz] = sizeOf(model);
+  const thickness = model.material_z_thickness;
   const x = xRef === "center" ? sx / 2 : xRef === "right" ? sx : 0;
   const y = yRef === "center" ? sy / 2 : yRef === "back" ? sy : 0;
-  const z = zRef === "center" ? sz / 2 : zRef === "top" ? sz : 0;
-  return new THREE.Vector3(x, y, z).applyMatrix4(world.matrices[index]);
+  const z =
+    zRef === "center"
+      ? sz / 2
+      : zRef === "top"
+        ? sz
+        : zRef === "cavity_bottom"
+          ? thickness ?? 0
+          : 0;
+  const point = new THREE.Vector3(x, y, z).applyMatrix4(world.matrices[index]);
+  point.zKnown = zRef !== "cavity_bottom" || typeof thickness === "number";
+  return point;
 }
 
 function worldBox(index) {
