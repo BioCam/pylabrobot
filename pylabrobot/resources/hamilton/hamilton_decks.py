@@ -346,6 +346,22 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       category="autoload_loading_tray",
       model=f"hamilton_{frame}_autoload_loading_tray" if frame else None,
     )
+    # The tray's own track markings, stated rather than derived: they line up with the deck's, so
+    # they are the deck's tracks read in the tray's frame. Nothing about the tray itself says where
+    # they are, which is why it has to be told.
+    #
+    # The marks run the tray's full depth and sit on its top surface, since a carrier is placed on
+    # the tray by the same marks it is placed on the deck by.
+    first, second = self.track_to_location(1), self.track_to_location(2)
+    tray.position_grid = {  # type: ignore[attr-defined]
+      "axis": "x",
+      "count": self.num_tracks,
+      "spacing": round(second.x - first.x, 4),
+      "origin": [round(first.x - left, 4), 0.0, size_z],
+      "extent": round(front_ahead_y - back_ahead_y, 4),
+      "label_every": DEFAULT_TRACK_LABEL_EVERY,
+      "label": "track",
+    }
     self.assign_child_resource(tray, location=Coordinate(left, _CARRIER_Y - front_ahead_y, 0.0))
     return tray
 

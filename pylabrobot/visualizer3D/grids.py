@@ -56,6 +56,8 @@ def describe_bands(resource: Any) -> Optional[list]:
 def describe_grid(resource: Any) -> Optional[Dict[str, Any]]:
   """The repeated grid this resource lays positions on, or None if it lays none.
 
+  Read from the resource where it declares one, and derived from its own positions otherwise.
+
   Returns a dict in the resource's own frame:
     axis          which way the grid runs
     count         how many positions there are
@@ -65,6 +67,14 @@ def describe_grid(resource: Any) -> Optional[Dict[str, Any]]:
     label_every   label the first, then every nth
     label         what one position is called
   """
+  # A resource may simply state its grid, the way it states its access bands. A part whose
+  # positions are not its own to compute - a loading tray, whose markings line up with the deck it
+  # feeds rather than with anything about itself - has nothing to derive them from, and saying so
+  # is better than inventing a rule for it.
+  declared = getattr(resource, "position_grid", None)
+  if declared:
+    return dict(declared)
+
   # A deck says where its positions are, under whatever it calls them. Hamilton's are tracks now
   # and were rails before; both are asked for, newest first, so a deck that has not been renamed
   # yet still draws its marks and one that has draws them under the name it uses.
