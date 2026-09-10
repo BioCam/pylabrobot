@@ -84,7 +84,14 @@ export function structureEdgeStyle(depth) {
 export const LIQUID = 0xf39c12;
 export const VESSEL_EMPTY = 0xffffff; // nothing in it reads as white, as it does on a plan
 export const VESSEL_RIM = 0x5c666e;
-export const VESSEL_INSET = 0.6; // how much of the footprint the inside takes; the rest is the rim
+// How thick a container's wall is drawn, in mm, measured OUTWARDS from the cavity. A resource's box
+// is what it holds, so its material stands outside that box - nothing is drawn within the extent
+// the resource declares. Nobody reports a wall thickness, so this is a drawing convention rather
+// than a measurement: thin enough to fit between two wells on a 9 mm pitch, thick enough to find.
+export const VESSEL_WALL = 0.5;
+// And how solid it is drawn. Slightly see-through, so what is standing in the cavity reads through
+// the wall around it rather than being hidden by it from every angle but straight down.
+export const VESSEL_WALL_OPACITY = 0.85;
 export const TIP = 0x40cda1; // the colour the existing visualizer fills a fitted tip spot with
 export const SELECT = 0x1a4b8c;
 export const HOVER = 0xbbcc33;
@@ -117,7 +124,39 @@ export const SPACE_OPACITY = 0.06;
 // A holder is one position on a carrier: it holds at most one thing, and what the tree needs to
 // say is what is standing in it, not that a holder exists. Counting through them is what makes a
 // tip carrier read as "5 tipracks" rather than "5 resource holders".
+// Things you look into and read positions off. A container keeps its walls - glass, so what is in
+// it still reads - because the walls are what makes it a container rather than a floor with things
+// floating over it. Everything else that holds an enclosure gives its fill up entirely: a facility,
+// a device or a deck drawn as a sheet between the eye and the deck buys nothing at all.
+export const CONTAINERS = new Set([
+  "plate",
+  "tip_rack",
+  "tube_rack",
+  "plate_adapter",
+  "plate_holder",
+  "resource_holder",
+  "trough",
+  "trash",
+]);
+
+// The positions inside a container: a plate's wells, a rack's tip spots, a tube rack's tubes. The
+// tree does not list them - a plate says "96 wells" on its own row, which is the whole of what a
+// reader wants, where ninety-six rows are a wall to scroll past. They are drawn in the viewport
+// exactly as before; this is about the panel only.
+export const TREE_HIDDEN = new Set(["well", "tip_spot", "tube"]);
+
 export const HOLDERS = new Set(["resource_holder", "plate_holder"]);
+
+// Glazing: a model's own see-through parts, at or below this opacity. Looking down an axis you are
+// looking THROUGH the hood at the deck, and each pane you look through lightens everything under it
+// - two read as an enclosure, five read as a wash. In an axis view the panes come out; in a free
+// view they stay, because there they are what makes the device read as enclosed.
+export const GLAZED_MAX_OPACITY = 0.5;
+
+// What a resource holds rather than what it is: the positions inside a plate, a rack or a head. A
+// depth control counts levels, and these are a level - so opening to the depth that shows a plate
+// on a carrier would open ninety-six wells with it. They open when they are asked for by name.
+export const CONTENTS = new Set(["well", "tip_spot", "tube", "tip_mounting_shaft"]);
 // A tip rack is drawn see-through at this rather than at SHELL_OPACITY: you read a rack by which of
 // its positions still hold a tip, and at the shell's opacity the tips inside are hard to count.
 export const TIP_RACK_OPACITY = 0.7;

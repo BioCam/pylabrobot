@@ -1032,10 +1032,11 @@ function updateDetail() {
     return;
   }
   for (const entry of meshes) {
-    // A carrier is exempt: its walls are the surface you read the layout off, so they stay drawn
-    // at SHELL_OPACITY whether or not what it holds is on screen. Everything above it in the
-    // stack still drops to its outline, which is what keeps the layers from compounding.
-    if (!entry.holdsEnclosure || isCarrier(entry.model) || entry.modelDrawn) continue;
+    // A container is exempt: its walls are what you read the layout off, so they stay drawn at
+    // SHELL_OPACITY whether or not what it holds is on screen. Everything above it in the stack -
+    // a bench, a device, the facility - still drops to its outline, which is what keeps the layers
+    // from compounding.
+    if (!entry.holdsEnclosure || keepsWalls(entry) || entry.modelDrawn) continue;
     const showsContents = entry.enclosedModels.some((m) => drawn.has(m));
     if (entry.mesh.material.visible === showsContents) entry.mesh.material.visible = !showsContents;
   }
@@ -1084,7 +1085,16 @@ const OVERLAY_ORDER = 10_000 * PAINT_LEVEL;
 // drawn see-through wherever it is, and a model whose own geometry has arrived has no use for the
 // box that stood in for it. Every mode change asks this rather than each one deciding again.
 function fillsBox(entry) {
-  return !MOVING_PARTS.has(entry.model.category) && !entry.modelDrawn;
+  // A vessel's box is drawn by its own cavity mesh, which fills it exactly. Drawing the box as well
+  // puts two surfaces on the same plane, and the depth buffer cannot choose between them.
+  return !MOVING_PARTS.has(entry.model.category) && !entry.modelDrawn && !entry.isVessel;
+}
+
+// Whether this is a thing you look into. Its walls stay drawn, at the shell's opacity, however much
+// is standing in it: a plate with no walls is a floor with wells floating over it, and a carrier
+// with none is a line around some plates.
+function keepsWalls(entry) {
+  return isCarrier(entry.model) || CONTAINERS.has(entry.model.category);
 }
 
 // How see-through a resource is drawn, whatever the angle it is seen from. A part that travels is
@@ -1130,12 +1140,10 @@ function setRenderMode(painter) {
       // buffer - it is a wash over the view, not a surface anything is behind.
       material.depthTest = !isSpace;
       material.depthWrite = !isSpace && !moves;
-      // A thing that holds other enclosures shows its outline and nothing else, which is the rule
-      // the fill was built with - "only the level you are actually looking into keeps a fill" -
-      // and which only the free view was applying. Drawn opaque, as everything is here, a device
-      // is a solid sheet the size of the device under everything standing on it, and the deck's
-      // contents have to read against that rather than against the page.
-      material.visible = fillsBox(entry) && !isShell;
+      // A shell that is not a container shows its outline and nothing else: drawn opaque, as
+      // everything is here, a device is a solid sheet the size of the device under everything
+      // standing on it. A container keeps its walls, which is what makes it read as one.
+      material.visible = fillsBox(entry) && (!isShell || keepsWalls(entry));
       // Still ordered, for the things depth cannot separate: coplanar fills, and the overlays and
       // outlines below that are drawn without depth at all.
       const order = paintOrder(entry);
@@ -1559,6 +1567,7 @@ function buildMeshes() {
   meshes = [];
   placementOf = new Array(world.names.length);
   vesselOf = new Map();
+  overlayOf = new Map();
   tipOf = new Map();
   edgeOf = new Map();
   drawnFromFile = new Set();
@@ -1711,20 +1720,55 @@ function buildMeshes() {
     }
 
     if (isVessel) {
+      // The wall, standing outside the cavity. Grown rather than inset, because the box IS the
+      // cavity - and grown rather than left as the box itself, because a box and a cavity on the
+      // same plane are two surfaces at the same depth, which is what made the side of every well
+      // shimmer. Nothing is coplanar with anything now.
+      const wall = new THREE.InstancedMesh(
+        geometryFor(model),
+        new THREE.MeshStandardMaterial({
+          color: VESSEL_RIM,
+          roughness: 0.6,
+          transparent: true,
+          opacity: VESSEL_WALL_OPACITY,
+        }),
+        instances.length
+      );
+      wall.frustumCulled = false;
+      instances.forEach((globalIndex, slot) => {
+        const at = [sx + 2 * VESSEL_WALL, sy + 2 * VESSEL_WALL, sz, sx / 2, sy / 2, sz / 2];
+        placeInstance(wall, slot, world.matrices[globalIndex], ...at);
+        remember(globalIndex, wall, slot, at);
+      });
+      wall.instanceMatrix.needsUpdate = true;
+      wall.userData.lit = wall.material;
+      wall.userData.flat = flatVariant(wall.material);
+      wall.userData.behind = true; // painted before the cavity it surrounds
+      view.add(wall);
+      overlays.push(wall);
+
       const inner = new THREE.InstancedMesh(
         geometryFor(model),
-        new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.55 }),
+        // Flagged transparent although it is fully opaque, so that it sits in the same pass as the
+        // wall around it. Three draws every transparent object after every opaque one whatever the
+        // render order says, so an opaque cavity inside a see-through wall is painted first and
+        // then covered by the wall's own top face - which is what hid the well from above.
+        new THREE.MeshStandardMaterial({
+          color: 0xffffff, roughness: 0.55, transparent: true, opacity: 1,
+        }),
         instances.length
       );
       inner.frustumCulled = false;
       const white = new THREE.Color(VESSEL_EMPTY);
       instances.forEach((globalIndex, slot) => {
-        // Inset, and a hair taller, so from above the rim reads as a ring around it.
-        placeInstance(
-          inner, slot, world.matrices[globalIndex],
-          sx * VESSEL_INSET, sy * VESSEL_INSET, sz * 1.02,
-          sx / 2, sy / 2, (sz * 1.02) / 2
-        );
+        // The cavity IS the box. A container's size is what it holds, and the material around it
+        // stands outside that - so the inside fills the resource's own extent exactly, and a wall
+        // is never drawn within it. Drawn inset, as this was, the walls were inside the box, which
+        // is the opposite of what the box means. A hair taller only, so that from directly above it
+        // does not fight the box's own top face for depth.
+        const at = [sx, sy, sz * 1.02, sx / 2, sy / 2, (sz * 1.02) / 2];
+        placeInstance(inner, slot, world.matrices[globalIndex], ...at);
+        remember(globalIndex, inner, slot, at);
         inner.setColorAt(slot, white);
         vesselOf.set(globalIndex, { mesh: inner, slot, model });
       });
@@ -1740,9 +1784,16 @@ function buildMeshes() {
     if (model.category === "tip_spot") overlays.push(buildOverlay(instances, model));
     const entry = meshes[meshes.length - 1];
     entry.overlays = overlays;
+    entry.isVessel = isVessel;
     entry.holdsEnclosure = holdsEnclosure;
     entry.enclosedModels = [...enclosedModels];
   }
+}
+
+// Where one instanced part stands, so it can be put back after being emptied.
+function remember(index, mesh, slot, at) {
+  if (!overlayOf.has(index)) overlayOf.set(index, []);
+  overlayOf.get(index).push({ mesh, slot, at });
 }
 
 function buildOverlay(instances, model) {
