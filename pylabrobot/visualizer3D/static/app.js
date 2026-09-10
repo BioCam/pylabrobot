@@ -1909,6 +1909,30 @@ function summaryOf(index) {
   return "";
 }
 
+// How far apart two sites may stand in y and still count as the same row, in mm.
+const SAME_ROW = 0.5;
+
+// The sites on a carrier, in the order a reader takes them and numbered the way PyLabRobot numbers
+// them. Holders arrive in whatever order they were assigned; what a person reads is the deck, so
+// they are listed back to front, and left to right within a row. The numbers then run the other
+// way down a column, because site 0 is the front one - and straight along a single row across.
+//
+// Null for anything that is not a carrier: only a resource whose children are all holders has
+// sites at all.
+function siteOrder(index) {
+  const children = index >= 0 ? world.childrenOf[index] : [];
+  if (children.length < 2 || !children.every((c) => HOLDERS.has(modelOf(c).category))) return null;
+  const at = (i) => world.matrices[i].elements;
+  const sorted = [...children].sort((a, b) => {
+    const dy = at(b)[13] - at(a)[13];
+    return Math.abs(dy) > SAME_ROW ? dy : at(a)[12] - at(b)[12];
+  });
+  const oneRow = sorted.every((c) => Math.abs(at(c)[13] - at(sorted[0])[13]) <= SAME_ROW);
+  const number = new Map();
+  sorted.forEach((c, i) => number.set(c, oneRow ? i : sorted.length - 1 - i));
+  return { sorted, number };
+}
+
 function buildTree() {
   treeEl.textContent = "";
   rowOf.clear();
@@ -1937,13 +1961,16 @@ function addRow(index, depth, before) {
   row.appendChild(dot);
 
   // A holder is a numbered position on its carrier, so it is labelled by that number rather than by
-  // a name nobody chose. Its ordinal among its parent's children is the site number.
+  // a name nobody chose - and so is whatever stands in it, which is the row a reader is actually
+  // looking for when they want to know which position a plate is at.
   const holder = HOLDERS.has(model.category);
-  if (holder) {
-    const siblings = world.childrenOf[world.parentOf[index]] ?? [];
+  const parent = world.parentOf[index];
+  const seat = holder ? index : parent >= 0 && HOLDERS.has(modelOf(parent).category) ? parent : -1;
+  const number = seat < 0 ? undefined : siteOrder(world.parentOf[seat])?.number.get(seat);
+  if (number !== undefined) {
     const site = document.createElement("span");
     site.className = "tree-node-site";
-    site.textContent = String(siblings.indexOf(index));
+    site.textContent = String(number);
     row.appendChild(site);
   }
 
@@ -2006,7 +2033,8 @@ function toggle(index, open) {
     expanded.add(index);
     entry.arrow.textContent = "▼";
     const before = entry.row.nextSibling;
-    for (const child of world.childrenOf[index]) addRow(child, entry.depth + 1, before);
+    const order = siteOrder(index)?.sorted ?? world.childrenOf[index];
+    for (const child of order) addRow(child, entry.depth + 1, before);
   } else {
     expanded.delete(index);
     entry.arrow.textContent = "▶";
