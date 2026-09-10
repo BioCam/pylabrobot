@@ -258,11 +258,11 @@ viewportEl.addEventListener(
 // A key off to one side rather than straight down the lens: dead-on light flattens as surely as no
 // light at all, because every face pointing at you gets the same amount of it.
 const lights = new THREE.Group();
-lights.add(new THREE.HemisphereLight(0xffffff, 0xc8d0d4, 0.75));
-const keyLight = new THREE.DirectionalLight(0xffffff, 0.85);
+lights.add(new THREE.HemisphereLight(0xffffff, 0xeceff1, 1.0));
+const keyLight = new THREE.DirectionalLight(0xffffff, 0.9);
 keyLight.position.set(-0.6, 0.5, 1);
 lights.add(keyLight);
-const fillLight = new THREE.DirectionalLight(0xffffff, 0.3);
+const fillLight = new THREE.DirectionalLight(0xffffff, 0.45);
 fillLight.position.set(0.8, -0.4, 0.6);
 lights.add(fillLight);
 camera.add(lights);
@@ -274,7 +274,7 @@ view.add(camera);
 try {
   const pmrem = new THREE.PMREMGenerator(renderer);
   view.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
-  view.environmentIntensity = 0.28;
+  view.environmentIntensity = 0.45;
   pmrem.dispose();
 } catch (error) {
   console.warn("no environment map; metal surfaces will look flat", error);
