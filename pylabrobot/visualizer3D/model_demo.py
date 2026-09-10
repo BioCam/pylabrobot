@@ -6,7 +6,7 @@ Run it:
 
 Nothing here declares a path and nothing is passed a models root. A resource carries a model name,
 a file under the package is named after that model, and the viewer draws it - so geometry travels
-with the code that describes the part, and a machine picks up its own appearance by being itself.
+with the code that describes the part, and a device picks up its own appearance by being itself.
 
 What is drawn as a model and what is still a box is printed on startup, because that is the whole
 of what this demonstrates and it is worth being able to read rather than infer from the picture.
@@ -182,7 +182,7 @@ async def main() -> None:
   if star.iswap is None:
     print("  this STARlet has no iSWAP, so nothing moves")
     return
-  # The arm turns and the jaws work at the same time, as they do on the machine: one drive does not
+  # The arm turns and the jaws work at the same time, as they do on the device: one drive does not
   # wait on the other.
   await asyncio.gather(turn_the_arm(star), work_the_jaws(star))
 

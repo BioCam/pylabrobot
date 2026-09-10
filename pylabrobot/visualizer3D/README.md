@@ -19,7 +19,7 @@ It opens a browser on `http://127.0.0.1:1338`. Append `?view=top` for a top view
 
 **Any resource is the world.** `Viewer3D(root)` takes a `Resource`. The demo's world is a plain
 `Resource` holding a simulated `STARDevice` at one coordinate and a bench at another. The bench has
-no deck, no driver and no machine of any kind; it holds a plate and a tip rack, and renders exactly
+no deck, no driver and no device of any kind; it holds a plate and a tip rack, and renders exactly
 like everything else. Nothing in the client switches on a resource type: geometry comes from the
 model's own `cross_section_type` and sizes, colour from its `category`, structure from the parent
 array, and the inspector prints whatever fields arrived.
@@ -47,7 +47,7 @@ to it. The rule deliberately stops at the top level, or a deck called "deck" los
 
 **One channel, not two.** Everything the viewer draws arrives as tracking state: a well's volume, a
 tip spot's fitting, and the position of anything that travels. A moving part reaches the picture
-because `Resource.location` publishes when it is set, so an X-arm read off the machine is on the
+because `Resource.location` publishes when it is set, so an X-arm read off the device is on the
 same path as a well being filled.
 
 A polling reader sat beside that for a while, asking a device where its arm was five times a second

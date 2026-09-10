@@ -5,7 +5,7 @@ ones that survived longest: the model was right, the message was right, and noth
 loads the page in headless Chrome, moves a resource, and reads back where the viewer thinks things
 are - including a child, which follows only because its parent's world transform was recomputed.
 
-Skipped where there is no Chrome to drive, so it is a no-op on a machine or a runner without one.
+Skipped where there is no Chrome to drive, so it is a no-op on a computer or a runner without one.
 """
 
 import asyncio

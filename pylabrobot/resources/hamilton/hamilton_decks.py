@@ -33,20 +33,24 @@ FRAME_BY_NUM_TRACKS = {
 
 _TRACK_WIDTH = 22.5  # space between rails (mm)
 
-# How far in front of the back of the machine the X-arm's own back edge stands, in mm. Measured on
+# How far in front of the back of the device the X-arm's own back edge stands, in mm. Measured on
 # the manufacturer's model: the chassis reaches to 51.06 and the arm's carriage to 35.56, and the
 # chassis's depth there - 785.79 - is what the device resource says to the decimal, so the two
 # frames line up and the difference is the arm's own setback.
-ARM_BACK_FROM_MACHINE_BACK = 15.5
+ARM_BACK_FROM_DEVICE_BACK = 15.5
+
+# How often a track gets a number on a part that states its own grid. The same rule the derived
+# grids use: the first, and then every fifth.
+DEFAULT_TRACK_LABEL_EVERY = 5
 
 # Where a carrier's own front edge sits on any Hamilton deck, in mm.
 _CARRIER_Y = 63.0
 
-# Parts of the MACHINE that happen to hang off the deck, as opposed to things placed ON it. They are
+# Parts of the DEVICE that happen to hang off the deck, as opposed to things placed ON it. They are
 # fitted where the instrument puts them, not assigned to rails, so they cannot occupy a rail and
 # must not be treated as though they do - a fitted autoload otherwise makes rail 1 unassignable,
 # because the sled's box reaches over the deck's front edge and up past a carrier's height.
-_MACHINE_PARTS = frozenset({"autoload_sled", "autoload_loading_tray"})
+_DEVICE_PARTS = frozenset({"autoload_sled", "autoload_loading_tray"})
 
 
 def track_for_x_coordinate(x: float) -> int:
@@ -242,20 +246,20 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     # own frame rather than assuming the middle of the box.
     x_arm.reference_point = {"x": reference_point_from_left}  # type: ignore[attr-defined]
     # Place it so its reference point lands at the arm's current x, and its back edge where the arm
-    # actually stands: a fixed distance in front of the back of the machine carrying the deck. It
+    # actually stands: a fixed distance in front of the back of the device carrying the deck. It
     # used to line up with the back of the DECK, which is not the same thing - the deck resource is
     # 653.5 mm deep where the deck it models is 773 - and that put the arm 19 mm too far forward.
     # Being deeper than the deck, the arm reaches in front of the deck's front edge, which is why y
     # comes out negative. It sits above the deck plane, so it does not occupy the footprint of the
     # carriers beneath it.
     #
-    # A deck standing on its own has no machine to measure from, and keeps its own back edge.
-    machine = self.parent
-    if machine is None:
+    # A deck standing on its own has no device to measure from, and keeps its own back edge.
+    device = self.parent
+    if device is None:
       y = self.get_absolute_size_y() - size_y
     else:
-      back_of_machine = (machine.get_absolute_size_y() - self.location.y) if self.location else 0.0
-      y = back_of_machine - ARM_BACK_FROM_MACHINE_BACK - size_y
+      back_of_device = (device.get_absolute_size_y() - self.location.y) if self.location else 0.0
+      y = back_of_device - ARM_BACK_FROM_DEVICE_BACK - size_y
     self.assign_child_resource(x_arm, location=Coordinate(x - reference_point_from_left, y, arm_z))
     return x_arm
 
@@ -295,7 +299,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       model="hamilton_star_autoload_sled",
     )
     # What the drive's x actually refers to. The sled is placed around the carrier-handling wheel,
-    # so its own origin is not what the machine reports - saying where the wheel sits within it is
+    # so its own origin is not what the device reports - saying where the wheel sits within it is
     # what lets anything reading this resource put the two together, a viewer included.
     sled.reference_point = {  # type: ignore[attr-defined]
       "x": reference_point_from_left
@@ -387,7 +391,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     Z_GRAB_LIMIT = 285
 
     def check_z_height(resource: Resource):
-      # What the machine carries belongs up there: it rides above the deck by design, and nothing
+      # What the device carries belongs up there: it rides above the deck by design, and nothing
       # traverses or grabs it, so the warnings below say nothing about it.
       if resource.category in ("x_arm", "head96"):
         return
@@ -444,7 +448,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       location: Where to put it, relative to this deck. Either this or `track`, not both.
       reassign: If True, reassign the resource if it is already assigned. If False, raise a
         `ValueError` if the resource is already assigned.
-      track: The leftmost track the resource covers, counted from 1 as the markings on the machine
+      track: The leftmost track the resource covers, counted from 1 as the markings on the device
         are, and down to -4 for the supports left of the first one. Either this or `location`, not
         both.
       rails: Deprecated, use `track`.
@@ -496,7 +500,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       # skipped as something to collide with, and it is where it is whatever stands on the deck.
       # The autoload's sled reaches into the front of a carrier's footprint, which is how it pulls
       # one in, so a deck with carriers on it would otherwise refuse to place its own sled.
-      if res.category in _MACHINE_PARTS:
+      if res.category in _DEVICE_PARTS:
         return False
       return True
 
@@ -513,7 +517,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
 
         # Check if there is space for this new resource.
         for og_resource in self.children:
-          if og_resource.category in _MACHINE_PARTS:
+          if og_resource.category in _DEVICE_PARTS:
             continue
           og_x = cast(Coordinate, og_resource.location).x
           og_y = cast(Coordinate, og_resource.location).y

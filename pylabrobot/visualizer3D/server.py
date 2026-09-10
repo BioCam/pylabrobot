@@ -48,7 +48,7 @@ STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 # Where a resource's geometry is looked for when it does not say. A file named after the model it
 # belongs to, anywhere under the package, is that model's geometry - so a resource ships with its
 # own geometry beside the code that describes it, and neither the resource nor the caller has to
-# name a path. Model names are already namespaced by manufacturer and machine, which is what lets
+# name a path. Model names are already namespaced by manufacturer and device, which is what lets
 # one flat index be unambiguous across every package.
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_SUFFIX = ".glb"

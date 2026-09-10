@@ -6,7 +6,7 @@ far apart they are, how many there are and how to label them, and draw that.
 
 Upstream, a resource should declare this itself, the way it declares its size. Until it does, this
 module derives it from public API the resource already offers, so no constant is copied into the
-viewer where it could drift from the machine.
+viewer where it could drift from the device.
 """
 
 import logging
@@ -26,7 +26,7 @@ def describe_bands(resource: Any) -> Optional[list]:
   """Bands across a resource that some capability can reach, if it declares any.
 
   Read off an optional `access_bands` attribute, so the viewer draws whatever it is told and this
-  module stays free of any one machine's numbers. Upstream these belong to the capability whose
+  module stays free of any one device's numbers. Upstream these belong to the capability whose
   reach they describe, not to the surface they are measured on.
 
   Each band is `{"label": str, "from": float, "to": float}` in the resource's own frame, with

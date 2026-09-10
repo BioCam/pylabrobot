@@ -2,7 +2,7 @@
 
 A `Facility` is a `Resource`, because it is a real cartesian space and everything in it resolves
 against its frame. Nothing else is needed above a device: the tree is the only structure, and a
-machine, a shuttle between machines and a bench that is not automated at all all stand in it the
+device, a shuttle between devices and a bench that is not automated at all all stand in it the
 same way.
 """
 
@@ -13,7 +13,7 @@ from pylabrobot.resources.resource import Resource
 class Facility(Resource):
   """The space a site's automation stands in, and the frame everything in it resolves against.
 
-  Its children are whatever is on the floor: a machine, a shuttle between machines, a bench that is
+  Its children are whatever is on the floor: a device, a shuttle between devices, a bench that is
   not automated at all.
   """
 

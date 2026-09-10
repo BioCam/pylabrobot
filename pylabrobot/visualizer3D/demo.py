@@ -1,4 +1,4 @@
-"""A facility with a v1 STAR in it, plus a bench that is not a machine at all.
+"""A facility with a v1 STAR in it, plus a bench that is not a device at all.
 
 Run it:
 
@@ -67,14 +67,14 @@ def build_facility() -> Facility:
 
   # The deck's own `size_z` is 900 mm, taken from the instrument's configuration file. That is the
   # working envelope, not the deck's extent, and it leaves the deck protruding 75.5 mm through the
-  # roof of the machine carrying it while enclosing 665 mm of empty space. The honest height is the
+  # roof of the device carrying it while enclosing 665 mm of empty space. The honest height is the
   # top of the X-arm that rides above it: 334.7 mm of channel travel plus the arm's own 140 mm.
   # Applied here rather than upstream, since this viewer does not edit the resource library.
   DECK_HEIGHT = 334.7 + 140.0
   star.deck._size_z = DECK_HEIGHT
   star.deck._local_size_z = DECK_HEIGHT
 
-  # A bench is not a machine, has no deck and no driver, and still takes part in the same
+  # A bench is not a device, has no deck and no driver, and still takes part in the same
   # cartesian space. This is the case the old visualizer had no way to express.
   bench = Resource(name="bench", size_x=900, size_y=600, size_z=880, category="bench")
   facility.assign_child_resource(bench, location=Coordinate(1300, 60, 0))
@@ -98,7 +98,7 @@ def declare_channel_access(star) -> None:
 
   In X the bands stop where the channels do, which neither the arm's travel nor the deck edge
   describes: both run further right than the channels ever go. The waste block is the real
-  right-hand limit on this machine - the channels eject into it and go no further - so the band
+  right-hand limit on this device - the channels eject into it and go no further - so the band
   stops at its near edge. Nothing reports that limit, which is why it is looked up here.
 
   Declared here because no v1 capability publishes any of it; it belongs on the pipettes
@@ -108,7 +108,7 @@ def declare_channel_access(star) -> None:
   x_from = max(0.0, low)
   x_to = min(star.deck.get_absolute_size_x(), high)
 
-  # Where the machine's x refers to, as a point from the arm's own origin: the centre of a dual-rail
+  # Where the device's x refers to, as a point from the arm's own origin: the centre of a dual-rail
   # arm, the right edge of a single-rail one. The driver names it with a word; a resource states it
   # as a coordinate, the way a pipette states the point its drives report. The X-arm tracker branch
   # serializes this on the resource; until that lands it is derived off the configuration here.
@@ -243,7 +243,7 @@ async def main() -> None:
 
   await asyncio.sleep(1.5)  # let a browser connect before anything moves
   await run(facility)
-  # The arm and the iSWAP move at once, as they do on the machine: they are on the same carriage
+  # The arm and the iSWAP move at once, as they do on the device: they are on the same carriage
   # and neither waits for the other.
   await asyncio.gather(sweep_arm(star), work_the_iswap(star))
 

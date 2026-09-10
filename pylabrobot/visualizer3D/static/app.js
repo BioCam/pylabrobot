@@ -335,7 +335,7 @@ function labelSprite(text, color = GRID_LABEL, sizeMm = GRID_LABEL_MM) {
   return label;
 }
 
-// Where the machine's x refers to, from the resource's own origin. Declared by the resource, so the
+// Where the device's x refers to, from the resource's own origin. Declared by the resource, so the
 // viewer needs no knowledge of rail types: a dual-rail arm reports its centre, a single-rail one its
 // right edge, and the line lands in the right place either way. Half the width when undeclared.
 function referenceOffset(model) {
@@ -514,7 +514,7 @@ const AXIS_VECTOR = {
   z: new THREE.Vector3(0, 0, 1),
 };
 
-// A resource that says where the machine's x refers to gets that point marked, whether or not it is
+// A resource that says where the device's x refers to gets that point marked, whether or not it is
 // an arm. An arm draws its own inside the group that carries it; everything else is marked here -
 // the autoload's sled being the case that prompted it, since the drive reports its carrier-handling
 // wheel rather than the sled's own corner.
@@ -1133,7 +1133,7 @@ function setRenderMode(painter) {
       // A thing that holds other enclosures shows its outline and nothing else, which is the rule
       // the fill was built with - "only the level you are actually looking into keeps a fill" -
       // and which only the free view was applying. Drawn opaque, as everything is here, a device
-      // is a solid sheet the size of the machine under everything standing on it, and the deck's
+      // is a solid sheet the size of the device under everything standing on it, and the deck's
       // contents have to read against that rather than against the page.
       material.visible = fillsBox(entry) && !isShell;
       // Still ordered, for the things depth cannot separate: coplanar fills, and the overlays and
@@ -2359,7 +2359,7 @@ function clearHover() {
 }
 
 
-// A line at the X the machine positions the arm by. Where that sits on the arm is the whole
+// A line at the X the device positions the arm by. Where that sits on the arm is the whole
 // difference between a dual-rail arm, positioned by its centre, and a single-rail one, positioned
 // by its right edge - so drawing the reported X against the arm shows which it is without the
 // viewer needing to know anything about rail types.

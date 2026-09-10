@@ -1648,7 +1648,7 @@ class STARDriver:
           raise RuntimeError(
             "the iSWAP rotation drive's X offset was not read; have you called `star.setup()`?"
           )
-        # How tall to model the column: nothing reports it, and what the machine shows is its top
+        # How tall to model the column: nothing reports it, and what the device shows is its top
         # standing level with the tops of the channel bodies when the drive is fully retracted.
         # Both heights are taken on the deck, so neither needs the arm taking out.
         tops = [

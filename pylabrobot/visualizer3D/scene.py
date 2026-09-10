@@ -33,7 +33,7 @@ NAME_KEYS = frozenset({"name", "parent_name"})
 
 # Fields a resource may declare about itself that `serialize()` does not yet carry. Upstream these
 # belong in the resource's own serialization; passing them through here keeps the viewer free of
-# any machine's constants in the meantime.
+# any device's constants in the meantime.
 DECLARED_FIELDS = ("reference_point", "window", "mesh", "reference_glb")
 RESOURCE_LINK = "<resource>"
 
@@ -343,7 +343,7 @@ def pack_state(states: Dict[str, Dict[str, Any]], epoch: int = 0) -> Dict[str, A
 
   State is overwhelmingly repetitive: every empty well publishes the same zeros, every unused tip
   spot the same tip. Sending each one in full costs a few hundred bytes per resource and dominates
-  the message on any facility with more than a machine or two in it, so the same prototype-and-
+  the message on any facility with more than a device or two in it, so the same prototype-and-
   instance split the geometry uses is applied here.
 
   Every name that went in comes out, including one whose state cleans down to nothing. Dropping it
