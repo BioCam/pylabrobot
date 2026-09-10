@@ -238,13 +238,24 @@ viewportEl.addEventListener(
   { capture: true, passive: false },
 );
 
-view.add(new THREE.HemisphereLight(0xffffff, 0xc8d0d4, 1.1));
-const keyLight = new THREE.DirectionalLight(0xffffff, 0.9);
-keyLight.position.set(-0.5, -1, 1.3);
-view.add(keyLight);
+// Lighting that rides with the camera. Lights fixed in the world make the same surface a different
+// colour from every angle - a top face catches the key from above and washes out, a side face goes
+// dark - and looking down an axis is exactly where a device modelled in white stops reading.
+// Carried on the camera, the shading a surface gets follows its own shape and not where you stand,
+// so a view can change without anything changing colour, and the form is still there to see.
+//
+// A key off to one side rather than straight down the lens: dead-on light flattens as surely as no
+// light at all, because every face pointing at you gets the same amount of it.
+const lights = new THREE.Group();
+lights.add(new THREE.HemisphereLight(0xffffff, 0xc8d0d4, 0.75));
+const keyLight = new THREE.DirectionalLight(0xffffff, 0.85);
+keyLight.position.set(-0.6, 0.5, 1);
+lights.add(keyLight);
 const fillLight = new THREE.DirectionalLight(0xffffff, 0.3);
-fillLight.position.set(1, 0.6, 0.4);
-view.add(fillLight);
+fillLight.position.set(0.8, -0.4, 0.6);
+lights.add(fillLight);
+camera.add(lights);
+view.add(camera);
 
 // A metal surface has almost no diffuse colour of its own; it is what it reflects. Without an
 // environment it renders nearly black under directional lights, so give the scene something to
@@ -1068,14 +1079,11 @@ function OPACITY_OF(isSpace, moves, isTipRack, isShell) {
 
 function setRenderMode(painter) {
   for (const entry of meshes) {
-    // Unlit at every angle. A lit material reports the light as much as the resource, so the same
-    // box read one colour from the side and another from above - the view changed what a thing
-    // looked like, which is the one thing a view must not do. What follows the view is depth and
-    // paint order, below; colour does not.
-    const lit = entry.mesh.material.userData.lit ?? entry.mesh.material;
-    const wanted = lit.userData.flat ?? lit;
-    if (entry.mesh.material !== wanted) entry.mesh.material = wanted;
-    const material = entry.mesh.material;
+    // Lit, at every angle. The lights ride with the camera, so a surface is shaded by its own shape
+    // rather than by where it is being looked at - which is what makes a box read as a box without
+    // the view being able to change what colour it is.
+    const material = entry.mesh.material.userData.lit ?? entry.mesh.material;
+    if (entry.mesh.material !== material) entry.mesh.material = material;
     const isShell = entry.holdsEnclosure;
     // A tip rack is read by which of its positions still hold a tip, so it is drawn see-through at
     // its own opacity rather than at the shell's - both in a plan view and in a free one.
@@ -1114,7 +1122,7 @@ function setRenderMode(painter) {
       entry.mesh.renderOrder = order;
       // What is inside a vessel, and the tip standing in it, paint after its rim.
       for (const overlay of entry.overlays ?? []) {
-        if (overlay.userData.flat) overlay.material = overlay.userData.flat;
+        if (overlay.userData.lit) overlay.material = overlay.userData.lit;
         overlay.material.depthTest = false;
         overlay.material.depthWrite = false;
         overlay.renderOrder = order + 1;
@@ -1129,7 +1137,7 @@ function setRenderMode(painter) {
       material.visible = fillsBox(entry) && !isShell;
       entry.mesh.renderOrder = 0;
       for (const overlay of entry.overlays ?? []) {
-        if (overlay.userData.flat) overlay.material = overlay.userData.flat;
+        if (overlay.userData.lit) overlay.material = overlay.userData.lit;
         overlay.material.depthTest = true;
         overlay.material.depthWrite = true;
         overlay.renderOrder = 0;
@@ -1140,12 +1148,12 @@ function setRenderMode(painter) {
   }
 
   for (const surface of surfaces) {
-    surface.material = surface.userData.flat;
+    surface.material = surface.userData.lit;
   }
 
   for (const root of meshRoots) {
     root.traverse((o) => {
-      if (o.isMesh && o.userData.flat) o.material = o.userData.flat;
+      if (o.isMesh && o.userData.lit) o.material = o.userData.lit;
     });
   }
 
