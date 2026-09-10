@@ -1271,6 +1271,25 @@ function mmPerPixel() {
 const GRID_TARGET_PX = 64;
 const GRID_MAX_DIVISIONS = 320;
 
+// The floor is drawn with the same fat lines everything else uses, rather than with `GridHelper`:
+// a hairline is one device pixel whatever width is asked for, which on a retina display is half of
+// what it looks like anywhere else and too faint to measure against either way. In CSS pixels, so
+// it means the same thing on every screen.
+const FLOOR_LINE = 0xc0c7cc;
+const FLOOR_AXIS = 0x9aa4ab; // the two lines through the centre, which say where the origin is
+const FLOOR_LINE_WIDTH = 1.4;
+const FLOOR_AXIS_WIDTH = 2.0;
+
+const floorMaterials = ["line", "axis"].map((kind) => {
+  const material = new THREE.Line2NodeMaterial({
+    color: kind === "axis" ? FLOOR_AXIS : FLOOR_LINE,
+    linewidth: kind === "axis" ? FLOOR_AXIS_WIDTH : FLOOR_LINE_WIDTH,
+    worldUnits: false,
+  });
+  material.resolution?.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+  return material;
+});
+
 function updateGrid() {
   const perPixel = mmPerPixel();
   if (!Number.isFinite(perPixel) || perPixel <= 0) return;
@@ -1295,16 +1314,39 @@ function updateGrid() {
   }
   gridState = { cell, divisions, cx, cy };
 
-  if (grid) {
-    view.remove(grid);
-    grid.geometry.dispose();
-    grid.material.dispose();
+  for (const line of grid ?? []) {
+    view.remove(line);
+    line.geometry.dispose();
   }
-  grid = new THREE.GridHelper(divisions * cell, divisions, 0xc8ced2, 0xe4e8ea);
-  grid.rotation.x = Math.PI / 2; // GridHelper lies in XZ; stand it up into PLR's XY
-  grid.position.set(cx, cy, floorZ);
-  grid.renderOrder = -1;
-  view.add(grid);
+
+  // Already in PLR's XY: the lines are built in the plane rather than laid down from another one.
+  const half = (divisions * cell) / 2;
+  const runs = [[], []]; // ordinary lines, then the two through the centre
+  for (let i = 0; i <= divisions; i++) {
+    const t = -half + i * cell;
+    const into = runs[Math.abs(t) < cell * 1e-6 ? 1 : 0];
+    into.push(-half, t, 0, half, t, 0, t, -half, 0, t, half, 0);
+  }
+
+  grid = runs
+    .map((points, kind) => {
+      if (!points.length) return null;
+      const geometry = new LineSegmentsGeometry();
+      geometry.setPositions(new Float32Array(points));
+      // A fat line is sized in pixels, so it needs the viewport it is being sized against. Set here
+      // as well as on a resize, because the first grid is built before the first resize lands.
+      floorMaterials[kind].resolution?.set(
+        viewportEl.clientWidth || 1,
+        Math.max(viewportEl.clientHeight, 1)
+      );
+      const line = new LineSegments2(geometry, floorMaterials[kind]);
+      line.position.set(cx, cy, floorZ);
+      line.renderOrder = -1;
+      line.frustumCulled = false;
+      view.add(line);
+      return line;
+    })
+    .filter(Boolean);
 }
 
 const selectionBox = new THREE.Box3Helper(new THREE.Box3(), new THREE.Color(SELECT));
@@ -2766,10 +2808,21 @@ const scaleLabel = document.getElementById("scale-bar-label");
 
 // Under perspective there is no single scale, so the bar is quoted at the orbit target's depth.
 // Under orthographic there is one scale for the whole viewport, and the bar is exact.
+// About how long the bar should be, in pixels. Long enough to read a number against, short enough
+// to leave the corner it sits in.
+const SCALE_BAR_PX = 120;
+
 function updateScaleBar() {
   const perPixel = mmPerPixel();
   if (!Number.isFinite(perPixel) || perPixel <= 0) return;
-  const nice = niceNumber(perPixel * 120);
+  // Counted in floor cells rather than rounded on its own, so the bar always spans a whole number
+  // of the squares it is drawn over. Both used to pick a nice number from the same 1-2-5 ladder
+  // but for different pixel targets, which agree only sometimes - and a scale that disagrees with
+  // the grid beneath it is worse than having no grid to check it against.
+  const cell = gridState?.cell;
+  const nice = cell
+    ? cell * ([1, 2, 5].find((n) => (n * cell) / perPixel >= SCALE_BAR_PX) ?? 10)
+    : niceNumber(perPixel * SCALE_BAR_PX);
   scaleLine.style.width = `${Math.round(nice / perPixel)}px`;
   scaleLabel.textContent = nice >= 1000 ? `${nice / 1000} m` : `${nice} mm`;
 }
@@ -3172,6 +3225,9 @@ function resize() {
   // twice the viewport on a 2x display, overflowing down and right.
   renderer.setSize(w, h);
   for (const material of edgeMaterials) material.resolution?.set(w, Math.max(h, 1));
+  // Kept apart from the edge materials: that set is emptied and refilled with every scene, and a
+  // fat line sized against a stale resolution is drawn at the wrong width or not at all.
+  for (const material of floorMaterials) material.resolution?.set(w, Math.max(h, 1));
   perspectiveCamera.aspect = w / Math.max(h, 1);
   perspectiveCamera.updateProjectionMatrix();
   if (projection === "orthographic") {
