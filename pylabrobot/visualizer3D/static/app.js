@@ -84,6 +84,10 @@ const edgeMaterials = new Set();
 let meshes = [];
 let placementOf = []; // instance index -> { mesh, slot }
 let vesselOf = new Map(); // index -> the inner body whose colour tracks what is in it
+// index -> the instanced parts drawn for it outside the box pipeline, and where each one stands.
+// Switching a resource off empties its box; these have to be emptied with it, or hiding a plate
+// leaves ninety-six cavities and their walls floating where the plate was.
+let overlayOf = new Map();
 let tipOf = new Map();
 let edgeOf = new Map();
 // The instances whose model arrived as a file. Their box is not drawn at all and its border is
@@ -1868,6 +1872,14 @@ function refreshOverlays(index, touched) {
       new THREE.Color(VESSEL_EMPTY).lerp(new THREE.Color(LIQUID), t)
     );
     if (vessel.mesh.instanceColor) vessel.mesh.instanceColor.needsUpdate = true;
+  }
+
+  // Parts drawn outside the box pipeline follow the resource they belong to: emptied when it is
+  // switched off, put back where they stand when it is switched on.
+  for (const part of overlayOf.get(index) ?? []) {
+    if (visible) placeInstance(part.mesh, part.slot, world.matrices[index], ...part.at);
+    else part.mesh.setMatrixAt(part.slot, ZERO);
+    touched.add(part.mesh);
   }
 
   const tip = tipOf.get(index);
