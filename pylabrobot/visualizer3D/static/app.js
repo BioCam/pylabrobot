@@ -300,6 +300,15 @@ const GROUND = new Set(["facility", "deck"]);
 const BAND_COLOR = 0x8ba7c6;
 const GRID_LABEL_MM = 30; // label height in deck millimetres
 const GRID_TICK = 30; // mm the mark runs forward of the grid, into the margin where labels sit
+// How far a number keeps from the front edge of what it is drawn on, in mm. Only reached where the
+// resource has no margin to give: a deck runs on well ahead of its first carrier, and a loading
+// tray's grid starts at the tray's own front edge.
+const GRID_MARGIN = 4;
+// A number is drawn inside its quad with room above and below it, so the quad's edge is not where
+// the ink stops. This is how much of the quad's height the digits actually take - a bold face's
+// cap height against the canvas the label is drawn on - and it is what a margin has to be measured
+// against, or the gap comes out 8.5 mm wider than it says.
+const GRID_LABEL_INK = 0.433;
 
 function labelSprite(text, color = GRID_LABEL, sizeMm = GRID_LABEL_MM) {
   const canvas = document.createElement("canvas");
@@ -840,17 +849,25 @@ function buildGridMarks() {
       surface.position.set(footprintX / 2, footprintY / 2, oz);
       group.add(surface);
     }
+    // A mark reaches forward of the grid into a margin the numbers sit in, and neither leaves the
+    // resource it is drawn on: a line hanging off the front of a part reads as geometry that is not
+    // there, and a number floating past the edge belongs to nothing. Where there is no margin to
+    // reach into - a loading tray's grid starts at the tray's own front edge - both come inside.
+    const half = GRID_LABEL_MM / 2;
+    const ink = (GRID_LABEL_MM * GRID_LABEL_INK) / 2;
+    const front = Math.max(oy - GRID_TICK, 0);
+    const labelY = Math.max(oy - GRID_TICK - half, ink + GRID_MARGIN);
     const points = [];
     for (let i = 0; i < grid.count; i++) {
       const x = ox + i * grid.spacing;
-      points.push(x, oy - GRID_TICK, z, x, oy + grid.extent, z);
+      points.push(x, front, z, x, oy + grid.extent, z);
 
       const position = i + 1;
       if (position === 1 || position % grid.label_every === 0) {
         const sprite = labelSprite(String(position));
         gridLabels.push(sprite);
-        // Between this mark and the next, in the margin the tick reaches into.
-        sprite.position.set(x + grid.spacing / 2, oy - GRID_TICK - GRID_LABEL_MM * 0.5, z);
+        // Between this mark and the next, so a number never sits on a line.
+        sprite.position.set(x + grid.spacing / 2, labelY, z);
         group.add(sprite);
       }
     }
