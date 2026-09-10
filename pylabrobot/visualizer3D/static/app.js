@@ -36,7 +36,8 @@ import {
   LIQUID,
   VESSEL_EMPTY,
   VESSEL_RIM,
-  VESSEL_INSET,
+  VESSEL_WALL,
+  VESSEL_WALL_OPACITY,
   TIP,
   SELECT,
   HOVER,
@@ -547,6 +548,14 @@ const ARM_OUTLINE_OFFSET = 1;
 // edge line that bounds it.
 const REFERENCE_MARK_OFFSET = 0.75;
 
+/** Whether this resource rides something that travels, rather than standing on the deck. */
+function carried(index) {
+  for (let i = world.parentOf[index]; i >= 0; i = world.parentOf[i]) {
+    if (MOVING_PARTS.has(modelOf(i).category)) return true;
+  }
+  return false;
+}
+
 function buildReferenceMarks() {
   for (const mark of referenceMarks) view.remove(mark.plane);
   referenceMarks = [];
@@ -569,7 +578,14 @@ function buildReferenceMarks() {
     if (NO_REFERENCE_MARK.has(model.category)) continue;
     const [, sy] = sizeOf(model);
     // Held in the resource's own frame, so a part that only travels in x keeps it as it moves.
-    const sz = deckZ === null ? 0 : deckZ - world.matrices[index].elements[14];
+    //
+    // Dropped to the deck's surface for something standing on the deck, where a mark at the top of
+    // a tall part would float above whatever it points at. A part CARRIED by an arm is not standing
+    // on anything: its mark belongs on the part, at the height the part is at, rather than sweeping
+    // along the deck two hundred millimetres below it as the arm travels.
+    const sz = deckZ === null || carried(index)
+      ? 0
+      : deckZ - world.matrices[index].elements[14];
     const plane = new THREE.Mesh(
       new THREE.PlaneGeometry(REFERENCE_WIDTH, sy),
       new THREE.MeshBasicMaterial({
