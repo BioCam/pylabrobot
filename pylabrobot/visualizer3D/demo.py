@@ -14,6 +14,7 @@ would move these trackers rather than talk to the viewer.
 """
 
 import asyncio
+import itertools
 import logging
 
 from pylabrobot.hamilton.star.device import STARDevice, STARLet
@@ -179,7 +180,9 @@ async def sweep_arm(star) -> None:
   """
   low, high = star.x_arm.configuration.x_range
   span = min(high, star.deck.get_absolute_size_x()) - low
-  for step in range(10_000):
+  # Until it is stopped. A count rather than a large number of steps, which is the same loop
+  # wearing a bound it never reaches.
+  for step in itertools.count():
     target = low + span * (0.15 if step % 2 else 0.75)
     await star.x_arm.move_x(round(target, 1))
     await asyncio.sleep(3.0)
@@ -204,7 +207,7 @@ async def work_the_iswap(star) -> None:
     c.gripper_increments_to_mm(c.gripper_range_increments[0]),
   ]
 
-  for step in range(10_000):
+  for step in itertools.count():
     rotation = rotation_stops[step % len(rotation_stops)]
     gripper = gripper_directions[step % len(gripper_directions)]
     try:

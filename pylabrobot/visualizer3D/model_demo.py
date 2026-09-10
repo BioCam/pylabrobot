@@ -13,9 +13,10 @@ of what this demonstrates and it is worth being able to read rather than infer f
 A part keeps its box until two things are true: it has a model name, and a file is named after it
 in its own resource's frame - the origin at the resource's own corner, in metres, Z up.
 
-The arm turns and the jaws open and close while it runs, so the models can be watched following
-their joints rather than sitting where the boxes used to be. Nothing here moves geometry: the
-drives move resources, and a model is drawn wherever its resource is.
+The arm turns and the jaws open and close for as long as it runs, so the models can be watched
+following their joints rather than sitting where the boxes used to be. It does not finish: this is
+a thing to leave open and look at, and it stops on Ctrl-C. Nothing here moves geometry: the drives
+move resources, and a model is drawn wherever its resource is.
 
 The X-arm is drawn like everything else, and its box is the part rather than what the drive
 reports: what a drive reports is a reach measured from the point it tracks, so the arm runs on
@@ -24,6 +25,7 @@ centred - which is where the channels hang from it.
 """
 
 import asyncio
+import itertools
 import logging
 from typing import Dict, List, Tuple
 
@@ -111,7 +113,10 @@ HELD_FOR = 2.5
 
 
 async def turn_the_arm(star: STARDevice) -> None:
-  """Swing the iSWAP between its stops, so a model can be watched following its joint."""
+  """Swing the iSWAP between its stops, so a model can be watched following its joint.
+
+  Runs until the demo is stopped.
+  """
   iswap = star.iswap
   if iswap is None:
     return
@@ -128,7 +133,10 @@ async def turn_the_arm(star: STARDevice) -> None:
   except ValueError as refused:
     print(f"  the drive stays where it is, so the arm will not turn far: {refused}")
 
-  for step in range(10_000):
+  # Until it is stopped. Written as a count rather than as a large number of steps, which is the
+  # same loop wearing a bound it never reaches - ten thousand poses held for two and a half seconds
+  # each is seven hours, so it read as finite and was not.
+  for step in itertools.count():
     where = ("front", "left", "front", "right")[step % 4]
     try:
       await iswap.rotate_to_angles(
@@ -142,7 +150,7 @@ async def turn_the_arm(star: STARDevice) -> None:
 
 
 async def work_the_jaws(star: STARDevice) -> None:
-  """Open and close the gripper, so the fingers and their pads can be watched moving.
+  """Open and close the gripper, so the fingers and their pads can be watched moving, until stopped.
 
   The two fingers are one model mounted twice, and the width between them is what the drive
   carries: there is no second mesh to keep in step, and nothing here touches the geometry. Moving
@@ -162,7 +170,7 @@ async def work_the_jaws(star: STARDevice) -> None:
   # Offset against the arm's own cycle, so the two are not seen only ever moving together.
   await asyncio.sleep(HELD_FOR / 2)
 
-  for step in range(10_000):
+  for step in itertools.count():
     width = (opened, closed)[step % 2]
     try:
       await iswap.gripper_move_to_jaw_position(width)
