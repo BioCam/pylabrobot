@@ -373,9 +373,10 @@ class TestGeometryDoesNotFollowTheReportedWidth(unittest.TestCase):
   geometry may move when that number does.
   """
 
-  # Every width a real device has answered for a large arm, plus the field's own default. The last
-  # is nonsense for a large arm and is here on purpose: a misconfigured device must not shrink the
-  # part it is describing.
+  # What devices have actually answered - 354.0 on one large arm, 370.0 the default another was
+  # left at, 246.0 on a half arm - and then the largest the field can hold, which is four digits
+  # in tenths of a millimetre. No arm is any of the last two sizes, and that is the point: the
+  # part must not follow the number, whether the number is a default, another arm's, or absurd.
   REPORTED_WIDTHS = (354.0, 370.0, 246.0, 999.9)
 
   def test_a_large_arm_is_the_same_part_whatever_width_it_reports(self):
