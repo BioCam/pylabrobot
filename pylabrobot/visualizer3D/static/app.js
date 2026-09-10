@@ -55,6 +55,9 @@ import {
   ARM_EDGE_WIDTH_3D,
   ARM_INSET_X,
   ARM_INSET_Y,
+  GRIP_MARK_OPACITY,
+  GRIP_MARK_OPENING,
+  GRIP_MARK_WIDTH,
   REFERENCE_LINE,
   REFERENCE_WIDTH,
   REFERENCE_DROP,
@@ -291,7 +294,7 @@ let gridLabels = [];
 let surfaces = [];
 let arms = []; // { group, index, referenceOffset, targetX, currentX }
 
-const GRID_LINE = 0xb4bdc3;
+const GRID_LINE = 0x4a545c; // dark, so it reads on a light deck as the numbers beside it do
 const GRID_LABEL = "#3d4a52";
 const GRID_LIFT = 0.4; // mm above the surface, so the marks do not fight the deck for depth
 // The work surface a grid is laid out on. A resource that declares a grid is declaring that things
@@ -320,7 +323,11 @@ const GRID_MARGIN = 4;
 // person reads a deck for - but a line at full strength over an opaque part reads as an error
 // rather than as a reference. Faint, it reads the way a hidden line does on a drawing: behind the
 // thing, and still there.
-const GRID_GHOST_OPACITY = 0.3;
+//
+// Set against the ink, not on its own: 0.3 of a near-white line was barely there, and the same 0.3
+// of the dark line that replaced it painted stripes across every carrier floor, which reads as a
+// floor you can see through rather than as a mark behind one.
+const GRID_GHOST_OPACITY = 0.14;
 // A number is drawn inside its quad with room above and below it, so the quad's edge is not where
 // the ink stops. This is how much of the quad's height the digits actually take - a bold face's
 // cap height against the canvas the label is drawn on - and it is what a margin has to be measured
@@ -548,6 +555,78 @@ const ARM_OUTLINE_OFFSET = 1;
 // edge line that bounds it.
 const REFERENCE_MARK_OFFSET = 0.75;
 
+// What the tree calls a gripper, and what it calls the faces it grips with.
+const GRIPPER = "mechanical_gripper";
+const PAD = "pad";
+
+/** The pad a gripper meets a resource with, as its model, or null where it grips with its fingers. */
+function padOf(index) {
+  const stack = [...world.childrenOf[index]];
+  while (stack.length) {
+    const at = stack.pop();
+    if (modelOf(at).category === PAD) return modelOf(at);
+    stack.push(...world.childrenOf[at]);
+  }
+  return null;
+}
+
+/**
+ * A crosshair lying flat at the grip centre: two arms as long as a pad's face, crossing, with a
+ * circular opening in the middle so the mark does not cover the very point it is marking.
+ */
+// How finely the opening's edge is stepped. Ten is smooth at any size this is ever drawn at.
+const GRIP_ARC_STEPS = 10;
+
+function gripCross(reach, width, opening) {
+  const arm = reach / 2;
+  const half = width / 2;
+  // Each arm is its own shape, starting ON the circle rather than at the centre. Punching a hole
+  // through one solid cross only works while the cross is wider than the hole, and it is not: the
+  // opening is deliberately the wider of the two, so the arms stand clear of it.
+  const theta = Math.asin(Math.min(1, half / opening));
+  const shapes = [];
+  for (let quarter = 0; quarter < 4; quarter++) {
+    const turn = (quarter * Math.PI) / 2;
+    const points = [];
+    for (let step = 0; step <= GRIP_ARC_STEPS; step++) {
+      const angle = turn - theta + (2 * theta * step) / GRIP_ARC_STEPS;
+      points.push(new THREE.Vector2(opening * Math.cos(angle), opening * Math.sin(angle)));
+    }
+    for (const [x, y] of [[arm, half], [arm, -half]]) {
+      points.push(
+        new THREE.Vector2(
+          x * Math.cos(turn) - y * Math.sin(turn),
+          x * Math.sin(turn) + y * Math.cos(turn)
+        )
+      );
+    }
+    shapes.push(new THREE.Shape(points));
+  }
+  return new THREE.ShapeGeometry(shapes);
+}
+
+/** A crosshair lying flat at the grip centre. */
+function buildGripMark(index, model, pad) {
+  const [span] = sizeOf(model);
+  const [along] = sizeOf(pad);
+  const plane = new THREE.Mesh(
+    gripCross(along, GRIP_MARK_WIDTH, GRIP_MARK_OPENING),
+    new THREE.MeshBasicMaterial({
+      color: REFERENCE_LINE, transparent: true, opacity: GRIP_MARK_OPACITY,
+      depthTest: false, side: THREE.DoubleSide,
+    })
+  );
+  plane.frustumCulled = false;
+  plane.renderOrder = OVERLAY_ORDER + 5;
+  plane.matrixAutoUpdate = false;
+  // Lying flat, centred on the far end of the span, which is the grip centre.
+  plane.userData.local = new THREE.Matrix4().makeTranslation(span, 0, 0);
+  plane.matrix.multiplyMatrices(world.matrices[index], plane.userData.local);
+  plane.matrixWorldNeedsUpdate = true;
+  view.add(plane);
+  referenceMarks.push({ plane, index });
+}
+
 /** Whether this resource rides something that travels, rather than standing on the deck. */
 function carried(index) {
   for (let i = world.parentOf[index]; i >= 0; i = world.parentOf[i]) {
@@ -574,6 +653,17 @@ function buildReferenceMarks() {
 
   for (let index = 0; index < world.names.length; index++) {
     const model = modelOf(index);
+
+    // A gripper says where it grips by being a link: it spans the joint it turns on to the point it
+    // is programmed against, so the far end of its own span IS that point. What is worth seeing
+    // there is not a line on the deck but the face the pads close on, so the mark is a pad-sized
+    // rectangle standing at the grip centre - a third pad, in the middle, where the resource goes.
+    if (model.category === GRIPPER) {
+      const pad = padOf(index);
+      if (pad) buildGripMark(index, model, pad);
+      continue;
+    }
+
     if (!model.reference_point || MOVING_PARTS.has(model.category)) continue;
     if (NO_REFERENCE_MARK.has(model.category)) continue;
     const [, sy] = sizeOf(model);

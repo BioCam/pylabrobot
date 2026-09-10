@@ -169,6 +169,15 @@ export const ARM_EDGE_WIDTH_3D = 2.6;
 export const ARM_INSET_X = 95;
 export const ARM_INSET_Y = 20;
 export const REFERENCE_LINE = 0x00e5ff;
+// A gripper's own reference is the point it grips at. Drawn as a line lying flat, as long as a pad
+// is - which pad it is, is read off the tree - and thicker than a resource's reference mark, since
+// it marks a point the arm is programmed against rather than an edge of something standing still.
+export const GRIP_MARK_OPACITY = 0.7;
+export const GRIP_MARK_WIDTH = 5.4; // mm across each arm of the cross
+// The opening at the middle, as a radius in mm. A crosshair with a solid centre covers the very
+// point it is marking; left open, the thing being gripped shows through where the grip happens.
+// Wider than an arm, so the four arms stand clear of it rather than meeting.
+export const GRIP_MARK_OPENING = 3.75;
 // A line material's width is ignored on most backends, so the reference mark is geometry: a thin
 // quad lying just under the arm, where it reads against the deck rather than floating inside the
 // carriage.
