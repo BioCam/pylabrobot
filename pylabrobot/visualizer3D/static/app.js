@@ -3038,7 +3038,14 @@ const projectionButton = document.getElementById("view-projection");
 projectionButton.addEventListener("click", () =>
   setProjection(projection === "orthographic" ? "perspective" : "orthographic")
 );
-document.getElementById("home-button").addEventListener("click", goToStartView);
+const homeButton = document.getElementById("home-button");
+homeButton.addEventListener("click", () => {
+  goToStartView();
+  // A flash while the camera moves, so the button that did it is the thing you were last looking
+  // at. Long enough to register, short enough not to linger over a view that has already settled.
+  homeButton.classList.add("clicked");
+  setTimeout(() => homeButton.classList.remove("clicked"), 400);
+});
 document.getElementById("zoom-in-btn").addEventListener("click", () => dolly(0.8));
 document.getElementById("zoom-out-btn").addEventListener("click", () => dolly(1.25));
 
