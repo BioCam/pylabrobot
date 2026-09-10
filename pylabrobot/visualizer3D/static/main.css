@@ -199,6 +199,124 @@ main { position: relative; flex: 1; min-width: 0; background: #fff; }
 
 .toolbar-btn-text { font-size: 10px; font-weight: 700; color: #333; letter-spacing: 0.04em; }
 
+/* ---------------------------------------------------------------- device tools */
+
+/* What a device carries, offered from the navbar and drawn in panels over the viewport. The
+   palette and the metrics are the tool rail's, so a capability button reads as a button of the
+   same application as the cursor and the coordinate tools. */
+
+#navbar-device-tools { display: flex; align-items: center; gap: 12px; margin-left: 12px; }
+
+.dt-group { display: flex; align-items: center; gap: 6px; }
+
+.dt-label {
+  border: none;
+  background: transparent;
+  padding: 0 4px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.15;
+  color: #555;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.dt-label:hover { color: #222; }
+.dt-label.collapsed { opacity: 0.6; }
+
+.dt-buttons { display: flex; align-items: center; gap: 6px; }
+.dt-buttons.collapsed { display: none; }
+
+.dt-btn {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid #999;
+  background: transparent;
+  border-radius: 6px;
+  opacity: 0.55;
+  padding: 0;
+  cursor: pointer;
+  transition: opacity 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.dt-btn img { width: 32px; height: 32px; object-fit: contain; }
+.dt-btn:hover { opacity: 1; background: #ced4da; border-color: #adb5bd; }
+.dt-btn.active { opacity: 1; background: #cfe2ff; border-color: #999; }
+.dt-btn:focus-visible { outline: 2px solid #1a4b8c; outline-offset: 2px; }
+
+.dt-panel {
+  position: absolute;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid #ced4da;
+  border-radius: 8px;
+  padding: 8px 12px;
+  font-size: 13px;
+  color: #333;
+  z-index: 25;
+  cursor: grab;
+  user-select: none;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+}
+
+.dt-panel.is-dragging { cursor: grabbing; }
+
+.dt-reset {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  border: none;
+  background: transparent;
+  color: #8a949a;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.dt-reset:hover { color: #1a4b8c; }
+
+.dt-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #6c757d;
+  margin-bottom: 6px;
+  padding-right: 18px;
+  white-space: nowrap;
+}
+
+.dt-count { font-weight: 500; text-transform: none; letter-spacing: 0; margin-left: 8px; }
+.dt-empty { color: #8a949a; padding: 8px 4px; max-width: 180px; }
+
+/* A channel is a stalk with a tip on it, and the tip is drawn at its own length - which is the
+   whole reason to look at this panel rather than at the tree. */
+.dt-channels { display: flex; align-items: flex-start; gap: 6px; }
+
+.dt-channel { display: flex; flex-direction: column; align-items: center; cursor: pointer; }
+.dt-channel:hover .dt-stalk { background: #1a4b8c; }
+.dt-channel-label { font-size: 11px; font-weight: 700; color: #8a949a; margin-bottom: 2px; }
+.dt-stalk { width: 5px; border-radius: 2px 2px 0 0; background: #5b6277; }
+.dt-tip { width: 7px; border-radius: 0 0 3px 3px; background: #40cda1; }
+
+/* A head is its channels seen from above: one dot per mounting shaft, filled where a tip is on. */
+.dt-head + .dt-head { margin-top: 10px; }
+.dt-grid { display: grid; gap: 2px; cursor: pointer; }
+.dt-dot { width: 8px; height: 8px; border-radius: 50%; border: 1px solid #adb5bd; }
+.dt-dot.is-filled { background: #40cda1; border-color: #2f9e7b; }
+
+.dt-arm + .dt-arm { margin-top: 10px; }
+.dt-arm { cursor: pointer; }
+.dt-row { display: flex; gap: 10px; justify-content: space-between; padding: 1px 0; }
+.dt-key { color: #6c757d; }
+.dt-val { font-weight: 600; }
+
 /* ---------------------------------------------------------------- floating tool panels */
 
 .tool-panel {

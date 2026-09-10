@@ -57,6 +57,7 @@ import {
 } from "./constants.js";
 import { initGif } from "./gif.js";
 import { initCoords } from "./coords.js";
+import { initDeviceTools } from "./device_tools.js";
 import { input, query } from "./dom.js";
 import {
   buildWorld,
@@ -1787,6 +1788,7 @@ function applyState(payload) {
   for (const mesh of touched) mesh.instanceMatrix.needsUpdate = true;
   if (selected >= 0 && infoPanel?.isConnected) renderInfoPanel();
   refreshTreeInfo();
+  deviceTools.refresh();
 }
 
 function refreshOverlays(index, touched) {
@@ -2391,6 +2393,17 @@ function pick(event) {
 }
 
 const coords = initCoords({ getWorld: () => world, referencePoint, escapeHtml });
+// What each device carries, offered from the navbar. It reads the tree rather than being told, so
+// there is nothing to keep in step: a tip picked up is a resource assigned, and the panel that
+// draws tips is looking at the same tree the viewport is.
+const deviceTools = initDeviceTools({
+  getWorld: () => world,
+  modelOf,
+  onSelect: (index) => {
+    revealAndHighlight(index);
+    select(index, true);
+  },
+});
 const { coordinateLabel, recordMeasurement, populateWrtDropdown, endpoints: deltaEndpoints } = coords;
 
 // ---------------------------------------------------------------- delta lines
@@ -3224,6 +3237,7 @@ function connect() {
       timings.meshesMs = performance.now() - _tBuild;
       const _tTree = performance.now();
       buildTree();
+      deviceTools.rebuild();
       timings.treeMs = performance.now() - _tTree;
       timings.readyMs = performance.now() - _t0;
       populateWrtDropdown();
