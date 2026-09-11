@@ -158,7 +158,7 @@ class iSWAPConfiguration:
 
   link_1_length: Optional[float] = None
   """rotation joint (joint 1) to the wrist joint (joint 2); default: 138.0 mm."""
-  link_2_length: Optional[float] = None
+  tool_length: Optional[float] = None
   """wrist joint (joint 2) to the gripper finger centre, in mm. default: 138.0 mm."""
 
   # -- X --
@@ -735,7 +735,7 @@ class iSWAP:
     c = self.configuration
     slots = await self._request_slots("pt")
     c.wrist_drive_predefined_increments = dict(zip(c.wrist_drive_slots, slots))
-    c.link_2_length = round(slots[9] / 10, 1)
+    c.tool_length = round(slots[9] / 10, 1)
     return c.wrist_drive_predefined_increments
 
   async def rotation_drive_request_y_stops(self) -> Dict[str, float]:

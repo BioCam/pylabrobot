@@ -675,7 +675,7 @@ class SimulatedISWAP(_Simulated, iSWAP):
       stops, length = declared.rotation_drive_predefined_increments, declared.link_1_length
       names = declared.rotation_drive_slots
     else:
-      stops, length = declared.wrist_drive_predefined_increments, declared.link_2_length
+      stops, length = declared.wrist_drive_predefined_increments, declared.tool_length
       names = declared.wrist_drive_slots
     if stops is None:
       raise RuntimeError(f"the simulated iSWAP has no {table} table; set it on its configuration")

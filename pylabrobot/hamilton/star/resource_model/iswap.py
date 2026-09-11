@@ -131,7 +131,7 @@ def iswap_gripper(
 
   Args:
     name: what to call this one.
-    length: the wrist joint to the grip centre, in mm, as `iSWAPConfiguration.link_2_length`
+    length: the wrist joint to the grip centre, in mm, as `iSWAPConfiguration.tool_length`
       reports it.
     jaw_range: how far apart the jaws stand, closed and open, in mm, as the gripper drive's own
       travel gives it.

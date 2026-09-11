@@ -1720,7 +1720,7 @@ class STARDriver:
     Returns:
       The link and the gripper, or `(None, None)` if the arm did not report its lengths.
     """
-    if c.link_1_length is None or c.link_2_length is None:
+    if c.link_1_length is None or c.tool_length is None:
       logger.warning("the iSWAP reported no link lengths, so its arm is not modelled")
       return None, None
     link_1 = next((child for child in resource.children if isinstance(child, Link)), None)
@@ -1735,7 +1735,7 @@ class STARDriver:
       # measurement of the fingers: what the drive accepts is what the jaws do.
       gripper = iswap_gripper(
         name="iswap_gripper",
-        length=c.link_2_length,
+        length=c.tool_length,
         jaw_range=(
           c.gripper_increments_to_mm(c.gripper_range_increments[0]),
           c.gripper_increments_to_mm(c.gripper_range_increments[1]),
