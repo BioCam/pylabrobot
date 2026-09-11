@@ -1260,7 +1260,7 @@ function OPACITY_OF(isSpace, moves, isTipRack, isShell) {
   return BOX_OPACITY;
 }
 
-function setRenderMode(painter) {
+function setRenderMode(plan) {
   for (const entry of meshes) {
     // Lit, at every angle. The lights ride with the camera, so a surface is shaded by its own shape
     // rather than by where it is being looked at - which is what makes a box read as a box without
@@ -1279,56 +1279,46 @@ function setRenderMode(painter) {
     // deck legible is its rail grid, its numbers and its access bands, and those are their own
     // objects.
     const isSpace = GROUND.has(entry.model.category);
-    if (painter) {
-      material.transparent = true;
-      material.opacity = OPACITY_OF(isSpace, moves, isTipRack, isShell);
-      material.side = isShell || isSpace ? THREE.BackSide : THREE.FrontSide;
-      // Depth decides, here as everywhere else. What stands on the deck writes depth as well as
-      // testing against it, so the higher of two surfaces wins per pixel - which is the one
-      // arbiter that is right about every instance of a model at once, where a render order can
-      // only ever be right about the model. A part held over the deck is the exception: it must
-      // not delete what it is above, so it tests without writing, and is drawn in the layer below.
-      // Ground stays out of the depth buffer entirely - a wash over the view, not a surface.
-      const rides = entry.instances.some((i) => travels(i));
-      material.depthTest = !isSpace;
-      material.depthWrite = !isSpace && !rides;
-      // A shell that is not a container shows its outline and nothing else: a device drawn as a
-      // sheet the size of the device sits under everything standing on it. A container keeps its
-      // walls, which is what makes it read as one.
-      material.visible = fillsBox(entry) && (!isShell || keepsWalls(entry));
-      const layer = rides ? CARRIED_LAYER : 0;
-      entry.mesh.renderOrder = layer;
-      // Three layers, and only three. What stands on the deck; what is held over it; and, inside
-      // each of those, the things that share a surface with their own resource and so cannot be
-      // told apart by depth - a well's liquid against the cavity it sits in. Depth still decides
-      // between layers, so a part in the layer above is covered wherever the machine's own
-      // structure is over it.
-      for (const overlay of entry.overlays ?? []) {
-        if (overlay.userData.lit) overlay.material = overlay.userData.lit;
-        // Not against depth: a tip hangs below the spot that holds it and liquid sits below the
-        // cavity it fills, so depth would have a vessel hide its own contents. They are inside
-        // their own resource, which has already been placed by depth, and they are painted in
-        // that resource's layer - so what they can reach past is their own rim, and nothing else.
-        overlay.material.depthTest = false;
-        overlay.material.depthWrite = false;
-        overlay.renderOrder = layer + (overlay.userData.behind ? 0.5 : 1);
-        overlay.material.needsUpdate = true;
-      }
-    } else {
-      material.transparent = true;
-      material.opacity = OPACITY_OF(isSpace, moves, isTipRack, isShell);
-      material.side = isShell || isSpace ? THREE.BackSide : THREE.FrontSide;
-      material.depthTest = true;
-      material.depthWrite = !(isShell || isSpace);
-      material.visible = fillsBox(entry) && (!isShell || keepsWalls(entry));
-      entry.mesh.renderOrder = 0;
-      for (const overlay of entry.overlays ?? []) {
-        if (overlay.userData.lit) overlay.material = overlay.userData.lit;
-        overlay.material.depthTest = true;
-        overlay.material.depthWrite = true;
-        overlay.renderOrder = 0;
-        overlay.material.needsUpdate = true;
-      }
+    const rides = entry.instances.some((i) => travels(i));
+
+    material.transparent = true;
+    material.opacity = OPACITY_OF(isSpace, moves, isTipRack, isShell);
+    material.side = isShell || isSpace ? THREE.BackSide : THREE.FrontSide;
+    // Ground stays out of the depth buffer in either view - a wash over the picture, not a surface
+    // anything is behind.
+    material.depthTest = !isSpace;
+    // The one place the two views genuinely differ about geometry. A plan is read by what is
+    // highest at each point, so everything writes depth and the higher surface wins per pixel -
+    // which is right about every instance of a model at once, where an order could only ever be
+    // right about the model. A free view is read by looking into things, so a shell stays out of
+    // the depth buffer and you see what is inside it.
+    //
+    // A part held over the deck writes too, and it costs nothing: it is drawn after everything it
+    // is above, so the deck is already in the picture and a depth written now cannot rub it out.
+    // What it does stop is the part shading itself - an arm is several surfaces and it carries
+    // channels and an iSWAP, and with nothing to separate them each overlap blended again, so the
+    // arm came out at a third of its own opacity here and two thirds there as it travelled.
+    material.depthWrite = plan ? !isSpace : !(isShell || isSpace);
+    // A shell that is not a container shows its outline and nothing else: a device drawn as a
+    // sheet the size of the device sits under everything standing on it. A container keeps its
+    // walls, which is what makes it read as one.
+    material.visible = fillsBox(entry) && (!isShell || keepsWalls(entry));
+    // Two layers, and only in a plan: what stands on the deck, and what is held over it. Depth
+    // decides everything else; this decides only that a travelling part is blended over the deck
+    // rather than into it.
+    const layer = plan && rides ? CARRIED_LAYER : 0;
+    entry.mesh.renderOrder = layer;
+    for (const overlay of entry.overlays ?? []) {
+      if (overlay.userData.lit) overlay.material = overlay.userData.lit;
+      // From above a vessel has to show its own contents, and depth would stop it: a tip hangs
+      // below the spot that holds it, and liquid sits below the cavity it fills. So in a plan they
+      // are painted in their own resource's layer, which is as far as they can reach. From any
+      // other angle depth is right - what stands in front of a well does cover it - and there they
+      // test like everything else.
+      overlay.material.depthTest = !plan;
+      overlay.material.depthWrite = !plan;
+      overlay.renderOrder = plan ? layer + (overlay.userData.behind ? 0.5 : 1) : 0;
+      overlay.material.needsUpdate = true;
     }
     material.needsUpdate = true;
   }
@@ -1345,15 +1335,15 @@ function setRenderMode(painter) {
       const rides = travels(o.userData.declaredBy);
       // Glazing comes out of an axis view. A part that travels keeps whatever it was modelled with,
       // see-through included: it is drawn that way so the deck under it can be read.
-      o.material.visible = !(painter && modelled?.glazed && !rides);
+      o.material.visible = !(plan && modelled?.glazed && !rides);
       if (!modelled) return;
       // A part held over the deck is drawn see-through, as its box is, so that what it is above
       // still reads through it. It does not write depth for the same reason; it still tests, so
       // the machine's own structure above it covers it as it should.
-      const lifted = painter && rides;
+      const lifted = plan && rides;
       o.material.transparent = lifted ? true : modelled.transparent;
       o.material.opacity = lifted ? Math.min(modelled.opacity, MOVING_OPACITY) : modelled.opacity;
-      o.material.depthWrite = lifted ? false : modelled.depthWrite;
+      o.material.depthWrite = lifted ? true : modelled.depthWrite;
       o.material.depthTest = true;
       o.renderOrder = lifted ? CARRIED_LAYER : 0;
       o.material.needsUpdate = true;
@@ -1370,7 +1360,12 @@ function setRenderMode(painter) {
         o.visible = planView === true;
         return;
       }
-      if (o.material.depthTest !== undefined) o.material.depthTest = !painter;
+      // Against depth, in either view: a mark lies on the deck surface, and whatever stands on the
+      // deck is above it. It used to be drawn without depth and kept under a carrier by its order
+      // instead, which stopped working the moment content stopped carrying orders - the solid mark
+      // was then painted over every carrier at full strength, which is the error the faint copy
+      // handled above exists to avoid.
+      if (o.material.depthTest !== undefined) o.material.depthTest = true;
     });
   }
 
@@ -1381,8 +1376,8 @@ function setRenderMode(painter) {
     const order = paintOrderOf(arm.index);
     arm.frame.renderOrder = order + ARM_FRAME_OFFSET;
     arm.outline.renderOrder = order + ARM_OUTLINE_OFFSET;
-    arm.outline.material.depthTest = !painter;
-    arm.outline.material.linewidth = painter ? ARM_EDGE_WIDTH_FLAT : ARM_EDGE_WIDTH_3D;
+    arm.outline.material.depthTest = !plan;
+    arm.outline.material.linewidth = plan ? ARM_EDGE_WIDTH_FLAT : ARM_EDGE_WIDTH_3D;
     arm.outline.material.needsUpdate = true;
     // The reference line lies under the carriage, so in a 3D view the channels hanging off it stand
     // in front and have to hide it - but only those, not the deck it is well above.
@@ -1392,26 +1387,26 @@ function setRenderMode(painter) {
     // drawn first, it lays down its own depth: what is nearer covers it, what is further fails
     // against it and stays behind. In an axis view nothing is in front of anything, so there it goes
     // back to painting through, under the carriage it marks.
-    arm.line.material.transparent = painter;
-    arm.line.material.opacity = painter ? ARM_REFERENCE_OPACITY : 1;
-    arm.line.material.depthTest = !painter;
-    arm.line.renderOrder = painter ? order + ARM_LINE_OFFSET : -1;
+    arm.line.material.transparent = plan;
+    arm.line.material.opacity = plan ? ARM_REFERENCE_OPACITY : 1;
+    arm.line.material.depthTest = !plan;
+    arm.line.renderOrder = plan ? order + ARM_LINE_OFFSET : -1;
     arm.line.material.needsUpdate = true;
   }
 
   for (const [index, line] of edgeOf) {
     // All that is left of a box whose model is being drawn: its border, and only just.
     const stoodIn = drawnFromFile.has(index);
-    line.material.depthTest = !painter;
+    line.material.depthTest = !plan;
     line.material.opacity = stoodIn
       ? MODEL_EDGE_OPACITY
-      : painter
+      : plan
         ? 1
         : line.userData.baseOpacity;
-    line.material.linewidth = painter ? EDGE_WIDTH_FLAT : EDGE_WIDTH_3D;
-    line.material.color.set(painter ? FLAT_EDGE : line.userData.baseColor);
-    line.renderOrder = painter ? paintOrderOf(index) + 1 : 0;
-    const wanted = painter ? line.userData.footprintGeometry : line.userData.boxGeometry;
+    line.material.linewidth = plan ? EDGE_WIDTH_FLAT : EDGE_WIDTH_3D;
+    line.material.color.set(plan ? FLAT_EDGE : line.userData.baseColor);
+    line.renderOrder = plan ? paintOrderOf(index) + 1 : 0;
+    const wanted = plan ? line.userData.footprintGeometry : line.userData.boxGeometry;
     if (wanted && line.geometry !== wanted) line.geometry = wanted;
     line.material.needsUpdate = true;
   }

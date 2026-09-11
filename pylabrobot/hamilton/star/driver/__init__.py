@@ -1,4 +1,3 @@
-from pylabrobot.hamilton.star.driver.errors import (
-  STARFirmwareError,
-  STARModuleError,
-)
+"""The STAR driver."""
+
+from .errors import STARFirmwareError, STARModuleError
