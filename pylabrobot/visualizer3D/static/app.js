@@ -685,11 +685,15 @@ function buildReferenceMarks() {
     //
     // Dropped to the deck's surface for something standing on the deck, where a mark at the top of
     // a tall part would float above whatever it points at. A part CARRIED by an arm is not standing
-    // on anything: its mark belongs on the part, at the height the part is at, rather than sweeping
-    // along the deck two hundred millimetres below it as the arm travels.
-    const sz = deckZ === null || carried(index)
-      ? 0
-      : deckZ - world.matrices[index].elements[14];
+    // on anything, so its mark rides with it - at the reference point's own height, which is the
+    // height the drive reports and the only one worth marking. On a head that is the bottom of
+    // shaft A1, eight millimetres below the plane the body is measured from; the mark used to sit
+    // on that plane, which is the resource's origin and nothing the device ever refers to.
+    const sz = carried(index)
+      ? model.reference_point.z ?? 0
+      : deckZ === null
+        ? 0
+        : deckZ - world.matrices[index].elements[14];
     const plane = new THREE.Mesh(
       new THREE.PlaneGeometry(REFERENCE_WIDTH, sy),
       new THREE.MeshBasicMaterial({
