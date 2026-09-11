@@ -77,9 +77,9 @@ class iSWAPChannel(Resource):
 # same plane `rotation_drive_z_offset_above_finger` is measured from - and the model agrees with
 # it independently, since the pads' underside comes out exactly that far below.
 LINK_1_BODY_SIZE = (163.4, 25.5, 15.3)
-LINK_1_BODY_LOCATION = Coordinate(-12.7, -12.75, 19.0)
+LINK_1_BODY_LOCATION = Coordinate(-12.7, -12.75, 20.3)
 GRIPPER_BODY_SIZE = (59.0, 90.0, 20.3)
-GRIPPER_BODY_LOCATION = Coordinate(-13.0, -45.0, -1.3)
+GRIPPER_BODY_LOCATION = Coordinate(-13.0, -45.0, 0.0)
 # A finger has no Y of its own: the jaw width stands it where it stands.
 GRIPPER_FINGER_SIZE = (135.0, 7.0, 8.0)
 GRIPPER_FINGER_LOCATION = Coordinate(6.5, 0.0, 4.0)
@@ -125,7 +125,11 @@ def iswap_channel(
 
 
 def iswap_gripper(
-  name: str, length: float, jaw_range: Tuple[float, float], jaw_width: Optional[float] = None
+  name: str,
+  length: float,
+  jaw_range: Tuple[float, float],
+  tool_center_point_z: float,
+  jaw_width: Optional[float] = None,
 ) -> MechanicalGripper:
   """The iSWAP's hand: the wrist joint to the centre the clamps hold a rack at.
 
@@ -135,6 +139,8 @@ def iswap_gripper(
       reports it.
     jaw_range: how far apart the jaws stand, closed and open, in mm, as the gripper drive's own
       travel gives it.
+    tool_center_point_z: how far the grip centre sits above the wrist, in mm. Below it, so
+      negative: the Z drive is calibrated to the finger plane and reports its own bottom.
     jaw_width: how far apart they stand to begin with, in mm. The width the drive homes and parks
       at, where the stored table has been read.
 
@@ -181,6 +187,7 @@ def iswap_gripper(
     pads=pads,
     pad_location=GRIPPER_PAD_LOCATION,
     jaw_range=jaw_range,
+    tool_center_point_z=tool_center_point_z,
     jaw_width=jaw_width,
     model=model,
   )

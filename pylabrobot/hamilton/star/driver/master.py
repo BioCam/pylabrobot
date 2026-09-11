@@ -1747,6 +1747,9 @@ class STARDriver:
           if c.gripper_drive_predefined_increments
           else None
         ),
+        # The Z drive is calibrated to the finger plane and reports its own bottom, so the grip
+        # centre is that far below the wrist the gripper hangs from.
+        tool_center_point_z=-c.rotation_drive_z_offset_above_finger,
       )
       link_1.assign_child_resource(gripper, location=Coordinate(link_1.get_size_x(), 0.0, 0.0))
     return link_1, gripper
