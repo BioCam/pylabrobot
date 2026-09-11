@@ -427,14 +427,8 @@ function buildDeclaredMeshes() {
           root.matrixAutoUpdate = false;
           root.matrix.copy(world.matrices[index]);
           root.matrixWorldNeedsUpdate = true;
-          // Where the part stands, on the same scale the boxes use, and set on each object rather
-          // than the group: three reads render order off the object it draws, and does not inherit
-          // it down a hierarchy. Without it a real model sits at zero, under every edge and rail
-          // mark in an axis view, and disappears beneath the deck it stands over.
-          const order = paintOrderOf(index) + ARM_FRAME_OFFSET;
           root.traverse((o) => {
             o.frustumCulled = false;
-            o.renderOrder = order;
             if (o.isMesh) {
               o.userData.declaredBy = index;
               // The same unlit twin the boxes keep. A model has more shape to lose than a box
@@ -442,6 +436,16 @@ function buildDeclaredMeshes() {
               // and shading it from above gives neither.
               o.userData.lit = o.material;
               o.userData.flat = flatVariant(o.material);
+              // What the file said, kept before a plan view changes it. A travelling part is put
+              // into the same pass as the content below it, which means writing over its material's
+              // own flags - and a material asked afterwards what it was modelled as would answer
+              // with whatever the plan view just gave it.
+              o.userData.asModelled = {
+                transparent: o.material.transparent,
+                opacity: o.material.opacity,
+                depthWrite: o.material.depthWrite,
+                glazed: o.material.transparent && o.material.opacity <= GLAZED_MAX_OPACITY,
+              };
             }
           });
 
@@ -493,7 +497,7 @@ function buildDeclaredMeshes() {
           }
           // The view is not going to change just because a file finished loading, so the border
           // has to be faded here as well as in the rule that keeps it faded.
-          setRenderMode(axisAligned ?? false);
+          setRenderMode(planView ?? false);
         }
       },
       undefined,
@@ -528,6 +532,7 @@ function applyJoints(index) {
       joint.node.quaternion.copy(joint.restQuaternion).multiply(turn);
     }
   }
+
 }
 
 const AXIS_VECTOR = {
@@ -628,6 +633,11 @@ function buildGripMark(index, model, pad) {
   plane.matrixWorldNeedsUpdate = true;
   view.add(plane);
   referenceMarks.push({ plane, index });
+}
+
+/** Whether this resource travels over the deck, itself or by riding something that does. */
+function travels(index) {
+  return MOVING_PARTS.has(modelOf(index).category) || carried(index);
 }
 
 /** Whether this resource rides something that travels, rather than standing on the deck. */
@@ -1167,7 +1177,7 @@ function updateDetail() {
   // in it - and the fill is put back here rather than left to the mode change that turns painting
   // on. A fill is only ever taken away in a free view, so one missed transition used to leave a
   // plan view drawn as bare outlines with nothing behind them, which is what it looked like.
-  if (axisAligned) {
+  if (planView) {
     for (const entry of meshes) {
       const wanted = fillsBox(entry);
       if (entry.mesh.material.visible !== wanted) entry.mesh.material.visible = wanted;
@@ -1185,17 +1195,18 @@ function updateDetail() {
   }
 }
 
-// Two ways to draw the same scene.
+// Whether the camera is looking straight down. The plan view is the one view drawn differently -
+// flatter, and with a container's walls kept - and it is the only one, because "higher" and
+// "nearer" are the same thing only from directly above.
 //
-// Looking down an axis, draw it the way the two-dimensional visualizer does: every resource
-// opaque, painted in tree order so a child covers its parent. That is what makes a deck legible
-// from above, and it is why the old viewer reads at a glance where a stack of translucent shells
-// does not. Depth testing is off, so the tree decides what is on top rather than the geometry -
-// which is correct here, since a child is always the thing you want to see.
-//
-// From any other angle that would be wrong: things behind would paint over things in front. So a
-// free view goes back to depth testing, with the enclosures translucent so you can see inside.
-let axisAligned = null;
+// What it is NOT is a drawing painted by rule. Both views let the depth buffer decide what covers
+// what, which is the one arbiter that is per-pixel and therefore right about every instance of a
+// model at once. The plan view used to sort by a number worked out from each resource's height,
+// with depth testing off; a number cannot be per instance - one mesh carries them all - so every
+// well on a deck was ordered as the tallest well in the room, and everything that had to be seen
+// over them needed its own exception. The exceptions are gone. What is left ordered by hand is
+// what has no depth of its own to test: grids, numbers, marks and outlines, up in OVERLAY_ORDER.
+let planView = null;
 
 // What a resource stands on, in facility mm, and then how deep it sits in the tree. Depth testing is
 // off in an axis view, so what paints last is what shows, and nesting alone decided that - which put
@@ -1210,19 +1221,18 @@ function paintOrderOf(index) {
   return world.matrices[index].elements[14] * PAINT_LEVEL + treeDepth(index) * 2;
 }
 
-// One mesh carries every instance of a model, so they share an order: the highest of them, since
-// that is the one that covering would be wrong.
-function paintOrder(entry) {
-  let order = -Infinity;
-  for (const index of entry.instances) order = Math.max(order, paintOrderOf(index));
-  return order;
-}
-
 // Anything drawn over the scene rather than in it - the origin marker, the highlight boxes, the
 // measurement legs - orders above every paint order a resource can reach. A fixed number cannot do
 // that on its own: paint order is a height in millimetres times PAINT_LEVEL, so the band has to
 // start past the tallest facility anyone will draw. Ten metres of stacked equipment is that.
 const OVERLAY_ORDER = 10_000 * PAINT_LEVEL;
+
+// The layer a part held over the deck is drawn in, above what stands on the deck. Not a height and
+// not a band of them: depth says what is over what, and this says only that a travelling part is
+// blended over the deck rather than into it. Whole numbers, with room for a vessel's own contents
+// between them.
+const CARRIED_LAYER = 2;
+
 
 // Whether a model's box is drawn as a filled solid at all. A part that travels over the deck is
 // drawn see-through wherever it is, and a model whose own geometry has arrived has no use for the
@@ -1270,33 +1280,38 @@ function setRenderMode(painter) {
     // objects.
     const isSpace = GROUND.has(entry.model.category);
     if (painter) {
-      // A part that travels over the deck is not content standing on it: drawn opaque it hides
-      // whatever it happens to be above, which is the one thing you need to see. It stays
-      // see-through, and paints last because that is where it physically is.
       material.transparent = true;
       material.opacity = OPACITY_OF(isSpace, moves, isTipRack, isShell);
       material.side = isShell || isSpace ? THREE.BackSide : THREE.FrontSide;
-      // Solid things sort by depth even here, so which of two overlapping ones is seen follows from
-      // where each actually stands. Render order cannot answer it: one mesh carries every instance
-      // of a model and so has one order for all of them, which let a tip rack 880 mm up on a bench
-      // lift every tip rack of its kind above a 96-head at 423 mm. Ground stays out of the depth
-      // buffer - it is a wash over the view, not a surface anything is behind.
+      // Depth decides, here as everywhere else. What stands on the deck writes depth as well as
+      // testing against it, so the higher of two surfaces wins per pixel - which is the one
+      // arbiter that is right about every instance of a model at once, where a render order can
+      // only ever be right about the model. A part held over the deck is the exception: it must
+      // not delete what it is above, so it tests without writing, and is drawn in the layer below.
+      // Ground stays out of the depth buffer entirely - a wash over the view, not a surface.
+      const rides = entry.instances.some((i) => travels(i));
       material.depthTest = !isSpace;
-      material.depthWrite = !isSpace && !moves;
-      // A shell that is not a container shows its outline and nothing else: drawn opaque, as
-      // everything is here, a device is a solid sheet the size of the device under everything
-      // standing on it. A container keeps its walls, which is what makes it read as one.
+      material.depthWrite = !isSpace && !rides;
+      // A shell that is not a container shows its outline and nothing else: a device drawn as a
+      // sheet the size of the device sits under everything standing on it. A container keeps its
+      // walls, which is what makes it read as one.
       material.visible = fillsBox(entry) && (!isShell || keepsWalls(entry));
-      // Still ordered, for the things depth cannot separate: coplanar fills, and the overlays and
-      // outlines below that are drawn without depth at all.
-      const order = paintOrder(entry);
-      entry.mesh.renderOrder = order;
-      // What is inside a vessel, and the tip standing in it, paint after its rim.
+      const layer = rides ? CARRIED_LAYER : 0;
+      entry.mesh.renderOrder = layer;
+      // Three layers, and only three. What stands on the deck; what is held over it; and, inside
+      // each of those, the things that share a surface with their own resource and so cannot be
+      // told apart by depth - a well's liquid against the cavity it sits in. Depth still decides
+      // between layers, so a part in the layer above is covered wherever the machine's own
+      // structure is over it.
       for (const overlay of entry.overlays ?? []) {
         if (overlay.userData.lit) overlay.material = overlay.userData.lit;
+        // Not against depth: a tip hangs below the spot that holds it and liquid sits below the
+        // cavity it fills, so depth would have a vessel hide its own contents. They are inside
+        // their own resource, which has already been placed by depth, and they are painted in
+        // that resource's layer - so what they can reach past is their own rim, and nothing else.
         overlay.material.depthTest = false;
         overlay.material.depthWrite = false;
-        overlay.renderOrder = order + (overlay.userData.behind ? 0.5 : 1);
+        overlay.renderOrder = layer + (overlay.userData.behind ? 0.5 : 1);
         overlay.material.needsUpdate = true;
       }
     } else {
@@ -1326,11 +1341,22 @@ function setRenderMode(painter) {
     root.traverse((o) => {
       if (!o.isMesh) return;
       if (o.userData.lit) o.material = o.userData.lit;
+      const modelled = o.userData.asModelled;
+      const rides = travels(o.userData.declaredBy);
       // Glazing comes out of an axis view. A part that travels keeps whatever it was modelled with,
       // see-through included: it is drawn that way so the deck under it can be read.
-      const carried = MOVING_PARTS.has(modelOf(o.userData.declaredBy).category);
-      const glazed = o.material.transparent && o.material.opacity <= GLAZED_MAX_OPACITY;
-      o.material.visible = !(painter && glazed && !carried);
+      o.material.visible = !(painter && modelled?.glazed && !rides);
+      if (!modelled) return;
+      // A part held over the deck is drawn see-through, as its box is, so that what it is above
+      // still reads through it. It does not write depth for the same reason; it still tests, so
+      // the machine's own structure above it covers it as it should.
+      const lifted = painter && rides;
+      o.material.transparent = lifted ? true : modelled.transparent;
+      o.material.opacity = lifted ? Math.min(modelled.opacity, MOVING_OPACITY) : modelled.opacity;
+      o.material.depthWrite = lifted ? false : modelled.depthWrite;
+      o.material.depthTest = true;
+      o.renderOrder = lifted ? CARRIED_LAYER : 0;
+      o.material.needsUpdate = true;
     });
   }
 
@@ -1391,28 +1417,19 @@ function setRenderMode(painter) {
   }
 }
 
-// Whether the camera is looking straight down. An axis view can be a plan or an elevation, and the
-// two want different things: a mark shows through what is standing on it only from above, where the
-// mark and the thing are in the same plane and one is simply on top of the other. From the front,
-// a line crossing a carrier is a line through it.
-let planView = null;
-
 function updateEdgeMode() {
   const direction = camera.position.clone().sub(controls.target).normalize();
-  const aligned =
-    Math.abs(direction.x) > 0.999 || Math.abs(direction.y) > 0.999 || Math.abs(direction.z) > 0.999;
-
-  const plan = aligned && Math.abs(direction.z) > 0.999;
+  // Looking straight down, and nothing else. An elevation is axis-aligned too and used to get the
+  // same treatment, which is wrong twice over: from the front, higher is not nearer, and a drawing
+  // painted by height puts the deck's back row in front of its front row. Looking straight up is
+  // not a plan either - what is highest is then furthest away.
+  const plan = direction.z > 0.999;
   // No frame is asked for: this runs inside one, and the camera only reaches an axis through an
   // input, which has asked for frames already and is still damping to a stop.
-  if (plan !== planView) {
-    planView = plan;
-    for (const mark of gridMarks) showThroughMarks(mark);
-  }
-
-  if (aligned === axisAligned) return;
-  axisAligned = aligned;
-  setRenderMode(aligned);
+  if (plan === planView) return;
+  planView = plan;
+  for (const mark of gridMarks) showThroughMarks(mark);
+  setRenderMode(plan);
 }
 
 /** Show or hide the faint copies of a grid's marks, which belong to a plan view alone. */
@@ -1746,7 +1763,7 @@ function buildMeshes() {
   }
   for (const line of edgeOf.values()) view.remove(line);
   edgeMaterials.clear();
-  axisAligned = null;
+  planView = null;
   detailScale = null;
   meshes = [];
   placementOf = new Array(world.names.length);
