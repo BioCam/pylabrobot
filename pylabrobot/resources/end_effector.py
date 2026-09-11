@@ -109,4 +109,12 @@ class MechanicalGripper(Link):
       )
 
   def serialize(self) -> dict:
-    return {**super().serialize(), "jaw_range": list(self.jaw_range)}
+    # The grip centre travels with the tool, so a reader is told it rather than left to work it out
+    # from the tool's size - which is what every reader has had to do, and what ties them to this
+    # tool's shape. Stated, not stored: it follows from the length, so anything reading a gripper
+    # back has to drop it rather than pass it to the constructor.
+    return {
+      **super().serialize(),
+      "jaw_range": list(self.jaw_range),
+      "tool_center_point": self.tool_center_point.serialize(),
+    }
