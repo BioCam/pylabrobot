@@ -2851,10 +2851,11 @@ class iSWAP:
   async def _unchecked_fw_request_gripper_tcp(self) -> Coordinate:
     """Ask the master where the gripper's tool centre point is. Nothing is guarded.
 
-    The master answers from what it tracks rather than from the drives, so it is only right after
-    certain commands have run: it has been measured wrong in nine of the arm's thirteen states, by
-    as much as 255 mm. `request_pose` reads the drives and runs the kinematics instead, and is what
-    anything relying on the answer should call. This is here to compare the two.
+    The master answers from what it tracks rather than from the drives, and it has only been
+    measured right with both joints at predefined stops. Away from them it answers the rotation
+    drive's own position, which is wrong by however far the arm reaches - 275 mm with the links
+    extended. `request_pose` reads the drives and runs the kinematics, and is what anything
+    relying on the answer should call.
 
     Returns:
       The tool centre point, in mm on the deck, as the master has it.
