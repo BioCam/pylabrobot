@@ -4,7 +4,7 @@ from typing import Optional, Tuple
 
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.end_effector import MechanicalGripper
-from pylabrobot.resources.manipulator import Link
+from pylabrobot.resources.manipulator import LinkBody
 from pylabrobot.resources.resource import Resource
 
 
@@ -63,22 +63,23 @@ class iSWAPHead(Resource):
     }
 
 
-# The material each part of the arm carries, measured on the manufacturer's own model: its size,
-# how far along the link it starts from the joint the link turns on, and how high it stands. A
-# part may start behind its joint, which is why the offset is stated rather than assumed to be
-# zero.
+# The material each part of the arm is made of, measured on the manufacturer's own model: its
+# size, and where the joint it turns on sits inside it. A member's origin is a corner, as any
+# resource's is, so the joint is somewhere within it rather than at the corner, and the arm turns
+# about the joint rather than about the corner.
 #
 # The heights are what makes the arm an arm rather than a flat plate: it steps down from the drive
 # to the plate it holds. They are measured against the height the Z drive reports, which is the
 # same plane `rotation_drive_z_offset_above_finger` is measured from - and the model agrees with
-# it independently, since the pads' underside comes out exactly that far below.
+# it independently, since the pads' underside comes out exactly that far below. Link 1's joint is
+# below its member because the rotation drive's column stands under the arm.
 LINK_1_BODY_SIZE = (163.4, 25.5, 15.3)
-LINK_1_BODY_LOCATION = Coordinate(-12.7, -12.75, 20.3)
+LINK_1_JOINT = Coordinate(12.7, 12.75, -20.3)
 GRIPPER_BODY_SIZE = (59.0, 90.0, 20.3)
-GRIPPER_BODY_LOCATION = Coordinate(-13.0, -45.0, 0.0)
+GRIPPER_JOINT = Coordinate(13.0, 45.0, 0.0)
 # A finger has no Y of its own: the jaw width stands it where it stands.
 GRIPPER_FINGER_SIZE = (135.0, 7.0, 8.0)
-GRIPPER_FINGER_LOCATION = Coordinate(6.5, 0.0, 4.0)
+GRIPPER_FINGER_LOCATION = GRIPPER_JOINT + Coordinate(6.5, 0.0, 4.0)
 # From the finger it is fixed to, as a child's location always is.
 GRIPPER_PAD_SIZE = (37.0, 4.0, 17.0)
 GRIPPER_PAD_LOCATION = Coordinate(109.0, 1.5, -17.0)
@@ -87,7 +88,7 @@ GRIPPER_PAD_LOCATION = Coordinate(109.0, 1.5, -17.0)
 # arm hangs below that: the drive reports where the material it carries is, not where its column
 # begins. The column stands on link 1 with nothing between them, so this follows link 1's own top
 # rather than being stated again - the two cannot drift apart.
-ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z = LINK_1_BODY_LOCATION.z + LINK_1_BODY_SIZE[2]
+ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z = -LINK_1_JOINT.z + LINK_1_BODY_SIZE[2]
 
 
 def iswap_head(
@@ -165,7 +166,13 @@ def iswap_gripper(
   )
   return MechanicalGripper(
     name=name,
-    tool_center_point=tool_center_point,
+    size_x=GRIPPER_BODY_SIZE[0],
+    size_y=GRIPPER_BODY_SIZE[1],
+    size_z=GRIPPER_BODY_SIZE[2],
+    proximal_joint=GRIPPER_JOINT,
+    # The caller states the grip centre from the wrist joint, as the arm reports it. This member's
+    # own frame starts at its corner, so the joint's place inside it carries the point across.
+    tool_center_point=GRIPPER_JOINT + tool_center_point,
     body=Resource(
       name=f"{name}_body",
       size_x=GRIPPER_BODY_SIZE[0],
@@ -174,7 +181,7 @@ def iswap_gripper(
       category="body",
       model=f"{model}_body",
     ),
-    body_location=GRIPPER_BODY_LOCATION,
+    body_location=Coordinate.zero(),
     fingers=fingers,
     finger_location=GRIPPER_FINGER_LOCATION,
     pads=pads,
@@ -185,24 +192,34 @@ def iswap_gripper(
   )
 
 
-def iswap_link_1(name: str, length: float) -> Link:
-  """The first link: the rotation joint to the wrist joint, with the arm bolted to it.
+def iswap_link_1(name: str, length: float) -> LinkBody:
+  """The first member: the rotation joint to the wrist joint, with the arm bolted to it.
 
   Args:
     name: what to call this one.
     length: joint to joint, in mm, as `iSWAPConfiguration.link_1_length` reports it.
 
   Returns:
-    The link.
+    The member.
   """
-  link = Link(name=name, length=length, category="iswap_link", model="hamilton_star_iswap_link_1")
+  member = LinkBody(
+    name=name,
+    size_x=LINK_1_BODY_SIZE[0],
+    size_y=LINK_1_BODY_SIZE[1],
+    size_z=LINK_1_BODY_SIZE[2],
+    proximal_joint=LINK_1_JOINT,
+    # The arm reports the link joint to joint, and this member's frame starts at its corner.
+    distal_joint=LINK_1_JOINT + Coordinate(length, 0.0, 0.0),
+    category="iswap_link",
+    model="hamilton_star_iswap_link_1",
+  )
   body = Resource(
-    name=f"{link.name}_body",
+    name=f"{member.name}_body",
     size_x=LINK_1_BODY_SIZE[0],
     size_y=LINK_1_BODY_SIZE[1],
     size_z=LINK_1_BODY_SIZE[2],
     category="body",
-    model=f"{link.model}_body" if link.model else None,
+    model=f"{member.model}_body" if member.model else None,
   )
-  link.assign_child_resource(body, location=LINK_1_BODY_LOCATION)
-  return link
+  member.assign_child_resource(body, location=Coordinate.zero())
+  return member

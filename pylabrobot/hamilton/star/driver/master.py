@@ -51,7 +51,7 @@ from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.end_effector import MechanicalGripper
 from pylabrobot.resources.hamilton.hamilton_decks import HamiltonDeck
 from pylabrobot.resources.hamilton.tip_creators import HamiltonTip, TipPickupMethod, TipSize
-from pylabrobot.resources.manipulator import Link
+from pylabrobot.resources.manipulator import LinkBody
 from pylabrobot.resources.resource import Resource
 
 logger = logging.getLogger(__name__)
@@ -1706,7 +1706,7 @@ class STARDriver:
   @staticmethod
   def _create_iswap_arm(
     resource: iSWAPHead, c: iSWAPConfiguration
-  ) -> Tuple[Optional[Link], Optional[MechanicalGripper]]:
+  ) -> Tuple[Optional[LinkBody], Optional[MechanicalGripper]]:
     """Hang the arm off the carriage: one link, and the gripper it carries.
 
     Link 1 turns on the rotation drive; the gripper turns on the wrist that link 1 carries, so it
@@ -1723,10 +1723,14 @@ class STARDriver:
     if c.link_1_length is None or c.tool_length is None:
       logger.warning("the iSWAP reported no link lengths, so its arm is not modelled")
       return None, None
-    link_1 = next((child for child in resource.children if isinstance(child, Link)), None)
+    link_1 = next((child for child in resource.children if isinstance(child, LinkBody)), None)
     if link_1 is None:
       link_1 = iswap_link_1(name="iswap_link_1", length=c.link_1_length)
-      resource.assign_child_resource(link_1, location=resource.reference_point)
+      # A member's origin is a corner, so it is placed by where its joint has to land: the joint
+      # goes on the drive's reference point, and the corner falls wherever that puts it.
+      resource.assign_child_resource(
+        link_1, location=resource.reference_point - link_1.proximal_joint
+      )
     gripper = next(
       (child for child in link_1.children if isinstance(child, MechanicalGripper)), None
     )
@@ -1750,7 +1754,10 @@ class STARDriver:
           else None
         ),
       )
-      link_1.assign_child_resource(gripper, location=Coordinate(link_1.get_size_x(), 0.0, 0.0))
+      # Likewise: the gripper's own joint lands on the wrist, which is link 1's far joint.
+      link_1.assign_child_resource(
+        gripper, location=cast(Coordinate, link_1.distal_joint) - gripper.proximal_joint
+      )
     return link_1, gripper
 
   async def _create_autoload_resource(self) -> None:

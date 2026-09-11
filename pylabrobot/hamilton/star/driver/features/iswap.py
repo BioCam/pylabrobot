@@ -15,7 +15,7 @@ from pylabrobot.hamilton.star.driver.errors import NoElementError, STARFirmwareE
 from pylabrobot.hamilton.star.resource_model import iSWAPHead
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.end_effector import MechanicalGripper
-from pylabrobot.resources.manipulator import Link
+from pylabrobot.resources.manipulator import LinkBody
 from pylabrobot.resources.rotation import Rotation
 
 if TYPE_CHECKING:
@@ -672,7 +672,7 @@ class iSWAP:
     None until anything has asked. Set by `request_plate_gripped`, which is the only thing that
     knows: the arm reports it from the fingers themselves, so a plate is not something this driver
     can infer from the commands it sent."""
-    self.link_1: Optional[Link] = None
+    self.link_1: Optional[LinkBody] = None
     self.gripper: Optional[MechanicalGripper] = None
 
   @property
@@ -902,7 +902,7 @@ class iSWAP:
     if self.link_1 is not None:
       # The carriage does not turn; the arm mounted on it does. Link 1 leaves the drive at the
       # drive's own angle less ninety degrees, which is the deck angle it lies along.
-      self.link_1.rotate_to(z=angle - 90.0)
+      self.link_1.rotate_to(z=angle - 90.0, pivot_coordinate=self.link_1.proximal_joint)
 
   def rotation_drive_get_reference_point_location(self) -> Optional[Coordinate]:
     """Where the model has the rotation drive's reference point, in mm on the deck.
@@ -966,7 +966,7 @@ class iSWAP:
       return
     straight = c.wrist_increments_to_deg(c.wrist_drive_predefined_increments["straight"])
     # The gripper is bolted to link 1's far end, which is link 1's length along its own span.
-    self.gripper.rotate_to(z=angle - straight)
+    self.gripper.rotate_to(z=angle - straight, pivot_coordinate=self.gripper.proximal_joint)
 
   def gripper_update_width(self, width: float) -> None:
     """Record how far apart the jaws stand on the resource that models them.
