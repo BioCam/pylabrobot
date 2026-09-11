@@ -8,11 +8,13 @@ fit a different one and the point moves with it.
 `MechanicalGripper` spans that offset, flange to grip centre, which is why it is a `Link`.
 """
 
-from typing import Optional, Sequence, Tuple, cast
+from typing import Any, Dict, Optional, Sequence, Tuple, cast
 
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.manipulator import Link
 from pylabrobot.resources.resource import Resource
+from pylabrobot.resources.rotation import Rotation
+from pylabrobot.serializer import deserialize
 
 
 class MechanicalGripper(Link):
@@ -32,6 +34,7 @@ class MechanicalGripper(Link):
     fingers: Sequence[Resource],
     finger_location: Coordinate,
     jaw_range: Tuple[float, float],
+    tool_center_point_z: float = 0.0,
     pads: Optional[Sequence[Resource]] = None,
     pad_location: Optional[Coordinate] = None,
     jaw_width: Optional[float] = None,
@@ -47,6 +50,8 @@ class MechanicalGripper(Link):
       fingers: the two jaws, either side of the span.
       finger_location: where a finger sits along and above the span. Its Y is `jaw_width`'s.
       jaw_range: the gap between the fingers, closed and open, in mm.
+      tool_center_point_z: how far the grip centre sits above where the tool is mounted, in mm.
+        Level with it when 0, and negative for a tool that grips below its own mounting.
       pads: what each finger meets the resource with, in the same order as `fingers`. A gripper
         whose fingers meet it themselves has none.
       pad_location: where a pad sits, from the finger it is fixed to. Given with `pads`.
@@ -61,6 +66,7 @@ class MechanicalGripper(Link):
     if pads is not None and len(pads) != len(fingers):
       raise ValueError(f"a gripper has a pad on each finger, not {len(pads)} on {len(fingers)}")
     self.jaw_range = jaw_range
+    self.tool_center_point_z = tool_center_point_z
 
     self.body = body
     self.assign_child_resource(body, location=body_location)
@@ -82,7 +88,7 @@ class MechanicalGripper(Link):
     Returns:
       The grip centre, which the fingers reach past.
     """
-    return Coordinate(self.get_size_x(), 0.0, 0.0)
+    return Coordinate(self.get_size_x(), 0.0, self.tool_center_point_z)
 
   @property
   def jaw_width(self) -> float:
@@ -114,3 +120,52 @@ class MechanicalGripper(Link):
       "jaw_range": list(self.jaw_range),
       "tool_center_point": self.tool_center_point.serialize(),
     }
+
+  @classmethod
+  def deserialize(cls, data: dict, allow_marshal: bool = False) -> "MechanicalGripper":
+    """Rebuild a gripper, taking its own parts back out of its children.
+
+    Its body and its two fingers are constructor arguments rather than children assigned after the
+    fact, so they are read off the front of `children`, in the order `__init__` put them there.
+    Anything after them is what the gripper was holding.
+    """
+    children = data["children"]
+    body, *fingers = (
+      Resource.deserialize(child, allow_marshal=allow_marshal) for child in children[:3]
+    )
+    pads = [pad for finger in fingers for pad in list(finger.children)]
+    for pad in pads:
+      pad.unassign()
+
+    def where(child: dict) -> Coordinate:
+      return cast(Coordinate, deserialize(child["location"], allow_marshal=allow_marshal))
+
+    gripper = cls(
+      name=data["name"],
+      length=data["length"],
+      body=body,
+      body_location=where(children[0]),
+      fingers=fingers,
+      finger_location=where(children[1]),
+      jaw_range=(data["jaw_range"][0], data["jaw_range"][1]),
+      tool_center_point_z=data["tool_center_point"]["z"],
+      pads=pads or None,
+      pad_location=where(children[1]["children"][0]) if pads else None,
+      category=data.get("category", "mechanical_gripper"),
+      model=data.get("model"),
+    )
+    rotation = data.get("rotation")
+    if rotation is not None:
+      gripper.rotation = cast(Rotation, deserialize(rotation, allow_marshal=allow_marshal))
+    for child in children[3:]:
+      gripper.assign_child_resource(
+        Resource.deserialize(child, allow_marshal=allow_marshal), location=where(child)
+      )
+    return gripper
+
+  def serialize_state(self) -> Dict[str, Any]:
+    return {**super().serialize_state(), "jaw_width": self.jaw_width}
+
+  def load_state(self, state: Dict[str, Any]) -> None:
+    super().load_state(state)
+    self.jaw_width = state["jaw_width"]
