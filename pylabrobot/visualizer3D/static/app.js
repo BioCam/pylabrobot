@@ -605,9 +605,9 @@ function gripCross(reach, width, opening) {
   return new THREE.ShapeGeometry(shapes);
 }
 
-/** A crosshair lying flat at the grip centre. */
+/** A crosshair lying flat at the grip centre, where the tool says its grip centre is. */
 function buildGripMark(index, model, pad) {
-  const [span] = sizeOf(model);
+  const tcp = model.tool_center_point;
   const [along] = sizeOf(pad);
   const plane = new THREE.Mesh(
     gripCross(along, GRIP_MARK_WIDTH, GRIP_MARK_OPENING),
@@ -619,8 +619,11 @@ function buildGripMark(index, model, pad) {
   plane.frustumCulled = false;
   plane.renderOrder = OVERLAY_ORDER + 5;
   plane.matrixAutoUpdate = false;
-  // Lying flat, centred on the far end of the span, which is the grip centre.
-  plane.userData.local = new THREE.Matrix4().makeTranslation(span, 0, 0);
+  // Lying flat, centred where the tool says it is programmed against. Read from the tool rather
+  // than taken as the far end of its own box: the two agree on this gripper, and only because its
+  // box is its link length - a tool that grips somewhere other than its tip would have the mark
+  // drawn at the tip, which is the one place it is not.
+  plane.userData.local = new THREE.Matrix4().makeTranslation(tcp.x, tcp.y, tcp.z);
   plane.matrix.multiplyMatrices(world.matrices[index], plane.userData.local);
   plane.matrixWorldNeedsUpdate = true;
   view.add(plane);
@@ -654,13 +657,14 @@ function buildReferenceMarks() {
   for (let index = 0; index < world.names.length; index++) {
     const model = modelOf(index);
 
-    // A gripper says where it grips by being a link: it spans the joint it turns on to the point it
-    // is programmed against, so the far end of its own span IS that point. What is worth seeing
-    // there is not a line on the deck but the face the pads close on, so the mark is a pad-sized
-    // rectangle standing at the grip centre - a third pad, in the middle, where the resource goes.
+    // A gripper states the point it is programmed against, and that is what gets the mark. What is
+    // worth seeing there is not a line on the deck but the face the pads close on, so the mark is
+    // drawn as long as a pad - a crosshair in the middle, where the resource goes.
     if (model.category === GRIPPER) {
       const pad = padOf(index);
-      if (pad) buildGripMark(index, model, pad);
+      // A tool that does not say where it grips gets no mark: the point is the tool's to state,
+      // and guessing it from the box is what this stopped doing.
+      if (pad && model.tool_center_point) buildGripMark(index, model, pad);
       continue;
     }
 
