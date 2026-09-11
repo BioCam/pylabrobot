@@ -166,9 +166,6 @@ def iswap_gripper(
   )
   return MechanicalGripper(
     name=name,
-    size_x=GRIPPER_BODY_SIZE[0],
-    size_y=GRIPPER_BODY_SIZE[1],
-    size_z=GRIPPER_BODY_SIZE[2],
     proximal_joint=GRIPPER_JOINT,
     # The caller states the grip centre from the wrist joint, as the arm reports it. This member's
     # own frame starts at its corner, so the joint's place inside it carries the point across.
