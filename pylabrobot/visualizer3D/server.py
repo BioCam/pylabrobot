@@ -149,6 +149,11 @@ class Viewer3D:
     # already watching an epoch their indices no longer match.
     self._scene_payload: Optional[Dict[str, Any]] = None
     self._scene_dirty = False
+    # Who has moved since that scene was built. The scene places every resource where it stood at
+    # build time and is handed out unchanged afterwards, so for anything that has moved since, the
+    # placement a new client is given is out of date - and a part that moved once, before that
+    # client arrived, would never be corrected by a later delta because there is no later delta.
+    self._moved: set = set()
     self._scene_timer: Optional[asyncio.TimerHandle] = None
     self.rebuilds = 0  # how many scene rebuilds a run actually cost
 
@@ -179,6 +184,8 @@ class Viewer3D:
 
   def _enqueue(self, name: str, state: dict) -> None:
     self._pending[name] = state
+    if "location" in state:
+      self._moved.add(name)
     if self._loop is not None and not self._flush_scheduled:
       self._flush_scheduled = True
       self._loop.call_soon(lambda: asyncio.ensure_future(self._flush()))
@@ -262,6 +269,8 @@ class Viewer3D:
     self._epoch += 1
     self._index_of = {name: i for i, name in enumerate(payload["instances"]["names"])}
     self._published = {}
+    # Placed afresh, so nothing has moved since.
+    self._moved = set()
     self._stats = scene.stats(scene_bytes=len(json.dumps(payload)))
     self._scene_payload = {
       **payload,
@@ -296,10 +305,18 @@ class Viewer3D:
       # In a snapshot, a resource with nothing left to say is left out entirely: absent already
       # means default to a client that has just arrived. In a delta it is kept, because there it
       # means "no longer what I last told you".
-      without_location = {k: v for k, v in published.items() if k != "location"}
-      cleaned, _ = state_signature(without_location)
+      #
+      # A resource that has moved since the scene was built keeps its position, whatever the
+      # paragraph above says: for that one the scene is what is out of date, and this is the only
+      # message that will ever correct it.
+      trimmed = (
+        published
+        if name in self._moved
+        else {k: v for k, v in published.items() if k != "location"}
+      )
+      cleaned, _ = state_signature(trimmed)
       if cleaned:
-        fresh[name] = without_location
+        fresh[name] = trimmed
     return pack_state(fresh, self._epoch)
 
   # What `reference_glb` promises: the file is in the resource's own frame, metres, Z up. Stated
