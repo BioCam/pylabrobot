@@ -122,21 +122,18 @@ def iswap_head(
 
 def iswap_gripper(
   name: str,
-  length: float,
+  tool_center_point: Coordinate,
   jaw_range: Tuple[float, float],
-  tool_center_point_z: float,
   jaw_width: Optional[float] = None,
 ) -> MechanicalGripper:
   """The iSWAP's hand: the wrist joint to the centre the clamps hold a rack at.
 
   Args:
     name: what to call this one.
-    length: the wrist joint to the grip centre, in mm, as `iSWAPConfiguration.tool_length`
-      reports it.
+    tool_center_point: the wrist joint to the grip centre, in mm. Its reach is
+      `iSWAPConfiguration.tool_length`; it grips below the wrist, so its z is negative.
     jaw_range: how far apart the jaws stand, closed and open, in mm, as the gripper drive's own
       travel gives it.
-    tool_center_point_z: how far the grip centre sits above the wrist, in mm. Below it, so
-      negative: the Z drive is calibrated to the finger plane and reports its own bottom.
     jaw_width: how far apart they stand to begin with, in mm. The width the drive homes and parks
       at, where the stored table has been read.
 
@@ -168,7 +165,7 @@ def iswap_gripper(
   )
   return MechanicalGripper(
     name=name,
-    length=length,
+    tool_center_point=tool_center_point,
     body=Resource(
       name=f"{name}_body",
       size_x=GRIPPER_BODY_SIZE[0],
@@ -183,7 +180,6 @@ def iswap_gripper(
     pads=pads,
     pad_location=GRIPPER_PAD_LOCATION,
     jaw_range=jaw_range,
-    tool_center_point_z=tool_center_point_z,
     jaw_width=jaw_width,
     model=model,
   )

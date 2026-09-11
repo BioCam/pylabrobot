@@ -1735,7 +1735,9 @@ class STARDriver:
       # measurement of the fingers: what the drive accepts is what the jaws do.
       gripper = iswap_gripper(
         name="iswap_gripper",
-        length=c.tool_length,
+        # The Z drive is calibrated to the finger plane and reports its own bottom, so the grip
+        # centre is that far below the wrist the gripper hangs from.
+        tool_center_point=Coordinate(c.tool_length, 0.0, -c.rotation_drive_z_offset_above_finger),
         jaw_range=(
           c.gripper_increments_to_mm(c.gripper_range_increments[0]),
           c.gripper_increments_to_mm(c.gripper_range_increments[1]),
@@ -1747,9 +1749,6 @@ class STARDriver:
           if c.gripper_drive_predefined_increments
           else None
         ),
-        # The Z drive is calibrated to the finger plane and reports its own bottom, so the grip
-        # centre is that far below the wrist the gripper hangs from.
-        tool_center_point_z=-c.rotation_drive_z_offset_above_finger,
       )
       link_1.assign_child_resource(gripper, location=Coordinate(link_1.get_size_x(), 0.0, 0.0))
     return link_1, gripper
