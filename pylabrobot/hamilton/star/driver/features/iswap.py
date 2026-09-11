@@ -8,7 +8,7 @@ import enum
 import logging
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Tuple, Union, cast
+from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Sequence, Tuple, Union, cast
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 from pylabrobot.hamilton.star.driver.errors import NoElementError, STARFirmwareError
@@ -38,9 +38,42 @@ GRIPPER_DECK_DIRECTIONS: Dict[str, float] = {
 
 RECORDED_FIRMWARE_PREFIX = "4."
 
-# The front of the deck, in the deck's own frame, which is the frame every position here is in.
-# Zero by definition rather than by measurement: it is where the deck's coordinates start.
-DECK_FRONT_EDGE_Y = 0.0
+# The rotation drive's own dimensions, in mm. Module constants rather than field defaults alone,
+# because the front limit below is worked out from them before any configuration exists.
+ROTATION_DRIVE_DIAMETER = 30.5
+ROTATION_DRIVE_SAFETY_RADIUS = 90.0
+
+# The arm this driver assumes it is on until it has read the one it is actually on. Twelve channels
+# is more than most arms carry, and every extra channel in front of the drive holds the drive
+# further back, so assuming twelve errs the safe way: it refuses poses a narrower arm could reach,
+# rather than allowing ones a wider arm could not. `iSWAP.declare_front_limit` replaces all three
+# with what the arm reports, at discovery.
+ASSUMED_CHANNELS = 12
+ASSUMED_CHANNEL_WIDTH = 9.0
+ASSUMED_ARM_FRONT_LIMIT = 6.0
+
+
+def rotation_drive_front_limit(
+  arm_front_limit: float, channel_widths: Sequence[float], swept_radius: float
+) -> float:
+  """How far forward the rotation drive can be brought, in mm.
+
+  Not the arm's own front limit: the channels ride in front of the drive on the same rail, and the
+  drive stops behind the backmost of them however far forward they are packed. Packed is what this
+  measures - every channel against the front of the arm's travel, each taking its own width - so
+  it is the limit with the deck cleared, not wherever the channels happen to be standing.
+
+  Args:
+    arm_front_limit: the front of the arm's own Y travel, in mm.
+    channel_widths: how wide each channel is, in mm, backmost first.
+    swept_radius: how far from the drive's centre anything it carries reaches, in mm.
+
+  Returns:
+    The furthest forward the drive's own reference point can be sent, in mm.
+  """
+  if not channel_widths:
+    return arm_front_limit
+  return arm_front_limit + sum(channel_widths[1:]) + channel_widths[0] / 2 + swept_radius
 
 
 @dataclass
@@ -240,12 +273,23 @@ class iSWAPConfiguration:
   y_speed_default_increments: int = 4_751
   y_current_limit_default: int = 7
   y_acceleration_level_default: int = 2
-  rotation_drive_diameter: float = 30.5
+  rotation_drive_diameter: float = ROTATION_DRIVE_DIAMETER
   """How wide the rotation drive is, in mm."""
 
-  rotation_drive_safety_radius: float = 90.0
+  rotation_drive_safety_radius: float = ROTATION_DRIVE_SAFETY_RADIUS
   """How far past the drive's own edge anything it carries reaches, in mm. A clearance that holds
   at every rotation angle is the drive's radius plus this."""
+
+  rotation_drive_y_min: float = rotation_drive_front_limit(
+    ASSUMED_ARM_FRONT_LIMIT,
+    [ASSUMED_CHANNEL_WIDTH] * ASSUMED_CHANNELS,
+    ROTATION_DRIVE_DIAMETER / 2 + ROTATION_DRIVE_SAFETY_RADIUS,
+  )
+  """How far forward the rotation drive can be brought, in mm: the front stop the channels leave it.
+
+  The one bound here that is not the drive's own. Defaulted for the assumed twelve-channel arm, so
+  a driver that has not read a device still has a limit rather than none, and overwritten with the
+  arm's own channels by `iSWAP.declare_front_limit` at discovery."""
 
   rotation_drive_size_z: float = 120.0
   """How tall to model the rotation drive, in mm. Not read from anywhere: how far the drive extends
@@ -784,6 +828,40 @@ class iSWAP:
     await self.wrist_drive_request_positions()
     await self.rotation_drive_request_predefined_z_positions()
     await self.gripper_drive_request_widths()
+    await self.declare_front_limit()
+
+  async def declare_front_limit(self) -> None:
+    """Work out how far forward the rotation drive can be brought, and record it.
+
+    The drive's back stop is its own and is read with the rest of its stored table. Its front stop
+    is not: the channels ride in front of it on the same rail, so how far forward it goes is a fact
+    about the arm it is on rather than about the drive. It is worked out here, once, from the arm's
+    own channel count and widths - `rotation_drive_front_limit` is the arithmetic - and it replaces
+    the assumed twelve-channel limit the configuration carries until this runs.
+
+    The channels are discovered alongside this feature rather than before it, so a width that has
+    not arrived yet is asked for here rather than waited on. Nothing moves: these are reads, and
+    the same read the channels' own discovery makes.
+
+    An arm with no channels keeps whatever the configuration holds: there is nothing in front of
+    the drive to work a limit out from, and an assumed limit is better than none.
+    """
+    device = self._driver.configuration
+    pipettes = self.arm.pipettes
+    if device is None or pipettes is None or not pipettes.configuration.channels:
+      return
+    widths = [channel.width for channel in pipettes.configuration.channels]
+    if any(width is None for width in widths):
+      widths = [await pipettes.request_min_pipette_width(channel) for channel in range(len(widths))]
+    front = (
+      device.left_arm_min_y_position if self.arm.side == "left" else device.right_arm_min_y_position
+    )
+    self.configuration.rotation_drive_y_min = round(
+      rotation_drive_front_limit(
+        front, cast(List[float], widths), self.configuration.rotation_drive_swept_radius
+      ),
+      2,
+    )
 
   # -- initialization --------------------------------------------------------
 
@@ -1880,18 +1958,24 @@ class iSWAP:
       gripper_relative_angle: where the wrist is being sent, in degrees.
 
     Raises:
-      ValueError: If either joint would land behind the drive's own back stop, or in front of the
-        deck.
+      ValueError: If either joint would land behind the drive's own back stop, or further forward
+        than the arm can carry it.
     """
     y_max = self.configuration.rotation_drive_y_max
     if y_max is None:
       return
     pose = self._compute_pose_at_angles(rotation_angle, gripper_relative_angle)
-    # Both moving joints, not only the far one: link 1 is long enough to put the wrist behind the
-    # rail while the grip centre is still clear of it.
-    for what, point in (
-      ("wrist joint", pose.wrist_joint_location),
-      ("grip centre", pose.gripper_center_location),
+    # Known, or `_compute_pose_at_angles` would have refused to work the pose out at all.
+    link_1 = cast(float, self.configuration.link_1_length)
+    tool = cast(MechanicalGripper, self.gripper).tool_center_point.x
+    # Each joint against the window it can be carried through: back, the drive's own stop, which
+    # both joints reach past by their own length; front, the stop the channels leave the drive,
+    # less that same length. Both moving joints, not only the far one - link 1 alone is long enough
+    # to put the wrist behind the rail while the grip centre is still clear of it.
+    y_min = self.configuration.rotation_drive_y_min
+    for what, point, front in (
+      ("wrist joint", pose.wrist_joint_location, y_min - link_1),
+      ("grip centre", pose.gripper_center_location, y_min - link_1 - tool),
     ):
       if point.y > y_max:
         raise ValueError(
@@ -1900,15 +1984,12 @@ class iSWAP:
           f"reaches - the X-arm runs across the back of the deck there. Turn the arm the other "
           f"way, or move the drive forward first"
         )
-      # And the other end of the same window. The drive's own travel stops at the deck's front
-      # edge, and the arm it carries reaches a long way past the drive: turned to the front with
-      # the carriage well forward, the grip centre swings off the front of the deck entirely -
-      # a pose the drive's Y limits say nothing about, since the drive itself never goes there.
-      if point.y < DECK_FRONT_EDGE_Y:
+      if point.y < front:
         raise ValueError(
           f"rotation {rotation_angle:.2f} deg with the wrist at {gripper_relative_angle:.2f} would put the "
-          f"{what} at y {point.y:.1f} mm, in front of the deck, which starts at "
-          f"{DECK_FRONT_EDGE_Y:.1f} mm. Turn the arm the other way, or move the drive back first"
+          f"{what} at y {point.y:.1f} mm, in front of the {front:.1f} mm the arm reaches with the "
+          f"drive at its own front stop of {y_min:.1f} mm - the channels ride in front of it and "
+          f"it stops behind them. Turn the arm the other way, or move the drive back first"
         )
 
   async def _record_where_the_joints_stopped(self) -> None:
