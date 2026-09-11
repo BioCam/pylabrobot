@@ -38,10 +38,10 @@ from pylabrobot.hamilton.star.driver.lock import _FirmwareLock
 from pylabrobot.hamilton.star.resource_model import (
   ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z,
   NChannelPipette,
-  iswap_channel,
   iswap_gripper,
+  iswap_head,
   iswap_link_1,
-  iSWAPChannel,
+  iSWAPHead,
 )
 from pylabrobot.hamilton.star.resource_model import head96 as head96_pipette
 from pylabrobot.hamilton.star.resource_model import head384 as head384_pipette
@@ -1656,9 +1656,9 @@ class STARDriver:
       z = await iswap.rotation_drive_request_z_position()
       angle = await iswap.rotation_drive_request_angle()
       existing = next(
-        (child for child in arm.resource.children if child.name == "iswap_channel"), None
+        (child for child in arm.resource.children if child.name == "iswap_head"), None
       )
-      resource = existing if isinstance(existing, iSWAPChannel) else None
+      resource = existing if isinstance(existing, iSWAPHead) else None
       if resource is None:
         if c.rotation_drive_x_offset is None:
           raise RuntimeError(
@@ -1677,8 +1677,8 @@ class STARDriver:
           + c.rotation_drive_z_offset_above_finger
           + ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z
         )
-        resource = iswap_channel(
-          name="iswap_channel",
+        resource = iswap_head(
+          name="iswap_head",
           diameter=c.rotation_drive_diameter,
           size_z=round(max(tops) - retracted_base, 1) if tops else c.rotation_drive_size_z,
         )
@@ -1705,7 +1705,7 @@ class STARDriver:
 
   @staticmethod
   def _create_iswap_arm(
-    resource: iSWAPChannel, c: iSWAPConfiguration
+    resource: iSWAPHead, c: iSWAPConfiguration
   ) -> Tuple[Optional[Link], Optional[MechanicalGripper]]:
     """Hang the arm off the carriage: one link, and the gripper it carries.
 

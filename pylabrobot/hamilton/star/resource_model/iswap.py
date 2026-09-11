@@ -1,4 +1,4 @@
-"""The iSWAP: the carriage its arm turns on, and the links that arm is made of."""
+"""The iSWAP: the head its arm turns on, and the links that arm is made of."""
 
 from typing import Optional, Tuple
 
@@ -8,20 +8,16 @@ from pylabrobot.resources.manipulator import Link
 from pylabrobot.resources.resource import Resource
 
 
-class iSWAPChannel(Resource):
-  """The carriage the iSWAP's arm is mounted on.
-
-  A channel in the sense the pipetting channels are: a body that rides the arm and carries its own
-  Y and Z drives.
+class iSWAPHead(Resource):
+  """The head the iSWAP's arm hangs from: the column its Y and Z drives ride.
 
   The drives position this, not the gripper: `reference_point` is the point they report, and where
   the gripper ends up follows from it through the two links and the joint angles. A resource is
   located by its left front bottom corner, so the drives' readings are offset by this point before
   being recorded.
 
-  It carries no children. What the arm holds hangs off the gripper, which is not modelled: where
-  the gripper is depends on the joint state rather than on where this sits, so it does not follow
-  this resource in the way a tip follows a mounting shaft.
+  The arm is its child, so it travels with the head, and where the gripper ends up within that
+  follows from the joint angles rather than from where this sits.
   """
 
   def __init__(
@@ -31,7 +27,7 @@ class iSWAPChannel(Resource):
     size_y: float,
     size_z: float,
     reference_point: Coordinate,
-    category: str = "iswap_channel",
+    category: str = "iswap_head",
     model: Optional[str] = None,
   ):
     """
@@ -94,25 +90,25 @@ GRIPPER_PAD_LOCATION = Coordinate(109.0, 1.5, -17.0)
 ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z = LINK_1_BODY_LOCATION.z + LINK_1_BODY_SIZE[2]
 
 
-def iswap_channel(
+def iswap_head(
   name: str,
   diameter: float,
   size_z: float,
-) -> iSWAPChannel:
-  """The channel, modelled as the cylinder the rotation drive sweeps around.
+) -> iSWAPHead:
+  """The head, modelled as the column standing above the arm.
 
-  Square in plan, spanning the drive's diameter, because a resource is a box. The drives report its
-  centre in X and Y and its bottom in Z, which is what `reference_point` states.
+  Square in plan, spanning the column's diameter, because a resource is a box. The drives report
+  its centre in X and Y, and a point below its base in Z, which is what `reference_point` states.
 
   Args:
     name: what to call this one.
-    diameter: how wide the drive is, in mm.
+    diameter: how wide the column is, in mm.
     size_z: how tall to model it, in mm.
 
   Returns:
-    The drive.
+    The head.
   """
-  return iSWAPChannel(
+  return iSWAPHead(
     name=name,
     size_x=diameter,
     size_y=diameter,
@@ -120,7 +116,7 @@ def iswap_channel(
     # The Z drive reports a point below the column's own base - the arm it carries hangs there -
     # so the reference point states that, and the resource lands that far above what is read.
     reference_point=Coordinate(diameter / 2, diameter / 2, -ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z),
-    model="hamilton_star_iswap_channel",
+    model="hamilton_star_iswap_head",
   )
 
 

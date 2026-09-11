@@ -1,9 +1,9 @@
 from pylabrobot.hamilton.star.resource_model.iswap import (
   ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z,
-  iswap_channel,
   iswap_gripper,
+  iswap_head,
   iswap_link_1,
-  iSWAPChannel,
+  iSWAPHead,
 )
 from pylabrobot.hamilton.star.resource_model.n_channel_pipettes import (
   NChannelPipette,
@@ -15,8 +15,8 @@ from pylabrobot.hamilton.star.resource_model.n_channel_pipettes import (
 
 __all__ = [
   "ROTATION_DRIVE_COLUMN_ABOVE_REPORTED_Z",
-  "iSWAPChannel",
-  "iswap_channel",
+  "iSWAPHead",
+  "iswap_head",
   "iswap_link_1",
   "iswap_gripper",
   "NChannelPipette",

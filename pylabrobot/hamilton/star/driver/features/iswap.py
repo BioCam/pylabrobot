@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Sequence, Tuple
 
 from pylabrobot.hamilton.protocol.text.framing import parse_firmware_version_date
 from pylabrobot.hamilton.star.driver.errors import NoElementError, STARFirmwareError
-from pylabrobot.hamilton.star.resource_model import iSWAPChannel
+from pylabrobot.hamilton.star.resource_model import iSWAPHead
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.end_effector import MechanicalGripper
 from pylabrobot.resources.manipulator import Link
@@ -665,7 +665,7 @@ class iSWAP:
     """
     self._driver = driver
     self.configuration = configuration or iSWAPConfiguration()
-    self.resource: Optional[iSWAPChannel] = None
+    self.resource: Optional[iSWAPHead] = None
     self.gripped: Optional[bool] = None
     """Whether the arm is holding something, as it last reported.
 

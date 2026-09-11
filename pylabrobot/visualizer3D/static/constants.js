@@ -33,7 +33,7 @@ export const RESOURCE_COLORS = {
   x_arm: 0x6b7a85,
   // The iSWAP, in warm colours the deck does not use, so a thin arm over a full deck is findable
   // and its parts are told apart: the links carry the arm, the fingers are what points somewhere.
-  iswap_channel: 0x8c5a2b,
+  iswap_head: 0x8c5a2b,
   iswap_link: 0xd4761f,
   mechanical_gripper: 0xb8471f,
   body: 0xb8471f,
