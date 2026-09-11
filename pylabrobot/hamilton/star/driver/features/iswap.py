@@ -890,7 +890,7 @@ class iSWAP:
     if self.link_1 is not None:
       # The carriage does not turn; the arm mounted on it does. Link 1 leaves the drive at the
       # drive's own angle less ninety degrees, which is the deck angle it lies along.
-      self.link_1.turn_to(angle - 90.0)
+      self.link_1.rotate_to(z=angle - 90.0)
 
   def rotation_drive_get_reference_point_location(self) -> Optional[Coordinate]:
     """Where the model has the rotation drive's reference point, in mm on the deck.
@@ -954,7 +954,7 @@ class iSWAP:
       return
     straight = c.wrist_increments_to_deg(c.wrist_drive_predefined_increments["straight"])
     # The gripper is bolted to link 1's far end, which is link 1's length along its own span.
-    self.gripper.turn_to(angle - straight)
+    self.gripper.rotate_to(z=angle - straight)
 
   def gripper_update_width(self, width: float) -> None:
     """Record how far apart the jaws stand on the resource that models them.
