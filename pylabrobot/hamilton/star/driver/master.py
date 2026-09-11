@@ -274,7 +274,7 @@ class STARDriver:
     await self.io.stop()
 
   async def features_below_safe_z(self, tolerance: float = 0.5) -> List[str]:
-    """Which channels, heads and the autoload wheel report below where they are safe.
+    """Which channels, heads, iSWAP and the autoload wheel report below where they are safe.
 
     Read back rather than taken on trust. A retract that answered without arriving leaves the
     device looking safe while a lateral move would drive whatever is still low into whatever is in
@@ -286,7 +286,8 @@ class STARDriver:
       tolerance: how far below the top of the window still counts as up, in mm.
 
     Returns:
-      One entry per channel, head or wheel that is low, naming it and where it says it is. Empty
+      One entry per channel, head, arm or wheel that is low, naming it and where it says it is.
+      Empty
       when everything is up, which is the only state anything may travel laterally in.
     """
     low: List[str] = []
@@ -315,6 +316,16 @@ class STARDriver:
         else:
           if z < safe - tolerance:
             low.append(f"{arm.side} {name} at {z:.1f} mm, safe is {safe:.1f} mm")
+      iswap = arm.iswap
+      if iswap is not None:
+        safe = iswap.configuration.rotation_drive_z_range[1]
+        try:
+          z = await iswap.rotation_drive_request_z_position()
+        except Exception:
+          low.append(f"{arm.side} iSWAP (where it is could not be read)")
+        else:
+          if z < safe - tolerance:
+            low.append(f"{arm.side} iSWAP at {z:.1f} mm, safe is {safe:.1f} mm")
 
     autoload = self.autoload
     if autoload is not None and autoload.configuration.z_drive_safety_position is not None:
@@ -362,6 +373,10 @@ class STARDriver:
         for head in (arm.head96, arm.head384):
           if head is not None:
             safe_z_moves.append(head.move_to_safe_z())
+        # The arm is the same hazard as the rest: parking retracts it, and an arm left low is
+        # driven through whatever it is over on the way home.
+        if arm.iswap is not None:
+          safe_z_moves.append(arm.iswap.rotation_drive_move_to_safe_z_height())
       if self.autoload is not None:
         safe_z_moves.append(self.autoload.wheel_move_to_safe_z())
 

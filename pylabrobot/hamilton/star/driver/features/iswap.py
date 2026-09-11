@@ -645,6 +645,18 @@ class iSWAP:
   that move it go to the master, so this feature speaks to both.
   """
 
+  park_traverse_height_range: Tuple[float, float] = (145.0, 360.0)
+  """The band a park may be asked to lift to, in mm.
+
+  The top is what the command itself accepts; the floor is this driver's, and parking is refused
+  below it."""
+
+  default_minimum_traverse_height: float = 284.0
+  """How high the arm lifts to before it travels, in mm, when a caller names no height.
+
+  What legacy sends. Parking drives the arm down to its nest, so this is what holds it clear of the
+  deck until it is home."""
+
   def __init__(self, driver: "STARDriver", configuration: Optional[iSWAPConfiguration] = None):
     """
     Args:
@@ -2892,22 +2904,43 @@ class iSWAP:
 
   # -- parking ---------------------------------------------------------------
 
-  async def _unchecked_fw_park(self):
+  async def _unchecked_fw_park(self, traverse_height: Optional[float] = None):
     """Close the gripper and park the arm. Nothing is guarded and nothing is recorded.
 
-    No traversal height is sent, so the master travels at its own.
-    """
-    return await self._driver.send_command(module="C0", command="PG", subsystem="R0")
+    Args:
+      traverse_height: how high to lift to before travelling, in mm.
+        `default_minimum_traverse_height` when None.
 
-  async def park(self):
+    Raises:
+      ValueError: If the traverse height is outside what the command takes.
+    """
+    if traverse_height is None:
+      traverse_height = self.default_minimum_traverse_height
+    low, high = self.park_traverse_height_range
+    if not low <= traverse_height <= high:
+      raise ValueError(f"the arm parks from {low} to {high} mm, not {traverse_height}")
+    return await self._driver.send_command(
+      module="C0",
+      command="PG",
+      subsystem="R0",
+      th=f"{round(traverse_height * 10):04}",
+    )
+
+  async def park(self, traverse_height: Optional[float] = None):
     """Close the gripper and park the arm. This moves it.
 
-    It travels at the master's own traversal height, which is where the arm is safe.
+    Parking retracts the arm, which is lateral motion, so the arm lifts to `traverse_height` before
+    it starts. Sending no height leaves that to the master, which does not raise the arm: an arm
+    left out over the deck is driven down into whatever is under it.
 
     Every axis moves, so every axis is read back afterwards, whether or not the park answered.
+
+    Args:
+      traverse_height: how high to lift to before travelling, in mm.
+        `default_minimum_traverse_height` when None.
     """
     try:
-      return await self._unchecked_fw_park()
+      return await self._unchecked_fw_park(traverse_height)
     finally:
       # Parking drives every axis, so every axis is read back: each read records what it answered,
       # and one command answering does not say where the others stopped. Its own failure is logged
