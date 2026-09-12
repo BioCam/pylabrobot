@@ -1291,18 +1291,23 @@ function setRenderMode(plan) {
     // Ground stays out of the depth buffer in either view - a wash over the picture, not a surface
     // anything is behind.
     material.depthTest = !isSpace;
-    // The one place the two views genuinely differ about geometry. A plan is read by what is
-    // highest at each point, so everything writes depth and the higher surface wins per pixel -
-    // which is right about every instance of a model at once, where an order could only ever be
-    // right about the model. A free view is read by looking into things, so a shell stays out of
-    // the depth buffer and you see what is inside it.
+    // Everything writes depth, in either view, so the nearest surface wins per pixel - which is
+    // right about every instance of a model at once, where an order could only ever be right about
+    // the model.
+    //
+    // A container used to be held out of the depth buffer in a free view, so that you could look
+    // into it. It never needed to be: a container is drawn back-faces-only, so the only surface of
+    // a plate ever seen is its far wall, which stands behind its own contents and cannot hide
+    // them. What holding it out did instead was stop it hiding anything at all - a plate behind
+    // another still drew, a well printed through its own plate from underneath, and an empty
+    // well's white cavity read as floating with nothing around it.
     //
     // A part held over the deck writes too, and it costs nothing: it is drawn after everything it
     // is above, so the deck is already in the picture and a depth written now cannot rub it out.
     // What it does stop is the part shading itself - an arm is several surfaces and it carries
     // channels and an iSWAP, and with nothing to separate them each overlap blended again, so the
     // arm came out at a third of its own opacity here and two thirds there as it travelled.
-    material.depthWrite = plan ? !isSpace : !(isShell || isSpace);
+    material.depthWrite = !isSpace;
     // A shell that is not a container shows its outline and nothing else: a device drawn as a
     // sheet the size of the device sits under everything standing on it. A container keeps its
     // walls, which is what makes it read as one.
