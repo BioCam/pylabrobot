@@ -883,11 +883,17 @@ function updateArms(delta) {
 // Move the drawn instances to wherever the world now says they are. The transforms are worked out
 // in `world.js`, which has no idea any of this is on screen; this is only the part that is.
 function redraw(indices) {
+  const touched = new Set();
   for (const at of indices) {
     const [sx, sy, sz] = sizeOf(modelOf(at));
+    // A resource that is switched off is drawn nowhere, and moving it does not turn it back on.
+    // Putting the instance back at its new transform regardless is what brought a hidden plate's
+    // wells back the moment anything under it moved.
+    const visible = isVisible(at);
     const placement = placementOf[at];
     if (placement) {
-      placeInstance(placement.mesh, placement.slot, world.matrices[at], sx, sy, sz);
+      if (visible) placeInstance(placement.mesh, placement.slot, world.matrices[at], sx, sy, sz);
+      else placement.mesh.setMatrixAt(placement.slot, ZERO);
       placement.mesh.instanceMatrix.needsUpdate = true;
     }
     // An outline is its own object with its own baked matrix, so a move that touched only the
@@ -910,7 +916,11 @@ function redraw(indices) {
       root.matrix.copy(world.matrices[at]);
       root.matrixWorldNeedsUpdate = true;
     }
+    // A well's rim and cavity are their own instances, so a move that touched only the box left
+    // them where the resource was - and left them standing when the resource was switched off.
+    placeParts(at, touched);
   }
+  for (const mesh of touched) mesh.instanceMatrix.needsUpdate = true;
 }
 
 function refreshSubtree(index, skipSelf) {
@@ -1915,7 +1925,9 @@ function buildMeshes() {
       floor.frustumCulled = false;
       instances.forEach((globalIndex, slot) => {
         // A hair above its own base, or it fights the deck surface it stands on for depth.
-        placeInstance(floor, slot, world.matrices[globalIndex], sx, sy, 1, sx / 2, sy / 2, 0.3);
+        const at = [sx, sy, 1, sx / 2, sy / 2, 0.3];
+        placeInstance(floor, slot, world.matrices[globalIndex], ...at);
+        remember(globalIndex, floor, slot, at);
       });
       floor.instanceMatrix.needsUpdate = true;
       floor.userData.lit = floor.material;
@@ -2049,7 +2061,6 @@ function applyState(payload) {
 
 function refreshOverlays(index, touched) {
   const state = stateOf.get(index);
-  const visible = isVisible(index);
 
   if (MOVING_PARTS.has(modelOf(index).category)) {
     const tracked = state?.tracker?.x;
@@ -2075,8 +2086,15 @@ function refreshOverlays(index, touched) {
     if (vessel.mesh.instanceColor) vessel.mesh.instanceColor.needsUpdate = true;
   }
 
-  // Parts drawn outside the box pipeline follow the resource they belong to: emptied when it is
-  // switched off, put back where they stand when it is switched on.
+  placeParts(index, touched);
+}
+
+// A well's rim and its cavity, a carrier's floor, a fitted tip: everything drawn outside the box
+// pipeline. Each one follows the resource it belongs to - emptied when that resource is switched
+// off, put back where it stands when it is switched on, and carried along when it moves.
+function placeParts(index, touched) {
+  const visible = isVisible(index);
+
   for (const part of overlayOf.get(index) ?? []) {
     if (visible) placeInstance(part.mesh, part.slot, world.matrices[index], ...part.at);
     else part.mesh.setMatrixAt(part.slot, ZERO);
@@ -2088,7 +2106,7 @@ function refreshOverlays(index, touched) {
     const [sx, sy, sz] = sizeOf(tip.model);
     // `pending_tip` is the live intent; `tip` is what has been committed. The viewer follows
     // intent, so a pickup shows the moment it is requested.
-    const mounted = state ? state.pending_tip ?? null : null;
+    const mounted = stateOf.get(index)?.pending_tip ?? null;
     if (!mounted || !visible) tip.mesh.setMatrixAt(tip.slot, ZERO);
     else {
       const length = mounted.total_tip_length || sz;
@@ -3541,6 +3559,11 @@ function connect() {
       timings.meshesMs = performance.now() - _tBuild;
       const _tTree = performance.now();
       buildTree();
+      // A rebuild draws everything at its true position, but what was switched off stays switched
+      // off: the tree is rebuilt on every assignment while a deck is being laid out, and without
+      // this, hiding a plate and then assigning anything at all put the plate and its wells back
+      // on screen with the eye still showing them as hidden.
+      for (const name of [...hiddenNames]) setHidden(name, true);
       deviceTools.rebuild();
       timings.treeMs = performance.now() - _tTree;
       timings.readyMs = performance.now() - _t0;
