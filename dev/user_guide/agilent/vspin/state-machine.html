@@ -670,6 +670,11 @@
 <li class="toctree-l3"><a class="reference internal" href="../../thermo_fisher/btx/gemini/X2/hello-world.html">BTX Gemini X2</a></li>
 </ul>
 </details></li>
+<li class="toctree-l2 has-children"><a class="reference internal" href="../../thermo_fisher/nanodrop_1000/index.html">Thermo Fisher NanoDrop 1000</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
+<li class="toctree-l3"><a class="reference internal" href="../../thermo_fisher/nanodrop_1000/setup.html">NanoDrop 1000 setup</a></li>
+<li class="toctree-l3"><a class="reference internal" href="../../thermo_fisher/nanodrop_1000/hello-world.html">Thermo Fisher NanoDrop 1000</a></li>
+</ul>
+</details></li>
 </ul>
 </details></li>
 <li class="toctree-l1 has-children"><a class="reference internal" href="../../ufactory/index.html">UFACTORY</a><details><summary><span class="toctree-toggle" role="presentation"><i class="fa-solid fa-chevron-down"></i></span></summary><ul>
@@ -857,6 +862,8 @@ stores these as separate lifecycle dimensions: <code class="docutils literal not
 ready to move. Ordinary VSpin commands require initialization and homing to be complete,
 <code class="docutils literal notranslate"><span class="pre">activity</span> <span class="pre">==</span> <span class="pre">IDLE</span></code>, and <code class="docutils literal notranslate"><span class="pre">recovery_required</span> <span class="pre">==</span> <span class="pre">False</span></code>, followed by the command’s physical
 checks.</p>
+<p>Use <code class="docutils literal notranslate"><span class="pre">await</span> <span class="pre">loader.setup()</span></code> and <code class="docutils literal notranslate"><span class="pre">await</span> <span class="pre">loader.stop()</span></code> on the Access2 frontend to include
+semantic lifecycle events while delegating to the existing driver methods.</p>
 <p>For Access2, initialization and homing are read from controller status. Its semantic
 state records connection, operation, recovery, and the last confirmed teachpoint.</p>
 <p><code class="docutils literal notranslate"><span class="pre">stop()</span></code> closes the transport and invalidates session-scoped position knowledge.
