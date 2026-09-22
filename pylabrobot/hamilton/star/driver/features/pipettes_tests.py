@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 import unittest.mock
 from typing import Any, List, Optional, Tuple
@@ -110,6 +111,56 @@ class TestPositionInYDirection(unittest.IsolatedAsyncioTestCase):
     at_18, sent_18 = await channels(width=18.0, positions=current)
     await at_18.move_to_y_positions({3: 150.0}, make_space=True)
     self.assertEqual(sent_18[-1], jy("4000 3000 2000 1500 1320 1140 0960 0780"))
+
+
+class TestXYMove(unittest.IsolatedAsyncioTestCase):
+  """`move_to_xy_positions`: checked first, the low channels up, then X and Y together."""
+
+  SPREAD = [400.0, 300.0, 200.0, 160.0, 142.0, 124.0, 106.0, 88.0]
+
+  async def asyncSetUp(self):
+    self.pipettes, self.sent = await channels(width=9.0, positions=self.SPREAD)
+    await self.pipettes.move_stop_disc_to_z_positions({0: 200.0, 1: 250.0})
+    self.sent.clear()
+
+  def _first(self, prefix: str) -> int:
+    return next(i for i, command in enumerate(self.sent) if command.startswith(prefix))
+
+  async def test_only_the_low_channels_rise_and_before_x_and_y(self):
+    await self.pipettes.move_to_xy_positions(500.0, {0: 420.0})
+    raised = [command[:4] for command in self.sent if command[2:4] == "ZA"]
+    self.assertEqual(raised, ["P1ZA"])
+    self.assertIn("P1ZAza22838", self.sent[self._first("P1ZA")])
+    self.assertLess(self._first("P1ZA"), self._first("X0XP"))
+    self.assertLess(self._first("P1ZA"), self._first("C0JY"))
+
+  async def test_a_height_of_0_raises_nothing(self):
+    await self.pipettes.move_to_xy_positions(500.0, {0: 420.0}, minimum_traverse_height_start=0)
+    self.assertFalse([command for command in self.sent if command[2:4] == "ZA"])
+    self.assertTrue(any(command.startswith("X0XP") for command in self.sent))
+
+  async def test_a_refused_x_or_y_moves_nothing(self):
+    for x, ys in ((5000.0, {0: 420.0}), (500.0, {1: 399.0})):
+      with self.assertRaises(ValueError):
+        await self.pipettes.move_to_xy_positions(x, ys)
+    moves = [command for command in self.sent if command[2:4] in ("ZA", "XP", "JY")]
+    self.assertEqual(moves, [])
+
+  async def test_x_and_y_go_out_together(self):
+    """X waits for Y to be sent: moved one after the other, this would time out."""
+    recorded = self.pipettes._driver.send_command
+    y_sent = asyncio.Event()
+
+    async def x_waits_for_y(module: str, command: str, **kwargs: Any):
+      if command == "JY":
+        y_sent.set()
+      if command == "XP":
+        await asyncio.wait_for(y_sent.wait(), timeout=2)
+      return await recorded(module=module, command=command, **kwargs)
+
+    self.pipettes._driver.send_command = x_waits_for_y  # type: ignore[assignment]
+    await self.pipettes.move_to_xy_positions(500.0, {0: 420.0})
+    self.assertTrue(y_sent.is_set())
 
 
 async def simulated_channels() -> Pipettes:

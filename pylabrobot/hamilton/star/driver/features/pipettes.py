@@ -1129,22 +1129,22 @@ class Pipettes:
     positions = await self.request_y_positions()
     return positions[channel]
 
-  async def move_to_y_positions(self, ys: Dict[int, float], make_space: bool = False):
-    """Move channels along Y.
-
-    The channels not named stay where they are.
-
-    TODO: park the iSWAP first when one is installed. Legacy does, skipping the move when its
-    flag says it is already parked; v1 tracks no such state and has no query for it.
+  async def _plan_y_positions(
+    self, ys: Dict[int, float], make_space: bool = False
+  ) -> Dict[int, float]:
+    """Where every channel goes for a Y move, checked; nothing moves.
 
     Args:
       ys: where to put each named channel, in mm, keyed by channel, 0-indexed from the back.
-      make_space: whether the channels not named may be moved, so that every pair meets its
-        minimum Y spacing and the channels stay in order back to front. Off by default: nothing
-        moves that the caller did not ask to move, and a request that will not fit raises instead.
-        It can raise either way, since the requested positions may leave no room.
-    """
+      make_space: whether the channels not named may be moved. See `move_to_y_positions`.
 
+    Returns:
+      Every channel's target in mm, keyed by channel.
+
+    Raises:
+      ValueError: If a target is out of reach or two channels would stand too close.
+      RuntimeError: If no configuration has been read, or the frontmost channel reads out of range.
+    """
     if self._driver.configuration is None:
       raise RuntimeError("no configuration read; have you called `star.setup()`?")
     min_y = self._driver.configuration.left_arm_min_y_position
@@ -1212,7 +1212,14 @@ class Pipettes:
           f"Channels {i} and {i + 1} must be at least {required}mm apart, "
           f"but are {actual:.2f}mm apart."
         )
+    return channel_locations
 
+  async def _move_to_planned_y_positions(self, channel_locations: Dict[int, float]):
+    """Send every channel to its planned Y (`C0 JY`) and record where they are.
+
+    Args:
+      channel_locations: every channel's target in mm, from `_plan_y_positions`.
+    """
     yp = " ".join([f"{round(y * 10):04}" for y in channel_locations.values()])
     try:
       resp = await self._driver.send_command(
@@ -1227,6 +1234,23 @@ class Pipettes:
     for channel, y in channel_locations.items():
       self.update_location_by_reference_point(channel, y=y)
     return resp
+
+  async def move_to_y_positions(self, ys: Dict[int, float], make_space: bool = False):
+    """Move channels along Y.
+
+    The channels not named stay where they are.
+
+    TODO: park the iSWAP first when one is installed. Legacy does, skipping the move when its
+    flag says it is already parked; v1 tracks no such state and has no query for it.
+
+    Args:
+      ys: where to put each named channel, in mm, keyed by channel, 0-indexed from the back.
+      make_space: whether the channels not named may be moved, so that every pair meets its
+        minimum Y spacing and the channels stay in order back to front. Off by default: nothing
+        moves that the caller did not ask to move, and a request that will not fit raises instead.
+        It can raise either way, since the requested positions may leave no room.
+    """
+    return await self._move_to_planned_y_positions(await self._plan_y_positions(ys, make_space))
 
   async def move_to_y_position(self, channel: int, y: float, make_space: bool = False):
     """Move one channel along Y.
@@ -1610,6 +1634,75 @@ class Pipettes:
     """
     async with self._temporary_z_drive_profile(speed=speed, acceleration=acceleration):
       await self.probe_z_max()
+
+  # -- x and y together ----------------------------------------------------------------------------
+
+  async def _traverse_raise_targets(self, height: float) -> Dict[int, float]:
+    """The stop disc target of every channel whose lowest point is below `height`, checked.
+
+    A channel's lowest point is its tip bottom when it carries one, else its stop disc.
+
+    Args:
+      height: the height every lowest point has to reach, in mm.
+
+    Returns:
+      Each low channel's stop disc target in mm, keyed by channel; empty if none is low.
+
+    Raises:
+      ValueError: If a channel cannot raise its lowest point that high.
+    """
+    lowest = await self._unchecked_fw_request_lowest_z_positions()
+    targets = {}
+    for channel, z in lowest.items():
+      if z < height:
+        stop_disc = await self.request_stop_disc_z_position(channel)
+        targets[channel] = round(stop_disc + height - z, 2)
+        self._check_reachable("z", targets[channel])
+    return targets
+
+  async def move_to_xy_positions(
+    self,
+    x: float,
+    ys: Dict[int, float],
+    *,
+    make_space: bool = False,
+    minimum_traverse_height_start: Optional[float] = None,
+  ) -> None:
+    """Move the channels across the deck: the low ones up first, then X and Y together.
+
+    Everything is checked before anything moves. Every channel whose lowest point is below
+    `minimum_traverse_height_start` is raised to it, all at once; then the arm (`X0 XP`) and the
+    channels (`C0 JY`) travel at the same time.
+
+    Args:
+      x: where to send the arm, in mm. The channels share it.
+      ys: where to put each named channel, in mm, keyed by channel, 0-indexed from the back.
+      make_space: whether the channels not named may be moved in Y. See `move_to_y_positions`.
+      minimum_traverse_height_start: the height to raise every low channel's lowest point to
+        first, in mm. `default_minimum_traverse_height` when None; 0 raises nothing.
+
+    Raises:
+      ValueError: If X, a Y or a raise is out of reach, or two channels would stand too close.
+    """
+    height = (
+      self.default_minimum_traverse_height
+      if minimum_traverse_height_start is None
+      else minimum_traverse_height_start
+    )
+    self._check_reachable("x", x)
+    planned_ys = await self._plan_y_positions(ys, make_space)
+    raises = await self._traverse_raise_targets(height) if height > 0 else {}
+
+    if raises:
+      await self.move_stop_disc_to_z_positions(raises)
+    results = await asyncio.gather(
+      self.move_to_x_position(x),
+      self._move_to_planned_y_positions(planned_ys),
+      return_exceptions=True,
+    )
+    failed = [result for result in results if isinstance(result, BaseException)]
+    if failed:
+      raise failed[0]
 
   # -- spreading -----------------------------------------------------------------------------------
 
