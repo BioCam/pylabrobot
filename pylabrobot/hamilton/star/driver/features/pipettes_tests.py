@@ -113,6 +113,27 @@ class TestPositionInYDirection(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(sent_18[-1], jy("4000 3000 2000 1500 1320 1140 0960 0780"))
 
 
+class TestMinimumYSpacings(unittest.IsolatedAsyncioTestCase):
+  """What `plan_batches` is told about how close two channels may stand."""
+
+  async def test_every_pair_takes_the_channels_own_width(self):
+    pipettes, _ = await channels(width=9.0, positions=TestXYMove.SPREAD)
+    self.assertEqual(pipettes.minimum_y_spacings, [9.0] * 7 + [0.0])
+
+  async def test_a_wider_channel_widens_the_pairs_it_is_in(self):
+    pipettes, _ = await channels(width=9.0, positions=TestXYMove.SPREAD)
+    pipettes.configuration.channels[3].width = 12.0
+
+    self.assertEqual(pipettes.minimum_y_spacings, [9.0, 9.0, 12.0, 12.0, 9.0, 9.0, 9.0, 0.0])
+
+  async def test_a_width_the_device_has_not_reported_is_refused(self):
+    pipettes, _ = await channels(width=9.0, positions=TestXYMove.SPREAD)
+    pipettes.configuration.channels[0].width = None
+
+    with self.assertRaises(RuntimeError):
+      _ = pipettes.minimum_y_spacings
+
+
 class TestXYMove(unittest.IsolatedAsyncioTestCase):
   """`move_to_xy_positions`: checked first, the low channels up, then X and Y together."""
 
@@ -821,13 +842,33 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
       "&tm1 0 1 0 0 1 0&tp1970tz1870th2450te2450ti0",
     )
 
-  async def test_two_channels_closer_than_the_wider_of_them_are_refused(self):
-    pipettes, rack, _ = await channels_over_a_rack()
+  async def test_two_spots_in_one_column_too_close_go_in_separate_commands(self):
+    """The channels cannot stand that close, so the spots are taken one command after the other."""
+    pipettes, rack, sent = await channels_over_a_rack()
     spots = [rack.get_item("A1"), rack.get_item("B1")]
-    with self.assertRaises(ValueError):
-      await pipettes.pick_up_tips(
-        spots, use_channels=[0, 3], offsets=[Coordinate.zero(), Coordinate(y=4)]
-      )
+
+    await pipettes.pick_up_tips(
+      spots, use_channels=[0, 3], offsets=[Coordinate.zero(), Coordinate(y=4)]
+    )
+
+    picked_up = [command for command in sent if command.startswith("C0TP")]
+    self.assertEqual(len(picked_up), 2)
+    self.assertIn("tm1 0&", picked_up[0])
+    self.assertIn("tm0 0 0 1 0&", picked_up[1])
+    self.assertEqual(
+      [pipettes.get_mounted_tip(channel) is not None for channel in (0, 3)], [True, True]
+    )
+
+  async def test_spots_in_different_columns_still_go_in_one_command(self):
+    """As legacy sends them: the firmware works through the columns itself."""
+    pipettes, rack, sent = await channels_over_a_rack()
+    spots = [rack.get_item("A1"), rack.get_item("B2")]
+
+    await pipettes.pick_up_tips(spots, use_channels=[0, 1])
+
+    picked_up = [command for command in sent if command.startswith("C0TP")]
+    self.assertEqual(len(picked_up), 1)
+    self.assertIn("tm1 1 0&", picked_up[0])
 
   async def test_a_model_that_cannot_be_updated_does_not_hide_the_devices_error(self):
     """What the device said is the error worth having; a stale model is only logged."""
