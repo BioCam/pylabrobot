@@ -188,3 +188,22 @@ class TestLoadCarrier(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+class TestTheWheelsSafeZTolerance(unittest.IsolatedAsyncioTestCase):
+  """The drive answers its hardware counter, which rests a step or two past where it was sent."""
+
+  async def test_a_wheel_a_couple_of_steps_low_is_at_its_safe_z(self):
+    feature, _ = await autoload(failing=set())
+    with patch(LOWERED, feature.configuration.z_drive_increments_to_mm(2)):
+      self.assertTrue(await feature.wheel_is_at_safe_z())
+      low = await feature._driver.features_below_safe_z()
+      self.assertFalse([entry for entry in low if "autoload" in entry])
+
+  async def test_a_wheel_further_down_than_the_tolerance_is_not(self):
+    feature, _ = await autoload(failing=set())
+    with patch(LOWERED, 2.0):
+      self.assertFalse(await feature.wheel_is_at_safe_z())
+      self.assertIn(
+        "autoload wheel below its safe Z", await feature._driver.features_below_safe_z()
+      )
