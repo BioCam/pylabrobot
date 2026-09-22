@@ -2398,6 +2398,22 @@ class Pipettes:
     if len({tip.kind() for tip in hamilton_tips}) > 1:
       raise ValueError("the tips picked up together must all be of one kind")
 
+    # The command ends with the tip bottom at the height it travelled at, so the stop disc ends an
+    # overhang higher: a tall tip cannot travel as high as a short one.
+    height = (
+      self.default_minimum_traverse_height
+      if minimum_traverse_height_start is None
+      else minimum_traverse_height_start
+    )
+    overhang = max(tip.get_size_z() - tip.fitting_depth for tip in hamilton_tips)
+    ceiling = round(self.configuration.z_range[1] - overhang, 2)
+    if height > ceiling:
+      raise ValueError(
+        f"a tip {overhang:.1f} mm below the stop disc travels no higher than {ceiling} mm, "
+        f"not {height}"
+      )
+    traverse = round(height * 10)
+
     xs, ys, pattern = self._tip_command_positions(locations)
     tip_type_index = await self._driver.get_or_assign_tip_type_index(hamilton_tips[0])
 
@@ -2410,14 +2426,6 @@ class Pipettes:
     )
     end = (
       round(spot_z * 10) if end_tip_pick_up_process is None else round(end_tip_pick_up_process * 10)
-    )
-    traverse = round(
-      (
-        self.default_minimum_traverse_height
-        if minimum_traverse_height_start is None
-        else minimum_traverse_height_start
-      )
-      * 10
     )
 
     picked_up: Dict[int, bool] = {channel: True for channel in use_channels}
@@ -2623,14 +2631,21 @@ class Pipettes:
       (default_begin if begin_tip_deposit_process is None else begin_tip_deposit_process) * 10
     )
     end = round((default_end if end_tip_deposit_process is None else end_tip_deposit_process) * 10)
-    traverse = round(
-      (
-        self.default_minimum_traverse_height
-        if minimum_traverse_height_start is None
-        else minimum_traverse_height_start
-      )
-      * 10
+    # The command ends with the tip bottom at the height it travelled at, so the stop disc ends an
+    # overhang higher: a tall tip cannot travel as high as a short one.
+    height = (
+      self.default_minimum_traverse_height
+      if minimum_traverse_height_start is None
+      else minimum_traverse_height_start
     )
+    overhang = max(tip.get_size_z() - tip.fitting_depth for tip in tips)
+    ceiling = round(self.configuration.z_range[1] - overhang, 2)
+    if height > ceiling:
+      raise ValueError(
+        f"a tip {overhang:.1f} mm below the stop disc travels no higher than {ceiling} mm, "
+        f"not {height}"
+      )
+    traverse = round(height * 10)
     z_end = round(
       (
         self.default_minimum_traverse_height

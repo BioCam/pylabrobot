@@ -901,6 +901,33 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
     self.assertIsNone(pipettes.get_mounted_tip(0))
     self.assertIsNone(rack.get_item("A1").tip)
 
+  async def test_a_traverse_height_the_tip_cannot_reach_is_refused(self):
+    """The command ends with the tip bottom at that height, so the stop disc ends an overhang up."""
+    pipettes, rack, sent = await channels_over_a_rack()
+    spot = rack.get_item("A1")
+    ceiling = round(pipettes.configuration.z_range[1] - 51.9, 2)  # a 300 uL tip's overhang
+
+    with self.assertRaises(ValueError):
+      await pipettes.pick_up_tips(
+        [spot], use_channels=[0], minimum_traverse_height_start=ceiling + 1
+      )
+    self.assertEqual(sent, [])
+
+    await pipettes.pick_up_tips([spot], use_channels=[0], minimum_traverse_height_start=ceiling)
+    self.assertTrue(any(command.startswith("C0TP") for command in sent))
+
+  async def test_a_drop_refuses_the_same_height_while_the_tip_is_still_on(self):
+    pipettes, rack, sent = await channels_over_a_rack()
+    spot = rack.get_item("A1")
+    await pipettes.pick_up_tips([spot], use_channels=[0])
+    sent.clear()
+    ceiling = round(pipettes.configuration.z_range[1] - 51.9, 2)
+
+    with self.assertRaises(ValueError):
+      await pipettes.drop_tips([spot], use_channels=[0], minimum_traverse_height_start=ceiling + 1)
+    self.assertEqual(sent, [])
+    self.assertIsNotNone(pipettes.get_mounted_tip(0))
+
   async def test_a_model_that_cannot_be_updated_does_not_hide_the_devices_error(self):
     """What the device said is the error worth having; a stale model is only logged."""
     from unittest.mock import AsyncMock, patch
