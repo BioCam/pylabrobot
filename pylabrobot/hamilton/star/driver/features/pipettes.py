@@ -2314,6 +2314,7 @@ class Pipettes:
     end_tip_pick_up_process: int,
     minimum_traverse_height_start: int,
     pickup_method: TipPickupMethod,
+    read_timeout: int = 120,
   ):
     """Send the pick-up as it is given, in tenths of a millimetre. `C0 TP`."""
     return await self._driver.send_command(
@@ -2321,7 +2322,7 @@ class Pipettes:
       command="TP",
       subsystem=_FirmwareLock.CHANNELS,
       tip_pattern=tip_pattern,
-      read_timeout=120,
+      read_timeout=read_timeout,
       xp=[f"{x:05}" for x in x_positions],
       yp=[f"{y:04}" for y in y_positions],
       tm=tip_pattern,

@@ -342,6 +342,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
     end_tip_pick_up_process: int,
     minimum_traverse_height_start: int,
     pickup_method: TipPickupMethod,
+    read_timeout: int = 120,
   ):
     resp = await super()._unchecked_fw_pick_up_tips(
       x_positions=x_positions,
