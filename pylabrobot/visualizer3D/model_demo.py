@@ -101,7 +101,7 @@ def report(root: Resource) -> None:
   print()
 
 
-# How far forward to bring the rotation drive before turning it, in mm. Parked at the back of its
+# How far forward to bring the elbow before turning it, in mm. Parked at the back of its
 # travel the arm cannot turn at all: a quarter turn puts the wrist joint further back than the
 # drive itself reaches, and the guard refuses it. Clearing more than link 1's length leaves room
 # for the whole swing.
@@ -127,9 +127,9 @@ async def turn_the_arm(star: STARDevice) -> None:
   # there for the run.
   await iswap.make_space()
 
-  parked = await iswap.rotation_drive_request_y_position()
+  parked = await iswap.elbow_request_y_position()
   try:
-    await iswap.rotation_drive_move_to_y_position(parked - ROOM_TO_TURN)
+    await iswap.elbow_move_to_y_position(parked - ROOM_TO_TURN)
   except ValueError as refused:
     print(f"  the drive stays where it is, so the arm will not turn far: {refused}")
 
@@ -140,7 +140,7 @@ async def turn_the_arm(star: STARDevice) -> None:
     where = ("front", "left", "front", "right")[step % 4]
     try:
       await iswap.rotate_to_angles(
-        rotation_absolute_angle=where, gripper_absolute_angle="front", make_space=False
+        elbow_absolute_angle=where, gripper_absolute_angle="front", make_space=False
       )
     except ValueError as refused:
       # The guards stand between the arm and the channels, and a demo is not a reason to talk past

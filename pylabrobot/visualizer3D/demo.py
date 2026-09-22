@@ -207,7 +207,7 @@ async def sweep_arm(star) -> None:
     await asyncio.sleep(3.0)
 
 
-# How far forward to bring the rotation drive before turning it, in mm. Enough to clear link 1's
+# How far forward to bring the elbow before turning it, in mm. Enough to clear link 1's
 # own length, so the whole swing has room.
 ROOM_TO_TURN = 200.0
 
@@ -228,14 +228,14 @@ async def work_the_iswap(star) -> None:
   # which is right, and which left half of the poses below doing nothing at all. Clearing more than
   # link 1's length leaves room for the whole swing.
   await iswap.make_space()
-  parked = await iswap.rotation_drive_request_y_position()
+  parked = await iswap.elbow_request_y_position()
   try:
-    await iswap.rotation_drive_move_to_y_position(parked - ROOM_TO_TURN)
+    await iswap.elbow_move_to_y_position(parked - ROOM_TO_TURN)
   except ValueError as refused:
     print(f"  the drive stays where it is, so the arm will not turn far: {refused}")
 
   c = iswap.configuration
-  rotation_stops = ["front", "left", "front", "right"]
+  elbow_stops = ["front", "left", "front", "right"]
   gripper_directions = ["front", "back", "front", "back"]
   jaws = [
     c.gripper_increments_to_mm(c.gripper_range_increments[1]),
@@ -243,11 +243,11 @@ async def work_the_iswap(star) -> None:
   ]
 
   for step in itertools.count():
-    rotation = rotation_stops[step % len(rotation_stops)]
+    elbow = elbow_stops[step % len(elbow_stops)]
     gripper = gripper_directions[step % len(gripper_directions)]
     try:
       await iswap.rotate_to_angles(
-        rotation_absolute_angle=rotation, gripper_absolute_angle=gripper, raise_features=True
+        elbow_absolute_angle=elbow, gripper_absolute_angle=gripper, raise_features=True
       )
     except ValueError as refused:
       # The guards stand between the arm and the channels, and a demo is not a reason to talk
@@ -255,7 +255,7 @@ async def work_the_iswap(star) -> None:
       # Printed rather than logged: nothing configures logging here, so an `info` call is a
       # refusal nobody sees - and a pose silently not happening looks like a viewer that has
       # stopped drawing.
-      print(f"  the arm may not go to {rotation}/{gripper}: {refused}")
+      print(f"  the arm may not go to {elbow}/{gripper}: {refused}")
     await asyncio.sleep(2.5)
 
     await iswap.gripper_move_to_jaw_position(jaws[step % len(jaws)])
