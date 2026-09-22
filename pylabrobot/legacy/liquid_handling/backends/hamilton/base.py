@@ -14,7 +14,6 @@ from typing import (
   Sequence,
   Tuple,
   TypeVar,
-  Union,
 )
 
 from pylabrobot.hamilton.protocol.text.framing import to_list
@@ -27,6 +26,7 @@ from pylabrobot.resources import TipSpot
 from pylabrobot.resources.hamilton import (
   HamiltonCoreGripperTool,
   HamiltonTip,
+  HamiltonTool,
   TipPickupMethod,
   TipSize,
   hamilton_core_gripper_tool,
@@ -437,9 +437,7 @@ class HamiltonLiquidHandler(LiquidHandlerBackend, metaclass=ABCMeta):
   ):
     """Tip/needle definition in firmware."""
 
-  async def get_or_assign_tip_type_index(
-    self, tool: Union[HamiltonTip, HamiltonCoreGripperTool]
-  ) -> int:
+  async def get_or_assign_tip_type_index(self, tool: HamiltonTool) -> int:
     """Get a tip type table index for the tool, a tip or a grip tool.
 
     If a tool with the same definition has been defined, use that index. Otherwise, define a new
@@ -449,8 +447,15 @@ class HamiltonLiquidHandler(LiquidHandlerBackend, metaclass=ABCMeta):
 
     model = tool.model
     if model is None:
-      raise ValueError("Tip model must be defined to assign a tip type index.")
+      raise ValueError("Tool model must be defined to assign a tip type index.")
 
+    if isinstance(tool, HamiltonCoreGripperTool):
+      # Grip tools keep the firmware's definition (entry 14): their Z reference is the grip line.
+      # TODO: define the CO-RE gripper tools in firmware ourselves.
+      assert model in self._tip_type_indices, f"No firmware definition for CO-RE gripper {model}."
+      return self._tip_type_indices[model]
+
+    assert isinstance(tool, HamiltonTip), "Only Hamilton tips can be registered in firmware."
     if model not in self._tip_type_indices:
       taken = set(self._tip_type_indices.values())
       ttti = next((i for i in range(1, 100) if i not in taken), None)

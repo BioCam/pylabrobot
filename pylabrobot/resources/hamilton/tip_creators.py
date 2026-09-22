@@ -7,9 +7,10 @@ See the TT command.
 
 import enum
 import warnings
-from typing import Dict, Optional, Union
+from typing import Optional, Union
 
 from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.hamilton.hamilton_tool import HamiltonTool
 from pylabrobot.resources.tip import Tip
 
 
@@ -24,21 +25,10 @@ class TipSize(enum.Enum):
   XL = 5  # TODO: identify tip_collar_size_z
 
 
-# Outer diameter of a tip, by its size. Every tip for the 1000 uL channel has the CO-RE collar, which
-# measures 8.2 mm on the 300 uL tip, the 300 uL teaching needle and the CO-RE gripper tool.
-# TODO: measure the XL (4 mL and 5 mL) tips.
-TIP_DIAMETER: Dict[TipSize, float] = {
+TIP_DIAMETER = {
   TipSize.LOW_VOLUME: 8.2,
   TipSize.STANDARD_VOLUME: 8.2,
   TipSize.HIGH_VOLUME: 8.2,
-}
-
-# Height of a tip's collar, by its size - the band the channel's CO-RE latches hold.
-# TODO: measure the XL (4 mL and 5 mL) tips and the 384-head tip, which state no collar height.
-COLLAR_HEIGHT: Dict[TipSize, float] = {
-  TipSize.LOW_VOLUME: 6.0,
-  TipSize.STANDARD_VOLUME: 8.0,
-  TipSize.HIGH_VOLUME: 10.0,
 }
 
 
@@ -56,7 +46,7 @@ class TipDropMethod(enum.Enum):
   DROP = 1
 
 
-class HamiltonTip(Tip):
+class HamiltonTip(Tip, HamiltonTool):
   """Represents a single tip for Hamilton instruments."""
 
   def __init__(
@@ -102,7 +92,7 @@ class HamiltonTip(Tip):
       nominal_volume=nominal_volume,
       maximal_volume=maximal_volume,
       fitting_depth=fitting_depth,
-      collar_height=COLLAR_HEIGHT.get(tip_size) if collar_height is None else collar_height,
+      collar_height=collar_height,
       name=name,
       category=category,
       model=model,
@@ -320,6 +310,7 @@ def hamilton_tip_10uL(name: str) -> HamiltonTip:
     maximal_volume=15,
     tip_size=TipSize.LOW_VOLUME,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
+    collar_height=6.0,
   )
 
 
@@ -339,6 +330,7 @@ def hamilton_tip_10uL_filter(name: str) -> HamiltonTip:
     maximal_volume=10,
     tip_size=TipSize.LOW_VOLUME,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
+    collar_height=6.0,
   )
 
 
@@ -361,6 +353,7 @@ def hamilton_tip_50uL(name: str) -> HamiltonTip:
     maximal_volume=65,
     tip_size=TipSize.STANDARD_VOLUME,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
+    collar_height=8.0,
   )
 
 
@@ -378,6 +371,7 @@ def hamilton_tip_50uL_filter(name: str) -> HamiltonTip:
     maximal_volume=60,
     tip_size=TipSize.STANDARD_VOLUME,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
+    collar_height=8.0,
   )
 
 
@@ -386,8 +380,6 @@ def hamilton_tip_300uL(name: str) -> HamiltonTip:
 
   Variants:
     - Hamilton cat. no.: 235937 - black/conductive, framed EmbeddedTipRack, sterile
-    - Hamilton cat. no.: 235950 - black/conductive, nested StandingTipRack, non-sterile
-    - Hamilton cat. no.: 235985 - black/conductive, nested StandingTipRack, sterile
     - Hamilton cat. no.: 235965 - transparent, nested StandingTipRack, non-sterile
     - Hamilton cat. no.: 235931 - steel (single tip)
   """
@@ -400,6 +392,7 @@ def hamilton_tip_300uL(name: str) -> HamiltonTip:
     maximal_volume=400,
     tip_size=TipSize.STANDARD_VOLUME,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
+    collar_height=8.0,
   )
 
 
@@ -419,6 +412,7 @@ def hamilton_tip_300uL_filter(name: str) -> HamiltonTip:
     maximal_volume=360,
     tip_size=TipSize.STANDARD_VOLUME,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
+    collar_height=8.0,
   )
 
 
@@ -434,6 +428,7 @@ def hamilton_tip_300uL_filter_slim(name: str) -> HamiltonTip:
     maximal_volume=345,
     tip_size=TipSize.HIGH_VOLUME,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
+    collar_height=10.0,
   )
 
 
@@ -448,6 +443,7 @@ def hamilton_tip_300uL_filter_ultrawide(name: str) -> HamiltonTip:
     maximal_volume=360,
     tip_size=TipSize.STANDARD_VOLUME,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
+    collar_height=8.0,
   )
 
 
@@ -468,6 +464,7 @@ def hamilton_tip_1000uL(name: str) -> HamiltonTip:
     maximal_volume=1250,
     tip_size=TipSize.HIGH_VOLUME,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
+    collar_height=10.0,
   )
 
 
@@ -485,6 +482,7 @@ def hamilton_tip_1000uL_filter(name: str) -> HamiltonTip:
     maximal_volume=1065,
     tip_size=TipSize.HIGH_VOLUME,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
+    collar_height=10.0,
   )
 
 
@@ -502,6 +500,7 @@ def hamilton_tip_1000uL_filter_wide(name: str) -> HamiltonTip:
     maximal_volume=1065,
     tip_size=TipSize.HIGH_VOLUME,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
+    collar_height=10.0,
   )
 
 
@@ -519,6 +518,7 @@ def hamilton_tip_1000uL_filter_ultrawide(name: str) -> HamiltonTip:
     maximal_volume=1065,
     tip_size=TipSize.HIGH_VOLUME,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
+    collar_height=10.0,
   )
 
 
@@ -606,11 +606,3 @@ def hamilton_teaching_needle_5000uL(name: str) -> HamiltonTip:
     tip_size=TipSize.XL,
     pickup_method=TipPickupMethod.OUT_OF_RACK,
   )
-
-
-# TODO: model the CoRe grip tools (cat. 186100, and the XL-channel gripper 171840) as
-# HamiltonTip tool definitions the same way as the teaching needles above
-# (maximal_volume=0; the define_tip_needle floor sends the 1.0 uL the firmware uses for
-# its grip tools). Routing pick_up_core_gripper_tools through get_or_assign_tip_type_index
-# would then drop the hardcoded tt="14" and remove the collision risk where a dynamically
-# assigned tip type can land on index 14 and overwrite the grip-tool definition.

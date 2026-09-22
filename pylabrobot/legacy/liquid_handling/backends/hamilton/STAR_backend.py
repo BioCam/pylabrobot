@@ -6199,7 +6199,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     end_z_coord = round(225.0 + self.core_adjustment.z + z_offset)
 
     ttti = await self.get_or_assign_tip_type_index(
-      tool or hamilton_core_gripper_tool("core_gripper_tool")
+      tool or hamilton_core_gripper_tool(name="core_gripper_tool")
     )
 
     command_output = await self.send_command(

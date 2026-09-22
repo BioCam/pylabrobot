@@ -169,7 +169,7 @@ class CoreGrippers:
     front = self._pipettes.get_reference_point_location(cast(int, self._front_channel))
     if back is None or front is None:
       return
-    grip_line = front.z - (tool.total_length - tool.fitting_depth)
+    grip_line = front.z - (tool.get_size_z() - tool.fitting_depth - tool.grip_line_height)
     center = held.center().rotated(held.get_absolute_rotation())
     lfb = Coordinate(
       front.x - center.x,

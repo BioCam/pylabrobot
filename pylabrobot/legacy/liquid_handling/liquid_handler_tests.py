@@ -31,7 +31,9 @@ from pylabrobot.resources import (
   ResourceHolder,
   ResourceNotFoundError,
   ResourceStack,
+  StandingTipRack,
   TipRack,
+  TipSpot,
   cor_96_wellplate_360uL_Fb,
   hamilton_1_trough_200mL_Vb,
   nest_1_troughplate_195000uL_Vb,
@@ -45,9 +47,9 @@ from pylabrobot.resources.errors import (
 )
 from pylabrobot.resources.hamilton import (
   STARLetDeck,
-  hamilton_96_tiprack_50uL_NTR,
   hamilton_96_tiprack_300uL_filter,
   hamilton_96_tiprack_1000uL_filter,
+  hamilton_tip_50uL,
 )
 from pylabrobot.resources.revvity.plates import Revvity_384_wellplate_28ul_Ub
 from pylabrobot.resources.utils import create_ordered_items_2d
@@ -518,6 +520,31 @@ class TestLiquidHandlerCommands(unittest.IsolatedAsyncioTestCase):
     self.deck.assign_child_resource(self.tip_rack, location=Coordinate(0, 0, 0))
     self.deck.assign_child_resource(self.plate, location=Coordinate(100, 100, 0))
     await self.lh.setup()
+
+  async def test_consolidate_tip_inventory(self):
+    """Execute library-planned transfers through the normal tracked tip operations."""
+    self.tip_rack.set_tip_state([index >= 86 for index in range(96)])
+    self.backend.can_pick_up_tip.side_effect = lambda channel, tip: channel in [1, 3, 5]
+    tips = [spot.tracker.get_tip() for spot in self.tip_rack.get_all_items()[86:]]
+    set_tip_tracking(True)
+    try:
+      await self.lh.consolidate_tip_inventory([self.tip_rack])
+      self.assertEqual(
+        [spot.has_tip() for spot in self.tip_rack.get_all_items()],
+        [True] * 10 + [False] * 86,
+      )
+      self.assertEqual(
+        [spot.tracker.get_tip() for spot in self.tip_rack.get_all_items()[:10]], tips
+      )
+      self.assertFalse(any(tracker.has_tip for tracker in self.lh.head.values()))
+      self.assertEqual(self.backend.pick_up_tips.call_count, 4)
+      self.assertEqual(self.backend.drop_tips.call_count, 4)
+      self.assertEqual(
+        [call.kwargs["use_channels"] for call in self.backend.pick_up_tips.call_args_list],
+        [[1, 3, 5], [1, 3, 5], [1, 3, 5], [1]],
+      )
+    finally:
+      set_tip_tracking(False)
 
   async def test_offsets_tips(self):
     tip_spot = self.tip_rack.get_item("A1")
@@ -1313,27 +1340,65 @@ class TestLiquidHandlerCommands(unittest.IsolatedAsyncioTestCase):
     set_tip_tracking(enabled=False)
 
 
-class TestTipsFromStackedRacks(unittest.IsolatedAsyncioTestCase):
-  """Two nested tip racks on top of each other: only the top one can be used."""
+def _standing_tip_rack(name: str) -> StandingTipRack:
+  return StandingTipRack(
+    name=name,
+    size_x=127.76,
+    size_y=85.48,
+    size_z=55.0,
+    ordered_items=create_ordered_items_2d(
+      TipSpot,
+      num_items_x=12,
+      num_items_y=8,
+      dx=10.0,
+      dy=7.0,
+      dz=55.0,
+      item_dx=9.0,
+      item_dy=9.0,
+      size_x=7.2,
+      size_y=7.2,
+      make_tip=hamilton_tip_50uL,
+      name_prefix=name,
+    ),
+    stacking_z_height=16.0,
+  )
+
+
+class TestCoveredTipRacks(unittest.IsolatedAsyncioTestCase):
+  """A tip rack with a lid, or another rack stacked on it, cannot be reached."""
 
   async def asyncSetUp(self):
     self.backend = _create_mock_backend(num_channels=8)
     self.deck = STARLetDeck()
     self.lh = LiquidHandler(backend=self.backend, deck=self.deck)
-    self.stack = ResourceStack("ntr_stack", direction="z")
-    self.bottom = hamilton_96_tiprack_50uL_NTR(name="bottom")
-    self.top = hamilton_96_tiprack_50uL_NTR(name="top")
+    self.stack = ResourceStack("stack", direction="z")
+    self.bottom = _standing_tip_rack("bottom")
+    self.top = _standing_tip_rack("top")
     self.stack.assign_child_resource(self.bottom)
     self.stack.assign_child_resource(self.top)
     self.deck.assign_child_resource(self.stack, location=Coordinate(100, 100, 0))
     await self.lh.setup()
 
-  async def test_only_the_top_rack_can_be_picked_up_from(self):
+  async def test_only_the_top_rack_of_a_stack_can_be_picked_up_from(self):
     with self.assertRaisesRegex(ValueError, "'bottom': something is stacked on top of it"):
       await self.lh.pick_up_tips([self.bottom.get_item("A1")])
     self.backend.pick_up_tips.assert_not_called()
     await self.lh.pick_up_tips([self.top.get_item("A1")])
     self.backend.pick_up_tips.assert_called_once()
+
+  async def test_tips_are_not_dropped_into_a_covered_rack(self):
+    with self.assertRaisesRegex(ValueError, "'bottom': something is stacked on top of it"):
+      await self.lh.drop_tips([self.bottom.get_item("A1")])
+    self.backend.drop_tips.assert_not_called()
+
+  async def test_a_lid_covers_a_rack_for_the_96_head(self):
+    self.top.lid = Lid("lid", size_x=127.76, size_y=85.48, size_z=10.0, nesting_z_height=2.0)
+    with self.assertRaisesRegex(ValueError, "'top': something is stacked on top of it"):
+      await self.lh.pick_up_tips96(self.top)
+    with self.assertRaisesRegex(ValueError, "'top': something is stacked on top of it"):
+      await self.lh.drop_tips96(self.top)
+    self.backend.pick_up_tips96.assert_not_called()
+    self.backend.drop_tips96.assert_not_called()
 
 
 class TestLiquidHandlerVolumeTracking(unittest.IsolatedAsyncioTestCase):

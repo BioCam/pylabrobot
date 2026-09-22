@@ -616,6 +616,9 @@ class TestWhatTheChannelsCarry(unittest.IsolatedAsyncioTestCase):
 
     self.shaft.mount_tip(hamilton_core_gripper_tool(name="grip"))
     self.assertAlmostEqual(await self.pipettes.request_tip_overhang(0), 30.0 - 8.0, places=1)
+    await self.pipettes.move_tool_bottom_to_z_positions({0: 200.0})
+    self.assertAlmostEqual(await self.pipettes.request_stop_disc_z_position(0), 222.0, places=1)
+    self.assertAlmostEqual(await self.pipettes.request_tool_bottom_z_position(0), 200.0, places=1)
 
   async def test_moving_the_tip_end_puts_the_stop_disc_an_overhang_higher(self):
     self.shaft.mount_tip(self.tip)

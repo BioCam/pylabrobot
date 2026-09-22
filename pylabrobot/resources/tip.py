@@ -83,5 +83,10 @@ class Tip(HeadTool):
       raise ValueError(f"collar_height is not defined for this tip: {self!r}")
     return self._collar_height
 
+  @property
+  def has_collar_height(self) -> bool:
+    """Whether this tip specifies a collar height."""
+    return self._collar_height is not None
+
 
 TipCreator = Callable[[str], Tip]

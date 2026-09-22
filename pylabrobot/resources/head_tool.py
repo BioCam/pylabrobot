@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 from typing import Any, Callable, Optional, Tuple, cast
 
 from pylabrobot.serializer import serialize
@@ -58,9 +56,7 @@ def release_named_tool(root: Resource, name: str, keep: Optional[Resource] = Non
 
 
 class HeadTool(Resource):
-  """A tool that a liquid handling channel picks up and carries: a tip, a needle, a gripper tool.
-
-  Tools that are interchangeable for a backend have equal :meth:`kind`, whatever their names.
+  """A tool that a liquid handling channel picks up and carries.
 
   Attributes:
     fitting_depth: the overlap between the tool and the channel, in mm.
@@ -76,13 +72,8 @@ class HeadTool(Resource):
     category: Optional[str] = None,
     model: Optional[str] = None,
     pick_up_location: Optional[Coordinate] = None,
-    collar_height: Optional[float] = None,
   ):
-    """Initialize a tool with an optional pickup location relative to its origin.
-
-    Args:
-      collar_height: the height of the tool's collar, in mm.
-    """
+    """Initialize a tool with an optional pickup location relative to its origin."""
     if not isinstance(name, str):
       raise TypeError("HeadTool name must be a string.")
     super().__init__(
@@ -95,42 +86,27 @@ class HeadTool(Resource):
     )
     self.fitting_depth = fitting_depth
     self.pick_up_location = pick_up_location
-    self._collar_height = collar_height
-
-  @property
-  def collar_height(self) -> float:
-    """Return collar_height, raising if it is None."""
-    if self._collar_height is None:
-      raise ValueError(f"collar_height is not defined for this tool: {self!r}")
-    return self._collar_height
-
-  @property
-  def has_collar_height(self) -> bool:
-    """Whether this tool states the height of its collar."""
-    return self._collar_height is not None
 
   def __eq__(self, other: object) -> bool:
-    """Compare resource fields and the tool's fit, collar and pickup location."""
+    """Compare resource fields and the tool's fit and pickup location."""
     return (
       isinstance(other, HeadTool)
       and super().__eq__(other)
       and self.fitting_depth == other.fitting_depth
       and self.pick_up_location == other.pick_up_location
-      and self._collar_height == other._collar_height
     )
 
-  def kind(self) -> Tuple[object, ...]:
-    """The tool without its name or place: equal for tools of the same kind."""
-    data = self.serialize()
-    for held_by_the_holder in ("location", "parent_name"):
-      data.pop(held_by_the_holder, None)
-    return cast(Tuple[object, ...], _without_names(data))
-
   def serialize(self) -> dict:
-    """Serialize the tool's resource fields, fitting depth, collar height and pickup location."""
+    """Serialize the tool's resource fields, fitting depth, and pickup location."""
     return {
       **super().serialize(),
       "fitting_depth": self.fitting_depth,
-      "collar_height": self._collar_height,
       "pick_up_location": serialize(self.pick_up_location),
     }
+
+  def kind(self) -> Tuple[object, ...]:
+    """The tool definition without its name or holder-dependent location."""
+    data = self.serialize()
+    data.pop("location", None)
+    data.pop("parent_name", None)
+    return cast(Tuple[object, ...], _without_names(data))
