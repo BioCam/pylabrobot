@@ -870,6 +870,37 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(len(picked_up), 1)
     self.assertIn("tm1 1 0&", picked_up[0])
 
+  async def test_two_tips_going_into_one_column_too_close_go_in_separate_commands(self):
+    pipettes, rack, sent = await channels_over_a_rack()
+    spots = [rack.get_item("A1"), rack.get_item("B1")]
+    await pipettes.pick_up_tips(
+      spots, use_channels=[0, 3], offsets=[Coordinate.zero(), Coordinate(y=4)]
+    )
+    sent.clear()
+
+    await pipettes.drop_tips(
+      spots, use_channels=[0, 3], offsets=[Coordinate.zero(), Coordinate(y=4)]
+    )
+
+    self.assertEqual(len([command for command in sent if command.startswith("C0TR")]), 2)
+    self.assertEqual([pipettes.get_mounted_tip(channel) for channel in (0, 3)], [None, None])
+    self.assertTrue(all(spot.tip is not None for spot in spots))
+
+  async def test_a_tip_dropped_at_a_place_belongs_to_nothing(self):
+    """A coordinate is somewhere on the deck, not a spot: one command, and the tip is let go."""
+    pipettes, rack, sent = await channels_over_a_rack()
+    await pipettes.pick_up_tips([rack.get_item("A1")], use_channels=[0])
+    sent.clear()
+    deck = pipettes._driver.deck
+    assert deck is not None
+    over_the_waste = deck.get_trash_area().get_location_wrt(deck, x="c", y="c", z="b")
+
+    await pipettes.drop_tips([over_the_waste], use_channels=[0])
+
+    self.assertEqual(len([command for command in sent if command.startswith("C0TR")]), 1)
+    self.assertIsNone(pipettes.get_mounted_tip(0))
+    self.assertIsNone(rack.get_item("A1").tip)
+
   async def test_a_model_that_cannot_be_updated_does_not_hide_the_devices_error(self):
     """What the device said is the error worth having; a stale model is only logged."""
     from unittest.mock import AsyncMock, patch

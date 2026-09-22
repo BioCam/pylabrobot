@@ -17,6 +17,7 @@ from typing import (
   Optional,
   Sequence,
   Tuple,
+  Union,
   cast,
 )
 
@@ -2567,77 +2568,46 @@ class Pipettes:
         pickup_method=pickup_method,
       )
 
-  async def drop_tips(
+  async def _drop_tips_at_location(
     self,
-    targets: Sequence[Resource],
-    use_channels: Optional[List[int]] = None,
-    offsets: Optional[List[Coordinate]] = None,
-    drop_method: Optional[TipDropMethod] = None,
+    locations: Dict[int, Coordinate],
+    drop_method: TipDropMethod,
     begin_tip_deposit_process: Optional[float] = None,
     end_tip_deposit_process: Optional[float] = None,
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_end: Optional[float] = None,
-  ) -> None:
-    """Drop each channel's tip into a tip spot or anywhere else, such as the waste.
+  ) -> Dict[int, bool]:
+    """Let each channel's tip go at the place given, in one `C0 TR`, and say which let go.
 
-    Heights and method as legacy's `STARBackend.drop_tips`: into tip spots, `DROP`, from the spot
-    plus the collar height down by the fitting depth; anywhere else, `PLACE_SHIFT`, from 59.9 mm
-    down to 49.9 mm above the target. Once the device has dropped them, each tip goes into its spot,
-    or belongs to nothing when it went anywhere else. If the command fails, the channels are asked
-    which of them still carry a tip, and only the others move.
+    Knows nothing of spots: what it is given is where on the deck each channel drops. Heights as
+    legacy's `STARBackend.drop_tips`: `DROP` from the place plus the collar height down by the
+    fitting depth, `PLACE_SHIFT` from 59.9 mm down to 49.9 mm above it. A tip that went is taken
+    off its shaft; where it belongs afterwards is `drop_tips`' to say.
 
     Args:
-      targets: where each channel's tip goes, one per channel. A `TipSpot` receives the tip.
-      use_channels: which channels, 0-indexed from the back, ascending. The first `len(targets)`
-        when None.
-      offsets: added to each target's centre, in mm. None for none.
-      drop_method: `DROP` when every target is a tip spot and `PLACE_SHIFT` otherwise, when None.
+      locations: where each channel drops, on the deck in mm, keyed by channel, ascending.
+      drop_method: how to let the tips go.
       begin_tip_deposit_process: where the deposit begins, in mm.
       end_tip_deposit_process: where it ends, in mm.
       minimum_traverse_height_start: how high the channels travel first, in mm.
       minimum_traverse_height_end: where the channels are left, in mm.
 
+    Returns:
+      Which channels let their tip go, keyed by channel.
+
     Raises:
       NoTipError: If a channel carries no tip in the model.
-      HasTipError: If a tip spot already holds a tip.
     """
-    if not targets:
-      return
-    deck = self._driver.deck
-    if deck is None:
-      raise RuntimeError("tip commands are placed from the deck; this driver was given none")
-    use_channels = list(range(len(targets))) if use_channels is None else list(use_channels)
-    offsets = [Coordinate.zero()] * len(targets) if offsets is None else list(offsets)
-
+    use_channels = list(locations)
     tips: List[Tip] = []
     for channel in use_channels:
       tip = self.get_mounted_tip(channel)
       if tip is None:
         raise NoTipError(f"channel {channel} carries no tip")
       tips.append(tip)
-    spots = [target for target in targets if isinstance(target, TipSpot)]
-    if len({id(spot) for spot in spots}) != len(spots):
-      raise ValueError("each tip must go into a spot of its own")
-    for spot in spots:
-      if spot.tracks_tips and spot.tip is not None:
-        raise HasTipError(f"{spot.name} already holds a tip")
 
-    if drop_method is None:
-      drop_method = (
-        TipDropMethod.DROP
-        if all(isinstance(target, TipSpot) for target in targets)
-        else TipDropMethod.PLACE_SHIFT
-      )
-
-    xs, ys, pattern = self._tip_command_positions(
-      {
-        channel: target.get_location_wrt(deck, x="c", y="c", z="b") + offset
-        for target, channel, offset in zip(targets, use_channels, offsets)
-      }
-    )
-    target_z = max(
-      target.get_location_wrt(deck).z + offset.z for target, offset in zip(targets, offsets)
-    )
+    xs, ys, pattern = self._tip_command_positions(locations)
+    target_z = max(location.z for location in locations.values())
     if drop_method == TipDropMethod.PLACE_SHIFT:
       # Empirical, from legacy: https://github.com/PyLabRobot/pylabrobot/pull/63
       default_begin, default_end = target_z + 59.9, target_z + 49.9
@@ -2718,18 +2688,115 @@ class Pipettes:
       raise
     finally:
       try:
-        for target, channel in zip(targets, use_channels):
-          if not dropped[channel]:
-            continue
-          tip = self._release_modelled_tip(channel)
-          if tip is not None and isinstance(target, TipSpot) and target.tracks_tips:
-            target.assign_tip(tip)
+        for channel, let_go in dropped.items():
+          if let_go:
+            self._release_modelled_tip(channel)
       except Exception:
         # What the device said is the error worth having: this one only says the model is stale.
         if command_error is None:
           raise
         logger.exception("could not record which tips the channels let go of")
       await self._record_after_tip_command()
+    return dropped
+
+  async def drop_tips(
+    self,
+    destinations: Sequence[Union[TipSpot, Coordinate]],
+    use_channels: Optional[List[int]] = None,
+    offsets: Optional[List[Coordinate]] = None,
+    drop_method: Optional[TipDropMethod] = None,
+    begin_tip_deposit_process: Optional[float] = None,
+    end_tip_deposit_process: Optional[float] = None,
+    minimum_traverse_height_start: Optional[float] = None,
+    minimum_traverse_height_end: Optional[float] = None,
+    x_tolerance: Optional[float] = None,
+  ) -> None:
+    """Drop each channel's tip into a tip spot, or anywhere on the deck, such as the waste.
+
+    Spots are planned into the fewest commands the channels can take at once, as `pick_up_tips`
+    plans them; places given as a coordinate go in one command, as legacy sends a discard. A tip
+    dropped into a spot goes into that spot in the model, one dropped anywhere else belongs to
+    nothing.
+
+    Args:
+      destinations: where each channel's tip goes: a `TipSpot`, which receives it, or a place on
+        the deck in mm.
+      use_channels: which channels, 0-indexed from the back, ascending. The first
+        `len(destinations)` when None.
+      offsets: added to each destination, in mm. None for none.
+      drop_method: `DROP` when every destination is a tip spot and `PLACE_SHIFT` otherwise, when
+        None.
+      begin_tip_deposit_process: where the deposit begins, in mm.
+      end_tip_deposit_process: where it ends, in mm.
+      minimum_traverse_height_start: how high the channels travel first, in mm.
+      minimum_traverse_height_end: where the channels are left, in mm.
+      x_tolerance: how far apart in X two spots may be and still go out in one command, in mm.
+        None lets any two share one, as legacy sends them.
+
+    Raises:
+      NoTipError: If a channel carries no tip in the model.
+      HasTipError: If a tip spot already holds a tip.
+      ValueError: If two tips would go into one spot.
+    """
+    if not destinations:
+      return
+    deck = self._driver.deck
+    if deck is None:
+      raise RuntimeError("tip commands are placed from the deck; this driver was given none")
+    use_channels = list(range(len(destinations))) if use_channels is None else list(use_channels)
+    offsets = [Coordinate.zero()] * len(destinations) if offsets is None else list(offsets)
+
+    spots = [place for place in destinations if isinstance(place, TipSpot)]
+    if len({id(spot) for spot in spots}) != len(spots):
+      raise ValueError("each tip must go into a spot of its own")
+    for spot in spots:
+      if spot.tracks_tips and spot.tip is not None:
+        raise HasTipError(f"{spot.name} already holds a tip")
+    if drop_method is None:
+      drop_method = (
+        TipDropMethod.DROP if len(spots) == len(destinations) else TipDropMethod.PLACE_SHIFT
+      )
+
+    def where(index: int) -> Coordinate:
+      place = destinations[index]
+      corner = (
+        place.get_location_wrt(deck, x="c", y="c", z="b") if isinstance(place, TipSpot) else place
+      )
+      return corner + offsets[index]
+
+    # Only spots can be planned: the planner asks a resource where it is and what is in the way.
+    if len(spots) == len(destinations):
+      batches = plan_batches(
+        use_channels=use_channels,
+        containers=cast(List[Container], list(spots)),
+        channel_spacings=self.minimum_y_spacings,
+        wrt_resource=deck,
+        x_tolerance=ANY_COLUMN if x_tolerance is None else x_tolerance,
+        resource_offsets=offsets,
+      )
+      groups = [(list(batch.indices), list(batch.channels)) for batch in batches]
+    else:
+      groups = [(list(range(len(destinations))), use_channels)]
+
+    for indices, channels_in_group in groups:
+      # Held now, because the command takes each tip off its shaft: what is put into the spot is
+      # the tip the channel came with.
+      held = {channel: self.get_mounted_tip(channel) for channel in channels_in_group}
+      dropped = await self._drop_tips_at_location(
+        {channel: where(index) for channel, index in zip(channels_in_group, indices)},
+        drop_method,
+        begin_tip_deposit_process=begin_tip_deposit_process,
+        end_tip_deposit_process=end_tip_deposit_process,
+        minimum_traverse_height_start=minimum_traverse_height_start,
+        minimum_traverse_height_end=minimum_traverse_height_end,
+      )
+      for index, channel in zip(indices, channels_in_group):
+        place = destinations[index]
+        tip = held[channel]
+        if (
+          dropped[channel] and tip is not None and isinstance(place, TipSpot) and place.tracks_tips
+        ):
+          place.assign_tip(tip)
 
   async def return_tips(self, use_channels: Optional[List[int]] = None, **kwargs) -> None:
     """Put each channel's tip back in the tip spot it was picked up from, as legacy does.
@@ -2792,6 +2859,11 @@ class Pipettes:
     offsets = (
       spread if offsets is None else [offset + extra for offset, extra in zip(offsets, spread)]
     )
+    # The waste is a place, not a spot: each tip is let go over it and belongs to nothing after.
+    over_the_waste = trash.get_location_wrt(deck, x="c", y="c", z="b")
     await self.drop_tips(
-      [trash] * len(use_channels), use_channels=use_channels, offsets=offsets, **kwargs
+      [over_the_waste] * len(use_channels),
+      use_channels=use_channels,
+      offsets=offsets,
+      **kwargs,
     )
