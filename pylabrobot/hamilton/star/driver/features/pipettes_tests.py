@@ -1,4 +1,5 @@
 import asyncio
+import re
 import unittest
 import unittest.mock
 from typing import Any, List, Optional, Tuple
@@ -1064,6 +1065,93 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
     await pipettes.initialize()
     self.assertIsNone(pipettes.get_mounted_tip(0))
     self.assertIsNone(tip.parent)
+
+
+class TestTipsOfDifferentKinds(unittest.IsolatedAsyncioTestCase):
+  """A command names one tip type, so spots holding different tips go out in separate commands."""
+
+  def setUp(self):
+    from pylabrobot.resources import set_tip_tracking
+
+    set_tip_tracking(True)
+    self.addCleanup(set_tip_tracking, False)
+
+  async def two_racks(self) -> Tuple[Pipettes, Any, Any, List[str]]:
+    """Channels, a 1000 uL rack on track 6, a 300 uL rack on track 16, and the tip commands."""
+    from pylabrobot.resources.hamilton import (
+      TIP_CAR_480_A00,
+      hamilton_96_tiprack_300uL,
+      hamilton_96_tiprack_1000uL,
+    )
+
+    pipettes, near, sent = await channels_over_a_rack()
+    deck = pipettes._driver.deck
+    assert deck is not None
+    carrier = TIP_CAR_480_A00(name="far_carrier")
+    carrier[0] = far = hamilton_96_tiprack_1000uL(name="far_rack")
+    deck.assign_child_resource(carrier, track=6)
+    return pipettes, far, near, sent
+
+  @staticmethod
+  def pickups(sent: List[str]) -> List[str]:
+    return [command for command in sent if command.startswith("C0TP")]
+
+  async def test_two_kinds_go_out_as_two_commands_in_ascending_x(self):
+    pipettes, far, near, sent = await self.two_racks()
+    await pipettes.pick_up_tips(
+      [near.get_item("A1"), near.get_item("B1"), far.get_item("C1"), far.get_item("D1")]
+    )
+    pickups = self.pickups(sent)
+    self.assertEqual(len(pickups), 2)
+    xs = [int(command[6:11]) for command in pickups]
+    self.assertLess(xs[0], xs[1], "the farther left rack is collected first")
+    tip_types = [command.split("tt")[1][:2] for command in pickups]
+    self.assertNotEqual(tip_types[0], tip_types[1])
+    patterns = [re.search(r"tm([01 ]+)", command).group(1) for command in pickups]  # type: ignore
+    self.assertEqual(patterns, ["0 0 1 1 0", "1 1 0"], "the 1000 uL spots are on channels 2 and 3")
+
+  async def test_each_channel_carries_the_tip_from_its_own_spot(self):
+    pipettes, far, near, _ = await self.two_racks()
+    spots = [near.get_item("A1"), far.get_item("C1")]
+    tips = [spot.tip for spot in spots]
+    await pipettes.pick_up_tips(spots, use_channels=[0, 2])
+    self.assertIs(pipettes.get_mounted_tip(0), tips[0])
+    self.assertIs(pipettes.get_mounted_tip(2), tips[1])
+    self.assertIsNone(pipettes.get_mounted_tip(1))
+
+  async def test_tips_of_two_kinds_are_returned_in_two_commands(self):
+    """A `DROP` lowers every tip to one height, so collars that differ cannot share a command."""
+    pipettes, far, near, sent = await self.two_racks()
+    await pipettes.pick_up_tips([near.get_item("A1"), far.get_item("C1")])
+    sent.clear()
+    await pipettes.return_tips()
+    drops = [command for command in sent if command.startswith("C0TR")]
+    self.assertEqual(len(drops), 2)
+    self.assertNotEqual(*[re.search(r"tp(\d+)", command).group(1) for command in drops])  # type: ignore
+
+  async def test_tips_of_two_kinds_are_discarded_in_one_command(self):
+    """A discard lets go from a height of its own, so the collars need not match."""
+    pipettes, far, near, sent = await self.two_racks()
+    await pipettes.pick_up_tips([near.get_item("A1"), far.get_item("C1")])
+    sent.clear()
+    await pipettes.discard_tips()
+    drops = [command for command in sent if command.startswith("C0TR")]
+    self.assertEqual(len(drops), 1)
+    self.assertTrue(drops[0].endswith("ti0"), "let go, rather than dropped into a spot")
+
+  async def test_one_kind_across_two_racks_still_goes_out_as_one_command(self):
+    """X alone never splits a command, as legacy sends them."""
+    from pylabrobot.resources.hamilton import TIP_CAR_480_A00, hamilton_96_tiprack_300uL
+
+    pipettes, near, sent = await channels_over_a_rack()
+    deck = pipettes._driver.deck
+    assert deck is not None
+    carrier = TIP_CAR_480_A00(name="second_carrier")
+    carrier[0] = far = hamilton_96_tiprack_300uL(name="second_rack")
+    deck.assign_child_resource(carrier, track=6)
+
+    await pipettes.pick_up_tips([near.get_item("A1"), far.get_item("C1")])
+    self.assertEqual(len(self.pickups(sent)), 1)
 
 
 class TestTipHandlingUntracked(unittest.IsolatedAsyncioTestCase):

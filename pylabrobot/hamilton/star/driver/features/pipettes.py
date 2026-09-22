@@ -29,7 +29,7 @@ from pylabrobot.hamilton.star.driver.errors import (
 )
 from pylabrobot.hamilton.star.driver.lock import CHANNEL_MODULE_LETTERS, _FirmwareLock
 from pylabrobot.lib.liquid_handling.channel_positioning import compute_channel_offsets
-from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import plan_batches
+from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import ChannelBatch, plan_batches
 from pylabrobot.resources.container import Container
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.errors import HasTipError, NoTipError
@@ -2503,6 +2503,10 @@ class Pipettes:
   ) -> None:
     """Pick up a tip from each spot, one channel per spot, and move each onto its channel.
 
+    The spots may hold tips of different kinds: a command carries one tip type, so the spots are
+    grouped by the kind of tip they hold and each group is planned into its own commands. The
+    commands go out in ascending X, whichever group they came from, so the arm sweeps once.
+
     Heights as legacy's `STARBackend.pick_up_tips`: the process begins a collar's height above the
     highest spot and ends at the spot. Once the device has picked them up, each tip is taken out of
     its spot and mounted on its channel's shaft. If the command fails, the channels are asked which
@@ -2526,7 +2530,7 @@ class Pipettes:
     Raises:
       NoTipError: If a spot holds no tip while tip tracking is on.
       HasTipError: If a channel already carries a tip.
-      ValueError: If the tips are not all of one kind, or a position cannot be reached.
+      ValueError: If a position cannot be reached.
     """
     deck = self._driver.deck
     if deck is None:
@@ -2540,8 +2544,6 @@ class Pipettes:
     if not all(isinstance(tip, HamiltonTip) for tip in tips):
       raise TypeError("the STAR picks up Hamilton tips")
     hamilton_tips = cast(List[HamiltonTip], tips)
-    if len({tip.kind() for tip in hamilton_tips}) > 1:
-      raise ValueError("the tips picked up together must all be of one kind")
     for channel in use_channels:
       mounted = self.get_mounted_tip(channel)
       if mounted is not None:
@@ -2552,25 +2554,39 @@ class Pipettes:
         # again with that deck.
         raise RuntimeError(f"channel {channel} is not modelled; set the driver up with its deck")
 
-    # One command per set of spots the channels can take at once. Only Y decides by default:
-    # spots in one column closer than their channels may stand go in separate commands.
-    batches = plan_batches(
-      use_channels=use_channels,
-      containers=cast(List[Container], list(tip_spots)),
-      channel_spacings=self.minimum_y_spacings,
-      wrt_resource=deck,
-      x_tolerance=ANY_COLUMN if x_tolerance is None else x_tolerance,
-      resource_offsets=offsets,
-    )
-    for batch in batches:
-      spots = [tip_spots[index] for index in batch.indices]
+    # One command per set of spots the channels can take at once, planned per kind of tip: a
+    # command names one tip type, so spots holding different tips cannot share one.
+    of_each_kind: Dict[Tuple[object, ...], List[int]] = {}
+    for index, tip in enumerate(hamilton_tips):
+      of_each_kind.setdefault(tip.kind(), []).append(index)
+
+    # Only Y decides within a kind by default: spots in one column closer than their channels may
+    # stand go in separate commands. The batches are run in ascending X, wherever they came from.
+    planned: List[Tuple[ChannelBatch, List[int]]] = []
+    for group in of_each_kind.values():
+      planned += [
+        (batch, group)
+        for batch in plan_batches(
+          use_channels=[use_channels[index] for index in group],
+          containers=cast(List[Container], [tip_spots[index] for index in group]),
+          channel_spacings=self.minimum_y_spacings,
+          wrt_resource=deck,
+          x_tolerance=ANY_COLUMN if x_tolerance is None else x_tolerance,
+          resource_offsets=[offsets[index] for index in group],
+        )
+      ]
+    planned.sort(key=lambda p: (p[0].x_position, min(p[1][i] for i in p[0].indices)))
+
+    for batch, group in planned:
+      indices = [group[index] for index in batch.indices]
+      spots = [tip_spots[index] for index in indices]
       in_batch = list(batch.channels)
       await self._pick_up_tips_at_location(
         {
           channel: spot.get_location_wrt(deck, x="c", y="c", z="b") + offsets[index]
-          for spot, channel, index in zip(spots, in_batch, batch.indices)
+          for spot, channel, index in zip(spots, in_batch, indices)
         },
-        {channel: hamilton_tips[index] for channel, index in zip(in_batch, batch.indices)},
+        {channel: hamilton_tips[index] for channel, index in zip(in_batch, indices)},
         begin_tip_pick_up_process=begin_tip_pick_up_process,
         end_tip_pick_up_process=end_tip_pick_up_process,
         minimum_traverse_height_start=minimum_traverse_height_start,
@@ -2734,6 +2750,11 @@ class Pipettes:
     dropped into a spot goes into that spot in the model, one dropped anywhere else belongs to
     nothing.
 
+    The channels may carry tips of different kinds: a `DROP` lowers them all to one height, so the
+    channels are grouped by the collar height of the tip they carry and each group is planned into
+    its own commands, in ascending X. A `PLACE_SHIFT` lets go from a height of its own, so a
+    discard takes whatever the channels carry in one command.
+
     Args:
       destinations: where each channel's tip goes: a `TipSpot`, which receives it, or a place on
         the deck in mm.
@@ -2782,15 +2803,36 @@ class Pipettes:
 
     # Only spots can be planned: the planner asks a resource where it is and what is in the way.
     if len(spots) == len(destinations):
-      batches = plan_batches(
-        use_channels=use_channels,
-        containers=cast(List[Container], list(spots)),
-        channel_spacings=self.minimum_y_spacings,
-        wrt_resource=deck,
-        x_tolerance=ANY_COLUMN if x_tolerance is None else x_tolerance,
-        resource_offsets=offsets,
-      )
-      groups = [(list(batch.indices), list(batch.channels)) for batch in batches]
+      # A `DROP` lowers every tip to one height, so tips whose collars differ cannot share one
+      # command. `PLACE_SHIFT` lets go from a height of its own and takes them together.
+      of_each_collar: Dict[Optional[float], List[int]] = {}
+      for index, channel in enumerate(use_channels):
+        held_tip = self.get_mounted_tip(channel)
+        collar = (
+          held_tip.collar_height
+          if drop_method is TipDropMethod.DROP and isinstance(held_tip, HamiltonTip)
+          else None
+        )
+        of_each_collar.setdefault(collar, []).append(index)
+
+      planned: List[Tuple[ChannelBatch, List[int]]] = []
+      for of_one_collar in of_each_collar.values():
+        planned += [
+          (batch, of_one_collar)
+          for batch in plan_batches(
+            use_channels=[use_channels[index] for index in of_one_collar],
+            containers=cast(List[Container], [spots[index] for index in of_one_collar]),
+            channel_spacings=self.minimum_y_spacings,
+            wrt_resource=deck,
+            x_tolerance=ANY_COLUMN if x_tolerance is None else x_tolerance,
+            resource_offsets=[offsets[index] for index in of_one_collar],
+          )
+        ]
+      planned.sort(key=lambda p: (p[0].x_position, min(p[1][i] for i in p[0].indices)))
+      groups = [
+        ([of_one_collar[index] for index in batch.indices], list(batch.channels))
+        for batch, of_one_collar in planned
+      ]
     else:
       groups = [(list(range(len(destinations))), use_channels)]
 
