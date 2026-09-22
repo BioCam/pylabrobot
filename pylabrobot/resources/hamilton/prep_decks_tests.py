@@ -90,6 +90,7 @@ def test_a_saved_deck_reads_back_as_the_deck_it_was():
   assert [spot.name for spot in read_back.spots] == [spot.name for spot in deck.spots]
   assert read_back.waste_block is not None and read_back.calibration_block is not None
   assert read_back.teaching_needle_spot is not None and read_back.liquid_waste_container is not None
+  assert read_back.waste_bin is not None
   assert list(read_back.waste_positions) == ["waste_rear", "waste_front", "waste_mph"]
 
 
@@ -99,13 +100,14 @@ def test_a_deck_built_without_its_parts_carries_none_of_them():
     with_spots=False,
     with_calibration_block=False,
     with_waste_block=False,
+    with_waste_bin=False,
     with_waste_positions=False,
   )
   assert deck.children == []
   assert deck.spots == [] and deck.waste_positions == {}
   assert deck.waste_block is None and deck.calibration_block is None
   assert deck.teaching_needle_spot is None and deck.liquid_waste_container is None
-  assert deck.core_gripper_holder is None
+  assert deck.core_gripper_holder is None and deck.waste_bin is None
 
 
 def test_the_holders_stand_where_they_were_probed_and_the_waste_block_does_not_move():
@@ -125,3 +127,16 @@ def test_the_holders_stand_where_they_were_probed_and_the_waste_block_does_not_m
   assert waste_block.get_location_wrt(deck) == Coordinate(282.25, -4.25, 0.0)
   tool = deck.get_resource("Prep_core_gripper_tool_back").get_location_wrt(deck, "c", "c")
   assert (tool.x, tool.y) == pytest.approx((290.0, 275.577))
+
+
+def test_the_waste_bin_stands_beside_the_waste_block_below_its_top():
+  """Left face on the block's right face, front 35 mm in front of it, top 4 mm below its top."""
+  deck = PrepDeck()
+  block, waste_bin = deck.waste_block, deck.waste_bin
+  assert block is not None and waste_bin is not None
+  assert waste_bin.parent is deck and waste_bin.model == "hamilton_prep_waste_bin"
+  block_rbt = block.get_location_wrt(deck, "r", "f", "t")
+  bin_lft = waste_bin.get_location_wrt(deck, "l", "f", "t")
+  assert bin_lft.x == pytest.approx(block_rbt.x)
+  assert bin_lft.y == pytest.approx(block_rbt.y - 35.0)
+  assert bin_lft.z == pytest.approx(block_rbt.z - 4.0)

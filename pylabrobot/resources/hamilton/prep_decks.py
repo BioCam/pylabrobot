@@ -30,6 +30,11 @@ PREP_SPOT_PITCH_Y = 95.0
 # to 8.49 mm below 14 mm. Placed by that top's left front corner, from this deck's origin.
 PREP_CALIBRATION_BLOCK_LOCATION = Coordinate(129.55, 183.73, 0.0)
 
+# The bin under the tip drop, beside the waste block: its left face on the block's right face, its
+# front 35 mm in front of the block's and its top 4 mm below the block's top.
+PREP_WASTE_BIN_SIZE = (134.0, 280.0, 122.0)
+PREP_WASTE_BIN_LOCATION = Coordinate(282.25 + 12.5, -4.25 - 35.0, 75.0 - 4.0 - 122.0)
+
 
 def hamilton_prep_resourceholder(name: str) -> ResourceHolder:
   """A PREP deck's labware spot: four corner clips around an insert pedestal, as measured.
@@ -59,8 +64,8 @@ def hamilton_prep_resourceholder(name: str) -> ResourceHolder:
 
 
 class PrepDeck(Deck):
-  """Hamilton PREP deck: labware spots, waste block, liquid waste container, teaching needle, CoRe
-  gripper holder, and waste positions.
+  """Hamilton PREP deck: labware spots, waste block, waste bin, liquid waste container, teaching
+  needle, CoRe gripper holder, and waste positions.
 
   Geometry aligns with the prep_tcp / MLPrep DeckConfiguration teaching site and waste
   sites used by :class:`~pylabrobot.hamilton.prep.driver.features.pipettes.Pipettes`
@@ -82,6 +87,7 @@ class PrepDeck(Deck):
     with_spots: bool = True,
     with_calibration_block: bool = True,
     with_waste_block: bool = True,
+    with_waste_bin: bool = True,
     with_waste_positions: bool = True,
     with_core_grippers: bool = True,
   ):
@@ -123,6 +129,21 @@ class PrepDeck(Deck):
 
     if with_waste_block:
       self._build_waste_block(prefix, with_core_grippers=with_core_grippers)
+
+    if with_waste_bin:
+      # Its handle reaches 22 mm in front of it, as the model shows.
+      size_x, size_y, size_z = PREP_WASTE_BIN_SIZE
+      self.assign_child_resource(
+        Resource(
+          name=f"{prefix}_waste_bin",
+          size_x=size_x,
+          size_y=size_y,
+          size_z=size_z,
+          category="waste_bin",
+          model="hamilton_prep_waste_bin",
+        ),
+        location=PREP_WASTE_BIN_LOCATION,
+      )
 
     if with_waste_positions:
       # PRPAA1087's waste sites (DeckConfiguration); the driver moves them to the connected
@@ -216,6 +237,7 @@ class PrepDeck(Deck):
       "with_spots": False,
       "with_calibration_block": False,
       "with_waste_block": False,
+      "with_waste_bin": False,
       "with_waste_positions": False,
       "with_core_grippers": False,
     }
@@ -243,6 +265,11 @@ class PrepDeck(Deck):
   def waste_block(self) -> Optional[Trash]:
     """Where tips are dropped, or None if this deck was built without it."""
     return _built(self.children, "waste_block", Trash)
+
+  @property
+  def waste_bin(self) -> Optional[Resource]:
+    """The bin beside the waste block, or None if this deck was built without it."""
+    return _built(self.children, "waste_bin", Resource)
 
   @property
   def liquid_waste_container(self) -> Optional[Trough]:
