@@ -534,7 +534,6 @@ function buildDeclaredMeshes() {
         root.matrix.copy(world.matrices[index]);
         root.matrixWorldNeedsUpdate = true;
         root.traverse((o) => {
-          o.frustumCulled = false;
           if (o.isMesh) {
             o.userData.declaredBy = index;
             o.userData.lit = o.material;
@@ -621,7 +620,6 @@ function buildInstancedModel(modelIndex, instances, gltf, scale, up) {
     // Where this mesh sits inside the file, with the file's units and its up-axis already in it.
     const local = o.matrixWorld.clone();
     const mesh = new THREE.InstancedMesh(o.geometry, o.material, instances.length);
-    mesh.frustumCulled = false;
     mesh.userData.instances = instances;
     mesh.userData.lit = o.material;
     mesh.userData.asModelled = {
@@ -1088,7 +1086,10 @@ function redraw(indices) {
     // them where the resource was - and left them standing when the resource was switched off.
     placeParts(at, touched);
   }
-  for (const mesh of touched) mesh.instanceMatrix.needsUpdate = true;
+  for (const mesh of touched) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.boundingSphere = null;
+  }
 }
 
 function refreshSubtree(index, skipSelf) {
@@ -2377,8 +2378,9 @@ function buildMeshes() {
 
     if (MOVING_PARTS.has(model.category)) material.visible = false;
 
+    // Culled by the sphere three works out over the instances, as every instanced mesh, overlay
+    // and outline here is: what is off screen is not submitted. A move or a hide drops the sphere.
     const mesh = new THREE.InstancedMesh(geometryFor(model), material, instances.length);
-    mesh.frustumCulled = false;
     instances.forEach((globalIndex, slot) => {
       placeInstance(mesh, slot, world.matrices[globalIndex], sx, sy, sz);
       placementOf[globalIndex] = { mesh, slot };
@@ -2439,7 +2441,6 @@ function buildMeshes() {
         line.userData.footprintGeometry = footprintGeometry;
         line.matrixAutoUpdate = false;
         line.matrix.copy(boxMatrix(world.matrices[globalIndex], sx, sy, sz));
-        line.frustumCulled = false;
         view.add(line);
         edgeOf.set(globalIndex, line);
       }
@@ -2464,7 +2465,6 @@ function buildMeshes() {
         new THREE.MeshStandardMaterial({ color: colorFor(model), roughness: 0.7 }),
         instances.length,
       );
-      floor.frustumCulled = false;
       instances.forEach((globalIndex, slot) => {
         // A hair above its own base, or it fights the deck surface it stands on for depth.
         const at = [sx, sy, 1, sx / 2, sy / 2, 0.3];
@@ -2492,7 +2492,6 @@ function buildMeshes() {
         }),
         instances.length,
       );
-      wall.frustumCulled = false;
       instances.forEach((globalIndex, slot) => {
         const at = [sx + 2 * VESSEL_WALL, sy + 2 * VESSEL_WALL, sz, sx / 2, sy / 2, sz / 2];
         placeInstance(wall, slot, world.matrices[globalIndex], ...at);
@@ -2518,7 +2517,6 @@ function buildMeshes() {
         }),
         instances.length,
       );
-      inner.frustumCulled = false;
       const white = new THREE.Color(VESSEL_EMPTY);
       instances.forEach((globalIndex, slot) => {
         // The cavity IS the box. A container's size is what it holds, and the material around it
@@ -2566,7 +2564,6 @@ function buildFilterDiscs(modelIndex, instances, model, sx, sy, sz) {
     new THREE.MeshBasicMaterial({ color: FILTER, side: THREE.DoubleSide }),
     instances.length,
   );
-  disc.frustumCulled = false;
   // A tip stands on its bottom end, so its top is its length and the collar hangs from there.
   const z = sz - (model.collar_height + FILTER_BELOW_COLLAR);
   const width = sx * FILTER_WIDTH_UNMEASURED;
@@ -2604,7 +2601,6 @@ function buildPlanDiscs(instances, sx, sy, sz) {
     new THREE.MeshBasicMaterial({ color: TIP_PLAN_FILL, transparent: true, opacity: 1 }),
     instances.length,
   );
-  disc.frustumCulled = false;
   // A plan view alone. The mode change and the rule that culls small things share the switch.
   disc.userData.planOnly = true;
   disc.visible = false;
@@ -2639,7 +2635,10 @@ function fitFilterDiscs(modelIndex, scene, scale, up) {
     at[1] = width;
     placeParts(index, touched);
   }
-  for (const mesh of touched) mesh.instanceMatrix.needsUpdate = true;
+  for (const mesh of touched) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.boundingSphere = null;
+  }
 }
 
 /** Twice the nearest a surface of `object` comes to the axis through (cx, cy), in the plane z. */
@@ -2700,7 +2699,10 @@ function applyState(payload) {
     refreshOverlays(index, touched);
     applyJoints(index);
   }
-  for (const mesh of touched) mesh.instanceMatrix.needsUpdate = true;
+  for (const mesh of touched) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.boundingSphere = null;
+  }
   if (selected >= 0 && infoPanel?.isConnected) renderInfoPanel();
   refreshTreeInfo();
   deviceTools.refresh();
@@ -2790,7 +2792,10 @@ function setHidden(name, hidden) {
     for (const child of world.childrenOf[index]) walk(child);
   };
   walk(root);
-  for (const mesh of touched) mesh.instanceMatrix.needsUpdate = true;
+  for (const mesh of touched) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.boundingSphere = null;
+  }
   refreshTreeVisibility();
 }
 
