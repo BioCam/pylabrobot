@@ -199,6 +199,7 @@ def Prep(
   size_y: float = PREP_SIZE_Y,
   size_z: float = PREP_SIZE_Z,
   simulate_motion_time: bool = False,
+  motion_time_scale: float = 0.25,
 ) -> PrepDevice:
   """A Prep, on a Prep deck.
 
@@ -217,8 +218,10 @@ def Prep(
     size_x: how wide it is, in mm.
     size_y: how deep it is, in mm.
     size_z: how tall it is, in mm.
-    simulate_motion_time: for a simulated device, whether each move takes the time the real one
-      would, so a viewer shows every step. Ignored for a real device.
+    simulate_motion_time: for a simulated device, whether each move takes time at all, so a viewer
+      shows every step. Ignored for a real device.
+    motion_time_scale: the share of the real device's time a simulated move then takes, a quarter
+      by default. 1.0 keeps the real time. Ignored for a real device.
 
   Returns:
     The device, on a Prep deck.
@@ -232,6 +235,7 @@ def Prep(
         declared_configuration_json=declared_configuration_json,
         firmware_tree_json=firmware_tree_json,
         simulate_motion_time=simulate_motion_time,
+        motion_time_scale=motion_time_scale,
       )
     else:
       driver = PrepDriver(

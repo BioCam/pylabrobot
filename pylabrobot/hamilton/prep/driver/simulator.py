@@ -1124,6 +1124,7 @@ class PrepSimulationDriver(PrepDriver):
     initialized: bool = False,
     default_minimum_traverse_height: float = 167.5,
     simulate_motion_time: bool = False,
+    motion_time_scale: float = 0.25,
   ):
     """
     Args:
@@ -1136,8 +1137,10 @@ class PrepSimulationDriver(PrepDriver):
         switched on does not.
       default_minimum_traverse_height: what the device answers `GetDefaultTraverseHeight` with, and
         where it raises channels to Z safety, in mm. Defaults to what the recorded device reports.
-      simulate_motion_time: whether a command that moves the channels takes the time the device
-        would, so a viewer shows each step. Off, every command answers at once.
+      simulate_motion_time: whether a command that moves the channels takes time at all, so a
+        viewer shows each step. Off, every command answers at once.
+      motion_time_scale: the share of the device's own time a move takes when it does: a quarter,
+        so a step is watched rather than waited for. 1.0 keeps the device's time.
 
     Raises:
       ValueError: If the declared configuration holds no device.
@@ -1166,6 +1169,7 @@ class PrepSimulationDriver(PrepDriver):
     self.initialized = initialized
     self.simulated_default_minimum_traverse_height = default_minimum_traverse_height
     self.simulate_motion_time = simulate_motion_time
+    self.motion_time_scale = motion_time_scale
 
     # The features this device has, each answering for itself. Setup builds only the ones that are
     # not already there, so these stand in for the real ones throughout.
@@ -1211,7 +1215,7 @@ class PrepSimulationDriver(PrepDriver):
     if answered is None:
       answered = self._answer_for_device(request, path, method)
     if before is not None:
-      seconds = self._motion_time(before, self._where_everything_is())
+      seconds = self._motion_time(before, self._where_everything_is()) * self.motion_time_scale
       if seconds > 0:
         await asyncio.sleep(seconds)
     return answered

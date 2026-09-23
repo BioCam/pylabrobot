@@ -179,7 +179,9 @@ def test_a_simulation_that_keeps_time_waits_as_long_as_the_device_would_take(mon
     return distance / speed + speed / acceleration
 
   async def _run(keep_time: bool) -> None:
-    p = PrepSimulationDriver(deck=PrepDeck(), simulate_motion_time=keep_time)
+    # At the device's own time, so the waits below can be checked against it. The default is a
+    # quarter of it, checked once at the end.
+    p = PrepSimulationDriver(deck=PrepDeck(), simulate_motion_time=keep_time, motion_time_scale=1.0)
     await p.setup()
     assert p.pipettes is not None and p.x_arm is not None
     waited.clear()
@@ -198,3 +200,4 @@ def test_a_simulation_that_keeps_time_waits_as_long_as_the_device_would_take(mon
 
   asyncio.run(_run(False))
   asyncio.run(_run(True))
+  assert PrepSimulationDriver(deck=PrepDeck(), simulate_motion_time=True).motion_time_scale == 0.25
