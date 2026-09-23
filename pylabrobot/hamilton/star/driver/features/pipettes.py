@@ -1,6 +1,7 @@
 """The pipetting channels: the row of independently driven pipettes on an arm."""
 
 import asyncio
+import dataclasses
 import datetime
 import enum
 import logging
@@ -2742,12 +2743,17 @@ class Pipettes:
   ) -> Tuple[List[int], Dict[int, float], List[ChannelBatch]]:
     """Check the channels and their tips, raise them, and plan the batches; X and Y stay put.
 
+    More containers than channels are dealt to the channels in turn: the first as many as there
+    are channels, then the next, each hand planned into batches as legacy plans one, and the
+    hands run one after the other.
+
     Args:
       deck: what the containers are placed on.
-      containers: one per channel used.
-      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
-      resource_offsets: added to where each channel goes in its container, in mm. Planned when
-        None.
+      containers: any number.
+      use_channels: which channels, 0-indexed from the back. The first len(containers) when None,
+        up to every channel.
+      resource_offsets: added to where each channel goes in its container, in mm, one per
+        container. Planned when None.
       x_grouping_tolerance: containers within this X distance share a batch, in mm.
         `default_x_grouping_tolerance` when None.
       minimum_traverse_height_start: the height every low channel's lowest point is raised to,
@@ -2756,27 +2762,41 @@ class Pipettes:
         against each tip's reach so the refusal comes before anything is in a container.
 
     Returns:
-      The channels used, each one's tip overhang in mm keyed by channel, and the batches in
-      ascending X.
+      The channel each container gets, per container; each channel's tip overhang in mm keyed by
+      channel; and the batches in the order to run them.
 
     Raises:
-      ValueError: If the channels and containers do not match, or a tip cannot reach the end.
+      ValueError: If the channels or offsets do not match the containers, or a tip cannot reach
+        the end.
       RuntimeError: If a channel used carries no tip.
     """
-    channels = validate_channel_selections(list(containers), self.num_channels, use_channels)
+    if use_channels is None:
+      use_channels = list(range(min(len(containers), self.num_channels)))
+    if not containers:
+      raise ValueError("no containers to probe")
+    if not use_channels or len(set(use_channels)) != len(use_channels):
+      raise ValueError(f"use_channels must name distinct channels, is {use_channels}")
+    if resource_offsets is not None and len(resource_offsets) != len(containers):
+      raise ValueError(f"{len(resource_offsets)} offsets for {len(containers)} containers")
+    # The containers are dealt to the channels in turn; a hand is as many as there are channels.
+    hand = len(use_channels)
+    hands = [list(containers[at : at + hand]) for at in range(0, len(containers), hand)]
+    channels = [use_channels[job % hand] for job in range(len(containers))]
+    for job, cards in enumerate(hands):
+      validate_channel_selections(cards, self.num_channels, use_channels[: len(cards)])
     presence = await self.sense_tip_presence()
-    bare = [channel for channel in channels if not presence[channel]]
+    bare = [channel for channel in use_channels if not presence[channel]]
     if bare:
       raise RuntimeError(f"channels {bare} carry no tip")
     # The overhang is the stop disc over the tip bottom, both read where they stand.
     lowest = await self._unchecked_fw_request_lowest_z_positions()
     overhangs = {}
-    for channel in channels:
+    for channel in use_channels:
       stop_disc = await self.request_stop_disc_z_position(channel)
       overhangs[channel] = round(stop_disc - lowest[channel], 2)
     if minimum_traverse_height_end is not None:
       top = self.configuration.z_range[1]
-      too_high = {ch: round(top - overhangs[ch], 2) for ch in channels}
+      too_high = {ch: round(top - overhangs[ch], 2) for ch in use_channels}
       too_high = {
         ch: reach for ch, reach in too_high.items() if minimum_traverse_height_end > reach
       }
@@ -2791,16 +2811,23 @@ class Pipettes:
       raises = await self._traverse_raise_targets(minimum_traverse_height_start)
       if raises:
         await self.move_stop_disc_to_z_positions(raises)
-    batches = plan_batches(
-      use_channels=channels,
-      containers=list(containers),
-      channel_spacings=self.minimum_y_spacings,
-      wrt_resource=deck,
-      x_tolerance=(
-        self.default_x_grouping_tolerance if x_grouping_tolerance is None else x_grouping_tolerance
-      ),
-      resource_offsets=resource_offsets,
+    tolerance = (
+      self.default_x_grouping_tolerance if x_grouping_tolerance is None else x_grouping_tolerance
     )
+    batches: List[ChannelBatch] = []
+    for number, cards in enumerate(hands):
+      first = number * hand
+      offsets = None if resource_offsets is None else resource_offsets[first : first + len(cards)]
+      for batch in plan_batches(
+        use_channels=use_channels[: len(cards)],
+        containers=cards,
+        channel_spacings=self.minimum_y_spacings,
+        wrt_resource=deck,
+        x_tolerance=tolerance,
+        resource_offsets=offsets,
+      ):
+        # The planner counts jobs within the hand; the rest counts them over every container.
+        batches.append(dataclasses.replace(batch, indices=[first + job for job in batch.indices]))
     return channels, overhangs, batches
 
   async def _execute_batched(
@@ -2920,7 +2947,7 @@ class Pipettes:
 
     Args:
       per_batch: what each batch's rounds found, in mm on the deck, by job index.
-      channels: the channels used, per job.
+      channels: the channel each container got, per job.
       containers: per job.
       z_cavity_bottom: per job, on the deck in mm.
       minimum_traverse_height_end: where the tips are left, in mm. Z safety when None.
@@ -2960,7 +2987,7 @@ class Pipettes:
       await self.move_to_safe_z()
     else:
       await self.move_tool_bottom_to_z_positions(
-        {channel: minimum_traverse_height_end for channel in channels}
+        {channel: minimum_traverse_height_end for channel in sorted(set(channels))}
       )
     return above_bottom
 
@@ -2980,14 +3007,16 @@ class Pipettes:
   ) -> List[float]:
     """Find the liquid surface in each container with a channel's tip, and say how high it stands.
 
-    The containers are planned into the fewest batches the channels can reach at once, and the
-    channels of a batch search together, capacitive (cLLD) or pressure (pLLD), from just above the
-    container's top down to its cavity bottom. Every channel used carries a tip, and every channel
-    is at Z safety at the end unless told where to stay.
+    The containers are dealt to the channels in turn, as many at once as there are channels, and
+    each hand is planned into the fewest batches the channels can reach at once. The channels of
+    a batch search together, capacitive (cLLD) or pressure (pLLD), from just above the container's
+    top down to its cavity bottom. Every channel used carries a tip, and every channel is at Z
+    safety at the end unless told where to stay.
 
     Args:
-      containers: one per channel used.
-      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
+      containers: any number; a whole plate is fine.
+      use_channels: which channels, 0-indexed from the back. The first len(containers) when None,
+        up to every channel.
       resource_offsets: added to where each channel goes in its container, in mm. Planned when
         None, spreading channels that share a container.
       lld_mode: how to search, one for all or one per container. Capacitive when None.
@@ -3156,16 +3185,17 @@ class Pipettes:
   ) -> List[Optional[float]]:
     """Touch the floor of each container with a channel's tip, and say how high it is.
 
-    `probe_liquid_heights` with the z-touch in place of the liquid search: the same batches, the
-    same moves between them, the channels of a batch searching together, and the same heights at
-    the end. Each search goes from just above the container's top to `below_floor` under its
-    modelled cavity bottom, and stops where the tip presses on something. The channels of a batch
-    go to their starts together, then set off in a cascade, `start_spacing` apart from the back.
-    Needs channel firmware from 2022 on.
+    `probe_liquid_heights` with the z-touch in place of the liquid search: the same hands and
+    batches, the same moves between them, the channels of a batch searching together, and the
+    same heights at the end. Each search goes from just above the container's top to `below_floor`
+    under its modelled cavity bottom, and stops where the tip presses on something. The channels
+    of a batch go to their starts together, then set off in a cascade, `start_spacing` apart from
+    the back. Needs channel firmware from 2022 on.
 
     Args:
-      containers: one per channel used.
-      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
+      containers: any number; a whole plate is fine.
+      use_channels: which channels, 0-indexed from the back. The first len(containers) when None,
+        up to every channel.
       resource_offsets: added to where each channel goes in its container, in mm. Planned when
         None, spreading channels that share a container.
       search_speed: in mm/s.
@@ -3199,7 +3229,7 @@ class Pipettes:
       raise ValueError(f"n_replicates must be at least 1, is {n_replicates}")
     if start_spacing < 0:
       raise ValueError(f"start_spacing must be at least 0 s, is {start_spacing}")
-    for channel in validate_channel_selections(list(containers), self.num_channels, use_channels):
+    for channel in use_channels or range(min(len(containers), self.num_channels)):
       self._require_ztouch_firmware(channel)
     channels, overhangs, batches = await self._prepare_batched(
       deck,

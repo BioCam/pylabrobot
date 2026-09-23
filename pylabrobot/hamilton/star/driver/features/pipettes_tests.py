@@ -958,6 +958,25 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.sent, [])
     self.xy.assert_not_awaited()
 
+  async def test_more_containers_than_channels_are_dealt_in_hands(self):
+    wells = self._wells("A1", "B1", "C1", "D1", "A2", "B2")
+    heights = await self.pipettes.probe_liquid_heights(wells, use_channels=[0, 1, 2, 3])
+    self.assertEqual(
+      [c[:4] for c in self.sent],
+      ["P1ZL", "P2ZL", "P3ZL", "P4ZL", "C0RL", "P1ZL", "P2ZL", "C0RL"],
+      "the first hand on four channels, the second on channels 0 and 1",
+    )
+    self.assertEqual(self.xy.await_count, 2)
+    bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    self.assertEqual(heights, [round(150.0 - bottom, 2)] * 6)
+
+  async def test_offsets_must_match_the_containers(self):
+    with self.assertRaises(ValueError):
+      await self.pipettes.probe_liquid_heights(
+        self._wells("A1", "B1"), resource_offsets=[Coordinate.zero()]
+      )
+    self.assertEqual(self.sent, [])
+
   async def test_volumes_come_from_each_containers_own_function(self):
     from pylabrobot.resources.container import Container
 
@@ -1051,6 +1070,19 @@ class TestLiquidProbingInSimulation(unittest.IsolatedAsyncioTestCase):
     top = self.pipettes.configuration.z_range[1]
     discs = await self.pipettes.request_stop_disc_z_positions()
     self.assertEqual([discs[channel] for channel in range(4)], [top] * 4)
+
+  async def test_a_whole_plate_on_four_tips(self):
+    wells = [self.plate.get_well(f"{row}{col}") for col in range(1, 13) for row in "ABCDEFGH"]
+    heights = await self.pipettes.probe_liquid_heights(wells, use_channels=[0, 1, 2, 3])
+    self.assertEqual(len(heights), 96)
+    with_water = {well.name: height for well, height in zip(wells, heights, strict=True) if height}
+    self.assertEqual(sorted(with_water), sorted(w.name for w in self.wells[:3]))
+    for well in self.wells[:3]:
+      self.assertAlmostEqual(
+        well.compute_volume_from_height(with_water[well.name]),
+        well.tracker.get_used_volume(),
+        delta=1.0,
+      )
 
   async def test_the_pressure_search_is_answered_too(self):
     capacitive = await self.pipettes.probe_liquid_heights(self.wells[:2])
