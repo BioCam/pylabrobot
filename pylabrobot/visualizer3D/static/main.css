@@ -325,20 +325,15 @@ main {
   margin-left: 12px;
 }
 
+/* One bordered group a device, as the existing visualizer's navbar has it: the device's name, a
+   hairline, then its feature buttons edge to edge, sliding shut behind the name on a click. */
 .dt-group {
   display: flex;
   align-items: center;
-  gap: 6px;
-}
-
-.dt-section-title {
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: #8a949a;
-  white-space: nowrap;
-  margin-right: 4px;
+  border: 1.5px solid #ced4da;
+  border-radius: 6px;
+  background: #f8f9fa;
+  overflow: hidden;
 }
 
 .dt-label {
@@ -346,23 +341,26 @@ main {
   border-right: 1px solid #ced4da;
   background: transparent;
   padding: 0 8px 0 10px;
+  height: 48px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   font-size: 12px;
   font-weight: 700;
-  line-height: 1.15;
+  line-height: 1.3;
   color: #555;
-  text-align: left;
+  text-align: center;
   white-space: nowrap;
   cursor: pointer;
+  font-family: inherit;
 }
 .dt-label.collapsed {
   border-right: none;
 }
 
-/* The buttons slide shut behind their label rather than vanishing, as the existing visualizer's do. */
 .dt-buttons {
   display: flex;
   align-items: center;
-  gap: 6px;
   overflow: hidden;
   max-width: 500px;
   opacity: 1;
@@ -376,41 +374,39 @@ main {
 }
 
 .dt-btn {
-  width: 40px;
-  height: 40px;
+  width: 48px;
+  height: 48px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: 1.5px solid #999;
+  border: none;
   background: transparent;
-  border-radius: 6px;
-  opacity: 0.55;
+  opacity: 0.8;
   padding: 0;
   cursor: pointer;
   transition:
     opacity 0.15s,
-    background 0.15s,
-    border-color 0.15s;
+    background 0.15s;
 }
-
+.dt-btn + .dt-btn {
+  border-left: 1px solid #ced4da;
+}
 .dt-btn img {
-  width: 32px;
-  height: 32px;
+  width: 44px;
+  height: 44px;
   object-fit: contain;
 }
 .dt-btn:hover {
   opacity: 1;
-  background: #ced4da;
-  border-color: #adb5bd;
+  background: #dee2e6;
 }
 .dt-btn.active {
   opacity: 1;
   background: #cfe2ff;
-  border-color: #999;
 }
 .dt-btn:focus-visible {
   outline: 2px solid #1a4b8c;
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 .dt-panel {

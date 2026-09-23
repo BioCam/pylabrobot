@@ -363,16 +363,9 @@ export function initDeviceTools({ getWorld, modelOf, onSelect }) {
     containerEl.textContent = "";
     const world = getWorld();
     if (!world) return;
-    const found = devices();
-    if (!found.length) return;
-
-    // The section's heading, once. Each device then carries only its own name.
-    const heading = document.createElement("span");
-    heading.className = "dt-section-title";
-    heading.textContent = "Device Features";
-    containerEl.appendChild(heading);
-
-    for (const device of found) {
+    // One button a device, carrying the device's name and nothing else, as the existing
+    // visualizer's navbar has one per liquid handler.
+    for (const device of devices()) {
       const parts = partsOf(device);
       const group = document.createElement("div");
       group.className = "dt-group";
