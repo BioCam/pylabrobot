@@ -1825,6 +1825,20 @@ class Pipettes:
     tip = shaft.tip if shaft is not None else None
     return tip if isinstance(tip, Tip) else None
 
+  def _release_modelled_tip(self, channel: int) -> Optional[Tip]:
+    """Take a channel's tip off its shaft in the model, leaving it assigned to nothing.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+
+    Returns:
+      The tip, or None if the model had none on that channel.
+    """
+    shaft = self.shaft(channel)
+    if shaft is None or not shaft.has_tip():
+      return None
+    return cast(Tip, shaft.release_tip())
+
   # ----------------------------------------
   # Probing
   # ----------------------------------------
@@ -2829,7 +2843,7 @@ class Pipettes:
       await self.move_to_safe_z()
     return touched
 
-  # -- liquid heights over many containers ----------------------------------------------------
+  # -- over many containers: liquid heights, volumes, and floors -------------------------------
 
   async def _prepare_batched(
     self,
@@ -2972,6 +2986,63 @@ class Pipettes:
       raise
     return results
 
+  async def _finish_batched_heights(
+    self,
+    per_batch: Sequence[Dict[int, List[Optional[float]]]],
+    channels: Sequence[int],
+    containers: Sequence[Container],
+    z_cavity_bottom: Sequence[float],
+    minimum_traverse_height_end: Optional[float],
+    what: str,
+  ) -> List[Optional[float]]:
+    """Turn the rounds of every batch into one height per container, and leave the channels.
+
+    Args:
+      per_batch: what each batch's rounds found, in mm on the deck, by job index.
+      channels: the channel each container got, per job.
+      containers: per job.
+      z_cavity_bottom: per job, on the deck in mm.
+      minimum_traverse_height_end: where the tips are left, in mm. Z safety when None.
+      what: what was searched for, for the error.
+
+    Returns:
+      The mean of the rounds above each container's cavity bottom, in mm; None where no round
+      found anything.
+
+    Raises:
+      RuntimeError: If something was found in some rounds and not in others.
+    """
+    found: Dict[int, List[Optional[float]]] = {}
+    for batch_found in per_batch:
+      for job, heights in batch_found.items():
+        found.setdefault(job, []).extend(heights)
+    above_bottom: List[Optional[float]] = []
+    inconsistent = []
+    for job, (channel, container) in enumerate(zip(channels, containers)):
+      rounds = found[job]
+      valid = [height for height in rounds if height is not None]
+      if not valid:
+        above_bottom.append(None)
+      elif len(valid) == len(rounds):
+        above_bottom.append(round(sum(valid) / len(valid) - z_cavity_bottom[job], 2))
+      else:
+        inconsistent.append(
+          f"channel {channel} in {container.name}: {len(valid)} of {len(rounds)} rounds"
+        )
+    if inconsistent:
+      await self.move_to_safe_z()
+      raise RuntimeError(
+        f"{what} found in some rounds and not in others, so it may be at the detection limit: "
+        + "; ".join(inconsistent)
+      )
+    if minimum_traverse_height_end is None:
+      await self.move_to_safe_z()
+    else:
+      await self.move_tool_bottom_to_z_positions(
+        {channel: minimum_traverse_height_end for channel in sorted(set(channels))}
+      )
+    return above_bottom
+
   async def _probe_batch_liquid_heights(
     self,
     batch: ChannelBatch,
@@ -3034,63 +3105,6 @@ class Pipettes:
         else:
           found[job].append(heights[channel])
     return found
-
-  async def _finish_batched_heights(
-    self,
-    per_batch: Sequence[Dict[int, List[Optional[float]]]],
-    channels: Sequence[int],
-    containers: Sequence[Container],
-    z_cavity_bottom: Sequence[float],
-    minimum_traverse_height_end: Optional[float],
-    what: str,
-  ) -> List[Optional[float]]:
-    """Turn the rounds of every batch into one height per container, and leave the channels.
-
-    Args:
-      per_batch: what each batch's rounds found, in mm on the deck, by job index.
-      channels: the channel each container got, per job.
-      containers: per job.
-      z_cavity_bottom: per job, on the deck in mm.
-      minimum_traverse_height_end: where the tips are left, in mm. Z safety when None.
-      what: what was searched for, for the error.
-
-    Returns:
-      The mean of the rounds above each container's cavity bottom, in mm; None where no round
-      found anything.
-
-    Raises:
-      RuntimeError: If something was found in some rounds and not in others.
-    """
-    found: Dict[int, List[Optional[float]]] = {}
-    for batch_found in per_batch:
-      for job, heights in batch_found.items():
-        found.setdefault(job, []).extend(heights)
-    above_bottom: List[Optional[float]] = []
-    inconsistent = []
-    for job, (channel, container) in enumerate(zip(channels, containers)):
-      rounds = found[job]
-      valid = [height for height in rounds if height is not None]
-      if not valid:
-        above_bottom.append(None)
-      elif len(valid) == len(rounds):
-        above_bottom.append(round(sum(valid) / len(valid) - z_cavity_bottom[job], 2))
-      else:
-        inconsistent.append(
-          f"channel {channel} in {container.name}: {len(valid)} of {len(rounds)} rounds"
-        )
-    if inconsistent:
-      await self.move_to_safe_z()
-      raise RuntimeError(
-        f"{what} found in some rounds and not in others, so it may be at the detection limit: "
-        + "; ".join(inconsistent)
-      )
-    if minimum_traverse_height_end is None:
-      await self.move_to_safe_z()
-    else:
-      await self.move_tool_bottom_to_z_positions(
-        {channel: minimum_traverse_height_end for channel in sorted(set(channels))}
-      )
-    return above_bottom
 
   async def probe_liquid_heights(
     self,
@@ -3181,6 +3195,55 @@ class Pipettes:
     )
     # The bottom is known, so a container in which no liquid was met stands at 0.0.
     return [0.0 if height is None else height for height in heights]
+
+  async def probe_liquid_volumes(
+    self,
+    containers: Sequence[Container],
+    use_channels: Optional[List[int]] = None,
+    resource_offsets: Optional[List[Coordinate]] = None,
+    lld_mode: Union["Pipettes.LLDMode", Sequence["Pipettes.LLDMode"], None] = None,
+    search_speed: float = 10.0,
+    n_replicates: int = 1,
+    *,
+    minimum_traverse_height_start: Optional[float] = None,
+    minimum_traverse_height_during: Optional[float] = None,
+    minimum_traverse_height_end: Optional[float] = None,
+    x_grouping_tolerance: Optional[float] = None,
+  ) -> List[float]:
+    """Find the liquid in each container as `probe_liquid_heights` does, and say how much there is.
+
+    Each container's own geometry turns the height into a volume, so every container has to know
+    its height-to-volume function.
+
+    Args:
+      As `probe_liquid_heights`.
+
+    Returns:
+      The volume in each container, in uL, in the order given; what its function makes of a
+      height of 0.0 where no liquid was met.
+
+    Raises:
+      ValueError: If a container has no height-to-volume function, or as `probe_liquid_heights`.
+      RuntimeError: As `probe_liquid_heights`.
+    """
+    without = [c.name for c in containers if not c.supports_compute_height_volume_functions()]
+    if without:
+      raise ValueError(f"no height-to-volume function for {without}")
+    heights = await self.probe_liquid_heights(
+      containers,
+      use_channels,
+      resource_offsets,
+      lld_mode,
+      search_speed,
+      n_replicates,
+      minimum_traverse_height_start=minimum_traverse_height_start,
+      minimum_traverse_height_during=minimum_traverse_height_during,
+      minimum_traverse_height_end=minimum_traverse_height_end,
+      x_grouping_tolerance=x_grouping_tolerance,
+    )
+    return [
+      container.compute_volume_from_height(height) for container, height in zip(containers, heights)
+    ]
 
   @staticmethod
   async def _after(delay: float, search: Awaitable[T]) -> T:
@@ -3369,55 +3432,6 @@ class Pipettes:
       per_batch, channels, containers, z_cavity_bottom, minimum_traverse_height_end, "a floor"
     )
 
-  async def probe_liquid_volumes(
-    self,
-    containers: Sequence[Container],
-    use_channels: Optional[List[int]] = None,
-    resource_offsets: Optional[List[Coordinate]] = None,
-    lld_mode: Union["Pipettes.LLDMode", Sequence["Pipettes.LLDMode"], None] = None,
-    search_speed: float = 10.0,
-    n_replicates: int = 1,
-    *,
-    minimum_traverse_height_start: Optional[float] = None,
-    minimum_traverse_height_during: Optional[float] = None,
-    minimum_traverse_height_end: Optional[float] = None,
-    x_grouping_tolerance: Optional[float] = None,
-  ) -> List[float]:
-    """Find the liquid in each container as `probe_liquid_heights` does, and say how much there is.
-
-    Each container's own geometry turns the height into a volume, so every container has to know
-    its height-to-volume function.
-
-    Args:
-      As `probe_liquid_heights`.
-
-    Returns:
-      The volume in each container, in uL, in the order given; what its function makes of a
-      height of 0.0 where no liquid was met.
-
-    Raises:
-      ValueError: If a container has no height-to-volume function, or as `probe_liquid_heights`.
-      RuntimeError: As `probe_liquid_heights`.
-    """
-    without = [c.name for c in containers if not c.supports_compute_height_volume_functions()]
-    if without:
-      raise ValueError(f"no height-to-volume function for {without}")
-    heights = await self.probe_liquid_heights(
-      containers,
-      use_channels,
-      resource_offsets,
-      lld_mode,
-      search_speed,
-      n_replicates,
-      minimum_traverse_height_start=minimum_traverse_height_start,
-      minimum_traverse_height_during=minimum_traverse_height_during,
-      minimum_traverse_height_end=minimum_traverse_height_end,
-      x_grouping_tolerance=x_grouping_tolerance,
-    )
-    return [
-      container.compute_volume_from_height(height) for container, height in zip(containers, heights)
-    ]
-
   # TODO: _unchecked_fw_ vs tip-presence-guarded versions
 
   # ----------------------------------------
@@ -3425,20 +3439,6 @@ class Pipettes:
   # ----------------------------------------
 
   # -- ? --------------------------------------------------
-
-  def _release_modelled_tip(self, channel: int) -> Optional[Tip]:
-    """Take a channel's tip off its shaft in the model, leaving it assigned to nothing.
-
-    Args:
-      channel: which channel, 0-indexed from the back.
-
-    Returns:
-      The tip, or None if the model had none on that channel.
-    """
-    shaft = self.shaft(channel)
-    if shaft is None or not shaft.has_tip():
-      return None
-    return cast(Tip, shaft.release_tip())
 
   def _tip_command_positions(
     self, locations: Dict[int, Coordinate]
