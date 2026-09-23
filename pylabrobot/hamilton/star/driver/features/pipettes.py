@@ -3044,6 +3044,40 @@ class Pipettes:
       )
     return above_bottom
 
+  def _get_stop_disc_search_windows(
+    self,
+    batch: ChannelBatch,
+    overhangs: Dict[int, float],
+    z_cavity_bottom: Sequence[float],
+    z_top: Sequence[float],
+    above_top: float,
+    below_bottom: float,
+  ) -> List[Tuple[int, int, float, float]]:
+    """The stop disc window each channel of a batch searches, lowest channel number first.
+
+    From `above_top` over the container's top, no higher than the drive goes, down to
+    `below_bottom` under its cavity bottom; both plus the channel's overhang, since the searches
+    run on the stop disc.
+
+    Args:
+      batch: the channels and which container each has, by job index.
+      overhangs: each channel's tip overhang in mm, keyed by channel.
+      z_cavity_bottom: per job, on the deck in mm.
+      z_top: per job, on the deck in mm.
+      above_top: how far above the top the search starts, in mm.
+      below_bottom: how far under the cavity bottom it may go, in mm.
+
+    Returns:
+      (channel, job, end, start) per channel, the heights in mm.
+    """
+    top = self.configuration.z_range[1]
+    windows = []
+    for channel, job in sorted(zip(batch.channels, batch.indices)):
+      end = round(z_cavity_bottom[job] - below_bottom + overhangs[channel], 2)
+      start = round(min(z_top[job] + overhangs[channel] + above_top, top), 2)
+      windows.append((channel, job, end, start))
+    return windows
+
   async def _probe_batch_liquid_heights(
     self,
     batch: ChannelBatch,
@@ -3078,12 +3112,9 @@ class Pipettes:
     Raises:
       STARFirmwareError: Anything a channel answered other than that it found nothing.
     """
-    top = self.configuration.z_range[1]
-    searches = []
-    for channel, job in zip(batch.channels, batch.indices):
-      end = round(z_cavity_bottom[job] + overhangs[channel], 2)
-      start = round(min(z_top[job] + overhangs[channel] + self.search_start_clearance, top), 2)
-      searches.append((channel, job, end, start))
+    searches = self._get_stop_disc_search_windows(
+      batch, overhangs, z_cavity_bottom, z_top, self.search_start_clearance, 0.0
+    )
     found: Dict[int, List[Optional[float]]] = {job: [] for job in batch.indices}
     for _ in range(n_replicates):
       results = await asyncio.gather(
@@ -3299,12 +3330,9 @@ class Pipettes:
     Raises:
       STARFirmwareError: As a channel answered.
     """
-    top = self.configuration.z_range[1]
-    searches = []
-    for channel, job in sorted(zip(batch.channels, batch.indices)):
-      end = round(z_cavity_bottom[job] - below_floor + overhangs[channel], 2)
-      start = round(min(z_top[job] + overhangs[channel], top), 2)
-      searches.append((channel, job, end, start))
+    searches = self._get_stop_disc_search_windows(
+      batch, overhangs, z_cavity_bottom, z_top, 0.0, below_floor
+    )
     found: Dict[int, List[Optional[float]]] = {job: [] for job in batch.indices}
     for _ in range(n_replicates):
       await self.move_stop_disc_to_z_positions(
