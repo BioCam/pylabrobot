@@ -317,20 +317,37 @@ class SimulatedPipettes(_Simulated, Pipettes):
     return resp
 
   def _record_tip_command(
-    self, x_positions: List[int], y_positions: List[int], tip_pattern: List[bool], z: int
+    self,
+    x_positions: List[int],
+    y_positions: List[int],
+    tip_pattern: List[bool],
+    z: int,
+    overhang: float = 0.0,
   ) -> None:
     """Put the arm and the channels where a tip command leaves them, as the reads will find them.
 
-    The arm ends over the last column the command visited, and each channel taking part at its Y
-    and at the height the command ends at. A channel the command does not name stays where it is,
-    in Z as in Y: a device reports the others unmoved - `C0 TP` on one channel answers
-    `rz +2450 +3343 +3343 ...`, the traverse height for that channel and the rest as they were.
+    The arm ends over the last column the command visited, and each channel taking part at its Y.
+    A channel the command does not name stays where it is, in Z as in Y.
+
+    The height a tip command ends at is its lowest point, and the model holds the stop disc, so a
+    channel that came away with a tip ends that much higher. As the device answers a pick-up of a
+    300 uL tip at `th2450`: the master reads the lowest points as `rz +2450 +3343 ...`, and the
+    channel itself reads `rz +27674` increments - 296.9 mm, the traverse height plus the 51.9 mm
+    the tip hangs below the disc.
+
+    Args:
+      x_positions, y_positions, tip_pattern: the command, in tenths of a millimetre.
+      z: the height the command ends at, in tenths of a millimetre.
+      overhang: how far what the channels now carry hangs below the stop disc, in mm. Nothing for
+        a command that leaves them empty.
     """
     involved = [i for i, used in enumerate(tip_pattern) if used and i < self.num_channels]
     if involved:
       self.arm.update_location_by_reference_point(x_positions[involved[-1]] / 10)
     for channel in involved:
-      self.update_location_by_reference_point(channel, y=y_positions[channel] / 10, z=z / 10)
+      self.update_location_by_reference_point(
+        channel, y=y_positions[channel] / 10, z=z / 10 + overhang
+      )
 
   async def _unchecked_fw_pick_up_tips(
     self,
@@ -354,7 +371,15 @@ class SimulatedPipettes(_Simulated, Pipettes):
       minimum_traverse_height_start=minimum_traverse_height_start,
       pickup_method=pickup_method,
     )
-    self._record_tip_command(x_positions, y_positions, tip_pattern, minimum_traverse_height_start)
+    # The channels come away carrying a tip of this type, which hangs below the stop disc by the
+    # length the type was defined with.
+    self._record_tip_command(
+      x_positions,
+      y_positions,
+      tip_pattern,
+      minimum_traverse_height_start,
+      overhang=self.device.defined_tip_lengths.get(tip_type_index, 0.0),
+    )
     return resp
 
   async def _unchecked_fw_drop_tips(
@@ -1176,6 +1201,10 @@ class STARSimulationDriver(STARDriver):
     if len(tips_mounted) != channels:
       raise ValueError(f"tips_mounted has {len(tips_mounted)} entries, expected {channels}")
     self.tips_mounted = list(tips_mounted)
+    # How far a tip of each defined type stands below the stop disc, by tip type index, as
+    # `define_tip_needle` was told. A tip command names one of these, and what it collects hangs
+    # that far down: the traverse height it ends at is the tip's, so the stop disc ends higher.
+    self.defined_tip_lengths: Dict[int, float] = {}
     # What each channel's drive holds, by channel; filled from the power-on values when first asked.
     self.channel_drive_parameters: Dict[int, Dict[str, int]] = {}
 
@@ -1215,6 +1244,19 @@ class STARSimulationDriver(STARDriver):
 
   async def _close(self):
     pass
+
+  async def define_tip_needle(self, *args: Any, **kwargs: Any):
+    """Remember how far a tip of this type hangs below the stop disc, then define it as usual.
+
+    A tip command names a type rather than a tip, so this is where the model learns what a channel
+    collecting that type will carry: `_record_tip_command` puts the stop disc that much above the
+    traverse height the command ends at.
+    """
+    resp = await super().define_tip_needle(*args, **kwargs)
+    index, length = kwargs.get("tip_type_table_index"), kwargs.get("tip_length")
+    if index is not None and length is not None:
+      self.defined_tip_lengths[int(index)] = float(length)
+    return resp
 
   async def request_device_configuration(self) -> DeviceConfiguration:
     """What the device reports it carries, answered from what it was declared to be.

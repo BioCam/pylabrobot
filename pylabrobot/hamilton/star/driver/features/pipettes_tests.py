@@ -1083,11 +1083,20 @@ class TestWhereATipCommandLeavesTheChannels(unittest.IsolatedAsyncioTestCase):
   async def test_a_pickup_moves_only_its_own_channel_in_z(self):
     pipettes, rack, _ = await channels_over_a_rack()
     before = await pipettes.request_stop_disc_z_positions()
+    tip = rack.get_item("A1").tip
+    overhang = tip.get_size_z() - tip.fitting_depth
 
     await pipettes.pick_up_tips([rack.get_item("A1")])
 
     after = await pipettes.request_stop_disc_z_positions()
-    self.assertEqual(after[0], pipettes.default_minimum_traverse_height)
+    self.assertAlmostEqual(
+      after[0],
+      pipettes.default_minimum_traverse_height + overhang,
+      places=1,
+      msg="the command ends with the tip's end at the traverse height, so the disc is above it",
+    )
+    lowest = await pipettes._unchecked_fw_request_lowest_z_positions()
+    self.assertAlmostEqual(lowest[0], pipettes.default_minimum_traverse_height, places=1)
     self.assertEqual(
       [after[channel] for channel in range(1, 8)],
       [before[channel] for channel in range(1, 8)],
