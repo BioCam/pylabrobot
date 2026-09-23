@@ -113,6 +113,17 @@ export const FILTER_BELOW_COLLAR = 2;
 // been read for the bore at that height.
 export const FILTER_WIDTH_UNMEASURED = 0.6;
 export const SELECT = 0x1a4b8c;
+// How long the selection box stays after a pick, as the existing visualizer's dashed rectangle
+// does: long enough to see what was chosen, gone before it gets in the way of looking at it.
+export const SELECTION_SHOWN_MS = 2000;
+// The get-location tool's bullseyes, held at this many pixels: blue on the resource under the
+// pointer, pink on the resource everything is measured against, as the existing visualizer has.
+export const BULLSEYE_PX = 22;
+export const BULLSEYE_HOVER = 0x0d6efd;
+export const BULLSEYE_WRT = 0xff5fa2;
+// What the search pane's "Wells" filter admits: anything that holds liquid, as the existing
+// visualizer admits any container, not wells alone.
+export const SEARCH_CONTAINERS = new Set(["well", "tube", "trough", "container", "petri_dish"]);
 export const HOVER = 0xbbcc33;
 // Ported from the X-arm tracker branch's `XArm` renderer: a translucent frame with a window
 // punched through it, and a cyan line at the tracked X. The window is what lets you read the deck

@@ -53,6 +53,20 @@ export function initCoords({ getWorld, referencePoint, escapeHtml }) {
     return point;
   }
 
+  /** Where the chosen reference stands, in world millimetres, or null when measuring absolutely. */
+  function wrtPoint() {
+    const wrtName = refValue("coords-wrt-ref");
+    if (wrtName === "root") return null;
+    const wrtIndex = getWorld().indexOfName.get(wrtName);
+    if (wrtIndex === undefined) return null;
+    return referencePoint(
+      wrtIndex,
+      refValue("coords-wrt-x-ref"),
+      refValue("coords-wrt-y-ref"),
+      refValue("coords-wrt-z-ref"),
+    );
+  }
+
   /** A height, or "na" where the resource cannot answer for the reference asked of it. */
   const height = (point) => (point.zKnown ? point.z.toFixed(1) : "na");
 
@@ -105,5 +119,5 @@ export function initCoords({ getWorld, referencePoint, escapeHtml }) {
       current && [...select.options].some((o) => o.value === current) ? current : "root";
   }
 
-  return { coordinateLabel, recordMeasurement, populateWrtDropdown, endpoints };
+  return { coordinateLabel, recordMeasurement, populateWrtDropdown, endpoints, wrtPoint };
 }

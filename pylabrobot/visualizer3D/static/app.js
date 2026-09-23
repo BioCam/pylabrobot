@@ -30,6 +30,9 @@ import {
   ARM_OPACITY,
   ARM_REFERENCE_OPACITY,
   BOX_OPACITY,
+  BULLSEYE_HOVER,
+  BULLSEYE_PX,
+  BULLSEYE_WRT,
   CHANNEL_RAMP,
   CHANNEL_RAMP_DARK_INK_STEPS,
   CONTAINERS,
@@ -63,7 +66,9 @@ import {
   REFERENCE_LINE,
   REFERENCE_WIDTH,
   RESOURCE_COLORS,
+  SEARCH_CONTAINERS,
   SELECT,
+  SELECTION_SHOWN_MS,
   SHELL_OPACITY,
   SPACE_OPACITY,
   structureEdgeStyle,
@@ -2993,22 +2998,30 @@ function addRow(index, depth, before) {
   eye.innerHTML = eyeSvg(hiddenNames.has(world.names[index]));
   eye.addEventListener("click", (e) => {
     e.stopPropagation();
+    // Hidden by a parent, a plain click can do nothing and says so; alt-click clears the whole
+    // chain above, as the existing visualizer's does.
+    if (!hiddenNames.has(world.names[index]) && !isVisible(index)) {
+      if (!e.altKey) return;
+      for (let i = index; i >= 0; i = world.parentOf[i]) {
+        if (hiddenNames.has(world.names[i])) setHidden(world.names[i], false);
+      }
+      return;
+    }
     setHidden(world.names[index], !hiddenNames.has(world.names[index]));
   });
   row.appendChild(eye);
 
   row.addEventListener("mouseenter", () => showHoverBox(index));
   row.addEventListener("mouseleave", () => (hoverBox.visible = false));
-  // Same gesture as the viewport: click selects, double click inspects. The existing visualizer
-  // opens the panel on a single click here, which made the tree and the scene behave differently
-  // for the same intent.
+  // As the existing visualizer's rows: a click opens the panel on the resource, a double click
+  // frames it in the viewport, from wherever the camera is looking.
   row.addEventListener("click", (e) => {
     if (e.offsetX < 20 && children.length) toggle(index, !expanded.has(index));
-    else select(index, false);
+    else select(index, true);
   });
   row.addEventListener("dblclick", (e) => {
     if (e.offsetX < 20 && children.length) return;
-    select(index, true);
+    frameBox(worldBox(index), camera.position.clone().sub(controls.target));
   });
 
   treeEl.insertBefore(row, before ?? null);
@@ -3114,9 +3127,16 @@ function applyRowVisibility(index) {
   const entry = rowOf.get(index);
   if (!entry) return;
   const own = hiddenNames.has(world.names[index]);
+  const inherited = !own && !isVisible(index);
   entry.row.classList.toggle("resource-hidden", !isVisible(index));
   entry.eye.innerHTML = eyeSvg(own);
   entry.eye.classList.toggle("is-hidden", own);
+  entry.eye.classList.toggle("inherited", inherited);
+  entry.eye.title = inherited
+    ? "Hidden by a parent - alt-click to reveal it"
+    : own
+      ? "Show"
+      : "Hide";
 }
 
 function refreshTreeVisibility() {
@@ -3304,10 +3324,13 @@ function renderInfoPanel() {
 // Selecting and inspecting are separate, as they are in the existing visualizer: a click in the
 // viewport selects, a double click opens the panel, and a click in the tree does both. An already
 // open panel follows the selection rather than being left showing something else.
+let selectionShownAt = 0;
+
 function select(index, openPanel = true) {
   selected = index;
   selectionBox.box.copy(worldBox(index));
   selectionBox.visible = true;
+  selectionShownAt = performance.now();
   revealAndHighlight(index);
   if (openPanel || infoPanel?.isConnected) renderInfoPanel();
 }
@@ -3332,6 +3355,7 @@ function markTreeRow(index) {
 
 function clearHover() {
   hoverBox.visible = false;
+  hoverBullseye.visible = false;
   markTreeRow(null);
 }
 
@@ -3387,7 +3411,83 @@ const {
   recordMeasurement,
   populateWrtDropdown,
   endpoints: deltaEndpoints,
+  wrtPoint,
 } = coords;
+
+// ---------------------------------------------------------------- bullseyes
+
+// The get-location tool's two markers, as the existing visualizer draws them: blue on the resource
+// under the pointer, at the reference asked of it, and pink on the resource everything is measured
+// against. Sprites held at BULLSEYE_PX, placed by transform, so a frame costs no buffer.
+function bullseyeTexture(colour) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext("2d");
+  context.strokeStyle = "rgba(255,255,255,0.85)";
+  context.lineWidth = 9;
+  context.beginPath();
+  context.arc(32, 32, 16, 0, Math.PI * 2);
+  context.stroke();
+  context.strokeStyle = colour;
+  context.fillStyle = colour;
+  context.lineWidth = 4;
+  context.beginPath();
+  context.arc(32, 32, 16, 0, Math.PI * 2);
+  context.stroke();
+  context.beginPath();
+  context.arc(32, 32, 3.5, 0, Math.PI * 2);
+  context.fill();
+  for (const [dx, dy] of [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ]) {
+    context.beginPath();
+    context.moveTo(32 + dx * 20, 32 + dy * 20);
+    context.lineTo(32 + dx * 31, 32 + dy * 31);
+    context.stroke();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function bullseye(colour) {
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: bullseyeTexture(hexOf(colour)),
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  sprite.renderOrder = OVERLAY_ORDER;
+  sprite.frustumCulled = false;
+  sprite.visible = false;
+  view.add(sprite);
+  return sprite;
+}
+const hoverBullseye = bullseye(BULLSEYE_HOVER);
+const wrtBullseye = bullseye(BULLSEYE_WRT);
+
+// Every frame: the tool decides whether either shows, the reference dropdown decides where the
+// pink one stands, and the zoom decides how big both are drawn.
+function updateBullseyes() {
+  if (activeTool !== "coords" || !world) {
+    hoverBullseye.visible = false;
+    wrtBullseye.visible = false;
+    return;
+  }
+  const perPixel = mmPerPixel();
+  if (!Number.isFinite(perPixel) || perPixel <= 0) return;
+  const at = wrtPoint();
+  wrtBullseye.visible = at !== null;
+  if (at !== null) wrtBullseye.position.copy(at);
+  hoverBullseye.scale.setScalar(perPixel * BULLSEYE_PX);
+  wrtBullseye.scale.setScalar(perPixel * BULLSEYE_PX);
+}
 
 // ---------------------------------------------------------------- delta lines
 
@@ -4018,6 +4118,10 @@ function showHoverFor(event) {
   showHoverBox(hit.index);
   markTreeRow(hit.index);
   drawDeltaLines(hit.index);
+  if (activeTool === "coords") {
+    hoverBullseye.position.copy(deltaEndpoints(hit.index).to);
+    hoverBullseye.visible = true;
+  }
   readout.textContent =
     activeTool === "coords"
       ? coordinateLabel(hit.index)
@@ -4251,6 +4355,22 @@ function pickPane(which, button) {
 treeButton.addEventListener("click", () => pickPane("tree", treeButton));
 searchButton.addEventListener("click", () => pickPane("search", searchButton));
 
+// Matching as the existing visualizer matches: every term of the query must be found, as a
+// subsequence, in the name or the type; an exact name outranks a prefix, a prefix a substring, a
+// substring a mere subsequence; ties keep the scene's order. No cap on hits.
+function fuzzyMatch(term, text) {
+  let at = 0;
+  for (let i = 0; i < text.length && at < term.length; i++) if (text[i] === term[at]) at++;
+  return at === term.length;
+}
+
+function fuzzyScore(term, text) {
+  if (text === term) return 4;
+  if (text.startsWith(term)) return 3;
+  if (text.includes(term)) return 2;
+  return 1;
+}
+
 function runSearch() {
   if (!world) return;
   const query = searchInput.value.trim().toLowerCase();
@@ -4262,19 +4382,32 @@ function runSearch() {
     searchResults.innerHTML = '<div class="search-empty">Type to search.</div>';
     return;
   }
+  const terms = query.split(/\s+/);
   const hits = [];
-  for (let i = 0; i < world.names.length && hits.length < 300; i++) {
+  for (let i = 0; i < world.names.length; i++) {
     const category = modelOf(i).category;
-    if (category === "well" && !includeWells) continue;
+    if (SEARCH_CONTAINERS.has(category) && !includeWells) continue;
     if (category === "tip_spot" && !includeTips) continue;
-    if ((category === "resource_holder" || category === "plate_holder") && !includeSites) continue;
-    if (world.names[i].toLowerCase().includes(query)) hits.push(i);
+    if (HOLDERS.has(category) && !includeSites) continue;
+    const name = world.names[i].toLowerCase();
+    const type = String(modelOf(i).type ?? "").toLowerCase();
+    let score = 0;
+    for (const term of terms) {
+      if (fuzzyMatch(term, name)) score += fuzzyScore(term, name);
+      else if (fuzzyMatch(term, type)) score += fuzzyScore(term, type);
+      else {
+        score = -1;
+        break;
+      }
+    }
+    if (score >= 0) hits.push({ index: i, score });
   }
+  hits.sort((a, b) => b.score - a.score || a.index - b.index);
   if (!hits.length) {
     searchResults.innerHTML = '<div class="search-empty">No resource matches.</div>';
     return;
   }
-  for (const index of hits) {
+  for (const { index } of hits) {
     const row = document.createElement("div");
     row.className = "search-result";
     row.innerHTML =
@@ -4496,6 +4629,12 @@ function drawFrame() {
   if (deltaAnnotation?.group.visible) updateDeltaLabels();
   if (updateArms(delta)) moving = true;
   if (updateGlides(delta)) moving = true;
+  // The selection box stays a moment and goes, as the existing visualizer's dashed rectangle does.
+  // Kept drawing until then, so the frame that removes it is drawn.
+  if (selectionBox.visible) {
+    if (performance.now() - selectionShownAt >= SELECTION_SHOWN_MS) selectionBox.visible = false;
+    else moving = true;
+  }
   if (controls.update()) moving = true;
   if (gif.isRecording()) moving = true;
 
@@ -4518,6 +4657,7 @@ function drawFrame() {
   updateEdgeMode();
   updateOrigin();
   updateHalos();
+  updateBullseyes();
   updateScaleBar();
 
   renderer.render(view, camera);

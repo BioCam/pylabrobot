@@ -1073,12 +1073,12 @@ main {
   background: none;
   color: #adb5bd;
   flex-shrink: 0;
-  opacity: 0;
 }
 
-.tree-node-row:hover .tree-eye-btn,
-.tree-eye-btn.is-hidden {
-  opacity: 1;
+/* Hidden by a parent: its own toggle cannot take effect, so it is shown inert rather than lying. */
+.tree-eye-btn.inherited {
+  opacity: 0.35;
+  cursor: not-allowed;
 }
 .tree-eye-btn:hover {
   color: #495057;
