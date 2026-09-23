@@ -110,6 +110,26 @@ const timings = { moduleMs: performance.now() - _t0 };
 // Every fat-line material, so a resize can refresh the resolution each one is sized against.
 const edgeMaterials = new Set();
 
+// ---------------------------------------------------------------- ownership
+
+// What each builder made for itself last time - geometries, materials, textures, instance buffers -
+// so it can let them go before making them again. Nothing shared is ever listed here.
+const ownedBy = new Map();
+
+function own(owner, ...things) {
+  if (!ownedBy.has(owner)) ownedBy.set(owner, []);
+  ownedBy.get(owner).push(...things);
+}
+
+/** Release what an owner made. The renderer keeps a draw's state until its material is disposed. */
+function disposeOwned(owner) {
+  for (const thing of ownedBy.get(owner) ?? []) {
+    edgeMaterials.delete(thing);
+    thing.dispose();
+  }
+  ownedBy.delete(owner);
+}
+
 // ---------------------------------------------------------------- state
 
 let meshes = [];
@@ -480,6 +500,7 @@ function buildDeclaredMeshes() {
   // them needs new ones. The file behind it is already parsed, so they are built again in this
   // same turn and nothing is ever off screen.
   for (const built of modelMeshes) for (const mesh of built.meshes) view.remove(mesh);
+  disposeOwned(buildDeclaredMeshes);
   modelMeshes = [];
 
   // One load per distinct model, however many instances stand on it. A file of several hundred
@@ -504,7 +525,10 @@ function buildDeclaredMeshes() {
   }
   // Whatever is left belongs to a resource this scene does not have, or to one that now declares a
   // different file.
-  for (const root of onScreen.values()) view.remove(root);
+  for (const root of onScreen.values()) {
+    view.remove(root);
+    disposeOwned(root);
+  }
   for (const modelIndex of kept) modelIsDrawn(modelIndex);
 
   for (const [modelIndex, instances] of byModel) {
@@ -544,6 +568,9 @@ function buildDeclaredMeshes() {
         root.traverse((o) => {
           if (o.isMesh) {
             o.userData.declaredBy = index;
+            // Its own material: the view sets opacity per resource, and a copy can be let go.
+            o.material = o.material.clone();
+            own(root, o.material);
             o.userData.lit = o.material;
             // What the file said, kept before a plan view changes it. A travelling part is put
             // into the same pass as the content below it, which means writing over its material's
@@ -627,9 +654,11 @@ function buildInstancedModel(modelIndex, instances, gltf, scale, up) {
     if (!o.isMesh) return;
     // Where this mesh sits inside the file, with the file's units and its up-axis already in it.
     const local = o.matrixWorld.clone();
-    const mesh = new THREE.InstancedMesh(o.geometry, o.material, instances.length);
+    const material = o.material.clone();
+    const mesh = new THREE.InstancedMesh(o.geometry, material, instances.length);
+    own(buildDeclaredMeshes, mesh, material);
     mesh.userData.instances = instances;
-    mesh.userData.lit = o.material;
+    mesh.userData.lit = material;
     mesh.userData.asModelled = {
       transparent: o.material.transparent,
       opacity: o.material.opacity,
@@ -769,6 +798,7 @@ function buildGripMark(index, model, pad) {
       side: THREE.DoubleSide,
     }),
   );
+  own(buildReferenceMarks, plane.geometry, plane.material);
   plane.frustumCulled = false;
   plane.renderOrder = OVERLAY_ORDER + 5;
   plane.matrixAutoUpdate = false;
@@ -806,6 +836,7 @@ function carried(index) {
 
 function buildReferenceMarks() {
   for (const mark of referenceMarks) view.remove(mark.plane);
+  disposeOwned(buildReferenceMarks);
   referenceMarks = [];
 
   // Draw these at the deck's working surface. A mark at the top of its own resource floats above
@@ -860,6 +891,7 @@ function buildReferenceMarks() {
         side: THREE.DoubleSide,
       }),
     );
+    own(buildReferenceMarks, plane.geometry, plane.material);
     plane.frustumCulled = false;
     plane.renderOrder = paintOrderOf(index) + REFERENCE_MARK_OFFSET;
     plane.matrixAutoUpdate = false;
@@ -873,6 +905,7 @@ function buildReferenceMarks() {
 
 function buildArms() {
   for (const arm of arms) view.remove(arm.group);
+  disposeOwned(buildArms);
   arms = [];
 
   for (let index = 0; index < world.names.length; index++) {
@@ -932,6 +965,7 @@ function buildArms() {
       }),
     );
     frame.renderOrder = paintOrderOf(index) + ARM_FRAME_OFFSET;
+    own(buildArms, solid, frame.material);
 
     // Struck from the same extrusion, so the stroke follows the window and the footprint both.
     // It lives in the arm's own group, which is what moves, so there is nothing left behind to
@@ -947,6 +981,7 @@ function buildArms() {
     });
     outlineMaterial.resolution?.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
     edgeMaterials.add(outlineMaterial);
+    own(buildArms, outlineGeometry, outlineMaterial);
     const outline = new LineSegments2(outlineGeometry, outlineMaterial);
     outline.frustumCulled = false;
     outline.renderOrder = paintOrderOf(index) + ARM_OUTLINE_OFFSET;
@@ -964,6 +999,7 @@ function buildArms() {
       }),
     );
     line.position.set(offset, (reachFront + reachBack) / 2, -REFERENCE_DROP);
+    own(buildArms, line.geometry, line.material);
     // Under the frame in paint order as well as in z, so it reads through the window and is tinted
     // by the carriage everywhere else. Ordering, not position, is what decides this: depth testing
     // is off in an axis view, so a lower render order is the only thing that puts it underneath.
@@ -1182,6 +1218,7 @@ function setArmX(index, referenceX) {
 
 function buildGridMarks() {
   for (const mark of gridMarks) view.remove(mark);
+  disposeOwned(buildGridMarks);
   gridMarks = [];
   gridLabels = [];
   surfaces = [];
@@ -1225,6 +1262,7 @@ function buildGridMarks() {
       // it sorted below the box it belongs to, and the box covered it.
       surface.renderOrder = paintOrderOf(index) + 0.25;
       surface.userData.lit = surfaceMaterial;
+      own(buildGridMarks, surface.geometry, surfaceMaterial);
       surfaces.push(surface);
       surface.position.set(footprintX / 2, footprintY / 2, oz);
       group.add(surface);
@@ -1245,6 +1283,7 @@ function buildGridMarks() {
       const position = i + 1;
       if (position === 1 || position % grid.label_every === 0) {
         const sprite = labelSprite(String(position));
+        own(buildGridMarks, sprite.geometry, sprite.material, sprite.material.map);
         gridLabels.push(sprite);
         // Between this mark and the next, so a number never sits on a line.
         sprite.position.set(x + grid.spacing / 2, labelY, z);
@@ -1271,6 +1310,7 @@ function buildGridMarks() {
         new THREE.LineBasicMaterial({ color: BAND_COLOR, depthTest: false }),
       );
       bandLines.renderOrder = paintOrderOf(index) + 0.5;
+      own(buildGridMarks, bandGeometry, bandLines.material);
       group.add(bandLines);
     }
 
@@ -1302,6 +1342,7 @@ function buildGridMarks() {
     showThrough.userData.mark = "through";
     showThrough.renderOrder = OVERLAY_ORDER - 1;
     group.add(showThrough);
+    own(buildGridMarks, geometry, marks.material, showThrough.material);
 
     group.userData.owner = index;
     view.add(group);
@@ -1356,6 +1397,7 @@ function buildOriginDots() {
 
 function buildOrigin() {
   if (originMarker) view.remove(originMarker);
+  disposeOwned(buildOrigin);
   const length = 1; // unit sized; scaled to a constant screen size in updateOrigin()
   const shaft = length * 0.022;
 
@@ -1385,14 +1427,15 @@ function buildOrigin() {
     bar.position.copy(direction).multiplyScalar(body / 2);
     head.position.copy(direction).multiplyScalar(body + (length - body) / 2);
     originMarker.add(bar, head);
+    own(buildOrigin, material, bar.geometry, head.geometry);
   }
 
-  originMarker.add(
-    new THREE.Mesh(
-      new THREE.SphereGeometry(shaft * 2.2, 18, 14),
-      new THREE.MeshStandardMaterial({ color: 0x1a1f22, roughness: 0.4 }),
-    ),
+  const centre = new THREE.Mesh(
+    new THREE.SphereGeometry(shaft * 2.2, 18, 14),
+    new THREE.MeshStandardMaterial({ color: 0x1a1f22, roughness: 0.4 }),
   );
+  originMarker.add(centre);
+  own(buildOrigin, centre.geometry, centre.material);
 
   // A ring flat on the floor, so the origin is still findable from directly above.
   const ring = new THREE.Mesh(
@@ -1405,6 +1448,7 @@ function buildOrigin() {
     }),
   );
   originMarker.add(ring);
+  own(buildOrigin, ring.geometry, ring.material);
 
   // The origin is a marker on the viewport, not something standing in the scene, so it reads over
   // whatever is drawn there.
@@ -1862,13 +1906,13 @@ let halos = null;
 let showHalos = true;
 
 const HALO_TEXTURE_PX = 96;
-/** One material per look, kept: a look is a number, a ramp step and whether it is filled. */
-const haloMaterials = new Map();
+/** One texture per look, kept: a look is a number, a ramp step and whether it is filled. */
+const haloTextures = new Map();
 
-function haloMaterialFor(label, step, filled) {
+function haloTextureFor(label, step, filled) {
   const key = `${label}|${step}|${filled}`;
-  let material = haloMaterials.get(key);
-  if (material) return material;
+  const kept = haloTextures.get(key);
+  if (kept) return kept;
   const canvas = document.createElement("canvas");
   canvas.width = HALO_TEXTURE_PX;
   canvas.height = HALO_TEXTURE_PX;
@@ -1906,14 +1950,19 @@ function haloMaterialFor(label, step, filled) {
   context.fillText(label, mid, mid + 2);
   const texture = new THREE.CanvasTexture(canvas);
   texture.colorSpace = THREE.SRGBColorSpace;
-  material = new THREE.SpriteMaterial({
-    map: texture,
+  haloTextures.set(key, texture);
+  return texture;
+}
+
+/** A sprite material over a kept texture: made per build, so the build can let it go. */
+function haloMaterial(map, color = 0xffffff) {
+  return new THREE.SpriteMaterial({
+    map,
+    color,
     transparent: true,
     depthTest: false,
     depthWrite: false,
   });
-  haloMaterials.set(key, material);
-  return material;
 }
 
 // The line from a channel to its disc: a unit line along x, placed by its transform alone, so the
@@ -1922,20 +1971,15 @@ const LEADER_GEOMETRY = new THREE.BufferGeometry().setFromPoints([
   new THREE.Vector3(0, 0, 0),
   new THREE.Vector3(1, 0, 0),
 ]);
-const leaderMaterials = new Map();
 
-function leaderMaterialFor(step) {
-  let material = leaderMaterials.get(step);
-  if (material) return material;
-  material = new THREE.LineBasicMaterial({
+function leaderMaterial(step) {
+  return new THREE.LineBasicMaterial({
     color: CHANNEL_RAMP[step],
     transparent: true,
     opacity: 0.9,
     depthTest: false,
     depthWrite: false,
   });
-  leaderMaterials.set(step, material);
-  return material;
 }
 
 // The glow on the channel itself: one soft white disc, tinted per ramp step by its material.
@@ -1955,21 +1999,6 @@ function markTexture() {
   return texture;
 }
 const MARK_TEXTURE = markTexture();
-const markMaterials = new Map();
-
-function markMaterialFor(step) {
-  let material = markMaterials.get(step);
-  if (material) return material;
-  material = new THREE.SpriteMaterial({
-    map: MARK_TEXTURE,
-    color: CHANNEL_RAMP[step],
-    transparent: true,
-    depthTest: false,
-    depthWrite: false,
-  });
-  markMaterials.set(step, material);
-  return material;
-}
 
 /** Whether a channel holds a tip: a tip is a resource under the channel's mounting shaft. */
 function channelTipped(index) {
@@ -1989,6 +2018,7 @@ function buildHalos() {
     view.remove(halos);
     halos = null;
   }
+  disposeOwned(buildHalos);
   if (!showHalos || !world) return;
   const channels = [];
   for (let index = 0; index < world.names.length; index++) {
@@ -2003,7 +2033,7 @@ function buildHalos() {
     const ordinal = row.indexOf(index);
     const step = Math.round((ordinal * (CHANNEL_RAMP.length - 1)) / Math.max(1, row.length - 1));
     const sprite = new THREE.Sprite(
-      haloMaterialFor(channelLabel(index, ordinal), step, channelTipped(index)),
+      haloMaterial(haloTextureFor(channelLabel(index, ordinal), step, channelTipped(index))),
     );
     sprite.renderOrder = OVERLAY_ORDER;
     sprite.frustumCulled = false;
@@ -2011,15 +2041,16 @@ function buildHalos() {
     // Discs alternate sides down the row, the first to the right, so neighbours nine millimetres
     // apart do not stack their discs on one side.
     sprite.userData.side = ordinal % 2 === 0 ? 1 : -1;
-    const leader = new THREE.Line(LEADER_GEOMETRY, leaderMaterialFor(step));
+    const leader = new THREE.Line(LEADER_GEOMETRY, leaderMaterial(step));
     leader.renderOrder = OVERLAY_ORDER - 2;
     leader.frustumCulled = false;
-    const mark = new THREE.Sprite(markMaterialFor(step));
+    const mark = new THREE.Sprite(haloMaterial(MARK_TEXTURE, CHANNEL_RAMP[step]));
     mark.renderOrder = OVERLAY_ORDER - 1;
     mark.frustumCulled = false;
     mark.userData.mark = true;
     sprite.userData.leader = leader;
     sprite.userData.mark = mark;
+    own(buildHalos, sprite.material, leader.material, mark.material);
     group.add(leader, mark, sprite);
   }
   halos = group;
@@ -2084,15 +2115,17 @@ const FLOOR_AXIS = 0x9aa4ab; // the two lines through the centre, which say wher
 const FLOOR_LINE_WIDTH = 1.4;
 const FLOOR_AXIS_WIDTH = 2.0;
 
-const floorMaterials = ["line", "axis"].map((kind) => {
+// A material per line, gone with the line: the renderer keeps a line's draw state until its
+// material is disposed, so lines sharing one material piled that up with every change of zoom.
+function floorMaterial(axis) {
   const material = new THREE.Line2NodeMaterial({
-    color: kind === "axis" ? FLOOR_AXIS : FLOOR_LINE,
-    linewidth: kind === "axis" ? FLOOR_AXIS_WIDTH : FLOOR_LINE_WIDTH,
+    color: axis ? FLOOR_AXIS : FLOOR_LINE,
+    linewidth: axis ? FLOOR_AXIS_WIDTH : FLOOR_LINE_WIDTH,
     worldUnits: false,
   });
-  material.resolution?.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+  material.resolution?.set(viewportEl.clientWidth || 1, Math.max(viewportEl.clientHeight, 1));
   return material;
-});
+}
 
 function updateGrid() {
   const perPixel = mmPerPixel();
@@ -2124,6 +2157,7 @@ function updateGrid() {
   for (const line of grid ?? []) {
     view.remove(line);
     line.geometry.dispose();
+    line.material.dispose();
   }
 
   // Already in PLR's XY: the lines are built in the plane rather than laid down from another one.
@@ -2145,13 +2179,7 @@ function updateGrid() {
       if (!points.length) return null;
       const geometry = new LineSegmentsGeometry();
       geometry.setPositions(new Float32Array(points));
-      // A fat line is sized in pixels, so it needs the viewport it is being sized against. Set here
-      // as well as on a resize, because the first grid is built before the first resize lands.
-      floorMaterials[kind].resolution?.set(
-        viewportEl.clientWidth || 1,
-        Math.max(viewportEl.clientHeight, 1),
-      );
-      const line = new LineSegments2(geometry, floorMaterials[kind]);
+      const line = new LineSegments2(geometry, floorMaterial(kind === 1));
       line.position.set(cx, cy, floorZ);
       line.renderOrder = -1;
       line.frustumCulled = false;
@@ -2315,20 +2343,16 @@ function hasEnclosedDescendant(index) {
 function buildMeshes() {
   for (const entry of meshes) {
     view.remove(entry.mesh);
-    entry.mesh.dispose();
     // An overlay is its own object in the view: a vessel's floor, its walls and its cavity, a
     // tip's filter disc, the green disc that says a spot is filled. Taking the box out and leaving
     // those behind does not leave them alone, it puts them out of reach - both rules that show and
     // hide an overlay walk `meshes`, so one dropped from that list keeps whatever it was last told
     // for the life of the page. A scene rebuilt while a plan view was up kept its green discs, and
     // they then showed from every angle.
-    for (const overlay of entry.overlays ?? []) {
-      view.remove(overlay);
-      overlay.dispose?.();
-    }
+    for (const overlay of entry.overlays ?? []) view.remove(overlay);
   }
   for (const line of edgeOf.values()) view.remove(line);
-  edgeMaterials.clear();
+  disposeOwned(buildMeshes);
   planView = null;
   detailScale = null;
   meshes = [];
@@ -2389,6 +2413,7 @@ function buildMeshes() {
     // Culled by the sphere three works out over the instances, as every instanced mesh, overlay
     // and outline here is: what is off screen is not submitted. A move or a hide drops the sphere.
     const mesh = new THREE.InstancedMesh(geometryFor(model), material, instances.length);
+    own(buildMeshes, mesh, material);
     instances.forEach((globalIndex, slot) => {
       placeInstance(mesh, slot, world.matrices[globalIndex], sx, sy, sz);
       placementOf[globalIndex] = { mesh, slot };
@@ -2441,6 +2466,7 @@ function buildMeshes() {
       });
       edgeMaterial.resolution?.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
       edgeMaterials.add(edgeMaterial);
+      own(buildMeshes, edgeGeometry, edgeMaterial);
       for (const globalIndex of instances) {
         const line = new LineSegments2(edgeGeometry, edgeMaterial);
         line.userData.boxGeometry = edgeGeometry;
@@ -2481,6 +2507,7 @@ function buildMeshes() {
       });
       floor.instanceMatrix.needsUpdate = true;
       floor.userData.lit = floor.material;
+      own(buildMeshes, floor, floor.geometry, floor.material);
       view.add(floor);
       overlays.push(floor);
     }
@@ -2507,6 +2534,7 @@ function buildMeshes() {
       });
       wall.instanceMatrix.needsUpdate = true;
       wall.userData.lit = wall.material;
+      own(buildMeshes, wall, wall.material);
       wall.userData.behind = true; // painted before the cavity it surrounds
       view.add(wall);
       overlays.push(wall);
@@ -2547,6 +2575,7 @@ function buildMeshes() {
       inner.instanceMatrix.needsUpdate = true;
       inner.instanceColor.needsUpdate = true;
       inner.userData.lit = inner.material;
+      own(buildMeshes, inner, inner.material);
       view.add(inner);
       overlays.push(inner);
     }
@@ -2584,6 +2613,7 @@ function buildFilterDiscs(modelIndex, instances, model, sx, sy, sz) {
   });
   disc.instanceMatrix.needsUpdate = true;
   disc.userData.lit = disc.material;
+  own(buildMeshes, disc, disc.material);
   view.add(disc);
   filterDiscsOf.set(modelIndex, { mesh: disc, placed, z, cx: sx / 2, cy: sy / 2 });
   return disc;
@@ -2620,6 +2650,7 @@ function buildPlanDiscs(instances, sx, sy, sz) {
   });
   disc.instanceMatrix.needsUpdate = true;
   disc.userData.lit = disc.material;
+  own(buildMeshes, disc, disc.material);
   view.add(disc);
   return disc;
 }
@@ -4679,7 +4710,7 @@ function resize() {
   for (const material of edgeMaterials) material.resolution?.set(w, Math.max(h, 1));
   // Kept apart from the edge materials: that set is emptied and refilled with every scene, and a
   // fat line sized against a stale resolution is drawn at the wrong width or not at all.
-  for (const material of floorMaterials) material.resolution?.set(w, Math.max(h, 1));
+  for (const line of grid ?? []) line.material.resolution?.set(w, Math.max(h, 1));
   perspectiveCamera.aspect = w / Math.max(h, 1);
   perspectiveCamera.updateProjectionMatrix();
   if (projection === "orthographic") {
