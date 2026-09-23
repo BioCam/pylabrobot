@@ -186,6 +186,26 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
         states.append(message["data"])
 
 
+class LifecycleTests(unittest.IsolatedAsyncioTestCase):
+  """A stopped viewer gives its ports back."""
+
+  async def test_a_viewer_started_after_another_stopped_binds_the_same_ports(self):
+    """`stop` used to close the file server and leave the websocket server listening, so the next
+    viewer in the same process found its port taken and moved up: the ports drifted by one on
+    every restart, and a page served by the earlier viewer kept its stale token forever."""
+    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    first = Viewer3D(facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
+    await first.start()
+    self.assertEqual((first.fs_port, first.ws_port), (FS_PORT, WS_PORT))
+    await first.stop()
+    second = Viewer3D(facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
+    await second.start()
+    try:
+      self.assertEqual((second.fs_port, second.ws_port), (FS_PORT, WS_PORT))
+    finally:
+      await second.stop()
+
+
 class RebuildTests(unittest.IsolatedAsyncioTestCase):
   """A scene rebuilt from reused models is the scene it was."""
 

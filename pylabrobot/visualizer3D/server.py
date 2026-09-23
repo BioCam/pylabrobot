@@ -6,6 +6,7 @@ protocol runs on the instrument host. What changed is the payload.
 """
 
 import asyncio
+import atexit
 import functools
 import hashlib
 import hmac
@@ -175,6 +176,7 @@ class Viewer3D:
 
     self._clients: set = set()
     self._httpd: Optional[http.server.HTTPServer] = None
+    self._ws_server: Optional[websockets.asyncio.server.Server] = None
     self._pending: Dict[str, dict] = {}
     self._flush_scheduled = False
     self._loop: Optional[asyncio.AbstractEventLoop] = None
@@ -638,6 +640,9 @@ class Viewer3D:
         self.ws_port += 1
 
     self._start_file_server()
+    # Ports are let go when the interpreter exits, even if nobody called `stop`, so the next run
+    # binds the same ones rather than moving up past a viewer that is no longer answering.
+    atexit.register(self._release_ports)
 
     url = f"http://{self.host}:{self.fs_port}"
     print(f"viewer on {url}  (websocket {self.ws_port})")
@@ -645,7 +650,25 @@ class Viewer3D:
       webbrowser.open(url)
 
   async def stop(self) -> None:
+    """Close both servers, so the ports are free for the next viewer to bind."""
+    atexit.unregister(self._release_ports)
+    self._loop = None  # a state change arriving now has nowhere to go
+    if self._ws_server is not None:
+      self._ws_server.close()
+      await self._ws_server.wait_closed()
+      self._ws_server = None
+    self._clients.clear()
     if self._httpd is not None:
       self._httpd.shutdown()
+      self._httpd.server_close()
+      self._httpd = None
+
+  def _release_ports(self) -> None:
+    """Close the listening sockets without the event loop, which at exit may already be gone."""
+    if self._ws_server is not None:
+      for sock in self._ws_server.sockets:
+        sock.close()
+      self._ws_server = None
+    if self._httpd is not None:
       self._httpd.server_close()
       self._httpd = None
