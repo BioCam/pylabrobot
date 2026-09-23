@@ -2360,6 +2360,12 @@ class Pipettes:
     Raises:
       ValueError: If the height is below the safety height or above what the tip can reach.
     """
+    # Traverse height also applies to tips on unselected channels.
+    tips = list(tips)
+    for channel in range(self.num_channels):
+      mounted = self.get_mounted_tip(channel)
+      if mounted is not None:
+        tips.append(mounted)
     overhang = max(tip.get_size_z() - tip.fitting_depth for tip in tips)
     ceiling = round(self.configuration.z_range[1] - overhang, 2)
     if ceiling < 245.0:
