@@ -2212,8 +2212,8 @@ class Pipettes:
     self,
     channel_idx: int,
     *,
-    search_end_position: float = 99.98,
     search_start_position: Optional[float] = None,
+    search_end_position: float = 99.98,
     search_speed: float = 10.0,
     acceleration: float = 800.0,
     detection_edge: int = 10,
@@ -2229,16 +2229,17 @@ class Pipettes:
 
     Args:
       channel_idx: which channel, 0-indexed from the back.
-      search_end_position: lowest tip bottom height, in mm.
       search_start_position: tip bottom height to search from, in mm. As high as the tip goes
         when None.
+      search_end_position: lowest tip bottom height, in mm.
       search_speed: in mm/s.
       acceleration: in mm/s2.
       detection_edge: cLLD edge steepness, 0 to 1023.
       detection_drop: offset after the edge, 0 to 1023.
       post_detection_trajectory: 0 moves down after detection, 1 up.
       post_detection_distance: how far it moves after detection, in mm.
-      move_channels_to_safe_pos_after: whether to raise every channel to Z safety afterwards.
+      move_channels_to_safe_pos_after: whether to raise every channel to Z safety afterwards,
+        instead of resting where the search left it.
 
     Returns:
       The height the channel detected at, in mm, or None if the search found nothing.
@@ -2573,9 +2574,9 @@ class Pipettes:
     self,
     channel_idx: int,
     *,
-    search_end_position: float = 99.98,
     search_start_position: Optional[float] = None,
-    mode: Optional["Pipettes.PressureLLDMode"] = None,
+    search_end_position: float = 99.98,
+    pressure_mode: Optional["Pipettes.PressureLLDMode"] = None,
     move_channels_to_safe_pos_after: bool = False,
     **search: Any,
   ) -> Optional[List[float]]:
@@ -2588,11 +2589,12 @@ class Pipettes:
 
     Args:
       channel_idx: which channel, 0-indexed from the back.
-      search_end_position: lowest tip bottom height, in mm.
       search_start_position: tip bottom height to search from, in mm. As high as the tip goes
         when None.
-      mode: what the search stops at. The liquid when None.
-      move_channels_to_safe_pos_after: whether to raise every channel to Z safety afterwards.
+      search_end_position: lowest tip bottom height, in mm.
+      pressure_mode: what the search stops at. The liquid when None.
+      move_channels_to_safe_pos_after: whether to raise every channel to Z safety afterwards,
+        instead of resting where the search left it.
       search: the rest of `_plld_search`'s settings, by name.
 
     Returns:
@@ -2626,7 +2628,7 @@ class Pipettes:
         channel_idx,
         search_end_position + overhang,
         round(search_start_position + overhang, 2),
-        mode=mode,
+        mode=pressure_mode,
         **search,
       )
     except STARFirmwareError as error:
@@ -2753,8 +2755,8 @@ class Pipettes:
     self,
     channel_idx: int,
     *,
-    search_end_position: float = 99.98,
     search_start_position: Optional[float] = None,
+    search_end_position: float = 99.98,
     search_speed: float = 10.0,
     approach_speed: float = 125.0,
     acceleration: float = 800.0,
@@ -2769,8 +2771,9 @@ class Pipettes:
     The z-touch: the drive comes down at `approach_speed` to the start, then searches at
     `search_speed` with its force held to `detection_limiter_pwm`, and stops where the tip meets
     resistance. The channel says where its stop disc stopped; the tip bottom is the overhang
-    below it. Then the channel backs off by `post_detection_distance`. A search that reached its
-    end, within `end_tolerance`, touched nothing and answers None.
+    below it. Then the channel backs off by `post_detection_distance` and rests there, or goes to
+    Z safety instead when asked. A search that reached its end, within `end_tolerance`, touched
+    nothing and answers None.
 
     The start is a tip bottom height, as the cLLD probe's; the end is a stop disc height, as
     legacy sends it, so the default is the drive's floor and the search goes as far as it can.
@@ -2778,9 +2781,9 @@ class Pipettes:
 
     Args:
       channel_idx: which channel, 0-indexed from the back.
-      search_end_position: stop disc height the search goes no lower than, in mm.
       search_start_position: tip bottom height the search starts from, in mm. As high as the tip
         goes when None.
+      search_end_position: stop disc height the search goes no lower than, in mm.
       search_speed: in mm/s.
       approach_speed: down to the start, in mm/s.
       acceleration: in mm/s2.
@@ -2788,7 +2791,8 @@ class Pipettes:
       push_force_pwm: the push-down force once stopped, 0 to 125; 0 switches the drive off.
       post_detection_distance: how far the channel backs off afterwards, in mm; 0 stays.
       end_tolerance: how close to the end counts as having touched nothing, in mm.
-      move_channels_to_safe_pos_after: whether to raise every channel to Z safety afterwards.
+      move_channels_to_safe_pos_after: whether to raise every channel to Z safety afterwards,
+        instead of resting where the search left it.
 
     Returns:
       The tip bottom height where it stopped, in mm, or None if it reached the end.
@@ -2836,12 +2840,12 @@ class Pipettes:
     touched = (
       None if stop_disc - search_end_position <= end_tolerance else round(stop_disc - overhang, 2)
     )
-    if post_detection_distance:
+    if move_channels_to_safe_pos_after:
+      await self.move_to_safe_z()
+    elif post_detection_distance:
       await self.move_stop_disc_to_z_position(
         channel_idx, round(stop_disc + post_detection_distance, 2)
       )
-    if move_channels_to_safe_pos_after:
-      await self.move_to_safe_z()
     return touched
 
   # -- over many containers: liquid heights, volumes, and floors -------------------------------
