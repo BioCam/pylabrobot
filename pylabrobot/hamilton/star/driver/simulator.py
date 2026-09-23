@@ -313,8 +313,8 @@ class SimulatedPipettes(_Simulated, Pipettes):
     """What `ZL` or `ZE` answers: the surface in the container the channel searches, or nothing.
 
     The stop disc ends `zi` above where the tip met the surface, as `zj` 1 leaves it, and the
-    height is latched for `C0 RL`. A search that meets no liquid above `zh` ends there and answers
-    as the device does, with trace 70.
+    height is latched for `C0 RL`. A search that meets no liquid above `zh` ends there, zeroes
+    the latch, and answers as the device does, with trace 70.
     """
     c = self.configuration
     container, surface = self._liquid_surface(channel)
@@ -322,6 +322,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
     end = c.z_drive_increments_to_mm(int(kwargs["zh"]))
     if surface is None or surface + below < end:
       self.update_location_by_reference_point(channel, z=end)
+      self.device.last_lld_heights[channel] = 0.0
       check_fw_string_error(f"{self.channel_id(channel)}{command}id0000er70")
     assert container is not None and surface is not None
     detected = round(surface + below, 2)

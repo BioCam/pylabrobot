@@ -1140,6 +1140,13 @@ class TestLiquidProbingInSimulation(unittest.IsolatedAsyncioTestCase):
         delta=1.0,
       )
 
+  async def test_a_miss_zeroes_the_channels_latched_height(self):
+    a1, d1 = self.wells[0], self.wells[3]
+    await self.pipettes.probe_liquid_heights([a1], use_channels=[0])
+    self.assertGreater((await self.pipettes.request_last_lld_heights())[0], 0.0)
+    await self.pipettes.probe_liquid_heights([d1], use_channels=[0])
+    self.assertEqual((await self.pipettes.request_last_lld_heights())[0], 0.0)
+
   async def test_the_pressure_search_is_answered_too(self):
     capacitive = await self.pipettes.probe_liquid_heights(self.wells[:2])
     pressure = await self.pipettes.probe_liquid_heights(
