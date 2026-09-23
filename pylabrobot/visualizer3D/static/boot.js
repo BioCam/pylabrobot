@@ -148,6 +148,23 @@ window.addEventListener("plr:status", (event) => {
   if (connected) document.getElementById("boot-diagnosis")?.remove();
 });
 
+// app.js has stopped trying: nothing has answered for a minute, and it says so once rather than
+// leaving a status dot to pulse and a hint about tunnelling ports that were never the problem.
+window.addEventListener("plr:gone", () => {
+  showDiagnosis({
+    title: "This viewer has stopped",
+    checks: [
+      [true, "renderer started"],
+      [false, "the viewer that served this page is no longer answering"],
+    ],
+    hint:
+      "Its Python process has ended or its kernel was restarted. A new run serves a new page with " +
+      "a key of its own, so this one cannot reconnect to it: use the URL the new run printed. " +
+      "Reload only if the same viewer is being started again.",
+    dismissible: true,
+  });
+});
+
 let started = false;
 try {
   await import("./app.js");

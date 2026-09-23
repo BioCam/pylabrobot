@@ -4574,6 +4574,12 @@ const statusLabel = document.getElementById("status-label");
 // last said. Keep a handle on the socket and re-read its real state whenever the tab comes back.
 let socket = null;
 
+const RECONNECT_MS = 1500;
+// A minute of refused attempts says the viewer is gone, not busy: its kernel was restarted, or the
+// run that served this page has ended. A new run serves a new page with a key of its own.
+const GIVE_UP_MS = 60000;
+let lostAt = null;
+
 function showStatus(connected) {
   for (const el of [statusDot, statusLabel]) {
     el.classList.toggle("connected", connected);
@@ -4605,7 +4611,9 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState !== "visible") return;
   const live = socket && socket.readyState === WebSocket.OPEN;
   showStatus(!!live);
-  if (!live) connect();
+  if (live) return;
+  lostAt = null; // a tab coming back gets its minute again
+  connect();
 });
 
 function connect() {
@@ -4618,12 +4626,15 @@ function connect() {
   socket = new WebSocket(window.WS_URL);
   framed = false;
   socket.onopen = () => {
+    lostAt = null;
     showStatus(true);
     sayHello();
   };
   socket.onclose = () => {
     showStatus(false);
-    setTimeout(connect, 1500);
+    lostAt ??= performance.now();
+    if (performance.now() - lostAt < GIVE_UP_MS) setTimeout(connect, RECONNECT_MS);
+    else window.dispatchEvent(new CustomEvent("plr:gone"));
   };
   socket.onmessage = (event) => {
     const { event: kind, data } = JSON.parse(event.data);
