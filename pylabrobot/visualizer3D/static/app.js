@@ -524,11 +524,7 @@ function buildDeclaredMeshes() {
           o.frustumCulled = false;
           if (o.isMesh) {
             o.userData.declaredBy = index;
-            // The same unlit twin the boxes keep. A model has more shape to lose than a box
-            // does, but in a plan view what is wanted from it is its outline and its colour,
-            // and shading it from above gives neither.
             o.userData.lit = o.material;
-            o.userData.flat = flatVariant(o.material);
             // What the file said, kept before a plan view changes it. A travelling part is put
             // into the same pass as the content below it, which means writing over its material's
             // own flags - and a material asked afterwards what it was modelled as would answer
@@ -615,7 +611,6 @@ function buildInstancedModel(modelIndex, instances, gltf, scale, up) {
     mesh.frustumCulled = false;
     mesh.userData.instances = instances;
     mesh.userData.lit = o.material;
-    mesh.userData.flat = flatVariant(o.material);
     mesh.userData.asModelled = {
       transparent: o.material.transparent,
       opacity: o.material.opacity,
@@ -1153,7 +1148,6 @@ function buildGridMarks() {
       // it sorted below the box it belongs to, and the box covered it.
       surface.renderOrder = paintOrderOf(index) + 0.25;
       surface.userData.lit = surfaceMaterial;
-      surface.userData.flat = flatVariant(surfaceMaterial);
       surfaces.push(surface);
       surface.position.set(footprintX / 2, footprintY / 2, oz);
       group.add(surface);
@@ -1910,25 +1904,6 @@ const EDGE_LIMIT = 160;
 // A resource says what shape it is through `cross_section_type`. A tip spot does not serialize
 // one, though it is plainly round, so it is special-cased here; upstream it should declare the
 // field the way a well does, and this line can go.
-// The same material, unlit. Colours land exactly as specified rather than being darkened by the
-// lighting, and per-instance colour still works because basic materials multiply it into the fill.
-function flatVariant(material) {
-  const flat = new THREE.MeshBasicMaterial({ color: material.color.clone() });
-  flat.transparent = material.transparent;
-  flat.opacity = material.opacity;
-  flat.side = material.side;
-  flat.visible = material.visible;
-  // What is printed on a part is part of it. A model's maps carry the branding, the door labels
-  // and the biohazard mark, and a twin built from the colour alone drops all of them - the part
-  // arrives blank, which reads as the print having been removed rather than the light changed.
-  flat.map = material.map ?? null;
-  flat.alphaMap = material.alphaMap ?? null;
-  flat.alphaTest = material.alphaTest;
-  flat.aoMap = material.aoMap ?? null;
-  if (material.emissiveMap) flat.map = flat.map ?? material.emissiveMap;
-  return flat;
-}
-
 function geometryFor(model) {
   // A shaft is open at both ends; anything else round is a vessel or a spot, which is not.
   if (model.category === "tip_mounting_shaft") return TUBE;
@@ -2106,11 +2081,6 @@ function buildMeshes() {
     });
 
     if (isVessel) material.color.setHex(VESSEL_RIM);
-    // Looking down an axis, a lit material reports the light rather than the resource: horizontal
-    // top faces take the environment's ceiling head-on and wash out, which is what took the colour
-    // out of a plan view. The overlays and the deck surfaces already switch to an unlit twin
-    // there; the box that carries most of the picture was the one thing that did not.
-    material.userData.flat = flatVariant(material);
     material.userData.lit = material;
 
     if (MOVING_PARTS.has(model.category)) material.visible = false;
@@ -2131,7 +2101,6 @@ function buildMeshes() {
       instances,
       depth: treeDepth(instances[0]),
       lit: material,
-      flat: flatVariant(material),
       // Filled in below, once the overlays this model needs are known.
       overlays: /** @type {any[]} */ ([]),
       // Set once this model's declared .glb has arrived and been placed.
@@ -2212,7 +2181,6 @@ function buildMeshes() {
       });
       floor.instanceMatrix.needsUpdate = true;
       floor.userData.lit = floor.material;
-      floor.userData.flat = flatVariant(floor.material);
       view.add(floor);
       overlays.push(floor);
     }
@@ -2240,7 +2208,6 @@ function buildMeshes() {
       });
       wall.instanceMatrix.needsUpdate = true;
       wall.userData.lit = wall.material;
-      wall.userData.flat = flatVariant(wall.material);
       wall.userData.behind = true; // painted before the cavity it surrounds
       view.add(wall);
       overlays.push(wall);
@@ -2281,7 +2248,6 @@ function buildMeshes() {
       });
       inner.instanceMatrix.needsUpdate = true;
       inner.instanceColor.needsUpdate = true;
-      inner.userData.flat = flatVariant(inner.material);
       inner.userData.lit = inner.material;
       view.add(inner);
       overlays.push(inner);
@@ -2321,7 +2287,6 @@ function buildFilterDiscs(modelIndex, instances, model, sx, sy, sz) {
   });
   disc.instanceMatrix.needsUpdate = true;
   disc.userData.lit = disc.material;
-  disc.userData.flat = flatVariant(disc.material);
   view.add(disc);
   filterDiscsOf.set(modelIndex, { mesh: disc, placed, z, cx: sx / 2, cy: sy / 2 });
   return disc;
@@ -2359,7 +2324,6 @@ function buildPlanDiscs(instances, sx, sy, sz) {
   });
   disc.instanceMatrix.needsUpdate = true;
   disc.userData.lit = disc.material;
-  disc.userData.flat = flatVariant(disc.material);
   view.add(disc);
   return disc;
 }
