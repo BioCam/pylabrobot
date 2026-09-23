@@ -1943,11 +1943,10 @@ const colorFor = (model) =>
 // always in front of it, so "1 plates" reads as a count rather than as a mistake.
 const plural = (type) => `${String(type).toLowerCase()}s`;
 
-// The plural naming these resources, or "" if they are not all of one kind and so cannot be
-// counted as one thing.
+// The plural naming these resources, from the first of them, as the existing visualizer counts a
+// carrier: "3 plates" says what a carrier is for even when one site holds something else.
 function countable(indices) {
-  const types = new Set(indices.map((i) => modelOf(i).type));
-  return types.size === 1 ? plural(modelOf(indices[0]).type) : "";
+  return plural(modelOf(indices[0]).type);
 }
 const hexOf = (n) => `#${n.toString(16).padStart(6, "0")}`;
 
@@ -2657,14 +2656,9 @@ function addRow(index, depth, before) {
   arrow.textContent = children.length ? "▶" : "";
   row.appendChild(arrow);
 
-  const dot = document.createElement("span");
-  dot.className = "tree-node-dot";
-  dot.style.backgroundColor = hexOf(colorFor(model));
-  row.appendChild(dot);
-
-  // A holder is a numbered position on its carrier, so it is labelled by that number rather than by
-  // a name nobody chose - and so is whatever stands in it, which is the row a reader is actually
-  // looking for when they want to know which position a plate is at.
+  // A holder is a numbered position on its carrier, so what stands in it is labelled by that
+  // number rather than by a name nobody chose - and the number takes the colour dot's place, as it
+  // does in the existing visualizer. The holder itself only gets a row while it stands empty.
   const holder = HOLDERS.has(model.category);
   const parent = world.parentOf[index];
   const seat = holder ? index : parent >= 0 && HOLDERS.has(modelOf(parent).category) ? parent : -1;
@@ -2735,8 +2729,12 @@ function toggle(index, open) {
     expanded.add(index);
     entry.arrow.textContent = "▼";
     const before = entry.row.nextSibling;
-    const order = siteOrder(index)?.sorted ?? treeChildren(index);
-    for (const child of order) addRow(child, entry.depth + 1, before);
+  // An adapter carries one thing, and its row says which, as the existing visualizer's does.
+  if (modelOf(index).category === "plate_adapter") {
+    return children.length ? shortName(children[0]) : "empty";
+  }
+
+    for (const child of treeChildren(index)) addRow(child, entry.depth + 1, before);
   } else {
     expanded.delete(index);
     entry.arrow.textContent = "▶";
@@ -2753,13 +2751,39 @@ function toggle(index, open) {
     };
     drop(index);
   }
+  if (kind === "tube") return `${children.length} tubes`;
 }
 
-// What the tree lists below a row. The positions inside a container are left out: a plate already
-// says how many wells it has, and the rows would be a wall to scroll past. Nothing about the
-// viewport changes - this decides the panel and nothing else.
+// What the tree lists below a row, in the order a reader takes them. Organised as the existing
+// visualizer's tree is. The positions inside a container are left out: a plate already says how
+// many wells it has. A deck is looked through, and what stood on it is listed left to right: the
+// carriers are what a person came to find, not the surface under them. A holder is a numbered
+// position, not a thing: the row is what stands in it, or the holder itself while it stands empty,
+// so the vacancy still shows. Nothing about the viewport changes - this decides the panel only.
 function treeChildren(index) {
-  return world.childrenOf[index].filter((c) => !TREE_HIDDEN.has(modelOf(c).category));
+  const listed = [];
+  let sawDeck = false;
+  for (const child of world.childrenOf[index]) {
+    const category = modelOf(child).category;
+    if (TREE_HIDDEN.has(category)) continue;
+    if (category === "deck") {
+      sawDeck = true;
+      listed.push(...treeChildren(child));
+      continue;
+    }
+    listed.push(child);
+  }
+  if (sawDeck) {
+    listed.sort((a, b) => world.matrices[a].elements[12] - world.matrices[b].elements[12]);
+  }
+  const rows = [];
+  for (const child of siteOrder(index)?.sorted ?? listed) {
+    const held = HOLDERS.has(modelOf(child).category)
+      ? world.childrenOf[child].filter((c) => !TREE_HIDDEN.has(modelOf(c).category))
+      : [];
+    rows.push(...(held.length ? held : [child]));
+  }
+  return rows;
 }
 
 // Whether opening this row would open a grid of positions rather than a level of the deck. Those
@@ -2833,6 +2857,11 @@ function revealAndHighlight(index) {
 let infoPanel = null;
 
 // Values go through innerHTML, and a resource name is user data. Escape it, or a model field
+  } else {
+    const dot = document.createElement("span");
+    dot.className = "tree-node-dot";
+    dot.style.backgroundColor = hexOf(colorFor(model));
+    row.appendChild(dot);
 // holding `<resource>` disappears into the markup.
 function ensureInfoPanel() {
   if (infoPanel?.isConnected) return infoPanel;

@@ -165,7 +165,12 @@ export const CONTAINERS = new Set([
 // exactly as before; this is about the panel only.
 export const TREE_HIDDEN = new Set(["well", "tip_spot", "tube"]);
 
-export const HOLDERS = new Set(["resource_holder", "plate_holder"]);
+export const HOLDERS = new Set([
+  "resource_holder",
+  "plate_holder",
+  // A tip carrier's or an MFX tip module's position: a holder by class, under its own category.
+  "embedded_tip_rack_holder",
+]);
 
 // Glazing: a model's own see-through parts, at or below this opacity. Looking down an axis you are
 // looking THROUGH the hood at the deck, and each pane you look through lightens everything under it
