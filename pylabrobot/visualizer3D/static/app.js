@@ -30,6 +30,8 @@ import {
   ARM_OPACITY,
   ARM_REFERENCE_OPACITY,
   BOX_OPACITY,
+  CHANNEL_RAMP,
+  CHANNEL_RAMP_DARK_INK_STEPS,
   CONTAINERS,
   CONTENTS,
   DEG,
@@ -43,9 +45,12 @@ import {
   GRIP_MARK_OPACITY,
   GRIP_MARK_OPENING,
   GRIP_MARK_WIDTH,
-  HALO_EMPTY,
+  HALO_CENTRED_AT,
+  HALO_INK,
+  HALO_MARK_PX,
+  HALO_OFFSET_PX,
   HALO_PX,
-  HALO_TIPPED,
+  HALO_TIPPED_BACKGROUND,
   HOLDERS,
   HOVER,
   LIQUID,
@@ -1075,8 +1080,8 @@ function redraw(indices) {
 function refreshSubtree(index, skipSelf) {
   redraw(refreshTransforms(index, skipSelf));
 }
-
   if (!setLocal(index, location)) return;
+
 
 function applyLocation(index, location) {
   // A travelling part is drawn by its own group and glides there, so it is told the target rather
@@ -1774,23 +1779,105 @@ function mmPerPixel() {
 
 // ---------------------------------------------------------------- channel halos
 
-// A halo on each pipetting channel: a soft disc facing the camera, held at HALO_PX across whatever
-// the zoom. Off until asked for from the rail. Sprites, one a channel, rather than one instanced
-// quad: a sprite faces the camera on its own and is placed through its own transform, where an
+// A halo on each pipetting channel: a disc facing the camera, held at HALO_PX across whatever the
+// zoom. Sprites, one a channel, rather than one instanced quad:
+// a sprite faces the camera on its own and is placed through its own transform, where an
 // instanced quad needs its matrix buffer rewritten every frame, and on the WebGPU backend a buffer
 // rewritten every frame drew on some frames and not others. Drawn in the overlay band, so a halo
 // sits over the arm's frame and whatever the channel is above without any of them being reordered.
+//
+// What a halo says: its colour is the channel's place in CHANNEL_RAMP, its number is drawn in it,
+// and it is filled while the channel's mounting shaft holds a tip and hollow while it does not.
+// On from the start; the rail button turns them off and on.
 let halos = null;
-let showHalos = false;
+let showHalos = true;
 
-function haloTexture() {
+const HALO_TEXTURE_PX = 96;
+/** One material per look, kept: a look is a number, a ramp step and whether it is filled. */
+const haloMaterials = new Map();
+
+function haloMaterialFor(label, step, filled) {
+  const key = `${label}|${step}|${filled}`;
+  let material = haloMaterials.get(key);
+  if (material) return material;
+  const canvas = document.createElement("canvas");
+  canvas.width = HALO_TEXTURE_PX;
+  canvas.height = HALO_TEXTURE_PX;
+  const context = canvas.getContext("2d");
+  const colour = hexOf(CHANNEL_RAMP[step]);
+  const mid = HALO_TEXTURE_PX / 2;
+  const radius = mid - 6;
+  // Two zones. The background is white with an empty shaft and light green with a tip in it, so
+  // the change reads from across the deck. The coin at the centre carries the channel's colour:
+  // a solid coin with a tip, a ring without.
+  context.beginPath();
+  context.arc(mid, mid, radius, 0, Math.PI * 2);
+  // A surface ring around every disc, so two halos that overlap still read as two.
+  context.lineWidth = 4;
+  context.strokeStyle = "rgba(255,255,255,0.9)";
+  context.fillStyle = filled ? HALO_TIPPED_BACKGROUND : "rgba(255,255,255,0.88)";
+  context.fill();
+  context.stroke();
+  const coin = radius - 12;
+  context.beginPath();
+  context.arc(mid, mid, coin, 0, Math.PI * 2);
+  if (filled) {
+    context.fillStyle = colour;
+    context.fill();
+  } else {
+    context.lineWidth = 6;
+    context.strokeStyle = colour;
+    context.stroke();
+  }
+  // Ink, never the series colour, on a solid coin; the ramp colour itself inside a ring.
+  context.fillStyle = filled ? (step < CHANNEL_RAMP_DARK_INK_STEPS ? HALO_INK : "#ffffff") : colour;
+  context.font = `bold ${label.length > 1 ? 34 : 42}px ui-monospace, Menlo, monospace`;
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillText(label, mid, mid + 2);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  });
+  haloMaterials.set(key, material);
+  return material;
+}
+
+// The line from a channel to its disc: a unit line along x, placed by its transform alone, so the
+// frame-by-frame update touches no buffer. One material per ramp step, kept like the discs' are.
+const LEADER_GEOMETRY = new THREE.BufferGeometry().setFromPoints([
+  new THREE.Vector3(0, 0, 0),
+  new THREE.Vector3(1, 0, 0),
+]);
+const leaderMaterials = new Map();
+
+function leaderMaterialFor(step) {
+  let material = leaderMaterials.get(step);
+  if (material) return material;
+  material = new THREE.LineBasicMaterial({
+    color: CHANNEL_RAMP[step],
+    transparent: true,
+    opacity: 0.9,
+    depthTest: false,
+    depthWrite: false,
+  });
+  leaderMaterials.set(step, material);
+  return material;
+}
+
+// The glow on the channel itself: one soft white disc, tinted per ramp step by its material.
+function markTexture() {
   const canvas = document.createElement("canvas");
   canvas.width = 64;
   canvas.height = 64;
   const context = canvas.getContext("2d");
   const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
-  gradient.addColorStop(0, "rgba(255,255,255,0.95)");
-  gradient.addColorStop(0.45, "rgba(255,255,255,0.5)");
+  gradient.addColorStop(0, "rgba(255,255,255,1)");
+  gradient.addColorStop(0.5, "rgba(255,255,255,0.7)");
   gradient.addColorStop(1, "rgba(255,255,255,0)");
   context.fillStyle = gradient;
   context.fillRect(0, 0, 64, 64);
@@ -1798,18 +1885,22 @@ function haloTexture() {
   texture.colorSpace = THREE.SRGBColorSpace;
   return texture;
 }
-const HALO_TEXTURE = haloTexture();
+const MARK_TEXTURE = markTexture();
+const markMaterials = new Map();
 
-// One material per state, shared by every halo in it: the texture is the same disc either way.
-const haloMaterial = (color) =>
-  new THREE.SpriteMaterial({
-    map: HALO_TEXTURE,
-    color,
+function markMaterialFor(step) {
+  let material = markMaterials.get(step);
+  if (material) return material;
+  material = new THREE.SpriteMaterial({
+    map: MARK_TEXTURE,
+    color: CHANNEL_RAMP[step],
     transparent: true,
     depthTest: false,
     depthWrite: false,
   });
-const HALO_MATERIALS = { tipped: haloMaterial(HALO_TIPPED), empty: haloMaterial(HALO_EMPTY) };
+  markMaterials.set(step, material);
+  return material;
+}
 
 /** Whether a channel holds a tip: a tip is a resource under the channel's mounting shaft. */
 function channelTipped(index) {
@@ -1818,39 +1909,96 @@ function channelTipped(index) {
   );
 }
 
+/** The channel's own number, as the tree names it, so the halo, the panel and the tree agree. */
+function channelLabel(index, ordinal) {
+  const numbered = /(\d+)$/.exec(world.names[index]);
+  return numbered ? numbered[1] : String(ordinal);
+}
+
 function buildHalos() {
   if (halos) {
     view.remove(halos);
     halos = null;
   }
   if (!showHalos || !world) return;
-  const group = new THREE.Group();
+  const channels = [];
   for (let index = 0; index < world.names.length; index++) {
-    if (modelOf(index).category !== "pipette_channel") continue;
+    if (modelOf(index).category === "pipette_channel") channels.push(index);
+  }
+  if (!channels.length) return;
+  const group = new THREE.Group();
+  for (const index of channels) {
+    // Its place in the row it belongs to: the channels on the same arm, in tree order. Sixteen
+    // channels take the whole ramp; eight take every other step, so the ends stay the ends.
+    const row = channels.filter((c) => world.parentOf[c] === world.parentOf[index]);
+    const ordinal = row.indexOf(index);
+    const step = Math.round((ordinal * (CHANNEL_RAMP.length - 1)) / Math.max(1, row.length - 1));
     const sprite = new THREE.Sprite(
-      channelTipped(index) ? HALO_MATERIALS.tipped : HALO_MATERIALS.empty,
+      haloMaterialFor(channelLabel(index, ordinal), step, channelTipped(index)),
     );
     sprite.renderOrder = OVERLAY_ORDER;
     sprite.frustumCulled = false;
     sprite.userData.index = index;
-    group.add(sprite);
+    // Discs alternate sides down the row, the first to the right, so neighbours nine millimetres
+    // apart do not stack their discs on one side.
+    sprite.userData.side = ordinal % 2 === 0 ? 1 : -1;
+    const leader = new THREE.Line(LEADER_GEOMETRY, leaderMaterialFor(step));
+    leader.renderOrder = OVERLAY_ORDER - 2;
+    leader.frustumCulled = false;
+    const mark = new THREE.Sprite(markMaterialFor(step));
+    mark.renderOrder = OVERLAY_ORDER - 1;
+    mark.frustumCulled = false;
+    mark.userData.mark = true;
+    sprite.userData.leader = leader;
+    sprite.userData.mark = mark;
+    group.add(leader, mark, sprite);
   }
-  if (!group.children.length) return;
   halos = group;
   view.add(halos);
 }
 
-// Each halo sits at the middle of its channel and is scaled to HALO_PX. Done every frame, since
-// the arm and the camera both move; eight transforms, so it costs nothing.
+const _haloRight = new THREE.Vector3();
+const _haloUp = new THREE.Vector3();
+const _haloAnchor = new THREE.Vector3();
+const _haloReach = new THREE.Vector3();
+const X_AXIS = new THREE.Vector3(1, 0, 0);
+
+// Each disc sits off the middle of its channel, right and up as the camera sees it, scaled to
+// HALO_PX, with its line running from the channel to the disc's edge - while the channel is small
+// on screen. As it grows the offset shrinks, and at HALO_CENTRED_AT discs wide the disc sits on the
+// channel and the line is gone. Done every frame, since the arm and the camera both move.
 function updateHalos() {
   if (!halos) return;
   const perPixel = mmPerPixel();
   if (!Number.isFinite(perPixel) || perPixel <= 0) return;
+  _haloRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
+  _haloUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
+  const discMm = perPixel * HALO_PX;
   for (const sprite of halos.children) {
+    if (!sprite.isSprite || sprite.userData.mark === true) continue;
     const index = sprite.userData.index;
     const [sx, sy, sz] = sizeOf(modelOf(index));
-    sprite.position.set(sx / 2, sy / 2, sz / 2).applyMatrix4(world.matrices[index]);
-    sprite.scale.setScalar(perPixel * HALO_PX);
+    // How many discs wide the channel is on screen: none of the offset once it reaches
+    // HALO_CENTRED_AT, all of it while it is under one.
+    const widths = Math.max(sx, sy) / discMm;
+    const standOff = Math.max(0, Math.min(1, (HALO_CENTRED_AT - widths) / (HALO_CENTRED_AT - 1)));
+    _haloReach
+      .copy(_haloRight)
+      .multiplyScalar(HALO_OFFSET_PX.right * sprite.userData.side)
+      .addScaledVector(_haloUp, HALO_OFFSET_PX.up)
+      .multiplyScalar(perPixel * standOff);
+    _haloAnchor.set(sx / 2, sy / 2, sz / 2).applyMatrix4(world.matrices[index]);
+    sprite.position.copy(_haloAnchor).add(_haloReach);
+    sprite.scale.setScalar(discMm);
+    sprite.userData.mark.position.copy(_haloAnchor);
+    sprite.userData.mark.scale.setScalar(perPixel * HALO_MARK_PX);
+    const leader = sprite.userData.leader;
+    const toEdge = _haloReach.length() - discMm / 2;
+    leader.visible = toEdge > 0;
+    if (!leader.visible) continue;
+    leader.position.copy(_haloAnchor);
+    leader.quaternion.setFromUnitVectors(X_AXIS, _haloReach.clone().normalize());
+    leader.scale.set(toEdge, 1, 1);
   }
 }
 
@@ -3928,6 +4076,7 @@ originsButton.addEventListener("click", () => {
 
 // The halos button is the same kind of button: what is drawn changes, what a click means does not.
 const halosButton = document.getElementById("toolbar-halos-btn");
+halosButton.classList.toggle("active", showHalos);
 
 function setHalos(on) {
   showHalos = on;

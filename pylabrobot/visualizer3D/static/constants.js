@@ -211,10 +211,33 @@ export const REFERENCE_DROP = 2; // mm below the arm's underside
 export const ARM_REFERENCE_OPACITY = 0.7;
 export const PROVENANCE_COLOR = { measured: 0x198754, derived: 0xd8a200, unavailable: 0xb02a37 };
 
-// A halo on each pipetting channel, switched on from the rail: a soft disc facing the camera and
+// A halo on each pipetting channel, on unless the rail button says not: a disc facing the camera,
 // held at this many pixels across whatever the zoom, so a nine-millimetre channel is findable at
-// deck scale. Green where the channel holds a tip, as a full spot is, and amber where it does not:
-// a grey was tried and vanished against the deck it is mostly seen over.
-export const HALO_PX = 26;
-export const HALO_TIPPED = TIP_PLAN_FILL;
-export const HALO_EMPTY = 0xffb000;
+// deck scale. Its colour is the channel's place in the ramp below and its number is drawn in it; it
+// is filled while the channel's mounting shaft holds a tip and hollow while it does not.
+export const HALO_PX = 30;
+// Where the disc sits relative to its channel, in pixels on screen: to one side and a little up,
+// right for the first channel and alternating down the row, so the channel stays uncovered and
+// neighbours' discs do not stack, with a line in the disc's colour joining the two. That is for a
+// channel smaller on screen than the disc. Zoomed in, the offset shrinks as the channel grows,
+// and once the channel is this many discs wide the disc sits on its centre with no line.
+export const HALO_OFFSET_PX = { right: 34, up: 18 };
+export const HALO_CENTRED_AT = 3;
+// And a small glow on the channel itself, in the same colour, this many pixels across: the point
+// the line runs from is marked, not bare geometry.
+export const HALO_MARK_PX = 14;
+// Sixteen steps from amber to magenta, one per channel in row order, OKLCH lightness 0.86 to
+// 0.50. Adjacent steps are about 3 OKLab units apart, a gradation rather than a distinction, so
+// the number in the halo is what names a channel and the ramp says where in the row it stands;
+// every fourth channel is 12 apart and the ends 44. Twenty-one from the tip green, so a full
+// channel never reads as a full spot. Dark ink reads on the first nine steps, white on the rest.
+export const CHANNEL_RAMP = [
+  0xfec766, 0xfebb5e, 0xfeae57, 0xfca254, 0xfa9553, 0xf78955, 0xf37d58, 0xed715d, 0xe76662,
+  0xe05b68, 0xd7506e, 0xce4775, 0xc33e7b, 0xb83581, 0xac2e87, 0x9f268d,
+];
+export const CHANNEL_RAMP_DARK_INK_STEPS = 9;
+export const HALO_INK = "#1f2529";
+// The disc's background: white while the mounting shaft is empty, and this light green once it
+// holds a tip, a tint of the green a full spot is drawn in. The change is meant to be seen from
+// across the deck, so it is the whole disc and not only the coin at its centre.
+export const HALO_TIPPED_BACKGROUND = "#b9edd9";
