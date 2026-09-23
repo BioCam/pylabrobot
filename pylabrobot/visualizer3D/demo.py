@@ -203,7 +203,7 @@ async def sweep_arm(star) -> None:
   # wearing a bound it never reaches.
   for step in itertools.count():
     target = low + span * (0.15 if step % 2 else 0.75)
-    await star.x_arm.move_x(round(target, 1))
+    await star.x_arm.move_to_x_position(round(target, 1))
     await asyncio.sleep(3.0)
 
 
