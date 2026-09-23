@@ -4597,8 +4597,58 @@ function connect() {
       }
     } else if (kind === "state" && world) {
       applyState(data);
+    } else if (kind === "moves" && world) {
+      applyMoves(data.moves);
     }
   };
+}
+
+// ---------------------------------------------------------------- moves
+
+// A resource put somewhere else, applied to the scene the page has rather than the scene being
+// built again: a tip picked up is the same tip, now under a channel's shaft. The tree keeps its
+// shape, the panel stays open, nothing is torn down to be fetched and drawn again.
+function applyMoves(moves) {
+  const touched = new Set();
+  const rowsUnder = new Set();
+  for (const move of moves) {
+    const index = world.indexOfName.get(move.name);
+    if (index === undefined) continue;
+    const parent = move.parent === null ? -1 : (world.indexOfName.get(move.parent) ?? -1);
+    const was = world.parentOf[index];
+    if (was !== parent) {
+      if (was >= 0) {
+        const siblings = world.childrenOf[was];
+        const at = siblings.indexOf(index);
+        if (at >= 0) siblings.splice(at, 1);
+        rowsUnder.add(was);
+      }
+      if (parent >= 0) {
+        world.childrenOf[parent].push(index);
+        rowsUnder.add(parent);
+      }
+      world.parentOf[index] = parent;
+    }
+    setLocal(index, move.location);
+    setLocalRotation(index, move.rotation);
+    for (const i of refreshTransforms(index)) touched.add(i);
+  }
+  redraw([...touched]);
+  for (const at of rowsUnder) reopenRowsUnder(at);
+  refreshTreeInfo();
+  deviceTools.refresh();
+  buildHalos();
+  if (selected >= 0 && infoPanel?.isConnected) renderInfoPanel();
+}
+
+// The rows under the nearest ancestor that has one, listed again if it is open, so a moved
+// resource is shown where it now stands. A holder has no row of its own; its carrier does.
+function reopenRowsUnder(index) {
+  let at = index;
+  while (at >= 0 && !rowOf.has(at)) at = world.parentOf[at];
+  if (at < 0 || !expanded.has(at)) return;
+  toggle(at, false);
+  toggle(at, true);
 }
 
 statusDot.addEventListener("click", connect);

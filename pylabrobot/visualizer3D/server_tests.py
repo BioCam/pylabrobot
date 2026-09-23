@@ -159,29 +159,55 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
     finally:
       await ws.close()
 
-  async def test_a_resource_moved_under_another_parent_is_not_drawn_under_its_old_one(self):
-    """Its new location waits for the rebuild: sent first, it would be read against the old parent."""
+  async def test_a_resource_moved_under_another_parent_is_moved_not_rebuilt(self):
+    """The same names are the same instances: a change of parent is a move, a parent index and six
+    floats, applied to the scene the client has. Its new location travels in the move and in no
+    state before it, which would be read against the old parent."""
     holder = Resource(name="holder", size_x=200, size_y=200, size_z=50)
     self.facility.assign_child_resource(holder, location=Coordinate(500, 500, 0))
+    # The holder is in the scene a client is greeted with, and the flush its assignment scheduled
+    # finds nothing moved since, so it sends nothing: a rebuild was the old behaviour there too.
     ws, _, _ = await self.connect()
     try:
-      await self.next_scene(ws)  # the rebuild for the holder
       self.plate.unassign()
       holder.assign_child_resource(self.plate, location=Coordinate(5, 5, 50))
-      states = await self.next_scene(ws)
+      states, moves = await self.next_of(ws, "moves")
       for state in states:
         index = state["of"].get("plate")
         self.assertTrue(index is None or "location" not in state["states"][index], state)
+      moved = {move["name"]: move for move in moves["moves"]}
+      self.assertIn("plate", moved)
+      self.assertEqual(moved["plate"]["parent"], "holder")
+      self.assertEqual(moved["plate"]["location"], {"x": 5.0, "y": 5.0, "z": 50.0})
+      self.assertEqual(self.viewer.rebuilds, 0)
     finally:
       await ws.close()
 
-  async def next_scene(self, ws, timeout: float = 2.0):
-    """The state messages that arrive before the next scene, which is waited for."""
+  async def test_a_client_arriving_after_a_move_sees_it_in_the_scene(self):
+    """The kept scene is moved along with the clients', so a late client is handed it as it stands."""
+    holder = Resource(name="holder", size_x=200, size_y=200, size_z=50)
+    self.facility.assign_child_resource(holder, location=Coordinate(500, 500, 0))
+    first, _, _ = await self.connect()
+    try:
+      self.plate.unassign()
+      holder.assign_child_resource(self.plate, location=Coordinate(5, 5, 50))
+      await self.next_of(first, "moves")
+      second, scene, _ = await self.connect()
+      try:
+        names = scene["instances"]["names"]
+        self.assertEqual(names[scene["instances"]["parent"][names.index("plate")]], "holder")
+      finally:
+        await second.close()
+    finally:
+      await first.close()
+
+  async def next_of(self, ws, event: str, timeout: float = 2.0):
+    """The state messages that arrive before the next message of `event`, and that message."""
     states: List[Dict[str, Any]] = []
     while True:
       message = json.loads(await asyncio.wait_for(ws.recv(), timeout))
-      if message["event"] == "scene":
-        return states
+      if message["event"] == event:
+        return states, message["data"]
       if message["event"] == "state":
         states.append(message["data"])
 

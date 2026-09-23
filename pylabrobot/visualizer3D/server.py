@@ -26,9 +26,10 @@ from urllib.parse import parse_qs, urlsplit
 
 import websockets
 
+from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
 
-from .scene import build_scene, collect_state, pack_state, state_signature
+from .scene import Scene, _all_names, build_scene, collect_state, pack_state, state_signature
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +204,9 @@ class Viewer3D:
     # rather than causing a fresh one: rebuilding would renumber everything and hand every client
     # already watching an epoch their indices no longer match.
     self._scene_payload: Optional[Dict[str, Any]] = None
+    # The scene behind that payload, kept so a resource put somewhere else can be moved within it
+    # rather than the whole thing being built again: a tip picked up is the same tip under a shaft.
+    self._scene: Optional[Scene] = None
     self._scene_dirty = False
     # A page left open from an earlier viewer retries its old token every second or so: said once.
     self._refused_a_token = False
@@ -294,8 +298,63 @@ class Viewer3D:
     if not self._scene_dirty:
       return
     self._scene_dirty = False
-    self.rebuilds += 1
-    await self._send_scene_to_all()
+    moves = self._moves()
+    if moves is None:
+      self.rebuilds += 1
+      await self._send_scene_to_all()
+    elif moves:
+      await self._broadcast("moves", {"epoch": self._epoch, "moves": moves})
+
+  def _moves(self) -> Optional[List[Dict[str, Any]]]:
+    """What has been put somewhere else since the scene was built, or None if it must be rebuilt.
+
+    A tree that holds the same names holds the same instances: a change to it is a change of
+    parent or of place, which is a parent index and six floats per resource moved, and the client
+    can apply that to the scene it has. A name appearing or disappearing is an instance the client
+    does not have, or has and should not, and that still costs a scene. The kept scene is moved
+    along with the client's, so a client arriving later is handed the scene as it stands.
+    """
+    scene = self._scene
+    if scene is None or frozenset(_all_names(self.root)) != self._known_names:
+      return None
+    moves: List[Dict[str, Any]] = []
+
+    def walk(resource: Resource, parent: Optional[str]) -> None:
+      index = self._index_of[resource.name]
+      location = resource.location or Coordinate.zero()
+      rotation = resource.rotation
+      local = [
+        float(location.x),
+        float(location.y),
+        float(location.z),
+        float(rotation.x),
+        float(rotation.y),
+        float(rotation.z),
+      ]
+      parent_index = -1 if parent is None else self._index_of[parent]
+      if (
+        parent_index != scene.parent_of_instance[index]
+        or local != scene.transforms[6 * index : 6 * index + 6]
+      ):
+        scene.parent_of_instance[index] = parent_index
+        scene.transforms[6 * index : 6 * index + 6] = local
+        moves.append(
+          {
+            "name": resource.name,
+            "parent": parent,
+            "location": {"x": local[0], "y": local[1], "z": local[2]},
+            "rotation": {"x": local[3], "y": local[4], "z": local[5]},
+          }
+        )
+      for child in resource.children:
+        walk(child, resource.name)
+
+    walk(self.root, None)
+    if moves:
+      self._scene_payload = {**scene.serialize(), "epoch": self._epoch, "stats": self._stats}
+    # Every place the kept scene knows is current again, so a snapshot need not carry any of them.
+    self._moved = set()
+    return moves
 
   # -- access ----------------------------------------------------------------
 
@@ -364,6 +423,7 @@ class Viewer3D:
     scene.legacy_bytes = self._legacy_bytes
 
     payload = scene.serialize()
+    self._scene = scene
     self._register_meshes(payload["models"])
 
     # A new scene renumbers everything, so the indices change and the client knows nothing about
