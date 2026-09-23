@@ -2203,6 +2203,8 @@ class Pipettes:
   # Tip handling
   # ----------------------------------------
 
+  # -- ? --------------------------------------------------
+
   def shaft(self, channel: int) -> Optional[TipMountingShaft]:
     """The mounting shaft modelling a channel, or None while nothing models it.
 
@@ -2308,6 +2310,8 @@ class Pipettes:
     await self._record_where_they_stopped("y")
     await self._record_where_they_stopped("z")
 
+  # -- tip pickup ----------------------------------------------------------------------------
+
   async def _unchecked_fw_pick_up_tips(
     self,
     x_positions: List[int],
@@ -2335,37 +2339,6 @@ class Pipettes:
       tz=f"{end_tip_pick_up_process:04}",
       th=f"{minimum_traverse_height_start:04}",
       td=pickup_method.value,
-    )
-
-  async def _unchecked_fw_drop_tips(
-    self,
-    x_positions: List[int],
-    y_positions: List[int],
-    tip_pattern: List[bool],
-    begin_tip_deposit_process: int,
-    end_tip_deposit_process: int,
-    minimum_traverse_height_start: int,
-    minimum_traverse_height_end: int,
-    discarding_method: TipDropMethod,
-  ):
-    """Send the drop as it is given, in tenths of a millimetre. `C0 TR`.
-
-    With `PLACE_SHIFT` the heights are where the tip's cone ends; with `DROP`, the stop disc's.
-    """
-    return await self._driver.send_command(
-      module="C0",
-      command="TR",
-      subsystem=_FirmwareLock.CHANNELS,
-      tip_pattern=tip_pattern,
-      read_timeout=120,
-      xp=[f"{x:05}" for x in x_positions],
-      yp=[f"{y:04}" for y in y_positions],
-      tm=tip_pattern,
-      tp=begin_tip_deposit_process,
-      tz=end_tip_deposit_process,
-      th=minimum_traverse_height_start,
-      te=minimum_traverse_height_end,
-      ti=discarding_method.value,
     )
 
   async def _pick_up_tips_at_location(
@@ -2596,6 +2569,39 @@ class Pipettes:
         minimum_traverse_height_start=minimum_traverse_height_start,
         pickup_method=pickup_method,
       )
+
+  # -- tip drop --------------------------------------------------
+
+  async def _unchecked_fw_drop_tips(
+    self,
+    x_positions: List[int],
+    y_positions: List[int],
+    tip_pattern: List[bool],
+    begin_tip_deposit_process: int,
+    end_tip_deposit_process: int,
+    minimum_traverse_height_start: int,
+    minimum_traverse_height_end: int,
+    discarding_method: TipDropMethod,
+  ):
+    """Send the drop as it is given, in tenths of a millimetre. `C0 TR`.
+
+    With `PLACE_SHIFT` the heights are where the tip's cone ends; with `DROP`, the stop disc's.
+    """
+    return await self._driver.send_command(
+      module="C0",
+      command="TR",
+      subsystem=_FirmwareLock.CHANNELS,
+      tip_pattern=tip_pattern,
+      read_timeout=120,
+      xp=[f"{x:05}" for x in x_positions],
+      yp=[f"{y:04}" for y in y_positions],
+      tm=tip_pattern,
+      tp=begin_tip_deposit_process,
+      tz=end_tip_deposit_process,
+      th=minimum_traverse_height_start,
+      te=minimum_traverse_height_end,
+      ti=discarding_method.value,
+    )
 
   async def _drop_tips_at_location(
     self,
