@@ -3325,13 +3325,25 @@ function renderInfoPanel() {
 // Selecting and inspecting are separate, as they are in the existing visualizer: a click in the
 // viewport selects, a double click opens the panel, and a click in the tree does both. An already
 // open panel follows the selection rather than being left showing something else.
-let selectionShownAt = 0;
+let selectionTimer = null;
+
+// The selection box stays a moment and goes, as the existing visualizer's dashed rectangle does.
+// A timer the page set for itself asks for the one frame that removes it; keeping the loop
+// running for the whole moment cost two seconds of frames on every click.
+function hideSelectionLater() {
+  clearTimeout(selectionTimer);
+  selectionTimer = setTimeout(() => {
+    selectionTimer = null;
+    selectionBox.visible = false;
+    invalidate();
+  }, SELECTION_SHOWN_MS);
+}
 
 function select(index, openPanel = true) {
   selected = index;
   selectionBox.box.copy(worldBox(index));
   selectionBox.visible = true;
-  selectionShownAt = performance.now();
+  hideSelectionLater();
   revealAndHighlight(index);
   if (openPanel || infoPanel?.isConnected) renderInfoPanel();
 }
@@ -4603,12 +4615,60 @@ new ResizeObserver(resize).observe(viewportEl);
 // The tree, the panels and the toolbars all change the scene through their own handlers. Rather
 // than raise the flag in each one and miss the next one added, any input earns a frame: the cost is
 // one redraw per interaction, and it stops the moment the pointer does.
-for (const kind of ["pointerdown", "pointermove", "pointerup", "wheel", "keydown", "click"]) {
+for (const kind of ["pointerdown", "pointerup", "keydown", "click"]) {
   document.addEventListener(kind, invalidate, { passive: true, capture: true });
+}
+// A pointer moving is the one input that arrives faster than frames, and it only reaches the
+// picture through the viewport: elsewhere a move changes nothing until it crosses into a row that
+// raises a hover box, so the crossing asks, not the move. Over the viewport a move is answered
+// with a raycast and a frame; on a machine whose frames are slow that is asked for at most every
+// HOVER_SLOW_INTERVAL_MS, with the last move always answered, so the readout never lags behind
+// a pointer that has stopped.
+const HOVER_SLOW_FRAME_MS = 24;
+const HOVER_SLOW_INTERVAL_MS = 150;
+let hoverAskedAt = 0;
+let hoverTrailing = null;
+viewportEl.addEventListener(
+  "pointermove",
+  () => {
+    const now = performance.now();
+    if (lastFrameMs < HOVER_SLOW_FRAME_MS || now - hoverAskedAt >= HOVER_SLOW_INTERVAL_MS) {
+      hoverAskedAt = now;
+      invalidate();
+      return;
+    }
+    if (hoverTrailing === null) {
+      hoverTrailing = setTimeout(
+        () => {
+          hoverTrailing = null;
+          hoverAskedAt = performance.now();
+          invalidate();
+        },
+        HOVER_SLOW_INTERVAL_MS - (now - hoverAskedAt),
+      );
+    }
+  },
+  { passive: true, capture: true },
+);
+viewportEl.addEventListener("wheel", invalidate, { passive: true, capture: true });
+for (const kind of ["mouseover", "mouseout"]) {
+  document.addEventListener(
+    kind,
+    (event) => {
+      const target = /** @type {Element | null} */ (event.target);
+      if (target?.closest?.(".tree-node-row, .search-result, #viewport")) invalidate();
+    },
+    { passive: true, capture: true },
+  );
 }
 setInterval(reportIdle, 500);
 
+// How long the last frame took on the main thread, submission included. What the pointer gate
+// above reads: a slow frame is a machine that cannot answer every pointer sample.
+let lastFrameMs = 0;
+
 function drawFrame() {
+  const frameStarted = performance.now();
   const delta = clock.getDelta();
 
   // At most one hover answered per frame, however many times the pointer moved in between: a
@@ -4631,12 +4691,6 @@ function drawFrame() {
   if (deltaAnnotation?.group.visible) updateDeltaLabels();
   if (updateArms(delta)) moving = true;
   if (updateGlides(delta)) moving = true;
-  // The selection box stays a moment and goes, as the existing visualizer's dashed rectangle does.
-  // Kept drawing until then, so the frame that removes it is drawn.
-  if (selectionBox.visible) {
-    if (performance.now() - selectionShownAt >= SELECTION_SHOWN_MS) selectionBox.visible = false;
-    else moving = true;
-  }
   if (controls.update()) moving = true;
   if (gif.isRecording()) moving = true;
 
@@ -4663,6 +4717,7 @@ function drawFrame() {
   updateScaleBar();
 
   renderer.render(view, camera);
+  lastFrameMs = performance.now() - frameStarted;
   if (viewHelper) {
     // The helper renders a second pass into a corner of the same canvas. Without turning auto-clear
     // off it clears the colour buffer for that corner first, leaving a blank patch over the scene.

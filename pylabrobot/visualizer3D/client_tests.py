@@ -20,7 +20,9 @@ BOUNDARIES = {
   "connect": "a message arriving from the server",
   "resize": "the viewport changing shape",
   "atBoundary": "a call from outside the page",
-  None: "the document-wide input listeners, and the camera's own change event",
+  "hideSelectionLater": "a timer the page set for itself, to take the selection box down",
+  None: "the input listeners - clicks and keys anywhere, the pointer over the viewport, a crossing"
+  " into a row that raises a hover box - and the camera's own change event",
 }
 
 
