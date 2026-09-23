@@ -521,6 +521,13 @@ class TestZTouchProbing(unittest.IsolatedAsyncioTestCase):
       await self.pipettes.probe_z_using_ztouch(0)
     self.assertEqual(self.sent, [])
 
+  async def test_an_argument_out_of_range_is_refused_before_anything_is_sent(self):
+    with self.assertRaises(ValueError):
+      await self.pipettes.probe_z_using_ztouch(0, search_speed=999.0)
+    self.assertEqual(self.sent, [])
+    self.recorded_z.assert_not_awaited()
+    self.back_off.assert_not_awaited()
+
   async def test_a_firmware_error_goes_to_safe_z(self):
     async def failing(module: str, command: str, **kwargs: Any):
       raise STARFirmwareError(errors={}, raw_response="")

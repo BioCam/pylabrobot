@@ -2828,10 +2828,11 @@ class Pipettes:
         push_force_pwm=push_force_pwm,
       )
     except STARFirmwareError:
+      # The search went out and stopped somewhere: read where, then come up.
+      await self._record_where_they_stopped("z")
       await self.move_to_safe_z()
       raise
-    finally:
-      await self._record_where_they_stopped("z")
+    await self._record_where_they_stopped("z")
     touched = (
       None if stop_disc - search_end_position <= end_tolerance else round(stop_disc - overhang, 2)
     )
