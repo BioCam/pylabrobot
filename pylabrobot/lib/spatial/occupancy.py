@@ -34,18 +34,21 @@ def get_resource_at_location(
       count, current = count + 1, current.parent
     return count
 
+  def is_location_inside(resource: Resource) -> bool:
+    """Whether `location` is inside `resource`'s box, its top face excluded."""
+    lfb = resource.get_location_wrt(reference_frame, "l", "f", "b")
+    return (
+      lfb.x <= location.x < lfb.x + resource.get_absolute_size_x()
+      and lfb.y <= location.y < lfb.y + resource.get_absolute_size_y()
+      and lfb.z <= location.z < lfb.z + resource.get_absolute_size_z()
+    )
+
   found: Optional[Resource] = None
   found_parents = -1
   for resource in reference_frame.get_all_children():
     if any(resource.is_in_subtree_of(excluded) for excluded in exclude):
       continue
-    lfb = resource.get_location_wrt(reference_frame, "l", "f", "b")
-    inside = (
-      lfb.x <= location.x < lfb.x + resource.get_absolute_size_x()
-      and lfb.y <= location.y < lfb.y + resource.get_absolute_size_y()
-      and lfb.z <= location.z < lfb.z + resource.get_absolute_size_z()
-    )
-    if not inside:
+    if not is_location_inside(resource):
       continue
     parents = count_parents_between(resource, reference_frame)
     if parents > found_parents:
