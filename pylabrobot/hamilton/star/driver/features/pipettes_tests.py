@@ -2,7 +2,7 @@ import asyncio
 import re
 import unittest
 import unittest.mock
-from typing import Any, List, Optional, Tuple
+from typing import Any, List, Optional, Tuple, Union
 
 from pylabrobot.hamilton.protocol.text.framing import assemble_command
 from pylabrobot.hamilton.star.device import RECORDING_STAR
@@ -741,7 +741,8 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.deck = deck
     self.sent: List[str] = []
     self.lh = [1500] * self.pipettes.num_channels
-    self.rz = 22300  # where a z-touch stops, in stop disc increments
+    # Where a z-touch stops, in stop disc increments; a list gives one reply per search.
+    self.rz: Union[int, List[int]] = 22300
     self.fail_with: dict = {}  # module -> list of error strings, one per search, in order
 
     async def answering(
@@ -757,7 +758,7 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
       if command == "ZE":
         return {"if": [12345, 0]}
       if command == "ZH":
-        return {"rz": self.rz}
+        return {"rz": self.rz.pop(0) if isinstance(self.rz, list) else self.rz}
       return None
 
     self.pipettes._driver.send_command = answering  # type: ignore[assignment]
@@ -970,6 +971,7 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
       self.sent,
       [f"P{ch + 1}ZHzb{start:05}za{end:05}zv11652zr075zu00932cg001cf000" for ch in range(4)],
     )
+    assert isinstance(self.rz, int)
     stop_disc = c.z_drive_increments_to_mm(self.rz)
     self.assertEqual(floors, [round(stop_disc - 51.9 - bottom, 2)] * 4)
     # The approach to the starts at the approach speed, then the back-off after the searches.
@@ -1007,6 +1009,28 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
     self.rz = self.pipettes.configuration.z_drive_mm_to_increments(round(bottom - 5.0 + 51.9, 2))
     self.assertEqual(await self.pipettes.probe_z_heights_using_ztouch(wells), [None])
+
+  async def test_an_interrupted_batch_brings_the_channels_up_before_it_propagates(self):
+    self.pipettes._probe_batch_liquid_heights = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      side_effect=asyncio.CancelledError()
+    )
+    with self.assertRaises(asyncio.CancelledError):
+      await self.pipettes.probe_liquid_heights(self._wells("A1"))
+    self.assertEqual(
+      self.safe_z.await_count, 2, "up before the first batch, and up again on the way out"
+    )
+
+  async def test_a_floor_touched_in_one_round_but_not_the_other_raises_and_comes_up(self):
+    self.pipettes._record_where_they_stopped = unittest.mock.AsyncMock()  # type: ignore[method-assign]
+    wells = self._wells("A1")
+    bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    at_the_end = self.pipettes.configuration.z_drive_mm_to_increments(round(bottom - 5.0 + 51.9, 2))
+    self.rz = [at_the_end, 22300]
+    with self.assertRaises(RuntimeError):
+      await self.pipettes.probe_z_heights_using_ztouch(wells, n_replicates=2)
+    self.assertEqual(
+      self.safe_z.await_count, 2, "up before the first batch, and up after the failure"
+    )
 
   async def test_an_end_height_a_tip_cannot_reach_is_refused_before_any_batch(self):
     with self.assertRaises(ValueError):
