@@ -5,7 +5,7 @@ from __future__ import annotations
 import dataclasses
 import logging
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple, cast
+from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tuple, Union, cast
 
 from pylabrobot.hamilton.star.driver.errors import STARFirmwareError
 from pylabrobot.hamilton.star.driver.lock import _FirmwareLock
@@ -17,6 +17,7 @@ from pylabrobot.resources.hamilton.core_grippers import HamiltonCoreGrippers
 from pylabrobot.resources.head_tool import HeadTool
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.resource_holder import ResourceHolder
+from pylabrobot.resources.resource_state import place_resource
 
 if TYPE_CHECKING:
   from ..master import STARDriver
@@ -197,7 +198,7 @@ class CoreGrippers:
   async def _unchecked_fw_move_resource(
     self,
     x_position: int,
-    x_acceleration_index: int,
+    x_acceleration_level: int,
     y_position: int,
     z_position: int,
     z_speed: int,
@@ -207,7 +208,7 @@ class CoreGrippers:
 
     Args:
       x_position: the plate centre's x; negative sends `xd1`.
-      x_acceleration_index: 1 to 5.
+      x_acceleration_level: 1 to 5.
       y_position: the plate centre's y.
       z_position: the plate's height.
       z_speed: in tenths of a mm/s.
@@ -220,7 +221,7 @@ class CoreGrippers:
       read_timeout=120,
       xs=f"{abs(x_position):05}",
       xd=int(x_position < 0),
-      xg=f"{x_acceleration_index}",
+      xg=f"{x_acceleration_level}",
       yj=f"{y_position:04}",
       zj=f"{z_position:04}",
       zy=f"{z_speed:04}",
@@ -673,7 +674,7 @@ class CoreGrippers:
     open_gripper_position: int,
     minimum_traverse_height_start: int,
     minimum_z_position_end: int,
-    x_acceleration_index: Optional[int] = None,
+    x_acceleration_level: Optional[int] = None,
   ):
     """Send the plate put-down as it is given, in tenths of a millimetre. `C0 ZR`.
 
@@ -686,11 +687,11 @@ class CoreGrippers:
       open_gripper_position: the jaws' opening to let go.
       minimum_traverse_height_start: how high the channels travel first.
       minimum_z_position_end: where the channels are left.
-      x_acceleration_index: 1 to 5; not sent when None, as legacy.
+      x_acceleration_level: 1 to 5; not sent when None, as legacy.
     """
     parameters: Dict[str, Any] = {"xs": f"{abs(x_position):05}", "xd": int(x_position < 0)}
-    if x_acceleration_index is not None:
-      parameters["xg"] = f"{x_acceleration_index}"
+    if x_acceleration_level is not None:
+      parameters["xg"] = f"{x_acceleration_level}"
     parameters.update(
       yj=f"{y_position:04}",
       zj=f"{z_position:04}",
@@ -709,6 +710,289 @@ class CoreGrippers:
     return await self._driver.send_command(
       module="C0", command="ZO", subsystem=_FirmwareLock.CHANNELS
     )
+
+  # -- by resource ---------------------------------------------------------------------------------
+
+  def _check_held_move(
+    self,
+    xyz: Coordinate,
+    traverse_heights: Tuple[float, float],
+    z_speed: float,
+    z_acceleration: float,
+  ) -> None:
+    """Raise unless a pick-up or drop at `xyz` stays within the channels' reach and drive windows.
+
+    Raises:
+      ValueError: If a position, height, speed or acceleration is out of range.
+    """
+    pipettes = self._pipettes
+    pipettes._check_reachable("x", xyz.x)
+    pipettes._check_reachable("y", xyz.y)
+    for z in (xyz.z, *traverse_heights):
+      pipettes._check_reachable("z", z)
+    c = pipettes.configuration
+    for checked, (low, high), name in (
+      (z_speed, c.z_speed_range, "z_speed"),
+      (z_acceleration, c.z_acceleration_range, "z_acceleration"),
+    ):
+      if not low <= checked <= high:
+        raise ValueError(f"{name} must be between {low} and {high}, is {checked}")
+
+  async def pick_up_resource(
+    self,
+    resource: Resource,
+    offset: Coordinate = Coordinate.zero(),
+    pickup_distance_from_top: Optional[float] = None,
+    *,
+    minimum_traverse_height_start: Optional[float] = None,
+    resource_size_y: Optional[float] = None,
+    y_clearance: float = 1.5,
+    grip_speed_y: float = 5.0,
+    squeeze_mm: float = 1.5,
+    grip_strength: Optional[int] = None,
+    z_speed: Optional[float] = None,
+    z_acceleration: Optional[float] = None,
+    minimum_traverse_height_end: Optional[float] = None,
+  ) -> None:
+    """Grip a resource where the tree has it, and hold it on the front tool in the model (`C0 ZP`).
+
+    The jaws open to `resource_size_y` plus `y_clearance` either side over its centre, come down to
+    `pickup_distance_from_top` below its top, and close to `resource_size_y` less `squeeze_mm`
+    either side.
+
+    Args:
+      resource: what to grip.
+      offset: added to the grip point, in mm.
+      pickup_distance_from_top: how far below its top the jaws close, in mm. None is its preferred
+        pickup location, else 5 mm.
+      minimum_traverse_height_start: the height to travel to it at, in mm.
+        `default_minimum_traverse_height` when None.
+      resource_size_y: its size in y, the width the jaws grip, in mm, centred on the grip point.
+        None reads it from the resource.
+      y_clearance: how far each jaw stands from the resource as it comes down, in mm.
+      grip_speed_y: how fast the jaws close, in mm/s.
+      squeeze_mm: how far past its walls each jaw closes, in mm.
+      grip_strength: 0 (low) to 99 (high). `default_grip_strength` when None.
+      z_speed: how fast the channels move in Z, in mm/s. `default_z_speed_with_resource_held` when
+        None.
+      z_acceleration: the Z drives' acceleration for the command, in mm/s2, then the pipettes'
+        default. `default_z_acceleration_with_resource_held` when None.
+      minimum_traverse_height_end: the height to leave it at once gripped, in mm.
+        `default_minimum_traverse_height` when None.
+
+    Raises:
+      RuntimeError: If the tools are not picked up, something is already held, or the iSWAP is not
+        parked.
+      ValueError: If a position, height, width, speed, acceleration or strength is out of range.
+    """
+    if self._tools_taken_from is None or self._back_channel is None or self._front_channel is None:
+      raise RuntimeError(
+        "the CoRe gripper tools are not picked up; `pick_up_tools` or `pick_up_tools_at_location` "
+        "first"
+      )
+    if self._held_resource is not None:
+      raise RuntimeError(f"the grippers already hold {self._held_resource.name}; put it down first")
+    pipettes = self._pipettes
+    back, front = cast(int, self._back_channel), cast(int, self._front_channel)
+    if minimum_traverse_height_start is None:
+      minimum_traverse_height_start = self.default_minimum_traverse_height
+    if minimum_traverse_height_end is None:
+      minimum_traverse_height_end = self.default_minimum_traverse_height
+    if resource_size_y is None:
+      resource_size_y = resource.get_absolute_size_y()
+    if grip_strength is None:
+      grip_strength = self.default_grip_strength
+    if z_speed is None:
+      z_speed = self.default_z_speed_with_resource_held
+    if z_acceleration is None:
+      z_acceleration = self.default_z_acceleration_with_resource_held
+
+    from_top = self._resolve_pickup_distance(resource, pickup_distance_from_top)
+    grip = self._compute_pickup_location(resource, offset, from_top)
+    self._check_held_move(
+      grip, (minimum_traverse_height_start, minimum_traverse_height_end), z_speed, z_acceleration
+    )
+    weakest, strongest = self.configuration.grip_strength_range
+    if not weakest <= grip_strength <= strongest:
+      raise ValueError(
+        f"grip_strength must be between {weakest} and {strongest}, is {grip_strength}"
+      )
+    slowest, fastest = pipettes.configuration.y_speed_range
+    if not slowest <= grip_speed_y <= fastest:
+      raise ValueError(f"grip_speed_y must be between {slowest} and {fastest}, is {grip_speed_y}")
+    if y_clearance < 0 or squeeze_mm < 0:
+      raise ValueError(
+        f"y_clearance and squeeze_mm must be 0 or more, are {y_clearance} and {squeeze_mm}"
+      )
+    closed = resource_size_y - 2 * squeeze_mm
+    if closed <= 0:
+      raise ValueError(f"the jaws would close to {closed} mm; squeeze_mm is too large")
+    await pipettes._require_iswap_parked()
+
+    source = (resource.parent, resource.location)
+    try:
+      async with pipettes._temporary_z_drive_profile(
+        acceleration=z_acceleration, channels=[back, front]
+      ):
+        await self._unchecked_fw_pick_up_resource(
+          x_position=round(grip.x * 10),
+          y_position=round(grip.y * 10),
+          y_gripping_speed=round(grip_speed_y * 10),
+          z_position=round(grip.z * 10),
+          z_speed=round(z_speed * 10),
+          open_gripper_position=round((resource_size_y + 2 * y_clearance) * 10),
+          plate_width=round(closed * 10),
+          grip_strength=grip_strength,
+          minimum_traverse_height_start=round(minimum_traverse_height_start * 10),
+          minimum_z_position_end=round(minimum_traverse_height_end * 10),
+        )
+    finally:
+      await pipettes._record_after_tip_command()
+    self._pickup_distance_from_top = from_top
+    self._holding_resource_width = resource_size_y
+    self._held_resource = resource
+    source_parent, source_location = source
+    self._taken_from = None if source_parent is None else (source_parent, source_location)
+    self._hang_held_resource_on_the_front_tool()
+
+  async def drop_resource(
+    self,
+    to: Union[Resource, Coordinate],
+    offset: Coordinate = Coordinate.zero(),
+    *,
+    minimum_traverse_height_start: Optional[float] = None,
+    x_acceleration_level: Optional[int] = None,
+    z_speed: Optional[float] = None,
+    z_acceleration: Optional[float] = None,
+    press_on_distance: float = 0.0,
+    y_clearance: float = 1.5,
+    minimum_traverse_height_end: Optional[float] = None,
+  ) -> None:
+    """Put the held resource down, and the tree follows once it is down (`C0 ZR`).
+
+    Args:
+      to: where it goes: the resource it goes into, e.g. a plate carrier site, or a `Coordinate`,
+        the deck position its centre-centre-bottom goes to, where it joins the deck.
+      offset: added to where it is let go, in mm.
+      minimum_traverse_height_start: the height to carry it at, in mm.
+        `default_minimum_traverse_height` when None.
+      x_acceleration_level: 1 to 5. Not sent when None.
+      z_speed: how fast the channels move in Z, in mm/s. `default_z_speed_with_resource_held` when
+        None.
+      z_acceleration: the Z drives' acceleration for the command, in mm/s2, then the pipettes'
+        default. `default_z_acceleration_with_resource_held` when None.
+      press_on_distance: how far past where it is let go to press it down, 0 to 99.9 mm.
+      y_clearance: how far each jaw opens past the resource's walls to let go, in mm.
+      minimum_traverse_height_end: where to leave the channels, in mm.
+        `default_minimum_traverse_height` when None.
+
+    Raises:
+      RuntimeError: If nothing is held, or the iSWAP is not parked.
+      ValueError: If a position, height, speed, acceleration, index or distance is out of range.
+    """
+    held, from_top = self._held_resource, self._pickup_distance_from_top
+    if held is None or from_top is None or self._holding_resource_width is None:
+      raise RuntimeError("Not holding anything; pick_up_resource first")
+    pipettes = self._pipettes
+    back, front = cast(int, self._back_channel), cast(int, self._front_channel)
+    if minimum_traverse_height_start is None:
+      minimum_traverse_height_start = self.default_minimum_traverse_height
+    if minimum_traverse_height_end is None:
+      minimum_traverse_height_end = self.default_minimum_traverse_height
+    if z_speed is None:
+      z_speed = self.default_z_speed_with_resource_held
+    if z_acceleration is None:
+      z_acceleration = self.default_z_acceleration_with_resource_held
+
+    child: Optional[Coordinate] = None
+    if isinstance(to, Coordinate):
+      # The deck is the destination, and the child location is where the centre-bottom puts the
+      # resource's own origin.
+      center = held.center().rotated(held.get_absolute_rotation())
+      destination: Resource = self._deck
+      child = to - Coordinate(center.x, center.y, 0)
+    else:
+      destination = to
+    destination.check_can_drop_resource_here(held)
+    release = self._compute_drop_location(destination, offset, child)
+    self._check_held_move(
+      release,
+      (minimum_traverse_height_start, minimum_traverse_height_end),
+      z_speed,
+      z_acceleration,
+    )
+    if x_acceleration_level is not None and not 1 <= x_acceleration_level <= 5:
+      raise ValueError(f"x_acceleration_level must be between 1 and 5, is {x_acceleration_level}")
+    if not 0 <= press_on_distance <= 99.9:
+      raise ValueError(f"press_on_distance must be between 0 and 99.9, is {press_on_distance}")
+    if y_clearance < 0:
+      raise ValueError(f"y_clearance must be 0 or more, is {y_clearance}")
+    await pipettes._require_iswap_parked()
+
+    try:
+      async with pipettes._temporary_z_drive_profile(
+        acceleration=z_acceleration, channels=[back, front]
+      ):
+        await self._unchecked_fw_drop_resource(
+          x_position=round(release.x * 10),
+          y_position=round(release.y * 10),
+          z_position=round(release.z * 10),
+          press_on_distance=round(press_on_distance * 10),
+          z_speed=round(z_speed * 10),
+          open_gripper_position=round((self._holding_resource_width + 2 * y_clearance) * 10),
+          minimum_traverse_height_start=round(minimum_traverse_height_start * 10),
+          minimum_z_position_end=round(minimum_traverse_height_end * 10),
+          x_acceleration_level=x_acceleration_level,
+        )
+    finally:
+      await pipettes._record_after_tip_command()
+    place_resource(held, destination, location=child)
+    self._clear_held_state()
+
+  async def return_resource(
+    self,
+    offset: Coordinate = Coordinate.zero(),
+    *,
+    minimum_traverse_height_start: Optional[float] = None,
+    x_acceleration_level: Optional[int] = None,
+    z_speed: Optional[float] = None,
+    z_acceleration: Optional[float] = None,
+    press_on_distance: float = 0.0,
+    y_clearance: float = 1.5,
+    minimum_traverse_height_end: Optional[float] = None,
+  ) -> None:
+    """Put the held resource back where :meth:`pick_up_resource` took it from.
+
+    Args:
+      offset: as :meth:`drop_resource` takes it, and every other argument too.
+
+    Raises:
+      RuntimeError: If nothing is held, or it was not taken from a parent in the tree.
+    """
+    if self._taken_from is None or self._held_resource is None:
+      raise RuntimeError(
+        "nothing to return it to: return_resource needs a pick_up_resource of a resource that "
+        "had a parent."
+      )
+    kwargs: Dict[str, Any] = {
+      "offset": offset,
+      "minimum_traverse_height_start": minimum_traverse_height_start,
+      "x_acceleration_level": x_acceleration_level,
+      "z_speed": z_speed,
+      "z_acceleration": z_acceleration,
+      "press_on_distance": press_on_distance,
+      "y_clearance": y_clearance,
+      "minimum_traverse_height_end": minimum_traverse_height_end,
+    }
+    parent, location = self._taken_from
+    if isinstance(parent, ResourceHolder):
+      await self.drop_resource(parent, **kwargs)
+      return
+    # Anywhere else it stood is a point on the deck.
+    held = self._held_resource
+    center = held.center().rotated(held.get_absolute_rotation())
+    lfb = parent.get_location_wrt(self._deck, "l", "f", "b") + (location or Coordinate.zero())
+    await self.drop_resource(lfb + Coordinate(center.x, center.y, 0), **kwargs)
 
   # -- probing ------------------------------------------------------------------------------------
 
