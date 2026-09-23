@@ -3052,6 +3052,13 @@ class Pipettes:
     # The bottom is known, so a container in which no liquid was met stands at 0.0.
     return [0.0 if height is None else height for height in heights]
 
+  @staticmethod
+  async def _after(delay: float, search: Awaitable[T]) -> T:
+    """Run `search` once `delay` seconds have passed, so gathered searches set off in a cascade."""
+    if delay > 0:
+      await asyncio.sleep(delay)
+    return await search
+
   async def _probe_batch_floors(
     self,
     batch: ChannelBatch,
@@ -3062,15 +3069,18 @@ class Pipettes:
     below_floor: float,
     end_tolerance: float,
     post_detection_distance: float,
+    start_spacing: float,
     n_replicates: int,
   ) -> Dict[int, List[Optional[float]]]:
-    """Z-touch the floor of every container of one batch, the channels together, n times.
+    """Z-touch the floor of every container of one batch, the channels in a cascade, n times.
 
     As `_probe_batch_liquid_heights` with the search swapped: each channel searches from
     `search_start_clearance` above its container's top down to `below_floor` under its cavity
     bottom, and answers where its stop disc stopped, so the height is the overhang below that.
-    A channel that reached its end, within `end_tolerance`, touched nothing and is None for the
-    round. Then every channel of the batch backs off by `post_detection_distance` at once.
+    The searches set off `start_spacing` apart, the lowest channel number first, and run on
+    together. A channel that reached its end, within `end_tolerance`, touched nothing and is
+    None for the round. Then every channel of the batch backs off by `post_detection_distance`
+    at once.
 
     Args:
       batch: the channels and which container each has, by job index.
@@ -3081,6 +3091,7 @@ class Pipettes:
       below_floor: how far under the modelled cavity bottom the search may go, in mm.
       end_tolerance: how close to the end counts as having touched nothing, in mm.
       post_detection_distance: how far the channels back off after each round, in mm.
+      start_spacing: how long after the previous channel each one sets off, in s.
       n_replicates: how many rounds.
 
     Returns:
@@ -3092,7 +3103,7 @@ class Pipettes:
     """
     top = self.configuration.z_range[1]
     searches = []
-    for channel, job in zip(batch.channels, batch.indices):
+    for channel, job in sorted(zip(batch.channels, batch.indices)):
       end = round(z_cavity_bottom[job] - below_floor + overhangs[channel], 2)
       start = round(min(z_top[job] + overhangs[channel] + self.search_start_clearance, top), 2)
       searches.append((channel, job, end, start))
@@ -3100,8 +3111,11 @@ class Pipettes:
     for _ in range(n_replicates):
       results = await asyncio.gather(
         *(
-          self._ztouch_search(channel, end, start, search_speed=search_speed)
-          for channel, job, end, start in searches
+          self._after(
+            index * start_spacing,
+            self._ztouch_search(channel, end, start, search_speed=search_speed),
+          )
+          for index, (channel, job, end, start) in enumerate(searches)
         ),
         return_exceptions=True,
       )
@@ -3130,6 +3144,7 @@ class Pipettes:
     below_floor: float = 5.0,
     end_tolerance: float = 0.5,
     post_detection_distance: float = 2.0,
+    start_spacing: float = 0.5,
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_during: Optional[float] = None,
     minimum_traverse_height_end: Optional[float] = None,
@@ -3140,8 +3155,9 @@ class Pipettes:
     `probe_liquid_heights` with the z-touch in place of the liquid search: the same batches, the
     same moves between them, the channels of a batch searching together, and the same heights at
     the end. Each search goes from just above the container's top to `below_floor` under its
-    modelled cavity bottom, and stops where the tip presses on something. Needs channel firmware
-    from 2022 on.
+    modelled cavity bottom, and stops where the tip presses on something. The channels of a batch
+    set off in a cascade, `start_spacing` apart from the back, rather than all at once. Needs
+    channel firmware from 2022 on.
 
     Args:
       containers: one per channel used.
@@ -3153,6 +3169,8 @@ class Pipettes:
       below_floor: how far under the modelled cavity bottom the search may go, in mm.
       end_tolerance: how close to the end counts as having touched nothing, in mm.
       post_detection_distance: how far the channels back off after each round, in mm.
+      start_spacing: how long after the previous channel each one sets off, in s. 0 starts them
+        all at once.
       minimum_traverse_height_start: the height every low channel's lowest point is raised to
         before the first batch, in mm. Z safety when None.
       minimum_traverse_height_during: the same, between batches. Z safety when None.
@@ -3175,6 +3193,8 @@ class Pipettes:
       raise RuntimeError("containers are placed from the deck; this driver was given none")
     if n_replicates < 1:
       raise ValueError(f"n_replicates must be at least 1, is {n_replicates}")
+    if start_spacing < 0:
+      raise ValueError(f"start_spacing must be at least 0 s, is {start_spacing}")
     for channel in validate_channel_selections(list(containers), self.num_channels, use_channels):
       self._require_ztouch_firmware(channel)
     channels, overhangs, batches = await self._prepare_batched(
@@ -3198,6 +3218,7 @@ class Pipettes:
         below_floor,
         end_tolerance,
         post_detection_distance,
+        start_spacing,
         n_replicates,
       ),
       batches,

@@ -925,6 +925,24 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.stop_discs.assert_awaited_once_with({ch: round(stop_disc + 2.0, 2) for ch in range(4)})
     self.assertEqual(self.safe_z.await_count, 2)
 
+  async def test_floors_set_off_in_a_cascade_from_the_back(self):
+    self.pipettes._record_where_they_stopped = unittest.mock.AsyncMock()  # type: ignore[method-assign]
+    slept: List[float] = []
+
+    async def sleeping(seconds: float) -> None:
+      slept.append(seconds)
+
+    with unittest.mock.patch("asyncio.sleep", sleeping):
+      await self.pipettes.probe_z_heights_using_ztouch(self._wells("A1", "B1", "C1", "D1"))
+      self.assertEqual(slept, [0.5, 1.0, 1.5], "channel 0 at once, the rest 0.5 s apart")
+      self.assertEqual([c[:4] for c in self.sent], ["P1ZH", "P2ZH", "P3ZH", "P4ZH"])
+      slept.clear()
+      self.sent.clear()
+      await self.pipettes.probe_z_heights_using_ztouch(self._wells("A1", "B1"), start_spacing=0)
+      self.assertEqual(slept, [], "0 starts them all at once")
+    with self.assertRaises(ValueError):
+      await self.pipettes.probe_z_heights_using_ztouch(self._wells("A1"), start_spacing=-1)
+
   async def test_a_floor_out_of_reach_is_none(self):
     self.pipettes._record_where_they_stopped = unittest.mock.AsyncMock()  # type: ignore[method-assign]
     wells = self._wells("A1")
