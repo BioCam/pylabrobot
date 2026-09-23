@@ -3077,10 +3077,11 @@ class Pipettes:
     As `_probe_batch_liquid_heights` with the search swapped: each channel searches from
     `search_start_clearance` above its container's top down to `below_floor` under its cavity
     bottom, and answers where its stop disc stopped, so the height is the overhang below that.
-    The searches set off `start_spacing` apart, the lowest channel number first, and run on
-    together. A channel that reached its end, within `end_tolerance`, touched nothing and is
-    None for the round. Then every channel of the batch backs off by `post_detection_distance`
-    at once.
+    The channels go to their starts together first, one `C0 JZ`, so the cascade is the search
+    itself: the searches set off `start_spacing` apart from there, the lowest channel number
+    first, and run on together. A channel that reached its end, within `end_tolerance`, touched
+    nothing and is None for the round. Then every channel of the batch backs off by
+    `post_detection_distance` at once.
 
     Args:
       batch: the channels and which container each has, by job index.
@@ -3109,6 +3110,9 @@ class Pipettes:
       searches.append((channel, job, end, start))
     found: Dict[int, List[Optional[float]]] = {job: [] for job in batch.indices}
     for _ in range(n_replicates):
+      await self.move_tool_bottom_to_z_positions(
+        {channel: round(start - overhangs[channel], 2) for channel, _, _, start in searches}
+      )
       results = await asyncio.gather(
         *(
           self._after(
@@ -3156,8 +3160,8 @@ class Pipettes:
     same moves between them, the channels of a batch searching together, and the same heights at
     the end. Each search goes from just above the container's top to `below_floor` under its
     modelled cavity bottom, and stops where the tip presses on something. The channels of a batch
-    set off in a cascade, `start_spacing` apart from the back, rather than all at once. Needs
-    channel firmware from 2022 on.
+    go to their starts together, then set off in a cascade, `start_spacing` apart from the back.
+    Needs channel firmware from 2022 on.
 
     Args:
       containers: one per channel used.

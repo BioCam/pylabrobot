@@ -922,6 +922,8 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     )
     stop_disc = c.z_drive_increments_to_mm(self.rz)
     self.assertEqual(floors, [round(stop_disc - 51.9 - bottom, 2)] * 4)
+    # The approach is one move to the starts, before the searches set off.
+    self.tool_bottoms.assert_awaited_once_with({ch: round(top + 5.0, 2) for ch in range(4)})
     self.stop_discs.assert_awaited_once_with({ch: round(stop_disc + 2.0, 2) for ch in range(4)})
     self.assertEqual(self.safe_z.await_count, 2)
 
