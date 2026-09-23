@@ -257,6 +257,38 @@ def test_drop_at_warns_when_carried_below_safe_deck_height(caplog, resource_heig
     assert "49.6 mm" in below[0].getMessage()
 
 
+@pytest.mark.parametrize("surface, found", [(15.2, True), (None, False)])
+def test_probe_resource_exists_ztouches_the_front_tool_over_its_centre(surface, found):
+  """The front channel goes over the centre and searches from `search_distance` above the top to it."""
+  deck = PrepDeck(with_core_grippers=True)
+  plate = deck[4] = cor_axy_96_wellplate_500uL_Ub("plate")
+  grippers, commands = _make_grippers(deck)
+  probe = AsyncMock(return_value=surface)
+  pipettes: Any = grippers._driver.pipettes
+  pipettes.probe_z_using_ztouch = probe
+
+  async def _run() -> bool:
+    return await grippers.probe_resource_exists_using_ztouch(plate, search_distance=20.0)
+
+  assert asyncio.run(_run()) is found
+  top = plate.get_location_wrt(deck, x="c", y="c", z="t")
+  xy = commands.move_to_xy_positions.await_args
+  assert xy is not None
+  assert xy.args == (top.x, {1: top.y})
+  assert xy.kwargs["make_space"] is True
+  probe.assert_awaited_once()
+  seek = probe.await_args
+  assert seek is not None
+  assert seek.args == (1,)
+  assert seek.kwargs["search_start_position"] == pytest.approx(top.z + 20.0)
+  assert seek.kwargs["search_end_position"] == pytest.approx(top.z)
+  assert seek.kwargs["allow_without_tip"] is True
+  # Travelled at Z safety, and the probe is the one to leave the channels there.
+  assert seek.kwargs["minimum_traverse_height_end"] is None
+  assert seek.kwargs["move_channels_to_safe_pos_after"] is True
+  assert commands.move_to_safe_z.await_count == 1
+
+
 def test_pick_up_tools_moves_over_the_tools_then_picks():
   """The channels are taken over the tools before the one PrepPickUpTool."""
 

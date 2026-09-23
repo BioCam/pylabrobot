@@ -1086,6 +1086,69 @@ class CoreGrippers:
     lfb = parent.get_location_wrt(self._deck, "l", "f", "b") + location
     await self.drop_resource(coordinate=lfb + Coordinate(center.x, center.y, 0), **kwargs)
 
+  # -- probing -------------------------------------------------------------------------------------
+
+  async def probe_resource_exists_using_ztouch(
+    self,
+    resource: Resource,
+    offset: Coordinate = Coordinate.zero(),
+    *,
+    minimum_traverse_height_start: Optional[float] = None,
+    search_distance: float = 30.0,
+    search_speed: float = 10.0,
+    push_force_pwm: Optional[int] = None,
+    minimum_traverse_height_end: Optional[float] = None,
+  ) -> bool:
+    """Z-touch the front tool down onto `resource`'s centre: meeting it is finding it.
+
+    The front channel goes over the centre of the resource where the tree has it, then seeks down
+    with `Pipettes.probe_z_using_ztouch` from `search_distance` above its top to the top itself.
+
+    Args:
+      resource: the resource to check for.
+      offset: added to its centre-centre-top, in mm.
+      minimum_traverse_height_start: the height to travel to it at, in mm. None goes to Z safety.
+      search_distance: how far above its top the search starts, in mm.
+      search_speed: how fast the tool searches down, in mm/s.
+      push_force_pwm: the Z drive's PWM to hold for the search, 40 to 125. None leaves it.
+      minimum_traverse_height_end: where the probe leaves the front channel, in mm. None goes to Z
+        safety.
+
+    Returns:
+      True if the tool met something in the search.
+
+    Raises:
+      RuntimeError: If the tools are not mounted, or the jaws are holding something.
+      ValueError: If `search_distance` is not above 0, or the search is outside the channel's reach.
+    """
+    self._require_mounted()
+    self._refuse_while_holding()
+    if search_distance <= 0:
+      raise ValueError(f"search_distance must be above 0 mm, is {search_distance}")
+    top = resource.get_location_wrt(self._deck, x="c", y="c", z="t") + offset
+
+    await self._raise_to_traverse(minimum_traverse_height_start)
+    await self.move_to_xy_positions(
+      top.x, {self._front_channel: top.y}, make_space=True, minimum_traverse_height_start=0
+    )
+    # The channel reports Z at the jaws while the tools are on, so the search is in their frame.
+    surface = await self._pipettes.probe_z_using_ztouch(
+      self._front_channel,
+      search_start_position=top.z + search_distance,
+      search_speed=search_speed,
+      search_end_position=top.z,
+      minimum_traverse_height_end=minimum_traverse_height_end,
+      allow_without_tip=True,
+      move_channels_to_safe_pos_after=minimum_traverse_height_end is None,
+      push_force_pwm=push_force_pwm,
+    )
+
+    if surface is None:
+      logger.info("'%s' not found: nothing met down to its top at %.2f mm", resource.name, top.z)
+      return False
+    logger.info("'%s' found at %.2f mm, its top at %.2f mm", resource.name, surface, top.z)
+    return True
+
   # -- complex, power commands --------------------------------------------------------------------
 
   async def move_resource(
