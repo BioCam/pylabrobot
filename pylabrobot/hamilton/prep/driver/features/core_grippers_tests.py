@@ -149,9 +149,9 @@ def test_drop_resource_after_coordinate_pick_raises():
   async def _run() -> None:
     await grippers._pick_up_at(
       Coordinate(100, 200, 50),
-      resource_width=85.0,
-      resource_length=127.0,
-      resource_height=14.0,
+      resource_size_x=127.0,
+      resource_size_y=85.0,
+      resource_size_z=14.0,
       plate_top_z_offset=5.0,
     )
     with pytest.raises(RuntimeError, match="pick_up_resource"):
@@ -186,12 +186,12 @@ def test_pick_up_resource_width_override():
   grippers, commands = _make_grippers(deck)
 
   async def _run() -> None:
-    await grippers.pick_up_resource(plate, resource_width=80.5)
+    await grippers.pick_up_resource(plate, resource_size_y=80.5)
     gripped = grippers._holding_resource_width
     await grippers.drop_resource(deck[2])
     pick = commands.pick_up_at.await_args
     commands.drop_at.assert_awaited_once()
-    assert pick.args[1] == 80.5 and gripped == 80.5
+    assert pick.kwargs["resource_size_y"] == 80.5 and gripped == 80.5
 
   asyncio.run(_run())
 
@@ -204,9 +204,9 @@ def test_private_pick_up_at_enables_drop_at():
   async def _run() -> None:
     await grippers._pick_up_at(
       Coordinate(1, 2, 3),
-      resource_width=85.0,
-      resource_length=127.0,
-      resource_height=14.0,
+      resource_size_x=127.0,
+      resource_size_y=85.0,
+      resource_size_z=14.0,
       plate_top_z_offset=5.0,
     )
     held = grippers._holding_resource_width
@@ -237,9 +237,9 @@ def test_drop_at_warns_when_carried_below_safe_deck_height(caplog, resource_heig
   async def _run() -> None:
     await grippers._pick_up_at(
       Coordinate(1, 2, 3),
-      resource_width=85.0,
-      resource_length=127.0,
-      resource_height=resource_height,
+      resource_size_x=127.0,
+      resource_size_y=85.0,
+      resource_size_z=resource_height,
       plate_top_z_offset=5.0,
     )
     await grippers._drop_at(Coordinate(10, 20, 30))
@@ -915,25 +915,6 @@ def test_only_moves_with_a_resource_held_set_the_z_drives_and_they_go_back_to_wh
   asyncio.run(_run())
 
 
-def test_drop_resource_takes_a_destination_or_a_coordinate_never_neither_or_both():
-  deck = PrepDeck(with_core_grippers=True)
-  plate = deck[0] = azenta_96_wellplate_200uL_Vb_4titudeframestar(name="plate")
-  grippers, commands = _make_grippers(deck, stub_pick_and_drop=False)
-
-  async def _run() -> None:
-    await grippers.pick_up_resource(plate)
-    sent_before = commands.send_command.await_count
-    with pytest.raises(ValueError, match="needs to know where"):
-      await grippers.drop_resource()
-    with pytest.raises(ValueError, match="both `destination`"):
-      await grippers.drop_resource(deck[4], coordinate=Coordinate(200.0, 44.0, 3.5))
-    # Refused before anything was sent, and still holding it.
-    assert commands.send_command.await_count == sent_before
-    assert grippers._held_resource is plate
-
-  asyncio.run(_run())
-
-
 def test_a_coordinate_puts_it_down_exactly_as_the_spot_it_names_would():
   """Dropped at a spot's centre-bottom, the device is sent what dropping into the spot sends."""
 
@@ -945,7 +926,7 @@ def test_a_coordinate_puts_it_down_exactly_as_the_spot_it_names_would():
     if by_coordinate is None:
       await grippers.drop_resource(deck[4])
     else:
-      await grippers.drop_resource(coordinate=by_coordinate)
+      await grippers.drop_resource(by_coordinate)
     sent = [c.args[0] for c in commands.send_command.await_args_list]
     (release,) = [c for c in sent if isinstance(c, PrepCmd.PrepDropPlate)]
     carry = [c for c in sent if isinstance(c, PrepCmd.PrepMovePlate)][-1]

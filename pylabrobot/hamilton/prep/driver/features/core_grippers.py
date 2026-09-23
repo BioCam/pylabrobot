@@ -4,7 +4,18 @@ from __future__ import annotations
 
 import logging
 from contextlib import asynccontextmanager
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Literal, Optional, Tuple
+from typing import (
+  TYPE_CHECKING,
+  Any,
+  AsyncIterator,
+  Callable,
+  Dict,
+  List,
+  Literal,
+  Optional,
+  Tuple,
+  Union,
+)
 
 from pylabrobot.resources import Coordinate, Resource
 from pylabrobot.resources.deck import Deck
@@ -682,10 +693,11 @@ class CoreGrippers:
     )
     return 5.0
 
-  def _compute_resource_width(self, resource: Resource) -> float:
+  def _compute_width_and_length(self, size_x: float, size_y: float) -> Tuple[float, float]:
+    """The firmware's plate width and length: the size along `grip_axis`, and the other one."""
     if self._grip_axis == "y":
-      return resource.get_absolute_size_y()
-    return resource.get_absolute_size_x()
+      return size_y, size_x
+    return size_x, size_y
 
   def _compute_pickup_location(
     self,
@@ -727,10 +739,10 @@ class CoreGrippers:
   async def _pick_up_at(
     self,
     location: Coordinate,
-    resource_width: float,
     *,
-    resource_length: float,
-    resource_height: float,
+    resource_size_x: float,
+    resource_size_y: float,
+    resource_size_z: float,
     plate_top_z_offset: float,
     y_clearance: float = 2.5,
     grip_speed_y: float = 5.0,
@@ -745,9 +757,9 @@ class CoreGrippers:
 
     Args:
       location: Plate center at grip height (x, y, grip_z) in deck coordinates.
-      resource_width: Plate width along the grip axis (Y) in mm.
-      resource_length: Plate length (X) in mm.
-      resource_height: Plate height (Z) in mm.
+      resource_size_x: its size in x, in mm, centred on the grip point.
+      resource_size_y: its size in y, in mm, centred on the grip point.
+      resource_size_z: its size in z, in mm.
       plate_top_z_offset: Offset from grip Z to plate top center Z.
       y_clearance: how far each gripper stands from the resource, either side, as it moves in to
         grip it and out after letting go, in mm.
@@ -764,12 +776,13 @@ class CoreGrippers:
       on_gripped: called once the jaws have closed, before they rise.
     """
     self._require_mounted()
-    self._check_jaws_open_within_reach(location.y, resource_width, y_clearance)
+    width, length = self._compute_width_and_length(resource_size_x, resource_size_y)
+    self._check_jaws_open_within_reach(location.y, width, y_clearance)
     await self._raise_to_traverse(minimum_traverse_height_start)
     # Over the plate first, jaws open, so the pick-up is straight down: left to itself the
     # firmware dives across the deck (to 73 mm). 0 raises nothing: they are already
     # up, and with the tools on the pipettes' traverse height is more than they reach.
-    half = (resource_width + 2 * y_clearance + JAW_OPEN_EXTRA) / 2
+    half = (width + 2 * y_clearance + JAW_OPEN_EXTRA) / 2
     await self._pipettes.move_to_xy_positions(
       location.x,
       {self._back_channel: location.y + half, self._front_channel: location.y - half},
@@ -788,9 +801,9 @@ class CoreGrippers:
     )
     plate_dims = PrepCmd.PlateDimensions(
       default_values=False,
-      length=resource_length,
-      width=resource_width,
-      height=resource_height,
+      length=length,
+      width=width,
+      height=resource_size_z,
     )
     grip_distance = y_clearance + squeeze_mm
 
@@ -812,8 +825,8 @@ class CoreGrippers:
       # Held now, raised or not: recorded before the jaws rise, so the model rises with them.
       self._plate_top_center = Coordinate(location.x, location.y, location.z + plate_top_z_offset)
       self._plate_top_z_offset = plate_top_z_offset
-      self._holding_resource_width = resource_width
-      self._holding_resource_height = resource_height
+      self._holding_resource_width = width
+      self._holding_resource_height = resource_size_z
       self._pickup_distance_from_top = None
       self._held_resource = None
       self._taken_from = None
@@ -904,9 +917,9 @@ class CoreGrippers:
     offset: Coordinate = Coordinate.zero(),
     pickup_distance_from_top: Optional[float] = None,
     *,
-    resource_width: Optional[float] = None,
-    resource_length: Optional[float] = None,
-    resource_height: Optional[float] = None,
+    resource_size_x: Optional[float] = None,
+    resource_size_y: Optional[float] = None,
+    resource_size_z: Optional[float] = None,
     y_clearance: float = 2.5,
     grip_speed_y: float = 5.0,
     squeeze_mm: float = 2.0,
@@ -917,14 +930,21 @@ class CoreGrippers:
   ) -> None:
     """Grip a resource where the tree has it, and hold it on the front tool in the model.
 
+    The pick-up is sent with the grip point, its centre-centre at `pickup_distance_from_top` below
+    the top, and these sizes as the plate's dimensions around it: the size along `grip_axis` is the
+    width the jaws open to, plus `y_clearance` either side.
+
     Args:
       resource: what to grip.
       offset: added to the grip point, in mm.
       pickup_distance_from_top: how far below its top the jaws close, in mm. None is its preferred
         pickup location, else 5 mm.
-      resource_width: its size along the grip axis, in mm. None reads it from the resource.
-      resource_length: its size in x, in mm. None reads it from the resource.
-      resource_height: its size in z, in mm. None reads it from the resource.
+      resource_size_x: its size in x, in mm, centred on the grip point. None reads it from the
+        resource.
+      resource_size_y: its size in y, in mm, centred on the grip point. None reads it from the
+        resource.
+      resource_size_z: its size in z, in mm, from the bottom to the top the grip point is measured
+        down from. None reads it from the resource.
       y_clearance: how far each gripper stands from the resource, either side, as it moves in to
         grip it and out after letting go, in mm.
       grip_speed_y: how fast the jaws close, in mm/s.
@@ -943,18 +963,19 @@ class CoreGrippers:
     self._require_mounted()
     source = (resource.parent, resource.location)
     from_top = self._resolve_pickup_distance(resource, pickup_distance_from_top)
-    if resource_width is None:
-      resource_width = self._compute_resource_width(resource)
-    if resource_length is None:
-      resource_length = resource.get_absolute_size_x()
-    if resource_height is None:
-      resource_height = resource.get_absolute_size_z()
+    if resource_size_x is None:
+      resource_size_x = resource.get_absolute_size_x()
+    if resource_size_y is None:
+      resource_size_y = resource.get_absolute_size_y()
+    if resource_size_z is None:
+      resource_size_z = resource.get_absolute_size_z()
+    width, _ = self._compute_width_and_length(resource_size_x, resource_size_y)
 
     location = self._compute_pickup_location(resource, offset, from_top)
 
     def gripped() -> None:
       self._pickup_distance_from_top = from_top
-      self._holding_resource_width = resource_width
+      self._holding_resource_width = width
       self._held_resource = resource
       source_parent, source_location = source
       self._taken_from = None if source_parent is None else (source_parent, source_location)
@@ -962,9 +983,9 @@ class CoreGrippers:
 
     await self._pick_up_at(
       location,
-      resource_width,
-      resource_length=resource_length,
-      resource_height=resource_height,
+      resource_size_x=resource_size_x,
+      resource_size_y=resource_size_y,
+      resource_size_z=resource_size_z,
       plate_top_z_offset=from_top,
       y_clearance=y_clearance,
       grip_speed_y=grip_speed_y,
@@ -978,8 +999,7 @@ class CoreGrippers:
 
   async def drop_resource(
     self,
-    destination: Optional[Resource] = None,
-    coordinate: Optional[Coordinate] = None,
+    to: Union[Resource, Coordinate],
     offset: Coordinate = Coordinate.zero(),
     *,
     y_clearance: float = 2.5,
@@ -992,29 +1012,16 @@ class CoreGrippers:
     """Put the held resource down; the tree follows once it is down.
 
     Args:
-      destination: the resource it goes into, e.g. a PrepDeck spot.
-      coordinate: where its centre-centre-bottom goes, in deck coordinates. It joins the deck there.
+      to: where it goes: the resource it goes into, e.g. a PrepDeck spot, or a `Coordinate`, the
+        deck position its centre-centre-bottom goes to, where it joins the deck.
       offset: added to where it is let go.
       y_clearance: how far each gripper stands from the resource, either side, as it moves in to
         grip it and out after letting go, in mm.
       z_speed: how fast it is lowered to where it is let go, in mm/s. None leaves it to the
         firmware (~133 mm/s).
-
-    Raises:
-      ValueError: If neither or both of `destination` and `coordinate` are given.
     """
-    if destination is None and coordinate is None:
-      raise ValueError(
-        "drop_resource needs to know where the held resource goes: give `destination`, the "
-        "resource it goes into, or `coordinate`, its centre-centre-bottom on the deck."
-      )
-    if destination is not None and coordinate is not None:
-      raise ValueError(
-        f"drop_resource was given both `destination` ({destination.name}) and `coordinate` "
-        f"({coordinate}), and each says where the held resource goes: give one."
-      )
     child: Optional[Coordinate] = None
-    if coordinate is not None:
+    if isinstance(to, Coordinate):
       if self._held_resource is None:
         raise RuntimeError(
           "drop_resource requires a prior pick_up_resource (held resource and grip height)."
@@ -1022,9 +1029,10 @@ class CoreGrippers:
       # The deck is the destination, and the child location is where the centre-bottom puts the
       # resource's own origin.
       center = self._held_resource.center().rotated(self._held_resource.get_absolute_rotation())
-      destination = self._deck
-      child = coordinate - Coordinate(center.x, center.y, 0)
-    assert destination is not None
+      destination: Resource = self._deck
+      child = to - Coordinate(center.x, center.y, 0)
+    else:
+      destination = to
     if self._holding_resource_width is None:
       raise RuntimeError("Not holding anything")
     if self._held_resource is None or self._pickup_distance_from_top is None:
@@ -1084,7 +1092,7 @@ class CoreGrippers:
     assert held is not None
     center = held.center().rotated(held.get_absolute_rotation())
     lfb = parent.get_location_wrt(self._deck, "l", "f", "b") + location
-    await self.drop_resource(coordinate=lfb + Coordinate(center.x, center.y, 0), **kwargs)
+    await self.drop_resource(lfb + Coordinate(center.x, center.y, 0), **kwargs)
 
   # -- probing -------------------------------------------------------------------------------------
 
@@ -1154,15 +1162,14 @@ class CoreGrippers:
   async def move_resource(
     self,
     resource: Resource,
-    destination: Optional[Resource] = None,
-    coordinate: Optional[Coordinate] = None,
+    to: Union[Resource, Coordinate],
     *,
     minimum_traverse_height_start: Optional[float] = None,
     pickup_offset: Coordinate = Coordinate.zero(),
     pickup_distance_from_top: Optional[float] = None,
-    resource_width: Optional[float] = None,
-    resource_length: Optional[float] = None,
-    resource_height: Optional[float] = None,
+    resource_size_x: Optional[float] = None,
+    resource_size_y: Optional[float] = None,
+    resource_size_z: Optional[float] = None,
     pickup_y_clearance: float = 2.5,
     grip_speed_y: float = 5.0,
     squeeze_mm: float = 2.0,
@@ -1181,17 +1188,19 @@ class CoreGrippers:
 
     Args:
       resource: what to move.
-      destination: the resource it goes into, e.g. a PrepDeck spot.
-      coordinate: where its centre-centre-bottom goes, in deck coordinates, instead of
-        `destination`.
+      to: where it goes: the resource it goes into, e.g. a PrepDeck spot, or a `Coordinate`, the
+        deck position its centre-centre-bottom goes to, where it joins the deck.
       minimum_traverse_height_start: the height to travel to the resource at, in mm. None goes to
         Z safety.
       pickup_offset: added to the grip point, in mm.
       pickup_distance_from_top: how far below its top the jaws close, in mm. None is its preferred
         pickup location, else 5 mm.
-      resource_width: its size along the grip axis, in mm. None reads it from the resource.
-      resource_length: its size in x, in mm. None reads it from the resource.
-      resource_height: its size in z, in mm. None reads it from the resource.
+      resource_size_x: its size in x, in mm, centred on the grip point. None reads it from the
+        resource.
+      resource_size_y: its size in y, in mm, centred on the grip point. None reads it from the
+        resource.
+      resource_size_z: its size in z, in mm, from the bottom to the top the grip point is measured
+        down from. None reads it from the resource.
       pickup_y_clearance: how far each gripper stands from the resource, either side, as it moves
         in to grip it, in mm.
       grip_speed_y: how fast the jaws close, in mm/s.
@@ -1215,10 +1224,7 @@ class CoreGrippers:
     Raises:
       HasTipError: If a channel carries a tip.
       RuntimeError: If the driver has no pipettes to carry the grippers.
-      ValueError: If neither or both of `destination` and `coordinate` are given.
     """
-    if (destination is None) == (coordinate is None):
-      raise ValueError("move_resource needs one of `destination` or `coordinate`, not both.")
     tipped = [ch for ch, tip in enumerate(self._pipettes.get_mounted_tips()) if tip is not None]
     if tipped:
       raise HasTipError(
@@ -1231,9 +1237,9 @@ class CoreGrippers:
       resource,
       offset=pickup_offset,
       pickup_distance_from_top=pickup_distance_from_top,
-      resource_width=resource_width,
-      resource_length=resource_length,
-      resource_height=resource_height,
+      resource_size_x=resource_size_x,
+      resource_size_y=resource_size_y,
+      resource_size_z=resource_size_z,
       y_clearance=pickup_y_clearance,
       grip_speed_y=grip_speed_y,
       squeeze_mm=squeeze_mm,
@@ -1243,8 +1249,7 @@ class CoreGrippers:
       z_speed=pickup_z_speed,
     )
     await self.drop_resource(
-      destination,
-      coordinate,
+      to,
       offset=drop_offset,
       y_clearance=drop_y_clearance,
       acceleration_scale_x=acceleration_scale_x,
