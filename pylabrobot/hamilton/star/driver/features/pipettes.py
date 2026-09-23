@@ -2663,6 +2663,66 @@ class Pipettes:
       raise
     return results
 
+  async def _probe_batch_liquid_heights(
+    self,
+    batch: ChannelBatch,
+    overhangs: Dict[int, float],
+    z_cavity_bottom: Sequence[float],
+    z_top: Sequence[float],
+    lld_modes: Sequence["Pipettes.LLDMode"],
+    search_speed: float,
+    n_replicates: int,
+  ) -> Dict[int, List[Optional[float]]]:
+    """Search for the liquid in every container of one batch, the channels together, n times.
+
+    Each channel searches from `search_start_clearance` above its container's top down to the
+    cavity bottom, on its stop disc: the tip bottom plus the overhang. The heights come from one
+    `C0 RL` after each round, so a channel that found nothing is None for that round.
+
+    Args:
+      batch: the channels and which container each has, by job index.
+      overhangs: each channel's tip overhang in mm, keyed by channel.
+      z_cavity_bottom: per job, on the deck in mm.
+      z_top: per job, on the deck in mm.
+      lld_modes: per job, capacitive or pressure.
+      search_speed: in mm/s.
+      n_replicates: how many rounds.
+
+    Returns:
+      The heights found, in mm on the deck, one list per job index; None where nothing was found.
+
+    Raises:
+      STARFirmwareError: Anything a channel answered other than that it found nothing.
+    """
+    top = self.configuration.z_range[1]
+    searches = []
+    for channel, job in zip(batch.channels, batch.indices):
+      end = round(z_cavity_bottom[job] + overhangs[channel], 2)
+      start = round(min(z_top[job] + overhangs[channel] + self.search_start_clearance, top), 2)
+      searches.append((channel, job, end, start))
+    found: Dict[int, List[Optional[float]]] = {job: [] for job in batch.indices}
+    for _ in range(n_replicates):
+      results = await asyncio.gather(
+        *(
+          self._clld_search(channel, end, start, search_speed=search_speed)
+          if lld_modes[job] == self.LLDMode.CAPACITIVE
+          else self._plld_search(channel, end, start, search_speed=search_speed)
+          for channel, job, end, start in searches
+        ),
+        return_exceptions=True,
+      )
+      heights = await self.request_last_lld_heights()
+      for (channel, job, _, _), result in zip(searches, results):
+        if isinstance(result, STARFirmwareError) and self._found_nothing(
+          result, self.channel_id(channel)
+        ):
+          found[job].append(None)
+        elif isinstance(result, BaseException):
+          raise result
+        else:
+          found[job].append(heights[channel])
+    return found
+
   # TODO: _unchecked_fw_ vs tip-presence-guarded versions
 
   # ----------------------------------------
