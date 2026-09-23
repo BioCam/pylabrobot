@@ -11,6 +11,8 @@ from typing import (
   TYPE_CHECKING,
   Any,
   AsyncIterator,
+  Awaitable,
+  Callable,
   Dict,
   Iterable,
   List,
@@ -18,6 +20,7 @@ from typing import (
   Optional,
   Sequence,
   Tuple,
+  TypeVar,
   Union,
   cast,
 )
@@ -30,7 +33,11 @@ from pylabrobot.hamilton.star.driver.errors import (
 )
 from pylabrobot.hamilton.star.driver.lock import CHANNEL_MODULE_LETTERS, _FirmwareLock
 from pylabrobot.lib.liquid_handling.channel_positioning import compute_channel_offsets
-from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import ChannelBatch, plan_batches
+from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import (
+  ChannelBatch,
+  plan_batches,
+  validate_channel_selections,
+)
 from pylabrobot.resources.container import Container
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.errors import HasTipError, NoTipError
@@ -49,6 +56,8 @@ logger = logging.getLogger(__name__)
 ANY_COLUMN = 1e6
 """An X tolerance wider than any deck: X alone never splits a tip command into batches, so spots
 spread across columns go out in one, as legacy sends them."""
+
+T = TypeVar("T")
 
 ChannelType = Literal["ML_STAR", "ML_STAR_RPC"]
 HeadType = Literal["ML_STAR", "ML_STAR_PLE", "ML_STAR_RPC"]
@@ -2551,6 +2560,108 @@ class Pipettes:
       fmt="rz#####",
     )
     return cast(int, resp["rz"])
+
+  # -- liquid heights over many containers ----------------------------------------------------
+
+  async def _prepare_batched(
+    self,
+    deck: Resource,
+    containers: Sequence[Container],
+    use_channels: Optional[List[int]],
+    resource_offsets: Optional[List[Coordinate]],
+    x_grouping_tolerance: Optional[float],
+    minimum_traverse_height_start: Optional[float],
+  ) -> Tuple[List[int], Dict[int, float], List[ChannelBatch]]:
+    """Check the channels and their tips, raise them, and plan the batches; X and Y stay put.
+
+    Args:
+      deck: what the containers are placed on.
+      containers: one per channel used.
+      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
+      resource_offsets: added to where each channel goes in its container, in mm. Planned when
+        None.
+      x_grouping_tolerance: containers within this X distance share a batch, in mm.
+        `default_x_grouping_tolerance` when None.
+      minimum_traverse_height_start: the height every low channel's lowest point is raised to,
+        in mm. Z safety when None.
+
+    Returns:
+      The channels used, each one's tip overhang in mm keyed by channel, and the batches in
+      ascending X.
+
+    Raises:
+      ValueError: If the channels and containers do not match.
+      RuntimeError: If a channel used carries no tip.
+    """
+    channels = validate_channel_selections(list(containers), self.num_channels, use_channels)
+    presence = await self.sense_tip_presence()
+    bare = [channel for channel in channels if not presence[channel]]
+    if bare:
+      raise RuntimeError(f"channels {bare} carry no tip")
+    # The overhang is the stop disc over the tip bottom, both read where they stand.
+    lowest = await self._unchecked_fw_request_lowest_z_positions()
+    overhangs = {}
+    for channel in channels:
+      stop_disc = await self.request_stop_disc_z_position(channel)
+      overhangs[channel] = round(stop_disc - lowest[channel], 2)
+    if minimum_traverse_height_start is None:
+      await self.move_to_safe_z()
+    else:
+      raises = await self._traverse_raise_targets(minimum_traverse_height_start)
+      if raises:
+        await self.move_stop_disc_to_z_positions(raises)
+    batches = plan_batches(
+      use_channels=channels,
+      containers=list(containers),
+      channel_spacings=self.minimum_y_spacings,
+      wrt_resource=deck,
+      x_tolerance=(
+        self.default_x_grouping_tolerance if x_grouping_tolerance is None else x_grouping_tolerance
+      ),
+      resource_offsets=resource_offsets,
+    )
+    return channels, overhangs, batches
+
+  async def _execute_batched(
+    self,
+    func: Callable[[ChannelBatch], Awaitable[T]],
+    batches: Sequence[ChannelBatch],
+    minimum_traverse_height_during: Optional[float],
+  ) -> List[T]:
+    """Take the channels to each batch in turn and run `func` there; on any failure, Z safety.
+
+    Between batches the channels come up to `minimum_traverse_height_during`, or to Z safety when
+    None; then the arm and the channels travel to the batch together, `X0 XP` and `C0 JY`.
+
+    Args:
+      func: what to do at a batch. It moves nothing in X or Y.
+      batches: as planned, in ascending X.
+      minimum_traverse_height_during: the height every low channel's lowest point is raised to
+        between batches, in mm. Z safety when None.
+
+    Returns:
+      What `func` answered at each batch, in order.
+    """
+    results: List[T] = []
+    try:
+      for index, batch in enumerate(batches):
+        if index > 0:
+          if minimum_traverse_height_during is None:
+            await self.move_to_safe_z()
+          else:
+            raises = await self._traverse_raise_targets(minimum_traverse_height_during)
+            if raises:
+              await self.move_stop_disc_to_z_positions(raises)
+        # Raised already, so the move raises nothing more.
+        await self.move_to_xy_positions(
+          batch.x_position, batch.y_positions, make_space=True, minimum_traverse_height_start=0
+        )
+        results.append(await func(batch))
+    except BaseException:
+      # A firmware error, a cancellation, an interrupt: the channels come up before it goes on.
+      await self.move_to_safe_z()
+      raise
+    return results
 
   # TODO: _unchecked_fw_ vs tip-presence-guarded versions
 
