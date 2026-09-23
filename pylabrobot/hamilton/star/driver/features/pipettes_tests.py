@@ -749,7 +749,7 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
       sent,
       [
         "C0TTtt01tf0tl0519tv04000tg2tu0",
-        "C0TPxp04554 04554 00000&yp1458 1368 0000&tm1 1 0&tt01tp2244tz2164th2450td0",
+        "C0TPxp04554 04554 00000&yp1458 1368 0000&tm1 1 0&tt01tp2244tz2164th2828td0",
       ],
     )
 
@@ -780,7 +780,7 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
     self.assertIs(tip.parent, spot)
     self.assertIsNotNone(spot.tip)
     self.assertIsNone(pipettes.get_mounted_tip(0))
-    self.assertEqual(sent[-1], "C0TRxp04554 00000&yp1458 0000&tm1 0&tp2244tz2164th2450te2450ti1")
+    self.assertEqual(sent[-1], "C0TRxp04554 00000&yp1458 0000&tm1 0&tp2244tz2164th2828te2828ti1")
 
   async def test_a_tip_moved_to_another_channel_returns_to_its_own_spot(self):
     """Where a tip goes back to is the tip's, not the channel's: it follows the tip across."""
@@ -794,7 +794,7 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
     await pipettes.return_tips()
     self.assertIs(tip.parent, spot)
     self.assertEqual(
-      sent[-1], "C0TRxp00000 04554 00000&yp0000 1458 0000&tm0 1 0&tp2244tz2164th2450te2450ti1"
+      sent[-1], "C0TRxp00000 04554 00000&yp0000 1458 0000&tm0 1 0&tp2244tz2164th2828te2828ti1"
     )
 
   async def test_returning_only_some_channels_leaves_the_others_carrying(self):
@@ -840,7 +840,7 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(
       sent[-1],
       "C0TRxp13400 00000 13400 00000 00000 13400 00000&yp3202 0000 3112 0000 0000 3022 0000"
-      "&tm1 0 1 0 0 1 0&tp1970tz1870th2450te2450ti0",
+      "&tm1 0 1 0 0 1 0&tp1970tz1870th2828te2828ti0",
     )
 
   async def test_two_spots_in_one_column_too_close_go_in_separate_commands(self):
@@ -988,11 +988,8 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
     with patch.object(pipettes, "_unchecked_fw_pick_up_tips", AsyncMock(side_effect=RuntimeError)):
       with self.assertRaises(RuntimeError):
         await pipettes.pick_up_tips([rack.get_item("A1")])
-    self.assertAlmostEqual(
-      await pipettes.request_stop_disc_z_position(0),
-      pipettes.default_minimum_traverse_height,
-      places=1,
-    )
+    # The height the command would have travelled at: as high as a 300 uL tip goes.
+    self.assertAlmostEqual(await pipettes.request_stop_disc_z_position(0), 282.8, places=1)
 
   async def test_a_pickup_that_faults_on_one_channel_keeps_the_others_tips(self):
     """Not every pick-up uses every channel: the error names the ones that faulted, by channel.
@@ -1088,15 +1085,16 @@ class TestWhereATipCommandLeavesTheChannels(unittest.IsolatedAsyncioTestCase):
 
     await pipettes.pick_up_tips([rack.get_item("A1")])
 
+    # No height given, so it travels as high as this tip can: the disc ends at the drive's top.
     after = await pipettes.request_stop_disc_z_positions()
     self.assertAlmostEqual(
       after[0],
-      pipettes.default_minimum_traverse_height + overhang,
+      pipettes.configuration.z_range[1],
       places=1,
       msg="the command ends with the tip's end at the traverse height, so the disc is above it",
     )
     lowest = await pipettes._unchecked_fw_request_lowest_z_positions()
-    self.assertAlmostEqual(lowest[0], pipettes.default_minimum_traverse_height, places=1)
+    self.assertAlmostEqual(lowest[0], pipettes.configuration.z_range[1] - overhang, places=1)
     self.assertEqual(
       [after[channel] for channel in range(1, 8)],
       [before[channel] for channel in range(1, 8)],
@@ -1132,7 +1130,6 @@ class TestTipsOfDifferentKinds(unittest.IsolatedAsyncioTestCase):
     """Channels, a 1000 uL rack on track 6, a 300 uL rack on track 16, and the tip commands."""
     from pylabrobot.resources.hamilton import (
       TIP_CAR_480_A00,
-      hamilton_96_tiprack_300uL,
       hamilton_96_tiprack_1000uL,
     )
 
@@ -1286,14 +1283,18 @@ class TestNestedTipRacksGroundTruth(unittest.IsolatedAsyncioTestCase):
           await head96.drop_tips(rack)
 
           tt = sent[0][4:8]
+          # As high as this tip can go: the ceiling less its length, from its definition.
+          length = re.search(r"tl(\d{4})", definition)
+          assert length is not None
+          th = 3347 - int(length.group(1))
           xp = " ".join([xs] * 8)
           yp = " ".join(f"{a1_y[size] - 90 * row:04}" for row in range(8))
           self.assertEqual(
             sent,
             [
               f"C0TT{tt}{definition}",
-              f"C0TPxp{xp}yp{yp}tm1 1 1 1 1 1 1 1{tt}tp{tp}tz1840th2450td0",
-              f"C0TRxp{xp}yp{yp}tm1 1 1 1 1 1 1 1{drop}th2450te2450ti1",
+              f"C0TPxp{xp}yp{yp}tm1 1 1 1 1 1 1 1{tt}tp{tp}tz1840th{th}td0",
+              f"C0TRxp{xp}yp{yp}tm1 1 1 1 1 1 1 1{drop}th{th}te{th}ti1",
               f"C0EPxs{xs}xd0yh{a1_y[size]}{tt}wu0za1840zh2450ze2450",
               f"C0ERxs{xs}xd0yh{a1_y[size]}za1840zh2450ze2450",
             ],
@@ -1353,6 +1354,10 @@ class TestNestedTipRacksGroundTruth(unittest.IsolatedAsyncioTestCase):
         await head96.drop_tips(rack)
 
         tt = sent[0][4:8]
+        # As high as this tip can go: the ceiling less its length, from its definition.
+        length = re.search(r"tl(\d{4})", definition)
+        assert length is not None
+        th = 3347 - int(length.group(1))
         # A1 17.9 mm right of the carrier, 145.8 mm back on site 0, sites 96 mm apart (0.1 mm)
         xs, a1_y = f"{round(carrier_x * 10) + 179:05}", 1458 + 960 * site
         xp = " ".join([xs] * 8)
@@ -1361,8 +1366,8 @@ class TestNestedTipRacksGroundTruth(unittest.IsolatedAsyncioTestCase):
           sent,
           [
             f"C0TT{tt}{definition}",
-            f"C0TPxp{xp}yp{yp}tm1 1 1 1 1 1 1 1{tt}tp{tp}tz2164th2450td0",
-            f"C0TRxp{xp}yp{yp}tm1 1 1 1 1 1 1 1{drop}th2450te2450ti1",
+            f"C0TPxp{xp}yp{yp}tm1 1 1 1 1 1 1 1{tt}tp{tp}tz2164th{th}td0",
+            f"C0TRxp{xp}yp{yp}tm1 1 1 1 1 1 1 1{drop}th{th}te{th}ti1",
             f"C0EPxs{xs}xd0yh{a1_y}{tt}wu0za2164zh2450ze2450",
             f"C0ERxs{xs}xd0yh{a1_y}za2164zh2450ze2450",
           ],
@@ -1411,6 +1416,10 @@ class TestNestedTipRacksGroundTruth(unittest.IsolatedAsyncioTestCase):
         await head96.drop_tips(rack)
 
         tt = sent[0][4:8]
+        # As high as this tip can go: the ceiling less its length, from its definition.
+        length = re.search(r"tl(\d{4})", definition)
+        assert length is not None
+        th = 3347 - int(length.group(1))
         # A1 146.0 mm back on slot 0, slots 96 mm apart (0.1 mm)
         xs, a1_y = "07705", 1460 + 960 * slot
         xp = " ".join([xs] * 8)
@@ -1419,8 +1428,8 @@ class TestNestedTipRacksGroundTruth(unittest.IsolatedAsyncioTestCase):
           sent,
           [
             f"C0TT{tt}{definition}",
-            f"C0TPxp{xp}yp{yp}tm1 1 1 1 1 1 1 1{tt}tp{tp}tz2162th2450td0",
-            f"C0TRxp{xp}yp{yp}tm1 1 1 1 1 1 1 1{drop}th2450te2450ti1",
+            f"C0TPxp{xp}yp{yp}tm1 1 1 1 1 1 1 1{tt}tp{tp}tz2162th{th}td0",
+            f"C0TRxp{xp}yp{yp}tm1 1 1 1 1 1 1 1{drop}th{th}te{th}ti1",
             f"C0EPxs{xs}xd0yh{a1_y}{tt}wu0za2162zh2450ze2450",
             f"C0ERxs{xs}xd0yh{a1_y}za2162zh2450ze2450",
           ],

@@ -133,6 +133,16 @@ Named `default_<quantity>[_<condition>]`: `default_z_speed`, `default_z_speed_wi
 `approach_speed` is the speed to where the search starts, where the command has one. Never a bare
 `speed`, on the probe or on its `_unchecked_fw_` command. The Prep's probes follow the same rule.
 
+**P20. A command over several channels plans above and sends below.** The public method plans the
+work into the fewest commands the channels can carry out at once and calls `_<verb>_in_one_move`
+for each; that method takes one list that goes in one command, sends it, handles a command that
+stopped part way, and records what the device says. Splitting is by what the firmware cannot do in
+one command: `C0 TP` and `C0 TR` carry an X per channel, so X never splits a batch, while one tip
+type per command, one collar height per drop, and two channels closer in Y than they may stand all
+do. A tip command travels as high as the mounted tip allows, its stop disc an overhang above that,
+and never below the 245.0 mm safety height. `pick_up_tips` and `drop_tips` follow this, and so do
+the Prep's.
+
 ## Where this is not consistent yet
 
 1. **`.configuration` has two owners.** Most features own theirs

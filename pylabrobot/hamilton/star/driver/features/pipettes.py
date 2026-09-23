@@ -2341,7 +2341,47 @@ class Pipettes:
       td=pickup_method.value,
     )
 
-  async def _pick_up_tips_at_location(
+  def _tip_traverse_height(
+    self, tips: Sequence[Tip], minimum_traverse_height_start: Optional[float]
+  ) -> float:
+    """How high the channels travel through a tip command, in mm.
+
+    The command ends with the tip bottom at that height and the stop disc an overhang above it, so
+    the longest tip decides how high the drive can take them. None travels as high as it can, and
+    245.0 mm is the safety height: nothing travels below it, whatever is mounted.
+
+    Args:
+      tips: what the channels carry through the command.
+      minimum_traverse_height_start: the height to travel at, in mm, or None for the highest.
+
+    Returns:
+      The height, in mm.
+
+    Raises:
+      ValueError: If the height is below the safety height or above what the tip can reach.
+    """
+    overhang = max(tip.get_size_z() - tip.fitting_depth for tip in tips)
+    ceiling = round(self.configuration.z_range[1] - overhang, 2)
+    if ceiling < 245.0:
+      raise ValueError(
+        f"a tip {overhang:.1f} mm below the stop disc reaches only {ceiling} mm, below the "
+        "245.0 mm safety height"
+      )
+    if minimum_traverse_height_start is None:
+      return ceiling
+    if minimum_traverse_height_start < 245.0:
+      raise ValueError(
+        f"the channels travel no lower than the 245.0 mm safety height, "
+        f"not {minimum_traverse_height_start}"
+      )
+    if minimum_traverse_height_start > ceiling:
+      raise ValueError(
+        f"a tip {overhang:.1f} mm below the stop disc travels no higher than {ceiling} mm, "
+        f"not {minimum_traverse_height_start}"
+      )
+    return minimum_traverse_height_start
+
+  async def _pick_up_tips_in_one_move(
     self,
     locations: Dict[int, Coordinate],
     tips: Dict[int, HamiltonTip],
@@ -2376,21 +2416,7 @@ class Pipettes:
     if len({tip.kind() for tip in hamilton_tips}) > 1:
       raise ValueError("the tips picked up together must all be of one kind")
 
-    # The command ends with the tip bottom at the height it travelled at, so the stop disc ends an
-    # overhang higher: a tall tip cannot travel as high as a short one.
-    height = (
-      self.default_minimum_traverse_height
-      if minimum_traverse_height_start is None
-      else minimum_traverse_height_start
-    )
-    overhang = max(tip.get_size_z() - tip.fitting_depth for tip in hamilton_tips)
-    ceiling = round(self.configuration.z_range[1] - overhang, 2)
-    if height > ceiling:
-      raise ValueError(
-        f"a tip {overhang:.1f} mm below the stop disc travels no higher than {ceiling} mm, "
-        f"not {height}"
-      )
-    traverse = round(height * 10)
+    traverse = round(self._tip_traverse_height(hamilton_tips, minimum_traverse_height_start) * 10)
 
     xs, ys, pattern = self._tip_command_positions(locations)
     tip_type_index = await self._driver.get_or_assign_tip_type_index(hamilton_tips[0])
@@ -2558,7 +2584,7 @@ class Pipettes:
       indices = [group[index] for index in batch.indices]
       spots = [tip_spots[index] for index in indices]
       in_batch = list(batch.channels)
-      await self._pick_up_tips_at_location(
+      await self._pick_up_tips_in_one_move(
         {
           channel: spot.get_location_wrt(deck, x="c", y="c", z="b") + offsets[index]
           for spot, channel, index in zip(spots, in_batch, indices)
@@ -2603,7 +2629,7 @@ class Pipettes:
       ti=discarding_method.value,
     )
 
-  async def _drop_tips_at_location(
+  async def _drop_tips_in_one_move(
     self,
     locations: Dict[int, Coordinate],
     drop_method: TipDropMethod,
@@ -2658,28 +2684,18 @@ class Pipettes:
       (default_begin if begin_tip_deposit_process is None else begin_tip_deposit_process) * 10
     )
     end = round((default_end if end_tip_deposit_process is None else end_tip_deposit_process) * 10)
-    # The command ends with the tip bottom at the height it travelled at, so the stop disc ends an
-    # overhang higher: a tall tip cannot travel as high as a short one.
-    height = (
-      self.default_minimum_traverse_height
-      if minimum_traverse_height_start is None
-      else minimum_traverse_height_start
-    )
-    overhang = max(tip.get_size_z() - tip.fitting_depth for tip in tips)
-    ceiling = round(self.configuration.z_range[1] - overhang, 2)
-    if height > ceiling:
-      raise ValueError(
-        f"a tip {overhang:.1f} mm below the stop disc travels no higher than {ceiling} mm, "
-        f"not {height}"
-      )
-    traverse = round(height * 10)
-    z_end = round(
-      (
-        self.default_minimum_traverse_height
-        if minimum_traverse_height_end is None
-        else minimum_traverse_height_end
-      )
-      * 10
+    traverse = round(self._tip_traverse_height(tips, minimum_traverse_height_start) * 10)
+    if minimum_traverse_height_end is not None:
+      # Where the channels are left, bare: no lower than the safety height, within the drive.
+      if minimum_traverse_height_end < 245.0:
+        raise ValueError(
+          f"the channels are left no lower than the 245.0 mm safety height, "
+          f"not {minimum_traverse_height_end}"
+        )
+      self._check_reachable("z", minimum_traverse_height_end)
+    # `traverse` is already in tenths; a height given is in mm.
+    z_end = (
+      traverse if minimum_traverse_height_end is None else round(minimum_traverse_height_end * 10)
     )
 
     dropped: Dict[int, bool] = {channel: True for channel in use_channels}
@@ -2850,7 +2866,7 @@ class Pipettes:
       # Held now, because the command takes each tip off its shaft: what is put into the spot is
       # the tip the channel came with.
       held = {channel: self.get_mounted_tip(channel) for channel in channels_in_group}
-      dropped = await self._drop_tips_at_location(
+      dropped = await self._drop_tips_in_one_move(
         {channel: where(index) for channel, index in zip(channels_in_group, indices)},
         drop_method,
         begin_tip_deposit_process=begin_tip_deposit_process,
