@@ -368,6 +368,14 @@ class TestResourceByResource(unittest.IsolatedAsyncioTestCase):
       await self.grippers.pick_up_resource(self.plate)
     self.assertEqual(len(self.sent), 1)
 
+  async def test_gripped_more_than_20_mm_below_its_top_is_refused(self):
+    await self.grippers.pick_up_tools()
+    with self.assertRaisesRegex(ValueError, "pipetting head"):
+      await self.grippers.pick_up_resource(self.plate, pickup_distance_from_top=20.5)
+    self.assertEqual(self.sent, [])
+    await self.grippers.pick_up_resource(self.plate, pickup_distance_from_top=12.0)
+    self.assertEqual(len(self.sent), 1)
+
   async def test_out_of_range_arguments_send_nothing(self):
     await self.grippers.pick_up_tools()
     for kwargs in ({"grip_strength": 100}, {"squeeze_mm": 50.0}, {"z_speed": 0.0}):

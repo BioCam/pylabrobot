@@ -45,6 +45,9 @@ FIRMWARE_Z_LEG = 1.0
 # How far inside a channel's reported Y window an open jaw must stay: the front one stalled opening
 # to 0.49 mm inside it.
 JAW_Y_MARGIN = 0.6
+# How far below its top a resource may be gripped, in mm: lower, its top presses into the pipetting
+# head the grippers hang from.
+MAX_PICKUP_DISTANCE_FROM_TOP = 20.0
 
 
 class CoreGrippers:
@@ -948,8 +951,8 @@ class CoreGrippers:
     Args:
       resource: what to grip.
       offset: added to the grip point, in mm.
-      pickup_distance_from_top: how far below its top the jaws close, in mm. None is its preferred
-        pickup location, else 5 mm.
+      pickup_distance_from_top: how far below its top the jaws close, in mm, at most
+        `MAX_PICKUP_DISTANCE_FROM_TOP`. None is its preferred pickup location, else 5 mm.
       resource_size_x: its size in x, in mm, centred on the grip point. None reads it from the
         resource.
       resource_size_y: its size in y, in mm, centred on the grip point. None reads it from the
@@ -970,10 +973,17 @@ class CoreGrippers:
 
     Raises:
       RuntimeError: If the tools are not on the channels.
+      ValueError: If `pickup_distance_from_top` is more than `MAX_PICKUP_DISTANCE_FROM_TOP`.
     """
     self._require_mounted()
     source = (resource.parent, resource.location)
     from_top = self._resolve_pickup_distance(resource, pickup_distance_from_top)
+    if from_top > MAX_PICKUP_DISTANCE_FROM_TOP:
+      raise ValueError(
+        f"pickup_distance_from_top must be at most {MAX_PICKUP_DISTANCE_FROM_TOP} mm, is "
+        f"{from_top}: gripped lower, the resource's top is pressed into the pipetting head the "
+        "grippers hang from."
+      )
     if resource_size_x is None:
       resource_size_x = resource.get_absolute_size_x()
     if resource_size_y is None:
@@ -1208,8 +1218,8 @@ class CoreGrippers:
       minimum_traverse_height_start: the height to travel to the resource at, in mm. None goes to
         Z safety.
       pickup_offset: added to the grip point, in mm.
-      pickup_distance_from_top: how far below its top the jaws close, in mm. None is its preferred
-        pickup location, else 5 mm.
+      pickup_distance_from_top: how far below its top the jaws close, in mm, at most
+        `MAX_PICKUP_DISTANCE_FROM_TOP`. None is its preferred pickup location, else 5 mm.
       resource_size_x: its size in x, in mm, centred on the grip point. None reads it from the
         resource.
       resource_size_y: its size in y, in mm, centred on the grip point. None reads it from the

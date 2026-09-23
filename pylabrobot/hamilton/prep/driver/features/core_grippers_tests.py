@@ -138,6 +138,21 @@ def test_the_tools_on_by_location_alone_let_the_grippers_act():
   asyncio.run(_run())
 
 
+def test_gripped_more_than_20_mm_below_its_top_is_refused():
+  deck = PrepDeck(with_core_grippers=True)
+  plate = deck[4] = cor_axy_96_wellplate_500uL_Ub("plate")
+  grippers, commands = _make_grippers(deck)
+
+  async def _run() -> None:
+    with pytest.raises(ValueError, match="pipetting head"):
+      await grippers.pick_up_resource(plate, pickup_distance_from_top=20.5)
+    commands.pick_up_at.assert_not_awaited()
+    await grippers.pick_up_resource(plate, pickup_distance_from_top=12.0)
+    commands.pick_up_at.assert_awaited_once()
+
+  asyncio.run(_run())
+
+
 def test_drop_resource_releases_over_the_destination_at_the_grip_height():
   """Released over the new holder's centre plus the offset, at the height it was gripped."""
   deck = PrepDeck(with_core_grippers=True)

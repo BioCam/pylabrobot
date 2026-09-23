@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 
 # How far below the pick-up window the tools are deposited, in mm: legacy's 235/225 against 215/205.
 _DEPOSIT_BELOW_PICK_UP = 20.0
+# How far below its top a resource may be gripped, in mm: lower, its top presses into the pipetting
+# head the grippers hang from.
+_MAX_PICKUP_DISTANCE_FROM_TOP = 20.0
 
 
 @dataclasses.dataclass
@@ -765,8 +768,8 @@ class CoreGrippers:
     Args:
       resource: what to grip.
       offset: added to the grip point, in mm.
-      pickup_distance_from_top: how far below its top the jaws close, in mm. None is its preferred
-        pickup location, else 5 mm.
+      pickup_distance_from_top: how far below its top the jaws close, in mm, at most
+        `_MAX_PICKUP_DISTANCE_FROM_TOP`. None is its preferred pickup location, else 5 mm.
       minimum_traverse_height_start: the height to travel to it at, in mm.
         `default_minimum_traverse_height` when None.
       resource_size_y: its size in y, the width the jaws grip, in mm, centred on the grip point.
@@ -785,7 +788,8 @@ class CoreGrippers:
     Raises:
       RuntimeError: If the tools are not picked up, something is already held, or the iSWAP is not
         parked.
-      ValueError: If a position, height, width, speed, acceleration or strength is out of range.
+      ValueError: If a position, height, width, speed, acceleration or strength is out of range, or
+        `pickup_distance_from_top` is more than `_MAX_PICKUP_DISTANCE_FROM_TOP`.
     """
     back, front = self._require_mounted()
     if self._held_resource is not None:
@@ -805,6 +809,12 @@ class CoreGrippers:
       z_acceleration = self.default_z_acceleration_with_resource_held
 
     from_top = self._resolve_pickup_distance(resource, pickup_distance_from_top)
+    if from_top > _MAX_PICKUP_DISTANCE_FROM_TOP:
+      raise ValueError(
+        f"pickup_distance_from_top must be at most {_MAX_PICKUP_DISTANCE_FROM_TOP} mm, is "
+        f"{from_top}: gripped lower, the resource's top is pressed into the pipetting head the "
+        "grippers hang from."
+      )
     grip = self._compute_pickup_location(resource, offset, from_top)
     self._check_held_move(
       grip, (minimum_traverse_height_start, minimum_traverse_height_end), z_speed, z_acceleration
