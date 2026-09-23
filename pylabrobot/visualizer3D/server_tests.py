@@ -1,6 +1,8 @@
 """The state channel: what a client is told, and what it is deliberately not told again."""
 
 import asyncio
+import contextlib
+import io
 import json
 import os
 import socket
@@ -210,6 +212,33 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
         return states, message["data"]
       if message["event"] == "state":
         states.append(message["data"])
+
+
+class FileServerTests(unittest.IsolatedAsyncioTestCase):
+  """The file server keeps quiet about what is not its fault."""
+
+  async def asyncSetUp(self):
+    self.facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    self.viewer = Viewer3D(self.facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
+    await self.viewer.start()
+
+  async def asyncTearDown(self):
+    await self.viewer.stop()
+
+  async def test_a_download_abandoned_by_the_browser_prints_no_traceback(self):
+    """A page left mid-download closes its end of the socket, which the threaded server used to
+    report as an exception in the request thread, a full traceback on every reload."""
+    captured = io.StringIO()
+
+    def abandon() -> None:
+      with socket.create_connection(("127.0.0.1", self.viewer.fs_port)) as sock:
+        sock.sendall(b"GET /vendor/three.webgpu.min.js HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+        sock.recv(1024)  # the start of the body, then gone
+
+    with contextlib.redirect_stderr(captured):
+      await asyncio.to_thread(abandon)
+      await asyncio.sleep(0.5)  # the request thread notices the closed socket
+    self.assertEqual(captured.getvalue(), "")
 
 
 class LifecycleTests(unittest.IsolatedAsyncioTestCase):

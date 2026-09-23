@@ -19,6 +19,7 @@ import os
 import re
 import secrets
 import socket
+import sys
 import threading
 import webbrowser
 from typing import Any, Dict, Iterable, List, Optional
@@ -669,11 +670,19 @@ class Viewer3D:
           return
         return super().do_GET()
 
+    class Server(http.server.ThreadingHTTPServer):
+      def handle_error(self, request, client_address):
+        # A browser that leaves a page mid-download closes its end; that is no error of ours,
+        # and a traceback on every reload buries anything that is.
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+          return
+        super().handle_error(request, client_address)
+
     # Threaded: a page loads its meshes in parallel, and a server answering one request at a time
     # was seen closing one of twenty-two without a response, which drew that resource as a box.
     while True:
       try:
-        self._httpd = http.server.ThreadingHTTPServer((self.host, self.fs_port), Handler)
+        self._httpd = Server((self.host, self.fs_port), Handler)
         break
       except OSError:
         self.fs_port += 1
