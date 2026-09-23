@@ -461,6 +461,77 @@ class TestZTouchFirmware(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.sent, ["P1ZHzb28142za13983zv11652zr075zu00466cg001cf010"])
 
 
+class TestZTouchProbing(unittest.IsolatedAsyncioTestCase):
+  """The z-touch probe: legacy's `Px ZH` on the stop disc, the tip bottom answered, then a back-off."""
+
+  async def asyncSetUp(self):
+    self.pipettes = await simulated_channels()
+    self.sent: List[str] = []
+    self.rz = 20000
+
+    async def recorded(module: str, command: str, fmt: Optional[Any] = None, **kwargs: Any):
+      self.sent.append(assemble_command(module=module, command=command, id_=None, **kwargs))
+      return {"rz": self.rz}
+
+    self.pipettes._driver.send_command = recorded  # type: ignore[assignment]
+    self.pipettes.sense_tip_presence = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      return_value=[1] * self.pipettes.num_channels
+    )
+    self.pipettes.request_tip_overhang = unittest.mock.AsyncMock(return_value=51.9)  # type: ignore[method-assign]
+    self.recorded_z = unittest.mock.AsyncMock()
+    self.back_off = unittest.mock.AsyncMock()
+    self.safe_z = unittest.mock.AsyncMock()
+    self.pipettes._record_where_they_stopped = self.recorded_z  # type: ignore[method-assign]
+    self.pipettes.move_stop_disc_to_z_position = self.back_off  # type: ignore[method-assign]
+    self.pipettes.move_to_safe_z = self.safe_z  # type: ignore[method-assign]
+
+  async def test_it_searches_from_the_top_to_the_floor_and_answers_the_tip_bottom(self):
+    touched = await self.pipettes.probe_z_using_ztouch(0)
+    self.assertEqual(self.sent, ["P1ZHzb31200za09320zv11652zr075zu00932cg001cf000"])
+    stop_disc = self.pipettes.configuration.z_drive_increments_to_mm(20000)
+    self.assertEqual(touched, round(stop_disc - 51.9, 2))
+    self.recorded_z.assert_awaited_once_with("z")
+    self.back_off.assert_awaited_once_with(0, round(stop_disc + 2.0, 2))
+    self.safe_z.assert_not_awaited()
+
+  async def test_a_window_is_the_tip_bottom_start_and_the_stop_disc_end(self):
+    await self.pipettes.probe_z_using_ztouch(
+      2, search_start_position=250.0, search_end_position=150.0, post_detection_distance=0
+    )
+    c = self.pipettes.configuration
+    start, end = c.z_drive_mm_to_increments(301.9), c.z_drive_mm_to_increments(150.0)
+    self.assertEqual(self.sent, [f"P3ZHzb{start:05}za{end:05}zv11652zr075zu00932cg001cf000"])
+    self.back_off.assert_not_awaited()
+
+  async def test_reaching_the_end_is_none(self):
+    self.rz = self.pipettes.configuration.z_drive_mm_to_increments(100.3)
+    self.assertIsNone(await self.pipettes.probe_z_using_ztouch(0))
+    self.back_off.assert_awaited_once()
+
+  async def test_old_firmware_and_a_bare_channel_are_refused_before_anything_is_sent(self):
+    recorded = self.pipettes.configuration.channels[0].firmware_version
+    self.pipettes.configuration.channels[0].firmware_version = "4.0S 2012-04-25"
+    with self.assertRaises(RuntimeError):
+      await self.pipettes.probe_z_using_ztouch(0)
+    self.pipettes.configuration.channels[0].firmware_version = recorded
+    self.pipettes.sense_tip_presence = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      return_value=[0] * self.pipettes.num_channels
+    )
+    with self.assertRaises(RuntimeError):
+      await self.pipettes.probe_z_using_ztouch(0)
+    self.assertEqual(self.sent, [])
+
+  async def test_a_firmware_error_goes_to_safe_z(self):
+    async def failing(module: str, command: str, **kwargs: Any):
+      raise STARFirmwareError(errors={}, raw_response="")
+
+    self.pipettes._driver.send_command = failing  # type: ignore[assignment]
+    with self.assertRaises(STARFirmwareError):
+      await self.pipettes.probe_z_using_ztouch(0)
+    self.safe_z.assert_awaited_once()
+    self.recorded_z.assert_awaited_once()
+
+
 class TestCLLDProbing(unittest.IsolatedAsyncioTestCase):
   """`C0 XL` and `Px YL` as legacy sends them, and what the probes make of the positions read."""
 
