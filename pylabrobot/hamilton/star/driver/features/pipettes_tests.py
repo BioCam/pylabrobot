@@ -615,6 +615,250 @@ class TestCLLDProbing(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.sent, [])
 
 
+class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
+  """Containers are batched, every batch searched at once, and the heights read in one `C0 RL`.
+
+  The moves are mocked away: what is checked is the searches sent, what the heights come out as,
+  and that the channels come up when they must.
+  """
+
+  async def asyncSetUp(self):
+    deck = STARDeck()
+    self.plate = cor_axy_96_wellplate_500uL_Ub("plate")
+    deck.assign_child_resource(self.plate, location=Coordinate(400, 100, 100))
+    self.driver = STARSimulationDriver(deck=deck, declared_configuration_json=RECORDING_STAR)
+    await self.driver.setup()
+    assert self.driver.pipettes is not None
+    self.pipettes = self.driver.pipettes
+    self.deck = deck
+    self.sent: List[str] = []
+    self.lh = [1500] * self.pipettes.num_channels
+    self.fail_with: dict = {}  # module -> list of error strings, one per search, in order
+
+    async def answering(
+      module: str, command: str, fmt: Optional[Any] = None, read_timeout: float = 0, **kwargs: Any
+    ):
+      self.sent.append(assemble_command(module=module, command=command, id_=None, **kwargs))
+      if command in ("ZL", "ZE") and self.fail_with.get(module):
+        reply = self.fail_with[module].pop(0)
+        if reply is not None:
+          check_fw_string_error(reply)
+      if command == "RL":
+        return {"lh": list(self.lh)}
+      if command == "ZE":
+        return {"if": [12345, 0]}
+      return None
+
+    self.pipettes._driver.send_command = answering  # type: ignore[assignment]
+    n = self.pipettes.num_channels
+    self.pipettes.sense_tip_presence = unittest.mock.AsyncMock(return_value=[1] * n)  # type: ignore[method-assign]
+    self.pipettes._unchecked_fw_request_lowest_z_positions = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      return_value={channel: 282.8 for channel in range(n)}
+    )
+    self.pipettes.request_stop_disc_z_position = unittest.mock.AsyncMock(return_value=334.7)  # type: ignore[method-assign]
+    self.safe_z = unittest.mock.AsyncMock()
+    self.xy = unittest.mock.AsyncMock()
+    self.stop_discs = unittest.mock.AsyncMock()
+    self.tool_bottoms = unittest.mock.AsyncMock()
+    self.pipettes.move_to_safe_z = self.safe_z  # type: ignore[method-assign]
+    self.pipettes.move_to_xy_positions = self.xy  # type: ignore[method-assign]
+    self.pipettes.move_stop_disc_to_z_positions = self.stop_discs  # type: ignore[method-assign]
+    self.pipettes.move_tool_bottom_to_z_positions = self.tool_bottoms  # type: ignore[method-assign]
+
+  async def asyncTearDown(self):
+    await self.driver.stop()
+
+  def _wells(self, *names: str):
+    return [self.plate.get_well(name) for name in names]
+
+  def _window(self, well) -> Tuple[int, int]:
+    """The stop disc increments a search of `well` runs between, with a 51.9 mm overhang."""
+    c = self.pipettes.configuration
+    bottom = well.get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    top = well.get_location_wrt(self.deck, "c", "c", "t").z
+    return (
+      c.z_drive_mm_to_increments(round(bottom + 51.9, 2)),
+      c.z_drive_mm_to_increments(round(top + 51.9 + 5.0, 2)),
+    )
+
+  async def test_plld_firmware(self):
+    await self.pipettes._unchecked_fw_probe_z_using_plld(
+      1,
+      9320,
+      31200,
+      186,
+      1,
+      True,
+      10,
+      2,
+      30,
+      10,
+      False,
+      466,
+      0,
+      30,
+      30,
+      30,
+      932,
+      0,
+      0,
+      11186,
+      932,
+      75,
+      3,
+      1829,
+      73,
+      5303,
+      3,
+    )
+    self.assertEqual(
+      self.sent,
+      [
+        "P2ZEzh09320zc31200zi0186zj1gf1gt0010gl0002gu0030gn0010gm0gz0466cj0co0030cp0030cq0030"
+        "cl00932cc0cd00000zv11186zl00932zr075zw3dl01829dr073dv05303dw3"
+      ],
+    )
+
+  async def test_one_column_is_searched_at_once_and_read_in_one_go(self):
+    wells = self._wells("A1", "B1", "C1", "D1")
+    heights = await self.pipettes.probe_liquid_heights(wells)
+
+    end, start = self._window(wells[0])
+    self.assertEqual(
+      self.sent,
+      [
+        f"P{channel + 1}ZLzh{end:05}zc{start:05}zl00932zr075gt0010gl0002zj1zi0186"
+        for channel in range(4)
+      ]
+      + ["C0RL"],
+    )
+    bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    self.assertEqual(heights, [round(150.0 - bottom, 2)] * 4)
+    self.xy.assert_awaited_once()
+    assert self.xy.await_args is not None
+    x, ys = self.xy.await_args.args
+    self.assertAlmostEqual(x, wells[0].get_location_wrt(self.deck, "c", "c", "b").x)
+    self.assertEqual(sorted(ys)[:4], [0, 1, 2, 3])
+    self.assertEqual(self.safe_z.await_count, 2, "up before the first batch and at the end")
+
+  async def test_two_columns_are_two_batches_with_safe_z_between(self):
+    await self.pipettes.probe_liquid_heights(self._wells("A1", "A2"))
+    self.assertEqual(self.xy.await_count, 2)
+    self.assertEqual([c[:4] for c in self.sent], ["P1ZL", "C0RL", "P2ZL", "C0RL"])
+    self.assertEqual(self.safe_z.await_count, 3, "before, between, and at the end")
+
+  async def test_a_traverse_height_raises_the_low_channels_instead_of_safe_z(self):
+    self.pipettes._traverse_raise_targets = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      return_value={0: 300.0}
+    )
+    await self.pipettes.probe_liquid_heights(
+      self._wells("A1", "A2"),
+      minimum_traverse_height_start=250.0,
+      minimum_traverse_height_during=250.0,
+      minimum_traverse_height_end=200.0,
+    )
+    self.assertEqual(self.stop_discs.await_count, 2, "before the first batch and between")
+    self.tool_bottoms.assert_awaited_once_with({0: 200.0, 1: 200.0})
+    self.safe_z.assert_not_awaited()
+
+  async def test_a_channel_that_finds_nothing_stands_at_zero_and_the_rest_are_read(self):
+    self.fail_with["P2"] = ["P2ZLid0001er70"]
+    heights = await self.pipettes.probe_liquid_heights(self._wells("A1", "B1"))
+    self.assertEqual(heights[1], 0.0)
+    self.assertGreater(heights[0], 0.0)
+    self.assertIn("C0RL", self.sent)
+
+  async def test_a_dual_search_that_finds_nothing_stands_at_zero_too(self):
+    self.fail_with["P1"] = ["P1ZLid0001er73"]
+    self.assertEqual(await self.pipettes.probe_liquid_heights(self._wells("A1")), [0.0])
+
+  async def test_found_in_one_round_but_not_the_other_raises_and_comes_up(self):
+    self.fail_with["P2"] = ["P2ZLid0001er70", None]
+    with self.assertRaises(RuntimeError):
+      await self.pipettes.probe_liquid_heights(self._wells("A1", "B1"), n_replicates=2)
+    self.assertEqual(self.sent.count("C0RL"), 2)
+    self.assertEqual(self.safe_z.await_count, 2, "up before the first batch and after the failure")
+
+  async def test_replicates_are_averaged(self):
+    self.lh = [1500] * self.pipettes.num_channels
+    calls = {"n": 0}
+    original = self.pipettes._driver.send_command
+
+    async def varying(module: str, command: str, **kwargs: Any):
+      result = await original(module=module, command=command, **kwargs)
+      if command == "RL":
+        calls["n"] += 1
+        result["lh"] = [1500 + 10 * calls["n"]] * self.pipettes.num_channels
+      return result
+
+    self.pipettes._driver.send_command = varying  # type: ignore[assignment]
+    wells = self._wells("A1")
+    bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    heights = await self.pipettes.probe_liquid_heights(wells, n_replicates=3)
+    self.assertEqual(heights, [round(152.0 - bottom, 2)])
+
+  async def test_any_other_channel_error_is_raised_after_coming_up(self):
+    self.fail_with["P1"] = ["P1ZLid0001er99"]
+    with self.assertRaises(STARFirmwareError):
+      await self.pipettes.probe_liquid_heights(self._wells("A1"))
+    self.assertEqual(self.safe_z.await_count, 2)
+
+  async def test_pressure_mode_sends_the_pressure_search(self):
+    wells = self._wells("A1", "B1")
+    modes = [self.pipettes.LLDMode.PRESSURE, self.pipettes.LLDMode.CAPACITIVE]
+    await self.pipettes.probe_liquid_heights(wells, lld_mode=modes)
+    end, start = self._window(wells[0])
+    self.assertEqual(
+      self.sent[0],
+      f"P1ZEzh{end:05}zc{start:05}zi0186zj1gf0gt0010gl0002gu0030gn0010gm0gz0466cj0co0030cp0030"
+      "cq0030cl00932cc0cd00000zv11186zl00932zr075zw3dl01829dr073dv05303dw3",
+    )
+    self.assertTrue(self.sent[1].startswith("P2ZL"))
+
+  async def test_an_off_mode_is_refused_before_anything_moves(self):
+    with self.assertRaises(ValueError):
+      await self.pipettes.probe_liquid_heights(
+        self._wells("A1"), lld_mode=self.pipettes.LLDMode.OFF
+      )
+    self.assertEqual(self.sent, [])
+    self.safe_z.assert_not_awaited()
+
+  async def test_a_channel_without_a_tip_is_refused_before_anything_moves(self):
+    self.pipettes.sense_tip_presence = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      return_value=[1, 0] + [1] * (self.pipettes.num_channels - 2)
+    )
+    with self.assertRaises(RuntimeError):
+      await self.pipettes.probe_liquid_heights(self._wells("A1", "B1"))
+    self.assertEqual(self.sent, [])
+    self.safe_z.assert_not_awaited()
+
+  async def test_volumes_come_from_each_containers_own_function(self):
+    from pylabrobot.resources.container import Container
+
+    tubes = [
+      Container(
+        f"tube_{i}",
+        8,
+        8,
+        40,
+        compute_volume_from_height=lambda height: round(height * 10.0, 1),
+        compute_height_from_volume=lambda volume: volume / 10.0,
+      )
+      for i in range(2)
+    ]
+    for i, tube in enumerate(tubes):
+      self.deck.assign_child_resource(tube, location=Coordinate(600, 100 + 9 * i, 100))
+    self.pipettes.probe_liquid_heights = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      return_value=[12.5, 0.0]
+    )
+    self.assertEqual(await self.pipettes.probe_liquid_volumes(tubes), [125.0, 0.0])
+
+  async def test_volumes_refuse_a_container_without_the_function(self):
+    with self.assertRaises(ValueError):
+      await self.pipettes.probe_liquid_volumes(self._wells("A1"))
+    self.assertEqual(self.sent, [])
+
+
 class TestBatchPlanning(unittest.IsolatedAsyncioTestCase):
   """A v1 device plans with `pylabrobot.lib.liquid_handling`, from its own minimum channel spacing."""
 

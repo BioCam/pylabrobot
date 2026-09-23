@@ -2836,6 +2836,55 @@ class Pipettes:
       )
     return above_bottom
 
+  async def probe_liquid_volumes(
+    self,
+    containers: Sequence[Container],
+    use_channels: Optional[List[int]] = None,
+    resource_offsets: Optional[List[Coordinate]] = None,
+    lld_mode: Union["Pipettes.LLDMode", Sequence["Pipettes.LLDMode"], None] = None,
+    search_speed: float = 10.0,
+    n_replicates: int = 1,
+    *,
+    minimum_traverse_height_start: Optional[float] = None,
+    minimum_traverse_height_during: Optional[float] = None,
+    minimum_traverse_height_end: Optional[float] = None,
+    x_grouping_tolerance: Optional[float] = None,
+  ) -> List[float]:
+    """Find the liquid in each container as `probe_liquid_heights` does, and say how much there is.
+
+    Each container's own geometry turns the height into a volume, so every container has to know
+    its height-to-volume function.
+
+    Args:
+      As `probe_liquid_heights`.
+
+    Returns:
+      The volume in each container, in uL, in the order given; what its function makes of a
+      height of 0.0 where no liquid was met.
+
+    Raises:
+      ValueError: If a container has no height-to-volume function, or as `probe_liquid_heights`.
+      RuntimeError: As `probe_liquid_heights`.
+    """
+    without = [c.name for c in containers if not c.supports_compute_height_volume_functions()]
+    if without:
+      raise ValueError(f"no height-to-volume function for {without}")
+    heights = await self.probe_liquid_heights(
+      containers,
+      use_channels,
+      resource_offsets,
+      lld_mode,
+      search_speed,
+      n_replicates,
+      minimum_traverse_height_start=minimum_traverse_height_start,
+      minimum_traverse_height_during=minimum_traverse_height_during,
+      minimum_traverse_height_end=minimum_traverse_height_end,
+      x_grouping_tolerance=x_grouping_tolerance,
+    )
+    return [
+      container.compute_volume_from_height(height) for container, height in zip(containers, heights)
+    ]
+
   # TODO: _unchecked_fw_ vs tip-presence-guarded versions
 
   # ----------------------------------------
