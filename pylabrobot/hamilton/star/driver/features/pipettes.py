@@ -1798,6 +1798,33 @@ class Pipettes:
       # has to be read for the same reason.
       await self._record_where_they_stopped("y")
 
+  # -- what the model has on each channel --------------------------------------------------------
+
+  def shaft(self, channel: int) -> Optional[TipMountingShaft]:
+    """The mounting shaft modelling a channel, or None while nothing models it.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+    """
+    if channel >= len(self.resources):
+      return None
+    return next(
+      (child for child in self.resources[channel].children if isinstance(child, TipMountingShaft)),
+      None,
+    )
+
+  def get_mounted_tip(self, channel: int) -> Optional[Tip]:
+    """The tip the model has on a channel, or None if it carries none.
+
+    What the model says, not what the device senses: `sense_tip_presence` asks the channels.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+    """
+    shaft = self.shaft(channel)
+    tip = shaft.tip if shaft is not None else None
+    return tip if isinstance(tip, Tip) else None
+
   # ----------------------------------------
   # Probing
   # ----------------------------------------
@@ -2357,7 +2384,7 @@ class Pipettes:
     search_speed: float = 10.0,
     acceleration: float = 800.0,
     z_current_limit: Optional[int] = None,
-    tip_has_filter: bool = False,
+    tip_has_filter: Optional[bool] = None,
     dispensing_speed: float = 5.0,
     dispensing_acceleration: float = 0.2,
     dispensing_max_speed: float = 14.5,
@@ -2394,7 +2421,8 @@ class Pipettes:
       search_speed: in mm/s.
       acceleration: in mm/s2.
       z_current_limit: Z drive current limit, 0 to 7. `default_z_current_limit` when None.
-      tip_has_filter: whether the tip has a filter.
+      tip_has_filter: whether the tip has a filter. What the model says of the mounted tip when
+        None, and no filter if the model has none.
       dispensing_speed: of the dispensing drive during the search, in mm/s.
       dispensing_acceleration: in mm/s2.
       dispensing_max_speed: in mm/s.
@@ -2430,6 +2458,9 @@ class Pipettes:
       raise ValueError(f"post_detection_trajectory must be 0 or 1, is {post_detection_trajectory}")
     if z_current_limit is None:
       z_current_limit = self.default_z_current_limit
+    if tip_has_filter is None:
+      tip = self.get_mounted_tip(channel)
+      tip_has_filter = tip is not None and tip.has_filter
     end = c.z_drive_mm_to_increments(end_position)
     start = c.z_drive_mm_to_increments(start_position)
     approach = c.z_drive_mm_to_increments(approach_speed)
@@ -2523,6 +2554,75 @@ class Pipettes:
     )
     wanted = 2 if mode == self.PressureLLDMode.FOAM else 1
     return [c.z_drive_increments_to_mm(increments) for increments in found[:wanted]]
+
+  async def probe_z_using_plld(
+    self,
+    channel_idx: int,
+    *,
+    search_end_position: float = 99.98,
+    search_start_position: Optional[float] = None,
+    mode: Optional["Pipettes.PressureLLDMode"] = None,
+    move_channels_to_safe_pos_after: bool = False,
+    **search: Any,
+  ) -> Optional[List[float]]:
+    """Lower a channel's tip until the pressure says it met the liquid, and say how high that is.
+
+    The pressure counterpart of `probe_z_using_clld`: a tip sensed on, the overhang measured, the
+    window in tip bottom terms, then the search. Every other setting of the search, speeds,
+    thresholds, the capacitive verification, foam and dispense-back, is passed on to
+    `_plld_search` by name and takes its default there.
+
+    Args:
+      channel_idx: which channel, 0-indexed from the back.
+      search_end_position: lowest tip bottom height, in mm.
+      search_start_position: tip bottom height to search from, in mm. As high as the tip goes
+        when None.
+      mode: what the search stops at. The liquid when None.
+      move_channels_to_safe_pos_after: whether to raise every channel to Z safety afterwards.
+      search: the rest of `_plld_search`'s settings, by name.
+
+    Returns:
+      The tip bottom heights detected, in mm: the liquid's, or in foam mode the foam's and then
+      the liquid's. None if the search found nothing.
+
+    Raises:
+      RuntimeError: If the channel carries no tip.
+      ValueError: If an argument is out of range.
+    """
+    self._require_channel(channel_idx)
+    if not (await self.sense_tip_presence())[channel_idx]:
+      raise RuntimeError(f"no tip mounted on channel {channel_idx}")
+    c = self.configuration
+    lowest, highest = (c.z_drive_increments_to_mm(i) for i in c.z_range_increments)
+    overhang = round(await self.request_tip_overhang(channel_idx), 1)
+    top = highest - overhang
+    if search_start_position is None:
+      search_start_position = top
+    if search_end_position < lowest:
+      raise ValueError(
+        f"search_end_position must be at least {lowest} mm, is {search_end_position}"
+      )
+    if not search_end_position <= search_start_position <= top:
+      raise ValueError(
+        f"search_start_position must be between {search_end_position} and {top} mm, "
+        f"is {search_start_position}"
+      )
+    try:
+      detected = await self._plld_search(
+        channel_idx,
+        search_end_position + overhang,
+        round(search_start_position + overhang, 2),
+        mode=mode,
+        **search,
+      )
+    except STARFirmwareError as error:
+      await self.move_to_safe_z()
+      if not self._found_nothing(error, self.channel_id(channel_idx)):
+        raise
+      return None
+    if move_channels_to_safe_pos_after:
+      await self.move_to_safe_z()
+    return [round(stop_disc - overhang, 2) for stop_disc in detected]
 
   async def _unchecked_fw_probe_z_using_ztouch(
     self,
@@ -3325,31 +3425,6 @@ class Pipettes:
   # ----------------------------------------
 
   # -- ? --------------------------------------------------
-
-  def shaft(self, channel: int) -> Optional[TipMountingShaft]:
-    """The mounting shaft modelling a channel, or None while nothing models it.
-
-    Args:
-      channel: which channel, 0-indexed from the back.
-    """
-    if channel >= len(self.resources):
-      return None
-    return next(
-      (child for child in self.resources[channel].children if isinstance(child, TipMountingShaft)),
-      None,
-    )
-
-  def get_mounted_tip(self, channel: int) -> Optional[Tip]:
-    """The tip the model has on a channel, or None if it carries none.
-
-    What the model says, not what the device senses: `sense_tip_presence` asks the channels.
-
-    Args:
-      channel: which channel, 0-indexed from the back.
-    """
-    shaft = self.shaft(channel)
-    tip = shaft.tip if shaft is not None else None
-    return tip if isinstance(tip, Tip) else None
 
   def _release_modelled_tip(self, channel: int) -> Optional[Tip]:
     """Take a channel's tip off its shaft in the model, leaving it assigned to nothing.

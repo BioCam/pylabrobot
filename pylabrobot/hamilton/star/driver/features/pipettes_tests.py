@@ -663,6 +663,36 @@ class TestCLLDProbing(unittest.IsolatedAsyncioTestCase):
     self.moves.assert_awaited_once()
     self.assertNotIn("C0RL", self.sent)
 
+  async def test_pressure_probe_searches_from_the_top_and_answers_the_tip_bottom(self):
+    self._mount_a_tip(51.9)
+    answer = self.pipettes._driver.send_command
+
+    async def recorded(module: str, command: str, **kwargs: Any):
+      await answer(module=module, command=command, **kwargs)
+      return {"if": [22964, 0]}
+
+    self.pipettes._driver.send_command = recorded  # type: ignore[assignment]
+    self.pipettes.get_mounted_tip = unittest.mock.Mock(return_value=None)  # type: ignore[method-assign]
+    heights = await self.pipettes.probe_z_using_plld(1, search_speed=5.0)
+    end = self.pipettes.configuration.z_drive_mm_to_increments(99.98 + 51.9)
+    self.assertEqual(
+      self.sent,
+      [
+        f"P2ZEzh{end:05}zc31200zi0186zj1gf0gt0010gl0002gu0030gn0010gm0gz0466cj0co0030cp0030"
+        "cq0030cl00932cc0cd00000zv11186zl00466zr075zw3dl01829dr073dv05303dw3"
+      ],
+    )
+    stop_disc = self.pipettes.configuration.z_drive_increments_to_mm(22964)
+    self.assertEqual(heights, [round(stop_disc - 51.9, 2)])
+    self.moves.assert_not_awaited()
+
+  async def test_pressure_probe_that_finds_nothing_goes_to_safe_z_and_answers_none(self):
+    self._mount_a_tip(51.9)
+    self.pipettes.get_mounted_tip = unittest.mock.Mock(return_value=None)  # type: ignore[method-assign]
+    self._answer_the_search_with("ZE", "P2ZEid0001er70")
+    self.assertIsNone(await self.pipettes.probe_z_using_plld(1))
+    self.moves.assert_awaited_once()
+
   async def test_z_probe_raises_any_other_channel_error(self):
     self._mount_a_tip(51.9)
     self._answer_the_search_with("ZL", "P2ZLid0001er99")
@@ -888,6 +918,19 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
       "cq0030cl00932cc0cd00000zv11186zl00932zr075zw3dl01829dr073dv05303dw3",
     )
     self.assertTrue(self.sent[1].startswith("P2ZL"))
+
+  async def test_the_filter_flag_comes_from_the_mounted_tip(self):
+    from pylabrobot.resources.hamilton import hamilton_tip_300uL_filter
+
+    filtered = hamilton_tip_300uL_filter("filtered")
+    self.pipettes.get_mounted_tip = unittest.mock.Mock(  # type: ignore[method-assign]
+      side_effect=lambda channel: filtered if channel == 0 else None
+    )
+    await self.pipettes.probe_liquid_heights(
+      self._wells("A1", "B1"), lld_mode=self.pipettes.LLDMode.PRESSURE
+    )
+    self.assertIn("gf1", self.sent[0])
+    self.assertIn("gf0", self.sent[1])
 
   async def test_an_off_mode_is_refused_before_anything_moves(self):
     with self.assertRaises(ValueError):
