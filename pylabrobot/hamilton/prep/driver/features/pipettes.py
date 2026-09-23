@@ -119,14 +119,32 @@ def default_lld_params(
   effective_lld: bool,
   p_lld: Optional[PrepCmd.PLldParameters] = None,
   c_lld: Optional[PrepCmd.CLldParameters] = None,
+  *,
+  lld_mode: Optional[Pipettes.LLDMode] = None,
 ) -> Pipettes._LldDefaults:
   """Build resolved pLLD / cLLD defaults.
 
   When LLD is active and no caller override is given, returns non-default
   parameters (``default_values=False``) so the firmware actually triggers
-  detection.  Otherwise returns firmware defaults.
+  detection. Capacitive-only seeks leave the pressure block at firmware
+  defaults so the dispenser is not started at speed 0. Otherwise returns
+  firmware defaults.
+
+  Args:
+    effective_lld: Whether this call uses any LLD seek.
+    p_lld: Caller override for pressure LLD parameters.
+    c_lld: Caller override for capacitive LLD parameters.
+    lld_mode: Which LLD mode the call resolved to. ``CAPACITIVE`` keeps pLLD
+      on firmware defaults unless ``p_lld`` is set.
   """
-  if effective_lld:
+  if not effective_lld:
+    resolved_p = p_lld or PrepCmd.PLldParameters.default()
+    resolved_c = c_lld or PrepCmd.CLldParameters.default()
+    return Pipettes._LldDefaults(p_lld=resolved_p, c_lld=resolved_c)
+
+  if lld_mode == Pipettes.LLDMode.CAPACITIVE:
+    resolved_p = p_lld or PrepCmd.PLldParameters.default()
+  else:
     resolved_p = p_lld or PrepCmd.PLldParameters(
       default_values=False,
       sensitivity=1,
@@ -134,16 +152,13 @@ def default_lld_params(
       lld_height_difference=0.0,
       detect_mode=0,
     )
-    resolved_c = c_lld or PrepCmd.CLldParameters(
-      default_values=False,
-      sensitivity=4,
-      clot_check_enable=False,
-      z_clot_check=0.0,
-      detect_mode=0,
-    )
-  else:
-    resolved_p = p_lld or PrepCmd.PLldParameters.default()
-    resolved_c = c_lld or PrepCmd.CLldParameters.default()
+  resolved_c = c_lld or PrepCmd.CLldParameters(
+    default_values=False,
+    sensitivity=3,
+    clot_check_enable=False,
+    z_clot_check=0.0,
+    detect_mode=0,
+  )
   return Pipettes._LldDefaults(p_lld=resolved_p, c_lld=resolved_c)
 
 
@@ -242,17 +257,42 @@ def resolve_command_version(
   return supports_v2 is True
 
 
+# LLD command read-timeout budget (shared by head8 and pipettes).
+# Floor matches PrepDriver.default_read_timeout so LLD never undercuts a
+# non-LLD command. Pad covers XY approach, settle, and dual-channel work
+# that is not in the vertical seek alone.
+LLD_READ_TIMEOUT_PAD_S: float = 30.0
+LLD_READ_TIMEOUT_FLOOR_S: float = 60.0
+
+
 def lld_seek_timeout(
   lld_params: PrepCmd.LldParameters,
   z_minimum: float,
+  *,
+  approach_from_z: Optional[float] = None,
 ) -> Optional[float]:
-  """Compute a read timeout (s) for an LLD seek move, or None if not applicable."""
-  if lld_params.channel_speed > 0:
-    speed: float = float(lld_params.channel_speed)
-    seek_distance: float = float(lld_params.search_start_position) - z_minimum
-    if seek_distance > 0:
-      return seek_distance / speed + 5.0
-  return None
+  """Read timeout (s) for an LLD aspirate/dispense, or None if not applicable.
+
+  Both head8 and pipettes use this same budget:
+
+  1. **Travel** — vertical distance from ``approach_from_z`` (or the seek
+     start when omitted) down to ``z_minimum``, timed at ``channel_speed``.
+     Using seek speed for the whole descent is a deliberate overestimate;
+     the real approach is faster.
+  2. **Pad** — ``LLD_READ_TIMEOUT_PAD_S`` for XY, settle, and dual-channel
+     work outside that Z travel.
+  3. **Floor** — at least ``LLD_READ_TIMEOUT_FLOOR_S`` so a shallow well
+     cannot produce a shorter wait than a non-LLD command.
+  """
+  if lld_params.channel_speed <= 0:
+    return None
+  speed: float = float(lld_params.channel_speed)
+  search_start: float = float(lld_params.search_start_position)
+  top: float = search_start if approach_from_z is None else max(search_start, float(approach_from_z))
+  distance: float = top - float(z_minimum)
+  if distance <= 0:
+    return None
+  return max(distance / speed + LLD_READ_TIMEOUT_PAD_S, LLD_READ_TIMEOUT_FLOOR_S)
 
 
 def _effective_radius(resource) -> float:
@@ -3791,8 +3831,22 @@ class Pipettes:
     effective_lld: bool,
     p_lld: Optional[PrepCmd.PLldParameters] = None,
     c_lld: Optional[PrepCmd.CLldParameters] = None,
+    *,
+    lld_mode: Optional[Pipettes.LLDMode] = None,
   ) -> Pipettes._LldDefaults:
-    return default_lld_params(effective_lld, p_lld, c_lld)
+    return default_lld_params(effective_lld, p_lld, c_lld, lld_mode=lld_mode)
+
+  @staticmethod
+  def _single_lld_mode(
+    lld_mode: Optional[Sequence[Pipettes.LLDMode]],
+  ) -> Optional[Pipettes.LLDMode]:
+    """The non-OFF mode from a per-channel list, or OFF / None when none apply."""
+    if lld_mode is None:
+      return None
+    for mode in lld_mode:
+      if mode != Pipettes.LLDMode.OFF:
+        return mode
+    return Pipettes.LLDMode.OFF
 
   @staticmethod
   def _lld_for_well(
@@ -3910,6 +3964,7 @@ class Pipettes:
     auto_container_geometry: bool = False,
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
     disable_volume_correction: Optional[List[bool]] = None,
+    lld_mode: Optional[Pipettes.LLDMode] = None,
   ) -> list[_AspirateChannelKit]:
     """Resolve all per-channel values for aspirate (pure computation, no I/O)."""
     ctx = self._resolve_channel_context(
@@ -3951,7 +4006,7 @@ class Pipettes:
       for op, hlc in zip(ops, hlcs)
     ]
 
-    lld_defaults = self._default_lld_params(effective_lld, p_lld, c_lld)
+    lld_defaults = self._default_lld_params(effective_lld, p_lld, c_lld, lld_mode=lld_mode)
     _tadm = tadm or PrepCmd.TadmParameters.default()
 
     kits: list[_AspirateChannelKit] = []
@@ -4166,6 +4221,7 @@ class Pipettes:
     auto_container_geometry: bool = False,
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
     disable_volume_correction: Optional[List[bool]] = None,
+    lld_mode: Optional[Pipettes.LLDMode] = None,
   ) -> list[_DispenseChannelKit]:
     """Resolve all per-channel values for dispense (pure computation, no I/O)."""
     ctx = self._resolve_channel_context(
@@ -4205,7 +4261,7 @@ class Pipettes:
       for op, hlc in zip(ops, hlcs)
     ]
 
-    lld_defaults = self._default_lld_params(effective_lld, c_lld=c_lld)
+    lld_defaults = self._default_lld_params(effective_lld, c_lld=c_lld, lld_mode=lld_mode)
 
     kits: list[_DispenseChannelKit] = []
     for ch in range(self.num_channels):
@@ -4442,12 +4498,17 @@ class Pipettes:
       auto_container_geometry=auto_container_geometry,
       hamilton_liquid_classes=hamilton_liquid_classes,
       disable_volume_correction=disable_volume_correction,
+      lld_mode=self._single_lld_mode(lld_mode),
     )
 
     lld_read_timeout = read_timeout
     if lld_read_timeout is None and effective_lld and kits:
       min_z_min = min(k.common.z_minimum for k in kits)
-      lld_read_timeout = lld_seek_timeout(kits[0].lld, min_z_min)
+      lld_read_timeout = lld_seek_timeout(
+        kits[0].lld,
+        min_z_min,
+        approach_from_z=self.default_minimum_traverse_height,
+      )
 
     volume_intents = [
       VolumeTransferIntent(
@@ -4548,12 +4609,17 @@ class Pipettes:
       auto_container_geometry=auto_container_geometry,
       hamilton_liquid_classes=hamilton_liquid_classes,
       disable_volume_correction=disable_volume_correction,
+      lld_mode=self._single_lld_mode(lld_mode),
     )
 
     lld_read_timeout = read_timeout
     if lld_read_timeout is None and effective_lld and kits:
       min_z_min = min(k.common.z_minimum for k in kits)
-      lld_read_timeout = lld_seek_timeout(kits[0].lld, min_z_min)
+      lld_read_timeout = lld_seek_timeout(
+        kits[0].lld,
+        min_z_min,
+        approach_from_z=self.default_minimum_traverse_height,
+      )
 
     volume_intents = [
       VolumeTransferIntent(
