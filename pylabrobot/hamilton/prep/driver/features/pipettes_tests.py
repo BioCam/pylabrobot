@@ -1970,9 +1970,9 @@ def test_setup_discards_tips_it_finds_on_both_channels():
     await p.setup()
     assert p.pipettes is not None
     shafts = [p.pipettes.shaft(ch) for ch in range(2)]
-    assert all(shaft is not None for shaft in shafts)
     await p.stop()
     for ch, shaft in enumerate(shafts):
+      assert shaft is not None
       shaft.mount_tip(hamilton_tip_50uL(name=f"left on {ch}"))
 
     sent = _record(p)
