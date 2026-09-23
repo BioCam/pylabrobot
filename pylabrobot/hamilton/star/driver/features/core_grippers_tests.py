@@ -376,6 +376,24 @@ class TestResourceByResource(unittest.IsolatedAsyncioTestCase):
     await self.grippers.pick_up_resource(self.plate, pickup_distance_from_top=12.0)
     self.assertEqual(len(self.sent), 1)
 
+  async def test_the_grip_line_is_checked_against_its_own_reach(self):
+    await self.grippers.pick_up_tools()
+    pipettes = self.grippers._pipettes
+    low, high = pipettes.configuration.z_range
+    # The tool's grip line is 22 mm below the stop disc and 2 mm above the tool's bottom.
+    pipettes.configuration.z_range = (low, 196.4 + 22.0 - 0.5)
+    with self.assertRaisesRegex(ValueError, "grip line reaches"):
+      await self.grippers.pick_up_resource(
+        self.plate, minimum_traverse_height_start=210.0, minimum_traverse_height_end=210.0
+      )
+    pipettes.configuration.z_range = (196.4 - 2.0 + 0.5, high)
+    with self.assertRaisesRegex(ValueError, "grip line reaches"):
+      await self.grippers.pick_up_resource(self.plate)
+    self.assertEqual(self.sent, [])
+    pipettes.configuration.z_range = (low, high)
+    await self.grippers.pick_up_resource(self.plate)
+    self.assertEqual(len(self.sent), 1)
+
   async def test_out_of_range_arguments_send_nothing(self):
     await self.grippers.pick_up_tools()
     for kwargs in ({"grip_strength": 100}, {"squeeze_mm": 50.0}, {"z_speed": 0.0}):

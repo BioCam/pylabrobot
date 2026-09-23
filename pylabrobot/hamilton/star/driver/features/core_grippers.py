@@ -13,7 +13,10 @@ from pylabrobot.lib.spatial.occupancy import get_resource_at_location
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.deck import Deck
 from pylabrobot.resources.errors import HasTipError
-from pylabrobot.resources.hamilton.core_gripper_tools import HamiltonCoreGripperTool
+from pylabrobot.resources.hamilton.core_gripper_tools import (
+  HamiltonCoreGripperTool,
+  hamilton_core_gripper_tool,
+)
 from pylabrobot.resources.hamilton.core_grippers import HamiltonCoreGrippers
 from pylabrobot.resources.head_tool import HeadTool
 from pylabrobot.resources.resource import Resource
@@ -727,15 +730,28 @@ class CoreGrippers:
   ) -> None:
     """Raise unless a pick-up or drop at `xyz` stays within the channels' reach and drive windows.
 
+    `xyz.z` is the jaws' grip line, which rides below the stop disc by the tool's length outside
+    the channel: it reaches the stop discs' window shifted down by that, and no lower than the
+    tool's bottom on the deck. The traverse heights are the channels' own.
+
     Raises:
       ValueError: If a position, height, speed or acceleration is out of range.
     """
     pipettes = self._pipettes
     pipettes._check_reachable("x", xyz.x)
     pipettes._check_reachable("y", xyz.y)
-    for z in (xyz.z, *traverse_heights):
+    for z in traverse_heights:
       pipettes._check_reachable("z", z)
     c = pipettes.configuration
+    front = self._front_tool()
+    tool = front if isinstance(front, HamiltonCoreGripperTool) else hamilton_core_gripper_tool("_")
+    below_stop_disc = tool.get_size_z() - tool.fitting_depth - tool.grip_line_height
+    lowest = round(c.z_range[0] + tool.grip_line_height, 2)
+    highest = round(c.z_range[1] - below_stop_disc, 2)
+    if not lowest <= xyz.z <= highest:
+      raise ValueError(
+        f"the grip line reaches {lowest} to {highest} mm with the tools on, not {xyz.z}"
+      )
     for checked, (low, high), name in (
       (z_speed, c.z_speed_range, "z_speed"),
       (z_acceleration, c.z_acceleration_range, "z_acceleration"),
