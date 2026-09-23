@@ -176,6 +176,22 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       # worked out again. Forgetting that is what left a 96-head standing still while its arm swept.
       self.assertEqual(await self.world_x(browser, "rider"), 720)
 
+  async def test_a_quality_level_changes_the_pixel_ratio_and_the_lighting(self):
+    """The page steps quality down on its own when frames are slow; the levels are driven here."""
+    async with Browser(CDP_PORT + 2) as browser:
+      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
+      await browser.settle("window.plrViewer && window.plrViewer.resources().length > 0")
+      full = await browser.evaluate("window.plrViewer.quality()")
+      self.assertEqual(full["level"], 0)
+      self.assertTrue(full["environment"])
+      lowest = await browser.evaluate("window.plrViewer.quality(2)")
+      self.assertEqual(
+        (lowest["level"], lowest["pixelRatio"], lowest["environment"]), (2, 1, False)
+      )
+      back = await browser.evaluate("window.plrViewer.quality(0)")
+      self.assertEqual((back["level"], back["environment"]), (0, True))
+      self.assertEqual(back["pixelRatio"], full["pixelRatio"])
+
   @staticmethod
   async def settled_model_count(browser, quiet: float = 0.4, limit: float = 10.0):
     """How many models are drawn, once no more of them are arriving."""

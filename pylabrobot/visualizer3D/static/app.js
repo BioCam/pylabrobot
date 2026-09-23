@@ -62,6 +62,12 @@ import {
   MOVING_PARTS,
   NO_REFERENCE_MARK,
   PICKABLE_PARTS,
+  QUALITY_FAST_MS,
+  QUALITY_HOLD_MS,
+  QUALITY_LEVELS,
+  QUALITY_RECOVER_MS,
+  QUALITY_SETTLE_MS,
+  QUALITY_SLOW_MS,
   REFERENCE_DROP,
   REFERENCE_LINE,
   REFERENCE_WIDTH,
@@ -298,6 +304,8 @@ try {
   const pmrem = new THREE.PMREMGenerator(renderer);
   view.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
   view.environmentIntensity = 0.45;
+  // Kept, so a quality level that takes the lighting away can give it back.
+  view.userData.roomEnvironment = view.environment;
   pmrem.dispose();
 } catch (error) {
   console.warn("no environment map; metal surfaces will look flat", error);
@@ -3984,6 +3992,16 @@ function atBoundary(surface) {
   origins: (on = true) => setOriginDots(on),
   // What the toolbar's halos button does, for the same reason.
   halos: (on = true) => setHalos(on),
+  // The quality level, set when given, for a test that has no slow machine to hand.
+  quality: (level) => {
+    if (level !== undefined) applyQuality(level);
+    return {
+      level: quality,
+      pixelRatio: renderer.getPixelRatio(),
+      environment: view.environment !== null,
+      pinned: qualityPinned,
+    };
+  },
   // Renders `frames` frames back to back and reports what each one cost. The viewer only draws
   // when something changes, so the cost of a frame is otherwise not observable from outside.
   benchmark: (frames = 120) => {
@@ -4093,7 +4111,8 @@ function drawStats(rate) {
     `models <b>${stats.models ?? 0}</b>   ` +
     `draws <b>${lastDrawCalls}</b>   ` +
     `${renderer.backend?.isWebGPUBackend ? "WebGPU" : "WebGL2"}   ` +
-    `<b>${rate}</b>\n` +
+    `<b>${rate}</b>` +
+    `${quality > 0 ? `   quality <b>${quality === 1 ? "low" : "lowest"}</b>` : ""}\n` +
     `tree JSON ${((stats.legacy_bytes ?? 0) / 1024).toFixed(1)} kB  ` +
     `→ this scene <b>${((stats.scene_bytes ?? 0) / 1024).toFixed(1)} kB</b> (${stats.ratio ?? 0}×)`;
   // Writing the same markup back forces layout and paint for nothing, twice a second, forever.
@@ -4498,6 +4517,7 @@ function sayHello() {
         backend: webgpu ? "WebGPU" : "WebGL2",
         renderer: webgpu ? null : probe.renderer,
         software: webgpu ? false : !!probe.software,
+        quality,
         userAgent: navigator.userAgent,
       },
     }),
@@ -4673,6 +4693,57 @@ setInterval(reportIdle, 500);
 // above reads: a slow frame is a machine that cannot answer every pointer sample.
 let lastFrameMs = 0;
 
+// ---------------------------------------------------------------- adaptive quality
+
+// The page steps its own cost down while frames are slow and back up once they are fast, so a
+// machine that cannot draw the scene at full quality still draws it at a usable rate without
+// anyone naming its renderer. `?quality=high` or `?quality=low` pins a level instead.
+const qualityPinned = new URLSearchParams(location.search).get("quality");
+let quality = qualityPinned === "low" ? QUALITY_LEVELS - 1 : 0;
+let frameCostAverage = 0;
+let slowSince = null;
+let fastSince = null;
+const demotedAt = new Map(); // level -> when it was last found too slow
+
+function applyQuality(level) {
+  quality = Math.max(0, Math.min(QUALITY_LEVELS - 1, level));
+  renderer.setPixelRatio(quality >= 1 ? 1 : Math.min(window.devicePixelRatio, 2));
+  // The drawing buffer follows the pixel ratio only through setSize.
+  renderer.setSize(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+  view.environment = quality >= 2 ? null : (view.userData.roomEnvironment ?? null);
+}
+
+// Read after each drawn frame. Down after slow frames have settled, up after fast ones have, and
+// never back into a level found slow within QUALITY_HOLD_MS.
+function adaptQuality(frameMs) {
+  if (qualityPinned !== null) return;
+  frameCostAverage = frameCostAverage === 0 ? frameMs : frameCostAverage * 0.9 + frameMs * 0.1;
+  const now = performance.now();
+  if (frameCostAverage > QUALITY_SLOW_MS) {
+    fastSince = null;
+    slowSince ??= now;
+    if (now - slowSince >= QUALITY_SETTLE_MS && quality < QUALITY_LEVELS - 1) {
+      demotedAt.set(quality, now);
+      applyQuality(quality + 1);
+      slowSince = null;
+      frameCostAverage = 0;
+    }
+  } else if (frameCostAverage < QUALITY_FAST_MS) {
+    slowSince = null;
+    fastSince ??= now;
+    const above = quality - 1;
+    const heldBack = above >= 0 && now - (demotedAt.get(above) ?? -Infinity) < QUALITY_HOLD_MS;
+    if (now - fastSince >= QUALITY_RECOVER_MS && above >= 0 && !heldBack) {
+      applyQuality(above);
+      fastSince = null;
+      frameCostAverage = 0;
+    }
+  } else {
+    slowSince = null;
+    fastSince = null;
+  }
+}
+
 function drawFrame() {
   const frameStarted = performance.now();
   const delta = clock.getDelta();
@@ -4724,6 +4795,7 @@ function drawFrame() {
 
   renderer.render(view, camera);
   lastFrameMs = performance.now() - frameStarted;
+  adaptQuality(lastFrameMs);
   if (viewHelper) {
     // The helper renders a second pass into a corner of the same canvas. Without turning auto-clear
     // off it clears the colour buffer for that corner first, leaving a blank patch over the scene.
@@ -4740,4 +4812,5 @@ buildViewHelper();
 refreshToolUI();
 showPane("tree");
 resize();
+if (quality > 0) applyQuality(quality);
 connect();

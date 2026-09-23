@@ -252,3 +252,16 @@ export const HALO_INK = "#1f2529";
 // holds a tip, a tint of the green a full spot is drawn in. The change is meant to be seen from
 // across the deck, so it is the whole disc and not only the coin at its centre.
 export const HALO_TIPPED_BACKGROUND = "#b9edd9";
+
+// Adaptive quality: the page steps its own cost down while frames are slow and back up once they
+// are fast again, averaged over drawn frames. A step down after QUALITY_SETTLE_MS of slow frames,
+// a step up after QUALITY_RECOVER_MS of fast ones, and a level found slow is not returned to for
+// QUALITY_HOLD_MS, so a machine slow at full and fast at low does not swing between the two.
+export const QUALITY_SLOW_MS = 33;
+export const QUALITY_FAST_MS = 12;
+export const QUALITY_SETTLE_MS = 1000;
+export const QUALITY_RECOVER_MS = 4000;
+export const QUALITY_HOLD_MS = 60000;
+// The levels: 0 draws everything as set up, 1 drops the pixel ratio to one, 2 also drops the
+// environment lighting. Antialiasing is fixed when the renderer is made, so it is not a level.
+export const QUALITY_LEVELS = 3;
