@@ -1295,7 +1295,7 @@ class SimulatedAutoload(_Simulated, Autoload):
     await self.recorded("C0", "CT", subsystem="I0", cp=f"{track:02}")
     return False
 
-  async def move_x(
+  async def move_to_x_position(
     self,
     x: float,
     speed: Optional[float] = None,
@@ -1305,7 +1305,7 @@ class SimulatedAutoload(_Simulated, Autoload):
     # A simulated drive goes exactly where it is told. The real one is read back afterwards, which
     # is what `Autoload` relies on, so the position has to be true here before that read happens or
     # the read returns the position the sled started at and it never moves.
-    resp = await super().move_x(
+    resp = await super().move_to_x_position(
       x, speed=speed, acceleration_ramp=acceleration_ramp, current_limit=current_limit
     )
     self.update_location_by_reference_point(x)
@@ -1330,8 +1330,8 @@ class SimulatedAutoload(_Simulated, Autoload):
     self.device.initialized["I0"] = True
 
   async def move_to_track(self, track: int, *args, **kwargs):
-    # As `move_x` records where a position move put the sled, so this records where a track move
-    # did. The deck is what knows where a track is.
+    # As `move_to_x_position` records where a position move put the sled, so this records where a
+    # track move did. The deck is what knows where a track is.
     await super().move_to_track(track, *args, **kwargs)
     # A simulated device is built with a deck or refuses to be built at all, so there is one.
     deck = cast(HamiltonDeck, self.device.deck)
