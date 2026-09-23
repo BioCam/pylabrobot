@@ -903,6 +903,32 @@ function buildReferenceMarks() {
   }
 }
 
+/**
+ * The opening in a moving part's frame, in the part's own frame: left, right, front, back in mm.
+ *
+ * Declared by the part when it knows its own geometry. A declared width is centred on the part
+ * unless the part also says how far its right edge sits from the end, which is the case for an
+ * opening that is deliberately off-centre.
+ */
+function armWindow(model) {
+  const [sx, sy] = sizeOf(model);
+  const window = model.window ?? {};
+  const insetY = window.inset_y ?? ARM_INSET_Y;
+  let left;
+  let right;
+  if (window.width === undefined) {
+    left = ARM_INSET_X;
+    right = sx - ARM_INSET_X;
+  } else if (window.right_margin === undefined) {
+    left = (sx - window.width) / 2;
+    right = left + window.width;
+  } else {
+    right = sx - window.right_margin;
+    left = right - window.width;
+  }
+  return [left, right, insetY, sy - insetY];
+}
+
 function buildArms() {
   for (const arm of arms) view.remove(arm.group);
   disposeOwned(buildArms);
@@ -921,30 +947,13 @@ function buildArms() {
     shape.lineTo(sx, sy);
     shape.lineTo(0, sy);
     shape.closePath();
-    // The opening is declared by the part when it knows its own geometry. A declared width is
-    // centred on the part unless the part also says how far its right edge sits from the end,
-    // which is the case for an opening that is deliberately off-centre.
-    const window = model.window ?? {};
-    const insetY = window.inset_y ?? ARM_INSET_Y;
-    let holeLeft;
-    let holeRight;
-    if (window.width === undefined) {
-      holeLeft = ARM_INSET_X;
-      holeRight = sx - ARM_INSET_X;
-    } else if (window.right_margin === undefined) {
-      holeLeft = (sx - window.width) / 2;
-      holeRight = holeLeft + window.width;
-    } else {
-      holeRight = sx - window.right_margin;
-      holeLeft = holeRight - window.width;
-    }
-    const innerH = sy - 2 * insetY;
-    if (holeRight > holeLeft && innerH > 0) {
+    const [holeLeft, holeRight, holeFront, holeBack] = armWindow(model);
+    if (holeRight > holeLeft && holeBack > holeFront) {
       const hole = new THREE.Path();
-      hole.moveTo(holeLeft, insetY);
-      hole.lineTo(holeLeft, sy - insetY);
-      hole.lineTo(holeRight, sy - insetY);
-      hole.lineTo(holeRight, insetY);
+      hole.moveTo(holeLeft, holeFront);
+      hole.lineTo(holeLeft, holeBack);
+      hole.lineTo(holeRight, holeBack);
+      hole.lineTo(holeRight, holeFront);
       hole.closePath();
       shape.holes.push(hole);
     }
@@ -3427,13 +3436,33 @@ const raycaster = new THREE.Raycaster();
 const pointer = new THREE.Vector2();
 const readout = document.getElementById("hover-readout");
 
+const _hitLocal = new THREE.Vector3();
+const _hitInverse = new THREE.Matrix4();
+
+/**
+ * Whether a hit on a moving part lands in its window. The part's box is not drawn - its frame is,
+ * with an opening - so through the opening the pointer is on whatever stands below, not on the
+ * arm that happens to be parked over it.
+ */
+function throughWindow(index, point) {
+  const model = modelOf(index);
+  if (!MOVING_PARTS.has(model.category)) return false;
+  const [left, right, front, back] = armWindow(model);
+  _hitLocal.copy(point).applyMatrix4(_hitInverse.copy(world.matrices[index]).invert());
+  return _hitLocal.x > left && _hitLocal.x < right && _hitLocal.y > front && _hitLocal.y < back;
+}
+
 function pick(event) {
   const rect = renderer.domElement.getBoundingClientRect();
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
   const candidates = meshes.map((m) => m.mesh);
-  const hits = raycaster.intersectObjects(candidates, false);
+  const hits = raycaster.intersectObjects(candidates, false).filter((hit) => {
+    const instances = hit.object.userData.instances;
+    if (!instances || hit.instanceId === undefined) return false;
+    return !throughWindow(instances[hit.instanceId], hit.point);
+  });
   for (const hit of hits) {
     const instances = hit.object.userData.instances;
     if (instances && hit.instanceId !== undefined) {
@@ -3441,14 +3470,26 @@ function pick(event) {
       if (!isVisible(index)) continue;
       // Enclosures are translucent, so clicking through one to its contents is the useful
       // behaviour; take an enclosure only when nothing solid lies behind it. A part that always
-      // carries something - a pipetting channel and its shaft - is taken where it is clicked.
+      // carries something - a pipetting channel and its shaft - is taken where it is clicked, and
+      // so is a moving part's frame: its window is already looked through, so this is its rim.
+      const category = modelOf(index).category;
       const takesClick =
-        world.childrenOf[index].length === 0 || PICKABLE_PARTS.has(modelOf(index).category);
+        world.childrenOf[index].length === 0 ||
+        PICKABLE_PARTS.has(category) ||
+        MOVING_PARTS.has(category);
       if (takesClick || hits.length === 1) return { index };
     }
   }
-  const first = hits.find((h) => h.object.userData.instances && h.instanceId !== undefined);
-  return first ? { index: first.object.userData.instances[first.instanceId] } : null;
+  // Nothing along the ray is a leaf: the pointer is on a plate between its wells, or on a deck
+  // between its carriers. The deepest thing it passes through is the one it is over - never the
+  // bench or the arm that happens to enclose it, which the nearest hit would name.
+  let deepest = -1;
+  for (const hit of hits) {
+    const index = hit.object.userData.instances[hit.instanceId];
+    if (!isVisible(index)) continue;
+    if (deepest < 0 || treeDepth(index) > treeDepth(deepest)) deepest = index;
+  }
+  return deepest < 0 ? null : { index: deepest };
 }
 
 const coords = initCoords({ getWorld: () => world, referencePoint, escapeHtml });
@@ -3915,6 +3956,11 @@ function atBoundary(surface) {
   // is what stops it settling.
   stats: () => stats,
   resources: () => world?.names ?? [],
+  // What the pointer at a point of the page would be over, by name.
+  pickAt: (clientX, clientY) => {
+    const hit = world ? pick({ clientX, clientY }) : null;
+    return hit ? world.names[hit.index] : null;
+  },
   // Where a resource is drawn, in facility coordinates. The one thing a test outside the page
   // cannot work out for itself, because it is the product of the whole parent chain.
   worldOf: (name) => {
