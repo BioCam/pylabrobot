@@ -3104,9 +3104,10 @@ class Pipettes:
   ) -> Dict[int, List[Optional[float]]]:
     """Z-touch the floor of every container of one batch, the channels in a cascade, n times.
 
-    As `_probe_batch_liquid_heights` with the search swapped: each channel searches from
-    `search_start_clearance` above its container's top down to `below_floor` under its cavity
-    bottom, and answers where its stop disc stopped, so the height is the overhang below that.
+    As `_probe_batch_liquid_heights` with the search swapped: each channel searches from its
+    container's top down to `below_floor` under its cavity bottom, and answers where its stop
+    disc stopped, so the height is the overhang below that. There is no clearance above the top,
+    as a liquid search has: nothing above it can be met, and everything below it is searched.
     The channels go to their starts together first, one `C0 JZ`, so the cascade is the search
     itself: the searches set off `start_spacing` apart from there, the lowest channel number
     first, and run on together. A channel that reached its end, within `end_tolerance`, touched
@@ -3136,7 +3137,7 @@ class Pipettes:
     searches = []
     for channel, job in sorted(zip(batch.channels, batch.indices)):
       end = round(z_cavity_bottom[job] - below_floor + overhangs[channel], 2)
-      start = round(min(z_top[job] + overhangs[channel] + self.search_start_clearance, top), 2)
+      start = round(min(z_top[job] + overhangs[channel], top), 2)
       searches.append((channel, job, end, start))
     found: Dict[int, List[Optional[float]]] = {job: [] for job in batch.indices}
     for _ in range(n_replicates):
@@ -3188,7 +3189,7 @@ class Pipettes:
 
     `probe_liquid_heights` with the z-touch in place of the liquid search: the same cycles and
     batches, the same moves between them, the channels of a batch searching together, and the
-    same heights at the end. Each search goes from just above the container's top to `below_floor`
+    same heights at the end. Each search goes from the container's top down to `below_floor`
     under its modelled cavity bottom, and stops where the tip presses on something. The channels
     of a batch go to their starts together, then set off in a cascade, `start_spacing` apart from
     the back. Needs channel firmware from 2022 on.
