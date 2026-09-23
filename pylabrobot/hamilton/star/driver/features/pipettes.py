@@ -2723,6 +2723,119 @@ class Pipettes:
           found[job].append(heights[channel])
     return found
 
+  async def probe_liquid_heights(
+    self,
+    containers: Sequence[Container],
+    use_channels: Optional[List[int]] = None,
+    resource_offsets: Optional[List[Coordinate]] = None,
+    lld_mode: Union["Pipettes.LLDMode", Sequence["Pipettes.LLDMode"], None] = None,
+    search_speed: float = 10.0,
+    n_replicates: int = 1,
+    *,
+    minimum_traverse_height_start: Optional[float] = None,
+    minimum_traverse_height_during: Optional[float] = None,
+    minimum_traverse_height_end: Optional[float] = None,
+    x_grouping_tolerance: Optional[float] = None,
+  ) -> List[float]:
+    """Find the liquid surface in each container with a channel's tip, and say how high it stands.
+
+    The containers are planned into the fewest batches the channels can reach at once, and the
+    channels of a batch search together, capacitive (cLLD) or pressure (pLLD), from just above the
+    container's top down to its cavity bottom. Every channel used carries a tip, and every channel
+    is at Z safety at the end unless told where to stay.
+
+    Args:
+      containers: one per channel used.
+      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
+      resource_offsets: added to where each channel goes in its container, in mm. Planned when
+        None, spreading channels that share a container.
+      lld_mode: how to search, one for all or one per container. Capacitive when None.
+      search_speed: in mm/s.
+      n_replicates: how many times each container is searched; the heights are averaged.
+      minimum_traverse_height_start: the height every low channel's lowest point is raised to
+        before the first batch, in mm. Z safety when None.
+      minimum_traverse_height_during: the same, between batches. Z safety when None.
+      minimum_traverse_height_end: where the tips used are left, in mm. Z safety when None.
+      x_grouping_tolerance: containers within this X distance share a batch, in mm.
+        `default_x_grouping_tolerance` when None.
+
+    Returns:
+      How high the liquid stands above each container's cavity bottom, in mm, in the order given.
+      The bottom is known, so a container in which no liquid was met stands at 0.0.
+
+    Raises:
+      ValueError: If an argument is out of range, or the lists do not match.
+      RuntimeError: If a channel used carries no tip, the driver was given no deck, or liquid was
+        found in some rounds and not in others.
+    """
+    deck = self._driver.deck
+    if deck is None:
+      raise RuntimeError("containers are placed from the deck; this driver was given none")
+    if n_replicates < 1:
+      raise ValueError(f"n_replicates must be at least 1, is {n_replicates}")
+    if lld_mode is None:
+      modes = [self.LLDMode.CAPACITIVE] * len(containers)
+    elif isinstance(lld_mode, self.LLDMode):
+      modes = [lld_mode] * len(containers)
+    else:
+      modes = list(lld_mode)
+    if len(modes) != len(containers):
+      raise ValueError(f"{len(modes)} lld modes for {len(containers)} containers")
+    unsupported = [
+      mode for mode in modes if mode not in (self.LLDMode.CAPACITIVE, self.LLDMode.PRESSURE)
+    ]
+    if unsupported:
+      raise ValueError(f"a liquid search is capacitive or pressure, not {unsupported[0]}")
+
+    channels, overhangs, batches = await self._prepare_batched(
+      deck,
+      containers,
+      use_channels,
+      resource_offsets,
+      x_grouping_tolerance,
+      minimum_traverse_height_start,
+    )
+    z_cavity_bottom = [c.get_location_wrt(deck, "c", "c", "cavity_bottom").z for c in containers]
+    z_top = [c.get_location_wrt(deck, "c", "c", "t").z for c in containers]
+    per_batch = await self._execute_batched(
+      lambda batch: self._probe_batch_liquid_heights(
+        batch, overhangs, z_cavity_bottom, z_top, modes, search_speed, n_replicates
+      ),
+      batches,
+      minimum_traverse_height_during,
+    )
+    found: Dict[int, List[Optional[float]]] = {}
+    for batch_found in per_batch:
+      for job, heights in batch_found.items():
+        found.setdefault(job, []).extend(heights)
+
+    above_bottom: List[float] = []
+    inconsistent = []
+    for job, (channel, container) in enumerate(zip(channels, containers)):
+      rounds = found[job]
+      valid = [height for height in rounds if height is not None]
+      if not valid:
+        above_bottom.append(0.0)
+      elif len(valid) == len(rounds):
+        above_bottom.append(round(sum(valid) / len(valid) - z_cavity_bottom[job], 2))
+      else:
+        inconsistent.append(
+          f"channel {channel} in {container.name}: {len(valid)} of {len(rounds)} rounds"
+        )
+    if inconsistent:
+      await self.move_to_safe_z()
+      raise RuntimeError(
+        "liquid found in some rounds and not in others, so the level may be at the detection "
+        "limit: " + "; ".join(inconsistent)
+      )
+    if minimum_traverse_height_end is None:
+      await self.move_to_safe_z()
+    else:
+      await self.move_tool_bottom_to_z_positions(
+        {channel: minimum_traverse_height_end for channel in channels}
+      )
+    return above_bottom
+
   # TODO: _unchecked_fw_ vs tip-presence-guarded versions
 
   # ----------------------------------------
