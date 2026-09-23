@@ -3100,6 +3100,7 @@ class Pipettes:
     end_tolerance: float,
     post_detection_distance: float,
     start_spacing: float,
+    approach_speed: float,
     n_replicates: int,
   ) -> Dict[int, List[Optional[float]]]:
     """Z-touch the floor of every container of one batch, the channels in a cascade, n times.
@@ -3108,9 +3109,9 @@ class Pipettes:
     container's top down to `below_floor` under its cavity bottom, and answers where its stop
     disc stopped, so the height is the overhang below that. There is no clearance above the top,
     as a liquid search has: nothing above it can be met, and everything below it is searched.
-    The channels go to their starts together first, one `C0 JZ`, so the cascade is the search
-    itself: the searches set off `start_spacing` apart from there, the lowest channel number
-    first, and run on together. A channel that reached its end, within `end_tolerance`, touched
+    The channels go to their starts together first, each on its own drive at `approach_speed`,
+    so the cascade is the search itself: the searches set off `start_spacing` apart from there,
+    the lowest channel number first, and run on together. A channel that reached its end, within `end_tolerance`, touched
     nothing and is None for the round. Then every channel of the batch backs off by
     `post_detection_distance` at once.
 
@@ -3124,6 +3125,7 @@ class Pipettes:
       end_tolerance: how close to the end counts as having touched nothing, in mm.
       post_detection_distance: how far the channels back off after each round, in mm.
       start_spacing: how long after the previous channel each one sets off, in s.
+      approach_speed: down to the starts, in mm/s.
       n_replicates: how many rounds.
 
     Returns:
@@ -3141,8 +3143,8 @@ class Pipettes:
       searches.append((channel, job, end, start))
     found: Dict[int, List[Optional[float]]] = {job: [] for job in batch.indices}
     for _ in range(n_replicates):
-      await self.move_tool_bottom_to_z_positions(
-        {channel: round(start - overhangs[channel], 2) for channel, _, _, start in searches}
+      await self.move_stop_disc_to_z_positions(
+        {channel: start for channel, _, _, start in searches}, speed=approach_speed
       )
       results = await asyncio.gather(
         *(
@@ -3180,6 +3182,7 @@ class Pipettes:
     end_tolerance: float = 0.5,
     post_detection_distance: float = 2.0,
     start_spacing: float = 0.25,
+    approach_speed: float = 125.0,
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_during: Optional[float] = None,
     minimum_traverse_height_end: Optional[float] = None,
@@ -3191,8 +3194,8 @@ class Pipettes:
     batches, the same moves between them, the channels of a batch searching together, and the
     same heights at the end. Each search goes from the container's top down to `below_floor`
     under its modelled cavity bottom, and stops where the tip presses on something. The channels
-    of a batch go to their starts together, then set off in a cascade, `start_spacing` apart from
-    the back. Needs channel firmware from 2022 on.
+    of a batch go to their starts together at `approach_speed`, then set off in a cascade,
+    `start_spacing` apart from the back. Needs channel firmware from 2022 on.
 
     Args:
       containers: any number; a whole plate is fine.
@@ -3207,6 +3210,7 @@ class Pipettes:
       post_detection_distance: how far the channels back off after each round, in mm.
       start_spacing: how long after the previous channel each one sets off, in s. 0 starts them
         all at once.
+      approach_speed: down to the search starts, in mm/s.
       minimum_traverse_height_start: the height every low channel's lowest point is raised to
         before the first batch, in mm. Z safety when None.
       minimum_traverse_height_during: the same, between batches. Z safety when None.
@@ -3255,6 +3259,7 @@ class Pipettes:
         end_tolerance,
         post_detection_distance,
         start_spacing,
+        approach_speed,
         n_replicates,
       ),
       batches,
