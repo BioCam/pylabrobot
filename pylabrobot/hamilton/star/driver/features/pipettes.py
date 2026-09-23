@@ -707,6 +707,10 @@ class Pipettes:
     for channel, involved in enumerate(tip_pattern):
       if involved:
         self._release_modelled_tip(channel)
+    # The command drives every channel: along Y to its initialization position, and along Z to
+    # `minimum_traverse_height_end`. Read both back, or the model still has them where they were.
+    await self._record_where_they_stopped("y")
+    await self._record_where_they_stopped("z")
     return resp
 
   def _min_spacing_between(self, i: int, j: int) -> float:

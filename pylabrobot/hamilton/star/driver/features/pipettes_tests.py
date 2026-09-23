@@ -1067,6 +1067,34 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
     self.assertIsNone(tip.parent)
 
 
+class TestWhereATipCommandLeavesTheChannels(unittest.IsolatedAsyncioTestCase):
+  """Only the channels a tip command names move, in Z as in Y.
+
+  As the device answers: `C0 TP` on one channel is followed by `rz +2450 +3343 +3343 ...` - the
+  traverse height for that channel, and the rest where they already stood.
+  """
+
+  def setUp(self):
+    from pylabrobot.resources import set_tip_tracking
+
+    set_tip_tracking(True)
+    self.addCleanup(set_tip_tracking, False)
+
+  async def test_a_pickup_moves_only_its_own_channel_in_z(self):
+    pipettes, rack, _ = await channels_over_a_rack()
+    before = await pipettes.request_stop_disc_z_positions()
+
+    await pipettes.pick_up_tips([rack.get_item("A1")])
+
+    after = await pipettes.request_stop_disc_z_positions()
+    self.assertEqual(after[0], pipettes.default_minimum_traverse_height)
+    self.assertEqual(
+      [after[channel] for channel in range(1, 8)],
+      [before[channel] for channel in range(1, 8)],
+      "the channels the command does not name stay where they were",
+    )
+
+
 class TestTipsOfDifferentKinds(unittest.IsolatedAsyncioTestCase):
   """A command names one tip type, so spots holding different tips go out in separate commands."""
 

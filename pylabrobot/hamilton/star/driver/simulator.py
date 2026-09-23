@@ -321,16 +321,16 @@ class SimulatedPipettes(_Simulated, Pipettes):
   ) -> None:
     """Put the arm and the channels where a tip command leaves them, as the reads will find them.
 
-    The arm ends over the last column the command visited, each channel taking part at its Y, and
-    every channel at the height the command ends at.
+    The arm ends over the last column the command visited, and each channel taking part at its Y
+    and at the height the command ends at. A channel the command does not name stays where it is,
+    in Z as in Y: a device reports the others unmoved - `C0 TP` on one channel answers
+    `rz +2450 +3343 +3343 ...`, the traverse height for that channel and the rest as they were.
     """
     involved = [i for i, used in enumerate(tip_pattern) if used and i < self.num_channels]
     if involved:
       self.arm.update_location_by_reference_point(x_positions[involved[-1]] / 10)
     for channel in involved:
-      self.update_location_by_reference_point(channel, y=y_positions[channel] / 10)
-    for channel in range(self.num_channels):
-      self.update_location_by_reference_point(channel, z=z / 10)
+      self.update_location_by_reference_point(channel, y=y_positions[channel] / 10, z=z / 10)
 
   async def _unchecked_fw_pick_up_tips(
     self,
