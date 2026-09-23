@@ -43,6 +43,9 @@ import {
   GRIP_MARK_OPACITY,
   GRIP_MARK_OPENING,
   GRIP_MARK_WIDTH,
+  HALO_EMPTY,
+  HALO_PX,
+  HALO_TIPPED,
   HOLDERS,
   HOVER,
   LIQUID,
@@ -1073,9 +1076,9 @@ function refreshSubtree(index, skipSelf) {
   redraw(refreshTransforms(index, skipSelf));
 }
 
-function applyLocation(index, location) {
   if (!setLocal(index, location)) return;
 
+function applyLocation(index, location) {
   // A travelling part is drawn by its own group and glides there, so it is told the target rather
   // than being moved under it. What stands on it is not part of that group, though - the 96-head
   // rides the arm in the model but is drawn with everything else - so the glide carries it.
@@ -1767,6 +1770,88 @@ function mmPerPixel() {
   }
   const distance = camera.position.distanceTo(controls.target);
   return (2 * distance * Math.tan((camera.fov * DEG) / 2)) / height;
+}
+
+// ---------------------------------------------------------------- channel halos
+
+// A halo on each pipetting channel: a soft disc facing the camera, held at HALO_PX across whatever
+// the zoom. Off until asked for from the rail. Sprites, one a channel, rather than one instanced
+// quad: a sprite faces the camera on its own and is placed through its own transform, where an
+// instanced quad needs its matrix buffer rewritten every frame, and on the WebGPU backend a buffer
+// rewritten every frame drew on some frames and not others. Drawn in the overlay band, so a halo
+// sits over the arm's frame and whatever the channel is above without any of them being reordered.
+let halos = null;
+let showHalos = false;
+
+function haloTexture() {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext("2d");
+  const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gradient.addColorStop(0, "rgba(255,255,255,0.95)");
+  gradient.addColorStop(0.45, "rgba(255,255,255,0.5)");
+  gradient.addColorStop(1, "rgba(255,255,255,0)");
+  context.fillStyle = gradient;
+  context.fillRect(0, 0, 64, 64);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+const HALO_TEXTURE = haloTexture();
+
+// One material per state, shared by every halo in it: the texture is the same disc either way.
+const haloMaterial = (color) =>
+  new THREE.SpriteMaterial({
+    map: HALO_TEXTURE,
+    color,
+    transparent: true,
+    depthTest: false,
+    depthWrite: false,
+  });
+const HALO_MATERIALS = { tipped: haloMaterial(HALO_TIPPED), empty: haloMaterial(HALO_EMPTY) };
+
+/** Whether a channel holds a tip: a tip is a resource under the channel's mounting shaft. */
+function channelTipped(index) {
+  return world.childrenOf[index].some(
+    (c) => modelOf(c).category === "tip_mounting_shaft" && world.childrenOf[c].length > 0,
+  );
+}
+
+function buildHalos() {
+  if (halos) {
+    view.remove(halos);
+    halos = null;
+  }
+  if (!showHalos || !world) return;
+  const group = new THREE.Group();
+  for (let index = 0; index < world.names.length; index++) {
+    if (modelOf(index).category !== "pipette_channel") continue;
+    const sprite = new THREE.Sprite(
+      channelTipped(index) ? HALO_MATERIALS.tipped : HALO_MATERIALS.empty,
+    );
+    sprite.renderOrder = OVERLAY_ORDER;
+    sprite.frustumCulled = false;
+    sprite.userData.index = index;
+    group.add(sprite);
+  }
+  if (!group.children.length) return;
+  halos = group;
+  view.add(halos);
+}
+
+// Each halo sits at the middle of its channel and is scaled to HALO_PX. Done every frame, since
+// the arm and the camera both move; eight transforms, so it costs nothing.
+function updateHalos() {
+  if (!halos) return;
+  const perPixel = mmPerPixel();
+  if (!Number.isFinite(perPixel) || perPixel <= 0) return;
+  for (const sprite of halos.children) {
+    const index = sprite.userData.index;
+    const [sx, sy, sz] = sizeOf(modelOf(index));
+    sprite.position.set(sx / 2, sy / 2, sz / 2).applyMatrix4(world.matrices[index]);
+    sprite.scale.setScalar(perPixel * HALO_PX);
+  }
 }
 
 // Aim for a cell around this many pixels: dense enough to measure against, open enough to see past.
@@ -2575,6 +2660,11 @@ function shortName(index) {
 function summaryOf(index) {
   const children = world.childrenOf[index];
 
+  // An adapter carries one thing, and its row says which, as the existing visualizer's does.
+  if (modelOf(index).category === "plate_adapter") {
+    return children.length ? shortName(children[0]) : "empty";
+  }
+
   if (!children.length) {
     const state = stateOf.get(index);
     if (state && state.pending_volume !== undefined) return `${fmt(state.pending_volume)} uL`;
@@ -2593,6 +2683,7 @@ function summaryOf(index) {
     return `${filled}/${children.length} tips`;
   }
   if (kind === "well") return `${children.length} wells`;
+  if (kind === "tube") return `${children.length} tubes`;
 
   // Look through holders to what stands in them, so the count names the contents. With every site
   // empty there is nothing to name, and the useful fact is how many positions there are.
@@ -2668,6 +2759,11 @@ function addRow(index, depth, before) {
     site.className = "tree-node-site";
     site.textContent = String(number);
     row.appendChild(site);
+  } else {
+    const dot = document.createElement("span");
+    dot.className = "tree-node-dot";
+    dot.style.backgroundColor = hexOf(colorFor(model));
+    row.appendChild(dot);
   }
 
   const name = document.createElement("span");
@@ -2729,11 +2825,6 @@ function toggle(index, open) {
     expanded.add(index);
     entry.arrow.textContent = "▼";
     const before = entry.row.nextSibling;
-  // An adapter carries one thing, and its row says which, as the existing visualizer's does.
-  if (modelOf(index).category === "plate_adapter") {
-    return children.length ? shortName(children[0]) : "empty";
-  }
-
     for (const child of treeChildren(index)) addRow(child, entry.depth + 1, before);
   } else {
     expanded.delete(index);
@@ -2751,7 +2842,6 @@ function toggle(index, open) {
     };
     drop(index);
   }
-  if (kind === "tube") return `${children.length} tubes`;
 }
 
 // What the tree lists below a row, in the order a reader takes them. Organised as the existing
@@ -2857,11 +2947,6 @@ function revealAndHighlight(index) {
 let infoPanel = null;
 
 // Values go through innerHTML, and a resource name is user data. Escape it, or a model field
-  } else {
-    const dot = document.createElement("span");
-    dot.className = "tree-node-dot";
-    dot.style.backgroundColor = hexOf(colorFor(model));
-    row.appendChild(dot);
 // holding `<resource>` disappears into the markup.
 function ensureInfoPanel() {
   if (infoPanel?.isConnected) return infoPanel;
@@ -3576,6 +3661,8 @@ function atBoundary(surface) {
   }),
   // What the toolbar's origins button does, for a test that has no pointer.
   origins: (on = true) => setOriginDots(on),
+  // What the toolbar's halos button does, for the same reason.
+  halos: (on = true) => setHalos(on),
   // Renders `frames` frames back to back and reports what each one cost. The viewer only draws
   // when something changes, so the cost of a frame is otherwise not observable from outside.
   benchmark: (frames = 120) => {
@@ -3839,6 +3926,21 @@ originsButton.addEventListener("click", () => {
   invalidate();
 });
 
+// The halos button is the same kind of button: what is drawn changes, what a click means does not.
+const halosButton = document.getElementById("toolbar-halos-btn");
+
+function setHalos(on) {
+  showHalos = on;
+  halosButton.classList.toggle("active", on);
+  buildHalos();
+  return { on, halos: halos?.children.length ?? 0 };
+}
+
+halosButton.addEventListener("click", () => {
+  setHalos(!showHalos);
+  invalidate();
+});
+
 toolButtons.cursor.addEventListener("click", () => setTool("cursor"));
 toolButtons.coords.addEventListener("click", () => setTool("coords"));
 toolButtons.gif.addEventListener("click", () => {
@@ -4065,6 +4167,7 @@ function connect() {
       buildDeclaredMeshes();
       buildOrigin();
       buildOriginDots();
+      buildHalos();
       timings.meshesMs = performance.now() - _tBuild;
       const _tTree = performance.now();
       buildTree();
@@ -4183,6 +4286,7 @@ function drawFrame() {
   updateDetail();
   updateEdgeMode();
   updateOrigin();
+  updateHalos();
   updateScaleBar();
 
   renderer.render(view, camera);

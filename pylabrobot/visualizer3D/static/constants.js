@@ -210,3 +210,11 @@ export const REFERENCE_WIDTH = 4.2; // mm
 export const REFERENCE_DROP = 2; // mm below the arm's underside
 export const ARM_REFERENCE_OPACITY = 0.7;
 export const PROVENANCE_COLOR = { measured: 0x198754, derived: 0xd8a200, unavailable: 0xb02a37 };
+
+// A halo on each pipetting channel, switched on from the rail: a soft disc facing the camera and
+// held at this many pixels across whatever the zoom, so a nine-millimetre channel is findable at
+// deck scale. Green where the channel holds a tip, as a full spot is, and amber where it does not:
+// a grey was tried and vanished against the deck it is mostly seen over.
+export const HALO_PX = 26;
+export const HALO_TIPPED = TIP_PLAN_FILL;
+export const HALO_EMPTY = 0xffb000;
