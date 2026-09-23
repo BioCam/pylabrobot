@@ -3402,6 +3402,7 @@ const coords = initCoords({ getWorld: () => world, referencePoint, escapeHtml })
 const deviceTools = initDeviceTools({
   getWorld: () => world,
   modelOf,
+  stateOf: (index) => stateOf.get(index),
   onSelect: (index) => {
     revealAndHighlight(index);
     select(index, true);

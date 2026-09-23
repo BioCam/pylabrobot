@@ -26,14 +26,21 @@ const GRIPPER_PARTS = new Set(["body", "finger", "pad"]);
 // gets a button: a bench or a facility holds devices and is no feature of anything.
 const DEVICE = "device";
 
-// A tip is drawn at its own length, so a 1000 uL tip reads as one. Millimetres at this many pixels
-// each, clamped so that a panel of eight channels still fits on a laptop.
+// The panels draw what the existing visualizer's draw, at its sizes. A tip is drawn at its own
+// length, millimetres at this many pixels each, clamped so eight channels still fit on a laptop.
 const TIP_PX_PER_MM = 0.8;
 const TIP_SHORTEST_MM = 10;
 const TIP_LONGEST_MM = 80;
-// The channel body above it, in pixels. Fixed, because it is a stalk to hang a tip from rather
-// than a measurement of anything.
-const CHANNEL_PX = 30;
+// The channel glyph above the tip, and the whole column, in pixels.
+const CHANNEL_PX = 27;
+const COLUMN_PX = CHANNEL_PX + TIP_LONGEST_MM * TIP_PX_PER_MM;
+// Liquid in a tip, as the existing visualizer tints it.
+const LIQUID_FILL = "rgba(0,119,187,0.45)";
+// A head's grid: dot size and gap. The green a spot with a tip is drawn in is the stylesheet's.
+const DOT_PX = 10;
+const DOT_GAP_PX = 3;
+// A gripper's fingers spread to what they hold, the plate scaled to this many pixels at most.
+const PLATE_PX = 80;
 
 // How far a panel sits below the button that opens it, and how far apart two panels sit.
 const PANEL_DROP = 12;
@@ -47,10 +54,11 @@ const KINDS = [
 ];
 
 /**
- * @param {{getWorld: () => any, modelOf: (i: number) => any, onSelect: (i: number) => void}} deps
+ * @param {{getWorld: () => any, modelOf: (i: number) => any, stateOf: (i: number) => any,
+ *          onSelect: (i: number) => void}} deps
  * @returns {{rebuild: () => void, refresh: () => void}}
  */
-export function initDeviceTools({ getWorld, modelOf, onSelect }) {
+export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
   const containerEl = document.getElementById("navbar-device-tools");
   const mainEl = document.querySelector("main");
   /** Open panels, by their own id. Each is { element, device, kind, button, offset }. */
@@ -141,102 +149,253 @@ export function initDeviceTools({ getWorld, modelOf, onSelect }) {
 
   // ------------------------------------------------------------------ drawing a panel
 
-  /** A row of one label and one value, the shape the info panel already uses. */
-  function row(key, value) {
+  /** The channel's own number, as the tree names it, so the panel and the tree agree. */
+  function channelLabel(index, fallback) {
+    const numbered = /(\d+)$/.exec(getWorld().names[index]);
+    return numbered ? numbered[1] : String(fallback);
+  }
+
+  const glowFilter = (id, colour) =>
+    `<filter id="${id}" x="-200%" y="-200%" width="500%" height="500%">` +
+    `<feFlood flood-color="${colour}" flood-opacity="1" result="color"/>` +
+    `<feComposite in="color" in2="SourceAlpha" operator="in" result="colored"/>` +
+    `<feGaussianBlur in="colored" stdDeviation="4" result="glow1"/>` +
+    `<feGaussianBlur in="colored" stdDeviation="8" result="glow2"/>` +
+    `<feGaussianBlur in="colored" stdDeviation="14" result="glow3"/>` +
+    `<feMerge><feMergeNode in="glow3"/><feMergeNode in="glow2"/><feMergeNode in="glow1"/>` +
+    `<feMergeNode in="SourceGraphic"/></feMerge></filter>`;
+
+  /** A hover glow on an SVG group, switched by the filter the group names in data-glow. */
+  function glowOnHover(root) {
+    for (const g of root.querySelectorAll("[data-glow]")) {
+      g.addEventListener("mouseenter", () => g.setAttribute("filter", `url(#${g.dataset.glow})`));
+      g.addEventListener("mouseleave", () => g.removeAttribute("filter"));
+    }
+  }
+
+  /**
+   * One channel as the existing visualizer draws it: its number, the channel as a black cylinder
+   * on a silver collar, and the tip hanging from it at its own length, with the liquid it holds.
+   */
+  function channelColumn(index, ordinal, id) {
+    const world = getWorld();
+    const tip = tipOf(index);
+    const label = channelLabel(index, ordinal);
+    const name = world.names[index];
+    let shapes =
+      `<g data-index="${index}" data-glow="ch${id}" style="cursor:pointer">` +
+      `<title>${escapeHtml(name)} - click to select</title>` +
+      `<rect x="0" y="1" width="14" height="18" rx="3" ry="3" fill="#333"/>` +
+      `<ellipse cx="7" cy="2" rx="7" ry="2" fill="#555"/>` +
+      `<ellipse cx="7" cy="19" rx="7" ry="2" fill="#222"/>` +
+      `<rect x="2" y="20" width="10" height="4" rx="2" ry="2" fill="#b0b0b0"/>` +
+      `<ellipse cx="7" cy="20" rx="5" ry="1.5" fill="#ccc"/>` +
+      `<ellipse cx="7" cy="24" rx="5" ry="1.5" fill="#999"/></g>`;
+    if (tip) {
+      const mm = Number(tip.model.size_z) || 0;
+      const tipPx = Math.min(TIP_LONGEST_MM, Math.max(TIP_SHORTEST_MM, mm)) * TIP_PX_PER_MM;
+      const collarY = 19.5;
+      const collarH = 6.5;
+      const bodyStart = collarY + collarH;
+      const straightH = Math.round(tipPx * 0.4);
+      const taperH = tipPx - straightH;
+      const straightEnd = bodyStart + straightH;
+      const tipEnd = straightEnd + taperH;
+      const botW = mm > 50 ? 2 : 1;
+      const botL = 7 - botW / 2;
+      const botR = 7 + botW / 2;
+      // What the tip holds, when its state says: a tip publishes its volume once it tracks one.
+      const state = stateOf(tip.index) ?? {};
+      const max = Number(state.max_volume) || 0;
+      const ratio = max > 0 ? Math.min(1, (Number(state.volume) || 0) / max) : 0;
+      let fill = "";
+      if (ratio > 0) {
+        const fillH = ratio * (straightH + taperH);
+        if (fillH <= taperH) {
+          const width = botW + (8 - botW) * (fillH / taperH);
+          const top = tipEnd - fillH;
+          fill = `<polygon points="${botL},${tipEnd} ${botR},${tipEnd} ${7 + width / 2},${top} ${7 - width / 2},${top}" fill="${LIQUID_FILL}"/>`;
+        } else {
+          const bodyH = fillH - taperH;
+          fill =
+            `<polygon points="3,${straightEnd} 11,${straightEnd} ${botR},${tipEnd} ${botL},${tipEnd}" fill="${LIQUID_FILL}"/>` +
+            `<rect x="3" y="${straightEnd - bodyH}" width="8" height="${bodyH}" fill="${LIQUID_FILL}"/>`;
+        }
+      }
+      shapes +=
+        `<g data-index="${tip.index}" data-glow="tip${id}" style="cursor:pointer">` +
+        `<title>${escapeHtml(world.names[tip.index])}, ${mm} mm - click to select</title>` +
+        `<rect x="1.5" y="${collarY}" width="11" height="${collarH}" rx="0.5" ry="0.5" fill="#c8c8c8" fill-opacity="0.5" stroke="#888" stroke-width="0.8"/>` +
+        `<rect x="3" y="${bodyStart}" width="8" height="${straightH}" rx="1" ry="1" fill="#d0d0d0" stroke="#888" stroke-width="0.8"/>` +
+        `<polygon points="3,${straightEnd} 11,${straightEnd} ${botR},${tipEnd} ${botL},${tipEnd}" fill="#d0d0d0" stroke="#888" stroke-width="0.8"/>` +
+        `${fill}</g>`;
+    }
     return (
-      `<div class="dt-row"><span class="dt-key">${escapeHtml(key)}</span>` +
-      `<span class="dt-val">${escapeHtml(String(value))}</span></div>`
+      `<div class="dt-column">` +
+      `<span class="dt-column-label" data-index="${index}" title="${escapeHtml(name)}">${escapeHtml(label)}</span>` +
+      `<svg width="14" height="${COLUMN_PX}" viewBox="0 0 14 ${COLUMN_PX}" style="overflow:visible;display:block">` +
+      `<defs>${glowFilter(`ch${id}`, "#99DDFF")}${glowFilter(`tip${id}`, "#EEDD88")}</defs>` +
+      `${shapes}</svg></div>`
     );
   }
 
   function fillSingle(panel, device) {
     const { channels } = partsOf(device);
     if (!channels.length) {
-      panel.innerHTML = `<div class="dt-empty">This device has no pipetting channels.</div>`;
+      panel.innerHTML = `<span class="dt-empty">No single-channel pipette is installed on this device.</span>`;
       return;
     }
+    panel.innerHTML = channels
+      .map((index, i) => channelColumn(index, i, `${device}_${i}`))
+      .join("");
+    glowOnHover(panel);
+  }
+
+  /**
+   * A head as the existing visualizer draws it: a dark block with one dot a position, green where
+   * a tip is on, and the four bars that carry it. A dot selects the tip, or the shaft when empty.
+   */
+  function headBlock(index, label) {
     const world = getWorld();
-    const columns = channels.map((index) => {
-      const tip = tipOf(index);
-      const mm = Number(tip?.model?.total_tip_length) || 0;
-      const length = mm
-        ? Math.min(TIP_LONGEST_MM, Math.max(TIP_SHORTEST_MM, mm)) * TIP_PX_PER_MM
-        : 0;
-      // The channel's own number, as the tree names it, so the panel and the tree agree.
-      const numbered = /(\d+)$/.exec(world.names[index]);
-      const label = numbered ? numbered[1] : String(channels.indexOf(index));
-      const title = tip
-        ? `${world.names[index]} - ${world.names[tip.index]}, ${mm} mm`
-        : `${world.names[index]} - no tip`;
-      return (
-        `<div class="dt-channel" data-index="${index}" title="${escapeHtml(title)}">` +
-        `<span class="dt-channel-label">${escapeHtml(label)}</span>` +
-        `<span class="dt-stalk" style="height:${CHANNEL_PX}px"></span>` +
-        (length ? `<span class="dt-tip" style="height:${length.toFixed(1)}px"></span>` : "") +
-        `</div>`
-      );
-    });
-    const fitted = channels.filter((index) => tipOf(index)).length;
-    panel.innerHTML =
-      `<div class="dt-title">Channels<span class="dt-count">${fitted} / ${channels.length} tipped</span></div>` +
-      `<div class="dt-channels" style="min-height:${CHANNEL_PX + TIP_LONGEST_MM * TIP_PX_PER_MM}px">` +
-      columns.join("") +
-      `</div>`;
+    const grid = gridOf(index);
+    const dots = grid.placed
+      .map((spot) => {
+        const tip = world.childrenOf[spot.index][0];
+        const target = tip === undefined ? spot.index : tip;
+        const title = tip === undefined ? world.names[spot.index] : world.names[tip];
+        return (
+          `<i class="dt-dot${spot.filled ? " is-filled" : ""}" data-index="${target}"` +
+          ` style="grid-row:${spot.row + 1};grid-column:${spot.column + 1}"` +
+          ` title="${escapeHtml(title)} - click to select"></i>`
+        );
+      })
+      .join("");
+    const gridW = grid.columns * DOT_PX + (grid.columns - 1) * DOT_GAP_PX;
+    const gridH = grid.rows * DOT_PX + (grid.rows - 1) * DOT_GAP_PX;
+    const hBar = `<span class="dt-bar" style="width:${Math.round(gridW * 0.6)}px;height:4px"></span>`;
+    const vBar = `<span class="dt-bar" style="width:4px;height:${Math.round(gridH * 0.6)}px"></span>`;
+    return (
+      `<div class="dt-column">` +
+      (label === null ? "" : `<span class="dt-column-label">${escapeHtml(label)}</span>`) +
+      `${hBar}<div class="dt-head-row">${vBar}` +
+      `<div class="dt-head" data-index="${index}" title="${escapeHtml(world.names[index])} - click to select">` +
+      `<div class="dt-grid" style="grid-template-columns:repeat(${grid.columns},${DOT_PX}px);` +
+      `grid-template-rows:repeat(${grid.rows},${DOT_PX}px);gap:${DOT_GAP_PX}px">${dots}</div>` +
+      `</div>${vBar}</div>${hBar}</div>`
+    );
   }
 
   function fillMulti(panel, device) {
     const { heads } = partsOf(device);
     if (!heads.length) {
-      panel.innerHTML = `<div class="dt-empty">This device has no multi-channel head.</div>`;
+      panel.innerHTML = `<span class="dt-empty">No multi-channel pipette is installed on this device.</span>`;
       return;
     }
-    const world = getWorld();
     panel.innerHTML = heads
-      .map((index) => {
-        const grid = gridOf(index);
-        const dots = grid.placed
-          .map(
-            (spot) =>
-              `<i class="dt-dot${spot.filled ? " is-filled" : ""}"` +
-              ` style="grid-row:${spot.row + 1};grid-column:${spot.column + 1}"` +
-              ` title="${escapeHtml(world.names[spot.index])}"></i>`,
-          )
-          .join("");
-        return (
-          `<div class="dt-head" data-index="${index}">` +
-          `<div class="dt-title">${escapeHtml(world.names[index])}` +
-          `<span class="dt-count">${grid.filled} / ${grid.placed.length} tipped</span></div>` +
-          `<div class="dt-grid" style="grid-template-columns:repeat(${grid.columns},1fr)">${dots}</div>` +
-          `</div>`
-        );
-      })
+      .map((index, i) => headBlock(index, heads.length > 1 ? String(i) : null))
       .join("");
+  }
+
+  /** What a held plate's wells lie on, read off its ordering: rows by letter, columns by number. */
+  function wellGridOf(model) {
+    const ids = Object.keys(model.ordering ?? {});
+    let rows = 0;
+    let columns = 0;
+    for (const id of ids) {
+      const m = /^([A-Z]+)(\d+)$/.exec(id);
+      if (!m) return null;
+      rows = Math.max(rows, m[1].charCodeAt(m[1].length - 1) - 64);
+      columns = Math.max(columns, Number(m[2]));
+    }
+    return rows && columns ? { rows, columns } : null;
+  }
+
+  /**
+   * A gripper as the existing visualizer draws it: a carriage on two rails whose fingers spread
+   * to the plate they hold, the plate drawn between them to scale with its wells.
+   */
+  function gripperFigure(index, label) {
+    const world = getWorld();
+    const held = heldBy(index);
+    const holding = held >= 0 ? modelOf(held) : null;
+    let plateW = 52;
+    let plateH = 22;
+    if (holding) {
+      const scale = Math.min(PLATE_PX / (holding.size_x || 127), PLATE_PX / (holding.size_y || 86));
+      plateW = Math.round((holding.size_x || 127) * scale);
+      plateH = Math.round((holding.size_y || 86) * scale);
+    }
+    const stdPlateW = Math.round(127 * Math.min(PLATE_PX / 127, PLATE_PX / 86));
+    const minGap = Math.round((stdPlateW + 16) * 1.1);
+    const closedGap = Math.round((52 + 16) * 1.1);
+    const gap = holding ? Math.round((plateW + 16) * 1.1) : closedGap;
+    const svgW = Math.max(closedGap, gap, minGap) + 28;
+    const svgH = 110;
+    const cx = svgW / 2;
+    const lRail = cx - gap / 2 - 7;
+    const rRail = cx + gap / 2 - 1;
+    const carriageW = closedGap + 8;
+    const carriageX = cx - carriageW / 2;
+    const pinTop = 85 - 5 - 1.2;
+    const pinBot = 85 + 5 - 1.2;
+    const lCush = lRail + 9;
+    const rCush = rRail + 1 - 6;
+    let shapes =
+      `<rect x="${lRail + 7}" y="10" width="12" height="5.1" rx="1" fill="#555" stroke="#444" stroke-width="0.6"/>` +
+      `<rect x="${rRail + 1 - 12}" y="10" width="12" height="5.1" rx="1" fill="#555" stroke="#444" stroke-width="0.6"/>` +
+      `<rect x="${lRail}" y="10" width="7" height="75" fill="#333" stroke="#222" stroke-width="1"/>` +
+      `<rect x="${rRail + 1}" y="10" width="7" height="75" fill="#333" stroke="#222" stroke-width="1"/>` +
+      `<rect x="${carriageX}" y="0" width="${carriageW}" height="24" rx="2" fill="#aaa" stroke="#666" stroke-width="1.2"/>` +
+      `<rect x="${carriageX}" y="0" width="${carriageW}" height="7" rx="2" fill="#888" stroke="#666" stroke-width="1.2"/>` +
+      `<rect x="${cx - 4}" y="3" width="8" height="18" fill="#666" stroke="#555" stroke-width="0.8"/>`;
+    for (const [x, pinX] of [
+      [lCush, lCush + 2],
+      [rCush, rCush - 3],
+    ]) {
+      shapes +=
+        `<rect x="${pinX}" y="${pinTop}" width="5" height="2.4" rx="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>` +
+        `<rect x="${pinX}" y="${pinBot}" width="5" height="2.4" rx="0.5" fill="#555" stroke="#333" stroke-width="0.4"/>` +
+        `<rect x="${x}" y="74" width="4" height="22" rx="1" fill="#444" stroke="#333" stroke-width="0.6"/>`;
+    }
+    let plate = "";
+    if (holding) {
+      const px = cx - plateW / 2;
+      const py = 85 - plateH / 2;
+      plate = `<rect x="${px}" y="${py}" width="${plateW}" height="${plateH}" rx="2" fill="#e9ecef" stroke="#3a3a3a" stroke-width="1"/>`;
+      const wells = wellGridOf(holding);
+      if (wells) {
+        const dx = plateW / (wells.columns + 1);
+        const dy = plateH / (wells.rows + 1);
+        const r = Math.max(0.6, Math.min(dx, dy) * 0.32);
+        for (let row = 1; row <= wells.rows; row++) {
+          for (let col = 1; col <= wells.columns; col++) {
+            plate += `<circle cx="${(px + col * dx).toFixed(1)}" cy="${(py + row * dy).toFixed(1)}" r="${r.toFixed(1)}" fill="#fff" stroke="#8a949a" stroke-width="0.4"/>`;
+          }
+        }
+      }
+      plate = `<g data-index="${held}" style="cursor:pointer"><title>${escapeHtml(world.names[held])} - click to select</title>${plate}</g>`;
+    }
+    const title = `${world.names[index]}${holding ? ` - holding ${world.names[held]}` : " - empty"} - click to select`;
+    return (
+      `<div class="dt-column">` +
+      (label === null ? "" : `<span class="dt-column-label">${escapeHtml(label)}</span>`) +
+      `<svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}" style="overflow:visible;display:block">` +
+      `<defs>${glowFilter(`arm${index}`, "#44BB99")}</defs>` +
+      `<g data-index="${index}" data-glow="arm${index}" style="cursor:pointer"><title>${escapeHtml(title)}</title>${shapes}</g>` +
+      `${plate}</svg></div>`
+    );
   }
 
   function fillArm(panel, device) {
     const { grippers } = partsOf(device);
     if (!grippers.length) {
-      panel.innerHTML = `<div class="dt-empty">This device has no gripper.</div>`;
+      panel.innerHTML = `<span class="dt-empty">No robotic arm is installed on this device.</span>`;
       return;
     }
-    const world = getWorld();
     panel.innerHTML = grippers
-      .map((index) => {
-        const model = modelOf(index);
-        const held = heldBy(index);
-        const jaws =
-          model.jaw_width !== undefined && model.jaw_width !== null
-            ? `${Number(model.jaw_width).toFixed(1)} mm`
-            : "unreported";
-        return (
-          `<div class="dt-arm" data-index="${index}">` +
-          `<div class="dt-title">${escapeHtml(world.names[index])}</div>` +
-          row("jaws", jaws) +
-          row("holding", held >= 0 ? world.names[held] : "nothing") +
-          `</div>`
-        );
-      })
+      .map((index, i) => gripperFigure(index, grippers.length > 1 ? String(i) : null))
       .join("");
+    glowOnHover(panel);
   }
 
   const FILL = { single: fillSingle, multi: fillMulti, arm: fillArm };
@@ -277,7 +436,7 @@ export function initDeviceTools({ getWorld, modelOf, onSelect }) {
   /** Drag by the panel itself, the way the existing visualizer's dropdowns move. */
   function draggable(panel) {
     panel.addEventListener("mousedown", (event) => {
-      if (event.target.closest(".dt-reset, .dt-channel, .dt-head, .dt-arm")) return;
+      if (event.target.closest(".dt-reset, [data-index]")) return;
       const start = { x: event.clientX, y: event.clientY };
       const from = { x: panel.offsetLeft, y: panel.offsetTop };
       panel.classList.add("is-dragging");
