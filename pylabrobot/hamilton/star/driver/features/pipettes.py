@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime
+import enum
 import logging
 import math
 from contextlib import asynccontextmanager
@@ -130,6 +131,14 @@ class PipettesConfiguration:
   clld_detection_edge_range: Tuple[int, int] = (0, 1_023)
   clld_detection_drop_range: Tuple[int, int] = (0, 1_023)
   lld_post_detection_distance_range_increments: Tuple[int, int] = (0, 9_999)
+  lld_max_delta_range_increments: Tuple[int, int] = (0, 9_999)
+  """How far a pressure detection may sit from the capacitive one verifying it, in Z increments."""
+  plld_detection_edge_range: Tuple[int, int] = (0, 1_023)
+  plld_detection_drop_range: Tuple[int, int] = (0, 1_023)
+  plld_foam_detection_drop_range: Tuple[int, int] = (0, 1_023)
+  plld_foam_detection_edge_tolerance_range: Tuple[int, int] = (0, 1_023)
+  plld_foam_ad_values_range: Tuple[int, int] = (0, 4_999)
+  plld_foam_search_speed_range_increments: Tuple[int, int] = (20, 13_500)
 
   # -- what a channel's own Z drive accepts, for the moves addressed to the channel itself --
   z_drive_speed_range_increments: Tuple[int, int] = (20, 15_000)
@@ -148,6 +157,11 @@ class PipettesConfiguration:
   device's channels. The floor is the deck surface either way."""
   dispensing_drive_mm_per_increment: float = 0.002734375
   dispensing_drive_uL_per_increment: float = 0.046876
+  dispensing_drive_speed_range_increments: Tuple[int, int] = (20, 13_500)
+  dispensing_drive_acceleration_range_increments: Tuple[int, int] = (1, 100)
+  """Counted in increments per second squared, unlike the Z drive's."""
+  dispensing_drive_current_limit_range: Tuple[int, int] = (0, 7)
+  dispensing_drive_volume_range_increments: Tuple[int, int] = (0, 26_666)
 
   channel_size_z: float = 140.0
   """How tall to model a channel, in mm. Not read from anywhere: how far a channel extends is not
@@ -273,6 +287,20 @@ class Pipettes:
   `configuration.channels`.
   """
 
+  class LLDMode(enum.Enum):
+    """How a channel senses the liquid. Numbered as the Prep's, so the two read the same."""
+
+    OFF = 0
+    CAPACITIVE = 1
+    PRESSURE = 2
+    DUAL = 3
+
+  class PressureLLDMode(enum.Enum):
+    """What a pressure search stops at: the liquid, or the foam and then the liquid under it."""
+
+    LIQUID = 0
+    FOAM = 1
+
   # Y speed when the caller names none, in mm/s.
   default_y_speed: float = 250.0
   # Y acceleration level when the caller names none, 1 (gentlest) to 4.
@@ -285,6 +313,10 @@ class Pipettes:
   default_z_current_limit: int = 3
   # Height the channels travel at when a command names none, in mm.
   default_minimum_traverse_height: float = 245.0
+  # Containers within this X distance are probed in one batch, in mm.
+  default_x_grouping_tolerance: float = 0.1
+  # How far above a container's top a liquid search starts, in mm.
+  search_start_clearance: float = 5.0
 
   def __init__(self, driver: "STARDriver", configuration: Optional[PipettesConfiguration] = None):
     """
@@ -1759,14 +1791,15 @@ class Pipettes:
   # ----------------------------------------
 
   def _found_nothing(self, error: STARFirmwareError, module: str) -> bool:
-    """Whether a firmware error says only that a cLLD search reached its end without detecting.
+    """Whether a firmware error says only that a search reached its end without detecting.
 
-    The master answers that with error 12, a channel with trace 70.
+    The master answers that with error 12, a channel with trace 70, or 73 when both its sensors
+    searched.
     """
     return bool(error.errors) and all(
       isinstance(e, NoTeachInSignalError)
       if module == "C0"
-      else e.raw_module == module and e.trace_information == 70
+      else e.raw_module == module and e.trace_information in (70, 73)
       for e in error.errors.values()
     )
 
