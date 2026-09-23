@@ -704,6 +704,7 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.deck = deck
     self.sent: List[str] = []
     self.lh = [1500] * self.pipettes.num_channels
+    self.rz = 22300  # where a z-touch stops, in stop disc increments
     self.fail_with: dict = {}  # module -> list of error strings, one per search, in order
 
     async def answering(
@@ -718,6 +719,8 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
         return {"lh": list(self.lh)}
       if command == "ZE":
         return {"if": [12345, 0]}
+      if command == "ZH":
+        return {"rz": self.rz}
       return None
 
     self.pipettes._driver.send_command = answering  # type: ignore[assignment]
@@ -902,6 +905,38 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
       await self.pipettes.probe_liquid_heights(self._wells("A1", "B1"))
     self.assertEqual(self.sent, [])
     self.safe_z.assert_not_awaited()
+
+  async def test_floors_are_touched_at_once_and_read_against_the_model(self):
+    self.pipettes._record_where_they_stopped = unittest.mock.AsyncMock()  # type: ignore[method-assign]
+    wells = self._wells("A1", "B1", "C1", "D1")
+    floors = await self.pipettes.probe_z_heights_using_ztouch(wells)
+
+    c = self.pipettes.configuration
+    bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    top = wells[0].get_location_wrt(self.deck, "c", "c", "t").z
+    end = c.z_drive_mm_to_increments(round(bottom - 5.0 + 51.9, 2))
+    start = c.z_drive_mm_to_increments(round(top + 51.9 + 5.0, 2))
+    self.assertEqual(
+      self.sent,
+      [f"P{ch + 1}ZHzb{start:05}za{end:05}zv11652zr075zu00932cg001cf000" for ch in range(4)],
+    )
+    stop_disc = c.z_drive_increments_to_mm(self.rz)
+    self.assertEqual(floors, [round(stop_disc - 51.9 - bottom, 2)] * 4)
+    self.stop_discs.assert_awaited_once_with({ch: round(stop_disc + 2.0, 2) for ch in range(4)})
+    self.assertEqual(self.safe_z.await_count, 2)
+
+  async def test_a_floor_out_of_reach_is_none(self):
+    self.pipettes._record_where_they_stopped = unittest.mock.AsyncMock()  # type: ignore[method-assign]
+    wells = self._wells("A1")
+    bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    self.rz = self.pipettes.configuration.z_drive_mm_to_increments(round(bottom - 5.0 + 51.9, 2))
+    self.assertEqual(await self.pipettes.probe_z_heights_using_ztouch(wells), [None])
+
+  async def test_an_end_height_a_tip_cannot_reach_is_refused_before_any_batch(self):
+    with self.assertRaises(ValueError):
+      await self.pipettes.probe_liquid_heights(self._wells("A1"), minimum_traverse_height_end=290.0)
+    self.assertEqual(self.sent, [])
+    self.xy.assert_not_awaited()
 
   async def test_volumes_come_from_each_containers_own_function(self):
     from pylabrobot.resources.container import Container

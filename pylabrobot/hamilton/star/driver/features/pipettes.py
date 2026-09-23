@@ -2738,6 +2738,7 @@ class Pipettes:
     resource_offsets: Optional[List[Coordinate]],
     x_grouping_tolerance: Optional[float],
     minimum_traverse_height_start: Optional[float],
+    minimum_traverse_height_end: Optional[float] = None,
   ) -> Tuple[List[int], Dict[int, float], List[ChannelBatch]]:
     """Check the channels and their tips, raise them, and plan the batches; X and Y stay put.
 
@@ -2751,13 +2752,15 @@ class Pipettes:
         `default_x_grouping_tolerance` when None.
       minimum_traverse_height_start: the height every low channel's lowest point is raised to,
         in mm. Z safety when None.
+      minimum_traverse_height_end: where the tips are to be left at the end, in mm, checked here
+        against each tip's reach so the refusal comes before anything is in a container.
 
     Returns:
       The channels used, each one's tip overhang in mm keyed by channel, and the batches in
       ascending X.
 
     Raises:
-      ValueError: If the channels and containers do not match.
+      ValueError: If the channels and containers do not match, or a tip cannot reach the end.
       RuntimeError: If a channel used carries no tip.
     """
     channels = validate_channel_selections(list(containers), self.num_channels, use_channels)
@@ -2771,6 +2774,17 @@ class Pipettes:
     for channel in channels:
       stop_disc = await self.request_stop_disc_z_position(channel)
       overhangs[channel] = round(stop_disc - lowest[channel], 2)
+    if minimum_traverse_height_end is not None:
+      top = self.configuration.z_range[1]
+      too_high = {ch: round(top - overhangs[ch], 2) for ch in channels}
+      too_high = {
+        ch: reach for ch, reach in too_high.items() if minimum_traverse_height_end > reach
+      }
+      if too_high:
+        raise ValueError(
+          f"minimum_traverse_height_end {minimum_traverse_height_end} mm is above what the tips "
+          f"reach: {too_high}"
+        )
     if minimum_traverse_height_start is None:
       await self.move_to_safe_z()
     else:
@@ -2893,6 +2907,63 @@ class Pipettes:
           found[job].append(heights[channel])
     return found
 
+  async def _finish_batched_heights(
+    self,
+    per_batch: Sequence[Dict[int, List[Optional[float]]]],
+    channels: Sequence[int],
+    containers: Sequence[Container],
+    z_cavity_bottom: Sequence[float],
+    minimum_traverse_height_end: Optional[float],
+    what: str,
+  ) -> List[Optional[float]]:
+    """Turn the rounds of every batch into one height per container, and leave the channels.
+
+    Args:
+      per_batch: what each batch's rounds found, in mm on the deck, by job index.
+      channels: the channels used, per job.
+      containers: per job.
+      z_cavity_bottom: per job, on the deck in mm.
+      minimum_traverse_height_end: where the tips are left, in mm. Z safety when None.
+      what: what was searched for, for the error.
+
+    Returns:
+      The mean of the rounds above each container's cavity bottom, in mm; None where no round
+      found anything.
+
+    Raises:
+      RuntimeError: If something was found in some rounds and not in others.
+    """
+    found: Dict[int, List[Optional[float]]] = {}
+    for batch_found in per_batch:
+      for job, heights in batch_found.items():
+        found.setdefault(job, []).extend(heights)
+    above_bottom: List[Optional[float]] = []
+    inconsistent = []
+    for job, (channel, container) in enumerate(zip(channels, containers)):
+      rounds = found[job]
+      valid = [height for height in rounds if height is not None]
+      if not valid:
+        above_bottom.append(None)
+      elif len(valid) == len(rounds):
+        above_bottom.append(round(sum(valid) / len(valid) - z_cavity_bottom[job], 2))
+      else:
+        inconsistent.append(
+          f"channel {channel} in {container.name}: {len(valid)} of {len(rounds)} rounds"
+        )
+    if inconsistent:
+      await self.move_to_safe_z()
+      raise RuntimeError(
+        f"{what} found in some rounds and not in others, so it may be at the detection limit: "
+        + "; ".join(inconsistent)
+      )
+    if minimum_traverse_height_end is None:
+      await self.move_to_safe_z()
+    else:
+      await self.move_tool_bottom_to_z_positions(
+        {channel: minimum_traverse_height_end for channel in channels}
+      )
+    return above_bottom
+
   async def probe_liquid_heights(
     self,
     containers: Sequence[Container],
@@ -2964,6 +3035,7 @@ class Pipettes:
       resource_offsets,
       x_grouping_tolerance,
       minimum_traverse_height_start,
+      minimum_traverse_height_end,
     )
     z_cavity_bottom = [c.get_location_wrt(deck, "c", "c", "cavity_bottom").z for c in containers]
     z_top = [c.get_location_wrt(deck, "c", "c", "t").z for c in containers]
@@ -2974,37 +3046,166 @@ class Pipettes:
       batches,
       minimum_traverse_height_during,
     )
-    found: Dict[int, List[Optional[float]]] = {}
-    for batch_found in per_batch:
-      for job, heights in batch_found.items():
-        found.setdefault(job, []).extend(heights)
+    heights = await self._finish_batched_heights(
+      per_batch, channels, containers, z_cavity_bottom, minimum_traverse_height_end, "liquid"
+    )
+    # The bottom is known, so a container in which no liquid was met stands at 0.0.
+    return [0.0 if height is None else height for height in heights]
 
-    above_bottom: List[float] = []
-    inconsistent = []
-    for job, (channel, container) in enumerate(zip(channels, containers)):
-      rounds = found[job]
-      valid = [height for height in rounds if height is not None]
-      if not valid:
-        above_bottom.append(0.0)
-      elif len(valid) == len(rounds):
-        above_bottom.append(round(sum(valid) / len(valid) - z_cavity_bottom[job], 2))
-      else:
-        inconsistent.append(
-          f"channel {channel} in {container.name}: {len(valid)} of {len(rounds)} rounds"
-        )
-    if inconsistent:
-      await self.move_to_safe_z()
-      raise RuntimeError(
-        "liquid found in some rounds and not in others, so the level may be at the detection "
-        "limit: " + "; ".join(inconsistent)
+  async def _probe_batch_floors(
+    self,
+    batch: ChannelBatch,
+    overhangs: Dict[int, float],
+    z_cavity_bottom: Sequence[float],
+    z_top: Sequence[float],
+    search_speed: float,
+    below_floor: float,
+    end_tolerance: float,
+    post_detection_distance: float,
+    n_replicates: int,
+  ) -> Dict[int, List[Optional[float]]]:
+    """Z-touch the floor of every container of one batch, the channels together, n times.
+
+    As `_probe_batch_liquid_heights` with the search swapped: each channel searches from
+    `search_start_clearance` above its container's top down to `below_floor` under its cavity
+    bottom, and answers where its stop disc stopped, so the height is the overhang below that.
+    A channel that reached its end, within `end_tolerance`, touched nothing and is None for the
+    round. Then every channel of the batch backs off by `post_detection_distance` at once.
+
+    Args:
+      batch: the channels and which container each has, by job index.
+      overhangs: each channel's tip overhang in mm, keyed by channel.
+      z_cavity_bottom: per job, on the deck in mm.
+      z_top: per job, on the deck in mm.
+      search_speed: in mm/s.
+      below_floor: how far under the modelled cavity bottom the search may go, in mm.
+      end_tolerance: how close to the end counts as having touched nothing, in mm.
+      post_detection_distance: how far the channels back off after each round, in mm.
+      n_replicates: how many rounds.
+
+    Returns:
+      The tip bottom heights touched, in mm on the deck, one list per job index; None where
+      nothing was touched.
+
+    Raises:
+      STARFirmwareError: As a channel answered.
+    """
+    top = self.configuration.z_range[1]
+    searches = []
+    for channel, job in zip(batch.channels, batch.indices):
+      end = round(z_cavity_bottom[job] - below_floor + overhangs[channel], 2)
+      start = round(min(z_top[job] + overhangs[channel] + self.search_start_clearance, top), 2)
+      searches.append((channel, job, end, start))
+    found: Dict[int, List[Optional[float]]] = {job: [] for job in batch.indices}
+    for _ in range(n_replicates):
+      results = await asyncio.gather(
+        *(
+          self._ztouch_search(channel, end, start, search_speed=search_speed)
+          for channel, job, end, start in searches
+        ),
+        return_exceptions=True,
       )
-    if minimum_traverse_height_end is None:
-      await self.move_to_safe_z()
-    else:
-      await self.move_tool_bottom_to_z_positions(
-        {channel: minimum_traverse_height_end for channel in channels}
-      )
-    return above_bottom
+      await self._record_where_they_stopped("z", batch.channels)
+      failed = [result for result in results if isinstance(result, BaseException)]
+      if failed:
+        raise failed[0]
+      backing_off = {}
+      for (channel, job, end, _), stop_disc in zip(searches, results):
+        stop_disc = cast(float, stop_disc)
+        touched = stop_disc - end > end_tolerance
+        found[job].append(round(stop_disc - overhangs[channel], 2) if touched else None)
+        backing_off[channel] = round(stop_disc + post_detection_distance, 2)
+      if post_detection_distance:
+        await self.move_stop_disc_to_z_positions(backing_off)
+    return found
+
+  async def probe_z_heights_using_ztouch(
+    self,
+    containers: Sequence[Container],
+    use_channels: Optional[List[int]] = None,
+    resource_offsets: Optional[List[Coordinate]] = None,
+    search_speed: float = 10.0,
+    n_replicates: int = 1,
+    *,
+    below_floor: float = 5.0,
+    end_tolerance: float = 0.5,
+    post_detection_distance: float = 2.0,
+    minimum_traverse_height_start: Optional[float] = None,
+    minimum_traverse_height_during: Optional[float] = None,
+    minimum_traverse_height_end: Optional[float] = None,
+    x_grouping_tolerance: Optional[float] = None,
+  ) -> List[Optional[float]]:
+    """Touch the floor of each container with a channel's tip, and say how high it is.
+
+    `probe_liquid_heights` with the z-touch in place of the liquid search: the same batches, the
+    same moves between them, the channels of a batch searching together, and the same heights at
+    the end. Each search goes from just above the container's top to `below_floor` under its
+    modelled cavity bottom, and stops where the tip presses on something. Needs channel firmware
+    from 2022 on.
+
+    Args:
+      containers: one per channel used.
+      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
+      resource_offsets: added to where each channel goes in its container, in mm. Planned when
+        None, spreading channels that share a container.
+      search_speed: in mm/s.
+      n_replicates: how many times each container is touched; the heights are averaged.
+      below_floor: how far under the modelled cavity bottom the search may go, in mm.
+      end_tolerance: how close to the end counts as having touched nothing, in mm.
+      post_detection_distance: how far the channels back off after each round, in mm.
+      minimum_traverse_height_start: the height every low channel's lowest point is raised to
+        before the first batch, in mm. Z safety when None.
+      minimum_traverse_height_during: the same, between batches. Z safety when None.
+      minimum_traverse_height_end: where the tips used are left, in mm. Z safety when None.
+      x_grouping_tolerance: containers within this X distance share a batch, in mm.
+        `default_x_grouping_tolerance` when None.
+
+    Returns:
+      Where each floor was touched, above the container's modelled cavity bottom, in mm, in the
+      order given: 0.0 is a floor where the model has it, negative is lower. None where nothing
+      was touched within reach.
+
+    Raises:
+      ValueError: If an argument is out of range, or the lists do not match.
+      RuntimeError: If a channel used carries no tip or old firmware, the driver was given no
+        deck, or a floor was touched in some rounds and not in others.
+    """
+    deck = self._driver.deck
+    if deck is None:
+      raise RuntimeError("containers are placed from the deck; this driver was given none")
+    if n_replicates < 1:
+      raise ValueError(f"n_replicates must be at least 1, is {n_replicates}")
+    for channel in validate_channel_selections(list(containers), self.num_channels, use_channels):
+      self._require_ztouch_firmware(channel)
+    channels, overhangs, batches = await self._prepare_batched(
+      deck,
+      containers,
+      use_channels,
+      resource_offsets,
+      x_grouping_tolerance,
+      minimum_traverse_height_start,
+      minimum_traverse_height_end,
+    )
+    z_cavity_bottom = [c.get_location_wrt(deck, "c", "c", "cavity_bottom").z for c in containers]
+    z_top = [c.get_location_wrt(deck, "c", "c", "t").z for c in containers]
+    per_batch = await self._execute_batched(
+      lambda batch: self._probe_batch_floors(
+        batch,
+        overhangs,
+        z_cavity_bottom,
+        z_top,
+        search_speed,
+        below_floor,
+        end_tolerance,
+        post_detection_distance,
+        n_replicates,
+      ),
+      batches,
+      minimum_traverse_height_during,
+    )
+    return await self._finish_batched_heights(
+      per_batch, channels, containers, z_cavity_bottom, minimum_traverse_height_end, "a floor"
+    )
 
   async def probe_liquid_volumes(
     self,
