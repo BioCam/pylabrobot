@@ -2346,6 +2346,12 @@ class Pipettes:
       # A floor, not a height: a channel standing above it travels where it stands, and only what
       # is below it is brought up. Sending the floor to every channel would drive the high ones down.
       heights = {channel: max(ceilings[channel], standing[channel].z) for channel in moving}
+      # Where the move is going, recorded as it is sent: on the answer the model would already be a
+      # whole move behind the device. The read below still has the last word.
+      if arm is not None:
+        arm.update_location_by_reference_point(x)
+      for channel in moving:
+        self.update_location_by_reference_point(channel, y=final_y[channel], z=heights[channel])
       await self._unchecked_fw_move_to_position(
         x,
         moving,
@@ -2353,12 +2359,6 @@ class Pipettes:
         [heights[channel] for channel in moving],
         via_lane=via_lane,
       )
-      # What was asked, recorded as soon as the command answers; the read below replaces it with
-      # where the channels actually stopped.
-      if arm is not None:
-        arm.update_location_by_reference_point(x)
-      for channel in moving:
-        self.update_location_by_reference_point(channel, y=final_y[channel], z=heights[channel])
     finally:
       try:
         if self._driver is not None and restore_x is not None:
@@ -2952,10 +2952,10 @@ class Pipettes:
       detect_mode=detect_mode,
     )
     try:
-      results = await self._unchecked_fw_z_seek_lld_position([seek])
-      # What was asked, recorded as soon as the command answers; the read below replaces it with
-      # where the channels actually stopped.
+      # Where the move is going, recorded as it is sent: on the answer the model would already be a
+      # whole move behind the device. The read below still has the last word.
       self.update_location_by_reference_point(channel_idx, z=minimum_traverse_height_end)
+      results = await self._unchecked_fw_z_seek_lld_position([seek])
     finally:
       await self._record_where_they_stopped()
     result = next(
