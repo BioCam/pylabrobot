@@ -288,7 +288,9 @@ def lld_seek_timeout(
     return None
   speed: float = float(lld_params.channel_speed)
   search_start: float = float(lld_params.search_start_position)
-  top: float = search_start if approach_from_z is None else max(search_start, float(approach_from_z))
+  top: float = (
+    search_start if approach_from_z is None else max(search_start, float(approach_from_z))
+  )
   distance: float = top - float(z_minimum)
   if distance <= 0:
     return None
@@ -3759,6 +3761,195 @@ class Pipettes:
     if not spots:
       raise RuntimeError("No tips have been picked up.")
     await self.drop_tips(spots, use_channels=carrying, **kwargs)
+
+  async def discard_tips(self, use_channels: Optional[List[int]] = None, **kwargs) -> None:
+    """Discard each channel's tip into the deck's waste, each at its own waste position.
+
+    Args:
+      use_channels: which channels. Every channel the model has a tip on, when None.
+      kwargs: passed on to `drop_tips`.
+
+    Raises:
+      RuntimeError: If this deck was built without a waste block.
+    """
+    deck = self._require_deck()
+    if use_channels is None:
+      use_channels = [ch for ch in range(self.num_channels) if self.get_mounted_tip(ch) is not None]
+    if not use_channels:
+      return
+    waste = getattr(deck, "waste_block", None)
+    if waste is None:
+      raise RuntimeError("tips are discarded into the deck's waste block; this deck has none")
+    await self.drop_tips([waste] * len(use_channels), use_channels=use_channels, **kwargs)
+
+  async def _move_relative_and_check(
+    self, command: PrepCmd.PrepCommand, expected: Dict[int, Coordinate], tolerance: float = 1.0
+  ) -> List[Coordinate]:
+    """Send one relative axis move, then read where the channels are and stop unless they arrived.
+
+    The relative moves bypass the coordinator, so nothing but this check tells a wrong sign, a
+    refused distance or a stalled drive from a move that happened.
+
+    Args:
+      command: the relative move to send.
+      expected: where each channel named should report itself after it.
+      tolerance: how far off still counts as arrived, in mm.
+
+    Raises:
+      RuntimeError: If a channel is not where the move should have left it.
+    """
+    await self._driver.send_command(command)
+    at = await self.request_locations()
+    for ch, want in expected.items():
+      got = at[ch]
+      off = max(abs(got.x - want.x), abs(got.y - want.y), abs(got.z - want.z))
+      if off > tolerance:
+        raise RuntimeError(
+          f"after {type(command).__name__} channel {ch} reports {got}, expected {want} "
+          f"({off:.1f} mm off): stopping before anything else moves"
+        )
+    return at
+
+  async def release_tips(self, channels: Optional[List[int]] = None) -> None:
+    """Let go of whatever each channel holds, where it stands, with the squeeze drive alone.
+
+    `PipettorService.ReleaseTips` opens the squeeze and nothing else: no Z move, no drop position,
+    and no definition consulted. It is what clears a channel the Pipettor has lost track of, since
+    after a power cycle it forgets what it holds and refuses to drop it. Runs before initializing.
+    The tip falls where the channel is, so bring it over the waste first.
+
+    Args:
+      channels: which channels, 0-indexed from the back. Every channel sensing something, when None.
+    """
+    if channels is None:
+      channels = [ch for ch, on in enumerate(await self.sense_tip_presence()) if on]
+    if not channels:
+      return
+    service = await self._driver.resolve_path(f"{PIPETTOR_OBJECT_PATH}.PipettorService")
+    method = await self._driver.request_method_by_name(service, "ReleaseTips")
+    try:
+      for ch in sorted(set(channels)):
+        await self._driver.send_command(
+          PrepCmd.PrepReleaseTips(
+            dest=service,
+            command_id=method.method_id,
+            interface_id=method.interface_id,
+            channel=self.channel_enum(ch),
+          )
+        )
+        self._release_tip(ch)
+    finally:
+      # What a channel carries moves its Z window, and the device answers the new one.
+      with suppress(Exception):  # in a finally: never mask what went wrong above
+        await self._record_channel_bounds()
+      await self._record_where_they_stopped()
+
+  async def _emergency_release_of_tips_over_waste(self) -> None:
+    """Get the tips off over the waste with the axes and the squeeze drives alone.
+
+    For a device whose Pipettor will not drop what the channels carry: after a power cycle it
+    forgets what it holds and refuses `DropTips` and its own initialization. Nothing here goes
+    through the coordinator: every move is relative, on the axis itself, and checked against
+    where the channels then report themselves. In order:
+
+    1. where the channels are, and which sense something;
+    2. every stop disc to Z safety, relatively;
+    3. X, then each channel's Y, relatively, to the centre of its waste site;
+    4. the length of what is on, from the firmware: its definition, or the shift of the Z window
+       it reports where the two disagree;
+    5. each carrying channel down, relatively, to 10 mm above the waste's tip-end height;
+    6. the squeeze drives let go;
+    7. back up to Z safety, relatively.
+
+    Raises:
+      RuntimeError: If the deck has no waste sites, or a move did not leave a channel where it should.
+    """
+    deck = self._require_deck()
+    sites = getattr(deck, "waste_positions", None)
+    if not sites:
+      raise RuntimeError("the waste sites are placed on a PrepDeck; this driver has another deck")
+    at = await self.request_locations()
+    present = await self.sense_tip_presence()
+    carrying = [ch for ch, on in enumerate(present) if on]
+    if not carrying:
+      logger.info("nothing is sensed on the channels; nothing to release")
+      return
+    traverse = self.default_minimum_traverse_height
+
+    def axis(address: Optional[Address], which: str, ch: int) -> Address:
+      if address is None:
+        raise RuntimeError(f"channel {ch}'s {which} was not found at setup")
+      return address
+
+    zaxes = {ch: axis(self.channels[ch].zaxis, "Z axis", ch) for ch in range(self.num_channels)}
+    yaxes = {ch: axis(self.channels[ch].yaxis, "Y axis", ch) for ch in range(self.num_channels)}
+
+    # 4 first, since the stop discs' heights follow from it: reported Z is the bottom of what is on.
+    attached = await self.request_attached_tip_information(carrying[0])
+    with suppress(Exception):
+      await self._record_channel_bounds()
+    lengths: Dict[int, float] = {}
+    for ch in carrying:
+      length = attached.length if attached is not None else 0.0
+      window = (
+        self.configuration.channels[ch].z_range if ch < len(self.configuration.channels) else None
+      )
+      if window is not None:
+        physical = traverse - window[1]
+        if physical > 0.5 and abs(physical - length) > 0.5:
+          logger.warning(
+            "channel %d's window says %.1f mm below the stop disc, its definition %.1f: the window",
+            ch,
+            physical,
+            length,
+          )
+          length = physical
+      lengths[ch] = length
+
+    # 2. Every stop disc up to Z safety, one channel at a time.
+    for ch in range(self.num_channels):
+      disc = at[ch].z + lengths.get(ch, 0.0)
+      if traverse - disc > 0.5:
+        want = Coordinate(at[ch].x, at[ch].y, at[ch].z + (traverse - disc))
+        at = await self._move_relative_and_check(
+          PrepCmd.PrepZAxisMoveRelative(dest=zaxes[ch], distance=traverse - disc),
+          {ch: want},
+        )
+
+    # 3. X once, then Y per channel, the smaller target first so nobody passes the one ahead.
+    targets = {
+      ch: sites[_CHANNEL_TO_WASTE_NAME[ch]].get_location_wrt(deck, "c", "c", "t") for ch in carrying
+    }
+    x = next(iter(targets.values())).x
+    at = await self._move_relative_and_check(
+      PrepCmd.PrepXAxisMoveRelative(distance=x - at[0].x),
+      {ch: Coordinate(x, at[ch].y, at[ch].z) for ch in range(self.num_channels)},
+    )
+    for ch in sorted(carrying, key=lambda c: targets[c].y):
+      want = Coordinate(at[ch].x, targets[ch].y, at[ch].z)
+      at = await self._move_relative_and_check(
+        PrepCmd.PrepYAxisMoveRelative(dest=yaxes[ch], distance=targets[ch].y - at[ch].y),
+        {ch: want},
+      )
+
+    # 5. Down to 10 mm over the waste's tip-end height, 6. let go, 7. back up.
+    for ch in carrying:
+      down = at[ch].z - (targets[ch].z + 10.0)
+      if down > 0:
+        want = Coordinate(at[ch].x, at[ch].y, at[ch].z - down)
+        at = await self._move_relative_and_check(
+          PrepCmd.PrepZAxisMoveRelative(dest=zaxes[ch], distance=-down), {ch: want}
+        )
+    await self.release_tips(carrying)
+    at = await self.request_locations()
+    for ch in carrying:
+      # Nothing on it now: reported Z is the stop disc, and Z safety is where it goes.
+      up = traverse - at[ch].z
+      if up > 0.5:
+        at = await self._move_relative_and_check(
+          PrepCmd.PrepZAxisMoveRelative(dest=zaxes[ch], distance=up),
+          {ch: Coordinate(at[ch].x, at[ch].y, traverse)},
+        )
 
   def can_pick_up_tip(self, channel: int, tip: Tip) -> bool:
     """Check if the tip can be picked up by the specified channel.

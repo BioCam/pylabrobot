@@ -3481,6 +3481,26 @@ class PrepYDriveGetPosition(PrepStatusRequest["PrepYDriveGetPosition.Response"])
 
 
 @dataclass(frozen=True)
+class PrepZAxisMoveRelative(PrepCommand[None]):
+  """Move a channel along Z by a distance, in mm, positive up (cmd=5, dest=ZAxis). Runs before
+  initializing."""
+
+  command_id = 5
+  firmware_path = None
+  dest: Address  # type: ignore[misc]
+  distance: F32 = math.nan
+
+  def build_parameters(self) -> HoiParams:
+    """Encode fields in firmware-defined order."""
+    return HoiParams().add(self.distance, F32)
+
+  @classmethod
+  def parse_response_parameters(cls, data: bytes) -> None:
+    """Decode the declared success response."""
+    return None
+
+
+@dataclass(frozen=True)
 class PrepYAxisMoveRelative(PrepCommand[None]):
   """Move a channel along Y by a distance, in mm (cmd=3, dest=YAxis). Runs before initializing."""
 
@@ -4438,6 +4458,24 @@ class PrepXAxisSeekToHomeFlag(PrepCommand["PrepXAxisSeekToHomeFlag.Response"]):
 
 
 @dataclass(frozen=True)
+class PrepXAxisMoveRelative(PrepCommand[None]):
+  """Move the X axis by a distance, in mm, positive to the right (cmd=4, dest=XAxis)."""
+
+  command_id = 4
+  firmware_path = "MLPrepRoot.XAxis"
+  distance: F64
+
+  def build_parameters(self) -> HoiParams:
+    """Encode fields in firmware-defined order."""
+    return HoiParams().add(self.distance, F64)
+
+  @classmethod
+  def parse_response_parameters(cls, data: bytes) -> None:
+    """Decode the declared success response."""
+    return None
+
+
+@dataclass(frozen=True)
 class PrepXAxisMoveAbsolute(PrepCommand[None]):
   """Move the X axis to a position in its own frame, in mm (cmd=3, dest=XAxis).
 
@@ -4753,6 +4791,52 @@ class PrepGetSafeSpeedsEnabled(PrepStatusRequest["PrepGetSafeSpeedsEnabled.Respo
   def parse_response_parameters(cls, data: bytes) -> PrepGetSafeSpeedsEnabled.Response:
     """Decode the declared success response."""
     return parse_into_struct(HoiParamsParser(data), cls.Response)
+
+
+@dataclass(frozen=True)
+class PrepReleaseTips(PrepCommand[None]):
+  """ReleaseTips(channel) (dest=PipettorService): the squeeze drive lets go where the channel stands.
+
+  The id is read from the device's method table by name, as it differs between firmware versions.
+  """
+
+  firmware_path = None
+  dest: Address
+  command_id: int  # type: ignore[misc]
+  interface_id: int = 1  # type: ignore[misc]
+  channel: WEnum = 0
+
+  def build_parameters(self) -> HoiParams:
+    """Encode fields in firmware-defined order."""
+    return HoiParams().add(self.channel, WEnum)
+
+  @classmethod
+  def parse_response_parameters(cls, data: bytes) -> None:
+    """Decode the declared success response."""
+    return None
+
+
+@dataclass(frozen=True)
+class PrepSetSafeSpeedsEnabled(PrepCommand[None]):
+  """SetSafeSpeedsEnabled(value) (dest=MLPrep), at the ids the device's method table gives.
+
+  The id differs between firmware versions, so the caller reads it by name and passes it in.
+  """
+
+  firmware_path = None
+  dest: Address
+  command_id: int  # type: ignore[misc]
+  interface_id: int = 1  # type: ignore[misc]
+  value: PaddedBool = False
+
+  def build_parameters(self) -> HoiParams:
+    """Encode fields in firmware-defined order."""
+    return HoiParams().add(self.value, PaddedBool)
+
+  @classmethod
+  def parse_response_parameters(cls, data: bytes) -> None:
+    """Decode the declared success response."""
+    return None
 
 
 @dataclass(frozen=True)

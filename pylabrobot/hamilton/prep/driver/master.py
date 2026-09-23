@@ -19,7 +19,7 @@ from typing import (
 
 from pylabrobot.hamilton.transport.tcp.commands import TCPCommand
 from pylabrobot.hamilton.transport.tcp.error_tables import HC_RESULT_PROTOCOL
-from pylabrobot.hamilton.transport.tcp.hoi_error import parse_hamilton_error_entries
+from pylabrobot.hamilton.transport.tcp.hoi_error import HoiError, parse_hamilton_error_entries
 from pylabrobot.hamilton.transport.tcp.introspection import FirmwareTreeNode, MethodInfo
 from pylabrobot.hamilton.transport.tcp.messages import (
   CommandMessage,
@@ -36,7 +36,19 @@ from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.deck import Deck
 from pylabrobot.resources.hamilton.core_grippers import HamiltonCoreGrippers
 from pylabrobot.resources.hamilton.prep_decks import PrepDeck
-from pylabrobot.resources.hamilton.tip_creators import HamiltonTip, TipPickupMethod, TipSize
+from pylabrobot.resources.hamilton.tip_creators import (
+  HamiltonTip,
+  TipPickupMethod,
+  TipSize,
+  hamilton_tip_10uL,
+  hamilton_tip_10uL_filter,
+  hamilton_tip_50uL,
+  hamilton_tip_50uL_filter,
+  hamilton_tip_300uL,
+  hamilton_tip_300uL_filter,
+  hamilton_tip_1000uL,
+  hamilton_tip_1000uL_filter,
+)
 from pylabrobot.resources.resource import Resource
 
 from . import prep_commands as PrepCmd
@@ -123,6 +135,38 @@ class _PrepTCPClient(HamiltonTCPClient):
       read_timeout=self._read_timeout,
       error_codes=self._ERROR_CODES,
     )
+
+
+def _hamilton_tip_for_reach(reach: float, has_filter: bool, name: str) -> Optional[HamiltonTip]:
+  """The Hamilton tip whose reach below the stop disc is `reach`, or None when none is within 0.3 mm.
+
+  A drop needs the tip's collar height, which only a known tip has. The filter flag breaks a tie
+  between the plain and filtered tip of one length, which share every other dimension.
+  """
+  candidates = (
+    hamilton_tip_10uL,
+    hamilton_tip_10uL_filter,
+    hamilton_tip_50uL,
+    hamilton_tip_50uL_filter,
+    hamilton_tip_300uL,
+    hamilton_tip_300uL_filter,
+    hamilton_tip_1000uL,
+    hamilton_tip_1000uL_filter,
+  )
+  matching = [
+    tip
+    for tip in (make(name) for make in candidates)
+    if abs(tip.get_size_z() - tip.fitting_depth - reach) <= 0.3
+  ]
+  if not matching:
+    return None
+  return next((tip for tip in matching if tip.has_filter == has_filter), matching[0])
+
+
+def _refused_with(error: BaseException, code: int) -> bool:
+  """Whether a device refusal carries `code` in any of its entries."""
+  entries = getattr(error, "entries", None) or getattr(error, "hoi_entries", None) or []
+  return any(getattr(entry, "result", None) == code for entry in entries)
 
 
 @dataclass(frozen=True)
@@ -1181,6 +1225,32 @@ class PrepDriver:
     self.configuration = configuration
     return configuration
 
+  async def _release_attached_over_waste(self, carrying: List[int]) -> None:
+    """Take the channels over their waste sites and let go with the squeeze drive alone.
+
+    A last resort, for what the Pipettor will not drop: after a power cycle it forgets what it
+    holds and refuses `DropTips` and its own initialization; a refused `PickUpTool` leaves a stale
+    definition behind. The X axis, each channel's Y axis and `ReleaseTips` all run regardless.
+
+    Args:
+      carrying: the channels sensing something, 0-indexed from the back.
+    """
+    if self.pipettes is None or self.x_arm is None:
+      raise RuntimeError("the pipettes and the arm are needed to release over the waste")
+    if not isinstance(self.deck, PrepDeck):
+      raise RuntimeError("the waste sites are placed on a PrepDeck; this driver has another deck")
+    names = ["waste_rear", "waste_front", "waste_mph"]
+    targets = {
+      ch: self.deck.waste_positions[names[ch]].get_location_wrt(self.deck, "c", "c", "t")
+      for ch in carrying
+    }
+    await self.x_arm.move_to_x_position(next(iter(targets.values())).x)
+    at = await self.pipettes.request_locations()
+    # The smaller target first, so a channel never has to pass the one ahead of it.
+    for ch in sorted(carrying, key=lambda c: targets[c].y):
+      await self._move_relative_in_y(ch, targets[ch].y - at[ch].y)
+    await self.pipettes.release_tips(carrying)
+
   async def _initialize_instrument(
     self, *, smart: bool, force_initialize: bool, read_timeout: float = 300.0
   ) -> None:
@@ -1203,18 +1273,37 @@ class PrepDriver:
         return
 
       logger.debug("device reports not initialized - running the initialization procedure")
-    await self.send_command(
-      PrepCmd.PrepInitialize(
-        smart=smart,
-        tip_drop_params=PrepCmd.InitTipDropParameters(
-          default_values=True,
-          x_position=287.0,
-          rolloff_distance=3,
-          channel_parameters=[],
-        ),
+    initialize = PrepCmd.PrepInitialize(
+      smart=smart,
+      tip_drop_params=PrepCmd.InitTipDropParameters(
+        default_values=True,
+        x_position=287.0,
+        rolloff_distance=3,
+        channel_parameters=[],
       ),
-      read_timeout=read_timeout,
     )
+    try:
+      await self.send_command(initialize, read_timeout=read_timeout)
+    except HoiError as e:
+      # Tips on after a power cycle: the device has no definition for them, so its own drop inside
+      # the procedure computes a Z beyond travel (0x0F06), whatever drop parameters it is given.
+      if not _refused_with(e, 0x0F06):
+        raise
+      if self.pipettes is None:
+        self.pipettes = Pipettes(self)
+        await self.pipettes._on_setup()
+      if self.x_arm is None:
+        self.x_arm = XArm(self)
+      carrying = [ch for ch, on in enumerate(await self.pipettes.sense_tip_presence()) if on]
+      if not carrying:
+        raise
+      logger.warning(
+        "the device refused to initialize with something on %s it has no definition for: "
+        "releasing it over the waste, then initializing again",
+        channels_named(carrying),
+      )
+      await self._release_attached_over_waste(carrying)
+      await self.send_command(initialize, read_timeout=read_timeout)
     logger.debug("the device initialization procedure has run")
 
   def format_setup_summary(self) -> str:
@@ -1338,13 +1427,22 @@ class PrepDriver:
       attached.is_needle,
       attached.is_tool,
     )
-    if attached.is_tool:
-      if self.core_grippers is None:
-        logger.warning("it is a tool, but there is nothing here to put it back with")
-        return
+    if attached.is_tool and self.core_grippers is not None:
       logger.warning("it is a tool, so it goes back in its holder rather than into the waste")
-      # Nothing parked to put back: only a tool on a channel to let go of.
-      await self.core_grippers.drop_tools()
+      try:
+        # Nothing parked to put back: only a tool on a channel to let go of.
+        await self.core_grippers.drop_tools()
+        return
+      except HoiError as e:
+        # A refused `PickUpTool` leaves its definition behind while the tips stay on: the device
+        # then says no tool is held, and what is on is treated as tips.
+        if not _refused_with(e, 0x0F07):
+          raise
+        logger.warning(
+          "the device holds no tool: the definition is stale, so it is treated as tips"
+        )
+    elif attached.is_tool:
+      logger.warning("it is a tool, but there is nothing here to put it back with")
       return
     waste = self.deck.waste_block if isinstance(self.deck, PrepDeck) else None
     if waste is None:
@@ -1354,20 +1452,45 @@ class PrepDriver:
     # The model holds nothing at setup and a drop needs it to, so it adopts what the firmware
     # describes. The definition gives how far the tip reaches below the stop disc, not its fitting
     # depth, which is 8 mm for every Hamilton tip but the 5 mL family's 10.
-    found = HamiltonTip(
-      name=f"attached at setup ({attached.label})",
-      has_filter=attached.has_filter,
-      size_z=attached.length + TIP_FITTING_DEPTH,
-      maximal_volume=attached.volume,
-      nominal_volume=attached.volume,
-      tip_size=TipSize.STANDARD_VOLUME,
-      pickup_method=TipPickupMethod.OUT_OF_RACK,
-    )
+    traverse = self.pipettes.default_minimum_traverse_height
     for channel in carrying:
       # A model that already knows keeps what it has; a fresh one adopts what the firmware describes.
+      # One tip per channel: a resource has one parent, so a shared one would leave all but the last.
       if self.pipettes.get_mounted_tip(channel) is None:
+        # The Z window the device reports is shifted by what is physically on; the definition can
+        # be another thing's. The window wins where the two disagree.
+        length = attached.length
+        windows = self.pipettes.configuration.channels
+        window = windows[channel].z_range if channel < len(windows) else None
+        if window is not None:
+          physical = traverse - window[1]
+          if physical > 0.5 and abs(physical - length) > 0.5:
+            logger.warning(
+              "channel %d's window says %.1f mm below the stop disc, its definition %.1f: the window",
+              channel,
+              physical,
+              length,
+            )
+            length = physical
+        name = f"attached at setup ({attached.label}) on channel {channel}"
+        found = _hamilton_tip_for_reach(length, attached.has_filter, name) or HamiltonTip(
+          name=name,
+          has_filter=attached.has_filter,
+          size_z=length + TIP_FITTING_DEPTH,
+          maximal_volume=attached.volume,
+          nominal_volume=attached.volume,
+          tip_size=TipSize.STANDARD_VOLUME,
+          pickup_method=TipPickupMethod.OUT_OF_RACK,
+        )
         self.pipettes._mount_tip(channel, found)
-    await self.pipettes.drop_tips([waste] * len(carrying), use_channels=carrying)
+    try:
+      await self.pipettes.drop_tips([waste] * len(carrying), use_channels=carrying)
+    except (HoiError, ValueError) as e:
+      # Last resort: the Pipettor forgets what it holds across a power cycle and refuses to drop it
+      # (0x0F03), computes its Z from a stale definition (0x0F06), or what is on matches no tip
+      # whose collar height a drop can be planned from. The squeeze drive lets go regardless.
+      logger.warning("the device refused to drop it (%s): releasing it over the waste instead", e)
+      await self._release_attached_over_waste(carrying)
 
   def _place_reported_sites(self) -> None:
     """Move the teaching needle and the waste positions to where the device reports them.
@@ -1597,6 +1720,23 @@ class PrepDriver:
   async def request_z_speed_scale(self) -> int:
     """Request how fast MLPrep drives Z, as a percentage of its full speed."""
     return int((await self.send_command(PrepCmd.PrepGetZSpeedScale())).value)
+
+  async def _set_safe_speeds_enabled(self, enabled: bool) -> None:
+    """Switch MLPrep's safe speeds on or off. Stays set until changed.
+
+    On, the device holds the Z drives to a low acceleration and raises the X jerk; `discover` reads
+    the state into the configuration. The command's id is read from the method table by name.
+
+    Args:
+      enabled: True for safe speeds.
+    """
+    mlprep = self.mlprep_address
+    method = await self.request_method_by_name(mlprep, "SetSafeSpeedsEnabled")
+    await self.send_command(
+      PrepCmd.PrepSetSafeSpeedsEnabled(
+        dest=mlprep, command_id=method.method_id, interface_id=method.interface_id, value=enabled
+      )
+    )
 
   async def set_x_speed_scale(self, percent: int) -> None:
     """Set how fast MLPrep drives X, as a percentage of its full speed. Stays set until changed.
