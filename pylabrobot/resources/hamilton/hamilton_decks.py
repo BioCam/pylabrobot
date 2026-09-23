@@ -124,6 +124,11 @@ def _resolve_num_tracks(num_tracks: Optional[int], num_rails: Optional[int]) -> 
 class HamiltonDeck(Deck, metaclass=ABCMeta):
   """Hamilton decks. Currently only STARLet, STAR and Vantage are supported."""
 
+  safe_deck_height: float = 245.0
+  """Up to this height, in mm of the deck's frame (145 above its surface), a resource is under a
+  traversing channel whatever tip it carries: the stop discs at Z safety, 334.7, less the 87.1 mm a
+  1000 uL tip reaches below them, with margin. Higher may be safe, depending on the tip."""
+
   def __init__(
     self,
     num_tracks: Optional[int] = None,
@@ -459,8 +464,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
   def _check_safe_z_height(self, resource: Resource):
     """Check for this resource, and all its children, that the z location is not too high."""
 
-    # TODO: maybe these are parameters per HamiltonDeck that we can take as attributes.
-    Z_MOVEMENT_LIMIT = 245
+    # TODO: a per-deck attribute, as `safe_deck_height` is.
     Z_GRAB_LIMIT = 285
 
     def check_z_height(resource: Resource):
@@ -475,7 +479,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
         # this is fine, because it's a convenience feature and not critical
         return
 
-      if z_top > Z_MOVEMENT_LIMIT:
+      if z_top > self.safe_deck_height:
         logger.warning(
           "Resource '%s' is very high on the deck: %s mm. Be careful when traversing the deck.",
           resource.name,

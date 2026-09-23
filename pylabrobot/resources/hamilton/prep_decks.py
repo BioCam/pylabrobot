@@ -1,11 +1,14 @@
 """Hamilton Prep deck."""
 
+import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from pylabrobot.resources.carrier import ResourceHolder
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.deck import Deck, _built
+from pylabrobot.resources.errors import NoLocationError
+from pylabrobot.resources.head_tool import HeadTool
 from pylabrobot.resources.hamilton.core_grippers import (
   HamiltonCoreGrippers,
   prep_core_gripper_holder,
@@ -15,6 +18,8 @@ from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip_rack import TipSpot
 from pylabrobot.resources.trash import Trash
 from pylabrobot.resources.trough import Trough
+
+logger = logging.getLogger(__name__)
 
 # How tall the deck's working volume is, in mm, from the deck surface. The channels travel from 18.03
 # to 167.5 mm and the deck configuration reports the same Z range, as read off PRPAA1087 on
@@ -74,6 +79,31 @@ class PrepDeck(Deck):
 
   This is **not** a :class:`HamiltonSTARDeck` (rails/teaching rack layout differ).
   """
+
+  safe_deck_height: float = 75.0
+  """Up to this height, in mm, a resource is under a traversing channel whatever tip it carries: the
+  stop discs at Z safety, 167.5, less the 87.1 mm a 1000 uL tip reaches below them, with margin.
+  Higher may be safe, depending on the tip."""
+
+  def _check_safe_deck_height(self, resource: Resource) -> None:
+    """Warn when a resource the device does not carry stands above `safe_deck_height`."""
+    up: Optional[Resource] = resource
+    while up is not None and up is not self:
+      if up.category == "x_arm" or isinstance(up, HeadTool):
+        return
+      up = up.parent
+    for each in [resource, *resource.get_all_children()]:
+      try:
+        z_top = each.get_location_wrt(self, z="top").z
+      except NoLocationError:
+        continue
+      if z_top > self.safe_deck_height:
+        logger.warning(
+          "Resource '%s' stands %s mm high on the deck, above the %s mm that is safe under any tip.",
+          each.name,
+          z_top,
+          self.safe_deck_height,
+        )
 
   def __init__(
     self,
@@ -159,6 +189,8 @@ class PrepDeck(Deck):
           ),
           location=Coordinate(x=287.0, y=y_pos, z=68.4),
         )
+
+    self.register_did_assign_resource_callback(self._check_safe_deck_height)
 
   def _build_waste_block(self, prefix: str, with_core_grippers: bool) -> None:
     """The waste block, and what stands on it: the trough, the teaching needle, the tool holder."""
