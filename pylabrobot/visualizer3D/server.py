@@ -546,6 +546,9 @@ class Viewer3D:
     host_allowed = self._host_allowed
 
     class Handler(http.server.SimpleHTTPRequestHandler):
+      # Keep-alive, so a page fetching two dozen meshes at once reuses a few connections.
+      protocol_version = "HTTP/1.1"
+
       def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=directory, **kwargs)
 
@@ -600,9 +603,11 @@ class Viewer3D:
           return
         return super().do_GET()
 
+    # Threaded: a page loads its meshes in parallel, and a server answering one request at a time
+    # was seen closing one of twenty-two without a response, which drew that resource as a box.
     while True:
       try:
-        self._httpd = http.server.HTTPServer((self.host, self.fs_port), Handler)
+        self._httpd = http.server.ThreadingHTTPServer((self.host, self.fs_port), Handler)
         break
       except OSError:
         self.fs_port += 1
