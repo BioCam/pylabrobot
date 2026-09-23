@@ -22,10 +22,9 @@ const SHAFT = "tip_mounting_shaft";
 // A gripper's own parts, as opposed to whatever it has picked up: anything else below it is cargo.
 const GRIPPER_PARTS = new Set(["body", "finger", "pad"]);
 
-// Somewhere a device stands rather than a device. A facility holds instruments and a bench holds
-// them too, and a deck is the surface one works over - none of the three is the thing that
-// pipettes, so the search goes through them and stops at what they contain.
-const PLACES = new Set(["facility", "bench", "deck"]);
+// What a device says it is. A STAR and a Prep both declare it, and it is the only thing that
+// gets a button: a bench or a facility holds devices and is no feature of anything.
+const DEVICE = "device";
 
 // A tip is drawn at its own length, so a 1000 uL tip reads as one. Millimetres at this many pixels
 // each, clamped so that a panel of eight channels still fits on a laptop.
@@ -88,21 +87,16 @@ export function initDeviceTools({ getWorld, modelOf, onSelect }) {
   const carries = (parts) => parts.channels.length || parts.heads.length || parts.grippers.length;
 
   /**
-   * The devices in the scene: the outermost resource that is not simply a place, and that
-   * pipettes or grips. A facility holding two instruments answers with both; an instrument holding
-   * an arm holding channels answers once, as the instrument.
+   * The devices in the scene: every resource that declares itself one and pipettes or grips, in
+   * tree order. A facility holding two instruments answers with both; whatever a device stands on
+   * is not asked.
    */
   function devices() {
     const world = getWorld();
     const found = [];
-    const walk = (index) => {
-      if (!PLACES.has(categoryOf(index)) && carries(partsOf(index))) {
-        found.push(index);
-        return; // nothing below a device is another device
-      }
-      for (const child of world.childrenOf[index]) walk(child);
-    };
-    for (let i = 0; i < world.names.length; i++) if (world.parentOf[i] < 0) walk(i);
+    for (let i = 0; i < world.names.length; i++) {
+      if (categoryOf(i) === DEVICE && carries(partsOf(i))) found.push(i);
+    }
     return found;
   }
 
@@ -292,6 +286,8 @@ export function initDeviceTools({ getWorld, modelOf, onSelect }) {
         moved.set(panel.id, at);
         panel.style.left = `${at.x}px`;
         panel.style.top = `${at.y}px`;
+        // The way back appears once there is somewhere to come back from.
+        panel.querySelector(".dt-reset").hidden = false;
       };
       const up = () => {
         panel.classList.remove("is-dragging");
@@ -336,10 +332,18 @@ export function initDeviceTools({ getWorld, modelOf, onSelect }) {
     const element = document.createElement("div");
     element.className = `dt-panel mt-panel-${kind}`;
     element.id = id;
-    element.innerHTML = `<button class="dt-reset" title="Put this panel back">&#8635;</button><div class="dt-body"></div>`;
-    element.querySelector(".dt-reset").addEventListener("click", (event) => {
+    // The same house as the deck's "Reset view", as the existing visualizer's panels carry, and
+    // hidden until the panel has been dragged: a way back is only offered once there is one.
+    element.innerHTML =
+      `<button class="dt-reset" title="Return this panel to its default position" hidden>` +
+      `<svg width="15" height="15" viewBox="0 0 20 20" aria-hidden="true">` +
+      `<path d="M10 1L1 9h3v8h5v-5h2v5h5V9h3L10 1z" fill="currentColor"/></svg>` +
+      `</button><div class="dt-body"></div>`;
+    const reset = element.querySelector(".dt-reset");
+    reset.addEventListener("click", (event) => {
       event.stopPropagation();
       moved.delete(id);
+      reset.hidden = true;
       layOut();
     });
     mainEl?.appendChild(element);
@@ -359,8 +363,16 @@ export function initDeviceTools({ getWorld, modelOf, onSelect }) {
     containerEl.textContent = "";
     const world = getWorld();
     if (!world) return;
+    const found = devices();
+    if (!found.length) return;
 
-    for (const device of devices()) {
+    // The section's heading, once. Each device then carries only its own name.
+    const heading = document.createElement("span");
+    heading.className = "dt-section-title";
+    heading.textContent = "Device Features";
+    containerEl.appendChild(heading);
+
+    for (const device of found) {
       const parts = partsOf(device);
       const group = document.createElement("div");
       group.className = "dt-group";
@@ -368,7 +380,7 @@ export function initDeviceTools({ getWorld, modelOf, onSelect }) {
       const label = document.createElement("button");
       label.className = "dt-label";
       label.title = "Show or hide this device's features";
-      label.innerHTML = `${escapeHtml(world.names[device])}<br>Device Features`;
+      label.textContent = world.names[device];
       group.appendChild(label);
 
       const buttons = document.createElement("div");
