@@ -137,10 +137,9 @@ let framed = false; // whether this connection has framed the camera on its firs
 // ---------------------------------------------------------------- renderer
 
 const viewportEl = document.getElementById("viewport");
-// `preserveDrawingBuffer` keeps the rendered frame readable after it is composited, which is
-// what lets a GIF frame be copied off the canvas. Without it the copy comes back blank on the
-// WebGL2 fallback path.
-const renderer = new THREE.WebGPURenderer({ antialias: true, preserveDrawingBuffer: true });
+// No `preserveDrawingBuffer`: this three never reads it, and a GIF frame is captured through a
+// render target rather than off the canvas.
+const renderer = new THREE.WebGPURenderer({ antialias: true });
 const _tInit = performance.now();
 await renderer.init();
 timings.rendererMs = performance.now() - _tInit;

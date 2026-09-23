@@ -90,7 +90,8 @@ export function initGif({ renderer, view, camera }) {
   // Copying the canvas directly comes back blank: the drawing buffer is gone by the time a copy
   // runs. Rendering the frame into a render target and reading it back works on both backends,
   // and it is the same render call, so the frame is exactly what is on screen. Only the viewport
-  // is captured, not the floating panels over it.
+  // is captured, not the floating panels over it. The read-back returns the pixels; handed an
+  // array as well, three took it for a texture index and the capture failed on every backend.
   let captureTarget = null;
   let capturing = false;
 
@@ -106,8 +107,7 @@ export function initGif({ renderer, view, camera }) {
       }
       renderer.setRenderTarget(captureTarget);
       renderer.render(view, camera);
-      const pixels = new Uint8Array(width * height * 4);
-      await renderer.readRenderTargetPixelsAsync(captureTarget, 0, 0, width, height, pixels);
+      const pixels = await renderer.readRenderTargetPixelsAsync(captureTarget, 0, 0, width, height);
       renderer.setRenderTarget(null);
 
       const scratch = document.createElement("canvas");
@@ -123,14 +123,13 @@ export function initGif({ renderer, view, camera }) {
       context.putImageData(image, 0, 0);
       capturedFrames.push(scratch);
     } catch (error) {
-      // three's WebGL2 backend cannot read a render target back (r180), so recording only works
-      // on the WebGPU path. Say so rather than producing an empty GIF.
+      // Both backends read a render target back; a failure is something else, and is said rather
+      // than producing an empty GIF.
       console.warn("frame capture failed", error);
       recording = false;
       captureBroken = true;
       showGifBox("start");
-      gifNotice.textContent =
-        "Recording needs the WebGPU backend; this browser fell back to WebGL2.";
+      gifNotice.textContent = `Recording failed on this browser: ${error?.message ?? error}`;
       button("start-recording-button").disabled = true;
     } finally {
       capturing = false;

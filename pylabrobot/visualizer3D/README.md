@@ -66,10 +66,9 @@ interface is worth doing again once state itself can carry that distinction.
   from tracker state at all: a tip is drawn when it stands in the tree as a resource.
 - Picking is `InstancedMesh` raycasting, which is fine at this size. GPU picking is the production
   answer.
-- GIF recording only works on the WebGPU backend. three's WebGL2 backend cannot read a render
-  target back (r180), so on the fallback path the control disables itself and says why rather than
-  producing an empty file. Untested on WebGPU here, since the browser used to check it has no
-  adapter. It captures the viewport only, not the floating panels over it.
+- GIF recording captures the viewport only, not the floating panels over it. It records on both
+  backends: the frame is rendered into a render target and read back, which three's WebGL2 backend
+  does too.
 - No GUI editing mode.
 
 ## Design fault: the renderer gates everything
@@ -137,8 +136,8 @@ without the variable renders on the CPU, and the URL opens in it, so start it th
 5. Serve HTTP and the websocket on one port (websockets `process_request`), and connect with
    `new URL("ws", location)`. That leaves one tunnel, and it works behind a proxy or HTTPS. If the port is taken,
    fail loudly instead of moving up silently.
-6. Capture GIF frames with `drawImage(renderer.domElement)` straight after `render`. `preserveDrawingBuffer` is
-   already on, so this should work on both backends (untested).
+6. **Done.** GIF frames are read back from a render target on both backends. `preserveDrawingBuffer`
+   was never read by this three and is gone.
 7. Detect software renderers and switch to a low-cost mode: pixel ratio 1, no antialias, no PMREM environment.
 8. Send broadcasts to all clients at once and drop slow ones. Today one slow remote viewer stalls updates for every client.
 
