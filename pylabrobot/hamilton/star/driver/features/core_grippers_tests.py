@@ -139,6 +139,13 @@ class TestPickUpAndDropTools(unittest.IsolatedAsyncioTestCase):
     )
     self.assertEqual(self.safe_z_moves(), [])
 
+  async def test_the_tools_on_by_location_alone_let_the_grippers_act(self):
+    with self.assertRaises(RuntimeError):
+      self.grippers._require_mounted()
+    await self.grippers.pick_up_tools_at_location(1337.5, 225.0, 107.0, 125.0)
+    self.assertEqual(self.grippers._require_mounted(), (6, 7))
+    self.assertFalse(self.grippers.tools_mounted)
+
   async def test_a_named_pair(self):
     await self.grippers.pick_up_tools_at_location(1337.5, 225.0, 107.0, 125.0, front_channel=5)
     self.assertIn("pa05pb06", self.tool_commands()[0])

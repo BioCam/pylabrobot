@@ -132,18 +132,19 @@ class CoreGrippers:
     self._pipettes._require_channel(channel)
     return bool((await self._pipettes.sense_tip_presence())[channel])
 
-  def _require_mounted(self) -> None:
-    """Raise unless the tools are on the channels.
+  def _require_mounted(self) -> Tuple[int, int]:
+    """Raise unless the channels hold the tools, taken by either pick-up. The back and front channel.
 
     Raises:
-      RuntimeError: If they are not.
+      RuntimeError: If they do not.
     """
-    if not self._tools_mounted:
+    if self._tools_taken_from is None or self._back_channel is None or self._front_channel is None:
       raise RuntimeError(
-        "the CoRe gripper tools are not mounted. Call "
-        "`await star.core_grippers.pick_up_tools()` first, or use "
+        "the CoRe gripper tools are not on the channels. Call "
+        "`await star.core_grippers.pick_up_tools()` or `pick_up_tools_at_location()` first, or use "
         "`async with star.core_grippers.mounted():`."
       )
+    return self._back_channel, self._front_channel
 
   def _clear_held_state(self) -> None:
     self._holding_resource_width = None
@@ -432,15 +433,15 @@ class CoreGrippers:
       RuntimeError: If no pick-up is remembered, or the iSWAP is not parked.
       ValueError: If a height is out of range.
     """
-    if self._tools_taken_from is None or self._back_channel is None or self._front_channel is None:
-      raise RuntimeError("no pick-up to put the tools back to; `pick_up_tools_at_location` first")
+    self._require_mounted()
     if self._held_resource is not None:
       raise RuntimeError(
         f"the grippers hold {self._held_resource.name}: put it down first with `drop_resource` "
         "or `return_resource`, then return the tools"
       )
     pipettes = self._pipettes
-    x, rear_y, front_y, seek, end = self._tools_taken_from
+    # Set with the channel pair, which `_require_mounted` has checked.
+    x, rear_y, front_y, seek, end = cast(Tuple[float, ...], self._tools_taken_from)
     start = self.default_minimum_traverse_height if move_to_safe_z_first else 0.0
     if minimum_traverse_height_end is None:
       minimum_traverse_height_end = self.default_minimum_traverse_height
@@ -786,15 +787,10 @@ class CoreGrippers:
         parked.
       ValueError: If a position, height, width, speed, acceleration or strength is out of range.
     """
-    if self._tools_taken_from is None or self._back_channel is None or self._front_channel is None:
-      raise RuntimeError(
-        "the CoRe gripper tools are not picked up; `pick_up_tools` or `pick_up_tools_at_location` "
-        "first"
-      )
+    back, front = self._require_mounted()
     if self._held_resource is not None:
       raise RuntimeError(f"the grippers already hold {self._held_resource.name}; put it down first")
     pipettes = self._pipettes
-    back, front = cast(int, self._back_channel), cast(int, self._front_channel)
     if minimum_traverse_height_start is None:
       minimum_traverse_height_start = self.default_minimum_traverse_height
     if minimum_traverse_height_end is None:
@@ -1036,10 +1032,7 @@ class CoreGrippers:
       RuntimeError: If the tools are not picked up.
       ValueError: If the jaw width is out of range, the check is aborted, or ZP fails otherwise.
     """
-    if self._tools_taken_from is None or self._back_channel is None or self._front_channel is None:
-      raise RuntimeError(
-        "the CoRe gripper tools are not picked up; `pick_up_tools_at_location` first"
-      )
+    back, front = self._require_mounted()
     pipettes = self._pipettes
     if minimum_traverse_height_start is None:
       minimum_traverse_height_start = self.default_minimum_traverse_height
@@ -1048,7 +1041,7 @@ class CoreGrippers:
 
     center = location + resource.centers()[0] + offset
     y_width_to_gripper_bump = resource.get_absolute_size_y() - gripper_y_margin * 2
-    min_width = pipettes._min_spacing_between(self._back_channel, self._front_channel)
+    min_width = pipettes._min_spacing_between(back, front)
     max_width = round(resource.get_absolute_size_y())
     if not min_width <= y_width_to_gripper_bump <= max_width:
       raise ValueError(
