@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import socket
 import unittest
 import urllib.error
@@ -21,6 +22,14 @@ from pylabrobot.visualizer3D.server import Viewer3D
 
 # Away from the defaults, so a viewer someone left open does not answer these.
 FS_PORT, WS_PORT = 8731, 8732
+# Any model file shipped with the package: what it draws does not matter, that it registers does.
+MESH_FILE = os.path.join(
+  os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+  "hamilton",
+  "star",
+  "resource_model",
+  "starlet_base.glb",
+)
 
 
 class StateChannelTests(unittest.IsolatedAsyncioTestCase):
@@ -175,6 +184,26 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
         return states
       if message["event"] == "state":
         states.append(message["data"])
+
+
+class RebuildTests(unittest.IsolatedAsyncioTestCase):
+  """A scene rebuilt from reused models is the scene it was."""
+
+  async def test_a_model_given_a_mesh_does_not_split_on_the_next_build(self):
+    """Registering meshes used to write into the interned model dicts, so on the next build the
+    one carrying a mesh no longer matched the twins the scene had kept, and every rebuild grew the
+    model table: fifty-three models became sixty-seven on the demo facility."""
+    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    for i in range(3):
+      part = Resource(name=f"part_{i}", size_x=10, size_y=10, size_z=10, model="part")
+      # Declared the way a resource module declares it: a field the base class does not know.
+      setattr(part, "mesh", {"path": MESH_FILE, "units": "m", "up": "Z"})
+      facility.assign_child_resource(part, location=Coordinate(100 * i, 0, 0))
+    viewer = Viewer3D(facility, open_browser=False)
+    first = viewer._scene_message(rebuild=True)
+    second = viewer._scene_message(rebuild=True)
+    self.assertEqual(len(first["models"]), 2)  # the facility and the one part they all share
+    self.assertEqual(second["models"], first["models"])
 
 
 class AccessTests(unittest.IsolatedAsyncioTestCase):

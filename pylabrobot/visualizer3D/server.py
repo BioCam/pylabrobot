@@ -440,7 +440,11 @@ class Viewer3D:
     given a stable id and served from this viewer; the path itself never reaches the browser.
     """
     on_disk = _models_on_disk(PACKAGE_ROOT)
-    for model in models:
+    # Copies, never the interned dicts: a model the scene derived is kept to be reused on the next
+    # build and compared to what it was, and one given a mesh here would no longer match its twins.
+    for i, interned in enumerate(models):
+      model = dict(interned)
+      models[i] = model
       reference = model.pop("reference_glb", None)
       if reference is None and "mesh" not in model:
         name = str(model.get("model") or "")
