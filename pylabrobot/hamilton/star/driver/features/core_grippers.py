@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Dict, List, Optional, Tupl
 
 from pylabrobot.hamilton.star.driver.errors import STARFirmwareError
 from pylabrobot.hamilton.star.driver.lock import _FirmwareLock
+from pylabrobot.lib.spatial.occupancy import get_resource_at_location
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.deck import Deck
 from pylabrobot.resources.errors import HasTipError
@@ -888,7 +889,8 @@ class CoreGrippers:
 
     Raises:
       RuntimeError: If nothing is held, or the iSWAP is not parked.
-      ValueError: If a position, height, speed, acceleration, index or distance is out of range.
+      ValueError: If a position, height, speed, acceleration, level or distance is out of range, or
+        a `Coordinate` falls inside a resource on the deck.
     """
     held, from_top = self._held_resource, self._pickup_distance_from_top
     if held is None or from_top is None or self._holding_resource_width is None:
@@ -906,6 +908,14 @@ class CoreGrippers:
 
     child: Optional[Coordinate] = None
     if isinstance(to, Coordinate):
+      # The arms move, and what they carry goes with them: only what stands on the deck is in the way.
+      arms = [c for c in self._deck.children if c.category == "x_arm"]
+      occupant = get_resource_at_location(to, self._deck, exclude=[held, *arms])
+      if occupant is not None:
+        raise ValueError(
+          f"{to} is inside '{occupant.name}': a coordinate puts {held.name} on the deck. To put it "
+          f"into '{occupant.name}' or what holds it, pass that resource as `to`."
+        )
       # The deck is the destination, and the child location is where the centre-bottom puts the
       # resource's own origin.
       center = held.center().rotated(held.get_absolute_rotation())

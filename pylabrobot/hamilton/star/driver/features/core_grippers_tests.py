@@ -331,6 +331,15 @@ class TestResourceByResource(unittest.IsolatedAsyncioTestCase):
     ccb = self.plate.get_location_wrt(self.star.deck, "c", "c", "b")
     self.assertEqual((ccb.x, ccb.y, ccb.z), (400.0, 200.0, 100.0))
 
+  async def test_a_coordinate_inside_a_carrier_is_refused_before_anything_is_sent(self):
+    await self.grippers.pick_up_tools()
+    await self.grippers.pick_up_resource(self.plate)
+    site = self.carrier[2].get_location_wrt(self.star.deck, "c", "c", "b")
+    with self.assertRaisesRegex(ValueError, "plate_carrier"):
+      await self.grippers.drop_resource(site)
+    self.assertEqual(len(self.sent), 1)
+    self.assertIs(self.grippers._held_resource, self.plate)
+
   async def test_return_puts_it_back_where_it_was_taken_from(self):
     await self.grippers.pick_up_tools()
     await self.grippers.pick_up_resource(self.plate)
