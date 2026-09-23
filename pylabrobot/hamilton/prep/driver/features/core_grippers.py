@@ -1110,11 +1110,12 @@ class CoreGrippers:
     """Z-touch the front tool down onto `resource`'s centre: meeting it is finding it.
 
     The front channel goes over the centre of the resource where the tree has it, then seeks down
-    with `Pipettes.probe_z_using_ztouch` from `search_distance` above its top to the top itself.
+    with `Pipettes.probe_z_using_ztouch` from `search_distance` above its top to its centre, as
+    STAR's does: a resource at its modelled height is met well before the search ends.
 
     Args:
       resource: the resource to check for.
-      offset: added to its centre-centre-top, in mm.
+      offset: added to where the search starts and ends, in mm.
       minimum_traverse_height_start: the height to travel to it at, in mm. None goes to Z safety.
       search_distance: how far above its top the search starts, in mm.
       search_speed: how fast the tool searches down, in mm/s.
@@ -1134,6 +1135,7 @@ class CoreGrippers:
     if search_distance <= 0:
       raise ValueError(f"search_distance must be above 0 mm, is {search_distance}")
     top = resource.get_location_wrt(self._deck, x="c", y="c", z="t") + offset
+    center = resource.get_location_wrt(self._deck, x="c", y="c", z="c") + offset
 
     await self._raise_to_traverse(minimum_traverse_height_start)
     await self.move_to_xy_positions(
@@ -1144,7 +1146,7 @@ class CoreGrippers:
       self._front_channel,
       search_start_position=top.z + search_distance,
       search_speed=search_speed,
-      search_end_position=top.z,
+      search_end_position=center.z,
       minimum_traverse_height_end=minimum_traverse_height_end,
       allow_without_tip=True,
       move_channels_to_safe_pos_after=minimum_traverse_height_end is None,
@@ -1152,7 +1154,9 @@ class CoreGrippers:
     )
 
     if surface is None:
-      logger.info("'%s' not found: nothing met down to its top at %.2f mm", resource.name, top.z)
+      logger.info(
+        "'%s' not found: nothing met down to its centre at %.2f mm", resource.name, center.z
+      )
       return False
     logger.info("'%s' found at %.2f mm, its top at %.2f mm", resource.name, surface, top.z)
     return True

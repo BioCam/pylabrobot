@@ -259,7 +259,8 @@ def test_drop_at_warns_when_carried_below_safe_deck_height(caplog, resource_heig
 
 @pytest.mark.parametrize("surface, found", [(15.2, True), (None, False)])
 def test_probe_resource_exists_ztouches_the_front_tool_over_its_centre(surface, found):
-  """The front channel goes over the centre and searches from `search_distance` above the top to it."""
+  """The front channel goes over the centre and searches from `search_distance` above the top to
+  its centre."""
   deck = PrepDeck(with_core_grippers=True)
   plate = deck[4] = cor_axy_96_wellplate_500uL_Ub("plate")
   grippers, commands = _make_grippers(deck)
@@ -281,7 +282,8 @@ def test_probe_resource_exists_ztouches_the_front_tool_over_its_centre(surface, 
   assert seek is not None
   assert seek.args == (1,)
   assert seek.kwargs["search_start_position"] == pytest.approx(top.z + 20.0)
-  assert seek.kwargs["search_end_position"] == pytest.approx(top.z)
+  center = plate.get_location_wrt(deck, x="c", y="c", z="c")
+  assert seek.kwargs["search_end_position"] == pytest.approx(center.z)
   assert seek.kwargs["allow_without_tip"] is True
   # Travelled at Z safety, and the probe is the one to leave the channels there.
   assert seek.kwargs["minimum_traverse_height_end"] is None
