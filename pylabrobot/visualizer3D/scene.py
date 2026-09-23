@@ -298,10 +298,9 @@ def _serialize_tree(resource: Resource) -> Dict[str, Any]:
 # and on a scene of mostly unrotated geometry it is the single largest repeated value.
 IDENTITY_ROTATION = {"type": "Rotation", "x": 0, "y": 0, "z": 0}
 
-# Fields that say which resource a state came from rather than what the state is. The message
-# already answers that with its key, and a prototype cannot be shared while it carries the identity
-# of one instance - the same reason `_model_of` strips names out of models.
-STATE_IDENTITY_KEYS = frozenset({"name", "thing"})
+# Fields that say which resource a state came from, not what it is: the key already says. A tip
+# names the spot it stands in, so without `parent_name` here every full spot's state was distinct.
+STATE_IDENTITY_KEYS = frozenset({"name", "thing", "parent_name"})
 
 
 def _without_identity(value: Any) -> Any:

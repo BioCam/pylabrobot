@@ -14,6 +14,7 @@ from websockets.typing import Origin
 from pylabrobot.resources import does_volume_tracking, set_volume_tracking
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.corning import cor_96_wellplate_360uL_Fb
+from pylabrobot.resources.hamilton import hamilton_96_tiprack_1000uL
 from pylabrobot.resources.resource import Resource
 from pylabrobot.visualizer3D.facility import Facility
 from pylabrobot.visualizer3D.server import Viewer3D
@@ -74,6 +75,19 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
       for state in snapshot["states"]:
         self.assertNotIn("location", state)
       self.assertLessEqual(len(snapshot["states"]), 2)
+    finally:
+      await ws.close()
+
+  async def test_full_tip_spots_share_one_state(self):
+    """A spot's state embeds its tip, and the tip names the spot. That is identity, not state: a
+    rack of the same tip is one state on the wire, not ninety-six."""
+    rack = hamilton_96_tiprack_1000uL(name="rack", with_tips=True)
+    self.facility.assign_child_resource(rack, location=Coordinate(300, 10, 0))
+    ws, _, snapshot = await self.connect()
+    try:
+      spots = [spot.name for spot in rack.get_all_items()]
+      self.assertEqual(len({snapshot["of"][name] for name in spots}), 1)
+      self.assertLessEqual(len(snapshot["states"]), 3)
     finally:
       await ws.close()
 
