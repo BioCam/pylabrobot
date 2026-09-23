@@ -316,7 +316,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
       self.update_location_by_reference_point(channel, z=z + self._below_stop_disc(channel))
     return resp
 
-  def _record_tip_command(
+  async def _record_tip_command(
     self,
     x_positions: List[int],
     y_positions: List[int],
@@ -327,7 +327,9 @@ class SimulatedPipettes(_Simulated, Pipettes):
     """Put the arm and the channels where a tip command leaves them, as the reads will find them.
 
     The arm ends over the last column the command visited, and each channel taking part at its Y.
-    A channel the command does not name stays where it is, in Z as in Y.
+    The Z drives are each their own, so an unnamed channel keeps its height: `rz +2450 +3343
+    +3343 ...`. In Y they share a rail, so the device brings the others along: the same pick-up
+    answers `ry +2418 +2328 +2238 ...`.
 
     The height a tip command ends at is its lowest point, and the model holds the stop disc, so a
     channel that came away with a tip ends that much higher. As the device answers a pick-up of a
@@ -342,11 +344,21 @@ class SimulatedPipettes(_Simulated, Pipettes):
         a command that leaves them empty.
     """
     involved = [i for i, used in enumerate(tip_pattern) if used and i < self.num_channels]
-    if involved:
-      self.arm.update_location_by_reference_point(x_positions[involved[-1]] / 10)
-    for channel in involved:
+    if not involved:
+      return
+    self.arm.update_location_by_reference_point(x_positions[involved[-1]] / 10)
+
+    # One rail, so the channels not named are moved as far as the spacing asks - the rule a Y
+    # move already goes by.
+    sent = {channel: y_positions[channel] / 10 for channel in involved}
+    try:
+      planned = await self._plan_y_positions(sent, make_space=True)
+    except ValueError:
+      # No room for the others, as a packed discard leaves none: the firmware arranges them.
+      planned = sent
+    for channel, y in planned.items():
       self.update_location_by_reference_point(
-        channel, y=y_positions[channel] / 10, z=z / 10 + overhang
+        channel, y=y, z=z / 10 + overhang if channel in involved else None
       )
 
   async def _unchecked_fw_pick_up_tips(
@@ -373,7 +385,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
     )
     # The channels come away carrying a tip of this type, which hangs below the stop disc by the
     # length the type was defined with.
-    self._record_tip_command(
+    await self._record_tip_command(
       x_positions,
       y_positions,
       tip_pattern,
@@ -403,7 +415,9 @@ class SimulatedPipettes(_Simulated, Pipettes):
       minimum_traverse_height_end=minimum_traverse_height_end,
       discarding_method=discarding_method,
     )
-    self._record_tip_command(x_positions, y_positions, tip_pattern, minimum_traverse_height_end)
+    await self._record_tip_command(
+      x_positions, y_positions, tip_pattern, minimum_traverse_height_end
+    )
     return resp
 
   async def move_stop_disc_to_z_position(self, channel: int, z: float, *args: Any, **kwargs: Any):

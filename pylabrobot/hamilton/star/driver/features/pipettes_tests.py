@@ -1103,6 +1103,21 @@ class TestWhereATipCommandLeavesTheChannels(unittest.IsolatedAsyncioTestCase):
       "the channels the command does not name stay where they were",
     )
 
+  async def test_a_pickup_brings_the_other_channels_along_in_y(self):
+    """The channels share a rail: sent `yp 2418 0000`, a device answers `ry +2418 +2328 ...`."""
+    pipettes, rack, _ = await channels_over_a_rack()
+
+    await pipettes.pick_up_tips([rack.get_item("A1")])
+
+    ys = await pipettes.request_y_positions()
+    order = [ys[channel] for channel in range(8)]
+    for channel in range(7):
+      self.assertGreaterEqual(
+        round(order[channel] - order[channel + 1], 2),
+        pipettes._min_spacing_between(channel, channel + 1),
+        f"channels {channel} and {channel + 1} stand too close: {order}",
+      )
+
 
 class TestTipsOfDifferentKinds(unittest.IsolatedAsyncioTestCase):
   """A command names one tip type, so spots holding different tips go out in separate commands."""
