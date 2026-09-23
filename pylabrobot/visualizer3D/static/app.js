@@ -1006,9 +1006,10 @@ function updateArms(delta) {
   for (const arm of arms) {
     if (Math.abs(arm.targetX - arm.currentX) < 0.01) continue;
     moved = true;
-    arm.currentX = reduce || !glideSeconds
-      ? arm.targetX
-      : arm.currentX + (arm.targetX - arm.currentX) * Math.min(1, delta / glideSeconds);
+    arm.currentX =
+      reduce || !glideSeconds
+        ? arm.targetX
+        : arm.currentX + (arm.targetX - arm.currentX) * Math.min(1, delta / glideSeconds);
     const local = new THREE.Matrix4().makeTranslation(arm.currentX, arm.local[1], arm.local[2]);
     arm.group.matrix.multiplyMatrices(arm.parentMatrix, local);
     arm.group.matrixWorldNeedsUpdate = true;
