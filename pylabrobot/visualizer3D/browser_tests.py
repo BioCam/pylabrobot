@@ -5,7 +5,7 @@ ones that survived longest: the model was right, the message was right, and noth
 loads the page in headless Chrome, moves a resource, and reads back where the viewer thinks things
 are - including a child, which follows only because its parent's world transform was recomputed.
 
-Skipped where there is no Chrome to drive, so it is a no-op on a computer or a runner without one.
+Skipped where there is no Chrome to drive, so it is a no-op on a computer without one.
 """
 
 import asyncio
@@ -13,6 +13,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -28,7 +29,26 @@ from pylabrobot.resources.resource_holder import ResourceHolder
 from pylabrobot.visualizer3D.facility import Facility
 from pylabrobot.visualizer3D.server import Viewer3D
 
-CHROME = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+
+def _find_chrome() -> str:
+  """Where a headless Chrome is, or empty where there is none. A runner has one on the path and a
+  Mac has it where the installer puts it, so the same tests run in both places."""
+  for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
+    found = shutil.which(name)
+    if found is not None:
+      return found
+  installed = "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+  return installed if os.path.isfile(installed) else ""
+
+
+CHROME = _find_chrome()
+# ANGLE draws through the platform's own graphics API, and Metal is macOS's. A runner has no GPU
+# to reach either way, so it draws in software, unsandboxed as CI needs.
+PLATFORM_FLAGS = (
+  ["--use-angle=metal"]
+  if sys.platform == "darwin"
+  else ["--use-angle=swiftshader", "--no-sandbox", "--disable-dev-shm-usage"]
+)
 FS_PORT, WS_PORT, CDP_PORT = 8741, 8742, 8743
 
 
@@ -51,7 +71,7 @@ class Browser:
         f"--remote-debugging-port={self._cdp_port}",
         f"--user-data-dir={self._profile}",
         "--enable-unsafe-webgpu",
-        "--use-angle=metal",
+        *PLATFORM_FLAGS,
         "--window-size=1200,800",
         "--no-first-run",
         "about:blank",
@@ -121,7 +141,7 @@ class Browser:
     raise AssertionError(f"the page never answered within {seconds:.0f}s: {expression}")
 
 
-@unittest.skipUnless(os.path.isfile(CHROME), "no headless browser to drive")
+@unittest.skipUnless(CHROME, "no headless browser to drive")
 class BrowserTests(unittest.IsolatedAsyncioTestCase):
   async def asyncSetUp(self):
     self.facility = Facility(name="facility", size_x=2000, size_y=1000, size_z=500)
