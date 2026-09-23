@@ -262,6 +262,9 @@ export const QUALITY_FAST_MS = 12;
 export const QUALITY_SETTLE_MS = 1000;
 export const QUALITY_RECOVER_MS = 4000;
 export const QUALITY_HOLD_MS = 60000;
+// The first frames after a scene arrives are spent compiling pipelines and read as slow on any
+// machine, so nothing is judged until this long after the scene came.
+export const QUALITY_WARMUP_MS = 3000;
 // The levels: 0 draws everything as set up, 1 drops the pixel ratio to one, 2 also drops the
 // environment lighting. Antialiasing is fixed when the renderer is made, so it is not a level.
 export const QUALITY_LEVELS = 3;

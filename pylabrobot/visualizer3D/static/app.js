@@ -68,6 +68,7 @@ import {
   QUALITY_RECOVER_MS,
   QUALITY_SETTLE_MS,
   QUALITY_SLOW_MS,
+  QUALITY_WARMUP_MS,
   REFERENCE_DROP,
   REFERENCE_LINE,
   REFERENCE_WIDTH,
@@ -4555,6 +4556,11 @@ function connect() {
     invalidate();
     if (kind === "scene") {
       const _tScene = performance.now();
+      // New pipelines to compile: the frame cost is not judged again until they have been.
+      sceneCameAt = _tScene;
+      frameCostAverage = 0;
+      slowSince = null;
+      fastSince = null;
       stats = data.stats ?? {};
       setWorld(buildWorld(data));
       glides.clear();
@@ -4753,6 +4759,7 @@ let quality = qualityPinned === "low" ? QUALITY_LEVELS - 1 : 0;
 let frameCostAverage = 0;
 let slowSince = null;
 let fastSince = null;
+let sceneCameAt = performance.now();
 const demotedAt = new Map(); // level -> when it was last found too slow
 
 function applyQuality(level) {
@@ -4767,6 +4774,7 @@ function applyQuality(level) {
 // never back into a level found slow within QUALITY_HOLD_MS.
 function adaptQuality(frameMs) {
   if (qualityPinned !== null) return;
+  if (performance.now() - sceneCameAt < QUALITY_WARMUP_MS) return;
   frameCostAverage = frameCostAverage === 0 ? frameMs : frameCostAverage * 0.9 + frameMs * 0.1;
   const now = performance.now();
   if (frameCostAverage > QUALITY_SLOW_MS) {
