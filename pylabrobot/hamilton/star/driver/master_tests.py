@@ -145,6 +145,22 @@ class TestSimulation(unittest.IsolatedAsyncioTestCase):
       STARSimulationDriver()
 
 
+class TestTipTypeTable(unittest.IsolatedAsyncioTestCase):
+  async def test_tips_of_one_kind_share_one_index(self):
+    from unittest.mock import AsyncMock
+
+    from pylabrobot.resources.hamilton import hamilton_tip_10uL, hamilton_tip_300uL
+
+    driver = master.STARDriver.__new__(master.STARDriver)
+    driver._tip_type_indices = {}
+    driver.define_tip_needle = AsyncMock()  # type: ignore[method-assign]
+    a = await driver.get_or_assign_tip_type_index(hamilton_tip_300uL(name="rack_A1#0"))
+    b = await driver.get_or_assign_tip_type_index(hamilton_tip_300uL(name="rack_B1#0"))
+    c = await driver.get_or_assign_tip_type_index(hamilton_tip_10uL(name="rack_C1#0"))
+    self.assertEqual((a, b, c), (1, 1, 2))
+    self.assertEqual(driver.define_tip_needle.await_count, 2)
+
+
 def keys_no_field_reads(saved: dict, configuration: object) -> List[str]:
   """What a saved configuration holds that reading it back leaves out, nested ones included.
 
@@ -355,7 +371,7 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
     self.assertIn("EI 96-head", moves)
     self.assertEqual(
       head.configuration.tip_discard_location,
-      head._position_centred_in(star.deck.get_resource("trash_core96")),
+      head._position_centred_in(star.deck.get_trash_area96()),
     )
 
   async def test_a_feature_left_down_is_named_once_setup_has_run(self):
@@ -391,6 +407,33 @@ class TestSetupSequence(unittest.IsolatedAsyncioTestCase):
         "autoload park",
       ],
     )
+
+
+class TestChannelResources(unittest.IsolatedAsyncioTestCase):
+  """A channel is modelled by a resource of its own, and the list of them runs channel by channel."""
+
+  async def test_a_channel_without_a_width_is_refused_rather_than_skipped(self):
+    """Skipping one would put every later channel's resource one out of step with its channel."""
+    from pylabrobot.hamilton.star.device import RECORDING_STAR
+    from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
+    from pylabrobot.resources.hamilton import STARDeck
+
+    deck = STARDeck()
+    driver = STARSimulationDriver(deck=deck, declared_configuration_json=RECORDING_STAR)
+    await driver.setup()
+    pipettes = driver.pipettes
+    assert pipettes is not None
+    channels = [resource.name for resource in pipettes.resources]
+    self.assertEqual(
+      channels, [deck.prefixed(f"pipette_channel_{channel}") for channel in range(len(channels))]
+    )
+
+    pipettes.configuration.channels[2].width = None
+    for resource in list(pipettes.resources):
+      resource.parent.unassign_child_resource(resource)  # type: ignore[union-attr]
+    with self.assertRaises(RuntimeError):
+      await driver._create_pipette_resources()
+    await driver.stop()
 
 
 class TestEveryConfiguration(unittest.IsolatedAsyncioTestCase):

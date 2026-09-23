@@ -9,8 +9,8 @@ from pylabrobot.resources.corning import (
 from pylabrobot.resources.hamilton import (
   PLT_CAR_L5AC_A00,
   TIP_CAR_480_A00,
-  HamiltonCoreGrippers,
   HamiltonDeck,
+  HamiltonSTARDeck,
   STARDeck,
   STARLetDeck,
   hamilton_96_tiprack_300uL_filter,
@@ -129,31 +129,29 @@ class HamiltonDeckTests(unittest.TestCase):
       deck.summary(),
       textwrap.dedent(
         """
-    Rail  Resource                           Type                    Coordinates (mm)
-    ===============================================================================================
-    (-6)  ├── trash_core96                   Trash                   (-58.200, 106.000, 216.400)
+    Rail  Resource                                Type                  Coordinates (mm)
+    ==================================================================================================
+    (-6)  ├── STARlet_trash_core96                Trash                 (-58.200, 106.000, 216.400)
           │
-    (1)   ├── tip_carrier                    TipCarrier              (100.000, 063.000, 100.000)
-          │   ├── tip_rack_01                EmbeddedTipRack         (106.200, 073.000, 208.950)
-          │   ├── tip_rack_02                EmbeddedTipRack         (106.200, 169.000, 208.950)
+    (1)   ├── tip_carrier                         TipCarrier            (100.000, 063.000, 100.000)
+          │   ├── tip_rack_01                     EmbeddedTipRack       (106.200, 073.000, 208.950)
+          │   ├── tip_rack_02                     EmbeddedTipRack       (106.200, 169.000, 208.950)
           │   ├── <empty>
-          │   ├── tip_rack_04                EmbeddedTipRack         (106.200, 361.000, 208.950)
-          │   ├── <empty>
-          │
-    (21)  ├── plate carrier                  PlateCarrier            (550.000, 063.000, 100.000)
-          │   ├── aspiration plate           Plate                   (554.000, 071.500, 183.120)
-          │   ├── <empty>
-          │   ├── dispense plate             Plate                   (554.000, 263.500, 183.120)
-          │   ├── <empty>
+          │   ├── tip_rack_04                     EmbeddedTipRack       (106.200, 361.000, 208.950)
           │   ├── <empty>
           │
-    (31)  ├── waste_block                    Resource                (775.000, 115.000, 100.000)
-          │   ├── teaching_tip_rack          TipRack                 (780.900, 461.100, 100.000)
-          │   ├── core_grippers              HamiltonCoreGrippers    (797.500, 085.500, 200.500)
-          │   │   ├── core_grippers_front    HamiltonCoreGripperTool (779.500, 102.750, 203.000)
-          │   │   ├── core_grippers_back     HamiltonCoreGripperTool (779.500, 120.750, 203.000)
+    (21)  ├── plate carrier                       PlateCarrier          (550.000, 063.000, 100.000)
+          │   ├── aspiration plate                Plate                 (554.000, 071.500, 183.120)
+          │   ├── <empty>
+          │   ├── dispense plate                  Plate                 (554.000, 263.500, 183.120)
+          │   ├── <empty>
+          │   ├── <empty>
           │
-    (32)  ├── trash                          Trash                   (800.000, 190.600, 137.100)
+    (31)  ├── STARlet_waste_block                 Resource              (775.000, 115.000, 100.000)
+          │   ├── STARlet_teaching_needle_rack    TipRack               (780.900, 461.100, 100.000)
+          │   ├── STARlet_core_gripper_holder     HamiltonCoreGrippers  (778.000, 085.500, 200.500)
+          │
+    (32)  ├── STARlet_trash                       Trash                 (800.000, 190.600, 137.100)
     """[1:]
       ),
     )
@@ -178,7 +176,7 @@ class HamiltonDeckTests(unittest.TestCase):
 
     self.assertEqual(len(tip_racks), 6)  # 5 added 300 uL racks + the built-in teaching rack
     self.assertEqual(len(matches), 5)
-    self.assertNotIn("teaching_tip_rack", {tr.name for tr in matches})
+    self.assertNotIn(deck.teaching_needle_rack, matches)
 
   def test_get_trash_area96_survives_serialization_round_trip(self):
     """`serialize()` encodes the 96 trash as a child and sets `with_trash96=False`, so the
@@ -187,9 +185,9 @@ class HamiltonDeckTests(unittest.TestCase):
     deck = self.build_layout()
     original_location = deck.get_trash_area96().get_location_wrt(deck)
 
-    deck2 = Deck.deserialize(deck.serialize())
+    deck2 = cast(HamiltonSTARDeck, Deck.deserialize(deck.serialize()))
 
-    self.assertIn("trash_core96", [child.name for child in deck2.children])
+    self.assertIsNotNone(deck2.trash96)
     self.assertEqual(deck2.get_trash_area96().get_location_wrt(deck2), original_location)
 
   def test_get_trash_area96_raises_after_clear_include_trash(self):
@@ -200,7 +198,7 @@ class HamiltonDeckTests(unittest.TestCase):
 
     deck.clear(include_trash=True)
 
-    self.assertNotIn("trash_core96", [child.name for child in deck.children])
+    self.assertIsNone(deck.trash96)
     with self.assertRaises(RuntimeError):
       deck.get_trash_area96()
 
@@ -219,35 +217,42 @@ class HamiltonDeckTests(unittest.TestCase):
       ],
     )
 
-  def test_core_gripper_holder_on_the_waste_block_as_probed(self):
-    # Probed on a STAR: the holder's top is at 220.0 and it is 19.5 mm tall, so it stands at 200.5.
-    # Its centre is the x the channels take the tools at.
+  def test_core_grippers_on_waste_as_probed(self):
+    # Probed on a STAR: holder top 220.0, 19.5 mm tall, tool tops (collar tops) 235.0. The collars
+    # stand where the legacy pick-up sends the channels: x on the holder's centre, y 107.0 and 125.0.
     for deck, x in ((STARDeck(), 1337.5), (STARLetDeck(), 797.5)):
       with self.subTest(deck=type(deck).__name__):
-        holder = deck.get_resource("core_grippers")
-        self.assertAlmostEqual(holder.get_location_wrt(deck).x, x)
+        holder = deck.core_gripper_holder
+        assert holder is not None
+        self.assertAlmostEqual(holder.get_location_wrt(deck, x="c").x, x)
         self.assertAlmostEqual(holder.get_location_wrt(deck).z, 200.5)
         self.assertAlmostEqual(holder.get_location_wrt(deck, z="t").z, 220.0)
+        front, back = holder.children[0], holder.children[1]
+        for tool in (front, back):
+          self.assertAlmostEqual(tool.get_location_wrt(deck, x="c", z="t").x, x)
+          self.assertAlmostEqual(tool.get_location_wrt(deck, z="t").z, 235.0)
+        # the collar is 4.25 mm from the side of the tool its pins face
+        self.assertAlmostEqual(front.get_location_wrt(deck).y, 107.0 - 4.25)
+        # the back tool is turned 180 degrees, so its own front faces the back of the deck
+        self.assertAlmostEqual(back.get_location_wrt(deck, y="f").y, 125.0 + 4.25)
 
-  def test_core_gripper_tools_belong_to_the_mount_and_round_trip(self):
-    """The deck owns the two parked tools and preserves them through serialization."""
-    for deck_factory in (STARDeck, STARLetDeck):
-      with self.subTest(deck=deck_factory.__name__):
-        deck = deck_factory(with_teaching_rack=False)
-        mount = deck.get_resource("core_grippers")
-        self.assertIsInstance(mount, HamiltonCoreGrippers)
-        assert isinstance(mount, HamiltonCoreGrippers)
-        self.assertEqual(len(mount.children), 2)
-        self.assertIsNot(mount.front_tool, mount.back_tool)
-        for tool in (mount.front_tool, mount.back_tool):
-          self.assertIs(tool.parent, mount)
-          self.assertIs(deck.get_resource(tool.name), tool)
-          self.assertEqual(tool.collar_height, 10)
+  def test_two_decks_stand_in_one_tree(self):
+    """A deck names what it owns after itself, so two of them stand in one tree."""
+    lab = Resource(name="lab", size_x=4000, size_y=2000, size_z=1000)
+    first = STARLetDeck(name="left_Deck")
+    second = STARLetDeck(name="right_Deck")
+    lab.assign_child_resource(first, location=Coordinate.zero())
+    lab.assign_child_resource(second, location=Coordinate(2000, 0, 0))
 
-        restored = Resource.deserialize(deck.serialize())
-        self.assertEqual(restored.serialize(), deck.serialize())
-        restored_mount = restored.get_resource("core_grippers")
-        assert isinstance(restored_mount, HamiltonCoreGrippers)
-        self.assertEqual(len(restored_mount.children), 2)
-        self.assertEqual(restored_mount.front_tool, mount.front_tool)
-        self.assertEqual(restored_mount.back_tool, mount.back_tool)
+    names = [r.name for r in lab.get_all_children()]
+    self.assertEqual(len(names), len(set(names)))
+    for deck, prefix in ((first, "left"), (second, "right")):
+      for resource in (
+        deck.waste_block,
+        deck.trash,
+        deck.trash96,
+        deck.teaching_needle_rack,
+        deck.core_gripper_holder,
+      ):
+        assert resource is not None
+        self.assertTrue(resource.name.startswith(f"{prefix}_"), resource.name)

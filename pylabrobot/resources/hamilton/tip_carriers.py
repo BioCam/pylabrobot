@@ -344,7 +344,7 @@ def hamilton_tip_carrier_L5_ntr_a00(name: str) -> TipCarrier:
     name=name,
     size_x=135.0,
     size_y=497.0,
-    # 29 mm above its sites, as measured.
+    # 29 mm above its sites. Hamilton's TIP_CAR_NTR_A00 definition states 130 mm, which the carrier is not.
     size_z=site_z + 29.0,
     sites=create_homogeneous_resources(
       klass=ResourceHolder,
@@ -362,6 +362,23 @@ def hamilton_tip_carrier_L5_ntr_a00(name: str) -> TipCarrier:
       name_prefix=name,
     ),
     model=hamilton_tip_carrier_L5_ntr_a00.__name__,
+  )
+
+
+def hamilton_prep_ftr_pedestal(name: str) -> TipCarrier:
+  """Hamilton cat. no.: 6600553-01
+  Pedestal for elevating fixed tip racks (FTR) on the MicroLab Prep.
+  Body: 133.11 x 89.96 x 53.37 mm. FTR rack seats on top of the pedestal.
+  """
+  site = ResourceHolder(name=f"{name}-0", size_x=122.4, size_y=82.6, size_z=0)
+  site.location = Coordinate(1.5, 1, 53.37)
+  return TipCarrier(
+    name=name,
+    size_x=133.11,
+    size_y=89.96,
+    size_z=53.37,
+    sites={0: site},
+    model="hamilton_prep_ftr_pedestal",
   )
 
 

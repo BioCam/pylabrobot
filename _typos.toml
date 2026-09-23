@@ -48,7 +48,19 @@ tranformation = "tranformation"
 # "unparseable" is an accepted English variant used by the Opentrons version parser.
 unparseable = "unparseable"
 
+# three.js material vocabulary, used in the 3D viewer's own code as the library spells it.
+metalness = "metalness"
+
+[default.extend-identifiers]
+# Prep firmware interface names, spelled as its firmware trees name them.
+IYAxis = "IYAxis"
+IYDrive = "IYDrive"
+IZAxis = "IZAxis"
+IZDrive = "IZDrive"
+
 [files]
 extend-exclude = [
-    "*.ipynb"
+    "*.ipynb",
+    # Third-party libraries, shipped as their authors minified them.
+    "pylabrobot/visualizer3D/static/vendor/**",
 ]

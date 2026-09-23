@@ -36,6 +36,8 @@ T = TypeVar("T")
 
 # What the firmware's tip type table calls the CO-RE grip tool (cat. 186100).
 CORE_GRIPPER_TIP_TYPE_INDEX = 14
+# The grip tool's model, which its index is kept under.
+_CORE_GRIPPER_TOOL_MODEL = hamilton_core_gripper_tool.__name__
 
 logger = logging.getLogger("pylabrobot")
 
@@ -96,9 +98,7 @@ class HamiltonLiquidHandler(LiquidHandlerBackend, metaclass=ABCMeta):
     self._waiting_tasks: List[HamiltonTask] = []
     # The firmware's own table already carries the CO-RE grip tool at index 14, so that index is
     # taken rather than handed out to a tip, which would overwrite the grip tool.
-    self._tip_type_indices: Dict[str, int] = {
-      hamilton_core_gripper_tool.__name__: CORE_GRIPPER_TIP_TYPE_INDEX
-    }
+    self._tip_type_indices: Dict[str, int] = {_CORE_GRIPPER_TOOL_MODEL: CORE_GRIPPER_TIP_TYPE_INDEX}
 
   def __setattr__(self, name: str, value: Any) -> None:
     if name == "allow_firmware_planning":
@@ -128,7 +128,7 @@ class HamiltonLiquidHandler(LiquidHandlerBackend, metaclass=ABCMeta):
         task.fut.set_exception, RuntimeError("Stopping HamiltonLiquidHandler.")
       )
     self._waiting_tasks.clear()
-    self._tip_type_indices = {hamilton_core_gripper_tool.__name__: CORE_GRIPPER_TIP_TYPE_INDEX}
+    self._tip_type_indices = {_CORE_GRIPPER_TOOL_MODEL: CORE_GRIPPER_TIP_TYPE_INDEX}
     await self.io.stop()
 
   def serialize(self) -> dict:
@@ -450,8 +450,7 @@ class HamiltonLiquidHandler(LiquidHandlerBackend, metaclass=ABCMeta):
       raise ValueError("Tool model must be defined to assign a tip type index.")
 
     if isinstance(tool, HamiltonCoreGripperTool):
-      # CO-RE grippers use an existing firmware definition (entry 14 for the standard tool).
-      # Their Z reference is the grip line, so do not register them using a tip's body length.
+      # Grip tools keep the firmware's definition (entry 14): their Z reference is the grip line.
       # TODO: define the CO-RE gripper tools in firmware ourselves.
       assert model in self._tip_type_indices, f"No firmware definition for CO-RE gripper {model}."
       return self._tip_type_indices[model]

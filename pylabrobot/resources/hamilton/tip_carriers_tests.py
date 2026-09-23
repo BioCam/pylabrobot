@@ -46,7 +46,7 @@ class StandardTipCarrierTests(unittest.TestCase):
         self.assertAlmostEqual(rack_center.y, site_center.y)
 
   def test_tip_spot_positions_on_star_deck(self):
-    # positions whose firmware commands match Venus
+    # positions whose firmware commands match Hamilton's own software
     for carrier_fn, rotation, a1, h12 in [
       (TIP_CAR_480_A00, 0, Coordinate(117.9, 145.8, 216.45), Coordinate(216.9, 82.8, 216.45)),
       (TIP_CAR_288_C00, 90, Coordinate(113.5, 111.0, 216.2), Coordinate(176.5, 210.0, 216.2)),
@@ -121,31 +121,49 @@ class StandardTipCarrierTests(unittest.TestCase):
         carrier[0] = rack = rack_fn("rack", with_tips=False)
         self.assertEqual(rack.location, Coordinate.zero())
 
-  def test_a_solid_coreii_rack_has_the_spots_of_a_framed_rack_at_its_top(self):
-    from pylabrobot.resources.hamilton import (
-      TIP_CAR_480_A00,
-      hamilton_96_tiprack_300uL,
-      hamilton_96_tiprack_raised_core_i,
-      hamilton_96_tiprack_raised_core_ii,
-      hamilton_tip_300uL,
-    )
 
-    carrier = TIP_CAR_480_A00("tip_carrier")
-    carrier[0] = framed = hamilton_96_tiprack_300uL("framed")
-    carrier[1] = solid = hamilton_96_tiprack_raised_core_ii("solid", make_tip=hamilton_tip_300uL)
-    carrier[2] = corei = hamilton_96_tiprack_raised_core_i("corei", make_tip=hamilton_tip_300uL)
-    # 16.0 and 12.5 mm above the site
-    for rack, above in ((solid, 16.0), (corei, 12.5)):
-      spot_z = rack.get_item("A1").get_absolute_location("c", "c", "b").z
-      self.assertAlmostEqual(spot_z - 114.95, above)
-    for spot in ("A1", "H12"):
-      framed_spot = framed.get_item(spot).get_absolute_location("c", "c", "b")
-      solid_spot = solid.get_item(spot).get_absolute_location("c", "c", "b")
-      self.assertAlmostEqual(solid_spot.x, framed_spot.x)
-      self.assertAlmostEqual(
-        solid_spot.y - carrier.sites[1].location.y, framed_spot.y - carrier.sites[0].location.y
-      )
-      self.assertAlmostEqual(solid_spot.z, solid.get_absolute_location().z + 25.5)
+class NestedTipCarrierTests(unittest.TestCase):
+  def test_tip_spot_positions_on_star_deck(self):
+    # Hamilton's pick-up positions, with the carrier at x 752.5
+    for rack_fn, site, a1_y in [
+      (hamilton_96_tiprack_10uL_NTR, 0, 145.8),
+      (hamilton_96_tiprack_50uL_NTR, 1, 241.8),
+      (hamilton_96_tiprack_300uL_NTR, 2, 337.8),
+    ]:
+      with self.subTest(rack=rack_fn.__name__):
+        deck = STARDeck()
+        carrier = hamilton_tip_carrier_L5_ntr_a00("carrier")
+        carrier[site] = rack = rack_fn("rack")
+        deck.assign_child_resource(carrier, location=Coordinate(752.5, 63, 100))
+        for spot, expected in (
+          ("A1", Coordinate(770.4, a1_y, 184.0)),
+          ("H12", Coordinate(869.4, a1_y - 63, 184.0)),
+        ):
+          actual = rack.get_item(spot).get_absolute_location("c", "c", "b")
+          for axis in ("x", "y", "z"):
+            self.assertAlmostEqual(getattr(actual, axis), getattr(expected, axis))
+
+  def test_tip_spot_positions_on_the_mfx_ntr4_module(self):
+    # Hamilton's pick-up positions, with the MFX carrier at x 932.5 and the module in slot 3: the
+    # rack centred on the module, the module on the carrier's site.
+    for rack_fn in (
+      hamilton_96_tiprack_10uL_NTR,
+      hamilton_96_tiprack_50uL_NTR,
+      hamilton_96_tiprack_300uL_NTR,
+    ):
+      with self.subTest(rack=rack_fn.__name__):
+        deck = STARDeck()
+        module = hamilton_mfx_resourceholder_ntr("module")
+        carrier = hamilton_mfx_carrier_L5_base("carrier", modules={3: module})
+        module.assign_child_resource(rack := rack_fn("rack"))
+        deck.assign_child_resource(carrier, location=Coordinate(932.5, 63, 100))
+        for spot, expected in (
+          ("A1", Coordinate(950.5, 434.0, 184.0)),
+          ("H12", Coordinate(1049.5, 371.0, 184.0)),
+        ):
+          actual = rack.get_item(spot).get_absolute_location("c", "c", "b")
+          for axis in ("x", "y", "z"):
+            self.assertAlmostEqual(getattr(actual, axis), getattr(expected, axis))
 
   def test_standard_tiprack_sinks_into_the_mfx_tiprackholder_as_into_a_tip_carrier(self):
     """The rack's skirt drops into the module, so its spots stand where a tip carrier puts them."""
@@ -169,54 +187,38 @@ class StandardTipCarrierTests(unittest.TestCase):
     self.assertAlmostEqual(module_z, 100 + 18.2 + 96.5 - 6.0 + 7.5)
     self.assertLess(abs(module_z - carrier_z), 0.3)
 
-    # Pick-up positions for a framed rack on the tip module: the rack centred on the module, in slot 0.
+    # Hamilton's pick-up positions for a framed rack on the tip module, from the `1_Tip` and `3_Tip`
+    # sites of an MFX carrier its software defines: the rack centred on the module, in slot 0.
     for spot, expected in (("A1", (950.5, 146.0)), ("H12", (1049.5, 83.0))):
       actual = on_module.get_item(spot).get_absolute_location("c", "c", "b")
       self.assertAlmostEqual(actual.x, expected[0])
       self.assertAlmostEqual(actual.y, expected[1])
 
+  def test_a_solid_coreii_rack_has_the_spots_of_a_framed_rack_at_its_top(self):
+    from pylabrobot.resources.hamilton import (
+      TIP_CAR_480_A00,
+      hamilton_96_tiprack_300uL,
+      hamilton_96_tiprack_raised_core_i,
+      hamilton_96_tiprack_raised_core_ii,
+      hamilton_tip_300uL,
+    )
 
-class NestedTipCarrierTests(unittest.TestCase):
-  def test_tip_spot_positions_on_star_deck(self):
-    # Pick-up positions, with the carrier at x 752.5
-    for rack_fn, site, a1_y in [
-      (hamilton_96_tiprack_10uL_NTR, 0, 145.8),
-      (hamilton_96_tiprack_50uL_NTR, 1, 241.8),
-      (hamilton_96_tiprack_300uL_NTR, 2, 337.8),
-    ]:
-      with self.subTest(rack=rack_fn.__name__):
-        deck = STARDeck()
-        carrier = hamilton_tip_carrier_L5_ntr_a00("carrier")
-        carrier[site] = rack = rack_fn("rack")
-        deck.assign_child_resource(carrier, location=Coordinate(752.5, 63, 100))
-        for spot, expected in (
-          ("A1", Coordinate(770.4, a1_y, 184.0)),
-          ("H12", Coordinate(869.4, a1_y - 63, 184.0)),
-        ):
-          actual = rack.get_item(spot).get_absolute_location("c", "c", "b")
-          for axis in ("x", "y", "z"):
-            self.assertAlmostEqual(getattr(actual, axis), getattr(expected, axis))
-
-  def test_tip_spot_positions_on_the_mfx_ntr4_module(self):
-    # Pick-up positions, with the MFX carrier at x 932.5 and the module in slot 3
-    for rack_fn in (
-      hamilton_96_tiprack_10uL_NTR,
-      hamilton_96_tiprack_50uL_NTR,
-      hamilton_96_tiprack_300uL_NTR,
-    ):
-      with self.subTest(rack=rack_fn.__name__):
-        deck = STARDeck()
-        module = hamilton_mfx_resourceholder_ntr("module")
-        carrier = hamilton_mfx_carrier_L5_base("carrier", modules={3: module})
-        module.assign_child_resource(rack := rack_fn("rack"))
-        deck.assign_child_resource(carrier, location=Coordinate(932.5, 63, 100))
-        for spot, expected in (
-          ("A1", Coordinate(950.5, 434.0, 184.0)),
-          ("H12", Coordinate(1049.5, 371.0, 184.0)),
-        ):
-          actual = rack.get_item(spot).get_absolute_location("c", "c", "b")
-          for axis in ("x", "y", "z"):
-            self.assertAlmostEqual(getattr(actual, axis), getattr(expected, axis))
+    carrier = TIP_CAR_480_A00("tip_carrier")
+    carrier[0] = framed = hamilton_96_tiprack_300uL("framed")
+    carrier[1] = solid = hamilton_96_tiprack_raised_core_ii("solid", make_tip=hamilton_tip_300uL)
+    carrier[2] = corei = hamilton_96_tiprack_raised_core_i("corei", make_tip=hamilton_tip_300uL)
+    # Hamilton's definitions: 16.0 and 12.5 mm above the site
+    for rack, above in ((solid, 16.0), (corei, 12.5)):
+      spot_z = rack.get_item("A1").get_absolute_location("c", "c", "b").z
+      self.assertAlmostEqual(spot_z - 114.95, above)
+    for spot in ("A1", "H12"):
+      framed_spot = framed.get_item(spot).get_absolute_location("c", "c", "b")
+      solid_spot = solid.get_item(spot).get_absolute_location("c", "c", "b")
+      self.assertAlmostEqual(solid_spot.x, framed_spot.x)
+      self.assertAlmostEqual(
+        solid_spot.y - carrier.sites[1].location.y, framed_spot.y - carrier.sites[0].location.y
+      )
+      self.assertAlmostEqual(solid_spot.z, solid.get_absolute_location().z + 25.5)
 
   def test_a_stack_of_nested_tip_racks_on_both_holders(self):
     # Each rack in a nest stands its 16 mm stacking height above the one below, so the top rack's
@@ -257,11 +259,8 @@ class NestedTipCarrierTests(unittest.TestCase):
     ]:
       with self.subTest(rack=rack_fn.__name__):
         rack = rack_fn("rack")
-        spot = rack.get_item("A1")
-        tip = spot.get_tip()
-        self.assertAlmostEqual(
-          spot.get_location_wrt(rack).z + tip.collar_height - tip.get_size_z(), tip_end, delta=0.15
-        )
+        tip = rack.get_item("A1").get_tip()
+        self.assertAlmostEqual(tip.get_location_wrt(rack).z, tip_end, delta=0.15)
 
   def test_the_carrier_stands_29_mm_above_its_sites(self):
     carrier = hamilton_tip_carrier_L5_ntr_a00("carrier")

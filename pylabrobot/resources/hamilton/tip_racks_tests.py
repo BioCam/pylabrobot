@@ -27,6 +27,7 @@ from pylabrobot.resources.hamilton import (
   hamilton_96_tiprack_1000uL_filter_ultrawide,
   hamilton_96_tiprack_1000uL_filter_wide,
 )
+from pylabrobot.resources.lid import Lid
 from pylabrobot.resources.tip_rack import StandingTipRack, TipRack
 
 
@@ -68,3 +69,15 @@ class HamiltonTipRackSerializationTests(unittest.TestCase):
     assert isinstance(tip_rack, StandingTipRack)
     self.assertEqual(tip_rack.stacking_z_height, 16.0)
     self.assertEqual(tip_rack, hamilton_96_tiprack_50uL_NTR(name="tr"))
+
+
+class TipRackAvailableTests(unittest.TestCase):
+  """A rack is available when nothing - a lid, or another rack in its stack - sits on top of it."""
+
+  def test_a_lid_on_a_rack_makes_it_unavailable(self):
+    rack = hamilton_96_tiprack_50uL_NTR(name="tr")
+    rack.assign_child_resource(
+      Lid("lid", size_x=127.76, size_y=85.48, size_z=5, nesting_z_height=0),
+      location=Coordinate(0, 0, 55),
+    )
+    self.assertFalse(rack._available_for_tip_handling)

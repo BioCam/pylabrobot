@@ -124,6 +124,11 @@ def _resolve_num_tracks(num_tracks: Optional[int], num_rails: Optional[int]) -> 
 class HamiltonDeck(Deck, metaclass=ABCMeta):
   """Hamilton decks. Currently only STARLet, STAR and Vantage are supported."""
 
+  safe_deck_height: float = 245.0
+  """Up to this height, in mm of the deck's frame (145 above its surface), a resource is under a
+  traversing channel whatever tip it carries: the stop discs at Z safety, 334.7, less the 87.1 mm a
+  1000 uL tip reaches below them, with margin. Higher may be safe, depending on the tip."""
+
   def __init__(
     self,
     num_tracks: Optional[int] = None,
@@ -135,6 +140,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     origin: Coordinate = Coordinate.zero(),
     num_rails: Optional[int] = None,
     model: Optional[str] = None,
+    prefix: Optional[str] = None,
   ):
     # What `@abstractmethod` refused before either could be left to the other: a deck with neither.
     if (
@@ -154,6 +160,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       size_z=size_z,
       category=category,
       origin=origin,
+      prefix=prefix,
     )
     # `Deck` takes no model, so it is set here rather than passed up.
     self.model = model
@@ -279,7 +286,8 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     and where along it the drive's position refers to.
 
     Args:
-      name: what to call it, e.g. "left_x_arm".
+      name: what to call it, e.g. "left_x_arm". The deck puts its own prefix in front, so two
+        devices' arms stand in one tree.
       x: where the arm is now, in mm, at its reference point.
       size_x: how wide the arm is, in mm, end to end.
       reference_point_from_left: how far along it, from its left edge in mm, the drive's position
@@ -289,6 +297,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     Returns:
       The arm resource, whether it was just created or already there.
     """
+    name = self.prefixed(name)
     if self.has_resource(name):
       return self.get_resource(name)
     # The arm rides at the channel stop-disk safety height, level with the raised stop discs so it
@@ -333,15 +342,16 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     do not duplicate it.
 
     Args:
-      name: where the carrier-handling wheel is, in mm, on this deck. The wheel is the point the
+      name: what to call it. The deck puts its own prefix in front.
+      x: where the carrier-handling wheel is, in mm, on this deck. The wheel is the point the
         drive reports, so the sled is placed around it.
-      x: where the wheel is, in mm, on this deck.
       reference_point_from_left: how far the point the drive reports - the carrier-handling
         wheel - sits from the sled's left edge, in mm.
 
     Returns:
       The sled resource, whether it was just created or already there.
     """
+    name = self.prefixed(name)
     if self.has_resource(name):
       return self.get_resource(name)
     # The whole part, transport and barcode reader. The 316.2 this replaces came off the
@@ -388,11 +398,12 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     that same track on the deck.
 
     Args:
-      name: what to call it.
+      name: what to call it. The deck puts its own prefix in front.
 
     Returns:
       The tray resource, whether it was just created or already there.
     """
+    name = self.prefixed(name)
     if self.has_resource(name):
       return self.get_resource(name)
     # Measured against the two things on the deck it lines up with: where the first carrier starts,
@@ -453,8 +464,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
   def _check_safe_z_height(self, resource: Resource):
     """Check for this resource, and all its children, that the z location is not too high."""
 
-    # TODO: maybe these are parameters per HamiltonDeck that we can take as attributes.
-    Z_MOVEMENT_LIMIT = 245
+    # TODO: a per-deck attribute, as `safe_deck_height` is.
     Z_GRAB_LIMIT = 285
 
     def check_z_height(resource: Resource):
@@ -469,7 +479,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
         # this is fine, because it's a convenience feature and not critical
         return
 
-      if z_top > Z_MOVEMENT_LIMIT:
+      if z_top > self.safe_deck_height:
         logger.warning(
           "Resource '%s' is very high on the deck: %s mm. Be careful when traversing the deck.",
           resource.name,
@@ -483,7 +493,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
           z_top,
         )
 
-      for child in resource.children:
+      for child in resource.comparable_children():
         check_z_height(child)
 
     check_z_height(resource)
@@ -658,7 +668,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       new_depth = depth + 1 if resource.category not in exclude_categories else depth
       return max(
         [(longest + longest_depth * depth_weight)]
-        + [find_longest_child_name(c, new_depth) for c in resource.children]
+        + [find_longest_child_name(c, new_depth) for c in resource.comparable_children()]
       )
 
     def find_longest_type_name(resource: Resource):
@@ -666,7 +676,9 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       longest = (
         len(resource.__class__.__name__) if resource.category not in exclude_categories else 0
       )
-      return max([longest] + [find_longest_type_name(child) for child in resource.children])
+      return max(
+        [longest] + [find_longest_type_name(child) for child in resource.comparable_children()]
+      )
 
     # Calculate the maximum lengths of the resource name and type for proper alignment
     max_name_length = find_longest_child_name(self)
@@ -735,7 +747,8 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     def print_tree(resource: Resource, depth=0):
       r_summary = print_resource_line(resource, depth=depth)
 
-      for child in resource.children:
+      # What a holder carries is state, so the deck's layout leaves it out.
+      for child in resource.comparable_children():
         if isinstance(child, ResourceHolder):
           r_summary += "\n"
           if child.resource is not None:
