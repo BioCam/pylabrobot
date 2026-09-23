@@ -8,11 +8,14 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, Dict, List, Lite
 
 from pylabrobot.resources import Coordinate, Resource
 from pylabrobot.resources.deck import Deck
+from pylabrobot.resources.errors import HasTipError
+from pylabrobot.resources.hamilton.prep_decks import PrepDeck
 from pylabrobot.resources.head_tool import HeadTool
 from pylabrobot.resources.resource_holder import ResourceHolder
 from pylabrobot.resources.resource_state import place_resource
 
 from .. import prep_commands as PrepCmd
+from .pipettes import channels_named
 
 if TYPE_CHECKING:
   from ..master import PrepDriver
@@ -61,6 +64,7 @@ class CoreGrippers:
     self._grip_axis = grip_axis
     self._pickup_distance_from_top: Optional[float] = None
     self._holding_resource_width: Optional[float] = None
+    self._holding_resource_height: Optional[float] = None
     self._held_resource: Optional[Resource] = None
     self._plate_top_center: Optional[Coordinate] = None
     self._plate_top_z_offset: Optional[float] = None
@@ -181,6 +185,7 @@ class CoreGrippers:
 
   def _clear_held_state(self) -> None:
     self._holding_resource_width = None
+    self._holding_resource_height = None
     self._pickup_distance_from_top = None
     self._held_resource = None
     self._plate_top_center = None
@@ -242,6 +247,26 @@ class CoreGrippers:
     await self._pipettes.move_tool_bottom_to_z_positions(
       {channel: minimum_traverse_height_end for channel in range(self._pipettes.num_channels)}
     )
+
+  async def _warn_if_carried_below_safe_deck_height(self) -> None:
+    """Log a warning when the held resource's bottom, where it is carried, is below the deck's
+    `safe_deck_height`: it can hit what stands on the deck on the way to the drop."""
+    deck = self._deck
+    if not isinstance(deck, PrepDeck):
+      return
+    if self._plate_top_z_offset is None or self._holding_resource_height is None:
+      return
+    jaws_z = (await self._pipettes.request_locations())[self._back_channel].z
+    bottom = jaws_z + self._plate_top_z_offset - self._holding_resource_height
+    if bottom < deck.safe_deck_height:
+      name = "the held resource" if self._held_resource is None else f"'{self._held_resource.name}'"
+      logger.warning(
+        "Carrying %s with its bottom at %.1f mm, below the %.1f mm safe deck height: it can hit "
+        "what stands on the deck on the way to the drop.",
+        name,
+        bottom,
+        deck.safe_deck_height,
+      )
 
   def _check_jaws_open_within_reach(self, y: float, width: float, y_clearance: float) -> None:
     """Raise unless both jaws, open around a resource centred at `y`, stay inside their channels'
@@ -788,6 +813,7 @@ class CoreGrippers:
       self._plate_top_center = Coordinate(location.x, location.y, location.z + plate_top_z_offset)
       self._plate_top_z_offset = plate_top_z_offset
       self._holding_resource_width = resource_width
+      self._holding_resource_height = resource_height
       self._pickup_distance_from_top = None
       self._held_resource = None
       self._taken_from = None
@@ -833,6 +859,7 @@ class CoreGrippers:
     # The firmware lowers it as part of letting go.
     async with self._temporary_z_drive_acceleration(z_acceleration):
       await self._raise_to_traverse(minimum_traverse_height_start)
+      await self._warn_if_carried_below_safe_deck_height()
       # Carried over the destination first, so letting go is straight down: left to itself the
       # firmware dives across the deck with the plate.
       await self.move_resource_to_xy_position(
@@ -1058,3 +1085,111 @@ class CoreGrippers:
     center = held.center().rotated(held.get_absolute_rotation())
     lfb = parent.get_location_wrt(self._deck, "l", "f", "b") + location
     await self.drop_resource(coordinate=lfb + Coordinate(center.x, center.y, 0), **kwargs)
+
+  # -- complex, power commands --------------------------------------------------------------------
+
+  async def move_resource(
+    self,
+    resource: Resource,
+    destination: Optional[Resource] = None,
+    coordinate: Optional[Coordinate] = None,
+    *,
+    minimum_traverse_height_start: Optional[float] = None,
+    pickup_offset: Coordinate = Coordinate.zero(),
+    pickup_distance_from_top: Optional[float] = None,
+    resource_width: Optional[float] = None,
+    resource_length: Optional[float] = None,
+    resource_height: Optional[float] = None,
+    pickup_y_clearance: float = 2.5,
+    grip_speed_y: float = 5.0,
+    squeeze_mm: float = 2.0,
+    pickup_z_acceleration: Optional[float] = None,
+    pickup_z_speed: Optional[float] = None,
+    minimum_traverse_height_during: Optional[float] = None,
+    acceleration_scale_x: int = 1,
+    drop_offset: Coordinate = Coordinate.zero(),
+    drop_z_acceleration: Optional[float] = None,
+    drop_z_speed: Optional[float] = None,
+    drop_y_clearance: float = 2.5,
+    minimum_traverse_height_end: Optional[float] = None,
+    return_grippers: bool = True,
+  ) -> None:
+    """Move a resource with the CoRe grippers, mounting them first if needed.
+
+    Args:
+      resource: what to move.
+      destination: the resource it goes into, e.g. a PrepDeck spot.
+      coordinate: where its centre-centre-bottom goes, in deck coordinates, instead of
+        `destination`.
+      minimum_traverse_height_start: the height to travel to the resource at, in mm. None goes to
+        Z safety.
+      pickup_offset: added to the grip point, in mm.
+      pickup_distance_from_top: how far below its top the jaws close, in mm. None is its preferred
+        pickup location, else 5 mm.
+      resource_width: its size along the grip axis, in mm. None reads it from the resource.
+      resource_length: its size in x, in mm. None reads it from the resource.
+      resource_height: its size in z, in mm. None reads it from the resource.
+      pickup_y_clearance: how far each gripper stands from the resource, either side, as it moves
+        in to grip it, in mm.
+      grip_speed_y: how fast the jaws close, in mm/s.
+      squeeze_mm: how far past touching the jaws close, in mm.
+      pickup_z_acceleration: the Z drives' acceleration from the grip on, in mm/s2. None is
+        `default_z_acceleration_with_resource_held`.
+      pickup_z_speed: how fast the jaws rise with it, in mm/s. None leaves it to the firmware.
+      minimum_traverse_height_during: the height to carry it at, in mm. None goes to Z safety.
+      acceleration_scale_x: X-axis acceleration scale while carrying it.
+      drop_offset: added to where it is let go, in mm.
+      drop_z_acceleration: the Z drives' acceleration until it is let go, in mm/s2. None is
+        `default_z_acceleration_with_resource_held`.
+      drop_z_speed: how fast it is lowered to where it is let go, in mm/s. None leaves it to the
+        firmware.
+      drop_y_clearance: how far each gripper stands from the resource, either side, as it moves
+        out after letting go, in mm.
+      minimum_traverse_height_end: the height to leave the destination at, in mm. None goes to Z
+        safety.
+      return_grippers: put the tools back in their holder once the resource is down.
+
+    Raises:
+      HasTipError: If a channel carries a tip.
+      RuntimeError: If the driver has no pipettes to carry the grippers.
+      ValueError: If neither or both of `destination` and `coordinate` are given.
+    """
+    if (destination is None) == (coordinate is None):
+      raise ValueError("move_resource needs one of `destination` or `coordinate`, not both.")
+    tipped = [ch for ch, tip in enumerate(self._pipettes.get_mounted_tips()) if tip is not None]
+    if tipped:
+      raise HasTipError(
+        f"a tip is mounted on {channels_named(tipped)}; drop it before moving a resource."
+      )
+    if not self._tools_mounted:
+      await self.pick_up_tools()
+
+    await self.pick_up_resource(
+      resource,
+      offset=pickup_offset,
+      pickup_distance_from_top=pickup_distance_from_top,
+      resource_width=resource_width,
+      resource_length=resource_length,
+      resource_height=resource_height,
+      y_clearance=pickup_y_clearance,
+      grip_speed_y=grip_speed_y,
+      squeeze_mm=squeeze_mm,
+      minimum_traverse_height_start=minimum_traverse_height_start,
+      minimum_traverse_height_end=minimum_traverse_height_during,
+      z_acceleration=pickup_z_acceleration,
+      z_speed=pickup_z_speed,
+    )
+    await self.drop_resource(
+      destination,
+      coordinate,
+      offset=drop_offset,
+      y_clearance=drop_y_clearance,
+      acceleration_scale_x=acceleration_scale_x,
+      minimum_traverse_height_start=minimum_traverse_height_during,
+      minimum_traverse_height_end=minimum_traverse_height_end,
+      z_acceleration=drop_z_acceleration,
+      z_speed=drop_z_speed,
+    )
+
+    if return_grippers:
+      await self.return_tools()

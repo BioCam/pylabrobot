@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from types import SimpleNamespace
 from typing import Any, Callable, List, Optional, Tuple
 from unittest.mock import AsyncMock
@@ -225,6 +226,35 @@ def test_private_pick_up_at_enables_drop_at():
       await grippers._drop_at(place)
 
   asyncio.run(_run())
+
+
+@pytest.mark.parametrize("resource_height, warned", [(14.0, False), (100.0, True)])
+def test_drop_at_warns_when_carried_below_safe_deck_height(caplog, resource_height, warned):
+  """Jaws carried at 144.6 mm, gripped 5 mm below the top: a 100 mm resource hangs to 49.6 mm."""
+  deck = PrepDeck(with_core_grippers=True)
+  grippers, _ = _make_grippers(deck, stub_pick_and_drop=False)
+
+  async def _run() -> None:
+    await grippers._pick_up_at(
+      Coordinate(1, 2, 3),
+      resource_width=85.0,
+      resource_length=127.0,
+      resource_height=resource_height,
+      plate_top_z_offset=5.0,
+    )
+    await grippers._drop_at(Coordinate(10, 20, 30))
+
+  # The pylabrobot logger does not propagate to the root, where caplog listens.
+  gripper_logger = logging.getLogger(CoreGrippers.__module__)
+  gripper_logger.addHandler(caplog.handler)
+  try:
+    asyncio.run(_run())
+  finally:
+    gripper_logger.removeHandler(caplog.handler)
+  below = [r for r in caplog.records if "safe deck height" in r.getMessage()]
+  assert bool(below) == warned
+  if warned:
+    assert "49.6 mm" in below[0].getMessage()
 
 
 def test_pick_up_tools_moves_over_the_tools_then_picks():
