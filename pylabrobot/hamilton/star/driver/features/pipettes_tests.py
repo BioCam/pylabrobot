@@ -936,7 +936,7 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
 
     with unittest.mock.patch("asyncio.sleep", sleeping):
       await self.pipettes.probe_z_heights_using_ztouch(self._wells("A1", "B1", "C1", "D1"))
-      self.assertEqual(slept, [0.5, 1.0, 1.5], "channel 0 at once, the rest 0.5 s apart")
+      self.assertEqual(slept, [0.25, 0.5, 0.75], "channel 0 at once, the rest 0.25 s apart")
       self.assertEqual([c[:4] for c in self.sent], ["P1ZH", "P2ZH", "P3ZH", "P4ZH"])
       slept.clear()
       self.sent.clear()

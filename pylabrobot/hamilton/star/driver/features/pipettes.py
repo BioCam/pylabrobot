@@ -3148,7 +3148,7 @@ class Pipettes:
     below_floor: float = 5.0,
     end_tolerance: float = 0.5,
     post_detection_distance: float = 2.0,
-    start_spacing: float = 0.5,
+    start_spacing: float = 0.25,
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_during: Optional[float] = None,
     minimum_traverse_height_end: Optional[float] = None,
