@@ -367,8 +367,8 @@ export function initDeviceTools({ getWorld, modelOf, onSelect }) {
 
       const label = document.createElement("button");
       label.className = "dt-label";
-      label.title = "Show or hide what this device carries";
-      label.innerHTML = `${escapeHtml(world.names[device])}<br>Capabilities`;
+      label.title = "Show or hide this device's features";
+      label.innerHTML = `${escapeHtml(world.names[device])}<br>Device Features`;
       group.appendChild(label);
 
       const buttons = document.createElement("div");

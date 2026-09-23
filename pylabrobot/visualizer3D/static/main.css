@@ -75,6 +75,15 @@ nav.navbar .container-fluid {
   font-weight: 700;
   color: #333;
   white-space: nowrap;
+  /* Room reserved after the name, as the existing visualizer reserves it, so the device tools
+     do not sit against a short name and jump when a longer one is shown. */
+  min-width: 316px;
+  display: inline-block;
+}
+
+.navbar-divider-device-tools {
+  margin: 0 14px;
+  height: 95%;
 }
 
 .toolbar-left-toggle,
@@ -324,31 +333,37 @@ main {
 
 .dt-label {
   border: none;
+  border-right: 1px solid #ced4da;
   background: transparent;
   padding: 0 4px;
   font-size: 11px;
   font-weight: 600;
   line-height: 1.15;
   color: #555;
-  text-align: left;
   cursor: pointer;
+  text-align: left;
   white-space: nowrap;
-}
-
-.dt-label:hover {
-  color: #222;
+  cursor: pointer;
 }
 .dt-label.collapsed {
-  opacity: 0.6;
+  border-right: none;
 }
 
+/* The buttons slide shut behind their label rather than vanishing, as the existing visualizer's do. */
 .dt-buttons {
   display: flex;
   align-items: center;
   gap: 6px;
+  overflow: hidden;
+  max-width: 500px;
+  opacity: 1;
+  transition:
+    max-width 0.25s ease,
+    opacity 0.2s ease;
 }
 .dt-buttons.collapsed {
-  display: none;
+  max-width: 0;
+  opacity: 0;
 }
 
 .dt-btn {
