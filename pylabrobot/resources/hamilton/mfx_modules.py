@@ -139,21 +139,6 @@ def Hamilton_MFX_plateholder_DWP_metal_tapped(name: str) -> PlateHolder:
   return hamilton_mfx_plateholder_DWP_metal_tapped(name)
 
 
-def hamilton_mfx_module_tiprackholder_ntr(name: str) -> ResourceHolder:
-  """Deprecated alias for `hamilton_mfx_resourceholder_ntr`.
-
-  What stands on it is a stack of nested racks, not a rack sunk into it, so it is a resource holder
-  rather than a tip rack holder - and its siblings carry no `module`.
-  """
-  warnings.warn(
-    "hamilton_mfx_module_tiprackholder_ntr is deprecated. "
-    "Use 'hamilton_mfx_resourceholder_ntr' instead.",
-    DeprecationWarning,
-    stacklevel=2,
-  )
-  return hamilton_mfx_resourceholder_ntr(name)
-
-
 def MFX_DWP_rackbased_module(name: str) -> PlateHolder:
   """Deprecated alias for `hamilton_mfx_plateholder_DWP_flat`."""
   warnings.warn(
