@@ -983,7 +983,15 @@ function buildArms() {
 
 // Glide rather than teleport, so a move reads as motion. The tracker carries commanded targets, so
 // this interpolation is cosmetic and says nothing about where the arm physically is mid-move.
-const ARM_GLIDE_PER_SECOND = 6;
+// How long a move takes to draw, in seconds. Off by default: a viewer watching a device should
+// show where it is, and a glide is the drawing running that far behind. Turned up to follow a
+// simulation, where the run is the thing being watched rather than the machine.
+const DEFAULT_GLIDE_SECONDS = 0;
+let glideSeconds = DEFAULT_GLIDE_SECONDS;
+
+export function setGlideSeconds(seconds) {
+  glideSeconds = Math.max(0, seconds);
+}
 
 const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
 
@@ -993,9 +1001,9 @@ function updateArms(delta) {
   for (const arm of arms) {
     if (Math.abs(arm.targetX - arm.currentX) < 0.01) continue;
     moved = true;
-    arm.currentX = reduce
+    arm.currentX = reduce || !glideSeconds
       ? arm.targetX
-      : arm.currentX + (arm.targetX - arm.currentX) * Math.min(1, delta * ARM_GLIDE_PER_SECOND);
+      : arm.currentX + (arm.targetX - arm.currentX) * Math.min(1, delta / glideSeconds);
     const local = new THREE.Matrix4().makeTranslation(arm.currentX, arm.local[1], arm.local[2]);
     arm.group.matrix.multiplyMatrices(arm.parentMatrix, local);
     arm.group.matrixWorldNeedsUpdate = true;
@@ -1080,8 +1088,6 @@ function redraw(indices) {
 function refreshSubtree(index, skipSelf) {
   redraw(refreshTransforms(index, skipSelf));
 }
-  if (!setLocal(index, location)) return;
-
 
 function applyLocation(index, location) {
   // A travelling part is drawn by its own group and glides there, so it is told the target rather
@@ -1090,12 +1096,60 @@ function applyLocation(index, location) {
   if (MOVING_PARTS.has(modelOf(index).category)) {
     const arm = arms.find((a) => a.index === index);
     if (arm) {
+      if (!setLocal(index, location)) return;
       arm.targetX = location.x;
       return;
     }
   }
 
-  refreshSubtree(index);
+  // Everything else eases its own transform, so what stands on it comes along and every panel
+  // reads the position where it always has.
+  if (!glideSeconds || reducedMotion?.matches) {
+    glides.delete(index);
+    if (setLocal(index, location)) refreshSubtree(index);
+    return;
+  }
+  const o = index * 6;
+  if (
+    world.local[o] === location.x &&
+    world.local[o + 1] === location.y &&
+    world.local[o + 2] === location.z
+  ) {
+    glides.delete(index);
+    return;
+  }
+  // No frame asked for here: the message that carried this position asked for one at its own
+  // edge, and `updateGlides` keeps the loop running while anything is still easing.
+  glides.set(index, {
+    from: { x: world.local[o], y: world.local[o + 1], z: world.local[o + 2] },
+    to: { x: location.x, y: location.y, z: location.z },
+    left: glideSeconds,
+  });
+}
+
+// What each gliding resource is easing toward, by index. A second move replaces the first: the
+// model is already at the new target and only the drawing is behind.
+const glides = new Map();
+
+function updateGlides(delta) {
+  if (!glides.size) return false;
+  for (const [index, glide] of glides) {
+    glide.left -= delta;
+    const done = glide.left <= 0;
+    // How much of the move is still to come, so the whole of it takes `glideSeconds` whatever its
+    // length and however the frames fall.
+    const left = done ? 0 : glide.left / glideSeconds;
+    const next = done
+      ? glide.to
+      : {
+          x: glide.to.x - (glide.to.x - glide.from.x) * left,
+          y: glide.to.y - (glide.to.y - glide.from.y) * left,
+          z: glide.to.z - (glide.to.z - glide.from.z) * left,
+        };
+    if (done) glides.delete(index);
+    if (setLocal(index, next)) refreshSubtree(index);
+  }
+  return true;
 }
 
 // A resource has turned. Only its own transform changes, but everything standing on it is drawn
@@ -4090,6 +4144,32 @@ halosButton.addEventListener("click", () => {
   invalidate();
 });
 
+// How fast a move is drawn, kept across reloads: a viewer left watching a run stays as it was set.
+// Storage may refuse - a private window, or site data cleared - and the default stands.
+const glideSlider = document.getElementById("glide-rate");
+try {
+  const kept = window.localStorage?.getItem("plr.glideSeconds");
+  if (kept !== null && kept !== undefined) glideSlider.value = kept;
+} catch {
+  /* left at the default */
+}
+setGlideSeconds(Number(glideSlider.value));
+const glideLabel = document.getElementById("glide-label");
+const sayGlide = () => {
+  glideLabel.textContent = Number(glideSlider.value) ? `${glideSlider.value}s` : "off";
+};
+sayGlide();
+glideSlider.addEventListener("input", () => {
+  setGlideSeconds(Number(glideSlider.value));
+  sayGlide();
+  try {
+    window.localStorage?.setItem("plr.glideSeconds", glideSlider.value);
+  } catch {
+    /* not remembered, which changes nothing about this session */
+  }
+  invalidate();
+});
+
 toolButtons.cursor.addEventListener("click", () => setTool("cursor"));
 toolButtons.coords.addEventListener("click", () => setTool("coords"));
 toolButtons.gif.addEventListener("click", () => {
@@ -4304,6 +4384,7 @@ function connect() {
       const _tScene = performance.now();
       stats = data.stats ?? {};
       setWorld(buildWorld(data));
+      glides.clear();
       timings.decodeMs = performance.now() - _tScene;
       const _tBuild = performance.now();
       buildMeshes();
@@ -4414,6 +4495,7 @@ function drawFrame() {
   }
   if (deltaAnnotation?.group.visible) updateDeltaLabels();
   if (updateArms(delta)) moving = true;
+  if (updateGlides(delta)) moving = true;
   if (controls.update()) moving = true;
   if (gif.isRecording()) moving = true;
 

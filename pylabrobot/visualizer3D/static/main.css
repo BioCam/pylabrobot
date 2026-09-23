@@ -1361,3 +1361,24 @@ main {
   border-radius: 4px;
   background: #f8f9fa;
 }
+
+/* How fast a move is drawn, in the left toolbar: vertical, so it fits the icon column. */
+.toolbar-section-glide {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+#glide-rate {
+  writing-mode: vertical-lr;
+  direction: rtl;
+  width: 20px;
+  height: 78px;
+  accent-color: #6c757d;
+}
+
+#glide-label {
+  font-size: 9px;
+  color: #666;
+}
