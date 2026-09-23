@@ -198,6 +198,10 @@ def test_a_simulation_that_keeps_time_waits_as_long_as_the_device_would_take(mon
       assert waited == []
     await p.stop()
 
+  async def _default_scale() -> float:
+    # Built inside a loop, as every driver here is: on Python 3.9 the driver needs a current one.
+    return PrepSimulationDriver(deck=PrepDeck(), simulate_motion_time=True).motion_time_scale
+
   asyncio.run(_run(False))
   asyncio.run(_run(True))
-  assert PrepSimulationDriver(deck=PrepDeck(), simulate_motion_time=True).motion_time_scale == 0.25
+  assert asyncio.run(_default_scale()) == 0.25
