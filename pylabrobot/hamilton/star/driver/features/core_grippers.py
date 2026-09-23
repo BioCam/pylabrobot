@@ -712,7 +712,7 @@ class CoreGrippers:
 
   # -- probing ------------------------------------------------------------------------------------
 
-  async def probe_z_for_resource_using_ztouch(
+  async def probe_resource_exists_using_ztouch(
     self,
     location: Coordinate,
     resource: Resource,

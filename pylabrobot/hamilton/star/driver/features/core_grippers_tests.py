@@ -227,7 +227,7 @@ class TestCheckResourceExists(unittest.IsolatedAsyncioTestCase):
     self.grippers._driver.send_command = recorded  # type: ignore[assignment]
 
   async def check(self, **kwargs: Any) -> bool:
-    return await self.grippers.probe_z_for_resource_using_ztouch(
+    return await self.grippers.probe_resource_exists_using_ztouch(
       self.location, self.plate, **kwargs
     )
 
