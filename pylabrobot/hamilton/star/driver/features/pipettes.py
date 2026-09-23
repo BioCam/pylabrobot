@@ -2087,6 +2087,74 @@ class Pipettes:
     resp = await self._driver.send_command(module="C0", command="RL", fmt="lh#### (n)")
     return [increments / 10 for increments in cast(List[int], resp["lh"])]
 
+  async def _clld_search(
+    self,
+    channel: int,
+    end_position: float,
+    start_position: float,
+    search_speed: float = 10.0,
+    acceleration: float = 800.0,
+    detection_edge: int = 10,
+    detection_drop: int = 2,
+    post_detection_trajectory: Literal[0, 1] = 1,
+    post_detection_distance: float = 2.0,
+  ) -> None:
+    """Run one channel's cLLD search between two stop disc heights, every field checked.
+
+    In stop disc terms: a caller that thinks in tip bottoms adds the overhang first. Nothing is
+    sensed here, so the caller makes sure a tip is on. A search that finds nothing raises as the
+    channel answers it.
+
+    Args:
+      channel: 0-indexed from the back.
+      end_position: stop disc height it goes no lower than, in mm.
+      start_position: stop disc height the search starts from, in mm.
+      search_speed: in mm/s.
+      acceleration: in mm/s2.
+      detection_edge: cLLD edge steepness, 0 to 1023.
+      detection_drop: offset after the edge, 0 to 1023.
+      post_detection_trajectory: 0 moves down after detection, 1 up.
+      post_detection_distance: how far it moves after detection, in mm.
+
+    Raises:
+      ValueError: If a field is out of the drive's range.
+      STARFirmwareError: As the channel answers, a search that found nothing included.
+    """
+    c = self.configuration
+    if post_detection_trajectory not in (0, 1):
+      raise ValueError(f"post_detection_trajectory must be 0 or 1, is {post_detection_trajectory}")
+    end = c.z_drive_mm_to_increments(end_position)
+    start = c.z_drive_mm_to_increments(start_position)
+    speed = c.z_drive_mm_to_increments(search_speed)
+    ramp = c.z_drive_acceleration_mm_to_increments(acceleration)
+    distance = c.z_drive_mm_to_increments(post_detection_distance)
+    for checked, (low, high), name in (
+      (end, c.z_range_increments, "search end, in increments,"),
+      (start, c.z_range_increments, "search start, in increments,"),
+      (speed, c.z_drive_speed_range_increments, "search_speed, in increments/s,"),
+      (ramp, c.z_drive_acceleration_range_increments, "acceleration, in 1000 increments/s2,"),
+      (detection_edge, c.clld_detection_edge_range, "detection_edge"),
+      (detection_drop, c.clld_detection_drop_range, "detection_drop"),
+      (
+        distance,
+        c.lld_post_detection_distance_range_increments,
+        "post_detection_distance, in increments,",
+      ),
+    ):
+      if not low <= checked <= high:
+        raise ValueError(f"{name} must be between {low} and {high}, is {checked}")
+    await self._unchecked_fw_probe_z_using_clld(
+      channel,
+      end_position=end,
+      start_position=start,
+      search_speed=speed,
+      acceleration=ramp,
+      detection_edge=detection_edge,
+      detection_drop=detection_drop,
+      post_detection_trajectory=post_detection_trajectory,
+      post_detection_distance=distance,
+    )
+
   async def probe_z_using_clld(
     self,
     channel_idx: int,
@@ -2146,40 +2214,17 @@ class Pipettes:
         f"search_start_position must be between {search_end_position} and {top} mm, "
         f"is {search_start_position}"
       )
-    if post_detection_trajectory not in (0, 1):
-      raise ValueError(f"post_detection_trajectory must be 0 or 1, is {post_detection_trajectory}")
-    end = c.z_drive_mm_to_increments(search_end_position + overhang)
-    start = c.z_drive_mm_to_increments(round(search_start_position + overhang, 2))
-    speed = c.z_drive_mm_to_increments(search_speed)
-    ramp = c.z_drive_acceleration_mm_to_increments(acceleration)
-    distance = c.z_drive_mm_to_increments(post_detection_distance)
-    for checked, (low, high), name in (
-      (end, c.z_range_increments, "search end, in increments,"),
-      (start, c.z_range_increments, "search start, in increments,"),
-      (speed, c.z_drive_speed_range_increments, "search_speed, in increments/s,"),
-      (ramp, c.z_drive_acceleration_range_increments, "acceleration, in 1000 increments/s2,"),
-      (detection_edge, c.clld_detection_edge_range, "detection_edge"),
-      (detection_drop, c.clld_detection_drop_range, "detection_drop"),
-      (
-        distance,
-        c.lld_post_detection_distance_range_increments,
-        "post_detection_distance, in increments,",
-      ),
-    ):
-      if not low <= checked <= high:
-        raise ValueError(f"{name} must be between {low} and {high}, is {checked}")
-
     try:
-      await self._unchecked_fw_probe_z_using_clld(
+      await self._clld_search(
         channel_idx,
-        end_position=end,
-        start_position=start,
-        search_speed=speed,
-        acceleration=ramp,
+        search_end_position + overhang,
+        round(search_start_position + overhang, 2),
+        search_speed=search_speed,
+        acceleration=acceleration,
         detection_edge=detection_edge,
         detection_drop=detection_drop,
         post_detection_trajectory=post_detection_trajectory,
-        post_detection_distance=distance,
+        post_detection_distance=post_detection_distance,
       )
     except STARFirmwareError as error:
       await self.move_to_safe_z()
