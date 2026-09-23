@@ -1158,6 +1158,39 @@ class iSWAP:
       raise RuntimeError("the elbow's X offset was not read; have you called `star.setup()`?")
     return round(await self.arm.request_position() - offset, 2)
 
+  async def elbow_move_to_x_position(
+    self,
+    x: float,
+    acceleration_level: int = 3,
+    current_limit: int = 7,
+    settle_reads: int = 20,
+  ):
+    """Move the elbow along X. The whole arm travels, with everything else it carries.
+
+    The iSWAP has no X drive. It rides the arm and sits `configuration.elbow_x_offset` left of the
+    carriage reference point, so the arm is sent to the carriage position that puts the elbow at `x`.
+
+    Args:
+      x: where to put the elbow, in deck mm.
+      acceleration_level: how hard to accelerate, 1 to 4.
+      current_limit: the motor current limit, 1 to 7.
+      settle_reads: how many reads to take before calling the arm stopped.
+
+    Raises:
+      ValueError: If the elbow cannot reach it.
+      RuntimeError: If the drive's X offset or the arm's travel was not read.
+    """
+    self._check_reachable("x", x)
+    offset = self.configuration.elbow_x_offset
+    if offset is None:
+      raise RuntimeError("the elbow's X offset was not read; have you called `star.setup()`?")
+    return await self.arm.move_to_x_position(
+      round(x + offset, 2),
+      acceleration_level=acceleration_level,
+      current_limit=current_limit,
+      settle_reads=settle_reads,
+    )
+
   # -- y position --------------------------------------------------------------------------------
 
   async def elbow_request_y_position(self) -> float:
