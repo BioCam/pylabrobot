@@ -360,6 +360,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
     tip_pattern: List[bool],
     z: int,
     overhang: float = 0.0,
+    descend_to: Optional[int] = None,
   ) -> None:
     """Put the arm and the channels where a tip command leaves them, as the reads will find them.
 
@@ -379,6 +380,8 @@ class SimulatedPipettes(_Simulated, Pipettes):
       z: the height the command ends at, in tenths of a millimetre.
       overhang: how far what the channels now carry hangs below the stop disc, in mm. Nothing for
         a command that leaves them empty.
+      descend_to: the lowest point of the stroke, in tenths of a millimetre. Recorded as a stop of
+        its own so the descent is seen; only the end is recorded when it is None.
     """
     involved = [i for i, used in enumerate(tip_pattern) if used and i < self.num_channels]
     if not involved:
@@ -393,10 +396,19 @@ class SimulatedPipettes(_Simulated, Pipettes):
     except ValueError:
       # No room for the others, as a packed discard leaves none: the firmware arranges them.
       planned = sent
+    # The stroke as the device makes it: across at the height it starts from, down onto the spots,
+    # and back up. Recorded as one stop, the whole command is a single jump to wherever it ended.
     for channel, y in planned.items():
-      self.update_location_by_reference_point(
-        channel, y=y, z=z / 10 + overhang if channel in involved else None
-      )
+      self.update_location_by_reference_point(channel, y=y)
+    if descend_to is not None:
+      await self.device.pay_motion_time()
+      for channel in involved:
+        self.update_location_by_reference_point(
+          channel, z=descend_to / 10 + self._below_stop_disc(channel)
+        )
+      await self.device.pay_motion_time()
+    for channel in involved:
+      self.update_location_by_reference_point(channel, z=z / 10 + overhang)
 
   async def _unchecked_fw_pick_up_tips(
     self,
@@ -428,6 +440,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
       tip_pattern,
       minimum_traverse_height_start,
       overhang=self.device.defined_tip_lengths.get(tip_type_index, 0.0),
+      descend_to=end_tip_pick_up_process,
     )
     return resp
 
@@ -453,7 +466,11 @@ class SimulatedPipettes(_Simulated, Pipettes):
       discarding_method=discarding_method,
     )
     await self._record_tip_command(
-      x_positions, y_positions, tip_pattern, minimum_traverse_height_end
+      x_positions,
+      y_positions,
+      tip_pattern,
+      minimum_traverse_height_end,
+      descend_to=end_tip_deposit_process,
     )
     return resp
 
@@ -1442,9 +1459,7 @@ class STARSimulationDriver(STARDriver):
       num_channels=self.num_channels if carries_a_list else 0,
       **kwargs,
     )
-    owed, self._motion_owed = self._motion_owed, 0.0
-    if owed:
-      await asyncio.sleep(owed * self.motion_time_scale)
+    await self.pay_motion_time()
     answered = await self._answer(module, command, **kwargs)
     if answered is None:
       self._log_exchange(cmd, None)
@@ -1452,6 +1467,13 @@ class STARSimulationDriver(STARDriver):
     value, source = answered
     self._log_exchange(cmd, f"simulation: {value} from model {source}")
     return value
+
+  async def pay_motion_time(self) -> None:
+    """Wait out what the moves recorded since the last wait would have taken. Nothing owed, nothing
+    waited, so this costs nothing on a device that is not keeping time."""
+    owed, self._motion_owed = self._motion_owed, 0.0
+    if owed:
+      await asyncio.sleep(owed * self.motion_time_scale)
 
   def owe_motion_time(self, *seconds: float) -> None:
     """Charge the device for a move, in seconds. The longest one owed stands: the drives move at
