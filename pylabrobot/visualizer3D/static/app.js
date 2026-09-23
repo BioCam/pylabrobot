@@ -429,6 +429,8 @@ dracoLoader.setDecoderPath("./vendor/draco/");
 dracoLoader.setDecoderConfig({ type: "wasm" });
 gltfLoader.setDRACOLoader(dracoLoader);
 let meshRoots = [];
+// Counted up per rebuild, so a file that lands late is placed only by the scene that asked for it.
+let sceneGeneration = 0;
 // A model drawn for many resources at once: one instanced mesh per mesh in its file, however many
 // resources stand on it. A clone apiece is a draw call apiece, and a rack of tips is ninety-six of
 // them. Each entry is { modelIndex, instances, meshes }.
@@ -493,6 +495,7 @@ function buildDeclaredMeshes() {
   // shape - a tip picked up, a plate moved - sends a whole scene, and rebuilding the geometry for
   // it would take every model off screen and put the boxes back until the files had been fetched
   // and parsed again. That flash is what this is here to stop.
+  sceneGeneration++;
   const onScreen = new Map();
   for (const root of meshRoots) onScreen.set(root.userData.key, root);
   meshRoots = [];
@@ -535,12 +538,13 @@ function buildDeclaredMeshes() {
     const declared = world.models[modelIndex].mesh;
     const scale = MESH_UNITS[declared.units] ?? 1;
     const names = instances.map((i) => world.names[i]);
+    const generation = sceneGeneration;
 
     const place = (gltf) => {
-      // The scene may have been rebuilt while this was in flight. Placing it then would leave
-      // objects nothing owns, positioned by transforms that no longer apply.
-      if (!world || names.some((n, k) => world.indexOfName.get(n) !== instances[k])) return;
+      // The scene may have been rebuilt while this was in flight; that scene issued its own load.
+      // Placing this one too would draw the model twice, and the same names do not make it current.
       parsedByUrl.set(declared.url, gltf);
+      if (generation !== sceneGeneration) return;
 
       fitFilterDiscs(modelIndex, gltf.scene, scale, declared.up ?? "Y");
 
@@ -1021,20 +1025,20 @@ function buildArms() {
     group.matrixWorldNeedsUpdate = true;
     view.add(group);
 
-    const parent = world.parentOf[index];
-    arms.push({
-      group,
-      frame,
-      outline,
-      line,
-      index,
-      parentMatrix: parent >= 0 ? world.matrices[parent].clone() : new THREE.Matrix4(),
-      local: world.local.slice(index * 6, index * 6 + 6),
-      referenceOffset: offset,
-      currentX: world.local[index * 6],
-      targetX: world.local[index * 6],
-    });
+    arms.push({ group, frame, outline, line, index, referenceOffset: offset, ...armPose(index) });
   }
+}
+
+/** Where an arm stands in the model: what its group is drawn from, and where its glide ends. */
+function armPose(index) {
+  const parent = world.parentOf[index];
+  const local = world.local.slice(index * 6, index * 6 + 6);
+  return {
+    parentMatrix: parent >= 0 ? world.matrices[parent].clone() : new THREE.Matrix4(),
+    local,
+    currentX: local[0],
+    targetX: local[0],
+  };
 }
 
 // Glide rather than teleport, so a move reads as motion. The tracker carries commanded targets, so
@@ -1113,7 +1117,7 @@ function redraw(indices) {
     if (placement) {
       if (visible) placeInstance(placement.mesh, placement.slot, world.matrices[at], sx, sy, sz);
       else placement.mesh.setMatrixAt(placement.slot, ZERO);
-      placement.mesh.instanceMatrix.needsUpdate = true;
+      touched.add(placement.mesh);
     }
     // An outline is its own object with its own baked matrix, so a move that touched only the
     // instance left it standing at the old position - a wireframe ghost of whatever rode the arm.
@@ -2572,11 +2576,11 @@ function buildMeshes() {
         const at = [sx, sy, sz * 1.02, sx / 2, sy / 2, (sz * 1.02) / 2];
         // A spot holding a tip shows the tip, and the white of an empty hole would lie across its
         // bore - over the filter, which sits just below the spot.
+        remember(globalIndex, inner, slot, at, model.category === "tip_spot");
         if (model.category === "tip_spot" && world.childrenOf[globalIndex].length > 0) {
           inner.setMatrixAt(slot, ZERO);
         } else {
           placeInstance(inner, slot, world.matrices[globalIndex], ...at);
-          remember(globalIndex, inner, slot, at);
         }
         inner.setColorAt(slot, white);
         vesselOf.set(globalIndex, { mesh: inner, slot, model });
@@ -2717,10 +2721,13 @@ function boreWidthAt(object, z, cx, cy) {
   return Number.isFinite(nearest) ? 2 * nearest : null;
 }
 
-// Where one instanced part stands, so it can be put back after being emptied.
-function remember(index, mesh, slot, at) {
+/**
+ * Where one instanced part stands, so it can be put back after being emptied. `emptyOnly` marks
+ * a part drawn only while the resource holds nothing, such as a spot's cavity.
+ */
+function remember(index, mesh, slot, at, emptyOnly = false) {
   if (!overlayOf.has(index)) overlayOf.set(index, []);
-  overlayOf.get(index).push({ mesh, slot, at });
+  overlayOf.get(index).push({ mesh, slot, at, emptyOnly });
 }
 
 // ---------------------------------------------------------------- live state
@@ -2787,7 +2794,8 @@ function placeParts(index, touched) {
   const visible = isVisible(index);
 
   for (const part of overlayOf.get(index) ?? []) {
-    if (visible) placeInstance(part.mesh, part.slot, world.matrices[index], ...part.at);
+    const shown = visible && !(part.emptyOnly && world.childrenOf[index].length > 0);
+    if (shown) placeInstance(part.mesh, part.slot, world.matrices[index], ...part.at);
     else part.mesh.setMatrixAt(part.slot, ZERO);
     touched.add(part.mesh);
   }
@@ -4725,6 +4733,15 @@ function applyMoves(moves) {
     setLocal(index, move.location);
     setLocalRotation(index, move.rotation);
     for (const i of refreshTransforms(index)) touched.add(i);
+    // The spot it left and the one it reached draw their cavities from whether they hold a tip.
+    for (const i of [was, parent]) if (i >= 0) touched.add(i);
+    // An arm is drawn by its own group, which is put where the model now says, with nothing to glide.
+    const arm = arms.find((a) => a.index === index);
+    if (arm) {
+      Object.assign(arm, armPose(index));
+      arm.group.matrix.copy(world.matrices[index]);
+      arm.group.matrixWorldNeedsUpdate = true;
+    }
   }
   redraw([...touched]);
   for (const at of rowsUnder) reopenRowsUnder(at);
