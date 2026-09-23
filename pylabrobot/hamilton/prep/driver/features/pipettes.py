@@ -3160,7 +3160,7 @@ class Pipettes:
       raise NoTipError(f"no tip is mounted on {channels_named(empty)}; call pick_up_tips first.")
     return [tip for tip in mounted.values() if tip is not None]
 
-  async def pick_up_tips_in_one_move(
+  async def _pick_up_tips_in_one_move(
     self,
     tip_spots: Sequence[TipSpot],
     use_channels: Optional[List[int]] = None,
@@ -3341,7 +3341,7 @@ class Pipettes:
 
     The channels ride one gantry, so only spots at one x, far enough apart in y and in channel
     order, can be taken in one move. Any other set is planned into the fewest such groups, and each
-    group is taken by `pick_up_tips_in_one_move`, in ascending x.
+    group is taken by `_pick_up_tips_in_one_move`, in ascending x.
 
     Args:
       tip_spots: the spot each channel takes a tip from.
@@ -3401,7 +3401,7 @@ class Pipettes:
       else (minimum_traverse_height_during)
     )
     for reached, batch in enumerate(batches):
-      await self.pick_up_tips_in_one_move(
+      await self._pick_up_tips_in_one_move(
         [tip_spots[i] for i in batch.indices],
         list(batch.channels),
         [offsets_list[i] for i in batch.indices],
@@ -3414,7 +3414,7 @@ class Pipettes:
         minimum_traverse_height_end,
       )
 
-  async def drop_tips_in_one_move(
+  async def _drop_tips_in_one_move(
     self,
     destinations: Sequence[Union[TipSpot, Trash]],
     use_channels: Optional[List[int]] = None,
@@ -3606,7 +3606,7 @@ class Pipettes:
 
     The channels ride one gantry, so only spots at one x, far enough apart in y and in channel
     order, can be dropped into in one move. Any other set is planned into the fewest such groups,
-    and each group is dropped by `drop_tips_in_one_move`, in ascending x. Waste goes in one move:
+    and each group is dropped by `_drop_tips_in_one_move`, in ascending x. Waste goes in one move:
     each channel has a waste position of its own.
 
     Args:
@@ -3650,7 +3650,7 @@ class Pipettes:
       raise ValueError("len(offsets) must equal len(destinations)")
 
     if all(isinstance(destination, Trash) for destination in destinations):
-      await self.drop_tips_in_one_move(
+      await self._drop_tips_in_one_move(
         destinations,
         use_channels,
         offsets_list,
@@ -3678,7 +3678,7 @@ class Pipettes:
       else minimum_traverse_height_during
     )
     for reached, batch in enumerate(batches):
-      await self.drop_tips_in_one_move(
+      await self._drop_tips_in_one_move(
         [destinations[i] for i in batch.indices],
         list(batch.channels),
         [offsets_list[i] for i in batch.indices],

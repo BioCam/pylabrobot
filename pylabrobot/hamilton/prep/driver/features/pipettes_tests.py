@@ -1409,13 +1409,13 @@ def test_the_first_group_is_reached_at_the_starting_height_and_the_rest_at_the_o
     assert p.pipettes is not None
 
     given: list = []
-    one_move = p.pipettes.pick_up_tips_in_one_move
+    one_move = p.pipettes._pick_up_tips_in_one_move
 
     async def record(*args, **kwargs):
       given.append(args[3] if len(args) > 3 else kwargs.get("minimum_traverse_height_start"))
       return await one_move(*args, **kwargs)
 
-    p.pipettes.pick_up_tips_in_one_move = record  # type: ignore[method-assign]
+    p.pipettes._pick_up_tips_in_one_move = record  # type: ignore[method-assign]
     await p.pipettes.pick_up_tips(
       rack["A1", "A2"],
       use_channels=[0, 1],
