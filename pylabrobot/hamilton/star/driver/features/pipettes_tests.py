@@ -859,6 +859,103 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.sent, [])
 
 
+class TestLiquidProbingInSimulation(unittest.IsolatedAsyncioTestCase):
+  """The simulator answers `ZL`, `ZE` and `RL` from the containers' trackers, through the real path.
+
+  Tips on four channels, an Azenta plate with water in three wells of a column and none in the
+  fourth, as the device notebook has it. The plate knows volume from height only, so the simulator
+  inverts it.
+  """
+
+  async def asyncSetUp(self):
+    from pylabrobot.resources import set_tip_tracking, set_volume_tracking
+    from pylabrobot.resources.azenta.plates import azenta_96_wellplate_200uL_Vb_4titudeframestar
+    from pylabrobot.resources.hamilton import (
+      PLT_CAR_L5AC_A00,
+      TIP_CAR_480_A00,
+      hamilton_96_tiprack_300uL,
+    )
+
+    set_tip_tracking(True)
+    set_volume_tracking(True)
+    self.addCleanup(set_tip_tracking, False)
+    self.addCleanup(set_volume_tracking, False)
+    self.deck = STARDeck()
+    tips = TIP_CAR_480_A00(name="tips")
+    tips[1] = self.rack = hamilton_96_tiprack_300uL(name="rack")
+    self.deck.assign_child_resource(tips, track=22)
+    plates = PLT_CAR_L5AC_A00(name="plates")
+    plates[0] = self.plate = azenta_96_wellplate_200uL_Vb_4titudeframestar(name="plate")
+    self.deck.assign_child_resource(plates, track=30)
+    self.driver = STARSimulationDriver(deck=self.deck, declared_configuration_json=RECORDING_STAR)
+    await self.driver.setup()
+    assert self.driver.pipettes is not None
+    self.pipettes = self.driver.pipettes
+    self.wells = [self.plate.get_well(name) for name in ("A1", "B1", "C1", "D1")]
+    for well, volume in zip(self.wells, (150.0, 100.0, 50.0, 0.0), strict=True):
+      well.tracker.set_volume(volume)
+    await self.pipettes.pick_up_tips([self.rack.get_item(f"{row}1") for row in "ABCD"])
+
+  async def asyncTearDown(self):
+    await self.driver.stop()
+
+  def _surface(self, well) -> float:
+    """Where the tracker's water stands in `well`, in mm on the deck, by the well's own model."""
+    volume = well.tracker.get_used_volume()
+    low, high = 0.0, well.get_size_z()
+    for _ in range(40):
+      mid = (low + high) / 2
+      low, high = (mid, high) if well.compute_volume_from_height(mid) < volume else (low, mid)
+    return round(float(well.get_location_wrt(self.deck, "c", "c", "cavity_bottom").z) + low, 2)
+
+  async def test_a_batch_search_reads_the_water_and_comes_up(self):
+    heights = await self.pipettes.probe_liquid_heights(self.wells)
+    for well, height in zip(self.wells, heights, strict=True):
+      self.assertAlmostEqual(
+        well.compute_volume_from_height(height), well.tracker.get_used_volume(), delta=1.0
+      )
+    self.assertEqual(heights[3], 0.0)
+    top = self.pipettes.configuration.z_range[1]
+    discs = await self.pipettes.request_stop_disc_z_positions()
+    self.assertEqual([discs[channel] for channel in range(4)], [top] * 4)
+
+  async def test_the_pressure_search_is_answered_too(self):
+    capacitive = await self.pipettes.probe_liquid_heights(self.wells[:2])
+    pressure = await self.pipettes.probe_liquid_heights(
+      self.wells[:2], lld_mode=self.pipettes.LLDMode.PRESSURE
+    )
+    self.assertEqual(pressure, capacitive)
+
+  async def test_a_container_that_knows_height_from_volume_answers_from_it(self):
+    from pylabrobot.resources.container import Container
+
+    tube = Container(
+      "tube",
+      8,
+      8,
+      40,
+      material_z_thickness=1.0,
+      compute_volume_from_height=lambda height: height * 10.0,
+      compute_height_from_volume=lambda volume: volume / 10.0,
+    )
+    self.deck.assign_child_resource(tube, location=Coordinate(1000, 300, 100))
+    tube.tracker.set_volume(50.0)
+    self.assertEqual(await self.pipettes.probe_liquid_heights([tube]), [5.0])
+
+  async def test_the_single_channel_probe_finds_the_well_under_the_tip(self):
+    a1, d1 = self.wells[0], self.wells[3]
+    for well, expected in ((a1, self._surface(a1)), (d1, None)):
+      centre = well.get_location_wrt(self.deck, "c", "c", "cavity_bottom")
+      await self.pipettes.move_to_safe_z()
+      await self.pipettes.move_to_xy_positions(centre.x, {0: centre.y}, make_space=True)
+      found = await self.pipettes.probe_z_using_clld(0, search_end_position=centre.z)
+      if expected is None:
+        self.assertIsNone(found)
+      else:
+        assert found is not None
+        self.assertAlmostEqual(found, expected, delta=0.1)
+
+
 class TestBatchPlanning(unittest.IsolatedAsyncioTestCase):
   """A v1 device plans with `pylabrobot.lib.liquid_handling`, from its own minimum channel spacing."""
 

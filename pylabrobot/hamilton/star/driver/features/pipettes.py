@@ -2666,6 +2666,7 @@ class Pipettes:
   async def _probe_batch_liquid_heights(
     self,
     batch: ChannelBatch,
+    containers: Sequence[Container],
     overhangs: Dict[int, float],
     z_cavity_bottom: Sequence[float],
     z_top: Sequence[float],
@@ -2681,6 +2682,8 @@ class Pipettes:
 
     Args:
       batch: the channels and which container each has, by job index.
+      containers: per job, what each channel searches in. Nothing here reads them: the simulator
+        answers the searches from their trackers.
       overhangs: each channel's tip overhang in mm, keyed by channel.
       z_cavity_bottom: per job, on the deck in mm.
       z_top: per job, on the deck in mm.
@@ -2799,7 +2802,7 @@ class Pipettes:
     z_top = [c.get_location_wrt(deck, "c", "c", "t").z for c in containers]
     per_batch = await self._execute_batched(
       lambda batch: self._probe_batch_liquid_heights(
-        batch, overhangs, z_cavity_bottom, z_top, modes, search_speed, n_replicates
+        batch, containers, overhangs, z_cavity_bottom, z_top, modes, search_speed, n_replicates
       ),
       batches,
       minimum_traverse_height_during,
