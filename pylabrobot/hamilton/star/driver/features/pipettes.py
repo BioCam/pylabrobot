@@ -2150,7 +2150,7 @@ class Pipettes:
     detection_edge: int = 10,
     detection_drop: int = 2,
     post_detection_trajectory: Literal[0, 1] = 1,
-    post_detection_distance: float = 2.0,
+    post_detection_distance: float = 0.0,
   ) -> None:
     """Run one channel's cLLD search between two stop disc heights, every field checked.
 
@@ -2167,7 +2167,7 @@ class Pipettes:
       detection_edge: cLLD edge steepness, 0 to 1023.
       detection_drop: offset after the edge, 0 to 1023.
       post_detection_trajectory: 0 moves down after detection, 1 up.
-      post_detection_distance: how far it moves after detection, in mm.
+      post_detection_distance: how far it moves after detection, in mm; 0 stays there.
 
     Raises:
       ValueError: If a field is out of the drive's range.
@@ -2417,7 +2417,7 @@ class Pipettes:
     foam_search_speed: float = 10.0,
     dispense_back_volume: Optional[float] = None,
     post_detection_trajectory: Literal[0, 1] = 1,
-    post_detection_distance: float = 2.0,
+    post_detection_distance: float = 0.0,
     read_timeout: int = 120,
   ) -> List[float]:
     """Run one channel's pressure search between two stop disc heights, every field checked.
@@ -2455,7 +2455,7 @@ class Pipettes:
       foam_search_speed: through the foam, in mm/s.
       dispense_back_volume: dispensed back after detection, in uL. Nothing when None.
       post_detection_trajectory: 0 moves down after detection, 1 up.
-      post_detection_distance: how far it moves after detection, in mm.
+      post_detection_distance: how far it moves after detection, in mm; 0 stays there.
       read_timeout: how long to wait for the search, in s.
 
     Returns:
@@ -2577,6 +2577,7 @@ class Pipettes:
     search_start_position: Optional[float] = None,
     search_end_position: float = 99.98,
     pressure_mode: Optional["Pipettes.PressureLLDMode"] = None,
+    post_detection_distance: float = 2.0,
     move_channels_to_safe_pos_after: bool = False,
     **search: Any,
   ) -> Optional[List[float]]:
@@ -2593,6 +2594,7 @@ class Pipettes:
         when None.
       search_end_position: lowest tip bottom height, in mm.
       pressure_mode: what the search stops at. The liquid when None.
+      post_detection_distance: how far it moves after detection, in mm.
       move_channels_to_safe_pos_after: whether to raise every channel to Z safety afterwards,
         instead of resting where the search left it.
       search: the rest of `_plld_search`'s settings, by name.
@@ -2629,6 +2631,7 @@ class Pipettes:
         search_end_position + overhang,
         round(search_start_position + overhang, 2),
         mode=pressure_mode,
+        post_detection_distance=post_detection_distance,
         **search,
       )
     except STARFirmwareError as error:
@@ -3297,7 +3300,6 @@ class Pipettes:
     search_speed: float,
     below_floor: float,
     end_tolerance: float,
-    post_detection_distance: float,
     start_spacing: float,
     approach_speed: float,
     n_replicates: int,
@@ -3310,9 +3312,9 @@ class Pipettes:
     as a liquid search has: nothing above it can be met, and everything below it is searched.
     The channels go to their starts together first, each on its own drive at `approach_speed`,
     so the cascade is the search itself: the searches set off `start_spacing` apart from there,
-    the lowest channel number first, and run on together. A channel that reached its end, within `end_tolerance`, touched
-    nothing and is None for the round. Then every channel of the batch backs off by
-    `post_detection_distance` at once.
+    the lowest channel number first, and run on together. A channel that reached its end, within
+    `end_tolerance`, touched nothing and is None for the round. The channels stay where they
+    stopped: the next round starts with the approach again.
 
     Args:
       batch: the channels and which container each has, by job index.
@@ -3322,7 +3324,6 @@ class Pipettes:
       search_speed: in mm/s.
       below_floor: how far under the modelled cavity bottom the search may go, in mm.
       end_tolerance: how close to the end counts as having touched nothing, in mm.
-      post_detection_distance: how far the channels back off after each round, in mm.
       start_spacing: how long after the previous channel each one sets off, in s.
       approach_speed: down to the starts, in mm/s.
       n_replicates: how many rounds.
@@ -3356,14 +3357,10 @@ class Pipettes:
       failed = [result for result in results if isinstance(result, BaseException)]
       if failed:
         raise failed[0]
-      backing_off = {}
       for (channel, job, end, _), stop_disc in zip(searches, results):
         stop_disc = cast(float, stop_disc)
         touched = stop_disc - end > end_tolerance
         found[job].append(round(stop_disc - overhangs[channel], 2) if touched else None)
-        backing_off[channel] = round(stop_disc + post_detection_distance, 2)
-      if post_detection_distance:
-        await self.move_stop_disc_to_z_positions(backing_off)
     return found
 
   async def probe_z_heights_using_ztouch(
@@ -3376,7 +3373,6 @@ class Pipettes:
     *,
     below_floor: float = 5.0,
     end_tolerance: float = 0.5,
-    post_detection_distance: float = 2.0,
     start_spacing: float = 0.25,
     approach_speed: float = 125.0,
     minimum_traverse_height_start: Optional[float] = None,
@@ -3403,7 +3399,6 @@ class Pipettes:
       n_replicates: how many times each container is touched; the heights are averaged.
       below_floor: how far under the modelled cavity bottom the search may go, in mm.
       end_tolerance: how close to the end counts as having touched nothing, in mm.
-      post_detection_distance: how far the channels back off after each round, in mm.
       start_spacing: how long after the previous channel each one sets off, in s. 0 starts them
         all at once.
       approach_speed: down to the search starts, in mm/s.
@@ -3453,7 +3448,6 @@ class Pipettes:
         search_speed,
         below_floor,
         end_tolerance,
-        post_detection_distance,
         start_spacing,
         approach_speed,
         n_replicates,

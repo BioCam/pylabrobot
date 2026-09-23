@@ -839,7 +839,7 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(
       self.sent,
       [
-        f"P{channel + 1}ZLzh{end:05}zc{start:05}zl00932zr075gt0010gl0002zj1zi0186"
+        f"P{channel + 1}ZLzh{end:05}zc{start:05}zl00932zr075gt0010gl0002zj1zi0000"
         for channel in range(4)
       ]
       + ["C0RL"],
@@ -922,7 +922,7 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     end, start = self._window(wells[0])
     self.assertEqual(
       self.sent[0],
-      f"P1ZEzh{end:05}zc{start:05}zi0186zj1gf0gt0010gl0002gu0030gn0010gm0gz0466cj0co0030cp0030"
+      f"P1ZEzh{end:05}zc{start:05}zi0000zj1gf0gt0010gl0002gu0030gn0010gm0gz0466cj0co0030cp0030"
       "cq0030cl00932cc0cd00000zv11186zl00932zr075zw3dl01829dr073dv05303dw3",
     )
     self.assertTrue(self.sent[1].startswith("P2ZL"))
@@ -974,13 +974,9 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     assert isinstance(self.rz, int)
     stop_disc = c.z_drive_increments_to_mm(self.rz)
     self.assertEqual(floors, [round(stop_disc - 51.9 - bottom, 2)] * 4)
-    # The approach to the starts at the approach speed, then the back-off after the searches.
-    self.assertEqual(
-      self.stop_discs.await_args_list,
-      [
-        unittest.mock.call({ch: round(top + 51.9, 2) for ch in range(4)}, speed=125.0),
-        unittest.mock.call({ch: round(stop_disc + 2.0, 2) for ch in range(4)}),
-      ],
+    # The approach to the starts at the approach speed; the channels stay where they touched.
+    self.stop_discs.assert_awaited_once_with(
+      {ch: round(top + 51.9, 2) for ch in range(4)}, speed=125.0
     )
     self.tool_bottoms.assert_not_awaited()
     self.assertEqual(self.safe_z.await_count, 2)
