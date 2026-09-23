@@ -73,6 +73,7 @@ def _make_grippers(deck: PrepDeck, stub_pick_and_drop: bool = True) -> Tuple[Cor
   )
   grippers = CoreGrippers(driver, grip_axis="y")  # type: ignore[arg-type]
   grippers._tools_mounted = True
+  grippers._tools_on_channels = True
 
   async def set_z_acceleration(z_acceleration: float) -> None:
     order.append(f"z_acceleration={z_acceleration}")
@@ -107,6 +108,34 @@ def _make_grippers(deck: PrepDeck, stub_pick_and_drop: bool = True) -> Tuple[Cor
     grippers._pick_up_at = commands.pick_up_at  # type: ignore[method-assign]
     grippers._drop_at = commands.drop_at  # type: ignore[method-assign]
   return grippers, commands
+
+
+def test_the_tools_on_by_location_alone_let_the_grippers_act():
+  """`pick_up_tools_at_location` puts them on the channels; `drop_tools` takes them off."""
+  deck = PrepDeck(with_core_grippers=True)
+  grippers, commands = _make_grippers(deck)
+  grippers._tools_mounted = grippers._tools_on_channels = False
+  pipettes: Any = grippers._driver.pipettes
+  pipettes._resolve_traverse_height = lambda: 167.5
+  pipettes._record_channel_bounds = AsyncMock()
+
+  async def send(command, **kwargs):
+    if isinstance(command, PrepCmd.PrepGetPlateHeld):
+      return PrepCmd.PrepGetPlateHeld.Response(value=False)
+
+  commands.send_command.side_effect = send
+
+  async def _run() -> None:
+    with pytest.raises(RuntimeError, match="not on the channels"):
+      grippers._require_mounted()
+    await grippers.pick_up_tools_at_location(100.0, 50.0, 60.0, 90.0)
+    assert grippers._require_mounted() == (0, 1)
+    assert not grippers.tools_mounted
+    await grippers.drop_tools(move_to_safe_z_first=False)
+    with pytest.raises(RuntimeError, match="not on the channels"):
+      grippers._require_mounted()
+
+  asyncio.run(_run())
 
 
 def test_drop_resource_releases_over_the_destination_at_the_grip_height():

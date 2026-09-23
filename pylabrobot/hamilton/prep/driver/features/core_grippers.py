@@ -81,6 +81,9 @@ class CoreGrippers:
     self._plate_top_z_offset: Optional[float] = None
     self._taken_from: Optional[Tuple[Resource, Optional[Coordinate]]] = None
     self._tools_mounted = False
+    # Whether the channels hold the tools, by either pick-up: the firmware drops them where it took
+    # them from, so no positions are kept.
+    self._tools_on_channels = False
     self._parked_tools: List[Tuple[HeadTool, Optional[Resource], Optional[Coordinate]]] = []
     self._z_acceleration_set = False
 
@@ -157,14 +160,19 @@ class CoreGrippers:
     """
     return bool((await self._driver.send_command(PrepCmd.PrepGetPlateHeld())).value)
 
-  def _require_mounted(self) -> None:
-    """Raise unless the tools are on the channels: nothing is gripped without them."""
-    if not self._tools_mounted:
+  def _require_mounted(self) -> Tuple[int, int]:
+    """Raise unless the channels hold the tools, taken by either pick-up. The back and front channel.
+
+    Raises:
+      RuntimeError: If they do not.
+    """
+    if not self._tools_on_channels:
       raise RuntimeError(
-        "the CoRe gripper tools are not mounted. Call "
-        "`await prep.core_grippers.pick_up_tools()` first, or use "
+        "the CoRe gripper tools are not on the channels. Call "
+        "`await prep.core_grippers.pick_up_tools()` or `pick_up_tools_at_location()` first, or use "
         "`async with prep.core_grippers.mounted():`."
       )
+    return self._back_channel, self._front_channel
 
   def _refuse_while_holding(self) -> None:
     """Raise if the jaws are holding something.
@@ -537,6 +545,7 @@ class CoreGrippers:
       raise
     finally:
       await self._pipettes._record_where_they_stopped()
+    self._tools_on_channels = True
     await self._pipettes.move_to_safe_z()
     await self._pipettes._record_channel_bounds()
 
@@ -564,6 +573,7 @@ class CoreGrippers:
       await self._driver.send_command(PrepCmd.PrepDropTool())
     finally:
       await self._pipettes._record_where_they_stopped()
+    self._tools_on_channels = False
     await self._pipettes._record_channel_bounds()
 
   # -- mounting ------------------------------------------------------------------------------------
@@ -599,6 +609,7 @@ class CoreGrippers:
     tools = [] if holder is None else [c for c in holder.children if isinstance(c, HeadTool)]
     if tools:
       await self._mount_tools_in_the_model(tools)
+    self._tools_on_channels = True
     self._tools_mounted = True
 
   async def pick_up_tools(self) -> None:
@@ -958,7 +969,7 @@ class CoreGrippers:
         The way down, empty, is the firmware's.
 
     Raises:
-      RuntimeError: If the tools are not mounted.
+      RuntimeError: If the tools are not on the channels.
     """
     self._require_mounted()
     source = (resource.parent, resource.location)
