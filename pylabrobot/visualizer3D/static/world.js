@@ -86,8 +86,16 @@ export function setWorld(next) {
 /** The model a given instance is an instance of. */
 export const modelOf = (index) => world.models[world.modelOf[index]];
 
-/** A model's extent in mm, never zero: a resource with no size still has to be pickable. */
-export const sizeOf = (model) => [model.size_x || 0.1, model.size_y || 0.1, model.size_z || 0.1];
+/** A model's extent in mm, never zero: a resource with no size still has to be pickable.
+ *
+ * A round resource may give a diameter and no footprint - a tip is the one that matters, since a
+ * rack holds ninety-six of them. Read as 0.1 mm it sits under every rule that asks how big a thing
+ * is on screen, so its model was culled at any zoom and the rack showed empty holes. */
+export const sizeOf = (model) => [
+  model.size_x || model.diameter || 0.1,
+  model.size_y || model.diameter || 0.1,
+  model.size_z || 0.1,
+];
 
 /** How many resources stand between this one and the root. */
 export function treeDepth(index) {
