@@ -1147,6 +1147,19 @@ class TestLiquidProbingInSimulation(unittest.IsolatedAsyncioTestCase):
     await self.pipettes.probe_liquid_heights([d1], use_channels=[0])
     self.assertEqual((await self.pipettes.request_last_lld_heights())[0], 0.0)
 
+  async def test_a_container_without_volume_functions_says_what_it_needs(self):
+    from pylabrobot.resources.container import Container
+
+    tube = Container("bare_tube", 8, 8, 40, material_z_thickness=1.0)
+    self.deck.assign_child_resource(tube, location=Coordinate(1000, 300, 100))
+    tube.tracker.set_volume(50.0)
+    with self.assertRaises(RuntimeError) as refused:
+      await self.pipettes.probe_liquid_heights([tube])
+    self.assertIn("bare_tube", str(refused.exception))
+    self.assertIn("height_volume_data", str(refused.exception))
+    top = self.pipettes.configuration.z_range[1]
+    self.assertEqual((await self.pipettes.request_stop_disc_z_positions())[0], top)
+
   async def test_the_pressure_search_is_answered_too(self):
     capacitive = await self.pipettes.probe_liquid_heights(self.wells[:2])
     pressure = await self.pipettes.probe_liquid_heights(

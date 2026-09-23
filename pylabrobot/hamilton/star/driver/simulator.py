@@ -301,6 +301,15 @@ class SimulatedPipettes(_Simulated, Pipettes):
       return container, round(bottom + container.compute_height_from_volume(volume), 2)
     except NotImplementedError:
       pass
+    if not container.supports_compute_height_volume_functions():
+      try:
+        container.compute_volume_from_height(0.0)
+      except NotImplementedError:
+        raise RuntimeError(
+          f"the simulator cannot say where {volume} uL stands in {container.name}: the container "
+          "has no height-volume functions. Generate a height_volume_data dictionary for it and "
+          "consider contributing it back to PyLabRobot :)"
+        ) from None
     low, high = 0.0, container.get_size_z()
     for _ in range(40):
       mid = (low + high) / 2
