@@ -1025,6 +1025,13 @@ class TestLiquidProbingInSimulation(unittest.IsolatedAsyncioTestCase):
     discs = await self.pipettes.request_stop_disc_z_positions()
     self.assertEqual([discs[channel] for channel in range(4)], [top] * 4)
 
+  async def test_the_floors_are_where_the_model_has_them(self):
+    floors = await self.pipettes.probe_z_heights_using_ztouch(self.wells)
+    self.assertEqual(floors, [0.0] * 4)
+    top = self.pipettes.configuration.z_range[1]
+    discs = await self.pipettes.request_stop_disc_z_positions()
+    self.assertEqual([discs[channel] for channel in range(4)], [top] * 4)
+
   async def test_the_pressure_search_is_answered_too(self):
     capacitive = await self.pipettes.probe_liquid_heights(self.wells[:2])
     pressure = await self.pipettes.probe_liquid_heights(
