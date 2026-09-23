@@ -2743,9 +2743,10 @@ class Pipettes:
   ) -> Tuple[List[int], Dict[int, float], List[ChannelBatch]]:
     """Check the channels and their tips, raise them, and plan the batches; X and Y stay put.
 
-    More containers than channels are dealt to the channels in turn: the first as many as there
-    are channels, then the next, each hand planned into batches as legacy plans one, and the
-    hands run one after the other.
+    More containers than channels are dealt to the channels in cycles, one per channel each
+    cycle, each cycle planned into batches as legacy plans one and the cycles run one after the
+    other. A cycle is the channels going once round the containers; a round is the same
+    containers searched again.
 
     Args:
       deck: what the containers are placed on.
@@ -2778,12 +2779,12 @@ class Pipettes:
       raise ValueError(f"use_channels must name distinct channels, is {use_channels}")
     if resource_offsets is not None and len(resource_offsets) != len(containers):
       raise ValueError(f"{len(resource_offsets)} offsets for {len(containers)} containers")
-    # The containers are dealt to the channels in turn; a hand is as many as there are channels.
-    hand = len(use_channels)
-    hands = [list(containers[at : at + hand]) for at in range(0, len(containers), hand)]
-    channels = [use_channels[job % hand] for job in range(len(containers))]
-    for job, cards in enumerate(hands):
-      validate_channel_selections(cards, self.num_channels, use_channels[: len(cards)])
+    # A cycle is as many containers as there are channels, one each.
+    cycle = len(use_channels)
+    cycles = [list(containers[at : at + cycle]) for at in range(0, len(containers), cycle)]
+    channels = [use_channels[job % cycle] for job in range(len(containers))]
+    for dealt in cycles:
+      validate_channel_selections(dealt, self.num_channels, use_channels[: len(dealt)])
     presence = await self.sense_tip_presence()
     bare = [channel for channel in use_channels if not presence[channel]]
     if bare:
@@ -2815,18 +2816,18 @@ class Pipettes:
       self.default_x_grouping_tolerance if x_grouping_tolerance is None else x_grouping_tolerance
     )
     batches: List[ChannelBatch] = []
-    for number, cards in enumerate(hands):
-      first = number * hand
-      offsets = None if resource_offsets is None else resource_offsets[first : first + len(cards)]
+    for number, dealt in enumerate(cycles):
+      first = number * cycle
+      offsets = None if resource_offsets is None else resource_offsets[first : first + len(dealt)]
       for batch in plan_batches(
-        use_channels=use_channels[: len(cards)],
-        containers=cards,
+        use_channels=use_channels[: len(dealt)],
+        containers=dealt,
         channel_spacings=self.minimum_y_spacings,
         wrt_resource=deck,
         x_tolerance=tolerance,
         resource_offsets=offsets,
       ):
-        # The planner counts jobs within the hand; the rest counts them over every container.
+        # The planner counts jobs within the cycle; the rest counts them over every container.
         batches.append(dataclasses.replace(batch, indices=[first + job for job in batch.indices]))
     return channels, overhangs, batches
 
@@ -3007,8 +3008,8 @@ class Pipettes:
   ) -> List[float]:
     """Find the liquid surface in each container with a channel's tip, and say how high it stands.
 
-    The containers are dealt to the channels in turn, as many at once as there are channels, and
-    each hand is planned into the fewest batches the channels can reach at once. The channels of
+    The containers are dealt to the channels in cycles, one per channel each cycle, and each
+    cycle is planned into the fewest batches the channels can reach at once. The channels of
     a batch search together, capacitive (cLLD) or pressure (pLLD), from just above the container's
     top down to its cavity bottom. Every channel used carries a tip, and every channel is at Z
     safety at the end unless told where to stay.
@@ -3185,7 +3186,7 @@ class Pipettes:
   ) -> List[Optional[float]]:
     """Touch the floor of each container with a channel's tip, and say how high it is.
 
-    `probe_liquid_heights` with the z-touch in place of the liquid search: the same hands and
+    `probe_liquid_heights` with the z-touch in place of the liquid search: the same cycles and
     batches, the same moves between them, the channels of a batch searching together, and the
     same heights at the end. Each search goes from just above the container's top to `below_floor`
     under its modelled cavity bottom, and stops where the tip presses on something. The channels

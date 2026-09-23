@@ -958,13 +958,13 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.sent, [])
     self.xy.assert_not_awaited()
 
-  async def test_more_containers_than_channels_are_dealt_in_hands(self):
+  async def test_more_containers_than_channels_are_dealt_in_cycles(self):
     wells = self._wells("A1", "B1", "C1", "D1", "A2", "B2")
     heights = await self.pipettes.probe_liquid_heights(wells, use_channels=[0, 1, 2, 3])
     self.assertEqual(
       [c[:4] for c in self.sent],
       ["P1ZL", "P2ZL", "P3ZL", "P4ZL", "C0RL", "P1ZL", "P2ZL", "C0RL"],
-      "the first hand on four channels, the second on channels 0 and 1",
+      "the first cycle on four channels, the second on channels 0 and 1",
     )
     self.assertEqual(self.xy.await_count, 2)
     bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
