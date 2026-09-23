@@ -335,12 +335,11 @@ main {
   border: none;
   border-right: 1px solid #ced4da;
   background: transparent;
-  padding: 0 4px;
-  font-size: 11px;
-  font-weight: 600;
+  padding: 0 8px 0 10px;
+  font-size: 12px;
+  font-weight: 700;
   line-height: 1.15;
   color: #555;
-  cursor: pointer;
   text-align: left;
   white-space: nowrap;
   cursor: pointer;
