@@ -334,7 +334,8 @@ class SimulatedPipettes(_Simulated, Pipettes):
     self.device.last_lld_heights[channel] = surface
     source = f"the liquid in {container.name}"
     if command == "ZE":
-      return {"if": [c.z_drive_mm_to_increments(detected)]}, source
+      # Two values as the device answers, the second 0 unless foam was searched through.
+      return {"if": [c.z_drive_mm_to_increments(detected), 0]}, source
     return None, source
 
   def _answer_ztouch(self, channel: int, **kwargs: Any) -> Tuple[Any, str]:
