@@ -552,6 +552,9 @@ class TestCLLDProbing(unittest.IsolatedAsyncioTestCase):
       self.sent.append(assemble_command(module=module, command=command, id_=None, **kwargs))
 
     self.pipettes._driver.send_command = recorded  # type: ignore[assignment]
+    self.pipettes.sense_tip_presence = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      return_value=[1] * self.pipettes.num_channels
+    )
     self.moves = unittest.mock.AsyncMock()
 
   async def test_x_firmware(self):
@@ -615,7 +618,7 @@ class TestCLLDProbing(unittest.IsolatedAsyncioTestCase):
 
     self.pipettes._driver.send_command = recorded  # type: ignore[assignment]
     z = await self.pipettes.probe_z_using_clld(1)
-    end = self.pipettes.configuration.z_drive_mm_to_increments(99.98 + 51.9)
+    end = self.pipettes.configuration.z_range_increments[0]  # the drive's floor, on the stop disc
     self.assertEqual(self.sent, [f"P2ZLzh{end:05}zc31200zl00932zr075gt0010gl0002zj1zi0186", "C0RL"])
     self.assertEqual(z, 123.4)
     self.moves.assert_not_awaited()
@@ -681,7 +684,7 @@ class TestCLLDProbing(unittest.IsolatedAsyncioTestCase):
     self.pipettes._driver.send_command = recorded  # type: ignore[assignment]
     self.pipettes.get_mounted_tip = unittest.mock.Mock(return_value=None)  # type: ignore[method-assign]
     heights = await self.pipettes.probe_z_using_plld(1, search_speed=5.0)
-    end = self.pipettes.configuration.z_drive_mm_to_increments(99.98 + 51.9)
+    end = self.pipettes.configuration.z_range_increments[0]  # the drive's floor, on the stop disc
     self.assertEqual(
       self.sent,
       [
@@ -714,6 +717,40 @@ class TestCLLDProbing(unittest.IsolatedAsyncioTestCase):
     with self.assertRaises(RuntimeError):
       await self.pipettes.probe_z_using_clld(0)
     self.assertEqual(self.sent, [])
+
+  async def test_a_bare_channel_probes_on_its_stop_disc_when_allowed(self):
+    self.pipettes.sense_tip_presence = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      return_value=[0] * self.pipettes.num_channels
+    )
+    self.pipettes.move_to_safe_z = self.moves  # type: ignore[method-assign]
+    answer = self.pipettes._driver.send_command
+
+    async def recorded(module: str, command: str, **kwargs: Any):
+      await answer(module=module, command=command, **kwargs)
+      return {"lh": [1234] * self.pipettes.num_channels}
+
+    self.pipettes._driver.send_command = recorded  # type: ignore[assignment]
+    z = await self.pipettes.probe_z_using_clld(1, allow_without_tip=True)
+    # No overhang: the window is the drive's own, floor to top.
+    floor, top = self.pipettes.configuration.z_range_increments
+    self.assertEqual(
+      self.sent, [f"P2ZLzh{floor:05}zc{top:05}zl00932zr075gt0010gl0002zj1zi0186", "C0RL"]
+    )
+    self.assertEqual(z, 123.4)
+
+  async def test_a_bare_x_probe_corrects_for_the_stop_disc(self):
+    self.pipettes.sense_tip_presence = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      return_value=[0] * self.pipettes.num_channels
+    )
+    self.pipettes.request_x_position = unittest.mock.AsyncMock(side_effect=[300.0, 250.0])  # type: ignore[method-assign]
+    self.pipettes.move_to_x_position = self.moves  # type: ignore[method-assign]
+    with self.assertRaises(RuntimeError):
+      await self.pipettes.probe_x_using_clld(0, "left", search_end_position=200.0)
+    self.pipettes.request_x_position = unittest.mock.AsyncMock(side_effect=[300.0, 250.0])  # type: ignore[method-assign]
+    x = await self.pipettes.probe_x_using_clld(
+      0, "left", search_end_position=200.0, allow_without_tip=True
+    )
+    self.assertEqual(x, 250.0 - 7.0 / 2)
 
   async def test_y_probe_refuses_a_start_past_the_neighbour(self):
     ys = [400.0, 300.0, 200.0, 100.0, 90.0, 80.0, 70.0, 60.0][: self.pipettes.num_channels]
