@@ -2286,13 +2286,19 @@ class TestDispenseInSimulation(_SimulatedPlateWithWater):
     self.assertEqual(tip.tracker.get_used_volume(), 0.0)
     self.assertEqual(self.pipettes.piston_positions[0], 10.0)
 
-  async def test_an_empty_takes_the_piston_to_rest(self):
-    await self.pipettes.aspirate(self.wells[:1], piston_volumes=[20.0])
+  async def test_an_empty_takes_the_piston_to_rest_and_books_what_the_tip_held(self):
+    await self.pipettes.aspirate(self.wells[:1], piston_volumes=[50.0])
     sent = self._record()
     await self.pipettes.dispense(self.wells[3:4], piston_volumes=[20.0], empty=[True])
     self.assertIn("dm4", sent[0])
+    self.assertIn("dv00200", sent[0])
     self.assertEqual(self.pipettes.piston_positions[0], 0.0)
     self.assertEqual((await self.pipettes.dispensing_drives_request_uL_positions())[0], 0.0)
+    # The tip is emptied whatever was asked: the well takes the 50 the tip held.
+    self.assertEqual(self.wells[3].tracker.get_used_volume(), 50.0)
+    tip = self.pipettes.get_mounted_tip(0)
+    assert tip is not None
+    self.assertEqual(tip.tracker.get_used_volume(), 0.0)
 
   async def test_a_failed_command_books_what_the_pistons_gave(self):
     await self.pipettes.aspirate(self.wells[:2], piston_volumes=[50.0, 20.0])

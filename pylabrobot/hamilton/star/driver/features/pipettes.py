@@ -6227,7 +6227,8 @@ class Pipettes:
         and `blow_out` when None.
       jet: whether each dispense is a jet from above the liquid. False when None: at the surface.
       blow_out: whether the blow-out air follows the liquid out. False when None.
-      empty: whether the tip is emptied where it stands, air and all. False when None.
+      empty: whether the tip is emptied where it stands, air and all; the model then books what
+        the tip holds. False when None.
       piston_volumes: what each piston pushes out, in uL, as given. One of this and `volumes`.
       search_speed: of the driver's own search, liquid or floor, in mm/s.
       approach_speed: down to that search's start, `lp` or the top, in mm/s.
@@ -6320,6 +6321,8 @@ class Pipettes:
       jets,
       blow_outs,
     )
+    # An empty pushes out whatever the tip holds: that is what moves, whatever volume was asked.
+    liquid = [tips[job].tracker.volume if empties[job] else liquid[job] for job in range(n)]
     heights = self._per_container("liquid_heights", liquid_heights, n) or [None] * n
     mixes = self._per_container("post_mixes", post_mixes, n) or [None] * n
 
