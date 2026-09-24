@@ -36,6 +36,7 @@ from pylabrobot.hamilton.star.driver.lock import CHANNEL_MODULE_LETTERS, _Firmwa
 from pylabrobot.hamilton.liquid_classes import HamiltonLiquidClass
 from pylabrobot.hamilton.star.liquid_classes import get_star_liquid_class
 from pylabrobot.lib.liquid_handling.channel_positioning import compute_channel_offsets
+from pylabrobot.lib.liquid_handling.mix import Mix
 from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import (
   ChannelBatch,
   plan_batches,
@@ -4406,11 +4407,8 @@ class Pipettes:
     immersion_depths: Optional[List[float]] = None,
     blow_out_air_volumes: Optional[List[float]] = None,
     pre_wetting_volumes: Optional[List[float]] = None,
-    mix_volumes: Optional[List[float]] = None,
-    mix_cycles: Optional[List[int]] = None,
-    mix_speeds: Optional[List[float]] = None,
+    mix: Optional[List[Optional[Mix]]] = None,
     mix_position_from_liquid_surface: float = 0.0,
-    mix_surface_following_distances: Optional[List[float]] = None,
     flow_rates: Optional[List[float]] = None,
     surface_following_distances: Optional[List[float]] = None,
     second_section_height: float = 3.2,
@@ -4454,11 +4452,9 @@ class Pipettes:
         when None.
       blow_out_air_volumes: air drawn before the liquid, in uL. 0.0 when None.
       pre_wetting_volumes: drawn and returned first, in uL. 0.0 when None.
-      mix_volumes: per mixing cycle, in uL. 0.0 when None.
-      mix_cycles: how many. 0 when None.
-      mix_speeds: in uL/s. 100.0 when None.
+      mix: how each channel mixes before drawing, a `Mix` per channel, None for no mixing: its
+        volume, cycles, flow rate and how far it follows the surface. Nothing mixes when None.
       mix_position_from_liquid_surface: how far under the surface mixing is, in mm.
-      mix_surface_following_distances: how far mixing follows the surface, in mm. 0.0 when None.
       flow_rates: in uL/s. 100.0 when None.
       surface_following_distances: how far each tip follows the sinking surface, in mm. 0.0 when
         None.
@@ -4515,14 +4511,13 @@ class Pipettes:
     clot = per_channel("clot_detection_heights", clot_detection_heights, 0.0)
     immersion = per_channel("immersion_depths", immersion_depths, 0.0)
     following = per_channel("surface_following_distances", surface_following_distances, 0.0)
-    mix_following = per_channel(
-      "mix_surface_following_distances", mix_surface_following_distances, 0.0
-    )
     swap = per_channel("swap_speeds", swap_speeds, 100.0)
     settling = per_channel("settling_times", settling_times, 0.0)
-    mix_volume = per_channel("mix_volumes", mix_volumes, 0.0)
-    mix_count = per_channel("mix_cycles", mix_cycles, 0)
-    mix_speed = per_channel("mix_speeds", mix_speeds, 100.0)
+    mixes = per_channel("mix", mix, None)
+    mix_volume = [m.volume if m is not None else 0.0 for m in mixes]
+    mix_count = [m.repetitions if m is not None else 0 for m in mixes]
+    mix_speed = [m.flow_rate if m is not None else 100.0 for m in mixes]
+    mix_following = [(m.surface_following_distance or 0.0) if m is not None else 0.0 for m in mixes]
 
     # A tip fills to one of two peaks that never coexist: the volume with the pre-wetting drawn
     # first, or the volume with the transport air drawn after it.
@@ -4753,11 +4748,8 @@ class Pipettes:
     immersion_depths: Optional[Sequence[float]] = None,
     blow_out_air_volumes: Optional[Sequence[float]] = None,
     pre_wetting_volumes: Optional[Sequence[float]] = None,
-    mix_volumes: Optional[Sequence[float]] = None,
-    mix_cycles: Optional[Sequence[int]] = None,
-    mix_speeds: Optional[Sequence[float]] = None,
+    mix: Optional[Sequence[Optional[Mix]]] = None,
     mix_position_from_liquid_surface: float = 0.0,
-    mix_surface_following_distances: Optional[Sequence[float]] = None,
     surface_following_distances: Optional[Sequence[float]] = None,
     second_section_height: float = 3.2,
     second_section_ratio: float = 618.0,
@@ -4821,11 +4813,9 @@ class Pipettes:
       blow_out_air_volumes: air drawn before the liquid, in uL, per container. The liquid
         class's, else 0.0, when None.
       pre_wetting_volumes: drawn and returned first, in uL, per container.
-      mix_volumes: per mixing cycle, in uL, per container.
-      mix_cycles: how many, per container.
-      mix_speeds: in uL/s, per container.
+      mix: how each container is mixed before the draw, a `Mix` per container, None for no mixing.
+        Its surface following distance counts here, which legacy's channels ignored.
       mix_position_from_liquid_surface: how far under the surface mixing is, in mm.
-      mix_surface_following_distances: how far mixing follows the surface, in mm, per container.
       surface_following_distances: how far each tip follows the sinking surface, in mm, per
         container.
       second_section_height: how tall the container's narrower lower section is, in mm.
@@ -4922,6 +4912,7 @@ class Pipettes:
       drawn = per_container("piston_volumes", piston_volumes) or []
       liquid = drawn
     heights = per_container("liquid_heights", liquid_heights) or [None] * n
+    mixes = per_container("mix", mix) or [None] * n
 
     def from_class(
       name: str, given: Optional[Sequence[Any]], attribute: str
@@ -4945,12 +4936,6 @@ class Pipettes:
       "surface_following_distances": per_container(
         "surface_following_distances", surface_following_distances
       ),
-      "mix_surface_following_distances": per_container(
-        "mix_surface_following_distances", mix_surface_following_distances
-      ),
-      "mix_volumes": per_container("mix_volumes", mix_volumes),
-      "mix_cycles": per_container("mix_cycles", mix_cycles),
-      "mix_speeds": per_container("mix_speeds", mix_speeds),
       "settling_times": from_class("settling_times", settling_times, "aspiration_settling_time"),
       "swap_speeds": from_class("swap_speeds", swap_speeds, "aspiration_swap_speed"),
       "transport_air_volumes": from_class(
@@ -5000,6 +4985,7 @@ class Pipettes:
         [floors[job] for job in jobs],
         [drawn[job] for job in jobs],
         minimum_traverse_height_start=minimum_traverse_height_during,
+        mix=[mixes[job] for job in jobs],
         lld_mode=lld_mode,
         gamma_lld_sensitivity=gamma_lld_sensitivity,
         dp_lld_sensitivity=dp_lld_sensitivity,
