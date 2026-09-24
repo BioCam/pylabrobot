@@ -1922,10 +1922,7 @@ class Pipettes:
     tip_bottom_diameter: float,
     stop_disc_diameter: float,
   ) -> float:
-    """What the channel would meet a surface with, in mm, refusing a bare channel unless allowed.
-
-    A probe answers where the surface is, not where the channel stopped, so it has to know what did
-    the touching: the tip on the channel, or the stop disc it would touch with bare.
+    """Diameter of what the channel probes with: its tip's, or the stop disc's when bare and allowed.
 
     Args:
       channel_idx: the probing channel.
@@ -1947,10 +1944,7 @@ class Pipettes:
     return tip_bottom_diameter if has_tip else stop_disc_diameter
 
   async def _overhang_that_probes(self, channel_idx: int, allow_without_tip: bool) -> float:
-    """How far below the stop disc the channel probes, in mm, refusing a bare channel unless allowed.
-
-    The Z searches run on the stop disc and answer for it, so a probe that speaks of the tip bottom
-    offsets by the tip's overhang; a bare channel probes with the stop disc itself, overhang 0.
+    """How far below the stop disc the channel probes: the tip's overhang, or 0 when bare and allowed.
 
     Args:
       channel_idx: the probing channel.
@@ -2268,9 +2262,7 @@ class Pipettes:
   ) -> None:
     """Run one channel's cLLD search between two stop disc heights, every field checked.
 
-    In stop disc terms: a caller that thinks in tip bottoms adds the overhang first. Nothing is
-    sensed here, so the caller makes sure a tip is on. A search that finds nothing raises as the
-    channel answers it.
+    Stop disc terms; no tip check; a search that finds nothing raises the channel's error.
 
     Args:
       channel: 0-indexed from the back.
@@ -2339,8 +2331,7 @@ class Pipettes:
   ) -> Optional[float]:
     """Lower a channel's tip until its cLLD triggers, and read the height it detected at.
 
-    On a firmware error the channels go to Z safety first, then it is raised or, for a search
-    that found nothing, None returned.
+    Z safety first on a firmware error; None when nothing was found.
 
     Args:
       channel_idx: which channel, 0-indexed from the back.
@@ -2535,11 +2526,9 @@ class Pipettes:
   ) -> List[float]:
     """Run one channel's pressure search between two stop disc heights, every field checked.
 
-    The channel comes down at `approach_speed` to the start, then searches at `search_speed` with
-    its dispensing drive drawing on the tip until the pressure says the tip met a surface. With
-    `clld_verification` the capacitive sensor searches alongside and the two detections must agree
-    within `max_delta_plld_clld`. In foam mode the search goes on through the foam to the liquid
-    under it. As `_clld_search`: in stop disc terms, and nothing sensed here.
+    Approach at `approach_speed`, then search at `search_speed` with the dispensing drive drawing.
+    `clld_verification` adds a capacitive search that must agree within `max_delta_plld_clld`;
+    foam mode searches on through the foam to the liquid. Stop disc terms; no tip check.
 
     Args:
       channel: 0-indexed from the back.
@@ -2695,12 +2684,9 @@ class Pipettes:
     move_channels_to_safe_pos_after: bool = False,
     **search: Any,
   ) -> Optional[List[float]]:
-    """Lower a channel's tip until the pressure says it met the liquid, and say how high that is.
+    """Lower a channel's tip until the pressure says it met the liquid, and read the height.
 
-    The pressure counterpart of `probe_z_using_clld`: a tip sensed on, the overhang measured, the
-    window in tip bottom terms, then the search. Every other setting of the search, speeds,
-    thresholds, the capacitive verification, foam and dispense-back, is passed on to
-    `_plld_search` by name and takes its default there.
+    Other search settings pass to `_plld_search` by name and take its defaults.
 
     Args:
       channel_idx: which channel, 0-indexed from the back.
@@ -2810,8 +2796,7 @@ class Pipettes:
   ) -> float:
     """Run one channel's z-touch search between two stop disc heights, every field checked.
 
-    As `_clld_search`: in stop disc terms, nothing sensed here, and where the channel stopped is
-    not recorded in the model, which the caller does once it has read the answer.
+    Stop disc terms; no tip check; where the channel stopped is not recorded here.
 
     Args:
       channel: 0-indexed from the back.
@@ -2883,18 +2868,12 @@ class Pipettes:
     post_detection_distance: float = 2.0,
     move_channels_to_safe_pos_after: bool = False,
   ) -> Optional[float]:
-    """Lower a channel's tip until it presses on something, and say how high that is.
+    """Lower a channel's tip until it presses on something, and read the height.
 
-    The z-touch: the drive comes down at `approach_speed` to the start, then searches at
-    `search_speed` with its force held to `detection_limiter_pwm`, and stops where the tip meets
-    resistance. The channel says where its stop disc stopped; the tip bottom is the overhang
-    below it. Then the channel backs off by `post_detection_distance` and rests there, or goes to
-    Z safety instead when asked. A search that reached its end, within `end_tolerance`, touched
-    nothing and answers None.
-
-    The start is a tip bottom height, as the cLLD probe's; the end is a stop disc height, as
-    legacy sends it, so the default is the drive's floor and the search goes as far as it can.
-    Needs channel firmware from 2022 on, as discovery recorded it.
+    Approach at `approach_speed`, search at `search_speed` with the force held to
+    `detection_limiter_pwm`. Afterwards `post_detection_distance` above what it met, or Z safety
+    when asked. None when the search reached its end within `end_tolerance`. Channel firmware
+    from 2022 on.
 
     Args:
       channel_idx: which channel, 0-indexed from the back.
@@ -2980,10 +2959,8 @@ class Pipettes:
   ) -> Tuple[List[int], Dict[int, float], List[ChannelBatch]]:
     """Check the channels and their tips, raise them, and plan the batches; X and Y stay put.
 
-    More containers than channels are dealt to the channels in cycles, one per channel each
-    cycle, each cycle planned into batches as legacy plans one and the cycles run one after the
-    other. A cycle is the channels going once round the containers; a round is the same
-    containers searched again.
+    More containers than channels are dealt in cycles, one per channel each cycle, each cycle
+    planned into batches.
 
     Args:
       deck: what the containers are placed on.
@@ -3072,11 +3049,10 @@ class Pipettes:
     batches: Sequence[ChannelBatch],
     minimum_traverse_height_during: Optional[float],
   ) -> List[T]:
-    """Take the channels to each batch in turn and run `func` there; on any failure, Z safety.
+    """Take the channels to each batch in turn and run `func` there; Z safety on any failure.
 
-    Between batches the channels come up to `minimum_traverse_height_during`, or to Z safety when
-    None, unless the model has them there already; then the arm and the channels travel to the
-    batch together, `X0 XP` and `C0 JY`.
+    Between batches: up to `minimum_traverse_height_during`, or Z safety when None and the model
+    has a channel below it; then `X0 XP` and `C0 JY` to the batch.
 
     Args:
       func: what to do at a batch. It moves nothing in X or Y.
@@ -3177,9 +3153,8 @@ class Pipettes:
   ) -> List[Tuple[int, int, float, float]]:
     """The stop disc window each channel of a batch searches, lowest channel number first.
 
-    From `above_top` over the container's top, no higher than the drive goes, down to
-    `below_bottom` under its cavity bottom; both plus the channel's overhang, since the searches
-    run on the stop disc.
+    `above_top` over the top, capped at the drive's top, down to `below_bottom` under the cavity
+    bottom, both plus the channel's overhang.
 
     Args:
       batch: the channels and which container each has, by job index.
@@ -3214,9 +3189,8 @@ class Pipettes:
   ) -> Dict[int, List[Optional[float]]]:
     """Search for the liquid in every container of one batch, the channels together, n times.
 
-    Each channel searches from `search_start_clearance` above its container's top down to the
-    cavity bottom, on its stop disc: the tip bottom plus the overhang. The heights come from one
-    `C0 RL` after each round, so a channel that found nothing is None for that round.
+    From `search_start_clearance` above the top to the cavity bottom, on the stop disc. One
+    `C0 RL` per round; None where a channel found nothing.
 
     Args:
       batch: the channels and which container each has, by job index.
@@ -3277,11 +3251,9 @@ class Pipettes:
   ) -> List[float]:
     """Find the liquid surface in each container with a channel's tip, and say how high it stands.
 
-    The containers are dealt to the channels in cycles, one per channel each cycle, and each
-    cycle is planned into the fewest batches the channels can reach at once. The channels of
-    a batch search together, capacitive (cLLD) or pressure (pLLD), from just above the container's
-    top down to its cavity bottom. Every channel used carries a tip, and every channel is at Z
-    safety at the end unless told where to stay.
+    Containers dealt to channels in cycles, each cycle planned into batches; the channels of a
+    batch search together, cLLD or pLLD, from just above the top to the cavity bottom. Every
+    channel used carries a tip; Z safety at the end unless told where to stay.
 
     Args:
       containers: any number; a whole plate is fine.
@@ -3374,8 +3346,7 @@ class Pipettes:
   ) -> List[float]:
     """Find the liquid in each container as `probe_liquid_heights` does, and say how much there is.
 
-    Each container's own geometry turns the height into a volume, so every container has to know
-    its height-to-volume function.
+    Every container has to know its height-volume functions.
 
     Args:
       As `probe_liquid_heights`.
@@ -3430,15 +3401,10 @@ class Pipettes:
   ) -> Dict[int, List[Optional[float]]]:
     """Z-touch the floor of every container of one batch, the channels in a cascade, n times.
 
-    As `_probe_batch_liquid_heights` with the search swapped: each channel searches from its
-    container's top down to `below_floor` under its cavity bottom, and answers where its stop
-    disc stopped, so the height is the overhang below that. There is no clearance above the top,
-    as a liquid search has: nothing above it can be met, and everything below it is searched.
-    The channels go to their starts together first, each on its own drive at `approach_speed`,
-    so the cascade is the search itself: the searches set off `start_spacing` apart from there,
-    the lowest channel number first, and run on together. A channel that reached its end, within
-    `end_tolerance`, touched nothing and is None for the round. The channels stay where they
-    stopped: the next round starts with the approach again.
+    From the top to `below_floor` under the cavity bottom, on the stop disc. The channels go to
+    their starts together at `approach_speed`, then set off `start_spacing` apart, lowest channel
+    first. None where a channel reached its end within `end_tolerance`. They stay where they
+    stopped; the next round approaches again.
 
     Args:
       batch: the channels and which container each has, by job index.
@@ -3506,12 +3472,9 @@ class Pipettes:
   ) -> List[Optional[float]]:
     """Touch the floor of each container with a channel's tip, and say how high it is.
 
-    `probe_liquid_heights` with the z-touch in place of the liquid search: the same cycles and
-    batches, the same moves between them, the channels of a batch searching together, and the
-    same heights at the end. Each search goes from the container's top down to `below_floor`
-    under its modelled cavity bottom, and stops where the tip presses on something. The channels
-    of a batch go to their starts together at `approach_speed`, then set off in a cascade,
-    `start_spacing` apart from the back. Needs channel firmware from 2022 on.
+    Batched as `probe_liquid_heights`, the z-touch in place of the liquid search: from the top to
+    `below_floor` under the cavity bottom, the channels of a batch to their starts together at
+    `approach_speed`, then a cascade `start_spacing` apart. Channel firmware from 2022 on.
 
     Args:
       containers: any number; a whole plate is fine.
@@ -4713,7 +4676,7 @@ class Pipettes:
   def _get_liquid_height_from_volume(self, container: Container, volume: float) -> float:
     """How high `volume` stands above the container's cavity bottom, in mm, by its own model.
 
-    A container that knows only volume from height is inverted by bisection over its depth.
+    Bisection over the depth for a container that knows only volume from height.
 
     Args:
       container: the container holding the liquid.
@@ -4785,15 +4748,14 @@ class Pipettes:
   ) -> None:
     """Draw liquid from each container with a channel's tip.
 
-    Batched as `probe_liquid_heights`: containers dealt to channels in cycles, each cycle planned
-    into batches, one `C0 AS` per batch. Heights from the model: floor at the cavity bottom, LLD
+    Batched as `probe_liquid_heights`, one `C0 AS` per batch. Floor at the cavity bottom; LLD
     search from `well_search_start_clearance` above a well's top, `search_start_clearance` above
-    any other container's, surface from `liquid_heights`, else the
-    tracked volume. Either `volumes` with a liquid class, which corrects the piston volume and
-    fills flow rate, air volumes, clot height, swap speed and settling time where not given, or
-    `piston_volumes` as given. With volume tracking on the trackers move first, so a short
-    container or a full tip refuses before anything moves; committed after the last batch.
-    Keyword arguments in the order the aspiration runs; per-container ones in the containers' order.
+    any other's; surface from `liquid_heights`, else the tracked volume. CAPACITIVE and PRESSURE
+    search first, set the tracker to the measured volume, and refuse a container without liquid.
+    `volumes` with a liquid class, which corrects the piston volume and fills what is not given,
+    or `piston_volumes` as given. Trackers move per batch, before its command, committed on
+    success. Keyword arguments in the order the aspiration runs; per-container lists in the
+    containers' order.
 
     Args:
       containers: any number.
