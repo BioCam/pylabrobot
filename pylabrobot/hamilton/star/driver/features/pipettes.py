@@ -51,6 +51,7 @@ from pylabrobot.resources.n_channel_pipettes import NChannelPipette, TipMounting
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip import Tip
 from pylabrobot.resources.tip_rack import TipSpot, tip_origin
+from pylabrobot.resources.well import Well
 from pylabrobot.resources.volume_tracker import does_volume_tracking
 
 if TYPE_CHECKING:
@@ -353,8 +354,10 @@ class Pipettes:
   default_minimum_traverse_height: float = 245.0
   # Containers within this X distance are probed in one batch, in mm.
   default_x_grouping_tolerance: float = 0.1
-  # How far above a container's top a liquid search starts, in mm.
+  # How far above a container's top a liquid search starts, in mm. An aspiration starts closer
+  # above a well, legacy's 2.7, than above anything else, legacy's 5.
   search_start_clearance: float = 5.0
+  well_search_start_clearance: float = 2.7
 
   def __init__(self, driver: "STARDriver", configuration: Optional[PipettesConfiguration] = None):
     """
@@ -4783,7 +4786,8 @@ class Pipettes:
 
     Batched as `probe_liquid_heights`: containers dealt to channels in cycles, each cycle planned
     into batches, one `C0 AS` per batch. Heights from the model: floor at the cavity bottom, LLD
-    search from `search_start_clearance` above the top, surface from `liquid_heights`, else the
+    search from `well_search_start_clearance` above a well's top, `search_start_clearance` above
+    any other container's, surface from `liquid_heights`, else the
     tracked volume. Either `volumes` with a liquid class, which corrects the piston volume and
     fills flow rate, air volumes, clot height, swap speed and settling time where not given, or
     `piston_volumes` as given. With volume tracking on the trackers move first, so a short
@@ -4952,7 +4956,14 @@ class Pipettes:
       for c, z in zip(containers, dz)
     ]
     searches = [
-      round(c.get_location_wrt(deck, "c", "c", "t").z + z + self.search_start_clearance, 2)
+      round(
+        c.get_location_wrt(deck, "c", "c", "t").z
+        + z
+        + (
+          self.well_search_start_clearance if isinstance(c, Well) else self.search_start_clearance
+        ),
+        2,
+      )
       for c, z in zip(containers, dz)
     ]
     tracking = does_volume_tracking()
