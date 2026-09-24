@@ -899,7 +899,7 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
     )
     self.fw.assert_awaited_once()
     sent = self.sent()
-    traverse = round(self.pipettes._tip_traverse_height([self.tip], None) * 10)
+    traverse = round(self.pipettes.default_minimum_traverse_height * 10)
     # Laid out as legacy lays them out: one trailing unused entry when not every channel is listed.
     self.assertEqual(sent["tip_pattern"], [True, True, False])
     self.assertEqual((sent["x_positions"], sent["y_positions"]), ([3000, 3000, 0], [3000, 2910, 0]))
@@ -1539,9 +1539,9 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertEqual(
       [tip.tracker.get_used_volume() for tip in tips if tip is not None], [50.0, 20.0]
     )
-    top = self.pipettes.configuration.z_range[1]
-    discs = await self.pipettes.request_stop_disc_z_positions()
-    self.assertEqual([discs[channel] for channel in range(4)], [top] * 4)
+    # The tips used end at the default traverse height, as legacy leaves them.
+    bottoms = [await self.pipettes.request_tool_bottom_z_position(channel) for channel in (0, 1)]
+    self.assertEqual(bottoms, [self.pipettes.default_minimum_traverse_height] * 2)
 
   async def test_two_cycles_are_two_commands_and_one_raise(self):
     for row in "EFGH":
@@ -1549,9 +1549,9 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     wells = [self.plate.get_well(f"{row}1") for row in "ABCEFGH"]
     sent = self._record_aspirations("C0ZA", "C0JZ")
     await self.pipettes.aspirate(wells, [10.0] * 7, use_channels=[0, 1, 2, 3])
-    # Z safety once, before the first batch; each command ends the tips at their highest, so
-    # nothing is raised between the batches or after the last.
-    self.assertEqual([c[:4] for c in sent], ["C0ZA", "C0AS", "C0AS"])
+    # The tips stand above the traverse height after the pick-up and each command ends them at
+    # it, so no Z command is sent before, between or after the aspirations.
+    self.assertEqual([c[:4] for c in sent], ["C0AS", "C0AS"])
     self.assertEqual([w.tracker.get_used_volume() for w in wells], [140.0, 90.0, 40.0] + [90.0] * 4)
 
   async def test_piston_volumes_are_drawn_as_given_and_never_with_a_class(self):

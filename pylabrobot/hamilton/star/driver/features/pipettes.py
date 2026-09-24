@@ -4451,7 +4451,8 @@ class Pipettes:
       lld_search_heights: where each LLD search starts.
       minimum_allowed_z_position_during: how low each tip bottom may go.
       piston_volumes: what each piston draws.
-      minimum_traverse_height_start: travel height before the command. The tips' highest when None.
+      minimum_traverse_height_start: travel height before the command.
+        `default_minimum_traverse_height` when None.
       lld_mode: how the liquid is found. ZTOUCH finds a floor, not a liquid, and logs a warning.
       gamma_lld_sensitivity: capacitive LLD sensitivity, 1 high to 4 low.
       dp_lld_sensitivity: pressure LLD sensitivity, 1 high to 4 low.
@@ -4473,7 +4474,8 @@ class Pipettes:
       pull_out_distance_transport_air: rise before drawing transport air.
       transport_air_volumes: air drawn after the liquid. 0.0 when None.
       limit_curve_index: TADM limit curve, 0 for none.
-      minimum_traverse_height_end: tip bottom height at the end. The tips' highest when None.
+      minimum_traverse_height_end: tip bottom height at the end. `default_minimum_traverse_height`
+        when None.
 
     Raises:
       ValueError: A list not one entry per channel, a value out of the firmware's range, an
@@ -4539,17 +4541,15 @@ class Pipettes:
 
     xs, ys, pattern = self._tip_command_positions(dict(zip(use_channels, places)))
     mounted = list(tips.values())
-    traverse_start = tenths(self._tip_traverse_height(mounted, minimum_traverse_height_start))
+    default = self.default_minimum_traverse_height
+    start = default if minimum_traverse_height_start is None else minimum_traverse_height_start
+    end = default if minimum_traverse_height_end is None else minimum_traverse_height_end
+    traverse_start = tenths(self._tip_traverse_height(mounted, start))
     # The end is where the command leaves the tips, any height they reach; the travel rule is
     # the start's alone.
-    if minimum_traverse_height_end is None:
-      traverse_end = tenths(self._tip_traverse_height(mounted, None))
-    else:
-      for channel, tip in tips.items():
-        self._check_reachable(
-          "z", round(minimum_traverse_height_end + tip.get_size_z() - tip.fitting_depth, 2)
-        )
-      traverse_end = tenths(minimum_traverse_height_end)
+    for channel, tip in tips.items():
+      self._check_reachable("z", round(end + tip.get_size_z() - tip.fitting_depth, 2))
+    traverse_end = tenths(end)
 
     c = self.configuration
     # A master command takes heights in tenths of a millimetre, not the Z drive's own increments.
@@ -4826,10 +4826,11 @@ class Pipettes:
       transport_air_volumes: air drawn after the liquid, in uL. The class's, else 0.0, when None.
       limit_curve_index: TADM limit curve, 0 for none.
       minimum_traverse_height_start: raise of every low channel before the first batch, in mm.
-        Z safety when None.
-      minimum_traverse_height_during: the same between batches, and each batch's end height. Z
-        safety when None.
-      minimum_traverse_height_end: where the tips are left, in mm. Z safety when None.
+        `default_minimum_traverse_height` when None.
+      minimum_traverse_height_during: the same between batches, and each batch's end height.
+        `default_minimum_traverse_height` when None.
+      minimum_traverse_height_end: where the tips are left, in mm. `default_minimum_traverse_height`
+        when None.
       x_grouping_tolerance: X distance within which containers share a batch, in mm.
         `default_x_grouping_tolerance` when None.
 
@@ -4845,6 +4846,11 @@ class Pipettes:
     if deck is None:
       raise RuntimeError("containers are placed from the deck; this driver was given none")
     n = len(containers)
+    # As legacy travels: at the default height, not Z safety, unless told otherwise.
+    default = self.default_minimum_traverse_height
+    start = default if minimum_traverse_height_start is None else minimum_traverse_height_start
+    during = default if minimum_traverse_height_during is None else minimum_traverse_height_during
+    end = default if minimum_traverse_height_end is None else minimum_traverse_height_end
 
     def per_container(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:
       if given is None:
@@ -4975,8 +4981,8 @@ class Pipettes:
       use_channels,
       resource_offsets,
       x_grouping_tolerance,
-      minimum_traverse_height_start,
-      minimum_traverse_height_end,
+      start,
+      end,
     )
 
     async def run(batch: ChannelBatch) -> None:
@@ -4993,7 +4999,7 @@ class Pipettes:
         [searches[job] for job in jobs],
         [floors[job] for job in jobs],
         [drawn[job] for job in jobs],
-        minimum_traverse_height_start=minimum_traverse_height_during,
+        minimum_traverse_height_start=during,
         pre_mixes=[mixes[job] for job in jobs],
         lld_mode=lld_mode,
         gamma_lld_sensitivity=gamma_lld_sensitivity,
@@ -5005,9 +5011,7 @@ class Pipettes:
         second_section_ratio=second_section_ratio,
         pull_out_distance_transport_air=pull_out_distance_transport_air,
         limit_curve_index=limit_curve_index,
-        minimum_traverse_height_end=(
-          minimum_traverse_height_end if last else minimum_traverse_height_during
-        ),
+        minimum_traverse_height_end=end if last else during,
         **{
           name: [values[job] for job in jobs]
           for name, values in per_container_settings.items()
@@ -5024,7 +5028,7 @@ class Pipettes:
         tip.tracker.add_liquid(volume)
         trackers += [container.tracker, tip.tracker]
     try:
-      await self._execute_batched(run, batches, minimum_traverse_height_during)
+      await self._execute_batched(run, batches, during)
     except BaseException:
       for tracker in trackers:
         tracker.rollback()
