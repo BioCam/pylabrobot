@@ -2711,3 +2711,84 @@ def test_probe_liquid_heights_refuses_pressure_lld():
     await p.stop()
 
   _run(_t())
+
+
+def _aspirate_following_setup():
+  """A simulated Prep with a tip on channel 0 and a Corning 3603 well of 200 uL."""
+  deck = PrepDeck()
+  tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
+  plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+  return PrepSimulationDriver(deck=deck), tip_rack, plate
+
+
+def test_aspirate_sends_the_containers_profile_from_z_minimum():
+  """By default the segments are the well's own profile, cut to begin at z_minimum."""
+
+  async def _t():
+    p, tip_rack, plate = _aspirate_following_setup()
+    await p.setup()
+    assert p.pipettes is not None
+    well = plate.get_item("A1")
+    await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
+    sent = _record(p)
+    await p.pipettes.aspirate(
+      [well],
+      piston_volumes=[20.0],
+      use_channels=[0],
+      liquid_heights=[3.0],
+      minimum_allowed_z_position_during=[
+        well.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z + 1.0
+      ],
+    )
+    entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
+    expected = _get_container_segments(well, profile_start=1.0)
+    assert [(s.area_bottom, s.height) for s in entry.container_description] == [
+      (pytest.approx(s.area_bottom), pytest.approx(s.height)) for s in expected
+    ]
+    await p.stop()
+
+  _run(_t())
+
+
+def test_aspirate_scales_the_profile_to_a_surface_following_distance():
+  """A distance scales the profile so the tip sinks exactly that; 0 sends none and tube_radius 0."""
+
+  async def _t():
+    p, tip_rack, plate = _aspirate_following_setup()
+    await p.setup()
+    assert p.pipettes is not None
+    well = plate.get_item("A1")
+    await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
+    sent = _record(p)
+    await p.pipettes.aspirate(
+      [well],
+      piston_volumes=[20.0],
+      use_channels=[0],
+      liquid_heights=[3.0],
+      surface_following_distances=[0.5],
+    )
+    entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
+    assert _get_profile_drop(entry.container_description, 3.0, 20.0) == pytest.approx(0.5, abs=1e-3)
+    await p.pipettes.dispense([well], vols=[20.0], use_channels=[0], liquid_height=[3.0])
+    sent.clear()
+    await p.pipettes.aspirate(
+      [well],
+      piston_volumes=[20.0],
+      use_channels=[0],
+      liquid_heights=[3.0],
+      surface_following_distances=[0.0],
+    )
+    entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
+    assert entry.container_description == []
+    assert entry.common.tube_radius == 0.0
+    with pytest.raises(ValueError, match="surface following distances for"):
+      await p.pipettes.aspirate(
+        [well],
+        piston_volumes=[20.0],
+        use_channels=[0],
+        liquid_heights=[3.0],
+        surface_following_distances=[0.5, 0.5],
+      )
+    await p.stop()
+
+  _run(_t())

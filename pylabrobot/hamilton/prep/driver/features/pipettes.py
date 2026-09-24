@@ -5436,7 +5436,7 @@ class Pipettes:
     minimum_traverse_height_end: Optional[float] = None,
     tadm: Optional[PrepCmd.TadmParameters] = None,
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
-    auto_container_geometry: bool = False,
+    surface_following_distances: Optional[Sequence[float]] = None,
     read_timeout: Optional[float] = None,
     command_version: Optional[Literal["v1", "v2"]] = None,
   ) -> None:
@@ -5487,9 +5487,10 @@ class Pipettes:
       minimum_traverse_height_end: the tip bottom height every tip is left at, in mm. The
         traverse height less each tip's overhang when None.
       tadm: TADM settings; given, the aspiration is monitored.
-      container_segments: each container's cross-sections, per container. None sends none,
-        unless `auto_container_geometry`.
-      auto_container_geometry: whether to build the segments from each container's shape.
+      container_segments: each container's cross-sections, sent as they are, per container. None
+        builds them from each container's profile.
+      surface_following_distances: how far each tip follows the sinking surface, in mm, per
+        container: its profile scaled to that. None follows the profile as it is; 0 does not follow.
       read_timeout: how long to wait for the answer, in s. Long enough for the search when an
         LLD search runs and this is None.
       command_version: "v1" or "v2" aspirate commands. What the firmware supports when None.
@@ -5545,10 +5546,31 @@ class Pipettes:
       z_minimum=minimum_allowed_z_position_during,
       z_bottom_search_offset=z_bottom_search_offset,
       container_segments=container_segments,
-      auto_container_geometry=auto_container_geometry,
       hamilton_liquid_classes=classes,
     )
     deck = self._require_deck()
+    if surface_following_distances is not None and len(surface_following_distances) != len(ops):
+      raise ValueError(
+        f"{len(surface_following_distances)} surface following distances for {len(ops)} containers"
+      )
+    # The firmware reads the profile at the tip's height, counted from z_minimum
+    bottoms = [op.resource.get_location_wrt(deck, "c", "c", "cavity_bottom").z for op in ops]
+    distances = [
+      None if surface_following_distances is None else surface_following_distances[i]
+      for i in range(len(ops))
+    ]
+    segments = [
+      container_segments[i]
+      if container_segments is not None
+      else _get_container_segments(
+        op.resource,
+        liquid_height=ctx.z_fluid[i] - bottoms[i],
+        piston_volume=ctx.volumes[i],
+        surface_following_distance=distances[i],
+        profile_start=ctx.z_minimum[i] - bottoms[i],
+      )
+      for i, op in enumerate(ops)
+    ]
     locations = [
       Coordinate(
         (loc := op.resource.get_location_wrt(deck, "c", "c", "cavity_bottom")).x + op.offset.x,
@@ -5577,7 +5599,10 @@ class Pipettes:
         [g.top_of_well for g in ctx.well_geometry],
         ctx.z_minimum,
         ctx.volumes,
-        tube_radii=[_effective_radius(op.resource) for op in ops],
+        # Without segments the firmware follows tube_radius, and 0 does not follow
+        tube_radii=[
+          0.0 if d == 0 else _effective_radius(op.resource) for d, op in zip(distances, ops)
+        ],
         lld_mode=lld_mode,
         clld_sensitivity=clld_sensitivity,
         immersion_depths=None if immersion_depths is None else list(immersion_depths),
@@ -5609,7 +5634,7 @@ class Pipettes:
         minimum_traverse_height_end=minimum_traverse_height_end,
         z_air=ctx.z_air,
         z_bottom_search_offset=ctx.z_bottom_search_offset,
-        container_segments=[ctx.ch_segments[ch] for ch in use_channels],
+        container_segments=segments,
         lld=lld,
         p_lld=p_lld,
         c_lld=c_lld,
