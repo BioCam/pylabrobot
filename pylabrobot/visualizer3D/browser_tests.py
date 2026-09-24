@@ -646,7 +646,8 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
         # A simulated pick-up and an aspirate, with the channel panel open through both: the
         # mounted tip is a new name, so this costs a scene, and what it then holds is drawn.
         await browser.evaluate(
-          "document.querySelector('.dt-btn[title=\"Single-channel pipettes\"]').click(); true"
+          "document.querySelector('.mt-panel-single') ||"
+          " document.querySelector('.dt-btn[title=\"Single-channel pipettes\"]').click(); true"
         )
         rack = star.deck.get_resource("tips_0")
         assert isinstance(rack, TipRack) and star.pipettes is not None

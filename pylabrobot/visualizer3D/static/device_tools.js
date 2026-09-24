@@ -66,6 +66,8 @@ export function initDeviceTools({ onSelect }) {
   const open = new Map();
   /** Where the user dragged a panel, by id, until it is reset. */
   const moved = new Map();
+  /** Devices whose panels have been shown: a device opens its panels once, when it arrives. */
+  const shown = new Set();
 
   // ------------------------------------------------------------------ reading the tree
 
@@ -572,6 +574,15 @@ export function initDeviceTools({ onSelect }) {
       const device = world.indexOfName.get(name);
       const button = device === undefined ? undefined : buttonOf.get(idOf(device, kind));
       if (button) toggle(device, kind, button);
+    }
+    // A device that has just arrived shows its panels; closed once, they stay closed.
+    for (const device of devices()) {
+      if (shown.has(world.names[device])) continue;
+      shown.add(world.names[device]);
+      for (const { kind } of KINDS) {
+        const button = buttonOf.get(idOf(device, kind));
+        if (button && !open.has(idOf(device, kind))) toggle(device, kind, button);
+      }
     }
   }
 
