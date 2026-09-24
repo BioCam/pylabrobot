@@ -13,6 +13,7 @@ import pytest
 from pylabrobot.hamilton.prep import PrepSimulationDriver
 from pylabrobot.hamilton.prep.driver import prep_commands as PrepCmd
 from pylabrobot.hamilton.prep.driver.features.pipettes import (
+  MAX_CONTAINER_SEGMENTS,
   Pipettes,
   _get_container_segments,
   _get_profile_drop,
@@ -2638,8 +2639,8 @@ def test_container_segments_are_one_step_per_height_volume_knot():
     assert segment.area_bottom == segment.area_top == pytest.approx((v1 - v0) / (h1 - h0))
 
 
-def test_container_segments_from_functions_are_volume_differences():
-  """Without data: a step per 0.5 mm of cavity depth, each holding what the functions say."""
+def test_container_segments_from_functions_join_steps_of_one_area():
+  """Without data, steps of one area are one segment: a cylinder by functions is one cylinder."""
   container = Container(
     name="c",
     size_x=10,
@@ -2650,9 +2651,26 @@ def test_container_segments_from_functions_are_volume_differences():
     compute_height_from_volume=lambda v: v / 50.0,
   )
   segments = _get_container_segments(container)
-  assert len(segments) == 20
-  assert sum(s.height for s in segments) == pytest.approx(10.0)
-  assert all(s.area_bottom == pytest.approx(50.0) for s in segments)
+  assert len(segments) == 1
+  assert segments[0].height == pytest.approx(10.0)
+  assert segments[0].area_bottom == pytest.approx(50.0)
+
+
+def test_container_segments_are_at_most_what_the_device_takes_and_keep_the_volume():
+  """A cone's 0.5 mm steps become MAX_CONTAINER_SEGMENTS, holding what the functions say."""
+  container = Container(
+    name="cone",
+    size_x=10,
+    size_y=10,
+    size_z=42,
+    material_z_thickness=2,
+    compute_volume_from_height=lambda h: 0.5 * h**2,
+    compute_height_from_volume=lambda v: (2 * v) ** 0.5,
+  )
+  segments = _get_container_segments(container)
+  assert len(segments) == MAX_CONTAINER_SEGMENTS
+  assert sum(s.height for s in segments) == pytest.approx(40.0)
+  assert sum(s.area_bottom * s.height for s in segments) == pytest.approx(0.5 * 40.0**2)
 
 
 def test_container_segments_fall_back_to_the_footprint_and_warn_for_a_v_bottom():

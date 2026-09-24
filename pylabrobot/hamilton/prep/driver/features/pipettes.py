@@ -368,12 +368,52 @@ def _effective_radius(resource) -> float:
 # Containers already warned about following a V- or U-bottom as a cylinder, by name.
 _warned_cylinder_fallback: set = set()
 
+# The most segments one channel has been sent and the device took; 150 were refused (0x0011).
+MAX_CONTAINER_SEGMENTS = 9
+
+
+def _merge_segments(
+  segments: Sequence[PrepCmd.SegmentDescriptor], limit: int = MAX_CONTAINER_SEGMENTS
+) -> list[PrepCmd.SegmentDescriptor]:
+  """The segments with neighbours of one area joined, then the closest pairs until `limit` are left.
+
+  A joined pair keeps its volume: its area is their volume over their height.
+
+  Args:
+    segments: bottom up, each of constant area.
+    limit: how many segments may be left.
+
+  Returns:
+    At most `limit` segments over the same height, holding the same volume.
+  """
+  merged = list(segments)
+
+  def join(i: int) -> None:
+    a, b = merged[i], merged[i + 1]
+    height = a.height + b.height
+    area = (a.area_bottom * a.height + b.area_bottom * b.height) / height
+    merged[i : i + 2] = [PrepCmd.SegmentDescriptor(area_top=area, area_bottom=area, height=height)]
+
+  i = 0
+  while i < len(merged) - 1:
+    if math.isclose(merged[i].area_bottom, merged[i + 1].area_bottom, rel_tol=1e-9):
+      join(i)
+    else:
+      i += 1
+  while len(merged) > limit:
+    differences = [
+      abs(merged[i].area_bottom - merged[i + 1].area_bottom) for i in range(len(merged) - 1)
+    ]
+    join(differences.index(min(differences)))
+  return merged
+
 
 def _get_profile_segments(resource: object) -> list[PrepCmd.SegmentDescriptor]:
   """A container's cross-section as firmware segments, bottom up from the cavity bottom.
 
   One step per `height_volume_data` knot interval; else one per 0.5 mm of cavity depth from its
-  height-volume functions; else its footprint as one cylinder.
+  height-volume functions; else its footprint as one cylinder. Steps of one area are joined, and
+  the closest pairs, until `MAX_CONTAINER_SEGMENTS` are left.
 
   Args:
     resource: the container.
@@ -424,7 +464,7 @@ def _get_profile_segments(resource: object) -> list[PrepCmd.SegmentDescriptor]:
       raise ValueError(f"{resource.name}: the volume does not rise between {h0} and {h1} mm")
     area = (v1 - v0) / (h1 - h0)
     segments.append(PrepCmd.SegmentDescriptor(area_top=area, area_bottom=area, height=h1 - h0))
-  return segments
+  return _merge_segments(segments)
 
 
 def _get_profile_drop(
