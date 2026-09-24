@@ -1628,6 +1628,16 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       "mv00300 00000 00300&mc03 00 03&mp000 000 000&ms0500 1000 0500&mh0015 0000 0015&", sent[1]
     )
 
+  async def test_the_floor_can_be_set_below_the_cavity_bottom(self):
+    sent = self._record_aspirations()
+    bottom = self.wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    await self.pipettes.aspirate(
+      self.wells[:1], piston_volumes=[50.0], minimum_allowed_z_positions_during=[bottom - 1.0]
+    )
+    # zx a millimetre under the floor, the tip pressing onto it; the surface as before.
+    self.assertIn(f"zx{round((bottom - 1.0) * 10):04}", sent[0])
+    self.assertIn(f"zl{self._surface_field(self.wells[0], 150.0)}", sent[0])
+
   async def test_a_capacitive_aspiration_searches_first_and_takes_what_it_measured(self):
     sent = self._record_aspirations("P1ZL", "P2ZL", "C0RL")
     self.wells[0].tracker.set_volume(120.0)  # The model is wrong; the search will say 150 is 120.

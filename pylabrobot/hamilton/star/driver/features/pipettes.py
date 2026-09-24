@@ -4736,6 +4736,7 @@ class Pipettes:
     aspirate_position_above_z_touch_off: float = 0.0,
     clot_detection_heights: Optional[Sequence[float]] = None,
     immersion_depths: Optional[Sequence[float]] = None,
+    minimum_allowed_z_positions_during: Optional[Sequence[float]] = None,
     blow_out_air_volumes: Optional[Sequence[float]] = None,
     pre_wetting_volumes: Optional[Sequence[float]] = None,
     pre_mixes: Optional[Sequence[Optional[Mix]]] = None,
@@ -4789,6 +4790,9 @@ class Pipettes:
       clot_detection_heights: how far a clot may hold the tip back, in mm. The class's, else 0.0,
         when None.
       immersion_depths: how far into the liquid each tip goes, in mm; negative is out of it.
+      minimum_allowed_z_positions_during: how low each tip bottom may go, in mm on the deck. The
+        cavity bottom plus the offset's z when None. Below the cavity bottom is allowed: the tip
+        then presses onto the well's floor and draws with suction, as a harvest wants.
       blow_out_air_volumes: air drawn before the liquid, in uL. The class's, else 0.0, when None.
       pre_wetting_volumes: drawn and returned first, in uL.
       pre_mixes: a `Mix` per container, mixed before the draw, None for no mixing.
@@ -4926,6 +4930,12 @@ class Pipettes:
       round(c.get_location_wrt(deck, "c", "c", "cavity_bottom").z + z, 2)
       for c, z in zip(containers, dz)
     ]
+    # The floor sent is the caller's when given; the heights are still measured from the cavity
+    # bottom, since the liquid stands on that.
+    sent_floors = (
+      per_container("minimum_allowed_z_positions_during", minimum_allowed_z_positions_during)
+      or floors
+    )
     searches = [
       round(
         c.get_location_wrt(deck, "c", "c", "t").z
@@ -5039,7 +5049,7 @@ class Pipettes:
           for ch, job in zip(batch.channels, jobs)
         ],
         [searches[job] for job in jobs],
-        [floors[job] for job in jobs],
+        [sent_floors[job] for job in jobs],
         [drawn[job] for job in jobs],
         pre_mixes=[mixes[job] for job in jobs],
         surface_following_distances=[
