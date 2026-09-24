@@ -835,6 +835,39 @@ class TestAspirateFirmware(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(Pipettes.LLDMode.ZTOUCH.value, 4)
 
 
+class TestLiquidClassLookup(unittest.TestCase):
+  """Every Hamilton tip finds its class, the ones without a filter included."""
+
+  def test_every_tip_size_maps_to_a_class(self):
+    from pylabrobot.hamilton.star.liquid_classes import get_star_liquid_class
+    from pylabrobot.resources.hamilton import tip_creators
+    from pylabrobot.resources.liquid import Liquid
+
+    # The 50 uL tips have water classes with a blow-out only; the rest have the plain surface one.
+    for creator, blow_out in (
+      (tip_creators.hamilton_tip_10uL, False),
+      (tip_creators.hamilton_tip_10uL_filter, False),
+      (tip_creators.hamilton_tip_50uL, True),
+      (tip_creators.hamilton_tip_50uL_filter, True),
+      (tip_creators.hamilton_tip_300uL, False),
+      (tip_creators.hamilton_tip_300uL_filter, False),
+      (tip_creators.hamilton_tip_1000uL, False),
+      (tip_creators.hamilton_tip_1000uL_filter, False),
+    ):
+      tip = creator("tip")
+      with self.subTest(tip=creator.__name__):
+        found = get_star_liquid_class(
+          tip_volume=tip.maximal_volume,
+          is_core=False,
+          is_tip=True,
+          has_filter=tip.has_filter,
+          liquid=Liquid.WATER,
+          jet=False,
+          blow_out=blow_out,
+        )
+        self.assertIsNotNone(found)
+
+
 class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
   """One `C0 AS` from mm and uL: the fields it fills, the defaults it takes, what it refuses."""
 

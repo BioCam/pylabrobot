@@ -38,7 +38,10 @@ def get_star_liquid_class(
   # given maximal volume of the tip.
   tip_volume = int(
     {
+      15.0: 10.0,
+      65.0: 50.0,
       360.0: 300.0,
+      400.0: 300.0,
       1065.0: 1000.0,
       1250.0: 1000.0,
       4367.0: 4000.0,
