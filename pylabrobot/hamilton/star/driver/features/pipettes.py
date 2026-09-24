@@ -5165,11 +5165,23 @@ class Pipettes:
           raise RuntimeError(f"channel {channel} found no liquid in {containers[job].name}")
         surfaces[job] = height
         above_bottom = round(height - floors[job], 2)
-        computed_following[job] = self._get_surface_following_distance(
-          containers[job], above_bottom, liquid[job]
-        )
-        if tracking:
+        try:
+          computed_following[job] = self._get_surface_following_distance(
+            containers[job], above_bottom, liquid[job]
+          )
           measured = containers[job].compute_volume_from_height(above_bottom)
+        except ValueError:
+          # A plate seated off the model, or a fill past the data: the surface found still counts.
+          logger.warning(
+            "channel %d found the liquid of %s %.2f mm above its modelled cavity bottom, outside "
+            "its height-volume data; the tip follows nothing and the model keeps %.1f uL",
+            channel,
+            containers[job].name,
+            above_bottom,
+            containers[job].tracker.get_used_volume(),
+          )
+          continue
+        if tracking:
           expected = containers[job].tracker.get_used_volume()
           # A measurement stacks the sensor, the 0.1 mm of the read, the well's model and where
           # the plate really sits, so it is only ever off by so much before it is worth a word.

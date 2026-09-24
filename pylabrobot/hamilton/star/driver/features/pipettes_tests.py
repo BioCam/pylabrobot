@@ -1718,6 +1718,26 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertEqual(sent, [])
     self.assertEqual(wells[0].tracker.get_used_volume(), 150.0)
 
+  async def test_a_surface_outside_the_height_volume_data_is_a_warning_not_a_refusal(self):
+    sent = self._record_aspirations()
+    # The plate modelled 1 mm lower than it sits: the 350 uL well's surface is found higher above
+    # its modelled cavity bottom than the data reaches.
+    self.wells[0].tracker.set_volume(350.0)
+    with self.assertLogs(
+      "pylabrobot.hamilton.star.driver.features.pipettes", level="WARNING"
+    ) as logs:
+      await self.pipettes.aspirate(
+        self.wells[:1],
+        [10.0],
+        resource_offsets=[Coordinate(0.0, 0.0, -1.0)],
+        lld_mode=Pipettes.LLDMode.CAPACITIVE,
+      )
+    self.assertEqual(len(sent), 1)
+    self.assertEqual(len(logs.output), 1)
+    self.assertIn("outside its height-volume data", logs.output[0])
+    self.assertIn("fp0000", sent[0])
+    self.assertEqual(self.wells[0].tracker.get_used_volume(), 340.0)
+
   async def test_a_measurement_far_off_the_model_is_a_warning_not_a_refusal(self):
     # The simulator answers the search from the tracker itself, so the search is stood in for:
     # it reports 100 uL where the model has 150.
