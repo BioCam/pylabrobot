@@ -557,6 +557,12 @@ class TestCLLDProbing(unittest.IsolatedAsyncioTestCase):
     )
     self.moves = unittest.mock.AsyncMock()
 
+  async def test_dispensing_drive_read(self):
+    reads = unittest.mock.AsyncMock(return_value={"rd": 1067})
+    self.pipettes._driver.send_command = reads  # type: ignore[method-assign]
+    self.assertEqual(await self.pipettes.dispensing_drive_request_position(2), 50.0)
+    reads.assert_awaited_once_with(module="P3", command="RD", fmt="rd#####")
+
   async def test_x_firmware(self):
     await self.pipettes._unchecked_fw_probe_x_using_clld(134.0)
     self.assertEqual(self.sent, ["C0XLxs01340"])
@@ -1555,6 +1561,14 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     # The tips used end at the default traverse height, as legacy leaves them.
     bottoms = [await self.pipettes.request_tool_bottom_z_position(channel) for channel in (0, 1)]
     self.assertEqual(bottoms, [self.pipettes.default_minimum_traverse_height] * 2)
+
+  async def test_the_pistons_stand_at_what_they_drew(self):
+    self.assertEqual(await self.pipettes.dispensing_drives_request_positions(), [0.0] * 8)
+    await self.pipettes.aspirate(self.wells[:2], piston_volumes=[50.0, 20.0])
+    positions = await self.pipettes.dispensing_drives_request_positions()
+    self.assertEqual(positions[:2], [50.0, 20.0])
+    self.assertEqual(positions[2:], [0.0] * 6)
+    self.assertEqual(await self.pipettes.dispensing_drive_request_position(0), 50.0)
 
   async def test_two_cycles_are_two_commands_and_one_raise(self):
     for row in "EFGH":
