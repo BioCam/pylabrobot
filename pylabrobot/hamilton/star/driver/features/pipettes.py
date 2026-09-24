@@ -3085,6 +3085,7 @@ class Pipettes:
     self,
     batch: ChannelBatch,
     containers: Sequence[Container],
+    *,
     overhangs: Dict[int, float],
     z_cavity_bottom: Sequence[float],
     z_top: Sequence[float],
@@ -3220,7 +3221,14 @@ class Pipettes:
     z_top = [c.get_location_wrt(deck, "c", "c", "t").z for c in containers]
     per_batch = await self._execute_batched(
       lambda batch: self._probe_batch_liquid_heights(
-        batch, containers, overhangs, z_cavity_bottom, z_top, modes, search_speed, n_replicates
+        batch,
+        containers,
+        overhangs=overhangs,
+        z_cavity_bottom=z_cavity_bottom,
+        z_top=z_top,
+        lld_modes=modes,
+        search_speed=search_speed,
+        n_replicates=n_replicates,
       ),
       batches,
       minimum_traverse_height_during,
@@ -3290,6 +3298,7 @@ class Pipettes:
   async def _probe_batch_floors(
     self,
     batch: ChannelBatch,
+    *,
     overhangs: Dict[int, float],
     z_cavity_bottom: Sequence[float],
     z_top: Sequence[float],
@@ -3438,15 +3447,15 @@ class Pipettes:
     per_batch = await self._execute_batched(
       lambda batch: self._probe_batch_floors(
         batch,
-        overhangs,
-        z_cavity_bottom,
-        z_top,
-        search_speed,
-        below_floor,
-        end_tolerance,
-        start_spacing,
-        approach_speed,
-        n_replicates,
+        overhangs=overhangs,
+        z_cavity_bottom=z_cavity_bottom,
+        z_top=z_top,
+        search_speed=search_speed,
+        below_floor=below_floor,
+        end_tolerance=end_tolerance,
+        start_spacing=start_spacing,
+        approach_speed=approach_speed,
+        n_replicates=n_replicates,
       ),
       batches,
       minimum_traverse_height_during,
