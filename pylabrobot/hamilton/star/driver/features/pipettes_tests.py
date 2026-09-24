@@ -858,7 +858,7 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
 
   async def test_defaults_are_legacys_and_the_fields_are_tenths(self):
     await self.pipettes._aspirate_in_one_move(
-      [0, 1], self.locations, [100.0, 50.0], self.floors, self.searches
+      [0, 1], self.locations, self.searches, self.floors, [100.0, 50.0]
     )
     self.fw.assert_awaited_once()
     sent = self.sent()
@@ -893,7 +893,7 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
 
   async def test_a_negative_immersion_depth_is_sent_as_a_direction(self):
     await self.pipettes._aspirate_in_one_move(
-      [0, 1], self.locations, [10.0, 10.0], self.floors, self.searches, immersion_depth=-1.5
+      [0, 1], self.locations, self.searches, self.floors, [10.0, 10.0], immersion_depth=-1.5
     )
     sent = self.sent()
     self.assertEqual(
@@ -907,9 +907,9 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
       await self.pipettes._aspirate_in_one_move(
         [0, 1],
         self.locations,
-        [10.0, 10.0],
-        self.floors,
         self.searches,
+        self.floors,
+        [10.0, 10.0],
         lld_mode=Pipettes.LLDMode.ZTOUCH,
       )
     self.assertIn("Z touch", logs.output[0])
@@ -927,13 +927,13 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
     for volumes, kwargs, message in refusals:
       with self.assertRaises(ValueError, msg=message) as refused:
         await self.pipettes._aspirate_in_one_move(
-          [0, 1], self.locations, volumes, self.floors, self.searches, **kwargs
+          [0, 1], self.locations, self.searches, self.floors, volumes, **kwargs
         )
       self.assertIn(message, str(refused.exception))
     self.pipettes.get_mounted_tip = unittest.mock.Mock(return_value=None)  # type: ignore[method-assign]
     with self.assertRaises(RuntimeError):
       await self.pipettes._aspirate_in_one_move(
-        [0, 1], self.locations, [10.0, 10.0], self.floors, self.searches
+        [0, 1], self.locations, self.searches, self.floors, [10.0, 10.0]
       )
     self.fw.assert_not_awaited()
 

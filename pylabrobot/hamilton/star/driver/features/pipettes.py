@@ -4384,34 +4384,34 @@ class Pipettes:
     self,
     use_channels: List[int],
     locations: List[Coordinate],
-    piston_volumes: List[float],
-    minimum_allowed_z_position_during: List[float],
     lld_search_heights: List[float],
+    minimum_allowed_z_position_during: List[float],
+    piston_volumes: List[float],
     *,
+    minimum_traverse_height_start: Optional[float] = None,
     lld_mode: "Pipettes.LLDMode" = LLDMode.OFF,
-    flow_rates: Optional[List[float]] = None,
-    transport_air_volumes: Optional[List[float]] = None,
+    gamma_lld_sensitivity: int = 1,
+    dp_lld_sensitivity: int = 1,
+    detection_height_difference_for_dual_lld: float = 0.0,
+    aspirate_position_above_z_touch_off: float = 0.0,
+    clot_detection_heights: Optional[List[float]] = None,
+    immersion_depth: float = 0.0,
     blow_out_air_volumes: Optional[List[float]] = None,
     pre_wetting_volumes: Optional[List[float]] = None,
-    clot_detection_heights: Optional[List[float]] = None,
-    swap_speeds: Optional[List[float]] = None,
-    settling_times: Optional[List[float]] = None,
     mix_volumes: Optional[List[float]] = None,
     mix_cycles: Optional[List[int]] = None,
     mix_speeds: Optional[List[float]] = None,
-    immersion_depth: float = 0.0,
-    surface_following_distance: float = 0.0,
-    pull_out_distance_transport_air: float = 10.0,
-    second_section_height: float = 3.2,
-    second_section_ratio: float = 618.0,
-    gamma_lld_sensitivity: int = 1,
-    dp_lld_sensitivity: int = 1,
-    aspirate_position_above_z_touch_off: float = 0.0,
-    detection_height_difference_for_dual_lld: float = 0.0,
     mix_position_from_liquid_surface: float = 0.0,
     mix_surface_following_distance: float = 0.0,
+    flow_rates: Optional[List[float]] = None,
+    surface_following_distance: float = 0.0,
+    second_section_height: float = 3.2,
+    second_section_ratio: float = 618.0,
+    settling_times: Optional[List[float]] = None,
+    swap_speeds: Optional[List[float]] = None,
+    pull_out_distance_transport_air: float = 10.0,
+    transport_air_volumes: Optional[List[float]] = None,
     limit_curve_index: int = 0,
-    minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_end: Optional[float] = None,
   ) -> None:
     """Aspirate at each place given, the channels together, in one `C0 AS`.
@@ -4423,39 +4423,43 @@ class Pipettes:
     what is one value is what legacy set alike for every channel. Fields legacy never varied,
     the aspiration type, TADM, recording and the second-section search, are sent as it sent them.
 
+    The arguments come in the order the aspiration runs: travel, finding the liquid, entering it,
+    mixing, drawing, waiting, leaving, monitoring, the end.
+
     Args:
       use_channels: which channels, 0-indexed from the back, ascending. Every list below has one
         entry per channel, in this order.
       locations: where each channel's tip bottom goes, on the deck in mm. The z is the liquid
         surface the tip is taken to when no LLD runs.
-      piston_volumes: how much each channel's piston draws, in uL.
-      minimum_allowed_z_position_during: how low each tip bottom may go, in mm.
       lld_search_heights: where each LLD search starts, in mm.
+      minimum_allowed_z_position_during: how low each tip bottom may go, in mm.
+      piston_volumes: how much each channel's piston draws, in uL.
+      minimum_traverse_height_start: how high the channels travel first, in mm. As high as the
+        mounted tips allow when None.
       lld_mode: how the liquid is found. Z touch finds a floor, not a liquid, and is warned about.
-      flow_rates: in uL/s. 100.0 when None.
-      transport_air_volumes: air drawn after the liquid, in uL. 0.0 when None.
-      blow_out_air_volumes: air drawn before it, in uL. 0.0 when None.
-      pre_wetting_volumes: drawn and returned first, in uL. 0.0 when None.
+      gamma_lld_sensitivity: capacitive LLD sensitivity, 1 high to 4 low.
+      dp_lld_sensitivity: pressure LLD sensitivity, 1 high to 4 low.
+      detection_height_difference_for_dual_lld: the two detections' allowed difference, in mm.
+      aspirate_position_above_z_touch_off: how far above a Z touch the aspiration is, in mm.
       clot_detection_heights: how far the tip may be held back by a clot, in mm. 0.0 when None.
-      swap_speeds: how fast the tip leaves the liquid, in mm/s. 100.0 when None.
-      settling_times: how long it waits in the liquid, in s. 0.0 when None.
+      immersion_depth: how far into the liquid the tip goes, in mm; negative is out of it.
+      blow_out_air_volumes: air drawn before the liquid, in uL. 0.0 when None.
+      pre_wetting_volumes: drawn and returned first, in uL. 0.0 when None.
       mix_volumes: per mixing cycle, in uL. 0.0 when None.
       mix_cycles: how many. 0 when None.
       mix_speeds: in uL/s. 100.0 when None.
-      immersion_depth: how far into the liquid the tip goes, in mm; negative is out of it.
-      surface_following_distance: how far the tip follows the sinking surface, in mm.
-      pull_out_distance_transport_air: how far the tip rises before drawing transport air, in mm.
-      second_section_height: the second-section height, in mm.
-      second_section_ratio: the second-section ratio, in tenths.
-      gamma_lld_sensitivity: capacitive LLD sensitivity, 1 high to 4 low.
-      dp_lld_sensitivity: pressure LLD sensitivity, 1 high to 4 low.
-      aspirate_position_above_z_touch_off: how far above a Z touch the aspiration is, in mm.
-      detection_height_difference_for_dual_lld: the two detections' allowed difference, in mm.
       mix_position_from_liquid_surface: how far under the surface mixing is, in mm.
       mix_surface_following_distance: how far mixing follows the surface, in mm.
+      flow_rates: in uL/s. 100.0 when None.
+      surface_following_distance: how far the tip follows the sinking surface, in mm.
+      second_section_height: how tall the container's narrower lower section is, in mm above
+        `minimum_allowed_z_position_during`; the surface following runs on it.
+      second_section_ratio: that section's bottom to top ratio, in tenths.
+      settling_times: how long it waits in the liquid, in s. 0.0 when None.
+      swap_speeds: how fast the tip leaves the liquid, in mm/s. 100.0 when None.
+      pull_out_distance_transport_air: how far the tip rises before drawing transport air, in mm.
+      transport_air_volumes: air drawn after the liquid, in uL. 0.0 when None.
       limit_curve_index: the TADM limit curve, 0 for none.
-      minimum_traverse_height_start: how high the channels travel first, in mm. As high as the
-        mounted tips allow when None.
       minimum_traverse_height_end: how high they end, in mm. The same when None.
 
     Raises:
