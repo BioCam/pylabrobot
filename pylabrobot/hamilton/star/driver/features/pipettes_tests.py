@@ -226,7 +226,7 @@ class TestPositionInZDirection(unittest.IsolatedAsyncioTestCase):
     pipettes = await simulated_channels()
     floor, ceiling = pipettes.configuration.z_range
 
-    self.assertEqual(ceiling, min((await pipettes.probe_z_max()).values()))
+    self.assertEqual(ceiling, min(await pipettes.probe_z_max()))
     self.assertEqual(floor, PipettesConfiguration().z_range[0])
 
   async def test_probing_reads_the_channels_and_changes_nothing(self):
@@ -765,7 +765,7 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     n = self.pipettes.num_channels
     self.pipettes.sense_tip_presence = unittest.mock.AsyncMock(return_value=[1] * n)  # type: ignore[method-assign]
     self.pipettes._unchecked_fw_request_lowest_z_positions = unittest.mock.AsyncMock(  # type: ignore[method-assign]
-      return_value={channel: 282.8 for channel in range(n)}
+      return_value=[282.8] * n
     )
     self.pipettes.request_stop_disc_z_position = unittest.mock.AsyncMock(return_value=334.7)  # type: ignore[method-assign]
     self.safe_z = unittest.mock.AsyncMock()

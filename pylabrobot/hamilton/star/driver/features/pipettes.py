@@ -1181,7 +1181,7 @@ class Pipettes:
       The position of each channel in mm, back to front.
     """
     resp = await self._driver.send_command(module="C0", command="RY", fmt="ry#### (n)")
-    positions = [increments / 10 for increments in cast(List[int], resp["ry"])]
+    positions = [round(increments / 10, 1) for increments in cast(List[int], resp["ry"])]
     for channel, y in enumerate(positions):
       self.update_location_by_reference_point(channel, y=y)
     return positions
@@ -1372,26 +1372,24 @@ class Pipettes:
     return resp
 
   # -- z position --------------------------------------------------------------------------------
-  async def _unchecked_fw_request_lowest_z_positions(self) -> Dict[int, float]:
+  async def _unchecked_fw_request_lowest_z_positions(self) -> List[float]:
     """Read where every channel is along Z, without recording it.
 
     The reading alone. `request_tool_bottom_z_positions` is the one that also records it on the resources.
 
     Returns:
-      The position of each channel in mm, keyed by channel, 0-indexed from the back.
+      The position of each channel in mm, by channel, 0-indexed from the back.
     """
     resp = await self._driver.send_command(module="C0", command="RZ", fmt="rz#### (n)")
-    return {
-      channel: increments / 10 for channel, increments in enumerate(cast(List[int], resp["rz"]))
-    }
+    return [round(increments / 10, 1) for increments in cast(List[int], resp["rz"])]
 
-  async def request_tool_bottom_z_positions(self) -> Dict[int, float]:
+  async def request_tool_bottom_z_positions(self) -> List[float]:
     """Read where the bottom of the tip on every channel is.
 
     Every channel has to carry one. Records each channel's stop disc on the resource modelling it.
 
     Returns:
-      The bottom of each channel's tip in mm, keyed by channel, 0-indexed from the back.
+      The bottom of each channel's tip in mm, by channel, 0-indexed from the back.
 
     Raises:
       ValueError: If any channel carries no tip.
@@ -1426,16 +1424,15 @@ class Pipettes:
     await self.request_stop_disc_z_position(channel)
     return tip_bottom
 
-  async def request_stop_disc_z_positions(self) -> Dict[int, float]:
+  async def request_stop_disc_z_positions(self) -> List[float]:
     """Read where every channel's stop disc is.
 
     Returns:
-      Each channel's stop disc in mm, keyed by channel, 0-indexed from the back.
+      Each channel's stop disc in mm, by channel, 0-indexed from the back.
     """
-    return {
-      channel: await self.request_stop_disc_z_position(channel)
-      for channel in range(self.num_channels)
-    }
+    return [
+      await self.request_stop_disc_z_position(channel) for channel in range(self.num_channels)
+    ]
 
   async def request_stop_disc_z_position(self, channel: int) -> float:
     """Read where one channel's stop disc is, regardless of whether a tool (e.g. tip,
@@ -1499,12 +1496,13 @@ class Pipettes:
       What the command answered.
     """
     positions = await self._unchecked_fw_request_lowest_z_positions()
-    positions.update(zs)
+    for channel, z in zs.items():
+      positions[channel] = z
     return await self._driver.send_command(
       module="C0",
       command="JZ",
       subsystem=_FirmwareLock.CHANNELS,
-      zp=[f"{round(z * 10):04}" for z in positions.values()],
+      zp=[f"{round(z * 10):04}" for z in positions],
     )
 
   async def move_tool_bottom_to_z_positions(self, zs: Dict[int, float]):
@@ -1674,20 +1672,20 @@ class Pipettes:
       # neither position describes, and this read is also how a successful move is recorded.
       await self._record_where_they_stopped("z", [channel])
 
-  async def probe_z_max(self) -> Dict[int, float]:
+  async def probe_z_max(self) -> List[float]:
     """Raises single-channel pipettes to Z safety and reads their stop discs z-positions.
 
     Informs the max of `configuration.z_range` during setup.
 
     Returns:
-      List[float]: The z-positions of each channel's stop disc, in mm, keyed by channel.
+      The z-positions of each channel's stop disc, in mm, by channel.
     """
     await self._driver.send_command(module="C0", command="ZA", subsystem=_FirmwareLock.CHANNELS)
 
     positions = await self.request_stop_disc_z_positions()
     # Only the bare channels are compared: with a tip or tool on, the drive rises to its very top.
     presence = await self.sense_tip_presence()
-    bare = [z for channel, z in positions.items() if not presence[channel]]
+    bare = [z for channel, z in enumerate(positions) if not presence[channel]]
     if bare and max(bare) - min(bare) > self.configuration.z_drive_increments_to_mm(1):
       logger.warning("the channels came to rest at different heights: %s", positions)
 
@@ -1723,7 +1721,7 @@ class Pipettes:
     """
     lowest = await self._unchecked_fw_request_lowest_z_positions()
     targets = {}
-    for channel, z in lowest.items():
+    for channel, z in enumerate(lowest):
       if z < height:
         stop_disc = await self.request_stop_disc_z_position(channel)
         targets[channel] = round(stop_disc + height - z, 2)
@@ -2138,7 +2136,7 @@ class Pipettes:
       The heights in mm, back to front.
     """
     resp = await self._driver.send_command(module="C0", command="RL", fmt="lh#### (n)")
-    return [increments / 10 for increments in cast(List[int], resp["lh"])]
+    return [round(increments / 10, 1) for increments in cast(List[int], resp["lh"])]
 
   async def _clld_search(
     self,
@@ -2913,10 +2911,8 @@ class Pipettes:
       raise RuntimeError(f"channels {bare} carry no tip")
     # The overhang is the stop disc over the tip bottom, both read where they stand.
     lowest = await self._unchecked_fw_request_lowest_z_positions()
-    overhangs = {}
-    for channel in use_channels:
-      stop_disc = await self.request_stop_disc_z_position(channel)
-      overhangs[channel] = round(stop_disc - lowest[channel], 2)
+    stop_discs = await self.request_stop_disc_z_positions()
+    overhangs = {ch: round(stop_discs[ch] - lowest[ch], 2) for ch in use_channels}
     if minimum_traverse_height_end is not None:
       top = self.configuration.z_range[1]
       too_high = {ch: round(top - overhangs[ch], 2) for ch in use_channels}
