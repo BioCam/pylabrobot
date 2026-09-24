@@ -2942,6 +2942,12 @@ _GOLDEN_ASPIRATE_CALLS: Dict[str, Tuple[int, str, Optional[List[int]], Dict[str,
     [0, 1],
     {"volumes": [10.0, 10.0], "lld_mode": Pipettes.LLDMode.CAPACITIVE},
   ),
+  "capacitive LLD, one per container": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {"volumes": [10.0, 10.0], "lld_mode": [Pipettes.LLDMode.CAPACITIVE] * 2},
+  ),
   "capacitive LLD, v1, sensitivity, immersion": (
     300,
     "A1:B1",
@@ -3104,6 +3110,9 @@ _GOLDEN_ASPIRATE_FRAMES: Dict[str, List[str]] = {
   "v1": ["60.0 ee7d3df414101f7df8178f8979539534afabc3d89e7af8cbe1a1749391d16071"],
   "v2 given": ["60.0 4a9e16bf10ef7f31d6d6e7b1312115061c5c6950d4ee9205e6c6c774bd4dd740"],
   "capacitive LLD": ["62.094 f26ce6d307a03e855b6c46edb53e2c82ec87d7ed83efafd48d517a2c6e77b4ef"],
+  "capacitive LLD, one per container": [
+    "62.094 f26ce6d307a03e855b6c46edb53e2c82ec87d7ed83efafd48d517a2c6e77b4ef",
+  ],
   "capacitive LLD, v1, sensitivity, immersion": [
     "62.094 48befe0ba080ccf5e048dfe4549889bf71683f06e26ae81ae27e2ff9b5ca019f",
   ],
@@ -3244,6 +3253,14 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
       one = {"use_channels": [0], "piston_volumes": [10.0], "liquid_heights": [3.0]}
       both = {"use_channels": [0, 1], "piston_volumes": [10.0, 10.0], "liquid_heights": [3.0] * 2}
       apart = [Coordinate(-5.0, 0, 0), Coordinate(5.0, 0, 0)]
+      capacitive, pressure = Pipettes.LLDMode.CAPACITIVE, Pipettes.LLDMode.PRESSURE
+      seek_0 = PrepCmd.PLldParameters(
+        default_values=False,
+        sensitivity=1,
+        dispenser_seek_speed=0.0,
+        lld_height_difference=0.0,
+        detect_mode=0,
+      )
       sent = _record(p)
       refusals: List[Tuple[Any, str, List[Container], Dict[str, Any]]] = [
         (NoTipError, "no tip is mounted", two, both),
@@ -3269,6 +3286,11 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
           {**both, "piston_volumes": [150.0, 40.0], "resource_offsets": apart},
         ),
         (TooLittleVolumeError, "room for", two, {**both, "piston_volumes": [10.0, 70.0]}),
+        (ValueError, "PRESSURE LLD needs p_lld", two, {**both, "lld_mode": pressure}),
+        (ValueError, "1 to 630", two, {**both, "lld_mode": capacitive, "p_lld": seek_0}),
+        (ValueError, "must be LLDMode", two, {**both, "lld_mode": [capacitive, "capacitive"]}),
+        (ValueError, "1 lld modes for 2", two, {**both, "lld_mode": [capacitive]}),
+        (ValueError, "cannot be mixed", two, {**both, "lld_mode": [capacitive, pressure]}),
       ]
       for error, match, containers, kwargs in refusals:
         with pytest.raises(error, match=match):
@@ -3280,6 +3302,36 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
       assert sent == []
     finally:
       set_volume_tracking(False)
+
+  _run(_t())
+
+
+def test_aspirate_sends_one_lld_category_per_command():
+  """Modes OFF and CAPACITIVE at one X: one command each, the pressure block the firmware's own."""
+
+  async def _t():
+    deck = PrepDeck()
+    rack = deck[1] = hamilton_96_tiprack_300uL_NTR(name="tips", with_tips=True)
+    plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+    p = PrepSimulationDriver(deck=deck)
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+    sent = _record(p, only=_ASPIRATE_COMMANDS)
+    await p.pipettes.aspirate(
+      plate["A1:B1"],
+      use_channels=[0, 1],
+      piston_volumes=[10.0, 20.0],
+      liquid_heights=[3.0, 3.0],
+      lld_mode=[Pipettes.LLDMode.OFF, Pipettes.LLDMode.CAPACITIVE],
+    )
+    assert [type(c) for c in sent] == [
+      PrepCmd.PrepAspirateNoLldMonitoringV2,
+      PrepCmd.PrepAspirateWithLldV2,
+    ]
+    assert [len(c.aspirate_parameters) for c in sent] == [1, 1]
+    assert sent[1].aspirate_parameters[0].p_lld == PrepCmd.PLldParameters.default()
+    await p.stop()
 
   _run(_t())
 

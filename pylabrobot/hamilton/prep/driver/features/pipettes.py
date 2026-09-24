@@ -139,33 +139,33 @@ def default_lld_params(
 ) -> Pipettes._LldDefaults:
   """Build resolved pLLD / cLLD defaults.
 
-  When LLD is active and no caller override is given, returns non-default
-  parameters (``default_values=False``) so the firmware actually triggers
-  detection. Capacitive-only seeks leave the pressure block at firmware
-  defaults so the dispenser is not started at speed 0. Otherwise returns
-  firmware defaults.
+  With LLD active, cLLD gets non-default parameters so the firmware triggers detection; pLLD stays
+  on firmware defaults unless given.
 
   Args:
     effective_lld: Whether this call uses any LLD seek.
-    p_lld: Caller override for pressure LLD parameters.
+    p_lld: Caller override for pressure LLD parameters; required for PRESSURE and DUAL.
     c_lld: Caller override for capacitive LLD parameters.
-    lld_mode: Which LLD mode the call resolved to. ``CAPACITIVE`` keeps pLLD
-      on firmware defaults unless ``p_lld`` is set.
+    lld_mode: Which LLD mode the call resolved to.
+
+  Raises:
+    ValueError: If a pressure mode has no `p_lld`, or a non-default `p_lld` seeks outside 1 to
+      630 uL/s.
   """
+  if p_lld is not None and not p_lld.default_values:
+    if not 1.0 <= p_lld.dispenser_seek_speed <= 630.0:
+      raise ValueError(
+        f"p_lld dispenser_seek_speed must be 1 to 630 uL/s, is {p_lld.dispenser_seek_speed}"
+      )
+  resolved_p = p_lld or PrepCmd.PLldParameters.default()
   if not effective_lld:
-    resolved_p = p_lld or PrepCmd.PLldParameters.default()
     resolved_c = c_lld or PrepCmd.CLldParameters.default()
     return Pipettes._LldDefaults(p_lld=resolved_p, c_lld=resolved_c)
 
-  if lld_mode == Pipettes.LLDMode.CAPACITIVE:
-    resolved_p = p_lld or PrepCmd.PLldParameters.default()
-  else:
-    resolved_p = p_lld or PrepCmd.PLldParameters(
-      default_values=False,
-      sensitivity=1,
-      dispenser_seek_speed=0.0,
-      lld_height_difference=0.0,
-      detect_mode=0,
+  pressure = (Pipettes.LLDMode.PRESSURE, Pipettes.LLDMode.DUAL)
+  if lld_mode is not None and lld_mode in pressure and p_lld is None:
+    raise ValueError(
+      f"{lld_mode.name} LLD needs p_lld with a dispenser seek speed of 1 to 630 uL/s"
     )
   resolved_c = c_lld or PrepCmd.CLldParameters(
     default_values=False,
@@ -5778,6 +5778,36 @@ class Pipettes:
       if not tip.tracker.is_disabled and volume - room > 1e-6:
         raise TooLittleVolumeError(f"a tip with room for {room} uL asked to take {volume} uL")
 
+  def _get_lld_modes(
+    self, lld_mode: Union[Pipettes.LLDMode, Sequence[Pipettes.LLDMode], None], n: int
+  ) -> Optional[List[Pipettes.LLDMode]]:
+    """One LLD mode per container, or None when none is given.
+
+    Args:
+      lld_mode: one for all, or one per container.
+      n: how many containers.
+
+    Raises:
+      ValueError: If a mode is not an `LLDMode`, the list is not one per container, or a pressure
+        mode is mixed with another mode.
+    """
+    if lld_mode is None:
+      return None
+    if isinstance(lld_mode, self.LLDMode):
+      return [lld_mode] * n
+    if isinstance(lld_mode, str) or not isinstance(lld_mode, Sequence):
+      raise ValueError(f"lld_mode must be an LLDMode or one per container, is {lld_mode!r}")
+    modes = list(lld_mode)
+    if len(modes) != n:
+      raise ValueError(f"{len(modes)} lld modes for {n} containers")
+    for mode in modes:
+      if not isinstance(mode, self.LLDMode):
+        raise ValueError(f"lld_mode entries must be LLDMode, got {mode!r}")
+    pressure = {self.LLDMode.PRESSURE, self.LLDMode.DUAL}
+    if len(set(modes)) > 1 and pressure & set(modes):
+      raise ValueError(f"a pressure LLD mode cannot be mixed with another in one call: {modes}")
+    return modes
+
   async def aspirate(
     self,
     containers: Sequence[Container],
@@ -5785,7 +5815,7 @@ class Pipettes:
     use_channels: Optional[List[int]] = None,
     resource_offsets: Optional[List[Coordinate]] = None,
     liquid_heights: Optional[Sequence[Optional[float]]] = None,
-    lld_mode: Optional[Pipettes.LLDMode] = None,
+    lld_mode: Union[Pipettes.LLDMode, Sequence[Pipettes.LLDMode], None] = None,
     flow_rates: Optional[Sequence[Optional[float]]] = None,
     *,
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
@@ -5830,8 +5860,8 @@ class Pipettes:
         the heights. Channels sharing a container spread across it in Y when None.
       liquid_heights: where the liquid stands above each cavity bottom, in mm. None takes it from
         the tracked volume, or, with an LLD mode, leaves it to the search.
-      lld_mode: how the liquid is found, one mode for every channel. None runs a search only
-        when `lld` is given.
+      lld_mode: how to search, one for all or one per container. None runs a search only when
+        `lld` is given.
       flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
       hamilton_liquid_classes: the class for each container's volume. Looked up for the
         channel's tip, water, when None.
@@ -5845,7 +5875,8 @@ class Pipettes:
       pre_wetting_volumes: drawn and returned first, in uL, per container. The liquid class's
         over-aspirate volume, else 0.0, when None.
       lld: the LLD search's start, speed and submerge depth. From the container's top when None.
-      p_lld: pressure LLD settings. The firmware's own when None, unless the mode needs them.
+      p_lld: pressure LLD settings, seeking at 1 to 630 uL/s; needed for PRESSURE and DUAL. The
+        firmware's own when None.
       clot_detection_heights: how far a clot may hold each tip back, in mm, per container. 0.0 when
         None; only 0.0 until the check is verified on the device.
       z_fluid: the tip bottom height to aspirate at without LLD, in mm, per container. The cavity
@@ -5884,7 +5915,8 @@ class Pipettes:
     Raises:
       ValueError: If an argument is out of range, the lists do not match, a channel repeats, there
         are more containers than channels, both or neither of `volumes` and `piston_volumes` are
-        given, a class is given with `piston_volumes`, or no class is known for a channel's tip.
+        given, a class is given with `piston_volumes`, no class is known for a channel's tip, a
+        mode is not an `LLDMode`, a pressure mode is mixed with another or has no `p_lld`.
       RuntimeError: If a channel used carries no tip, or nothing knows where a container's
         liquid stands: no height given, volume tracking off, no LLD.
       TooLittleLiquidError: If a container holds less than it is asked for.
@@ -5927,22 +5959,30 @@ class Pipettes:
     for name, values in per_container.items():
       if values is not None and len(values) != n:
         raise ValueError(f"{name} length must match containers ({n})")
-    effective_lld = self._resolve_effective_lld(
-      None if lld_mode is None else [lld_mode] * n, lld, n
-    )
+    modes = self._get_lld_modes(lld_mode, n)
     offsets = (
       resource_offsets
       if resource_offsets is not None
       else self._get_resource_offsets(containers, use_channels)
     )
-    _, batches = self._plan_batched(
-      self._require_deck(),
-      containers,
-      use_channels,
-      offsets,
-      x_grouping_tolerance,
-      minimum_traverse_height_end,
+    # One command carries one LLD category, so each mode is planned on its own.
+    groups = (
+      [list(range(n))]
+      if modes is None
+      else [[job for job in range(n) if modes[job] == mode] for mode in dict.fromkeys(modes)]
     )
+    batches: List[ChannelBatch] = []
+    for group in groups:
+      _, planned = self._plan_batched(
+        self._require_deck(),
+        [containers[job] for job in group],
+        [use_channels[job] for job in group],
+        [offsets[job] for job in group],
+        x_grouping_tolerance,
+        minimum_traverse_height_end,
+      )
+      batches.extend(replace(b, indices=[group[job] for job in b.indices]) for b in planned)
+    batches.sort(key=lambda b: b.x_position)
 
     def pick(values: Optional[Sequence[_T]], batch: ChannelBatch) -> Optional[List[_T]]:
       """The batch's entries of a per-container list, None when it is None."""
@@ -5951,16 +5991,17 @@ class Pipettes:
     async def aspirate_batch(batch: ChannelBatch, check_only: bool = False) -> List[float]:
       """Aspirate the batch's containers in one command; the last leaves the tips at the end."""
       last = batch is batches[-1]
+      batch_modes = pick(modes, batch)
       return await self._aspirate_batch(
         batch.x_position,
         [containers[job] for job in batch.indices],
         [drawn[job] for job in batch.indices],
         batch.channels,
         [offsets[job] for job in batch.indices],
-        effective_lld,
+        self._resolve_effective_lld(batch_modes, lld, len(batch.indices)),
         piston_volumes is None,
         pick(liquid_heights, batch),
-        lld_mode,
+        None if batch_modes is None else batch_modes[0],
         pick(flow_rates, batch),
         hamilton_liquid_classes=pick(hamilton_liquid_classes, batch),
         clld_sensitivity=clld_sensitivity,
