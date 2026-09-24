@@ -3,6 +3,7 @@
 
 import * as THREE from "three";
 
+import { showEdges } from "./boxes.js";
 import {
   ARM_EDGE_WIDTH_3D,
   ARM_EDGE_WIDTH_FLAT,
@@ -22,7 +23,6 @@ import {
 import {
   CARRIED_LAYER,
   drawnFromFile,
-  edgeOf,
   GROUND,
   isCarrier,
   meshes,
@@ -62,6 +62,10 @@ let detailScale = null;
 // over them needed its own exception. The exceptions are gone. What is left ordered by hand is
 // what has no depth of its own to test: grids, numbers, marks and outlines, up in OVERLAY_ORDER.
 let planView = null;
+
+// Set when a file's arrival changed what a box is, for the next frame's mode pass to pick up: one
+// pass then, however many files landed, rather than a pass per file.
+let renderModeDirty = false;
 
 // Whether a model's box is drawn as a filled solid at all. A part that travels over the deck is
 // drawn see-through wherever it is, and a model whose own geometry has arrived has no use for the
@@ -260,19 +264,23 @@ function setRenderMode(plan) {
     arm.line.material.needsUpdate = true;
   }
 
-  for (const [index, line] of edgeOf) {
+  for (const entry of meshes) {
+    const edges = entry.edges;
+    if (!edges) continue;
     // All that is left of a box whose model is being drawn: its border, and only just.
-    const stoodIn = drawnFromFile.has(index);
-    line.material.depthTest = !plan;
-    line.material.opacity = stoodIn ? MODEL_EDGE_OPACITY : plan ? 1 : line.userData.baseOpacity;
-    line.material.linewidth = plan ? EDGE_WIDTH_FLAT : EDGE_WIDTH_3D;
-    line.material.color.set(plan ? FLAT_EDGE : line.userData.baseColor);
-    line.renderOrder = plan ? paintOrderOf(index) + 1 : 0;
-    const wanted = plan ? line.userData.footprintGeometry : line.userData.boxGeometry;
-    if (wanted && line.geometry !== wanted) line.geometry = wanted;
+    const stoodIn = entry.modelDrawn;
+    edges.material.depthTest = !plan;
+    edges.material.opacity = stoodIn ? MODEL_EDGE_OPACITY : plan ? 1 : edges.userData.baseOpacity;
+    edges.material.linewidth = plan ? EDGE_WIDTH_FLAT : EDGE_WIDTH_3D;
+    edges.material.color.set(plan ? FLAT_EDGE : edges.userData.baseColor);
+    // One order for every instance of a model, the highest of theirs: outlines are one colour in
+    // a plan, so the order only decides what they are painted over.
+    edges.renderOrder = plan ? Math.max(...entry.instances.map(paintOrderOf)) + 1 : 0;
+    const wanted = edges.userData.sets[plan ? 1 : 0].geometry;
+    if (edges.geometry !== wanted) edges.geometry = wanted;
     // Told every pass, not only when a flag changed: a line material told only then draws a plan
     // view's outlines faintly, so three reads more off it than the values above and its flags.
-    line.material.needsUpdate = true;
+    edges.material.needsUpdate = true;
   }
 }
 
@@ -295,9 +303,9 @@ export function modelIsDrawn(modelIndex) {
     arm.frame.visible = false;
     arm.outline.visible = false;
   }
-  // The view is not going to change just because a file finished loading, so the border has to be
-  // faded here as well as in the rule that keeps it faded.
-  setRenderMode(planView ?? false);
+  // The view is not going to change just because a file finished loading, so the border is faded
+  // by the next frame's mode pass, which the rule that keeps it faded runs anyway.
+  renderModeDirty = true;
 }
 
 // Below this many pixels across, a resource contributes noise rather than information. Set so a
@@ -324,7 +332,15 @@ export function forgetDetail() {
   planView = null;
 }
 
+/** The mode pass a landed file asked for, run ahead of the detail rules that build on it. */
+function settleRenderMode() {
+  if (!renderModeDirty || planView === null) return;
+  renderModeDirty = false;
+  setRenderMode(planView);
+}
+
 export function updateDetail() {
+  settleRenderMode();
   const perPixel = mmPerPixel();
   if (!Number.isFinite(perPixel) || perPixel <= 0) return;
   // Only rework when the scale has moved enough to change an answer.
@@ -362,17 +378,20 @@ export function updateDetail() {
   for (const entry of meshes) {
     const [sx, sy] = sizeOf(entry.model);
     const visible = Math.max(sx, sy) / perPixel >= DETAIL_MIN_PX;
-    if (entry.mesh.visible !== visible) entry.mesh.visible = visible;
+    if (entry.mesh.visible !== visible) {
+      entry.mesh.visible = visible;
+      for (const index of entry.instances) showEdges(index);
+    }
     // The box stands in for the model again as soon as the model is too small to be worth
     // drawing, and steps back out of the way when it is not. Standing in, it is drawn as solidly
     // as the model was, so what a resource looks like does not change as it crosses the threshold.
     if (entry.modelDrawn) {
       const fills = !geometryOf.has(entry.modelIndex);
       if (entry.mesh.material.visible !== fills) entry.mesh.material.visible = fills;
+      // Opacity is a uniform, read every frame: no version bump, which would re-key the pipeline.
       if (entry.standsIn !== fills) {
         entry.standsIn = fills;
         entry.mesh.material.opacity = boxOpacity(entry);
-        entry.mesh.material.needsUpdate = true;
       }
     }
     entry.detailVisible = visible;
@@ -425,6 +444,7 @@ export function updateEdgeMode() {
   // input, which has asked for frames already and is still damping to a stop.
   if (plan === planView) return;
   planView = plan;
+  renderModeDirty = false;
   for (const mark of gridMarks) showThroughMarks(mark);
   setRenderMode(plan);
 }

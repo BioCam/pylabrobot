@@ -3,10 +3,9 @@
 
 import * as THREE from "three";
 
+import { placeEdges, showEdges } from "./boxes.js";
 import { LIQUID, MOVING_PARTS, VESSEL_EMPTY } from "./constants.js";
 import {
-  boxMatrix,
-  edgeOf,
   hiddenNames,
   isVisible,
   meshRoots,
@@ -17,7 +16,7 @@ import {
   vesselOf,
   ZERO,
 } from "./drawn.js";
-import { armPose, arms, buildHalos, gridMarks, referenceMarks } from "./marks.js";
+import { armPose, arms, gridMarks, referenceMarks, refreshHalos } from "./marks.js";
 import { applyJoints } from "./models.js";
 import {
   mirrorPlacement,
@@ -73,10 +72,9 @@ function redraw(indices) {
       else placement.mesh.setMatrixAt(placement.slot, ZERO);
       touched.add(placement.mesh);
     }
-    // An outline is its own object with its own baked matrix, so a move that touched only the
-    // instance left it standing at the old position - a wireframe ghost of whatever rode the arm.
-    const line = edgeOf.get(at);
-    if (line) line.matrix.copy(boxMatrix(world.matrices[at], sx, sy, sz));
+    // An outline is segments in its model's line buffer, so a move that touched only the instance
+    // left them at the old position - a wireframe ghost of whatever rode the arm.
+    placeEdges(at);
     // A reference mark is its own object too, and marks a point ON the resource - so when the
     // resource travels, the point travels with it.
     for (const mark of referenceMarks) {
@@ -306,8 +304,7 @@ export function setHidden(name, hidden) {
       }
       touched.add(placement.mesh);
     }
-    const line = edgeOf.get(index);
-    if (line) line.visible = isVisible(index);
+    showEdges(index);
     // A resource drawn from a file is drawn outside the instanced pipeline, so switching off the
     // box it stood in for leaves the geometry on screen unless it is told too.
     const model = meshRoots.find((r) => r.userData.index === index);
@@ -368,6 +365,6 @@ export function applyMoves(moves) {
     }
   }
   redraw([...touched]);
-  buildHalos();
+  refreshHalos();
   announce({ kind: "moves", rowsUnder });
 }

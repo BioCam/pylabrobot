@@ -906,12 +906,14 @@ export function buildHalos() {
     const row = channels.filter((c) => world.parentOf[c] === world.parentOf[index]);
     const ordinal = row.indexOf(index);
     const step = Math.round((ordinal * (CHANNEL_RAMP.length - 1)) / Math.max(1, row.length - 1));
-    const sprite = new THREE.Sprite(
-      haloMaterial(haloTextureFor(channelLabel(index, ordinal), step, channelTipped(index))),
-    );
+    const label = channelLabel(index, ordinal);
+    const tipped = channelTipped(index);
+    const sprite = new THREE.Sprite(haloMaterial(haloTextureFor(label, step, tipped)));
     sprite.renderOrder = OVERLAY_ORDER;
     sprite.frustumCulled = false;
     sprite.userData.index = index;
+    // What its disc was drawn for, so a move can swap the disc of the one channel it changed.
+    Object.assign(sprite.userData, { label, step, tipped });
     // Discs alternate sides down the row, the first to the right, so neighbours nine millimetres
     // apart do not stack their discs on one side.
     sprite.userData.side = ordinal % 2 === 0 ? 1 : -1;
@@ -929,6 +931,17 @@ export function buildHalos() {
   }
   halos = group;
   view.add(halos);
+}
+
+/** Bring each halo's disc up to date with whether its channel holds a tip, keeping the sprites. */
+export function refreshHalos() {
+  for (const sprite of halos?.children ?? []) {
+    if (!sprite.isSprite || sprite.userData.mark === true) continue;
+    const tipped = channelTipped(sprite.userData.index);
+    if (tipped === sprite.userData.tipped) continue;
+    sprite.userData.tipped = tipped;
+    sprite.material.map = haloTextureFor(sprite.userData.label, sprite.userData.step, tipped);
+  }
 }
 
 export function showHalosIf(on) {
@@ -1013,6 +1026,27 @@ function floorMaterial(axis) {
   return material;
 }
 
+// The world's own axes: a unit segment each, scaled to the patch and moved with it, so a pan
+// touches no buffer. Made once, and kept: neither their geometry nor their material changes.
+function axisLine(along) {
+  const geometry = new LineSegmentsGeometry();
+  geometry.setPositions(along === "x" ? [-1, 0, 0, 1, 0, 0] : [0, -1, 0, 0, 1, 0]);
+  const line = new LineSegments2(geometry, floorMaterial(true));
+  line.renderOrder = -1;
+  line.frustumCulled = false;
+  view.add(line);
+  return line;
+}
+
+let axes = null;
+
+// Whether a line of the patch lands on the world's zero along one axis. The patch is centred at
+// `centre`, so its lines sit at centre - half + i * cell.
+function lineOnZero(centre, half, cell, divisions) {
+  const i = (half - centre) / cell;
+  return i > -1e-6 && i < divisions + 1e-6 && Math.abs(i - Math.round(i)) < 1e-6;
+}
+
 export function updateGrid() {
   const perPixel = mmPerPixel();
   if (!Number.isFinite(perPixel) || perPixel <= 0) return;
@@ -1038,39 +1072,38 @@ export function updateGrid() {
   ) {
     return;
   }
-  gridState = { cell, divisions, cx, cy };
-
-  for (const line of grid ?? []) {
-    view.remove(line);
-    line.geometry.dispose();
-    line.material.dispose();
-  }
-
-  // Already in PLR's XY: the lines are built in the plane rather than laid down from another one.
   const half = (divisions * cell) / 2;
-  const runs = [[], []]; // ordinary lines, then the two the world's own axes fall on
-  // A line is an axis when it lands on zero IN THE WORLD, which is not the middle of the patch: the
-  // patch follows the camera, so its middle is wherever you happen to be looking. The geometry is
-  // built around the patch's centre and drawn at (cx, cy), so a local t sits at t + cx or t + cy.
-  // Where the origin is off the patch entirely, neither axis is drawn, which is the truth.
-  const axis = (at) => (Math.abs(at) < cell * 1e-6 ? 1 : 0);
-  for (let i = 0; i <= divisions; i++) {
-    const t = -half + i * cell;
-    runs[axis(t + cy)].push(-half, t, 0, half, t, 0);
-    runs[axis(t + cx)].push(t, -half, 0, t, half, 0);
-  }
 
-  grid = runs
-    .map((points, kind) => {
-      if (!points.length) return null;
-      const geometry = new LineSegmentsGeometry();
-      geometry.setPositions(new Float32Array(points));
-      const line = new LineSegments2(geometry, floorMaterial(kind === 1));
-      line.position.set(cx, cy, floorZ);
-      line.renderOrder = -1;
-      line.frustumCulled = false;
-      view.add(line);
-      return line;
-    })
-    .filter(Boolean);
+  // Only a change of spacing or extent needs new lines; a pan moves the patch it has.
+  if (gridState?.cell !== cell || gridState?.divisions !== divisions) {
+    if (grid) {
+      view.remove(grid);
+      grid.geometry.dispose();
+      grid.material.dispose();
+    }
+    // Already in PLR's XY: the lines are built in the plane rather than laid down from another one.
+    const points = [];
+    for (let i = 0; i <= divisions; i++) {
+      const t = -half + i * cell;
+      points.push(-half, t, 0, half, t, 0, t, -half, 0, t, half, 0);
+    }
+    const geometry = new LineSegmentsGeometry();
+    geometry.setPositions(new Float32Array(points));
+    grid = new LineSegments2(geometry, floorMaterial(false));
+    grid.renderOrder = -2; // under the axes, which lie on two of its lines
+    grid.frustumCulled = false;
+    view.add(grid);
+  }
+  gridState = { cell, divisions, cx, cy };
+  grid.position.set(cx, cy, floorZ);
+
+  // An axis is drawn where it lands on a line of the patch, which is zero IN THE WORLD and not
+  // the middle of the patch: the patch follows the camera. Off the patch, neither is - the truth.
+  axes ??= { x: axisLine("x"), y: axisLine("y") };
+  axes.x.visible = lineOnZero(cy, half, cell, divisions);
+  axes.x.position.set(cx, 0, floorZ);
+  axes.x.scale.set(half, 1, 1);
+  axes.y.visible = lineOnZero(cx, half, cell, divisions);
+  axes.y.position.set(0, cy, floorZ);
+  axes.y.scale.set(1, half, 1);
 }

@@ -28,6 +28,7 @@ import {
   enclosureDepth,
   hasEnclosedDescendant,
   isCarrier,
+  isVisible,
   meshes,
   own,
   placeInstance,
@@ -59,6 +60,20 @@ const PLANE = new THREE.PlaneGeometry(1, 1);
 // Above this many instances of one model, outlining each stops being cheap.
 const EDGE_LIMIT = 160;
 
+// The unit edges of each shape, as segment endpoints: what every instance's outline is scaled from.
+const unitEdges = new Map();
+
+function edgesOf(geometry) {
+  let edges = unitEdges.get(geometry);
+  if (!edges) {
+    const boxEdges = new THREE.EdgesGeometry(geometry);
+    edges = boxEdges.getAttribute("position").array;
+    boxEdges.dispose();
+    unitEdges.set(geometry, edges);
+  }
+  return edges;
+}
+
 // A resource says what shape it is through `cross_section_type`. A tip spot does not serialize
 // one, though it is plainly round, so it is special-cased here; upstream it should declare the
 // field the way a well does, and this line can go.
@@ -68,8 +83,7 @@ function geometryFor(model) {
   return model.cross_section_type === "circle" || model.category === "tip_spot" ? CYL : BOX;
 }
 
-// The outline a resource drops to in an axis view. Unit-sized and scaled per instance, so there is
-// one of each shape rather than one per model.
+// The outline a resource drops to in an axis view, as unit segment endpoints scaled per instance.
 function ringFootprint(corners) {
   const points = [];
   for (let corner = 0; corner < corners; corner++) {
@@ -86,9 +100,7 @@ function ringFootprint(corners) {
       -0.5,
     );
   }
-  const geometry = new LineSegmentsGeometry();
-  geometry.setPositions(new Float32Array(points));
-  return geometry;
+  return new Float32Array(points);
 }
 
 const SQUARE_FOOTPRINT = ringFootprint(4);
@@ -151,31 +163,17 @@ function makeDrawing(model, count, encloses, edgeDepth) {
     model,
     isVessel: vessel,
     overlays: /** @type {any[]} */ ([]),
-    lines: /** @type {any[]} */ ([]),
+    // One line object outlining every instance, or null: see below.
+    edges: /** @type {any} */ (null),
     // The cavity whose colour tracks what the vessel holds; the filter discs a tip's file sizes.
     vessel: /** @type {any} */ (null),
     filterDiscs: /** @type {any} */ (null),
   };
   own(entry, mesh, material);
 
-  // The existing visualizer strokes every resource, and a translucent box on a white ground
-  // needs that stroke to read at all. So does a solid one that holds nothing: a 96-head, a
-  // channel, a loading tray. What decides is how many there are, not whether anything is inside -
-  // an outline is one line object per instance, and there are a thousand wells. The count is the
-  // whole of the cost control, and it already excludes exactly the things too small to read.
-  //
-  // A travelling part draws its own frame and moves, so it gets no generic box outline: the box
-  // would describe the slab rather than the frame, and it would be a second thing to keep in
-  // step with every move - which is exactly what left a ghost behind at the old position.
+  // Stroked, as the existing visualizer strokes every resource, up to a count past which a
+  // thousand wells read as haze. A travelling part draws its own frame and gets no box outline.
   if (!MOVING_PARTS.has(model.category) && count <= EDGE_LIMIT) {
-    const boxEdges = new THREE.EdgesGeometry(geometryFor(model));
-    const edgeGeometry = new LineSegmentsGeometry();
-    edgeGeometry.setPositions(boxEdges.getAttribute("position").array);
-    boxEdges.dispose();
-    // Looking down an axis, every edge projects onto the footprint anyway, and the verticals
-    // collapse to points. Keeping a footprint-only geometry to swap in removes that redundancy
-    // and, more usefully, stops stacked shapes reading as a thicket in a plan view.
-    const footprintGeometry = footprintFor(model);
     const style = structureEdgeStyle(edgeDepth);
     const edgeMaterial = new THREE.Line2NodeMaterial({
       color: style.color,
@@ -184,16 +182,24 @@ function makeDrawing(model, count, encloses, edgeDepth) {
       linewidth: EDGE_WIDTH_3D,
       worldUnits: false,
     });
-    own(entry, edgeGeometry, edgeMaterial);
-    for (let slot = 0; slot < count; slot++) {
-      const line = new LineSegments2(edgeGeometry, edgeMaterial);
-      line.userData.boxGeometry = edgeGeometry;
-      line.userData.baseOpacity = style.opacity;
-      line.userData.baseColor = style.color.clone();
-      line.userData.footprintGeometry = footprintGeometry;
-      line.matrixAutoUpdate = false;
-      entry.lines.push(line);
-    }
+    // Every instance's edges in one geometry, and its footprint in a second one to swap in for a
+    // plan view: one draw per model, an instance's own segments rewritten when it moves or hides.
+    const sets = [edgesOf(geometryFor(model)), footprintFor(model)].map((unit) => {
+      const geometry = new LineSegmentsGeometry();
+      geometry.setPositions(new Float32Array(unit.length * count));
+      own(entry, geometry);
+      return { unit, geometry };
+    });
+    const edges = new LineSegments2(sets[0].geometry, edgeMaterial);
+    // One object for every instance, parked ones included: three's sphere over them all says
+    // nothing worth testing, so it is submitted whenever the model is.
+    edges.frustumCulled = false;
+    edges.userData.sets = sets;
+    edges.userData.shown = new Uint8Array(count); // per slot, whether its segments are in view
+    edges.userData.baseOpacity = style.opacity;
+    edges.userData.baseColor = style.color.clone();
+    own(entry, edgeMaterial);
+    entry.edges = edges;
   }
 
   // A carrier's base is solid, so looking into one should stop at its floor rather than carrying
@@ -290,6 +296,53 @@ function makeDrawing(model, count, encloses, edgeDepth) {
   return entry;
 }
 
+// Where a hidden instance's segments go: past every far plane, so the GPU clips them unrun. A
+// zero-length segment is no hiding place - the line shader normalises its direction.
+const PARKED_Z = -1e7;
+
+const _corner = new THREE.Vector3();
+
+/** Write one instance's outline into its drawing's line buffers, at `matrix` or parked. */
+function writeEdges(entry, slot, matrix) {
+  for (const { unit, geometry } of entry.edges.userData.sets) {
+    const buffer = geometry.attributes.instanceStart.data;
+    const at = slot * unit.length;
+    for (let i = 0; i < unit.length; i += 3) {
+      if (matrix) _corner.set(unit[i], unit[i + 1], unit[i + 2]).applyMatrix4(matrix);
+      else _corner.set(i % 6 ? 1 : 0, 0, PARKED_Z);
+      buffer.array[at + i] = _corner.x;
+      buffer.array[at + i + 1] = _corner.y;
+      buffer.array[at + i + 2] = _corner.z;
+    }
+    buffer.needsUpdate = true;
+  }
+}
+
+/** Whether an instance's outline is drawn: not while its box is culled or switched off. */
+function edgeShown(index) {
+  return placementOf[index].mesh.visible && isVisible(index);
+}
+
+/** Put an instance's outline where it now stands, or park it: what a move calls. */
+export function placeEdges(index) {
+  const entry = edgeOf.get(index);
+  if (!entry) return;
+  const slot = placementOf[index].slot;
+  const shown = edgeShown(index);
+  entry.edges.userData.shown[slot] = shown ? 1 : 0;
+  const [sx, sy, sz] = sizeOf(entry.model);
+  writeEdges(entry, slot, shown ? boxMatrix(world.matrices[index], sx, sy, sz) : null);
+}
+
+/** Park or restore an instance's outline as its box is culled, switched off or brought back. */
+export function showEdges(index) {
+  const entry = edgeOf.get(index);
+  if (!entry) return;
+  const slot = placementOf[index].slot;
+  if (entry.edges.userData.shown[slot] === (edgeShown(index) ? 1 : 0)) return;
+  placeEdges(index);
+}
+
 /** Put every instance of a drawing where the tree has it, and register each part by resource. */
 function placeDrawing(entry, touched) {
   const { mesh, model, instances } = entry;
@@ -303,23 +356,25 @@ function placeDrawing(entry, touched) {
     }
     if (entry.vessel) vesselOf.set(index, { mesh: entry.vessel, slot, model });
     placeParts(index, touched);
-    const line = entry.lines[slot];
-    if (line) {
-      line.matrix.copy(boxMatrix(world.matrices[index], sx, sy, sz));
-      line.visible = true;
-      edgeOf.set(index, line);
+    if (entry.edges) {
+      edgeOf.set(index, entry);
+      placeEdges(index);
     }
   });
   touched.add(mesh);
 }
 
-const drawnObjects = (entry) => [entry.mesh, ...entry.overlays, ...entry.lines];
+const drawnObjects = (entry) => [
+  entry.mesh,
+  ...entry.overlays,
+  ...(entry.edges ? [entry.edges] : []),
+];
 
 // What is baked into a drawing's objects: the model, the resources standing on it in order,
 // whether it encloses anything and how deeply it is enclosed. The same key, and they still serve.
 function drawingKey(model, instances, encloses) {
-  const names = instances.map((index) => world.names[index]);
-  return JSON.stringify([model, encloses, enclosureDepth(instances[0]), names]);
+  const names = instances.map((index) => world.names[index]).join("\n");
+  return `${JSON.stringify(model)}\n${encloses}\n${enclosureDepth(instances[0])}\n${names}`;
 }
 
 // A scene arrives whole whenever the tree changes shape, and most of it was on screen already.
@@ -419,6 +474,10 @@ function boreWidthAt(object, z, cx, cy) {
   return Number.isFinite(nearest) ? 2 * nearest : null;
 }
 
+// The bore a file has at a disc's height, by file, scale, axis and height: a file never changes,
+// and every scene asks again for every tip model.
+const boreWidths = new Map();
+
 /**
  * Size a model's filter discs to the bore its own file has at their height, once the file is here.
  * The file is in the tip's frame, so the plane the disc lies in cuts the tip's inner wall at the
@@ -428,10 +487,15 @@ export function fitFilterDiscs(modelIndex, scene, scale, up) {
   const entry = meshes.find((e) => e.modelIndex === modelIndex);
   const discs = entry?.filterDiscs;
   if (!discs) return;
-  scene.scale.setScalar(scale);
-  if (up === "Y") scene.rotation.x = Math.PI / 2;
-  scene.updateMatrixWorld(true);
-  const width = boreWidthAt(scene, discs.z, discs.cx, discs.cy);
+  const key = [entry.model.mesh.url, scale, up, discs.z, discs.cx, discs.cy].join("\n");
+  let width = boreWidths.get(key);
+  if (width === undefined) {
+    scene.scale.setScalar(scale);
+    if (up === "Y") scene.rotation.x = Math.PI / 2;
+    scene.updateMatrixWorld(true);
+    width = boreWidthAt(scene, discs.z, discs.cx, discs.cy);
+    boreWidths.set(key, width);
+  }
   if (width === null) return;
   const touched = new Set();
   discs.at[0] = width;

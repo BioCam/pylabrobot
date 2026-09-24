@@ -166,8 +166,8 @@ function placeInstancedModel(built, modelIndex, instances) {
 // What identifies an instanced model across rebuilds: the file it is drawn from and the resources
 // standing on it, in order. Any other set needs new meshes, built from the parsed file in the same turn.
 function instancedKey(modelIndex, instances) {
-  const names = instances.map((index) => world.names[index]);
-  return JSON.stringify([world.models[modelIndex].mesh, names]);
+  const names = instances.map((index) => world.names[index]).join("\n");
+  return `${JSON.stringify(world.models[modelIndex].mesh)}\n${names}`;
 }
 
 export function buildDeclaredMeshes() {
@@ -213,7 +213,6 @@ export function buildDeclaredMeshes() {
   for (const [modelIndex, instances] of byModel) {
     const declared = world.models[modelIndex].mesh;
     const scale = MESH_UNITS[declared.units] ?? 1;
-    const names = instances.map((i) => world.names[i]);
     const generation = sceneGeneration;
 
     const place = (gltf) => {
@@ -309,7 +308,7 @@ export function buildDeclaredMeshes() {
       continue;
     }
     gltfLoader.load(declared.url, place, undefined, (error) =>
-      console.warn(`could not load the mesh declared by ${names[0]}`, error),
+      console.warn(`could not load the mesh declared by ${world.names[instances[0]]}`, error),
     );
   }
   // Whatever is left was drawn for a set of resources this scene does not have. Let go here, so a
