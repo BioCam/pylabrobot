@@ -62,6 +62,7 @@ from pylabrobot.resources.hamilton.hamilton_decks import (
 )
 from pylabrobot.resources.hamilton.tip_creators import TipDropMethod, TipPickupMethod
 from pylabrobot.resources.n_channel_pipettes import TipMountingShaft
+from pylabrobot.resources.trash import Trash
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +268,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
       return None
     found: Optional[Container] = None
     for resource in deck.get_all_children():
-      if not isinstance(resource, Container):
+      if not isinstance(resource, Container) or isinstance(resource, Trash):
         continue
       corner = resource.get_location_wrt(deck)
       if not (
