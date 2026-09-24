@@ -156,7 +156,9 @@ class Scene:
     """
     index = len(self.names)
     self.names.append(resource.name)
-    self.model_of_instance.append(self._intern(model))
+    model_index = self._intern(model)
+    self.model_of_instance.append(model_index)
+    self.derived[resource.name] = self.models[model_index]
     self.parent_of_instance.append(parent)
     location = resource.location or Coordinate.zero()
     rotation = resource.rotation
@@ -186,8 +188,10 @@ class Scene:
       model["bands"] = bands
     for field, value in (declared or {}).items():
       model[field] = value
-    self.derived[resource_name] = model
-    self.model_of_instance.append(self._intern(model))
+    # The interned dict, so every instance of one model shares one object.
+    model_index = self._intern(model)
+    self.model_of_instance.append(model_index)
+    self.derived[resource_name] = self.models[model_index]
     self.parent_of_instance.append(parent)
     self.transforms.extend(_location_of(data))
     self.transforms.extend(_rotation_of(data))
@@ -210,23 +214,22 @@ class Scene:
       },
     }
 
-  def stats(self, scene_bytes: Optional[int] = None) -> Dict[str, Any]:
+  def stats(self, scene_bytes: int) -> Dict[str, Any]:
     """What the split cost and what it saved, in bytes actually sent."""
-    new_bytes = scene_bytes if scene_bytes is not None else len(json.dumps(self.serialize()))
     return {
       "instances": self.num_instances,
       "models": len(self.models),
       "legacy_bytes": self.legacy_bytes,
-      "scene_bytes": new_bytes,
-      "ratio": round(self.legacy_bytes / new_bytes, 2) if new_bytes else 0.0,
+      "scene_bytes": scene_bytes,
+      "ratio": round(self.legacy_bytes / scene_bytes, 2) if scene_bytes else 0.0,
     }
 
 
-def _all_names(resource: Resource) -> List[str]:
+def all_names(resource: Resource) -> List[str]:
   """Every resource name in the tree, so a link to one can be recognised as a link."""
   found = [resource.name]
   for child in resource.children:
-    found.extend(_all_names(child))
+    found.extend(all_names(child))
   return found
 
 
@@ -243,6 +246,24 @@ def _legacy_shape(resource: Resource, data: Dict[str, Any]) -> Dict[str, Any]:
     for child in resource.children
   ]
   return data
+
+
+def legacy_size(root: Resource) -> int:
+  """The size of the tree as the existing visualizer sends it: one node per resource."""
+  return len(json.dumps(_legacy_shape(root, root.serialize())))
+
+
+def _links_to(model: Dict[str, Any], names: frozenset) -> bool:
+  """Whether a nested value of `model` is a link, or a string naming one of `names`."""
+
+  def found(value: Any) -> bool:
+    if isinstance(value, dict):
+      return any(found(v) for v in value.values())
+    if isinstance(value, list):
+      return any(found(v) for v in value)
+    return isinstance(value, str) and (value == RESOURCE_LINK or value in names)
+
+  return any(found(v) for v in model.values() if isinstance(v, (dict, list)))
 
 
 def build_scene(
@@ -262,22 +283,24 @@ def build_scene(
   Args:
     root: the resource to flatten.
     measure_legacy: also measure the tree the way the existing visualizer sends it, to report what
-      the split saves. Off by default: a running viewer measures it once, a benchmark every time.
+      the split saves. Off by default: a running viewer measures it at start, a benchmark here.
     known: models derived by an earlier pass, by resource name. A name found here is taken to have
       the model it had then, which is what makes a rebuild cost only what actually changed.
-    known_names: the names that pass saw. Reuse is only sound while the tree holds the same names,
-      because whether a string in a model counts as a reference to another resource depends on
-      which names exist. Different names, and `known` is ignored and everything derived again.
+    known_names: the names that pass saw. Whether a string in a model counts as a reference to
+      another resource depends on which names exist, so a model that holds a link, or a string
+      naming a resource that has since appeared or gone, is derived again; the rest are reused.
   """
-  names = frozenset(_all_names(root))
+  names = frozenset(all_names(root))
   scene = Scene(names=names)
-  reuse = known if (known and known_names == names) else {}
+  changed = names ^ (known_names or frozenset())
+  models = {id(model): model for model in (known or {}).values()}
+  stale = {i for i, model in models.items() if changed and _links_to(model, changed)}
+  reuse = {name: model for name, model in (known or {}).items() if id(model) not in stale}
 
   def walk(resource: Resource, parent: int, data: Optional[Dict[str, Any]] = None) -> None:
     model = reuse.get(resource.name)
     if model is not None:
       index = scene.add_known(resource, parent, model)
-      scene.derived[resource.name] = model
       for child in resource.children:
         walk(child, index)
       return
@@ -301,7 +324,7 @@ def build_scene(
 
   walk(root, -1)
   if measure_legacy:
-    scene.legacy_bytes = len(json.dumps(_legacy_shape(root, root.serialize())))
+    scene.legacy_bytes = legacy_size(root)
   return scene
 
 
@@ -342,17 +365,28 @@ def _visible(value: Any) -> Any:
 
 
 def state_signature(published: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
-  """The publishable form of one resource's state, and a key that is equal when it looks equal."""
+  """The publishable form of one resource's state, and a key that is equal when it looks equal.
+
+  The key covers everything but `location`, which is one resource's own and travels beside the
+  shared table; it is kept in the cleaned state as published, since the wire carries it as is.
+  """
   cleaned = _visible(
     _without_identity(
-      {k: v for k, v in published.items() if not (k == "rotation" and v == IDENTITY_ROTATION)}
+      {
+        k: v
+        for k, v in published.items()
+        if k != "location" and not (k == "rotation" and v == IDENTITY_ROTATION)
+      }
     )
   )
-  return cleaned, json.dumps(cleaned, sort_keys=True, default=str)
+  key = json.dumps(cleaned, sort_keys=True, default=str)
+  if "location" in published:
+    cleaned["location"] = published["location"]
+  return cleaned, key
 
 
-def pack_state(states: Dict[str, Dict[str, Any]], epoch: int = 0) -> Dict[str, Any]:
-  """Pack `{name: state}` into distinct states plus an index per name.
+def pack_state(states: Dict[str, Tuple[Dict[str, Any], str]], epoch: int = 0) -> Dict[str, Any]:
+  """Pack `{name: (cleaned state, key)}` into distinct states plus an index per name.
 
   State is overwhelmingly repetitive: every empty well publishes the same zeros, every unused tip
   spot the same tip. Sending each one in full costs a few hundred bytes per resource and dominates
@@ -370,11 +404,10 @@ def pack_state(states: Dict[str, Dict[str, Any]], epoch: int = 0) -> Dict[str, A
   index: Dict[str, int] = {}
   locations: Dict[str, Any] = {}
 
-  for name, published in states.items():
-    if "location" in published:
-      locations[name] = published["location"]
-      published = {k: v for k, v in published.items() if k != "location"}
-    cleaned, key = state_signature(published)
+  for name, (cleaned, key) in states.items():
+    if "location" in cleaned:
+      locations[name] = cleaned["location"]
+      cleaned = {k: v for k, v in cleaned.items() if k != "location"}
     if key not in distinct:
       distinct[key] = len(table)
       table.append(cleaned)
@@ -388,33 +421,21 @@ def pack_state(states: Dict[str, Dict[str, Any]], epoch: int = 0) -> Dict[str, A
   return {"epoch": epoch, "states": table, "of": index, "locations": locations}
 
 
-def collect_state(root: Resource) -> Dict[str, Dict[str, Any]]:
-  """Tracker state for every resource that publishes any, keyed by name.
+def collect_state(root: Resource) -> Dict[str, Tuple[Dict[str, Any], str]]:
+  """The cleaned state and key of every resource that publishes any, keyed by name.
 
   Only resources whose state says something is included, so a scene of mostly static geometry
   sends a small message. A rotation that is the identity says nothing - but one that is not says
   where a joint is pointing, which for an arm's links is the whole of what they have to report.
   """
-  state: Dict[str, Dict[str, Any]] = {}
+  state: Dict[str, Tuple[Dict[str, Any], str]] = {}
 
   def walk(resource: Resource) -> None:
-    published = resource.serialize_state()
-    cleaned, _ = state_signature(published)
+    cleaned, key = state_signature(resource.serialize_state())
     if cleaned:
-      state[resource.name] = published
+      state[resource.name] = (cleaned, key)
     for child in resource.children:
       walk(child)
 
   walk(root)
   return state
-
-
-def find(root: Resource, name: str) -> Optional[Resource]:
-  """The descendant called `name`, or None."""
-  if root.name == name:
-    return root
-  for child in root.children:
-    hit = find(child, name)
-    if hit is not None:
-      return hit
-  return None

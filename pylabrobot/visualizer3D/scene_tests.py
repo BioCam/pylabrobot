@@ -8,7 +8,7 @@ from pylabrobot.resources.corning import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.hamilton import hamilton_96_tiprack_1000uL
 from pylabrobot.resources.resource import Resource
 from pylabrobot.visualizer3D.facility import Facility
-from pylabrobot.visualizer3D.scene import _model_of, build_scene, pack_state
+from pylabrobot.visualizer3D.scene import _model_of, build_scene, pack_state, state_signature
 
 
 def facility_with(plates: int) -> Facility:
@@ -99,6 +99,40 @@ class SceneTests(unittest.TestCase):
       json.dumps(build_scene(facility).serialize(), sort_keys=True),
     )
 
+  def test_a_discard_reuses_the_models_that_do_not_link_to_it(self):
+    """Any change of names threw every derived model away, so an assign or a discard cost the
+    cold build. A model that holds no link is what it was, whichever names exist."""
+    facility = facility_with(2)
+    box = Resource(name="box", size_x=10, size_y=10, size_z=10)
+    facility.assign_child_resource(box, location=Coordinate(900, 900, 0))
+    first = build_scene(facility)
+    names = frozenset(first.names)
+    facility.unassign_child_resource(box)
+    warm = build_scene(facility, known=first.derived, known_names=names)
+    self.assertIs(warm.derived["plate_0_well_A1"], first.derived["plate_0_well_A1"])
+    self.assertIsNot(warm.derived["plate_0"], first.derived["plate_0"])  # links its wells
+    self.assertEqual(
+      json.dumps(warm.serialize(), sort_keys=True),
+      json.dumps(build_scene(facility).serialize(), sort_keys=True),
+    )
+
+  def test_a_name_that_reappears_is_a_link_again(self):
+    """A model derived while a name was gone holds it as a plain string; put back, it is a link."""
+    facility = facility_with(1)
+    plate = facility.get_resource("plate_0")
+    well = facility.get_resource("plate_0_well_A1")
+    location = well.location
+    plate.unassign_child_resource(well)
+    first = build_scene(facility)
+    names = frozenset(first.names)
+    self.assertEqual(first.derived["plate_0"]["ordering"]["A1"], "plate_0_well_A1")
+    plate.assign_child_resource(well, location=location)
+    warm = build_scene(facility, known=first.derived, known_names=names)
+    self.assertEqual(
+      json.dumps(warm.serialize(), sort_keys=True),
+      json.dumps(build_scene(facility).serialize(), sort_keys=True),
+    )
+
   def test_a_model_is_the_resources_own_whether_or_not_its_parent_serialized_it(self):
     """A parent's serialization feeds its children's models, and a child it left out serializes
     itself: either way the model is what the resource itself says it is."""
@@ -143,9 +177,9 @@ class PackStateTests(unittest.TestCase):
     at = lambda x: {"x": x, "y": 0.0, "z": 0.0, "type": "Coordinate"}  # noqa: E731
     packed = pack_state(
       {
-        "a": {"volume": 100.0, "location": at(1.0)},
-        "b": {"volume": 100.0, "location": at(2.0)},
-        "c": {"volume": 100.0},
+        "a": state_signature({"volume": 100.0, "location": at(1.0)}),
+        "b": state_signature({"volume": 100.0, "location": at(2.0)}),
+        "c": state_signature({"volume": 100.0}),
       }
     )
     self.assertEqual(len(packed["states"]), 1)

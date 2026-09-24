@@ -137,6 +137,26 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
     finally:
       await ws.close()
 
+  async def test_a_filled_well_is_not_a_move(self):
+    """Every state carries the resource's position, so a well whose volume changed was reported
+    as moved: three quarters of a plate fill was positions, and every later snapshot repeated
+    them."""
+    first, _, _ = await self.connect()
+    try:
+      for well in self.plate.get_all_items():
+        well.tracker.set_volume(100.0)
+      update = await self.next_state(first)
+      self.assertIsNotNone(update)
+      self.assertEqual(len(update["of"]), 96)
+      self.assertEqual(update["locations"], {})
+      second, _, snapshot = await self.connect()
+      try:
+        self.assertEqual(snapshot["locations"], {})
+      finally:
+        await second.close()
+    finally:
+      await first.close()
+
   async def test_an_unchanged_value_is_not_sent_again(self):
     ws, _, _ = await self.connect()
     try:
@@ -155,6 +175,25 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
       self.assertIsNotNone(await self.next_state(ws))
       self.plate.get_item("A1").tracker.set_volume(150.04)
       self.assertIsNone(await self.next_state(ws, timeout=1.0))
+    finally:
+      await ws.close()
+
+  async def test_a_discarded_resource_is_no_longer_listened_to(self):
+    """A resource taken out of the tree kept its callback, so a discarded plate's every tracker
+    change was still serialized and queued for a viewer that could never draw it."""
+    kept = cor_96_wellplate_360uL_Fb(name="kept")
+    self.facility.assign_child_resource(kept, location=Coordinate(300, 10, 0))
+    ws, _, _ = await self.connect()
+    try:
+      self.plate.unassign()
+      await self.next_of(ws, "scene")
+      self.assertIsNotNone(await self.next_state(ws))  # the snapshot after the rebuild
+      self.assertEqual(self.plate.get_item("A1")._resource_state_updated_callbacks, [])
+      self.plate.get_item("A1").tracker.set_volume(150.0)
+      kept.get_item("A1").tracker.set_volume(150.0)
+      update = await self.next_state(ws)
+      self.assertIsNotNone(update)
+      self.assertEqual(list(update["of"]), ["kept_well_A1"])
     finally:
       await ws.close()
 
@@ -305,21 +344,23 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     loop's own thread, so everything else on the loop stood still for that long."""
     facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
     viewer = Viewer3D(facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
+    viewer.FS_POLL_S = 0.5  # a shutdown that waits on the loop would then hold it this long
     await viewer.start()
-    ticks = 0
+    loop = asyncio.get_running_loop()
+    ticks = [loop.time()]
 
     async def tick() -> None:
-      nonlocal ticks
       while True:
         await asyncio.sleep(0.02)
-        ticks += 1
+        ticks.append(loop.time())
 
     ticking = asyncio.ensure_future(tick())
     try:
       await viewer.stop()
     finally:
+      ticks.append(loop.time())  # a loop held until here shows as one long gap
       ticking.cancel()
-    self.assertGreater(ticks, 5)
+    self.assertLess(max(b - a for a, b in zip(ticks, ticks[1:])), 0.2)
 
   async def test_a_stopped_viewer_no_longer_listens_to_the_tree(self):
     """`stop` used to leave every state and assignment callback in place, so a stopped viewer
@@ -350,6 +391,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
       for _ in range(20):
         facility.assign_child_resource(part, location=Coordinate(0, 0, 0))
         facility.unassign_child_resource(part)
+      facility.assign_child_resource(part, location=Coordinate(0, 0, 0))
       self.assertEqual(len(part._resource_state_updated_callbacks), 1)
     finally:
       await viewer.stop()

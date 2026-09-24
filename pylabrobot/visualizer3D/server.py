@@ -30,7 +30,16 @@ import websockets
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
 
-from .scene import Scene, _all_names, build_scene, collect_state, pack_state, state_signature
+from .scene import (
+  STATE_DECIMALS,
+  Scene,
+  all_names,
+  build_scene,
+  collect_state,
+  legacy_size,
+  pack_state,
+  state_signature,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +59,11 @@ def _finite(obj: Any) -> Any:
   if isinstance(obj, (list, tuple)):
     return [_finite(v) for v in obj]
   return obj
+
+
+def _encode(event: str, data: Any) -> str:
+  """One message as the page reads it: the same encoding for a greeting and a broadcast."""
+  return json.dumps(_finite({"event": event, "data": data}))
 
 
 def _hostname_of(authority: Optional[str]) -> Optional[str]:
@@ -136,6 +150,17 @@ def _port_taken(error: OSError) -> bool:
   return error.errno == errno.EADDRINUSE
 
 
+def _xyz(location: Dict[str, Any]) -> List[float]:
+  return [float(location.get(axis, 0.0)) for axis in ("x", "y", "z")]
+
+
+def _signature(cleaned: Dict[str, Any], key: str) -> str:
+  """What a client was told, as a key: the shared part's, plus the position as it can be seen."""
+  if "location" not in cleaned:
+    return key
+  return key + repr([round(v, STATE_DECIMALS) for v in _xyz(cleaned["location"])])
+
+
 class Viewer3D:
   """A parallel visualizer that takes any resource as its world.
 
@@ -192,26 +217,22 @@ class Viewer3D:
     self._clients: set = set()
     self._httpd: Optional[http.server.HTTPServer] = None
     self._ws_server: Optional[websockets.asyncio.server.Server] = None
-    self._pending: Dict[str, dict] = {}
+    self._pending: Dict[str, Tuple[Dict[str, Any], str]] = {}
     self._flush_scheduled = False
     self._loop: Optional[asyncio.AbstractEventLoop] = None
-    self._stats: Dict[str, Any] = {}
-    self._legacy_bytes: Optional[int] = None  # measured once; it costs a full extra serialization
+    self._legacy_bytes = 0  # measured once, at start, off the loop
     # Files a resource declared as its own geometry, by the id the page fetches them under. Only a
     # path that a resource named is ever served, so this doubles as the whitelist.
     self._mesh_files: Dict[str, str] = {}
-    # Which scene the indices below belong to, and the index of every resource in it. State is
-    # addressed by index rather than by name, so both have to be current before any is sent.
+    # Which scene was last built, and where in it each name stands: what a move or a published
+    # position is compared against. State itself is addressed by name.
     self._epoch = 0
     self._index_of: Dict[str, int] = {}
     # What each resource last looked like on the wire. A resource that publishes a change too small
     # to see produces the same signature and is not sent again.
     self._published: Dict[str, str] = {}
-    # Models derived by the last flatten, by resource name, and the set of names that flatten saw.
-    # Reusing a model is only sound while the tree holds the same names: a model can carry a
-    # reference to another resource, and whether a string counts as such a reference depends on
-    # which names exist. Same names, same answer. A name appearing or disappearing throws the lot
-    # away and pays for one full flatten, which is the case that was going to be expensive anyway.
+    # Models derived by the last flatten, by resource name, and the names that flatten saw: the
+    # next one reuses every model that no appeared or vanished name could have changed.
     self._known_models: Dict[str, Dict[str, Any]] = {}
     self._known_names: frozenset = frozenset()
     # The scene as last built. A client arriving is not a change to the scene, so it is handed this
@@ -221,7 +242,6 @@ class Viewer3D:
     # The scene behind that payload, kept so a resource put somewhere else can be moved within it
     # rather than the whole thing being built again: a tip picked up is the same tip under a shaft.
     self._scene: Optional[Scene] = None
-    self._scene_dirty = False
     # A page left open from an earlier viewer retries its old token every second or so: said once.
     self._refused_a_token = False
     # Who has moved since that scene was built. The scene places every resource where it stood at
@@ -247,7 +267,8 @@ class Viewer3D:
     self._subscribe(resource)
     self._resend()
 
-  def _on_unassign(self, _resource: Resource) -> None:
+  def _on_unassign(self, resource: Resource) -> None:
+    self._unsubscribe(resource)
     self._resend()
 
   def _subscribe(self, resource: Resource) -> None:
@@ -255,20 +276,24 @@ class Viewer3D:
     if id(resource) in self._subscribed:
       return
 
-    def on_update(_state: dict, r: Resource = resource) -> None:
-      self._on_state_update(r)
+    def on_update(state: dict, r: Resource = resource) -> None:
+      # Batched on the loop, so a 96-channel operation is one message, not ninety-six.
+      loop = self._live_loop()
+      if loop is not None:
+        loop.call_soon_threadsafe(self._enqueue, r.name, state)
 
     resource.register_state_update_callback(on_update)
     self._subscribed[id(resource)] = (resource, on_update)
     for child in resource.children:
       self._subscribe(child)
 
-  def _unsubscribe(self) -> None:
-    for resource, on_update in self._subscribed.values():
-      resource.deregister_state_update_callback(on_update)
-    self._subscribed.clear()
-    self.root.deregister_did_assign_resource_callback(self._on_assign)
-    self.root.deregister_did_unassign_resource_callback(self._on_unassign)
+  def _unsubscribe(self, resource: Resource) -> None:
+    """Stop listening to `resource` and everything under it: out of the tree, it has no viewer."""
+    subscribed = self._subscribed.pop(id(resource), None)
+    if subscribed is not None:
+      subscribed[0].deregister_state_update_callback(subscribed[1])
+    for child in resource.children:
+      self._unsubscribe(child)
 
   def _live_loop(self) -> Optional[asyncio.AbstractEventLoop]:
     """The loop to hand a change to, or None: after `stop`, and once the loop the viewer was
@@ -276,35 +301,37 @@ class Viewer3D:
     loop = self._loop
     return loop if loop is not None and not loop.is_closed() else None
 
-  def _on_state_update(self, resource: Resource) -> None:
-    """Batch state updates so a 96-channel operation is one message, not ninety-six."""
-    loop = self._live_loop()
-    if loop is None:
-      return
-    loop.call_soon_threadsafe(self._enqueue, resource.name, resource.serialize_state())
+  def _placed_as_kept(self, name: str, location: Dict[str, Any]) -> bool:
+    """Whether `location` is where the kept scene already places `name`: published, but no move."""
+    index = self._index_of.get(name)
+    if self._scene is None or index is None:
+      return False
+    return _xyz(location) == self._scene.transforms[6 * index : 6 * index + 3]
 
   def _enqueue(self, name: str, state: dict) -> None:
-    self._pending[name] = state
+    if "location" in state and self._placed_as_kept(name, state["location"]):
+      state = {k: v for k, v in state.items() if k != "location"}
+    self._pending[name] = state_signature(state)
     if "location" in state:
       self._moved.add(name)
     if self._loop is not None and not self._flush_scheduled:
       self._flush_scheduled = True
-      self._loop.call_soon(lambda: asyncio.ensure_future(self._flush()))
+      asyncio.ensure_future(self._flush())
 
   async def _flush(self) -> None:
     payload, self._pending = self._pending, {}
     self._flush_scheduled = False
-    if self._scene_dirty:
+    if self._scene_timer is not None:
       # The tree changed shape and a rebuild is on its way. A location is relative to a parent the
       # client may not have yet - a resource just moved under another would be drawn at its new
       # offset from its old parent until the rebuild lands - and the rebuild places everything
       # where it is. What is not a location still goes now.
       payload = {
-        name: {k: v for k, v in state.items() if k != "location"} for name, state in payload.items()
+        name: ({k: v for k, v in cleaned.items() if k != "location"}, key)
+        for name, (cleaned, key) in payload.items()
       }
-      payload = {name: state for name, state in payload.items() if state}
     if payload:
-      message = self._state_message(payload)
+      message = self._delta_message(payload)
       # Everything in the batch may have been a change nobody could see.
       if message["of"]:
         await self._broadcast("state", message)
@@ -324,7 +351,7 @@ class Viewer3D:
     loop.call_soon_threadsafe(self._mark_scene_dirty)
 
   def _mark_scene_dirty(self) -> None:
-    self._scene_dirty = True
+    # A pending timer is what says the scene is stale; a burst keeps pushing it back.
     if self._scene_timer is not None:
       self._scene_timer.cancel()
     if self._loop is None:
@@ -335,9 +362,6 @@ class Viewer3D:
 
   async def _flush_scene(self) -> None:
     self._scene_timer = None
-    if not self._scene_dirty:
-      return
-    self._scene_dirty = False
     if not self._clients:
       # Nobody to tell. The kept scene is dropped, so the next client is greeted with one built
       # for it then, rather than this one being built now for no one.
@@ -361,7 +385,7 @@ class Viewer3D:
     along with the client's, so a client arriving later is handed the scene as it stands.
     """
     scene = self._scene
-    if scene is None or frozenset(_all_names(self.root)) != self._known_names:
+    if scene is None or frozenset(all_names(self.root)) != self._known_names:
       return None
     moves: List[Dict[str, Any]] = []
 
@@ -396,13 +420,8 @@ class Viewer3D:
         walk(child, resource.name)
 
     walk(self.root, None)
-    if moves:
-      self._scene_payload = {
-        **scene.serialize(),
-        "epoch": self._epoch,
-        "stats": self._stats,
-        "protocol": PROTOCOL,
-      }
+    if moves and self._scene_payload is not None:
+      self._scene_payload = {**self._scene_payload, **scene.serialize()}
     # Every place the kept scene knows is current again, so a snapshot need not carry any of them.
     self._moved = set()
     return moves
@@ -447,7 +466,7 @@ class Viewer3D:
   async def _broadcast(self, event: str, data: Any) -> None:
     if not self._clients:
       return
-    message = json.dumps(_finite({"event": event, "data": data}))
+    message = _encode(event, data)
     for client in list(self._clients):
       try:
         await client.send(message)
@@ -459,79 +478,57 @@ class Viewer3D:
     if self._scene_payload is not None and not rebuild:
       return self._scene_payload
 
-    # The comparison against the old payload shape is measured on the first build only: it costs
-    # a second full serialization of the tree and never changes for a given scene.
-    scene = build_scene(
-      self.root,
-      measure_legacy=self._legacy_bytes is None,
-      known=self._known_models,
-      known_names=self._known_names,
-    )
+    scene = build_scene(self.root, known=self._known_models, known_names=self._known_names)
     self._known_names = frozenset(scene.names)
     self._known_models = scene.derived
-    if self._legacy_bytes is None:
-      self._legacy_bytes = scene.legacy_bytes
     scene.legacy_bytes = self._legacy_bytes
 
     payload = scene.serialize()
     self._scene = scene
     self._register_meshes(payload["models"])
 
-    # A new scene renumbers everything, so the indices change and the client knows nothing about
-    # what any resource looks like. Both have to be reset together with the epoch that names them.
+    # A new scene renumbers everything, so the indices change with the epoch that names them.
     self._epoch += 1
     self._index_of = {name: i for i, name in enumerate(payload["instances"]["names"])}
-    self._published = {}
     # Placed afresh, so nothing has moved since.
     self._moved = set()
-    self._stats = scene.stats(scene_bytes=len(json.dumps(payload)))
     self._scene_payload = {
       **payload,
       "epoch": self._epoch,
-      "stats": self._stats,
+      "stats": scene.stats(scene_bytes=len(json.dumps(payload))),
       "protocol": PROTOCOL,
     }
     return self._scene_payload
 
-  def _state_message(self, states: Dict[str, Dict[str, Any]], full: bool = False) -> Dict[str, Any]:
-    """Pack state for the wire.
+  def _delta_message(self, states: Dict[str, Tuple[Dict[str, Any], str]]) -> Dict[str, Any]:
+    """What looks different from what the clients were last told, packed; that record advances.
 
-    A broadcast goes to clients that have been following along, so anything that still looks the way
-    it last did is left out. A snapshot goes to a client that knows nothing yet and must carry
-    everything, whatever the others have already been told - suppression is about what a given
-    client has seen, and a new one has seen none of it.
-
-    A snapshot leaves out `location`, alone among the fields. The scene sent immediately before it
-    already places every resource, so repeating that here says nothing new - and because a position
-    is unique to one resource, carrying it would give every resource a state of its own and undo
-    the sharing the rest of this message depends on. A position still travels the moment it
-    changes; it just is not announced twice at the start.
+    A state that cleaned down to nothing is kept: to a client following along it means "no longer
+    what I last said".
     """
     fresh = {}
-    for name, published in states.items():
-      _, signature = state_signature(published)
-      if not full and self._published.get(name) == signature:
-        continue
-      self._published[name] = signature
-      if not full:
-        fresh[name] = published
-        continue
-      # In a snapshot, a resource with nothing left to say is left out entirely: absent already
-      # means default to a client that has just arrived. In a delta it is kept, because there it
-      # means "no longer what I last told you".
-      #
-      # A resource that has moved since the scene was built keeps its position, whatever the
-      # paragraph above says: for that one the scene is what is out of date, and this is the only
-      # message that will ever correct it.
-      trimmed = (
-        published
-        if name in self._moved
-        else {k: v for k, v in published.items() if k != "location"}
-      )
-      cleaned, _ = state_signature(trimmed)
-      if cleaned:
-        fresh[name] = trimmed
+    for name, (cleaned, key) in states.items():
+      signature = _signature(cleaned, key)
+      if self._published.get(name) != signature:
+        self._published[name] = signature
+        fresh[name] = (cleaned, key)
     return pack_state(fresh, self._epoch)
+
+  def _snapshot(self) -> Dict[str, Tuple[Dict[str, Any], str]]:
+    """Every state a client that knows nothing yet must be told, whatever the others were.
+
+    `location` is left out: the scene sent just before places everything, and a position is one
+    resource's own, so it would give every resource a state of its own. A resource that moved
+    since that scene was built keeps it, as this is the only message that will ever correct it.
+    One with nothing left to say is left out: absent already means default here.
+    """
+    states = {}
+    for name, (cleaned, key) in collect_state(self.root).items():
+      if name not in self._moved:
+        cleaned.pop("location", None)
+      if cleaned:
+        states[name] = (cleaned, key)
+    return states
 
   # What `reference_glb` promises: the file is in the resource's own frame, metres, Z up. Stated
   # once here rather than per resource, which is the point of having a convention.
@@ -604,18 +601,15 @@ class Viewer3D:
 
   async def _send_scene_to_all(self) -> None:
     await self._broadcast("scene", self._scene_message(rebuild=True))
-    await self._broadcast("state", self._state_message(collect_state(self.root), full=True))
+    # A new scene is where every client starts over: what it is told now is what it was last told.
+    states = self._snapshot()
+    self._published = {name: _signature(cleaned, key) for name, (cleaned, key) in states.items()}
+    await self._broadcast("state", pack_state(states, self._epoch))
 
   async def _handler(self, websocket) -> None:
     self._clients.add(websocket)
-    await websocket.send(json.dumps(_finite({"event": "scene", "data": self._scene_message()})))
-    await websocket.send(
-      json.dumps(
-        _finite(
-          {"event": "state", "data": self._state_message(collect_state(self.root), full=True)}
-        )
-      )
-    )
+    await websocket.send(_encode("scene", self._scene_message()))
+    await websocket.send(_encode("state", pack_state(self._snapshot(), self._epoch)))
     try:
       async for message in websocket:
         self._on_client_message(message)
@@ -654,6 +648,9 @@ class Viewer3D:
     print(f"viewer: a browser connected, drawing with {drawing}")
 
   # -- static files ----------------------------------------------------------
+
+  # How often the serving thread looks up from its socket, which is how long `stop` waits for it.
+  FS_POLL_S = 0.05
 
   def _start_file_server(self) -> None:
     directory = STATIC_DIR
@@ -747,13 +744,19 @@ class Viewer3D:
         self.fs_port += 1
     self._httpd = httpd
 
-    thread = threading.Thread(target=httpd.serve_forever, daemon=True, name="viz3d_fs")
+    serve = functools.partial(httpd.serve_forever, poll_interval=self.FS_POLL_S)
+    thread = threading.Thread(target=serve, daemon=True, name="viz3d_fs")
     thread.start()
 
   # -- lifecycle -------------------------------------------------------------
 
   async def start(self) -> None:
     self._loop = asyncio.get_running_loop()
+    # Off the loop, before a client can connect: the package walk for model files, and the size of
+    # the tree as the existing visualizer would send it, which the stats panel compares against.
+    self._legacy_bytes, _ = await asyncio.gather(
+      asyncio.to_thread(legacy_size, self.root), asyncio.to_thread(_models_on_disk, PACKAGE_ROOT)
+    )
 
     # The websocket first, because the page has to be told which port to call back on and the file
     # server bakes that number into what it serves. Started the other way round, a viewer whose
@@ -780,7 +783,9 @@ class Viewer3D:
   async def stop(self) -> None:
     """Close both servers, so the ports are free for the next viewer, and stop listening to the
     tree, so a stopped viewer costs the resources nothing and a change is never handed to no loop."""
-    self._unsubscribe()
+    self._unsubscribe(self.root)
+    self.root.deregister_did_assign_resource_callback(self._on_assign)
+    self.root.deregister_did_unassign_resource_callback(self._on_unassign)
     self._loop = None
     if self._scene_timer is not None:
       self._scene_timer.cancel()
@@ -791,7 +796,7 @@ class Viewer3D:
       self._ws_server = None
     self._clients.clear()
     if self._httpd is not None:
-      # Shutdown waits for the serving thread's poll, half a second: not on the loop's time.
+      # Shutdown waits for the serving thread's poll: not on the loop's time.
       await asyncio.to_thread(self._httpd.shutdown)
       self._httpd.server_close()
       self._httpd = None
