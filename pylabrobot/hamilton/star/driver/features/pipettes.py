@@ -52,7 +52,7 @@ from pylabrobot.resources.n_channel_pipettes import NChannelPipette, TipMounting
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip import Tip
 from pylabrobot.resources.tip_rack import TipSpot, tip_origin
-from pylabrobot.resources.volume_tracker import does_volume_tracking
+from pylabrobot.resources.volume_tracker import VolumeTracker, does_volume_tracking
 from pylabrobot.resources.well import Well
 
 if TYPE_CHECKING:
@@ -5000,6 +5000,443 @@ class Pipettes:
     after = container.compute_height_from_volume(max(now - volume, 0.0))
     return round(max(liquid_height - after, 0.0), 2)
 
+  # -- what aspirating and dispensing share --------------------------------------------------------
+
+  @staticmethod
+  def _per_container(name: str, given: Optional[Sequence[Any]], n: int) -> Optional[List[Any]]:
+    """`given` as a list of one entry per container; None stays None.
+
+    Raises:
+      ValueError: Not one entry per container.
+    """
+    if given is None:
+      return None
+    if len(given) != n:
+      raise ValueError(f"{name} must have one entry per container, {n}, has {len(given)}")
+    return list(given)
+
+  @staticmethod
+  def _check_volume_arguments(
+    volumes: Optional[Sequence[float]],
+    piston_volumes: Optional[Sequence[float]],
+    hamilton_liquid_classes: Optional[Sequence[HamiltonLiquidClass]],
+    verb: str,
+  ) -> None:
+    """Raise unless exactly one of `volumes` and `piston_volumes` is given, and no class beside
+    `piston_volumes`. `verb` is "drawn" or "pushed out", for the refusals."""
+    if (volumes is None) == (piston_volumes is None):
+      raise ValueError(
+        f"give volumes, which a liquid class corrects, or piston_volumes, {verb} as given; not "
+        "both and not neither"
+      )
+    if piston_volumes is not None and hamilton_liquid_classes is not None:
+      raise ValueError(f"piston_volumes are {verb} as given; a liquid class would correct them")
+
+  def _get_channel_of_each_container(self, n: int, use_channels: Optional[List[int]]) -> List[int]:
+    """The channel each of `n` containers is dealt to, in cycles, as `_prepare_batched` deals
+    them: the first `n` channels when `use_channels` is None."""
+    dealt = use_channels or list(range(min(n, self.num_channels)))
+    return [dealt[job % len(dealt)] for job in range(n)]
+
+  async def _sense_pipetting_channels(
+    self, channel_of: Sequence[int], touched: Sequence[int], action: str
+  ) -> Tuple[List[int], List[HamiltonTip]]:
+    """What the channels carry, their pistons read, and the Z-touch checks, before anything moves.
+
+    Args:
+      channel_of: the channel of each container, per job.
+      touched: the jobs on Z touch.
+      action: "an aspiration" or "a dispense", for the refusals.
+
+    Returns:
+      What `sense_tip_presence` answered, and each job's tip as the model has it.
+
+    Raises:
+      RuntimeError: A channel without a tip, sensed or modelled, or without the Z-touch firmware.
+      TypeError: A tip that is not a Hamilton tip.
+    """
+    presence = await self.sense_tip_presence()
+    bare = sorted({channel for channel in channel_of if not presence[channel]})
+    if bare:
+      raise RuntimeError(f"channels {bare} carry no tip; {action} needs one on each")
+    # Where the pistons stand, read once; each batch's command moves the model on from there.
+    await self.dispensing_drives_request_uL_positions(sorted(set(channel_of)))
+    for job in touched:
+      self._require_ztouch_firmware(channel_of[job])
+    self._warn_ztouch_on_soft_tips(channel_of[job] for job in touched)
+    tips: List[HamiltonTip] = []
+    for channel in channel_of:
+      tip = self.get_mounted_tip(channel)
+      if tip is None:
+        raise RuntimeError(f"channel {channel} is not modelled with a tip; {action} needs one")
+      if not isinstance(tip, HamiltonTip):
+        raise TypeError(f"channel {channel} carries {tip.name}, not a Hamilton tip")
+      tips.append(tip)
+    return presence, tips
+
+  def _get_piston_volumes(
+    self,
+    containers: Sequence[Container],
+    channel_of: Sequence[int],
+    tips: Sequence[HamiltonTip],
+    volumes: Optional[Sequence[float]],
+    piston_volumes: Optional[Sequence[float]],
+    hamilton_liquid_classes: Optional[Sequence[HamiltonLiquidClass]],
+    jets: Sequence[bool],
+    blow_outs: Sequence[bool],
+  ) -> Tuple[List[float], List[float], Optional[List[HamiltonLiquidClass]]]:
+    """The liquid asked per container, the piston volume that moves it, and the classes used.
+
+    With `volumes`, the class given per container, else the one looked up for the channel's tip,
+    water, `jets` and `blow_outs`, corrects the piston volume. With `piston_volumes` the piston
+    moves as given and the liquid counts the same.
+
+    Returns:
+      The liquid per job, the piston volume per job, and the classes, None with `piston_volumes`.
+
+    Raises:
+      ValueError: Lists not one per container, or no class known for a channel's tip.
+    """
+    n = len(containers)
+    if volumes is None:
+      assert piston_volumes is not None
+      piston = self._per_container("piston_volumes", piston_volumes, n) or []
+      return list(piston), piston, None
+    liquid = self._per_container("volumes", volumes, n)
+    assert liquid is not None
+    classes = self._per_container("hamilton_liquid_classes", hamilton_liquid_classes, n)
+    if classes is None:
+      classes = []
+      for job, tip in enumerate(tips):
+        found = get_star_liquid_class(
+          tip_volume=tip.maximal_volume,
+          is_core=False,
+          is_tip=True,
+          has_filter=tip.has_filter,
+          liquid=Liquid.WATER,
+          jet=jets[job],
+          blow_out=blow_outs[job],
+        )
+        if found is None:
+          raise ValueError(
+            f"no liquid class is known for channel {channel_of[job]}'s tip on "
+            f"{containers[job].name}: {tip.maximal_volume} uL, "
+            f"{'with' if tip.has_filter else 'without'} filter, water, jet={jets[job]}, "
+            f"blow_out={blow_outs[job]}. Give hamilton_liquid_classes, or piston_volumes"
+          )
+        classes.append(found)
+    piston = [round(hlc.compute_corrected_volume(v), 2) for hlc, v in zip(classes, liquid)]
+    return liquid, piston, classes
+
+  def _get_pipetting_heights(
+    self,
+    deck: Resource,
+    containers: Sequence[Container],
+    resource_offsets: Optional[List[Coordinate]],
+    given_floors: Optional[Sequence[float]],
+    heights: Sequence[Optional[float]],
+    modes: Sequence["Pipettes.LLDMode"],
+    searched: Sequence[int],
+  ) -> Tuple[List[float], List[float], List[float], List[float], List[float]]:
+    """The heights per container on the deck, in mm, before any search moves them.
+
+    Args:
+      deck: what the containers are placed on.
+      containers: per job.
+      resource_offsets: per job, its z added to every height; None for none.
+      given_floors: per job, the floor the caller wants sent; None for the cavity bottoms.
+      heights: per job, where an OFF command goes above the cavity bottom; None for the bottom.
+      modes: per job.
+      searched: the jobs whose liquid a search finds.
+
+    Returns:
+      The cavity bottoms, the floors sent, the tops, the search starts, and the surfaces.
+
+    Raises:
+      ValueError: A height given for a job whose LLD mode finds the surface.
+      RuntimeError: A searched container without height-volume functions.
+    """
+    n = len(containers)
+    dz = [0.0] * n if resource_offsets is None else [offset.z for offset in resource_offsets]
+    floors = [
+      round(c.get_location_wrt(deck, "c", "c", "cavity_bottom").z + z, 2)
+      for c, z in zip(containers, dz)
+    ]
+    # The floor sent is the caller's when given; the heights are still measured from the cavity
+    # bottom, since the liquid stands on that.
+    sent_floors = list(given_floors) if given_floors is not None else list(floors)
+    tops = [round(c.get_location_wrt(deck, "c", "c", "t").z + z, 2) for c, z in zip(containers, dz)]
+    searches = [
+      round(
+        top
+        + (
+          self.well_search_start_clearance if isinstance(c, Well) else self.search_start_clearance
+        ),
+        2,
+      )
+      for c, top in zip(containers, tops)
+    ]
+    # OFF goes where the caller says, the cavity bottom by default; a search finds its surface.
+    told = [job for job in range(n) if heights[job] is not None and modes[job] != self.LLDMode.OFF]
+    if told:
+      raise ValueError(
+        f"liquid_heights given for {[containers[job].name for job in told]}, whose LLD mode finds "
+        "the surface itself; give None there"
+      )
+    surfaces = [round(floors[job] + (heights[job] or 0.0), 2) for job in range(n)]
+    # What a search finds becomes a volume by the container's own functions: refused here, before
+    # anything moves, not at the batch that would need them.
+    lacking = [
+      containers[job].name
+      for job in searched
+      if not containers[job].supports_compute_height_volume_functions()
+    ]
+    if lacking:
+      raise RuntimeError(
+        f"{lacking} have no height-volume functions, so what a search finds in them cannot become "
+        "a volume. Generate a height_volume_data dictionary for each and consider contributing "
+        "it back to PyLabRobot :)"
+      )
+    return floors, sent_floors, tops, searches, surfaces
+
+  async def _touch_floors_of_batch(
+    self,
+    batch: ChannelBatch,
+    touched: Sequence[int],
+    containers: Sequence[Container],
+    overhangs: Dict[int, float],
+    floors: Sequence[float],
+    tops: Sequence[float],
+    search_speed: float,
+    approach_speed: float,
+    surfaces: List[float],
+    sent_floors: List[float],
+    floors_given: bool,
+  ) -> None:
+    """Z-touch the floors under the batch's touched jobs; the surface, and the floor sent unless
+    the caller gave one, become the floor touched.
+
+    Raises:
+      RuntimeError: A floor not met.
+    """
+    pairs = [(ch, job) for ch, job in zip(batch.channels, batch.indices) if job in touched]
+    if not pairs:
+      return
+    subset = dataclasses.replace(
+      batch, channels=[ch for ch, _ in pairs], indices=[job for _, job in pairs]
+    )
+    found = await self._probe_batch_floors(
+      subset,
+      overhangs=overhangs,
+      z_cavity_bottom=floors,
+      z_top=tops,
+      search_speed=search_speed,
+      approach_speed=approach_speed,
+      n_replicates=1,
+    )
+    for channel, job in pairs:
+      height = found[job][0]
+      if height is None:
+        raise RuntimeError(
+          f"channel {channel} met no floor in {containers[job].name} down to "
+          f"{self.search_limit_below_cavity_bottom} mm under its modelled cavity bottom"
+        )
+      logger.info(
+        "channel %d touched the floor of %s at %.2f mm, the model has it at %.2f mm",
+        channel,
+        containers[job].name,
+        height,
+        floors[job],
+      )
+      surfaces[job] = height
+      if not floors_given:
+        sent_floors[job] = height
+
+  async def _search_liquid_of_batch(
+    self,
+    batch: ChannelBatch,
+    searched: Sequence[int],
+    containers: Sequence[Container],
+    overhangs: Dict[int, float],
+    floors: Sequence[float],
+    searches: Sequence[float],
+    modes: Sequence["Pipettes.LLDMode"],
+    search_speed: float,
+    approach_speed: float,
+    surfaces: List[float],
+    sent_floors: List[float],
+    floors_given: bool,
+    computed_following: List[float],
+    volume_leaving: Sequence[float],
+    tracking: bool,
+  ) -> None:
+    """Search for the liquid under the batch's searched jobs and put what is found into the model.
+
+    The surface becomes the surface found; a surface found below the modelled cavity bottom moves
+    the floor sent there, unless the caller gave one; the following distance becomes what
+    `volume_leaving` does to that surface, negative for liquid arriving; with tracking on the
+    container's tracker takes the measured volume, warning when 20 % off.
+
+    Raises:
+      RuntimeError: No liquid found.
+    """
+    pairs = [(ch, job) for ch, job in zip(batch.channels, batch.indices) if job in searched]
+    if not pairs:
+      return
+    subset = dataclasses.replace(
+      batch, channels=[ch for ch, _ in pairs], indices=[job for _, job in pairs]
+    )
+    found = await self._probe_batch_liquid_heights(
+      subset,
+      containers,
+      overhangs=overhangs,
+      z_cavity_bottom=floors,
+      z_start=searches,
+      lld_modes=modes,
+      search_speed=search_speed,
+      n_replicates=1,
+      approach_speed=approach_speed,
+    )
+    for channel, job in pairs:
+      height = found[job][0]
+      if height is None:
+        raise RuntimeError(f"channel {channel} found no liquid in {containers[job].name}")
+      surfaces[job] = height
+      above_bottom = round(height - floors[job], 2)
+      if above_bottom < 0:
+        # The plate sits lower than the model: the floor sent follows the surface found, or the
+        # firmware would hold the tip above it.
+        if not floors_given:
+          sent_floors[job] = height
+        logger.warning(
+          "channel %d found the liquid of %s %.2f mm below its modelled cavity bottom; the floor "
+          "sent is the surface found",
+          channel,
+          containers[job].name,
+          -above_bottom,
+        )
+        continue
+      try:
+        computed_following[job] = self._get_surface_following_distance(
+          containers[job], above_bottom, volume_leaving[job]
+        )
+        measured = containers[job].compute_volume_from_height(above_bottom)
+      except ValueError:
+        # A plate seated off the model, or a fill past the data: the surface found still counts.
+        logger.warning(
+          "channel %d found the liquid of %s %.2f mm above its modelled cavity bottom, outside "
+          "its height-volume data; the tip follows nothing and the model keeps %.1f uL",
+          channel,
+          containers[job].name,
+          above_bottom,
+          containers[job].tracker.get_used_volume(),
+        )
+        continue
+      if tracking:
+        expected = containers[job].tracker.get_used_volume()
+        # A measurement stacks the sensor, the 0.1 mm of the read, the well's model and where
+        # the plate really sits, so it is only ever off by so much before it is worth a word.
+        if abs(measured - expected) > 0.2 * expected:
+          logger.warning(
+            "channel %d measured %.1f uL in %s where the model had %.1f uL",
+            channel,
+            measured,
+            containers[job].name,
+            expected,
+          )
+        containers[job].tracker.set_volume(measured)
+
+  async def _pipette_batch(
+    self,
+    batch: ChannelBatch,
+    search: Callable[[ChannelBatch], Awaitable[None]],
+    send: Callable[[ChannelBatch], Awaitable[None]],
+    containers: Sequence[Container],
+    liquid: Sequence[float],
+    *,
+    givers: Sequence[VolumeTracker],
+    takers: Sequence[VolumeTracker],
+    quiet: Sequence[int],
+    air_before_liquid: Sequence[float],
+    piston_sign: int,
+    piston_after: Callable[[float, int], float],
+    tracking: bool,
+    short_message: str,
+    booked_message: str,
+  ) -> None:
+    """Run one batch: its search, the booking on the trackers, its command, and the piston model.
+
+    The givers book before the device moves the liquid; a giver holding less gives what it holds,
+    the rest is air. Committed as the command succeeds; rolled back on its failure, with a read of
+    the pistons to book what did move.
+
+    Args:
+      batch: the channels and which container each has, by job index.
+      search: puts the batch's tips where they search or touch, and the model with them.
+      send: the batch's command, from the heights as they stand.
+      containers: per job.
+      liquid: per job, what is asked, in uL.
+      givers: per job, the tracker the liquid leaves.
+      takers: per job, the tracker it enters.
+      quiet: the jobs whose shortfall is an info line, not a warning.
+      air_before_liquid: per job, the air the piston moves before the liquid, in uL.
+      piston_sign: 1 where the command moves the piston up its travel, -1 where down it.
+      piston_after: where a channel's piston stands after the command, from where it stood and
+        the job.
+      tracking: whether volumes are tracked.
+      short_message: the log line for a giver holding less than asked: channel, volume asked,
+        container, what it holds.
+      booked_message: the log line for what a failed command still moved: channel, volume,
+        container.
+    """
+    jobs = batch.indices
+    await search(batch)
+    moves: List[float] = []
+    trackers: List[VolumeTracker] = []
+    try:
+      if tracking:
+        for channel, job in zip(batch.channels, jobs):
+          held = givers[job].get_used_volume()
+          moved = min(liquid[job], held)
+          if moved < liquid[job]:
+            (logger.info if job in quiet else logger.warning)(
+              short_message, channel, liquid[job], containers[job].name, held
+            )
+          # Booked before either tracker may refuse, so a refusal rolls back what came before it.
+          trackers += [givers[job], takers[job]]
+          givers[job].remove_liquid(moved)
+          takers[job].add_liquid(moved)
+          moves.append(moved)
+      await send(batch)
+    except BaseException:
+      for tracker in trackers:
+        tracker.rollback()
+      # A command that failed part way moved liquid on some channels: each piston's travel past
+      # the air before the liquid is liquid, up to what was booked.
+      if tracking and len(moves) == len(jobs):
+        for index, (channel, job) in enumerate(zip(batch.channels, jobs)):
+          before = self.piston_positions[channel]
+          try:
+            now = await self.dispensing_drive_request_uL_position(channel)
+          except Exception:
+            logger.warning(
+              "could not read channel %d's piston; what it moved is not in the model", channel
+            )
+            continue
+          travel = piston_sign * (now - before) - air_before_liquid[job]
+          moved = round(min(max(travel, 0.0), moves[index]), 1)
+          if moved > 0:
+            givers[job].remove_liquid(moved)
+            takers[job].add_liquid(moved)
+            givers[job].commit()
+            takers[job].commit()
+            logger.warning(booked_message, channel, moved, containers[job].name)
+      raise
+    for tracker in trackers:
+      tracker.commit()
+    for channel, job in zip(batch.channels, jobs):
+      self.piston_positions[channel] = piston_after(self.piston_positions[channel], job)
+
   async def aspirate(
     self,
     containers: Sequence[Container],
@@ -5124,99 +5561,46 @@ class Pipettes:
     during = default if minimum_traverse_height_during is None else minimum_traverse_height_during
     end = default if minimum_traverse_height_end is None else minimum_traverse_height_end
 
-    def per_container(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:
-      if given is None:
-        return None
-      if len(given) != n:
-        raise ValueError(f"{name} must have one entry per container, {n}, has {len(given)}")
-      return list(given)
-
-    modes = per_container(
-      "lld_mode", [lld_mode] * n if isinstance(lld_mode, self.LLDMode) else list(lld_mode)
+    modes = self._per_container(
+      "lld_mode", [lld_mode] * n if isinstance(lld_mode, self.LLDMode) else list(lld_mode), n
     )
     assert modes is not None
-    searching_modes = (self.LLDMode.CAPACITIVE, self.LLDMode.PRESSURE)
     if self.LLDMode.DUAL in modes:
       raise NotImplementedError("DUAL is not implemented; use CAPACITIVE or PRESSURE")
     touched = [job for job in range(n) if modes[job] == self.LLDMode.ZTOUCH]
-    if (volumes is None) == (piston_volumes is None):
-      raise ValueError(
-        "give volumes, which a liquid class corrects, or piston_volumes, drawn as given; not both "
-        "and not neither"
-      )
-    if piston_volumes is not None and hamilton_liquid_classes is not None:
-      raise ValueError("piston_volumes are drawn as given; a liquid class would correct them")
+    searched = [
+      job for job in range(n) if modes[job] in (self.LLDMode.CAPACITIVE, self.LLDMode.PRESSURE)
+    ]
+    self._check_volume_arguments(volumes, piston_volumes, hamilton_liquid_classes, "drawn")
 
-    # The channels the containers are dealt to, as `_prepare_batched` deals them, and their tips.
-    dealt = use_channels or list(range(min(n, self.num_channels)))
-    channel_of = [dealt[job % len(dealt)] for job in range(n)]
-    # The channels say what they carry before anything else is worked out from the model's tips.
-    presence = await self.sense_tip_presence()
-    bare = sorted({channel for channel in channel_of if not presence[channel]})
-    if bare:
-      raise RuntimeError(f"channels {bare} carry no tip; an aspiration needs one on each")
-    # Where the pistons stand, read once; each batch's command moves the model on from there.
-    await self.dispensing_drives_request_uL_positions(sorted(set(channel_of)))
-    for job in touched:
-      self._require_ztouch_firmware(channel_of[job])
-    self._warn_ztouch_on_soft_tips(channel_of[job] for job in touched)
+    channel_of = self._get_channel_of_each_container(n, use_channels)
+    presence, tips = await self._sense_pipetting_channels(channel_of, touched, "an aspiration")
     if touched:
       logger.warning(
         "channels %s aspirate on Z touch: from the floor of %s, air where no liquid is",
         sorted({channel_of[job] for job in touched}),
         [containers[job].name for job in touched],
       )
-    tips: List[HamiltonTip] = []
-    for channel in channel_of:
-      tip = self.get_mounted_tip(channel)
-      if tip is None:
-        raise RuntimeError(f"channel {channel} is not modelled with a tip; an aspiration needs one")
-      if not isinstance(tip, HamiltonTip):
-        raise TypeError(f"channel {channel} carries {tip.name}, not a Hamilton tip")
-      tips.append(tip)
-
-    classes: Optional[List[HamiltonLiquidClass]] = None
-    if volumes is not None:
-      liquid = per_container("volumes", volumes)
-      assert liquid is not None
-      classes = per_container("hamilton_liquid_classes", hamilton_liquid_classes)
-      if classes is None:
-        jets = per_container("jet", jet) or [False] * n
-        blow_outs = per_container("blow_out", blow_out) or [False] * n
-        classes = []
-        for job, tip in enumerate(tips):
-          found = get_star_liquid_class(
-            tip_volume=tip.maximal_volume,
-            is_core=False,
-            is_tip=True,
-            has_filter=tip.has_filter,
-            liquid=Liquid.WATER,
-            jet=jets[job],
-            blow_out=blow_outs[job],
-          )
-          if found is None:
-            raise ValueError(
-              f"no liquid class is known for channel {channel_of[job]}'s tip on "
-              f"{containers[job].name}: {tip.maximal_volume} uL, "
-              f"{'with' if tip.has_filter else 'without'} filter, water, jet={jets[job]}, "
-              f"blow_out={blow_outs[job]}. Give hamilton_liquid_classes, or piston_volumes"
-            )
-          classes.append(found)
-      drawn = [
-        round(hlc.compute_corrected_volume(volume), 2) for hlc, volume in zip(classes, liquid)
-      ]
-    else:
-      assert piston_volumes is not None
-      drawn = per_container("piston_volumes", piston_volumes) or []
-      liquid = drawn
-    heights = per_container("liquid_heights", liquid_heights) or [None] * n
-    mixes = per_container("pre_mixes", pre_mixes) or [None] * n
+    jets = self._per_container("jet", jet, n) or [False] * n
+    blow_outs = self._per_container("blow_out", blow_out, n) or [False] * n
+    liquid, drawn, classes = self._get_piston_volumes(
+      containers,
+      channel_of,
+      tips,
+      volumes,
+      piston_volumes,
+      hamilton_liquid_classes,
+      jets,
+      blow_outs,
+    )
+    heights = self._per_container("liquid_heights", liquid_heights, n) or [None] * n
+    mixes = self._per_container("pre_mixes", pre_mixes, n) or [None] * n
 
     def from_class(
       name: str, given: Optional[Sequence[Any]], attribute: str
     ) -> Optional[List[Any]]:
       """What is given, else what the liquid classes say, else nothing: legacy's own defaults."""
-      values = per_container(name, given)
+      values = self._per_container(name, given, n)
       if values is None and classes is not None:
         values = [getattr(hlc, attribute) for hlc in classes]
       return values
@@ -5229,17 +5613,21 @@ class Pipettes:
       "blow_out_air_volumes": from_class(
         "blow_out_air_volumes", blow_out_air_volumes, "aspiration_blow_out_volume"
       ),
-      "pre_wetting_volumes": per_container("pre_wetting_volumes", pre_wetting_volumes),
-      "immersion_depths": per_container("immersion_depths", immersion_depths),
-      "mix_positions_from_liquid_surface": per_container(
-        "mix_positions_from_liquid_surface", mix_positions_from_liquid_surface
+      "pre_wetting_volumes": self._per_container("pre_wetting_volumes", pre_wetting_volumes, n),
+      "immersion_depths": self._per_container("immersion_depths", immersion_depths, n),
+      "mix_positions_from_liquid_surface": self._per_container(
+        "mix_positions_from_liquid_surface", mix_positions_from_liquid_surface, n
       ),
-      "second_section_heights": per_container("second_section_heights", second_section_heights),
-      "second_section_ratios": per_container("second_section_ratios", second_section_ratios),
-      "pull_out_distances_transport_air": per_container(
-        "pull_out_distances_transport_air", pull_out_distances_transport_air
+      "second_section_heights": self._per_container(
+        "second_section_heights", second_section_heights, n
       ),
-      "limit_curve_indices": per_container("limit_curve_indices", limit_curve_indices),
+      "second_section_ratios": self._per_container(
+        "second_section_ratios", second_section_ratios, n
+      ),
+      "pull_out_distances_transport_air": self._per_container(
+        "pull_out_distances_transport_air", pull_out_distances_transport_air, n
+      ),
+      "limit_curve_indices": self._per_container("limit_curve_indices", limit_curve_indices, n),
       "settling_times": from_class("settling_times", settling_times, "aspiration_settling_time"),
       "swap_speeds": from_class("swap_speeds", swap_speeds, "aspiration_swap_speed"),
       "transport_air_volumes": from_class(
@@ -5274,57 +5662,15 @@ class Pipettes:
       standing[channel] += blow_out_air[job] + drawn[job] + transport_air[job]
       filled[channel] += blow_out_air[job] + drawn[job] + transport_air[job]
 
-    # The heights on the deck, in mm: the floor, where a search starts, and the surface.
-    dz = [0.0] * n if resource_offsets is None else [offset.z for offset in resource_offsets]
-    floors = [
-      round(c.get_location_wrt(deck, "c", "c", "cavity_bottom").z + z, 2)
-      for c, z in zip(containers, dz)
-    ]
-    # The floor sent is the caller's when given; the heights are still measured from the cavity
-    # bottom, since the liquid stands on that.
-    given_floors = per_container(
-      "minimum_allowed_z_positions_during", minimum_allowed_z_positions_during
+    given_floors = self._per_container(
+      "minimum_allowed_z_positions_during", minimum_allowed_z_positions_during, n
     )
-    sent_floors = list(given_floors) if given_floors is not None else list(floors)
-    tops = [round(c.get_location_wrt(deck, "c", "c", "t").z + z, 2) for c, z in zip(containers, dz)]
-    searches = [
-      round(
-        c.get_location_wrt(deck, "c", "c", "t").z
-        + z
-        + (
-          self.well_search_start_clearance if isinstance(c, Well) else self.search_start_clearance
-        ),
-        2,
-      )
-      for c, z in zip(containers, dz)
-    ]
+    floors, sent_floors, tops, searches, surfaces = self._get_pipetting_heights(
+      deck, containers, resource_offsets, given_floors, heights, modes, searched
+    )
     tracking = does_volume_tracking()
-    following = per_container("surface_following_distances", surface_following_distances)
+    following = self._per_container("surface_following_distances", surface_following_distances, n)
     computed_following = [0.0] * n
-    # OFF draws where the caller says, the cavity bottom by default; a search finds its surface.
-    told = [job for job in range(n) if heights[job] is not None and modes[job] != self.LLDMode.OFF]
-    if told:
-      raise ValueError(
-        f"liquid_heights given for {[containers[job].name for job in told]}, whose LLD mode finds "
-        "the surface itself; give None there"
-      )
-    surfaces = [round(floors[job] + (heights[job] or 0.0), 2) for job in range(n)]
-
-    searched = [job for job in range(n) if modes[job] in searching_modes]
-    if searched:
-      # What a search finds becomes a volume by the container's own functions: refused here,
-      # before anything moves, not at the batch that would need them.
-      lacking = [
-        containers[job].name
-        for job in searched
-        if not containers[job].supports_compute_height_volume_functions()
-      ]
-      if lacking:
-        raise RuntimeError(
-          f"{lacking} have no height-volume functions, so what a search finds in them cannot become "
-          "a volume. Generate a height_volume_data dictionary for each and consider contributing "
-          "it back to PyLabRobot :)"
-        )
     _, overhangs, batches = await self._prepare_batched(
       deck,
       containers,
@@ -5336,109 +5682,38 @@ class Pipettes:
       presence=presence,
     )
 
-    async def touch(batch: ChannelBatch) -> None:
-      """Touch the floor where the batch's channels are to, and aspirate from it."""
-      pairs = [(ch, job) for ch, job in zip(batch.channels, batch.indices) if job in touched]
-      if not pairs:
-        return
-      subset = dataclasses.replace(
-        batch, channels=[ch for ch, _ in pairs], indices=[job for _, job in pairs]
-      )
-      found = await self._probe_batch_floors(
-        subset,
-        overhangs=overhangs,
-        z_cavity_bottom=floors,
-        z_top=tops,
-        search_speed=search_speed,
-        approach_speed=approach_speed,
-        n_replicates=1,
-      )
-      for channel, job in pairs:
-        height = found[job][0]
-        if height is None:
-          raise RuntimeError(
-            f"channel {channel} met no floor in {containers[job].name} down to "
-            f"{self.search_limit_below_cavity_bottom} mm under its modelled cavity bottom"
-          )
-        logger.info(
-          "channel %d touched the floor of %s at %.2f mm, the model has it at %.2f mm",
-          channel,
-          containers[job].name,
-          height,
-          floors[job],
-        )
-        surfaces[job] = height
-        if given_floors is None:
-          sent_floors[job] = height
-
     async def search(batch: ChannelBatch) -> None:
-      """Find the liquid where the batch's channels search for it, and put it into the model."""
-      await touch(batch)
-      pairs = [(ch, job) for ch, job in zip(batch.channels, batch.indices) if job in searched]
-      if not pairs:
-        return
-      subset = dataclasses.replace(
-        batch, channels=[ch for ch, _ in pairs], indices=[job for _, job in pairs]
-      )
-      found = await self._probe_batch_liquid_heights(
-        subset,
+      """Touch the floors and find the liquid where the batch's channels are to, model included."""
+      await self._touch_floors_of_batch(
+        batch,
+        touched,
         containers,
-        overhangs=overhangs,
-        z_cavity_bottom=floors,
-        z_start=searches,
-        lld_modes=modes,
-        search_speed=search_speed,
-        n_replicates=1,
-        approach_speed=approach_speed,
+        overhangs,
+        floors,
+        tops,
+        search_speed,
+        approach_speed,
+        surfaces,
+        sent_floors,
+        given_floors is not None,
       )
-      for channel, job in pairs:
-        height = found[job][0]
-        if height is None:
-          raise RuntimeError(f"channel {channel} found no liquid in {containers[job].name}")
-        surfaces[job] = height
-        above_bottom = round(height - floors[job], 2)
-        if above_bottom < 0:
-          # The plate sits lower than the model: the floor sent follows the surface found, or the
-          # firmware would hold the tip above it.
-          if given_floors is None:
-            sent_floors[job] = height
-          logger.warning(
-            "channel %d found the liquid of %s %.2f mm below its modelled cavity bottom; the floor "
-            "sent is the surface found",
-            channel,
-            containers[job].name,
-            -above_bottom,
-          )
-          continue
-        try:
-          computed_following[job] = self._get_surface_following_distance(
-            containers[job], above_bottom, liquid[job]
-          )
-          measured = containers[job].compute_volume_from_height(above_bottom)
-        except ValueError:
-          # A plate seated off the model, or a fill past the data: the surface found still counts.
-          logger.warning(
-            "channel %d found the liquid of %s %.2f mm above its modelled cavity bottom, outside "
-            "its height-volume data; the tip follows nothing and the model keeps %.1f uL",
-            channel,
-            containers[job].name,
-            above_bottom,
-            containers[job].tracker.get_used_volume(),
-          )
-          continue
-        if tracking:
-          expected = containers[job].tracker.get_used_volume()
-          # A measurement stacks the sensor, the 0.1 mm of the read, the well's model and where
-          # the plate really sits, so it is only ever off by so much before it is worth a word.
-          if abs(measured - expected) > 0.2 * expected:
-            logger.warning(
-              "channel %d measured %.1f uL in %s where the model had %.1f uL",
-              channel,
-              measured,
-              containers[job].name,
-              expected,
-            )
-          containers[job].tracker.set_volume(measured)
+      await self._search_liquid_of_batch(
+        batch,
+        searched,
+        containers,
+        overhangs,
+        floors,
+        searches,
+        modes,
+        search_speed,
+        approach_speed,
+        surfaces,
+        sent_floors,
+        given_floors is not None,
+        computed_following,
+        liquid,
+        tracking,
+      )
 
     async def send(batch: ChannelBatch) -> None:
       """One `C0 AS` for the batch, from the heights as they stand."""
@@ -5476,69 +5751,28 @@ class Pipettes:
         **per_channel_settings,
       )
 
+    def piston_after(standing: float, job: int) -> float:
+      return float(round(standing + drawn[job] + blow_out_air[job] + transport_air[job], 1))
+
     async def run(batch: ChannelBatch) -> None:
-      jobs = batch.indices
-      await search(batch)
-      # The model gives before the device draws, so a short container or a full tip refuses here,
-      # before this batch's command; committed as the command succeeds.
-      moves: List[float] = []
-      trackers = []
-      try:
-        if tracking:
-          for channel, job in zip(batch.channels, jobs):
-            # A draw past what the container holds takes the rest as air, which is how a well is
-            # emptied on purpose; the model records the liquid that moved.
-            held = containers[job].tracker.get_used_volume()
-            moved = min(liquid[job], held)
-            if moved < liquid[job]:
-              # Emptying is what a Z touch is for; elsewhere it is worth a warning.
-              (logger.info if job in touched else logger.warning)(
-                "channel %d draws %.1f uL from %s, which holds %.1f uL; the rest is air",
-                channel,
-                liquid[job],
-                containers[job].name,
-                held,
-              )
-            # Booked before either tracker may refuse, so a refusal rolls back what came before it.
-            trackers += [containers[job].tracker, tips[job].tracker]
-            containers[job].tracker.remove_liquid(moved)
-            tips[job].tracker.add_liquid(moved)
-            moves.append(moved)
-        await send(batch)
-      except BaseException:
-        for tracker in trackers:
-          tracker.rollback()
-        # A command that failed part way drew on some channels: each piston stands past its
-        # blow-out air by the liquid it took, up to what its container gave.
-        if tracking and len(moves) == len(jobs):
-          for index, (channel, job) in enumerate(zip(batch.channels, jobs)):
-            before = self.piston_positions[channel]
-            try:
-              now = await self.dispensing_drive_request_uL_position(channel)
-            except Exception:
-              logger.warning(
-                "could not read channel %d's piston; what it drew is not in the model", channel
-              )
-              continue
-            drew = round(min(max(now - before - blow_out_air[job], 0.0), moves[index]), 1)
-            if drew > 0:
-              containers[job].tracker.remove_liquid(drew)
-              tips[job].tracker.add_liquid(drew)
-              containers[job].tracker.commit()
-              tips[job].tracker.commit()
-              logger.warning(
-                "channel %d drew %.1f uL from %s before the command failed; the model has it",
-                channel,
-                drew,
-                containers[job].name,
-              )
-        raise
-      for tracker in trackers:
-        tracker.commit()
-      for channel, job in zip(batch.channels, jobs):
-        self.piston_positions[channel] = round(
-          self.piston_positions[channel] + drawn[job] + blow_out_air[job] + transport_air[job], 1
-        )
+      # The container gives before the device draws; a draw past what it holds takes the rest as
+      # air, which is how a well is emptied on purpose, so under ZTOUCH that is an info line.
+      await self._pipette_batch(
+        batch,
+        search,
+        send,
+        containers,
+        liquid,
+        givers=[container.tracker for container in containers],
+        takers=[tip.tracker for tip in tips],
+        quiet=touched,
+        air_before_liquid=blow_out_air,
+        piston_sign=1,
+        piston_after=piston_after,
+        tracking=tracking,
+        short_message="channel %d draws %.1f uL from %s, which holds %.1f uL; the rest is air",
+        booked_message="channel %d drew %.1f uL from %s before the command failed; the model has it",
+      )
 
     await self._execute_batched(run, batches, during)
 
@@ -6080,15 +6314,8 @@ class Pipettes:
     during = default if minimum_traverse_height_during is None else minimum_traverse_height_during
     end = default if minimum_traverse_height_end is None else minimum_traverse_height_end
 
-    def per_container(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:
-      if given is None:
-        return None
-      if len(given) != n:
-        raise ValueError(f"{name} must have one entry per container, {n}, has {len(given)}")
-      return list(given)
-
-    modes = per_container(
-      "lld_mode", [lld_mode] * n if isinstance(lld_mode, self.LLDMode) else list(lld_mode)
+    modes = self._per_container(
+      "lld_mode", [lld_mode] * n if isinstance(lld_mode, self.LLDMode) else list(lld_mode), n
     )
     assert modes is not None
     for job, mode in enumerate(modes):
@@ -6099,88 +6326,40 @@ class Pipettes:
         )
     touched = [job for job in range(n) if modes[job] == self.LLDMode.ZTOUCH]
     searched = [job for job in range(n) if modes[job] == self.LLDMode.CAPACITIVE]
-    if (volumes is None) == (piston_volumes is None):
-      raise ValueError(
-        "give volumes, which a liquid class corrects, or piston_volumes, pushed out as given; not "
-        "both and not neither"
-      )
-    if piston_volumes is not None and hamilton_liquid_classes is not None:
-      raise ValueError("piston_volumes are pushed out as given; a liquid class would correct them")
+    self._check_volume_arguments(volumes, piston_volumes, hamilton_liquid_classes, "pushed out")
 
-    # The channels the containers are dealt to, as `_prepare_batched` deals them, and their tips.
-    dealt = use_channels or list(range(min(n, self.num_channels)))
-    channel_of = [dealt[job % len(dealt)] for job in range(n)]
-    # The channels say what they carry before anything else is worked out from the model's tips.
-    presence = await self.sense_tip_presence()
-    bare = sorted({channel for channel in channel_of if not presence[channel]})
-    if bare:
-      raise RuntimeError(f"channels {bare} carry no tip; a dispense needs one on each")
-    # Where the pistons stand, read once; each batch's command moves the model on from there.
-    await self.dispensing_drives_request_uL_positions(sorted(set(channel_of)))
-    for job in touched:
-      self._require_ztouch_firmware(channel_of[job])
-    self._warn_ztouch_on_soft_tips(channel_of[job] for job in touched)
+    channel_of = self._get_channel_of_each_container(n, use_channels)
+    presence, tips = await self._sense_pipetting_channels(channel_of, touched, "a dispense")
     if touched:
       logger.warning(
         "channels %s dispense on Z touch: onto the floor of %s",
         sorted({channel_of[job] for job in touched}),
         [containers[job].name for job in touched],
       )
-    tips: List[HamiltonTip] = []
-    for channel in channel_of:
-      tip = self.get_mounted_tip(channel)
-      if tip is None:
-        raise RuntimeError(f"channel {channel} is not modelled with a tip; a dispense needs one")
-      if not isinstance(tip, HamiltonTip):
-        raise TypeError(f"channel {channel} carries {tip.name}, not a Hamilton tip")
-      tips.append(tip)
-
-    jets = per_container("jet", jet) or [False] * n
-    blow_outs = per_container("blow_out", blow_out) or [False] * n
-    empties = per_container("empty", empty) or [False] * n
+    jets = self._per_container("jet", jet, n) or [False] * n
+    blow_outs = self._per_container("blow_out", blow_out, n) or [False] * n
+    empties = self._per_container("empty", empty, n) or [False] * n
     dispensing_modes = [
       self._get_dispensing_mode(jets[job], blow_outs[job], empties[job]) for job in range(n)
     ]
-    classes: Optional[List[HamiltonLiquidClass]] = None
-    if volumes is not None:
-      liquid = per_container("volumes", volumes)
-      assert liquid is not None
-      classes = per_container("hamilton_liquid_classes", hamilton_liquid_classes)
-      if classes is None:
-        classes = []
-        for job, tip in enumerate(tips):
-          found = get_star_liquid_class(
-            tip_volume=tip.maximal_volume,
-            is_core=False,
-            is_tip=True,
-            has_filter=tip.has_filter,
-            liquid=Liquid.WATER,
-            jet=jets[job],
-            blow_out=blow_outs[job],
-          )
-          if found is None:
-            raise ValueError(
-              f"no liquid class is known for channel {channel_of[job]}'s tip on "
-              f"{containers[job].name}: {tip.maximal_volume} uL, "
-              f"{'with' if tip.has_filter else 'without'} filter, water, jet={jets[job]}, "
-              f"blow_out={blow_outs[job]}. Give hamilton_liquid_classes, or piston_volumes"
-            )
-          classes.append(found)
-      pushed = [
-        round(hlc.compute_corrected_volume(volume), 2) for hlc, volume in zip(classes, liquid)
-      ]
-    else:
-      assert piston_volumes is not None
-      pushed = per_container("piston_volumes", piston_volumes) or []
-      liquid = pushed
-    heights = per_container("liquid_heights", liquid_heights) or [None] * n
-    mixes = per_container("post_mixes", post_mixes) or [None] * n
+    liquid, pushed, classes = self._get_piston_volumes(
+      containers,
+      channel_of,
+      tips,
+      volumes,
+      piston_volumes,
+      hamilton_liquid_classes,
+      jets,
+      blow_outs,
+    )
+    heights = self._per_container("liquid_heights", liquid_heights, n) or [None] * n
+    mixes = self._per_container("post_mixes", post_mixes, n) or [None] * n
 
     def from_class(
       name: str, given: Optional[Sequence[Any]], attribute: str
     ) -> Optional[List[Any]]:
       """What is given, else what the liquid classes say, else nothing: legacy's own defaults."""
-      values = per_container(name, given)
+      values = self._per_container(name, given, n)
       if values is None and classes is not None:
         values = [getattr(hlc, attribute) for hlc in classes]
       return values
@@ -6190,23 +6369,27 @@ class Pipettes:
       "transport_air_volumes": from_class(
         "transport_air_volumes", transport_air_volumes, "dispense_air_transport_volume"
       ),
-      "cut_off_speeds": per_container("cut_off_speeds", cut_off_speeds),
+      "cut_off_speeds": self._per_container("cut_off_speeds", cut_off_speeds, n),
       "stop_back_volumes": from_class(
         "stop_back_volumes", stop_back_volumes, "dispense_stop_back_volume"
       ),
       "blow_out_air_volumes": from_class(
         "blow_out_air_volumes", blow_out_air_volumes, "dispense_blow_out_volume"
       ),
-      "immersion_depths": per_container("immersion_depths", immersion_depths),
-      "mix_positions_from_liquid_surface": per_container(
-        "mix_positions_from_liquid_surface", mix_positions_from_liquid_surface
+      "immersion_depths": self._per_container("immersion_depths", immersion_depths, n),
+      "mix_positions_from_liquid_surface": self._per_container(
+        "mix_positions_from_liquid_surface", mix_positions_from_liquid_surface, n
       ),
-      "second_section_heights": per_container("second_section_heights", second_section_heights),
-      "second_section_ratios": per_container("second_section_ratios", second_section_ratios),
-      "pull_out_distances_transport_air": per_container(
-        "pull_out_distances_transport_air", pull_out_distances_transport_air
+      "second_section_heights": self._per_container(
+        "second_section_heights", second_section_heights, n
       ),
-      "limit_curve_indices": per_container("limit_curve_indices", limit_curve_indices),
+      "second_section_ratios": self._per_container(
+        "second_section_ratios", second_section_ratios, n
+      ),
+      "pull_out_distances_transport_air": self._per_container(
+        "pull_out_distances_transport_air", pull_out_distances_transport_air, n
+      ),
+      "limit_curve_indices": self._per_container("limit_curve_indices", limit_curve_indices, n),
       "settling_times": from_class("settling_times", settling_times, "dispense_settling_time"),
       "swap_speeds": from_class("swap_speeds", swap_speeds, "dispense_swap_speed"),
     }
@@ -6238,52 +6421,15 @@ class Pipettes:
       standing[channel] = 0.0 if dispensing_modes[job] == 4 else standing[channel] - travels[job]
       room[id(containers[job])] -= liquid[job]
 
-    # The heights on the deck, in mm: the floor, where a search starts, and the surface.
-    dz = [0.0] * n if resource_offsets is None else [offset.z for offset in resource_offsets]
-    floors = [
-      round(c.get_location_wrt(deck, "c", "c", "cavity_bottom").z + z, 2)
-      for c, z in zip(containers, dz)
-    ]
-    given_floors = per_container(
-      "minimum_allowed_z_positions_during", minimum_allowed_z_positions_during
+    given_floors = self._per_container(
+      "minimum_allowed_z_positions_during", minimum_allowed_z_positions_during, n
     )
-    sent_floors = list(given_floors) if given_floors is not None else list(floors)
-    tops = [round(c.get_location_wrt(deck, "c", "c", "t").z + z, 2) for c, z in zip(containers, dz)]
-    searches = [
-      round(
-        c.get_location_wrt(deck, "c", "c", "t").z
-        + z
-        + (
-          self.well_search_start_clearance if isinstance(c, Well) else self.search_start_clearance
-        ),
-        2,
-      )
-      for c, z in zip(containers, dz)
-    ]
+    floors, sent_floors, tops, searches, surfaces = self._get_pipetting_heights(
+      deck, containers, resource_offsets, given_floors, heights, modes, searched
+    )
     tracking = does_volume_tracking()
-    following = per_container("surface_following_distances", surface_following_distances)
+    following = self._per_container("surface_following_distances", surface_following_distances, n)
     computed_following = [0.0] * n
-    # OFF dispenses where the caller says, the cavity bottom by default; a search finds the surface.
-    told = [job for job in range(n) if heights[job] is not None and modes[job] != self.LLDMode.OFF]
-    if told:
-      raise ValueError(
-        f"liquid_heights given for {[containers[job].name for job in told]}, whose LLD mode finds "
-        "the surface itself; give None there"
-      )
-    surfaces = [round(floors[job] + (heights[job] or 0.0), 2) for job in range(n)]
-
-    if searched:
-      lacking = [
-        containers[job].name
-        for job in searched
-        if not containers[job].supports_compute_height_volume_functions()
-      ]
-      if lacking:
-        raise RuntimeError(
-          f"{lacking} have no height-volume functions, so what a search finds in them cannot become "
-          "a volume. Generate a height_volume_data dictionary for each and consider contributing "
-          "it back to PyLabRobot :)"
-        )
     _, overhangs, batches = await self._prepare_batched(
       deck,
       containers,
@@ -6295,105 +6441,39 @@ class Pipettes:
       presence=presence,
     )
 
-    async def touch(batch: ChannelBatch) -> None:
-      """Touch the floor where the batch's channels are to, and dispense onto it."""
-      pairs = [(ch, job) for ch, job in zip(batch.channels, batch.indices) if job in touched]
-      if not pairs:
-        return
-      subset = dataclasses.replace(
-        batch, channels=[ch for ch, _ in pairs], indices=[job for _, job in pairs]
-      )
-      found = await self._probe_batch_floors(
-        subset,
-        overhangs=overhangs,
-        z_cavity_bottom=floors,
-        z_top=tops,
-        search_speed=search_speed,
-        approach_speed=approach_speed,
-        n_replicates=1,
-      )
-      for channel, job in pairs:
-        height = found[job][0]
-        if height is None:
-          raise RuntimeError(
-            f"channel {channel} met no floor in {containers[job].name} down to "
-            f"{self.search_limit_below_cavity_bottom} mm under its modelled cavity bottom"
-          )
-        logger.info(
-          "channel %d touched the floor of %s at %.2f mm, the model has it at %.2f mm",
-          channel,
-          containers[job].name,
-          height,
-          floors[job],
-        )
-        surfaces[job] = height
-        if given_floors is None:
-          sent_floors[job] = height
-
     async def search(batch: ChannelBatch) -> None:
-      """Find the liquid where the batch's channels search for it, and put it into the model."""
-      await touch(batch)
-      pairs = [(ch, job) for ch, job in zip(batch.channels, batch.indices) if job in searched]
-      if not pairs:
-        return
-      subset = dataclasses.replace(
-        batch, channels=[ch for ch, _ in pairs], indices=[job for _, job in pairs]
-      )
-      found = await self._probe_batch_liquid_heights(
-        subset,
+      """Touch the floors and find the liquid where the batch's channels are to, model included."""
+      await self._touch_floors_of_batch(
+        batch,
+        touched,
         containers,
-        overhangs=overhangs,
-        z_cavity_bottom=floors,
-        z_start=searches,
-        lld_modes=modes,
-        search_speed=search_speed,
-        n_replicates=1,
-        approach_speed=approach_speed,
+        overhangs,
+        floors,
+        tops,
+        search_speed,
+        approach_speed,
+        surfaces,
+        sent_floors,
+        given_floors is not None,
       )
-      for channel, job in pairs:
-        height = found[job][0]
-        if height is None:
-          raise RuntimeError(f"channel {channel} found no liquid in {containers[job].name}")
-        surfaces[job] = height
-        above_bottom = round(height - floors[job], 2)
-        if above_bottom < 0:
-          if given_floors is None:
-            sent_floors[job] = height
-          logger.warning(
-            "channel %d found the liquid of %s %.2f mm below its modelled cavity bottom; the floor "
-            "sent is the surface found",
-            channel,
-            containers[job].name,
-            -above_bottom,
-          )
-          continue
-        try:
-          # The surface rises by what comes in: the following distance is that rise.
-          computed_following[job] = self._get_surface_following_distance(
-            containers[job], above_bottom, -liquid[job]
-          )
-          measured = containers[job].compute_volume_from_height(above_bottom)
-        except ValueError:
-          logger.warning(
-            "channel %d found the liquid of %s %.2f mm above its modelled cavity bottom, outside "
-            "its height-volume data; the tip follows nothing and the model keeps %.1f uL",
-            channel,
-            containers[job].name,
-            above_bottom,
-            containers[job].tracker.get_used_volume(),
-          )
-          continue
-        if tracking:
-          expected = containers[job].tracker.get_used_volume()
-          if abs(measured - expected) > 0.2 * expected:
-            logger.warning(
-              "channel %d measured %.1f uL in %s where the model had %.1f uL",
-              channel,
-              measured,
-              containers[job].name,
-              expected,
-            )
-          containers[job].tracker.set_volume(measured)
+      # The surface rises by what comes in: the following distance is that rise.
+      await self._search_liquid_of_batch(
+        batch,
+        searched,
+        containers,
+        overhangs,
+        floors,
+        searches,
+        modes,
+        search_speed,
+        approach_speed,
+        surfaces,
+        sent_floors,
+        given_floors is not None,
+        computed_following,
+        [-v for v in liquid],
+        tracking,
+      )
 
     async def send(batch: ChannelBatch) -> None:
       """One `C0 DS` for the batch, from the heights as they stand."""
@@ -6431,66 +6511,31 @@ class Pipettes:
         **per_channel_settings,
       )
 
+    def piston_after(standing: float, job: int) -> float:
+      if dispensing_modes[job] == 4:
+        return 0.0
+      return float(round(max(standing - travels[job], 0.0), 1))
+
     async def run(batch: ChannelBatch) -> None:
-      jobs = batch.indices
-      await search(batch)
-      # The model gives before the device pushes: a tip holding less gives what it holds, the rest
-      # is air; committed as the command succeeds.
-      moves: List[float] = []
-      trackers = []
-      try:
-        if tracking:
-          for channel, job in zip(batch.channels, jobs):
-            held = tips[job].tracker.get_used_volume()
-            moved = min(liquid[job], held)
-            if moved < liquid[job]:
-              logger.warning(
-                "channel %d dispenses %.1f uL into %s from a tip holding %.1f uL; the rest is air",
-                channel,
-                liquid[job],
-                containers[job].name,
-                held,
-              )
-            trackers += [tips[job].tracker, containers[job].tracker]
-            tips[job].tracker.remove_liquid(moved)
-            containers[job].tracker.add_liquid(moved)
-            moves.append(moved)
-        await send(batch)
-      except BaseException:
-        for tracker in trackers:
-          tracker.rollback()
-        # A command that failed part way pushed on some channels: each piston stands short of
-        # where it was by the transport air and the liquid it gave, up to what was booked.
-        if tracking and len(moves) == len(jobs):
-          for index, (channel, job) in enumerate(zip(batch.channels, jobs)):
-            before = self.piston_positions[channel]
-            try:
-              now = await self.dispensing_drive_request_uL_position(channel)
-            except Exception:
-              logger.warning(
-                "could not read channel %d's piston; what it gave is not in the model", channel
-              )
-              continue
-            gave = round(min(max(before - now - transport_air[job], 0.0), moves[index]), 1)
-            if gave > 0:
-              tips[job].tracker.remove_liquid(gave)
-              containers[job].tracker.add_liquid(gave)
-              tips[job].tracker.commit()
-              containers[job].tracker.commit()
-              logger.warning(
-                "channel %d gave %.1f uL into %s before the command failed; the model has it",
-                channel,
-                gave,
-                containers[job].name,
-              )
-        raise
-      for tracker in trackers:
-        tracker.commit()
-      for channel, job in zip(batch.channels, jobs):
-        self.piston_positions[channel] = (
-          0.0
-          if dispensing_modes[job] == 4
-          else round(max(self.piston_positions[channel] - travels[job], 0.0), 1)
-        )
+      # The tip gives before the device pushes; a tip holding less gives what it holds, the rest
+      # is air.
+      await self._pipette_batch(
+        batch,
+        search,
+        send,
+        containers,
+        liquid,
+        givers=[tip.tracker for tip in tips],
+        takers=[container.tracker for container in containers],
+        quiet=[],
+        air_before_liquid=transport_air,
+        piston_sign=-1,
+        piston_after=piston_after,
+        tracking=tracking,
+        short_message=(
+          "channel %d dispenses %.1f uL into %s from a tip holding %.1f uL; the rest is air"
+        ),
+        booked_message="channel %d gave %.1f uL into %s before the command failed; the model has it",
+      )
 
     await self._execute_batched(run, batches, during)
