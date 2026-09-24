@@ -3593,15 +3593,15 @@ class Pipettes:
       ys.append(round(centre.y * 10))
       placed[channel] = (centre.x, centre.y)
 
-    # As legacy checks them: each pair taking part by itself, not the channels between them. Where
-    # those leave the pair too little room, the firmware arranges the channels, as it does for
-    # legacy's commands.
+    # Each pair taking part by itself, as legacy checks them; the firmware arranges the channels
+    # between. Distances in tenths, as the command carries them: 9.0 mm is 9.0 mm, float or not.
     for i, (xi, yi) in placed.items():
       for j, (xj, yj) in placed.items():
         # Channels in different columns are separate moves on the device.
-        if i < j and round(xi, 1) == round(xj, 1) and abs(yi - yj) < self._min_pair_spacing(i, j):
+        apart = round(abs(yi - yj), 1)
+        if i < j and round(xi, 1) == round(xj, 1) and apart < self._min_pair_spacing(i, j):
           raise ValueError(
-            f"channels {i} and {j} would be {abs(yi - yj):.1f} mm apart in Y, closer than "
+            f"channels {i} and {j} would be {apart} mm apart in Y, closer than "
             f"{self._min_pair_spacing(i, j)} mm"
           )
 

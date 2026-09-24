@@ -928,6 +928,14 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
     )
     self.pipettes._record_after_command.assert_awaited_once()  # type: ignore[attr-defined]
 
+  async def test_wells_a_pitch_apart_in_floating_point_are_accepted(self):
+    # 145.7 - 136.7 is 8.999999999999986 in floating point; the firmware gets 9.0 mm.
+    locations = [Coordinate(300.0, 145.7, 150.0), Coordinate(300.0, 136.7, 150.0)]
+    await self.pipettes._aspirate_in_one_move(
+      [0, 1], locations, self.searches, self.floors, [10.0, 10.0]
+    )
+    self.assertEqual(self.sent()["y_positions"], [1457, 1367, 0])
+
   async def test_the_end_height_is_any_the_tips_reach(self):
     await self.pipettes._aspirate_in_one_move(
       [0, 1],
