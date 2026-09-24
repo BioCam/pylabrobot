@@ -49,6 +49,12 @@ const UNITS = {
   maximal_volume: "uL",
 };
 
+// 1, 2 or 5 times a power of ten: the spacings a person can count in.
+export function niceNumber(value) {
+  const magnitude = 10 ** Math.floor(Math.log10(Math.max(value, 1e-6)));
+  return [1, 2, 5, 10].map((m) => m * magnitude).find((v) => v >= value) ?? magnitude * 10;
+}
+
 /** A colour number as CSS writes it. */
 export const hexOf = (n) => `#${n.toString(16).padStart(6, "0")}`;
 

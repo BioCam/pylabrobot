@@ -31,6 +31,7 @@ import {
   REFERENCE_WIDTH,
 } from "./constants.js";
 import { carried, disposeOwned, OVERLAY_ORDER, own, paintOrderOf } from "./drawn.js";
+import { hexOf, niceNumber } from "./format.js";
 import { camera, controls, mmPerPixel, view, viewportEl } from "./renderer.js";
 import { modelOf, sizeOf, world } from "./world.js";
 
@@ -122,7 +123,7 @@ function labelSprite(text, color = GRID_LABEL, sizeMm = GRID_LABEL_MM) {
 // Where the device's x refers to, from the resource's own origin. Declared by the resource, so the
 // viewer needs no knowledge of rail types: a dual-rail arm reports its centre, a single-rail one its
 // right edge, and the line lands in the right place either way. Half the width when undeclared.
-export function referenceOffset(model) {
+function referenceOffset(model) {
   const [sx] = sizeOf(model);
   return model.reference_point?.x ?? sx / 2;
 }
@@ -202,10 +203,42 @@ function gripCross(reach, width, opening) {
   return new THREE.ShapeGeometry(shapes);
 }
 
-// The floor grid follows the view, the way the existing visualizer's does: its spacing is chosen
-// from how many millimetres a pixel is worth, and it re-centres on what you are looking at. A grid
-// fixed at build time is a grid that means nothing once you zoom.
-export let grid = null;
+/** A crosshair lying flat at the grip centre, where the tool says its grip centre is. */
+function buildGripMark(index, model, pad) {
+  const tcp = model.tool_center_point;
+  const [along] = sizeOf(pad);
+  const plane = new THREE.Mesh(
+    gripCross(along, GRIP_MARK_WIDTH, GRIP_MARK_OPENING),
+    new THREE.MeshBasicMaterial({
+      color: REFERENCE_LINE,
+      transparent: true,
+      opacity: GRIP_MARK_OPACITY,
+      depthTest: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  own(buildReferenceMarks, plane.geometry, plane.material);
+  plane.frustumCulled = false;
+  plane.renderOrder = OVERLAY_ORDER + 5;
+  plane.matrixAutoUpdate = false;
+  // Lying flat, centred where the tool says it is programmed against. Read from the tool rather
+  // than taken as the far end of its own box: the two agree on this gripper, and only because its
+  // box is its link length - a tool that grips somewhere other than its tip would have the mark
+  // drawn at the tip, which is the one place it is not.
+  //
+  // The tool states that point from its joint, not from its own origin, so the joint is added back:
+  // left out, the mark stands the joint's offset away from where the jaws close.
+  const joint = model.proximal_joint;
+  plane.userData.local = new THREE.Matrix4().makeTranslation(
+    joint.x + tcp.x,
+    joint.y + tcp.y,
+    joint.z + tcp.z,
+  );
+  plane.matrix.multiplyMatrices(world.matrices[index], plane.userData.local);
+  plane.matrixWorldNeedsUpdate = true;
+  view.add(plane);
+  referenceMarks.push({ plane, index });
+}
 
 export function buildReferenceMarks() {
   for (const mark of referenceMarks) view.remove(mark.plane);
@@ -274,43 +307,6 @@ export function buildReferenceMarks() {
     view.add(plane);
     referenceMarks.push({ plane, index });
   }
-}
-
-/** A crosshair lying flat at the grip centre, where the tool says its grip centre is. */
-function buildGripMark(index, model, pad) {
-  const tcp = model.tool_center_point;
-  const [along] = sizeOf(pad);
-  const plane = new THREE.Mesh(
-    gripCross(along, GRIP_MARK_WIDTH, GRIP_MARK_OPENING),
-    new THREE.MeshBasicMaterial({
-      color: REFERENCE_LINE,
-      transparent: true,
-      opacity: GRIP_MARK_OPACITY,
-      depthTest: false,
-      side: THREE.DoubleSide,
-    }),
-  );
-  own(buildReferenceMarks, plane.geometry, plane.material);
-  plane.frustumCulled = false;
-  plane.renderOrder = OVERLAY_ORDER + 5;
-  plane.matrixAutoUpdate = false;
-  // Lying flat, centred where the tool says it is programmed against. Read from the tool rather
-  // than taken as the far end of its own box: the two agree on this gripper, and only because its
-  // box is its link length - a tool that grips somewhere other than its tip would have the mark
-  // drawn at the tip, which is the one place it is not.
-  //
-  // The tool states that point from its joint, not from its own origin, so the joint is added back:
-  // left out, the mark stands the joint's offset away from where the jaws close.
-  const joint = model.proximal_joint;
-  plane.userData.local = new THREE.Matrix4().makeTranslation(
-    joint.x + tcp.x,
-    joint.y + tcp.y,
-    joint.z + tcp.z,
-  );
-  plane.matrix.multiplyMatrices(world.matrices[index], plane.userData.local);
-  plane.matrixWorldNeedsUpdate = true;
-  view.add(plane);
-  referenceMarks.push({ plane, index });
 }
 
 /**
@@ -625,7 +621,7 @@ export function buildOriginDots() {
   view.add(originDots);
 }
 
-export function showOriginDotsIf(on) {
+export function setOriginDots(on) {
   showOriginDots = on;
   buildOriginDots();
 }
@@ -745,22 +741,6 @@ export function buildOrigin() {
   updateOrigin();
 }
 
-export let gridState = null;
-
-let floorZ = 0;
-
-/** A new scene stands on a floor at `z`; the grid is laid out again for it. */
-export function resetFloor(z) {
-  floorZ = z;
-  gridState = null;
-}
-
-// 1, 2 or 5 times a power of ten: the spacings a person can count in.
-export function niceNumber(value) {
-  const magnitude = 10 ** Math.floor(Math.log10(Math.max(value, 1e-6)));
-  return [1, 2, 5, 10].map((m) => m * magnitude).find((v) => v >= value) ?? magnitude * 10;
-}
-
 // A halo on each pipetting channel: a disc facing the camera, held at HALO_PX across whatever the
 // zoom. Sprites, one a channel, rather than one instanced quad:
 // a sprite faces the camera on its own and is placed through its own transform, where an
@@ -779,8 +759,6 @@ const HALO_TEXTURE_PX = 96;
 
 /** One texture per look, kept: a look is a number, a ramp step and whether it is filled. */
 const haloTextures = new Map();
-
-export const hexOf = (n) => `#${n.toString(16).padStart(6, "0")}`;
 
 function haloTextureFor(label, step, filled) {
   const key = `${label}|${step}|${filled}`;
@@ -944,7 +922,7 @@ export function refreshHalos() {
   }
 }
 
-export function showHalosIf(on) {
+export function setHalos(on) {
   showHalos = on;
   buildHalos();
 }
@@ -998,10 +976,25 @@ export function updateHalos() {
   }
 }
 
-// Aim for a cell around this many pixels: dense enough to measure against, open enough to see past.
-const GRID_TARGET_PX = 64;
+// The floor lines follow the view, the way the existing visualizer's do: their spacing is chosen
+// from how many millimetres a pixel is worth, and they re-centre on what you are looking at. Lines
+// fixed at build time mean nothing once you zoom.
+let floorLines = null;
 
-const GRID_MAX_DIVISIONS = 320;
+export let floorState = null;
+
+let floorZ = 0;
+
+/** A new scene stands on a floor at `z`; the floor lines are laid out again for it. */
+export function resetFloor(z) {
+  floorZ = z;
+  floorState = null;
+}
+
+// Aim for a cell around this many pixels: dense enough to measure against, open enough to see past.
+const FLOOR_CELL_PX = 64;
+
+const FLOOR_MAX_DIVISIONS = 320;
 
 // The floor is drawn with the same fat lines everything else uses, rather than with `GridHelper`:
 // a hairline is one device pixel whatever width is asked for, which on a retina display is half of
@@ -1047,16 +1040,16 @@ function lineOnZero(centre, half, cell, divisions) {
   return i > -1e-6 && i < divisions + 1e-6 && Math.abs(i - Math.round(i)) < 1e-6;
 }
 
-export function updateGrid() {
+export function updateFloor() {
   const perPixel = mmPerPixel();
   if (!Number.isFinite(perPixel) || perPixel <= 0) return;
 
   const span = perPixel * Math.hypot(viewportEl.clientWidth, viewportEl.clientHeight) * 1.3;
-  // Coarsen the spacing rather than shrink the coverage: a grid that stops inside the viewport
-  // reads as a hole in the floor, whereas a larger cell just reads as a larger cell.
+  // Coarsen the spacing rather than shrink the coverage: lines that stop inside the viewport read
+  // as a hole in the floor, whereas a larger cell just reads as a larger cell.
   const cell = Math.max(
-    niceNumber(perPixel * GRID_TARGET_PX),
-    niceNumber(span / GRID_MAX_DIVISIONS),
+    niceNumber(perPixel * FLOOR_CELL_PX),
+    niceNumber(span / FLOOR_MAX_DIVISIONS),
   );
   const divisions = Math.max(4, Math.ceil(span / cell));
   // Snap the centre to the spacing, or the lines crawl as you pan.
@@ -1064,22 +1057,22 @@ export function updateGrid() {
   const cy = Math.round(controls.target.y / cell) * cell;
 
   if (
-    gridState &&
-    gridState.cell === cell &&
-    gridState.divisions === divisions &&
-    gridState.cx === cx &&
-    gridState.cy === cy
+    floorState &&
+    floorState.cell === cell &&
+    floorState.divisions === divisions &&
+    floorState.cx === cx &&
+    floorState.cy === cy
   ) {
     return;
   }
   const half = (divisions * cell) / 2;
 
   // Only a change of spacing or extent needs new lines; a pan moves the patch it has.
-  if (gridState?.cell !== cell || gridState?.divisions !== divisions) {
-    if (grid) {
-      view.remove(grid);
-      grid.geometry.dispose();
-      grid.material.dispose();
+  if (floorState?.cell !== cell || floorState?.divisions !== divisions) {
+    if (floorLines) {
+      view.remove(floorLines);
+      floorLines.geometry.dispose();
+      floorLines.material.dispose();
     }
     // Already in PLR's XY: the lines are built in the plane rather than laid down from another one.
     const points = [];
@@ -1089,13 +1082,13 @@ export function updateGrid() {
     }
     const geometry = new LineSegmentsGeometry();
     geometry.setPositions(new Float32Array(points));
-    grid = new LineSegments2(geometry, floorMaterial(false));
-    grid.renderOrder = -2; // under the axes, which lie on two of its lines
-    grid.frustumCulled = false;
-    view.add(grid);
+    floorLines = new LineSegments2(geometry, floorMaterial(false));
+    floorLines.renderOrder = -2; // under the axes, which lie on two of its lines
+    floorLines.frustumCulled = false;
+    view.add(floorLines);
   }
-  gridState = { cell, divisions, cx, cy };
-  grid.position.set(cx, cy, floorZ);
+  floorState = { cell, divisions, cx, cy };
+  floorLines.position.set(cx, cy, floorZ);
 
   // An axis is drawn where it lands on a line of the patch, which is zero IN THE WORLD and not
   // the middle of the patch: the patch follows the camera. Off the patch, neither is - the truth.

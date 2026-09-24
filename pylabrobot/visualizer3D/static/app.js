@@ -4,6 +4,7 @@ import { buildMeshes } from "./boxes.js";
 import { PROTOCOL } from "./constants.js";
 import { initDeviceTools } from "./device_tools.js";
 import { hiddenNames, meshes, meshRoots, modelMeshes, stateOf, worldBox } from "./drawn.js";
+import { niceNumber } from "./format.js";
 import {
   afterDraw,
   applyQuality,
@@ -34,12 +35,11 @@ import {
   buildOrigin,
   buildOriginDots,
   buildReferenceMarks,
+  floorState,
   gridLabels,
   gridMarks,
-  gridState,
-  niceNumber,
   resetFloor,
-  updateGrid,
+  updateFloor,
   updateHalos,
   updateOrigin,
 } from "./marks.js";
@@ -79,8 +79,8 @@ import {
   pick,
   populateWrtDropdown,
   refreshToolUI,
-  setHalos,
-  setOriginDots,
+  switchHalos,
+  switchOriginDots,
   updateBullseyes,
   updateDeltaLabels,
 } from "./tools.js";
@@ -312,9 +312,9 @@ function atBoundary(surface) {
     max: hoverBox.box.max.toArray().map((v) => +v.toFixed(1)),
   }),
   // What the toolbar's origins button does, for a test that has no pointer.
-  origins: (on = true) => setOriginDots(on),
+  origins: (on = true) => switchOriginDots(on),
   // What the toolbar's halos button does, for the same reason.
-  halos: (on = true) => setHalos(on),
+  halos: (on = true) => switchHalos(on),
   // The quality level, set when given, for a test that has no slow machine to hand.
   quality: (level) => {
     if (level !== undefined) applyQuality(level);
@@ -394,8 +394,8 @@ function updateScaleBar() {
   // Counted in floor cells rather than rounded on its own, so the bar always spans a whole number
   // of the squares it is drawn over. Both used to pick a nice number from the same 1-2-5 ladder
   // but for different pixel targets, which agree only sometimes - and a scale that disagrees with
-  // the grid beneath it is worse than having no grid to check it against.
-  const cell = gridState?.cell;
+  // the floor beneath it is worse than having no floor to check it against.
+  const cell = floorState?.cell;
   const nice = cell
     ? cell * ([1, 2, 5].find((n) => (n * cell) / perPixel >= SCALE_BAR_PX) ?? 10)
     : niceNumber(perPixel * SCALE_BAR_PX);
@@ -522,7 +522,7 @@ whileMoving(() => gif.isRecording());
 // until the camera next moved, and a view turned to a plan kept the colours of the angle it came
 // from. Nothing here asks for another frame; they are worked out for this one.
 for (const prepare of [
-  updateGrid,
+  updateFloor,
   updateDetail,
   updateEdgeMode,
   updateOrigin,

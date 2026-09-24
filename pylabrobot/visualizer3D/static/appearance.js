@@ -85,7 +85,7 @@ function keepsWalls(entry) {
 
 // How see-through a resource is drawn, whatever the angle it is seen from. A part that travels is
 // the see-through one, because drawn solid it hides whatever it happens to be above.
-function OPACITY_OF(isSpace, moves, own, isShell, standsIn) {
+function opacityOf(isSpace, moves, own, isShell, standsIn) {
   if (isSpace) return SPACE_OPACITY;
   if (moves) return MOVING_OPACITY;
   if (own !== undefined) return own;
@@ -102,7 +102,7 @@ function OPACITY_OF(isSpace, moves, own, isShell, standsIn) {
  * model. Read by the mode change and by the rule that hands the box back and forth with the
  * model, so the two cannot disagree about it. */
 function boxOpacity(entry) {
-  return OPACITY_OF(
+  return opacityOf(
     GROUND.has(entry.model.category),
     MOVING_PARTS.has(entry.model.category),
     CATEGORY_OPACITY[entry.model.category],

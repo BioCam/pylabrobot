@@ -46,8 +46,9 @@ export function initGif(deps) {
     }
   }
 
-  document.getElementById("gif-frame-rate").addEventListener("input", (e) => {
-    frameInterval = Number(/** @type {HTMLInputElement} */ (e.target).value);
+  const frameRate = input("gif-frame-rate");
+  frameRate.addEventListener("input", () => {
+    frameInterval = Number(frameRate.value);
     document.getElementById("current-value").textContent = `Frame Interval: ${frameInterval}`;
   });
 
@@ -55,7 +56,8 @@ export function initGif(deps) {
   gifNotice.style.cssText = "font-size:12px;color:#b02a37;line-height:1.4;text-align:center;";
   document.getElementById("gif-panel").appendChild(gifNotice);
 
-  document.getElementById("start-recording-button").addEventListener("click", () => {
+  const startButton = button("start-recording-button");
+  startButton.addEventListener("click", () => {
     if (captureBroken) return;
     gifNotice.textContent = "";
     capturedFrames = [];
@@ -165,7 +167,7 @@ export function initGif(deps) {
       captureBroken = true;
       showGifBox("start");
       gifNotice.textContent = `Recording failed on this browser: ${error?.message ?? error}`;
-      button("start-recording-button").disabled = true;
+      startButton.disabled = true;
     } finally {
       capturing = false;
     }

@@ -22,10 +22,10 @@ import {
   AXIS_COLORS,
   armWindow,
   halos,
+  setHalos,
+  setOriginDots,
   showHalos,
-  showHalosIf,
   showOriginDots,
-  showOriginDotsIf,
 } from "./marks.js";
 import { clearSelection, hoverBox, infoPanel, select, selected, showHoverBox } from "./panel.js";
 import {
@@ -565,10 +565,11 @@ function setTool(tool) {
 // The origins button is not a tool: it changes what is drawn, not what a click means.
 const originsButton = document.getElementById("toolbar-origins-btn");
 
-export function setOriginDots(on) {
+/** What the origins button does: the dots drawn or not, and the button showing which. */
+export function switchOriginDots(on) {
   originsButton.classList.toggle("active", on);
   const t = performance.now();
-  showOriginDotsIf(on);
+  setOriginDots(on);
   return {
     on,
     dots: on ? (world?.names.length ?? 0) : 0,
@@ -579,7 +580,7 @@ export function setOriginDots(on) {
 // The click is the edge, as it is for every other button: a frame is asked for where the press
 // comes into the page, not where the scene changes. `plrViewer.origins` asks through `atBoundary`.
 originsButton.addEventListener("click", () => {
-  setOriginDots(!showOriginDots);
+  switchOriginDots(!showOriginDots);
   invalidate();
 });
 
@@ -588,14 +589,15 @@ const halosButton = document.getElementById("toolbar-halos-btn");
 
 halosButton.classList.toggle("active", showHalos);
 
-export function setHalos(on) {
+/** What the halos button does: the halos drawn or not, and the button showing which. */
+export function switchHalos(on) {
   halosButton.classList.toggle("active", on);
-  showHalosIf(on);
+  setHalos(on);
   return { on, halos: halos?.children.length ?? 0 };
 }
 
 halosButton.addEventListener("click", () => {
-  setHalos(!showHalos);
+  switchHalos(!showHalos);
   invalidate();
 });
 

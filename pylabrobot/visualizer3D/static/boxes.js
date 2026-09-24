@@ -1,5 +1,5 @@
 // Every resource as a box: one instanced mesh per model, with the outlines, the vessel cavities,
-// the filter and plan discs that ride on it.
+// the filter and plan discs that ride on it. A drawing is kept across rebuilds while unchanged.
 
 import * as THREE from "three";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
@@ -28,6 +28,7 @@ import {
   enclosureDepth,
   hasEnclosedDescendant,
   isCarrier,
+  isVessel,
   isVisible,
   meshes,
   own,
@@ -111,12 +112,6 @@ const footprintFor = (model) => (geometryFor(model) === BOX ? SQUARE_FOOTPRINT :
 
 export const colorFor = (model) =>
   model.appearance?.color ?? RESOURCE_COLORS[model.category] ?? RESOURCE_COLORS.default;
-
-// A well or a tip spot is not drawn as a shell to see through, but as a rim with an inside: the
-// rim gives it an edge thick enough to find, and the inside carries what is in it. That is how
-// the existing visualizer draws them, and it is what survives being looked at from above.
-const isVessel = (model) =>
-  (Number.isFinite(model.max_volume) && model.max_volume > 0) || model.category === "tip_spot";
 
 /**
  * One instanced part riding every instance of a drawing, standing at `at` in each of them.

@@ -70,9 +70,9 @@ export const PICKABLE_PARTS = new Set(["pipette_channel"]);
 // Structure, reference and content, in that order of prominence. With the fills gone, outlines
 // carry the information about what is on the deck, so they are the darkest thing; rails, bands and
 // grid are references and recede; only live contents are saturated.
-export const STRUCTURE_LIGHT = 0xaeb7bd; // an outer shell: a facility, a device
-export const STRUCTURE_DARK = 0x49555e; // an inner one: a plate, a holder
-export const STRUCTURE_MAX_DEPTH = 4; // depth at which the ramp reaches STRUCTURE_DARK
+const STRUCTURE_LIGHT = 0xaeb7bd; // an outer shell: a facility, a device
+const STRUCTURE_DARK = 0x49555e; // an inner one: a plate, a holder
+const STRUCTURE_MAX_DEPTH = 4; // depth at which the ramp reaches STRUCTURE_DARK
 // Outlines are drawn as fat lines, because `LineBasicMaterial.linewidth` is ignored on every
 // backend that matters: a hairline is one device pixel whatever you ask for. This is in CSS
 // pixels, so it means the same thing on a retina display as anywhere else.

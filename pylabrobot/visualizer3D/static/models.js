@@ -1,5 +1,6 @@
 // Resources drawn from model files: fetched and parsed once per file, instanced for what stands
-// still, cloned for what rides a moving part, with joints the state drives.
+// still, cloned for what rides a moving part, with joints the state drives. A model already on
+// screen is kept across rebuilds while its resource and file are unchanged.
 
 import * as THREE from "three";
 import { DRACOLoader } from "three/addons/DRACOLoader.js";
@@ -102,6 +103,27 @@ function replaceInScene(root, index) {
 // glTF says metres and Y-up; a resource that means something else says so in its declaration.
 const MESH_UNITS = { mm: 1, cm: 10, m: 1000 };
 
+// A copy of the file's scene in our units and Z-up: Y-up is glTF's default, and a Z-up file is
+// already in our own convention.
+function orient(gltf, scale, up) {
+  const scene = gltf.scene.clone(true);
+  scene.scale.setScalar(scale);
+  if (up === "Y") scene.rotation.x = Math.PI / 2;
+  return scene;
+}
+
+// What the file said of a material, kept before a plan view writes over its flags: a material
+// asked afterwards what it was modelled as would answer with whatever the plan view gave it.
+function asModelled(material) {
+  return {
+    transparent: material.transparent,
+    opacity: material.opacity,
+    depthWrite: material.depthWrite,
+    color: material.color.getHex(),
+    glazed: material.transparent && material.opacity <= GLAZED_MAX_OPACITY,
+  };
+}
+
 /**
  * One model for every resource standing on it, in one instanced mesh per mesh in its file.
  *
@@ -115,29 +137,22 @@ const MESH_UNITS = { mm: 1, cm: 10, m: 1000 };
  */
 function makeInstancedModel(key, count, gltf, scale, up) {
   const carrier = new THREE.Group();
-  const scene = gltf.scene.clone(true);
-  scene.scale.setScalar(scale);
-  // Y-up is glTF's default; a Z-up file is already in our own convention.
-  if (up === "Y") scene.rotation.x = Math.PI / 2;
+  const scene = orient(gltf, scale, up);
   carrier.add(scene);
   carrier.updateMatrixWorld(true);
 
   const built = { key, meshes: [] };
   scene.traverse((o) => {
     if (!o.isMesh) return;
+    // One material for every instance: what rides a moving part is cloned instead, so that it can
+    // be drawn see-through on its own.
     const material = o.material.clone();
     const mesh = new THREE.InstancedMesh(o.geometry, material, count);
     own(built, mesh, material);
     // Where this mesh sits inside the file, with the file's units and its up-axis already in it.
     mesh.userData.at = [o.matrixWorld.clone()];
     mesh.userData.lit = material;
-    mesh.userData.asModelled = {
-      transparent: o.material.transparent,
-      opacity: o.material.opacity,
-      depthWrite: o.material.depthWrite,
-      color: o.material.color.getHex(),
-      glazed: o.material.transparent && o.material.opacity <= GLAZED_MAX_OPACITY,
-    };
+    mesh.userData.asModelled = asModelled(o.material);
     view.add(mesh);
     built.meshes.push(mesh);
   });
@@ -213,6 +228,7 @@ export function buildDeclaredMeshes() {
   for (const [modelIndex, instances] of byModel) {
     const declared = world.models[modelIndex].mesh;
     const scale = MESH_UNITS[declared.units] ?? 1;
+    const up = declared.up ?? "Y";
     const generation = sceneGeneration;
 
     const place = (gltf) => {
@@ -221,7 +237,7 @@ export function buildDeclaredMeshes() {
       parsedByUrl.set(declared.url, gltf);
       if (generation !== sceneGeneration) return;
 
-      fitFilterDiscs(modelIndex, gltf.scene, scale, declared.up ?? "Y");
+      fitFilterDiscs(modelIndex, gltf.scene, scale, up);
 
       // What rides something that travels keeps a copy of its own: it is drawn see-through and
       // in a layer of its own while it is being carried, and instances of one model share a
@@ -232,17 +248,13 @@ export function buildDeclaredMeshes() {
       if (standing.length > 0) {
         const key = instancedKey(modelIndex, standing);
         const built =
-          instanced.get(key) ??
-          makeInstancedModel(key, standing.length, gltf, scale, declared.up ?? "Y");
+          instanced.get(key) ?? makeInstancedModel(key, standing.length, gltf, scale, up);
         instanced.delete(key);
         placeInstancedModel(built, modelIndex, standing);
       }
 
       riding.forEach((index) => {
-        const scene = gltf.scene.clone(true);
-        scene.scale.setScalar(scale);
-        // Y-up is glTF's default; a Z-up file is already in our own convention.
-        if ((declared.up ?? "Y") === "Y") scene.rotation.x = Math.PI / 2;
+        const scene = orient(gltf, scale, up);
 
         const root = new THREE.Group();
         root.add(scene);
@@ -256,16 +268,7 @@ export function buildDeclaredMeshes() {
             o.material = o.material.clone();
             own(root, o.material);
             o.userData.lit = o.material;
-            // What the file said, kept before a plan view changes it. A travelling part is put
-            // into the same pass as the content below it, which means writing over its material's
-            // own flags - and a material asked afterwards what it was modelled as would answer
-            // with whatever the plan view just gave it.
-            o.userData.asModelled = {
-              transparent: o.material.transparent,
-              opacity: o.material.opacity,
-              depthWrite: o.material.depthWrite,
-              glazed: o.material.transparent && o.material.opacity <= GLAZED_MAX_OPACITY,
-            };
+            o.userData.asModelled = asModelled(o.material);
           }
         });
 

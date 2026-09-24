@@ -30,10 +30,9 @@ import {
 
 // Glide rather than teleport, so a move reads as motion. The tracker carries commanded targets, so
 // this interpolation is cosmetic and says nothing about where the arm physically is mid-move.
-// How long a move takes to draw, in seconds. Off by default: a viewer watching a device should
-// show where it is, and a glide is the drawing running that far behind. Turned up to follow a
-// simulation, where the run is the thing being watched rather than the machine.
 
+// How long a move takes to draw, in seconds. Off by default: a viewer watching a device should show
+// where it is, and a glide is the drawing running behind. Turned up to follow a simulated run.
 const DEFAULT_GLIDE_SECONDS = 0;
 
 let glideSeconds = DEFAULT_GLIDE_SECONDS;
@@ -44,18 +43,6 @@ export function setGlideSeconds(seconds) {
 
 const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
 
-// The tracked X, from the arm's own tracker when it has one. The frame's left edge sits at that X
-// minus the reference offset, so the resource's box stays where the resource says it is.
-// A resource has moved. Position is published as state now, the same way rotation always has been,
-// so this is the one path by which anything that travels reaches the picture: an arm over a deck, a
-// plate put down somewhere new, a robot between workcells.
-//
-// Its own transform changes, and so does the world transform of everything standing on it, so the
-// subtree is recomputed and every instance in it repositioned.
-// Recompute the world transform of everything at or beneath `index`, and move the drawn instances
-// to match. A resource's own transform is relative to its parent, so a parent moving carries its
-// children with it in the model for free - but the matrices the scene draws from are absolute, and
-// those have to be worked out again.
 // Move the drawn instances to wherever the world now says they are. The transforms are worked out
 // in `world.js`, which has no idea any of this is on screen; this is only the part that is.
 function redraw(indices) {
