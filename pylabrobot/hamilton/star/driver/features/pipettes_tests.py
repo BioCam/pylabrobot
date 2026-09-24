@@ -2502,16 +2502,17 @@ class TestDispenseInSimulation(_SimulatedPlateWithWater):
     self.assertIn("pressure LLD is for aspirating", str(refused.exception))
     self.assertEqual(sent, [])
 
-  async def test_a_z_touch_dispenses_onto_the_floor(self):
+  async def test_a_z_touch_dispenses_just_above_the_bottom_it_touched(self):
     await self.pipettes.aspirate(self.wells[:1], piston_volumes=[20.0])
     sent = self._record("P1ZH")
     await self.pipettes.dispense(
       self.wells[3:4], piston_volumes=[10.0], lld_mode=Pipettes.LLDMode.ZTOUCH
     )
     self.assertEqual([c[:4] for c in sent], ["P1ZH", "C0DS"])
-    floor = self._field(self.wells[3], 0.0)
-    self.assertIn(f"zl{floor}", sent[-1])
-    self.assertIn(f"zx{floor}", sent[-1])
+    # 0.2 mm above the bottom touched, which stays the floor the command may not go below.
+    self.assertIn(f"th{self._field(self.wells[3], 0.2)}te2450", sent[-1])
+    self.assertIn(f"zl{self._field(self.wells[3], 0.2)}", sent[-1])
+    self.assertIn(f"zx{self._field(self.wells[3], 0.0)}", sent[-1])
     self.assertEqual(self.wells[3].tracker.get_used_volume(), 10.0)
 
   async def test_a_channel_the_device_does_not_have_is_refused(self):

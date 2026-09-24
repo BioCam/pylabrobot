@@ -383,6 +383,9 @@ class Pipettes:
   search_limit_below_cavity_bottom: float = 1.0
   # The channels of a batch set off on their Z-touch one after another, this long apart, in s.
   ztouch_cascade_interval: float = 0.25
+  # A Z-touch dispense lifts the tip this far off the cavity bottom it touched, in mm, so the
+  # orifice is not sealed on it.
+  ztouch_dispense_height_above_bottom: float = 0.2
   # A drive that ran to the search limit lands a few hundredths off it: a stop this close to the
   # limit, in mm, reached it and met nothing.
   _ztouch_end_allowance: float = 0.1
@@ -6267,14 +6270,15 @@ class Pipettes:
   ) -> None:
     """Dispense liquid into each container from a channel's tip.
 
-    Batched as `aspirate`, one `C0 DS` per batch. Every height in the command is what is given, or
-    0: OFF dispenses at `liquid_heights` above the cavity bottom, the cavity bottom when None, with
-    no immersion and no following unless given. The firmware never searches: CAPACITIVE searches
-    first, as `probe_liquid_heights`, dispenses at the surface found and sets the tracker to the
-    measured volume, warning when it is 20 % off; ZTOUCH touches the floor first and dispenses
-    from it; PRESSURE and DUAL are for aspirating. A dispense past what a tip holds goes ahead and
-    pushes air, with a warning. `volumes` with a liquid class, which corrects the piston volume and
-    fills what is not given, or `piston_volumes` as given; `jet`, `blow_out` and `empty` pick the
+    Batched as `aspirate`, one `C0 DS` per batch. Every height in the command is what is given,
+    or 0: OFF dispenses at `liquid_heights` above the cavity bottom, the cavity bottom when
+    None, with no immersion and no following unless given. The firmware never searches:
+    CAPACITIVE searches first, as `probe_liquid_heights`, dispenses at the surface found and
+    sets the tracker to the measured volume, warning when it is 20 % off; ZTOUCH touches the
+    cavity bottom first and dispenses `ztouch_dispense_height_above_bottom` above it; PRESSURE
+    and DUAL are for aspirating. A dispense past what a tip holds goes ahead and pushes air,
+    with a warning. `volumes` with a liquid class, which corrects the piston volume and fills
+    what is not given, or `piston_volumes` as given; `jet`, `blow_out` and `empty` pick the
     firmware's mode. The tracker books what moved per batch, before its command, committed on
     success; it never places a tip. Keyword arguments in the order the dispense runs;
     per-container lists in the containers' order.
@@ -6496,6 +6500,10 @@ class Pipettes:
         sent_floors=sent_floors,
         given_floors=given_floors,
       )
+      # The tip lifts off the bottom it touched, or its orifice would be sealed on it.
+      for job in batch.indices:
+        if job in touched:
+          surfaces[job] = round(surfaces[job] + self.ztouch_dispense_height_above_bottom, 2)
       await self._search_liquid_of_batch(
         batch,
         searched=searched,
