@@ -222,7 +222,6 @@ export const GRIP_MARK_OPENING = 3.75;
 export const REFERENCE_WIDTH = 4.2; // mm
 export const REFERENCE_DROP = 2; // mm below the arm's underside
 export const ARM_REFERENCE_OPACITY = 0.7;
-export const PROVENANCE_COLOR = { measured: 0x198754, derived: 0xd8a200, unavailable: 0xb02a37 };
 
 // A halo on each pipetting channel, on unless the rail button says not: a disc facing the camera,
 // held at this many pixels across whatever the zoom, so a nine-millimetre channel is findable at

@@ -34,8 +34,6 @@ for (const helper of [selectionBox, hoverBox]) {
 
 export let infoPanel = null;
 
-// Values go through innerHTML, and a resource name is user data. Escape it, or a model field
-// holding `<resource>` disappears into the markup.
 function ensureInfoPanel() {
   if (infoPanel?.isConnected) return infoPanel;
   infoPanel = document.createElement("div");
@@ -80,15 +78,10 @@ export function clearSelection() {
   announceSelection(-1);
 }
 
-export function closeInfoPanel() {
-  clearSelection();
-}
-
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && infoPanel?.isConnected) closeInfoPanel();
+  if (e.key === "Escape" && infoPanel?.isConnected) clearSelection();
 });
 
-// Units for the fields that have them. A number without its unit is not an answer.
 // Shown by the panel's own sections, so they must not appear again under Specifics.
 const HANDLED = new Set([
   "type",
@@ -117,6 +110,8 @@ const PANELS = {
   deck: { note: "Construction flags describe how the deck was built, not what it now holds." },
 };
 
+// Values go through innerHTML, and a resource name is user data. Escape it, or a model field
+// holding `<resource>` disappears into the markup.
 export function renderInfoPanel() {
   if (selected < 0) return hideInfoPanel();
   const panel = ensureInfoPanel();
@@ -205,7 +200,7 @@ export function renderInfoPanel() {
         `<div class="uml-methods">${methods}</div></details></div>`
       : "");
 
-  panel.querySelector(".uml-close-btn").addEventListener("click", closeInfoPanel);
+  panel.querySelector(".uml-close-btn").addEventListener("click", clearSelection);
 }
 
 /** The selection put back after a rebuild: no flash of the box, the panel only if it was up. */

@@ -14,21 +14,20 @@ import {
 } from "./constants.js";
 import { initCoords } from "./coords.js";
 import { input } from "./dom.js";
-import { isVisible, meshes, OVERLAY_ORDER, referencePoint } from "./drawn.js";
-import { escapeHtml } from "./format.js";
+import { isVisible, meshes, OVERLAY_ORDER } from "./drawn.js";
+import { hexOf } from "./format.js";
 import { invalidate, lastFrameMs } from "./frame.js";
 import { setGlideSeconds } from "./live.js";
 import {
   AXIS_COLORS,
   armWindow,
   halos,
-  hexOf,
   showHalos,
   showHalosIf,
   showOriginDots,
   showOriginDotsIf,
 } from "./marks.js";
-import { closeInfoPanel, hoverBox, infoPanel, select, selected, showHoverBox } from "./panel.js";
+import { clearSelection, hoverBox, infoPanel, select, selected, showHoverBox } from "./panel.js";
 import {
   camera,
   controls,
@@ -178,10 +177,6 @@ function clearHover() {
   markTreeRow(null);
 }
 
-// A line at the X the device positions the arm by. Where that sits on the arm is the whole
-// difference between a dual-rail arm, positioned by its centre, and a single-rail one, positioned
-// by its right edge - so drawing the reported X against the arm shows which it is without the
-// viewer needing to know anything about rail types.
 const raycaster = new THREE.Raycaster();
 
 const pointer = new THREE.Vector2();
@@ -210,7 +205,8 @@ export function pick(event) {
   pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
   pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
   raycaster.setFromCamera(pointer, camera);
-  const candidates = meshes.map((m) => m.mesh);
+  // A mesh that is culled or hidden is not drawn, so it is not under the pointer either.
+  const candidates = meshes.filter((m) => m.mesh.visible).map((m) => m.mesh);
   const hits = raycaster.intersectObjects(candidates, false).filter((hit) => {
     const instances = hit.object.userData.instances;
     if (!instances || hit.instanceId === undefined) return false;
@@ -245,15 +241,11 @@ export function pick(event) {
   return deepest < 0 ? null : { index: deepest };
 }
 
-const coords = initCoords({ getWorld: () => world, referencePoint, escapeHtml });
+const coords = initCoords();
 
-export const {
-  coordinateLabel,
-  recordMeasurement,
-  populateWrtDropdown,
-  endpoints: deltaEndpoints,
-  wrtPoint,
-} = coords;
+const { coordinateLabel, recordMeasurement, endpoints: deltaEndpoints, wrtPoint } = coords;
+
+export const { populateWrtDropdown } = coords;
 
 const wrtBullseye = bullseye(BULLSEYE_WRT);
 
@@ -346,7 +338,7 @@ function buildDeltaAnnotation() {
     group.add(label);
     return {
       axis,
-      color: `#${color.toString(16).padStart(6, "0")}`,
+      color: hexOf(color),
       lines,
       canvas,
       texture,
@@ -524,7 +516,7 @@ renderer.domElement.addEventListener("click", (event) => {
     if (hit && hit.index !== undefined) recordMeasurement(hit.index);
     return;
   }
-  if (performance.now() - panelOpenedAt > PANEL_GUARD_MS) closeInfoPanel();
+  if (performance.now() - panelOpenedAt > PANEL_GUARD_MS) clearSelection();
 });
 
 renderer.domElement.addEventListener("dblclick", (event) => {
@@ -532,7 +524,7 @@ renderer.domElement.addEventListener("dblclick", (event) => {
   const hit = pick(event);
   if (!hit || hit.index === undefined) return;
   if (selected === hit.index && infoPanel?.isConnected) {
-    closeInfoPanel();
+    clearSelection();
     return;
   }
   select(hit.index, true);
@@ -609,7 +601,7 @@ halosButton.addEventListener("click", () => {
 
 // How fast a move is drawn, kept across reloads: a viewer left watching a run stays as it was set.
 // Storage may refuse - a private window, or site data cleared - and the default stands.
-const glideSlider = document.getElementById("glide-rate");
+const glideSlider = input("glide-rate");
 
 try {
   const kept = window.localStorage?.getItem("plr.glideSeconds");

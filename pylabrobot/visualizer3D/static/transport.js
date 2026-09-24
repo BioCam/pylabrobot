@@ -3,7 +3,7 @@
 import { invalidate, qualityNow } from "./frame.js";
 
 // What the hello says the page draws with, and who takes each kind of message. Given once by the
-// page: `opened` on every new socket, then `scene`, `state` and `moves` as they arrive.
+// page: `connecting` as every new socket is made, then `scene`, `state` and `moves` as they arrive.
 
 let renderer = null;
 let handlers = {};
@@ -61,7 +61,7 @@ export function connect() {
     return;
   }
   socket = new WebSocket(window.WS_URL);
-  handlers.opened();
+  handlers.connecting();
   socket.onopen = () => {
     lostAt = null;
     showStatus(true);

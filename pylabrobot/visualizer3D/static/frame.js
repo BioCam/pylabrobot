@@ -22,6 +22,21 @@ let viewportEl = null;
 let cameraNow = () => null;
 let skyLight = null;
 
+// How long the last frame took: this thread's work or the gap since the frame before, whichever is
+// longer. What the pointer gate reads: a slow frame is a machine that cannot answer every sample.
+export let lastFrameMs = 0;
+
+// The page steps its own cost down while frames are slow and back up once they are fast, so a
+// machine that cannot draw the scene at full quality still draws it at a usable rate without
+// anyone naming its renderer. `?quality=low` pins the lowest level; any other value pins the top.
+export const qualityPinned = new URLSearchParams(location.search).get("quality");
+let quality = qualityPinned === "low" ? QUALITY_LEVELS - 1 : 0;
+let frameCostAverage = 0;
+let slowSince = null;
+let fastSince = null;
+let sceneCameAt = performance.now();
+const demotedAt = new Map(); // level -> when it was last found too slow
+
 // What a frame runs, in the order the page registered it. A mover is given the seconds since the
 // last frame and says whether it is still moving; a preparer works out what this frame draws;
 // a finisher runs after the draw, over it.
@@ -96,21 +111,6 @@ function updateStats() {
   lastSample = now;
   drawStats(`${String(fps)} fps`);
 }
-
-// How long the last frame took: this thread's work or the gap since the frame before, whichever is
-// longer. What the pointer gate reads: a slow frame is a machine that cannot answer every sample.
-export let lastFrameMs = 0;
-
-// The page steps its own cost down while frames are slow and back up once they are fast, so a
-// machine that cannot draw the scene at full quality still draws it at a usable rate without
-// anyone naming its renderer. `?quality=high` or `?quality=low` pins a level instead.
-export const qualityPinned = new URLSearchParams(location.search).get("quality");
-export let quality = qualityPinned === "low" ? QUALITY_LEVELS - 1 : 0;
-let frameCostAverage = 0;
-let slowSince = null;
-let fastSince = null;
-let sceneCameAt = performance.now();
-const demotedAt = new Map(); // level -> when it was last found too slow
 
 // Read after each drawn frame. Down after slow frames have settled, up after fast ones have, and
 // never back into a level found slow within QUALITY_HOLD_MS.

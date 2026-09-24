@@ -1,15 +1,18 @@
-/**
- * The coordinate tool: reads a point off a resource against a chosen reference and lists it.
- *
- * It knows nothing about the scene beyond what it is handed, so the geometry stays in one place.
- *
- * @param {{getWorld: () => any, referencePoint: Function, escapeHtml: (s: string) => string}} deps
- * @returns {{coordinateLabel: (i: number) => string, recordMeasurement: (i: number) => void,
- *            populateWrtDropdown: () => void, endpoints: (i: number) => {from: any, to: any}}}
- */
-import { select as selectEl } from "./dom.js";
+// The coordinate tool: reads a point off a resource against a chosen reference and lists it.
 
-export function initCoords({ getWorld, referencePoint, escapeHtml }) {
+import { select as selectEl } from "./dom.js";
+import { referencePoint } from "./drawn.js";
+import { escapeHtml } from "./format.js";
+import { world } from "./world.js";
+
+/**
+ * The geometry is `referencePoint`'s, so where a reference stands is decided in one place.
+ *
+ * @returns {{coordinateLabel: (i: number) => string, recordMeasurement: (i: number) => void,
+ *            populateWrtDropdown: () => void, endpoints: (i: number) => {from: any, to: any},
+ *            wrtPoint: () => any}}
+ */
+export function initCoords() {
   const refValue = (id) => selectEl(id).value;
   const measurementsEl = document.getElementById("coords-measurements");
   const hintEl = document.getElementById("coords-measurements-hint");
@@ -30,7 +33,7 @@ export function initCoords({ getWorld, referencePoint, escapeHtml }) {
     );
     const wrtName = refValue("coords-wrt-ref");
     if (wrtName === "root") return { from: null, to };
-    const wrtIndex = getWorld().indexOfName.get(wrtName);
+    const wrtIndex = world.indexOfName.get(wrtName);
     if (wrtIndex === undefined) return { from: null, to };
     return {
       from: referencePoint(
@@ -57,7 +60,7 @@ export function initCoords({ getWorld, referencePoint, escapeHtml }) {
   function wrtPoint() {
     const wrtName = refValue("coords-wrt-ref");
     if (wrtName === "root") return null;
-    const wrtIndex = getWorld().indexOfName.get(wrtName);
+    const wrtIndex = world.indexOfName.get(wrtName);
     if (wrtIndex === undefined) return null;
     return referencePoint(
       wrtIndex,
@@ -74,7 +77,7 @@ export function initCoords({ getWorld, referencePoint, escapeHtml }) {
     const p = coordinateFor(index);
     const wrtName = refValue("coords-wrt-ref");
     const wrt = wrtName === "root" ? "abs" : `wrt ${wrtName}`;
-    return `${getWorld().names[index]}\n${wrt}: (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${height(p)}) mm`;
+    return `${world.names[index]}\n${wrt}: (${p.x.toFixed(1)}, ${p.y.toFixed(1)}, ${height(p)}) mm`;
   }
 
   function recordMeasurement(index) {
@@ -91,7 +94,7 @@ export function initCoords({ getWorld, referencePoint, escapeHtml }) {
     row.className = "measurement-row";
     row.innerHTML =
       `<div class="m-content">` +
-      `<div class="m-name">${escapeHtml(getWorld().names[index])} ` +
+      `<div class="m-name">${escapeHtml(world.names[index])} ` +
       `(${initials("coords-x-ref", "coords-y-ref", "coords-z-ref")})</div>` +
       `<div class="m-wrt">wrt ${escapeHtml(wrtName)} ` +
       `(${initials("coords-wrt-x-ref", "coords-wrt-y-ref", "coords-wrt-z-ref")})</div>` +
@@ -108,11 +111,11 @@ export function initCoords({ getWorld, referencePoint, escapeHtml }) {
     select.innerHTML = '<option value="root">(abs)</option>';
     // Everything above the leaves: a well is rarely the thing another thing is measured against,
     // and listing 1,400 of them makes the dropdown unusable.
-    for (let i = 0; i < getWorld().names.length; i++) {
-      if (getWorld().childrenOf[i].length === 0) continue;
+    for (let i = 0; i < world.names.length; i++) {
+      if (world.childrenOf[i].length === 0) continue;
       const option = document.createElement("option");
-      option.value = getWorld().names[i];
-      option.textContent = getWorld().names[i];
+      option.value = world.names[i];
+      option.textContent = world.names[i];
       select.appendChild(option);
     }
     select.value =

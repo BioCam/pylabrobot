@@ -33,8 +33,8 @@ view.background = new THREE.Color(BACKGROUND);
 // axis view has to be, because under perspective only the point directly beneath the camera
 // projects straight down and everything else is seen at an angle. A plan view with converging
 // verticals is not a plan view.
-export const perspectiveCamera = new THREE.PerspectiveCamera(45, 1, 1, 20000);
-export const orthographicCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, -20000, 20000);
+const perspectiveCamera = new THREE.PerspectiveCamera(45, 1, 1, 20000);
+const orthographicCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, -20000, 20000);
 for (const c of [perspectiveCamera, orthographicCamera]) c.up.set(0, 0, 1); // PLR is Z-up
 
 export let camera = perspectiveCamera;
@@ -117,7 +117,7 @@ export const VIEWS = {
 
 // The orthographic frustum is sized to cover what the perspective camera covered at the target,
 // so switching does not jump the framing.
-export function sizeOrthographic(distance) {
+function sizeOrthographic(distance) {
   const aspect = (viewportEl.clientWidth || 1) / (viewportEl.clientHeight || 1);
   const halfHeight = distance * Math.tan((perspectiveCamera.fov * DEG) / 2);
   orthographicCamera.top = halfHeight;
@@ -183,7 +183,6 @@ function projectedExtent(box, direction) {
   let halfWidth = 0;
   let halfHeight = 0;
   let halfDepth = 0;
-  for (const c of [box.min, box.max]) void c;
   for (let i = 0; i < 8; i++) {
     corner.set(
       i & 1 ? box.max.x : box.min.x,

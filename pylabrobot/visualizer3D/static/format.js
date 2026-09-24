@@ -25,7 +25,7 @@ export function fmt(value) {
   return escapeHtml(value);
 }
 
-export function umlRows(pairs) {
+function umlRows(pairs) {
   return pairs
     .map(
       ([k, v]) =>
@@ -34,7 +34,8 @@ export function umlRows(pairs) {
     .join("");
 }
 
-export const UNITS = {
+// Units for the fields that have them. A number without its unit is not an answer.
+const UNITS = {
   size_x: "mm",
   size_y: "mm",
   size_z: "mm",
@@ -47,6 +48,9 @@ export const UNITS = {
   nominal_volume: "uL",
   maximal_volume: "uL",
 };
+
+/** A colour number as CSS writes it. */
+export const hexOf = (n) => `#${n.toString(16).padStart(6, "0")}`;
 
 export const NBSP = "\u00a0";
 export const tuple = (x, y, z, unit) =>

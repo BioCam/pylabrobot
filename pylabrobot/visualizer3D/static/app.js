@@ -95,7 +95,7 @@ import {
   revealAndHighlight,
   showPane,
 } from "./tree.js";
-import { buildWorld, modelOf, setWorld, world } from "./world.js";
+import { buildWorld, setWorld, world } from "./world.js";
 
 // A facility viewer that knows nothing about liquid handlers.
 //
@@ -108,9 +108,8 @@ import { buildWorld, modelOf, setWorld, world } from "./world.js";
 // new: camera presets, an axis gizmo that turns with the view, and a Z reference in the
 // coordinate tool.
 
-const _t0 = performance.now();
-
-const timings = { moduleMs: performance.now() - _t0, rendererMs: rendererInitMs };
+// Milliseconds, `readyMs` from the page's time origin; the rest are the spans they name.
+const timings = { rendererMs: rendererInitMs };
 
 let framed = false; // whether this connection has framed the camera on its first scene
 
@@ -124,9 +123,6 @@ gltfLoader.setDRACOLoader(dracoLoader);
 // there is nothing to keep in step: a tip picked up is a resource assigned, and the panel that
 // draws tips is looking at the same tree the viewport is.
 const deviceTools = initDeviceTools({
-  getWorld: () => world,
-  modelOf,
-  stateOf: (index) => stateOf.get(index),
   onSelect: (index) => {
     revealAndHighlight(index);
     select(index, true);
@@ -153,10 +149,10 @@ function goToStartView() {
   frame(startView);
 }
 
-// A small handle on the viewer, so a notebook cell or a link can drive it.
-// The fourth and last way in: a call from outside the page, which tests and benchmarks use to drive
-// the same paths a message takes. Everything that changes something is wrapped as a group, so a
-// method added to that group is covered without anyone remembering to cover it.
+// A small handle on the viewer, so a notebook cell or a link can drive it: a call from outside the
+// page, which tests and benchmarks use to drive the same paths a message takes. Everything that
+// changes something is wrapped as a group, so a method added to that group is covered without
+// anyone remembering to cover it.
 //
 // Reads are deliberately not wrapped. Asking the viewer a question must not be a reason to redraw,
 // or watching for it to settle is what stops it settling.
@@ -389,6 +385,9 @@ const scaleLabel = document.getElementById("scale-bar-label");
 // to leave the corner it sits in.
 const SCALE_BAR_PX = 120;
 
+// What the bar last showed: written on change only, since a write forces layout every frame.
+let scaleShown = { nice: 0, px: 0 };
+
 function updateScaleBar() {
   const perPixel = mmPerPixel();
   if (!Number.isFinite(perPixel) || perPixel <= 0) return;
@@ -400,13 +399,13 @@ function updateScaleBar() {
   const nice = cell
     ? cell * ([1, 2, 5].find((n) => (n * cell) / perPixel >= SCALE_BAR_PX) ?? 10)
     : niceNumber(perPixel * SCALE_BAR_PX);
-  scaleLine.style.width = `${Math.round(nice / perPixel)}px`;
+  const px = Math.round(nice / perPixel);
+  if (nice === scaleShown.nice && px === scaleShown.px) return;
+  scaleShown = { nice, px };
+  scaleLine.style.width = `${px}px`;
   scaleLabel.textContent = nice >= 1000 ? `${nice / 1000} m` : `${nice} mm`;
 }
 
-// view presets and viewport furniture
-// The axis presets live on the view helper now: click an axis there and the camera animates onto
-// it. What the helper cannot do is choose a projection, so that button stays.
 projectionButton.addEventListener("click", () =>
   setProjection(projection === "orthographic" ? "perspective" : "orthographic"),
 );
@@ -458,7 +457,7 @@ function rebuildScene(data) {
   for (const name of [...hiddenNames]) setHidden(name, true);
   deviceTools.rebuild();
   timings.treeMs = performance.now() - _tTree;
-  timings.readyMs = performance.now() - _t0;
+  timings.readyMs = performance.now();
   populateWrtDropdown();
   clearSelection();
   stateOf.clear();
@@ -571,7 +570,7 @@ initTransport({
   renderer,
   handlers: {
     // A new socket frames the camera on its first scene, and on that one only.
-    opened: () => {
+    connecting: () => {
       framed = false;
     },
     scene: rebuildScene,

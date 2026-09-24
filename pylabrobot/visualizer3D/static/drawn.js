@@ -135,6 +135,11 @@ export function placeInstance(mesh, slot, matrix, sx, sy, sz, ox, oy, oz) {
   mesh.setMatrixAt(slot, boxMatrix(matrix, sx, sy, sz, ox, oy, oz));
 }
 
+// A well or a tip spot is drawn as a rim with an inside that carries what is in it, rather than as
+// a shell to see through: what holds liquid, or holds a tip.
+export const isVessel = (model) =>
+  (Number.isFinite(model.max_volume) && model.max_volume > 0) || model.category === "tip_spot";
+
 function isEnclosure(index) {
   const model = modelOf(index);
   return (

@@ -12,7 +12,9 @@
  * already uses.
  */
 
+import { stateOf } from "./drawn.js";
 import { escapeHtml } from "./format.js";
+import { modelOf, world } from "./world.js";
 
 // What the tree calls the parts a device works with.
 const CHANNEL = "pipette_channel";
@@ -54,11 +56,10 @@ const KINDS = [
 ];
 
 /**
- * @param {{getWorld: () => any, modelOf: (i: number) => any, stateOf: (i: number) => any,
- *          onSelect: (i: number) => void}} deps
+ * @param {{onSelect: (i: number) => void}} deps
  * @returns {{rebuild: () => void, refresh: () => void}}
  */
-export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
+export function initDeviceTools({ onSelect }) {
   const containerEl = document.getElementById("navbar-device-tools");
   const mainEl = document.querySelector("main");
   /** Open panels, by their own id. Each is { element, device, kind, button, offset }. */
@@ -70,7 +71,6 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
 
   /** Every index below `index`, itself included, that `keep` accepts. */
   function descendants(index, keep) {
-    const world = getWorld();
     const found = [];
     const stack = [index];
     while (stack.length) {
@@ -100,7 +100,6 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
    * is not asked.
    */
   function devices() {
-    const world = getWorld();
     const found = [];
     for (let i = 0; i < world.names.length; i++) {
       if (categoryOf(i) === DEVICE && carries(partsOf(i))) found.push(i);
@@ -110,7 +109,6 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
 
   /** The tip a channel is holding, as its model, or null. It hangs off the mounting shaft. */
   function tipOf(index) {
-    const world = getWorld();
     for (const child of world.childrenOf[index]) {
       if (categoryOf(child) !== SHAFT) continue;
       const tip = world.childrenOf[child][0];
@@ -125,7 +123,6 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
    * about not knowing rather than inventing a shape.
    */
   function gridOf(index) {
-    const world = getWorld();
     const shafts = world.childrenOf[index].filter((c) => categoryOf(c) === SHAFT);
     const placed = shafts.map((shaft) => {
       const spot = /_([A-Z]+)(\d+)$/.exec(world.names[shaft]);
@@ -143,7 +140,6 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
 
   /** What a gripper is holding, or -1. Its own body, fingers and pads are not cargo. */
   function heldBy(index) {
-    const world = getWorld();
     return world.childrenOf[index].find((c) => !GRIPPER_PARTS.has(categoryOf(c))) ?? -1;
   }
 
@@ -151,7 +147,7 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
 
   /** The channel's own number, as the tree names it, so the panel and the tree agree. */
   function channelLabel(index, fallback) {
-    const numbered = /(\d+)$/.exec(getWorld().names[index]);
+    const numbered = /(\d+)$/.exec(world.names[index]);
     return numbered ? numbered[1] : String(fallback);
   }
 
@@ -178,7 +174,6 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
    * on a silver collar, and the tip hanging from it at its own length, with the liquid it holds.
    */
   function channelColumn(index, ordinal, id) {
-    const world = getWorld();
     const tip = tipOf(index);
     const label = channelLabel(index, ordinal);
     const name = world.names[index];
@@ -205,7 +200,7 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
       const botL = 7 - botW / 2;
       const botR = 7 + botW / 2;
       // What the tip holds, when its state says: a tip publishes its volume once it tracks one.
-      const state = stateOf(tip.index) ?? {};
+      const state = stateOf.get(tip.index) ?? {};
       const max = Number(state.max_volume) || 0;
       const ratio = max > 0 ? Math.min(1, (Number(state.volume) || 0) / max) : 0;
       let fill = "";
@@ -256,7 +251,6 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
    * a tip is on, and the four bars that carry it. A dot selects the tip, or the shaft when empty.
    */
   function headBlock(index, label) {
-    const world = getWorld();
     const grid = gridOf(index);
     const dots = grid.placed
       .map((spot) => {
@@ -315,7 +309,6 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
    * to the plate they hold, the plate drawn between them to scale with its wells.
    */
   function gripperFigure(index, label) {
-    const world = getWorld();
     const held = heldBy(index);
     const holding = held >= 0 ? modelOf(held) : null;
     let plateW = 52;
@@ -518,7 +511,7 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
     mainEl?.appendChild(element);
     draggable(element);
     button.classList.add("active");
-    const panel = { element, device, kind, button, name: getWorld().names[device] };
+    const panel = { element, device, kind, button, name: world.names[device] };
     open.set(id, panel);
     render(panel);
     layOut();
@@ -533,7 +526,6 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
     for (const id of [...open.keys()]) close(id);
     if (!containerEl) return;
     containerEl.textContent = "";
-    const world = getWorld();
     if (!world) return;
     // One button a device, carrying the device's name and nothing else, as the existing
     // visualizer's navbar has one per liquid handler.
@@ -585,7 +577,6 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
 
   /** Whether any of these resources stands under this device. */
   function under(device, indices) {
-    const world = getWorld();
     for (let index of indices) {
       for (; index >= 0; index = world.parentOf[index]) if (index === device) return true;
     }

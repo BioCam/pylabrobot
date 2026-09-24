@@ -5,9 +5,8 @@ import { colorFor } from "./boxes.js";
 import { CONTENTS, HOLDERS, SEARCH_CONTAINERS, TREE_HIDDEN } from "./constants.js";
 import { input, query } from "./dom.js";
 import { hiddenNames, isVisible, stateOf, worldBox } from "./drawn.js";
-import { escapeHtml, fmt } from "./format.js";
+import { escapeHtml, fmt, hexOf } from "./format.js";
 import { setHidden } from "./live.js";
-import { hexOf } from "./marks.js";
 import {
   hoverBox,
   infoPanel,
@@ -172,7 +171,11 @@ function applyRowVisibility(index) {
   const own = hiddenNames.has(world.names[index]);
   const inherited = !own && !isVisible(index);
   entry.row.classList.toggle("resource-hidden", !isVisible(index));
-  entry.eye.innerHTML = eyeSvg(own);
+  // Parsing the eye's markup again on every message is what a refresh of the whole tree costs.
+  if (entry.eyeHidden !== own) {
+    entry.eye.innerHTML = eyeSvg(own);
+    entry.eyeHidden = own;
+  }
   entry.eye.classList.toggle("is-hidden", own);
   entry.eye.classList.toggle("inherited", inherited);
   entry.eye.title = inherited
@@ -238,7 +241,6 @@ function addRow(index, depth, before) {
   const eye = document.createElement("button");
   eye.className = "tree-eye-btn";
   eye.title = "Show or hide";
-  eye.innerHTML = eyeSvg(hiddenNames.has(world.names[index]));
   eye.addEventListener("click", (e) => {
     e.stopPropagation();
     // Hidden by a parent, a plain click can do nothing and says so; alt-click clears the whole
@@ -271,14 +273,14 @@ function addRow(index, depth, before) {
   });
 
   treeEl.insertBefore(row, before ?? null);
-  rowOf.set(index, { row, depth, arrow, info, eye });
+  rowOf.set(index, { row, depth, arrow, info, eye, eyeHidden: null });
   applyRowVisibility(index);
   return row;
 }
 
 // Children only enter the DOM when a node is opened, so a deck of thousands of wells does not
 // build thousands of rows to show four carriers.
-export function toggle(index, open) {
+function toggle(index, open) {
   const entry = rowOf.get(index);
   if (!entry || !treeChildren(index).length || open === expanded.has(index)) return;
 
@@ -369,7 +371,10 @@ export function refreshTreeVisibility() {
 }
 
 export function refreshTreeInfo() {
-  for (const [index, entry] of rowOf) entry.info.textContent = summaryOf(index);
+  for (const [index, entry] of rowOf) {
+    const text = summaryOf(index);
+    if (entry.info.textContent !== text) entry.info.textContent = text;
+  }
 }
 
 export function revealAndHighlight(index) {
