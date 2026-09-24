@@ -127,6 +127,17 @@ function disposeOwned(owner) {
   ownedBy.delete(owner);
 }
 
+/**
+ * Every instanced mesh, before its first frame. The renderer keys an instanced mesh's shader
+ * state by the object's own uuid, so a mesh made afresh on every rebuild compiled a state of its
+ * own each time: a hundred of them, half a second a scene. Meshes of a kind share one uuid, and
+ * with it one state; everything else the state depends on is still in the key.
+ */
+function sharingShader(mesh) {
+  mesh.uuid = mesh.instanceColor ? "instanced, coloured" : "instanced";
+  return mesh;
+}
+
 // ---------------------------------------------------------------- state
 
 let meshes = [];
@@ -673,7 +684,7 @@ function buildInstancedModel(modelIndex, instances, gltf, scale, up) {
       remember(index, mesh, slot, [local]);
     });
     mesh.instanceMatrix.needsUpdate = true;
-    view.add(mesh);
+    view.add(sharingShader(mesh));
     meshes.push(mesh);
   });
   modelMeshes.push({ modelIndex, instances, meshes });
@@ -1401,7 +1412,7 @@ function buildOriginDots() {
   }
   mesh.instanceMatrix.needsUpdate = true;
   originDots = mesh;
-  view.add(originDots);
+  view.add(sharingShader(originDots));
 }
 
 function buildOrigin() {
@@ -2426,7 +2437,7 @@ function buildMeshes() {
     });
     mesh.instanceMatrix.needsUpdate = true;
     mesh.userData.instances = instances;
-    view.add(mesh);
+    view.add(sharingShader(mesh));
     meshes.push({
       mesh,
       model,
@@ -2512,7 +2523,7 @@ function buildMeshes() {
       floor.instanceMatrix.needsUpdate = true;
       floor.userData.lit = floor.material;
       own(buildMeshes, floor, floor.geometry, floor.material);
-      view.add(floor);
+      view.add(sharingShader(floor));
       overlays.push(floor);
     }
 
@@ -2540,7 +2551,7 @@ function buildMeshes() {
       wall.userData.lit = wall.material;
       own(buildMeshes, wall, wall.material);
       wall.userData.behind = true; // painted before the cavity it surrounds
-      view.add(wall);
+      view.add(sharingShader(wall));
       overlays.push(wall);
 
       const inner = new THREE.InstancedMesh(
@@ -2580,7 +2591,7 @@ function buildMeshes() {
       inner.instanceColor.needsUpdate = true;
       inner.userData.lit = inner.material;
       own(buildMeshes, inner, inner.material);
-      view.add(inner);
+      view.add(sharingShader(inner));
       overlays.push(inner);
     }
     if (model.category === "tip" && model.has_filter && Number.isFinite(model.collar_height)) {
@@ -2618,7 +2629,7 @@ function buildFilterDiscs(modelIndex, instances, model, sx, sy, sz) {
   disc.instanceMatrix.needsUpdate = true;
   disc.userData.lit = disc.material;
   own(buildMeshes, disc, disc.material);
-  view.add(disc);
+  view.add(sharingShader(disc));
   filterDiscsOf.set(modelIndex, { mesh: disc, placed, z, cx: sx / 2, cy: sy / 2 });
   return disc;
 }
@@ -2655,7 +2666,7 @@ function buildPlanDiscs(instances, sx, sy, sz) {
   disc.instanceMatrix.needsUpdate = true;
   disc.userData.lit = disc.material;
   own(buildMeshes, disc, disc.material);
-  view.add(disc);
+  view.add(sharingShader(disc));
   return disc;
 }
 
