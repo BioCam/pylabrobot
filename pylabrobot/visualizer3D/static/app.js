@@ -1,86 +1,38 @@
-// A facility viewer that knows nothing about liquid handlers.
-//
-// The server sends models once and instances as a packed transform array. One InstancedMesh is
-// built per model, so a full deck draws in a couple of dozen calls no matter how many wells are
-// on it. Nothing here is keyed on a resource type: geometry comes from the model's own fields,
-// colour from its category, and the tree from the parent array.
-//
-// The interface follows the existing visualizer. Only what three dimensions genuinely adds is
-// new: camera presets, an axis gizmo that turns with the view, and a Z reference in the
-// coordinate tool.
-
-const _t0 = performance.now();
-
 import * as THREE from "three";
-import { DRACOLoader } from "three/addons/DRACOLoader.js";
-import { GLTFLoader } from "three/addons/GLTFLoader.js";
 import { LineSegments2 } from "three/addons/lines/LineSegments2.js";
 import { LineSegmentsGeometry } from "three/addons/lines/LineSegmentsGeometry.js";
 
+import { forgetDetail, updateDetail, updateEdgeMode } from "./appearance.js";
+import { buildMeshes, colorFor } from "./boxes.js";
 import {
-  ARM_COLOR,
-  ARM_EDGE,
-  ARM_EDGE_WIDTH_3D,
-  ARM_EDGE_WIDTH_FLAT,
-  ARM_INSET_X,
-  ARM_INSET_Y,
-  ARM_OPACITY,
-  ARM_REFERENCE_OPACITY,
-  BOX_OPACITY,
   BULLSEYE_HOVER,
   BULLSEYE_PX,
   BULLSEYE_WRT,
-  CATEGORY_OPACITY,
-  CHANNEL_RAMP,
-  CHANNEL_RAMP_DARK_INK_STEPS,
-  CONTAINERS,
   CONTENTS,
-  DEG,
-  EDGE_WIDTH_3D,
-  EDGE_WIDTH_FLAT,
-  FILTER,
-  FILTER_BELOW_COLLAR,
-  FILTER_WIDTH_UNMEASURED,
-  FLAT_EDGE,
-  GLAZED_MAX_OPACITY,
-  GRIP_MARK_OPACITY,
-  GRIP_MARK_OPENING,
-  GRIP_MARK_WIDTH,
-  HALO_CENTRED_AT,
-  HALO_INK,
-  HALO_MARK_PX,
-  HALO_OFFSET_PX,
-  HALO_PX,
-  HALO_TIPPED_BACKGROUND,
   HOLDERS,
   HOVER,
-  LIQUID,
-  MODEL_EDGE_OPACITY,
-  MOVING_OPACITY,
   MOVING_PARTS,
-  NO_REFERENCE_MARK,
   PICKABLE_PARTS,
   PROTOCOL,
-  REFERENCE_DROP,
-  REFERENCE_LINE,
-  REFERENCE_WIDTH,
-  RESOURCE_COLORS,
   SEARCH_CONTAINERS,
   SELECT,
   SELECTION_SHOWN_MS,
-  SHELL_OPACITY,
-  SPACE_OPACITY,
-  structureEdgeStyle,
-  TIP_PLAN_FILL,
   TREE_HIDDEN,
-  VESSEL_EMPTY,
-  VESSEL_RIM,
-  VESSEL_WALL,
-  VESSEL_WALL_OPACITY,
 } from "./constants.js";
 import { initCoords } from "./coords.js";
 import { initDeviceTools } from "./device_tools.js";
 import { input, query } from "./dom.js";
+import {
+  hiddenNames,
+  isVisible,
+  meshes,
+  meshRoots,
+  modelMeshes,
+  OVERLAY_ORDER,
+  referencePoint,
+  stateOf,
+  worldBox,
+} from "./drawn.js";
 import { escapeHtml, fmt, NBSP, section, tuple, withUnit } from "./format.js";
 import {
   afterDraw,
@@ -96,6 +48,42 @@ import {
   whileMoving,
 } from "./frame.js";
 import { initGif } from "./gif.js";
+import {
+  applyMoves,
+  applyState,
+  glides,
+  onChange,
+  setGlideSeconds,
+  setHidden,
+  updateArms,
+  updateGlides,
+} from "./live.js";
+import {
+  AXIS_COLORS,
+  arms,
+  armWindow,
+  buildArms,
+  buildGridMarks,
+  buildHalos,
+  buildOrigin,
+  buildOriginDots,
+  buildReferenceMarks,
+  gridLabels,
+  gridMarks,
+  gridState,
+  halos,
+  hexOf,
+  niceNumber,
+  resetFloor,
+  showHalos,
+  showHalosIf,
+  showOriginDots,
+  showOriginDotsIf,
+  updateGrid,
+  updateHalos,
+  updateOrigin,
+} from "./marks.js";
+import { buildDeclaredMeshes, dracoLoader, gltfLoader } from "./models.js";
 import {
   buildViewHelper,
   camera,
@@ -117,71 +105,39 @@ import {
   viewportEl,
 } from "./renderer.js";
 import { connect, initTransport } from "./transport.js";
-import {
-  buildWorld,
-  mirrorPlacement,
-  modelOf,
-  refreshTransforms,
-  setLocal,
-  setLocalRotation,
-  setWorld,
-  sizeOf,
-  treeDepth,
-  world,
-} from "./world.js";
+import { buildWorld, modelOf, setWorld, sizeOf, treeDepth, world } from "./world.js";
+
+// A facility viewer that knows nothing about liquid handlers.
+//
+// The server sends models once and instances as a packed transform array. One InstancedMesh is
+// built per model, so a full deck draws in a couple of dozen calls no matter how many wells are
+// on it. Nothing here is keyed on a resource type: geometry comes from the model's own fields,
+// colour from its category, and the tree from the parent array.
+//
+// The interface follows the existing visualizer. Only what three dimensions genuinely adds is
+// new: camera presets, an axis gizmo that turns with the view, and a Z reference in the
+// coordinate tool.
+const _t0 = performance.now();
 
 const timings = { moduleMs: performance.now() - _t0, rendererMs: rendererInitMs };
 
-// ---------------------------------------------------------------- ownership
-
-// What each builder made for itself last time - geometries, materials, textures, instance buffers -
-// so it can let them go before making them again. Nothing shared is ever listed here.
-const ownedBy = new Map();
-
-function own(owner, ...things) {
-  if (!ownedBy.has(owner)) ownedBy.set(owner, []);
-  ownedBy.get(owner).push(...things);
-}
-
-/** Release what an owner made. The renderer keeps a draw's state until its material is disposed. */
-function disposeOwned(owner) {
-  for (const thing of ownedBy.get(owner) ?? []) thing.dispose();
-  ownedBy.delete(owner);
-}
-
-// ---------------------------------------------------------------- state
-
-let meshes = [];
-let placementOf = []; // instance index -> { mesh, slot }
-let vesselOf = new Map(); // index -> the inner body whose colour tracks what is in it
-// index -> the instanced parts drawn for it outside the box pipeline, and where each one stands.
-// Switching a resource off empties its box; these have to be emptied with it, or hiding a plate
-// leaves ninety-six cavities and their walls floating where the plate was.
-let overlayOf = new Map();
-// model index -> the filter discs drawn in its tips, so reading the tip's file can size them.
-let filterDiscsOf = new Map();
-let edgeOf = new Map();
-// The instances whose model arrived as a file. Their box is not drawn at all and its border is
-// only just there, and both have to be decided from here rather than at the moment the file
-// landed: everything that says what is drawn runs again on every view change, so a one-off switch
-// would be undone by the next orbit past an axis.
-let drawnFromFile = new Set();
-const stateOf = new Map();
-const hiddenNames = new Set();
 let selected = -1;
-let activeTool = "cursor";
-let framed = false; // whether this connection has framed the camera on its first scene
 
-// ---------------------------------------------------------------- two-finger pan
+let activeTool = "cursor";
+
+let framed = false; // whether this connection has framed the camera on its first scene
 
 // A two-finger swipe is not a touch as far as the page is concerned: it arrives as the same `wheel`
 // event a mouse sends, and nothing says which device sent it. OrbitControls does not try to tell
 // them apart, so every swipe read as a zoom and a trackpad could not pan at all.
 const WHEEL_NOTCH = 120; // one notch, in the units of the pre-standard `wheelDelta`
+
 const WHEEL_NOTCH_PX = 50; // fallback threshold, for browsers reporting no `wheelDelta`
+
 const GESTURE_GAP_MS = 120;
 
 let gestureEndsAt = 0;
+
 let gesturePans = false;
 
 function looksLikeTrackpad(event) {
@@ -211,6 +167,7 @@ function wheelPans(event) {
 }
 
 const panRight = new THREE.Vector3();
+
 const panUp = new THREE.Vector3();
 
 // Slide the view without turning it: camera and target move by the same vector, so the angle
@@ -241,1869 +198,22 @@ viewportEl.addEventListener(
   { capture: true, passive: false },
 );
 
-// A resource that lays things out on a repeated grid says so in its model, and the viewer draws
-// whatever it is told: how many, how far apart, where the first one sits, how to label them.
-// Nothing here knows what a rail is, so a deck with slots or a nest with positions draws the same
-// way the day it declares one.
-let gridMarks = [];
-// Every rail number in the scene. They are one draw call each and the largest per-device cost the
-// viewer has, so they are the first thing to stop drawing once they are too small to read.
-let gridLabels = [];
-let surfaces = [];
-let arms = []; // { group, index, referenceOffset, targetX, currentX }
-
-const GRID_LINE = 0x4a545c; // dark, so it reads on a light deck as the numbers beside it do
-const GRID_LABEL = "#3d4a52";
-const GRID_LIFT = 0.4; // mm above the surface, so the marks do not fight the deck for depth
-// The work surface a grid is laid out on. A resource that declares a grid is declaring that things
-// stand on it at that height, so that is where the surface goes; nothing here knows it is a deck.
-const SURFACE_COLOR = 0xfbfcfd; // the deck is the brightest thing; what stands on it is darker
-// The work surface is a lid over everything the instrument keeps below it, and drawing it hid all
-// of that. Fully transparent, what stands on the deck reads against the space around it rather than
-// against a sheet the same colour. The number to turn: above zero the surface is drawn again, and in
-// an axis view it will paint over what stands on it, because a transparent material draws after
-// every opaque one and depth testing is off there.
-const SURFACE_OPACITY = 0;
-
-// What counts as ground rather than as an object standing on it.
-const GROUND = new Set(["facility", "deck"]);
-// Bands a capability can reach across a surface, drawn as a pair of lines with the reach labelled
-// at the near edge. Blue keeps them apart from the grey position grid they cross.
-const BAND_COLOR = 0x8ba7c6;
-const GRID_LABEL_MM = 30; // label height in deck millimetres
-const GRID_TICK = 30; // mm the mark runs forward of the grid, into the margin where labels sit
-// How far a number keeps from the front edge of what it is drawn on, in mm. Only reached where the
-// resource has no margin to give: a deck runs on well ahead of its first carrier, and a loading
-// tray's grid starts at the tray's own front edge.
-const GRID_MARGIN = 4;
-// How strongly a track mark shows through what is standing on it. A carrier with a solid base hides
-// the very mark that says which track it is on, and which track a carrier is on is most of what a
-// person reads a deck for - but a line at full strength over an opaque part reads as an error
-// rather than as a reference. Faint, it reads the way a hidden line does on a drawing: behind the
-// thing, and still there.
-//
-// Set against the ink, not on its own: 0.3 of a near-white line was barely there, and the same 0.3
-// of the dark line that replaced it painted stripes across every carrier floor, which reads as a
-// floor you can see through rather than as a mark behind one.
-const GRID_GHOST_OPACITY = 0.14;
-// A number is drawn inside its quad with room above and below it, so the quad's edge is not where
-// the ink stops. This is how much of the quad's height the digits actually take - a bold face's
-// cap height against the canvas the label is drawn on - and it is what a margin has to be measured
-// against, or the gap comes out 8.5 mm wider than it says.
-const GRID_LABEL_INK = 0.433;
-
-function labelSprite(text, color = GRID_LABEL, sizeMm = GRID_LABEL_MM) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 128;
-  canvas.height = 64;
-  const context = canvas.getContext("2d");
-  context.font = "bold 38px ui-monospace, Menlo, monospace";
-  context.fillStyle = color;
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  context.fillText(text, 64, 34);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  // A flat quad in the surface's own plane, not a sprite. A sprite turns to face the camera, which
-  // is right for a marker and wrong for a number painted on a deck: these are part of the drawing,
-  // so they lie in it. PlaneGeometry is already in XY, which is the surface's plane.
-  const label = new THREE.Mesh(
-    new THREE.PlaneGeometry(sizeMm * 2, sizeMm),
-    new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthTest: false }),
-  );
-  label.frustumCulled = false;
-  return label;
-}
-
-// Where the device's x refers to, from the resource's own origin. Declared by the resource, so the
-// viewer needs no knowledge of rail types: a dual-rail arm reports its centre, a single-rail one its
-// right edge, and the line lands in the right place either way. Half the width when undeclared.
-function referenceOffset(model) {
-  const [sx] = sizeOf(model);
-  return model.reference_point?.x ?? sx / 2;
-}
-
-// Geometry a resource declared for itself, drawn in place of its box.
-//
-// The file is loaded once per model and shared by every instance of it, the same way one geometry
-// serves every well of a plate. Loading is asynchronous and the scene is already on screen by the
-// time it lands, so each mesh is added when it arrives rather than being waited for: the box shows
-// until then, and nothing blocks.
-const gltfLoader = new GLTFLoader();
-// Draco-compressed meshes are common in files exported for the web, and cannot be read without a
-// decoder. It is fetched only when a compressed mesh actually turns up, so a viewer that never
-// loads one pays nothing for it. Only the WebAssembly decoder is vendored; the much larger
-// JavaScript fallback is for browsers that predate WebAssembly, which cannot run this viewer anyway.
-const dracoLoader = new DRACOLoader();
 dracoLoader.setDecoderPath("./vendor/draco/");
+
 dracoLoader.setDecoderConfig({ type: "wasm" });
+
 gltfLoader.setDRACOLoader(dracoLoader);
-let meshRoots = [];
-// Counted up per rebuild, so a file that lands late is placed only by the scene that asked for it.
-let sceneGeneration = 0;
-// A model drawn for many resources at once: one instanced mesh per mesh in its file, however many
-// resources stand on it. A clone apiece is a draw call apiece, and a rack of tips is ninety-six of
-// them. Each entry is { modelIndex, instances, meshes }.
-let modelMeshes = [];
-// Every file that has been fetched and parsed, by url. A tree that changes shape sends a whole
-// scene, and an instanced mesh cannot be resized - so the meshes are built again, from this,
-// without going back to the network.
-const parsedByUrl = new Map();
-
-// What identifies a drawn model across rebuilds: the resource it belongs to and the file it was
-// drawn from. A scene arrives whole whenever the tree changes shape, and most of what it describes
-// is what was already on screen.
-function meshKey(index) {
-  return `${world.names[index]}\n${modelOf(index).mesh?.url}`;
-}
-
-// A model that is on screen puts its box away. Recorded on the entry rather than only switched
-// off, because everything that decides what is drawn runs again on every view change, and each of
-// those would otherwise put the box back over the model it was standing in for.
-function modelIsDrawn(modelIndex) {
-  // Geometry that has just arrived has not been asked whether it is big enough to be worth
-  // drawing: that is decided per view, and the view has not changed just because a file loaded.
-  detailScale = null;
-  const entry = meshes.find((m) => m.modelIndex === modelIndex);
-  if (!entry) return;
-  entry.modelDrawn = true;
-  entry.mesh.material.visible = false;
-  for (const i of entry.instances) drawnFromFile.add(i);
-  // A part that travels is drawn twice over: once as the open frame `buildArms` extrudes for it,
-  // and now as itself. The frame and the stroke around it were standing in for geometry nobody
-  // had, so they go the way the box does. The reference line stays: it marks where the drive
-  // reports this part to be, which is not a fact about the shape and is the one thing the geometry
-  // cannot say for itself.
-  for (const arm of arms) {
-    if (!entry.instances.includes(arm.index)) continue;
-    arm.frame.visible = false;
-    arm.outline.visible = false;
-  }
-  // The view is not going to change just because a file finished loading, so the border has to be
-  // faded here as well as in the rule that keeps it faded.
-  setRenderMode(planView ?? false);
-}
-
-// Put a model that is already on screen where the new scene says it is. Its geometry, its
-// materials and its joints are the same objects; what changed is which instance it belongs to and
-// the transform that places it.
-function replaceInScene(root, index) {
-  root.userData.index = index;
-  root.matrix.copy(world.matrices[index]);
-  root.matrixWorldNeedsUpdate = true;
-  root.traverse((o) => {
-    if (o.isMesh) o.userData.declaredBy = index;
-  });
-  applyJoints(index);
-}
-
-// glTF says metres and Y-up; a resource that means something else says so in its declaration.
-const MESH_UNITS = { mm: 1, cm: 10, m: 1000 };
-
-function buildDeclaredMeshes() {
-  // What is on screen already, by the resource and file it was drawn for. A tree that changes
-  // shape - a tip picked up, a plate moved - sends a whole scene, and rebuilding the geometry for
-  // it would take every model off screen and put the boxes back until the files had been fetched
-  // and parsed again. That flash is what this is here to stop.
-  sceneGeneration++;
-  const onScreen = new Map();
-  for (const root of meshRoots) onScreen.set(root.userData.key, root);
-  meshRoots = [];
-  // An instanced mesh holds a fixed number of instances, so a scene with a different number of
-  // them needs new ones. The file behind it is already parsed, so they are built again in this
-  // same turn and nothing is ever off screen.
-  for (const built of modelMeshes) for (const mesh of built.meshes) view.remove(mesh);
-  disposeOwned(buildDeclaredMeshes);
-  modelMeshes = [];
-
-  // One load per distinct model, however many instances stand on it. A file of several hundred
-  // thousand triangles is expensive to fetch and parse, and cloning shares both geometry and
-  // materials, so the cost is paid once no matter how many arms are in the facility.
-  const byModel = new Map();
-  const kept = new Set();
-  for (let index = 0; index < world.names.length; index++) {
-    const declared = modelOf(index).mesh;
-    if (!declared?.url) continue;
-    const modelIndex = world.modelOf[index];
-    const root = onScreen.get(meshKey(index));
-    if (root !== undefined) {
-      onScreen.delete(meshKey(index));
-      replaceInScene(root, index);
-      meshRoots.push(root);
-      kept.add(modelIndex);
-      continue;
-    }
-    if (!byModel.has(modelIndex)) byModel.set(modelIndex, []);
-    byModel.get(modelIndex).push(index);
-  }
-  // Whatever is left belongs to a resource this scene does not have, or to one that now declares a
-  // different file.
-  for (const root of onScreen.values()) {
-    view.remove(root);
-    disposeOwned(root);
-  }
-  for (const modelIndex of kept) modelIsDrawn(modelIndex);
-
-  for (const [modelIndex, instances] of byModel) {
-    const declared = world.models[modelIndex].mesh;
-    const scale = MESH_UNITS[declared.units] ?? 1;
-    const names = instances.map((i) => world.names[i]);
-    const generation = sceneGeneration;
-
-    const place = (gltf) => {
-      // The scene may have been rebuilt while this was in flight; that scene issued its own load.
-      // Placing this one too would draw the model twice, and the same names do not make it current.
-      parsedByUrl.set(declared.url, gltf);
-      if (generation !== sceneGeneration) return;
-
-      fitFilterDiscs(modelIndex, gltf.scene, scale, declared.up ?? "Y");
-
-      // What rides something that travels keeps a copy of its own: it is drawn see-through and
-      // in a layer of its own while it is being carried, and instances of one model share a
-      // material, so a tip on a channel cannot be told from a tip in a rack through one. There
-      // are never many of them - a head has eight channels, not ninety-six.
-      const riding = instances.filter((index) => travels(index));
-      const standing = instances.filter((index) => !travels(index));
-      if (standing.length > 0) {
-        buildInstancedModel(modelIndex, standing, gltf, scale, declared.up ?? "Y");
-      }
-
-      riding.forEach((index) => {
-        const scene = gltf.scene.clone(true);
-        scene.scale.setScalar(scale);
-        // Y-up is glTF's default; a Z-up file is already in our own convention.
-        if ((declared.up ?? "Y") === "Y") scene.rotation.x = Math.PI / 2;
-
-        const root = new THREE.Group();
-        root.add(scene);
-        root.matrixAutoUpdate = false;
-        root.matrix.copy(world.matrices[index]);
-        root.matrixWorldNeedsUpdate = true;
-        root.traverse((o) => {
-          if (o.isMesh) {
-            o.userData.declaredBy = index;
-            // Its own material: the view sets opacity per resource, and a copy can be let go.
-            o.material = o.material.clone();
-            own(root, o.material);
-            o.userData.lit = o.material;
-            // What the file said, kept before a plan view changes it. A travelling part is put
-            // into the same pass as the content below it, which means writing over its material's
-            // own flags - and a material asked afterwards what it was modelled as would answer
-            // with whatever the plan view just gave it.
-            o.userData.asModelled = {
-              transparent: o.material.transparent,
-              opacity: o.material.opacity,
-              depthWrite: o.material.depthWrite,
-              glazed: o.material.transparent && o.material.opacity <= GLAZED_MAX_OPACITY,
-            };
-          }
-        });
-
-        // A rigged file names the parts that move. The declaration says which node answers to
-        // which joint, so the viewer drives what it is told and holds no knowledge of any arm's
-        // geometry. Each node's rest transform is kept, because a joint value is a displacement
-        // from where the file was authored, not an absolute pose.
-        const joints = new Map();
-        for (const [key, spec] of Object.entries(declared.joints ?? {})) {
-          const node = scene.getObjectByName(spec.node);
-          if (!node) {
-            console.warn(
-              `${world.names[index]} declares joint ${key} on node ${spec.node}, which the file does not have`,
-            );
-            continue;
-          }
-          joints.set(key, {
-            node,
-            spec,
-            restPosition: node.position.clone(),
-            restQuaternion: node.quaternion.clone(),
-          });
-        }
-        root.userData.joints = joints;
-        root.userData.scale = scale;
-        root.userData.index = index;
-        root.userData.key = meshKey(index);
-
-        view.add(root);
-        meshRoots.push(root);
-        applyJoints(index);
-      });
-
-      modelIsDrawn(modelIndex);
-    };
-
-    const parsed = parsedByUrl.get(declared.url);
-    if (parsed !== undefined) {
-      place(parsed);
-      continue;
-    }
-    gltfLoader.load(declared.url, place, undefined, (error) =>
-      console.warn(`could not load the mesh declared by ${names[0]}`, error),
-    );
-  }
-}
-
-/**
- * Draw one model for every resource standing on it, in one instanced mesh per mesh in its file.
- *
- * A cloned model is a draw call apiece: a tip carrier's five racks came to 1,544 of the 1,962 draws
- * a close view cost, for geometry that is the same tip ninety-six times over. Instanced, a model
- * costs one draw however many resources it is drawn for, and the geometry and the materials are
- * the ones the file was parsed into - shared, as the clones shared them.
- *
- * Each instance is registered the way a box's own parts are, so a resource that moves or is
- * switched off takes its geometry with it without this knowing anything about either.
- */
-function buildInstancedModel(modelIndex, instances, gltf, scale, up) {
-  const carrier = new THREE.Group();
-  const scene = gltf.scene.clone(true);
-  scene.scale.setScalar(scale);
-  // Y-up is glTF's default; a Z-up file is already in our own convention.
-  if (up === "Y") scene.rotation.x = Math.PI / 2;
-  carrier.add(scene);
-  carrier.updateMatrixWorld(true);
-
-  const meshes = [];
-  scene.traverse((o) => {
-    if (!o.isMesh) return;
-    // Where this mesh sits inside the file, with the file's units and its up-axis already in it.
-    const local = o.matrixWorld.clone();
-    const material = o.material.clone();
-    const mesh = new THREE.InstancedMesh(o.geometry, material, instances.length);
-    own(buildDeclaredMeshes, mesh, material);
-    mesh.userData.instances = instances;
-    mesh.userData.lit = material;
-    mesh.userData.asModelled = {
-      transparent: o.material.transparent,
-      opacity: o.material.opacity,
-      depthWrite: o.material.depthWrite,
-      color: o.material.color.getHex(),
-      glazed: o.material.transparent && o.material.opacity <= GLAZED_MAX_OPACITY,
-    };
-    instances.forEach((index, slot) => {
-      placeInstance(mesh, slot, world.matrices[index], local);
-      remember(index, mesh, slot, [local]);
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    view.add(mesh);
-    meshes.push(mesh);
-  });
-  modelMeshes.push({ modelIndex, instances, meshes });
-  return meshes;
-}
-
-// Move a resource's mesh to the joint values it publishes.
-//
-// A revolute joint turns about its declared axis, a prismatic one slides along it. Both are applied
-// as a displacement from the rest transform the file was authored in, so a value of zero puts the
-// arm back exactly where the file drew it.
-function applyJoints(index) {
-  const root = meshRoots.find((r) => r.userData.index === index);
-  if (!root) return;
-  const published = stateOf.get(index)?.joints;
-  if (!published) return;
-
-  for (const [key, joint] of root.userData.joints) {
-    const value = published[key];
-    if (value === undefined || value === null) continue;
-    const axis = AXIS_VECTOR[joint.spec.axis ?? "z"];
-    if (!axis) continue;
-
-    if (joint.spec.type === "prismatic") {
-      // Published in millimetres; the node lives in the file's own units.
-      const travel = value / (root.userData.scale || 1);
-      joint.node.position.copy(joint.restPosition).addScaledVector(axis, travel);
-    } else {
-      const turn = new THREE.Quaternion().setFromAxisAngle(axis, value * DEG);
-      joint.node.quaternion.copy(joint.restQuaternion).multiply(turn);
-    }
-  }
-}
-
-const AXIS_VECTOR = {
-  x: new THREE.Vector3(1, 0, 0),
-  y: new THREE.Vector3(0, 1, 0),
-  z: new THREE.Vector3(0, 0, 1),
-};
-
-// A resource that says where the device's x refers to gets that point marked, whether or not it is
-// an arm. An arm draws its own inside the group that carries it; everything else is marked here -
-// the autoload's sled being the case that prompted it, since the drive reports its carrier-handling
-// wheel rather than the sled's own corner.
-let referenceMarks = [];
-
-// A moving part is drawn as three objects rather than one instanced box - a reference line, the
-// carriage, and the stroke that bounds it - so they need ordering against each other as well as
-// against the scene. These are the three offsets, applied to whatever order the part is at: the
-// line reads under the carriage, and the stroke over it. They match the offsets a static resource
-// uses for its own surface and edge, so the two schemes interleave.
-const ARM_LINE_OFFSET = -0.5;
-const ARM_FRAME_OFFSET = 0;
-const ARM_OUTLINE_OFFSET = 1;
-
-// The reference mark on a resource that does not travel, drawn over its own resource but under the
-// edge line that bounds it.
-const REFERENCE_MARK_OFFSET = 0.75;
-
-// What the tree calls a gripper, and what it calls the faces it grips with.
-const GRIPPER = "mechanical_gripper";
-const PAD = "pad";
-
-/** The pad a gripper meets a resource with, as its model, or null where it grips with its fingers. */
-function padOf(index) {
-  const stack = [...world.childrenOf[index]];
-  while (stack.length) {
-    const at = stack.pop();
-    if (modelOf(at).category === PAD) return modelOf(at);
-    stack.push(...world.childrenOf[at]);
-  }
-  return null;
-}
-
-/**
- * A crosshair lying flat at the grip centre: two arms as long as a pad's face, crossing, with a
- * circular opening in the middle so the mark does not cover the very point it is marking.
- */
-// How finely the opening's edge is stepped. Ten is smooth at any size this is ever drawn at.
-const GRIP_ARC_STEPS = 10;
-
-function gripCross(reach, width, opening) {
-  const arm = reach / 2;
-  const half = width / 2;
-  // Each arm is its own shape, starting ON the circle rather than at the centre. Punching a hole
-  // through one solid cross only works while the cross is wider than the hole, and it is not: the
-  // opening is deliberately the wider of the two, so the arms stand clear of it.
-  const theta = Math.asin(Math.min(1, half / opening));
-  const shapes = [];
-  for (let quarter = 0; quarter < 4; quarter++) {
-    const turn = (quarter * Math.PI) / 2;
-    const points = [];
-    for (let step = 0; step <= GRIP_ARC_STEPS; step++) {
-      const angle = turn - theta + (2 * theta * step) / GRIP_ARC_STEPS;
-      points.push(new THREE.Vector2(opening * Math.cos(angle), opening * Math.sin(angle)));
-    }
-    for (const [x, y] of [
-      [arm, half],
-      [arm, -half],
-    ]) {
-      points.push(
-        new THREE.Vector2(
-          x * Math.cos(turn) - y * Math.sin(turn),
-          x * Math.sin(turn) + y * Math.cos(turn),
-        ),
-      );
-    }
-    shapes.push(new THREE.Shape(points));
-  }
-  return new THREE.ShapeGeometry(shapes);
-}
-
-/** A crosshair lying flat at the grip centre, where the tool says its grip centre is. */
-function buildGripMark(index, model, pad) {
-  const tcp = model.tool_center_point;
-  const [along] = sizeOf(pad);
-  const plane = new THREE.Mesh(
-    gripCross(along, GRIP_MARK_WIDTH, GRIP_MARK_OPENING),
-    new THREE.MeshBasicMaterial({
-      color: REFERENCE_LINE,
-      transparent: true,
-      opacity: GRIP_MARK_OPACITY,
-      depthTest: false,
-      side: THREE.DoubleSide,
-    }),
-  );
-  own(buildReferenceMarks, plane.geometry, plane.material);
-  plane.frustumCulled = false;
-  plane.renderOrder = OVERLAY_ORDER + 5;
-  plane.matrixAutoUpdate = false;
-  // Lying flat, centred where the tool says it is programmed against. Read from the tool rather
-  // than taken as the far end of its own box: the two agree on this gripper, and only because its
-  // box is its link length - a tool that grips somewhere other than its tip would have the mark
-  // drawn at the tip, which is the one place it is not.
-  //
-  // The tool states that point from its joint, not from its own origin, so the joint is added back:
-  // left out, the mark stands the joint's offset away from where the jaws close.
-  const joint = model.proximal_joint;
-  plane.userData.local = new THREE.Matrix4().makeTranslation(
-    joint.x + tcp.x,
-    joint.y + tcp.y,
-    joint.z + tcp.z,
-  );
-  plane.matrix.multiplyMatrices(world.matrices[index], plane.userData.local);
-  plane.matrixWorldNeedsUpdate = true;
-  view.add(plane);
-  referenceMarks.push({ plane, index });
-}
-
-/** Whether this resource travels over the deck, itself or by riding something that does. */
-function travels(index) {
-  return MOVING_PARTS.has(modelOf(index).category) || carried(index);
-}
-
-/** Whether this resource rides something that travels, rather than standing on the deck. */
-function carried(index) {
-  for (let i = world.parentOf[index]; i >= 0; i = world.parentOf[i]) {
-    if (MOVING_PARTS.has(modelOf(i).category)) return true;
-  }
-  return false;
-}
-
-function buildReferenceMarks() {
-  for (const mark of referenceMarks) view.remove(mark.plane);
-  disposeOwned(buildReferenceMarks);
-  referenceMarks = [];
-
-  // Draw these at the deck's working surface. A mark at the top of its own resource floats above
-  // whatever it is pointing at, which on a part as tall as the autoload sled is 215 mm of daylight.
-  // The surface is not the deck resource's origin - on a Hamilton deck that sits 100 mm below it -
-  // but the z its rail grid is measured on, which is where anything seated on the deck stands.
-  let deckZ = null;
-  for (let index = 0; index < world.names.length; index++) {
-    const deck = modelOf(index);
-    if (deck.category !== "deck" || !deck.grid) continue;
-    deckZ = world.matrices[index].elements[14] + deck.grid.origin[2];
-    break;
-  }
-
-  for (let index = 0; index < world.names.length; index++) {
-    const model = modelOf(index);
-
-    // A gripper states the point it is programmed against, and that is what gets the mark. What is
-    // worth seeing there is not a line on the deck but the face the pads close on, so the mark is
-    // drawn as long as a pad - a crosshair in the middle, where the resource goes.
-    if (model.category === GRIPPER) {
-      const pad = padOf(index);
-      // A tool that does not say where it grips gets no mark: the point is the tool's to state,
-      // and guessing it from the box is what this stopped doing.
-      if (pad && model.tool_center_point) buildGripMark(index, model, pad);
-      continue;
-    }
-
-    if (!model.reference_point || MOVING_PARTS.has(model.category)) continue;
-    if (NO_REFERENCE_MARK.has(model.category)) continue;
-    const [, sy] = sizeOf(model);
-    // Held in the resource's own frame, so a part that only travels in x keeps it as it moves.
-    //
-    // Dropped to the deck's surface for something standing on the deck, where a mark at the top of
-    // a tall part would float above whatever it points at. A part CARRIED by an arm is not standing
-    // on anything, so its mark rides with it - at the reference point's own height, which is the
-    // height the drive reports and the only one worth marking. On a head that is the bottom of
-    // shaft A1, eight millimetres below the plane the body is measured from; the mark used to sit
-    // on that plane, which is the resource's origin and nothing the device ever refers to.
-    const sz = carried(index)
-      ? (model.reference_point.z ?? 0)
-      : deckZ === null
-        ? 0
-        : deckZ - world.matrices[index].elements[14];
-    const plane = new THREE.Mesh(
-      new THREE.PlaneGeometry(REFERENCE_WIDTH, sy),
-      new THREE.MeshBasicMaterial({
-        color: REFERENCE_LINE,
-        transparent: true,
-        opacity: ARM_REFERENCE_OPACITY,
-        depthTest: false,
-        side: THREE.DoubleSide,
-      }),
-    );
-    own(buildReferenceMarks, plane.geometry, plane.material);
-    plane.frustumCulled = false;
-    plane.renderOrder = paintOrderOf(index) + REFERENCE_MARK_OFFSET;
-    plane.matrixAutoUpdate = false;
-    plane.userData.local = new THREE.Matrix4().makeTranslation(referenceOffset(model), sy / 2, sz);
-    plane.matrix.multiplyMatrices(world.matrices[index], plane.userData.local);
-    plane.matrixWorldNeedsUpdate = true;
-    view.add(plane);
-    referenceMarks.push({ plane, index });
-  }
-}
-
-/**
- * The opening in a moving part's frame, in the part's own frame: left, right, front, back in mm.
- *
- * Declared by the part when it knows its own geometry. A declared width is centred on the part
- * unless the part also says how far its right edge sits from the end, which is the case for an
- * opening that is deliberately off-centre.
- */
-function armWindow(model) {
-  const [sx, sy] = sizeOf(model);
-  const window = model.window ?? {};
-  const insetY = window.inset_y ?? ARM_INSET_Y;
-  let left;
-  let right;
-  if (window.width === undefined) {
-    left = ARM_INSET_X;
-    right = sx - ARM_INSET_X;
-  } else if (window.right_margin === undefined) {
-    left = (sx - window.width) / 2;
-    right = left + window.width;
-  } else {
-    right = sx - window.right_margin;
-    left = right - window.width;
-  }
-  return [left, right, insetY, sy - insetY];
-}
-
-function buildArms() {
-  for (const arm of arms) view.remove(arm.group);
-  disposeOwned(buildArms);
-  arms = [];
-
-  for (let index = 0; index < world.names.length; index++) {
-    const model = modelOf(index);
-    if (!MOVING_PARTS.has(model.category)) continue;
-    const [sx, sy, sz] = sizeOf(model);
-
-    // Outer footprint with a rectangular hole, extruded to the part's height: a carriage you can
-    // see the deck through, rather than a wall across it.
-    const shape = new THREE.Shape();
-    shape.moveTo(0, 0);
-    shape.lineTo(sx, 0);
-    shape.lineTo(sx, sy);
-    shape.lineTo(0, sy);
-    shape.closePath();
-    const [holeLeft, holeRight, holeFront, holeBack] = armWindow(model);
-    if (holeRight > holeLeft && holeBack > holeFront) {
-      const hole = new THREE.Path();
-      hole.moveTo(holeLeft, holeFront);
-      hole.lineTo(holeLeft, holeBack);
-      hole.lineTo(holeRight, holeBack);
-      hole.lineTo(holeRight, holeFront);
-      hole.closePath();
-      shape.holes.push(hole);
-    }
-
-    const solid = new THREE.ExtrudeGeometry(shape, { depth: sz, bevelEnabled: false });
-    // How the part looks, when it says: its colour and how metallic it reads. Otherwise every arm
-    // is the same translucent grey.
-    const appearance = model.appearance ?? {};
-    const frame = new THREE.Mesh(
-      solid,
-      new THREE.MeshStandardMaterial({
-        color: appearance.color ?? ARM_COLOR,
-        metalness: appearance.metalness ?? 0,
-        roughness: appearance.roughness ?? 0.6,
-        transparent: true,
-        opacity: ARM_OPACITY,
-        depthWrite: false,
-      }),
-    );
-    frame.renderOrder = paintOrderOf(index) + ARM_FRAME_OFFSET;
-    own(buildArms, solid, frame.material);
-
-    // Struck from the same extrusion, so the stroke follows the window and the footprint both.
-    // It lives in the arm's own group, which is what moves, so there is nothing left behind to
-    // keep in step - the failure the generic box outline had.
-    const outlineEdges = new THREE.EdgesGeometry(solid);
-    const outlineGeometry = new LineSegmentsGeometry();
-    outlineGeometry.setPositions(outlineEdges.getAttribute("position").array);
-    outlineEdges.dispose();
-    const outlineMaterial = new THREE.Line2NodeMaterial({
-      color: ARM_EDGE,
-      linewidth: ARM_EDGE_WIDTH_3D,
-      worldUnits: false,
-    });
-    own(buildArms, outlineGeometry, outlineMaterial);
-    const outline = new LineSegments2(outlineGeometry, outlineMaterial);
-    outline.frustumCulled = false;
-    outline.renderOrder = paintOrderOf(index) + ARM_OUTLINE_OFFSET;
-
-    const offset = referenceOffset(model);
-    // Along the Y its reference point reaches, when the arm declares it, else the arm's whole depth.
-    const [reachFront, reachBack] = model.reference_point?.y_range ?? [0, sy];
-    const line = new THREE.Mesh(
-      new THREE.PlaneGeometry(REFERENCE_WIDTH, reachBack - reachFront),
-      new THREE.MeshBasicMaterial({
-        color: REFERENCE_LINE,
-        transparent: true,
-        opacity: ARM_REFERENCE_OPACITY,
-        depthTest: false,
-      }),
-    );
-    line.position.set(offset, (reachFront + reachBack) / 2, -REFERENCE_DROP);
-    own(buildArms, line.geometry, line.material);
-    // Under the frame in paint order as well as in z, so it reads through the window and is tinted
-    // by the carriage everywhere else. Ordering, not position, is what decides this: depth testing
-    // is off in an axis view, so a lower render order is the only thing that puts it underneath.
-    line.renderOrder = paintOrderOf(index) + ARM_LINE_OFFSET;
-
-    const group = new THREE.Group();
-    group.add(line, frame, outline);
-    group.matrixAutoUpdate = false;
-    group.matrix.copy(world.matrices[index]);
-    group.matrixWorldNeedsUpdate = true;
-    view.add(group);
-
-    arms.push({ group, frame, outline, line, index, referenceOffset: offset, ...armPose(index) });
-  }
-}
-
-/** Where an arm stands in the model: what its group is drawn from, and where its glide ends. */
-function armPose(index) {
-  const parent = world.parentOf[index];
-  const local = world.local.slice(index * 6, index * 6 + 6);
-  return {
-    parentMatrix: parent >= 0 ? world.matrices[parent].clone() : new THREE.Matrix4(),
-    local,
-    currentX: local[0],
-    targetX: local[0],
-  };
-}
-
-// Glide rather than teleport, so a move reads as motion. The tracker carries commanded targets, so
-// this interpolation is cosmetic and says nothing about where the arm physically is mid-move.
-// How long a move takes to draw, in seconds. Off by default: a viewer watching a device should
-// show where it is, and a glide is the drawing running that far behind. Turned up to follow a
-// simulation, where the run is the thing being watched rather than the machine.
-const DEFAULT_GLIDE_SECONDS = 0;
-let glideSeconds = DEFAULT_GLIDE_SECONDS;
-
-export function setGlideSeconds(seconds) {
-  glideSeconds = Math.max(0, seconds);
-}
-
-const reducedMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)");
-
-function updateArms(delta) {
-  const reduce = reducedMotion?.matches;
-  let moved = false;
-  for (const arm of arms) {
-    if (Math.abs(arm.targetX - arm.currentX) < 0.01) continue;
-    moved = true;
-    arm.currentX =
-      reduce || !glideSeconds
-        ? arm.targetX
-        : arm.currentX + (arm.targetX - arm.currentX) * Math.min(1, delta / glideSeconds);
-    const local = new THREE.Matrix4().makeTranslation(arm.currentX, arm.local[1], arm.local[2]);
-    arm.group.matrix.multiplyMatrices(arm.parentMatrix, local);
-    arm.group.matrixWorldNeedsUpdate = true;
-
-    // Keep the scene model in step with what is drawn. Everything else reads position from here -
-    // the info panel, the selection box, the coordinate tool - so moving only the group would
-    // leave all of them quoting where the arm used to be.
-    mirrorPlacement(arm.index, arm.currentX, arm.group.matrix);
-    // What the arm itself is drawn from. Its frame and outline ride the group and have moved
-    // already, but everything else the arm owns is a separate object with a baked matrix - its
-    // declared model above all, which hangs off the view rather than off the group - and the line
-    // below deliberately skips the arm while it works out the subtree beneath it. Without this a
-    // part drawn from a file stays where it was loaded while the arm travels out from under it,
-    // which is what a model-drawn X-arm did: the reference line moved and the geometry did not.
-    redraw([arm.index]);
-    // Whatever rides the arm moves with it. Its own matrix is already set from the group, so only
-    // what is beneath it needs working out.
-    refreshSubtree(arm.index, true);
-    if (selected === arm.index) {
-      selectionBox.box.copy(worldBox(arm.index));
-      refreshPlacement(arm.index);
-    }
-  }
-  return moved;
-}
-
-// The tracked X, from the arm's own tracker when it has one. The frame's left edge sits at that X
-// minus the reference offset, so the resource's box stays where the resource says it is.
-// A resource has moved. Position is published as state now, the same way rotation always has been,
-// so this is the one path by which anything that travels reaches the picture: an arm over a deck, a
-// plate put down somewhere new, a robot between workcells.
-//
-// Its own transform changes, and so does the world transform of everything standing on it, so the
-// subtree is recomputed and every instance in it repositioned.
-// Recompute the world transform of everything at or beneath `index`, and move the drawn instances
-// to match. A resource's own transform is relative to its parent, so a parent moving carries its
-// children with it in the model for free - but the matrices the scene draws from are absolute, and
-// those have to be worked out again.
-// Move the drawn instances to wherever the world now says they are. The transforms are worked out
-// in `world.js`, which has no idea any of this is on screen; this is only the part that is.
-function redraw(indices) {
-  const touched = new Set();
-  for (const at of indices) {
-    const [sx, sy, sz] = sizeOf(modelOf(at));
-    // A resource that is switched off is drawn nowhere, and moving it does not turn it back on.
-    // Putting the instance back at its new transform regardless is what brought a hidden plate's
-    // wells back the moment anything under it moved.
-    const visible = isVisible(at);
-    const placement = placementOf[at];
-    if (placement) {
-      if (visible) placeInstance(placement.mesh, placement.slot, world.matrices[at], sx, sy, sz);
-      else placement.mesh.setMatrixAt(placement.slot, ZERO);
-      touched.add(placement.mesh);
-    }
-    // An outline is its own object with its own baked matrix, so a move that touched only the
-    // instance left it standing at the old position - a wireframe ghost of whatever rode the arm.
-    const line = edgeOf.get(at);
-    if (line) line.matrix.copy(boxMatrix(world.matrices[at], sx, sy, sz));
-    // A reference mark is its own object too, and marks a point ON the resource - so when the
-    // resource travels, the point travels with it.
-    for (const mark of referenceMarks) {
-      if (mark.index !== at) continue;
-      mark.plane.matrix.multiplyMatrices(world.matrices[at], mark.plane.userData.local);
-      mark.plane.matrixWorldNeedsUpdate = true;
-    }
-    // A declared mesh is its own object with a baked matrix for the same reason, and needs the same
-    // treatment: without it the model stays where it was loaded while the box it stood in for
-    // travels on without it. An autoload sled driven along its rail showed exactly that - box in
-    // one place, geometry in another.
-    const root = meshRoots.find((r) => r.userData.index === at);
-    if (root) {
-      root.matrix.copy(world.matrices[at]);
-      root.matrixWorldNeedsUpdate = true;
-    }
-    // A well's rim and cavity are their own instances, so a move that touched only the box left
-    // them where the resource was - and left them standing when the resource was switched off.
-    placeParts(at, touched);
-  }
-  for (const mesh of touched) {
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.boundingSphere = null;
-  }
-}
-
-function refreshSubtree(index, skipSelf) {
-  redraw(refreshTransforms(index, skipSelf));
-}
-
-function applyLocation(index, location) {
-  // A travelling part is drawn by its own group and glides there, so it is told the target rather
-  // than being moved under it. What stands on it is not part of that group, though - the 96-head
-  // rides the arm in the model but is drawn with everything else - so the glide carries it.
-  if (MOVING_PARTS.has(modelOf(index).category)) {
-    const arm = arms.find((a) => a.index === index);
-    if (arm) {
-      if (!setLocal(index, location)) return;
-      arm.targetX = location.x;
-      return;
-    }
-  }
-
-  // Everything else eases its own transform, so what stands on it comes along and every panel
-  // reads the position where it always has.
-  if (!glideSeconds || reducedMotion?.matches) {
-    glides.delete(index);
-    if (setLocal(index, location)) refreshSubtree(index);
-    return;
-  }
-  const o = index * 6;
-  if (
-    world.local[o] === location.x &&
-    world.local[o + 1] === location.y &&
-    world.local[o + 2] === location.z
-  ) {
-    glides.delete(index);
-    return;
-  }
-  // No frame asked for here: the message that carried this position asked for one at its own
-  // edge, and `updateGlides` keeps the loop running while anything is still easing.
-  glides.set(index, {
-    from: { x: world.local[o], y: world.local[o + 1], z: world.local[o + 2] },
-    to: { x: location.x, y: location.y, z: location.z },
-    left: glideSeconds,
-  });
-}
-
-// What each gliding resource is easing toward, by index. A second move replaces the first: the
-// model is already at the new target and only the drawing is behind.
-const glides = new Map();
-
-function updateGlides(delta) {
-  if (!glides.size) return false;
-  for (const [index, glide] of glides) {
-    glide.left -= delta;
-    const done = glide.left <= 0;
-    // How much of the move is still to come, so the whole of it takes `glideSeconds` whatever its
-    // length and however the frames fall.
-    const left = done ? 0 : glide.left / glideSeconds;
-    const next = done
-      ? glide.to
-      : {
-          x: glide.to.x - (glide.to.x - glide.from.x) * left,
-          y: glide.to.y - (glide.to.y - glide.from.y) * left,
-          z: glide.to.z - (glide.to.z - glide.from.z) * left,
-        };
-    if (done) glides.delete(index);
-    if (setLocal(index, next)) refreshSubtree(index);
-  }
-  return true;
-}
-
-// A resource has turned. Only its own transform changes, but everything standing on it is drawn
-// from an absolute matrix worked out through that transform - so an arm's links carry the gripper,
-// its fingers and their pads round with them, and all of it has to be recomputed.
-function applyRotation(index, rotation) {
-  if (!setLocalRotation(index, rotation)) return;
-  refreshSubtree(index);
-}
-
-function setArmX(index, referenceX) {
-  const arm = arms.find((a) => a.index === index);
-  if (arm) arm.targetX = referenceX - arm.referenceOffset;
-}
-
-function buildGridMarks() {
-  for (const mark of gridMarks) view.remove(mark);
-  disposeOwned(buildGridMarks);
-  gridMarks = [];
-  gridLabels = [];
-  surfaces = [];
-
-  for (let index = 0; index < world.names.length; index++) {
-    const grid = modelOf(index).grid;
-    if (!grid) continue;
-
-    const group = new THREE.Group();
-    group.matrixAutoUpdate = false;
-    group.matrix.copy(world.matrices[index]);
-    // With matrixAutoUpdate off, three only recomputes matrixWorld when told to; without this the
-    // whole group silently renders at the identity transform.
-    group.matrixWorldNeedsUpdate = true;
-
-    const [ox, oy, oz] = grid.origin;
-    const z = oz + GRID_LIFT;
-
-    const [footprintX, footprintY] = sizeOf(modelOf(index));
-    // Nothing to draw at all when it is fully transparent, rather than a draw call per deck that
-    // contributes no pixels. The grid, the rail numbers and the access bands are their own objects
-    // and stay either way, so the deck still reads as a deck.
-    if (SURFACE_OPACITY > 0) {
-      const surfaceMaterial = new THREE.MeshStandardMaterial({
-        color: SURFACE_COLOR,
-        metalness: 0.3,
-        roughness: 0.42,
-        transparent: true,
-        opacity: SURFACE_OPACITY,
-        // What stands on the deck is drawn opaque and so lands in the depth buffer first; the surface
-        // is below it and fails against it, which is what keeps a plate from being tinted by the deck
-        // it sits on. Writing depth as well would have the surface occlude whatever is under it.
-        depthWrite: false,
-      });
-      const surface = new THREE.Mesh(
-        new THREE.PlaneGeometry(footprintX, footprintY),
-        surfaceMaterial,
-      );
-      // The deck's own top face, so it paints just after the deck's box and just before whatever
-      // stands on it. On the same height scale as everything else - left on the old tree-depth scale
-      // it sorted below the box it belongs to, and the box covered it.
-      surface.renderOrder = paintOrderOf(index) + 0.25;
-      surface.userData.lit = surfaceMaterial;
-      own(buildGridMarks, surface.geometry, surfaceMaterial);
-      surfaces.push(surface);
-      surface.position.set(footprintX / 2, footprintY / 2, oz);
-      group.add(surface);
-    }
-    // A mark reaches forward of the grid into a margin the numbers sit in, and neither leaves the
-    // resource it is drawn on: a line hanging off the front of a part reads as geometry that is not
-    // there, and a number floating past the edge belongs to nothing. Where there is no margin to
-    // reach into - a loading tray's grid starts at the tray's own front edge - both come inside.
-    const half = GRID_LABEL_MM / 2;
-    const ink = (GRID_LABEL_MM * GRID_LABEL_INK) / 2;
-    const front = Math.max(oy - GRID_TICK, 0);
-    const labelY = Math.max(oy - GRID_TICK - half, ink + GRID_MARGIN);
-    const points = [];
-    for (let i = 0; i < grid.count; i++) {
-      const x = ox + i * grid.spacing;
-      points.push(x, front, z, x, oy + grid.extent, z);
-
-      const position = i + 1;
-      if (position === 1 || position % grid.label_every === 0) {
-        const sprite = labelSprite(String(position));
-        own(buildGridMarks, sprite.geometry, sprite.material, sprite.material.map);
-        gridLabels.push(sprite);
-        // Between this mark and the next, so a number never sits on a line.
-        sprite.position.set(x + grid.spacing / 2, labelY, z);
-        group.add(sprite);
-      }
-    }
-
-    // Access bands: two lines each, spanning the surface, labelled at the near edge.
-    const bands = modelOf(index).bands ?? [];
-    if (bands.length) {
-      const bandPoints = [];
-      // Lines only: the reach each pair belongs to is in the band's label if anything ever needs
-      // it, but drawn on the deck the numbers competed with the rail numbering.
-      for (const band of bands) {
-        // A band runs only as far as whatever reaches across it says it does.
-        const x0 = band.x_from ?? 0;
-        const x1 = band.x_to ?? footprintX;
-        for (const y of [band.from, band.to]) bandPoints.push(x0, y, z, x1, y, z);
-      }
-      const bandGeometry = new THREE.BufferGeometry();
-      bandGeometry.setAttribute("position", new THREE.Float32BufferAttribute(bandPoints, 3));
-      const bandLines = new THREE.LineSegments(
-        bandGeometry,
-        new THREE.LineBasicMaterial({ color: BAND_COLOR, depthTest: false }),
-      );
-      bandLines.renderOrder = paintOrderOf(index) + 0.5;
-      own(buildGridMarks, bandGeometry, bandLines.material);
-      group.add(bandLines);
-    }
-
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute("position", new THREE.Float32BufferAttribute(points, 3));
-    const marks = new THREE.LineSegments(
-      geometry,
-      // Opaque, so it sorts with everything else: a transparent line renders after all opaque
-      // geometry no matter its render order, which is what kept these on top of the carriers.
-      new THREE.LineBasicMaterial({ color: GRID_LINE, depthTest: false }),
-    );
-    // Just above the surface it is drawn on, and below anything standing on that surface.
-    marks.renderOrder = paintOrderOf(index) + 0.5;
-    marks.userData.mark = "solid";
-    group.add(marks);
-
-    // The same marks again, faint and over the top of whatever is standing on them, so the track a
-    // carrier occupies can still be read off. Shares the geometry - this is a second material, not
-    // a second set of lines.
-    const showThrough = new THREE.LineSegments(
-      geometry,
-      new THREE.LineBasicMaterial({
-        color: GRID_LINE,
-        transparent: true,
-        opacity: GRID_GHOST_OPACITY,
-        depthTest: false,
-      }),
-    );
-    showThrough.userData.mark = "through";
-    showThrough.renderOrder = OVERLAY_ORDER - 1;
-    group.add(showThrough);
-    own(buildGridMarks, geometry, marks.material, showThrough.material);
-
-    group.userData.owner = index;
-    view.add(group);
-    gridMarks.push(group);
-  }
-}
-
-// The facility's origin, drawn as a triad. Everything in the scene is measured from here, so it
-// should be findable without hunting: the coordinate tool, the deck maths and the readouts all
-// resolve against this point.
-let originMarker = null;
-
-const AXIS_COLORS = { x: 0xdc3545, y: 0x198754, z: 0x1a4b8c };
-
-// ---------------------------------------------------------------- origin markers (trial)
-
-// A small magenta sphere on every resource's origin, for checking where a resource is measured
-// from. Off until the toolbar button turns it on.
-//
-// One InstancedMesh, not a mesh each: measured on a 316-resource Prep, instancing costs one draw
-// call and 0.9% of a frame, where a mesh per resource cost 215 draw calls and 37%.
-const ORIGIN_DOT_RADIUS = 1.0; // mm
-const ORIGIN_DOT_COLOR = 0xff00ff;
-let originDots = null;
-let showOriginDots = false;
-
-function buildOriginDots() {
-  if (originDots) {
-    view.remove(originDots);
-    originDots.geometry.dispose();
-    originDots.material.dispose();
-    originDots = null;
-  }
-  if (!showOriginDots || !world) return;
-  const count = world.names.length;
-  const mesh = new THREE.InstancedMesh(
-    new THREE.SphereGeometry(ORIGIN_DOT_RADIUS, 8, 6),
-    new THREE.MeshBasicMaterial({ color: ORIGIN_DOT_COLOR }),
-    count,
-  );
-  mesh.frustumCulled = false;
-  const at = new THREE.Vector3();
-  const matrix = new THREE.Matrix4();
-  for (let i = 0; i < count; i++) {
-    at.setFromMatrixPosition(world.matrices[i]);
-    mesh.setMatrixAt(i, matrix.makeTranslation(at.x, at.y, at.z));
-  }
-  mesh.instanceMatrix.needsUpdate = true;
-  originDots = mesh;
-  view.add(originDots);
-}
-
-function buildOrigin() {
-  if (originMarker) view.remove(originMarker);
-  disposeOwned(buildOrigin);
-  const length = 1; // unit sized; scaled to a constant screen size in updateOrigin()
-  const shaft = length * 0.022;
-
-  originMarker = new THREE.Group();
-  // The facility is the root instance, so its own frame is the origin everything resolves against.
-  originMarker.position.setFromMatrixPosition(world.matrices[0]);
-
-  // Solid shafts rather than lines: a one-pixel line disappears the moment the scene is a room
-  // wide, and the origin is the one thing that has to stay findable at any zoom.
-  const axes = [
-    [new THREE.Vector3(1, 0, 0), AXIS_COLORS.x],
-    [new THREE.Vector3(0, 1, 0), AXIS_COLORS.y],
-    [new THREE.Vector3(0, 0, 1), AXIS_COLORS.z],
-  ];
-  for (const [direction, color] of axes) {
-    const material = new THREE.MeshStandardMaterial({ color, roughness: 0.45 });
-    const body = length * 0.78;
-    const bar = new THREE.Mesh(new THREE.CylinderGeometry(shaft, shaft, body, 12), material);
-    const head = new THREE.Mesh(new THREE.ConeGeometry(shaft * 2.6, length - body, 14), material);
-    // Cylinders and cones point along +Y; turn each onto its own axis.
-    const quaternion = new THREE.Quaternion().setFromUnitVectors(
-      new THREE.Vector3(0, 1, 0),
-      direction,
-    );
-    bar.quaternion.copy(quaternion);
-    head.quaternion.copy(quaternion);
-    bar.position.copy(direction).multiplyScalar(body / 2);
-    head.position.copy(direction).multiplyScalar(body + (length - body) / 2);
-    originMarker.add(bar, head);
-    own(buildOrigin, material, bar.geometry, head.geometry);
-  }
-
-  const centre = new THREE.Mesh(
-    new THREE.SphereGeometry(shaft * 2.2, 18, 14),
-    new THREE.MeshStandardMaterial({ color: 0x1a1f22, roughness: 0.4 }),
-  );
-  originMarker.add(centre);
-  own(buildOrigin, centre.geometry, centre.material);
-
-  // A ring flat on the floor, so the origin is still findable from directly above.
-  const ring = new THREE.Mesh(
-    new THREE.RingGeometry(length * 0.15, length * 0.2, 48),
-    new THREE.MeshBasicMaterial({
-      color: 0x1a4b8c,
-      transparent: true,
-      opacity: 0.6,
-      side: THREE.DoubleSide,
-    }),
-  );
-  originMarker.add(ring);
-  own(buildOrigin, ring.geometry, ring.material);
-
-  // The origin is a marker on the viewport, not something standing in the scene, so it reads over
-  // whatever is drawn there.
-  originMarker.traverse((o) => {
-    if (o.material) {
-      o.material.depthTest = false;
-      o.material.depthWrite = false;
-      o.renderOrder = OVERLAY_ORDER;
-    }
-  });
-  view.add(originMarker);
-  updateOrigin();
-}
-
-// Below this many pixels across, a resource contributes noise rather than information. Set so a
-// well still draws at a 500 mm scale bar, where a pixel is worth about 2.5 mm and a 6.9 mm well
-// projects to roughly 2.7 px; it drops out at facility zoom, where it is closer to 1.4 px and a
-// thousand of them read as grey haze. Its parent is still drawn, so nothing vanishes without
-// something in its place.
-const DETAIL_MIN_PX = 2;
-// And below this a model is not worth its geometry: the box it stood in for says the same thing
-// at a fraction of the cost, and one box is drawn with all the others in a single call. Between
-// the two a resource is still there, drawn as a box; below the smaller one it is not drawn at all.
-// Eight pixels is where an 8.2 mm tip lands with the camera about a metre off an 840 px tall
-// canvas: far enough out that a deck being worked on is still made of things, not boxes.
-const MODEL_MIN_PX = 8;
-// Below this a rail number is a smudge rather than a number. Nothing is lost by not drawing it, and
-// at facility scale it is most of what the renderer is being asked to do.
-const LABEL_MIN_PX = 7;
-let detailScale = null;
-
-function updateDetail() {
-  const perPixel = mmPerPixel();
-  if (!Number.isFinite(perPixel) || perPixel <= 0) return;
-  // Only rework when the scale has moved enough to change an answer.
-  if (detailScale !== null && Math.abs(perPixel / detailScale - 1) < 0.02) return;
-  detailScale = perPixel;
-
-  // A rail number is drawn in deck millimetres, so how big it lands on screen is a division away.
-  const labelsLegible = GRID_LABEL_MM / perPixel >= LABEL_MIN_PX;
-  for (const label of gridLabels) {
-    if (label.visible !== labelsLegible) label.visible = labelsLegible;
-  }
-
-  // A model is geometry, and geometry is what the renderer spends its frame on: a tip rack two
-  // pixels across was still drawing its ninety-six tips, one draw call each. The rule that decides
-  // whether a box is worth drawing decides this too - and a part that travels is exempt, because
-  // what it is doing is the thing being watched.
-  const geometryOf = new Set();
-  for (const root of meshRoots) {
-    const index = root.userData.index;
-    const [sx, sy] = sizeOf(modelOf(index));
-    const visible = travels(index) || Math.max(sx, sy) / perPixel >= MODEL_MIN_PX;
-    if (root.visible !== visible) root.visible = visible;
-    if (visible) geometryOf.add(world.modelOf[index]);
-  }
-  // Every resource drawn from one instanced mesh is the same model at the same size, and none of
-  // them travels - what travels keeps a clone of its own - so one answer covers the lot.
-  for (const built of modelMeshes) {
-    const [sx, sy] = sizeOf(world.models[built.modelIndex]);
-    const visible = Math.max(sx, sy) / perPixel >= MODEL_MIN_PX;
-    for (const mesh of built.meshes) if (mesh.visible !== visible) mesh.visible = visible;
-    if (visible) geometryOf.add(built.modelIndex);
-  }
-
-  const drawn = new Set();
-  for (const entry of meshes) {
-    const [sx, sy] = sizeOf(entry.model);
-    const visible = Math.max(sx, sy) / perPixel >= DETAIL_MIN_PX;
-    if (entry.mesh.visible !== visible) entry.mesh.visible = visible;
-    // The box stands in for the model again as soon as the model is too small to be worth
-    // drawing, and steps back out of the way when it is not. Standing in, it is drawn as solidly
-    // as the model was, so what a resource looks like does not change as it crosses the threshold.
-    if (entry.modelDrawn) {
-      const fills = !geometryOf.has(entry.modelIndex);
-      if (entry.mesh.material.visible !== fills) entry.mesh.material.visible = fills;
-      if (entry.standsIn !== fills) {
-        entry.standsIn = fills;
-        entry.mesh.material.opacity = boxOpacity(entry);
-        entry.mesh.material.needsUpdate = true;
-      }
-    }
-    entry.detailVisible = visible;
-    for (const overlay of entry.overlays ?? []) {
-      const wanted = visible && (!overlay.userData.planOnly || planView === true);
-      if (overlay.visible !== wanted) overlay.visible = wanted;
-    }
-    if (visible) drawn.add(entry.modelIndex);
-  }
-
-  // In a free view an enclosure gets its fill back once nothing inside it is being drawn, so a
-  // plate whose wells have been culled reads as a plate rather than an empty frame. In an axis
-  // view everything is opaque and painted in order, so an enclosure keeps its fill whatever stands
-  // in it - and the fill is put back here rather than left to the mode change that turns painting
-  // on. A fill is only ever taken away in a free view, so one missed transition used to leave a
-  // plan view drawn as bare outlines with nothing behind them, which is what it looked like.
-  if (planView) {
-    for (const entry of meshes) {
-      const wanted = fillsBox(entry);
-      if (entry.mesh.material.visible !== wanted) entry.mesh.material.visible = wanted;
-    }
-    return;
-  }
-  for (const entry of meshes) {
-    // A container is exempt: its walls are what you read the layout off, so they stay drawn at
-    // SHELL_OPACITY whether or not what it holds is on screen. Everything above it in the stack -
-    // a bench, a device, the facility - still drops to its outline, which is what keeps the layers
-    // from compounding.
-    if (!entry.holdsEnclosure || keepsWalls(entry) || entry.modelDrawn) continue;
-    const showsContents = entry.enclosedModels.some((m) => drawn.has(m));
-    if (entry.mesh.material.visible === showsContents) entry.mesh.material.visible = !showsContents;
-  }
-}
-
-// Whether the camera is looking straight down. The plan view is the one view drawn differently -
-// flatter, and with a container's walls kept - and it is the only one, because "higher" and
-// "nearer" are the same thing only from directly above.
-//
-// What it is NOT is a drawing painted by rule. Both views let the depth buffer decide what covers
-// what, which is the one arbiter that is per-pixel and therefore right about every instance of a
-// model at once. The plan view used to sort by a number worked out from each resource's height,
-// with depth testing off; a number cannot be per instance - one mesh carries them all - so every
-// well on a deck was ordered as the tallest well in the room, and everything that had to be seen
-// over them needed its own exception. The exceptions are gone. What is left ordered by hand is
-// what has no depth of its own to test: grids, numbers, marks and outlines, up in OVERLAY_ORDER.
-let planView = null;
-
-// What a resource stands on, in facility mm, and then how deep it sits in the tree. Depth testing is
-// off in an axis view, so what paints last is what shows, and nesting alone decided that - which put
-// a well 100 mm up over a 96-head 400 mm up, because the well sat one level deeper. Height leads
-// now; nesting only separates things standing at the same level, where a parent still paints first.
-//
-// Where a resource stands rather than how high it reaches: a shell is as tall as everything it
-// holds, so reaching highest would have the facility paint over its own contents.
-const PAINT_LEVEL = 100;
-
-function paintOrderOf(index) {
-  return world.matrices[index].elements[14] * PAINT_LEVEL + treeDepth(index) * 2;
-}
-
-// Anything drawn over the scene rather than in it - the origin marker, the highlight boxes, the
-// measurement legs - orders above every paint order a resource can reach. A fixed number cannot do
-// that on its own: paint order is a height in millimetres times PAINT_LEVEL, so the band has to
-// start past the tallest facility anyone will draw. Ten metres of stacked equipment is that.
-const OVERLAY_ORDER = 10_000 * PAINT_LEVEL;
-
-// The layer a part held over the deck is drawn in, above what stands on the deck. Not a height and
-// not a band of them: depth says what is over what, and this says only that a travelling part is
-// blended over the deck rather than into it. Whole numbers, with room for a vessel's own contents
-// between them.
-const CARRIED_LAYER = 2;
-
-// Whether a model's box is drawn as a filled solid at all. A part that travels over the deck is
-// drawn see-through wherever it is, and a model whose own geometry has arrived has no use for the
-// box that stood in for it. Every mode change asks this rather than each one deciding again.
-function fillsBox(entry) {
-  // A vessel's box is drawn by its own cavity mesh, which fills it exactly. Drawing the box as well
-  // puts two surfaces on the same plane, and the depth buffer cannot choose between them.
-  return !MOVING_PARTS.has(entry.model.category) && !entry.modelDrawn && !entry.isVessel;
-}
-
-// Whether this is a thing you look into. Its walls stay drawn, at the shell's opacity, however much
-// is standing in it: a plate with no walls is a floor with wells floating over it, and a carrier
-// with none is a line around some plates.
-function keepsWalls(entry) {
-  return isCarrier(entry.model) || CONTAINERS.has(entry.model.category);
-}
-
-// How see-through a resource is drawn, whatever the angle it is seen from. A part that travels is
-// the see-through one, because drawn solid it hides whatever it happens to be above.
-function OPACITY_OF(isSpace, moves, own, isShell, standsIn) {
-  if (isSpace) return SPACE_OPACITY;
-  if (moves) return MOVING_OPACITY;
-  if (own !== undefined) return own;
-  // A box that is holding the place of a model is no longer a statement about extent: it is the
-  // picture of the thing, and it is drawn as solidly as the model would have been. A tip at
-  // BOX_OPACITY over a white rack composites to about #a3a3a3, which is the colour of an empty
-  // spot - so a full rack and a spent one looked alike everywhere the model was too small to draw.
-  if (standsIn) return 1;
-  if (isShell) return SHELL_OPACITY;
-  return BOX_OPACITY;
-}
-
-/** How see-through this model's box is drawn, given what it is and whether it stands in for a
- * model. Read by the mode change and by the rule that hands the box back and forth with the
- * model, so the two cannot disagree about it. */
-function boxOpacity(entry) {
-  return OPACITY_OF(
-    GROUND.has(entry.model.category),
-    MOVING_PARTS.has(entry.model.category),
-    CATEGORY_OPACITY[entry.model.category],
-    entry.holdsEnclosure,
-    entry.standsIn === true,
-  );
-}
-
-function setRenderMode(plan) {
-  for (const entry of meshes) {
-    // Lit, at every angle. The lights ride with the camera, so a surface is shaded by its own shape
-    // rather than by where it is being looked at - which is what makes a box read as a box without
-    // the view being able to change what colour it is.
-    const material = entry.mesh.material.userData.lit ?? entry.mesh.material;
-    if (entry.mesh.material !== material) entry.mesh.material = material;
-    const isShell = entry.holdsEnclosure;
-    // Ground: the space things stand in, and the surface they stand on. Neither is a thing to look
-    // at, and drawing either solid hides what it carries - a deck drawn opaque is a sheet the same
-    // colour as the plates on it. Both stay barely there in every mode: enough to see where the
-    // floor ends and where the deck reaches, never enough to tint what is on them. What makes a
-    // deck legible is its rail grid, its numbers and its access bands, and those are their own
-    // objects.
-    const isSpace = GROUND.has(entry.model.category);
-    const rides = entry.instances.some((i) => travels(i));
-
-    material.transparent = true;
-    material.opacity = boxOpacity(entry);
-    material.side = isShell || isSpace ? THREE.BackSide : THREE.FrontSide;
-    // Ground stays out of the depth buffer in either view - a wash over the picture, not a surface
-    // anything is behind.
-    material.depthTest = !isSpace;
-    // Everything writes depth, in either view, so the nearest surface wins per pixel - which is
-    // right about every instance of a model at once, where an order could only ever be right about
-    // the model.
-    //
-    // A container used to be held out of the depth buffer in a free view, so that you could look
-    // into it. It never needed to be: a container is drawn back-faces-only, so the only surface of
-    // a plate ever seen is its far wall, which stands behind its own contents and cannot hide
-    // them. What holding it out did instead was stop it hiding anything at all - a plate behind
-    // another still drew, a well printed through its own plate from underneath, and an empty
-    // well's white cavity read as floating with nothing around it.
-    //
-    // A part held over the deck writes too, and it costs nothing: it is drawn after everything it
-    // is above, so the deck is already in the picture and a depth written now cannot rub it out.
-    // What it does stop is the part shading itself - an arm is several surfaces and it carries
-    // channels and an iSWAP, and with nothing to separate them each overlap blended again, so the
-    // arm came out at a third of its own opacity here and two thirds there as it travelled.
-    material.depthWrite = !isSpace;
-    // A shell that is not a container shows its outline and nothing else: a device drawn as a
-    // sheet the size of the device sits under everything standing on it. A container keeps its
-    // walls, which is what makes it read as one.
-    material.visible = fillsBox(entry) && (!isShell || keepsWalls(entry));
-    // Two layers, and only in a plan: what stands on the deck, and what is held over it. Depth
-    // decides everything else; this decides only that a travelling part is blended over the deck
-    // rather than into it.
-    const layer = plan && rides ? CARRIED_LAYER : 0;
-    entry.mesh.renderOrder = layer;
-    for (const overlay of entry.overlays ?? []) {
-      if (overlay.userData.lit) overlay.material = overlay.userData.lit;
-      // A mode change is not a zoom, so the rule that culls small things may not run again before
-      // the next frame: a plan-only overlay is switched here too, and by the same two tests.
-      if (overlay.userData.planOnly) overlay.visible = plan && entry.detailVisible !== false;
-      // From above a vessel has to show its own contents, and depth would stop it: a tip hangs
-      // below the spot that holds it, and liquid sits below the cavity it fills. So in a plan they
-      // are painted in their own resource's layer, which is as far as they can reach. From any
-      // other angle depth is right - what stands in front of a well does cover it - and there they
-      // test like everything else.
-      overlay.material.depthTest = !plan;
-      overlay.material.depthWrite = !plan;
-      overlay.renderOrder = plan ? layer + (overlay.userData.behind ? 0.5 : 1) : 0;
-      overlay.material.needsUpdate = true;
-    }
-    material.needsUpdate = true;
-  }
-
-  for (const surface of surfaces) {
-    surface.material = surface.userData.lit;
-  }
-
-  // A mesh out of a model file, whether it was cloned for one resource or instanced for many.
-  const fromFile = [];
-  for (const root of meshRoots) root.traverse((o) => o.isMesh && fromFile.push(o));
-  for (const built of modelMeshes) for (const mesh of built.meshes) fromFile.push(mesh);
-  for (const o of fromFile) {
-    if (o.userData.lit) o.material = o.userData.lit;
-    const modelled = o.userData.asModelled;
-    // An instanced mesh holds only what stands still; a clone is drawn for one resource.
-    const rides = o.userData.declaredBy !== undefined && travels(o.userData.declaredBy);
-    // Glazing comes out of an axis view. A part that travels keeps whatever it was modelled with,
-    // see-through included: it is drawn that way so the deck under it can be read.
-    o.material.visible = !(plan && modelled?.glazed && !rides);
-    if (!modelled) return;
-    // A part held over the deck is drawn see-through, as its box is, so that what it is above
-    // still reads through it. It does not write depth for the same reason; it still tests, so
-    // the machine's own structure above it covers it as it should.
-    const lifted = plan && rides;
-    o.material.transparent = lifted ? true : modelled.transparent;
-    o.material.opacity = lifted ? Math.min(modelled.opacity, MOVING_OPACITY) : modelled.opacity;
-    o.material.depthWrite = lifted ? true : modelled.depthWrite;
-    o.material.depthTest = true;
-    o.renderOrder = lifted ? CARRIED_LAYER : 0;
-    o.material.needsUpdate = true;
-  }
-
-  for (const mark of gridMarks) {
-    mark.traverse((o) => {
-      if (!o.material) return;
-      // The faint copy belongs to a plan alone, and which view that is follows the camera rather
-      // than the mode: an elevation is axis-aligned too, and from the front a line over a carrier
-      // is a line through it.
-      if (o.userData.mark === "through") {
-        o.visible = planView === true;
-        return;
-      }
-      // Against depth, in either view: a mark lies on the deck surface, and whatever stands on the
-      // deck is above it. It used to be drawn without depth and kept under a carrier by its order
-      // instead, which stopped working the moment content stopped carrying orders - the solid mark
-      // was then painted over every carrier at full strength, which is the error the faint copy
-      // handled above exists to avoid.
-      if (o.material.depthTest !== undefined) o.material.depthTest = true;
-    });
-  }
-
-  for (const arm of arms) {
-    // Where the part stands now. An arm is the one thing in the scene that travels, so the order it
-    // was built with is the order it had when it was somewhere else - and in an axis view, where
-    // depth testing is off, that order is the whole of what puts it over the deck it passes above.
-    const order = paintOrderOf(arm.index);
-    arm.frame.renderOrder = order + ARM_FRAME_OFFSET;
-    arm.outline.renderOrder = order + ARM_OUTLINE_OFFSET;
-    arm.outline.material.depthTest = !plan;
-    arm.outline.material.linewidth = plan ? ARM_EDGE_WIDTH_FLAT : ARM_EDGE_WIDTH_3D;
-    arm.outline.material.needsUpdate = true;
-    // The reference line lies under the carriage, so in a 3D view the channels hanging off it stand
-    // in front and have to hide it - but only those, not the deck it is well above.
-    //
-    // A transparent material always draws after every opaque one, whatever its render order, so as
-    // long as the line was transparent it could only be wholly in front or wholly behind. Opaque and
-    // drawn first, it lays down its own depth: what is nearer covers it, what is further fails
-    // against it and stays behind. In an axis view nothing is in front of anything, so there it goes
-    // back to painting through, under the carriage it marks.
-    arm.line.material.transparent = plan;
-    arm.line.material.opacity = plan ? ARM_REFERENCE_OPACITY : 1;
-    arm.line.material.depthTest = !plan;
-    arm.line.renderOrder = plan ? order + ARM_LINE_OFFSET : -1;
-    arm.line.material.needsUpdate = true;
-  }
-
-  for (const [index, line] of edgeOf) {
-    // All that is left of a box whose model is being drawn: its border, and only just.
-    const stoodIn = drawnFromFile.has(index);
-    line.material.depthTest = !plan;
-    line.material.opacity = stoodIn ? MODEL_EDGE_OPACITY : plan ? 1 : line.userData.baseOpacity;
-    line.material.linewidth = plan ? EDGE_WIDTH_FLAT : EDGE_WIDTH_3D;
-    line.material.color.set(plan ? FLAT_EDGE : line.userData.baseColor);
-    line.renderOrder = plan ? paintOrderOf(index) + 1 : 0;
-    const wanted = plan ? line.userData.footprintGeometry : line.userData.boxGeometry;
-    if (wanted && line.geometry !== wanted) line.geometry = wanted;
-    line.material.needsUpdate = true;
-  }
-}
-
-function updateEdgeMode() {
-  const direction = camera.position.clone().sub(controls.target).normalize();
-  // Looking straight down, and nothing else. An elevation is axis-aligned too and used to get the
-  // same treatment, which is wrong twice over: from the front, higher is not nearer, and a drawing
-  // painted by height puts the deck's back row in front of its front row. Looking straight up is
-  // not a plan either - what is highest is then furthest away.
-  const plan = direction.z > 0.999;
-  // No frame is asked for: this runs inside one, and the camera only reaches an axis through an
-  // input, which has asked for frames already and is still damping to a stop.
-  if (plan === planView) return;
-  planView = plan;
-  for (const mark of gridMarks) showThroughMarks(mark);
-  setRenderMode(plan);
-}
-
-/** Show or hide the faint copies of a grid's marks, which belong to a plan view alone. */
-function showThroughMarks(group) {
-  group.traverse((o) => {
-    if (o.userData.mark === "through") o.visible = planView === true;
-  });
-}
-
-// Held at a constant size on screen, so it marks the origin without swamping a close view or
-// vanishing from a wide one.
-const ORIGIN_PX = 90;
-
-// How close to the edge of the viewport an origin that has left it is brought, in normalised
-// device coordinates. Inside 1.0 so the whole marker shows rather than half of it.
-const ORIGIN_EDGE = 0.92;
-
-const _originAt = new THREE.Vector3();
-const _originNdc = new THREE.Vector3();
-const _originDepth = new THREE.Vector3();
-
-function updateOrigin() {
-  if (!originMarker) return;
-  const perPixel = mmPerPixel();
-  if (!Number.isFinite(perPixel) || perPixel <= 0) return;
-  originMarker.scale.setScalar(perPixel * ORIGIN_PX);
-
-  // The frame every coordinate in the panel is measured against, so it is the one marker that must
-  // not be able to go missing: panned or zoomed far enough, the facility's own corner leaves the
-  // viewport entirely. It is held at the edge instead, in the direction the origin actually lies,
-  // which keeps both the frame and the way back to it on screen.
-  _originAt.setFromMatrixPosition(world.matrices[0]);
-  _originNdc.copy(_originAt).project(camera);
-  // A point behind the camera projects mirrored through the centre, so it would be pinned to the
-  // opposite edge from the one it lies towards.
-  if (_originAt.clone().applyMatrix4(camera.matrixWorldInverse).z > 0) {
-    _originNdc.x *= -1;
-    _originNdc.y *= -1;
-  }
-  if (Math.abs(_originNdc.x) <= ORIGIN_EDGE && Math.abs(_originNdc.y) <= ORIGIN_EDGE) {
-    originMarker.position.copy(_originAt);
-    return;
-  }
-  // Held at the depth the camera is looking at, so it is drawn at the size the scale above gives it.
-  const depth = _originDepth.copy(controls.target).project(camera).z;
-  originMarker.position
-    .set(
-      Math.max(-ORIGIN_EDGE, Math.min(ORIGIN_EDGE, _originNdc.x)),
-      Math.max(-ORIGIN_EDGE, Math.min(ORIGIN_EDGE, _originNdc.y)),
-      depth,
-    )
-    .unproject(camera);
-}
-
-// The floor grid follows the view, the way the existing visualizer's does: its spacing is chosen
-// from how many millimetres a pixel is worth, and it re-centres on what you are looking at. A grid
-// fixed at build time is a grid that means nothing once you zoom.
-let grid = null;
-let gridState = null;
-let floorZ = 0;
-
-// 1, 2 or 5 times a power of ten: the spacings a person can count in.
-function niceNumber(value) {
-  const magnitude = 10 ** Math.floor(Math.log10(Math.max(value, 1e-6)));
-  return [1, 2, 5, 10].map((m) => m * magnitude).find((v) => v >= value) ?? magnitude * 10;
-}
-
-// ---------------------------------------------------------------- channel halos
-
-// A halo on each pipetting channel: a disc facing the camera, held at HALO_PX across whatever the
-// zoom. Sprites, one a channel, rather than one instanced quad:
-// a sprite faces the camera on its own and is placed through its own transform, where an
-// instanced quad needs its matrix buffer rewritten every frame, and on the WebGPU backend a buffer
-// rewritten every frame drew on some frames and not others. Drawn in the overlay band, so a halo
-// sits over the arm's frame and whatever the channel is above without any of them being reordered.
-//
-// What a halo says: its colour is the channel's place in CHANNEL_RAMP, its number is drawn in it,
-// and it is filled while the channel's mounting shaft holds a tip and hollow while it does not.
-// On from the start; the rail button turns them off and on.
-let halos = null;
-let showHalos = true;
-
-const HALO_TEXTURE_PX = 96;
-/** One texture per look, kept: a look is a number, a ramp step and whether it is filled. */
-const haloTextures = new Map();
-
-function haloTextureFor(label, step, filled) {
-  const key = `${label}|${step}|${filled}`;
-  const kept = haloTextures.get(key);
-  if (kept) return kept;
-  const canvas = document.createElement("canvas");
-  canvas.width = HALO_TEXTURE_PX;
-  canvas.height = HALO_TEXTURE_PX;
-  const context = canvas.getContext("2d");
-  const colour = hexOf(CHANNEL_RAMP[step]);
-  const mid = HALO_TEXTURE_PX / 2;
-  const radius = mid - 6;
-  // Two zones. The background is white with an empty shaft and light green with a tip in it, so
-  // the change reads from across the deck. The coin at the centre carries the channel's colour:
-  // a solid coin with a tip, a ring without.
-  context.beginPath();
-  context.arc(mid, mid, radius, 0, Math.PI * 2);
-  // A surface ring around every disc, so two halos that overlap still read as two.
-  context.lineWidth = 4;
-  context.strokeStyle = "rgba(255,255,255,0.9)";
-  context.fillStyle = filled ? HALO_TIPPED_BACKGROUND : "rgba(255,255,255,0.88)";
-  context.fill();
-  context.stroke();
-  const coin = radius - 12;
-  context.beginPath();
-  context.arc(mid, mid, coin, 0, Math.PI * 2);
-  if (filled) {
-    context.fillStyle = colour;
-    context.fill();
-  } else {
-    context.lineWidth = 6;
-    context.strokeStyle = colour;
-    context.stroke();
-  }
-  // Ink, never the series colour, on a solid coin; the ramp colour itself inside a ring.
-  context.fillStyle = filled ? (step < CHANNEL_RAMP_DARK_INK_STEPS ? HALO_INK : "#ffffff") : colour;
-  context.font = `bold ${label.length > 1 ? 34 : 42}px ui-monospace, Menlo, monospace`;
-  context.textAlign = "center";
-  context.textBaseline = "middle";
-  context.fillText(label, mid, mid + 2);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  haloTextures.set(key, texture);
-  return texture;
-}
-
-/** A sprite material over a kept texture: made per build, so the build can let it go. */
-function haloMaterial(map, color = 0xffffff) {
-  return new THREE.SpriteMaterial({
-    map,
-    color,
-    transparent: true,
-    depthTest: false,
-    depthWrite: false,
-  });
-}
-
-// The line from a channel to its disc: a unit line along x, placed by its transform alone, so the
-// frame-by-frame update touches no buffer. One material per ramp step, kept like the discs' are.
-const LEADER_GEOMETRY = new THREE.BufferGeometry().setFromPoints([
-  new THREE.Vector3(0, 0, 0),
-  new THREE.Vector3(1, 0, 0),
-]);
-
-function leaderMaterial(step) {
-  return new THREE.LineBasicMaterial({
-    color: CHANNEL_RAMP[step],
-    transparent: true,
-    opacity: 0.9,
-    depthTest: false,
-    depthWrite: false,
-  });
-}
-
-// The glow on the channel itself: one soft white disc, tinted per ramp step by its material.
-function markTexture() {
-  const canvas = document.createElement("canvas");
-  canvas.width = 64;
-  canvas.height = 64;
-  const context = canvas.getContext("2d");
-  const gradient = context.createRadialGradient(32, 32, 0, 32, 32, 32);
-  gradient.addColorStop(0, "rgba(255,255,255,1)");
-  gradient.addColorStop(0.5, "rgba(255,255,255,0.7)");
-  gradient.addColorStop(1, "rgba(255,255,255,0)");
-  context.fillStyle = gradient;
-  context.fillRect(0, 0, 64, 64);
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
-}
-const MARK_TEXTURE = markTexture();
-
-/** Whether a channel holds a tip: a tip is a resource under the channel's mounting shaft. */
-function channelTipped(index) {
-  return world.childrenOf[index].some(
-    (c) => modelOf(c).category === "tip_mounting_shaft" && world.childrenOf[c].length > 0,
-  );
-}
-
-/** The channel's own number, as the tree names it, so the halo, the panel and the tree agree. */
-function channelLabel(index, ordinal) {
-  const numbered = /(\d+)$/.exec(world.names[index]);
-  return numbered ? numbered[1] : String(ordinal);
-}
-
-function buildHalos() {
-  if (halos) {
-    view.remove(halos);
-    halos = null;
-  }
-  disposeOwned(buildHalos);
-  if (!showHalos || !world) return;
-  const channels = [];
-  for (let index = 0; index < world.names.length; index++) {
-    if (modelOf(index).category === "pipette_channel") channels.push(index);
-  }
-  if (!channels.length) return;
-  const group = new THREE.Group();
-  for (const index of channels) {
-    // Its place in the row it belongs to: the channels on the same arm, in tree order. Sixteen
-    // channels take the whole ramp; eight take every other step, so the ends stay the ends.
-    const row = channels.filter((c) => world.parentOf[c] === world.parentOf[index]);
-    const ordinal = row.indexOf(index);
-    const step = Math.round((ordinal * (CHANNEL_RAMP.length - 1)) / Math.max(1, row.length - 1));
-    const sprite = new THREE.Sprite(
-      haloMaterial(haloTextureFor(channelLabel(index, ordinal), step, channelTipped(index))),
-    );
-    sprite.renderOrder = OVERLAY_ORDER;
-    sprite.frustumCulled = false;
-    sprite.userData.index = index;
-    // Discs alternate sides down the row, the first to the right, so neighbours nine millimetres
-    // apart do not stack their discs on one side.
-    sprite.userData.side = ordinal % 2 === 0 ? 1 : -1;
-    const leader = new THREE.Line(LEADER_GEOMETRY, leaderMaterial(step));
-    leader.renderOrder = OVERLAY_ORDER - 2;
-    leader.frustumCulled = false;
-    const mark = new THREE.Sprite(haloMaterial(MARK_TEXTURE, CHANNEL_RAMP[step]));
-    mark.renderOrder = OVERLAY_ORDER - 1;
-    mark.frustumCulled = false;
-    mark.userData.mark = true;
-    sprite.userData.leader = leader;
-    sprite.userData.mark = mark;
-    own(buildHalos, sprite.material, leader.material, mark.material);
-    group.add(leader, mark, sprite);
-  }
-  halos = group;
-  view.add(halos);
-}
-
-const _haloRight = new THREE.Vector3();
-const _haloUp = new THREE.Vector3();
-const _haloAnchor = new THREE.Vector3();
-const _haloReach = new THREE.Vector3();
-const X_AXIS = new THREE.Vector3(1, 0, 0);
-
-// Each disc sits off the middle of its channel, right and up as the camera sees it, scaled to
-// HALO_PX, with its line running from the channel to the disc's edge - while the channel is small
-// on screen. As it grows the offset shrinks, and at HALO_CENTRED_AT discs wide the disc sits on the
-// channel and the line is gone. Done every frame, since the arm and the camera both move.
-function updateHalos() {
-  if (!halos) return;
-  const perPixel = mmPerPixel();
-  if (!Number.isFinite(perPixel) || perPixel <= 0) return;
-  _haloRight.set(1, 0, 0).applyQuaternion(camera.quaternion);
-  _haloUp.set(0, 1, 0).applyQuaternion(camera.quaternion);
-  const discMm = perPixel * HALO_PX;
-  for (const sprite of halos.children) {
-    if (!sprite.isSprite || sprite.userData.mark === true) continue;
-    const index = sprite.userData.index;
-    const [sx, sy, sz] = sizeOf(modelOf(index));
-    // How many discs wide the channel is on screen: none of the offset once it reaches
-    // HALO_CENTRED_AT, all of it while it is under one.
-    const widths = Math.max(sx, sy) / discMm;
-    const standOff = Math.max(0, Math.min(1, (HALO_CENTRED_AT - widths) / (HALO_CENTRED_AT - 1)));
-    _haloReach
-      .copy(_haloRight)
-      .multiplyScalar(HALO_OFFSET_PX.right * sprite.userData.side)
-      .addScaledVector(_haloUp, HALO_OFFSET_PX.up)
-      .multiplyScalar(perPixel * standOff);
-    _haloAnchor.set(sx / 2, sy / 2, sz / 2).applyMatrix4(world.matrices[index]);
-    sprite.position.copy(_haloAnchor).add(_haloReach);
-    sprite.scale.setScalar(discMm);
-    sprite.userData.mark.position.copy(_haloAnchor);
-    sprite.userData.mark.scale.setScalar(perPixel * HALO_MARK_PX);
-    const leader = sprite.userData.leader;
-    const toEdge = _haloReach.length() - discMm / 2;
-    leader.visible = toEdge > 0;
-    if (!leader.visible) continue;
-    leader.position.copy(_haloAnchor);
-    leader.quaternion.setFromUnitVectors(X_AXIS, _haloReach.clone().normalize());
-    leader.scale.set(toEdge, 1, 1);
-  }
-}
-
-// Aim for a cell around this many pixels: dense enough to measure against, open enough to see past.
-const GRID_TARGET_PX = 64;
-const GRID_MAX_DIVISIONS = 320;
-
-// The floor is drawn with the same fat lines everything else uses, rather than with `GridHelper`:
-// a hairline is one device pixel whatever width is asked for, which on a retina display is half of
-// what it looks like anywhere else and too faint to measure against either way. In CSS pixels, so
-// it means the same thing on every screen.
-const FLOOR_LINE = 0xc0c7cc;
-const FLOOR_AXIS = 0x9aa4ab; // the two lines through the centre, which say where the origin is
-const FLOOR_LINE_WIDTH = 1.4;
-const FLOOR_AXIS_WIDTH = 2.0;
-
-// A material per line, gone with the line: the renderer keeps a line's draw state until its
-// material is disposed, so lines sharing one material piled that up with every change of zoom.
-function floorMaterial(axis) {
-  const material = new THREE.Line2NodeMaterial({
-    color: axis ? FLOOR_AXIS : FLOOR_LINE,
-    linewidth: axis ? FLOOR_AXIS_WIDTH : FLOOR_LINE_WIDTH,
-    worldUnits: false,
-  });
-  return material;
-}
-
-function updateGrid() {
-  const perPixel = mmPerPixel();
-  if (!Number.isFinite(perPixel) || perPixel <= 0) return;
-
-  const span = perPixel * Math.hypot(viewportEl.clientWidth, viewportEl.clientHeight) * 1.3;
-  // Coarsen the spacing rather than shrink the coverage: a grid that stops inside the viewport
-  // reads as a hole in the floor, whereas a larger cell just reads as a larger cell.
-  const cell = Math.max(
-    niceNumber(perPixel * GRID_TARGET_PX),
-    niceNumber(span / GRID_MAX_DIVISIONS),
-  );
-  const divisions = Math.max(4, Math.ceil(span / cell));
-  // Snap the centre to the spacing, or the lines crawl as you pan.
-  const cx = Math.round(controls.target.x / cell) * cell;
-  const cy = Math.round(controls.target.y / cell) * cell;
-
-  if (
-    gridState &&
-    gridState.cell === cell &&
-    gridState.divisions === divisions &&
-    gridState.cx === cx &&
-    gridState.cy === cy
-  ) {
-    return;
-  }
-  gridState = { cell, divisions, cx, cy };
-
-  for (const line of grid ?? []) {
-    view.remove(line);
-    line.geometry.dispose();
-    line.material.dispose();
-  }
-
-  // Already in PLR's XY: the lines are built in the plane rather than laid down from another one.
-  const half = (divisions * cell) / 2;
-  const runs = [[], []]; // ordinary lines, then the two the world's own axes fall on
-  // A line is an axis when it lands on zero IN THE WORLD, which is not the middle of the patch: the
-  // patch follows the camera, so its middle is wherever you happen to be looking. The geometry is
-  // built around the patch's centre and drawn at (cx, cy), so a local t sits at t + cx or t + cy.
-  // Where the origin is off the patch entirely, neither axis is drawn, which is the truth.
-  const axis = (at) => (Math.abs(at) < cell * 1e-6 ? 1 : 0);
-  for (let i = 0; i <= divisions; i++) {
-    const t = -half + i * cell;
-    runs[axis(t + cy)].push(-half, t, 0, half, t, 0);
-    runs[axis(t + cx)].push(t, -half, 0, t, half, 0);
-  }
-
-  grid = runs
-    .map((points, kind) => {
-      if (!points.length) return null;
-      const geometry = new LineSegmentsGeometry();
-      geometry.setPositions(new Float32Array(points));
-      const line = new LineSegments2(geometry, floorMaterial(kind === 1));
-      line.position.set(cx, cy, floorZ);
-      line.renderOrder = -1;
-      line.frustumCulled = false;
-      view.add(line);
-      return line;
-    })
-    .filter(Boolean);
-}
 
 const selectionBox = new THREE.Box3Helper(new THREE.Box3(), new THREE.Color(SELECT));
+
 selectionBox.visible = false;
+
 view.add(selectionBox);
 
 const hoverBox = new THREE.Box3Helper(new THREE.Box3(), new THREE.Color(HOVER));
+
 hoverBox.visible = false;
+
 view.add(hoverBox);
 
 // Both highlights draw over everything. A hairline box behind translucent walls, landing on the
@@ -2114,58 +224,6 @@ for (const helper of [selectionBox, hoverBox]) {
   helper.renderOrder = OVERLAY_ORDER + 30;
 }
 
-// Unit primitives, shared by every model of the same shape and scaled per instance.
-const BOX = new THREE.BoxGeometry(1, 1, 1);
-const CYL = new THREE.CylinderGeometry(0.5, 0.5, 1, 20).rotateX(Math.PI / 2);
-// Open at both ends. A shaft is a length of tube: the bottom is where a tip goes on and the top is
-// where the channel carries on, so capping either reads as a solid slug hanging off the head.
-const TUBE = new THREE.CylinderGeometry(0.5, 0.5, 1, 20, 1, true).rotateX(Math.PI / 2);
-// Flat in XY, facing up: a filter lies across a tip standing on the deck.
-const DISC = new THREE.CircleGeometry(0.5, 32);
-
-// Above this many instances of one model, outlining each stops being cheap.
-const EDGE_LIMIT = 160;
-
-// ---------------------------------------------------------------- scene build
-
-// A resource says what shape it is through `cross_section_type`. A tip spot does not serialize
-// one, though it is plainly round, so it is special-cased here; upstream it should declare the
-// field the way a well does, and this line can go.
-function geometryFor(model) {
-  // A shaft is open at both ends; anything else round is a vessel or a spot, which is not.
-  if (model.category === "tip_mounting_shaft") return TUBE;
-  return model.cross_section_type === "circle" || model.category === "tip_spot" ? CYL : BOX;
-}
-
-// The outline a resource drops to in an axis view. Unit-sized and scaled per instance, so there is
-// one of each shape rather than one per model.
-function ringFootprint(corners) {
-  const points = [];
-  for (let corner = 0; corner < corners; corner++) {
-    // Square from the diagonals, circle from a fine enough ring: the same walk either way.
-    const from = ((corner + 0.5) / corners) * Math.PI * 2;
-    const to = ((corner + 1.5) / corners) * Math.PI * 2;
-    const reach = corners === 4 ? Math.SQRT1_2 : 0.5;
-    points.push(
-      Math.cos(from) * reach,
-      Math.sin(from) * reach,
-      -0.5,
-      Math.cos(to) * reach,
-      Math.sin(to) * reach,
-      -0.5,
-    );
-  }
-  const geometry = new LineSegmentsGeometry();
-  geometry.setPositions(new Float32Array(points));
-  return geometry;
-}
-
-const SQUARE_FOOTPRINT = ringFootprint(4);
-const ROUND_FOOTPRINT = ringFootprint(20);
-
-const footprintFor = (model) => (geometryFor(model) === BOX ? SQUARE_FOOTPRINT : ROUND_FOOTPRINT);
-const colorFor = (model) =>
-  model.appearance?.color ?? RESOURCE_COLORS[model.category] ?? RESOURCE_COLORS.default;
 // "TipRack" -> "tipracks", as the existing visualizer writes them. Deliberately naive: a count is
 // always in front of it, so "1 plates" reads as a count rather than as a mistake.
 const plural = (type) => `${String(type).toLowerCase()}s`;
@@ -2175,629 +233,11 @@ const plural = (type) => `${String(type).toLowerCase()}s`;
 function countable(indices) {
   return plural(modelOf(indices[0]).type);
 }
-const hexOf = (n) => `#${n.toString(16).padStart(6, "0")}`;
-
-const IDENTITY_Q = new THREE.Quaternion();
-const tmpMatrix = new THREE.Matrix4();
-const tmpVec = new THREE.Vector3();
-const tmpScale = new THREE.Vector3();
-const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
-
-// A resource's origin is the minimum corner of its box, so the drawn centre sits half a size in.
-function boxMatrix(matrix, sx, sy, sz, ox, oy, oz) {
-  tmpVec.set(ox ?? sx / 2, oy ?? sy / 2, oz ?? sz / 2);
-  tmpScale.set(sx, sy, sz);
-  return tmpMatrix.compose(tmpVec, IDENTITY_Q, tmpScale).premultiply(matrix);
-}
-
-function placeInstance(mesh, slot, matrix, sx, sy, sz, ox, oy, oz) {
-  // A mesh out of a model file sits at a transform of its own inside that file, which is not a
-  // scale and an offset. Given one, it is applied to the resource's own matrix as it stands.
-  if (sx?.isMatrix4) {
-    mesh.setMatrixAt(slot, tmpMatrix.multiplyMatrices(matrix, sx));
-    return;
-  }
-  mesh.setMatrixAt(slot, boxMatrix(matrix, sx, sy, sz, ox, oy, oz));
-}
-
-function isEnclosure(index) {
-  const model = modelOf(index);
-  return (
-    world.childrenOf[index].length > 0 ||
-    model.max_volume !== undefined ||
-    MOVING_PARTS.has(model.category)
-  );
-}
-
-function collectEnclosedModels(index, into) {
-  for (const child of world.childrenOf[index]) {
-    if (isEnclosure(child)) into.add(world.modelOf[child]);
-    collectEnclosedModels(child, into);
-  }
-}
-
-// A carrier is the level you look at rather than through: its floor is filled in, and its walls
-// keep their fill instead of being culled when the things it holds are drawn.
-function isCarrier(model) {
-  return String(model.category).includes("carrier");
-}
-
-function enclosureDepth(index) {
-  let depth = 0;
-  for (let i = world.parentOf[index]; i >= 0; i = world.parentOf[i]) {
-    if (isEnclosure(i)) depth++;
-  }
-  return depth;
-}
-
-function hasEnclosedDescendant(index) {
-  for (const child of world.childrenOf[index]) {
-    if (isEnclosure(child) || hasEnclosedDescendant(child)) return true;
-  }
-  return false;
-}
-
-function buildMeshes() {
-  for (const entry of meshes) {
-    view.remove(entry.mesh);
-    // An overlay is its own object in the view: a vessel's floor, its walls and its cavity, a
-    // tip's filter disc, the green disc that says a spot is filled. Taking the box out and leaving
-    // those behind does not leave them alone, it puts them out of reach - both rules that show and
-    // hide an overlay walk `meshes`, so one dropped from that list keeps whatever it was last told
-    // for the life of the page. A scene rebuilt while a plan view was up kept its green discs, and
-    // they then showed from every angle.
-    for (const overlay of entry.overlays ?? []) view.remove(overlay);
-  }
-  for (const line of edgeOf.values()) view.remove(line);
-  disposeOwned(buildMeshes);
-  planView = null;
-  detailScale = null;
-  meshes = [];
-  placementOf = new Array(world.names.length);
-  vesselOf = new Map();
-  overlayOf = new Map();
-  filterDiscsOf = new Map();
-  edgeOf = new Map();
-  drawnFromFile = new Set();
-
-  const byModel = new Map();
-  for (let i = 0; i < world.names.length; i++) {
-    const m = world.modelOf[i];
-    if (!byModel.has(m)) byModel.set(m, []);
-    byModel.get(m).push(i);
-  }
-
-  for (const [modelIndex, instances] of byModel) {
-    const model = world.models[modelIndex];
-    const [sx, sy, sz] = sizeOf(model);
-
-    // A well or a tip spot is not drawn as a shell to see through, but as a rim with an inside:
-    // the rim gives it an edge thick enough to find, and the inside carries what is in it. That is
-    // how the existing visualizer draws them, and it is what survives being looked at from above.
-    const isVessel =
-      (Number.isFinite(model.max_volume) && model.max_volume > 0) || model.category === "tip_spot";
-
-    // A resource that holds something is an enclosure: other resources, read off the tree, or
-    // liquid, read off its own capacity. Neither test names a resource type.
-    const encloses =
-      !isVessel &&
-      (instances.some((i) => world.childrenOf[i].length > 0) ||
-        model.max_volume !== undefined ||
-        MOVING_PARTS.has(model.category));
-
-    // But only the innermost enclosures are filled. A well in a plate on a holder on a carrier on
-    // a deck in a device in a facility sits under six translucent shells, and six layers at 0.3
-    // opacity leave about a tenth of the contrast underneath. So anything that holds another
-    // enclosure is drawn as its outline alone, and only the level you are actually looking into
-    // keeps a fill.
-    const holdsEnclosure = encloses && instances.some((i) => hasEnclosedDescendant(i));
-
-    const material = new THREE.MeshStandardMaterial({
-      color: colorFor(model),
-      roughness: 0.68,
-      metalness: 0.0,
-      transparent: encloses,
-      opacity: encloses ? 0.26 : 1.0,
-      depthWrite: !encloses,
-      side: encloses ? THREE.BackSide : THREE.FrontSide,
-    });
-
-    if (isVessel) material.color.setHex(VESSEL_RIM);
-    material.userData.lit = material;
-
-    if (MOVING_PARTS.has(model.category)) material.visible = false;
-
-    // Culled by the sphere three works out over the instances, as every instanced mesh, overlay
-    // and outline here is: what is off screen is not submitted. A move or a hide drops the sphere.
-    const mesh = new THREE.InstancedMesh(geometryFor(model), material, instances.length);
-    own(buildMeshes, mesh, material);
-    instances.forEach((globalIndex, slot) => {
-      placeInstance(mesh, slot, world.matrices[globalIndex], sx, sy, sz);
-      placementOf[globalIndex] = { mesh, slot };
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.userData.instances = instances;
-    view.add(mesh);
-    meshes.push({
-      mesh,
-      model,
-      modelIndex,
-      instances,
-      depth: treeDepth(instances[0]),
-      lit: material,
-      // Filled in below, once the overlays this model needs are known.
-      overlays: /** @type {any[]} */ ([]),
-      // Set once this model's declared .glb has arrived and been placed.
-      modelDrawn: false,
-      // Whether the box is currently holding the place of a model too small to be worth drawing.
-      standsIn: false,
-      holdsEnclosure: false,
-      enclosedModels: /** @type {any[]} */ ([]),
-    });
-
-    // The existing visualizer strokes every resource, and a translucent box on a white ground
-    // needs that stroke to read at all. So does a solid one that holds nothing: a 96-head, a
-    // channel, a loading tray. What decides is how many there are, not whether anything is inside -
-    // an outline is one line object per instance, and there are a thousand wells. The count is the
-    // whole of the cost control, and it already excludes exactly the things too small to read.
-    //
-    // A travelling part draws its own frame and moves, so it gets no generic box outline: the box
-    // would describe the slab rather than the frame, and it would be a second thing to keep in
-    // step with every move - which is exactly what left a ghost behind at the old position.
-    if (!MOVING_PARTS.has(model.category) && instances.length <= EDGE_LIMIT) {
-      const boxEdges = new THREE.EdgesGeometry(geometryFor(model));
-      const edgeGeometry = new LineSegmentsGeometry();
-      edgeGeometry.setPositions(boxEdges.getAttribute("position").array);
-      boxEdges.dispose();
-      // Looking down an axis, every edge projects onto the footprint anyway, and the verticals
-      // collapse to points. Keeping a footprint-only geometry to swap in removes that redundancy
-      // and, more usefully, stops stacked shapes reading as a thicket in a plan view.
-      const footprintGeometry = footprintFor(model);
-      const style = structureEdgeStyle(enclosureDepth(instances[0]));
-      const edgeMaterial = new THREE.Line2NodeMaterial({
-        color: style.color,
-        transparent: true,
-        opacity: style.opacity,
-        linewidth: EDGE_WIDTH_3D,
-        worldUnits: false,
-      });
-      own(buildMeshes, edgeGeometry, edgeMaterial);
-      for (const globalIndex of instances) {
-        const line = new LineSegments2(edgeGeometry, edgeMaterial);
-        line.userData.boxGeometry = edgeGeometry;
-        line.userData.baseOpacity = style.opacity;
-        line.userData.baseColor = style.color.clone();
-        line.userData.footprintGeometry = footprintGeometry;
-        line.matrixAutoUpdate = false;
-        line.matrix.copy(boxMatrix(world.matrices[globalIndex], sx, sy, sz));
-        view.add(line);
-        edgeOf.set(globalIndex, line);
-      }
-    }
-
-    // A trough reports an infinite capacity, which arrives as the string "Infinity". There is no
-    // fill fraction to draw against that, so it gets no liquid body.
-    // Which enclosure models sit inside this one. An outline is only the right answer while its
-    // contents are actually being drawn; once they are culled the outline has nothing to frame.
-    const enclosedModels = new Set();
-    for (const i of instances) collectEnclosedModels(i, enclosedModels);
-
-    const overlays = [];
-
-    // A carrier's base is solid, so looking into one should stop at its floor rather than carrying
-    // on through to the deck. The shell stays see-through; only the bottom face is filled in.
-    if (encloses && isCarrier(model)) {
-      const floor = new THREE.InstancedMesh(
-        // Unit geometry: `placeInstance` supplies the real size through the instance matrix, so a
-        // pre-sized plane would be scaled by its own dimensions a second time.
-        new THREE.PlaneGeometry(1, 1),
-        new THREE.MeshStandardMaterial({ color: colorFor(model), roughness: 0.7 }),
-        instances.length,
-      );
-      instances.forEach((globalIndex, slot) => {
-        // A hair above its own base, or it fights the deck surface it stands on for depth.
-        const at = [sx, sy, 1, sx / 2, sy / 2, 0.3];
-        placeInstance(floor, slot, world.matrices[globalIndex], ...at);
-        remember(globalIndex, floor, slot, at);
-      });
-      floor.instanceMatrix.needsUpdate = true;
-      floor.userData.lit = floor.material;
-      own(buildMeshes, floor, floor.geometry, floor.material);
-      view.add(floor);
-      overlays.push(floor);
-    }
-
-    if (isVessel) {
-      // The wall, standing outside the cavity. Grown rather than inset, because the box IS the
-      // cavity - and grown rather than left as the box itself, because a box and a cavity on the
-      // same plane are two surfaces at the same depth, which is what made the side of every well
-      // shimmer. Nothing is coplanar with anything now.
-      const wall = new THREE.InstancedMesh(
-        geometryFor(model),
-        new THREE.MeshStandardMaterial({
-          color: VESSEL_RIM,
-          roughness: 0.6,
-          transparent: true,
-          opacity: VESSEL_WALL_OPACITY,
-        }),
-        instances.length,
-      );
-      instances.forEach((globalIndex, slot) => {
-        const at = [sx + 2 * VESSEL_WALL, sy + 2 * VESSEL_WALL, sz, sx / 2, sy / 2, sz / 2];
-        placeInstance(wall, slot, world.matrices[globalIndex], ...at);
-        remember(globalIndex, wall, slot, at);
-      });
-      wall.instanceMatrix.needsUpdate = true;
-      wall.userData.lit = wall.material;
-      own(buildMeshes, wall, wall.material);
-      wall.userData.behind = true; // painted before the cavity it surrounds
-      view.add(wall);
-      overlays.push(wall);
-
-      const inner = new THREE.InstancedMesh(
-        geometryFor(model),
-        // Flagged transparent although it is fully opaque, so that it sits in the same pass as the
-        // wall around it. Three draws every transparent object after every opaque one whatever the
-        // render order says, so an opaque cavity inside a see-through wall is painted first and
-        // then covered by the wall's own top face - which is what hid the well from above.
-        new THREE.MeshStandardMaterial({
-          color: 0xffffff,
-          roughness: 0.55,
-          transparent: true,
-          opacity: 1,
-        }),
-        instances.length,
-      );
-      const white = new THREE.Color(VESSEL_EMPTY);
-      instances.forEach((globalIndex, slot) => {
-        // The cavity IS the box. A container's size is what it holds, and the material around it
-        // stands outside that - so the inside fills the resource's own extent exactly, and a wall
-        // is never drawn within it. Drawn inset, as this was, the walls were inside the box, which
-        // is the opposite of what the box means. A hair taller only, so that from directly above it
-        // does not fight the box's own top face for depth.
-        const at = [sx, sy, sz * 1.02, sx / 2, sy / 2, (sz * 1.02) / 2];
-        // A spot holding a tip shows the tip, and the white of an empty hole would lie across its
-        // bore - over the filter, which sits just below the spot.
-        remember(globalIndex, inner, slot, at, model.category === "tip_spot");
-        if (model.category === "tip_spot" && world.childrenOf[globalIndex].length > 0) {
-          inner.setMatrixAt(slot, ZERO);
-        } else {
-          placeInstance(inner, slot, world.matrices[globalIndex], ...at);
-        }
-        inner.setColorAt(slot, white);
-        vesselOf.set(globalIndex, { mesh: inner, slot, model });
-      });
-      inner.instanceMatrix.needsUpdate = true;
-      inner.instanceColor.needsUpdate = true;
-      inner.userData.lit = inner.material;
-      own(buildMeshes, inner, inner.material);
-      view.add(inner);
-      overlays.push(inner);
-    }
-    if (model.category === "tip" && model.has_filter && Number.isFinite(model.collar_height)) {
-      overlays.push(buildFilterDiscs(modelIndex, instances, model, sx, sy, sz));
-    }
-    if (model.category === "tip") overlays.push(buildPlanDiscs(instances, sx, sy, sz));
-    const entry = meshes[meshes.length - 1];
-    entry.overlays = overlays;
-    entry.isVessel = isVessel;
-    entry.holdsEnclosure = holdsEnclosure;
-    entry.enclosedModels = [...enclosedModels];
-  }
-}
-
-/**
- * A filter in every tip of one model: a white disc across the bore, `FILTER_BELOW_COLLAR` below the
- * collar. One instanced mesh however many tips there are, so a rack of filtered tips costs one draw.
- */
-function buildFilterDiscs(modelIndex, instances, model, sx, sy, sz) {
-  const disc = new THREE.InstancedMesh(
-    DISC,
-    new THREE.MeshBasicMaterial({ color: FILTER, side: THREE.DoubleSide }),
-    instances.length,
-  );
-  // A tip stands on its bottom end, so its top is its length and the collar hangs from there.
-  const z = sz - (model.collar_height + FILTER_BELOW_COLLAR);
-  const width = sx * FILTER_WIDTH_UNMEASURED;
-  const placed = [];
-  instances.forEach((globalIndex, slot) => {
-    const at = [width, width, 1, sx / 2, sy / 2, z];
-    placeInstance(disc, slot, world.matrices[globalIndex], ...at);
-    remember(globalIndex, disc, slot, at);
-    placed.push({ index: globalIndex, at });
-  });
-  disc.instanceMatrix.needsUpdate = true;
-  disc.userData.lit = disc.material;
-  own(buildMeshes, disc, disc.material);
-  view.add(disc);
-  filterDiscsOf.set(modelIndex, { mesh: disc, placed, z, cx: sx / 2, cy: sy / 2 });
-  return disc;
-}
-
-/**
- * The green disc that says a spot is filled, lying across the top of every tip of one model.
- *
- * From directly above a tip is a circle, and the only thing worth reading off it is that something
- * is standing there - which is what the existing visualizer says with a green circle. Said with a
- * disc rather than by colouring the tip, it is unlit, so the colour lands on the value asked for
- * rather than on whatever the lighting makes of it; and it is one instanced mesh however many tips
- * there are, so a rack of them costs one draw. A tip is only a resource while it is in its spot, so
- * there is one of these for every tip still standing and none for a spot that has been used.
- */
-function buildPlanDiscs(instances, sx, sy, sz) {
-  const disc = new THREE.InstancedMesh(
-    DISC,
-    // Flagged transparent although it is fully opaque, for the reason the cavity above is: three
-    // draws every transparent object after every opaque one whatever the render order says, and
-    // the spot's own rim is in that pass. Left opaque, this was painted first and the rim it is
-    // meant to fill then covered it, which is a green disc nobody ever saw.
-    new THREE.MeshBasicMaterial({ color: TIP_PLAN_FILL, transparent: true, opacity: 1 }),
-    instances.length,
-  );
-  // A plan view alone. The mode change and the rule that culls small things share the switch.
-  disc.userData.planOnly = true;
-  disc.visible = false;
-  instances.forEach((globalIndex, slot) => {
-    // Level with the top of the tip, which is the first thing the eye meets looking down at it.
-    const at = [sx, sy, 1, sx / 2, sy / 2, sz];
-    placeInstance(disc, slot, world.matrices[globalIndex], ...at);
-    remember(globalIndex, disc, slot, at);
-  });
-  disc.instanceMatrix.needsUpdate = true;
-  disc.userData.lit = disc.material;
-  own(buildMeshes, disc, disc.material);
-  view.add(disc);
-  return disc;
-}
-
-/**
- * Size a model's filter discs to the bore its own file has at their height, once the file is here.
- * The file is in the tip's frame, so the plane the disc lies in cuts the tip's inner wall at the
- * nearest distance from the axis.
- */
-function fitFilterDiscs(modelIndex, scene, scale, up) {
-  const discs = filterDiscsOf.get(modelIndex);
-  if (!discs) return;
-  scene.scale.setScalar(scale);
-  if (up === "Y") scene.rotation.x = Math.PI / 2;
-  scene.updateMatrixWorld(true);
-  const width = boreWidthAt(scene, discs.z, discs.cx, discs.cy);
-  if (width === null) return;
-  const touched = new Set();
-  for (const { index, at } of discs.placed) {
-    at[0] = width;
-    at[1] = width;
-    placeParts(index, touched);
-  }
-  for (const mesh of touched) {
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.boundingSphere = null;
-  }
-}
-
-/** Twice the nearest a surface of `object` comes to the axis through (cx, cy), in the plane z. */
-function boreWidthAt(object, z, cx, cy) {
-  let nearest = Number.POSITIVE_INFINITY;
-  const corners = [new THREE.Vector3(), new THREE.Vector3(), new THREE.Vector3()];
-  object.traverse((o) => {
-    if (!o.isMesh) return;
-    const position = o.geometry.attributes.position;
-    const index = o.geometry.index;
-    const count = index ? index.count : position.count;
-    for (let i = 0; i + 2 < count; i += 3) {
-      for (let k = 0; k < 3; k++) {
-        const vertex = index ? index.getX(i + k) : i + k;
-        corners[k].fromBufferAttribute(position, vertex).applyMatrix4(o.matrixWorld);
-      }
-      // Where each edge crosses the plane, if it does.
-      for (let k = 0; k < 3; k++) {
-        const p = corners[k];
-        const q = corners[(k + 1) % 3];
-        if (p.z === q.z || (p.z - z) * (q.z - z) > 0) continue;
-        const t = (z - p.z) / (q.z - p.z);
-        const r = Math.hypot(p.x + t * (q.x - p.x) - cx, p.y + t * (q.y - p.y) - cy);
-        if (r < nearest) nearest = r;
-      }
-    }
-  });
-  return Number.isFinite(nearest) ? 2 * nearest : null;
-}
-
-/**
- * Where one instanced part stands, so it can be put back after being emptied. `emptyOnly` marks
- * a part drawn only while the resource holds nothing, such as a spot's cavity.
- */
-function remember(index, mesh, slot, at, emptyOnly = false) {
-  if (!overlayOf.has(index)) overlayOf.set(index, []);
-  overlayOf.get(index).push({ mesh, slot, at, emptyOnly });
-}
-
-// ---------------------------------------------------------------- live state
-
-// State arrives as a table of the distinct states in the scene, plus which of them each resource
-// holds. Empty wells and unused tip spots share a single entry, and anything that has not changed
-// since the client was last told is absent.
-//
-// Addressed by name rather than by scene index: the order instances are emitted in is not stable
-// across rebuilds, so an index can mean a different resource in the next scene. A name cannot.
-function applyState(payload) {
-  const touched = new Set();
-  const { states, of } = payload;
-  if (!states || !of) return;
-  for (const [name, slot] of Object.entries(of)) {
-    const index = world.indexOfName.get(name);
-    if (index === undefined) continue;
-    // Shared between every resource in the same state, and only ever read.
-    stateOf.set(index, states[slot]);
-    // A state carries the whole of what a resource publishes, so a rotation that is not in it is
-    // one that has come back to zero - the sender drops the identity to keep the message small.
-    // Taking absence as "unchanged" leaves a joint drawn at the last angle it was turned to.
-    applyRotation(index, states[slot]?.rotation ?? { x: 0, y: 0, z: 0 });
-    refreshOverlays(index, touched);
-    applyJoints(index);
-  }
-  for (const [name, location] of Object.entries(payload.locations ?? {})) {
-    const index = world.indexOfName.get(name);
-    if (index !== undefined) applyLocation(index, location);
-  }
-  for (const mesh of touched) {
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.boundingSphere = null;
-  }
-  // Only a panel showing something this message touched is drawn again: drawing the rest
-  // afresh reset what the reader had opened in it, on every well of a protocol.
-  const changed = new Set(Object.keys(of).map((name) => world.indexOfName.get(name)));
-  if (changed.has(selected) && infoPanel?.isConnected) renderInfoPanel();
-  refreshTreeInfo();
-  deviceTools.refresh(changed);
-}
-
-function refreshOverlays(index, touched) {
-  const state = stateOf.get(index);
-
-  if (MOVING_PARTS.has(modelOf(index).category)) {
-    const tracked = state?.tracker?.x;
-    if (tracked !== undefined && tracked !== null) setArmX(index, tracked);
-  }
-
-  const vessel = vesselOf.get(index);
-  if (vessel && Number.isFinite(vessel.model.max_volume)) {
-    // The committed volume, as the existing visualizer draws it: what is in the well, not what an
-    // operation under way would leave there if it succeeds - and a rollback publishes nothing.
-    const volume = state?.volume ?? 0;
-    const fraction = Math.max(0, Math.min(1, volume / (vessel.model.max_volume || 1)));
-    // Empty is white; any liquid at all steps clear of white so a nearly empty well still reads.
-    const t = fraction > 0 ? 0.35 + 0.65 * fraction : 0;
-    vessel.mesh.setColorAt(
-      vessel.slot,
-      new THREE.Color(VESSEL_EMPTY).lerp(new THREE.Color(LIQUID), t),
-    );
-    if (vessel.mesh.instanceColor) vessel.mesh.instanceColor.needsUpdate = true;
-  }
-
-  placeParts(index, touched);
-}
-
-// A well's rim and its cavity, a carrier's floor: everything drawn outside the box
-// pipeline. Each one follows the resource it belongs to - emptied when that resource is switched
-// off, put back where it stands when it is switched on, and carried along when it moves.
-function placeParts(index, touched) {
-  const visible = isVisible(index);
-
-  for (const part of overlayOf.get(index) ?? []) {
-    const shown = visible && !(part.emptyOnly && world.childrenOf[index].length > 0);
-    if (shown) placeInstance(part.mesh, part.slot, world.matrices[index], ...part.at);
-    else part.mesh.setMatrixAt(part.slot, ZERO);
-    touched.add(part.mesh);
-  }
-}
-
-// ---------------------------------------------------------------- visibility
-
-// Only explicitly hidden resources go in the set. A resource is drawn when neither it nor any
-// ancestor is hidden, so "hidden because I was toggled off" stays distinct from "hidden because
-// a parent is off".
-function isVisible(index) {
-  for (let i = index; i >= 0; i = world.parentOf[i]) {
-    if (hiddenNames.has(world.names[i])) return false;
-  }
-  return true;
-}
-
-function setHidden(name, hidden) {
-  if (hidden) hiddenNames.add(name);
-  else hiddenNames.delete(name);
-  const root = world.indexOfName.get(name);
-  if (root === undefined) return;
-
-  const touched = new Set();
-  const walk = (index) => {
-    const placement = placementOf[index];
-    if (placement) {
-      if (isVisible(index)) {
-        const [sx, sy, sz] = sizeOf(modelOf(index));
-        placeInstance(placement.mesh, placement.slot, world.matrices[index], sx, sy, sz);
-      } else {
-        placement.mesh.setMatrixAt(placement.slot, ZERO);
-      }
-      touched.add(placement.mesh);
-    }
-    const line = edgeOf.get(index);
-    if (line) line.visible = isVisible(index);
-    // A resource drawn from a file is drawn outside the instanced pipeline, so switching off the
-    // box it stood in for leaves the geometry on screen unless it is told too.
-    const model = meshRoots.find((r) => r.userData.index === index);
-    if (model) model.visible = isVisible(index);
-    for (const mark of gridMarks) {
-      if (mark.userData.owner === index) mark.visible = isVisible(index);
-    }
-    // A travelling part is drawn by its own group rather than the instanced pipeline, so it has to
-    // be told separately. Anything else drawn outside that pipeline needs the same line.
-    const arm = arms.find((a) => a.index === index);
-    if (arm) arm.group.visible = isVisible(index);
-    refreshOverlays(index, touched);
-    for (const child of world.childrenOf[index]) walk(child);
-  };
-  walk(root);
-  for (const mesh of touched) {
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.boundingSphere = null;
-  }
-  refreshTreeVisibility();
-}
-
-// ---------------------------------------------------------------- reference points
-
-// PLR's own reference semantics: a resource's origin is its left, front, bottom corner.
-//
-// `cavity_bottom` is the one reference a resource may be unable to answer: it is the floor of what
-// a container holds, standing its base's thickness above the outside of that base, and only a
-// container states a thickness. The point still comes back, so x and y read as they always do,
-// with `zKnown` false so a caller can say the height is unavailable rather than print the bottom
-// of the box as though it were the cavity's.
-function referencePoint(index, xRef, yRef, zRef) {
-  const model = modelOf(index);
-  const [sx, sy, sz] = sizeOf(model);
-  const thickness = model.material_z_thickness;
-  const x = xRef === "center" ? sx / 2 : xRef === "right" ? sx : 0;
-  const y = yRef === "center" ? sy / 2 : yRef === "back" ? sy : 0;
-  const z =
-    zRef === "center"
-      ? sz / 2
-      : zRef === "top"
-        ? sz
-        : zRef === "cavity_bottom"
-          ? (thickness ?? 0)
-          : 0;
-  const point = new THREE.Vector3(x, y, z).applyMatrix4(world.matrices[index]);
-  point.zKnown = zRef !== "cavity_bottom" || typeof thickness === "number";
-  return point;
-}
-
-function worldBox(index) {
-  const [sx, sy, sz] = sizeOf(modelOf(index));
-  const box = new THREE.Box3();
-  const corner = new THREE.Vector3();
-  for (const c of [
-    [0, 0, 0],
-    [sx, 0, 0],
-    [0, sy, 0],
-    [0, 0, sz],
-    [sx, sy, 0],
-    [sx, 0, sz],
-    [0, sy, sz],
-    [sx, sy, sz],
-  ]) {
-    corner.set(c[0], c[1], c[2]).applyMatrix4(world.matrices[index]);
-    box.expandByPoint(corner);
-  }
-  return box;
-}
-
-// ---------------------------------------------------------------- facility tree
 
 const treeEl = document.getElementById("resource-tree");
+
 const rowOf = new Map();
+
 const expanded = new Set();
 
 function eyeSvg(hidden) {
@@ -3151,8 +591,6 @@ function revealAndHighlight(index) {
   }
 }
 
-// ---------------------------------------------------------------- info panel
-
 let infoPanel = null;
 
 // Values go through innerHTML, and a resource name is user data. Escape it, or a model field
@@ -3362,14 +800,14 @@ function clearHover() {
 // difference between a dual-rail arm, positioned by its centre, and a single-rail one, positioned
 // by its right edge - so drawing the reported X against the arm shows which it is without the
 // viewer needing to know anything about rail types.
-
-// ---------------------------------------------------------------- picking
-
 const raycaster = new THREE.Raycaster();
+
 const pointer = new THREE.Vector2();
+
 const readout = document.getElementById("hover-readout");
 
 const _hitLocal = new THREE.Vector3();
+
 const _hitInverse = new THREE.Matrix4();
 
 /**
@@ -3426,6 +864,7 @@ function pick(event) {
 }
 
 const coords = initCoords({ getWorld: () => world, referencePoint, escapeHtml });
+
 // What each device carries, offered from the navbar. It reads the tree rather than being told, so
 // there is nothing to keep in step: a tip picked up is a resource assigned, and the panel that
 // draws tips is looking at the same tree the viewport is.
@@ -3438,6 +877,7 @@ const deviceTools = initDeviceTools({
     select(index, true);
   },
 });
+
 const {
   coordinateLabel,
   recordMeasurement,
@@ -3445,8 +885,6 @@ const {
   endpoints: deltaEndpoints,
   wrtPoint,
 } = coords;
-
-// ---------------------------------------------------------------- bullseyes
 
 // The get-location tool's two markers, as the existing visualizer draws them: blue on the resource
 // under the pointer, at the reference asked of it, and pink on the resource everything is measured
@@ -3501,7 +939,9 @@ function bullseye(colour) {
   view.add(sprite);
   return sprite;
 }
+
 const hoverBullseye = bullseye(BULLSEYE_HOVER);
+
 const wrtBullseye = bullseye(BULLSEYE_WRT);
 
 // Every frame: the tool decides whether either shows, the reference dropdown decides where the
@@ -3521,8 +961,6 @@ function updateBullseyes() {
   wrtBullseye.scale.setScalar(perPixel * BULLSEYE_PX);
 }
 
-// ---------------------------------------------------------------- delta lines
-
 // The existing visualizer draws an L between the two points a measurement runs between, one leg per
 // axis in the axis' own colour, labelled with the distance. In three dimensions the L becomes a
 // staircase: x, then y, then z. A coordinate tells you how far apart two things are; this tells you
@@ -3531,11 +969,17 @@ function updateBullseyes() {
 // Drawn over everything, because it annotates the scene rather than standing in it: a measurement
 // half-buried in a carrier would be worse than useless.
 const DELTA_WIDTH = 2.4;
+
 const DELTA_HALO_WIDTH = 6.0;
+
 const DELTA_HALO_OPACITY = 0.35;
+
 const DELTA_LABEL_MM = 26;
+
 const DELTA_MIN = 0.05; // mm; a leg shorter than this is a rounding artefact, not a distance
+
 const DELTA_AXES = ["x", "y", "z"];
+
 const deltaToggle = input("delta-lines-toggle");
 
 // Built once and then moved, never rebuilt. Hovering fires on every frame the pointer moves, so
@@ -3673,8 +1117,6 @@ function updateDeltaLabels() {
 deltaToggle.addEventListener("change", () => {
   if (!deltaToggle.checked) clearDeltaLines();
 });
-
-// ---------------------------------------------------------------- camera
 
 function sceneBounds() {
   const box = new THREE.Box3();
@@ -3920,9 +1362,8 @@ function atBoundary(surface) {
   },
 };
 
-// ---------------------------------------------------------------- overlays
-
 const scaleLine = document.getElementById("scale-bar-line");
+
 const scaleLabel = document.getElementById("scale-bar-label");
 
 // Under perspective there is no single scale, so the bar is quoted at the orbit target's depth.
@@ -3945,8 +1386,6 @@ function updateScaleBar() {
   scaleLine.style.width = `${Math.round(nice / perPixel)}px`;
   scaleLabel.textContent = nice >= 1000 ? `${nice / 1000} m` : `${nice} mm`;
 }
-
-// ---------------------------------------------------------------- interaction
 
 // Hover is answered once a frame at most, and not at all while a button is down.
 //
@@ -4016,6 +1455,7 @@ renderer.domElement.addEventListener("pointerleave", () => {
 // toggles: the same resource again closes it. The coordinate tool takes clicks instead, recording
 // a measurement.
 const PANEL_GUARD_MS = 400;
+
 let panelOpenedAt = 0;
 
 renderer.domElement.addEventListener("click", (event) => {
@@ -4052,6 +1492,7 @@ const toolButtons = {
   coords: document.getElementById("toolbar-coords-btn"),
   gif: document.getElementById("toolbar-gif-btn"),
 };
+
 const panels = {
   coords: document.getElementById("coords-panel"),
   gif: document.getElementById("gif-panel"),
@@ -4080,10 +1521,9 @@ function setTool(tool) {
 const originsButton = document.getElementById("toolbar-origins-btn");
 
 function setOriginDots(on) {
-  showOriginDots = on;
   originsButton.classList.toggle("active", on);
   const t = performance.now();
-  buildOriginDots();
+  showOriginDotsIf(on);
   return {
     on,
     dots: on ? (world?.names.length ?? 0) : 0,
@@ -4100,12 +1540,12 @@ originsButton.addEventListener("click", () => {
 
 // The halos button is the same kind of button: what is drawn changes, what a click means does not.
 const halosButton = document.getElementById("toolbar-halos-btn");
+
 halosButton.classList.toggle("active", showHalos);
 
 function setHalos(on) {
-  showHalos = on;
   halosButton.classList.toggle("active", on);
-  buildHalos();
+  showHalosIf(on);
   return { on, halos: halos?.children.length ?? 0 };
 }
 
@@ -4117,18 +1557,24 @@ halosButton.addEventListener("click", () => {
 // How fast a move is drawn, kept across reloads: a viewer left watching a run stays as it was set.
 // Storage may refuse - a private window, or site data cleared - and the default stands.
 const glideSlider = document.getElementById("glide-rate");
+
 try {
   const kept = window.localStorage?.getItem("plr.glideSeconds");
   if (kept !== null && kept !== undefined) glideSlider.value = kept;
 } catch {
   /* left at the default */
 }
+
 setGlideSeconds(Number(glideSlider.value));
+
 const glideLabel = document.getElementById("glide-label");
+
 const sayGlide = () => {
   glideLabel.textContent = Number(glideSlider.value) ? `${glideSlider.value}s` : "off";
 };
+
 sayGlide();
+
 glideSlider.addEventListener("input", () => {
   setGlideSeconds(Number(glideSlider.value));
   sayGlide();
@@ -4141,7 +1587,9 @@ glideSlider.addEventListener("input", () => {
 });
 
 toolButtons.cursor.addEventListener("click", () => setTool("cursor"));
+
 toolButtons.coords.addEventListener("click", () => setTool("coords"));
+
 toolButtons.gif.addEventListener("click", () => {
   openPanel = openPanel === "gif" ? (activeTool === "coords" ? "coords" : null) : "gif";
   refreshToolUI();
@@ -4153,7 +1601,9 @@ toolButtons.gif.addEventListener("click", () => {
 projectionButton.addEventListener("click", () =>
   setProjection(projection === "orthographic" ? "perspective" : "orthographic"),
 );
+
 const homeButton = document.getElementById("home-button");
+
 homeButton.addEventListener("click", () => {
   goToStartView();
   // A flash while the camera moves, so the button that did it is the thing you were last looking
@@ -4161,16 +1611,21 @@ homeButton.addEventListener("click", () => {
   homeButton.classList.add("clicked");
   setTimeout(() => homeButton.classList.remove("clicked"), 400);
 });
+
 document.getElementById("zoom-in-btn").addEventListener("click", () => dolly(0.8));
+
 document.getElementById("zoom-out-btn").addEventListener("click", () => dolly(1.25));
 
 // panel toggles
 const leftRail = document.getElementById("toolbar-left");
+
 const sidepanel = document.getElementById("sidepanel");
+
 document.getElementById("toolbar-left-toggle").addEventListener("click", () => {
   leftRail.classList.toggle("collapsed");
   resize();
 });
+
 document.getElementById("toolbar-right-toggle").addEventListener("click", () => {
   sidepanel.classList.toggle("collapsed");
   resize();
@@ -4178,21 +1633,29 @@ document.getElementById("toolbar-right-toggle").addEventListener("click", () => 
 
 // tree actions
 const depthInput = input("tree-depth-input");
+
 let allExpanded = false;
+
 document.getElementById("toggle-expand-btn").addEventListener("click", () => {
   allExpanded = !allExpanded;
   expandAll(allExpanded);
 });
+
 document
   .getElementById("collapse-all-btn")
   .addEventListener("click", () => showToDepth(Number(depthInput.value) || 0));
+
 depthInput.addEventListener("change", () => showToDepth(Number(depthInput.value) || 0));
 
 // search
 const searchView = document.getElementById("search-view");
+
 const searchInput = input("search-input");
+
 const searchResults = document.getElementById("search-results");
+
 const treeButton = document.getElementById("toolbar-tree-btn");
+
 const searchButton = document.getElementById("toolbar-search-btn");
 
 function showPane(which) {
@@ -4218,6 +1681,7 @@ function pickPane(which, button) {
 }
 
 treeButton.addEventListener("click", () => pickPane("tree", treeButton));
+
 searchButton.addEventListener("click", () => pickPane("search", searchButton));
 
 // Matching as the existing visualizer matches: every term of the query must be found, as a
@@ -4291,17 +1755,21 @@ function runSearch() {
 }
 
 searchInput.addEventListener("input", runSearch);
+
 for (const id of ["search-include-wells", "search-include-tips", "search-include-sites"]) {
   document.getElementById(id).addEventListener("change", runSearch);
 }
 
 // sidepanel resize
 const resizeHandle = document.getElementById("sidepanel-resize-handle");
+
 let resizingFrom = null;
+
 resizeHandle.addEventListener("pointerdown", (e) => {
   resizingFrom = { x: e.clientX, width: sidepanel.offsetWidth };
   resizeHandle.setPointerCapture(e.pointerId);
 });
+
 resizeHandle.addEventListener("pointermove", (e) => {
   if (!resizingFrom) return;
   const width = Math.max(
@@ -4311,9 +1779,8 @@ resizeHandle.addEventListener("pointermove", (e) => {
   sidepanel.style.width = `${width}px`;
   resize();
 });
-resizeHandle.addEventListener("pointerup", () => (resizingFrom = null));
 
-// ---------------------------------------------------------------- scene
+resizeHandle.addEventListener("pointerup", () => (resizingFrom = null));
 
 // A scene arriving whole: everything drawn is built again from it, in this order, with what the
 // reader had open put back afterwards.
@@ -4332,10 +1799,9 @@ function rebuildScene(data) {
   glides.clear();
   timings.decodeMs = performance.now() - _tScene;
   const _tBuild = performance.now();
+  forgetDetail();
   buildMeshes();
-  floorZ = sceneBounds().min.z;
-  gridState = null;
-  planView = null;
+  resetFloor(sceneBounds().min.z);
   buildGridMarks();
   buildArms();
   buildReferenceMarks();
@@ -4370,53 +1836,6 @@ function rebuildScene(data) {
   }
 }
 
-// ---------------------------------------------------------------- moves
-
-// A resource put somewhere else, applied to the scene the page has rather than the scene being
-// built again: a tip picked up is the same tip, now under a channel's shaft. The tree keeps its
-// shape, the panel stays open, nothing is torn down to be fetched and drawn again.
-function applyMoves(moves) {
-  const touched = new Set();
-  const rowsUnder = new Set();
-  for (const move of moves) {
-    const index = world.indexOfName.get(move.name);
-    if (index === undefined) continue;
-    const parent = move.parent === null ? -1 : (world.indexOfName.get(move.parent) ?? -1);
-    const was = world.parentOf[index];
-    if (was !== parent) {
-      if (was >= 0) {
-        const siblings = world.childrenOf[was];
-        const at = siblings.indexOf(index);
-        if (at >= 0) siblings.splice(at, 1);
-        rowsUnder.add(was);
-      }
-      if (parent >= 0) {
-        world.childrenOf[parent].push(index);
-        rowsUnder.add(parent);
-      }
-      world.parentOf[index] = parent;
-    }
-    setLocal(index, move.location);
-    setLocalRotation(index, move.rotation);
-    for (const i of refreshTransforms(index)) touched.add(i);
-    // The spot it left and the one it reached draw their cavities from whether they hold a tip.
-    for (const i of [was, parent]) if (i >= 0) touched.add(i);
-    // An arm is drawn by its own group, which is put where the model now says, with nothing to glide.
-    const arm = arms.find((a) => a.index === index);
-    if (arm) {
-      Object.assign(arm, armPose(index));
-      arm.group.matrix.copy(world.matrices[index]);
-      arm.group.matrixWorldNeedsUpdate = true;
-    }
-  }
-  redraw([...touched]);
-  for (const at of rowsUnder) reopenRowsUnder(at);
-  refreshTreeInfo();
-  deviceTools.refresh();
-  buildHalos();
-  if (selected >= 0 && infoPanel?.isConnected) renderInfoPanel();
-}
-
 // The rows under the nearest ancestor that has one, listed again if it is open, so a moved
 // resource is shown where it now stands. A holder has no row of its own; its carrier does.
 function reopenRowsUnder(index) {
@@ -4436,14 +1855,13 @@ const gif = initGif({
   },
 });
 
-// ---------------------------------------------------------------- loop
-
 // The tree, the panels and the toolbars all change the scene through their own handlers. Rather
 // than raise the flag in each one and miss the next one added, any input earns a frame: the cost is
 // one redraw per interaction, and it stops the moment the pointer does.
 for (const kind of ["pointerdown", "pointerup", "keydown", "click"]) {
   document.addEventListener(kind, invalidate, { passive: true, capture: true });
 }
+
 // A pointer moving is the one input that arrives faster than frames, and it only reaches the
 // picture through the viewport: elsewhere a move changes nothing until it crosses into a row that
 // raises a hover box, so the crossing asks, not the move. Over the viewport a move is answered
@@ -4451,9 +1869,13 @@ for (const kind of ["pointerdown", "pointerup", "keydown", "click"]) {
 // HOVER_SLOW_INTERVAL_MS, with the last move always answered, so the readout never lags behind
 // a pointer that has stopped.
 const HOVER_SLOW_FRAME_MS = 24;
+
 const HOVER_SLOW_INTERVAL_MS = 150;
+
 let hoverAskedAt = 0;
+
 let hoverTrailing = null;
+
 viewportEl.addEventListener(
   "pointermove",
   () => {
@@ -4476,7 +1898,9 @@ viewportEl.addEventListener(
   },
   { passive: true, capture: true },
 );
+
 viewportEl.addEventListener("wheel", invalidate, { passive: true, capture: true });
+
 for (const kind of ["mouseover", "mouseout"]) {
   document.addEventListener(
     kind,
@@ -4498,6 +1922,7 @@ whileMoving(() => {
   if (hoverAt !== null) answerHover();
   return false;
 });
+
 whileMoving((delta) => {
   if (!viewHelper?.animating) return false;
   viewHelper.update(delta);
@@ -4507,14 +1932,20 @@ whileMoving((delta) => {
   if (!viewHelper.animating) setProjection("orthographic");
   return true;
 });
+
 whileMoving(() => {
   if (deltaAnnotation?.group.visible) updateDeltaLabels();
   return false;
 });
+
 whileMoving(updateArms);
+
 whileMoving(updateGlides);
+
 whileMoving(() => controls.update());
+
 whileMoving(() => gif.isRecording());
+
 // What the camera can see decides what is worth drawing, so it is decided before the frame is
 // drawn rather than after it. Asked afterwards, every frame drew what the frame before it had
 // worked out, and the last frame of a move - the one left on screen - never drew its own answer
@@ -4532,6 +1963,7 @@ for (const prepare of [
 ]) {
   beforeDraw(prepare);
 }
+
 afterDraw(() => {
   if (!viewHelper) return;
   // The helper renders a second pass into a corner of the same canvas. Without turning auto-clear
@@ -4540,7 +1972,30 @@ afterDraw(() => {
   viewHelper.render(renderer);
   renderer.autoClear = true;
 });
+
 afterDraw(() => gif.tick());
+
+// The panels and the tree follow the live state: told what changed, each redraws its own part.
+onChange((change) => {
+  if (change.kind === "glide") {
+    if (change.index !== selected) return;
+    selectionBox.box.copy(worldBox(change.index));
+    refreshPlacement(change.index);
+  } else if (change.kind === "state") {
+    // Only a panel showing something this message touched is drawn again: drawing the rest
+    // afresh reset what the reader had opened in it, on every well of a protocol.
+    if (change.changed.has(selected) && infoPanel?.isConnected) renderInfoPanel();
+    refreshTreeInfo();
+    deviceTools.refresh(change.changed);
+  } else if (change.kind === "moves") {
+    for (const at of change.rowsUnder) reopenRowsUnder(at);
+    refreshTreeInfo();
+    deviceTools.refresh();
+    if (selected >= 0 && infoPanel?.isConnected) renderInfoPanel();
+  } else if (change.kind === "visibility") {
+    refreshTreeVisibility();
+  }
+});
 
 initTransport({
   renderer,
@@ -4560,7 +2015,11 @@ initTransport({
 });
 
 buildViewHelper();
+
 refreshToolUI();
+
 showPane("tree");
+
 resize();
+
 connect();
