@@ -4972,7 +4972,7 @@ class Pipettes:
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
     lld: Optional[PrepCmd.LldParameters] = None,
     p_lld: Optional[PrepCmd.PLldParameters] = None,
-    c_lld: Optional[PrepCmd.CLldParameters] = None,
+    clot_detection_heights: Optional[List[float]] = None,
     tadm: Optional[PrepCmd.TadmParameters] = None,
     read_timeout: Optional[float] = None,
     command_version: Optional[Literal["v1", "v2"]] = None,
@@ -5010,7 +5010,8 @@ class Pipettes:
       container_segments: each container's cross-sections. None sends none.
       lld: the LLD search's block as it is, in place of the one built here.
       p_lld: the pressure LLD block as it is.
-      c_lld: the capacitive LLD block as it is; `clld_sensitivity` still applies.
+      clot_detection_heights: how far a clot may hold each tip back, in mm. 0.0 when None; only 0.0
+        until the check is verified on the device.
       tadm: the TADM block as it is; given, the aspiration is monitored.
       read_timeout: answer timeout in s. Long enough for the search when LLD runs and None.
       command_version: "v1" or "v2". What the firmware supports when None.
@@ -5033,8 +5034,12 @@ class Pipettes:
     effective_lld = self._resolve_effective_lld(
       None if lld_mode is None else [lld_mode] * n, lld, n
     )
+    clot_detection_heights = fill_in_defaults(clot_detection_heights, [0.0] * n)
+    if any(h != 0 for h in clot_detection_heights):
+      raise ValueError("clot detection is not verified on the Prep yet; give 0.0")
+    c_lld = None
     if clld_sensitivity is not None:
-      base = c_lld or default_lld_params(True, lld_mode=Pipettes.LLDMode.CAPACITIVE).c_lld
+      base = default_lld_params(True, lld_mode=Pipettes.LLDMode.CAPACITIVE).c_lld
       c_lld = replace(base, sensitivity=clld_sensitivity)
     lld_defaults = self._default_lld_params(effective_lld, p_lld, c_lld, lld_mode=lld_mode)
     blow_out_air_volumes = fill_in_defaults(blow_out_air_volumes, [0.0] * n)
@@ -5425,7 +5430,7 @@ class Pipettes:
     pre_wetting_volumes: Optional[List[float]] = None,
     lld: Optional[PrepCmd.LldParameters] = None,
     p_lld: Optional[PrepCmd.PLldParameters] = None,
-    c_lld: Optional[PrepCmd.CLldParameters] = None,
+    clot_detection_heights: Optional[Sequence[float]] = None,
     z_fluid: Optional[List[float]] = None,
     minimum_allowed_z_position_during: Optional[List[float]] = None,
     z_bottom_search_offset: Optional[List[float]] = None,
@@ -5469,7 +5474,8 @@ class Pipettes:
         over-aspirate volume, else 0.0, when None.
       lld: the LLD search's start, speed and submerge depth. From the container's top when None.
       p_lld: pressure LLD settings. The firmware's own when None, unless the mode needs them.
-      c_lld: capacitive LLD settings. Sensitivity 3, detect mode 0 when None and a search runs.
+      clot_detection_heights: how far a clot may hold each tip back, in mm, per container. 0.0 when
+        None; only 0.0 until the check is verified on the device.
       z_fluid: the tip bottom height to aspirate at without LLD, in mm, per container. The cavity
         bottom plus the liquid height when None.
       minimum_allowed_z_position_during: how low each tip bottom may go, in mm, per container.
@@ -5643,7 +5649,9 @@ class Pipettes:
         container_segments=segments,
         lld=lld,
         p_lld=p_lld,
-        c_lld=c_lld,
+        clot_detection_heights=None
+        if clot_detection_heights is None
+        else list(clot_detection_heights),
         tadm=tadm,
         read_timeout=read_timeout,
         command_version=command_version,

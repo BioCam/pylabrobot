@@ -292,6 +292,32 @@ def test_aspirate_sends_an_explicit_zero_blow_out_and_refuses_a_zero_flow_rate()
   _run(_t())
 
 
+def test_aspirate_refuses_a_clot_check_until_it_is_verified():
+  """0.0 sends the capacitive block as before; any other height is refused before sending."""
+
+  async def _t():
+    deck = PrepDeck()
+    tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
+    plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+    p = PrepSimulationDriver(deck=deck)
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
+    well = plate.get_item("A1")
+    kwargs = {"piston_volumes": [5.0], "use_channels": [0], "lld_mode": Pipettes.LLDMode.CAPACITIVE}
+    sent = _record(p)
+    await p.pipettes.aspirate([well], clot_detection_heights=[0.0], **kwargs)
+    c_lld = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0].c_lld
+    assert (c_lld.clot_check_enable, c_lld.z_clot_check) == (False, 0.0)
+    sent.clear()
+    with pytest.raises(ValueError, match="clot detection is not verified"):
+      await p.pipettes.aspirate([well], clot_detection_heights=[1.5], **kwargs)
+    assert not any(hasattr(c, "aspirate_parameters") for c in sent)
+    await p.stop()
+
+  _run(_t())
+
+
 def test_aspirate_sends_the_clld_sensitivity_it_is_given():
   """clld_sensitivity replaces only the sensitivity in the capacitive LLD block."""
 
