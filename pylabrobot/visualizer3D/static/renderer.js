@@ -127,6 +127,10 @@ export function sizeOrthographic(distance) {
   orthographicCamera.updateProjectionMatrix();
 }
 
+// The axis presets live on the view helper: click an axis there and the camera animates onto it.
+// What the helper cannot do is choose a projection, so that button stays.
+export const projectionButton = document.getElementById("view-projection");
+
 export function setProjection(kind) {
   if (kind === projection) return;
   const target = controls.target.clone();
@@ -254,10 +258,6 @@ export function dolly(factor) {
 // `?view=front` picks another, so a link can still point at a particular angle.
 export const startViewName = new URLSearchParams(location.search).get("view") ?? "top";
 export const startView = VIEWS[startViewName] ?? VIEWS.top;
-
-// The axis presets live on the view helper: click an axis there and the camera animates onto it.
-// What the helper cannot do is choose a projection, so that button stays.
-export const projectionButton = document.getElementById("view-projection");
 
 let sizedTo = { w: 0, h: 0 };
 

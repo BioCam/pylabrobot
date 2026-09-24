@@ -107,6 +107,7 @@ import { buildWorld, modelOf, setWorld, world } from "./world.js";
 // The interface follows the existing visualizer. Only what three dimensions genuinely adds is
 // new: camera presets, an axis gizmo that turns with the view, and a Z reference in the
 // coordinate tool.
+
 const _t0 = performance.now();
 
 const timings = { moduleMs: performance.now() - _t0, rendererMs: rendererInitMs };

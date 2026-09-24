@@ -67,6 +67,11 @@ function announceSelection(index) {
   for (const listener of selectionListeners) listener(index);
 }
 
+function hideInfoPanel() {
+  if (infoPanel) infoPanel.remove();
+  infoPanel = null;
+}
+
 /** No selection: the box goes, the panel goes, and the tree is told. */
 export function clearSelection() {
   selected = -1;
@@ -75,20 +80,8 @@ export function clearSelection() {
   announceSelection(-1);
 }
 
-/** The selection put back after a rebuild: no flash of the box, the panel only if it was up. */
-export function restoreSelection(index, withPanel) {
-  selected = index;
-  announceSelection(index);
-  if (withPanel) renderInfoPanel();
-}
-
 export function closeInfoPanel() {
   clearSelection();
-}
-
-function hideInfoPanel() {
-  if (infoPanel) infoPanel.remove();
-  infoPanel = null;
 }
 
 // Units for the fields that have them. A number without its unit is not an answer.
@@ -209,6 +202,13 @@ export function renderInfoPanel() {
       : "");
 
   panel.querySelector(".uml-close-btn").addEventListener("click", closeInfoPanel);
+}
+
+/** The selection put back after a rebuild: no flash of the box, the panel only if it was up. */
+export function restoreSelection(index, withPanel) {
+  selected = index;
+  announceSelection(index);
+  if (withPanel) renderInfoPanel();
 }
 
 // Selecting and inspecting are separate, as they are in the existing visualizer: a click in the

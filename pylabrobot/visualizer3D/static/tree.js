@@ -22,6 +22,7 @@ import { modelOf, world } from "./world.js";
 
 // "TipRack" -> "tipracks", as the existing visualizer writes them. Deliberately naive: a count is
 // always in front of it, so "1 plates" reads as a count rather than as a mistake.
+
 const plural = (type) => `${String(type).toLowerCase()}s`;
 
 // The plural naming these resources, from the first of them, as the existing visualizer counts a
@@ -133,28 +134,52 @@ export function rememberView() {
   };
 }
 
-function openPathTo(index) {
-  const chain = [];
-  for (let i = index; i >= 0; i = world.parentOf[i]) chain.unshift(i);
-  for (const i of chain) toggle(i, true);
-}
-
-export function restoreView(kept) {
-  if (!kept) return;
-  for (const name of kept.open) {
-    const index = world.indexOfName.get(name);
-    if (index !== undefined) openPathTo(index);
+// What the tree lists below a row, in the order a reader takes them. Organised as the existing
+// visualizer's tree is. The positions inside a container are left out: a plate already says how
+// many wells it has. A deck is looked through, and what stood on it is listed left to right: the
+// carriers are what a person came to find, not the surface under them. A holder is a numbered
+// position, not a thing: the row is what stands in it, or the holder itself while it stands empty,
+// so the vacancy still shows. Nothing about the viewport changes - this decides the panel only.
+function treeChildren(index) {
+  const listed = [];
+  let sawDeck = false;
+  for (const child of world.childrenOf[index]) {
+    const category = modelOf(child).category;
+    if (TREE_HIDDEN.has(category)) continue;
+    if (category === "deck") {
+      sawDeck = true;
+      listed.push(...treeChildren(child));
+      continue;
+    }
+    listed.push(child);
   }
-  const index = world.indexOfName.get(kept.selected);
-  if (index !== undefined) restoreSelection(index, kept.panel);
+  if (sawDeck) {
+    listed.sort((a, b) => world.matrices[a].elements[12] - world.matrices[b].elements[12]);
+  }
+  const rows = [];
+  for (const child of siteOrder(index)?.sorted ?? listed) {
+    const held = HOLDERS.has(modelOf(child).category)
+      ? world.childrenOf[child].filter((c) => !TREE_HIDDEN.has(modelOf(c).category))
+      : [];
+    rows.push(...(held.length ? held : [child]));
+  }
+  return rows;
 }
 
-export function buildTree() {
-  treeEl.textContent = "";
-  rowOf.clear();
-  expanded.clear();
-  for (let i = 0; i < world.names.length; i++) if (world.parentOf[i] < 0) addRow(i, 0, null);
-  showToDepth(Number(depthInput.value) || 1);
+function applyRowVisibility(index) {
+  const entry = rowOf.get(index);
+  if (!entry) return;
+  const own = hiddenNames.has(world.names[index]);
+  const inherited = !own && !isVisible(index);
+  entry.row.classList.toggle("resource-hidden", !isVisible(index));
+  entry.eye.innerHTML = eyeSvg(own);
+  entry.eye.classList.toggle("is-hidden", own);
+  entry.eye.classList.toggle("inherited", inherited);
+  entry.eye.title = inherited
+    ? "Hidden by a parent - alt-click to reveal it"
+    : own
+      ? "Show"
+      : "Hide";
 }
 
 function addRow(index, depth, before) {
@@ -279,36 +304,20 @@ export function toggle(index, open) {
   }
 }
 
-// What the tree lists below a row, in the order a reader takes them. Organised as the existing
-// visualizer's tree is. The positions inside a container are left out: a plate already says how
-// many wells it has. A deck is looked through, and what stood on it is listed left to right: the
-// carriers are what a person came to find, not the surface under them. A holder is a numbered
-// position, not a thing: the row is what stands in it, or the holder itself while it stands empty,
-// so the vacancy still shows. Nothing about the viewport changes - this decides the panel only.
-function treeChildren(index) {
-  const listed = [];
-  let sawDeck = false;
-  for (const child of world.childrenOf[index]) {
-    const category = modelOf(child).category;
-    if (TREE_HIDDEN.has(category)) continue;
-    if (category === "deck") {
-      sawDeck = true;
-      listed.push(...treeChildren(child));
-      continue;
-    }
-    listed.push(child);
+function openPathTo(index) {
+  const chain = [];
+  for (let i = index; i >= 0; i = world.parentOf[i]) chain.unshift(i);
+  for (const i of chain) toggle(i, true);
+}
+
+export function restoreView(kept) {
+  if (!kept) return;
+  for (const name of kept.open) {
+    const index = world.indexOfName.get(name);
+    if (index !== undefined) openPathTo(index);
   }
-  if (sawDeck) {
-    listed.sort((a, b) => world.matrices[a].elements[12] - world.matrices[b].elements[12]);
-  }
-  const rows = [];
-  for (const child of siteOrder(index)?.sorted ?? listed) {
-    const held = HOLDERS.has(modelOf(child).category)
-      ? world.childrenOf[child].filter((c) => !TREE_HIDDEN.has(modelOf(c).category))
-      : [];
-    rows.push(...(held.length ? held : [child]));
-  }
-  return rows;
+  const index = world.indexOfName.get(kept.selected);
+  if (index !== undefined) restoreSelection(index, kept.panel);
 }
 
 // Whether opening this row would open a grid of positions rather than a level of the deck. Those
@@ -331,6 +340,17 @@ function showToDepth(maxDepth) {
   for (let i = 0; i < world.names.length; i++) if (world.parentOf[i] < 0) walk(i, 0);
 }
 
+// tree actions
+const depthInput = input("tree-depth-input");
+
+export function buildTree() {
+  treeEl.textContent = "";
+  rowOf.clear();
+  expanded.clear();
+  for (let i = 0; i < world.names.length; i++) if (world.parentOf[i] < 0) addRow(i, 0, null);
+  showToDepth(Number(depthInput.value) || 1);
+}
+
 function expandAll(open) {
   if (!open) {
     for (let i = 0; i < world.names.length; i++) if (world.parentOf[i] < 0) toggle(i, false);
@@ -341,22 +361,6 @@ function expandAll(open) {
     for (const child of treeChildren(index)) walk(child);
   };
   for (let i = 0; i < world.names.length; i++) if (world.parentOf[i] < 0) walk(i);
-}
-
-function applyRowVisibility(index) {
-  const entry = rowOf.get(index);
-  if (!entry) return;
-  const own = hiddenNames.has(world.names[index]);
-  const inherited = !own && !isVisible(index);
-  entry.row.classList.toggle("resource-hidden", !isVisible(index));
-  entry.eye.innerHTML = eyeSvg(own);
-  entry.eye.classList.toggle("is-hidden", own);
-  entry.eye.classList.toggle("inherited", inherited);
-  entry.eye.title = inherited
-    ? "Hidden by a parent - alt-click to reveal it"
-    : own
-      ? "Show"
-      : "Hide";
 }
 
 export function refreshTreeVisibility() {
@@ -403,9 +407,6 @@ document.getElementById("toolbar-right-toggle").addEventListener("click", () => 
   sidepanel.classList.toggle("collapsed");
   resize();
 });
-
-// tree actions
-const depthInput = input("tree-depth-input");
 
 let allExpanded = false;
 

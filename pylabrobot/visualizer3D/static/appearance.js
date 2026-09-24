@@ -47,138 +47,8 @@ import { modelOf, sizeOf, world } from "./world.js";
 // A model that is on screen puts its box away. Recorded on the entry rather than only switched
 // off, because everything that decides what is drawn runs again on every view change, and each of
 // those would otherwise put the box back over the model it was standing in for.
-export function modelIsDrawn(modelIndex) {
-  // Geometry that has just arrived has not been asked whether it is big enough to be worth
-  // drawing: that is decided per view, and the view has not changed just because a file loaded.
-  detailScale = null;
-  const entry = meshes.find((m) => m.modelIndex === modelIndex);
-  if (!entry) return;
-  entry.modelDrawn = true;
-  entry.mesh.material.visible = false;
-  for (const i of entry.instances) drawnFromFile.add(i);
-  // A part that travels is drawn twice over: once as the open frame `buildArms` extrudes for it,
-  // and now as itself. The frame and the stroke around it were standing in for geometry nobody
-  // had, so they go the way the box does. The reference line stays: it marks where the drive
-  // reports this part to be, which is not a fact about the shape and is the one thing the geometry
-  // cannot say for itself.
-  for (const arm of arms) {
-    if (!entry.instances.includes(arm.index)) continue;
-    arm.frame.visible = false;
-    arm.outline.visible = false;
-  }
-  // The view is not going to change just because a file finished loading, so the border has to be
-  // faded here as well as in the rule that keeps it faded.
-  setRenderMode(planView ?? false);
-}
-
-// Below this many pixels across, a resource contributes noise rather than information. Set so a
-// well still draws at a 500 mm scale bar, where a pixel is worth about 2.5 mm and a 6.9 mm well
-// projects to roughly 2.7 px; it drops out at facility zoom, where it is closer to 1.4 px and a
-// thousand of them read as grey haze. Its parent is still drawn, so nothing vanishes without
-// something in its place.
-const DETAIL_MIN_PX = 2;
-
-// And below this a model is not worth its geometry: the box it stood in for says the same thing
-// at a fraction of the cost, and one box is drawn with all the others in a single call. Between
-// the two a resource is still there, drawn as a box; below the smaller one it is not drawn at all.
-// Eight pixels is where an 8.2 mm tip lands with the camera about a metre off an 840 px tall
-// canvas: far enough out that a deck being worked on is still made of things, not boxes.
-const MODEL_MIN_PX = 8;
-
-// Below this a rail number is a smudge rather than a number. Nothing is lost by not drawing it, and
-// at facility scale it is most of what the renderer is being asked to do.
-const LABEL_MIN_PX = 7;
 
 let detailScale = null;
-
-/** A new scene: the detail level and the view mode are worked out afresh for it. */
-export function forgetDetail() {
-  detailScale = null;
-  planView = null;
-}
-
-export function updateDetail() {
-  const perPixel = mmPerPixel();
-  if (!Number.isFinite(perPixel) || perPixel <= 0) return;
-  // Only rework when the scale has moved enough to change an answer.
-  if (detailScale !== null && Math.abs(perPixel / detailScale - 1) < 0.02) return;
-  detailScale = perPixel;
-
-  // A rail number is drawn in deck millimetres, so how big it lands on screen is a division away.
-  const labelsLegible = GRID_LABEL_MM / perPixel >= LABEL_MIN_PX;
-  for (const label of gridLabels) {
-    if (label.visible !== labelsLegible) label.visible = labelsLegible;
-  }
-
-  // A model is geometry, and geometry is what the renderer spends its frame on: a tip rack two
-  // pixels across was still drawing its ninety-six tips, one draw call each. The rule that decides
-  // whether a box is worth drawing decides this too - and a part that travels is exempt, because
-  // what it is doing is the thing being watched.
-  const geometryOf = new Set();
-  for (const root of meshRoots) {
-    const index = root.userData.index;
-    const [sx, sy] = sizeOf(modelOf(index));
-    const visible = travels(index) || Math.max(sx, sy) / perPixel >= MODEL_MIN_PX;
-    if (root.visible !== visible) root.visible = visible;
-    if (visible) geometryOf.add(world.modelOf[index]);
-  }
-  // Every resource drawn from one instanced mesh is the same model at the same size, and none of
-  // them travels - what travels keeps a clone of its own - so one answer covers the lot.
-  for (const built of modelMeshes) {
-    const [sx, sy] = sizeOf(world.models[built.modelIndex]);
-    const visible = Math.max(sx, sy) / perPixel >= MODEL_MIN_PX;
-    for (const mesh of built.meshes) if (mesh.visible !== visible) mesh.visible = visible;
-    if (visible) geometryOf.add(built.modelIndex);
-  }
-
-  const drawn = new Set();
-  for (const entry of meshes) {
-    const [sx, sy] = sizeOf(entry.model);
-    const visible = Math.max(sx, sy) / perPixel >= DETAIL_MIN_PX;
-    if (entry.mesh.visible !== visible) entry.mesh.visible = visible;
-    // The box stands in for the model again as soon as the model is too small to be worth
-    // drawing, and steps back out of the way when it is not. Standing in, it is drawn as solidly
-    // as the model was, so what a resource looks like does not change as it crosses the threshold.
-    if (entry.modelDrawn) {
-      const fills = !geometryOf.has(entry.modelIndex);
-      if (entry.mesh.material.visible !== fills) entry.mesh.material.visible = fills;
-      if (entry.standsIn !== fills) {
-        entry.standsIn = fills;
-        entry.mesh.material.opacity = boxOpacity(entry);
-        entry.mesh.material.needsUpdate = true;
-      }
-    }
-    entry.detailVisible = visible;
-    for (const overlay of entry.overlays ?? []) {
-      const wanted = visible && (!overlay.userData.planOnly || planView === true);
-      if (overlay.visible !== wanted) overlay.visible = wanted;
-    }
-    if (visible) drawn.add(entry.modelIndex);
-  }
-
-  // In a free view an enclosure gets its fill back once nothing inside it is being drawn, so a
-  // plate whose wells have been culled reads as a plate rather than an empty frame. In an axis
-  // view everything is opaque and painted in order, so an enclosure keeps its fill whatever stands
-  // in it - and the fill is put back here rather than left to the mode change that turns painting
-  // on. A fill is only ever taken away in a free view, so one missed transition used to leave a
-  // plan view drawn as bare outlines with nothing behind them, which is what it looked like.
-  if (planView) {
-    for (const entry of meshes) {
-      const wanted = fillsBox(entry);
-      if (entry.mesh.material.visible !== wanted) entry.mesh.material.visible = wanted;
-    }
-    return;
-  }
-  for (const entry of meshes) {
-    // A container is exempt: its walls are what you read the layout off, so they stay drawn at
-    // SHELL_OPACITY whether or not what it holds is on screen. Everything above it in the stack -
-    // a bench, a device, the facility - still drops to its outline, which is what keeps the layers
-    // from compounding.
-    if (!entry.holdsEnclosure || keepsWalls(entry) || entry.modelDrawn) continue;
-    const showsContents = entry.enclosedModels.some((m) => drawn.has(m));
-    if (entry.mesh.material.visible === showsContents) entry.mesh.material.visible = !showsContents;
-  }
-}
 
 // Whether the camera is looking straight down. The plan view is the one view drawn differently -
 // flatter, and with a container's walls kept - and it is the only one, because "higher" and
@@ -391,6 +261,144 @@ function setRenderMode(plan) {
   }
 }
 
+export function modelIsDrawn(modelIndex) {
+  // Geometry that has just arrived has not been asked whether it is big enough to be worth
+  // drawing: that is decided per view, and the view has not changed just because a file loaded.
+  detailScale = null;
+  const entry = meshes.find((m) => m.modelIndex === modelIndex);
+  if (!entry) return;
+  entry.modelDrawn = true;
+  entry.mesh.material.visible = false;
+  for (const i of entry.instances) drawnFromFile.add(i);
+  // A part that travels is drawn twice over: once as the open frame `buildArms` extrudes for it,
+  // and now as itself. The frame and the stroke around it were standing in for geometry nobody
+  // had, so they go the way the box does. The reference line stays: it marks where the drive
+  // reports this part to be, which is not a fact about the shape and is the one thing the geometry
+  // cannot say for itself.
+  for (const arm of arms) {
+    if (!entry.instances.includes(arm.index)) continue;
+    arm.frame.visible = false;
+    arm.outline.visible = false;
+  }
+  // The view is not going to change just because a file finished loading, so the border has to be
+  // faded here as well as in the rule that keeps it faded.
+  setRenderMode(planView ?? false);
+}
+
+// Below this many pixels across, a resource contributes noise rather than information. Set so a
+// well still draws at a 500 mm scale bar, where a pixel is worth about 2.5 mm and a 6.9 mm well
+// projects to roughly 2.7 px; it drops out at facility zoom, where it is closer to 1.4 px and a
+// thousand of them read as grey haze. Its parent is still drawn, so nothing vanishes without
+// something in its place.
+const DETAIL_MIN_PX = 2;
+
+// And below this a model is not worth its geometry: the box it stood in for says the same thing
+// at a fraction of the cost, and one box is drawn with all the others in a single call. Between
+// the two a resource is still there, drawn as a box; below the smaller one it is not drawn at all.
+// Eight pixels is where an 8.2 mm tip lands with the camera about a metre off an 840 px tall
+// canvas: far enough out that a deck being worked on is still made of things, not boxes.
+const MODEL_MIN_PX = 8;
+
+// Below this a rail number is a smudge rather than a number. Nothing is lost by not drawing it, and
+// at facility scale it is most of what the renderer is being asked to do.
+const LABEL_MIN_PX = 7;
+
+/** A new scene: the detail level and the view mode are worked out afresh for it. */
+export function forgetDetail() {
+  detailScale = null;
+  planView = null;
+}
+
+export function updateDetail() {
+  const perPixel = mmPerPixel();
+  if (!Number.isFinite(perPixel) || perPixel <= 0) return;
+  // Only rework when the scale has moved enough to change an answer.
+  if (detailScale !== null && Math.abs(perPixel / detailScale - 1) < 0.02) return;
+  detailScale = perPixel;
+
+  // A rail number is drawn in deck millimetres, so how big it lands on screen is a division away.
+  const labelsLegible = GRID_LABEL_MM / perPixel >= LABEL_MIN_PX;
+  for (const label of gridLabels) {
+    if (label.visible !== labelsLegible) label.visible = labelsLegible;
+  }
+
+  // A model is geometry, and geometry is what the renderer spends its frame on: a tip rack two
+  // pixels across was still drawing its ninety-six tips, one draw call each. The rule that decides
+  // whether a box is worth drawing decides this too - and a part that travels is exempt, because
+  // what it is doing is the thing being watched.
+  const geometryOf = new Set();
+  for (const root of meshRoots) {
+    const index = root.userData.index;
+    const [sx, sy] = sizeOf(modelOf(index));
+    const visible = travels(index) || Math.max(sx, sy) / perPixel >= MODEL_MIN_PX;
+    if (root.visible !== visible) root.visible = visible;
+    if (visible) geometryOf.add(world.modelOf[index]);
+  }
+  // Every resource drawn from one instanced mesh is the same model at the same size, and none of
+  // them travels - what travels keeps a clone of its own - so one answer covers the lot.
+  for (const built of modelMeshes) {
+    const [sx, sy] = sizeOf(world.models[built.modelIndex]);
+    const visible = Math.max(sx, sy) / perPixel >= MODEL_MIN_PX;
+    for (const mesh of built.meshes) if (mesh.visible !== visible) mesh.visible = visible;
+    if (visible) geometryOf.add(built.modelIndex);
+  }
+
+  const drawn = new Set();
+  for (const entry of meshes) {
+    const [sx, sy] = sizeOf(entry.model);
+    const visible = Math.max(sx, sy) / perPixel >= DETAIL_MIN_PX;
+    if (entry.mesh.visible !== visible) entry.mesh.visible = visible;
+    // The box stands in for the model again as soon as the model is too small to be worth
+    // drawing, and steps back out of the way when it is not. Standing in, it is drawn as solidly
+    // as the model was, so what a resource looks like does not change as it crosses the threshold.
+    if (entry.modelDrawn) {
+      const fills = !geometryOf.has(entry.modelIndex);
+      if (entry.mesh.material.visible !== fills) entry.mesh.material.visible = fills;
+      if (entry.standsIn !== fills) {
+        entry.standsIn = fills;
+        entry.mesh.material.opacity = boxOpacity(entry);
+        entry.mesh.material.needsUpdate = true;
+      }
+    }
+    entry.detailVisible = visible;
+    for (const overlay of entry.overlays ?? []) {
+      const wanted = visible && (!overlay.userData.planOnly || planView === true);
+      if (overlay.visible !== wanted) overlay.visible = wanted;
+    }
+    if (visible) drawn.add(entry.modelIndex);
+  }
+
+  // In a free view an enclosure gets its fill back once nothing inside it is being drawn, so a
+  // plate whose wells have been culled reads as a plate rather than an empty frame. In an axis
+  // view everything is opaque and painted in order, so an enclosure keeps its fill whatever stands
+  // in it - and the fill is put back here rather than left to the mode change that turns painting
+  // on. A fill is only ever taken away in a free view, so one missed transition used to leave a
+  // plan view drawn as bare outlines with nothing behind them, which is what it looked like.
+  if (planView) {
+    for (const entry of meshes) {
+      const wanted = fillsBox(entry);
+      if (entry.mesh.material.visible !== wanted) entry.mesh.material.visible = wanted;
+    }
+    return;
+  }
+  for (const entry of meshes) {
+    // A container is exempt: its walls are what you read the layout off, so they stay drawn at
+    // SHELL_OPACITY whether or not what it holds is on screen. Everything above it in the stack -
+    // a bench, a device, the facility - still drops to its outline, which is what keeps the layers
+    // from compounding.
+    if (!entry.holdsEnclosure || keepsWalls(entry) || entry.modelDrawn) continue;
+    const showsContents = entry.enclosedModels.some((m) => drawn.has(m));
+    if (entry.mesh.material.visible === showsContents) entry.mesh.material.visible = !showsContents;
+  }
+}
+
+/** Show or hide the faint copies of a grid's marks, which belong to a plan view alone. */
+function showThroughMarks(group) {
+  group.traverse((o) => {
+    if (o.userData.mark === "through") o.visible = planView === true;
+  });
+}
+
 export function updateEdgeMode() {
   const direction = camera.position.clone().sub(controls.target).normalize();
   // Looking straight down, and nothing else. An elevation is axis-aligned too and used to get the
@@ -404,11 +412,4 @@ export function updateEdgeMode() {
   planView = plan;
   for (const mark of gridMarks) showThroughMarks(mark);
   setRenderMode(plan);
-}
-
-/** Show or hide the faint copies of a grid's marks, which belong to a plan view alone. */
-function showThroughMarks(group) {
-  group.traverse((o) => {
-    if (o.userData.mark === "through") o.visible = planView === true;
-  });
 }

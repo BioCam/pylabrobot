@@ -28,6 +28,7 @@ import { modelOf, world } from "./world.js";
 // serves every well of a plate. Loading is asynchronous and the scene is already on screen by the
 // time it lands, so each mesh is added when it arrives rather than being waited for: the box shows
 // until then, and nothing blocks.
+
 export const gltfLoader = new GLTFLoader();
 
 // Draco-compressed meshes are common in files exported for the web, and cannot be read without a
@@ -51,6 +52,40 @@ function meshKey(index) {
   return `${world.names[index]}\n${modelOf(index).mesh?.url}`;
 }
 
+const AXIS_VECTOR = {
+  x: new THREE.Vector3(1, 0, 0),
+  y: new THREE.Vector3(0, 1, 0),
+  z: new THREE.Vector3(0, 0, 1),
+};
+
+// Move a resource's mesh to the joint values it publishes.
+//
+// A revolute joint turns about its declared axis, a prismatic one slides along it. Both are applied
+// as a displacement from the rest transform the file was authored in, so a value of zero puts the
+// arm back exactly where the file drew it.
+export function applyJoints(index) {
+  const root = meshRoots.find((r) => r.userData.index === index);
+  if (!root) return;
+  const published = stateOf.get(index)?.joints;
+  if (!published) return;
+
+  for (const [key, joint] of root.userData.joints) {
+    const value = published[key];
+    if (value === undefined || value === null) continue;
+    const axis = AXIS_VECTOR[joint.spec.axis ?? "z"];
+    if (!axis) continue;
+
+    if (joint.spec.type === "prismatic") {
+      // Published in millimetres; the node lives in the file's own units.
+      const travel = value / (root.userData.scale || 1);
+      joint.node.position.copy(joint.restPosition).addScaledVector(axis, travel);
+    } else {
+      const turn = new THREE.Quaternion().setFromAxisAngle(axis, value * DEG);
+      joint.node.quaternion.copy(joint.restQuaternion).multiply(turn);
+    }
+  }
+}
+
 // Put a model that is already on screen where the new scene says it is. Its geometry, its
 // materials and its joints are the same objects; what changed is which instance it belongs to and
 // the transform that places it.
@@ -66,6 +101,55 @@ function replaceInScene(root, index) {
 
 // glTF says metres and Y-up; a resource that means something else says so in its declaration.
 const MESH_UNITS = { mm: 1, cm: 10, m: 1000 };
+
+/**
+ * Draw one model for every resource standing on it, in one instanced mesh per mesh in its file.
+ *
+ * A cloned model is a draw call apiece: a tip carrier's five racks came to 1,544 of the 1,962 draws
+ * a close view cost, for geometry that is the same tip ninety-six times over. Instanced, a model
+ * costs one draw however many resources it is drawn for, and the geometry and the materials are
+ * the ones the file was parsed into - shared, as the clones shared them.
+ *
+ * Each instance is registered the way a box's own parts are, so a resource that moves or is
+ * switched off takes its geometry with it without this knowing anything about either.
+ */
+function buildInstancedModel(modelIndex, instances, gltf, scale, up) {
+  const carrier = new THREE.Group();
+  const scene = gltf.scene.clone(true);
+  scene.scale.setScalar(scale);
+  // Y-up is glTF's default; a Z-up file is already in our own convention.
+  if (up === "Y") scene.rotation.x = Math.PI / 2;
+  carrier.add(scene);
+  carrier.updateMatrixWorld(true);
+
+  const meshes = [];
+  scene.traverse((o) => {
+    if (!o.isMesh) return;
+    // Where this mesh sits inside the file, with the file's units and its up-axis already in it.
+    const local = o.matrixWorld.clone();
+    const material = o.material.clone();
+    const mesh = new THREE.InstancedMesh(o.geometry, material, instances.length);
+    own(buildDeclaredMeshes, mesh, material);
+    mesh.userData.instances = instances;
+    mesh.userData.lit = material;
+    mesh.userData.asModelled = {
+      transparent: o.material.transparent,
+      opacity: o.material.opacity,
+      depthWrite: o.material.depthWrite,
+      color: o.material.color.getHex(),
+      glazed: o.material.transparent && o.material.opacity <= GLAZED_MAX_OPACITY,
+    };
+    instances.forEach((index, slot) => {
+      placeInstance(mesh, slot, world.matrices[index], local);
+      remember(index, mesh, slot, [local]);
+    });
+    mesh.instanceMatrix.needsUpdate = true;
+    view.add(mesh);
+    meshes.push(mesh);
+  });
+  modelMeshes.push({ modelIndex, instances, meshes });
+  return meshes;
+}
 
 export function buildDeclaredMeshes() {
   // What is on screen already, by the resource and file it was drawn for. A tree that changes
@@ -208,86 +292,3 @@ export function buildDeclaredMeshes() {
     );
   }
 }
-
-/**
- * Draw one model for every resource standing on it, in one instanced mesh per mesh in its file.
- *
- * A cloned model is a draw call apiece: a tip carrier's five racks came to 1,544 of the 1,962 draws
- * a close view cost, for geometry that is the same tip ninety-six times over. Instanced, a model
- * costs one draw however many resources it is drawn for, and the geometry and the materials are
- * the ones the file was parsed into - shared, as the clones shared them.
- *
- * Each instance is registered the way a box's own parts are, so a resource that moves or is
- * switched off takes its geometry with it without this knowing anything about either.
- */
-function buildInstancedModel(modelIndex, instances, gltf, scale, up) {
-  const carrier = new THREE.Group();
-  const scene = gltf.scene.clone(true);
-  scene.scale.setScalar(scale);
-  // Y-up is glTF's default; a Z-up file is already in our own convention.
-  if (up === "Y") scene.rotation.x = Math.PI / 2;
-  carrier.add(scene);
-  carrier.updateMatrixWorld(true);
-
-  const meshes = [];
-  scene.traverse((o) => {
-    if (!o.isMesh) return;
-    // Where this mesh sits inside the file, with the file's units and its up-axis already in it.
-    const local = o.matrixWorld.clone();
-    const material = o.material.clone();
-    const mesh = new THREE.InstancedMesh(o.geometry, material, instances.length);
-    own(buildDeclaredMeshes, mesh, material);
-    mesh.userData.instances = instances;
-    mesh.userData.lit = material;
-    mesh.userData.asModelled = {
-      transparent: o.material.transparent,
-      opacity: o.material.opacity,
-      depthWrite: o.material.depthWrite,
-      color: o.material.color.getHex(),
-      glazed: o.material.transparent && o.material.opacity <= GLAZED_MAX_OPACITY,
-    };
-    instances.forEach((index, slot) => {
-      placeInstance(mesh, slot, world.matrices[index], local);
-      remember(index, mesh, slot, [local]);
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    view.add(mesh);
-    meshes.push(mesh);
-  });
-  modelMeshes.push({ modelIndex, instances, meshes });
-  return meshes;
-}
-
-// Move a resource's mesh to the joint values it publishes.
-//
-// A revolute joint turns about its declared axis, a prismatic one slides along it. Both are applied
-// as a displacement from the rest transform the file was authored in, so a value of zero puts the
-// arm back exactly where the file drew it.
-export function applyJoints(index) {
-  const root = meshRoots.find((r) => r.userData.index === index);
-  if (!root) return;
-  const published = stateOf.get(index)?.joints;
-  if (!published) return;
-
-  for (const [key, joint] of root.userData.joints) {
-    const value = published[key];
-    if (value === undefined || value === null) continue;
-    const axis = AXIS_VECTOR[joint.spec.axis ?? "z"];
-    if (!axis) continue;
-
-    if (joint.spec.type === "prismatic") {
-      // Published in millimetres; the node lives in the file's own units.
-      const travel = value / (root.userData.scale || 1);
-      joint.node.position.copy(joint.restPosition).addScaledVector(axis, travel);
-    } else {
-      const turn = new THREE.Quaternion().setFromAxisAngle(axis, value * DEG);
-      joint.node.quaternion.copy(joint.restQuaternion).multiply(turn);
-    }
-  }
-}
-
-const AXIS_VECTOR = {
-  x: new THREE.Vector3(1, 0, 0),
-  y: new THREE.Vector3(0, 1, 0),
-  z: new THREE.Vector3(0, 0, 1),
-};

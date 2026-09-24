@@ -9,6 +9,7 @@ import { modelOf, sizeOf, treeDepth, world } from "./world.js";
 
 // What each builder made for itself last time - geometries, materials, textures, instance buffers -
 // so it can let them go before making them again. Nothing shared is ever listed here.
+
 const ownedBy = new Map();
 
 export function own(owner, ...things) {
@@ -73,17 +74,17 @@ export const hiddenNames = new Set();
 // What counts as ground rather than as an object standing on it.
 export const GROUND = new Set(["facility", "deck"]);
 
-/** Whether this resource travels over the deck, itself or by riding something that does. */
-export function travels(index) {
-  return MOVING_PARTS.has(modelOf(index).category) || carried(index);
-}
-
 /** Whether this resource rides something that travels, rather than standing on the deck. */
 export function carried(index) {
   for (let i = world.parentOf[index]; i >= 0; i = world.parentOf[i]) {
     if (MOVING_PARTS.has(modelOf(i).category)) return true;
   }
   return false;
+}
+
+/** Whether this resource travels over the deck, itself or by riding something that does. */
+export function travels(index) {
+  return MOVING_PARTS.has(modelOf(index).category) || carried(index);
 }
 
 // What a resource stands on, in facility mm, and then how deep it sits in the tree. Depth testing is
@@ -184,6 +185,16 @@ export function remember(index, mesh, slot, at, emptyOnly = false) {
   overlayOf.get(index).push({ mesh, slot, at, emptyOnly });
 }
 
+// Only explicitly hidden resources go in the set. A resource is drawn when neither it nor any
+// ancestor is hidden, so "hidden because I was toggled off" stays distinct from "hidden because
+// a parent is off".
+export function isVisible(index) {
+  for (let i = index; i >= 0; i = world.parentOf[i]) {
+    if (hiddenNames.has(world.names[i])) return false;
+  }
+  return true;
+}
+
 // A well's rim and its cavity, a carrier's floor: everything drawn outside the box
 // pipeline. Each one follows the resource it belongs to - emptied when that resource is switched
 // off, put back where it stands when it is switched on, and carried along when it moves.
@@ -196,16 +207,6 @@ export function placeParts(index, touched) {
     else part.mesh.setMatrixAt(part.slot, ZERO);
     touched.add(part.mesh);
   }
-}
-
-// Only explicitly hidden resources go in the set. A resource is drawn when neither it nor any
-// ancestor is hidden, so "hidden because I was toggled off" stays distinct from "hidden because
-// a parent is off".
-export function isVisible(index) {
-  for (let i = index; i >= 0; i = world.parentOf[i]) {
-    if (hiddenNames.has(world.names[i])) return false;
-  }
-  return true;
 }
 
 // PLR's own reference semantics: a resource's origin is its left, front, bottom corner.

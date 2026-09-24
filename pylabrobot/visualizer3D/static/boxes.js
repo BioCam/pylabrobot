@@ -42,6 +42,7 @@ import { view } from "./renderer.js";
 import { sizeOf, treeDepth, world } from "./world.js";
 
 // Unit primitives, shared by every model of the same shape and scaled per instance.
+
 const BOX = new THREE.BoxGeometry(1, 1, 1);
 
 const CYL = new THREE.CylinderGeometry(0.5, 0.5, 1, 20).rotateX(Math.PI / 2);
@@ -96,6 +97,70 @@ const footprintFor = (model) => (geometryFor(model) === BOX ? SQUARE_FOOTPRINT :
 
 export const colorFor = (model) =>
   model.appearance?.color ?? RESOURCE_COLORS[model.category] ?? RESOURCE_COLORS.default;
+
+/**
+ * A filter in every tip of one model: a white disc across the bore, `FILTER_BELOW_COLLAR` below the
+ * collar. One instanced mesh however many tips there are, so a rack of filtered tips costs one draw.
+ */
+function buildFilterDiscs(modelIndex, instances, model, sx, sy, sz) {
+  const disc = new THREE.InstancedMesh(
+    DISC,
+    new THREE.MeshBasicMaterial({ color: FILTER, side: THREE.DoubleSide }),
+    instances.length,
+  );
+  // A tip stands on its bottom end, so its top is its length and the collar hangs from there.
+  const z = sz - (model.collar_height + FILTER_BELOW_COLLAR);
+  const width = sx * FILTER_WIDTH_UNMEASURED;
+  const placed = [];
+  instances.forEach((globalIndex, slot) => {
+    const at = [width, width, 1, sx / 2, sy / 2, z];
+    placeInstance(disc, slot, world.matrices[globalIndex], ...at);
+    remember(globalIndex, disc, slot, at);
+    placed.push({ index: globalIndex, at });
+  });
+  disc.instanceMatrix.needsUpdate = true;
+  disc.userData.lit = disc.material;
+  own(buildMeshes, disc, disc.material);
+  view.add(disc);
+  filterDiscsOf.set(modelIndex, { mesh: disc, placed, z, cx: sx / 2, cy: sy / 2 });
+  return disc;
+}
+
+/**
+ * The green disc that says a spot is filled, lying across the top of every tip of one model.
+ *
+ * From directly above a tip is a circle, and the only thing worth reading off it is that something
+ * is standing there - which is what the existing visualizer says with a green circle. Said with a
+ * disc rather than by colouring the tip, it is unlit, so the colour lands on the value asked for
+ * rather than on whatever the lighting makes of it; and it is one instanced mesh however many tips
+ * there are, so a rack of them costs one draw. A tip is only a resource while it is in its spot, so
+ * there is one of these for every tip still standing and none for a spot that has been used.
+ */
+function buildPlanDiscs(instances, sx, sy, sz) {
+  const disc = new THREE.InstancedMesh(
+    DISC,
+    // Flagged transparent although it is fully opaque, for the reason the cavity above is: three
+    // draws every transparent object after every opaque one whatever the render order says, and
+    // the spot's own rim is in that pass. Left opaque, this was painted first and the rim it is
+    // meant to fill then covered it, which is a green disc nobody ever saw.
+    new THREE.MeshBasicMaterial({ color: TIP_PLAN_FILL, transparent: true, opacity: 1 }),
+    instances.length,
+  );
+  // A plan view alone. The mode change and the rule that culls small things share the switch.
+  disc.userData.planOnly = true;
+  disc.visible = false;
+  instances.forEach((globalIndex, slot) => {
+    // Level with the top of the tip, which is the first thing the eye meets looking down at it.
+    const at = [sx, sy, 1, sx / 2, sy / 2, sz];
+    placeInstance(disc, slot, world.matrices[globalIndex], ...at);
+    remember(globalIndex, disc, slot, at);
+  });
+  disc.instanceMatrix.needsUpdate = true;
+  disc.userData.lit = disc.material;
+  own(buildMeshes, disc, disc.material);
+  view.add(disc);
+  return disc;
+}
 
 export function buildMeshes() {
   for (const entry of meshes) {
@@ -338,95 +403,6 @@ export function buildMeshes() {
   }
 }
 
-/**
- * A filter in every tip of one model: a white disc across the bore, `FILTER_BELOW_COLLAR` below the
- * collar. One instanced mesh however many tips there are, so a rack of filtered tips costs one draw.
- */
-function buildFilterDiscs(modelIndex, instances, model, sx, sy, sz) {
-  const disc = new THREE.InstancedMesh(
-    DISC,
-    new THREE.MeshBasicMaterial({ color: FILTER, side: THREE.DoubleSide }),
-    instances.length,
-  );
-  // A tip stands on its bottom end, so its top is its length and the collar hangs from there.
-  const z = sz - (model.collar_height + FILTER_BELOW_COLLAR);
-  const width = sx * FILTER_WIDTH_UNMEASURED;
-  const placed = [];
-  instances.forEach((globalIndex, slot) => {
-    const at = [width, width, 1, sx / 2, sy / 2, z];
-    placeInstance(disc, slot, world.matrices[globalIndex], ...at);
-    remember(globalIndex, disc, slot, at);
-    placed.push({ index: globalIndex, at });
-  });
-  disc.instanceMatrix.needsUpdate = true;
-  disc.userData.lit = disc.material;
-  own(buildMeshes, disc, disc.material);
-  view.add(disc);
-  filterDiscsOf.set(modelIndex, { mesh: disc, placed, z, cx: sx / 2, cy: sy / 2 });
-  return disc;
-}
-
-/**
- * The green disc that says a spot is filled, lying across the top of every tip of one model.
- *
- * From directly above a tip is a circle, and the only thing worth reading off it is that something
- * is standing there - which is what the existing visualizer says with a green circle. Said with a
- * disc rather than by colouring the tip, it is unlit, so the colour lands on the value asked for
- * rather than on whatever the lighting makes of it; and it is one instanced mesh however many tips
- * there are, so a rack of them costs one draw. A tip is only a resource while it is in its spot, so
- * there is one of these for every tip still standing and none for a spot that has been used.
- */
-function buildPlanDiscs(instances, sx, sy, sz) {
-  const disc = new THREE.InstancedMesh(
-    DISC,
-    // Flagged transparent although it is fully opaque, for the reason the cavity above is: three
-    // draws every transparent object after every opaque one whatever the render order says, and
-    // the spot's own rim is in that pass. Left opaque, this was painted first and the rim it is
-    // meant to fill then covered it, which is a green disc nobody ever saw.
-    new THREE.MeshBasicMaterial({ color: TIP_PLAN_FILL, transparent: true, opacity: 1 }),
-    instances.length,
-  );
-  // A plan view alone. The mode change and the rule that culls small things share the switch.
-  disc.userData.planOnly = true;
-  disc.visible = false;
-  instances.forEach((globalIndex, slot) => {
-    // Level with the top of the tip, which is the first thing the eye meets looking down at it.
-    const at = [sx, sy, 1, sx / 2, sy / 2, sz];
-    placeInstance(disc, slot, world.matrices[globalIndex], ...at);
-    remember(globalIndex, disc, slot, at);
-  });
-  disc.instanceMatrix.needsUpdate = true;
-  disc.userData.lit = disc.material;
-  own(buildMeshes, disc, disc.material);
-  view.add(disc);
-  return disc;
-}
-
-/**
- * Size a model's filter discs to the bore its own file has at their height, once the file is here.
- * The file is in the tip's frame, so the plane the disc lies in cuts the tip's inner wall at the
- * nearest distance from the axis.
- */
-export function fitFilterDiscs(modelIndex, scene, scale, up) {
-  const discs = filterDiscsOf.get(modelIndex);
-  if (!discs) return;
-  scene.scale.setScalar(scale);
-  if (up === "Y") scene.rotation.x = Math.PI / 2;
-  scene.updateMatrixWorld(true);
-  const width = boreWidthAt(scene, discs.z, discs.cx, discs.cy);
-  if (width === null) return;
-  const touched = new Set();
-  for (const { index, at } of discs.placed) {
-    at[0] = width;
-    at[1] = width;
-    placeParts(index, touched);
-  }
-  for (const mesh of touched) {
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.boundingSphere = null;
-  }
-}
-
 /** Twice the nearest a surface of `object` comes to the axis through (cx, cy), in the plane z. */
 function boreWidthAt(object, z, cx, cy) {
   let nearest = Number.POSITIVE_INFINITY;
@@ -453,4 +429,29 @@ function boreWidthAt(object, z, cx, cy) {
     }
   });
   return Number.isFinite(nearest) ? 2 * nearest : null;
+}
+
+/**
+ * Size a model's filter discs to the bore its own file has at their height, once the file is here.
+ * The file is in the tip's frame, so the plane the disc lies in cuts the tip's inner wall at the
+ * nearest distance from the axis.
+ */
+export function fitFilterDiscs(modelIndex, scene, scale, up) {
+  const discs = filterDiscsOf.get(modelIndex);
+  if (!discs) return;
+  scene.scale.setScalar(scale);
+  if (up === "Y") scene.rotation.x = Math.PI / 2;
+  scene.updateMatrixWorld(true);
+  const width = boreWidthAt(scene, discs.z, discs.cx, discs.cy);
+  if (width === null) return;
+  const touched = new Set();
+  for (const { index, at } of discs.placed) {
+    at[0] = width;
+    at[1] = width;
+    placeParts(index, touched);
+  }
+  for (const mesh of touched) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.boundingSphere = null;
+  }
 }

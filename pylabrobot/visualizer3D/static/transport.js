@@ -4,6 +4,7 @@ import { invalidate, qualityNow } from "./frame.js";
 
 // What the hello says the page draws with, and who takes each kind of message. Given once by the
 // page: `opened` on every new socket, then `scene`, `state` and `moves` as they arrive.
+
 let renderer = null;
 let handlers = {};
 
@@ -52,15 +53,6 @@ function sayHello() {
   );
 }
 
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState !== "visible") return;
-  const live = socket && socket.readyState === WebSocket.OPEN;
-  showStatus(!!live);
-  if (live) return;
-  lostAt = null; // a tab coming back gets its minute again
-  connect();
-});
-
 export function connect() {
   if (
     socket &&
@@ -99,5 +91,14 @@ export function connect() {
     else if (kind === "moves") handlers.moves(data.moves);
   };
 }
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  const live = socket && socket.readyState === WebSocket.OPEN;
+  showStatus(!!live);
+  if (live) return;
+  lostAt = null; // a tab coming back gets its minute again
+  connect();
+});
 
 statusDot.addEventListener("click", connect);

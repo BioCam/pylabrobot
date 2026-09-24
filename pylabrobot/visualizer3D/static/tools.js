@@ -116,6 +116,62 @@ viewportEl.addEventListener(
   { capture: true, passive: false },
 );
 
+// The get-location tool's two markers, as the existing visualizer draws them: blue on the resource
+// under the pointer, at the reference asked of it, and pink on the resource everything is measured
+// against. Sprites held at BULLSEYE_PX, placed by transform, so a frame costs no buffer.
+function bullseyeTexture(colour) {
+  const canvas = document.createElement("canvas");
+  canvas.width = 64;
+  canvas.height = 64;
+  const context = canvas.getContext("2d");
+  context.strokeStyle = "rgba(255,255,255,0.85)";
+  context.lineWidth = 9;
+  context.beginPath();
+  context.arc(32, 32, 16, 0, Math.PI * 2);
+  context.stroke();
+  context.strokeStyle = colour;
+  context.fillStyle = colour;
+  context.lineWidth = 4;
+  context.beginPath();
+  context.arc(32, 32, 16, 0, Math.PI * 2);
+  context.stroke();
+  context.beginPath();
+  context.arc(32, 32, 3.5, 0, Math.PI * 2);
+  context.fill();
+  for (const [dx, dy] of [
+    [1, 0],
+    [-1, 0],
+    [0, 1],
+    [0, -1],
+  ]) {
+    context.beginPath();
+    context.moveTo(32 + dx * 20, 32 + dy * 20);
+    context.lineTo(32 + dx * 31, 32 + dy * 31);
+    context.stroke();
+  }
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  return texture;
+}
+
+function bullseye(colour) {
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({
+      map: bullseyeTexture(hexOf(colour)),
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    }),
+  );
+  sprite.renderOrder = OVERLAY_ORDER;
+  sprite.frustumCulled = false;
+  sprite.visible = false;
+  view.add(sprite);
+  return sprite;
+}
+
+const hoverBullseye = bullseye(BULLSEYE_HOVER);
+
 function clearHover() {
   hoverBox.visible = false;
   hoverBullseye.visible = false;
@@ -198,62 +254,6 @@ export const {
   endpoints: deltaEndpoints,
   wrtPoint,
 } = coords;
-
-// The get-location tool's two markers, as the existing visualizer draws them: blue on the resource
-// under the pointer, at the reference asked of it, and pink on the resource everything is measured
-// against. Sprites held at BULLSEYE_PX, placed by transform, so a frame costs no buffer.
-function bullseyeTexture(colour) {
-  const canvas = document.createElement("canvas");
-  canvas.width = 64;
-  canvas.height = 64;
-  const context = canvas.getContext("2d");
-  context.strokeStyle = "rgba(255,255,255,0.85)";
-  context.lineWidth = 9;
-  context.beginPath();
-  context.arc(32, 32, 16, 0, Math.PI * 2);
-  context.stroke();
-  context.strokeStyle = colour;
-  context.fillStyle = colour;
-  context.lineWidth = 4;
-  context.beginPath();
-  context.arc(32, 32, 16, 0, Math.PI * 2);
-  context.stroke();
-  context.beginPath();
-  context.arc(32, 32, 3.5, 0, Math.PI * 2);
-  context.fill();
-  for (const [dx, dy] of [
-    [1, 0],
-    [-1, 0],
-    [0, 1],
-    [0, -1],
-  ]) {
-    context.beginPath();
-    context.moveTo(32 + dx * 20, 32 + dy * 20);
-    context.lineTo(32 + dx * 31, 32 + dy * 31);
-    context.stroke();
-  }
-  const texture = new THREE.CanvasTexture(canvas);
-  texture.colorSpace = THREE.SRGBColorSpace;
-  return texture;
-}
-
-function bullseye(colour) {
-  const sprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({
-      map: bullseyeTexture(hexOf(colour)),
-      transparent: true,
-      depthTest: false,
-      depthWrite: false,
-    }),
-  );
-  sprite.renderOrder = OVERLAY_ORDER;
-  sprite.frustumCulled = false;
-  sprite.visible = false;
-  view.add(sprite);
-  return sprite;
-}
-
-const hoverBullseye = bullseye(BULLSEYE_HOVER);
 
 const wrtBullseye = bullseye(BULLSEYE_WRT);
 
@@ -441,16 +441,6 @@ deltaToggle.addEventListener("change", () => {
 // camera rather than pointing at anything, so there is nothing to pick.
 export let hoverAt = null;
 
-// Answered by the loop, at the start of the frame the pointer's own input asked for. Answering it
-// in a callback of its own instead put it a frame behind: the loop registers its callback first,
-// because the input that starts it is handled in the capture phase, so the hover box and the delta
-// lines were drawn one frame late and the last hover before the pointer stopped never drew at all.
-export function answerHover() {
-  const at = hoverAt;
-  hoverAt = null;
-  if (at !== null && world) showHoverFor(at);
-}
-
 function showHoverFor(event) {
   const hit = pick(event);
   if (!hit) {
@@ -475,6 +465,16 @@ function showHoverFor(event) {
     activeTool === "coords"
       ? coordinateLabel(hit.index)
       : [world.names[hit.index], model.type, model.model].filter(Boolean).join("\n");
+}
+
+// Answered by the loop, at the start of the frame the pointer's own input asked for. Answering it
+// in a callback of its own instead put it a frame behind: the loop registers its callback first,
+// because the input that starts it is handled in the capture phase, so the hover box and the delta
+// lines were drawn one frame late and the last hover before the pointer stopped never drew at all.
+export function answerHover() {
+  const at = hoverAt;
+  hoverAt = null;
+  if (at !== null && world) showHoverFor(at);
 }
 
 renderer.domElement.addEventListener("pointermove", (event) => {

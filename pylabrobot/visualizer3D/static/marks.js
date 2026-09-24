@@ -38,6 +38,7 @@ import { modelOf, sizeOf, world } from "./world.js";
 // whatever it is told: how many, how far apart, where the first one sits, how to label them.
 // Nothing here knows what a rail is, so a deck with slots or a nest with positions draws the same
 // way the day it declares one.
+
 export let gridMarks = [];
 
 // Every rail number in the scene. They are one draw call each and the largest per-device cost the
@@ -201,42 +202,10 @@ function gripCross(reach, width, opening) {
   return new THREE.ShapeGeometry(shapes);
 }
 
-/** A crosshair lying flat at the grip centre, where the tool says its grip centre is. */
-function buildGripMark(index, model, pad) {
-  const tcp = model.tool_center_point;
-  const [along] = sizeOf(pad);
-  const plane = new THREE.Mesh(
-    gripCross(along, GRIP_MARK_WIDTH, GRIP_MARK_OPENING),
-    new THREE.MeshBasicMaterial({
-      color: REFERENCE_LINE,
-      transparent: true,
-      opacity: GRIP_MARK_OPACITY,
-      depthTest: false,
-      side: THREE.DoubleSide,
-    }),
-  );
-  own(buildReferenceMarks, plane.geometry, plane.material);
-  plane.frustumCulled = false;
-  plane.renderOrder = OVERLAY_ORDER + 5;
-  plane.matrixAutoUpdate = false;
-  // Lying flat, centred where the tool says it is programmed against. Read from the tool rather
-  // than taken as the far end of its own box: the two agree on this gripper, and only because its
-  // box is its link length - a tool that grips somewhere other than its tip would have the mark
-  // drawn at the tip, which is the one place it is not.
-  //
-  // The tool states that point from its joint, not from its own origin, so the joint is added back:
-  // left out, the mark stands the joint's offset away from where the jaws close.
-  const joint = model.proximal_joint;
-  plane.userData.local = new THREE.Matrix4().makeTranslation(
-    joint.x + tcp.x,
-    joint.y + tcp.y,
-    joint.z + tcp.z,
-  );
-  plane.matrix.multiplyMatrices(world.matrices[index], plane.userData.local);
-  plane.matrixWorldNeedsUpdate = true;
-  view.add(plane);
-  referenceMarks.push({ plane, index });
-}
+// The floor grid follows the view, the way the existing visualizer's does: its spacing is chosen
+// from how many millimetres a pixel is worth, and it re-centres on what you are looking at. A grid
+// fixed at build time is a grid that means nothing once you zoom.
+export let grid = null;
 
 export function buildReferenceMarks() {
   for (const mark of referenceMarks) view.remove(mark.plane);
@@ -307,6 +276,43 @@ export function buildReferenceMarks() {
   }
 }
 
+/** A crosshair lying flat at the grip centre, where the tool says its grip centre is. */
+function buildGripMark(index, model, pad) {
+  const tcp = model.tool_center_point;
+  const [along] = sizeOf(pad);
+  const plane = new THREE.Mesh(
+    gripCross(along, GRIP_MARK_WIDTH, GRIP_MARK_OPENING),
+    new THREE.MeshBasicMaterial({
+      color: REFERENCE_LINE,
+      transparent: true,
+      opacity: GRIP_MARK_OPACITY,
+      depthTest: false,
+      side: THREE.DoubleSide,
+    }),
+  );
+  own(buildReferenceMarks, plane.geometry, plane.material);
+  plane.frustumCulled = false;
+  plane.renderOrder = OVERLAY_ORDER + 5;
+  plane.matrixAutoUpdate = false;
+  // Lying flat, centred where the tool says it is programmed against. Read from the tool rather
+  // than taken as the far end of its own box: the two agree on this gripper, and only because its
+  // box is its link length - a tool that grips somewhere other than its tip would have the mark
+  // drawn at the tip, which is the one place it is not.
+  //
+  // The tool states that point from its joint, not from its own origin, so the joint is added back:
+  // left out, the mark stands the joint's offset away from where the jaws close.
+  const joint = model.proximal_joint;
+  plane.userData.local = new THREE.Matrix4().makeTranslation(
+    joint.x + tcp.x,
+    joint.y + tcp.y,
+    joint.z + tcp.z,
+  );
+  plane.matrix.multiplyMatrices(world.matrices[index], plane.userData.local);
+  plane.matrixWorldNeedsUpdate = true;
+  view.add(plane);
+  referenceMarks.push({ plane, index });
+}
+
 /**
  * The opening in a moving part's frame, in the part's own frame: left, right, front, back in mm.
  *
@@ -331,6 +337,18 @@ export function armWindow(model) {
     left = right - window.width;
   }
   return [left, right, insetY, sy - insetY];
+}
+
+/** Where an arm stands in the model: what its group is drawn from, and where its glide ends. */
+export function armPose(index) {
+  const parent = world.parentOf[index];
+  const local = world.local.slice(index * 6, index * 6 + 6);
+  return {
+    parentMatrix: parent >= 0 ? world.matrices[parent].clone() : new THREE.Matrix4(),
+    local,
+    currentX: local[0],
+    targetX: local[0],
+  };
 }
 
 export function buildArms() {
@@ -425,18 +443,6 @@ export function buildArms() {
 
     arms.push({ group, frame, outline, line, index, referenceOffset: offset, ...armPose(index) });
   }
-}
-
-/** Where an arm stands in the model: what its group is drawn from, and where its glide ends. */
-export function armPose(index) {
-  const parent = world.parentOf[index];
-  const local = world.local.slice(index * 6, index * 6 + 6);
-  return {
-    parentMatrix: parent >= 0 ? world.matrices[parent].clone() : new THREE.Matrix4(),
-    local,
-    currentX: local[0],
-    targetX: local[0],
-  };
 }
 
 export function buildGridMarks() {
@@ -593,11 +599,6 @@ let originDots = null;
 
 export let showOriginDots = false;
 
-export function showOriginDotsIf(on) {
-  showOriginDots = on;
-  buildOriginDots();
-}
-
 export function buildOriginDots() {
   if (originDots) {
     view.remove(originDots);
@@ -622,6 +623,58 @@ export function buildOriginDots() {
   mesh.instanceMatrix.needsUpdate = true;
   originDots = mesh;
   view.add(originDots);
+}
+
+export function showOriginDotsIf(on) {
+  showOriginDots = on;
+  buildOriginDots();
+}
+
+// Held at a constant size on screen, so it marks the origin without swamping a close view or
+// vanishing from a wide one.
+const ORIGIN_PX = 90;
+
+// How close to the edge of the viewport an origin that has left it is brought, in normalised
+// device coordinates. Inside 1.0 so the whole marker shows rather than half of it.
+const ORIGIN_EDGE = 0.92;
+
+const _originAt = new THREE.Vector3();
+
+const _originNdc = new THREE.Vector3();
+
+const _originDepth = new THREE.Vector3();
+
+export function updateOrigin() {
+  if (!originMarker) return;
+  const perPixel = mmPerPixel();
+  if (!Number.isFinite(perPixel) || perPixel <= 0) return;
+  originMarker.scale.setScalar(perPixel * ORIGIN_PX);
+
+  // The frame every coordinate in the panel is measured against, so it is the one marker that must
+  // not be able to go missing: panned or zoomed far enough, the facility's own corner leaves the
+  // viewport entirely. It is held at the edge instead, in the direction the origin actually lies,
+  // which keeps both the frame and the way back to it on screen.
+  _originAt.setFromMatrixPosition(world.matrices[0]);
+  _originNdc.copy(_originAt).project(camera);
+  // A point behind the camera projects mirrored through the centre, so it would be pinned to the
+  // opposite edge from the one it lies towards.
+  if (_originAt.clone().applyMatrix4(camera.matrixWorldInverse).z > 0) {
+    _originNdc.x *= -1;
+    _originNdc.y *= -1;
+  }
+  if (Math.abs(_originNdc.x) <= ORIGIN_EDGE && Math.abs(_originNdc.y) <= ORIGIN_EDGE) {
+    originMarker.position.copy(_originAt);
+    return;
+  }
+  // Held at the depth the camera is looking at, so it is drawn at the size the scale above gives it.
+  const depth = _originDepth.copy(controls.target).project(camera).z;
+  originMarker.position
+    .set(
+      Math.max(-ORIGIN_EDGE, Math.min(ORIGIN_EDGE, _originNdc.x)),
+      Math.max(-ORIGIN_EDGE, Math.min(ORIGIN_EDGE, _originNdc.y)),
+      depth,
+    )
+    .unproject(camera);
 }
 
 export function buildOrigin() {
@@ -692,58 +745,6 @@ export function buildOrigin() {
   updateOrigin();
 }
 
-// Held at a constant size on screen, so it marks the origin without swamping a close view or
-// vanishing from a wide one.
-const ORIGIN_PX = 90;
-
-// How close to the edge of the viewport an origin that has left it is brought, in normalised
-// device coordinates. Inside 1.0 so the whole marker shows rather than half of it.
-const ORIGIN_EDGE = 0.92;
-
-const _originAt = new THREE.Vector3();
-
-const _originNdc = new THREE.Vector3();
-
-const _originDepth = new THREE.Vector3();
-
-export function updateOrigin() {
-  if (!originMarker) return;
-  const perPixel = mmPerPixel();
-  if (!Number.isFinite(perPixel) || perPixel <= 0) return;
-  originMarker.scale.setScalar(perPixel * ORIGIN_PX);
-
-  // The frame every coordinate in the panel is measured against, so it is the one marker that must
-  // not be able to go missing: panned or zoomed far enough, the facility's own corner leaves the
-  // viewport entirely. It is held at the edge instead, in the direction the origin actually lies,
-  // which keeps both the frame and the way back to it on screen.
-  _originAt.setFromMatrixPosition(world.matrices[0]);
-  _originNdc.copy(_originAt).project(camera);
-  // A point behind the camera projects mirrored through the centre, so it would be pinned to the
-  // opposite edge from the one it lies towards.
-  if (_originAt.clone().applyMatrix4(camera.matrixWorldInverse).z > 0) {
-    _originNdc.x *= -1;
-    _originNdc.y *= -1;
-  }
-  if (Math.abs(_originNdc.x) <= ORIGIN_EDGE && Math.abs(_originNdc.y) <= ORIGIN_EDGE) {
-    originMarker.position.copy(_originAt);
-    return;
-  }
-  // Held at the depth the camera is looking at, so it is drawn at the size the scale above gives it.
-  const depth = _originDepth.copy(controls.target).project(camera).z;
-  originMarker.position
-    .set(
-      Math.max(-ORIGIN_EDGE, Math.min(ORIGIN_EDGE, _originNdc.x)),
-      Math.max(-ORIGIN_EDGE, Math.min(ORIGIN_EDGE, _originNdc.y)),
-      depth,
-    )
-    .unproject(camera);
-}
-
-// The floor grid follows the view, the way the existing visualizer's does: its spacing is chosen
-// from how many millimetres a pixel is worth, and it re-centres on what you are looking at. A grid
-// fixed at build time is a grid that means nothing once you zoom.
-export let grid = null;
-
 export let gridState = null;
 
 let floorZ = 0;
@@ -774,15 +775,12 @@ export let halos = null;
 
 export let showHalos = true;
 
-export function showHalosIf(on) {
-  showHalos = on;
-  buildHalos();
-}
-
 const HALO_TEXTURE_PX = 96;
 
 /** One texture per look, kept: a look is a number, a ramp step and whether it is filled. */
 const haloTextures = new Map();
+
+export const hexOf = (n) => `#${n.toString(16).padStart(6, "0")}`;
 
 function haloTextureFor(label, step, filled) {
   const key = `${label}|${step}|${filled}`;
@@ -933,6 +931,11 @@ export function buildHalos() {
   view.add(halos);
 }
 
+export function showHalosIf(on) {
+  showHalos = on;
+  buildHalos();
+}
+
 const _haloRight = new THREE.Vector3();
 
 const _haloUp = new THREE.Vector3();
@@ -1071,5 +1074,3 @@ export function updateGrid() {
     })
     .filter(Boolean);
 }
-
-export const hexOf = (n) => `#${n.toString(16).padStart(6, "0")}`;

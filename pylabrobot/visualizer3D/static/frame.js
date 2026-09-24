@@ -15,6 +15,7 @@ import {
 } from "./constants.js";
 
 // What the loop draws with and where. Given once by the page, before anything asks for a frame.
+
 let renderer = null;
 let view = null;
 let viewportEl = null;
@@ -40,6 +41,15 @@ export function afterDraw(finisher) {
   finishers.push(finisher);
 }
 
+export function applyQuality(level) {
+  quality = Math.max(0, Math.min(QUALITY_LEVELS - 1, level));
+  renderer.setPixelRatio(quality >= 1 ? 1 : Math.min(window.devicePixelRatio, 2));
+  // The drawing buffer follows the pixel ratio only through setSize.
+  renderer.setSize(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
+  view.environment = quality >= 2 ? null : (view.userData.roomEnvironment ?? null);
+  skyLight.intensity = view.environment ? SKY_LIGHT : SKY_LIGHT_WITHOUT_ENVIRONMENT;
+}
+
 export function initFrame(deps) {
   ({ renderer, view, viewportEl, skyLight } = deps);
   cameraNow = deps.camera;
@@ -51,56 +61,10 @@ let lastRenderAt = 0;
 let looping = false;
 const clock = new THREE.Clock();
 
-// Skipping the draw is not enough on its own: the per-frame callback alone costs a third of a core,
-// because it is still called sixty times a second to decide there is nothing to do. So the loop is
-// stopped outright when the scene settles, and started again by whatever changes it.
-//
-// Raised at the edges of the viewer rather than wherever something happens to change: a message
-// arriving, an input, a resize, a call from outside. That way adding a function that changes the
-// scene cannot forget to ask for a frame, which is a silent freeze - the failure this had five
-// times over while it was the caller's job to remember.
-export function invalidate() {
-  renderPending = true;
-  if (!looping) {
-    looping = true;
-    clock.getDelta(); // discard the idle gap, or the first frame back sees a huge delta
-    // The frame-rate window restarts with the loop. Left running across the idle gap, the first
-    // frame back averages out to nothing and reads as "0 fps".
-    frames = 0;
-    lastSample = performance.now();
-    renderer.setAnimationLoop(drawFrame);
-  }
-}
-
 const statsEl = document.getElementById("stats-panel");
 let frames = 0;
 let lastSample = performance.now();
 let stats = {};
-
-/** The scene's own measurements, as the server sent them. */
-export function setStats(measurements) {
-  stats = measurements;
-}
-
-export function statsNow() {
-  return stats;
-}
-
-function updateStats() {
-  frames++;
-  const now = performance.now();
-  if (now - lastSample < 500) return;
-  const fps = Math.round((frames * 1000) / (now - lastSample));
-  frames = 0;
-  lastSample = now;
-  drawStats(`${String(fps)} fps`);
-}
-
-// Quoting a frame rate while nothing is being drawn would be a lie, so an idle viewer says so. This
-// runs on a timer rather than in the loop, because the loop is exactly what has stopped.
-function reportIdle() {
-  if (performance.now() - lastRenderAt > 400) drawStats("idle");
-}
 
 let lastDrawCalls = 0;
 
@@ -123,7 +87,15 @@ function drawStats(rate) {
   if (text !== statsEl.innerHTML) statsEl.innerHTML = text;
 }
 
-setInterval(reportIdle, 500);
+function updateStats() {
+  frames++;
+  const now = performance.now();
+  if (now - lastSample < 500) return;
+  const fps = Math.round((frames * 1000) / (now - lastSample));
+  frames = 0;
+  lastSample = now;
+  drawStats(`${String(fps)} fps`);
+}
 
 // How long the last frame took: this thread's work or the gap since the frame before, whichever is
 // longer. What the pointer gate reads: a slow frame is a machine that cannot answer every sample.
@@ -139,15 +111,6 @@ let slowSince = null;
 let fastSince = null;
 let sceneCameAt = performance.now();
 const demotedAt = new Map(); // level -> when it was last found too slow
-
-export function applyQuality(level) {
-  quality = Math.max(0, Math.min(QUALITY_LEVELS - 1, level));
-  renderer.setPixelRatio(quality >= 1 ? 1 : Math.min(window.devicePixelRatio, 2));
-  // The drawing buffer follows the pixel ratio only through setSize.
-  renderer.setSize(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
-  view.environment = quality >= 2 ? null : (view.userData.roomEnvironment ?? null);
-  skyLight.intensity = view.environment ? SKY_LIGHT : SKY_LIGHT_WITHOUT_ENVIRONMENT;
-}
 
 // Read after each drawn frame. Down after slow frames have settled, up after fast ones have, and
 // never back into a level found slow within QUALITY_HOLD_MS.
@@ -181,18 +144,6 @@ function adaptQuality(frameMs) {
   }
 }
 
-export function qualityNow() {
-  return quality;
-}
-
-/** A scene has arrived: new pipelines to compile, so the frame cost is not judged until they have. */
-export function sceneArrived() {
-  sceneCameAt = performance.now();
-  frameCostAverage = 0;
-  slowSince = null;
-  fastSince = null;
-}
-
 function drawFrame() {
   const frameStarted = performance.now();
   const delta = clock.getDelta();
@@ -219,4 +170,54 @@ function drawFrame() {
   for (const finish of finishers) finish();
   // Read after the draw, because it is the draw it reports.
   updateStats();
+}
+
+// Skipping the draw is not enough on its own: the per-frame callback alone costs a third of a core,
+// because it is still called sixty times a second to decide there is nothing to do. So the loop is
+// stopped outright when the scene settles, and started again by whatever changes it.
+//
+// Raised at the edges of the viewer rather than wherever something happens to change: a message
+// arriving, an input, a resize, a call from outside. That way adding a function that changes the
+// scene cannot forget to ask for a frame, which is a silent freeze - the failure this had five
+// times over while it was the caller's job to remember.
+export function invalidate() {
+  renderPending = true;
+  if (!looping) {
+    looping = true;
+    clock.getDelta(); // discard the idle gap, or the first frame back sees a huge delta
+    // The frame-rate window restarts with the loop. Left running across the idle gap, the first
+    // frame back averages out to nothing and reads as "0 fps".
+    frames = 0;
+    lastSample = performance.now();
+    renderer.setAnimationLoop(drawFrame);
+  }
+}
+
+/** The scene's own measurements, as the server sent them. */
+export function setStats(measurements) {
+  stats = measurements;
+}
+
+export function statsNow() {
+  return stats;
+}
+
+// Quoting a frame rate while nothing is being drawn would be a lie, so an idle viewer says so. This
+// runs on a timer rather than in the loop, because the loop is exactly what has stopped.
+function reportIdle() {
+  if (performance.now() - lastRenderAt > 400) drawStats("idle");
+}
+
+setInterval(reportIdle, 500);
+
+export function qualityNow() {
+  return quality;
+}
+
+/** A scene has arrived: new pipelines to compile, so the frame cost is not judged until they have. */
+export function sceneArrived() {
+  sceneCameAt = performance.now();
+  frameCostAverage = 0;
+  slowSince = null;
+  fastSince = null;
 }
