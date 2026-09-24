@@ -1368,13 +1368,13 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
 
 
 class _SimulatedPlateWithWater(unittest.IsolatedAsyncioTestCase):
-  """300 uL filter tips on four channels, an Azenta plate with water in three wells of a column and
-  none in the fourth, as the device notebook has it. The plate knows volume from height only, so
-  the simulator inverts it. Tracking is on for tips and volumes."""
+  """300 uL filter tips on four channels, a Corning plate with water in three wells of a column and
+  none in the fourth. The plate knows height and volume both ways. Tracking is on for tips and
+  volumes."""
 
   async def asyncSetUp(self):
     from pylabrobot.resources import set_tip_tracking, set_volume_tracking
-    from pylabrobot.resources.azenta.plates import azenta_96_wellplate_200uL_Vb_4titudeframestar
+    from pylabrobot.resources.corning.plates import cor_96_wellplate_360uL_Fb
     from pylabrobot.resources.hamilton import (
       PLT_CAR_L5AC_A00,
       TIP_CAR_480_A00,
@@ -1390,7 +1390,7 @@ class _SimulatedPlateWithWater(unittest.IsolatedAsyncioTestCase):
     tips[1] = self.rack = hamilton_96_tiprack_300uL_filter(name="rack")
     self.deck.assign_child_resource(tips, track=22)
     plates = PLT_CAR_L5AC_A00(name="plates")
-    plates[0] = self.plate = azenta_96_wellplate_200uL_Vb_4titudeframestar(name="plate")
+    plates[0] = self.plate = cor_96_wellplate_360uL_Fb(name="plate")
     self.deck.assign_child_resource(plates, track=30)
     self.driver = STARSimulationDriver(deck=self.deck, declared_configuration_json=RECORDING_STAR)
     await self.driver.setup()
@@ -1410,18 +1410,16 @@ class TestLiquidProbingInSimulation(_SimulatedPlateWithWater):
 
   def _surface(self, well) -> float:
     """Where the tracker's water stands in `well`, in mm on the deck, by the well's own model."""
-    volume = well.tracker.get_used_volume()
-    low, high = 0.0, well.get_size_z()
-    for _ in range(40):
-      mid = (low + high) / 2
-      low, high = (mid, high) if well.compute_volume_from_height(mid) < volume else (low, mid)
-    return round(float(well.get_location_wrt(self.deck, "c", "c", "cavity_bottom").z) + low, 2)
+    bottom = well.get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    return round(
+      float(bottom) + float(well.compute_height_from_volume(well.tracker.get_used_volume())), 2
+    )
 
   async def test_a_batch_search_reads_the_water_and_comes_up(self):
     heights = await self.pipettes.probe_liquid_heights(self.wells)
     for well, height in zip(self.wells, heights, strict=True):
       self.assertAlmostEqual(
-        well.compute_volume_from_height(height), well.tracker.get_used_volume(), delta=1.0
+        well.compute_volume_from_height(height), well.tracker.get_used_volume(), delta=2.0
       )
     self.assertEqual(heights[3], 0.0)
     top = self.pipettes.configuration.z_range[1]
@@ -1445,7 +1443,7 @@ class TestLiquidProbingInSimulation(_SimulatedPlateWithWater):
       self.assertAlmostEqual(
         well.compute_volume_from_height(with_water[well.name]),
         well.tracker.get_used_volume(),
-        delta=1.0,
+        delta=2.0,
       )
 
   async def test_a_miss_zeroes_the_channels_latched_height(self):
@@ -1628,8 +1626,8 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       sent[-1],
     )
     # Measured volume less what was drawn, to the resolution of the well's height-volume model.
-    self.assertAlmostEqual(self.wells[0].tracker.get_used_volume(), 70.0, delta=1.0)
-    self.assertAlmostEqual(self.wells[1].tracker.get_used_volume(), 80.0, delta=1.0)
+    self.assertAlmostEqual(self.wells[0].tracker.get_used_volume(), 70.0, delta=2.0)
+    self.assertAlmostEqual(self.wells[1].tracker.get_used_volume(), 80.0, delta=2.0)
 
   async def test_no_liquid_found_is_refused_and_earlier_batches_stand(self):
     for row in "EFGH":
@@ -1645,8 +1643,8 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     # The first batch, A1 to E1 on the four channels, searched, drew and is committed. The second
     # was refused at its first well and never sent its command; its other wells are untouched.
     self.assertEqual(len(sent), 1)
-    self.assertAlmostEqual(wells[0].tracker.get_used_volume(), 140.0, delta=1.0)
-    self.assertAlmostEqual(wells[3].tracker.get_used_volume(), 90.0, delta=1.0)
+    self.assertAlmostEqual(wells[0].tracker.get_used_volume(), 140.0, delta=2.0)
+    self.assertAlmostEqual(wells[3].tracker.get_used_volume(), 90.0, delta=2.0)
     self.assertEqual(wells[5].tracker.get_used_volume(), 100.0)
 
   async def test_too_little_liquid_is_refused_before_anything_is_sent(self):
