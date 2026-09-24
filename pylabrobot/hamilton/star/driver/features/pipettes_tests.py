@@ -1598,6 +1598,29 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     )
     self.assertEqual(self.pipettes.piston_positions[:2], [99.0, 20.0])
 
+  async def test_a_piston_without_room_is_refused_before_anything_moves(self):
+    sent = self._record_aspirations()
+    # The device's piston stands near the end of its travel from earlier draws.
+    self.driver.dispensing_drive_uL[1] = 1200.0
+    with self.assertRaises(ValueError) as refused:
+      await self.pipettes.aspirate(self.wells[:2], piston_volumes=[10.0, 100.0])
+    self.assertIn("channel 1's piston would stand at 1300.0 uL", str(refused.exception))
+    self.assertIn("past its drive's 1250.0 uL", str(refused.exception))
+    self.assertEqual(sent, [])
+    self.assertEqual(self.wells[1].tracker.get_used_volume(), 100.0)
+
+  async def test_a_tip_without_room_over_the_cycles_is_refused_before_anything_moves(self):
+    sent = self._record_aspirations()
+    # One channel, two cycles into a 360 uL tip: 200 fits, the 200 after it does not.
+    with self.assertRaises(ValueError) as refused:
+      await self.pipettes.aspirate(
+        self.wells[:2], piston_volumes=[200.0, 200.0], use_channels=[0], liquid_heights=[1.0, 1.0]
+      )
+    self.assertIn("channel 0's tip would hold 400.0 uL", str(refused.exception))
+    self.assertIn("over its 360.0 uL; it holds 0.0 uL now", str(refused.exception))
+    self.assertEqual(sent, [])
+    self.assertEqual([w.tracker.get_used_volume() for w in self.wells[:2]], [150.0, 100.0])
+
   async def test_two_cycles_are_two_commands_and_one_raise(self):
     for row in "EFGH":
       self.plate.get_well(f"{row}1").tracker.set_volume(100.0)
@@ -1868,17 +1891,15 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       [tip.tracker.get_used_volume() for tip in tips if tip is not None], [30.0, 0.0]
     )
 
-  async def test_a_tip_without_room_rolls_back_the_whole_batch(self):
-    from pylabrobot.resources.errors import TooLittleVolumeError
-
+  async def test_a_full_tip_is_refused_before_anything_moves(self):
     sent = self._record_aspirations()
     full = self.pipettes.get_mounted_tip(1)
     assert full is not None
     full.tracker.set_volume(300.0)
-    with self.assertRaises(TooLittleVolumeError):
+    with self.assertRaises(ValueError) as refused:
       await self.pipettes.aspirate(self.wells[:2], piston_volumes=[10.0, 100.0])
-    # Channel 0's well and tip were booked before channel 1's tip refused: both stand as before,
-    # pending included, and nothing was sent.
+    self.assertIn("channel 1's tip would hold 400.0 uL", str(refused.exception))
+    # Refused before any booking: every well and tip stands as before, pending included.
     self.assertEqual(sent, [])
     self.assertEqual([w.tracker.get_used_volume() for w in self.wells[:2]], [150.0, 100.0])
     self.assertEqual([w.tracker.volume for w in self.wells[:2]], [150.0, 100.0])

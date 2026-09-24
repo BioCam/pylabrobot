@@ -4903,7 +4903,8 @@ class Pipettes:
 
     Raises:
       ValueError: An argument out of range, lists that do not match, both or neither of `volumes`
-        and `piston_volumes`, a class beside `piston_volumes`, or no class for a channel's tip.
+        and `piston_volumes`, a class beside `piston_volumes`, no class for a channel's tip, or
+        a piston or a tip without room for its draws from where it stands.
       RuntimeError: A channel without a tip, or without the firmware a ZTOUCH needs, no deck, no
         way to know where a liquid stands (no height given, tracking off, LLD off), a container
         without height-volume functions under CAPACITIVE or PRESSURE, no liquid found where the
@@ -5045,6 +5046,30 @@ class Pipettes:
     # What each piston travels besides the liquid: blow-out air before it, transport air after.
     blow_out_air = per_container_settings["blow_out_air_volumes"] or [0.0] * n
     transport_air = per_container_settings["transport_air_volumes"] or [0.0] * n
+    pre_wetting = per_container_settings["pre_wetting_volumes"] or [0.0] * n
+    # From where it stands, each piston has to have room for its draws, in the order they come:
+    # the blow-out air, then the pre-wetting drawn and returned, then the liquid and transport air.
+    # Each tip the same, from what it holds.
+    c = self.configuration
+    room = c.dispensing_drive_increments_to_uL(c.dispensing_drive_volume_range_increments[1])
+    standing = {channel: self.piston_positions[channel] for channel in channel_of}
+    filled = {channel: tips[job].tracker.volume for job, channel in enumerate(channel_of)}
+    for job, channel in enumerate(channel_of):
+      travel = blow_out_air[job] + max(pre_wetting[job], drawn[job] + transport_air[job])
+      if standing[channel] + travel > room:
+        raise ValueError(
+          f"channel {channel}'s piston would stand at {standing[channel] + travel:.1f} uL drawing "
+          f"from {containers[job].name}, past its drive's {room:.1f} uL; it holds "
+          f"{self.piston_positions[channel]:.1f} uL now"
+        )
+      if filled[channel] + travel > tips[job].maximal_volume:
+        raise ValueError(
+          f"channel {channel}'s tip would hold {filled[channel] + travel:.1f} uL drawing from "
+          f"{containers[job].name}, over its {tips[job].maximal_volume:.1f} uL; it holds "
+          f"{tips[job].tracker.volume:.1f} uL now"
+        )
+      standing[channel] += blow_out_air[job] + drawn[job] + transport_air[job]
+      filled[channel] += blow_out_air[job] + drawn[job] + transport_air[job]
 
     # The heights on the deck, in mm: the floor, where a search starts, and the surface.
     dz = [0.0] * n if resource_offsets is None else [offset.z for offset in resource_offsets]
