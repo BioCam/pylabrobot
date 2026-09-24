@@ -5224,25 +5224,26 @@ class Pipettes:
       # The model gives before the device draws, so a short container or a full tip refuses here,
       # before this batch's command; committed as the command succeeds.
       trackers = []
-      if tracking:
-        for channel, job in zip(batch.channels, jobs):
-          # A draw past what the container holds takes the rest as air, which is how a well is
-          # emptied on purpose; the model records the liquid that moved.
-          held = containers[job].tracker.get_used_volume()
-          moved = min(liquid[job], held)
-          if moved < liquid[job]:
-            # Emptying is what a Z touch is for; elsewhere it is worth a warning.
-            (logger.info if job in touched else logger.warning)(
-              "channel %d draws %.1f uL from %s, which holds %.1f uL; the rest is air",
-              channel,
-              liquid[job],
-              containers[job].name,
-              held,
-            )
-          containers[job].tracker.remove_liquid(moved)
-          tips[job].tracker.add_liquid(moved)
-          trackers += [containers[job].tracker, tips[job].tracker]
       try:
+        if tracking:
+          for channel, job in zip(batch.channels, jobs):
+            # A draw past what the container holds takes the rest as air, which is how a well is
+            # emptied on purpose; the model records the liquid that moved.
+            held = containers[job].tracker.get_used_volume()
+            moved = min(liquid[job], held)
+            if moved < liquid[job]:
+              # Emptying is what a Z touch is for; elsewhere it is worth a warning.
+              (logger.info if job in touched else logger.warning)(
+                "channel %d draws %.1f uL from %s, which holds %.1f uL; the rest is air",
+                channel,
+                liquid[job],
+                containers[job].name,
+                held,
+              )
+            # Booked before either tracker may refuse, so a refusal rolls back what came before it.
+            trackers += [containers[job].tracker, tips[job].tracker]
+            containers[job].tracker.remove_liquid(moved)
+            tips[job].tracker.add_liquid(moved)
         await send(batch)
       except BaseException:
         for tracker in trackers:

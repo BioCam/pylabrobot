@@ -1820,6 +1820,26 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       [tip.tracker.get_used_volume() for tip in tips if tip is not None], [30.0, 0.0]
     )
 
+  async def test_a_tip_without_room_rolls_back_the_whole_batch(self):
+    from pylabrobot.resources.errors import TooLittleVolumeError
+
+    sent = self._record_aspirations()
+    full = self.pipettes.get_mounted_tip(1)
+    assert full is not None
+    full.tracker.set_volume(300.0)
+    with self.assertRaises(TooLittleVolumeError):
+      await self.pipettes.aspirate(self.wells[:2], piston_volumes=[10.0, 100.0])
+    # Channel 0's well and tip were booked before channel 1's tip refused: both stand as before,
+    # pending included, and nothing was sent.
+    self.assertEqual(sent, [])
+    self.assertEqual([w.tracker.get_used_volume() for w in self.wells[:2]], [150.0, 100.0])
+    self.assertEqual([w.tracker.volume for w in self.wells[:2]], [150.0, 100.0])
+    first = self.pipettes.get_mounted_tip(0)
+    assert first is not None
+    self.assertEqual(
+      (first.tracker.get_used_volume(), full.tracker.get_used_volume()), (0.0, 300.0)
+    )
+
   async def test_without_tracking_the_surface_has_to_be_given_or_searched_for(self):
     from pylabrobot.resources import set_volume_tracking
 
