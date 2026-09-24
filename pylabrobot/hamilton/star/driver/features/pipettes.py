@@ -199,6 +199,8 @@ class PipettesConfiguration:
   z_touch_off_position_range_increments: Tuple[int, int] = (0, 100)
   dual_lld_height_difference_range_increments: Tuple[int, int] = (0, 99)
   limit_curve_index_range: Tuple[int, int] = (0, 999)
+  stop_back_volume_range_increments: Tuple[int, int] = (0, 180)
+  side_touch_off_distance_range_increments: Tuple[int, int] = (0, 45)
 
   channel_size_z: float = 140.0
   """How tall to model a channel, in mm. Not read from anywhere: how far a channel extends is not
@@ -5536,6 +5538,959 @@ class Pipettes:
       for channel, job in zip(batch.channels, jobs):
         self.piston_positions[channel] = round(
           self.piston_positions[channel] + drawn[job] + blow_out_air[job] + transport_air[job], 1
+        )
+
+    await self._execute_batched(run, batches, during)
+
+  # -- dispensing ---------------------------------------------------------------------------------
+
+  @staticmethod
+  def _get_dispensing_mode(jet: bool, blow_out: bool, empty: bool) -> int:
+    """The firmware's dispensing mode: 0 jet, 1 jet with blow-out, 2 at the surface, 3 at the
+    surface with blow-out, 4 empty the tip where it stands."""
+    if empty:
+      return 4
+    if jet:
+      return 1 if blow_out else 0
+    return 3 if blow_out else 2
+
+  async def _unchecked_fw_dispense(
+    self,
+    tip_pattern: List[bool],
+    dispensing_mode: List[int],
+    x_positions: List[int],
+    y_positions: List[int],
+    minimum_height: List[int],
+    lld_search_height: List[int],
+    liquid_surface_no_lld: List[int],
+    pull_out_distance_transport_air: List[int],
+    immersion_depth: List[int],
+    immersion_depth_direction: List[int],
+    surface_following_distance: List[int],
+    second_section_height: List[int],
+    second_section_ratio: List[int],
+    minimum_traverse_height_start: int,
+    minimum_z_end_position: int,
+    dispense_volumes: List[int],
+    dispense_speed: List[int],
+    cut_off_speed: List[int],
+    stop_back_volume: List[int],
+    transport_air_volume: List[int],
+    blow_out_air_volume: List[int],
+    lld_mode: List[int],
+    side_touch_off_distance: int,
+    dispense_position_above_z_touch_off: List[int],
+    clld_sensitivity: List[int],
+    plld_sensitivity: List[int],
+    swap_speed: List[int],
+    settling_time: List[int],
+    mix_volume: List[int],
+    mix_cycles: List[int],
+    mix_position_from_liquid_surface: List[int],
+    mix_speed: List[int],
+    mix_surface_following_distance: List[int],
+    limit_curve_index: List[int],
+    tadm_algorithm: bool,
+    recording_mode: int,
+    read_timeout: int = 300,
+  ):
+    """Send the dispense as it is given: heights and distances in tenths of a millimetre, volumes
+    in tenths of a microlitre, speeds in tenths per second, times in tenths of a second, one value
+    per channel of the pattern. `C0 DS`."""
+    return await self._driver.send_command(
+      module="C0",
+      command="DS",
+      subsystem=_FirmwareLock.CHANNELS,
+      tip_pattern=tip_pattern,
+      read_timeout=read_timeout,
+      dm=[f"{dm:01}" for dm in dispensing_mode],
+      tm=tip_pattern,
+      xp=[f"{xp:05}" for xp in x_positions],
+      yp=[f"{yp:04}" for yp in y_positions],
+      zx=[f"{zx:04}" for zx in minimum_height],
+      lp=[f"{lp:04}" for lp in lld_search_height],
+      zl=[f"{zl:04}" for zl in liquid_surface_no_lld],
+      po=[f"{po:04}" for po in pull_out_distance_transport_air],
+      ip=[f"{ip:04}" for ip in immersion_depth],
+      it=[f"{it}" for it in immersion_depth_direction],
+      fp=[f"{fp:04}" for fp in surface_following_distance],
+      zu=[f"{zu:04}" for zu in second_section_height],
+      zr=[f"{zr:05}" for zr in second_section_ratio],
+      th=f"{minimum_traverse_height_start:04}",
+      te=f"{minimum_z_end_position:04}",
+      dv=[f"{dv:05}" for dv in dispense_volumes],
+      ds=[f"{ds:04}" for ds in dispense_speed],
+      ss=[f"{ss:04}" for ss in cut_off_speed],
+      rv=[f"{rv:03}" for rv in stop_back_volume],
+      ta=[f"{ta:03}" for ta in transport_air_volume],
+      ba=[f"{ba:04}" for ba in blow_out_air_volume],
+      lm=[f"{lm}" for lm in lld_mode],
+      dj=f"{side_touch_off_distance:02}",
+      zo=[f"{zo:03}" for zo in dispense_position_above_z_touch_off],
+      ll=[f"{ll}" for ll in clld_sensitivity],
+      lv=[f"{lv}" for lv in plld_sensitivity],
+      de=[f"{de:04}" for de in swap_speed],
+      wt=[f"{wt:02}" for wt in settling_time],
+      mv=[f"{mv:05}" for mv in mix_volume],
+      mc=[f"{mc:02}" for mc in mix_cycles],
+      mp=[f"{mp:03}" for mp in mix_position_from_liquid_surface],
+      ms=[f"{ms:04}" for ms in mix_speed],
+      mh=[f"{mh:04}" for mh in mix_surface_following_distance],
+      gi=[f"{gi:03}" for gi in limit_curve_index],
+      gj=tadm_algorithm,
+      gk=recording_mode,
+    )
+
+  async def _dispense_in_one_move(
+    self,
+    use_channels: List[int],
+    locations: List[Coordinate],
+    lld_search_heights: List[float],
+    minimum_allowed_z_position_during: List[float],
+    piston_volumes: List[float],
+    *,
+    jets: Optional[List[bool]] = None,
+    blow_outs: Optional[List[bool]] = None,
+    empties: Optional[List[bool]] = None,
+    minimum_traverse_height_start: Optional[float] = None,
+    lld_modes: Optional[List["Pipettes.LLDMode"]] = None,
+    clld_sensitivities: Optional[List[int]] = None,
+    plld_sensitivities: Optional[List[int]] = None,
+    dispense_positions_above_z_touch_off: Optional[List[float]] = None,
+    side_touch_off_distance: float = 0.0,
+    immersion_depths: Optional[List[float]] = None,
+    transport_air_volumes: Optional[List[float]] = None,
+    flow_rates: Optional[List[float]] = None,
+    cut_off_speeds: Optional[List[float]] = None,
+    stop_back_volumes: Optional[List[float]] = None,
+    surface_following_distances: Optional[List[float]] = None,
+    second_section_heights: Optional[List[float]] = None,
+    second_section_ratios: Optional[List[float]] = None,
+    blow_out_air_volumes: Optional[List[float]] = None,
+    post_mixes: Optional[List[Optional[Mix]]] = None,
+    mix_positions_from_liquid_surface: Optional[List[float]] = None,
+    settling_times: Optional[List[float]] = None,
+    swap_speeds: Optional[List[float]] = None,
+    pull_out_distances_transport_air: Optional[List[float]] = None,
+    limit_curve_indices: Optional[List[int]] = None,
+    minimum_traverse_height_end: Optional[float] = None,
+  ) -> None:
+    """Dispense at each place given, the channels together, in one `C0 DS`.
+
+    Positions and heights on the deck in mm, volumes in uL, speeds in mm/s or uL/s, times in s.
+    Arguments in the order the dispense runs. No model update: `dispense` does that. TADM and
+    recording go as legacy sent them, off.
+
+    Args:
+      use_channels: which channels, 0-indexed from the back, ascending. Every list below is one
+        entry per channel, in this order.
+      locations: where each tip bottom goes; the z is the liquid surface when no LLD runs.
+      lld_search_heights: where each LLD search starts.
+      minimum_allowed_z_position_during: how low each tip bottom may go.
+      piston_volumes: what each piston pushes out.
+      jets: whether each dispense is a jet from above the liquid. False when None: at the surface.
+      blow_outs: whether the blow-out air follows the liquid out. False when None.
+      empties: whether the tip is emptied where it stands, air and all. False when None.
+      minimum_traverse_height_start: tip bottom height the channels are raised to before the
+        command, if below it. `default_minimum_traverse_height` when None.
+      lld_modes: how each channel finds the liquid. OFF when None. PRESSURE and DUAL are for
+        aspirating only. ZTOUCH finds a floor, not a liquid, and logs a warning.
+      clld_sensitivities: capacitive LLD sensitivity, 1 high to 4 low. 1 when None.
+      plld_sensitivities: pressure LLD sensitivity, 1 high to 4 low. 1 when None.
+      dispense_positions_above_z_touch_off: dispense height above a Z touch. 0.0 when None.
+      side_touch_off_distance: sideways move against the wall to shed the drop; 0 for none.
+      immersion_depths: how far into the liquid each tip goes; negative is out of it. 0.0 when None.
+      transport_air_volumes: air pushed out before the liquid. 0.0 when None.
+      flow_rates: 120.0 when None.
+      cut_off_speeds: the flow the dispense ends at. 5.0 when None.
+      stop_back_volumes: drawn back after the dispense. 0.0 when None.
+      surface_following_distances: how far each tip follows the rising surface. 0.0 when None.
+      second_section_heights: height of each container's narrower lower section above
+        `minimum_allowed_z_position_during`, for the surface following. 3.2 when None.
+      second_section_ratios: that section's bottom to top ratio, in tenths. 618.0 when None.
+      blow_out_air_volumes: air pushed out after the liquid, in a blow-out mode. 0.0 when None.
+      post_mixes: a `Mix` per channel, mixed after the dispense, None for no mixing.
+      mix_positions_from_liquid_surface: mixing depth under the surface. 0.0 when None.
+      settling_times: wait after the dispense. 0.0 when None.
+      swap_speeds: speed of leaving the liquid. 10.0 when None.
+      pull_out_distances_transport_air: rise before drawing transport air. 10.0 when None.
+      limit_curve_indices: TADM limit curve, 0 for none. 0 when None.
+      minimum_traverse_height_end: tip bottom height at the end. `default_minimum_traverse_height`
+        when None.
+
+    Raises:
+      ValueError: A list not one entry per channel, a value out of the firmware's range, an
+        unreachable position, or a pressure or dual LLD mode.
+      RuntimeError: A channel used carries no tip.
+    """
+    n = len(use_channels)
+
+    def per_channel(name: str, given: Optional[Sequence[Any]], default: Any) -> List[Any]:
+      if given is None:
+        return [default] * n
+      if len(given) != n:
+        raise ValueError(f"{name} must have one entry per channel, {n}, has {len(given)}")
+      return list(given)
+
+    def tenths(value: float) -> int:
+      return round(value * 10)
+
+    tips: Dict[int, Tip] = {}
+    for channel in use_channels:
+      tip = self.get_mounted_tip(channel)
+      if tip is None:
+        raise RuntimeError(f"channel {channel} carries no tip; a dispense needs one")
+      tips[channel] = tip
+    modes = per_channel("lld_modes", lld_modes, self.LLDMode.OFF)
+    for channel, mode in zip(use_channels, modes):
+      if mode in (self.LLDMode.PRESSURE, self.LLDMode.DUAL):
+        raise ValueError(
+          f"channel {channel} asks for {mode.name}: pressure LLD is for aspirating; a dispense "
+          "finds the liquid by CAPACITIVE or ZTOUCH"
+        )
+    on_ztouch = [ch for ch, mode in zip(use_channels, modes) if mode == self.LLDMode.ZTOUCH]
+    if on_ztouch:
+      logger.warning(
+        "channels %s dispense on Z touch, which finds a floor, not a liquid: the tips go to the "
+        "bottom and dispense there",
+        on_ztouch,
+      )
+
+    places = per_channel("locations", locations, None)
+    volume = per_channel("piston_volumes", piston_volumes, None)
+    floor = per_channel(
+      "minimum_allowed_z_position_during", minimum_allowed_z_position_during, None
+    )
+    search = per_channel("lld_search_heights", lld_search_heights, None)
+    jet = per_channel("jets", jets, False)
+    blow_out = per_channel("blow_outs", blow_outs, False)
+    empty = per_channel("empties", empties, False)
+    dispensing_modes = [self._get_dispensing_mode(jet[i], blow_out[i], empty[i]) for i in range(n)]
+    flow = per_channel("flow_rates", flow_rates, 120.0)
+    cut_off = per_channel("cut_off_speeds", cut_off_speeds, 5.0)
+    stop_back = per_channel("stop_back_volumes", stop_back_volumes, 0.0)
+    transport = per_channel("transport_air_volumes", transport_air_volumes, 0.0)
+    blow_out_air = per_channel("blow_out_air_volumes", blow_out_air_volumes, 0.0)
+    immersion = per_channel("immersion_depths", immersion_depths, 0.0)
+    following = per_channel("surface_following_distances", surface_following_distances, 0.0)
+    swap = per_channel("swap_speeds", swap_speeds, 10.0)
+    settling = per_channel("settling_times", settling_times, 0.0)
+    clld = per_channel("clld_sensitivities", clld_sensitivities, 1)
+    plld = per_channel("plld_sensitivities", plld_sensitivities, 1)
+    above_touch_off = per_channel(
+      "dispense_positions_above_z_touch_off", dispense_positions_above_z_touch_off, 0.0
+    )
+    mix_position = per_channel(
+      "mix_positions_from_liquid_surface", mix_positions_from_liquid_surface, 0.0
+    )
+    section_height = per_channel("second_section_heights", second_section_heights, 3.2)
+    section_ratio = per_channel("second_section_ratios", second_section_ratios, 618.0)
+    pull_out = per_channel(
+      "pull_out_distances_transport_air", pull_out_distances_transport_air, 10.0
+    )
+    limit_curve = per_channel("limit_curve_indices", limit_curve_indices, 0)
+    mixes = per_channel("post_mixes", post_mixes, None)
+    mix_volume = [m.volume if m is not None else 0.0 for m in mixes]
+    mix_count = [m.repetitions if m is not None else 0 for m in mixes]
+    mix_speed = [m.flow_rate if m is not None else 100.0 for m in mixes]
+    mix_following = [(m.surface_following_distance or 0.0) if m is not None else 0.0 for m in mixes]
+
+    xs, ys, pattern = self._tip_command_positions(dict(zip(use_channels, places)))
+    # Both heights are the firmware's fields, any height the tips reach: the start is a floor the
+    # channels are raised to if below it, so one under them raises nothing. `dispense` travels.
+    default = self.default_minimum_traverse_height
+    start = default if minimum_traverse_height_start is None else minimum_traverse_height_start
+    end = default if minimum_traverse_height_end is None else minimum_traverse_height_end
+    for channel, tip in tips.items():
+      overhang = tip.get_size_z() - tip.fitting_depth
+      self._check_reachable("z", round(start + overhang, 2))
+      self._check_reachable("z", round(end + overhang, 2))
+    traverse_start, traverse_end = tenths(start), tenths(end)
+
+    c = self.configuration
+    # A master command takes heights in tenths of a millimetre, not the Z drive's own increments.
+    z_range = (tenths(c.z_range[0]), tenths(c.z_range[1]))
+    surfaces = [tenths(location.z) for location in places]
+    floors = [tenths(z) for z in floor]
+    searches = [tenths(z) for z in search]
+    fields: List[Tuple[str, List[int], Tuple[int, int]]] = [
+      ("locations' z, in 0.1 mm,", surfaces, z_range),
+      ("minimum_allowed_z_position_during, in 0.1 mm,", floors, z_range),
+      ("lld_search_heights, in 0.1 mm,", searches, z_range),
+      (
+        "piston_volumes, in 0.1 uL,",
+        [tenths(v) for v in volume],
+        c.pipetting_volume_range_increments,
+      ),
+      ("flow_rates, in 0.1 uL/s,", [tenths(v) for v in flow], c.pipetting_speed_range_increments),
+      (
+        "cut_off_speeds, in 0.1 uL/s,",
+        [tenths(v) for v in cut_off],
+        c.pipetting_speed_range_increments,
+      ),
+      (
+        "stop_back_volumes, in 0.1 uL,",
+        [tenths(v) for v in stop_back],
+        c.stop_back_volume_range_increments,
+      ),
+      (
+        "transport_air_volumes, in 0.1 uL,",
+        [tenths(v) for v in transport],
+        c.transport_air_volume_range_increments,
+      ),
+      (
+        "blow_out_air_volumes, in 0.1 uL,",
+        [tenths(v) for v in blow_out_air],
+        c.blow_out_air_volume_range_increments,
+      ),
+      (
+        "side_touch_off_distance, in 0.1 mm,",
+        [tenths(side_touch_off_distance)],
+        c.side_touch_off_distance_range_increments,
+      ),
+      ("swap_speeds, in 0.1 mm/s,", [tenths(v) for v in swap], c.swap_speed_range_increments),
+      (
+        "settling_times, in 0.1 s,",
+        [tenths(v) for v in settling],
+        c.settling_time_range_increments,
+      ),
+      (
+        "mix_volumes, in 0.1 uL,",
+        [tenths(v) for v in mix_volume],
+        c.pipetting_volume_range_increments,
+      ),
+      ("mix_cycles", list(mix_count), c.mix_cycles_range),
+      (
+        "mix_speeds, in 0.1 uL/s,",
+        [tenths(v) for v in mix_speed],
+        c.pipetting_speed_range_increments,
+      ),
+      (
+        "immersion_depths, in 0.1 mm,",
+        [abs(tenths(v)) for v in immersion],
+        c.pipetting_distance_range_increments,
+      ),
+      (
+        "surface_following_distances, in 0.1 mm,",
+        [tenths(v) for v in following],
+        c.pipetting_distance_range_increments,
+      ),
+      (
+        "pull_out_distances_transport_air, in 0.1 mm,",
+        [tenths(v) for v in pull_out],
+        c.pipetting_distance_range_increments,
+      ),
+      (
+        "second_section_heights, in 0.1 mm,",
+        [tenths(v) for v in section_height],
+        c.pipetting_distance_range_increments,
+      ),
+      (
+        "second_section_ratios, in tenths,",
+        [tenths(v) for v in section_ratio],
+        c.second_section_ratio_range_increments,
+      ),
+      ("clld_sensitivities", list(clld), c.lld_sensitivity_range),
+      ("plld_sensitivities", list(plld), c.lld_sensitivity_range),
+      (
+        "dispense_positions_above_z_touch_off, in 0.1 mm,",
+        [tenths(v) for v in above_touch_off],
+        c.z_touch_off_position_range_increments,
+      ),
+      (
+        "mix_positions_from_liquid_surface, in 0.1 mm,",
+        [tenths(v) for v in mix_position],
+        c.mix_position_range_increments,
+      ),
+      (
+        "mix_surface_following_distances, in 0.1 mm,",
+        [tenths(v) for v in mix_following],
+        c.pipetting_distance_range_increments,
+      ),
+      ("limit_curve_indices", list(limit_curve), c.limit_curve_index_range),
+    ]
+    for name, values, (low, high) in fields:
+      for value in values:
+        if not low <= value <= high:
+          raise ValueError(f"{name} must be between {low} and {high}, is {value}")
+
+    try:
+      await self._unchecked_fw_dispense(
+        tip_pattern=pattern,
+        dispensing_mode=dispensing_modes,
+        x_positions=xs,
+        y_positions=ys,
+        minimum_height=floors,
+        lld_search_height=searches,
+        liquid_surface_no_lld=surfaces,
+        pull_out_distance_transport_air=[tenths(v) for v in pull_out],
+        immersion_depth=[abs(tenths(v)) for v in immersion],
+        immersion_depth_direction=[1 if v < 0 else 0 for v in immersion],
+        surface_following_distance=[tenths(v) for v in following],
+        second_section_height=[tenths(v) for v in section_height],
+        second_section_ratio=[tenths(v) for v in section_ratio],
+        minimum_traverse_height_start=traverse_start,
+        minimum_z_end_position=traverse_end,
+        dispense_volumes=[tenths(v) for v in volume],
+        dispense_speed=[tenths(v) for v in flow],
+        cut_off_speed=[tenths(v) for v in cut_off],
+        stop_back_volume=[tenths(v) for v in stop_back],
+        transport_air_volume=[tenths(v) for v in transport],
+        blow_out_air_volume=[tenths(v) for v in blow_out_air],
+        lld_mode=[mode.value for mode in modes],
+        side_touch_off_distance=tenths(side_touch_off_distance),
+        dispense_position_above_z_touch_off=[tenths(v) for v in above_touch_off],
+        clld_sensitivity=list(clld),
+        plld_sensitivity=list(plld),
+        swap_speed=[tenths(v) for v in swap],
+        settling_time=[tenths(v) for v in settling],
+        mix_volume=[tenths(v) for v in mix_volume],
+        mix_cycles=list(mix_count),
+        mix_position_from_liquid_surface=[tenths(v) for v in mix_position],
+        mix_speed=[tenths(v) for v in mix_speed],
+        mix_surface_following_distance=[tenths(v) for v in mix_following],
+        limit_curve_index=list(limit_curve),
+        tadm_algorithm=False,
+        recording_mode=0,
+      )
+    finally:
+      await self._record_after_command(use_channels)
+
+  async def dispense(
+    self,
+    containers: Sequence[Container],
+    volumes: Optional[Sequence[float]] = None,
+    use_channels: Optional[List[int]] = None,
+    resource_offsets: Optional[List[Coordinate]] = None,
+    liquid_heights: Optional[Sequence[Optional[float]]] = None,
+    lld_mode: Union["Pipettes.LLDMode", Sequence["Pipettes.LLDMode"]] = LLDMode.OFF,
+    flow_rates: Optional[Sequence[float]] = None,
+    *,
+    hamilton_liquid_classes: Optional[Sequence[HamiltonLiquidClass]] = None,
+    jet: Optional[Sequence[bool]] = None,
+    blow_out: Optional[Sequence[bool]] = None,
+    empty: Optional[Sequence[bool]] = None,
+    piston_volumes: Optional[Sequence[float]] = None,
+    search_speed: float = 10.0,
+    approach_speed: float = 125.0,
+    side_touch_off_distance: float = 0.0,
+    immersion_depths: Optional[Sequence[float]] = None,
+    minimum_allowed_z_positions_during: Optional[Sequence[float]] = None,
+    transport_air_volumes: Optional[Sequence[float]] = None,
+    cut_off_speeds: Optional[Sequence[float]] = None,
+    stop_back_volumes: Optional[Sequence[float]] = None,
+    surface_following_distances: Optional[Sequence[float]] = None,
+    second_section_heights: Optional[Sequence[float]] = None,
+    second_section_ratios: Optional[Sequence[float]] = None,
+    blow_out_air_volumes: Optional[Sequence[float]] = None,
+    post_mixes: Optional[Sequence[Optional[Mix]]] = None,
+    mix_positions_from_liquid_surface: Optional[Sequence[float]] = None,
+    settling_times: Optional[Sequence[float]] = None,
+    swap_speeds: Optional[Sequence[float]] = None,
+    pull_out_distances_transport_air: Optional[Sequence[float]] = None,
+    limit_curve_indices: Optional[Sequence[int]] = None,
+    minimum_traverse_height_start: Optional[float] = None,
+    minimum_traverse_height_during: Optional[float] = None,
+    minimum_traverse_height_end: Optional[float] = None,
+    x_grouping_tolerance: Optional[float] = None,
+  ) -> None:
+    """Dispense liquid into each container from a channel's tip.
+
+    Batched as `aspirate`, one `C0 DS` per batch. Every height in the command is what is given, or
+    0: OFF dispenses at `liquid_heights` above the cavity bottom, the cavity bottom when None, with
+    no immersion and no following unless given. The firmware never searches: CAPACITIVE searches
+    first, as `probe_liquid_heights`, dispenses at the surface found and sets the tracker to the
+    measured volume, warning when it is 20 % off; ZTOUCH touches the floor first and dispenses
+    from it; PRESSURE and DUAL are for aspirating. A dispense past what a tip holds goes ahead and
+    pushes air, with a warning. `volumes` with a liquid class, which corrects the piston volume and
+    fills what is not given, or `piston_volumes` as given; `jet`, `blow_out` and `empty` pick the
+    firmware's mode. The tracker books what moved per batch, before its command, committed on
+    success; it never places a tip. Keyword arguments in the order the dispense runs;
+    per-container lists in the containers' order.
+
+    Args:
+      containers: any number.
+      volumes: liquid to put into each container, corrected by a liquid class. One of this and
+        `piston_volumes`.
+      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
+      resource_offsets: offset of each channel in its container, in mm. Planned when None. The z
+        shifts the heights.
+      liquid_heights: where each OFF dispense goes, above the cavity bottom, in mm. The cavity
+        bottom when None. Refused for a container with an LLD mode, whose search finds the surface.
+      lld_mode: how the liquid, or under ZTOUCH the floor, is found, one for all or one per
+        container. OFF goes to the height given. PRESSURE and DUAL refuse.
+      flow_rates: in uL/s. The class's, else 120.0, when None.
+      hamilton_liquid_classes: one per container. Looked up for the channel's tip, water, `jet`
+        and `blow_out` when None.
+      jet: whether each dispense is a jet from above the liquid. False when None: at the surface.
+      blow_out: whether the blow-out air follows the liquid out. False when None.
+      empty: whether the tip is emptied where it stands, air and all. False when None.
+      piston_volumes: what each piston pushes out, in uL, as given. One of this and `volumes`.
+      search_speed: of the driver's own search, liquid or floor, in mm/s.
+      approach_speed: down to that search's start, `lp` or the top, in mm/s.
+      side_touch_off_distance: sideways move against the wall to shed the drop, in mm; 0 for none.
+      immersion_depths: how far into the liquid each tip goes, in mm; negative is out of it.
+      minimum_allowed_z_positions_during: how low each tip bottom may go, in mm on the deck. The
+        cavity bottom plus the offset's z when None.
+      transport_air_volumes: air pushed out before the liquid, in uL. The class's, else 0.0, when
+        None.
+      cut_off_speeds: the flow each dispense ends at, in uL/s. 5.0 when None.
+      stop_back_volumes: drawn back after each dispense, in uL. The class's, else 0.0, when None.
+      surface_following_distances: how far each tip follows the rising surface, in mm. 0.0 when
+        None; after a search, the rise the dispense makes from the surface found, by the
+        container's height-volume functions.
+      second_section_heights: height of each container's narrower lower section, in mm. 3.2 when
+        None.
+      second_section_ratios: that section's bottom to top ratio, in tenths. 618.0 when None.
+      blow_out_air_volumes: air pushed out after the liquid in a blow-out mode, in uL. The
+        class's, else 0.0, when None.
+      post_mixes: a `Mix` per container, mixed after the dispense, None for no mixing.
+      mix_positions_from_liquid_surface: mixing depth under the surface, in mm, per container. 0.0
+        when None.
+      settling_times: wait after the dispense, in s. The class's, else 0.0, when None.
+      swap_speeds: speed of leaving the liquid, in mm/s. The class's, else 10.0, when None.
+      pull_out_distances_transport_air: rise before drawing transport air, in mm, per container.
+        10.0 when None.
+      limit_curve_indices: TADM limit curve, 0 for none, per container. 0 when None.
+      minimum_traverse_height_start: raise of every low channel before the first batch, in mm.
+        `default_minimum_traverse_height` when None.
+      minimum_traverse_height_during: the same between batches, and each batch's end height.
+        `default_minimum_traverse_height` when None.
+      minimum_traverse_height_end: where the tips are left, in mm. `default_minimum_traverse_height`
+        when None.
+      x_grouping_tolerance: X distance within which containers share a batch, in mm.
+        `default_x_grouping_tolerance` when None.
+
+    Raises:
+      ValueError: An argument out of range, lists that do not match, both or neither of `volumes`
+        and `piston_volumes`, a class beside `piston_volumes`, no class for a channel's tip, a
+        liquid height beside an LLD mode, a pressure or dual LLD mode, a piston without the travel
+        for its dispenses, or a container without room for them.
+      RuntimeError: A channel without a tip, or without the firmware a ZTOUCH needs, no deck, a
+        container without height-volume functions under CAPACITIVE, no liquid found where the
+        channels searched, or no floor met where they touched.
+    """
+    deck = self._driver.deck
+    if deck is None:
+      raise RuntimeError("containers are placed from the deck; this driver was given none")
+    n = len(containers)
+    # As legacy travels: at the default height, not Z safety, unless told otherwise.
+    default = self.default_minimum_traverse_height
+    start = default if minimum_traverse_height_start is None else minimum_traverse_height_start
+    during = default if minimum_traverse_height_during is None else minimum_traverse_height_during
+    end = default if minimum_traverse_height_end is None else minimum_traverse_height_end
+
+    def per_container(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:
+      if given is None:
+        return None
+      if len(given) != n:
+        raise ValueError(f"{name} must have one entry per container, {n}, has {len(given)}")
+      return list(given)
+
+    modes = per_container(
+      "lld_mode", [lld_mode] * n if isinstance(lld_mode, self.LLDMode) else list(lld_mode)
+    )
+    assert modes is not None
+    for job, mode in enumerate(modes):
+      if mode in (self.LLDMode.PRESSURE, self.LLDMode.DUAL):
+        raise ValueError(
+          f"{containers[job].name} asks for {mode.name}: pressure LLD is for aspirating; a "
+          "dispense finds the liquid by CAPACITIVE or ZTOUCH"
+        )
+    touched = [job for job in range(n) if modes[job] == self.LLDMode.ZTOUCH]
+    searched = [job for job in range(n) if modes[job] == self.LLDMode.CAPACITIVE]
+    if (volumes is None) == (piston_volumes is None):
+      raise ValueError(
+        "give volumes, which a liquid class corrects, or piston_volumes, pushed out as given; not "
+        "both and not neither"
+      )
+    if piston_volumes is not None and hamilton_liquid_classes is not None:
+      raise ValueError("piston_volumes are pushed out as given; a liquid class would correct them")
+
+    # The channels the containers are dealt to, as `_prepare_batched` deals them, and their tips.
+    dealt = use_channels or list(range(min(n, self.num_channels)))
+    channel_of = [dealt[job % len(dealt)] for job in range(n)]
+    # The channels say what they carry before anything else is worked out from the model's tips.
+    presence = await self.sense_tip_presence()
+    bare = sorted({channel for channel in channel_of if not presence[channel]})
+    if bare:
+      raise RuntimeError(f"channels {bare} carry no tip; a dispense needs one on each")
+    # Where the pistons stand, read once; each batch's command moves the model on from there.
+    await self.dispensing_drives_request_uL_positions(sorted(set(channel_of)))
+    for job in touched:
+      self._require_ztouch_firmware(channel_of[job])
+    self._warn_ztouch_on_soft_tips(channel_of[job] for job in touched)
+    if touched:
+      logger.warning(
+        "channels %s dispense on Z touch: onto the floor of %s",
+        sorted({channel_of[job] for job in touched}),
+        [containers[job].name for job in touched],
+      )
+    tips: List[HamiltonTip] = []
+    for channel in channel_of:
+      tip = self.get_mounted_tip(channel)
+      if tip is None:
+        raise RuntimeError(f"channel {channel} is not modelled with a tip; a dispense needs one")
+      if not isinstance(tip, HamiltonTip):
+        raise TypeError(f"channel {channel} carries {tip.name}, not a Hamilton tip")
+      tips.append(tip)
+
+    jets = per_container("jet", jet) or [False] * n
+    blow_outs = per_container("blow_out", blow_out) or [False] * n
+    empties = per_container("empty", empty) or [False] * n
+    dispensing_modes = [
+      self._get_dispensing_mode(jets[job], blow_outs[job], empties[job]) for job in range(n)
+    ]
+    classes: Optional[List[HamiltonLiquidClass]] = None
+    if volumes is not None:
+      liquid = per_container("volumes", volumes)
+      assert liquid is not None
+      classes = per_container("hamilton_liquid_classes", hamilton_liquid_classes)
+      if classes is None:
+        classes = []
+        for job, tip in enumerate(tips):
+          found = get_star_liquid_class(
+            tip_volume=tip.maximal_volume,
+            is_core=False,
+            is_tip=True,
+            has_filter=tip.has_filter,
+            liquid=Liquid.WATER,
+            jet=jets[job],
+            blow_out=blow_outs[job],
+          )
+          if found is None:
+            raise ValueError(
+              f"no liquid class is known for channel {channel_of[job]}'s tip on "
+              f"{containers[job].name}: {tip.maximal_volume} uL, "
+              f"{'with' if tip.has_filter else 'without'} filter, water, jet={jets[job]}, "
+              f"blow_out={blow_outs[job]}. Give hamilton_liquid_classes, or piston_volumes"
+            )
+          classes.append(found)
+      pushed = [
+        round(hlc.compute_corrected_volume(volume), 2) for hlc, volume in zip(classes, liquid)
+      ]
+    else:
+      assert piston_volumes is not None
+      pushed = per_container("piston_volumes", piston_volumes) or []
+      liquid = pushed
+    heights = per_container("liquid_heights", liquid_heights) or [None] * n
+    mixes = per_container("post_mixes", post_mixes) or [None] * n
+
+    def from_class(
+      name: str, given: Optional[Sequence[Any]], attribute: str
+    ) -> Optional[List[Any]]:
+      """What is given, else what the liquid classes say, else nothing: legacy's own defaults."""
+      values = per_container(name, given)
+      if values is None and classes is not None:
+        values = [getattr(hlc, attribute) for hlc in classes]
+      return values
+
+    per_container_settings = {
+      "flow_rates": from_class("flow_rates", flow_rates, "dispense_flow_rate"),
+      "transport_air_volumes": from_class(
+        "transport_air_volumes", transport_air_volumes, "dispense_air_transport_volume"
+      ),
+      "cut_off_speeds": per_container("cut_off_speeds", cut_off_speeds),
+      "stop_back_volumes": from_class(
+        "stop_back_volumes", stop_back_volumes, "dispense_stop_back_volume"
+      ),
+      "blow_out_air_volumes": from_class(
+        "blow_out_air_volumes", blow_out_air_volumes, "dispense_blow_out_volume"
+      ),
+      "immersion_depths": per_container("immersion_depths", immersion_depths),
+      "mix_positions_from_liquid_surface": per_container(
+        "mix_positions_from_liquid_surface", mix_positions_from_liquid_surface
+      ),
+      "second_section_heights": per_container("second_section_heights", second_section_heights),
+      "second_section_ratios": per_container("second_section_ratios", second_section_ratios),
+      "pull_out_distances_transport_air": per_container(
+        "pull_out_distances_transport_air", pull_out_distances_transport_air
+      ),
+      "limit_curve_indices": per_container("limit_curve_indices", limit_curve_indices),
+      "settling_times": from_class("settling_times", settling_times, "dispense_settling_time"),
+      "swap_speeds": from_class("swap_speeds", swap_speeds, "dispense_swap_speed"),
+    }
+    # What each piston travels: the transport air before the liquid, the blow-out air after it in
+    # a blow-out mode; an empty takes the piston to rest.
+    transport_air = per_container_settings["transport_air_volumes"] or [0.0] * n
+    blow_out_air = per_container_settings["blow_out_air_volumes"] or [0.0] * n
+    travels = [
+      transport_air[job]
+      + pushed[job]
+      + (blow_out_air[job] if dispensing_modes[job] in (1, 3) else 0.0)
+      for job in range(n)
+    ]
+    # From where it stands, each piston has to have the travel for its dispenses, and each
+    # container the room for them, cycle by cycle.
+    standing = {channel: self.piston_positions[channel] for channel in channel_of}
+    room = {id(container): container.tracker.get_free_volume() for container in containers}
+    for job, channel in enumerate(channel_of):
+      if dispensing_modes[job] != 4 and standing[channel] - travels[job] < -0.05:
+        raise ValueError(
+          f"channel {channel}'s piston holds {standing[channel]:.1f} uL of travel for the "
+          f"{travels[job]:.1f} uL it is to push out into {containers[job].name}"
+        )
+      if liquid[job] > room[id(containers[job])] + 1e-6:
+        raise ValueError(
+          f"{containers[job].name} has room for {room[id(containers[job])]:.1f} uL, not the "
+          f"{liquid[job]:.1f} uL channel {channel} is to dispense"
+        )
+      standing[channel] = 0.0 if dispensing_modes[job] == 4 else standing[channel] - travels[job]
+      room[id(containers[job])] -= liquid[job]
+
+    # The heights on the deck, in mm: the floor, where a search starts, and the surface.
+    dz = [0.0] * n if resource_offsets is None else [offset.z for offset in resource_offsets]
+    floors = [
+      round(c.get_location_wrt(deck, "c", "c", "cavity_bottom").z + z, 2)
+      for c, z in zip(containers, dz)
+    ]
+    given_floors = per_container(
+      "minimum_allowed_z_positions_during", minimum_allowed_z_positions_during
+    )
+    sent_floors = list(given_floors) if given_floors is not None else list(floors)
+    tops = [round(c.get_location_wrt(deck, "c", "c", "t").z + z, 2) for c, z in zip(containers, dz)]
+    searches = [
+      round(
+        c.get_location_wrt(deck, "c", "c", "t").z
+        + z
+        + (
+          self.well_search_start_clearance if isinstance(c, Well) else self.search_start_clearance
+        ),
+        2,
+      )
+      for c, z in zip(containers, dz)
+    ]
+    tracking = does_volume_tracking()
+    following = per_container("surface_following_distances", surface_following_distances)
+    computed_following = [0.0] * n
+    # OFF dispenses where the caller says, the cavity bottom by default; a search finds the surface.
+    told = [job for job in range(n) if heights[job] is not None and modes[job] != self.LLDMode.OFF]
+    if told:
+      raise ValueError(
+        f"liquid_heights given for {[containers[job].name for job in told]}, whose LLD mode finds "
+        "the surface itself; give None there"
+      )
+    surfaces = [round(floors[job] + (heights[job] or 0.0), 2) for job in range(n)]
+
+    if searched:
+      lacking = [
+        containers[job].name
+        for job in searched
+        if not containers[job].supports_compute_height_volume_functions()
+      ]
+      if lacking:
+        raise RuntimeError(
+          f"{lacking} have no height-volume functions, so what a search finds in them cannot become "
+          "a volume. Generate a height_volume_data dictionary for each and consider contributing "
+          "it back to PyLabRobot :)"
+        )
+    _, overhangs, batches = await self._prepare_batched(
+      deck,
+      containers,
+      use_channels,
+      resource_offsets,
+      x_grouping_tolerance,
+      start,
+      end,
+      presence=presence,
+    )
+
+    async def touch(batch: ChannelBatch) -> None:
+      """Touch the floor where the batch's channels are to, and dispense onto it."""
+      pairs = [(ch, job) for ch, job in zip(batch.channels, batch.indices) if job in touched]
+      if not pairs:
+        return
+      subset = dataclasses.replace(
+        batch, channels=[ch for ch, _ in pairs], indices=[job for _, job in pairs]
+      )
+      found = await self._probe_batch_floors(
+        subset,
+        overhangs=overhangs,
+        z_cavity_bottom=floors,
+        z_top=tops,
+        search_speed=search_speed,
+        approach_speed=approach_speed,
+        n_replicates=1,
+      )
+      for channel, job in pairs:
+        height = found[job][0]
+        if height is None:
+          raise RuntimeError(
+            f"channel {channel} met no floor in {containers[job].name} down to "
+            f"{self.search_limit_below_cavity_bottom} mm under its modelled cavity bottom"
+          )
+        logger.info(
+          "channel %d touched the floor of %s at %.2f mm, the model has it at %.2f mm",
+          channel,
+          containers[job].name,
+          height,
+          floors[job],
+        )
+        surfaces[job] = height
+        if given_floors is None:
+          sent_floors[job] = height
+
+    async def search(batch: ChannelBatch) -> None:
+      """Find the liquid where the batch's channels search for it, and put it into the model."""
+      await touch(batch)
+      pairs = [(ch, job) for ch, job in zip(batch.channels, batch.indices) if job in searched]
+      if not pairs:
+        return
+      subset = dataclasses.replace(
+        batch, channels=[ch for ch, _ in pairs], indices=[job for _, job in pairs]
+      )
+      found = await self._probe_batch_liquid_heights(
+        subset,
+        containers,
+        overhangs=overhangs,
+        z_cavity_bottom=floors,
+        z_start=searches,
+        lld_modes=modes,
+        search_speed=search_speed,
+        n_replicates=1,
+        approach_speed=approach_speed,
+      )
+      for channel, job in pairs:
+        height = found[job][0]
+        if height is None:
+          raise RuntimeError(f"channel {channel} found no liquid in {containers[job].name}")
+        surfaces[job] = height
+        above_bottom = round(height - floors[job], 2)
+        if above_bottom < 0:
+          if given_floors is None:
+            sent_floors[job] = height
+          logger.warning(
+            "channel %d found the liquid of %s %.2f mm below its modelled cavity bottom; the floor "
+            "sent is the surface found",
+            channel,
+            containers[job].name,
+            -above_bottom,
+          )
+          continue
+        try:
+          # The surface rises by what comes in: the following distance is that rise.
+          computed_following[job] = self._get_surface_following_distance(
+            containers[job], above_bottom, -liquid[job]
+          )
+          measured = containers[job].compute_volume_from_height(above_bottom)
+        except ValueError:
+          logger.warning(
+            "channel %d found the liquid of %s %.2f mm above its modelled cavity bottom, outside "
+            "its height-volume data; the tip follows nothing and the model keeps %.1f uL",
+            channel,
+            containers[job].name,
+            above_bottom,
+            containers[job].tracker.get_used_volume(),
+          )
+          continue
+        if tracking:
+          expected = containers[job].tracker.get_used_volume()
+          if abs(measured - expected) > 0.2 * expected:
+            logger.warning(
+              "channel %d measured %.1f uL in %s where the model had %.1f uL",
+              channel,
+              measured,
+              containers[job].name,
+              expected,
+            )
+          containers[job].tracker.set_volume(measured)
+
+    async def send(batch: ChannelBatch) -> None:
+      """One `C0 DS` for the batch, from the heights as they stand."""
+      jobs = batch.indices
+      last = batch is batches[-1]
+      per_channel_settings: Dict[str, Any] = {
+        name: [values[job] for job in jobs]
+        for name, values in per_container_settings.items()
+        if values is not None
+      }
+      down = [job for job in jobs if job in searched or job in touched]
+      kwargs_to_start_from_current_positions: Dict[str, Any] = {
+        "minimum_traverse_height_start": min(surfaces[job] for job in down) if down else during,
+        "lld_modes": [self.LLDMode.OFF] * len(jobs),
+      }
+      await self._dispense_in_one_move(
+        batch.channels,
+        [
+          Coordinate(batch.x_position, batch.y_positions[ch], surfaces[job])
+          for ch, job in zip(batch.channels, jobs)
+        ],
+        [searches[job] for job in jobs],
+        [sent_floors[job] for job in jobs],
+        [pushed[job] for job in jobs],
+        jets=[jets[job] for job in jobs],
+        blow_outs=[blow_outs[job] for job in jobs],
+        empties=[empties[job] for job in jobs],
+        side_touch_off_distance=side_touch_off_distance,
+        post_mixes=[mixes[job] for job in jobs],
+        surface_following_distances=[
+          computed_following[job] if following is None else following[job] for job in jobs
+        ],
+        minimum_traverse_height_end=end if last else during,
+        **kwargs_to_start_from_current_positions,
+        **per_channel_settings,
+      )
+
+    async def run(batch: ChannelBatch) -> None:
+      jobs = batch.indices
+      await search(batch)
+      # The model gives before the device pushes: a tip holding less gives what it holds, the rest
+      # is air; committed as the command succeeds.
+      moves: List[float] = []
+      trackers = []
+      try:
+        if tracking:
+          for channel, job in zip(batch.channels, jobs):
+            held = tips[job].tracker.get_used_volume()
+            moved = min(liquid[job], held)
+            if moved < liquid[job]:
+              logger.warning(
+                "channel %d dispenses %.1f uL into %s from a tip holding %.1f uL; the rest is air",
+                channel,
+                liquid[job],
+                containers[job].name,
+                held,
+              )
+            trackers += [tips[job].tracker, containers[job].tracker]
+            tips[job].tracker.remove_liquid(moved)
+            containers[job].tracker.add_liquid(moved)
+            moves.append(moved)
+        await send(batch)
+      except BaseException:
+        for tracker in trackers:
+          tracker.rollback()
+        # A command that failed part way pushed on some channels: each piston stands short of
+        # where it was by the transport air and the liquid it gave, up to what was booked.
+        if tracking and len(moves) == len(jobs):
+          for index, (channel, job) in enumerate(zip(batch.channels, jobs)):
+            before = self.piston_positions[channel]
+            try:
+              now = await self.dispensing_drive_request_uL_position(channel)
+            except Exception:
+              logger.warning(
+                "could not read channel %d's piston; what it gave is not in the model", channel
+              )
+              continue
+            gave = round(min(max(before - now - transport_air[job], 0.0), moves[index]), 1)
+            if gave > 0:
+              tips[job].tracker.remove_liquid(gave)
+              containers[job].tracker.add_liquid(gave)
+              tips[job].tracker.commit()
+              containers[job].tracker.commit()
+              logger.warning(
+                "channel %d gave %.1f uL into %s before the command failed; the model has it",
+                channel,
+                gave,
+                containers[job].name,
+              )
+        raise
+      for tracker in trackers:
+        tracker.commit()
+      for channel, job in zip(batch.channels, jobs):
+        self.piston_positions[channel] = (
+          0.0
+          if dispensing_modes[job] == 4
+          else round(max(self.piston_positions[channel] - travels[job], 0.0), 1)
         )
 
     await self._execute_batched(run, batches, during)

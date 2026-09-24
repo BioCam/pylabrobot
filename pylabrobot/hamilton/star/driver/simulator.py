@@ -424,6 +424,27 @@ class SimulatedPipettes(_Simulated, Pipettes):
           )
           used += 1
         return None
+      if command == "DS":
+        end = int(kwargs["te"]) / 10
+        used = 0
+        for index, (involved, y) in enumerate(zip(kwargs["tm"], kwargs["yp"])):
+          if not involved:
+            continue
+          self.update_location_by_reference_point(
+            index, y=int(y) / 10, z=round(end + self._below_stop_disc(index), 2)
+          )
+          # The piston pushes out the transport air and the volume; the blow-out air too in a
+          # blow-out mode; everything in an empty.
+          standing = self.device.dispensing_drive_uL.get(index, 0.0)
+          mode = str(kwargs["dm"][used])
+          pushed = sum(int(kwargs[field][used]) for field in ("ta", "dv")) / 10
+          if mode in ("1", "3"):
+            pushed += int(kwargs["ba"][used]) / 10
+          self.device.dispensing_drive_uL[index] = (
+            0.0 if mode == "4" else round(max(standing - pushed, 0.0), 1)
+          )
+          used += 1
+        return None
 
       return None
 
