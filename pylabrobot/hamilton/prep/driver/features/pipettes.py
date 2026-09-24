@@ -2874,9 +2874,10 @@ class Pipettes:
 
     Args:
       channel_idx: which channel, 0-indexed from the back.
-      search_start_position: start height in mm. Defaults to where the channel stands.
-      search_end_position: where the search ends, in mm. The bottom of the channel's Z range when
-        None: a seek that detects nothing goes that far down.
+      search_start_position: tip bottom height to search from, in mm. Defaults to where the
+        channel stands.
+      search_end_position: lowest tip bottom height, in mm. The bottom of the channel's Z range
+        when None: a seek that detects nothing goes that far down.
       search_speed: seek speed in mm/s. Defaults to `default_clld_probe_speed`.
       sensitivity: cLLD sensitivity. Defaults to `default_clld_sensitivity`.
       detect_mode: cLLD detect mode. Defaults to `default_clld_detect_mode`.
