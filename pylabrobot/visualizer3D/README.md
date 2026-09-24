@@ -1,18 +1,20 @@
-# plr_viz3d
+# visualizer3D
 
-A parallel PyLabRobot visualizer whose world is a resource, not a liquid handler. Prototype only:
-no tests, no packaging, no upstream wiring. It exists to check that the three claims in the
-architecture note hold against real v1 code.
+A parallel PyLabRobot visualizer whose world is a resource, not a liquid handler. It exists to
+check that the three claims in the architecture note hold against real v1 code. Its tests sit
+beside it (`scene_tests.py`, `server_tests.py`, `client_tests.py`, `browser_tests.py`), its static
+files ship with the package, and `pylabrobot.visualizer3D` exports `Viewer3D`.
 
 ## Running it
 
 Needs the v1 STAR branch on the path and `websockets`.
 
 ```
-python -m plr_viz3d.demo
+python -m pylabrobot.visualizer3D.demo
 ```
 
-It opens a browser on `http://127.0.0.1:1338`. Append `?view=top` for a top view. From the console,
+It opens a browser on `http://127.0.0.1:1338`, in a top view; `?view=iso` or `?view=front` picks
+another, and `?quality=low` pins the low-cost level. From the console,
 `plrViewer.focus("destination_0")` frames and selects a named resource.
 
 ## What it demonstrates
@@ -61,9 +63,9 @@ interface is worth doing again once state itself can carry that distinction.
 - No WebGPU verification. The headless browser used to check it has no adapter, so it exercised the
   WebGL2 fallback path. Frame rates seen there are software rendering and mean nothing; draw calls
   are the figure that transfers.
-- Liquid is driven from tracker state only. The v1 STAR has no aspirate or dispense yet, so the
-  demo moves trackers directly. A real command would move the same trackers. Tips are not drawn
-  from tracker state at all: a tip is drawn when it stands in the tree as a resource.
+- Liquid is driven from tracker state only: the demo moves the volume trackers directly, and a
+  real command moves the same trackers. Tips are not drawn from tracker state at all: a tip is
+  drawn when it stands in the tree as a resource.
 - Picking is `InstancedMesh` raycasting, which is fine at this size. GPU picking is the production
   answer.
 - GIF recording captures the viewport only, not the floating panels over it. It records on both
@@ -84,8 +86,8 @@ even though none of them need a GPU. The same symptom also comes from a websocke
 **Where it breaks.** WebGL2 is often missing even on capable hardware: the browser blocklists the GPU, a
 sandbox can't reach the driver, or the session has no GPU (VMs, some remote desktops, CI). Chrome also no longer
 falls back to software rendering on its own. The browser tests don't catch any of this. They are
-headless (always software rendering), and they skip entirely off macOS
-(`CHROME` is a macOS path).
+headless (always software rendering), and they skip where `_find_chrome` finds no Chrome on the
+path or at the macOS install location.
 
 **On the Jetson AGX Orin workcell host** (JetPack 5, Xorg, no `/dev/dri`), verified 2026-09-16:
 
@@ -123,8 +125,8 @@ without the variable renders on the CPU, and the URL opens in it, so start it th
 
 **Better design, ship in this order.** This came out of an adversarial review. The server-side items were checked against the code.
 
-1. Make the browser tests find Chrome on Linux (env var or `shutil.which`). Add runs with no GPU, and with the
-   page served but the websocket port closed.
+1. **Done** for finding Chrome: `shutil.which` first, the macOS install path second. Still to add:
+   runs with no GPU, and with the page served but the websocket port closed.
 2. Construct `WebGPURenderer` with `forceWebGL: true`, and make WebGPU opt-in (`?backend=webgpu`). At 24–34 draw
    calls WebGPU gains nothing and doubles the paths to test.
 3. **Done.** Add a small `boot.js` that checks capability and websocket reachability, then `import("./app.js")` inside
@@ -138,7 +140,9 @@ without the variable renders on the CPU, and the URL opens in it, so start it th
    fail loudly instead of moving up silently.
 6. **Done.** GIF frames are read back from a render target on both backends. `preserveDrawingBuffer`
    was never read by this three and is gone.
-7. Detect software renderers and switch to a low-cost mode: pixel ratio 1, no antialias, no PMREM environment.
+7. **Done**, by measurement rather than detection: `frame.js` steps the pixel ratio to 1 and then
+   drops the environment while frames stay slow, and back up once they are fast; `?quality=low`
+   pins the lowest level. Antialiasing is fixed when the renderer is made, so it is not a level.
 8. Send broadcasts to all clients at once and drop slow ones. Today one slow remote viewer stalls updates for every client.
 
 Rejected: a Canvas2D fallback renderer (a second renderer that would drift from the first) and a full
@@ -195,6 +199,147 @@ static/dom.js         element lookups that say which kind of element is being as
 
 Modules import downwards only: `app.js` imports everything, `tools.js` imports `tree.js` and
 `panel.js`, and nothing imports `app.js`. Within a module a helper is declared above its callers.
+
+## Protocol and model contract
+
+Everything crosses one websocket as JSON, `{"event": kind, "data": ...}`. Non-finite floats are
+written as the strings `"Infinity"`, `"-Infinity"` and `"NaN"` (`_finite` in `server.py`), since
+a trough's capacity is genuinely infinite and bare `Infinity` is not JSON.
+
+**Access.** Every run makes a token (`secrets.token_urlsafe(32)`) and bakes it, the websocket
+port and the source name into `index.html` in place of `{{ ws_token }}`, `{{ ws_port }}` and
+`{{ source_filename }}`; the page connects to `ws://<hostname>:<ws_port>/?token=<token>`. A
+handshake without this run's token, or with an `Origin` whose hostname is not an IP literal,
+`localhost`, this machine's name, `<name>.local`, the bound host or one of `allowed_hosts`, is
+answered 403. The file server applies the same hostname rule to the HTTP `Host` header.
+
+**Cache headers.** `/`, `/index.html` and `/mesh/<id>` are `Cache-Control: no-store`, since the
+page carries this run's token and a mesh id belongs to this run. Everything else is `no-cache`:
+revalidated and answered 304 when unchanged.
+
+**Ports.** The websocket binds first, so the page can be told the port it actually got, then the
+file server. Each walks up from its default (2122 and 1338) through at most `PORT_TRIES` (20)
+ports while the bind fails with `EADDRINUSE`; any other error is raised.
+
+### Messages
+
+| kind | when | `data` |
+|---|---|---|
+| `scene` | the first message to a new client (the kept scene, not a rebuild); broadcast, with a full `state` after it, when a name appears in or disappears from the tree | `protocol`, `epoch`, `stats`, `models`, `instances` |
+| `state` | a snapshot after every `scene`; a delta whenever a batch of tracker updates holds something that looks different from what was last sent | `epoch`, `states`, `of`, `locations` |
+| `moves` | the tree changed shape but holds the same names: a reparent or a relocation, applied to the scene the page has | `epoch`, `moves` |
+| `hello` | page to server, once per socket: what it draws with, or from `boot.js` why it could not | `backend`, `renderer`, `software`, `quality`, `userAgent`, `error` |
+
+**`scene`.** `protocol` is `PROTOCOL` in `server.py`, currently 1, and the page holds its own
+copy in `constants.js`: on a mismatch `rebuildScene` draws nothing and raises `plr:mismatch`, and
+`boot.js` shows "The viewer is older than this page". `epoch` counts rebuilds and rides on every
+message; the page does not read it yet. `stats` is `{instances, models, legacy_bytes,
+scene_bytes, ratio}`, where `legacy_bytes` is the old per-resource tree serialized once, on the
+first build only, and the stats panel prints all five. `models` is the list of distinct models
+(below). `instances` is `{names, model, parent, transforms}`: parallel arrays by instance index,
+`model` an index into `models`, `parent` an instance index or -1 at the root, `transforms` base64
+little-endian float32, six per instance (x, y, z in mm, then rotation x, y, z in degrees, relative
+to the parent). Parents are emitted before their children, so `world.js` resolves world matrices
+in one forward pass.
+
+**`state`.** `collect_state` walks the tree and keeps every resource whose `serialize_state()`
+still says something once cleaned: `name`, `thing` and `parent_name` dropped at any depth, an
+identity `rotation` dropped, floats rounded to one decimal (`STATE_DECIMALS`). `pack_state` then
+sends `states`, the table of distinct cleaned states, `of`, name to index into that table, and
+`locations`, name to the `location` it published, kept out of the shared table because a position
+is one resource's own. A snapshot carries everything but `location` (the scene just placed it),
+except for a resource that moved after the scene was built, and leaves out a resource with nothing
+to say. A delta carries only names whose signature changed since they were last sent, and keeps a
+name whose state cleaned down to nothing, because there it means "no longer what I last said".
+Updates coalesce per event-loop turn into one message; while a rebuild is pending, locations are
+held back so nothing is drawn relative to a parent the page does not have yet. Addressed by name
+throughout: instance order is not stable across rebuilds.
+
+**`moves`.** Each entry is `{name, parent, location: {x, y, z}, rotation: {x, y, z}}`, `parent` a
+name or null, for every resource whose parent or local transform differs from the kept scene. A
+burst of structural changes is debounced by `SCENE_DEBOUNCE_S` (50 ms) into one `moves` or one
+rebuild. The page re-parents it in `world.childrenOf`, sets its local transform and recomputes the
+subtree.
+
+**Meshes.** `/mesh/<id>` serves a file the scene named, as `model/gltf-binary`; `<id>` is the
+first sixteen hex digits of the SHA-1 of the absolute path plus its extension, and only registered
+ids are served.
+
+### The model
+
+`scene.py` derives a model from `Resource.serialize()` by removing `INSTANCE_FIELDS` (`name`,
+`location`, `rotation`, `parent_name`, `children`); inside nested values every `name` and
+`parent_name` key is dropped and a string equal to any resource name in the tree becomes
+`"<resource>"`. `methods`, `grid`, `bands` and the `DECLARED_FIELDS` read straight off the resource
+(`reference_point`, `window`, `mesh`, `reference_glb`, `appearance`) are added, and dicts that
+compare equal within one `type` are interned to one model. `_register_meshes` then works on a
+copy: `reference_glb` is popped and never reaches the page; a resource with neither `mesh` nor
+`reference_glb` gets a `mesh` when a `<model>.glb` exists anywhere under the package (a `tip`
+whose `model` ends in `_filter` falls back to the unfiltered file); and a `mesh`'s `path` is
+replaced by `url`. A package `.glb` or a `reference_glb` is taken as metres, Z up
+(`REFERENCE_GLB_UNITS`, `REFERENCE_GLB_UP`); a declared `mesh` states its own, and the page reads a
+missing `units` as mm and a missing `up` as Y.
+
+| field | produced from | read by | effect |
+|---|---|---|---|
+| `type` | `Resource.serialize` | `scene.py`, `panel.js`, `tree.js`, `tools.js` | the interning bucket; panel header, tree row, hover readout, search |
+| `category` | `Resource.serialize` | most modules; `server.py` | colour (`RESOURCE_COLORS`) and everything in the tables below |
+| `size_x`, `size_y`, `size_z` | `Resource.serialize` | `world.js` `sizeOf`, `device_tools.js` | the box, its outline, pick box and detail culling; a tip's drawn length and a held plate's proportions in the device tools |
+| `diameter` | `tip.py`, `petri_dish.py` | `world.js` `sizeOf` | stands in for a zero `size_x`/`size_y` |
+| `model` | `Resource.serialize` | `server.py`, `panel.js`, `tools.js` | names the `.glb` looked up under the package; panel and hover readout |
+| `cross_section_type` | `well.py`, `petri_dish.py`, `n_channel_pipettes.py` | `boxes.js` | `"circle"` draws a cylinder, anything else a box |
+| `max_volume` | `container.py`, `tube.py` | `boxes.js`, `drawn.js`, `live.js`, `panel.js` | finite and above 0: drawn as a vessel (rim, wall, cavity); present at all: an enclosure; the fill colour's denominator; "volume / max" in the panel |
+| `material_z_thickness` | `container.py` | `drawn.js` | the `cavity_bottom` height in the coordinate tool |
+| `ordering` | `itemized_resource.py` | `panel.js`, `device_tools.js` | item count; a held plate's rows and columns |
+| `has_filter`, `collar_height` | `tip.py` | `boxes.js` | a filter disc `FILTER_BELOW_COLLAR` under a `tip`'s collar |
+| `methods` | `scene.py` `_public_methods` | `panel.js` | the collapsed "Methods" list |
+| `grid` | `grids.describe_grid`: a declared `position_grid`, else `track_to_location` or `rail_to_location` with `num_tracks` or `num_rails` | `marks.js` | rail marks from `origin` every `spacing`, `count` of them, `extent` deep, numbered every `label_every`; the deck surface; a `deck`'s working Z for reference marks. `axis` and `label` are not read |
+| `bands` | `grids.describe_bands` from `access_bands` | `marks.js` | two lines per band at `from` and `to`, bounded by `x_from` and `x_to`; `label` is not drawn |
+| `reference_point` | attribute, a `Coordinate` or a dict (`hamilton_decks.py`, `n_channel_pipettes.py`, `iswap.py`) | `marks.js` | `x`: where the reference line or mark sits, else half the width; `y_range`: an arm's line reach; `z`: the mark's height on a carried part |
+| `window` | attribute (`demo.py`) | `marks.js`, `tools.js` | the opening in a moving part's frame: `width`, `right_margin`, `inset_y`, defaulting to `ARM_INSET_X`/`ARM_INSET_Y`; a click through it lands on what is below |
+| `appearance` | attribute (`prep_decks.py`, prep `x_arm.py`) | `boxes.js`, `marks.js` | `color` overrides the category colour; `metalness` and `roughness` on a moving part's frame |
+| `tool_center_point`, `proximal_joint` | `end_effector.py`, `manipulator.py` | `marks.js` | the grip crosshair at `proximal_joint + tool_center_point` on a `mechanical_gripper` |
+| `mesh` | attribute, or `server.py` from `reference_glb` or a package `.glb` | `models.js`, `boxes.js` | `url` fetched once per model; `units` (`mm`, `cm`, `m`) scales; `up` (`Y` default, or `Z`) rotates; `joints` `{key: {node, axis, type}}` maps state `joints[key]` onto a node, `prismatic` in mm along `axis`, else degrees about it; a `tip`'s bore sizes its filter disc |
+| anything else | subclass `serialize` | `panel.js` | listed under "Specifics", or "Construction" for `with_*` and `core_grippers`, with units from `UNITS` in `format.js` |
+
+State keys the page reads: `rotation` (absent means zero), `location`, `volume`, `tracker.x`
+(an arm's tracked X), `joints`, and a tip's `volume` and `max_volume` in the device tools. The
+panel prints the rest under "Tracker state".
+
+### Categories
+
+The sets in `constants.js`, and `GROUND` in `drawn.js`:
+
+| set | categories | where it matters |
+|---|---|---|
+| `MOVING_PARTS` | `x_arm`, `arm`, `gripper`, `head`, `channel` | drawn as an open frame with a reference line in a group of its own (`marks.js`); no box fill or generic outline (`boxes.js`); `MOVING_OPACITY`, and the carried layer in a plan (`appearance.js`); `tracker.x` and `locations` glide it (`live.js`); takes a click on its rim (`tools.js`); everything under it travels (`drawn.js`) |
+| `PICKABLE_PARTS` | `pipette_channel` | a click selects it although it has children |
+| `NO_REFERENCE_MARK` | `pipette_channel` | its `reference_point` gets no mark |
+| `TREE_HIDDEN` | `well`, `tip_spot`, `tube` | no tree row; the parent's row counts them |
+| `CONTENTS` | `well`, `tip_spot`, `tube`, `tip_mounting_shaft` | show-to-depth does not open a level made only of these |
+| `HOLDERS` | `resource_holder`, `plate_holder`, `embedded_tip_rack_holder` | a numbered site: the tree shows what stands in it, or `<empty>`; counted through for "n plates"; the search "sites" filter |
+| `SEARCH_CONTAINERS` | `well`, `tube`, `trough`, `container`, `petri_dish` | the search "Wells" filter |
+| `CONTAINERS` | `plate`, `tip_rack`, `tube_rack`, `plate_adapter`, `plate_holder`, `resource_holder`, `trough`, `trash` | keep their walls at `SHELL_OPACITY` while their contents are drawn |
+| `CATEGORY_OPACITY` | `tip_rack` 0.7, `plate` 0.25 | the box's own opacity |
+| `RESOURCE_COLORS` | 31 categories and `default` | the box colour and the tree's dot |
+| `GROUND` | `facility`, `deck` | `SPACE_OPACITY`, out of the depth buffer |
+
+Categories named directly in the code:
+
+| category | where it matters |
+|---|---|
+| any containing `carrier` (`isCarrier`, `drawn.js`) | a filled floor; walls kept while its contents are drawn |
+| `tip_spot` | round, and a vessel without a `max_volume`; its cavity is hidden while it holds a tip; "n/m tips" in the tree; the search "tips" filter |
+| `tip` | the filter disc and the green plan disc (`boxes.js`); the `_filter` file fallback (`server.py`) |
+| `tip_mounting_shaft` | an open tube; a tip under it is what its channel holds (halos, device tools) |
+| `pipette_channel` | a halo with its number; a column in the device tools |
+| `head96`, `head384` | a head grid in the device tools |
+| `mechanical_gripper` | the grip crosshair; the gripper figure in the device tools |
+| `body`, `finger`, `pad` | a gripper's own parts, not its cargo; a `pad` sizes the crosshair |
+| `device` | gets a device-tools button |
+| `deck` | its `grid` sets the working Z for reference marks; the tree lists its children in its parent's row, sorted by X; a panel note on construction flags |
+| `plate_adapter` | its tree row names what it carries |
+| `well`, `tube` | "n wells" and "n tubes" in the parent's row |
 
 ## Type checking
 
