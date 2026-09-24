@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+from pylabrobot.hamilton.liquid_classes import HamiltonLiquidClass
 from pylabrobot.hamilton.prep import PrepSimulationDriver
 from pylabrobot.hamilton.prep.driver import prep_commands as PrepCmd
 from pylabrobot.hamilton.prep.driver.features.pipettes import (
@@ -157,9 +158,8 @@ def test_channels_tip_and_volume_trackers_follow_pick_up_aspirate_dispense_and_d
 
       await p.pipettes.dispense(
         dst,
-        vols=vols,
+        piston_volumes=vols,
         use_channels=use,
-        disable_volume_correction=[True] * 2,
       )
       for well in dst:
         assert well.tracker.get_used_volume() == pytest.approx(20.0)
@@ -2885,7 +2885,7 @@ def test_aspirate_scales_the_profile_to_a_surface_following_distance():
     )
     entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
     assert _get_profile_drop(entry.container_description, 3.0, 20.0) == pytest.approx(0.5, abs=1e-3)
-    await p.pipettes.dispense([well], vols=[20.0], use_channels=[0], liquid_height=[3.0])
+    await p.pipettes.dispense([well], piston_volumes=[20.0], use_channels=[0], liquid_heights=[3.0])
     sent.clear()
     await p.pipettes.aspirate(
       [well],
@@ -3342,7 +3342,7 @@ _DISPENSE_COMMANDS = (
   PrepCmd.PrepDispenseNoLldV2,
   PrepCmd.PrepDispenseWithLldV2,
 )
-_CAPACITIVE = [Pipettes.LLDMode.CAPACITIVE] * 2
+_CAPACITIVE = Pipettes.LLDMode.CAPACITIVE
 _SEGMENTS = [
   [
     PrepCmd.SegmentDescriptor(area_top=30.0, area_bottom=10.0, height=4.0),
@@ -3351,10 +3351,36 @@ _SEGMENTS = [
   [],
 ]
 _WATER_JET = get_star_liquid_class(1000, False, True, False, Liquid.WATER, True, True)
+_WATER_300 = get_star_liquid_class(
+  hamilton_tip_300uL("t").maximal_volume, False, True, False, Liquid.WATER, False, False
+)
 _TWO = [10.0, 20.0]
 
+
+def _as_piston_volumes(
+  classes: List[Optional[HamiltonLiquidClass]], volumes: List[float], corrected: List[bool]
+) -> Dict[str, List[Optional[float]]]:
+  """The piston-volume dispense arguments that send what `volumes` with `classes` would."""
+  return {
+    "piston_volumes": [
+      c.compute_corrected_volume(v) if c is not None and k else v
+      for c, v, k in zip(classes, volumes, corrected)
+    ],
+    "flow_rates": [None if c is None else c.dispense_flow_rate for c in classes],
+    "settling_times": [None if c is None else c.dispense_settling_time for c in classes],
+    "swap_speeds": [None if c is None else c.dispense_swap_speed for c in classes],
+    "transport_air_volumes": [
+      None if c is None else c.dispense_air_transport_volume for c in classes
+    ],
+    "stop_back_volumes": [None if c is None else c.dispense_stop_back_volume for c in classes],
+    "cut_off_speeds": [None if c is None else c.dispense_stop_flow_rate for c in classes],
+  }
+
+
 # name: (tip volume, where, volumes, use_channels, keyword arguments)
-_GOLDEN_DISPENSE_CALLS: Dict[str, Tuple[int, str, List[float], Optional[List[int]], Dict]] = {
+_GOLDEN_DISPENSE_CALLS: Dict[
+  str, Tuple[int, str, Optional[List[float]], Optional[List[int]], Dict]
+] = {
   "both channels, class defaults": (300, "A1:B1", _TWO, [0, 1], {}),
   "channel 0 alone": (300, "A1", [10.0], [0], {}),
   "channel 1 alone": (300, "B1", [10.0], [1], {}),
@@ -3377,16 +3403,12 @@ _GOLDEN_DISPENSE_CALLS: Dict[str, Tuple[int, str, List[float], Optional[List[int
     [0, 1],
     {"lld": PrepCmd.LldParameters(False, 50.0, 4.0, 1.0, 0.5)},
   ),
-  "LLD with c_lld, read_timeout": (
+  "LLD with clld_sensitivity, read_timeout": (
     300,
     "A1:B1",
     _TWO,
     [0, 1],
-    {
-      "lld_mode": _CAPACITIVE,
-      "c_lld": PrepCmd.CLldParameters(False, 2, True, 1.0, 1),
-      "read_timeout": 90.0,
-    },
+    {"lld_mode": _CAPACITIVE, "clld_sensitivity": 2, "read_timeout": 90.0},
   ),
   "LLD with heights given, v1": (
     300,
@@ -3395,23 +3417,23 @@ _GOLDEN_DISPENSE_CALLS: Dict[str, Tuple[int, str, List[float], Optional[List[int
     [0, 1],
     {
       "lld_mode": _CAPACITIVE,
-      "z_minimum": [5.0, 6.0],
+      "minimum_allowed_z_positions_during": [5.0, 6.0],
       "minimum_traverse_height_end": 100.0,
       "z_air": [60.0, 61.0],
       "command_version": "v1",
     },
   ),
-  "lld_mode all OFF": (300, "A1:B1", _TWO, [0, 1], {"lld_mode": [Pipettes.LLDMode.OFF] * 2}),
+  "lld_mode all OFF": (300, "A1:B1", _TWO, [0, 1], {"lld_mode": Pipettes.LLDMode.OFF}),
   "heights, offsets, flow rates, blow-out air": (
     300,
     "A1:B1",
     _TWO,
     [0, 1],
     {
-      "liquid_height": [3.0, None],
-      "offsets": [Coordinate(0.5, -0.5, 1.0), Coordinate.zero()],
+      "liquid_heights": [3.0, None],
+      "resource_offsets": [Coordinate(0.5, -0.5, 1.0), Coordinate.zero()],
       "flow_rates": [50.0, None],
-      "blow_out_air_volume": [5.0, None],
+      "blow_out_air_volumes": [0.0, None],
     },
   ),
   "heights finer than the location keeps": (
@@ -3419,7 +3441,7 @@ _GOLDEN_DISPENSE_CALLS: Dict[str, Tuple[int, str, List[float], Optional[List[int
     "A1:B1",
     _TWO,
     [0, 1],
-    {"liquid_height": [3.12345, 1.00006]},
+    {"liquid_heights": [3.12345, 1.00006]},
   ),
   "z values given": (
     300,
@@ -3430,7 +3452,7 @@ _GOLDEN_DISPENSE_CALLS: Dict[str, Tuple[int, str, List[float], Optional[List[int
       "minimum_traverse_height_end": 100.0,
       "z_fluid": [10.0, 11.0],
       "z_air": [60.0, 61.0],
-      "z_minimum": [5.0, 6.0],
+      "minimum_allowed_z_positions_during": [5.0, 6.0],
       "z_bottom_search_offset": [1.0, 1.5],
     },
   ),
@@ -3440,11 +3462,11 @@ _GOLDEN_DISPENSE_CALLS: Dict[str, Tuple[int, str, List[float], Optional[List[int
     _TWO,
     [0, 1],
     {
-      "settling_time": [0.5, 1.5],
-      "transport_air_volume": [2.0, 3.0],
-      "z_liquid_exit_speed": [20.0, 25.0],
-      "stop_back_volume": [1.0, 2.0],
-      "cutoff_speed": [30.0, 40.0],
+      "settling_times": [0.5, 1.5],
+      "transport_air_volumes": [2.0, 3.0],
+      "swap_speeds": [20.0, 25.0],
+      "stop_back_volumes": [1.0, 2.0],
+      "cut_off_speeds": [30.0, 40.0],
     },
   ),
   "container segments": (300, "A1:B1", _TWO, [0, 1], {"container_segments": _SEGMENTS}),
@@ -3461,24 +3483,35 @@ _GOLDEN_DISPENSE_CALLS: Dict[str, Tuple[int, str, List[float], Optional[List[int
     "A1:B1",
     _TWO,
     [0, 1],
-    {"auto_container_geometry": True, "command_version": "v1", "z_minimum": [5.0, 6.0]},
+    {
+      "auto_container_geometry": True,
+      "command_version": "v1",
+      "minimum_allowed_z_positions_during": [5.0, 6.0],
+    },
   ),
   "liquid classes given": (
     300,
     "A1:B1",
-    _TWO,
+    None,
     [0, 1],
-    {"hamilton_liquid_classes": [_WATER_JET, None]},
+    _as_piston_volumes([_WATER_JET, None], _TWO, [True, True]),
   ),
   "volume correction off": (
     300,
     "A1:B1",
-    _TWO,
+    None,
     [0, 1],
-    {"disable_volume_correction": [True, False]},
+    _as_piston_volumes([_WATER_300, _WATER_300], _TWO, [False, True]),
   ),
-  "no class for the tip": (50, "A1:B1", _TWO, [0, 1], {}),
-  "channels sharing a dish": (300, "dish", _TWO, [0, 1], {"liquid_height": [5.0, 5.0]}),
+  "no class for the tip": (50, "A1:B1", None, [0, 1], {"piston_volumes": _TWO}),
+  "piston volumes, one lld_mode": (
+    50,
+    "A1:B1",
+    None,
+    None,
+    {"piston_volumes": [5.0, 10.0], "lld_mode": Pipettes.LLDMode.OFF},
+  ),
+  "channels sharing a dish": (300, "dish", _TWO, [0, 1], {"liquid_heights": [5.0, 5.0]}),
   "read_timeout without LLD": (300, "A1:B1", _TWO, [0, 1], {"read_timeout": 30.0}),
 }
 
@@ -3514,7 +3547,9 @@ async def _capture_dispense(name: str) -> List[str]:
     return await exchange(command, *args, **kw)
 
   session.exchange = record  # type: ignore[method-assign]
-  await p.pipettes.dispense(containers, vols, use_channels=use_channels, **kwargs)
+  await p.pipettes.dispense(
+    containers=containers, volumes=vols, use_channels=use_channels, **kwargs
+  )
   await p.stop()
   return frames
 
@@ -3692,7 +3727,7 @@ _GOLDEN_DISPENSE_FRAMES: Dict[str, List[str]] = {
     "040000007a431e00140017010200010017010200010028000400000090401e00140017010200010005000200"
     "00002000040001000000",
   ],
-  "LLD with c_lld, read_timeout": [
+  "LLD with clld_sensitivity, read_timeout": [
     "90.0 "
     "c8020630000002000100ffff00e00100001000000213c4020000000001032b0000011f00a4021e004e011701"
     "0200000020000400020000001e002600170102000000280004001f854f412800040048619742280004000000"
@@ -3700,15 +3735,15 @@ _GOLDEN_DISPENSE_FRAMES: Dict[str, List[str]] = {
     "e742280004000000004028000400cdcc4441280004000000f042280004000000a040280004001f855b402800"
     "0400000000002800040000000000280004000000803f06000400000000001e00260017010200000028000400"
     "9a998d41280004000000a040280004000000004028000400000000001e002400170102000000200004000200"
-    "0000170102000100280004000000803f20000400010000001e00240017010200010028000400000000002800"
+    "0000170102000000280004000000000020000400000000001e00240017010200010028000400000000002800"
     "0400000000000401020000002800040000007a431e0014001701020001001701020001002800040000009040"
     "1e00140017010200010005000200000020000400010000001e004e0117010200000020000400010000001e00"
     "2600170102000000280004001f854f4128000400486185422800040000000000280004000000a0401f000000"
     "1e00640017010200000017010200010028000400c3f5e040280004003333e742280004000000004028000400"
     "9a99b941280004000000f042280004000000a040280004001f855b4028000400000000002800040000000000"
     "280004000000803f06000400000000001e002600170102000000280004009a998d41280004000000a0402800"
-    "04000000004028000400000000001e0024001701020000002000040002000000170102000100280004000000"
-    "803f20000400010000001e002400170102000100280004000000000028000400000000000401020000002800"
+    "04000000004028000400000000001e0024001701020000002000040002000000170102000000280004000000"
+    "000020000400000000001e002400170102000100280004000000000028000400000000000401020000002800"
     "040000007a431e00140017010200010017010200010028000400000090401e00140017010200010005000200"
     "00002000040001000000",
   ],
@@ -3961,6 +3996,24 @@ _GOLDEN_DISPENSE_FRAMES: Dict[str, List[str]] = {
     "0000000028000400000000000401020000002800040000007a431e0014001701020001001701020001002800"
     "0400000090401e0014001701020001000500020000002000040001000000",
   ],
+  "piston volumes, one lld_mode": [
+    "60.0 "
+    "84020630000002000100ffff00e0010000100000021380020000000001032a0000011f0060021e002c011701"
+    "0200000020000400020000001e002600170102000000280004001f854f412800040048619742280004000000"
+    "0000280004000000c8421f0000001e00640017010200000017010200010028000400c3f5e040280004003333"
+    "fa422800040000002041280004000000a040280004000000c8422800040000000000280004001f855b402800"
+    "0400000000002800040000000000280004000000000006000400000000001e002c0017010200000028000400"
+    "c3f5e040280004009a999d41170102000000280004000000004028000400000000001e002400170102000100"
+    "280004000000000028000400000000000401020000002800040000007a431e00140017010200010017010200"
+    "010028000400000090401e00140017010200010005000200000020000400010000001e002c01170102000000"
+    "20000400010000001e002600170102000000280004001f854f41280004004861854228000400000000002800"
+    "04000000c8421f0000001e00640017010200000017010200010028000400c3f5e040280004003333fa422800"
+    "0400000020412800040000002041280004000000c8422800040000000000280004001f855b40280004000000"
+    "00002800040000000000280004000000000006000400000000001e002c0017010200000028000400c3f5e040"
+    "280004009a999d41170102000000280004000000004028000400000000001e00240017010200010028000400"
+    "0000000028000400000000000401020000002800040000007a431e0014001701020001001701020001002800"
+    "0400000090401e0014001701020001000500020000002000040001000000",
+  ],
   "channels sharing a dish": [
     "60.0 "
     "84020630000002000100ffff00e0010000100000021380020000000001032a0000011f0060021e002c011701"
@@ -4005,3 +4058,34 @@ def test_dispense_sends_the_golden_frames():
   assert list(_GOLDEN_DISPENSE_FRAMES) == list(_GOLDEN_DISPENSE_CALLS)
   for name, frames in _GOLDEN_DISPENSE_FRAMES.items():
     assert asyncio.run(_capture_dispense(name)) == frames, name
+
+
+def test_dispense_refuses_before_booking_or_sending():
+  """No class for volumes, a flow rate of 0 and blow-out air are refused; nothing moves."""
+
+  async def _t():
+    set_volume_tracking(True)
+    try:
+      deck = PrepDeck()
+      tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
+      plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+      p = PrepSimulationDriver(deck=deck)
+      await p.setup()
+      assert p.pipettes is not None
+      well = plate.get_item("A1")
+      await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
+      sent = _record(p)
+      for kwargs, match in (
+        ({"volumes": [5.0]}, "no liquid class for"),
+        ({"piston_volumes": [5.0], "flow_rates": [0.0]}, "flow_rates must be above 0"),
+        ({"piston_volumes": [5.0], "blow_out_air_volumes": [1.0]}, "blow-out air on aspirate"),
+      ):
+        with pytest.raises(ValueError, match=match):
+          await p.pipettes.dispense([well], use_channels=[0], liquid_heights=[2.0], **kwargs)
+      assert not any(isinstance(c, _DISPENSE_COMMANDS) for c in sent)
+      assert well.tracker.get_used_volume() == 0.0
+      await p.stop()
+    finally:
+      set_volume_tracking(False)
+
+  _run(_t())
