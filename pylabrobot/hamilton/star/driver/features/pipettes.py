@@ -4759,8 +4759,9 @@ class Pipettes:
     Batched as `probe_liquid_heights`, one `C0 AS` per batch. Floor at the cavity bottom; LLD
     search from `well_search_start_clearance` above a well's top, `search_start_clearance` above
     any other's; surface from `liquid_heights`, else the tracked volume. CAPACITIVE and PRESSURE
-    search first, set the tracker to the measured volume, refuse a container without liquid, and
-    aspirate from where the tips rest with the firmware's LLD off.
+    search first, set the tracker to the measured volume, warning when it is 20 % off the tracked
+    one, refuse a container without liquid, and aspirate from where the tips rest with the
+    firmware's LLD off.
     `volumes` with a liquid class, which corrects the piston volume and fills what is not given,
     or `piston_volumes` as given. Trackers move per batch, before its command, committed on
     success. Keyword arguments in the order the aspiration runs; per-container lists in the
@@ -5017,9 +5018,19 @@ class Pipettes:
           containers[job], above_bottom, liquid[job]
         )
         if tracking:
-          containers[job].tracker.set_volume(
-            containers[job].compute_volume_from_height(above_bottom)
-          )
+          measured = containers[job].compute_volume_from_height(above_bottom)
+          expected = containers[job].tracker.get_used_volume()
+          # A measurement stacks the sensor, the 0.1 mm of the read, the well's model and where
+          # the plate really sits, so it is only ever off by so much before it is worth a word.
+          if abs(measured - expected) > 0.2 * expected:
+            logger.warning(
+              "channel %d measured %.1f uL in %s where the model had %.1f uL",
+              channel,
+              measured,
+              containers[job].name,
+              expected,
+            )
+          containers[job].tracker.set_volume(measured)
 
     async def send(batch: ChannelBatch) -> None:
       """One `C0 AS` for the batch, from the heights as they stand."""

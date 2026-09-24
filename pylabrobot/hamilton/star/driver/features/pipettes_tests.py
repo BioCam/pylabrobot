@@ -1680,6 +1680,24 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertEqual(sent, [])
     self.assertEqual(wells[0].tracker.get_used_volume(), 150.0)
 
+  async def test_a_measurement_far_off_the_model_is_a_warning_not_a_refusal(self):
+    # The simulator answers the search from the tracker itself, so the search is stood in for:
+    # it reports 100 uL where the model has 150.
+    surface = self.wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    surface += self.wells[0].compute_height_from_volume(100.0)
+    self.pipettes._probe_batch_liquid_heights = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      return_value={0: [round(surface, 1)]}
+    )
+    sent = self._record_aspirations()
+    with self.assertLogs(
+      "pylabrobot.hamilton.star.driver.features.pipettes", level="WARNING"
+    ) as logs:
+      await self.pipettes.aspirate(self.wells[:1], [10.0], lld_mode=Pipettes.LLDMode.CAPACITIVE)
+    self.assertIn("measured", logs.output[0])
+    self.assertIn("150.0 uL", logs.output[0])
+    self.assertEqual(len(sent), 1)
+    self.assertAlmostEqual(self.wells[0].tracker.get_used_volume(), 90.0, delta=2.0)
+
   async def test_no_liquid_found_is_refused_and_earlier_batches_stand(self):
     for row in "EFGH":
       self.plate.get_well(f"{row}1").tracker.set_volume(100.0)
