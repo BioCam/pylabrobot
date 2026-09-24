@@ -64,13 +64,6 @@ import {
   NO_REFERENCE_MARK,
   PICKABLE_PARTS,
   PROTOCOL,
-  QUALITY_FAST_MS,
-  QUALITY_HOLD_MS,
-  QUALITY_LEVELS,
-  QUALITY_RECOVER_MS,
-  QUALITY_SETTLE_MS,
-  QUALITY_SLOW_MS,
-  QUALITY_WARMUP_MS,
   REFERENCE_DROP,
   REFERENCE_LINE,
   REFERENCE_WIDTH,
@@ -80,7 +73,6 @@ import {
   SELECTION_SHOWN_MS,
   SHELL_OPACITY,
   SKY_LIGHT,
-  SKY_LIGHT_WITHOUT_ENVIRONMENT,
   SPACE_OPACITY,
   structureEdgeStyle,
   TIP_PLAN_FILL,
@@ -94,7 +86,22 @@ import { initCoords } from "./coords.js";
 import { initDeviceTools } from "./device_tools.js";
 import { input, query } from "./dom.js";
 import { escapeHtml, fmt, NBSP, section, tuple, withUnit } from "./format.js";
+import {
+  afterDraw,
+  applyQuality,
+  beforeDraw,
+  initFrame,
+  invalidate,
+  lastFrameMs,
+  qualityNow,
+  qualityPinned,
+  sceneArrived,
+  setStats,
+  statsNow,
+  whileMoving,
+} from "./frame.js";
 import { initGif } from "./gif.js";
+import { connect, initTransport } from "./transport.js";
 import {
   buildWorld,
   mirrorPlacement,
@@ -147,7 +154,6 @@ let drawnFromFile = new Set();
 const stateOf = new Map();
 const hiddenNames = new Set();
 let selected = -1;
-let stats = {};
 let activeTool = "cursor";
 let framed = false; // whether this connection has framed the camera on its first scene
 
@@ -188,30 +194,6 @@ let projection = "perspective";
 // sixty frames a second otherwise, which is the wrong price for a viewer meant to sit open beside a
 // running protocol all day. Anything that changes what is on screen raises this flag; the loop
 // draws once and lowers it again.
-let renderPending = true;
-let lastRenderAt = 0;
-let looping = false;
-
-// Skipping the draw is not enough on its own: the per-frame callback alone costs a third of a core,
-// because it is still called sixty times a second to decide there is nothing to do. So the loop is
-// stopped outright when the scene settles, and started again by whatever changes it.
-//
-// Raised at the edges of the viewer rather than wherever something happens to change: a message
-// arriving, an input, a resize, a call from outside. That way adding a function that changes the
-// scene cannot forget to ask for a frame, which is a silent freeze - the failure this had five
-// times over while it was the caller's job to remember.
-function invalidate() {
-  renderPending = true;
-  if (!looping) {
-    looping = true;
-    clock.getDelta(); // discard the idle gap, or the first frame back sees a huge delta
-    // The frame-rate window restarts with the loop. Left running across the idle gap, the first
-    // frame back averages out to nothing and reads as "0 fps".
-    frames = 0;
-    lastSample = performance.now();
-    renderer.setAnimationLoop(drawFrame);
-  }
-}
 
 const controls = new OrbitControls(camera, renderer.domElement);
 controls.enableDamping = true;
@@ -328,6 +310,8 @@ try {
 } catch (error) {
   console.warn("no environment map; metal surfaces will look flat", error);
 }
+
+initFrame({ renderer, view, viewportEl, camera: () => camera, skyLight });
 
 // A resource that lays things out on a repeated grid says so in its model, and the viewer draws
 // whatever it is told: how many, how far apart, where the first one sits, how to label them.
@@ -2213,7 +2197,6 @@ for (const helper of [selectionBox, hoverBox]) {
 
 // three's own view helper, in place of the hand-drawn legend: same three axes, but clickable,
 // and it animates the camera onto the axis you pick.
-const clock = new THREE.Clock();
 let viewHelper = null;
 
 function buildViewHelper() {
@@ -3995,7 +3978,7 @@ function atBoundary(surface) {
 
   // Only answers questions. Asking must not be a reason to redraw, or watching the viewer settle
   // is what stops it settling.
-  stats: () => stats,
+  stats: () => statsNow(),
   resources: () => world?.names ?? [],
   // What a resource last published, as the page holds it: what its colour and panel are drawn from.
   stateOf: (name) => {
@@ -4119,7 +4102,7 @@ function atBoundary(surface) {
   quality: (level) => {
     if (level !== undefined) applyQuality(level);
     return {
-      level: quality,
+      level: qualityNow(),
       pixelRatio: renderer.getPixelRatio(),
       environment: view.environment !== null,
       pinned: qualityPinned,
@@ -4199,47 +4182,6 @@ function updateScaleBar() {
     : niceNumber(perPixel * SCALE_BAR_PX);
   scaleLine.style.width = `${Math.round(nice / perPixel)}px`;
   scaleLabel.textContent = nice >= 1000 ? `${nice / 1000} m` : `${nice} mm`;
-}
-
-const statsEl = document.getElementById("stats-panel");
-let frames = 0;
-let lastSample = performance.now();
-
-function updateStats() {
-  frames++;
-  const now = performance.now();
-  if (now - lastSample < 500) return;
-  const fps = Math.round((frames * 1000) / (now - lastSample));
-  frames = 0;
-  lastSample = now;
-  drawStats(`${String(fps)} fps`);
-}
-
-// Quoting a frame rate while nothing is being drawn would be a lie, so an idle viewer says so. This
-// runs on a timer rather than in the loop, because the loop is exactly what has stopped.
-function reportIdle() {
-  if (performance.now() - lastRenderAt > 400) drawStats("idle");
-}
-
-let lastDrawCalls = 0;
-
-function drawStats(rate) {
-  // three zeroes its counters between frames, so an idle viewer would otherwise report no draws at
-  // all. What the scene costs when it is drawn does not change just because it is not being drawn.
-  const info = renderer.info.render;
-  const calls = info.drawCalls ?? info.calls ?? 0;
-  if (calls > 0) lastDrawCalls = calls;
-  const text =
-    `instances  <b>${(stats.instances ?? 0).toLocaleString()}</b>   ` +
-    `models <b>${stats.models ?? 0}</b>   ` +
-    `draws <b>${lastDrawCalls}</b>   ` +
-    `${renderer.backend?.isWebGPUBackend ? "WebGPU" : "WebGL2"}   ` +
-    `<b>${rate}</b>` +
-    `${quality > 0 ? `   quality <b>${quality === 1 ? "low" : "lowest"}</b>` : ""}\n` +
-    `tree JSON ${((stats.legacy_bytes ?? 0) / 1024).toFixed(1)} kB  ` +
-    `→ this scene <b>${((stats.scene_bytes ?? 0) / 1024).toFixed(1)} kB</b> (${stats.ratio ?? 0}×)`;
-  // Writing the same markup back forces layout and paint for nothing, twice a second, forever.
-  if (text !== statsEl.innerHTML) statsEl.innerHTML = text;
 }
 
 // ---------------------------------------------------------------- interaction
@@ -4610,152 +4552,61 @@ resizeHandle.addEventListener("pointermove", (e) => {
 });
 resizeHandle.addEventListener("pointerup", () => (resizingFrom = null));
 
-// ---------------------------------------------------------------- transport
+// ---------------------------------------------------------------- scene
 
-const statusDot = document.getElementById("status-indicator");
-const statusLabel = document.getElementById("status-label");
-
-// The status is only ever as fresh as the last time this tab ran. A backgrounded tab gets frozen,
-// so neither the close handler nor the reconnect timer fires, and it goes on painting whatever it
-// last said. Keep a handle on the socket and re-read its real state whenever the tab comes back.
-let socket = null;
-
-const RECONNECT_MS = 1500;
-// A minute of refused attempts says the viewer is gone, not busy: its kernel was restarted, or the
-// run that served this page has ended. A new run serves a new page with a key of its own.
-const GIVE_UP_MS = 60000;
-let lostAt = null;
-
-function showStatus(connected) {
-  for (const el of [statusDot, statusLabel]) {
-    el.classList.toggle("connected", connected);
-    el.classList.toggle("disconnected", !connected);
-  }
-  statusLabel.textContent = connected ? "Connected" : "Disconnected";
-  window.dispatchEvent(new CustomEvent("plr:status", { detail: { connected } }));
-}
-
-/** Tell the server what this page draws with, so a slow or odd viewer is visible from Python. */
-function sayHello() {
-  const probe = window.plrCapability ?? {};
-  const webgpu = !!renderer.backend?.isWebGPUBackend;
-  socket.send(
-    JSON.stringify({
-      event: "hello",
-      data: {
-        backend: webgpu ? "WebGPU" : "WebGL2",
-        renderer: webgpu ? null : probe.renderer,
-        software: webgpu ? false : !!probe.software,
-        quality,
-        userAgent: navigator.userAgent,
-      },
-    }),
-  );
-}
-
-document.addEventListener("visibilitychange", () => {
-  if (document.visibilityState !== "visible") return;
-  const live = socket && socket.readyState === WebSocket.OPEN;
-  showStatus(!!live);
-  if (live) return;
-  lostAt = null; // a tab coming back gets its minute again
-  connect();
-});
-
-function connect() {
-  if (
-    socket &&
-    (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)
-  ) {
+// A scene arriving whole: everything drawn is built again from it, in this order, with what the
+// reader had open put back afterwards.
+function rebuildScene(data) {
+  // A page is fetched fresh on every load; the Python serving it is as old as its process. A
+  // scene from another protocol is not drawn, since what it says would be misread.
+  if (data.protocol !== PROTOCOL) {
+    window.dispatchEvent(new CustomEvent("plr:mismatch"));
     return;
   }
-  socket = new WebSocket(window.WS_URL);
-  framed = false;
-  socket.onopen = () => {
-    lostAt = null;
-    showStatus(true);
-    sayHello();
-  };
-  socket.onclose = () => {
-    showStatus(false);
-    lostAt ??= performance.now();
-    if (performance.now() - lostAt < GIVE_UP_MS) setTimeout(connect, RECONNECT_MS);
-    else window.dispatchEvent(new CustomEvent("plr:gone"));
-  };
-  socket.onmessage = (event) => {
-    let message;
-    try {
-      message = JSON.parse(event.data);
-    } catch {
-      console.warn("a message from the viewer was not JSON, and was ignored");
-      return;
-    }
-    const { event: kind, data } = message;
-    if (!data) return;
-    // Everything the server says changes what is on screen: the scene it draws, or the state it
-    // draws it in. There is no message that only touches the panels around the viewport.
-    invalidate();
-    if (kind === "scene") {
-      // A page is fetched fresh on every load; the Python serving it is as old as its process. A
-      // scene from another protocol is not drawn, since what it says would be misread.
-      if (data.protocol !== PROTOCOL) {
-        window.dispatchEvent(new CustomEvent("plr:mismatch"));
-        return;
-      }
-      const _tScene = performance.now();
-      // New pipelines to compile: the frame cost is not judged again until they have been.
-      sceneCameAt = _tScene;
-      frameCostAverage = 0;
-      slowSince = null;
-      fastSince = null;
-      stats = data.stats ?? {};
-      const kept = rememberView();
-      setWorld(buildWorld(data));
-      glides.clear();
-      timings.decodeMs = performance.now() - _tScene;
-      const _tBuild = performance.now();
-      buildMeshes();
-      floorZ = sceneBounds().min.z;
-      gridState = null;
-      planView = null;
-      buildGridMarks();
-      buildArms();
-      buildReferenceMarks();
-      buildDeclaredMeshes();
-      buildOrigin();
-      buildOriginDots();
-      buildHalos();
-      timings.meshesMs = performance.now() - _tBuild;
-      const _tTree = performance.now();
-      buildTree();
-      // A rebuild draws everything at its true position, but what was switched off stays switched
-      // off: the tree is rebuilt on every assignment while a deck is being laid out, and without
-      // this, hiding a plate and then assigning anything at all put the plate and its wells back
-      // on screen with the eye still showing them as hidden.
-      for (const name of [...hiddenNames]) setHidden(name, true);
-      deviceTools.rebuild();
-      timings.treeMs = performance.now() - _tTree;
-      timings.readyMs = performance.now() - _t0;
-      populateWrtDropdown();
-      selected = -1;
-      selectionBox.visible = false;
-      hideInfoPanel();
-      stateOf.clear();
-      restoreView(kept);
-      resize();
-      // Only the first scene of a connection frames the camera. A tree that is assembled while the
-      // viewer watches rebuilds on every assignment, and framing each one would throw the view away
-      // as you build. The camera holds no scene indices, so it survives a rebuild unchanged.
-      if (!framed) {
-        goToStartView();
-        framed = true;
-      }
-    } else if (kind === "state" && world) {
-      applyState(data);
-    } else if (kind === "moves" && world && Array.isArray(data.moves)) {
-      applyMoves(data.moves);
-    }
-  };
+  const _tScene = performance.now();
+  sceneArrived();
+  setStats(data.stats ?? {});
+  const kept = rememberView();
+  setWorld(buildWorld(data));
+  glides.clear();
+  timings.decodeMs = performance.now() - _tScene;
+  const _tBuild = performance.now();
+  buildMeshes();
+  floorZ = sceneBounds().min.z;
+  gridState = null;
+  planView = null;
+  buildGridMarks();
+  buildArms();
+  buildReferenceMarks();
+  buildDeclaredMeshes();
+  buildOrigin();
+  buildOriginDots();
+  buildHalos();
+  timings.meshesMs = performance.now() - _tBuild;
+  const _tTree = performance.now();
+  buildTree();
+  // A rebuild draws everything at its true position, but what was switched off stays switched
+  // off: the tree is rebuilt on every assignment while a deck is being laid out, and without
+  // this, hiding a plate and then assigning anything at all put the plate and its wells back
+  // on screen with the eye still showing them as hidden.
+  for (const name of [...hiddenNames]) setHidden(name, true);
+  deviceTools.rebuild();
+  timings.treeMs = performance.now() - _tTree;
+  timings.readyMs = performance.now() - _t0;
+  populateWrtDropdown();
+  selected = -1;
+  selectionBox.visible = false;
+  hideInfoPanel();
+  stateOf.clear();
+  restoreView(kept);
+  resize();
+  // Only the first scene of a connection frames the camera. A tree that is assembled while the
+  // viewer watches rebuilds on every assignment, and framing each one would throw the view away
+  // as you build. The camera holds no scene indices, so it survives a rebuild unchanged.
+  if (!framed) {
+    goToStartView();
+    framed = true;
+  }
 }
 
 // ---------------------------------------------------------------- moves
@@ -4814,8 +4665,6 @@ function reopenRowsUnder(index) {
   toggle(at, false);
   toggle(at, true);
 }
-
-statusDot.addEventListener("click", connect);
 
 // The camera is read at capture time: a view change swaps it, and the recording follows the view.
 const gif = initGif({
@@ -4904,136 +4753,80 @@ for (const kind of ["mouseover", "mouseout"]) {
     { passive: true, capture: true },
   );
 }
-setInterval(reportIdle, 500);
 
-// How long the last frame took on the main thread, submission included. What the pointer gate
-// above reads: a slow frame is a machine that cannot answer every pointer sample.
-let lastFrameMs = 0;
-
-// ---------------------------------------------------------------- adaptive quality
-
-// The page steps its own cost down while frames are slow and back up once they are fast, so a
-// machine that cannot draw the scene at full quality still draws it at a usable rate without
-// anyone naming its renderer. `?quality=high` or `?quality=low` pins a level instead.
-const qualityPinned = new URLSearchParams(location.search).get("quality");
-let quality = qualityPinned === "low" ? QUALITY_LEVELS - 1 : 0;
-let frameCostAverage = 0;
-let slowSince = null;
-let fastSince = null;
-let sceneCameAt = performance.now();
-const demotedAt = new Map(); // level -> when it was last found too slow
-
-function applyQuality(level) {
-  quality = Math.max(0, Math.min(QUALITY_LEVELS - 1, level));
-  renderer.setPixelRatio(quality >= 1 ? 1 : Math.min(window.devicePixelRatio, 2));
-  // The drawing buffer follows the pixel ratio only through setSize.
-  renderer.setSize(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
-  view.environment = quality >= 2 ? null : (view.userData.roomEnvironment ?? null);
-  skyLight.intensity = view.environment ? SKY_LIGHT : SKY_LIGHT_WITHOUT_ENVIRONMENT;
-}
-
-// Read after each drawn frame. Down after slow frames have settled, up after fast ones have, and
-// never back into a level found slow within QUALITY_HOLD_MS.
-function adaptQuality(frameMs) {
-  if (qualityPinned !== null) return;
-  if (performance.now() - sceneCameAt < QUALITY_WARMUP_MS) return;
-  frameCostAverage = frameCostAverage === 0 ? frameMs : frameCostAverage * 0.9 + frameMs * 0.1;
-  const now = performance.now();
-  if (frameCostAverage > QUALITY_SLOW_MS) {
-    fastSince = null;
-    slowSince ??= now;
-    if (now - slowSince >= QUALITY_SETTLE_MS && quality < QUALITY_LEVELS - 1) {
-      demotedAt.set(quality, now);
-      applyQuality(quality + 1);
-      slowSince = null;
-      frameCostAverage = 0;
-    }
-  } else if (frameCostAverage < QUALITY_FAST_MS) {
-    slowSince = null;
-    fastSince ??= now;
-    const above = quality - 1;
-    const heldBack = above >= 0 && now - (demotedAt.get(above) ?? -Infinity) < QUALITY_HOLD_MS;
-    if (now - fastSince >= QUALITY_RECOVER_MS && above >= 0 && !heldBack) {
-      applyQuality(above);
-      fastSince = null;
-      frameCostAverage = 0;
-    }
-  } else {
-    slowSince = null;
-    fastSince = null;
-  }
-}
-
-function drawFrame() {
-  const frameStarted = performance.now();
-  const delta = clock.getDelta();
-
+// What a frame runs, in order. Three things keep drawing on their own account: the helper's snap
+// animation, an arm gliding to a new position, and a recording that needs a frame to capture;
+// `controls.update` reports whether damping is still carrying the camera.
+whileMoving(() => {
   // At most one hover answered per frame, however many times the pointer moved in between: a
-  // pointer crosses the canvas far faster than frames are drawn, and each answer raycasts the whole
-  // scene to produce a readout nobody could have seen the previous version of.
+  // pointer crosses the canvas far faster than frames are drawn, and each answer raycasts the
+  // whole scene to produce a readout nobody could have seen the previous version of.
   if (hoverAt !== null) answerHover();
-
-  // Three things keep drawing on their own account: the helper's snap animation, an arm gliding to
-  // a new position, and a recording that needs a frame to capture. `controls.update` reports
-  // whether damping is still carrying the camera.
-  let moving = false;
-  if (viewHelper?.animating) {
-    viewHelper.update(delta);
-    // Every direction the helper can snap to is axis-aligned, so the view it lands on is a plan or
-    // an elevation. Switch once the animation is done, not during it, since changing projection
-    // rebuilds the helper.
-    if (!viewHelper.animating) setProjection("orthographic");
-    moving = true;
-  }
+  return false;
+});
+whileMoving((delta) => {
+  if (!viewHelper?.animating) return false;
+  viewHelper.update(delta);
+  // Every direction the helper can snap to is axis-aligned, so the view it lands on is a plan or
+  // an elevation. Switch once the animation is done, not during it, since changing projection
+  // rebuilds the helper.
+  if (!viewHelper.animating) setProjection("orthographic");
+  return true;
+});
+whileMoving(() => {
   if (deltaAnnotation?.group.visible) updateDeltaLabels();
-  if (updateArms(delta)) moving = true;
-  if (updateGlides(delta)) moving = true;
-  if (controls.update()) moving = true;
-  if (gif.isRecording()) moving = true;
-
-  if (!renderPending && !moving) {
-    looping = false;
-    renderer.setAnimationLoop(null);
-    return;
-  }
-  renderPending = false;
-  lastRenderAt = performance.now();
-
-  // What the camera can see decides what is worth drawing, so it is decided before the frame is
-  // drawn rather than after it. Asked afterwards, every frame drew what the frame before it had
-  // worked out, and the last frame of a move - the one left on screen - never drew its own answer
-  // at all: a zoom settled with the detail of where it started, a window resize changed nothing
-  // until the camera next moved, and a view turned to a plan kept the colours of the angle it came
-  // from. Nothing here asks for another frame; they are worked out for this one.
-  updateGrid();
-  updateDetail();
-  updateEdgeMode();
-  updateOrigin();
-  updateHalos();
-  updateBullseyes();
-  updateScaleBar();
-
-  renderer.render(view, camera);
-  // What a frame costs is the longer of this thread's work and the gap since the last frame: the
-  // GPU, or a rasteriser in another process, shows up only in the gap. The gap of an idle spell is
-  // discarded where the loop is woken, so the first frame back is costed by its work alone.
-  lastFrameMs = Math.max(performance.now() - frameStarted, delta * 1000);
-  adaptQuality(lastFrameMs);
-  if (viewHelper) {
-    // The helper renders a second pass into a corner of the same canvas. Without turning auto-clear
-    // off it clears the colour buffer for that corner first, leaving a blank patch over the scene.
-    renderer.autoClear = false;
-    viewHelper.render(renderer);
-    renderer.autoClear = true;
-  }
-  gif.tick();
-  // Read after the draw, because it is the draw it reports.
-  updateStats();
+  return false;
+});
+whileMoving(updateArms);
+whileMoving(updateGlides);
+whileMoving(() => controls.update());
+whileMoving(() => gif.isRecording());
+// What the camera can see decides what is worth drawing, so it is decided before the frame is
+// drawn rather than after it. Asked afterwards, every frame drew what the frame before it had
+// worked out, and the last frame of a move - the one left on screen - never drew its own answer
+// at all: a zoom settled with the detail of where it started, a window resize changed nothing
+// until the camera next moved, and a view turned to a plan kept the colours of the angle it came
+// from. Nothing here asks for another frame; they are worked out for this one.
+for (const prepare of [
+  updateGrid,
+  updateDetail,
+  updateEdgeMode,
+  updateOrigin,
+  updateHalos,
+  updateBullseyes,
+  updateScaleBar,
+]) {
+  beforeDraw(prepare);
 }
+afterDraw(() => {
+  if (!viewHelper) return;
+  // The helper renders a second pass into a corner of the same canvas. Without turning auto-clear
+  // off it clears the colour buffer for that corner first, leaving a blank patch over the scene.
+  renderer.autoClear = false;
+  viewHelper.render(renderer);
+  renderer.autoClear = true;
+});
+afterDraw(() => gif.tick());
+
+initTransport({
+  renderer,
+  handlers: {
+    // A new socket frames the camera on its first scene, and on that one only.
+    opened: () => {
+      framed = false;
+    },
+    scene: rebuildScene,
+    state: (data) => {
+      if (world) applyState(data);
+    },
+    moves: (moves) => {
+      if (world && Array.isArray(moves)) applyMoves(moves);
+    },
+  },
+});
 
 buildViewHelper();
 refreshToolUI();
 showPane("tree");
 resize();
-if (quality > 0) applyQuality(quality);
 connect();

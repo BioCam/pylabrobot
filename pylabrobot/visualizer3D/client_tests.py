@@ -10,7 +10,13 @@ import pathlib
 import re
 import unittest
 
-APP = pathlib.Path(__file__).parent / "static" / "app.js"
+STATIC = pathlib.Path(__file__).parent / "static"
+
+
+def page_sources():
+  """Every module of the page, as (name, lines): the rule holds across all of them."""
+  return [(path.name, path.read_text().splitlines()) for path in sorted(STATIC.glob("*.js"))]
+
 
 # Every way into the viewer, and what comes in through it. A call to `invalidate` anywhere else is
 # the scattering this replaced: correct on the day it is written, and one edit away from being
@@ -30,7 +36,7 @@ def enclosing_function(lines, index):
   """The top-level function containing this line, or None if it sits at module level."""
   for above in range(index, -1, -1):
     text = lines[above]
-    opened = re.match(r"^function (\w+)", text)
+    opened = re.match(r"^(?:export )?(?:async )?function (\w+)", text)
     if opened is not None:
       return opened.group(1)
     if above != index and text.startswith("}"):
@@ -40,14 +46,14 @@ def enclosing_function(lines, index):
 
 class InvalidationTests(unittest.TestCase):
   def test_only_the_edges_ask_for_a_frame(self):
-    lines = APP.read_text().splitlines()
     stray = []
-    for index, text in enumerate(lines):
-      if "invalidate" not in text:
-        continue
-      where = enclosing_function(lines, index)
-      if where not in BOUNDARIES:
-        stray.append(f"  line {index + 1} in {where}(): {text.strip()}")
+    for name, lines in page_sources():
+      for index, text in enumerate(lines):
+        if "invalidate" not in text or text.lstrip().startswith(("import", "//", "*")):
+          continue
+        where = enclosing_function(lines, index)
+        if where not in BOUNDARIES:
+          stray.append(f"  {name}:{index + 1} in {where}(): {text.strip()}")
 
     self.assertEqual(
       stray,
@@ -61,8 +67,9 @@ class InvalidationTests(unittest.TestCase):
 
   def test_every_edge_is_still_wired(self):
     """The rule above only helps while the edges themselves still ask."""
-    lines = APP.read_text().splitlines()
-    found = {enclosing_function(lines, i) for i, t in enumerate(lines) if "invalidate" in t}
+    found = set()
+    for _, lines in page_sources():
+      found |= {enclosing_function(lines, i) for i, t in enumerate(lines) if "invalidate" in t}
     for name, why in BOUNDARIES.items():
       self.assertIn(name, found, f"nothing asks for a frame on {why}")
 
