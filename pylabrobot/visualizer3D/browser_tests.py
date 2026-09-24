@@ -12,15 +12,15 @@ import asyncio
 import base64
 import json
 import os
-import struct
-import zlib
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
 import urllib.request
+import zlib
 from typing import Any, List, Optional
 
 import websockets
@@ -32,8 +32,8 @@ from pylabrobot.resources.hamilton import hamilton_96_tiprack_50uL_NTR
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.resource_holder import ResourceHolder
-from pylabrobot.visualizer3D.facility import Facility
 from pylabrobot.visualizer3D.demo import build_facility, declare_channel_access, star_of
+from pylabrobot.visualizer3D.facility import Facility
 from pylabrobot.visualizer3D.server import Viewer3D
 
 

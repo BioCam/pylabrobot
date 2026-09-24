@@ -102,6 +102,20 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
     finally:
       await ws.close()
 
+  async def test_a_tip_publishes_what_it_holds(self):
+    """A tip's tracker was never published, so the channel panel drew every tip empty."""
+    rack = hamilton_96_tiprack_1000uL(name="rack", with_tips=True)
+    self.facility.assign_child_resource(rack, location=Coordinate(300, 10, 0))
+    tip = rack.get_item("A1").get_tip()
+    ws, _, _ = await self.connect()
+    try:
+      tip.tracker.set_volume(250.0)
+      update = await self.next_state(ws)
+      self.assertIsNotNone(update)
+      self.assertEqual(update["states"][update["of"][tip.name]]["volume"], 250.0)
+    finally:
+      await ws.close()
+
   async def test_a_change_names_only_what_changed(self):
     ws, _, _ = await self.connect()
     try:
