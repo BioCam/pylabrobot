@@ -2742,7 +2742,8 @@ function remember(index, mesh, slot, at, emptyOnly = false) {
 function applyState(payload) {
   const touched = new Set();
   const { states, of } = payload;
-  for (const [name, slot] of Object.entries(of ?? {})) {
+  if (!states || !of) return;
+  for (const [name, slot] of Object.entries(of)) {
     const index = world.indexOfName.get(name);
     if (index === undefined) continue;
     // Shared between every resource in the same state, and only ever read.
@@ -4646,7 +4647,15 @@ function connect() {
     else window.dispatchEvent(new CustomEvent("plr:gone"));
   };
   socket.onmessage = (event) => {
-    const { event: kind, data } = JSON.parse(event.data);
+    let message;
+    try {
+      message = JSON.parse(event.data);
+    } catch {
+      console.warn("a message from the viewer was not JSON, and was ignored");
+      return;
+    }
+    const { event: kind, data } = message;
+    if (!data) return;
     // Everything the server says changes what is on screen: the scene it draws, or the state it
     // draws it in. There is no message that only touches the panels around the viewport.
     invalidate();
@@ -4699,7 +4708,7 @@ function connect() {
       }
     } else if (kind === "state" && world) {
       applyState(data);
-    } else if (kind === "moves" && world) {
+    } else if (kind === "moves" && world && Array.isArray(data.moves)) {
       applyMoves(data.moves);
     }
   };

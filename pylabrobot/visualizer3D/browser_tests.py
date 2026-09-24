@@ -161,6 +161,25 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     """Where the viewer draws a resource, read off the scene it holds."""
     return float(await browser.evaluate(f"window.plrViewer.worldOf({name!r})[0]"))
 
+  async def test_a_frame_the_page_cannot_read_does_not_stop_the_next_one(self):
+    """The page parsed every frame unguarded and applied a state without looking at it, so one
+    message that was not JSON, or a state with nothing in it, threw inside the handler."""
+    async with Browser(CDP_PORT) as browser:
+      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
+      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
+      await browser.evaluate(
+        "window.__plrErrors = 0; window.addEventListener('error', () => { window.__plrErrors++; })"
+      )
+      for client in list(self.viewer._clients):
+        await client.send("this is not json")
+        await client.send(json.dumps({"event": "bogus"}))
+        await client.send(json.dumps({"event": "state", "data": {}}))
+        await client.send(json.dumps({"event": "moves", "data": {"epoch": 0}}))
+      self.carrier.location = Coordinate(300, 100, 0)
+      await browser.settle("window.plrViewer.worldOf('rider')[0] === 320", 10)
+      errors = await browser.evaluate("window.__plrErrors")
+      self.assertEqual(errors, 0)
+
   async def test_a_move_reaches_the_picture_and_carries_its_children(self):
     async with Browser(CDP_PORT) as browser:
       await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")

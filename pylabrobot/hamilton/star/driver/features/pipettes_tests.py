@@ -835,6 +835,43 @@ class TestAspirateFirmware(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(Pipettes.LLDMode.ZTOUCH.value, 4)
 
 
+class TestLiquidClassLookup(unittest.TestCase):
+  """Every Hamilton tip finds its class, the ones without a filter included."""
+
+  def test_every_tip_size_maps_to_a_class(self):
+    from pylabrobot.hamilton.star.liquid_classes import get_star_liquid_class
+    from pylabrobot.resources.hamilton import tip_creators
+    from pylabrobot.resources.liquid import Liquid
+
+    # The 50 uL tips have water classes with a blow-out only; the rest have the plain surface one.
+    for creator, blow_out in (
+      (tip_creators.hamilton_tip_10uL, False),
+      (tip_creators.hamilton_tip_10uL_filter, False),
+      (tip_creators.hamilton_tip_50uL, True),
+      (tip_creators.hamilton_tip_50uL_filter, True),
+      (tip_creators.hamilton_tip_300uL, False),
+      (tip_creators.hamilton_tip_300uL_filter, False),
+      (tip_creators.hamilton_tip_300uL_filter_slim, False),
+      (tip_creators.hamilton_tip_300uL_filter_ultrawide, False),
+      (tip_creators.hamilton_tip_1000uL, False),
+      (tip_creators.hamilton_tip_1000uL_filter, False),
+      (tip_creators.hamilton_tip_1000uL_filter_wide, False),
+      (tip_creators.hamilton_tip_1000uL_filter_ultrawide, False),
+    ):
+      tip = creator("tip")
+      with self.subTest(tip=creator.__name__):
+        found = get_star_liquid_class(
+          tip_volume=tip.maximal_volume,
+          is_core=False,
+          is_tip=True,
+          has_filter=tip.has_filter,
+          liquid=Liquid.WATER,
+          jet=False,
+          blow_out=blow_out,
+        )
+        self.assertIsNotNone(found)
+
+
 class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
   """One `C0 AS` from mm and uL: the fields it fills, the defaults it takes, what it refuses."""
 
@@ -1459,7 +1496,7 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     return f"{round((bottom + height) * 10):04}"
 
   async def test_the_wells_give_and_the_tips_take_in_one_command(self):
-    from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.star import (
+    from pylabrobot.hamilton.star.liquid_classes.mapping import (
       StandardVolumeFilter_Water_DispenseSurface as water,
     )
 
@@ -1494,7 +1531,7 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertEqual([w.tracker.get_used_volume() for w in wells], [140.0, 90.0, 40.0] + [90.0] * 4)
 
   async def test_piston_volumes_are_drawn_as_given_and_never_with_a_class(self):
-    from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.star import (
+    from pylabrobot.hamilton.star.liquid_classes.mapping import (
       StandardVolumeFilter_Water_DispenseSurface as water,
     )
 
@@ -1513,7 +1550,7 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertEqual(len(sent), 1)
 
   async def test_a_given_class_corrects_and_fills_what_is_not_given(self):
-    from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.star import (
+    from pylabrobot.hamilton.star.liquid_classes.mapping import (
       StandardVolumeFilter_Water_DispenseJet_Empty as jet_empty,
     )
 
@@ -1525,6 +1562,23 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertIn("as0420", sent[0])
     self.assertIn(f"ta{round(jet_empty.aspiration_air_transport_volume * 10):03}", sent[0])
     self.assertIn(f"de{round(jet_empty.aspiration_swap_speed * 10):04}", sent[0])
+
+  async def test_a_mix_reaches_the_four_mixing_fields(self):
+    from pylabrobot.lib.liquid_handling.mix import Mix
+
+    sent = self._record_aspirations()
+    await self.pipettes.aspirate(self.wells[:2], piston_volumes=[10.0, 10.0])
+    self.assertIn(
+      "mv00000 00000 00000&mc00 00 00&mp000 000 000&ms1000 1000 1000&mh0000 0000 0000&", sent[0]
+    )
+    await self.pipettes.aspirate(
+      self.wells[:2],
+      piston_volumes=[10.0, 10.0],
+      mix=[Mix(volume=30.0, repetitions=3, flow_rate=50.0, surface_following_distance=1.5), None],
+    )
+    self.assertIn(
+      "mv00300 00000 00300&mc03 00 03&mp000 000 000&ms0500 1000 0500&mh0015 0000 0015&", sent[1]
+    )
 
   async def test_too_little_liquid_is_refused_before_anything_is_sent(self):
     from pylabrobot.resources.errors import TooLittleLiquidError

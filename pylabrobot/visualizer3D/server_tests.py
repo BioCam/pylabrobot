@@ -260,6 +260,87 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     finally:
       await second.stop()
 
+  async def test_a_stopped_viewer_no_longer_listens_to_the_tree(self):
+    """`stop` used to leave every state and assignment callback in place, so a stopped viewer
+    kept serializing every change for nobody, and each viewer started on a tree in one session
+    added its own callbacks to every resource for the life of the tree."""
+    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    part = Resource(name="part", size_x=10, size_y=10, size_z=10)
+    facility.assign_child_resource(part, location=Coordinate(0, 0, 0))
+    before = len(part._resource_state_updated_callbacks)
+    viewer = Viewer3D(facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
+    self.assertEqual(len(part._resource_state_updated_callbacks), before + 1)
+    await viewer.start()
+    await viewer.stop()
+    self.assertEqual(len(part._resource_state_updated_callbacks), before)
+    part.location = Coordinate(1, 2, 3)
+    late = Resource(name="late", size_x=10, size_y=10, size_z=10)
+    facility.assign_child_resource(late, location=Coordinate(0, 0, 0))
+    self.assertEqual(len(late._resource_state_updated_callbacks), 0)
+
+  async def test_a_resource_put_back_is_listened_to_once(self):
+    """Every assignment subscribed the resource again, so a tip picked up and put back twenty
+    times carried twenty-one callbacks and its every change was serialized twenty-one times."""
+    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    part = Resource(name="part", size_x=10, size_y=10, size_z=10)
+    viewer = Viewer3D(facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
+    await viewer.start()
+    try:
+      for _ in range(20):
+        facility.assign_child_resource(part, location=Coordinate(0, 0, 0))
+        facility.unassign_child_resource(part)
+      self.assertEqual(len(part._resource_state_updated_callbacks), 1)
+    finally:
+      await viewer.stop()
+
+
+class BindTests(unittest.IsolatedAsyncioTestCase):
+  """A port that is taken is walked past; any other bind failure is raised at once."""
+
+  async def test_a_host_that_cannot_be_bound_is_raised_at_once(self):
+    """Every bind error used to read as a taken port, so an address this machine does not have
+    walked up through all sixty-five thousand ports, took seconds, and then overflowed."""
+    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    viewer = Viewer3D(
+      facility, host="203.0.113.1", open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT
+    )
+    with self.assertRaises(OSError):
+      await viewer.start()
+    self.assertEqual(viewer.ws_port, WS_PORT)
+
+  async def test_an_ipv6_host_serves_both_ports(self):
+    """The file server was bound as IPv4 whatever the host, so `::1` bound the websocket and then
+    hung forever walking ports for a file server that could never bind one."""
+    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    viewer = Viewer3D(facility, host="::1", open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
+    await viewer.start()
+    try:
+      self.assertEqual((viewer.fs_port, viewer.ws_port), (FS_PORT, WS_PORT))
+    finally:
+      await viewer.stop()
+
+
+class AbandonedLoopTests(unittest.TestCase):
+  """A viewer whose loop closed under it leaves the tree alone."""
+
+  def test_a_change_after_the_loop_closed_does_not_raise(self):
+    """A script that starts a viewer and returns from `asyncio.run` without stopping it used to
+    turn every later location change into `RuntimeError: Event loop is closed`, raised out of the
+    resource, and an assignment raised after the child was already attached."""
+    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    part = Resource(name="part", size_x=10, size_y=10, size_z=10)
+    facility.assign_child_resource(part, location=Coordinate(0, 0, 0))
+
+    async def start_and_forget() -> None:
+      # Its ports stay bound in this process: nothing can stop it once its loop has gone.
+      await Viewer3D(facility, open_browser=False, fs_port=FS_PORT + 6, ws_port=WS_PORT + 6).start()
+
+    asyncio.run(start_and_forget())
+    part.location = Coordinate(1, 2, 3)
+    late = Resource(name="late", size_x=10, size_y=10, size_z=10)
+    facility.assign_child_resource(late, location=Coordinate(0, 0, 0))
+    self.assertIs(late.parent, facility)
+
 
 class RebuildTests(unittest.IsolatedAsyncioTestCase):
   """A scene rebuilt from reused models is the scene it was."""

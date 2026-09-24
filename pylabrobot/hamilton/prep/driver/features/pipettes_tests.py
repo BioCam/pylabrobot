@@ -23,6 +23,7 @@ from pylabrobot.hamilton.transport.tcp.packets import Address
 from pylabrobot.hamilton.transport.tcp.wire_types import HcResultEntry
 from pylabrobot.resources import Coordinate, Resource
 from pylabrobot.resources.corning.axygen.plates import cor_axy_96_wellplate_500uL_Ub
+from pylabrobot.resources.corning.plates import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.errors import HasTipError, NoTipError
 from pylabrobot.resources.hamilton import (
   PrepDeck,
@@ -122,8 +123,9 @@ def test_channels_tip_and_volume_trackers_follow_pick_up_aspirate_dispense_and_d
         assert tip is not None and tip.parent is p.pipettes.shaft(i)
       await p.pipettes.aspirate(
         src,
-        vols=vols,
+        volumes=vols,
         use_channels=use,
+        liquid_heights=[1.0] * 2,
         disable_volume_correction=[True] * 2,
       )
       for well in src:
@@ -149,6 +151,40 @@ def test_channels_tip_and_volume_trackers_follow_pick_up_aspirate_dispense_and_d
       await p.pipettes.drop_tips(spots, use_channels=use)
       assert all(s.tip is not None for s in spots)
       assert all(p.pipettes.get_mounted_tip(i) is None for i in use)
+      await p.stop()
+    finally:
+      set_tip_tracking(False)
+      set_volume_tracking(False)
+
+  _run(_t())
+
+
+def test_aspirate_takes_a_missing_liquid_height_from_the_tracked_volume():
+  """No height given: the tip goes to where the tracked volume stands; untracked, it refuses."""
+
+  async def _t():
+    set_tip_tracking(True)
+    set_volume_tracking(True)
+    try:
+      deck = PrepDeck()
+      tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
+      plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+      p = PrepSimulationDriver(deck=deck)
+      await p.setup()
+      assert p.pipettes is not None
+      well = plate.get_item("A1")
+      well.tracker.set_volume(100.0)
+      await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
+      sent = _record(p)
+      await p.pipettes.aspirate([well], volumes=[20.0], use_channels=[0])
+      entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
+      bottom = well.get_location_wrt(deck, "c", "c", "cavity_bottom").z
+      height = well.compute_height_from_volume(100.0)
+      assert entry.no_lld.z_fluid == pytest.approx(bottom + height, abs=0.01)
+
+      set_volume_tracking(False)
+      with pytest.raises(RuntimeError, match="nothing knows where its liquid is"):
+        await p.pipettes.aspirate([well], volumes=[20.0], use_channels=[0])
       await p.stop()
     finally:
       set_tip_tracking(False)
