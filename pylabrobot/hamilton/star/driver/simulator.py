@@ -298,24 +298,7 @@ class SimulatedPipettes(_Simulated, Pipettes):
     deck = self._driver.deck
     assert deck is not None
     bottom = container.get_location_wrt(deck, "c", "c", "cavity_bottom").z
-    try:
-      return container, round(bottom + container.compute_height_from_volume(volume), 2)
-    except NotImplementedError:
-      pass
-    if not container.supports_compute_height_volume_functions():
-      try:
-        container.compute_volume_from_height(0.0)
-      except NotImplementedError:
-        raise RuntimeError(
-          f"the simulator cannot say where {volume} uL stands in {container.name}: the container "
-          "has no height-volume functions. Generate a height_volume_data dictionary for it and "
-          "consider contributing it back to PyLabRobot :)"
-        ) from None
-    low, high = 0.0, container.get_size_z()
-    for _ in range(40):
-      mid = (low + high) / 2
-      low, high = (mid, high) if container.compute_volume_from_height(mid) < volume else (low, mid)
-    return container, round(bottom + low, 2)
+    return container, round(bottom + self._get_liquid_height_from_volume(container, volume), 2)
 
   def _answer_liquid_search(
     self, channel: int, command: str, **kwargs: Any
@@ -422,6 +405,16 @@ class SimulatedPipettes(_Simulated, Pipettes):
           },
           "what each channel last detected liquid at",
         )
+      if command == "AS":
+        # The command moves the channels itself: each involved one to its Y and, at the end, its
+        # tip bottom to `te`. That is what the model has to show when the driver reads back.
+        end = int(kwargs["te"]) / 10
+        for index, (involved, y) in enumerate(zip(kwargs["tm"], kwargs["yp"])):
+          if involved:
+            self.update_location_by_reference_point(
+              index, y=int(y) / 10, z=round(end + self._below_stop_disc(index), 2)
+            )
+        return None
 
       return None
 

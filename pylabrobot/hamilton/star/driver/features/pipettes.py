@@ -47,6 +47,7 @@ from pylabrobot.resources.n_channel_pipettes import NChannelPipette, TipMounting
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip import Tip
 from pylabrobot.resources.tip_rack import TipSpot, tip_origin
+from pylabrobot.resources.volume_tracker import does_volume_tracking
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.features.x_arm import XArm
@@ -4279,7 +4280,11 @@ class Pipettes:
       **kwargs,
     )
 
-  # -- aspirating and dispensing ------------------------------------------------------------------
+  # ----------------------------------------
+  # Liquid handling
+  # ----------------------------------------
+
+  # -- aspirating ---------------------------------------------------------------------------------
 
   async def _unchecked_fw_aspirate(
     self,
@@ -4680,3 +4685,264 @@ class Pipettes:
       )
     finally:
       await self._record_after_command()
+
+  def _get_liquid_height_from_volume(self, container: Container, volume: float) -> float:
+    """How high `volume` stands above the container's cavity bottom, in mm, by its own model.
+
+    A container that knows only volume from height is inverted by bisection over its depth.
+
+    Args:
+      container: the container holding the liquid.
+      volume: in uL.
+
+    Returns:
+      The height in mm, 0.0 for nothing.
+
+    Raises:
+      RuntimeError: If the container has no height-volume functions.
+    """
+    if volume <= 0:
+      return 0.0
+    try:
+      return round(container.compute_height_from_volume(volume), 2)
+    except NotImplementedError:
+      pass
+    try:
+      container.compute_volume_from_height(0.0)
+    except NotImplementedError:
+      raise RuntimeError(
+        f"where {volume} uL stands in {container.name} is not known: the container has no "
+        "height-volume functions. Generate a height_volume_data dictionary for it and consider "
+        "contributing it back to PyLabRobot :)"
+      ) from None
+    low, high = 0.0, container.get_size_z()
+    for _ in range(40):
+      mid = (low + high) / 2
+      low, high = (mid, high) if container.compute_volume_from_height(mid) < volume else (low, mid)
+    return round(low, 2)
+
+  async def aspirate(
+    self,
+    containers: Sequence[Container],
+    piston_volumes: Sequence[float],
+    use_channels: Optional[List[int]] = None,
+    resource_offsets: Optional[List[Coordinate]] = None,
+    liquid_heights: Optional[Sequence[Optional[float]]] = None,
+    lld_mode: "Pipettes.LLDMode" = LLDMode.OFF,
+    flow_rates: Optional[Sequence[float]] = None,
+    *,
+    gamma_lld_sensitivity: int = 1,
+    dp_lld_sensitivity: int = 1,
+    detection_height_difference_for_dual_lld: float = 0.0,
+    aspirate_position_above_z_touch_off: float = 0.0,
+    clot_detection_heights: Optional[Sequence[float]] = None,
+    immersion_depth: float = 0.0,
+    blow_out_air_volumes: Optional[Sequence[float]] = None,
+    pre_wetting_volumes: Optional[Sequence[float]] = None,
+    mix_volumes: Optional[Sequence[float]] = None,
+    mix_cycles: Optional[Sequence[int]] = None,
+    mix_speeds: Optional[Sequence[float]] = None,
+    mix_position_from_liquid_surface: float = 0.0,
+    mix_surface_following_distance: float = 0.0,
+    surface_following_distance: float = 0.0,
+    second_section_height: float = 3.2,
+    second_section_ratio: float = 618.0,
+    settling_times: Optional[Sequence[float]] = None,
+    swap_speeds: Optional[Sequence[float]] = None,
+    pull_out_distance_transport_air: float = 10.0,
+    transport_air_volumes: Optional[Sequence[float]] = None,
+    limit_curve_index: int = 0,
+    minimum_traverse_height_start: Optional[float] = None,
+    minimum_traverse_height_during: Optional[float] = None,
+    minimum_traverse_height_end: Optional[float] = None,
+    x_grouping_tolerance: Optional[float] = None,
+  ) -> None:
+    """Draw liquid from each container with a channel's tip.
+
+    As `probe_liquid_heights` goes about it: the containers are dealt to the channels in cycles,
+    one per channel each cycle, each cycle is planned into the fewest batches the channels can
+    reach at once, and the channels of a batch aspirate together in one `C0 AS`. The heights come
+    from the model: the tip may go no lower than the cavity bottom, an LLD search starts
+    `search_start_clearance` above the top, and the surface is the given liquid height above the
+    bottom, else what the container's tracked volume stands at. With volume tracking on, every
+    container gives up its volume and every tip takes it, refused before anything moves when a
+    container has too little or a tip too little room, and committed only once every batch is done.
+    The keyword arguments come in the order the aspiration runs, as `_aspirate_in_one_move` has
+    them; the per-container ones are one entry per container, in the containers' order.
+
+    Args:
+      containers: any number; a whole plate is fine.
+      piston_volumes: how much each channel's piston draws, in uL, per container.
+      use_channels: which channels, 0-indexed from the back. The first len(containers) when None,
+        up to every channel.
+      resource_offsets: added to where each channel goes in its container, in mm. Planned when
+        None, spreading channels that share a container. The z shifts the heights.
+      liquid_heights: where the liquid stands above each cavity bottom, in mm. None takes it from
+        the tracked volume, or, with an LLD mode, leaves it to the search.
+      lld_mode: how the liquid is found. Off goes to the surface as given.
+      flow_rates: in uL/s, per container. 100.0 when None.
+      gamma_lld_sensitivity: capacitive LLD sensitivity, 1 high to 4 low.
+      dp_lld_sensitivity: pressure LLD sensitivity, 1 high to 4 low.
+      detection_height_difference_for_dual_lld: the two detections' allowed difference, in mm.
+      aspirate_position_above_z_touch_off: how far above a Z touch the aspiration is, in mm.
+      clot_detection_heights: how far the tip may be held back by a clot, in mm, per container.
+      immersion_depth: how far into the liquid the tip goes, in mm; negative is out of it.
+      blow_out_air_volumes: air drawn before the liquid, in uL, per container.
+      pre_wetting_volumes: drawn and returned first, in uL, per container.
+      mix_volumes: per mixing cycle, in uL, per container.
+      mix_cycles: how many, per container.
+      mix_speeds: in uL/s, per container.
+      mix_position_from_liquid_surface: how far under the surface mixing is, in mm.
+      mix_surface_following_distance: how far mixing follows the surface, in mm.
+      surface_following_distance: how far the tip follows the sinking surface, in mm.
+      second_section_height: how tall the container's narrower lower section is, in mm.
+      second_section_ratio: that section's bottom to top ratio, in tenths.
+      settling_times: how long the tip waits in the liquid, in s, per container.
+      swap_speeds: how fast the tip leaves the liquid, in mm/s, per container.
+      pull_out_distance_transport_air: how far the tip rises before drawing transport air, in mm.
+      transport_air_volumes: air drawn after the liquid, in uL, per container.
+      limit_curve_index: the TADM limit curve, 0 for none.
+      minimum_traverse_height_start: the height every low channel's lowest point is raised to
+        before the first batch, in mm. Z safety when None.
+      minimum_traverse_height_during: the same, between batches, and where each batch ends. Z
+        safety when None.
+      minimum_traverse_height_end: where the tips used are left, in mm. Z safety when None.
+      x_grouping_tolerance: containers within this X distance share a batch, in mm.
+        `default_x_grouping_tolerance` when None.
+
+    Raises:
+      ValueError: If an argument is out of range, or the lists do not match.
+      RuntimeError: If a channel used carries no tip, the driver was given no deck, or nothing
+        knows where a container's liquid stands: no height given, volume tracking off, LLD off.
+      TooLittleLiquidError: If a container holds less than it is asked for.
+      TooLittleVolumeError: If a tip has no room for what it is asked to draw.
+    """
+    deck = self._driver.deck
+    if deck is None:
+      raise RuntimeError("containers are placed from the deck; this driver was given none")
+    n = len(containers)
+
+    def per_container(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:
+      if given is None:
+        return None
+      if len(given) != n:
+        raise ValueError(f"{name} must have one entry per container, {n}, has {len(given)}")
+      return list(given)
+
+    volumes = per_container("piston_volumes", piston_volumes)
+    assert volumes is not None
+    heights = per_container("liquid_heights", liquid_heights) or [None] * n
+    per_container_settings = {
+      "flow_rates": per_container("flow_rates", flow_rates),
+      "clot_detection_heights": per_container("clot_detection_heights", clot_detection_heights),
+      "blow_out_air_volumes": per_container("blow_out_air_volumes", blow_out_air_volumes),
+      "pre_wetting_volumes": per_container("pre_wetting_volumes", pre_wetting_volumes),
+      "mix_volumes": per_container("mix_volumes", mix_volumes),
+      "mix_cycles": per_container("mix_cycles", mix_cycles),
+      "mix_speeds": per_container("mix_speeds", mix_speeds),
+      "settling_times": per_container("settling_times", settling_times),
+      "swap_speeds": per_container("swap_speeds", swap_speeds),
+      "transport_air_volumes": per_container("transport_air_volumes", transport_air_volumes),
+    }
+
+    # The heights on the deck, in mm: the floor, where a search starts, and the surface.
+    dz = [0.0] * n if resource_offsets is None else [offset.z for offset in resource_offsets]
+    floors = [
+      round(c.get_location_wrt(deck, "c", "c", "cavity_bottom").z + z, 2)
+      for c, z in zip(containers, dz)
+    ]
+    searches = [
+      round(c.get_location_wrt(deck, "c", "c", "t").z + z + self.search_start_clearance, 2)
+      for c, z in zip(containers, dz)
+    ]
+    tracking = does_volume_tracking()
+    surfaces = []
+    for job, container in enumerate(containers):
+      if heights[job] is not None:
+        above_bottom = heights[job]
+      elif lld_mode != self.LLDMode.OFF:
+        above_bottom = (
+          0.0  # The search finds the surface; the floor is what the field falls back to.
+        )
+      elif tracking:
+        above_bottom = self._get_liquid_height_from_volume(
+          container, container.tracker.get_used_volume()
+        )
+      else:
+        raise RuntimeError(
+          f"no liquid height given for {container.name}, volume tracking is off and no LLD runs, "
+          "so nothing knows where its liquid is"
+        )
+      surfaces.append(round(floors[job] + above_bottom, 2))
+
+    async def run(batch: ChannelBatch) -> None:
+      jobs = batch.indices
+      await self._aspirate_in_one_move(
+        batch.channels,
+        [
+          Coordinate(batch.x_position, batch.y_positions[ch], surfaces[job])
+          for ch, job in zip(batch.channels, jobs)
+        ],
+        [searches[job] for job in jobs],
+        [floors[job] for job in jobs],
+        [volumes[job] for job in jobs],
+        minimum_traverse_height_start=minimum_traverse_height_during,
+        lld_mode=lld_mode,
+        gamma_lld_sensitivity=gamma_lld_sensitivity,
+        dp_lld_sensitivity=dp_lld_sensitivity,
+        detection_height_difference_for_dual_lld=detection_height_difference_for_dual_lld,
+        aspirate_position_above_z_touch_off=aspirate_position_above_z_touch_off,
+        immersion_depth=immersion_depth,
+        mix_position_from_liquid_surface=mix_position_from_liquid_surface,
+        mix_surface_following_distance=mix_surface_following_distance,
+        surface_following_distance=surface_following_distance,
+        second_section_height=second_section_height,
+        second_section_ratio=second_section_ratio,
+        pull_out_distance_transport_air=pull_out_distance_transport_air,
+        limit_curve_index=limit_curve_index,
+        minimum_traverse_height_end=minimum_traverse_height_during,
+        **{
+          name: [values[job] for job in jobs]
+          for name, values in per_container_settings.items()
+          if values is not None
+        },
+      )
+
+    # The model gives before the device draws, so a container with too little liquid or a tip
+    # with too little room refuses here, before anything has moved; nothing is kept until the end.
+    trackers = []
+    if tracking:
+      channels_for = use_channels or list(range(min(n, self.num_channels)))
+      for job, (container, volume) in enumerate(zip(containers, volumes)):
+        channel = channels_for[job % len(channels_for)]
+        tip = self.get_mounted_tip(channel)
+        if tip is None:
+          raise RuntimeError(
+            f"channel {channel} is not modelled with a tip; an aspiration needs one"
+          )
+        container.tracker.remove_liquid(volume)
+        tip.tracker.add_liquid(volume)
+        trackers += [container.tracker, tip.tracker]
+    try:
+      channels, _, batches = await self._prepare_batched(
+        deck,
+        containers,
+        use_channels,
+        resource_offsets,
+        x_grouping_tolerance,
+        minimum_traverse_height_start,
+        minimum_traverse_height_end,
+      )
+      await self._execute_batched(run, batches, minimum_traverse_height_during)
+    except BaseException:
+      for tracker in trackers:
+        tracker.rollback()
+      raise
+    for tracker in trackers:
+      tracker.commit()
+    if minimum_traverse_height_end is None:
+      await self.move_to_safe_z()
+    else:
+      await self.move_tool_bottom_to_z_positions(
+        {channel: minimum_traverse_height_end for channel in sorted(set(channels))}
+      )

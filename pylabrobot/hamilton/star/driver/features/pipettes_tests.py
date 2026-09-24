@@ -1295,13 +1295,10 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.sent, [])
 
 
-class TestLiquidProbingInSimulation(unittest.IsolatedAsyncioTestCase):
-  """The simulator answers `ZL`, `ZE` and `RL` from the containers' trackers, through the real path.
-
-  Tips on four channels, an Azenta plate with water in three wells of a column and none in the
+class _SimulatedPlateWithWater(unittest.IsolatedAsyncioTestCase):
+  """Tips on four channels, an Azenta plate with water in three wells of a column and none in the
   fourth, as the device notebook has it. The plate knows volume from height only, so the simulator
-  inverts it.
-  """
+  inverts it. Tracking is on for tips and volumes."""
 
   async def asyncSetUp(self):
     from pylabrobot.resources import set_tip_tracking, set_volume_tracking
@@ -1334,6 +1331,10 @@ class TestLiquidProbingInSimulation(unittest.IsolatedAsyncioTestCase):
 
   async def asyncTearDown(self):
     await self.driver.stop()
+
+
+class TestLiquidProbingInSimulation(_SimulatedPlateWithWater):
+  """The simulator answers `ZL`, `ZE` and `RL` from the containers' trackers, through the real path."""
 
   def _surface(self, well) -> float:
     """Where the tracker's water stands in `well`, in mm on the deck, by the well's own model."""
@@ -1430,6 +1431,80 @@ class TestLiquidProbingInSimulation(unittest.IsolatedAsyncioTestCase):
       else:
         assert found is not None
         self.assertAlmostEqual(found, expected, delta=0.1)
+
+
+class TestAspirateInSimulation(_SimulatedPlateWithWater):
+  """`aspirate` over containers: one `C0 AS` per batch, the model giving what the device draws."""
+
+  def _record_aspirations(self) -> List[str]:
+    sent: List[str] = []
+    log = self.driver._log_exchange
+
+    def recorded(written: str, read: Optional[str]) -> None:
+      if written.startswith("C0AS"):
+        sent.append(written)
+      log(written, read)
+
+    self.driver._log_exchange = recorded  # type: ignore[method-assign]
+    return sent
+
+  def _surface_field(self, well, volume: float) -> str:
+    bottom = well.get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    height = self.pipettes._get_liquid_height_from_volume(well, volume)
+    return f"{round((bottom + height) * 10):04}"
+
+  async def test_the_wells_give_and_the_tips_take_in_one_command(self):
+    sent = self._record_aspirations()
+    await self.pipettes.aspirate(self.wells[:2], [50.0, 20.0])
+    self.assertEqual(len(sent), 1)
+    self.assertIn(
+      f"zl{self._surface_field(self.wells[0], 150.0)} {self._surface_field(self.wells[1], 100.0)}",
+      sent[0],
+    )
+    self.assertIn("av00500 00200", sent[0])
+    self.assertEqual([w.tracker.get_used_volume() for w in self.wells[:2]], [100.0, 80.0])
+    tips = [self.pipettes.get_mounted_tip(channel) for channel in (0, 1)]
+    self.assertEqual(
+      [tip.tracker.get_used_volume() for tip in tips if tip is not None], [50.0, 20.0]
+    )
+    top = self.pipettes.configuration.z_range[1]
+    discs = await self.pipettes.request_stop_disc_z_positions()
+    self.assertEqual([discs[channel] for channel in range(4)], [top] * 4)
+
+  async def test_two_cycles_are_two_commands(self):
+    for row in "EFGH":
+      self.plate.get_well(f"{row}1").tracker.set_volume(100.0)
+    wells = [self.plate.get_well(f"{row}1") for row in "ABCEFGH"]
+    sent = self._record_aspirations()
+    await self.pipettes.aspirate(wells, [10.0] * 7, use_channels=[0, 1, 2, 3])
+    self.assertEqual(len(sent), 2)
+    self.assertEqual([w.tracker.get_used_volume() for w in wells], [140.0, 90.0, 40.0] + [90.0] * 4)
+
+  async def test_too_little_liquid_is_refused_before_anything_is_sent(self):
+    from pylabrobot.resources.errors import TooLittleLiquidError
+
+    sent = self._record_aspirations()
+    with self.assertRaises(TooLittleLiquidError):
+      await self.pipettes.aspirate([self.wells[3]], [10.0])
+    self.assertEqual(sent, [])
+    self.assertEqual(self.wells[3].tracker.get_used_volume(), 0.0)
+
+  async def test_without_tracking_the_surface_has_to_be_given_or_searched_for(self):
+    from pylabrobot.resources import set_volume_tracking
+
+    set_volume_tracking(False)
+    sent = self._record_aspirations()
+    with self.assertRaises(RuntimeError) as refused:
+      await self.pipettes.aspirate(self.wells[:1], [10.0])
+    self.assertIn("nothing knows", str(refused.exception))
+    self.assertEqual(sent, [])
+    bottom = self.wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    await self.pipettes.aspirate(self.wells[:1], [10.0], liquid_heights=[2.0])
+    self.assertIn(f"zl{round((bottom + 2.0) * 10):04}", sent[0])
+    await self.pipettes.aspirate(self.wells[:1], [10.0], lld_mode=Pipettes.LLDMode.CAPACITIVE)
+    self.assertIn(f"zl{round(bottom * 10):04}", sent[1])
+    self.assertIn("lm1", sent[1])
+    self.assertEqual(self.wells[0].tracker.get_used_volume(), 150.0)
 
 
 class TestBatchPlanning(unittest.IsolatedAsyncioTestCase):
