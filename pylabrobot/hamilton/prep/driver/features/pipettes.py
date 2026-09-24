@@ -4124,7 +4124,7 @@ class Pipettes:
     z_bottom_search_offset: Optional[List[float]] = None,
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
     auto_container_geometry: bool = False,
-    hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
+    hamilton_liquid_classes: Optional[Sequence[Optional[HamiltonLiquidClass]]] = None,
     disable_volume_correction: Optional[List[bool]] = None,
   ) -> _ChannelContext[_OpT]:
     """Resolve shared per-channel state for aspirate or dispense.
@@ -4218,7 +4218,7 @@ class Pipettes:
     tadm: Optional[PrepCmd.TadmParameters] = None,
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
     auto_container_geometry: bool = False,
-    hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
+    hamilton_liquid_classes: Optional[Sequence[Optional[HamiltonLiquidClass]]] = None,
     disable_volume_correction: Optional[List[bool]] = None,
     lld_mode: Optional[Pipettes.LLDMode] = None,
     mix: Optional[Sequence[Optional[Mix]]] = None,
@@ -4771,7 +4771,7 @@ class Pipettes:
   async def aspirate(
     self,
     containers: Sequence[Container],
-    volumes: Sequence[float],
+    volumes: Optional[Sequence[float]] = None,
     use_channels: Optional[List[int]] = None,
     resource_offsets: Optional[List[Coordinate]] = None,
     liquid_heights: Optional[Sequence[Optional[float]]] = None,
@@ -4779,7 +4779,7 @@ class Pipettes:
     flow_rates: Optional[Sequence[Optional[float]]] = None,
     *,
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
-    disable_volume_correction: Optional[List[bool]] = None,
+    piston_volumes: Optional[Sequence[float]] = None,
     immersion_depths: Optional[Sequence[float]] = None,
     blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
     pre_wetting_volumes: Optional[List[float]] = None,
@@ -4807,6 +4807,7 @@ class Pipettes:
     Args:
       containers: one per channel used.
       volumes: how much liquid to take from each container, in uL, corrected by the liquid class.
+        One of this and `piston_volumes`.
       use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
       resource_offsets: added to where each channel goes in its container, in mm. The z shifts
         the heights. Channels sharing a container spread across it in Y when None.
@@ -4817,8 +4818,8 @@ class Pipettes:
       flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
       hamilton_liquid_classes: the class for each container's volume. Looked up for the
         channel's tip, water, when None.
-      disable_volume_correction: per container, whether the volume is sent as the piston's,
-        uncorrected by the class.
+      piston_volumes: how much each piston draws, in uL, per container, as given, with no liquid
+        class. One of this and `volumes`.
       immersion_depths: how far under the surface each tip aspirates, in mm, per container.
         With LLD the search's `z_submerge`, 2.0 when None; without, off `z_fluid`, 0.0 when None.
       blow_out_air_volumes: air drawn before the liquid, in uL, per container. The liquid
@@ -4855,7 +4856,9 @@ class Pipettes:
       command_version: "v1" or "v2" aspirate commands. What the firmware supports when None.
 
     Raises:
-      ValueError: If an argument is out of range or the lists do not match.
+      ValueError: If an argument is out of range, the lists do not match, both or neither of
+        `volumes` and `piston_volumes` are given, a class is given with `piston_volumes`, or no
+        class is known for a channel's tip.
       RuntimeError: If a channel used carries no tip, or nothing knows where a container's
         liquid stands: no height given, volume tracking off, no LLD.
       TooLittleLiquidError: If a container holds less than it is asked for.
@@ -4863,12 +4866,17 @@ class Pipettes:
     containers = list(containers)
     use_channels = use_channels if use_channels is not None else list(range(len(containers)))
     n = len(containers)
+    drawn = volumes if volumes is not None else piston_volumes
+    if drawn is None or (volumes is not None and piston_volumes is not None):
+      raise ValueError("give one of volumes and piston_volumes")
+    if piston_volumes is not None and hamilton_liquid_classes is not None:
+      raise ValueError("piston_volumes are sent as given; no liquid class applies")
     effective_lld = self._resolve_effective_lld(
       None if lld_mode is None else [lld_mode] * n, lld, n
     )
     ops = self._build_transfers(
       containers,
-      volumes,
+      drawn,
       use_channels,
       offsets=resource_offsets
       if resource_offsets is not None
@@ -4877,6 +4885,19 @@ class Pipettes:
       flow_rates=flow_rates,
       blow_out_air_volume=blow_out_air_volumes,
     )
+    classes: List[Optional[HamiltonLiquidClass]] = [None] * n
+    if piston_volumes is None:
+      classes = resolve_hamilton_liquid_classes(
+        None if hamilton_liquid_classes is None else list(hamilton_liquid_classes),
+        ops,
+        jet=False,
+        blow_out=False,
+      )
+      for op, hlc in zip(ops, classes):
+        if hlc is None:
+          raise ValueError(
+            f"no liquid class for {op.tip}; give hamilton_liquid_classes, or piston_volumes"
+          )
     is_tadm = tadm is not None
     use_v2 = self._resolve_command_version(command_version)
 
@@ -4899,8 +4920,7 @@ class Pipettes:
       tadm=tadm,
       container_segments=container_segments,
       auto_container_geometry=auto_container_geometry,
-      hamilton_liquid_classes=hamilton_liquid_classes,
-      disable_volume_correction=disable_volume_correction,
+      hamilton_liquid_classes=classes,
       lld_mode=lld_mode,
       mix=mix,
       mix_position_from_liquid_surface=mix_position_from_liquid_surface,

@@ -124,10 +124,9 @@ def test_channels_tip_and_volume_trackers_follow_pick_up_aspirate_dispense_and_d
         assert tip is not None and tip.parent is p.pipettes.shaft(i)
       await p.pipettes.aspirate(
         src,
-        volumes=vols,
+        piston_volumes=vols,
         use_channels=use,
         liquid_heights=[1.0] * 2,
-        disable_volume_correction=[True] * 2,
       )
       for well in src:
         assert well.tracker.get_used_volume() == pytest.approx(80.0)
@@ -177,7 +176,7 @@ def test_aspirate_takes_a_missing_liquid_height_from_the_tracked_volume():
       well.tracker.set_volume(100.0)
       await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
       sent = _record(p)
-      await p.pipettes.aspirate([well], volumes=[20.0], use_channels=[0])
+      await p.pipettes.aspirate([well], piston_volumes=[20.0], use_channels=[0])
       entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
       bottom = well.get_location_wrt(deck, "c", "c", "cavity_bottom").z
       height = well.compute_height_from_volume(100.0)
@@ -185,7 +184,7 @@ def test_aspirate_takes_a_missing_liquid_height_from_the_tracked_volume():
 
       set_volume_tracking(False)
       with pytest.raises(RuntimeError, match="nothing knows where its liquid is"):
-        await p.pipettes.aspirate([well], volumes=[20.0], use_channels=[0])
+        await p.pipettes.aspirate([well], piston_volumes=[20.0], use_channels=[0])
       await p.stop()
     finally:
       set_tip_tracking(False)
@@ -209,11 +208,11 @@ def test_aspirate_immerses_the_tip_below_the_surface_with_and_without_lld():
     await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
     sent = _record(p)
     await p.pipettes.aspirate(
-      [well], volumes=[0.0], use_channels=[0], liquid_heights=[5.0], immersion_depths=[2.0]
+      [well], piston_volumes=[0.0], use_channels=[0], liquid_heights=[5.0], immersion_depths=[2.0]
     )
     await p.pipettes.aspirate(
       [well],
-      volumes=[0.0],
+      piston_volumes=[0.0],
       use_channels=[0],
       lld_mode=Pipettes.LLDMode.CAPACITIVE,
       immersion_depths=[1.5],
@@ -221,6 +220,35 @@ def test_aspirate_immerses_the_tip_below_the_surface_with_and_without_lld():
     plain, searched = [c.aspirate_parameters[0] for c in sent if hasattr(c, "aspirate_parameters")]
     assert plain.no_lld.z_fluid == pytest.approx(bottom + 3.0, abs=0.01)
     assert searched.lld.z_submerge == pytest.approx(1.5)
+    await p.stop()
+
+  _run(_t())
+
+
+def test_aspirate_takes_volumes_by_a_liquid_class_or_piston_volumes_as_given():
+  """One of volumes and piston_volumes; a tip without a class is refused before anything moves."""
+
+  async def _t():
+    deck = PrepDeck()
+    tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
+    plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+    p = PrepSimulationDriver(deck=deck)
+    await p.setup()
+    assert p.pipettes is not None
+    well = plate.get_item("A1")
+    await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
+    for kwargs, match in (
+      ({}, "one of volumes and piston_volumes"),
+      ({"volumes": [5.0], "piston_volumes": [5.0]}, "one of volumes and piston_volumes"),
+      ({"piston_volumes": [5.0], "hamilton_liquid_classes": [None]}, "no liquid class applies"),
+      ({"volumes": [5.0]}, "no liquid class for"),
+    ):
+      with pytest.raises(ValueError, match=match):
+        await p.pipettes.aspirate([well], use_channels=[0], liquid_heights=[2.0], **kwargs)
+    sent = _record(p)
+    await p.pipettes.aspirate([well], piston_volumes=[5.0], use_channels=[0], liquid_heights=[2.0])
+    entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
+    assert entry.common.liquid_volume == pytest.approx(5.0)
     await p.stop()
 
   _run(_t())
@@ -242,7 +270,7 @@ def test_channels_sharing_a_container_spread_across_it():
     await p.pipettes.pick_up_tips(tip_rack["A1:B1"], use_channels=[0, 1])
     sent = _record(p)
     await p.pipettes.aspirate(
-      [dish] * 2, volumes=[5.0] * 2, use_channels=[0, 1], liquid_heights=[5.0] * 2
+      [dish] * 2, piston_volumes=[5.0] * 2, use_channels=[0, 1], liquid_heights=[5.0] * 2
     )
     rear, front = [e.aspirate.y_position for e in sent[-1].aspirate_parameters]
     centre = dish.get_location_wrt(deck, "c", "c", "c").y
@@ -267,7 +295,7 @@ def test_aspirate_sends_a_mix_per_container_and_the_default_block_where_none():
     sent = _record(p)
     await p.pipettes.aspirate(
       plate["A1:B1"],
-      volumes=[10.0, 10.0],
+      piston_volumes=[10.0, 10.0],
       use_channels=[0, 1],
       liquid_heights=[2.0, 2.0],
       mix=[Mix(volume=30.0, repetitions=3, flow_rate=50.0), None],
@@ -282,7 +310,7 @@ def test_aspirate_sends_a_mix_per_container_and_the_default_block_where_none():
     with pytest.raises(ValueError, match="mix length"):
       await p.pipettes.aspirate(
         plate["A1:B1"],
-        volumes=[10.0, 10.0],
+        piston_volumes=[10.0, 10.0],
         use_channels=[0, 1],
         liquid_heights=[2.0, 2.0],
         mix=[None],
