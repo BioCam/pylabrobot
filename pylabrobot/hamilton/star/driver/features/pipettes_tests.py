@@ -2248,6 +2248,23 @@ class TestDispenseInSimulation(_SimulatedPlateWithWater):
     # The tracker takes the measured volume, read in tenths of a millimetre, then the 10 given.
     self.assertAlmostEqual(self.wells[1].tracker.get_used_volume(), 110.0, delta=2.0)
 
+  async def test_a_well_the_search_finds_fuller_than_the_model_is_refused_before_booking(self):
+    await self.pipettes.aspirate(self.wells[:1], piston_volumes=[100.0])
+    # The model has 100 uL in B1; the search answers 300, leaving room for 60, not 100.
+    full = self.wells[1].compute_height_from_volume(300.0)
+    bottom = self.wells[1].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    self.pipettes._probe_batch_liquid_heights = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      return_value={0: [round(bottom + full, 2)]}
+    )
+    sent = self._record()
+    with self.assertRaises(RuntimeError) as refused:
+      await self.pipettes.dispense(
+        self.wells[1:2], piston_volumes=[100.0], lld_mode=Pipettes.LLDMode.CAPACITIVE
+      )
+    self.assertIn("room for", str(refused.exception))
+    self.assertEqual(sent, [])
+    self.assertAlmostEqual(self.wells[1].tracker.get_used_volume(), 300.0, delta=2.0)
+
   async def test_pressure_lld_is_refused_for_a_dispense(self):
     sent = self._record()
     with self.assertRaises(ValueError) as refused:

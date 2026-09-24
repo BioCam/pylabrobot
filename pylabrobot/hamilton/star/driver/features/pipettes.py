@@ -6278,7 +6278,8 @@ class Pipettes:
         for its dispenses, or a container without room for them.
       RuntimeError: A channel without a tip, or without the firmware a ZTOUCH needs, no deck, a
         container without height-volume functions under CAPACITIVE, no liquid found where the
-        channels searched, or no floor met where they touched.
+        channels searched, a container the search found without the room, or no floor met where
+        they touched.
     """
     deck = self._driver.deck
     if deck is None:
@@ -6449,6 +6450,14 @@ class Pipettes:
         given_floors is not None,
         tracking,
       )
+      # The search may have found more liquid than the model had: the room is checked again.
+      for channel, job in zip(batch.channels, batch.indices):
+        if job in searched and liquid[job] > containers[job].tracker.get_free_volume() + 1e-6:
+          raise RuntimeError(
+            f"{containers[job].name} holds {containers[job].tracker.get_used_volume():.1f} uL as "
+            f"measured, room for {containers[job].tracker.get_free_volume():.1f} uL, not the "
+            f"{liquid[job]:.1f} uL channel {channel} is to dispense"
+          )
 
     async def send(batch: ChannelBatch) -> None:
       """One `C0 DS` for the batch, from the heights as they stand."""
