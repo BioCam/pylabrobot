@@ -6,6 +6,7 @@ import datetime
 import enum
 import logging
 import math
+import re
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import (
@@ -311,6 +312,23 @@ class PipettesConfiguration:
       self.channels.extend(PipetteConfiguration() for _ in range(num_channels))
     elif len(self.channels) != num_channels:
       raise ValueError(f"configuration has {len(self.channels)} channels, expected {num_channels}")
+
+
+@dataclass(frozen=True)
+class TADMCurve:
+  """One recorded TADM pressure curve, read back from a channel's FIFO.
+
+  Attributes:
+    measurement_id: the 4-character label stamped on the recording (`nr`).
+    operation: which stroke recorded it, from the liquid-handling-type field.
+    had_error: whether the firmware flagged a TADM error on it.
+    pressures: signed pressures in Pa, in time order.
+  """
+
+  measurement_id: str
+  operation: Literal["aspirate", "dispense", "other"]
+  had_error: bool
+  pressures: List[int]
 
 
 class Pipettes:
@@ -4458,6 +4476,61 @@ class Pipettes:
     """
     self._require_channel(channel)
     await self._driver.send_command(module=self.channel_id(channel), command="BH")
+
+  async def _advance_tadm_fifo(self, channel: int) -> bool:
+    """Move the FIFO pointer to the next stored curve; whether there is one. `Px QM`."""
+    resp = await self._driver.send_command(module=self.channel_id(channel), command="QM")
+    return "qm1" in resp
+
+  async def _request_tadm_curve_parameters(
+    self, channel: int
+  ) -> Tuple[int, Literal["aspirate", "dispense", "other"], bool, str]:
+    """Point count, operation, error flag and label of the curve at the pointer. `Px QL`."""
+    resp = await self._driver.send_command(module=self.channel_id(channel), command="QL")
+    match = re.search(r"ql([\d ]+?)nr(.*?)gd", resp)
+    if match is None:
+      raise ValueError(f"could not parse QL reply: {resp!r}")
+    fields = match.group(1).split()
+    operation: Literal["aspirate", "dispense", "other"] = (
+      "aspirate" if int(fields[1]) == 0 else "dispense" if int(fields[1]) == 1 else "other"
+    )
+    return int(fields[0]), operation, int(fields[2]) != 0, match.group(2).strip()
+
+  async def _request_tadm_curve_data(self, channel: int, start: int, count: int) -> List[int]:
+    """`count` signed pressures in Pa from index `start` of the curve at the pointer. `Px QN`."""
+    resp = await self._driver.send_command(
+      module=self.channel_id(channel), command="QN", li=f"{start:04}", ln=f"{count:02}"
+    )
+    return [int(value) for value in resp.split("qn")[-1].split()]
+
+  async def read_tadm_curve(self, channel: int, points_per_read: int = 50) -> Optional[TADMCurve]:
+    """Read the next recorded curve from a channel's TADM FIFO.
+
+    Only a `points_per_read` of 1 is verified on hardware; drop to it if a batched read misbehaves.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+      points_per_read: pressures per `QN` request, 1 to 50.
+
+    Returns:
+      The curve, or None when the FIFO is empty.
+    """
+    self._require_channel(channel)
+    if not 1 <= points_per_read <= 50:
+      raise ValueError(f"points_per_read must be in [1, 50], is {points_per_read}")
+    if not await self._advance_tadm_fifo(channel):
+      return None
+    n_points, operation, had_error, measurement_id = await self._request_tadm_curve_parameters(
+      channel
+    )
+    pressures: List[int] = []
+    while len(pressures) < n_points:
+      count = min(points_per_read, n_points - len(pressures))
+      values = await self._request_tadm_curve_data(channel, len(pressures), count)
+      if not values:  # an empty reply would otherwise loop forever
+        break
+      pressures.extend(values)
+    return TADMCurve(measurement_id, operation, had_error, pressures)
 
   # ----------------------------------------
   # Liquid handling
