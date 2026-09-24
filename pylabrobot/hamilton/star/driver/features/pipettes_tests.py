@@ -1587,7 +1587,7 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertIn(f"ta{round(jet_empty.aspiration_air_transport_volume * 10):03}", sent[0])
     self.assertIn(f"de{round(jet_empty.aspiration_swap_speed * 10):04}", sent[0])
 
-  async def test_a_mix_reaches_the_four_mixing_fields(self):
+  async def test_a_pre_mix_reaches_the_four_mixing_fields(self):
     from pylabrobot.lib.liquid_handling.mix import Mix
 
     sent = self._record_aspirations()
@@ -1598,7 +1598,10 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     await self.pipettes.aspirate(
       self.wells[:2],
       piston_volumes=[10.0, 10.0],
-      mix=[Mix(volume=30.0, repetitions=3, flow_rate=50.0, surface_following_distance=1.5), None],
+      pre_mixes=[
+        Mix(volume=30.0, repetitions=3, flow_rate=50.0, surface_following_distance=1.5),
+        None,
+      ],
     )
     self.assertIn(
       "mv00300 00000 00300&mc03 00 03&mp000 000 000&ms0500 1000 0500&mh0015 0000 0015&", sent[1]

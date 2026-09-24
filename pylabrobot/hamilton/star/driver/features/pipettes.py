@@ -4425,7 +4425,7 @@ class Pipettes:
     immersion_depths: Optional[List[float]] = None,
     blow_out_air_volumes: Optional[List[float]] = None,
     pre_wetting_volumes: Optional[List[float]] = None,
-    mix: Optional[List[Optional[Mix]]] = None,
+    pre_mixes: Optional[List[Optional[Mix]]] = None,
     mix_position_from_liquid_surface: float = 0.0,
     flow_rates: Optional[List[float]] = None,
     surface_following_distances: Optional[List[float]] = None,
@@ -4461,7 +4461,7 @@ class Pipettes:
       immersion_depths: how far into the liquid each tip goes; negative is out of it. 0.0 when None.
       blow_out_air_volumes: air drawn before the liquid. 0.0 when None.
       pre_wetting_volumes: drawn and returned first. 0.0 when None.
-      mix: a `Mix` per channel, None for no mixing.
+      pre_mixes: a `Mix` per channel, mixed before the draw, None for no mixing.
       mix_position_from_liquid_surface: mixing depth under the surface.
       flow_rates: 100.0 when None.
       surface_following_distances: how far each tip follows the sinking surface. 0.0 when None.
@@ -4520,7 +4520,7 @@ class Pipettes:
     following = per_channel("surface_following_distances", surface_following_distances, 0.0)
     swap = per_channel("swap_speeds", swap_speeds, 100.0)
     settling = per_channel("settling_times", settling_times, 0.0)
-    mixes = per_channel("mix", mix, None)
+    mixes = per_channel("pre_mixes", pre_mixes, None)
     mix_volume = [m.volume if m is not None else 0.0 for m in mixes]
     mix_count = [m.repetitions if m is not None else 0 for m in mixes]
     mix_speed = [m.flow_rate if m is not None else 100.0 for m in mixes]
@@ -4764,7 +4764,7 @@ class Pipettes:
     immersion_depths: Optional[Sequence[float]] = None,
     blow_out_air_volumes: Optional[Sequence[float]] = None,
     pre_wetting_volumes: Optional[Sequence[float]] = None,
-    mix: Optional[Sequence[Optional[Mix]]] = None,
+    pre_mixes: Optional[Sequence[Optional[Mix]]] = None,
     mix_position_from_liquid_surface: float = 0.0,
     surface_following_distances: Optional[Sequence[float]] = None,
     second_section_height: float = 3.2,
@@ -4815,7 +4815,7 @@ class Pipettes:
       immersion_depths: how far into the liquid each tip goes, in mm; negative is out of it.
       blow_out_air_volumes: air drawn before the liquid, in uL. The class's, else 0.0, when None.
       pre_wetting_volumes: drawn and returned first, in uL.
-      mix: a `Mix` per container, None for no mixing.
+      pre_mixes: a `Mix` per container, mixed before the draw, None for no mixing.
       mix_position_from_liquid_surface: mixing depth under the surface, in mm.
       surface_following_distances: how far each tip follows the sinking surface, in mm.
       second_section_height: height of the container's narrower lower section, in mm.
@@ -4908,7 +4908,7 @@ class Pipettes:
       drawn = per_container("piston_volumes", piston_volumes) or []
       liquid = drawn
     heights = per_container("liquid_heights", liquid_heights) or [None] * n
-    mixes = per_container("mix", mix) or [None] * n
+    mixes = per_container("pre_mixes", pre_mixes) or [None] * n
 
     def from_class(
       name: str, given: Optional[Sequence[Any]], attribute: str
@@ -4994,7 +4994,7 @@ class Pipettes:
         [floors[job] for job in jobs],
         [drawn[job] for job in jobs],
         minimum_traverse_height_start=minimum_traverse_height_during,
-        mix=[mixes[job] for job in jobs],
+        pre_mixes=[mixes[job] for job in jobs],
         lld_mode=lld_mode,
         gamma_lld_sensitivity=gamma_lld_sensitivity,
         dp_lld_sensitivity=dp_lld_sensitivity,
