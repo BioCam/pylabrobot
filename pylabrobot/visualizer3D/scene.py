@@ -1,13 +1,9 @@
 """Flatten any resource tree into prototypes and instances.
 
-The current visualizer sends one JSON object per resource, so a 96-well plate repeats the same
-geometry ninety-six times. Here a resource is split in two: what it *is* (its model, shared by
-every resource serializing to the same thing) and where it *is* (its instance: a name, a parent,
-and a transform). Models go over the wire once; instances are six floats in a typed array.
-
-Nothing here knows about any resource type. The split is derived from `Resource.serialize()` by
-removing the fields that vary per instance, so a resource type that does not exist yet flattens
-correctly the day it is written.
+A resource is split into its model (what it is, shared by every resource that serializes the
+same way, sent once) and its instance (a name, a parent, six floats). The split is derived from
+`Resource.serialize()` by removing the fields that vary per instance, so no resource type is
+known here.
 """
 
 import base64
@@ -15,7 +11,7 @@ import functools
 import inspect
 import json
 import struct
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
@@ -26,39 +22,31 @@ from .grids import describe_bands, describe_grid
 # else is shared by every resource that serializes the same way, and so belongs to the model.
 INSTANCE_FIELDS = frozenset({"name", "location", "rotation", "parent_name", "children"})
 
-# Identity also leaks below the top level: a tip spot carries the name of its prototype tip, and a
-# plate carries a map of identifier to the name of the well it holds. Both are this resource's
-# links, not its kind, and leaving them in gives every plate and every tip spot its own model.
+# Keys that name one particular thing at any depth: a tip spot carries its prototype tip's name,
+# a plate the names of its wells. Links, not kind.
 NAME_KEYS = frozenset({"name", "parent_name"})
 
-# Fields a resource may declare about itself that `serialize()` does not yet carry. Upstream these
-# belong in the resource's own serialization; passing them through here keeps the viewer free of
-# any device's constants in the meantime.
+# Fields a resource may declare about itself that `serialize()` does not carry, read straight off
+# the resource.
 DECLARED_FIELDS = ("reference_point", "window", "mesh", "reference_glb", "appearance")
 RESOURCE_LINK = "<resource>"
 
 
 def _declared(value: Any) -> Any:
-  """A declared field as JSON.
+  """A declared field as JSON: anything with a `serialize` method is asked for it.
 
-  Read straight off the resource rather than out of `serialize()`, so a field may still be a live
-  object - a pipette states its reference point as a `Coordinate` where an arm states one as a word.
-  Anything that knows its own serialized form is asked for it.
+  Read off the resource, so a field may be a live object such as a `Coordinate`.
   """
   serialize = getattr(value, "serialize", None)
   return serialize() if callable(serialize) else value
 
 
-def _model_of(data: Dict[str, Any], names: frozenset) -> Dict[str, Any]:
+def _model_of(data: Dict[str, Any], names: FrozenSet[str]) -> Dict[str, Any]:
   """The kind-defining part of a serialized resource, with every identity removed.
 
-  Two rules, both general. A key called `name` anywhere names one particular thing. And inside a
-  nested structure, a string that matches a resource in this tree is a link to it. Ordered maps
-  such as a plate's item ordering keep their keys, which is the part that does describe the kind.
-
-  The link rule deliberately stops at the top level: a resource's own descriptive fields are
-  scalars there, and a category can legitimately read the same as some resource's name (a deck
-  called "deck", a bench called "bench") without being a reference to it.
+  Inside nested values a `NAME_KEYS` key is dropped and a string naming a resource in `names`
+  becomes `RESOURCE_LINK`. Top-level scalars are kept as they are: a category may read the same
+  as a resource's name (a deck called "deck") without referring to it.
   """
 
   def strip(value: Any) -> Any:
@@ -79,12 +67,7 @@ def _model_of(data: Dict[str, Any], names: frozenset) -> Dict[str, Any]:
 
 @functools.lru_cache(maxsize=None)
 def _public_methods(cls: type) -> Tuple[str, ...]:
-  """The public operations of a resource class, as signatures.
-
-  A model is already one per class, so the operations belong on the model. The existing visualizer
-  keeps them in a separate registry keyed by type name and re-sends it with every assignment; here
-  they ride along with the thing they describe and are sent once.
-  """
+  """The public operations of a resource class as signatures, sorted, cached per class."""
   signatures = []
   for name in dir(cls):
     if name.startswith("_"):
@@ -119,16 +102,15 @@ def _rotation_of(data: Dict[str, Any]) -> Tuple[float, float, float]:
 
 
 class Scene:
-  """A flattened resource tree: models, instances, and the measurements that justify the split."""
+  """A flattened resource tree: models, instances, and the measurements of the split."""
 
-  def __init__(self, names: Optional[frozenset] = None) -> None:
+  def __init__(self, names: Optional[FrozenSet[str]] = None) -> None:
     self.names_in_tree = names or frozenset()
     # Every model derived this pass, by resource name, so the next pass can skip the work.
     self.derived: Dict[str, Dict[str, Any]] = {}
     self.models: List[Dict[str, Any]] = []
-    # Candidate models per serialized type. Interning compares dictionaries directly rather than
-    # serializing each one to a key: dict equality is a C-level compare, and a tree has only a
-    # handful of distinct models per type, so the scan is short.
+    # Candidate model indices per serialized type: interning compares dicts directly, and a tree
+    # has only a handful of distinct models per type, so the scan is short.
     self._candidates: Dict[str, List[int]] = {}
     self.names: List[str] = []
     self.model_of_instance: List[int] = []
@@ -149,10 +131,7 @@ class Scene:
   def add_known(self, resource: Resource, parent: int, model: Dict[str, Any]) -> int:
     """Add a resource whose model is already known, without serializing it again.
 
-    Deriving a model means serializing a resource in full and then throwing nearly all of it away:
-    profiling a facility of three hundred plates, that was over half the flattening time, and
-    twenty-eight thousand wells were serialized to produce one model. A resource that has not
-    changed has the model it had last time, and its position is readable directly.
+    Its position is read off the resource.
     """
     index = len(self.names)
     self.names.append(resource.name)
@@ -239,7 +218,7 @@ def _serialized_children(data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 
 def _legacy_shape(resource: Resource, data: Dict[str, Any]) -> Dict[str, Any]:
-  """The comparison's payload shape: one node per resource, listing every child, left out or not."""
+  """One JSON node per resource, listing every child, including those `serialize()` leaves out."""
   serialized = _serialized_children(data)
   data["children"] = [
     _legacy_shape(child, serialized.get(child.name) or child.serialize())
@@ -249,11 +228,11 @@ def _legacy_shape(resource: Resource, data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def legacy_size(root: Resource) -> int:
-  """The size of the tree as the existing visualizer sends it: one node per resource."""
+  """The size of the tree serialized as one JSON node per resource."""
   return len(json.dumps(_legacy_shape(root, root.serialize())))
 
 
-def _links_to(model: Dict[str, Any], names: frozenset) -> bool:
+def _links_to(model: Dict[str, Any], names: FrozenSet[str]) -> bool:
   """Whether a nested value of `model` is a link, or a string naming one of `names`."""
 
   def found(value: Any) -> bool:
@@ -270,25 +249,19 @@ def build_scene(
   root: Resource,
   measure_legacy: bool = False,
   known: Optional[Dict[str, Dict[str, Any]]] = None,
-  known_names: Optional[frozenset] = None,
+  known_names: Optional[FrozenSet[str]] = None,
 ) -> Scene:
   """Flatten `root` and every descendant into models and instances.
 
-  Traversal is depth-first and parents are emitted before children, so a client can resolve world
-  transforms in one forward pass without sorting.
-
-  `Resource.serialize()` serializes the whole subtree, so a node is serialized once and the nested
-  children handed down the walk: serializing at every node costs each resource once per ancestor.
+  Depth-first, parents before children, so world transforms resolve in one forward pass. A node
+  is serialized once and its nested children are handed down the walk.
 
   Args:
     root: the resource to flatten.
-    measure_legacy: also measure the tree the way the existing visualizer sends it, to report what
-      the split saves. Off by default: a running viewer measures it at start, a benchmark here.
-    known: models derived by an earlier pass, by resource name. A name found here is taken to have
-      the model it had then, which is what makes a rebuild cost only what actually changed.
-    known_names: the names that pass saw. Whether a string in a model counts as a reference to
-      another resource depends on which names exist, so a model that holds a link, or a string
-      naming a resource that has since appeared or gone, is derived again; the rest are reused.
+    measure_legacy: also measure the per-resource tree, for `Scene.legacy_bytes`.
+    known: models derived by an earlier pass, by resource name, reused unless stale.
+    known_names: the names that pass saw; a model that links to, or names, a resource that has
+      since appeared or gone is derived again.
   """
   names = frozenset(all_names(root))
   scene = Scene(names=names)
@@ -346,10 +319,8 @@ def _without_identity(value: Any) -> Any:
   return value
 
 
-# What a viewer can see. Firmware reports position to 0.1 mm and a tenth of a microlitre is below
-# anything a well can show, so a change smaller than this is not news. Rounding to it rather than
-# comparing against a threshold means two values that look the same *are* the same: they produce one
-# signature, so they suppress a resend and share one entry in the table below. One rule, both jobs.
+# What a viewer can see: firmware reports position to 0.1 mm. Rounding rather than thresholding
+# makes two values that look the same produce one signature and share one table entry.
 STATE_DECIMALS = 1
 
 
@@ -367,8 +338,7 @@ def _visible(value: Any) -> Any:
 def state_signature(published: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
   """The publishable form of one resource's state, and a key that is equal when it looks equal.
 
-  The key covers everything but `location`, which is one resource's own and travels beside the
-  shared table; it is kept in the cleaned state as published, since the wire carries it as is.
+  The key leaves out `location`; the cleaned state keeps it as published.
   """
   cleaned = _visible(
     _without_identity(
@@ -386,18 +356,10 @@ def state_signature(published: Dict[str, Any]) -> Tuple[Dict[str, Any], str]:
 
 
 def pack_state(states: Dict[str, Tuple[Dict[str, Any], str]], epoch: int = 0) -> Dict[str, Any]:
-  """Pack `{name: (cleaned state, key)}` into distinct states plus an index per name.
+  """Pack `{name: (cleaned state, key)}` into a table of distinct states plus an index per name.
 
-  State is overwhelmingly repetitive: every empty well publishes the same zeros, every unused tip
-  spot the same tip. Sending each one in full costs a few hundred bytes per resource and dominates
-  the message on any facility with more than a device or two in it, so the same prototype-and-
-  instance split the geometry uses is applied here.
-
-  Every name that went in comes out, including one whose state cleans down to nothing. Dropping it
-  would leave a client that had already been told about a full well believing it was still full.
-
-  A position is one resource's own, so it travels under the name in `locations` rather than in
-  the shared table: left in, it would give every moved well a state of its own.
+  Every name that went in comes out, including one whose state cleaned down to nothing. A
+  `location` travels under the name in `locations`, not in the shared table.
   """
   distinct: Dict[str, int] = {}
   table: List[Dict[str, Any]] = []
@@ -413,20 +375,16 @@ def pack_state(states: Dict[str, Tuple[Dict[str, Any], str]], epoch: int = 0) ->
       table.append(cleaned)
     index[name] = distinct[key]
 
-  # Addressed by name, deliberately. Addressing by scene index would be smaller, and was tried: it
-  # is wrong, because the order instances are emitted in is not stable. Resources are created
-  # lazily during setup and reassigned by code that has nothing to do with the viewer, which
-  # reorders a parent's children, and an index that means one resource in one scene means a
-  # different one in the next. A name means the same thing in every scene.
+  # Addressed by name: instance order is not stable across rebuilds, since setup creates resources
+  # lazily and a reassignment reorders a parent's children.
   return {"epoch": epoch, "states": table, "of": index, "locations": locations}
 
 
 def collect_state(root: Resource) -> Dict[str, Tuple[Dict[str, Any], str]]:
   """The cleaned state and key of every resource that publishes any, keyed by name.
 
-  Only resources whose state says something is included, so a scene of mostly static geometry
-  sends a small message. A rotation that is the identity says nothing - but one that is not says
-  where a joint is pointing, which for an arm's links is the whole of what they have to report.
+  A resource whose state cleans down to nothing is left out; a rotation that is not the identity
+  counts.
   """
   state: Dict[str, Tuple[Dict[str, Any], str]] = {}
 

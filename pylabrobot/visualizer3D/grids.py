@@ -1,16 +1,14 @@
 """Repeated position grids a resource lays things out on, described as data.
 
-A Hamilton deck has rails; another deck will have slots, or a plate nest will have positions. The
-viewer should not know what any of them are called. It should be told where the first one is, how
-far apart they are, how many there are and how to label them, and draw that.
-
-Upstream, a resource should declare this itself, the way it declares its size. Until it does, this
-module derives it from public API the resource already offers, so no constant is copied into the
-viewer where it could drift from the device.
+A grid is where the first position is, how far apart they are, how many there are and how they
+are labelled. It is read off the resource where it declares one, and derived from its public
+API otherwise.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
+
+from pylabrobot.resources.resource import Resource
 
 logger = logging.getLogger(__name__)
 
@@ -22,20 +20,17 @@ SEATED_TOLERANCE = 0.5
 DEFAULT_LABEL_EVERY = 5
 
 
-def describe_bands(resource: Any) -> Optional[list]:
-  """Bands across a resource that some capability can reach, if it declares any.
-
-  Read off an optional `access_bands` attribute, so the viewer draws whatever it is told and this
-  module stays free of any one device's numbers. Upstream these belong to the capability whose
-  reach they describe, not to the surface they are measured on.
+def describe_bands(resource: Resource) -> Optional[List[Dict[str, Any]]]:
+  """The `access_bands` a resource declares, or None.
 
   Each band is `{"label": str, "from": float, "to": float}` in the resource's own frame, with
-  optional `x_from` and `x_to` bounding how far it runs along the other axis.
+  optional `x_from` and `x_to` bounding it along the other axis. A malformed band is logged and
+  skipped.
   """
   bands = getattr(resource, "access_bands", None)
   if not bands:
     return None
-  described = []
+  described: List[Dict[str, Any]] = []
   for band in bands:
     try:
       described.append(
@@ -53,31 +48,26 @@ def describe_bands(resource: Any) -> Optional[list]:
   return described or None
 
 
-def describe_grid(resource: Any) -> Optional[Dict[str, Any]]:
+def describe_grid(resource: Resource) -> Optional[Dict[str, Any]]:
   """The repeated grid this resource lays positions on, or None if it lays none.
 
-  Read from the resource where it declares one, and derived from its own positions otherwise.
+  A declared `position_grid` is returned as is; otherwise it is derived from `track_to_location`
+  or `rail_to_location` and the matching count.
 
-  Returns a dict in the resource's own frame:
-    axis          which way the grid runs
-    count         how many positions there are
-    spacing       distance between them, in mm
-    origin        where the first one sits, [x, y, z] in mm
-    extent        how far a position mark runs across the resource, in mm
-    label_every   label the first, then every nth
-    label         what one position is called
+  Returns:
+    A dict in the resource's own frame: `axis`, which way the grid runs; `count`; `spacing` in mm;
+    `origin`, the first position as [x, y, z] in mm; `extent`, how far a mark runs across the
+    resource in mm; `label_every`, label the first and then every nth; `label`, what one
+    position is called.
   """
-  # A resource may simply state its grid, the way it states its access bands. A part whose
-  # positions are not its own to compute - a loading tray, whose markings line up with the deck it
-  # feeds rather than with anything about itself - has nothing to derive them from, and saying so
-  # is better than inventing a rule for it.
+  # A resource may state its grid, as it states its access bands: a loading tray's markings line
+  # up with the deck it feeds, so nothing about itself could derive them.
   declared = getattr(resource, "position_grid", None)
   if declared:
     return dict(declared)
 
-  # A deck says where its positions are, under whatever it calls them. Hamilton's are tracks now
-  # and were rails before; both are asked for, newest first, so a deck that has not been renamed
-  # yet still draws its marks and one that has draws them under the name it uses.
+  # A deck says where its positions are under whatever it calls them: `track` or `rail`, and the
+  # marks are labelled under the name it uses.
   named = next(
     (
       (word, getattr(resource, f"{word}_to_location"))
@@ -110,19 +100,14 @@ def describe_grid(resource: Any) -> Optional[Dict[str, Any]]:
   if spacing <= 0:
     return None
 
-  # A mark runs from where the position starts to the back of what the positions CARRY, not to the
-  # back of the resource - a deck runs on well past anything standing on it, and a mark that
-  # overshoots reads as a reach that is not there.
-  #
-  # What is standing on them is whatever shares their y: a carrier seats on the line, so its own y
-  # is the grid's. The deepest of those is the reach. A deck with nothing on it yet has nothing to
-  # measure, and only then does its own depth stand in.
+  # A mark runs to the back of what the positions carry, not of the resource: the deepest child
+  # seated on the line (sharing its y), or the resource's own depth when nothing stands on it.
   try:
     depth = resource.get_absolute_size_y()
   except Exception:
     return None
 
-  seated = []
+  seated: List[float] = []
   for child in getattr(resource, "children", []):
     location = getattr(child, "location", None)
     if location is None or abs(location.y - first.y) > SEATED_TOLERANCE:

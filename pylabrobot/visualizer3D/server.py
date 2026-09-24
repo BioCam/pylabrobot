@@ -1,8 +1,6 @@
 """Serve a flattened resource tree to the browser and keep it current.
 
-Same two servers as the existing visualizer, a static file server and a websocket, because that
-part of the design was never the problem: it is what lets the viewer sit on a laptop while the
-protocol runs on the instrument host. What changed is the payload.
+Two servers: static files over HTTP, and a websocket carrying the scene, its state and moves.
 """
 
 import asyncio
@@ -22,10 +20,12 @@ import socket
 import sys
 import threading
 import webbrowser
-from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, FrozenSet, Iterable, List, Optional, Set, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 import websockets
+from websockets.asyncio.server import Server, ServerConnection
+from websockets.http11 import Request, Response
 
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
@@ -45,10 +45,9 @@ logger = logging.getLogger(__name__)
 
 
 def _finite(obj: Any) -> Any:
-  """Replace non-finite floats with strings.
+  """Replace non-finite floats with the strings "Infinity", "-Infinity" and "NaN".
 
-  `json.dumps` writes bare `Infinity` and `NaN`, which are not JSON and make `JSON.parse` throw in
-  the browser. A trough's max volume is genuinely infinite, so this is reached on an ordinary deck.
+  `json.dumps` writes them bare, which `JSON.parse` refuses; a trough's max volume is infinite.
   """
   if isinstance(obj, float) and not math.isfinite(obj):
     if math.isnan(obj):
@@ -94,11 +93,8 @@ def _printable(value: Any, limit: int = 200) -> Optional[str]:
 
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
-# Where a resource's geometry is looked for when it does not say. A file named after the model it
-# belongs to, anywhere under the package, is that model's geometry - so a resource ships with its
-# own geometry beside the code that describes it, and neither the resource nor the caller has to
-# name a path. Model names are already namespaced by manufacturer and device, which is what lets
-# one flat index be unambiguous across every package.
+# Where a resource's geometry is looked for when it declares none: a file named after its model,
+# anywhere under the package. Model names are namespaced by manufacturer and device.
 PACKAGE_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_SUFFIX = ".glb"
 # What a filtered tip's model name ends in, after the name of the tip it is filtered from.
@@ -107,13 +103,9 @@ FILTER_SUFFIX = "_filter"
 
 @functools.lru_cache(maxsize=None)
 def _models_on_disk(root: str) -> Dict[str, str]:
-  """Every model file under `root`, by the model name it is named after.
+  """Every `.glb` under `root` by the model name it is named after, cached per root.
 
-  Walked once per root and remembered: a viewer is started per run, but a test suite starts many,
-  and the answer only changes when files do.
-
-  A name found twice is ambiguous - two packages cannot both own one model name - so neither is
-  offered, and the collision is reported rather than silently resolved by walk order.
+  A name found under two paths is ambiguous: neither is offered, and the clash is logged.
   """
   found: Dict[str, str] = {}
   clashes: Dict[str, List[str]] = {}
@@ -139,9 +131,8 @@ def _models_on_disk(root: str) -> Dict[str, str]:
 
 # How far a taken port is walked up before the viewer gives up on binding.
 PORT_TRIES = 20
-# What the page and this server agree on. The page is fetched fresh on every load while the
-# Python side lives as long as its process, so the two can drift apart; the scene carries this,
-# and a page that expects another number says so rather than drawing what it misreads.
+# What the page and this server agree on: the scene carries it, and a page that expects another
+# number says so rather than drawing what it misreads.
 PROTOCOL = 1
 
 
@@ -162,373 +153,57 @@ def _signature(cleaned: Dict[str, Any], key: str) -> str:
 
 
 class Viewer3D:
-  """A parallel visualizer that takes any resource as its world.
+  """A visualizer that takes any resource as its world.
 
   Args:
-    root: the resource that is the world. Every descendant is placed in its cartesian space.
+    root: the resource that is the world; every descendant is placed in its cartesian space.
     host: interface to bind both servers to.
     fs_port: static file server port.
-    models_root: directory that every `Resource.reference_glb` is relative to. Only resources that
-      declare one need it; a model shipped under the package is found without it.
     ws_port: websocket port.
     open_browser: whether to open a browser window on start.
-    name: what to show in the header, as the existing visualizer shows the calling script.
-    allowed_hosts: extra hostnames a browser may reach the viewer by, e.g. a DNS name for this
-      machine. IP addresses, `localhost`, and this machine's hostname (and `<hostname>.local`) are
-      always accepted.
+    name: what to show in the header.
+    models_root: directory every `Resource.reference_glb` is relative to; a model shipped under
+      the package is found without it.
+    allowed_hosts: extra hostnames a browser may reach the viewer by. IP addresses, `localhost`,
+      this machine's hostname and `<hostname>.local` are always accepted.
 
-  Who may watch. The deck state is not public, and a websocket is not covered by the browser's
-  same-origin policy: any web page open in the operator's browser could otherwise connect to
-  `ws://127.0.0.1:<ws_port>` and read it. So every run makes a secret token, bakes it into the page
-  it serves, and refuses a websocket without it. The token only protects anything while a foreign
-  page cannot read ours, which DNS rebinding would allow - a hostile name resolved to 127.0.0.1 makes
-  the page same-origin with it. Both servers therefore also refuse a hostname they do not recognise, in
-  the HTTP `Host` header and in the websocket `Origin`. An IP address cannot be rebound, so any is
-  accepted, which is what keeps an SSH tunnel or a LAN address working without configuration.
+  Access: each run makes a token, bakes it into the page it serves, and refuses a websocket
+  without it. Both servers refuse an unrecognised hostname, in the HTTP `Host` header and in the
+  websocket `Origin`; an IP literal is always accepted, since it cannot be rebound.
   """
 
-  def __init__(
-    self,
-    root: Resource,
-    host: str = "127.0.0.1",
-    fs_port: int = 1338,
-    ws_port: int = 2122,
-    open_browser: bool = True,
-    name: str = "facility",
-    models_root: Optional[str] = None,
-    allowed_hosts: Iterable[str] = (),
-  ):
-    self.root = root
-    self.host = host
-    self.fs_port = fs_port
-    self.ws_port = ws_port
-    self.open_browser = open_browser
-    self.name = name
-    self.token = secrets.token_urlsafe(32)
-    machine = socket.gethostname().lower()
-    # The interface bound to counts as a way in when it is a name rather than an address.
-    self.allowed_hosts = {"localhost", machine, f"{machine}.local", host.lower()} | {
-      h.lower().strip("[]") for h in allowed_hosts
-    }
-    # Where a resource's `reference_glb` is resolved from. One root for the whole scene, so a
-    # resource names its model the same way wherever the tree is built and whoever runs it.
-    self.models_root = os.path.abspath(os.path.expanduser(models_root)) if models_root else None
+  root: Resource
+  host: str
+  fs_port: int
+  ws_port: int
+  open_browser: bool
+  name: str
+  token: str
+  allowed_hosts: Set[str]
+  models_root: Optional[str]
+  rebuilds: int
+  clients_seen: List[Dict[str, Optional[str]]]
+  _clients: Set[ServerConnection]
+  _httpd: Optional[http.server.HTTPServer]
+  _ws_server: Optional[Server]
+  _pending: Dict[str, Tuple[Dict[str, Any], str]]
+  _flush_scheduled: bool
+  _loop: Optional[asyncio.AbstractEventLoop]
+  _legacy_bytes: int
+  _mesh_files: Dict[str, str]
+  _epoch: int
+  _index_of: Dict[str, int]
+  _published: Dict[str, str]
+  _known_models: Dict[str, Dict[str, Any]]
+  _known_names: FrozenSet[str]
+  _scene_payload: Optional[Dict[str, Any]]
+  _scene: Optional[Scene]
+  _refused_a_token: bool
+  _moved: Set[str]
+  _scene_timer: Optional[asyncio.TimerHandle]
+  _subscribed: Dict[int, Tuple[Resource, Callable[[Dict[str, Any]], None]]]
 
-    self._clients: set = set()
-    self._httpd: Optional[http.server.HTTPServer] = None
-    self._ws_server: Optional[websockets.asyncio.server.Server] = None
-    self._pending: Dict[str, Tuple[Dict[str, Any], str]] = {}
-    self._flush_scheduled = False
-    self._loop: Optional[asyncio.AbstractEventLoop] = None
-    self._legacy_bytes = 0  # measured once, at start, off the loop
-    # Files a resource declared as its own geometry, by the id the page fetches them under. Only a
-    # path that a resource named is ever served, so this doubles as the whitelist.
-    self._mesh_files: Dict[str, str] = {}
-    # Which scene was last built, and where in it each name stands: what a move or a published
-    # position is compared against. State itself is addressed by name.
-    self._epoch = 0
-    self._index_of: Dict[str, int] = {}
-    # What each resource last looked like on the wire. A resource that publishes a change too small
-    # to see produces the same signature and is not sent again.
-    self._published: Dict[str, str] = {}
-    # Models derived by the last flatten, by resource name, and the names that flatten saw: the
-    # next one reuses every model that no appeared or vanished name could have changed.
-    self._known_models: Dict[str, Dict[str, Any]] = {}
-    self._known_names: frozenset = frozenset()
-    # The scene as last built. A client arriving is not a change to the scene, so it is handed this
-    # rather than causing a fresh one: rebuilding would renumber everything and hand every client
-    # already watching an epoch their indices no longer match.
-    self._scene_payload: Optional[Dict[str, Any]] = None
-    # The scene behind that payload, kept so a resource put somewhere else can be moved within it
-    # rather than the whole thing being built again: a tip picked up is the same tip under a shaft.
-    self._scene: Optional[Scene] = None
-    # A page left open from an earlier viewer retries its old token every second or so: said once.
-    self._refused_a_token = False
-    # Who has moved since that scene was built. The scene places every resource where it stood at
-    # build time and is handed out unchanged afterwards, so for anything that has moved since, the
-    # placement a new client is given is out of date - and a part that moved once, before that
-    # client arrived, would never be corrected by a later delta because there is no later delta.
-    self._moved: set = set()
-    self._scene_timer: Optional[asyncio.TimerHandle] = None
-    self.rebuilds = 0  # how many scene rebuilds a run actually cost
-    self.clients_seen: List[Dict[str, Optional[str]]] = []  # what each page said it draws with
-
-    # Every resource this viewer listens to, with the callback it gave, so `stop` can take it back.
-    # By identity: a tip compares by value and is not hashable.
-    self._subscribed: Dict[int, Tuple[Resource, Callable[[dict], None]]] = {}
-    self._subscribe(root)
-    # A newly assigned resource has to start publishing too, or its state never reaches the viewer.
-    root.register_did_assign_resource_callback(self._on_assign)
-    root.register_did_unassign_resource_callback(self._on_unassign)
-
-  # -- wiring ----------------------------------------------------------------
-
-  def _on_assign(self, resource: Resource) -> None:
-    self._subscribe(resource)
-    self._resend()
-
-  def _on_unassign(self, resource: Resource) -> None:
-    self._unsubscribe(resource)
-    self._resend()
-
-  def _subscribe(self, resource: Resource) -> None:
-    # A resource put back after being taken out is still listened to: one callback, not one more.
-    if id(resource) in self._subscribed:
-      return
-
-    def on_update(state: dict, r: Resource = resource) -> None:
-      # Batched on the loop, so a 96-channel operation is one message, not ninety-six.
-      loop = self._live_loop()
-      if loop is not None:
-        loop.call_soon_threadsafe(self._enqueue, r.name, state)
-
-    resource.register_state_update_callback(on_update)
-    self._subscribed[id(resource)] = (resource, on_update)
-    for child in resource.children:
-      self._subscribe(child)
-
-  def _unsubscribe(self, resource: Resource) -> None:
-    """Stop listening to `resource` and everything under it: out of the tree, it has no viewer."""
-    subscribed = self._subscribed.pop(id(resource), None)
-    if subscribed is not None:
-      subscribed[0].deregister_state_update_callback(subscribed[1])
-    for child in resource.children:
-      self._unsubscribe(child)
-
-  def _live_loop(self) -> Optional[asyncio.AbstractEventLoop]:
-    """The loop to hand a change to, or None: after `stop`, and once the loop the viewer was
-    started on has closed under it, as it does when a script's `asyncio.run` returns."""
-    loop = self._loop
-    return loop if loop is not None and not loop.is_closed() else None
-
-  def _placed_as_kept(self, name: str, location: Dict[str, Any]) -> bool:
-    """Whether `location` is where the kept scene already places `name`: published, but no move."""
-    index = self._index_of.get(name)
-    if self._scene is None or index is None:
-      return False
-    return _xyz(location) == self._scene.transforms[6 * index : 6 * index + 3]
-
-  def _enqueue(self, name: str, state: dict) -> None:
-    if "location" in state and self._placed_as_kept(name, state["location"]):
-      state = {k: v for k, v in state.items() if k != "location"}
-    self._pending[name] = state_signature(state)
-    if "location" in state:
-      self._moved.add(name)
-    if self._loop is not None and not self._flush_scheduled:
-      self._flush_scheduled = True
-      asyncio.ensure_future(self._flush())
-
-  async def _flush(self) -> None:
-    payload, self._pending = self._pending, {}
-    self._flush_scheduled = False
-    if self._scene_timer is not None:
-      # The tree changed shape and a rebuild is on its way. A location is relative to a parent the
-      # client may not have yet - a resource just moved under another would be drawn at its new
-      # offset from its old parent until the rebuild lands - and the rebuild places everything
-      # where it is. What is not a location still goes now.
-      payload = {
-        name: ({k: v for k, v in cleaned.items() if k != "location"}, key)
-        for name, (cleaned, key) in payload.items()
-      }
-    if payload:
-      message = self._delta_message(payload)
-      # Everything in the batch may have been a change nobody could see.
-      if message["of"]:
-        await self._broadcast("state", message)
-
-  # A structural change costs a whole scene, so a burst of them must not cost a scene each. Picking
-  # up ninety-six tips is one operation to a user and a hundred and ninety-two callbacks here; they
-  # coalesce into a single rebuild on a short timer. The proper answer is to send the moved
-  # instances rather than the scene, since a move is a parent index and six floats, but coalescing
-  # is what stops the current shape being quadratic in a burst.
-  SCENE_DEBOUNCE_S = 0.05
-
-  def _resend(self) -> None:
-    """The tree changed shape, so the flattening is stale. Schedule one rebuild for the burst."""
-    loop = self._live_loop()
-    if loop is None:
-      return
-    loop.call_soon_threadsafe(self._mark_scene_dirty)
-
-  def _mark_scene_dirty(self) -> None:
-    # A pending timer is what says the scene is stale; a burst keeps pushing it back.
-    if self._scene_timer is not None:
-      self._scene_timer.cancel()
-    if self._loop is None:
-      return
-    self._scene_timer = self._loop.call_later(
-      self.SCENE_DEBOUNCE_S, lambda: asyncio.ensure_future(self._flush_scene())
-    )
-
-  async def _flush_scene(self) -> None:
-    self._scene_timer = None
-    if not self._clients:
-      # Nobody to tell. The kept scene is dropped, so the next client is greeted with one built
-      # for it then, rather than this one being built now for no one.
-      self._scene = None
-      self._scene_payload = None
-      return
-    moves = self._moves()
-    if moves is None:
-      self.rebuilds += 1
-      await self._send_scene_to_all()
-    elif moves:
-      await self._broadcast("moves", {"epoch": self._epoch, "moves": moves})
-
-  def _moves(self) -> Optional[List[Dict[str, Any]]]:
-    """What has been put somewhere else since the scene was built, or None if it must be rebuilt.
-
-    A tree that holds the same names holds the same instances: a change to it is a change of
-    parent or of place, which is a parent index and six floats per resource moved, and the client
-    can apply that to the scene it has. A name appearing or disappearing is an instance the client
-    does not have, or has and should not, and that still costs a scene. The kept scene is moved
-    along with the client's, so a client arriving later is handed the scene as it stands.
-    """
-    scene = self._scene
-    if scene is None or frozenset(all_names(self.root)) != self._known_names:
-      return None
-    moves: List[Dict[str, Any]] = []
-
-    def walk(resource: Resource, parent: Optional[str]) -> None:
-      index = self._index_of[resource.name]
-      location = resource.location or Coordinate.zero()
-      rotation = resource.rotation
-      local = [
-        float(location.x),
-        float(location.y),
-        float(location.z),
-        float(rotation.x),
-        float(rotation.y),
-        float(rotation.z),
-      ]
-      parent_index = -1 if parent is None else self._index_of[parent]
-      if (
-        parent_index != scene.parent_of_instance[index]
-        or local != scene.transforms[6 * index : 6 * index + 6]
-      ):
-        scene.parent_of_instance[index] = parent_index
-        scene.transforms[6 * index : 6 * index + 6] = local
-        moves.append(
-          {
-            "name": resource.name,
-            "parent": parent,
-            "location": {"x": local[0], "y": local[1], "z": local[2]},
-            "rotation": {"x": local[3], "y": local[4], "z": local[5]},
-          }
-        )
-      for child in resource.children:
-        walk(child, resource.name)
-
-    walk(self.root, None)
-    if moves and self._scene_payload is not None:
-      self._scene_payload = {**self._scene_payload, **scene.serialize()}
-    # Every place the kept scene knows is current again, so a snapshot need not carry any of them.
-    self._moved = set()
-    return moves
-
-  # -- access ----------------------------------------------------------------
-
-  def _host_allowed(self, hostname: Optional[str]) -> bool:
-    if hostname is None:
-      return False
-    return _is_ip_literal(hostname) or hostname in self.allowed_hosts
-
-  @property
-  def ws_url(self) -> str:
-    """Where a client outside a browser connects, token included."""
-    return f"ws://127.0.0.1:{self.ws_port}/?token={self.token}"
-
-  def _check_websocket(self, connection, request):
-    """Refuse a websocket handshake without this run's token or from a page we did not serve.
-
-    A browser always sends `Origin` on a websocket; a client that is not a browser may leave it out,
-    and still needs the token.
-    """
-    offered = parse_qs(urlsplit(request.path).query).get("token", [""])[0]
-    if not hmac.compare_digest(offered.encode(), self.token.encode()):
-      if not self._refused_a_token:
-        logger.warning(
-          "refused a websocket without this viewer's token, likely a page left open from an "
-          "earlier viewer: close it. Repeats are logged at debug."
-        )
-        self._refused_a_token = True
-      else:
-        logger.debug("refused a websocket without this viewer's token")
-      return connection.respond(403, "Forbidden\n")
-    origin = request.headers.get("Origin")
-    if origin is not None and not self._host_allowed(_hostname_of(origin)):
-      logger.warning("refused a websocket from origin %r", origin[:200])
-      return connection.respond(403, "Forbidden\n")
-    return None
-
-  # -- transport -------------------------------------------------------------
-
-  async def _broadcast(self, event: str, data: Any) -> None:
-    if not self._clients:
-      return
-    message = _encode(event, data)
-    for client in list(self._clients):
-      try:
-        await client.send(message)
-      except Exception:
-        self._clients.discard(client)
-
-  def _scene_message(self, rebuild: bool = False) -> Dict[str, Any]:
-    """The scene and its measurements."""
-    if self._scene_payload is not None and not rebuild:
-      return self._scene_payload
-
-    scene = build_scene(self.root, known=self._known_models, known_names=self._known_names)
-    self._known_names = frozenset(scene.names)
-    self._known_models = scene.derived
-    scene.legacy_bytes = self._legacy_bytes
-
-    payload = scene.serialize()
-    self._scene = scene
-    self._register_meshes(payload["models"])
-
-    # A new scene renumbers everything, so the indices change with the epoch that names them.
-    self._epoch += 1
-    self._index_of = {name: i for i, name in enumerate(payload["instances"]["names"])}
-    # Placed afresh, so nothing has moved since.
-    self._moved = set()
-    self._scene_payload = {
-      **payload,
-      "epoch": self._epoch,
-      "stats": scene.stats(scene_bytes=len(json.dumps(payload))),
-      "protocol": PROTOCOL,
-    }
-    return self._scene_payload
-
-  def _delta_message(self, states: Dict[str, Tuple[Dict[str, Any], str]]) -> Dict[str, Any]:
-    """What looks different from what the clients were last told, packed; that record advances.
-
-    A state that cleaned down to nothing is kept: to a client following along it means "no longer
-    what I last said".
-    """
-    fresh = {}
-    for name, (cleaned, key) in states.items():
-      signature = _signature(cleaned, key)
-      if self._published.get(name) != signature:
-        self._published[name] = signature
-        fresh[name] = (cleaned, key)
-    return pack_state(fresh, self._epoch)
-
-  def _snapshot(self) -> Dict[str, Tuple[Dict[str, Any], str]]:
-    """Every state a client that knows nothing yet must be told, whatever the others were.
-
-    `location` is left out: the scene sent just before places everything, and a position is one
-    resource's own, so it would give every resource a state of its own. A resource that moved
-    since that scene was built keeps it, as this is the only message that will ever correct it.
-    One with nothing left to say is left out: absent already means default here.
-    """
-    states = {}
-    for name, (cleaned, key) in collect_state(self.root).items():
-      if name not in self._moved:
-        cleaned.pop("location", None)
-      if cleaned:
-        states[name] = (cleaned, key)
-    return states
+  # -- packing -----------------------------------------------------------------
 
   # What `reference_glb` promises: the file is in the resource's own frame, metres, Z up. Stated
   # once here rather than per resource, which is the point of having a convention.
@@ -536,19 +211,12 @@ class Viewer3D:
   REFERENCE_GLB_UP = "Z"
 
   def _register_meshes(self, models: List[Dict[str, Any]]) -> None:
-    """Turn each declared model into a URL the page can fetch, and remember what to serve.
+    """Give each model with geometry a `mesh` holding a URL the page can fetch; remember the file.
 
-    A resource gets its geometry one of three ways, in this order. `mesh` is the long form,
-    carrying its own absolute path, units, up axis and joint map, for a rigged model or one that
-    does not fit the convention. `reference_glb` is a path relative to `models_root`, for a file
-    that lives outside the package. And a resource that says neither is looked up by the model it
-    is: a file named after it, shipped anywhere under the package, is drawn without anyone having
-    to declare or pass anything. A resource with no model name, or one no file is named after,
-    keeps its box.
-
-    All three end up in the same place, because the page only knows one way to draw a model. The
-    page cannot read a filesystem path and the file is often far too large to inline, so each is
-    given a stable id and served from this viewer; the path itself never reaches the browser.
+    Three sources, in this order: a declared `mesh` (path, units, up axis, joints), a
+    `reference_glb` relative to `models_root`, or a `<model>.glb` under the package (a `tip` whose
+    name ends in `FILTER_SUFFIX` falls back to its unfiltered twin's file). The path never reaches
+    the page: the file is served under a stable id.
     """
     on_disk = _models_on_disk(PACKAGE_ROOT)
     # Copies, never the interned dicts: a model the scene derived is kept to be reused on the next
@@ -599,6 +267,196 @@ class Viewer3D:
       model["mesh"] = {k: v for k, v in mesh.items() if k != "path"}
       model["mesh"]["url"] = f"mesh/{mesh_id}"
 
+  def _delta_message(self, states: Dict[str, Tuple[Dict[str, Any], str]]) -> Dict[str, Any]:
+    """Pack what differs from what the clients were last told, and record it as told.
+
+    A state that cleaned down to nothing is kept: it means "no longer what I last said".
+    """
+    fresh = {}
+    for name, (cleaned, key) in states.items():
+      signature = _signature(cleaned, key)
+      if self._published.get(name) != signature:
+        self._published[name] = signature
+        fresh[name] = (cleaned, key)
+    return pack_state(fresh, self._epoch)
+
+  def _snapshot(self) -> Dict[str, Tuple[Dict[str, Any], str]]:
+    """Every state a new client must be told: each with something to say, without `location`.
+
+    The scene sent before it places everything. A resource in `_moved` keeps its `location`, as
+    this is the only message that will correct it.
+    """
+    states = {}
+    for name, (cleaned, key) in collect_state(self.root).items():
+      if name not in self._moved:
+        cleaned.pop("location", None)
+      if cleaned:
+        states[name] = (cleaned, key)
+    return states
+
+  # -- access ------------------------------------------------------------------
+
+  def _host_allowed(self, hostname: Optional[str]) -> bool:
+    if hostname is None:
+      return False
+    return _is_ip_literal(hostname) or hostname in self.allowed_hosts
+
+  @property
+  def ws_url(self) -> str:
+    """Where a client outside a browser connects, token included."""
+    return f"ws://127.0.0.1:{self.ws_port}/?token={self.token}"
+
+  def _check_websocket(self, connection: ServerConnection, request: Request) -> Optional[Response]:
+    """Refuse a handshake without this run's token, or with an `Origin` the viewer does not serve.
+
+    A client that is not a browser may omit `Origin`, and still needs the token.
+    """
+    offered = parse_qs(urlsplit(request.path).query).get("token", [""])[0]
+    if not hmac.compare_digest(offered.encode(), self.token.encode()):
+      if not self._refused_a_token:
+        logger.warning(
+          "refused a websocket without this viewer's token, likely a page left open from an "
+          "earlier viewer: close it. Repeats are logged at debug."
+        )
+        self._refused_a_token = True
+      else:
+        logger.debug("refused a websocket without this viewer's token")
+      return connection.respond(403, "Forbidden\n")
+    origin = request.headers.get("Origin")
+    if origin is not None and not self._host_allowed(_hostname_of(origin)):
+      logger.warning("refused a websocket from origin %r", origin[:200])
+      return connection.respond(403, "Forbidden\n")
+    return None
+
+  # -- transport ---------------------------------------------------------------
+
+  async def _broadcast(self, event: str, data: Any) -> None:
+    if not self._clients:
+      return
+    message = _encode(event, data)
+    for client in list(self._clients):
+      try:
+        await client.send(message)
+      except Exception:
+        self._clients.discard(client)
+
+  def _live_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+    """The loop to hand a change to, or None after `stop` or once that loop has closed."""
+    loop = self._loop
+    return loop if loop is not None and not loop.is_closed() else None
+
+  # -- state channel -----------------------------------------------------------
+
+  def _placed_as_kept(self, name: str, location: Dict[str, Any]) -> bool:
+    """Whether `location` is where the kept scene already places `name`: published, but no move."""
+    index = self._index_of.get(name)
+    if self._scene is None or index is None:
+      return False
+    return _xyz(location) == self._scene.transforms[6 * index : 6 * index + 3]
+
+  async def _flush(self) -> None:
+    payload, self._pending = self._pending, {}
+    self._flush_scheduled = False
+    if self._scene_timer is not None:
+      # A rebuild is on its way: a location is relative to a parent the client may not have yet,
+      # and the rebuild places everything. What is not a location still goes now.
+      payload = {
+        name: ({k: v for k, v in cleaned.items() if k != "location"}, key)
+        for name, (cleaned, key) in payload.items()
+      }
+    if payload:
+      message = self._delta_message(payload)
+      # Everything in the batch may have been a change nobody could see.
+      if message["of"]:
+        await self._broadcast("state", message)
+
+  def _enqueue(self, name: str, state: Dict[str, Any]) -> None:
+    if "location" in state and self._placed_as_kept(name, state["location"]):
+      state = {k: v for k, v in state.items() if k != "location"}
+    self._pending[name] = state_signature(state)
+    if "location" in state:
+      self._moved.add(name)
+    if self._loop is not None and not self._flush_scheduled:
+      self._flush_scheduled = True
+      asyncio.ensure_future(self._flush())
+
+  # -- scene channel -----------------------------------------------------------
+
+  def _scene_message(self, rebuild: bool = False) -> Dict[str, Any]:
+    """The scene and its measurements."""
+    if self._scene_payload is not None and not rebuild:
+      return self._scene_payload
+
+    scene = build_scene(self.root, known=self._known_models, known_names=self._known_names)
+    self._known_names = frozenset(scene.names)
+    self._known_models = scene.derived
+    scene.legacy_bytes = self._legacy_bytes
+
+    payload = scene.serialize()
+    self._scene = scene
+    self._register_meshes(payload["models"])
+
+    # A new scene renumbers everything, so the indices change with the epoch that names them.
+    self._epoch += 1
+    self._index_of = {name: i for i, name in enumerate(payload["instances"]["names"])}
+    # Placed afresh, so nothing has moved since.
+    self._moved = set()
+    self._scene_payload = {
+      **payload,
+      "epoch": self._epoch,
+      "stats": scene.stats(scene_bytes=len(json.dumps(payload))),
+      "protocol": PROTOCOL,
+    }
+    return self._scene_payload
+
+  def _moves(self) -> Optional[List[Dict[str, Any]]]:
+    """Moves since the scene was built, applied to the kept scene too, or None if a name changed.
+
+    A move is a resource whose parent or local transform differs from the kept scene, as `{name,
+    parent, location, rotation}`. A name appearing or disappearing needs a rebuild.
+    """
+    scene = self._scene
+    if scene is None or frozenset(all_names(self.root)) != self._known_names:
+      return None
+    moves: List[Dict[str, Any]] = []
+
+    def walk(resource: Resource, parent: Optional[str]) -> None:
+      index = self._index_of[resource.name]
+      location = resource.location or Coordinate.zero()
+      rotation = resource.rotation
+      local = [
+        float(location.x),
+        float(location.y),
+        float(location.z),
+        float(rotation.x),
+        float(rotation.y),
+        float(rotation.z),
+      ]
+      parent_index = -1 if parent is None else self._index_of[parent]
+      if (
+        parent_index != scene.parent_of_instance[index]
+        or local != scene.transforms[6 * index : 6 * index + 6]
+      ):
+        scene.parent_of_instance[index] = parent_index
+        scene.transforms[6 * index : 6 * index + 6] = local
+        moves.append(
+          {
+            "name": resource.name,
+            "parent": parent,
+            "location": {"x": local[0], "y": local[1], "z": local[2]},
+            "rotation": {"x": local[3], "y": local[4], "z": local[5]},
+          }
+        )
+      for child in resource.children:
+        walk(child, resource.name)
+
+    walk(self.root, None)
+    if moves and self._scene_payload is not None:
+      self._scene_payload = {**self._scene_payload, **scene.serialize()}
+    # Every place the kept scene knows is current again, so a snapshot need not carry any of them.
+    self._moved = set()
+    return moves
+
   async def _send_scene_to_all(self) -> None:
     await self._broadcast("scene", self._scene_message(rebuild=True))
     # A new scene is where every client starts over: what it is told now is what it was last told.
@@ -606,24 +464,83 @@ class Viewer3D:
     self._published = {name: _signature(cleaned, key) for name, (cleaned, key) in states.items()}
     await self._broadcast("state", pack_state(states, self._epoch))
 
-  async def _handler(self, websocket) -> None:
-    self._clients.add(websocket)
-    await websocket.send(_encode("scene", self._scene_message()))
-    await websocket.send(_encode("state", pack_state(self._snapshot(), self._epoch)))
-    try:
-      async for message in websocket:
-        self._on_client_message(message)
-    except Exception:
-      pass
-    finally:
-      self._clients.discard(websocket)
+  async def _flush_scene(self) -> None:
+    self._scene_timer = None
+    if not self._clients:
+      # Nobody to tell. The kept scene is dropped, so the next client is greeted with one built
+      # for it then, rather than this one being built now for no one.
+      self._scene = None
+      self._scene_payload = None
+      return
+    moves = self._moves()
+    if moves is None:
+      self.rebuilds += 1
+      await self._send_scene_to_all()
+    elif moves:
+      await self._broadcast("moves", {"epoch": self._epoch, "moves": moves})
+
+  # A burst of structural changes coalesces into one rebuild or one `moves`: picking up ninety-six
+  # tips is one operation to a user and a hundred and ninety-two callbacks here.
+  SCENE_DEBOUNCE_S = 0.05
+
+  def _mark_scene_dirty(self) -> None:
+    # A pending timer is what says the scene is stale; a burst keeps pushing it back.
+    if self._scene_timer is not None:
+      self._scene_timer.cancel()
+    if self._loop is None:
+      return
+    self._scene_timer = self._loop.call_later(
+      self.SCENE_DEBOUNCE_S, lambda: asyncio.ensure_future(self._flush_scene())
+    )
+
+  def _resend(self) -> None:
+    """The tree changed shape: schedule one rebuild for the burst."""
+    loop = self._live_loop()
+    if loop is None:
+      return
+    loop.call_soon_threadsafe(self._mark_scene_dirty)
+
+  # -- subscriptions -----------------------------------------------------------
+
+  def _subscribe(self, resource: Resource) -> None:
+    # A resource put back after being taken out is still listened to: one callback, not one more.
+    if id(resource) in self._subscribed:
+      return
+
+    def on_update(state: Dict[str, Any], r: Resource = resource) -> None:
+      # Batched on the loop, so a 96-channel operation is one message, not ninety-six.
+      loop = self._live_loop()
+      if loop is not None:
+        loop.call_soon_threadsafe(self._enqueue, r.name, state)
+
+    resource.register_state_update_callback(on_update)
+    self._subscribed[id(resource)] = (resource, on_update)
+    for child in resource.children:
+      self._subscribe(child)
+
+  def _unsubscribe(self, resource: Resource) -> None:
+    """Stop listening to `resource` and everything under it: out of the tree, it has no viewer."""
+    subscribed = self._subscribed.pop(id(resource), None)
+    if subscribed is not None:
+      subscribed[0].deregister_state_update_callback(subscribed[1])
+    for child in resource.children:
+      self._unsubscribe(child)
+
+  def _on_assign(self, resource: Resource) -> None:
+    self._subscribe(resource)
+    self._resend()
+
+  def _on_unassign(self, resource: Resource) -> None:
+    self._unsubscribe(resource)
+    self._resend()
+
+  # -- clients -----------------------------------------------------------------
 
   def _on_client_message(self, message: Any) -> None:
-    """A page says what it draws with, or why it could not draw at all.
+    """Print what a page draws with, or why it could not draw at all.
 
-    Printed rather than logged because the person to tell is the one watching the notebook, who
-    otherwise only sees a browser tab that shows nothing. Everything in it came from a browser, so
-    it is shortened and stripped to printable text before it is shown.
+    Printed, not logged: the person to tell is the one watching the notebook. Every value came from
+    a browser, so it is shortened and stripped to printable text first.
     """
     try:
       parsed = json.loads(message)
@@ -647,7 +564,19 @@ class Viewer3D:
       drawing += " - software rendering, expect it to be slow"
     print(f"viewer: a browser connected, drawing with {drawing}")
 
-  # -- static files ----------------------------------------------------------
+  async def _handler(self, websocket: ServerConnection) -> None:
+    self._clients.add(websocket)
+    await websocket.send(_encode("scene", self._scene_message()))
+    await websocket.send(_encode("state", pack_state(self._snapshot(), self._epoch)))
+    try:
+      async for message in websocket:
+        self._on_client_message(message)
+    except Exception:
+      pass
+    finally:
+      self._clients.discard(websocket)
+
+  # -- static files ------------------------------------------------------------
 
   # How often the serving thread looks up from its socket, which is how long `stop` waits for it.
   FS_POLL_S = 0.05
@@ -664,13 +593,13 @@ class Viewer3D:
       # Keep-alive, so a page fetching two dozen meshes at once reuses a few connections.
       protocol_version = "HTTP/1.1"
 
-      def __init__(self, *args, **kwargs):
+      def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=directory, **kwargs)
 
-      def log_message(self, fmt, *args):
+      def log_message(self, fmt: str, *args: Any) -> None:
         pass
 
-      def end_headers(self):
+      def end_headers(self) -> None:
         # The page carries this run's token and a mesh this run's id: never kept. The rest is
         # revalidated and answered 304 when unchanged, rather than fetched again on every load.
         path = self.path.split("?", 1)[0]
@@ -678,7 +607,7 @@ class Viewer3D:
         self.send_header("Cache-Control", "no-store" if fresh else "no-cache")
         super().end_headers()
 
-      def do_HEAD(self):
+      def do_HEAD(self) -> None:
         if self._refuse_foreign_host():
           return
         super().do_HEAD()
@@ -689,7 +618,7 @@ class Viewer3D:
         self.send_error(403, "unrecognised Host; pass it to Viewer3D(allowed_hosts=...)")
         return True
 
-      def do_GET(self):
+      def do_GET(self) -> None:
         if self._refuse_foreign_host():
           return
         # Match on the path alone: a link may carry a query string (`/?view=top`), and serving the
@@ -725,7 +654,7 @@ class Viewer3D:
     class Server(http.server.ThreadingHTTPServer):
       address_family = socket.AF_INET6 if ":" in self.host else socket.AF_INET
 
-      def handle_error(self, request, client_address):
+      def handle_error(self, request: Any, client_address: Any) -> None:
         # A browser that leaves a page mid-download closes its end; that is no error of ours,
         # and a traceback on every reload buries anything that is.
         if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
@@ -748,20 +677,89 @@ class Viewer3D:
     thread = threading.Thread(target=serve, daemon=True, name="viz3d_fs")
     thread.start()
 
-  # -- lifecycle -------------------------------------------------------------
+  # -- lifecycle ---------------------------------------------------------------
+
+  def __init__(
+    self,
+    root: Resource,
+    host: str = "127.0.0.1",
+    fs_port: int = 1338,
+    ws_port: int = 2122,
+    open_browser: bool = True,
+    name: str = "facility",
+    models_root: Optional[str] = None,
+    allowed_hosts: Iterable[str] = (),
+  ):
+    self.root = root
+    self.host = host
+    self.fs_port = fs_port
+    self.ws_port = ws_port
+    self.open_browser = open_browser
+    self.name = name
+    self.token = secrets.token_urlsafe(32)
+    machine = socket.gethostname().lower()
+    # The interface bound to counts as a way in when it is a name rather than an address.
+    self.allowed_hosts = {"localhost", machine, f"{machine}.local", host.lower()} | {
+      h.lower().strip("[]") for h in allowed_hosts
+    }
+    # Where a resource's `reference_glb` is resolved from. One root for the whole scene, so a
+    # resource names its model the same way wherever the tree is built and whoever runs it.
+    self.models_root = os.path.abspath(os.path.expanduser(models_root)) if models_root else None
+
+    self._clients = set()
+    self._httpd = None
+    self._ws_server = None
+    self._pending = {}
+    self._flush_scheduled = False
+    self._loop = None
+    self._legacy_bytes = 0  # measured once, at start, off the loop
+    # Files a resource declared as its own geometry, by the id the page fetches them under. Only a
+    # path that a resource named is ever served, so this doubles as the whitelist.
+    self._mesh_files = {}
+    # Which scene was last built, and where in it each name stands: what a move or a published
+    # position is compared against. State itself is addressed by name.
+    self._epoch = 0
+    self._index_of = {}
+    # What each resource last looked like on the wire. A resource that publishes a change too small
+    # to see produces the same signature and is not sent again.
+    self._published = {}
+    # Models derived by the last flatten, by resource name, and the names that flatten saw: the
+    # next one reuses every model that no appeared or vanished name could have changed.
+    self._known_models = {}
+    self._known_names = frozenset()
+    # The scene as last built: a client arriving is handed this rather than causing a rebuild,
+    # which would renumber everything under the clients already watching.
+    self._scene_payload = None
+    # The scene behind that payload, kept so a resource put somewhere else can be moved within it
+    # rather than the whole thing being built again: a tip picked up is the same tip under a shaft.
+    self._scene = None
+    # A page left open from an earlier viewer retries its old token every second or so: said once.
+    self._refused_a_token = False
+    # Who has moved since that scene was built: the kept scene places them where they stood then,
+    # and a new client's snapshot is the only message that will correct that.
+    self._moved = set()
+    self._scene_timer = None
+    self.rebuilds = 0  # how many scene rebuilds a run actually cost
+    self.clients_seen = []  # what each page said it draws with
+
+    # Every resource this viewer listens to, with the callback it gave, so `stop` can take it back.
+    # By identity: a tip compares by value and is not hashable.
+    self._subscribed = {}
+    self._subscribe(root)
+    # A newly assigned resource has to start publishing too, or its state never reaches the viewer.
+    root.register_did_assign_resource_callback(self._on_assign)
+    root.register_did_unassign_resource_callback(self._on_unassign)
 
   async def start(self) -> None:
     self._loop = asyncio.get_running_loop()
     # Off the loop, before a client can connect: the package walk for model files, and the size of
-    # the tree as the existing visualizer would send it, which the stats panel compares against.
+    # the tree as one node per resource, which the stats panel compares against.
     self._legacy_bytes, _ = await asyncio.gather(
       asyncio.to_thread(legacy_size, self.root), asyncio.to_thread(_models_on_disk, PACKAGE_ROOT)
     )
 
-    # The websocket first, because the page has to be told which port to call back on and the file
-    # server bakes that number into what it serves. Started the other way round, a viewer whose
-    # preferred port is already taken serves a page pointing at the viewer that took it, and then
-    # quietly shows someone else's facility.
+    # The websocket first: the file server bakes its port into the page. The other way round, a
+    # viewer whose port is taken serves a page pointing at the viewer that took it.
     for attempt in range(PORT_TRIES):
       try:
         self._ws_server = await websockets.serve(
@@ -781,8 +779,10 @@ class Viewer3D:
       webbrowser.open(url)
 
   async def stop(self) -> None:
-    """Close both servers, so the ports are free for the next viewer, and stop listening to the
-    tree, so a stopped viewer costs the resources nothing and a change is never handed to no loop."""
+    """Close both servers and stop listening to the tree.
+
+    The ports are free for the next viewer, and no change is handed to a loop that is gone.
+    """
     self._unsubscribe(self.root)
     self.root.deregister_did_assign_resource_callback(self._on_assign)
     self.root.deregister_did_unassign_resource_callback(self._on_unassign)

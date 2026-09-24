@@ -1,9 +1,7 @@
-"""The space a site's automation stands in.
+"""The space a site's automation stands in, as a `Resource`.
 
-A `Facility` is a `Resource`, because it is a real cartesian space and everything in it resolves
-against its frame. Nothing else is needed above a device: the tree is the only structure, and a
-device, a shuttle between devices and a bench that is not automated at all all stand in it the
-same way.
+Its frame is what everything in it resolves against; the tree is the only structure above a
+device.
 """
 
 from pylabrobot.resources.coordinate import Coordinate

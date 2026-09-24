@@ -17,6 +17,12 @@ It opens a browser on `http://127.0.0.1:1338`, in a top view; `?view=iso` or `?v
 another, and `?quality=low` pins the low-cost level. From the console,
 `plrViewer.focus("destination_0")` frames and selects a named resource.
 
+`demo.py` sets the STAR deck's height to the top of the X-arm riding above it (334.7 mm of
+channel travel plus the arm's own 140 mm). The deck's own `size_z` of 900 mm is the working
+envelope from the instrument's configuration file, not the deck's extent: drawn as is, it
+protrudes 75.5 mm through the roof of the device carrying it around 665 mm of empty space. The
+viewer applies this itself rather than editing the resource library.
+
 ## What it demonstrates
 
 **Any resource is the world.** `Viewer3D(root)` takes a `Resource`. The demo's world is a plain
@@ -215,14 +221,19 @@ port and the source name into `index.html` in place of `{{ ws_token }}`, `{{ ws_
 `wss:` when it was served over https, at the hostname it was reached by. A
 handshake without this run's token, or with an `Origin` whose hostname is not an IP literal,
 `localhost`, this machine's name, `<name>.local`, the bound host or one of `allowed_hosts`, is
-answered 403. The file server applies the same hostname rule to the HTTP `Host` header.
+answered 403. The file server applies the same hostname rule to the HTTP `Host` header. The
+token only protects anything while a foreign page cannot read ours, which DNS rebinding would
+allow: a hostile name resolved to 127.0.0.1 makes that page same-origin with the viewer. That is
+why an unrecognised hostname is refused, and why any IP address is accepted: it cannot be rebound,
+which is what keeps an SSH tunnel or a LAN address working without configuration.
 
 **Cache headers.** `/`, `/index.html` and `/mesh/<id>` are `Cache-Control: no-store`, since the
 page carries this run's token and a mesh id belongs to this run. Everything else is `no-cache`:
 revalidated and answered 304 when unchanged.
 
 **Ports.** The websocket binds first, so the page can be told the port it actually got, then the
-file server. Each walks up from its default (2122 and 1338) through at most `PORT_TRIES` (20)
+file server; the other way round, a viewer whose preferred port is taken would serve a page
+pointing at the viewer that took it, and quietly show someone else's facility. Each walks up from its default (2122 and 1338) through at most `PORT_TRIES` (20)
 ports while the bind fails with `EADDRINUSE`; any other error is raised.
 
 ### Messages
@@ -236,7 +247,8 @@ ports while the bind fails with `EADDRINUSE`; any other error is raised.
 
 **`scene`.** `protocol` is `PROTOCOL` in `server.py`, currently 1, and the page holds its own
 copy in `constants.js`: on a mismatch `rebuildScene` draws nothing and raises `plr:mismatch`, and
-`boot.js` shows "The viewer is older than this page". `epoch` counts rebuilds and rides on every
+`boot.js` shows "The viewer is older than this page". The two can drift apart because the page is
+fetched fresh on every load while the Python side lives as long as its process. `epoch` counts rebuilds and rides on every
 message; the page does not read it yet. `stats` is `{instances, models, legacy_bytes,
 scene_bytes, ratio}`, where `legacy_bytes` is the old per-resource tree serialized once, on the
 first build only, and the stats panel prints all five. `models` is the list of distinct models
@@ -248,22 +260,31 @@ in one forward pass.
 
 **`state`.** `collect_state` walks the tree and keeps every resource whose `serialize_state()`
 still says something once cleaned: `name`, `thing` and `parent_name` dropped at any depth, an
-identity `rotation` dropped, floats rounded to one decimal (`STATE_DECIMALS`). `pack_state` then
+identity `rotation` dropped, floats rounded to one decimal (`STATE_DECIMALS`: firmware reports
+position to 0.1 mm, and a tenth of a microlitre is below anything a well can show). Rounding
+rather than comparing against a threshold means two values that look the same produce one
+signature, so one rule both suppresses a resend and shares one table entry. `pack_state` then
 sends `states`, the table of distinct cleaned states, `of`, name to index into that table, and
 `locations`, name to the `location` it published, kept out of the shared table because a position
 is one resource's own. A snapshot carries everything but `location` (the scene just placed it),
-except for a resource that moved after the scene was built, and leaves out a resource with nothing
-to say. A delta carries only names whose signature changed since they were last sent, and keeps a
-name whose state cleaned down to nothing, because there it means "no longer what I last said".
-Updates coalesce per event-loop turn into one message; while a rebuild is pending, locations are
-held back so nothing is drawn relative to a parent the page does not have yet. Addressed by name
-throughout: instance order is not stable across rebuilds.
+except for a resource that moved after the scene was built (the kept scene is handed out
+unchanged, so this snapshot is the only message that will ever correct its placement), and leaves
+out a resource with nothing to say. A delta carries only names whose signature changed since they
+were last sent, and keeps a name whose state cleaned down to nothing, because there it means "no
+longer what I last said". Updates coalesce per event-loop turn into one message; while a rebuild
+is pending, locations are held back so nothing is drawn relative to a parent the page does not
+have yet. Addressed by name throughout: instance order is not stable across rebuilds, because
+resources are created lazily during setup and reassigned by code that reorders a parent's
+children, so an index that means one resource in one scene means another in the next.
 
 **`moves`.** Each entry is `{name, parent, location: {x, y, z}, rotation: {x, y, z}}`, `parent` a
 name or null, for every resource whose parent or local transform differs from the kept scene. A
 burst of structural changes is debounced by `SCENE_DEBOUNCE_S` (50 ms) into one `moves` or one
-rebuild. The page re-parents it in `world.childrenOf`, sets its local transform and recomputes the
-subtree.
+rebuild: picking up ninety-six tips is one operation to a user and a hundred and ninety-two
+callbacks to the server, and a scene per callback would be quadratic in the burst. A client
+arriving is handed the kept scene rather than a rebuild, which would renumber everything under the
+clients already watching. The page re-parents it in `world.childrenOf`, sets its local transform
+and recomputes the subtree.
 
 **Meshes.** `/mesh/<id>` serves a file the scene named, as `model/gltf-binary`; `<id>` is the
 first sixteen hex digits of the SHA-1 of the absolute path plus its extension, and only registered
@@ -276,10 +297,14 @@ ids are served.
 `parent_name` key is dropped and a string equal to any resource name in the tree becomes
 `"<resource>"`. `methods`, `grid`, `bands` and the `DECLARED_FIELDS` read straight off the resource
 (`reference_point`, `window`, `mesh`, `reference_glb`, `appearance`) are added, and dicts that
-compare equal within one `type` are interned to one model. `_register_meshes` then works on a
+compare equal within one `type` are interned to one model. The declared fields belong in the
+resource's own serialization upstream; passing them through keeps the viewer free of any device's
+constants meanwhile. `_register_meshes` then works on a
 copy: `reference_glb` is popped and never reaches the page; a resource with neither `mesh` nor
 `reference_glb` gets a `mesh` when a `<model>.glb` exists anywhere under the package (a `tip`
-whose `model` ends in `_filter` falls back to the unfiltered file); and a `mesh`'s `path` is
+whose `model` ends in `_filter` falls back to the unfiltered file), so a resource ships its
+geometry beside the code that describes it and nobody names a path, which model names namespaced
+by manufacturer and device keep unambiguous in one flat index; and a `mesh`'s `path` is
 replaced by `url`. A package `.glb` or a `reference_glb` is taken as metres, Z up
 (`REFERENCE_GLB_UNITS`, `REFERENCE_GLB_UP`); a declared `mesh` states its own, and the page reads a
 missing `units` as mm and a missing `up` as Y.
@@ -297,7 +322,7 @@ missing `units` as mm and a missing `up` as Y.
 | `ordering` | `itemized_resource.py` | `panel.js`, `device_tools.js` | item count; a held plate's rows and columns |
 | `has_filter`, `collar_height` | `tip.py` | `boxes.js` | a filter disc `FILTER_BELOW_COLLAR` under a `tip`'s collar |
 | `methods` | `scene.py` `_public_methods` | `panel.js` | the collapsed "Methods" list |
-| `grid` | `grids.describe_grid`: a declared `position_grid`, else `track_to_location` or `rail_to_location` with `num_tracks` or `num_rails` | `marks.js` | rail marks from `origin` every `spacing`, `count` of them, `extent` deep, numbered every `label_every`; the deck surface; a `deck`'s working Z for reference marks. `axis` and `label` are not read |
+| `grid` | `grids.describe_grid`: a declared `position_grid` (a loading tray's markings line up with the deck it feeds, so nothing about itself could derive them), else `track_to_location` or `rail_to_location` with `num_tracks` or `num_rails`; `extent` is the deepest child seated on the line, else the resource's own depth, so a mark never overshoots into a reach that is not there | `marks.js` | rail marks from `origin` every `spacing`, `count` of them, `extent` deep, numbered every `label_every`; the deck surface; a `deck`'s working Z for reference marks. `axis` and `label` are not read |
 | `bands` | `grids.describe_bands` from `access_bands` | `marks.js` | two lines per band at `from` and `to`, bounded by `x_from` and `x_to`; `label` is not drawn |
 | `reference_point` | attribute, a `Coordinate` or a dict (`hamilton_decks.py`, `n_channel_pipettes.py`, `iswap.py`) | `marks.js` | `x`: where the reference line or mark sits, else half the width; `y_range`: an arm's line reach; `z`: the mark's height on a carried part |
 | `window` | attribute (`demo.py`) | `marks.js`, `tools.js` | the opening in a moving part's frame: `width`, `right_margin`, `inset_y`, defaulting to `ARM_INSET_X`/`ARM_INSET_Y`; a click through it lands on what is below |

@@ -1,4 +1,4 @@
-"""A parallel PyLabRobot visualizer built on a resource world rather than a liquid handler."""
+"""A PyLabRobot visualizer whose world is any resource."""
 
 from .facility import Facility
 from .scene import Scene, build_scene, collect_state, pack_state

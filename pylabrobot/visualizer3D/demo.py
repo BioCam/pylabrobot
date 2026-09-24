@@ -1,20 +1,18 @@
-"""A facility with a v1 STAR in it, plus a bench that is not a device at all.
+"""A facility with a simulated STAR and a bench in it.
 
 Run it:
 
     python -m pylabrobot.visualizer3D.demo
 
-The world is a `Facility`. A bench stands at its origin and a simulated `STARDevice` stands on the
-bench. The viewer treats them identically, because it never asks what anything is.
-
-The v1 STAR has no aspirate or dispense yet, so the run below drives the volume trackers
-directly. That is the same channel the viewer subscribes to either way: a real pipetting command
-would move these trackers rather than talk to the viewer.
+The run fills a plate, moves liquid to another plate through the volume trackers, then sweeps
+the X-arm and works the iSWAP for as long as it runs. `model_demo` shares the facility, the STAR
+lookup and the iSWAP loops defined here.
 """
 
 import asyncio
 import itertools
 import logging
+from typing import Tuple
 
 from pylabrobot.hamilton.star.device import STARDevice, STARLet
 from pylabrobot.resources import set_volume_tracking
@@ -41,25 +39,30 @@ from pylabrobot.resources.resource import Resource
 from .facility import Facility
 from .server import Viewer3D
 
-logging.disable(logging.WARNING)
-
 
 def star_of(facility: Resource) -> STARDevice:
-  """The STAR the demo drives. It is the first thing assigned, and the only device here."""
+  """The STAR the demo drives: the facility's first child."""
   star = facility.children[0]
   if not isinstance(star, STARDevice):
     raise TypeError(f"expected a STAR at the front of {facility.name}, found {type(star).__name__}")
   return star
 
 
-def build_facility() -> Facility:
-  """A facility with a bench in it and a STAR standing on the bench."""
+def build_facility(*, bare: bool = False) -> Facility:
+  """A facility with a simulated STARLet standing on a bench, with labware on its deck.
+
+  Args:
+    bare: the STARLet alone at the origin, with nothing else to look at.
+  """
+  if bare:
+    facility = Facility(name="facility", size_x=2000, size_y=1200, size_z=1000)
+    facility.assign_child_resource(STARLet(simulation=True), location=Coordinate(0, 0, 0))
+    return facility
+
   facility = Facility(name="facility", size_x=2600, size_y=1400, size_z=1000)
 
-  # A bench is not a device, has no deck and no driver, and still takes part in the same
-  # cartesian space. This is the case the old visualizer had no way to express. It stands at the
-  # facility's origin and the STAR stands on it. The STAR is assigned first all the same, since
-  # `star_of` finds it as the facility's first child.
+  # A bench: no deck, no driver, the same cartesian space. The STAR is assigned first all the
+  # same, since `star_of` finds it as the facility's first child.
   bench = Resource(name="bench", size_x=900, size_y=600, size_z=880, category="bench")
 
   star = STARLet(simulation=True)
@@ -108,11 +111,8 @@ def build_facility() -> Facility:
   )
   star.deck.assign_child_resource(mfx_carrier, track=25)
 
-  # The deck's own `size_z` is 900 mm, taken from the instrument's configuration file. That is the
-  # working envelope, not the deck's extent, and it leaves the deck protruding 75.5 mm through the
-  # roof of the device carrying it while enclosing 665 mm of empty space. The honest height is the
-  # top of the X-arm that rides above it: 334.7 mm of channel travel plus the arm's own 140 mm.
-  # Applied here rather than upstream, since this viewer does not edit the resource library.
+  # The deck's own `size_z` (900 mm) is the working envelope, not its extent. The top of the X-arm
+  # riding above it is the honest height: channel travel plus the arm's own height.
   DECK_HEIGHT = 334.7 + 140.0
   star.deck._size_z = DECK_HEIGHT
   star.deck._local_size_z = DECK_HEIGHT
@@ -120,42 +120,39 @@ def build_facility() -> Facility:
   return facility
 
 
-def declare_channel_access(star) -> None:
-  """Record how far the channels reach across the deck, once the arm has been discovered.
+def x_travel(star: STARDevice) -> Tuple[float, float]:
+  """The X-arm's travel as (low, high) in mm, known once `setup()` has discovered the arm."""
+  x_range = star.x_arm.configuration.x_range
+  if x_range is None:
+    raise RuntimeError("the X-arm's travel is only known after setup")
+  return x_range
 
-  Depths of 465, 393 and 321 mm, concentric: each narrower band is inset by half the difference at
-  both ends, so every extra four channels costs 36 mm of reach front and back - four channels at
-  the 9 mm pitch. In Y this is the deck's own frame, which is also the frame the instrument is
-  commanded in, since the backend derives every firmware coordinate from `get_location_wrt(deck)`.
 
-  In X the bands stop where the channels do, which neither the arm's travel nor the deck edge
-  describes: both run further right than the channels ever go. The waste block is the real
-  right-hand limit on this device - the channels eject into it and go no further - so the band
-  stops at its near edge. Nothing reports that limit, which is why it is looked up here.
+def declare_channel_access(star: STARDevice) -> None:
+  """Declare the channels' reach across the deck as `access_bands`, once the arm is set up.
 
-  Declared here because no v1 capability publishes any of it; it belongs on the pipettes
-  capability, whose reach it describes, rather than on the deck it is measured across.
+  Depths of 465, 393 and 321 mm for 4/8, 12 and 16 channels, concentric, in the deck's frame. In
+  X the bands run from the arm's travel to the waste block, where the channels stop. Declared
+  here because no capability publishes it.
   """
-  low, high = star.x_arm.configuration.x_range
+  low, high = x_travel(star)
   x_from = max(0.0, low)
   x_to = min(star.deck.get_absolute_size_x(), high)
 
   # Where the device's x refers to is the arm's own to say, and the deck states it when it places
-  # the arm: 223.00 mm from its left edge, measured on the part. This used to derive it here as
-  # half the arm's width, from a time when the arm's width was the width its drive reports and the
-  # tracked point was the middle of it. It is neither, and half of 400.49 mm put the mark 22.755 mm
-  # left of where the drive says the arm is.
+  # the arm: nothing about the reference point is derived here.
   if star.x_arm.resource is not None:
     # The opening through the carriage, used only where no model is drawn for the arm.
     if star.x_arm.configuration.reference_point == "center":
-      star.x_arm.resource.window = {"width": 185.0, "inset_y": 20.0}
+      star.x_arm.resource.window = {"width": 185.0, "inset_y": 20.0}  # type: ignore[attr-defined]
 
   waste_block_name = star.deck.get_component_name("waste_block")
   if star.deck.has_resource(waste_block_name):
     waste_block = star.deck.get_resource(waste_block_name)
     x_to = min(x_to, waste_block.get_location_wrt(star.deck).x)
 
-  star.deck.access_bands = [
+  # A field the viewer reads off the deck; `Resource` does not declare it.
+  star.deck.access_bands = [  # type: ignore[attr-defined]
     {"label": label, "from": front, "to": front + depth, "x_from": x_from, "x_to": x_to}
     for label, front, depth in (
       ("4/8", 77.5, 465.0),
@@ -192,13 +189,12 @@ async def run(facility: Resource) -> None:
   print("run complete; the viewer stays up")
 
 
-async def sweep_arm(star) -> None:
-  """Walk the X-arm back and forth, so the viewer has a moving part to follow.
+async def sweep_arm(star: STARDevice) -> None:
+  """Walk the X-arm back and forth until stopped, so the viewer has a moving part to follow.
 
-  The arm is the one thing on a v1 STAR that reports a live position, so this is what a viewer
-  tracking motion actually has to work from.
+  The arm is the one part of the STAR that reports a live position.
   """
-  low, high = star.x_arm.configuration.x_range
+  low, high = x_travel(star)
   span = min(high, star.deck.get_absolute_size_x()) - low
   # Until it is stopped. A count rather than a large number of steps, which is the same loop
   # wearing a bound it never reaches.
@@ -208,62 +204,76 @@ async def sweep_arm(star) -> None:
     await asyncio.sleep(3.0)
 
 
-# How far forward to bring the elbow before turning it, in mm. Enough to clear link 1's
-# own length, so the whole swing has room.
+# How far forward to bring the elbow before turning it, in mm: more than link 1's own length,
+# so the whole swing has room.
 ROOM_TO_TURN = 200.0
 
+# How long each pose is held, in seconds, so a move can be followed rather than glimpsed.
+HELD_FOR = 2.5
 
-async def work_the_iswap(star) -> None:
-  """Turn the arm's two joints and work its jaws, so the viewer has the whole linkage moving.
 
-  Every pose is one the arm reports back afterwards, so what the viewer draws is the model
-  following the drives rather than a path written here. The poses are the stops the arm stores,
-  which is what it is calibrated against, and the widths are the ends of the gripper's own travel.
+async def turn_the_arm(star: STARDevice) -> None:
+  """Swing the iSWAP's elbow between its stops until stopped, the wrist pointing front.
+
+  Clears the deck once, up front, and brings the elbow forward by `ROOM_TO_TURN` first.
   """
   iswap = star.iswap
   if iswap is None:
     return
 
-  # Cleared once, up front. Parked at the back of its travel the arm cannot turn far: a quarter
-  # turn puts the grip centre further back than the drive itself reaches, and the guard refuses it -
-  # which is right, and which left half of the poses below doing nothing at all. Clearing more than
-  # link 1's length leaves room for the whole swing.
+  # Cleared once, up front: a rotation cannot clear the deck for itself, so the channels and the
+  # head are put out of the way first and stay there for the run.
   await iswap.make_space()
+
+  # Parked at the back of its travel, a quarter turn puts the grip centre behind the drive's own
+  # reach and the guard refuses it; link 1's length of room lets it swing.
   parked = await iswap.elbow_request_y_position()
   try:
     await iswap.elbow_move_to_y_position(parked - ROOM_TO_TURN)
   except ValueError as refused:
     print(f"  the drive stays where it is, so the arm will not turn far: {refused}")
 
+  # Until it is stopped. A count rather than a large number of steps, which is the same loop
+  # wearing a bound it never reaches.
+  for step in itertools.count():
+    where = ("front", "left", "front", "right")[step % 4]
+    try:
+      await iswap.rotate_to_angles(elbow_absolute_angle=where, gripper_absolute_angle="front")
+    except ValueError as refused:
+      # What the guards refuse is what a real caller would be refused. Printed, not logged: nothing
+      # configures logging here, and a pose silently not happening looks like a viewer that stopped.
+      print(f"  the arm may not go to {where}: {refused}")
+    await asyncio.sleep(HELD_FOR)
+
+
+async def work_the_jaws(star: STARDevice) -> None:
+  """Open and close the gripper until stopped.
+
+  The stops are the ends of the drive's own travel: widest first, offset by half a hold against
+  the arm's cycle.
+  """
+  iswap = star.iswap
+  if iswap is None:
+    return
+
   c = iswap.configuration
-  elbow_stops = ["front", "left", "front", "right"]
-  gripper_directions = ["front", "back", "front", "back"]
-  jaws = [
-    c.gripper_increments_to_mm(c.gripper_range_increments[1]),
-    c.gripper_increments_to_mm(c.gripper_range_increments[0]),
-  ]
+  # Widest first: the arm comes up holding whatever it homed at, and opening from there reads as a
+  # move where closing onto an already-closed gripper would not.
+  closed, opened = (c.gripper_increments_to_mm(end) for end in c.gripper_range_increments)
+  # Offset against the arm's own cycle, so the two are not seen only ever moving together.
+  await asyncio.sleep(HELD_FOR / 2)
 
   for step in itertools.count():
-    elbow = elbow_stops[step % len(elbow_stops)]
-    gripper = gripper_directions[step % len(gripper_directions)]
+    width = (opened, closed)[step % 2]
     try:
-      await iswap.rotate_to_angles(
-        elbow_absolute_angle=elbow, gripper_absolute_angle=gripper, raise_features=True
-      )
+      await iswap.gripper_move_to_jaw_position(width)
     except ValueError as refused:
-      # The guards stand between the arm and the channels, and a demo is not a reason to talk
-      # past them: what they refuse is what a real caller would be refused.
-      # Printed rather than logged: nothing configures logging here, so an `info` call is a
-      # refusal nobody sees - and a pose silently not happening looks like a viewer that has
-      # stopped drawing.
-      print(f"  the arm may not go to {elbow}/{gripper}: {refused}")
-    await asyncio.sleep(2.5)
-
-    await iswap.gripper_move_to_jaw_position(jaws[step % len(jaws)])
-    await asyncio.sleep(2.5)
+      print(f"  the jaws may not go to {width:.1f} mm: {refused}")
+    await asyncio.sleep(HELD_FOR)
 
 
 async def main() -> None:
+  logging.disable(logging.WARNING)
   set_volume_tracking(True)
 
   facility = build_facility()
@@ -278,7 +288,7 @@ async def main() -> None:
   await run(facility)
   # The arm and the iSWAP move at once, as they do on the device: they are on the same carriage
   # and neither waits for the other.
-  await asyncio.gather(sweep_arm(star), work_the_iswap(star))
+  await asyncio.gather(sweep_arm(star), turn_the_arm(star), work_the_jaws(star))
 
 
 if __name__ == "__main__":
