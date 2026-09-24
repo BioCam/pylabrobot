@@ -456,6 +456,10 @@ class PipettesConfiguration:
   channels at."""
   channel_model: str = "hamilton_star_pipette_channel"
   """Which 3D model draws a channel."""
+  z_speed_range: Tuple[float, float] = (10.0, 142.0)
+  """The Z speeds a `MoveZAbsolute` is sent at, in mm/s, lowest first. The top is the drive's own
+  speed, fitted from timed moves; the bottom the slowest sent to date. The firmware reports neither,
+  and where it refuses is not yet read."""
   default_y_ranges: Tuple[Tuple[float, float], ...] = ((0.0, 385.0), (-9.0, 376.0))
   """The Y window each channel reaches when its device reports none, in mm, lowest first, by channel back to
   front. A legacy Prep's without an 8-channel head: what GetChannelBounds reports on PRPAA1087 (V1.2.2) and
@@ -2048,12 +2052,13 @@ class Pipettes:
       acceleration: Z drive acceleration in mm/s2 for this move, then restored. None leaves it.
 
     Raises:
-      ValueError: If a channel does not exist or cannot reach its z, or `speed` or `acceleration` is
-        not above 0.
+      ValueError: If a channel does not exist or cannot reach its z, `speed` is outside
+        `configuration.z_speed_range`, or `acceleration` is not above 0.
     """
     speed = self.default_z_speed if speed is None else speed
-    if speed <= 0:
-      raise ValueError(f"speed must be above 0 mm/s, is {speed}")
+    low, high = self.configuration.z_speed_range
+    if not low <= speed <= high:
+      raise ValueError(f"speed must be between {low} and {high} mm/s, is {speed}")
     if acceleration is not None and acceleration <= 0:
       raise ValueError(f"acceleration must be above 0 mm/s2, is {acceleration}")
     if not zs:
@@ -2481,6 +2486,7 @@ class Pipettes:
     self,
     channel_idx: int,
     direction: Literal["left", "right"],
+    *,
     search_start_position: Optional[float] = None,
     search_end_position: Optional[float] = None,
     minimum_traverse_height_start: Optional[float] = None,
@@ -2662,6 +2668,7 @@ class Pipettes:
     self,
     channel_idx: int,
     direction: Literal["forward", "backward"],
+    *,
     search_start_position: Optional[float] = None,
     search_end_position: Optional[float] = None,
     minimum_traverse_height_start: Optional[float] = None,
