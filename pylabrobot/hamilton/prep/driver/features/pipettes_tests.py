@@ -194,6 +194,38 @@ def test_aspirate_takes_a_missing_liquid_height_from_the_tracked_volume():
   _run(_t())
 
 
+def test_aspirate_immerses_the_tip_below_the_surface_with_and_without_lld():
+  """Without LLD the aspirate height drops by the depth; with LLD the depth is the search's submerge."""
+
+  async def _t():
+    deck = PrepDeck()
+    tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
+    plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+    p = PrepSimulationDriver(deck=deck)
+    await p.setup()
+    assert p.pipettes is not None
+    well = plate.get_item("A1")
+    bottom = well.get_location_wrt(deck, "c", "c", "cavity_bottom").z
+    await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
+    sent = _record(p)
+    await p.pipettes.aspirate(
+      [well], volumes=[0.0], use_channels=[0], liquid_heights=[5.0], immersion_depths=[2.0]
+    )
+    await p.pipettes.aspirate(
+      [well],
+      volumes=[0.0],
+      use_channels=[0],
+      lld_mode=Pipettes.LLDMode.CAPACITIVE,
+      immersion_depths=[1.5],
+    )
+    plain, searched = [c.aspirate_parameters[0] for c in sent if hasattr(c, "aspirate_parameters")]
+    assert plain.no_lld.z_fluid == pytest.approx(bottom + 3.0, abs=0.01)
+    assert searched.lld.z_submerge == pytest.approx(1.5)
+    await p.stop()
+
+  _run(_t())
+
+
 def test_aspirate_sends_a_mix_per_container_and_the_default_block_where_none():
   """A `Mix` becomes that channel's mix block; a container without one is sent the default."""
 

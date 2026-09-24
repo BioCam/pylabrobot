@@ -20,7 +20,7 @@ import logging
 import math
 import struct as _struct
 from contextlib import asynccontextmanager, suppress
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import (
   TYPE_CHECKING,
   Any,
@@ -4220,6 +4220,7 @@ class Pipettes:
     lld_mode: Optional[Pipettes.LLDMode] = None,
     mix: Optional[Sequence[Optional[Mix]]] = None,
     mix_position_from_liquid_surface: float = 0.0,
+    immersion_depths: Optional[Sequence[float]] = None,
   ) -> list[_AspirateChannelKit]:
     """Resolve all per-channel values for aspirate (pure computation, no I/O)."""
     ctx = self._resolve_channel_context(
@@ -4264,6 +4265,11 @@ class Pipettes:
     lld_defaults = self._default_lld_params(effective_lld, p_lld, c_lld, lld_mode=lld_mode)
     _tadm = tadm or PrepCmd.TadmParameters.default()
     mix_blocks = get_mix_parameters(mix, len(ops), mix_position_from_liquid_surface)
+    if immersion_depths is not None and len(immersion_depths) != len(ops):
+      raise ValueError(f"immersion_depths length must match containers ({len(ops)})")
+    z_fluids = list(ctx.z_fluid)
+    if immersion_depths is not None and z_fluid is None:
+      z_fluids = [z - depth for z, depth in zip(z_fluids, immersion_depths)]
 
     kits: list[_AspirateChannelKit] = []
     for ch in range(self.num_channels):
@@ -4292,9 +4298,14 @@ class Pipettes:
           ),
           segments=ctx.ch_segments[ch],
           no_lld=PrepCmd.NoLldParameters.for_fixed_z(
-            ctx.z_fluid[idx], ctx.z_air[idx], z_bottom_search_offset=ctx.z_bottom_search_offset[idx]
+            z_fluids[idx], ctx.z_air[idx], z_bottom_search_offset=ctx.z_bottom_search_offset[idx]
           ),
-          lld=self._lld_for_well(effective_lld, lld, ctx.well_geometry[idx].top_of_well),
+          lld=self._lld_for_well(effective_lld, lld, ctx.well_geometry[idx].top_of_well)
+          if immersion_depths is None
+          else replace(
+            self._lld_for_well(effective_lld, lld, ctx.well_geometry[idx].top_of_well),
+            z_submerge=immersion_depths[idx],
+          ),
           p_lld=lld_defaults.p_lld,
           c_lld=lld_defaults.c_lld,
           monitoring=PrepCmd.AspirateMonitoringParameters.default(),
@@ -4730,6 +4741,7 @@ class Pipettes:
     *,
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
     disable_volume_correction: Optional[List[bool]] = None,
+    immersion_depths: Optional[Sequence[float]] = None,
     blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
     pre_wetting_volumes: Optional[List[float]] = None,
     lld: Optional[PrepCmd.LldParameters] = None,
@@ -4768,6 +4780,8 @@ class Pipettes:
         channel's tip, water, when None.
       disable_volume_correction: per container, whether the volume is sent as the piston's,
         uncorrected by the class.
+      immersion_depths: how far under the surface each tip aspirates, in mm, per container.
+        With LLD the search's `z_submerge`, 2.0 when None; without, off `z_fluid`, 0.0 when None.
       blow_out_air_volumes: air drawn before the liquid, in uL, per container. The liquid
         class's, else 0.0, when None.
       pre_wetting_volumes: drawn and returned first, in uL, per container. The liquid class's
@@ -4849,6 +4863,7 @@ class Pipettes:
       lld_mode=lld_mode,
       mix=mix,
       mix_position_from_liquid_surface=mix_position_from_liquid_surface,
+      immersion_depths=immersion_depths,
     )
 
     lld_read_timeout = read_timeout
