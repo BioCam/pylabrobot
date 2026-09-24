@@ -2510,7 +2510,7 @@ class Pipettes:
         `search_start_position`, in mm. `default_minimum_traverse_height` when None. A lower value
         asserts the lateral path is clear, which the driver cannot check.
       sensitivity: cLLD sensitivity. Defaults to `default_clld_sensitivity`.
-      detect_mode: cLLD detect mode.
+      detect_mode: cLLD detect mode. What the modes mean is not known; only 2 has worked along X.
       post_detection_dist: back-off after a detection in mm.
       tip_bottom_diameter: diameter of the tip bottom in mm, when a tip is mounted.
       stop_disc_diameter: diameter of the stop disc (tip mounting shaft) in mm, when none is.
