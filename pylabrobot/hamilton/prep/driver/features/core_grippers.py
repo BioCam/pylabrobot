@@ -436,7 +436,7 @@ class CoreGrippers:
   # -- with a resource held ------------------------------------------------------------------------
 
   async def _unchecked_fw_move_resource(
-    self, plate_top_center: PrepCmd.XYZCoord, acceleration_scale_x: int
+    self, plate_top_center: PrepCmd.XYZCoord, x_acceleration_scale: int
   ) -> None:
     """Send `Pipettor.MovePlate` (PrepMovePlate, cmd=19) without checks.
 
@@ -444,15 +444,15 @@ class CoreGrippers:
     `move_resource_to_xy_position` sends the height it is already at.
 
     Carries X at its own profile, whatever the X axis is set to: about 125 mm/s and 160 mm/s2 over
-    117 mm on the device, with `acceleration_scale_x` 1 or 2 alike.
+    117 mm on the device, with `x_acceleration_scale` 1 or 2 alike.
 
     Args:
       plate_top_center: where the held plate's top centre goes, in deck coordinates.
-      acceleration_scale_x: X-axis acceleration scale; showed no effect at 2.
+      x_acceleration_scale: X-axis acceleration scale; showed no effect at 2.
     """
     await self._driver.send_command(
       PrepCmd.PrepMovePlate(
-        plate_top_center=plate_top_center, acceleration_scale_x=acceleration_scale_x
+        plate_top_center=plate_top_center, acceleration_scale_x=x_acceleration_scale
       )
     )
 
@@ -461,7 +461,7 @@ class CoreGrippers:
     x: Optional[float] = None,
     y: Optional[float] = None,
     *,
-    acceleration_scale_x: int = 1,
+    x_acceleration_scale: int = 1,
   ) -> None:
     """Carry the held resource across the deck, at the height it is already at (PrepMovePlate).
 
@@ -470,7 +470,7 @@ class CoreGrippers:
     Args:
       x: where to take its centre, in mm. None keeps it where it is in x.
       y: where to take its centre, in mm. None keeps it where it is in y.
-      acceleration_scale_x: X-axis acceleration scale; showed no effect at 2.
+      x_acceleration_scale: X-axis acceleration scale; showed no effect at 2.
 
     Raises:
       ValueError: If neither x nor y is given.
@@ -493,7 +493,7 @@ class CoreGrippers:
     y = (back.y + front.y) / 2 if y is None else y
     try:
       await self._unchecked_fw_move_resource(
-        self._compute_plate_top(Coordinate(x, y, back.z)), acceleration_scale_x=acceleration_scale_x
+        self._compute_plate_top(Coordinate(x, y, back.z)), x_acceleration_scale=x_acceleration_scale
       )
     finally:
       await self._pipettes._record_where_they_stopped()
@@ -853,7 +853,7 @@ class CoreGrippers:
     location: Coordinate,
     *,
     y_clearance: float = 2.5,
-    acceleration_scale_x: int = 1,
+    x_acceleration_scale: int = 1,
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_end: Optional[float] = None,
     z_acceleration: Optional[float] = None,
@@ -866,7 +866,7 @@ class CoreGrippers:
       location: where the jaws are to hold it when it is let go, as `_pick_up_at` takes it.
       y_clearance: how far each gripper stands from the resource, either side, as it moves in to
         grip it and out after letting go, in mm.
-      acceleration_scale_x: X-axis acceleration scale; showed no effect at 2.
+      x_acceleration_scale: X-axis acceleration scale; showed no effect at 2.
       minimum_traverse_height_start: the height to carry it to the destination at, in mm. None
         goes to Z safety, as high as they reach.
       minimum_traverse_height_end: the height to leave the channels at once it is released, in mm.
@@ -887,7 +887,7 @@ class CoreGrippers:
       # Carried over the destination first, so letting go is straight down: left to itself the
       # firmware dives across the deck with the plate.
       await self.move_resource_to_xy_position(
-        location.x, location.y, acceleration_scale_x=acceleration_scale_x
+        location.x, location.y, x_acceleration_scale=x_acceleration_scale
       )
       await self._move_jaws_to_z(
         location.z + FIRMWARE_Z_LEG,
@@ -899,7 +899,7 @@ class CoreGrippers:
           PrepCmd.PrepDropPlate(
             plate_top_center=plate_top_center,
             clearance_y=y_clearance,
-            acceleration_scale_x=acceleration_scale_x,
+            acceleration_scale_x=x_acceleration_scale,
           )
         )
       finally:
@@ -1023,7 +1023,7 @@ class CoreGrippers:
     offset: Coordinate = Coordinate.zero(),
     *,
     y_clearance: float = 2.5,
-    acceleration_scale_x: int = 1,
+    x_acceleration_scale: int = 1,
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_end: Optional[float] = None,
     z_acceleration: Optional[float] = None,
@@ -1065,7 +1065,7 @@ class CoreGrippers:
     await self._drop_at(
       location,
       y_clearance=y_clearance,
-      acceleration_scale_x=acceleration_scale_x,
+      x_acceleration_scale=x_acceleration_scale,
       minimum_traverse_height_start=minimum_traverse_height_start,
       minimum_traverse_height_end=minimum_traverse_height_end,
       z_acceleration=z_acceleration,
@@ -1078,7 +1078,7 @@ class CoreGrippers:
     offset: Coordinate = Coordinate.zero(),
     *,
     y_clearance: float = 2.5,
-    acceleration_scale_x: int = 1,
+    x_acceleration_scale: int = 1,
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_end: Optional[float] = None,
     z_acceleration: Optional[float] = None,
@@ -1097,7 +1097,7 @@ class CoreGrippers:
     kwargs: Dict[str, Any] = {
       "offset": offset,
       "y_clearance": y_clearance,
-      "acceleration_scale_x": acceleration_scale_x,
+      "x_acceleration_scale": x_acceleration_scale,
       "minimum_traverse_height_start": minimum_traverse_height_start,
       "minimum_traverse_height_end": minimum_traverse_height_end,
       "z_acceleration": z_acceleration,
@@ -1202,7 +1202,7 @@ class CoreGrippers:
     pickup_z_acceleration: Optional[float] = None,
     pickup_z_speed: Optional[float] = None,
     minimum_traverse_height_during: Optional[float] = None,
-    acceleration_scale_x: int = 1,
+    x_acceleration_scale: int = 1,
     drop_offset: Coordinate = Coordinate.zero(),
     drop_z_acceleration: Optional[float] = None,
     drop_z_speed: Optional[float] = None,
@@ -1236,7 +1236,7 @@ class CoreGrippers:
       pickup_z_speed: how fast the jaws rise with it, in mm/s. None is the pipettes'
         `default_z_speed`.
       minimum_traverse_height_during: the height to carry it at, in mm. None goes to Z safety.
-      acceleration_scale_x: X-axis acceleration scale while carrying it.
+      x_acceleration_scale: X-axis acceleration scale while carrying it.
       drop_offset: added to where it is let go, in mm.
       drop_z_acceleration: the Z drives' acceleration until it is let go, in mm/s2. None is
         `default_z_acceleration_with_resource_held`.
@@ -1279,7 +1279,7 @@ class CoreGrippers:
       to,
       offset=drop_offset,
       y_clearance=drop_y_clearance,
-      acceleration_scale_x=acceleration_scale_x,
+      x_acceleration_scale=x_acceleration_scale,
       minimum_traverse_height_start=minimum_traverse_height_during,
       minimum_traverse_height_end=minimum_traverse_height_end,
       z_acceleration=drop_z_acceleration,
