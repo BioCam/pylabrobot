@@ -268,3 +268,7 @@ export const QUALITY_WARMUP_MS = 3000;
 // The levels: 0 draws everything as set up, 1 drops the pixel ratio to one, 2 also drops the
 // environment lighting. Antialiasing is fixed when the renderer is made, so it is not a level.
 export const QUALITY_LEVELS = 3;
+// The sky light, with the environment and without it. The environment is most of the light on
+// every surface, so the lowest level, which drops it, stands the sky light in for it instead.
+export const SKY_LIGHT = 1.0;
+export const SKY_LIGHT_WITHOUT_ENVIRONMENT = 3.6;

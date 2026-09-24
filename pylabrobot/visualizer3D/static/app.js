@@ -78,6 +78,8 @@ import {
   SELECT,
   SELECTION_SHOWN_MS,
   SHELL_OPACITY,
+  SKY_LIGHT,
+  SKY_LIGHT_WITHOUT_ENVIRONMENT,
   SPACE_OPACITY,
   structureEdgeStyle,
   TIP_PLAN_FILL,
@@ -307,7 +309,8 @@ viewportEl.addEventListener(
 // A key off to one side rather than straight down the lens: dead-on light flattens as surely as no
 // light at all, because every face pointing at you gets the same amount of it.
 const lights = new THREE.Group();
-lights.add(new THREE.HemisphereLight(0xffffff, 0xeceff1, 1.0));
+const skyLight = new THREE.HemisphereLight(0xffffff, 0xeceff1, SKY_LIGHT);
+lights.add(skyLight);
 const keyLight = new THREE.DirectionalLight(0xffffff, 0.9);
 keyLight.position.set(-0.6, 0.5, 1);
 lights.add(keyLight);
@@ -4870,6 +4873,7 @@ function applyQuality(level) {
   // The drawing buffer follows the pixel ratio only through setSize.
   renderer.setSize(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
   view.environment = quality >= 2 ? null : (view.userData.roomEnvironment ?? null);
+  skyLight.intensity = view.environment ? SKY_LIGHT : SKY_LIGHT_WITHOUT_ENVIRONMENT;
 }
 
 // Read after each drawn frame. Down after slow frames have settled, up after fast ones have, and
