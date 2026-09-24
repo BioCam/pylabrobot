@@ -9,8 +9,11 @@ Skipped where there is no Chrome to drive, so it is a no-op on a computer withou
 """
 
 import asyncio
+import base64
 import json
 import os
+import struct
+import zlib
 import shutil
 import subprocess
 import sys
@@ -18,7 +21,7 @@ import tempfile
 import time
 import unittest
 import urllib.request
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 import websockets
 
@@ -127,6 +130,23 @@ class Browser:
       raise RuntimeError(json.dumps(reply["result"]["exceptionDetails"])[:300])
     return reply["result"]["result"].get("value")
 
+  async def drawn_fraction(self, selector: str) -> float:
+    """How much of an element's screen is not background: what a viewer has drawn there."""
+    box = await self.evaluate(
+      f"document.querySelector({selector!r}).getBoundingClientRect().toJSON()"
+    )
+    clip = {
+      "x": box["x"],
+      "y": box["y"],
+      "width": box["width"],
+      "height": box["height"],
+      "scale": 1,
+    }
+    shot = await self._call("Page.captureScreenshot", {"format": "png", "clip": clip})
+    rows = _png_luminance(base64.b64decode(shot["result"]["data"]))
+    pixels = [v for row in rows for v in row]
+    return sum(1 for v in pixels if v < 200) / len(pixels)
+
   async def settle(self, expression: str, seconds: float = 25.0) -> Any:
     """Wait for an expression to answer something truthy, then answer with it.
 
@@ -143,6 +163,51 @@ class Browser:
       if value:
         return value
     raise AssertionError(f"the page never answered within {seconds:.0f}s: {expression}")
+
+
+def _png_luminance(png: bytes) -> List[List[int]]:
+  """An 8-bit RGB or RGBA PNG as rows of luminance, without any imaging library."""
+  assert png[:8] == b"\x89PNG\r\n\x1a\n"
+  at, width, height, channels, data = 8, 0, 0, 0, b""
+  while at < len(png):
+    (length,) = struct.unpack(">I", png[at : at + 4])
+    kind, body = png[at + 4 : at + 8], png[at + 8 : at + 8 + length]
+    if kind == b"IHDR":
+      width, height, depth, colour = struct.unpack(">IIBB", body[:10])
+      assert depth == 8 and colour in (2, 6), "an 8-bit RGB or RGBA image"
+      channels = 3 if colour == 2 else 4
+    elif kind == b"IDAT":
+      data += body
+    at += 12 + length
+  raw = zlib.decompress(data)
+  stride = width * channels
+  rows: List[List[int]] = []
+  previous = bytearray(stride)
+  for y in range(height):
+    start = y * (stride + 1)
+    filter_, line = raw[start], bytearray(raw[start + 1 : start + 1 + stride])
+    for i in range(stride):
+      a = line[i - channels] if i >= channels else 0
+      b = previous[i]
+      c = previous[i - channels] if i >= channels else 0
+      if filter_ == 1:
+        line[i] = (line[i] + a) & 255
+      elif filter_ == 2:
+        line[i] = (line[i] + b) & 255
+      elif filter_ == 3:
+        line[i] = (line[i] + (a + b) // 2) & 255
+      elif filter_ == 4:
+        p = a + b - c
+        pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+        line[i] = (line[i] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+    rows.append(
+      [
+        (299 * line[i] + 587 * line[i + 1] + 114 * line[i + 2]) // 1000
+        for i in range(0, stride, channels)
+      ]
+    )
+    previous = line
+  return rows
 
 
 @unittest.skipUnless(CHROME, "no headless browser to drive")
@@ -390,7 +455,11 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
     volumes in the state; each is checked on its own elsewhere. This drives all of them at once on
     the demo facility and reads the page back against the tree, resource by resource. A joint's
     angle travels rounded to a tenth of a degree, which at the reach of an arm's link is a fifth
-    of a millimetre, so that is how close the drawing is held to the tree."""
+    of a millimetre, so that is how close the drawing is held to the tree.
+
+    It also reads the pixels, before the run and after it in the other projection: every other
+    test here reads the page's model of the scene, and a page once drew nothing at all until its
+    quality level happened to change, on GPUs other than the one the change was made on."""
     was_tracking = does_volume_tracking()
     set_volume_tracking(True)
     facility = build_facility()
@@ -403,6 +472,9 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
       async with Browser(CDP_PORT + 8) as browser:
         await browser.open(f"http://127.0.0.1:{viewer.fs_port}/")
         await browser.settle("window.plrViewer && window.plrViewer.resources().length > 3000", 60)
+        await BrowserTests.settled_model_count(browser)
+        await asyncio.sleep(2.0)
+        self.assertGreater(await browser.drawn_fraction("#viewport"), 0.02, "the opening view")
 
         source = star.deck.get_resource("source_0")
         destination = star.deck.get_resource("destination_0")
@@ -443,6 +515,10 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
             f"window.plrViewer.stateOf({plate_.get_item(well).name!r})"
           )
           self.assertEqual(shown["volume"], plate_.get_item(well).tracker.get_used_volume())
+
+        await browser.evaluate("window.plrViewer.view('iso')")
+        await asyncio.sleep(2.0)
+        self.assertGreater(await browser.drawn_fraction("#viewport"), 0.02, "the iso view")
     finally:
       await viewer.stop()
       set_volume_tracking(was_tracking)
