@@ -762,12 +762,16 @@ class Viewer3D:
     tree, so a stopped viewer costs the resources nothing and a change is never handed to no loop."""
     self._unsubscribe()
     self._loop = None
+    if self._scene_timer is not None:
+      self._scene_timer.cancel()
+      self._scene_timer = None
     if self._ws_server is not None:
       self._ws_server.close()
       await self._ws_server.wait_closed()
       self._ws_server = None
     self._clients.clear()
     if self._httpd is not None:
-      self._httpd.shutdown()
+      # Shutdown waits for the serving thread's poll, half a second: not on the loop's time.
+      await asyncio.to_thread(self._httpd.shutdown)
       self._httpd.server_close()
       self._httpd = None

@@ -8,7 +8,7 @@ from pylabrobot.resources.corning import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.hamilton import hamilton_96_tiprack_1000uL
 from pylabrobot.resources.resource import Resource
 from pylabrobot.visualizer3D.facility import Facility
-from pylabrobot.visualizer3D.scene import build_scene
+from pylabrobot.visualizer3D.scene import build_scene, pack_state
 
 
 def facility_with(plates: int) -> Facility:
@@ -89,6 +89,24 @@ class SceneTests(unittest.TestCase):
       json.dumps(warm.serialize(), sort_keys=True),
       json.dumps(build_scene(facility).serialize(), sort_keys=True),
     )
+
+
+class PackStateTests(unittest.TestCase):
+  def test_resources_that_differ_only_in_position_share_one_state(self):
+    """A position rode inside the state, so two wells at the same volume were two states, and a
+    plate of them that had moved once could never share anything again."""
+    at = lambda x: {"x": x, "y": 0.0, "z": 0.0, "type": "Coordinate"}  # noqa: E731
+    packed = pack_state(
+      {
+        "a": {"volume": 100.0, "location": at(1.0)},
+        "b": {"volume": 100.0, "location": at(2.0)},
+        "c": {"volume": 100.0},
+      }
+    )
+    self.assertEqual(len(packed["states"]), 1)
+    self.assertEqual(packed["of"], {"a": 0, "b": 0, "c": 0})
+    self.assertEqual(packed["locations"], {"a": at(1.0), "b": at(2.0)})
+    self.assertNotIn("location", packed["states"][0])
 
 
 if __name__ == "__main__":

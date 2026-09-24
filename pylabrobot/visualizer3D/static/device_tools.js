@@ -508,7 +508,7 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
     mainEl?.appendChild(element);
     draggable(element);
     button.classList.add("active");
-    const panel = { element, device, kind, button };
+    const panel = { element, device, kind, button, name: getWorld().names[device] };
     open.set(id, panel);
     render(panel);
     layOut();
@@ -517,6 +517,9 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
   // ------------------------------------------------------------------ the navbar cluster
 
   function rebuild() {
+    // What was open comes back, by device name: a scene arriving is no reason to close a panel.
+    const wasOpen = [...open.values()].map((panel) => [panel.name, panel.kind]);
+    const buttonOf = new Map();
     for (const id of [...open.keys()]) close(id);
     if (!containerEl) return;
     containerEl.textContent = "";
@@ -559,8 +562,14 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
         button.innerHTML = `<img src="./img/${icon}" alt="${escapeHtml(title)}">`;
         button.addEventListener("click", () => toggle(device, kind, button));
         buttons.appendChild(button);
+        buttonOf.set(idOf(device, kind), button);
       }
       containerEl.appendChild(group);
+    }
+    for (const [name, kind] of wasOpen) {
+      const device = world.indexOfName.get(name);
+      const button = device === undefined ? undefined : buttonOf.get(idOf(device, kind));
+      if (button) toggle(device, kind, button);
     }
   }
 

@@ -350,12 +350,19 @@ def pack_state(states: Dict[str, Dict[str, Any]], epoch: int = 0) -> Dict[str, A
 
   Every name that went in comes out, including one whose state cleans down to nothing. Dropping it
   would leave a client that had already been told about a full well believing it was still full.
+
+  A position is one resource's own, so it travels under the name in `locations` rather than in
+  the shared table: left in, it would give every moved well a state of its own.
   """
   distinct: Dict[str, int] = {}
   table: List[Dict[str, Any]] = []
   index: Dict[str, int] = {}
+  locations: Dict[str, Any] = {}
 
   for name, published in states.items():
+    if "location" in published:
+      locations[name] = published["location"]
+      published = {k: v for k, v in published.items() if k != "location"}
     cleaned, key = state_signature(published)
     if key not in distinct:
       distinct[key] = len(table)
@@ -367,7 +374,7 @@ def pack_state(states: Dict[str, Dict[str, Any]], epoch: int = 0) -> Dict[str, A
   # lazily during setup and reassigned by code that has nothing to do with the viewer, which
   # reorders a parent's children, and an index that means one resource in one scene means a
   # different one in the next. A name means the same thing in every scene.
-  return {"epoch": epoch, "states": table, "of": index}
+  return {"epoch": epoch, "states": table, "of": index, "locations": locations}
 
 
 def collect_state(root: Resource) -> Dict[str, Dict[str, Any]]:

@@ -156,8 +156,7 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
       update = await self.next_state(ws)
       self.assertIsNotNone(update)
       self.assertIn("plate", update["of"])
-      moved = update["states"][update["of"]["plate"]]
-      self.assertEqual(moved["location"]["x"], 400)
+      self.assertEqual(update["locations"]["plate"]["x"], 400)
     finally:
       await ws.close()
 
@@ -175,8 +174,7 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
       holder.assign_child_resource(self.plate, location=Coordinate(5, 5, 50))
       states, moves = await self.next_of(ws, "moves")
       for state in states:
-        index = state["of"].get("plate")
-        self.assertTrue(index is None or "location" not in state["states"][index], state)
+        self.assertNotIn("plate", state.get("locations", {}), state)
       moved = {move["name"]: move for move in moves["moves"]}
       self.assertIn("plate", moved)
       self.assertEqual(moved["plate"]["parent"], "holder")
@@ -259,6 +257,27 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
       self.assertEqual((second.fs_port, second.ws_port), (FS_PORT, WS_PORT))
     finally:
       await second.stop()
+
+  async def test_stop_does_not_hold_the_loop(self):
+    """Shutting the file server down waited on its serving thread's half-second poll from the
+    loop's own thread, so everything else on the loop stood still for that long."""
+    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    viewer = Viewer3D(facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
+    await viewer.start()
+    ticks = 0
+
+    async def tick() -> None:
+      nonlocal ticks
+      while True:
+        await asyncio.sleep(0.02)
+        ticks += 1
+
+    ticking = asyncio.ensure_future(tick())
+    try:
+      await viewer.stop()
+    finally:
+      ticking.cancel()
+    self.assertGreater(ticks, 5)
 
   async def test_a_stopped_viewer_no_longer_listens_to_the_tree(self):
     """`stop` used to leave every state and assignment callback in place, so a stopped viewer

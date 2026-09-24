@@ -213,6 +213,43 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       self.assertEqual((back["level"], back["environment"]), (0, True))
       self.assertEqual(back["pixelRatio"], full["pixelRatio"])
 
+  async def test_a_scene_keeps_what_the_reader_had_open(self):
+    """Every scene rebuilt the tree folded, dropped the selection and closed the panel, and a
+    deck being laid out sends a scene on every assignment."""
+    async with Browser(CDP_PORT + 5) as browser:
+      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
+      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
+      await browser.evaluate("window.plrViewer.focus('rider', 'top')")
+      row = "document.querySelector(`.tree-node-row[data-index='${window.plrViewer.resources().indexOf('rider')}']`)"
+      await browser.settle(f"{row}?.classList.contains('selected')", 10)
+      self.facility.assign_child_resource(
+        Resource(name="late", size_x=10, size_y=10, size_z=10), location=Coordinate(0, 0, 0)
+      )
+      await browser.settle("window.plrViewer.resources().includes('late')", 30)
+      self.assertTrue(await browser.evaluate(f"{row}?.classList.contains('selected') ?? false"))
+      panel = await browser.evaluate("document.querySelector('.uml-panel')?.textContent ?? ''")
+      self.assertIn("rider", panel)
+
+  async def test_a_click_on_a_row_selects_unless_it_is_on_the_arrow(self):
+    """The fold zone was measured from the element under the pointer, not from the row, so the
+    first twenty pixels of the name folded the row instead of selecting it."""
+    async with Browser(CDP_PORT + 6) as browser:
+      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
+      await browser.settle(
+        "window.plrViewer && window.plrViewer.resources().includes('carrier')", 30
+      )
+      click = (
+        "((where) => {"
+        "  const row = document.querySelector(`.tree-node-row[data-index='${window.plrViewer.resources().indexOf('carrier')}']`);"
+        "  const target = row.querySelector(where === 'arrow' ? '.tree-node-arrow' : '.tree-node-name');"
+        "  const box = target.getBoundingClientRect();"
+        "  target.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: box.left + 3, clientY: box.top + box.height / 2 }));"
+        "  return [row.classList.contains('selected'), row.querySelector('.tree-node-arrow').textContent];"
+        "})"
+      )
+      self.assertEqual(await browser.evaluate(f"{click}('name')"), [True, "▶"])
+      self.assertEqual(await browser.evaluate(f"{click}('arrow')"), [True, "▼"])
+
   async def test_slow_frames_step_the_quality_down_on_their_own(self):
     """The frame cost was this thread's time around the render call, which a GPU or a rasteriser
     in another process never shows up in, so the machines the levels exist for never stepped down.

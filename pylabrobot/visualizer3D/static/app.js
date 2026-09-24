@@ -2748,13 +2748,16 @@ function applyState(payload) {
     if (index === undefined) continue;
     // Shared between every resource in the same state, and only ever read.
     stateOf.set(index, states[slot]);
-    if (states[slot]?.location) applyLocation(index, states[slot].location);
     // A state carries the whole of what a resource publishes, so a rotation that is not in it is
     // one that has come back to zero - the sender drops the identity to keep the message small.
     // Taking absence as "unchanged" leaves a joint drawn at the last angle it was turned to.
     applyRotation(index, states[slot]?.rotation ?? { x: 0, y: 0, z: 0 });
     refreshOverlays(index, touched);
     applyJoints(index);
+  }
+  for (const [name, location] of Object.entries(payload.locations ?? {})) {
+    const index = world.indexOfName.get(name);
+    if (index !== undefined) applyLocation(index, location);
   }
   for (const mesh of touched) {
     mesh.instanceMatrix.needsUpdate = true;
@@ -2998,6 +3001,37 @@ function siteOrder(index) {
   return { sorted, number };
 }
 
+// What the reader has open, by name, so a scene arriving does not fold the tree they opened, drop
+// what they selected or close the panel they were reading. Taken before the new world replaces
+// the old, since the indices held here mean nothing once it has.
+function rememberView() {
+  if (!world) return null;
+  return {
+    open: [...expanded].map((i) => world.names[i]),
+    selected: selected >= 0 ? world.names[selected] : null,
+    panel: infoPanel?.isConnected === true,
+  };
+}
+
+function openPathTo(index) {
+  const chain = [];
+  for (let i = index; i >= 0; i = world.parentOf[i]) chain.unshift(i);
+  for (const i of chain) toggle(i, true);
+}
+
+function restoreView(kept) {
+  if (!kept) return;
+  for (const name of kept.open) {
+    const index = world.indexOfName.get(name);
+    if (index !== undefined) openPathTo(index);
+  }
+  const index = world.indexOfName.get(kept.selected);
+  if (index === undefined) return;
+  selected = index;
+  revealAndHighlight(index);
+  if (kept.panel) renderInfoPanel();
+}
+
 function buildTree() {
   treeEl.textContent = "";
   rowOf.clear();
@@ -3081,12 +3115,15 @@ function addRow(index, depth, before) {
   row.addEventListener("mouseleave", () => (hoverBox.visible = false));
   // As the existing visualizer's rows: a click opens the panel on the resource, a double click
   // frames it in the viewport, from wherever the camera is looking.
+  // The arrow and the indent before it fold the row; the rest of it, from the name on, selects.
+  const onArrow = (e) =>
+    children.length > 0 && e.clientX <= arrow.getBoundingClientRect().right + 4;
   row.addEventListener("click", (e) => {
-    if (e.offsetX < 20 && children.length) toggle(index, !expanded.has(index));
+    if (onArrow(e)) toggle(index, !expanded.has(index));
     else select(index, true);
   });
   row.addEventListener("dblclick", (e) => {
-    if (e.offsetX < 20 && children.length) return;
+    if (onArrow(e)) return;
     frameBox(worldBox(index), camera.position.clone().sub(controls.target));
   });
 
@@ -4669,6 +4706,7 @@ function connect() {
       slowSince = null;
       fastSince = null;
       stats = data.stats ?? {};
+      const kept = rememberView();
       setWorld(buildWorld(data));
       glides.clear();
       timings.decodeMs = performance.now() - _tScene;
@@ -4700,6 +4738,7 @@ function connect() {
       selectionBox.visible = false;
       hideInfoPanel();
       stateOf.clear();
+      restoreView(kept);
       resize();
       // Only the first scene of a connection frames the camera. A tree that is assembled while the
       // viewer watches rebuilds on every assignment, and framing each one would throw the view away
