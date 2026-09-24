@@ -4327,11 +4327,11 @@ class Pipettes:
       if ch in indexed
     ]
 
-    # Nothing is dropped with liquid in it, two into one spot, or into a spot that is taken
+    # A tip holding liquid is dropped with a warning; two into one spot, or a taken spot, never
     for ch, tip in zip(use_channels, tips):
       if not tip.tracker.is_disabled and tip.tracker.get_used_volume() > 1e-6:
-        raise RuntimeError(
-          f"Cannot drop tip on channel {ch} with volume {tip.tracker.get_used_volume()} uL"
+        logger.warning(
+          "dropping the tip on channel %d with %s uL in it", ch, tip.tracker.get_used_volume()
         )
     spots = [dest for dest in destinations if isinstance(dest, TipSpot)]
     if len({id(spot) for spot in spots}) != len(spots):

@@ -305,6 +305,35 @@ def test_aspirate_sends_an_explicit_zero_blow_out_and_refuses_a_zero_flow_rate()
   _run(_t())
 
 
+def test_a_tip_holding_liquid_is_dropped_with_a_warning():
+  """What a tip still holds is the caller's to decide: it is dropped, and the log says so."""
+
+  async def _t():
+    set_tip_tracking(True)
+    set_volume_tracking(True)
+    try:
+      deck = PrepDeck()
+      tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
+      plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+      p = PrepSimulationDriver(deck=deck)
+      await p.setup()
+      assert p.pipettes is not None
+      well, spot = plate.get_item("A1"), tip_rack.get_item("A1")
+      well.tracker.set_volume(100.0)
+      await p.pipettes.pick_up_tips([spot], use_channels=[0])
+      await p.pipettes.aspirate([well], piston_volumes=[5.0], use_channels=[0])
+      with patch.object(pipettes_logger, "warning") as warning:
+        await p.pipettes.return_tips()
+      assert p.pipettes.get_mounted_tip(0) is None and spot.has_tip()
+      assert "with 5.0 uL in it" in warning.call_args.args[0] % warning.call_args.args[1:]
+      await p.stop()
+    finally:
+      set_volume_tracking(False)
+      set_tip_tracking(False)
+
+  _run(_t())
+
+
 def test_aspirate_refuses_a_clot_check_until_it_is_verified():
   """0.0 sends the capacitive block as before; any other height is refused before sending."""
 
