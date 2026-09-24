@@ -851,8 +851,12 @@ class TestLiquidClassLookup(unittest.TestCase):
       (tip_creators.hamilton_tip_50uL_filter, True),
       (tip_creators.hamilton_tip_300uL, False),
       (tip_creators.hamilton_tip_300uL_filter, False),
+      (tip_creators.hamilton_tip_300uL_filter_slim, False),
+      (tip_creators.hamilton_tip_300uL_filter_ultrawide, False),
       (tip_creators.hamilton_tip_1000uL, False),
       (tip_creators.hamilton_tip_1000uL_filter, False),
+      (tip_creators.hamilton_tip_1000uL_filter_wide, False),
+      (tip_creators.hamilton_tip_1000uL_filter_ultrawide, False),
     ):
       tip = creator("tip")
       with self.subTest(tip=creator.__name__):
