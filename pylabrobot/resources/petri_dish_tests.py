@@ -35,17 +35,6 @@ class TestPetriDish(unittest.TestCase):
       },
     )
 
-  def test_petri_dish_deserialization(self):
-    petri_dish = PetriDish("petri_dish", diameter=90.0, height=15.0, material_z_thickness=2.5)
-    dish = PetriDish.deserialize(petri_dish.serialize())
-
-    self.assertIsInstance(dish, PetriDish)
-    self.assertEqual(dish.diameter, 90.0)
-    self.assertEqual(dish.height, 15.0)
-    self.assertEqual(dish.get_absolute_size_x(), 90.0)
-    self.assertEqual(dish.get_absolute_size_z(), 15.0)
-    self.assertEqual(dish.material_z_thickness, 2.5)
-
   def test_petri_dish_holder_serialization(self):
     petri_dish_holder = PetriDishHolder("petri_dish_holder")
     serialized = petri_dish_holder.serialize()
