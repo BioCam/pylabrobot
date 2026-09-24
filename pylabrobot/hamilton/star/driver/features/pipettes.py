@@ -4657,9 +4657,8 @@ class Pipettes:
     plld_sensitivities: Optional[List[int]] = None,
     detection_height_differences_for_dual_lld: Optional[List[float]] = None,
     aspirate_positions_above_z_touch_off: Optional[List[float]] = None,
-    clot_detection_heights: Optional[List[float]] = None,
-    immersion_depths: Optional[List[float]] = None,
     blow_out_air_volumes: Optional[List[float]] = None,
+    immersion_depths: Optional[List[float]] = None,
     pre_wetting_volumes: Optional[List[float]] = None,
     pre_mixes: Optional[List[Optional[Mix]]] = None,
     mix_positions_from_liquid_surface: Optional[List[float]] = None,
@@ -4669,6 +4668,7 @@ class Pipettes:
     second_section_ratios: Optional[List[float]] = None,
     settling_times: Optional[List[float]] = None,
     swap_speeds: Optional[List[float]] = None,
+    clot_detection_heights: Optional[List[float]] = None,
     pull_out_distances_transport_air: Optional[List[float]] = None,
     transport_air_volumes: Optional[List[float]] = None,
     limit_curve_indices: Optional[List[int]] = None,
@@ -4697,9 +4697,8 @@ class Pipettes:
       detection_height_differences_for_dual_lld: allowed difference of the two detections. 0.0
         when None.
       aspirate_positions_above_z_touch_off: aspiration height above a Z touch. 0.0 when None.
-      clot_detection_heights: how far a clot may hold the tip back. 0.0 when None.
-      immersion_depths: how far into the liquid each tip goes; negative is out of it. 0.0 when None.
       blow_out_air_volumes: air drawn before the liquid. 0.0 when None.
+      immersion_depths: how far into the liquid each tip goes; negative is out of it. 0.0 when None.
       pre_wetting_volumes: drawn and returned first. 0.0 when None.
       pre_mixes: a `Mix` per channel, mixed before the draw, None for no mixing.
       mix_positions_from_liquid_surface: mixing depth under the surface. 0.0 when None.
@@ -4710,6 +4709,7 @@ class Pipettes:
       second_section_ratios: that section's bottom to top ratio, in tenths. 618.0 when None.
       settling_times: wait in the liquid. 0.0 when None.
       swap_speeds: speed of leaving the liquid. 100.0 when None.
+      clot_detection_heights: how far a clot may hold the tip back. 0.0 when None.
       pull_out_distances_transport_air: rise before drawing transport air. 10.0 when None.
       transport_air_volumes: air drawn after the liquid. 0.0 when None.
       limit_curve_indices: TADM limit curve, 0 for none. 0 when None.
@@ -5497,10 +5497,9 @@ class Pipettes:
     piston_volumes: Optional[Sequence[float]] = None,
     search_speed: float = 10.0,
     approach_speed: float = 125.0,
-    clot_detection_heights: Optional[Sequence[float]] = None,
+    blow_out_air_volumes: Optional[Sequence[float]] = None,
     immersion_depths: Optional[Sequence[float]] = None,
     minimum_allowed_z_positions_during: Optional[Sequence[float]] = None,
-    blow_out_air_volumes: Optional[Sequence[float]] = None,
     pre_wetting_volumes: Optional[Sequence[float]] = None,
     pre_mixes: Optional[Sequence[Optional[Mix]]] = None,
     mix_positions_from_liquid_surface: Optional[Sequence[float]] = None,
@@ -5509,6 +5508,7 @@ class Pipettes:
     second_section_ratios: Optional[Sequence[float]] = None,
     settling_times: Optional[Sequence[float]] = None,
     swap_speeds: Optional[Sequence[float]] = None,
+    clot_detection_heights: Optional[Sequence[float]] = None,
     pull_out_distances_transport_air: Optional[Sequence[float]] = None,
     transport_air_volumes: Optional[Sequence[float]] = None,
     limit_curve_indices: Optional[Sequence[int]] = None,
@@ -5552,13 +5552,11 @@ class Pipettes:
       piston_volumes: what each piston draws, in uL, as given. One of this and `volumes`.
       search_speed: of the driver's own search, liquid or floor, in mm/s.
       approach_speed: down to that search's start, `lp` or the top, in mm/s.
-      clot_detection_heights: how far a clot may hold the tip back, in mm. The class's, else 0.0,
-        when None.
+      blow_out_air_volumes: air drawn before the liquid, in uL. The class's, else 0.0, when None.
       immersion_depths: how far into the liquid each tip goes, in mm; negative is out of it.
       minimum_allowed_z_positions_during: how low each tip bottom may go, in mm on the deck. The
         cavity bottom plus the offset's z when None. Below the cavity bottom is allowed: the tip
         then presses onto the well's floor and draws with suction, as a harvest wants.
-      blow_out_air_volumes: air drawn before the liquid, in uL. The class's, else 0.0, when None.
       pre_wetting_volumes: drawn and returned first, in uL.
       pre_mixes: a `Mix` per container, mixed before the draw, None for no mixing.
       mix_positions_from_liquid_surface: mixing depth under the surface, in mm, per container. 0.0
@@ -5570,6 +5568,8 @@ class Pipettes:
       second_section_ratios: that section's bottom to top ratio, in tenths. 618.0 when None.
       settling_times: wait in the liquid, in s. The class's, else 0.0, when None.
       swap_speeds: speed of leaving the liquid, in mm/s. The class's, else 100.0, when None.
+      clot_detection_heights: how far a clot may hold the tip back, in mm. The class's, else 0.0,
+        when None.
       pull_out_distances_transport_air: rise before drawing transport air, in mm, per container.
         10.0 when None.
       transport_air_volumes: air drawn after the liquid, in uL. The class's, else 0.0, when None.
