@@ -2904,6 +2904,20 @@ class Pipettes:
     if parse_firmware_version_date(version).year < 2022:
       raise RuntimeError(f"channel {channel} runs {version}; z-touch needs firmware from 2022")
 
+  def _warn_ztouch_on_soft_tips(self, channels: Iterable[int]) -> None:
+    """Warn where a channel carries a 50 uL tip: it bends under the force a Z-touch presses with."""
+    soft = sorted(
+      channel
+      for channel in channels
+      if isinstance(tip := self.get_mounted_tip(channel), HamiltonTip) and tip.nominal_volume == 50
+    )
+    if soft:
+      logger.warning(
+        "channels %s carry 50 uL tips, which bend under a Z-touch: the height touched may be off "
+        "and the tip may stay bent",
+        soft,
+      )
+
   async def probe_z_using_ztouch(
     self,
     channel_idx: int,
@@ -2953,6 +2967,7 @@ class Pipettes:
     """
     self._require_channel(channel_idx)
     self._require_ztouch_firmware(channel_idx)
+    self._warn_ztouch_on_soft_tips([channel_idx])
     overhang = await self._overhang_that_probes(channel_idx, allow_without_tip)
     c = self.configuration
     lowest, highest = (c.z_drive_increments_to_mm(i) for i in c.z_range_increments)
@@ -3559,10 +3574,10 @@ class Pipettes:
       raise RuntimeError("containers are placed from the deck; this driver was given none")
     if n_replicates < 1:
       raise ValueError(f"n_replicates must be at least 1, is {n_replicates}")
-    if start_spacing < 0:
-      raise ValueError(f"start_spacing must be at least 0 s, is {start_spacing}")
-    for channel in use_channels or range(min(len(containers), self.num_channels)):
+    touching = list(use_channels or range(min(len(containers), self.num_channels)))
+    for channel in touching:
       self._require_ztouch_firmware(channel)
+    self._warn_ztouch_on_soft_tips(touching)
     channels, overhangs, batches = await self._prepare_batched(
       deck,
       containers,
@@ -4944,6 +4959,7 @@ class Pipettes:
     await self.dispensing_drives_request_uL_positions(sorted(set(channel_of)))
     for job in touched:
       self._require_ztouch_firmware(channel_of[job])
+    self._warn_ztouch_on_soft_tips(channel_of[job] for job in touched)
     if touched:
       logger.warning(
         "channels %s aspirate on Z touch: from the floor of %s, air where no liquid is",
