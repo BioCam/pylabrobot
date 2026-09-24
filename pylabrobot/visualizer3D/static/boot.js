@@ -12,9 +12,18 @@ const statusLabel = document.getElementById("status-label");
 // Long enough for a software renderer on a slow machine to build a large scene; any later and a
 // person has already decided the page is broken.
 const CONNECT_GRACE_MS = 8000;
+// A renderer that never answers is the failure with no error: on some GPUs the adapter or the
+// first context never resolves, and the page said "Starting..." for good.
+const STALL_MS = 20000;
 const SOFTWARE_RENDERERS = /swiftshader|llvmpipe|softpipe|software|microsoft basic render/i;
+// The newest thing the page relies on is the import map that names three: the browsers that
+// first read one. The inline guard in index.html names the same versions.
+const NEEDS = "Chrome 89, Firefox 108 or Safari 16.4 or newer";
 
 window.__plrBooted = true; // the inline guard in index.html checks this
+
+/** Whether the browser reads import maps; null where it cannot say, and the import itself will. */
+const importMaps = HTMLScriptElement.supports?.("importmap") ?? null;
 
 /** What the browser offers, measured once and shared with app.js for the hello it sends. */
 function probeWebGL2() {
@@ -87,6 +96,19 @@ function browserHint() {
   return "Use a current Firefox or Chrome with hardware acceleration enabled.";
 }
 
+/** The rows every graphics diagnosis opens with: what the browser offers, as probed. */
+function gpuChecks(webgpu, webgl, note = "") {
+  return [
+    [webgpu, webgpu ? "WebGPU available" : "WebGPU unavailable"],
+    [
+      webgl.webgl2 && !note,
+      webgl.webgl2
+        ? `WebGL2 available: ${webgl.renderer}${webgl.software ? " (software, slow)" : ""}${note}`
+        : "WebGL2 unavailable",
+    ],
+  ];
+}
+
 function setStatus(text) {
   statusLabel.textContent = text;
   statusLabel.classList.remove("connected");
@@ -127,9 +149,10 @@ function showDiagnosis({ title, checks, hint, detail, dismissible }) {
 }
 
 function websocketHint() {
+  const { protocol, host } = new URL(window.WS_URL);
   return (
     "The page was served, but the viewer's websocket at " +
-    `ws://${location.hostname}:${window.WS_PORT} does not answer. Over SSH, tunnel both ports - ` +
+    `${protocol}//${host} does not answer. Over SSH, tunnel both ports - ` +
     "this page's and the websocket's. If the viewer was restarted, its ports may have moved: use " +
     "the URL it printed. Reload once the server is up."
   );
@@ -181,15 +204,35 @@ window.addEventListener("plr:mismatch", () => {
 });
 
 let started = false;
+// Said once, and taken down by the first status change if the renderer comes round after all.
+const stall = setTimeout(async () => {
+  const webgpu = await probeWebGPU();
+  setStatus("Renderer stuck");
+  showDiagnosis({
+    title: "The renderer has not started",
+    checks: [
+      ...gpuChecks(webgpu, webgl),
+      [false, `no renderer after ${STALL_MS / 1000} s: the browser is waiting on its GPU driver`],
+    ],
+    hint: browserHint(),
+    dismissible: true,
+  });
+}, STALL_MS);
 try {
   await import("./app.js");
   started = true;
 } catch (error) {
   const webgpu = await probeWebGPU();
+  const tooOld = importMaps === false;
   const noGPU = !webgpu && !webgl.webgl2;
-  const reason = noGPU
-    ? "this browser offers neither WebGPU nor WebGL2"
-    : `${error?.name ?? "Error"}: ${error?.message ?? error}`;
+  // renderer.js hangs its canvas in the viewport once the renderer has started. WebGL2 offered
+  // to the probe and then not drawn with is a driver the browser should not be trusting.
+  const drew = !!document.querySelector("#viewport canvas");
+  const reason = tooOld
+    ? `this browser has no import maps: the viewer needs ${NEEDS}`
+    : noGPU
+      ? "this browser offers neither WebGPU nor WebGL2"
+      : `${error?.name ?? "Error"}: ${error?.message ?? error}`;
   const reachable = await probeWebsocket({
     backend: null,
     renderer: webgl.renderer,
@@ -198,23 +241,30 @@ try {
     userAgent: navigator.userAgent,
   });
   setStatus("Viewer failed");
+  const checks = [
+    ...gpuChecks(webgpu, webgl, drew || tooOld ? "" : ", but the renderer could not use it"),
+    [reachable, reachable ? "server reachable" : "server not reachable"],
+  ];
+  if (tooOld) checks.unshift([false, `no import maps: the viewer needs ${NEEDS}`]);
   showDiagnosis({
-    title: noGPU ? "No 3D graphics in this browser" : "The viewer could not start",
-    checks: [
-      [webgpu, webgpu ? "WebGPU available" : "WebGPU unavailable"],
-      [
-        webgl.webgl2,
-        webgl.webgl2
-          ? `WebGL2 available: ${webgl.renderer}${webgl.software ? " (software, slow)" : ""}`
-          : "WebGL2 unavailable",
-      ],
-      [reachable, reachable ? "server reachable" : "server not reachable"],
-    ],
-    hint: noGPU ? browserHint() : reachable ? null : websocketHint(),
-    detail: noGPU ? null : reason,
+    title: tooOld
+      ? "This browser is too old for the viewer"
+      : noGPU
+        ? "No 3D graphics in this browser"
+        : "The viewer could not start",
+    checks,
+    hint: tooOld
+      ? "Update the browser, or open this page in a current one."
+      : noGPU || (reachable && !drew)
+        ? browserHint()
+        : reachable
+          ? null
+          : websocketHint(),
+    detail: noGPU || tooOld ? null : reason,
   });
   console.error(error);
 }
+clearTimeout(stall);
 
 if (started) {
   setTimeout(() => {

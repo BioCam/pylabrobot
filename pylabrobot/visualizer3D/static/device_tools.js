@@ -402,10 +402,20 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
 
   // ------------------------------------------------------------------ panels
 
+  /** Where main was last laid out: a dragged panel keeps its place on screen, not in main. */
+  let mainWas = null;
+
   /** Put every open panel where it belongs: multi, single and arm in a row under their buttons. */
   function layOut() {
     if (!mainEl) return;
     const bounds = mainEl.getBoundingClientRect();
+    if (mainWas) {
+      for (const at of moved.values()) {
+        at.x += mainWas.left - bounds.left;
+        at.y += mainWas.top - bounds.top;
+      }
+    }
+    mainWas = bounds;
     for (const device of new Set([...open.values()].map((p) => p.device))) {
       const mine = KINDS.map(({ kind }) => open.get(idOf(device, kind))).filter(Boolean);
       if (!mine.length) continue;
@@ -593,6 +603,8 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
     if (drawn) layOut();
   }
 
-  window.addEventListener("resize", layOut);
+  // Whatever resizes main - the window, either rail, the side panel - moves it out from under the
+  // buttons, and a panel left where it was in main is no longer under its own.
+  if (mainEl) new ResizeObserver(layOut).observe(mainEl);
   return { rebuild, refresh };
 }

@@ -76,9 +76,12 @@ nav.navbar .container-fluid {
   color: #333;
   white-space: nowrap;
   /* Room reserved after the name, as the existing visualizer reserves it, so the device tools
-     do not sit against a short name and jump when a longer one is shown. */
-  min-width: 316px;
-  display: inline-block;
+     do not sit against a short name and jump when a longer one is shown. On a narrow window the
+     room gives way, then the name is cut, before anything is pushed off the bar. */
+  flex: 0 1 316px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .navbar-divider-device-tools {
@@ -794,6 +797,8 @@ main {
   position: absolute;
   bottom: 52px;
   left: 132px;
+  border: none;
+  background: none;
   cursor: pointer;
   opacity: 0.7;
   border-radius: 6px;
@@ -995,6 +1000,11 @@ main {
 }
 .tree-node-row.selected {
   background: #cfe2ff;
+}
+.tree-node-row:focus-visible,
+.search-result:focus-visible {
+  outline: 2px solid #1a4b8c;
+  outline-offset: -2px;
 }
 
 .tree-node-arrow {

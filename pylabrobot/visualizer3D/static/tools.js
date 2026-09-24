@@ -441,6 +441,17 @@ deltaToggle.addEventListener("change", () => {
 // camera rather than pointing at anything, so there is nothing to pick.
 export let hoverAt = null;
 
+const READOUT_GAP_PX = 14; // between the pointer and the readout
+
+/** Beside the pointer, and inside the viewport: near an edge it stops short of running off. */
+function placeReadout(event) {
+  const rect = viewportEl.getBoundingClientRect();
+  const x = event.clientX - rect.left + READOUT_GAP_PX;
+  const y = event.clientY - rect.top + READOUT_GAP_PX;
+  readout.style.left = `${Math.max(0, Math.min(x, rect.width - readout.offsetWidth))}px`;
+  readout.style.top = `${Math.max(0, Math.min(y, rect.height - readout.offsetHeight))}px`;
+}
+
 function showHoverFor(event) {
   const hit = pick(event);
   if (!hit) {
@@ -449,10 +460,13 @@ function showHoverFor(event) {
     clearDeltaLines();
     return;
   }
+  const model = modelOf(hit.index);
+  readout.textContent =
+    activeTool === "coords"
+      ? coordinateLabel(hit.index)
+      : [world.names[hit.index], model.type, model.model].filter(Boolean).join("\n");
   readout.style.display = "block";
-  const rect = viewportEl.getBoundingClientRect();
-  readout.style.left = `${event.clientX - rect.left + 14}px`;
-  readout.style.top = `${event.clientY - rect.top + 14}px`;
+  placeReadout(event); // once it has its text, so it is measured at the size it will show at
   showHoverBox(hit.index);
   markTreeRow(hit.index);
   drawDeltaLines(hit.index);
@@ -460,11 +474,6 @@ function showHoverFor(event) {
     hoverBullseye.position.copy(deltaEndpoints(hit.index).to);
     hoverBullseye.visible = true;
   }
-  const model = modelOf(hit.index);
-  readout.textContent =
-    activeTool === "coords"
-      ? coordinateLabel(hit.index)
-      : [world.names[hit.index], model.type, model.model].filter(Boolean).join("\n");
 }
 
 // Answered by the loop, at the start of the frame the pointer's own input asked for. Answering it

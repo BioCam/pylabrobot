@@ -331,6 +331,59 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       self.assertEqual(await browser.evaluate(f"{click}('name')"), [True, "▶"])
       self.assertEqual(await browser.evaluate(f"{click}('arrow')"), [True, "▼"])
 
+  async def test_the_websocket_is_reached_the_way_the_page_was(self):
+    """A page served over https may only open wss:, and one reached by a name connects to that
+    name, not to 127.0.0.1."""
+    async with Browser() as browser:
+      await browser.open(f"http://localhost:{self.viewer.fs_port}/")
+      await browser.settle("window.plrViewer && window.plrViewer.resources().length", 30)
+      self.assertTrue(
+        (await browser.evaluate("window.WS_URL")).startswith(f"ws://localhost:{WS_PORT}/?token=")
+      )
+      self.assertTrue(
+        (
+          await browser.evaluate("window.wsUrlFor({ protocol: 'https:', hostname: 'lab.example' })")
+        ).startswith(f"wss://lab.example:{WS_PORT}/?token=")
+      )
+
+  async def test_the_hover_readout_stays_inside_the_viewport(self):
+    """Placed beside the pointer, the readout ran off the right and bottom edges at a resource
+    that stood near them."""
+    async with Browser() as browser:
+      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
+      await browser.settle(
+        "window.plrViewer && window.plrViewer.resources().includes('carrier')", 30
+      )
+      # Close enough that the carrier fills the viewport, corners included.
+      await browser.evaluate(
+        "window.plrViewer.focus('carrier', 'top');"
+        "for (let i = 0; i < 8; i++) document.getElementById('zoom-in-btn').click(); true"
+      )
+      await asyncio.sleep(1.0)
+      await browser.evaluate(
+        "(() => {"
+        "  const canvas = document.querySelector('#viewport canvas');"
+        "  const box = canvas.getBoundingClientRect();"
+        "  canvas.dispatchEvent(new PointerEvent('pointermove', {"
+        "    bubbles: true, clientX: box.right - 2, clientY: box.bottom - 2, buttons: 0 }));"
+        "  return true;"
+        "})()"
+      )
+      placed = await browser.settle(
+        "(() => {"
+        "  const readout = document.getElementById('hover-readout');"
+        "  if (readout.style.display !== 'block') return null;"
+        "  const box = readout.getBoundingClientRect();"
+        "  const viewport = document.getElementById('viewport').getBoundingClientRect();"
+        "  return { text: readout.textContent, right: box.right - viewport.right,"
+        "           bottom: box.bottom - viewport.bottom };"
+        "})()",
+        10,
+      )
+      self.assertIn("carrier", placed["text"])
+      self.assertLessEqual(placed["right"], 0)
+      self.assertLessEqual(placed["bottom"], 0)
+
   async def test_a_state_message_leaves_a_panel_it_does_not_touch_alone(self):
     """The info panel was drawn again on every state message whether or not it showed anything
     the message touched, so a section the reader had opened in it snapped shut on every well of a

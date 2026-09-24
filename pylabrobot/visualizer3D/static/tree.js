@@ -190,6 +190,7 @@ function addRow(index, depth, before) {
   row.className = "tree-node-row";
   row.style.paddingLeft = `${8 + depth * 16}px`;
   row.dataset.index = index;
+  row.tabIndex = 0;
 
   const arrow = document.createElement("span");
   arrow.className = `tree-node-arrow${children.length ? " has-children" : ""}`;
@@ -401,6 +402,19 @@ export function markTreeRow(index) {
   hoveredRow?.row.classList.add("canvas-hover");
 }
 
+// From the keyboard a row does what a click on it does: Enter selects, the arrows fold and
+// unfold. Only the row itself - its eye button answers its own keys.
+treeEl.addEventListener("keydown", (e) => {
+  const row = /** @type {HTMLElement} */ (e.target);
+  if (!row.classList.contains("tree-node-row")) return;
+  const index = Number(row.dataset.index);
+  if (e.key === "Enter") select(index, true);
+  else if (e.key === "ArrowRight") toggle(index, true);
+  else if (e.key === "ArrowLeft") toggle(index, false);
+  else return;
+  e.preventDefault();
+});
+
 const sidepanel = document.getElementById("sidepanel");
 
 document.getElementById("toolbar-right-toggle").addEventListener("click", () => {
@@ -513,6 +527,7 @@ function runSearch() {
   for (const { index } of hits) {
     const row = document.createElement("div");
     row.className = "search-result";
+    row.tabIndex = 0;
     row.innerHTML =
       `<span class="tree-node-dot" style="background:${hexOf(colorFor(modelOf(index)))}"></span>` +
       `<span class="sr-name">${escapeHtml(world.names[index])}</span>` +
@@ -529,6 +544,12 @@ function runSearch() {
 }
 
 searchInput.addEventListener("input", runSearch);
+
+searchResults.addEventListener("keydown", (e) => {
+  if (e.key !== "Enter" && e.key !== " ") return;
+  /** @type {HTMLElement} */ (e.target).closest(".search-result")?.click();
+  e.preventDefault();
+});
 
 for (const id of ["search-include-wells", "search-include-tips", "search-include-sites"]) {
   document.getElementById(id).addEventListener("change", runSearch);

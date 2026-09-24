@@ -84,6 +84,10 @@ export function closeInfoPanel() {
   clearSelection();
 }
 
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && infoPanel?.isConnected) closeInfoPanel();
+});
+
 // Units for the fields that have them. A number without its unit is not an answer.
 // Shown by the panel's own sections, so they must not appear again under Specifics.
 const HANDLED = new Set([

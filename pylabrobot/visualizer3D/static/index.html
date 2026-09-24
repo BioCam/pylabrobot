@@ -82,7 +82,11 @@
     </div>
     <div class="toolbar-section">
       <button class="toolbar-btn" id="toolbar-gif-btn" title="GIF Recording">
-        <span style="font-size: 17px; line-height: 1;">&#127909;</span>
+        <svg width="18" height="18" viewBox="0 0 20 20" fill="none" stroke="#333"
+             stroke-width="1.6" stroke-linejoin="round">
+          <rect x="2" y="5.5" width="11" height="9" rx="1.5"/>
+          <path d="M13 8.5l5-2.5v8l-5-2.5z"/>
+        </svg>
       </button>
     </div>
     <div class="toolbar-section">
@@ -232,11 +236,11 @@
 
     <div id="hover-readout"></div>
 
-    <div id="home-button" title="Reset view">
+    <button type="button" id="home-button" title="Reset view">
       <svg width="28" height="28" viewBox="0 0 20 20">
         <path d="M10 1L1 9h3v8h5v-5h2v5h5V9h3L10 1z" fill="#888"/>
       </svg>
-    </div>
+    </button>
 
     <!-- The 2D visualizer's static x/y legend becomes a gizmo that turns with the camera,
          because in three dimensions which way the axes point is no longer fixed. -->
@@ -319,14 +323,26 @@
 { "imports": { "three": "./vendor/three.webgpu.min.js", "three/addons/": "./vendor/" } }
 </script>
 <script>
-  window.WS_PORT = "{{ ws_port }}";
-  window.WS_URL = `ws://${location.hostname}:{{ ws_port }}/?token={{ ws_token }}`;
+  // The page's own scheme and host: one served over https (a proxy, JupyterHub) may only open
+  // wss:, and the viewer is reached by the name the page was, not by 127.0.0.1.
+  window.wsUrlFor = (page) =>
+    `${page.protocol === "https:" ? "wss:" : "ws:"}//${page.hostname}` +
+    `:{{ ws_port }}/?token={{ ws_token }}`;
+  window.WS_URL = window.wsUrlFor(location);
   // boot.js explains every failure it can see, but a browser too old to run it at all sees nothing.
+  // It names the same versions boot.js does, which are the first that read the import map above.
   setTimeout(() => {
     if (window.__plrBooted) return;
     const label = document.getElementById("status-label");
-    label.textContent = "Browser not supported";
+    label.textContent = "Browser too old";
     label.className = "disconnected";
+    const panel = document.createElement("section");
+    panel.id = "boot-diagnosis";
+    panel.setAttribute("role", "alert");
+    panel.innerHTML =
+      "<h2>This browser is too old for the viewer</h2>" +
+      "<p>It needs Chrome 89, Firefox 108 or Safari 16.4 or newer.</p>";
+    document.body.appendChild(panel);
   }, 5000);
 </script>
 <script type="module" src="./boot.js"></script>
