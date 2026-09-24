@@ -5,13 +5,18 @@ from __future__ import annotations
 import asyncio
 import functools
 from typing import Any, List
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from pylabrobot.hamilton.prep import PrepSimulationDriver
 from pylabrobot.hamilton.prep.driver import prep_commands as PrepCmd
-from pylabrobot.hamilton.prep.driver.features.pipettes import Pipettes
+from pylabrobot.hamilton.prep.driver.features.pipettes import (
+  Pipettes,
+  _get_container_segments,
+  _get_profile_drop,
+)
+from pylabrobot.hamilton.prep.driver.features.pipettes import logger as pipettes_logger
 from pylabrobot.hamilton.prep.driver.simulator import (
   SIMULATED_X_AXIS_OFFSET,
   SIMULATED_X_SPEED,
@@ -24,7 +29,7 @@ from pylabrobot.hamilton.transport.tcp.packets import Address
 from pylabrobot.hamilton.transport.tcp.wire_types import HcResultEntry
 from pylabrobot.lib.liquid_handling.mix import Mix
 from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import ChannelBatch
-from pylabrobot.resources import Coordinate, PetriDish, Resource
+from pylabrobot.resources import Container, Coordinate, PetriDish, Resource, Well
 from pylabrobot.resources.corning.axygen.plates import cor_axy_96_wellplate_500uL_Ub
 from pylabrobot.resources.corning.plates import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.errors import HasTipError, NoTipError
@@ -2551,6 +2556,91 @@ def test_probe_batch_liquid_heights_refuses_pressure_lld():
     await p.stop()
 
   _run(_t())
+
+
+def test_container_segments_are_one_step_per_height_volume_knot():
+  """Each knot interval of the data is one segment of its own dV/dh."""
+  well = cor_96_wellplate_360uL_Fb(name="plate")["A1"][0]
+  knots = sorted(well.height_volume_data.items())
+  segments = _get_container_segments(well)
+  assert len(segments) == len(knots) - 1
+  for segment, (h0, v0), (h1, v1) in zip(segments, knots, knots[1:]):
+    assert segment.height == pytest.approx(h1 - h0)
+    assert segment.area_bottom == segment.area_top == pytest.approx((v1 - v0) / (h1 - h0))
+
+
+def test_container_segments_from_functions_are_volume_differences():
+  """Without data: a step per 0.5 mm of cavity depth, each holding what the functions say."""
+  container = Container(
+    name="c",
+    size_x=10,
+    size_y=10,
+    size_z=12,
+    material_z_thickness=2,
+    compute_volume_from_height=lambda h: 50.0 * h,
+    compute_height_from_volume=lambda v: v / 50.0,
+  )
+  segments = _get_container_segments(container)
+  assert len(segments) == 20
+  assert sum(s.height for s in segments) == pytest.approx(10.0)
+  assert all(s.area_bottom == pytest.approx(50.0) for s in segments)
+
+
+def test_container_segments_fall_back_to_the_footprint_and_warn_for_a_v_bottom():
+  """No height-volume model: one cylinder over the cavity depth, and a V-bottom says so once."""
+  well = Well(name="v_well", size_x=6, size_y=6, size_z=10, material_z_thickness=1, bottom_type="V")
+  with patch.object(pipettes_logger, "warning") as warning:
+    segments = _get_container_segments(well)
+    _get_container_segments(well)
+  assert len(segments) == 1
+  assert segments[0].area_bottom == pytest.approx(3.14159 * 9, rel=1e-4)
+  assert segments[0].height == pytest.approx(9.0)
+  assert warning.call_count == 1
+
+
+def test_profile_drop_matches_the_containers_own_height_from_volume():
+  """The firmware's drop through the steps is the tracker's: height now less height after."""
+  well = cor_96_wellplate_360uL_Fb(name="plate")["A1"][0]
+  start = well.compute_height_from_volume(200.0)
+  expected = start - well.compute_height_from_volume(175.0)
+  assert _get_profile_drop(_get_container_segments(well), start, 25.0) == pytest.approx(expected)
+
+
+def test_a_surface_following_distance_scales_the_profile_to_that_drop():
+  """The areas are scaled so the tip sinks exactly the distance asked; 0 is not yet known."""
+  well = cor_96_wellplate_360uL_Fb(name="plate")["A1"][0]
+  start = well.compute_height_from_volume(200.0)
+  segments = _get_container_segments(well, start, 25.0, surface_following_distance=0.3)
+  assert _get_profile_drop(segments, start, 25.0) == pytest.approx(0.3, abs=1e-4)
+  assert _get_container_segments(well, start, 25.0, surface_following_distance=0.0) == []
+  with pytest.raises(ValueError, match="liquid height and piston volume"):
+    _get_container_segments(well, surface_following_distance=0.3)
+
+
+def test_container_segments_start_at_z_minimum_as_the_firmware_counts_them():
+  """Segment 0 begins at z_minimum: cut inside an interval, on a knot, and extended below it."""
+  well = cor_96_wellplate_360uL_Fb(name="plate")["A1"][0]
+  whole = _get_container_segments(well)
+  inside = _get_container_segments(well, profile_start=1.0)
+  assert inside[0].height == pytest.approx(1.69 - 1.0)
+  assert inside[0].area_bottom == pytest.approx(whole[1].area_bottom)
+  assert len(inside) == len(whole) - 1
+  on_knot = _get_container_segments(well, profile_start=1.69)
+  assert on_knot[0].height == pytest.approx(whole[2].height)
+  below = _get_container_segments(well, profile_start=-0.5)
+  assert below[0].height == pytest.approx(whole[0].height + 0.5)
+  with pytest.raises(ValueError, match="above the profile"):
+    _get_container_segments(well, profile_start=20.0)
+
+
+def test_a_surface_following_distance_counts_from_z_minimum():
+  """Scaled from where the firmware starts the profile, the tip still sinks the distance asked."""
+  well = cor_96_wellplate_360uL_Fb(name="plate")["A1"][0]
+  start = well.compute_height_from_volume(200.0)
+  segments = _get_container_segments(
+    well, start, 25.0, surface_following_distance=0.3, profile_start=2.0
+  )
+  assert _get_profile_drop(segments, start - 2.0, 25.0) == pytest.approx(0.3, abs=1e-4)
 
 
 def _probe_liquid_setup():

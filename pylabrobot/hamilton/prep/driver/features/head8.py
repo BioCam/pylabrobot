@@ -64,8 +64,8 @@ from .pipettes import (
   PipetteChannel,
   Pipettes,
   _absolute_z_from_well,
-  _build_container_segments,
   _effective_radius,
+  _get_container_segments,
 )
 from .pipettes import (
   default_lld_params as _default_lld_params_fn,
@@ -1116,7 +1116,7 @@ class Head8:
       ref_x, ref_y = loc.x, loc.y + 3.5 * PROBE_PITCH_MM
       wg = _absolute_z_from_well(container, self._require_deck(), liquid_height)
       ref_segments = container_segments or (
-        _build_container_segments(container) if auto_container_geometry else []
+        _get_container_segments(container) if auto_container_geometry else []
       )
       ref_resource = container
     else:
@@ -1132,7 +1132,7 @@ class Head8:
       ref_x, ref_y = ref_loc.x, ref_loc.y
       wg = _absolute_z_from_well(wells_list[0], self._require_deck(), liquid_height)
       ref_segments = container_segments or (
-        _build_container_segments(wells_list[0]) if auto_container_geometry else []
+        _get_container_segments(wells_list[0]) if auto_container_geometry else []
       )
       ref_resource = wells_list[0]
 
@@ -1338,7 +1338,7 @@ class Head8:
       ref_x, ref_y = loc.x, loc.y + 3.5 * PROBE_PITCH_MM
       wg = _absolute_z_from_well(container, self._require_deck(), liquid_height)
       ref_segments = container_segments or (
-        _build_container_segments(container) if auto_container_geometry else []
+        _get_container_segments(container) if auto_container_geometry else []
       )
       ref_resource = container
     else:
@@ -1354,7 +1354,7 @@ class Head8:
       ref_x, ref_y = ref_loc.x, ref_loc.y
       wg = _absolute_z_from_well(wells_list[0], self._require_deck(), liquid_height)
       ref_segments = container_segments or (
-        _build_container_segments(wells_list[0]) if auto_container_geometry else []
+        _get_container_segments(wells_list[0]) if auto_container_geometry else []
       )
       ref_resource = wells_list[0]
 
