@@ -52,6 +52,9 @@ from pylabrobot.hamilton.transport.tcp.hoi_error import HoiError
 from pylabrobot.hamilton.transport.tcp.messages import HoiParamsParser, parse_into_struct
 from pylabrobot.hamilton.transport.tcp.packets import Address
 from pylabrobot.legacy.liquid_handling.errors import ChannelizedError
+from pylabrobot.lib.liquid_handling.channel_positioning import (
+  compute_nonconsecutive_channel_offsets,
+)
 from pylabrobot.lib.liquid_handling.liquid_height import get_liquid_height_from_volume
 from pylabrobot.lib.liquid_handling.mix import Mix
 from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import plan_batches
@@ -4277,7 +4280,9 @@ class Pipettes:
         continue
       idx = ctx.ch_to_idx[ch]
       asp = ctx.indexed_ops[ch]
-      loc = asp.resource.get_location_wrt(self._require_deck(), "c", "c", "cavity_bottom")
+      loc = asp.resource.get_location_wrt(
+        self._require_deck(), "c", "c", "cavity_bottom"
+      ) + Coordinate(asp.offset.x, asp.offset.y, 0)
       radius = _effective_radius(asp.resource)
 
       kits.append(
@@ -4536,7 +4541,9 @@ class Pipettes:
         continue
       idx = ctx.ch_to_idx[ch]
       op = ctx.indexed_ops[ch]
-      loc = op.resource.get_location_wrt(self._require_deck(), "c", "c", "cavity_bottom")
+      loc = op.resource.get_location_wrt(
+        self._require_deck(), "c", "c", "cavity_bottom"
+      ) + Coordinate(op.offset.x, op.offset.y, 0)
       radius = _effective_radius(op.resource)
 
       kits.append(
@@ -4729,6 +4736,38 @@ class Pipettes:
       resolved.append(height)
     return resolved
 
+  def _get_resource_offsets(
+    self, containers: Sequence[Container], use_channels: List[int]
+  ) -> List[Coordinate]:
+    """Each channel's offset in its container: channels sharing one spread across it in Y.
+
+    Args:
+      containers: one per channel used.
+      use_channels: which channels, in the containers' order.
+
+    Returns:
+      One offset per container; zero for a container only one channel goes to.
+
+    Raises:
+      ValueError: If the channels sharing a container do not fit in it.
+    """
+    offsets = [Coordinate.zero()] * len(containers)
+    for container in {id(c): c for c in containers}.values():
+      jobs = [i for i, c in enumerate(containers) if c is container]
+      if len(jobs) < 2:
+        continue
+      jobs.sort(key=lambda i: use_channels[i])
+      spread = compute_nonconsecutive_channel_offsets(
+        container, [use_channels[i] for i in jobs], self.minimum_y_spacings
+      )
+      if spread is None:
+        raise ValueError(
+          f"channels {[use_channels[i] for i in jobs]} do not fit in {container.name}"
+        )
+      for i, offset in zip(jobs, spread):
+        offsets[i] = offset
+    return offsets
+
   async def aspirate(
     self,
     containers: Sequence[Container],
@@ -4770,7 +4809,7 @@ class Pipettes:
       volumes: how much liquid to take from each container, in uL, corrected by the liquid class.
       use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
       resource_offsets: added to where each channel goes in its container, in mm. The z shifts
-        the heights.
+        the heights. Channels sharing a container spread across it in Y when None.
       liquid_heights: where the liquid stands above each cavity bottom, in mm. None takes it from
         the tracked volume, or, with an LLD mode, leaves it to the search.
       lld_mode: how the liquid is found, one mode for every channel. None runs a search only
@@ -4831,7 +4870,9 @@ class Pipettes:
       containers,
       volumes,
       use_channels,
-      offsets=resource_offsets,
+      offsets=resource_offsets
+      if resource_offsets is not None
+      else self._get_resource_offsets(containers, use_channels),
       liquid_height=self._get_liquid_heights(containers, liquid_heights, effective_lld),
       flow_rates=flow_rates,
       blow_out_air_volume=blow_out_air_volumes,
@@ -4943,7 +4984,9 @@ class Pipettes:
       resources,
       vols,
       use_channels,
-      offsets=offsets,
+      offsets=offsets
+      if offsets is not None
+      else self._get_resource_offsets(resources, use_channels),
       liquid_height=liquid_height,
       flow_rates=flow_rates,
       blow_out_air_volume=blow_out_air_volume,

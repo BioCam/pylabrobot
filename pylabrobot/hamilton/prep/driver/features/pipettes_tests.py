@@ -22,7 +22,7 @@ from pylabrobot.hamilton.transport.tcp.hoi_error import HoiError
 from pylabrobot.hamilton.transport.tcp.packets import Address
 from pylabrobot.hamilton.transport.tcp.wire_types import HcResultEntry
 from pylabrobot.lib.liquid_handling.mix import Mix
-from pylabrobot.resources import Coordinate, Resource
+from pylabrobot.resources import Coordinate, PetriDish, Resource
 from pylabrobot.resources.corning.axygen.plates import cor_axy_96_wellplate_500uL_Ub
 from pylabrobot.resources.corning.plates import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.errors import HasTipError, NoTipError
@@ -221,6 +221,33 @@ def test_aspirate_immerses_the_tip_below_the_surface_with_and_without_lld():
     plain, searched = [c.aspirate_parameters[0] for c in sent if hasattr(c, "aspirate_parameters")]
     assert plain.no_lld.z_fluid == pytest.approx(bottom + 3.0, abs=0.01)
     assert searched.lld.z_submerge == pytest.approx(1.5)
+    await p.stop()
+
+  _run(_t())
+
+
+def test_channels_sharing_a_container_spread_across_it():
+  """Two channels into one dish go either side of its centre, at least their spacing apart."""
+
+  async def _t():
+    deck = PrepDeck()
+    tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
+    dish = PetriDish(name="dish", diameter=77.0, height=30.0, material_z_thickness=2.0)
+    deck[6].assign_child_by_anchor(
+      dish, parent_anchor=("c", "c", "t"), child_anchor=("c", "c", "b")
+    )
+    p = PrepSimulationDriver(deck=deck)
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.pick_up_tips(tip_rack["A1:B1"], use_channels=[0, 1])
+    sent = _record(p)
+    await p.pipettes.aspirate(
+      [dish] * 2, volumes=[5.0] * 2, use_channels=[0, 1], liquid_heights=[5.0] * 2
+    )
+    rear, front = [e.aspirate.y_position for e in sent[-1].aspirate_parameters]
+    centre = dish.get_location_wrt(deck, "c", "c", "c").y
+    assert rear - centre == pytest.approx(centre - front, abs=0.01)
+    assert rear - front >= 9.0
     await p.stop()
 
   _run(_t())
