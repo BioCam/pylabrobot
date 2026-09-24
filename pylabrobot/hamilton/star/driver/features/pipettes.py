@@ -4365,6 +4365,9 @@ class Pipettes:
 
   # -- total aspiration and dispense monitoring (TADM) ---------------------------------------------
 
+  # Index is the `gk` wire value.
+  _TADM_STORAGE_LEVELS = ("none", "errors_only", "all")
+
   async def set_tadm_mode(self, channel: int, enabled: bool = True) -> None:
     """Switch a channel between TADM mode and pressure/capacitive LLD mode. `Px AF`.
 
@@ -4408,6 +4411,53 @@ class Pipettes:
     """
     self._require_channel(channel)
     await self._driver.send_command(module=self.channel_id(channel), command="AQ")
+
+  async def start_tadm_monitoring(
+    self,
+    channel: int,
+    *,
+    enforce_limit_curve_control: bool = True,
+    storage_level: Literal["none", "errors_only", "all"] = "all",
+    limit_curve_index: int = 0,
+    measurement_id: Optional[str] = None,
+  ) -> None:
+    """Record every aspirate and dispense on a channel until `stop_tadm_monitoring`. `Px BG`.
+
+    Needs TADM mode on and a limit curve loaded. With enforcement off, nothing is recorded.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+      enforce_limit_curve_control: abort the plunger when pressure leaves the limit curve (`gj`).
+      storage_level: which curves the FIFO keeps (`gk`).
+      limit_curve_index: the limit curve enforced against, 0 to 999 (`gi`).
+      measurement_id: 4-character label stamped on each curve (`nr`). Omitted when None.
+    """
+    self._require_channel(channel)
+    if storage_level not in self._TADM_STORAGE_LEVELS:
+      raise ValueError(f"storage_level must be one of {self._TADM_STORAGE_LEVELS}")
+    if not 0 <= limit_curve_index <= 999:
+      raise ValueError(f"limit_curve_index must be in [0, 999], is {limit_curve_index}")
+    if measurement_id is not None and len(measurement_id) != 4:
+      raise ValueError(f"measurement_id must be 4 characters, is {measurement_id!r}")
+    if storage_level == "errors_only" and not enforce_limit_curve_control:
+      raise ValueError('storage_level="errors_only" keeps nothing without enforcement')
+    fields: Dict[str, Any] = {
+      "gi": f"{limit_curve_index:03}",
+      "gj": "1" if enforce_limit_curve_control else "0",
+      "gk": str(self._TADM_STORAGE_LEVELS.index(storage_level)),
+    }
+    if measurement_id is not None:
+      fields["nr"] = measurement_id
+    await self._driver.send_command(module=self.channel_id(channel), command="BG", **fields)
+
+  async def stop_tadm_monitoring(self, channel: int) -> None:
+    """End the monitoring `start_tadm_monitoring` began. `Px BH`.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+    """
+    self._require_channel(channel)
+    await self._driver.send_command(module=self.channel_id(channel), command="BH")
 
   # ----------------------------------------
   # Liquid handling

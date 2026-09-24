@@ -2833,3 +2833,30 @@ class TestPressureMonitoring(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.send.call_args.kwargs, {"module": "P8", "command": "AN"})
     await self.pipettes.reset_tadm_limit_curves(7)
     self.assertEqual(self.send.call_args.kwargs, {"module": "P8", "command": "AQ"})
+
+  async def test_monitoring_session(self):
+    await self.pipettes.start_tadm_monitoring(7)
+    self.assertEqual(
+      self.send.call_args.kwargs,
+      {"module": "P8", "command": "BG", "gi": "000", "gj": "1", "gk": "2"},
+    )
+    await self.pipettes.start_tadm_monitoring(
+      7, storage_level="errors_only", limit_curve_index=5, measurement_id="REF0"
+    )
+    self.assertEqual(
+      self.send.call_args.kwargs,
+      {"module": "P8", "command": "BG", "gi": "005", "gj": "1", "gk": "1", "nr": "REF0"},
+    )
+    await self.pipettes.stop_tadm_monitoring(7)
+    self.assertEqual(self.send.call_args.kwargs, {"module": "P8", "command": "BH"})
+
+  async def test_monitoring_rejects_what_the_firmware_cannot_do(self):
+    with self.assertRaises(ValueError):
+      await self.pipettes.start_tadm_monitoring(7, limit_curve_index=1000)
+    with self.assertRaises(ValueError):
+      await self.pipettes.start_tadm_monitoring(7, measurement_id="TOOLONG")
+    with self.assertRaises(ValueError):
+      await self.pipettes.start_tadm_monitoring(
+        7, enforce_limit_curve_control=False, storage_level="errors_only"
+      )
+    self.send.assert_not_called()
