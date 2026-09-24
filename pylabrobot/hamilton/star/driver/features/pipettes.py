@@ -1734,7 +1734,7 @@ class Pipettes:
 
   # -- dispensing drive position -------------------------------------------------------------------
 
-  async def dispensing_drive_request_position(self, channel: int) -> float:
+  async def dispensing_drive_request_uL_position(self, channel: int) -> float:
     """Read where one channel's dispensing drive stands, in uL. `Px RD`.
 
     Args:
@@ -1749,14 +1749,15 @@ class Pipettes:
     )
     return self.configuration.dispensing_drive_increments_to_uL(cast(int, resp["rd"]))
 
-  async def dispensing_drives_request_positions(self) -> List[float]:
+  async def dispensing_drives_request_uL_positions(self) -> List[float]:
     """Read where every channel's dispensing drive stands, in uL, by channel.
 
     Returns:
       Each piston's position in uL, 0.0 at rest; air and liquid alike.
     """
     return [
-      await self.dispensing_drive_request_position(channel) for channel in range(self.num_channels)
+      await self.dispensing_drive_request_uL_position(channel)
+      for channel in range(self.num_channels)
     ]
 
   # -- x and y together ----------------------------------------------------------------------------
