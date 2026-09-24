@@ -35,15 +35,36 @@ class TestTheColumn(unittest.TestCase):
     self.assertEqual(pf400_chassis.z_column().get_size_z(), 0.0)
 
 
+class TestTheCarriage(unittest.TestCase):
+  """What the J1 drive moves, and where a reading puts it."""
+
+  def test_it_rides_the_columns_front_face_centred_across_it(self):
+    column = pf400_chassis.z_column()
+    carriage = pf400_chassis.z_carriage()
+    location = pf400_chassis.z_carriage_location(0.0)
+    self.assertEqual(location.x, column.get_size_x())
+    self.assertEqual(2 * location.y + carriage.get_size_y(), column.get_size_y())
+
+  def test_the_drive_reports_the_shoulder_axis_at_the_flange_plane(self):
+    reference = pf400_chassis.Z_CARRIAGE_REFERENCE_POINT
+    self.assertEqual(reference, Coordinate(72.3, 55.0, -118.9))
+
+  def test_a_reading_moves_it_by_what_it_read(self):
+    stood = pf400_chassis.z_carriage_location(0.0)
+    raised = pf400_chassis.z_carriage_location(250.0)
+    self.assertEqual(raised - stood, Coordinate(0.0, 0.0, 250.0))
+
+
 class TestEveryPart(unittest.TestCase):
   """Each part is a cuboid that says what it is."""
 
   def test_each_part_names_a_category_and_a_model(self):
-    parts = (pf400_chassis.base_plate(), pf400_chassis.z_column())
+    parts = (pf400_chassis.base_plate(), pf400_chassis.z_column(), pf400_chassis.z_carriage())
     self.assertEqual(
       [(part.category, part.model) for part in parts],
       [
         ("base_plate", "brooks_pf400_base_plate"),
         ("z_column", "brooks_pf400_z_column"),
+        ("z_carriage", "brooks_pf400_z_carriage"),
       ],
     )

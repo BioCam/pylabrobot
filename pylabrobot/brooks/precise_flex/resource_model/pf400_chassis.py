@@ -1,4 +1,4 @@
-"""The PreciseFlex 400's chassis: the plate it stands on and the column its carriage rides.
+"""The PreciseFlex 400's chassis: the plate it stands on, the column it rides, the carriage on it.
 
 Each part is a cuboid in its own frame, located by its left front bottom corner, in mm. Sizes are
 the extended-reach arm's, measured off the manufacturer's model.
@@ -22,6 +22,21 @@ Z_COLUMN_LOCATION = Coordinate(
 )
 # How far the column reaches above the flange plane once the carriage is at the top of its travel.
 Z_COLUMN_HEADROOM = 250.0
+
+# The carriage the J1 drive rides up the column: the housing the arm turns in, which is what the
+# drive carries and what is seen of it.
+Z_CARRIAGE_SIZE = (122.8, 110.0, 56.25)
+# Where it rides: at the column's front face, centred across it. Z is whatever the drive reports.
+Z_CARRIAGE_LOCATION_XY = (Z_COLUMN_SIZE_XY[0], (Z_COLUMN_SIZE_XY[1] - Z_CARRIAGE_SIZE[1]) / 2)
+# How far the carriage's underside stands above the flange plane the drive reports: the arm hangs
+# between the two, so it spans both links and the clearance around them.
+Z_CARRIAGE_ABOVE_FLANGE_PLANE = 118.9
+# The point the drive reports, within the carriage: the shoulder axis, at the flange plane below it.
+Z_CARRIAGE_REFERENCE_POINT = Coordinate(
+  SHOULDER_AXIS.x - Z_COLUMN_LOCATION.x - Z_CARRIAGE_LOCATION_XY[0],
+  Z_CARRIAGE_SIZE[1] / 2,
+  -Z_CARRIAGE_ABOVE_FLANGE_PLANE,
+)
 
 
 def z_column_height(z_travel: float) -> float:
@@ -74,4 +89,41 @@ def z_column(name: str = "pf400_z_column", height: Optional[float] = None) -> Re
     size_z=0.0 if height is None else height,
     category="z_column",
     model="brooks_pf400_z_column",
+  )
+
+
+def z_carriage_location(z: float) -> Coordinate:
+  """Where the carriage stands on the column when the J1 drive reports `z`.
+
+  A resource is located by its corner, so the reported point is taken out of the reading.
+
+  Args:
+    z: where the drive reports the flange plane is, in mm above the plane it homes to.
+
+  Returns:
+    The location, on the column.
+  """
+  return Coordinate(
+    Z_CARRIAGE_LOCATION_XY[0],
+    Z_CARRIAGE_LOCATION_XY[1],
+    SHOULDER_AXIS.z + z - Z_COLUMN_LOCATION.z - Z_CARRIAGE_REFERENCE_POINT.z,
+  )
+
+
+def z_carriage(name: str = "pf400_z_carriage") -> Resource:
+  """The carriage the J1 drive rides up the column, and the arm turns in.
+
+  Args:
+    name: what to call this one.
+
+  Returns:
+    The carriage.
+  """
+  return Resource(
+    name=name,
+    size_x=Z_CARRIAGE_SIZE[0],
+    size_y=Z_CARRIAGE_SIZE[1],
+    size_z=Z_CARRIAGE_SIZE[2],
+    category="z_carriage",
+    model="brooks_pf400_z_carriage",
   )
