@@ -1997,7 +1997,8 @@ class Pipettes:
     tip_bottom_diameter: float,
     stop_disc_diameter: float,
   ) -> float:
-    """Diameter of what the channel probes with: its tip's, or the stop disc's when bare and allowed.
+    """Diameter of what the channel probes with: its tip's, or the stop disc's when bare and
+    allowed.
 
     Args:
       channel_idx: the probing channel.
@@ -2019,7 +2020,8 @@ class Pipettes:
     return tip_bottom_diameter if has_tip else stop_disc_diameter
 
   async def _overhang_that_probes(self, channel_idx: int, allow_without_tip: bool) -> float:
-    """How far below the stop disc the channel probes: the tip's overhang, or 0 when bare and allowed.
+    """How far below the stop disc the channel probes: the tip's overhang, or 0 when bare and
+    allowed.
 
     Args:
       channel_idx: the probing channel.
@@ -2828,7 +2830,8 @@ class Pipettes:
     detection_limiter_pwm: int,
     push_force_pwm: int,
   ) -> int:
-    """Send the z-touch search as it is given, in Z increments; the stop disc where it stopped. `Px ZH`.
+    """Send the z-touch search as it is given, in Z increments; the stop disc where it stopped.
+    `Px ZH`.
 
     Args:
       channel: 0-indexed from the back.
@@ -4675,7 +4678,8 @@ class Pipettes:
 
     Positions and heights on the deck in mm, volumes in uL, speeds in mm/s or uL/s, times in s.
     Arguments in the order the aspiration runs. No model update: `aspirate` does that. Fields
-    legacy never varied (aspiration type, TADM, recording, second-section search) go as it sent them.
+    legacy never varied (aspiration type, TADM, recording, second-section search) go as it sent
+    them.
 
     Args:
       use_channels: which channels, 0-indexed from the back, ascending. Every list below is one
@@ -4790,8 +4794,8 @@ class Pipettes:
         peak = held + volume[index] + extra
         if peak > tips[channel].maximal_volume:
           raise ValueError(
-            f"channel {channel} would hold {peak:.1f} uL with its {label}, {held:.1f} uL in the tip "
-            f"already, over its tip's {tips[channel].maximal_volume:.1f} uL"
+            f"channel {channel} would hold {peak:.1f} uL with its {label}, {held:.1f} uL in the "
+            f"tip already, over its tip's {tips[channel].maximal_volume:.1f} uL"
           )
 
     xs, ys, pattern = self._tip_command_positions(dict(zip(use_channels, places)))
@@ -5017,8 +5021,8 @@ class Pipettes:
     """
     if (volumes is None) == (piston_volumes is None):
       raise ValueError(
-        f"give volumes, which a liquid class corrects, or piston_volumes, {how_moved} as given; not "
-        "both and not neither"
+        f"give volumes, which a liquid class corrects, or piston_volumes, {how_moved} as given; "
+        "not both and not neither"
       )
     if piston_volumes is not None and hamilton_liquid_classes is not None:
       raise ValueError(
@@ -5174,7 +5178,7 @@ class Pipettes:
       round(c.get_location_wrt(deck, "c", "c", "cavity_bottom").z + z, 2)
       for c, z in zip(containers, dz)
     ]
-    # The floor sent is the caller's when given; the liquid_heights are still measured from the cavity
+    # The floor sent is the caller's when given; the heights are still measured from the cavity
     # bottom, since the liquid stands on that.
     sent_floors = list(given_floors) if given_floors is not None else list(floors)
     tops = [c.get_location_wrt(deck, "c", "c", "t").z + z for c, z in zip(containers, dz)]
@@ -5241,11 +5245,11 @@ class Pipettes:
       z_cavity_bottom: per job, on the deck in mm.
       z_top: per job, on the deck in mm.
       search_speed: in mm/s.
-      approach_speed: down to the z_top, in mm/s.
+      approach_speed: down to the tops, in mm/s.
       surfaces: per job, on the deck in mm; written with the floor touched.
       sent_floors: per job, on the deck in mm; written with the floor touched unless the caller
         gave one.
-      given_floors: the z_cavity_bottom the caller gave, per job; None when none.
+      given_floors: the floors the caller gave, per job; None when none.
 
     Raises:
       RuntimeError: A floor not met.
@@ -5315,7 +5319,7 @@ class Pipettes:
       surfaces: per job, on the deck in mm; written with the surface found.
       sent_floors: per job, on the deck in mm; written with a surface found below the modelled
         cavity bottom, unless the caller gave a floor.
-      given_floors: the z_cavity_bottom the caller gave, per job; None when none.
+      given_floors: the floors the caller gave, per job; None when none.
       tracking: whether volumes are tracked; the container's tracker then takes the measured
         volume, warning when 20 % off.
 
