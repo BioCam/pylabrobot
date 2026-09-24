@@ -140,7 +140,6 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     origin: Coordinate = Coordinate.zero(),
     num_rails: Optional[int] = None,
     model: Optional[str] = None,
-    prefix: Optional[str] = None,
   ):
     # What `@abstractmethod` refused before either could be left to the other: a deck with neither.
     if (
@@ -160,7 +159,6 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       size_z=size_z,
       category=category,
       origin=origin,
-      prefix=prefix,
     )
     # `Deck` takes no model, so it is set here rather than passed up.
     self.model = model
@@ -286,8 +284,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     and where along it the drive's position refers to.
 
     Args:
-      name: what to call it, e.g. "left_x_arm". The deck puts its own prefix in front, so two
-        devices' arms stand in one tree.
+      name: what to call it, e.g. "left_x_arm".
       x: where the arm is now, in mm, at its reference point.
       size_x: how wide the arm is, in mm, end to end.
       reference_point_from_left: how far along it, from its left edge in mm, the drive's position
@@ -297,7 +294,6 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     Returns:
       The arm resource, whether it was just created or already there.
     """
-    name = self.prefixed(name)
     if self.has_resource(name):
       return self.get_resource(name)
     # The arm rides at the channel stop-disk safety height, level with the raised stop discs so it
@@ -342,7 +338,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     do not duplicate it.
 
     Args:
-      name: what to call it. The deck puts its own prefix in front.
+      name: what to call it.
       x: where the carrier-handling wheel is, in mm, on this deck. The wheel is the point the
         drive reports, so the sled is placed around it.
       reference_point_from_left: how far the point the drive reports - the carrier-handling
@@ -351,7 +347,6 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     Returns:
       The sled resource, whether it was just created or already there.
     """
-    name = self.prefixed(name)
     if self.has_resource(name):
       return self.get_resource(name)
     # The whole part, transport and barcode reader. The 316.2 this replaces came off the
@@ -398,12 +393,11 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
     that same track on the deck.
 
     Args:
-      name: what to call it. The deck puts its own prefix in front.
+      name: what to call it.
 
     Returns:
       The tray resource, whether it was just created or already there.
     """
-    name = self.prefixed(name)
     if self.has_resource(name):
       return self.get_resource(name)
     # Measured against the two things on the deck it lines up with: where the first carrier starts,
@@ -493,7 +487,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
           z_top,
         )
 
-      for child in resource.comparable_children():
+      for child in resource._comparable_children():
         check_z_height(child)
 
     # Hanging from what the device carries, e.g. a plate in the grippers' jaws, it rides with that.
@@ -688,7 +682,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       new_depth = depth + 1 if resource.category not in exclude_categories else depth
       return max(
         [(longest + longest_depth * depth_weight)]
-        + [find_longest_child_name(c, new_depth) for c in resource.comparable_children()]
+        + [find_longest_child_name(c, new_depth) for c in resource._comparable_children()]
       )
 
     def find_longest_type_name(resource: Resource):
@@ -697,7 +691,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
         len(resource.__class__.__name__) if resource.category not in exclude_categories else 0
       )
       return max(
-        [longest] + [find_longest_type_name(child) for child in resource.comparable_children()]
+        [longest] + [find_longest_type_name(child) for child in resource._comparable_children()]
       )
 
     # Calculate the maximum lengths of the resource name and type for proper alignment
@@ -768,7 +762,7 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       r_summary = print_resource_line(resource, depth=depth)
 
       # What a holder carries is state, so the deck's layout leaves it out.
-      for child in resource.comparable_children():
+      for child in resource._comparable_children():
         if isinstance(child, ResourceHolder):
           r_summary += "\n"
           if child.resource is not None:

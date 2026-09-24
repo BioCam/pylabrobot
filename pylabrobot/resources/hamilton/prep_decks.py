@@ -85,6 +85,10 @@ class PrepDeck(Deck):
   stop discs at Z safety, 167.5, less the 87.1 mm a 1000 uL tip reaches below them, with margin.
   Higher may be safe, depending on the tip."""
 
+  def get_component_name(self, name: str) -> str:
+    """Qualify a built-in component name with this deck's optional device prefix."""
+    return name if self._name_prefix is None else f"{self._name_prefix}_{name}"
+
   def _check_safe_deck_height(self, resource: Resource) -> None:
     """Warn when a resource the device does not carry stands above `safe_deck_height`."""
     up: Optional[Resource] = resource
@@ -121,8 +125,7 @@ class PrepDeck(Deck):
 
   def __init__(
     self,
-    name: str = "Prep_Deck",
-    prefix: Optional[str] = None,
+    name: str = "deck",
     size_x: float = 300.0,
     size_y: float = 394.0,
     size_z: float = PREP_DECK_SIZE_Z,
@@ -134,12 +137,18 @@ class PrepDeck(Deck):
     with_waste_bin: bool = True,
     with_waste_positions: bool = True,
     with_core_grippers: bool = True,
+    name_prefix: Optional[str] = None,
   ):
     """A Prep deck of the given size, carrying the parts a Prep has.
 
     Each `with_` says whether to build that part. A deck read back from a file builds none of
     them: they are its saved children, as they are on a `HamiltonSTARDeck`.
+
+    Args:
+      name_prefix: prefix for component names, without a trailing underscore. None keeps
+        standalone component names. The deck itself keeps its explicitly supplied name.
     """
+    self._name_prefix = name_prefix
     super().__init__(
       name=name,
       size_x=size_x,
@@ -147,21 +156,19 @@ class PrepDeck(Deck):
       size_z=size_z,
       origin=origin,
       category=category,
-      prefix=prefix,
     )
-    prefix = self.prefix
     if with_spots:
       for column in range(2):
         for row in range(4):
           x = PREP_FIRST_SLOT_LOCATION.x + column * PREP_SPOT_PITCH_X
           y = PREP_FIRST_SLOT_LOCATION.y + row * PREP_SPOT_PITCH_Y
-          spot = hamilton_prep_resourceholder(name=f"{prefix}_spot_{column}_{row}")
+          spot = hamilton_prep_resourceholder(name=self.get_component_name(f"spot_{column}_{row}"))
           self.assign_child_resource(spot, location=Coordinate(x, y, 0))
 
     if with_calibration_block:
       self.assign_child_resource(
         Resource(
-          name=f"{prefix}_calibration_block",
+          name=self.get_component_name("calibration_block"),
           size_x=6.0,
           size_y=6.0,
           size_z=22.0,
@@ -172,14 +179,14 @@ class PrepDeck(Deck):
       )
 
     if with_waste_block:
-      self._build_waste_block(prefix, with_core_grippers=with_core_grippers)
+      self._build_waste_block(with_core_grippers=with_core_grippers)
 
     if with_waste_bin:
       # Its handle reaches 22 mm in front of it, as the model shows.
       size_x, size_y, size_z = PREP_WASTE_BIN_SIZE
       self.assign_child_resource(
         Resource(
-          name=f"{prefix}_waste_bin",
+          name=self.get_component_name("waste_bin"),
           size_x=size_x,
           size_y=size_y,
           size_z=size_z,
@@ -195,7 +202,7 @@ class PrepDeck(Deck):
       for waste_name, y_pos in [("waste_rear", 30.0), ("waste_front", 10.0), ("waste_mph", 112.0)]:
         self.assign_child_resource(
           Trash(
-            name=f"{prefix}_{waste_name}",
+            name=self.get_component_name(waste_name),
             size_x=6.0,
             size_y=6.0,
             size_z=0.0,
@@ -206,7 +213,7 @@ class PrepDeck(Deck):
 
     self.register_did_assign_resource_callback(self._check_safe_deck_height)
 
-  def _build_waste_block(self, prefix: str, with_core_grippers: bool) -> None:
+  def _build_waste_block(self, with_core_grippers: bool) -> None:
     """The waste block, and what stands on it: the trough, the teaching needle, the tool holder."""
 
     # Where tips are dropped, as on the STAR's waste block, carrying the liquid waste trough, the
@@ -214,7 +221,7 @@ class PrepDeck(Deck):
     # front of the gripper mount's back edge (Y 286.5).
     # 12.5 x 292 x 75 measured off the block; 13 x 287.5 x 73 was the estimate it replaces.
     waste_block = Trash(
-      name=f"{prefix}_waste_block",
+      name=self.get_component_name("waste_block"),
       size_x=12.5,
       size_y=292.0,
       size_z=75.0,
@@ -232,7 +239,7 @@ class PrepDeck(Deck):
     liquid_waste_size_y = 214.29 - (-3 + tip_drop_size_y)
     liquid_waste_size_z = 25.0  # measured
     liquid_waste_container = Trough(
-      name=f"{prefix}_liquid_waste_container",
+      name=self.get_component_name("liquid_waste_container"),
       size_x=waste_block.get_absolute_size_x(),
       size_y=liquid_waste_size_y,
       size_z=liquid_waste_size_z,
@@ -250,7 +257,7 @@ class PrepDeck(Deck):
     # device's at setup. Z is where the needle's collar rests, as every tip spot's is: the height
     # the device takes it from and puts it back at, leaving its body from 23.85 to 83.75.
     teaching_needle_spot = TipSpot(
-      name=f"{prefix}_teaching_needle",
+      name=self.get_component_name("teaching_needle"),
       size_x=6.0,
       size_y=6.0,
       make_tip=hamilton_teaching_needle_300uL,
@@ -271,7 +278,7 @@ class PrepDeck(Deck):
       # Measured off the block: the holder overhangs its left face by 4 mm, its flat 40 mm up with
       # a rail to 55 between the two tools.
       waste_block.assign_child_resource(
-        prep_core_gripper_holder(name=f"{prefix}_core_gripper_holder"),
+        prep_core_gripper_holder(name=self.get_component_name("core_grippers")),
         location=Coordinate(-4.0, 249.5, 37.0),
       )
 
@@ -286,6 +293,7 @@ class PrepDeck(Deck):
       "with_waste_bin": False,
       "with_waste_positions": False,
       "with_core_grippers": False,
+      "name_prefix": self._name_prefix,
     }
 
   # -- what the deck carries --------------------------------------------------------------------
@@ -333,9 +341,7 @@ class PrepDeck(Deck):
   def core_gripper_holder(self) -> Optional[HamiltonCoreGrippers]:
     """The CO-RE gripper holder on the waste block, or None if this deck carries none."""
     block = self.waste_block
-    return (
-      None if block is None else _built(block.children, "core_gripper_holder", HamiltonCoreGrippers)
-    )
+    return None if block is None else _built(block.children, "core_grippers", HamiltonCoreGrippers)
 
   @property
   def waste_positions(self) -> Dict[str, Trash]:
@@ -368,8 +374,7 @@ class PrepDeck(Deck):
     negative y. It rides at the height it is given.
 
     Args:
-      name: what to call it. The deck puts its own prefix in front, so two devices' arms stand in
-        one tree.
+      name: what to call it.
       x: where the arm is now, in mm, at its reference point.
       z: the height it rides at, in mm on this deck, to the underside of its body.
       size_x: how wide the arm is, in mm.
@@ -386,7 +391,6 @@ class PrepDeck(Deck):
     Returns:
       The arm resource, whether it was just created or already there.
     """
-    name = self.prefixed(name)
     if self.has_resource(name):
       return self.get_resource(name)
     x_arm = Resource(

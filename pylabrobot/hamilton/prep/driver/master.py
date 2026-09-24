@@ -356,6 +356,12 @@ class PrepDriver:
     self.x_arm: Optional[XArm] = None
     self._setup_finished: bool = False
 
+  def get_component_name(self, name: str) -> str:
+    """Resolve a built-in resource name using the Prep deck's naming prefix."""
+    if isinstance(self.deck, PrepDeck):
+      return self.deck.get_component_name(name)
+    return name
+
   # ----------------------------------------
   # Connection and lifecycle
   # ----------------------------------------
@@ -1544,7 +1550,7 @@ class PrepDriver:
     y_ranges = [c.y_range for c in pipettes.channels if c.y_range is not None]
     reach = (min(r[0] for r in y_ranges), max(r[1] for r in y_ranges)) if y_ranges else None
     arm.resource = self.deck.get_or_create_x_arm(
-      name="x_arm",
+      name=self.get_component_name("x_arm"),
       x=positions[0].x,
       z=z,
       size_x=c.size_x,
@@ -1560,7 +1566,7 @@ class PrepDriver:
     # and each has its own Y and Z.
     self.pipettes.resources = []
     for channel in range(len(positions)):
-      name = self.deck.prefixed(f"pipette_channel_{channel}")
+      name = self.get_component_name(f"pipette_channel_{channel}")
       resource = next((child for child in arm.resource.children if child.name == name), None)
       if resource is None:
         resource = Resource(

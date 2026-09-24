@@ -152,7 +152,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     await driver.setup()
     deck = cast(HamiltonDeck, driver.deck)
     arms = [child.name for child in deck.children if child.category == "x_arm"]
-    self.assertEqual(sorted(arms), [deck.prefixed("left_x_arm"), deck.prefixed("right_x_arm")])
+    self.assertEqual(sorted(arms), ["left_x_arm", "right_x_arm"])
 
   async def test_a_rejected_move_records_where_the_arm_stopped(self):
     """The arm stops somewhere neither the old position nor the target describes, so the device
@@ -160,7 +160,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     from the model and so cannot report a stop the model does not know about."""
     driver = await _both_arms()
     deck = cast(HamiltonDeck, driver.deck)
-    resource = deck.get_resource(deck.prefixed("left_x_arm"))
+    resource = deck.get_resource("left_x_arm")
 
     async def refuse(module: str, command: str, fmt=None, **kwargs):
       if command == "XP":
@@ -214,7 +214,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
     it at the target. Driven against a stub, since a simulated read answers from the model."""
     driver = await _both_arms()
     deck = cast(HamiltonDeck, driver.deck)
-    resource = deck.get_resource(deck.prefixed("left_x_arm"))
+    resource = deck.get_resource("left_x_arm")
     approach = iter(
       [
         "rx +0004985 +0000049850",  # still arriving
@@ -272,7 +272,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
       side="left",
     )
     deck = cast(HamiltonDeck, driver.deck)
-    arm.resource = deck.get_resource(deck.prefixed("left_x_arm"))
+    arm.resource = deck.get_resource("left_x_arm")
     await arm.move_to_x_position(500.0)
     self.assertEqual(reads, 5)
     seated = cast(Coordinate, arm.resource.location)
@@ -296,7 +296,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
       side="left",
     )
     deck = cast(HamiltonDeck, driver.deck)
-    arm.resource = deck.get_resource(deck.prefixed("left_x_arm"))
+    arm.resource = deck.get_resource("left_x_arm")
     with self.assertLogs("pylabrobot.hamilton.star.driver.features.x_arm", level="WARNING"):
       await arm.move_to_x_position(500.0, settle_reads=3)
     self.assertEqual(reads, 3)

@@ -39,25 +39,25 @@ def test_liquid_waste_container_sits_in_the_waste_block_up_to_the_teaching_needl
 
 
 def test_two_decks_stand_in_one_tree():
-  """A deck names what it owns after itself, so two of them stand in one tree."""
+  """A deck names what it owns after its prefix, so two of them stand in one tree."""
   from pylabrobot.resources.coordinate import Coordinate
   from pylabrobot.resources.resource import Resource
 
   lab = Resource(name="lab", size_x=4000, size_y=2000, size_z=1000)
-  first = PrepDeck(name="prep_left", with_core_grippers=True)
-  second = PrepDeck(name="prep_right", with_core_grippers=True)
+  first = PrepDeck(name="prep_left_deck", name_prefix="prep_left", with_core_grippers=True)
+  second = PrepDeck(name="prep_right_deck", name_prefix="prep_right", with_core_grippers=True)
   lab.assign_child_resource(first, location=Coordinate.zero())
   lab.assign_child_resource(second, location=Coordinate(1000, 0, 0))
 
   names = [r.name for r in lab.get_all_children()]
   assert len(names) == len(set(names))
   assert "prep_left_spot_0_0" in names and "prep_right_spot_0_0" in names
-  assert "prep_left_core_gripper_holder" in names and "prep_right_core_gripper_holder" in names
-  for deck in (first, second):
+  assert "prep_left_core_grippers" in names and "prep_right_core_grippers" in names
+  for deck, prefix in ((first, "prep_left"), (second, "prep_right")):
     parts = (deck.teaching_needle_spot, deck.calibration_block, deck.waste_block)
-    assert all(part is not None and part.name.startswith(deck.name) for part in parts)
-    assert all(w.name.startswith(deck.name) for w in deck.waste_positions.values())
-    assert all(s.name.startswith(deck.name) for s in deck.spots)
+    assert all(part is not None and part.name.startswith(prefix) for part in parts)
+    assert all(w.name.startswith(prefix) for w in deck.waste_positions.values())
+    assert all(s.name.startswith(prefix) for s in deck.spots)
 
 
 def test_a_saved_deck_reads_back_as_the_deck_it_was():
@@ -128,7 +128,7 @@ def test_the_holders_stand_where_they_were_probed_and_the_waste_block_does_not_m
   waste_block = deck.waste_block
   assert waste_block is not None
   assert waste_block.get_location_wrt(deck) == Coordinate(282.25, -4.25, 0.0)
-  tool = deck.get_resource("Prep_core_gripper_tool_back").get_location_wrt(deck, "c", "c")
+  tool = deck.get_resource("core_grippers_back").get_location_wrt(deck, "c", "c")
   assert (tool.x, tool.y) == pytest.approx((290.0, 275.577))
 
 

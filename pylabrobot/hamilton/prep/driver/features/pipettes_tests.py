@@ -11,8 +11,6 @@ import pytest
 
 from pylabrobot.hamilton.prep import PrepSimulationDriver
 from pylabrobot.hamilton.prep.driver import prep_commands as PrepCmd
-from pylabrobot.hamilton.transport.tcp.hoi_error import HoiError
-from pylabrobot.hamilton.transport.tcp.wire_types import HcResultEntry
 from pylabrobot.hamilton.prep.driver.features.pipettes import Pipettes
 from pylabrobot.hamilton.prep.driver.simulator import (
   SIMULATED_X_AXIS_OFFSET,
@@ -20,7 +18,9 @@ from pylabrobot.hamilton.prep.driver.simulator import (
   SIMULATED_Y_DRIVE_OFFSETS,
   SIMULATED_Z_DRIVE_OFFSETS,
 )
+from pylabrobot.hamilton.transport.tcp.hoi_error import HoiError
 from pylabrobot.hamilton.transport.tcp.packets import Address
+from pylabrobot.hamilton.transport.tcp.wire_types import HcResultEntry
 from pylabrobot.resources import Coordinate, Resource
 from pylabrobot.resources.corning.axygen.plates import cor_axy_96_wellplate_500uL_Ub
 from pylabrobot.resources.errors import HasTipError, NoTipError
@@ -30,8 +30,8 @@ from pylabrobot.resources.hamilton import (
   hamilton_96_tiprack_10uL_NTR,
   hamilton_96_tiprack_50uL_NTR,
   hamilton_96_tiprack_300uL_NTR,
-  hamilton_tip_300uL,
   hamilton_tip_50uL,
+  hamilton_tip_300uL,
 )
 from pylabrobot.resources.hamilton.core_gripper_tools import hamilton_core_gripper_tool
 from pylabrobot.resources.tip_tracking import set_tip_tracking

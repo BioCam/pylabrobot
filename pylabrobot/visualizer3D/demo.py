@@ -150,8 +150,9 @@ def declare_channel_access(star) -> None:
     if star.x_arm.configuration.reference_point == "center":
       star.x_arm.resource.window = {"width": 185.0, "inset_y": 20.0}
 
-  waste_block = star.deck.waste_block
-  if waste_block is not None:
+  waste_block_name = star.deck.get_component_name("waste_block")
+  if star.deck.has_resource(waste_block_name):
+    waste_block = star.deck.get_resource(waste_block_name)
     x_to = min(x_to, waste_block.get_location_wrt(star.deck).x)
 
   star.deck.access_bands = [

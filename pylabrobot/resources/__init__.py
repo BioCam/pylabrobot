@@ -45,10 +45,15 @@ from .powder import Powder
 from .resource import Resource
 from .resource_stack import ResourceStack
 from .resource_state import (
+  TipDropIntent,
+  TipPickupIntent,
   VolumeTransferIntent,
   all_channels_succeeded,
+  finalize_tip_ops,
   finalize_volume_ops,
   place_resource,
+  queue_tip_drops,
+  queue_tip_pickups,
   queue_volume_transfers,
   successes_from_failed_channels,
 )
@@ -84,7 +89,7 @@ from .well import CrossSectionType, Well, WellBottomType
 
 
 def __getattr__(name: str):
-  # TODO: Remove >2026-12
+  # TODO: Remove in v1
   if name == "TipTracker":
     from .tip_tracker import __getattr__ as deprecated
 

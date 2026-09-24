@@ -682,6 +682,18 @@ class STARCommandCatcher(STARBackend):
 class TestSTARCoreGripperRegistration(unittest.IsolatedAsyncioTestCase):
   """Grippers require an existing firmware definition."""
 
+  async def test_named_deck_gripper_pickup(self):
+    """Named deck mounts and their tools remain usable by the legacy driver."""
+    backend = STARCommandCatcher()
+    deck = STARDeck(name="custom_deck")
+    lh = LiquidHandler(backend=backend, deck=deck)
+    await lh.setup()
+    try:
+      await backend.pick_up_core_gripper_tools(front_channel=7)
+      self.assertTrue(any("C0ZT" in command for command in backend.commands))
+    finally:
+      await lh.stop()
+
   async def test_gripper_uses_existing_definition_and_refuses_registration(self):
     backend = STARCommandCatcher()
     tool = hamilton_core_gripper_tool("gripper")
@@ -764,8 +776,8 @@ class TestSTARLiquidHandlerCommands(unittest.IsolatedAsyncioTestCase):
 
   async def test_teaching_needle_pickup_and_return(self):
     """Teaching needles retain their pickup and return heights in the integrated holder."""
-    rack = self.deck.teaching_needle_rack
-    assert rack is not None
+    rack = self.deck.get_resource(self.deck.get_component_name("teaching_tip_rack"))
+    assert isinstance(rack, TipRack)
     await self.lh.pick_up_tips(rack.get_all_items(), use_channels=list(range(8)))
     pickup = next(
       call.kwargs["cmd"]

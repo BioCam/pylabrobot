@@ -2,8 +2,13 @@ import unittest
 from typing import Any, List, Optional, Set, Tuple
 from unittest.mock import AsyncMock, patch
 
-from pylabrobot.hamilton.star.device import RECORDING_STAR
-from pylabrobot.hamilton.star.driver.features.autoload import Autoload
+from pylabrobot.hamilton.star.device import (
+  RECORDING_STAR,
+  RECORDING_STAR_HEAD384,
+  RECORDING_STARLET,
+  RECORDING_STARLET_HEAD384,
+)
+from pylabrobot.hamilton.star.driver.features.autoload import Autoload, AutoloadConfiguration
 from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
 from pylabrobot.resources.hamilton import PLT_CAR_L5AC_A00, STARDeck
 
@@ -186,10 +191,6 @@ class TestLoadCarrier(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded["carrier_barcode"], "read" if wanted else None)
 
 
-if __name__ == "__main__":
-  unittest.main()
-
-
 class TestTheWheelsSafeZTolerance(unittest.IsolatedAsyncioTestCase):
   """The drive answers its hardware counter, which rests a step or two past where it was sent."""
 
@@ -207,3 +208,23 @@ class TestTheWheelsSafeZTolerance(unittest.IsolatedAsyncioTestCase):
       self.assertIn(
         "autoload wheel below its safe Z", await feature._driver.features_below_safe_z()
       )
+
+
+class TestTheRecordingsSled(unittest.TestCase):
+  """Every shipped recording with an autoload places its sled where the configuration does."""
+
+  def test_the_reference_point_is_the_configurations(self):
+    default = AutoloadConfiguration().reference_point_from_sled_left_edge
+    for recording in (
+      RECORDING_STAR,
+      RECORDING_STAR_HEAD384,
+      RECORDING_STARLET,
+      RECORDING_STARLET_HEAD384,
+    ):
+      driver = STARSimulationDriver(deck=STARDeck(), declared_configuration_json=recording)
+      with self.subTest(recording=recording):
+        self.assertEqual(driver.simulated_autoload.reference_point_from_sled_left_edge, default)
+
+
+if __name__ == "__main__":
+  unittest.main()
