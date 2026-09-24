@@ -14,6 +14,7 @@ from pylabrobot.resources.hamilton import (
   STARDeck,
   STARLetDeck,
   hamilton_96_tiprack_300uL_filter,
+  hamilton_96_tiprack_1000uL,
   hamilton_96_tiprack_1000uL_filter,
 )
 from pylabrobot.resources.stanley.cups import (
@@ -22,6 +23,16 @@ from pylabrobot.resources.stanley.cups import (
 
 
 class HamiltonDeckTests(unittest.TestCase):
+  def test_the_safe_deck_height_follows_the_longest_tip_when_asked(self):
+    deck = STARDeck()
+    self.assertEqual(deck.safe_deck_height, 245.0)
+    carrier = TIP_CAR_480_A00(name="tip_carrier")
+    carrier[0] = hamilton_96_tiprack_1000uL(name="rack")
+    deck.assign_child_resource(carrier, track=20)
+    # The 1000 uL rack decides: 334.7 - 87.1 - 5.
+    self.assertEqual(deck.update_safe_deck_height_from_tips(334.7), 242.6)
+    self.assertEqual(deck.safe_deck_height, 242.6)
+
   def test_rails_is_deprecated(self):
     """`rails` still places a resource, and says it is deprecated."""
     deck = STARLetDeck()

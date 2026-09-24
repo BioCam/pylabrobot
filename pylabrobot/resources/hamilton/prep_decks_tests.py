@@ -1,9 +1,12 @@
 """PrepDeck: what the standard deck carries."""
 
+from typing import List
+
 import pytest
 
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import PrepDeck
+from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip_rack import TipSpot
 from pylabrobot.resources.trough import Trough
 
@@ -140,3 +143,14 @@ def test_the_waste_bin_stands_beside_the_waste_block_below_its_top():
   assert bin_lft.x == pytest.approx(block_rbt.x)
   assert bin_lft.y == pytest.approx(block_rbt.y - 35.0)
   assert bin_lft.z == pytest.approx(block_rbt.z - 4.0)
+
+
+def test_the_safe_deck_height_follows_the_longest_tip_when_asked(monkeypatch):
+  deck = PrepDeck()
+  assert deck.safe_deck_height == 75.0
+  checked: List[Resource] = []
+  monkeypatch.setattr(deck, "_check_safe_deck_height", checked.append)
+  # Only the teaching needle, as long as a 300 uL tip: 167.5 - 51.9 - 5.
+  assert deck.update_safe_deck_height_from_tips(167.5) == 110.6
+  assert deck.safe_deck_height == 110.6
+  assert checked == list(deck.children)

@@ -4,16 +4,17 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Tuple
 
+from pylabrobot.lib.spatial.clearance import get_longest_tip_overhang
 from pylabrobot.resources.carrier import ResourceHolder
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.deck import Deck, _built
 from pylabrobot.resources.errors import NoLocationError
-from pylabrobot.resources.head_tool import HeadTool
 from pylabrobot.resources.hamilton.core_grippers import (
   HamiltonCoreGrippers,
   prep_core_gripper_holder,
 )
 from pylabrobot.resources.hamilton.tip_creators import hamilton_teaching_needle_300uL
+from pylabrobot.resources.head_tool import HeadTool
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip_rack import TipSpot
 from pylabrobot.resources.trash import Trash
@@ -104,6 +105,31 @@ class PrepDeck(Deck):
           z_top,
           self.safe_deck_height,
         )
+
+  def update_safe_deck_height_from_tips(self, stop_disc_z_max: float, margin: float = 5.0) -> float:
+    """Set `safe_deck_height` from the longest tip this deck holds, then check what stands on it.
+
+    The height is the stop discs' highest point less that tip's overhang below it, less `margin`.
+    Called only when wanted: the class default holds for the longest tip the device can use.
+
+    Args:
+      stop_disc_z_max: the highest the channels' stop discs travel at, in mm of the deck's frame,
+        e.g. the top of the pipettes' Z range.
+      margin: kept clear under the longest tip, in mm.
+
+    Returns:
+      The height set, in mm.
+
+    Raises:
+      ValueError: If the deck holds no tip, so no tip decides the height.
+    """
+    overhang = get_longest_tip_overhang(self)
+    if overhang is None:
+      raise ValueError("the deck holds no tip, so no tip decides how high a resource may stand")
+    self.safe_deck_height = round(stop_disc_z_max - overhang - margin, 2)
+    for child in self.children:
+      self._check_safe_deck_height(child)
+    return self.safe_deck_height
 
   def __init__(
     self,
