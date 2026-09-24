@@ -4753,16 +4753,9 @@ class Pipettes:
   ) -> None:
     """Draw liquid from each container with a channel's tip, every channel in one command.
 
-    The arguments are named as the STAR's `aspirate` names them. `volumes` is the liquid wanted;
-    a Hamilton liquid class turns it into what the piston draws, by its correction curve, and fills
-    the flow rate, the air volumes, the settling time and the swap speed where they are not given.
-    With volume tracking on, every container gives up its volume and every tip takes it. The
-    keyword arguments come in the order the aspiration runs; the per-container ones are one entry
-    per container, in the containers' order.
-
     Args:
       containers: one per channel used.
-      volumes: how much liquid to take from each container, in uL.
+      volumes: how much liquid to take from each container, in uL, corrected by the liquid class.
       use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
       resource_offsets: added to where each channel goes in its container, in mm. The z shifts
         the heights.
