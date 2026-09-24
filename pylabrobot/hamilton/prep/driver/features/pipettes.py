@@ -2853,8 +2853,8 @@ class Pipettes:
     channel_idx: int,
     *,
     search_start_position: Optional[float] = None,
-    search_speed: Optional[float] = None,
     search_end_position: Optional[float] = None,
+    search_speed: Optional[float] = None,
     sensitivity: Optional[int] = None,
     detect_mode: Optional[int] = None,
     allow_without_tip: bool = False,
@@ -2866,9 +2866,9 @@ class Pipettes:
     Args:
       channel_idx: which channel, 0-indexed from the back.
       search_start_position: start height in mm. Defaults to where the channel stands.
-      search_speed: seek speed in mm/s. Defaults to `default_clld_probe_speed`.
       search_end_position: where the search ends, in mm. The bottom of the channel's Z range when
         None: a seek that detects nothing goes that far down.
+      search_speed: seek speed in mm/s. Defaults to `default_clld_probe_speed`.
       sensitivity: cLLD sensitivity. Defaults to `default_clld_sensitivity`.
       detect_mode: cLLD detect mode. Defaults to `default_clld_detect_mode`.
       allow_without_tip: whether to probe without a mounted tip. False requires one.
@@ -3006,15 +3006,15 @@ class Pipettes:
     self,
     channel_idx: int,
     *,
-    tip_len: Optional[float] = None,
     search_start_position: Optional[float] = None,
-    search_speed: float = 10.0,
     search_end_position: Optional[float] = None,
+    search_speed: float = 10.0,
+    push_force_pwm: Optional[int] = None,
+    end_tolerance: float = 1.2,
+    tip_len: Optional[float] = None,
     allow_without_tip: bool = False,
     post_detection_distance: float = 2.0,
     move_channels_to_safe_pos_after: bool = False,
-    end_tolerance: float = 1.2,
-    push_force_pwm: Optional[int] = None,
   ) -> Optional[float]:
     """Lower a channel where it stands until it meets resistance, with its Z axis's obstacle seek.
 
@@ -3028,20 +3028,20 @@ class Pipettes:
 
     Args:
       channel_idx: which channel, 0-indexed from the back.
-      tip_len: total length of the mounted tip in mm. Defaults to the length the firmware holds
-        for it plus the fitting depth.
       search_start_position: start height in mm. Defaults to where the channel stands.
-      search_speed: seek speed in mm/s.
       search_end_position: where the search ends, in mm. The bottom of the channel's Z range when
         None: a seek that detects nothing goes that far down.
+      search_speed: seek speed in mm/s.
+      push_force_pwm: the Z drive's PWM to hold for the seek, 40 to 125, put back afterwards. None
+        leaves the drive as it is. Below 40 the drive cannot lift the channel again: 30 stalled it.
+      end_tolerance: how close to `search_end_position` an answer counts as the end of an
+        untouched search rather than a surface, in mm.
+      tip_len: total length of the mounted tip in mm. Defaults to the length the firmware holds
+        for it plus the fitting depth.
       allow_without_tip: whether to probe without a mounted tip. False requires one.
       post_detection_distance: how far above what it met the channel rests afterwards, in mm. The
         seek itself lands back at the start first, as the firmware returns it there.
       move_channels_to_safe_pos_after: whether to raise every channel to Z safety instead.
-      end_tolerance: how close to `search_end_position` an answer counts as the end of an untouched search
-        rather than a surface, in mm.
-      push_force_pwm: the Z drive's PWM to hold for the seek, 40 to 125, put back afterwards. None leaves the
-        drive as it is (125 on PRPAA1087). Below 40 the drive cannot lift the channel again: 30 stalled it.
 
     Returns:
       Height where the channel met the obstacle in mm, rounded to 0.01 mm, or None.
