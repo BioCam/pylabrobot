@@ -1099,12 +1099,13 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     return [self.plate.get_well(name) for name in names]
 
   def _window(self, well) -> Tuple[int, int]:
-    """The stop disc increments a search of `well` runs between, with a 51.9 mm overhang."""
+    """The stop disc increments a search of `well` runs between, with a 51.9 mm overhang: from
+    5 mm above the top to 1 mm below the cavity bottom."""
     c = self.pipettes.configuration
     bottom = well.get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
     top = well.get_location_wrt(self.deck, "c", "c", "t").z
     return (
-      c.z_drive_mm_to_increments(round(bottom + 51.9, 2)),
+      c.z_drive_mm_to_increments(round(bottom - 1.0 + 51.9, 2)),
       c.z_drive_mm_to_increments(round(top + 51.9 + 5.0, 2)),
     )
 
@@ -1575,8 +1576,9 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     sent = self._record_aspirations()
     await self.pipettes.aspirate(self.wells[:2], [50.0, 20.0])
     self.assertEqual(len(sent), 1)
+    # No height given: both draws at the cavity bottom.
     self.assertIn(
-      f"zl{self._surface_field(self.wells[0], 150.0)} {self._surface_field(self.wells[1], 100.0)}",
+      f"zl{self._surface_field(self.wells[0], 0.0)} {self._surface_field(self.wells[1], 0.0)}",
       sent[0],
     )
     # A well's LLD search starts 2 mm above its top.
@@ -1660,10 +1662,9 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertIn("av00500", sent[0])
     self.assertIn("as1000", sent[0])
     self.assertEqual(self.wells[0].tracker.get_used_volume(), 100.0)
-    # With the surface known from the tracker, the following is the drop 50 uL makes.
-    well = self.wells[0]
-    drop = well.compute_height_from_volume(150.0) - well.compute_height_from_volume(100.0)
-    self.assertIn(f"fp{round(drop * 10):04}", sent[0])
+    # No height given: the draw is at the cavity bottom and follows nothing.
+    self.assertIn(f"zl{self._surface_field(self.wells[0], 0.0)}", sent[0])
+    self.assertIn("fp0000", sent[0])
     await self.pipettes.aspirate(
       self.wells[:1], piston_volumes=[10.0], surface_following_distances=[0.3]
     )
@@ -1725,9 +1726,9 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     await self.pipettes.aspirate(
       self.wells[:1], piston_volumes=[50.0], minimum_allowed_z_positions_during=[bottom - 1.0]
     )
-    # zx a millimetre under the floor, the tip pressing onto it; the surface as before.
+    # zx a millimetre under the floor, the tip pressing onto it; the draw still at the floor.
     self.assertIn(f"zx{round((bottom - 1.0) * 10):04}", sent[0])
-    self.assertIn(f"zl{self._surface_field(self.wells[0], 150.0)}", sent[0])
+    self.assertIn(f"zl{self._surface_field(self.wells[0], 0.0)}", sent[0])
 
   async def test_a_capacitive_aspiration_searches_first_and_takes_what_it_measured(self):
     sent = self._record_aspirations("P1ZL", "P2ZL", "C0RL")
@@ -1835,8 +1836,9 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertIn(f"lp{round((top + 2.0) * 10):04}", sent[-1])
     floor = self._surface_field(self.wells[3], 0.0)
     self.assertIn(f"th{floor}te2450", sent[-1])
+    # The OFF channel draws at the cavity bottom, the searched ones where they found the liquid.
     self.assertIn(
-      f"zl{self._surface_field(self.wells[0], 150.0)} {self._surface_field(self.wells[1], 100.0)} "
+      f"zl{self._surface_field(self.wells[0], 0.0)} {self._surface_field(self.wells[1], 100.0)} "
       f"{self._surface_field(self.wells[2], 50.0)} {floor}",
       sent[-1],
     )
@@ -1951,26 +1953,55 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     tips = [self.pipettes.get_mounted_tip(channel) for channel in (0, 1)]
     self.assertEqual([tip.tracker.volume for tip in tips if tip is not None], [50.0, 0.0])
 
-  async def test_without_tracking_the_surface_has_to_be_given_or_searched_for(self):
+  async def test_without_tracking_off_draws_at_the_bottom_or_where_told_and_a_search_finds(self):
     from pylabrobot.resources import set_volume_tracking
 
     set_volume_tracking(False)
     sent = self._record_aspirations()
-    with self.assertRaises(RuntimeError) as refused:
-      await self.pipettes.aspirate(self.wells[:1], [10.0])
-    self.assertIn("nothing knows", str(refused.exception))
-    self.assertEqual(sent, [])
     bottom = self.wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    await self.pipettes.aspirate(self.wells[:1], [10.0])
+    self.assertIn(f"zl{round(bottom * 10):04}", sent[0])
     await self.pipettes.aspirate(self.wells[:1], [10.0], liquid_heights=[2.0])
-    self.assertIn(f"zl{round((bottom + 2.0) * 10):04}", sent[0])
+    self.assertIn(f"zl{round((bottom + 2.0) * 10):04}", sent[1])
     # A capacitive search first: the simulator answers it from the tracker, the surface it found
     # is sent, and with tracking off the tracker is left alone.
     await self.pipettes.aspirate(self.wells[:1], [10.0], lld_mode=Pipettes.LLDMode.CAPACITIVE)
     surface = self._surface_field(self.wells[0], 150.0)
-    self.assertIn(f"th{surface}te2450", sent[1])
-    self.assertIn(f"zl{surface}", sent[1])
-    self.assertIn("lm0", sent[1])
+    self.assertIn(f"th{surface}te2450", sent[2])
+    self.assertIn(f"zl{surface}", sent[2])
+    self.assertIn("lm0", sent[2])
     self.assertEqual(self.wells[0].tracker.get_used_volume(), 150.0)
+
+  async def test_a_liquid_height_beside_an_lld_mode_is_refused(self):
+    sent = self._record_aspirations()
+    with self.assertRaises(ValueError) as refused:
+      await self.pipettes.aspirate(
+        self.wells[:1], [10.0], liquid_heights=[2.0], lld_mode=Pipettes.LLDMode.CAPACITIVE
+      )
+    self.assertIn("finds the surface itself", str(refused.exception))
+    self.assertEqual(sent, [])
+
+  async def test_a_surface_found_below_the_modelled_floor_moves_the_floor_sent(self):
+    sent = self._record_aspirations("P1ZL")
+    # The plate modelled 2 mm higher than it sits: the 50 uL well's surface, 1.69 mm up, is found
+    # a third of a millimetre below the modelled cavity bottom, within the 1 mm the search runs
+    # past it; the read is in tenths.
+    with self.assertLogs(
+      "pylabrobot.hamilton.star.driver.features.pipettes", level="WARNING"
+    ) as logs:
+      await self.pipettes.aspirate(
+        self.wells[2:3],
+        [10.0],
+        resource_offsets=[Coordinate(0.0, 0.0, 2.0)],
+        lld_mode=Pipettes.LLDMode.CAPACITIVE,
+      )
+    self.assertEqual([c[:4] for c in sent], ["P1ZL", "C0AS"])
+    self.assertEqual(len(logs.output), 1)
+    self.assertIn("0.35 mm below its modelled cavity bottom; the floor sent", logs.output[0])
+    surface = self._surface_field(self.wells[2], 50.0)
+    self.assertIn(f"zl{surface}", sent[1])
+    self.assertIn(f"zx{surface}", sent[1])
+    self.assertEqual(self.wells[2].tracker.get_used_volume(), 40.0)
 
 
 class TestBatchPlanning(unittest.IsolatedAsyncioTestCase):

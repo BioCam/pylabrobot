@@ -376,9 +376,9 @@ class Pipettes:
   # well; more above a trough or tube, whose fill can dome. Legacy had 2.7 and 5, unexplained.
   search_start_clearance: float = 5.0
   well_search_start_clearance: float = 2.0
-  # A Z-touch search stops looking this far below the modelled cavity bottom, in mm: the seating
-  # error of a plate, no more.
-  ztouch_search_limit_below_cavity_bottom: float = 1.0
+  # A search, for liquid or a floor, stops looking this far below the modelled cavity bottom, in
+  # mm: the seating error of a plate, no more.
+  search_limit_below_cavity_bottom: float = 1.0
   # The channels of a batch set off on their Z-touch one after another, this long apart, in s.
   ztouch_cascade_interval: float = 0.25
   # A drive that ran to the search limit lands a few hundredths off it: a stop this close to the
@@ -3278,8 +3278,8 @@ class Pipettes:
   ) -> Dict[int, List[Optional[float]]]:
     """Search for the liquid in every container of one batch, the channels together, n times.
 
-    From `z_start` to the cavity bottom, on the stop disc. One `C0 RL` per round; None where a
-    channel found nothing.
+    From `z_start` to `search_limit_below_cavity_bottom` under the cavity bottom, on the stop disc.
+    One `C0 RL` per round; None where a channel found nothing.
 
     Args:
       batch: the channels and which container each has, by job index.
@@ -3300,7 +3300,9 @@ class Pipettes:
     Raises:
       STARFirmwareError: Anything a channel answered other than that it found nothing.
     """
-    searches = self._get_stop_disc_search_windows(batch, overhangs, z_cavity_bottom, z_start, 0.0)
+    searches = self._get_stop_disc_search_windows(
+      batch, overhangs, z_cavity_bottom, z_start, self.search_limit_below_cavity_bottom
+    )
     found: Dict[int, List[Optional[float]]] = {job: [] for job in batch.indices}
     for _ in range(n_replicates):
       if approach_speed is not None:
@@ -3491,7 +3493,7 @@ class Pipettes:
   ) -> Dict[int, List[Optional[float]]]:
     """Z-touch the floor of every container of one batch, the channels in a cascade, n times.
 
-    From the top to `ztouch_search_limit_below_cavity_bottom` under the cavity bottom, on the stop
+    From the top to `search_limit_below_cavity_bottom` under the cavity bottom, on the stop
     disc. The channels go to their starts together at `approach_speed`, then set off
     `ztouch_cascade_interval` apart, lowest channel first. None where a channel reached the limit.
     They stay where they stopped; the next round approaches again.
@@ -3513,7 +3515,7 @@ class Pipettes:
       STARFirmwareError: As a channel answered.
     """
     searches = self._get_stop_disc_search_windows(
-      batch, overhangs, z_cavity_bottom, z_top, self.ztouch_search_limit_below_cavity_bottom
+      batch, overhangs, z_cavity_bottom, z_top, self.search_limit_below_cavity_bottom
     )
     found: Dict[int, List[Optional[float]]] = {job: [] for job in batch.indices}
     for _ in range(n_replicates):
@@ -3557,7 +3559,7 @@ class Pipettes:
     """Touch the floor of each container with a channel's tip, and say how high it is.
 
     Batched as `probe_liquid_heights`, the z-touch in place of the liquid search: from the top to
-    `ztouch_search_limit_below_cavity_bottom` under the cavity bottom, the channels of a batch to
+    `search_limit_below_cavity_bottom` under the cavity bottom, the channels of a batch to
     their starts together at `approach_speed`, then a cascade `ztouch_cascade_interval` apart.
     Channel firmware from 2022 on.
 
@@ -5036,19 +5038,19 @@ class Pipettes:
   ) -> None:
     """Draw liquid from each container with a channel's tip.
 
-    Batched as `probe_liquid_heights`, one `C0 AS` per batch. Floor at the cavity bottom; LLD
-    search from `well_search_start_clearance` above a well's top, `search_start_clearance` above
-    any other's; surface from `liquid_heights`, else the tracked volume. The firmware never
-    searches: CAPACITIVE and PRESSURE search first, as `probe_liquid_heights`, set the tracker to
-    the measured volume, warning when it is 20 % off the tracked one, and refuse a container
-    without liquid; ZTOUCH touches the floor first, as `probe_z_heights_using_ztouch`, and refuses
-    a container whose floor is not met; DUAL is not implemented. Every draw then starts from where
-    the tips rest, with the firmware's LLD off. A draw past what a container holds goes ahead and
-    takes air, with a warning, an info line under ZTOUCH, where emptying is the point. `volumes`
-    with a liquid class, which corrects the piston volume and fills what is not
-    given, or `piston_volumes` as given. Trackers move the liquid that is there per batch, before
-    its command, committed on success. Keyword arguments in the order the aspiration runs;
-    per-container lists in the containers' order.
+    Batched as `probe_liquid_heights`, one `C0 AS` per batch. Every height in the command is what
+    is given, or 0: OFF draws at `liquid_heights` above the cavity bottom, the cavity bottom when
+    None, with no immersion and no following unless given. The firmware never searches: CAPACITIVE
+    and PRESSURE search first, as `probe_liquid_heights`, from `well_search_start_clearance` above
+    a well's top or `search_start_clearance` above any other's, draw at the surface found, set the
+    tracker to the measured volume, warning when it is 20 % off, and refuse a container without
+    liquid; ZTOUCH touches the floor first, as `probe_z_heights_using_ztouch`, draws from it, and
+    refuses a container whose floor is not met; DUAL is not implemented. A draw past what a
+    container holds goes ahead and takes air, with a warning, an info line under ZTOUCH, where
+    emptying is the point. `volumes` with a liquid class, which corrects the piston volume and
+    fills what is not given, or `piston_volumes` as given. The tracker books what moved per batch,
+    before its command, committed on success; it never places a tip. Keyword arguments in the order
+    the aspiration runs; per-container lists in the containers' order.
 
     Args:
       containers: any number.
@@ -5057,8 +5059,8 @@ class Pipettes:
       use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
       resource_offsets: offset of each channel in its container, in mm. Planned when None. The z
         shifts the heights.
-      liquid_heights: liquid height above each cavity bottom, in mm. None: the tracked volume, or
-        the search with an LLD mode.
+      liquid_heights: where each OFF draw goes, above the cavity bottom, in mm. The cavity bottom
+        when None. Refused for a container with an LLD mode, whose search finds the surface.
       lld_mode: how the liquid, or under ZTOUCH the floor, is found, one for all or one per
         container. OFF goes to the surface as given. DUAL refuses.
       flow_rates: in uL/s. The class's, else 100.0, when None.
@@ -5080,8 +5082,9 @@ class Pipettes:
       pre_mixes: a `Mix` per container, mixed before the draw, None for no mixing.
       mix_positions_from_liquid_surface: mixing depth under the surface, in mm, per container. 0.0
         when None.
-      surface_following_distances: how far each tip follows the sinking surface, in mm. The drop
-        the volume drawn makes, by the container's height-volume functions, when None.
+      surface_following_distances: how far each tip follows the sinking surface, in mm. 0.0 when
+        None; after a search, the drop the draw makes from the surface found, by the container's
+        height-volume functions.
       second_section_heights: height of each container's narrower lower section, in mm. 3.2 when
         None.
       second_section_ratios: that section's bottom to top ratio, in tenths. 618.0 when None.
@@ -5102,12 +5105,12 @@ class Pipettes:
 
     Raises:
       ValueError: An argument out of range, lists that do not match, both or neither of `volumes`
-        and `piston_volumes`, a class beside `piston_volumes`, no class for a channel's tip, or
-        a piston or a tip without room for its draws from where it stands.
-      RuntimeError: A channel without a tip, or without the firmware a ZTOUCH needs, no deck, no
-        way to know where a liquid stands (no height given, tracking off, LLD off), a container
-        without height-volume functions under CAPACITIVE or PRESSURE, no liquid found where the
-        channels searched, or no floor met where they touched.
+        and `piston_volumes`, a class beside `piston_volumes`, no class for a channel's tip, a
+        liquid height beside an LLD mode, or a piston or a tip without room for its draws from
+        where it stands.
+      RuntimeError: A channel without a tip, or without the firmware a ZTOUCH needs, no deck, a
+        container without height-volume functions under CAPACITIVE or PRESSURE, no liquid found
+        where the channels searched, or no floor met where they touched.
       NotImplementedError: DUAL.
       TooLittleVolumeError: A tip without room for what it is to draw.
     """
@@ -5298,28 +5301,14 @@ class Pipettes:
     tracking = does_volume_tracking()
     following = per_container("surface_following_distances", surface_following_distances)
     computed_following = [0.0] * n
-    surfaces = []
-    for job, container in enumerate(containers):
-      if heights[job] is not None:
-        above_bottom = heights[job]
-      elif modes[job] != self.LLDMode.OFF:
-        above_bottom = (
-          0.0  # The search finds the surface; the floor is what the field falls back to.
-        )
-      elif tracking:
-        above_bottom = self._get_liquid_height_from_volume(
-          container, container.tracker.get_used_volume()
-        )
-      else:
-        raise RuntimeError(
-          f"no liquid height given for {container.name}, volume tracking is off and no LLD runs, "
-          "so nothing knows where its liquid is"
-        )
-      surfaces.append(round(floors[job] + above_bottom, 2))
-      if modes[job] == self.LLDMode.OFF:
-        computed_following[job] = self._get_surface_following_distance(
-          container, above_bottom, liquid[job]
-        )
+    # OFF draws where the caller says, the cavity bottom by default; a search finds its surface.
+    told = [job for job in range(n) if heights[job] is not None and modes[job] != self.LLDMode.OFF]
+    if told:
+      raise ValueError(
+        f"liquid_heights given for {[containers[job].name for job in told]}, whose LLD mode finds "
+        "the surface itself; give None there"
+      )
+    surfaces = [round(floors[job] + (heights[job] or 0.0), 2) for job in range(n)]
 
     searched = [job for job in range(n) if modes[job] in searching_modes]
     if searched:
@@ -5369,7 +5358,7 @@ class Pipettes:
         if height is None:
           raise RuntimeError(
             f"channel {channel} met no floor in {containers[job].name} down to "
-            f"{self.ztouch_search_limit_below_cavity_bottom} mm under its modelled cavity bottom"
+            f"{self.search_limit_below_cavity_bottom} mm under its modelled cavity bottom"
           )
         logger.info(
           "channel %d touched the floor of %s at %.2f mm, the model has it at %.2f mm",
@@ -5408,6 +5397,19 @@ class Pipettes:
           raise RuntimeError(f"channel {channel} found no liquid in {containers[job].name}")
         surfaces[job] = height
         above_bottom = round(height - floors[job], 2)
+        if above_bottom < 0:
+          # The plate sits lower than the model: the floor sent follows the surface found, or the
+          # firmware would hold the tip above it.
+          if given_floors is None:
+            sent_floors[job] = height
+          logger.warning(
+            "channel %d found the liquid of %s %.2f mm below its modelled cavity bottom; the floor "
+            "sent is the surface found",
+            channel,
+            containers[job].name,
+            -above_bottom,
+          )
+          continue
         try:
           computed_following[job] = self._get_surface_following_distance(
             containers[job], above_bottom, liquid[job]
