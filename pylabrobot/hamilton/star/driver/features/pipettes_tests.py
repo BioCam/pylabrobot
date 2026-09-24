@@ -2116,6 +2116,7 @@ class TestDispenseInOneMove(unittest.IsolatedAsyncioTestCase):
     )
     self.assertEqual((sent["swap_speed"], sent["settling_time"]), ([100, 100], [0, 0]))
     self.assertEqual(sent["side_touch_off_distance"], 0)
+    self.assertEqual((sent["mix_cycles"], sent["mix_speed"]), ([0, 0], [10, 10]))
     self.assertEqual((sent["tadm_algorithm"], sent["recording_mode"]), (False, 0))
     self.pipettes._record_after_command.assert_awaited_once()  # type: ignore[attr-defined]
 

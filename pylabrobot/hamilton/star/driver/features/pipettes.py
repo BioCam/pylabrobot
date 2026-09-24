@@ -6002,7 +6002,8 @@ class Pipettes:
     mixes = per_channel("post_mixes", post_mixes, None)
     mix_volume = [m.volume if m is not None else 0.0 for m in mixes]
     mix_count = [m.repetitions if m is not None else 0 for m in mixes]
-    mix_speed = [m.flow_rate if m is not None else 100.0 for m in mixes]
+    # Idle without a mix; 1.0, as legacy's dispense sends it, so the commands match.
+    mix_speed = [m.flow_rate if m is not None else 1.0 for m in mixes]
     mix_following = [(m.surface_following_distance or 0.0) if m is not None else 0.0 for m in mixes]
 
     xs, ys, pattern = self._tip_command_positions(dict(zip(use_channels, places)))
