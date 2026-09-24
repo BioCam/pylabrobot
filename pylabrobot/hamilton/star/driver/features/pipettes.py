@@ -4696,6 +4696,25 @@ class Pipettes:
       )
     return round(container.compute_height_from_volume(volume), 2)
 
+  def _get_surface_following_distance(
+    self, container: Container, liquid_height: float, volume: float
+  ) -> float:
+    """How far the surface sinks when `volume` leaves a container filled to `liquid_height`, in mm.
+
+    Args:
+      container: the container, with its height-volume functions.
+      liquid_height: above the cavity bottom, in mm.
+      volume: drawn, in uL.
+
+    Returns:
+      The drop in mm, 0.0 for a container without height-volume functions.
+    """
+    if not container.supports_compute_height_volume_functions():
+      return 0.0
+    now = container.compute_volume_from_height(liquid_height)
+    after = container.compute_height_from_volume(max(now - volume, 0.0))
+    return round(max(liquid_height - after, 0.0), 2)
+
   async def aspirate(
     self,
     containers: Sequence[Container],
@@ -4773,7 +4792,8 @@ class Pipettes:
       pre_wetting_volumes: drawn and returned first, in uL.
       pre_mixes: a `Mix` per container, mixed before the draw, None for no mixing.
       mix_position_from_liquid_surface: mixing depth under the surface, in mm.
-      surface_following_distances: how far each tip follows the sinking surface, in mm.
+      surface_following_distances: how far each tip follows the sinking surface, in mm. The drop
+        the volume drawn makes, by the container's height-volume functions, when None.
       second_section_height: height of the container's narrower lower section, in mm.
       second_section_ratio: that section's bottom to top ratio, in tenths.
       settling_times: wait in the liquid, in s. The class's, else 0.0, when None.
@@ -4892,9 +4912,6 @@ class Pipettes:
       ),
       "pre_wetting_volumes": per_container("pre_wetting_volumes", pre_wetting_volumes),
       "immersion_depths": per_container("immersion_depths", immersion_depths),
-      "surface_following_distances": per_container(
-        "surface_following_distances", surface_following_distances
-      ),
       "settling_times": from_class("settling_times", settling_times, "aspiration_settling_time"),
       "swap_speeds": from_class("swap_speeds", swap_speeds, "aspiration_swap_speed"),
       "transport_air_volumes": from_class(
@@ -4920,6 +4937,8 @@ class Pipettes:
       for c, z in zip(containers, dz)
     ]
     tracking = does_volume_tracking()
+    following = per_container("surface_following_distances", surface_following_distances)
+    computed_following = [0.0] * n
     surfaces = []
     for job, container in enumerate(containers):
       if heights[job] is not None:
@@ -4938,6 +4957,10 @@ class Pipettes:
           "so nothing knows where its liquid is"
         )
       surfaces.append(round(floors[job] + above_bottom, 2))
+      if lld_mode == self.LLDMode.OFF:
+        computed_following[job] = self._get_surface_following_distance(
+          container, above_bottom, liquid[job]
+        )
 
     searching = lld_mode in (self.LLDMode.CAPACITIVE, self.LLDMode.PRESSURE)
     if searching:
@@ -4978,9 +5001,14 @@ class Pipettes:
         if height is None:
           raise RuntimeError(f"channel {channel} found no liquid in {containers[job].name}")
         surfaces[job] = height
+        above_bottom = round(height - floors[job], 2)
+        computed_following[job] = self._get_surface_following_distance(
+          containers[job], above_bottom, liquid[job]
+        )
         if tracking:
-          measured = containers[job].compute_volume_from_height(round(height - floors[job], 2))
-          containers[job].tracker.set_volume(measured)
+          containers[job].tracker.set_volume(
+            containers[job].compute_volume_from_height(above_bottom)
+          )
 
     async def send(batch: ChannelBatch) -> None:
       """One `C0 AS` for the batch, from the heights as they stand."""
@@ -4999,6 +5027,9 @@ class Pipettes:
         [drawn[job] for job in jobs],
         minimum_traverse_height_start=during,
         pre_mixes=[mixes[job] for job in jobs],
+        surface_following_distances=[
+          computed_following[job] if following is None else following[job] for job in jobs
+        ],
         lld_mode=lld_mode,
         clld_sensitivity=clld_sensitivity,
         plld_sensitivity=plld_sensitivity,

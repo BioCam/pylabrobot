@@ -1573,6 +1573,14 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertIn("av00500", sent[0])
     self.assertIn("as1000", sent[0])
     self.assertEqual(self.wells[0].tracker.get_used_volume(), 100.0)
+    # With the surface known from the tracker, the following is the drop 50 uL makes.
+    well = self.wells[0]
+    drop = well.compute_height_from_volume(150.0) - well.compute_height_from_volume(100.0)
+    self.assertIn(f"fp{round(drop * 10):04}", sent[0])
+    await self.pipettes.aspirate(
+      self.wells[:1], piston_volumes=[10.0], surface_following_distances=[0.3]
+    )
+    self.assertIn("fp0003", sent[1])
     for kwargs in (
       {},
       {"volumes": [10.0], "piston_volumes": [10.0]},
@@ -1580,7 +1588,7 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     ):
       with self.assertRaises(ValueError):
         await self.pipettes.aspirate(self.wells[:1], **kwargs)
-    self.assertEqual(len(sent), 1)
+    self.assertEqual(len(sent), 2)
 
   async def test_a_given_class_corrects_and_fills_what_is_not_given(self):
     from pylabrobot.hamilton.star.liquid_classes.mapping import (
@@ -1625,6 +1633,15 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       f"zl{self._surface_field(self.wells[0], 120.0)} {self._surface_field(self.wells[1], 100.0)}",
       sent[-1],
     )
+    # Each tip follows the surface by the drop its own draw makes in its own well.
+    drops = []
+    for well, drawn in zip(self.wells[:2], (50.0, 20.0)):
+      now = well.compute_height_from_volume(well.tracker.get_used_volume() + drawn)
+      drops.append(
+        round((now - well.compute_height_from_volume(well.tracker.get_used_volume())) * 10)
+      )
+    self.assertIn(f"fp{drops[0]:04} {drops[1]:04}", sent[-1])
+    self.assertGreater(drops[0], drops[1])
     # Measured volume less what was drawn, to the resolution of the well's height-volume model.
     self.assertAlmostEqual(self.wells[0].tracker.get_used_volume(), 70.0, delta=2.0)
     self.assertAlmostEqual(self.wells[1].tracker.get_used_volume(), 80.0, delta=2.0)
