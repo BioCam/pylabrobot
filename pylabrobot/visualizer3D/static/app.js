@@ -252,6 +252,8 @@ function atBoundary(surface) {
   detail: () =>
     meshes.map((e) => ({
       type: e.model.type,
+      // The mesh itself, by id: a rebuild that finds the same resources on a model keeps it.
+      id: e.mesh.id,
       mm: Math.max(e.model.size_x ?? 0, e.model.size_y ?? 0),
       drawn: e.mesh.visible,
       filled: e.mesh.material.visible,

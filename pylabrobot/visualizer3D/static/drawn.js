@@ -7,8 +7,8 @@ import * as THREE from "three";
 import { MOVING_PARTS } from "./constants.js";
 import { modelOf, sizeOf, treeDepth, world } from "./world.js";
 
-// What each builder made for itself last time - geometries, materials, textures, instance buffers -
-// so it can let them go before making them again. Nothing shared is ever listed here.
+// What each owner made - geometries, materials, textures, instance buffers - so it can let them go:
+// a builder that starts afresh each scene, or one drawing that outlives its scene. Nothing shared.
 
 const ownedBy = new Map();
 
@@ -34,9 +34,6 @@ export let vesselOf = new Map(); // index -> the inner body whose colour tracks 
 // leaves ninety-six cavities and their walls floating where the plate was.
 let overlayOf = new Map();
 
-// model index -> the filter discs drawn in its tips, so reading the tip's file can size them.
-export let filterDiscsOf = new Map();
-
 export let edgeOf = new Map();
 
 // The instances whose model arrived as a file. Their box is not drawn at all and its border is
@@ -56,7 +53,6 @@ export function clearDrawn() {
   placementOf = new Array(world.names.length);
   vesselOf = new Map();
   overlayOf = new Map();
-  filterDiscsOf = new Map();
   edgeOf = new Map();
   drawnFromFile = new Set();
 }

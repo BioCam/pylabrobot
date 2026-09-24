@@ -26,7 +26,6 @@ import {
   disposeOwned,
   edgeOf,
   enclosureDepth,
-  filterDiscsOf,
   hasEnclosedDescendant,
   isCarrier,
   meshes,
@@ -36,10 +35,9 @@ import {
   placeParts,
   remember,
   vesselOf,
-  ZERO,
 } from "./drawn.js";
 import { view } from "./renderer.js";
-import { sizeOf, treeDepth, world } from "./world.js";
+import { sizeOf, world } from "./world.js";
 
 // Unit primitives, shared by every model of the same shape and scaled per instance.
 
@@ -53,6 +51,10 @@ const TUBE = new THREE.CylinderGeometry(0.5, 0.5, 1, 20, 1, true).rotateX(Math.P
 
 // Flat in XY, facing up: a filter lies across a tip standing on the deck.
 const DISC = new THREE.CircleGeometry(0.5, 32);
+
+// A carrier's floor. Unit-sized like the rest: `placeInstance` supplies the real size through the
+// instance matrix, so a pre-sized plane would be scaled by its own dimensions a second time.
+const PLANE = new THREE.PlaneGeometry(1, 1);
 
 // Above this many instances of one model, outlining each stops being cheap.
 const EDGE_LIMIT = 160;
@@ -98,83 +100,232 @@ const footprintFor = (model) => (geometryFor(model) === BOX ? SQUARE_FOOTPRINT :
 export const colorFor = (model) =>
   model.appearance?.color ?? RESOURCE_COLORS[model.category] ?? RESOURCE_COLORS.default;
 
+// A well or a tip spot is not drawn as a shell to see through, but as a rim with an inside: the
+// rim gives it an edge thick enough to find, and the inside carries what is in it. That is how
+// the existing visualizer draws them, and it is what survives being looked at from above.
+const isVessel = (model) =>
+  (Number.isFinite(model.max_volume) && model.max_volume > 0) || model.category === "tip_spot";
+
 /**
- * A filter in every tip of one model: a white disc across the bore, `FILTER_BELOW_COLLAR` below the
- * collar. One instanced mesh however many tips there are, so a rack of filtered tips costs one draw.
+ * One instanced part riding every instance of a drawing, standing at `at` in each of them.
+ * `emptyOnly` marks a part drawn only while the resource holds nothing, such as a spot's cavity.
  */
-function buildFilterDiscs(modelIndex, instances, model, sx, sy, sz) {
-  const disc = new THREE.InstancedMesh(
-    DISC,
-    new THREE.MeshBasicMaterial({ color: FILTER, side: THREE.DoubleSide }),
-    instances.length,
-  );
-  // A tip stands on its bottom end, so its top is its length and the collar hangs from there.
-  const z = sz - (model.collar_height + FILTER_BELOW_COLLAR);
-  const width = sx * FILTER_WIDTH_UNMEASURED;
-  const placed = [];
-  instances.forEach((globalIndex, slot) => {
-    const at = [width, width, 1, sx / 2, sy / 2, z];
-    placeInstance(disc, slot, world.matrices[globalIndex], ...at);
-    remember(globalIndex, disc, slot, at);
-    placed.push({ index: globalIndex, at });
-  });
-  disc.instanceMatrix.needsUpdate = true;
-  disc.userData.lit = disc.material;
-  own(buildMeshes, disc, disc.material);
-  view.add(disc);
-  filterDiscsOf.set(modelIndex, { mesh: disc, placed, z, cx: sx / 2, cy: sy / 2 });
-  return disc;
+function makeOverlay(entry, geometry, material, at, emptyOnly = false) {
+  const overlay = new THREE.InstancedMesh(geometry, material, entry.mesh.count);
+  overlay.userData.lit = material;
+  overlay.userData.at = at;
+  overlay.userData.emptyOnly = emptyOnly;
+  own(entry, overlay, material);
+  entry.overlays.push(overlay);
+  return overlay;
 }
 
 /**
- * The green disc that says a spot is filled, lying across the top of every tip of one model.
- *
- * From directly above a tip is a circle, and the only thing worth reading off it is that something
- * is standing there - which is what the existing visualizer says with a green circle. Said with a
- * disc rather than by colouring the tip, it is unlit, so the colour lands on the value asked for
- * rather than on whatever the lighting makes of it; and it is one instanced mesh however many tips
- * there are, so a rack of them costs one draw. A tip is only a resource while it is in its spot, so
- * there is one of these for every tip still standing and none for a spot that has been used.
+ * Everything drawn for one model: its box, an outline per instance, and the parts that ride on it.
+ * Made for a count of instances and nothing about which: `placeDrawing` puts those in, per scene.
  */
-function buildPlanDiscs(instances, sx, sy, sz) {
-  const disc = new THREE.InstancedMesh(
-    DISC,
-    // Flagged transparent although it is fully opaque, for the reason the cavity above is: three
-    // draws every transparent object after every opaque one whatever the render order says, and
-    // the spot's own rim is in that pass. Left opaque, this was painted first and the rim it is
-    // meant to fill then covered it, which is a green disc nobody ever saw.
-    new THREE.MeshBasicMaterial({ color: TIP_PLAN_FILL, transparent: true, opacity: 1 }),
-    instances.length,
-  );
-  // A plan view alone. The mode change and the rule that culls small things share the switch.
-  disc.userData.planOnly = true;
-  disc.visible = false;
-  instances.forEach((globalIndex, slot) => {
-    // Level with the top of the tip, which is the first thing the eye meets looking down at it.
-    const at = [sx, sy, 1, sx / 2, sy / 2, sz];
-    placeInstance(disc, slot, world.matrices[globalIndex], ...at);
-    remember(globalIndex, disc, slot, at);
-  });
-  disc.instanceMatrix.needsUpdate = true;
-  disc.userData.lit = disc.material;
-  own(buildMeshes, disc, disc.material);
-  view.add(disc);
-  return disc;
-}
+function makeDrawing(model, count, encloses, edgeDepth) {
+  const [sx, sy, sz] = sizeOf(model);
+  const vessel = isVessel(model);
 
-export function buildMeshes() {
-  for (const entry of meshes) {
-    view.remove(entry.mesh);
-    // An overlay is its own object in the view: a vessel's floor, its walls and its cavity, a
-    // tip's filter disc, the green disc that says a spot is filled. Taking the box out and leaving
-    // those behind does not leave them alone, it puts them out of reach - both rules that show and
-    // hide an overlay walk `meshes`, so one dropped from that list keeps whatever it was last told
-    // for the life of the page. A scene rebuilt while a plan view was up kept its green discs, and
-    // they then showed from every angle.
-    for (const overlay of entry.overlays ?? []) view.remove(overlay);
+  const material = new THREE.MeshStandardMaterial({
+    color: colorFor(model),
+    roughness: 0.68,
+    metalness: 0.0,
+    transparent: encloses,
+    opacity: encloses ? 0.26 : 1.0,
+    depthWrite: !encloses,
+    side: encloses ? THREE.BackSide : THREE.FrontSide,
+  });
+
+  if (vessel) material.color.setHex(VESSEL_RIM);
+  material.userData.lit = material;
+
+  if (MOVING_PARTS.has(model.category)) material.visible = false;
+
+  // Culled by the sphere three works out over the instances, as every instanced mesh, overlay
+  // and outline here is: what is off screen is not submitted. A move or a hide drops the sphere.
+  const mesh = new THREE.InstancedMesh(geometryFor(model), material, count);
+  const entry = {
+    mesh,
+    model,
+    isVessel: vessel,
+    overlays: /** @type {any[]} */ ([]),
+    lines: /** @type {any[]} */ ([]),
+    // The cavity whose colour tracks what the vessel holds; the filter discs a tip's file sizes.
+    vessel: /** @type {any} */ (null),
+    filterDiscs: /** @type {any} */ (null),
+  };
+  own(entry, mesh, material);
+
+  // The existing visualizer strokes every resource, and a translucent box on a white ground
+  // needs that stroke to read at all. So does a solid one that holds nothing: a 96-head, a
+  // channel, a loading tray. What decides is how many there are, not whether anything is inside -
+  // an outline is one line object per instance, and there are a thousand wells. The count is the
+  // whole of the cost control, and it already excludes exactly the things too small to read.
+  //
+  // A travelling part draws its own frame and moves, so it gets no generic box outline: the box
+  // would describe the slab rather than the frame, and it would be a second thing to keep in
+  // step with every move - which is exactly what left a ghost behind at the old position.
+  if (!MOVING_PARTS.has(model.category) && count <= EDGE_LIMIT) {
+    const boxEdges = new THREE.EdgesGeometry(geometryFor(model));
+    const edgeGeometry = new LineSegmentsGeometry();
+    edgeGeometry.setPositions(boxEdges.getAttribute("position").array);
+    boxEdges.dispose();
+    // Looking down an axis, every edge projects onto the footprint anyway, and the verticals
+    // collapse to points. Keeping a footprint-only geometry to swap in removes that redundancy
+    // and, more usefully, stops stacked shapes reading as a thicket in a plan view.
+    const footprintGeometry = footprintFor(model);
+    const style = structureEdgeStyle(edgeDepth);
+    const edgeMaterial = new THREE.Line2NodeMaterial({
+      color: style.color,
+      transparent: true,
+      opacity: style.opacity,
+      linewidth: EDGE_WIDTH_3D,
+      worldUnits: false,
+    });
+    own(entry, edgeGeometry, edgeMaterial);
+    for (let slot = 0; slot < count; slot++) {
+      const line = new LineSegments2(edgeGeometry, edgeMaterial);
+      line.userData.boxGeometry = edgeGeometry;
+      line.userData.baseOpacity = style.opacity;
+      line.userData.baseColor = style.color.clone();
+      line.userData.footprintGeometry = footprintGeometry;
+      line.matrixAutoUpdate = false;
+      entry.lines.push(line);
+    }
   }
-  for (const line of edgeOf.values()) view.remove(line);
-  disposeOwned(buildMeshes);
+
+  // A carrier's base is solid, so looking into one should stop at its floor rather than carrying
+  // on through to the deck. The shell stays see-through; only the bottom face is filled in, a
+  // hair above its own base, or it fights the deck surface it stands on for depth.
+  if (encloses && isCarrier(model)) {
+    const floorMaterial = new THREE.MeshStandardMaterial({
+      color: colorFor(model),
+      roughness: 0.7,
+    });
+    makeOverlay(entry, PLANE, floorMaterial, [sx, sy, 1, sx / 2, sy / 2, 0.3]);
+  }
+
+  if (vessel) {
+    // The wall, standing outside the cavity. Grown rather than inset, because the box IS the
+    // cavity - and grown rather than left as the box itself, because a box and a cavity on the
+    // same plane are two surfaces at the same depth, which is what made the side of every well
+    // shimmer. Nothing is coplanar with anything now.
+    const wallMaterial = new THREE.MeshStandardMaterial({
+      color: VESSEL_RIM,
+      roughness: 0.6,
+      transparent: true,
+      opacity: VESSEL_WALL_OPACITY,
+    });
+    const wallAt = [sx + 2 * VESSEL_WALL, sy + 2 * VESSEL_WALL, sz, sx / 2, sy / 2, sz / 2];
+    const wall = makeOverlay(entry, geometryFor(model), wallMaterial, wallAt);
+    wall.userData.behind = true; // painted before the cavity it surrounds
+
+    // The cavity IS the box. A container's size is what it holds, and the material around it
+    // stands outside that - so the inside fills the resource's own extent exactly, and a wall
+    // is never drawn within it. Drawn inset, as this was, the walls were inside the box, which
+    // is the opposite of what the box means. A hair taller only, so that from directly above it
+    // does not fight the box's own top face for depth.
+    //
+    // Flagged transparent although it is fully opaque, so that it sits in the same pass as the
+    // wall around it. Three draws every transparent object after every opaque one whatever the
+    // render order says, so an opaque cavity inside a see-through wall is painted first and
+    // then covered by the wall's own top face - which is what hid the well from above.
+    const innerMaterial = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      roughness: 0.55,
+      transparent: true,
+      opacity: 1,
+    });
+    const innerAt = [sx, sy, sz * 1.02, sx / 2, sy / 2, (sz * 1.02) / 2];
+    // A spot holding a tip shows the tip, and the white of an empty hole would lie across its
+    // bore - over the filter, which sits just below the spot.
+    const spot = model.category === "tip_spot";
+    const inner = makeOverlay(entry, geometryFor(model), innerMaterial, innerAt, spot);
+    const white = new THREE.Color(VESSEL_EMPTY);
+    for (let slot = 0; slot < count; slot++) inner.setColorAt(slot, white);
+    inner.instanceColor.needsUpdate = true;
+    entry.vessel = inner;
+  }
+
+  // A filter in every tip of one model: a white disc across the bore, `FILTER_BELOW_COLLAR` below
+  // the collar. One instanced mesh however many tips there are, so a rack of filtered tips costs
+  // one draw. Its width is a guess until the tip's own file says what the bore is at that height.
+  if (model.category === "tip" && model.has_filter && Number.isFinite(model.collar_height)) {
+    const filterMaterial = new THREE.MeshBasicMaterial({ color: FILTER, side: THREE.DoubleSide });
+    // A tip stands on its bottom end, so its top is its length and the collar hangs from there.
+    const z = sz - (model.collar_height + FILTER_BELOW_COLLAR);
+    const width = sx * FILTER_WIDTH_UNMEASURED;
+    const at = [width, width, 1, sx / 2, sy / 2, z];
+    makeOverlay(entry, DISC, filterMaterial, at);
+    entry.filterDiscs = { at, z, cx: sx / 2, cy: sy / 2 };
+  }
+
+  // The green disc that says a spot is filled, lying across the top of every tip of one model.
+  //
+  // From directly above a tip is a circle, and the only thing worth reading off it is that
+  // something is standing there - which is what the existing visualizer says with a green circle.
+  // Said with a disc rather than by colouring the tip, it is unlit, so the colour lands on the
+  // value asked for rather than on whatever the lighting makes of it; and it is one instanced mesh
+  // however many tips there are, so a rack of them costs one draw. A tip is only a resource while
+  // it is in its spot, so there is one of these for every tip still standing and none for a spot
+  // that has been used.
+  //
+  // Flagged transparent although it is fully opaque, for the reason the cavity above is: the
+  // spot's own rim is in the transparent pass. Left opaque, this was painted first and the rim it
+  // is meant to fill then covered it, which is a green disc nobody ever saw.
+  if (model.category === "tip") {
+    const planMaterial = new THREE.MeshBasicMaterial({
+      color: TIP_PLAN_FILL,
+      transparent: true,
+      opacity: 1,
+    });
+    // Level with the top of the tip, which is the first thing the eye meets looking down at it.
+    const disc = makeOverlay(entry, DISC, planMaterial, [sx, sy, 1, sx / 2, sy / 2, sz]);
+    // A plan view alone. The mode change and the rule that culls small things share the switch.
+    disc.userData.planOnly = true;
+    disc.visible = false;
+  }
+  return entry;
+}
+
+/** Put every instance of a drawing where the tree has it, and register each part by resource. */
+function placeDrawing(entry, touched) {
+  const { mesh, model, instances } = entry;
+  const [sx, sy, sz] = sizeOf(model);
+  mesh.userData.instances = instances;
+  instances.forEach((index, slot) => {
+    placeInstance(mesh, slot, world.matrices[index], sx, sy, sz);
+    placementOf[index] = { mesh, slot };
+    for (const overlay of entry.overlays) {
+      remember(index, overlay, slot, overlay.userData.at, overlay.userData.emptyOnly);
+    }
+    if (entry.vessel) vesselOf.set(index, { mesh: entry.vessel, slot, model });
+    placeParts(index, touched);
+    const line = entry.lines[slot];
+    if (line) {
+      line.matrix.copy(boxMatrix(world.matrices[index], sx, sy, sz));
+      line.visible = true;
+      edgeOf.set(index, line);
+    }
+  });
+  touched.add(mesh);
+}
+
+const drawnObjects = (entry) => [entry.mesh, ...entry.overlays, ...entry.lines];
+
+// What is baked into a drawing's objects: the model, the resources standing on it in order,
+// whether it encloses anything and how deeply it is enclosed. The same key, and they still serve.
+function drawingKey(model, instances, encloses) {
+  const names = instances.map((index) => world.names[index]);
+  return JSON.stringify([model, encloses, enclosureDepth(instances[0]), names]);
+}
+
+// A scene arrives whole whenever the tree changes shape, and most of it was on screen already.
+// A drawing with the same key is kept, objects and all: a new mesh costs a shader state to draw.
+export function buildMeshes() {
+  const kept = new Map(meshes.map((entry) => [entry.key, entry]));
   clearDrawn();
 
   const byModel = new Map();
@@ -184,222 +335,59 @@ export function buildMeshes() {
     byModel.get(m).push(i);
   }
 
+  const touched = new Set();
   for (const [modelIndex, instances] of byModel) {
     const model = world.models[modelIndex];
-    const [sx, sy, sz] = sizeOf(model);
-
-    // A well or a tip spot is not drawn as a shell to see through, but as a rim with an inside:
-    // the rim gives it an edge thick enough to find, and the inside carries what is in it. That is
-    // how the existing visualizer draws them, and it is what survives being looked at from above.
-    const isVessel =
-      (Number.isFinite(model.max_volume) && model.max_volume > 0) || model.category === "tip_spot";
 
     // A resource that holds something is an enclosure: other resources, read off the tree, or
     // liquid, read off its own capacity. Neither test names a resource type.
     const encloses =
-      !isVessel &&
+      !isVessel(model) &&
       (instances.some((i) => world.childrenOf[i].length > 0) ||
         model.max_volume !== undefined ||
         MOVING_PARTS.has(model.category));
 
+    const key = drawingKey(model, instances, encloses);
+    let entry = kept.get(key);
+    if (entry) {
+      kept.delete(key);
+    } else {
+      entry = makeDrawing(model, instances.length, encloses, enclosureDepth(instances[0]));
+      entry.key = key;
+      for (const object of drawnObjects(entry)) view.add(object);
+    }
+
+    // What the tree makes of this model, worked out afresh: a new scene renumbers every model.
+    entry.modelIndex = modelIndex;
+    entry.instances = instances;
     // But only the innermost enclosures are filled. A well in a plate on a holder on a carrier on
     // a deck in a device in a facility sits under six translucent shells, and six layers at 0.3
     // opacity leave about a tenth of the contrast underneath. So anything that holds another
     // enclosure is drawn as its outline alone, and only the level you are actually looking into
     // keeps a fill.
-    const holdsEnclosure = encloses && instances.some((i) => hasEnclosedDescendant(i));
-
-    const material = new THREE.MeshStandardMaterial({
-      color: colorFor(model),
-      roughness: 0.68,
-      metalness: 0.0,
-      transparent: encloses,
-      opacity: encloses ? 0.26 : 1.0,
-      depthWrite: !encloses,
-      side: encloses ? THREE.BackSide : THREE.FrontSide,
-    });
-
-    if (isVessel) material.color.setHex(VESSEL_RIM);
-    material.userData.lit = material;
-
-    if (MOVING_PARTS.has(model.category)) material.visible = false;
-
-    // Culled by the sphere three works out over the instances, as every instanced mesh, overlay
-    // and outline here is: what is off screen is not submitted. A move or a hide drops the sphere.
-    const mesh = new THREE.InstancedMesh(geometryFor(model), material, instances.length);
-    own(buildMeshes, mesh, material);
-    instances.forEach((globalIndex, slot) => {
-      placeInstance(mesh, slot, world.matrices[globalIndex], sx, sy, sz);
-      placementOf[globalIndex] = { mesh, slot };
-    });
-    mesh.instanceMatrix.needsUpdate = true;
-    mesh.userData.instances = instances;
-    view.add(mesh);
-    meshes.push({
-      mesh,
-      model,
-      modelIndex,
-      instances,
-      depth: treeDepth(instances[0]),
-      lit: material,
-      // Filled in below, once the overlays this model needs are known.
-      overlays: /** @type {any[]} */ ([]),
-      // Set once this model's declared .glb has arrived and been placed.
-      modelDrawn: false,
-      // Whether the box is currently holding the place of a model too small to be worth drawing.
-      standsIn: false,
-      holdsEnclosure: false,
-      enclosedModels: /** @type {any[]} */ ([]),
-    });
-
-    // The existing visualizer strokes every resource, and a translucent box on a white ground
-    // needs that stroke to read at all. So does a solid one that holds nothing: a 96-head, a
-    // channel, a loading tray. What decides is how many there are, not whether anything is inside -
-    // an outline is one line object per instance, and there are a thousand wells. The count is the
-    // whole of the cost control, and it already excludes exactly the things too small to read.
-    //
-    // A travelling part draws its own frame and moves, so it gets no generic box outline: the box
-    // would describe the slab rather than the frame, and it would be a second thing to keep in
-    // step with every move - which is exactly what left a ghost behind at the old position.
-    if (!MOVING_PARTS.has(model.category) && instances.length <= EDGE_LIMIT) {
-      const boxEdges = new THREE.EdgesGeometry(geometryFor(model));
-      const edgeGeometry = new LineSegmentsGeometry();
-      edgeGeometry.setPositions(boxEdges.getAttribute("position").array);
-      boxEdges.dispose();
-      // Looking down an axis, every edge projects onto the footprint anyway, and the verticals
-      // collapse to points. Keeping a footprint-only geometry to swap in removes that redundancy
-      // and, more usefully, stops stacked shapes reading as a thicket in a plan view.
-      const footprintGeometry = footprintFor(model);
-      const style = structureEdgeStyle(enclosureDepth(instances[0]));
-      const edgeMaterial = new THREE.Line2NodeMaterial({
-        color: style.color,
-        transparent: true,
-        opacity: style.opacity,
-        linewidth: EDGE_WIDTH_3D,
-        worldUnits: false,
-      });
-      own(buildMeshes, edgeGeometry, edgeMaterial);
-      for (const globalIndex of instances) {
-        const line = new LineSegments2(edgeGeometry, edgeMaterial);
-        line.userData.boxGeometry = edgeGeometry;
-        line.userData.baseOpacity = style.opacity;
-        line.userData.baseColor = style.color.clone();
-        line.userData.footprintGeometry = footprintGeometry;
-        line.matrixAutoUpdate = false;
-        line.matrix.copy(boxMatrix(world.matrices[globalIndex], sx, sy, sz));
-        view.add(line);
-        edgeOf.set(globalIndex, line);
-      }
-    }
-
-    // A trough reports an infinite capacity, which arrives as the string "Infinity". There is no
-    // fill fraction to draw against that, so it gets no liquid body.
+    entry.holdsEnclosure = encloses && instances.some((i) => hasEnclosedDescendant(i));
     // Which enclosure models sit inside this one. An outline is only the right answer while its
     // contents are actually being drawn; once they are culled the outline has nothing to frame.
     const enclosedModels = new Set();
     for (const i of instances) collectEnclosedModels(i, enclosedModels);
-
-    const overlays = [];
-
-    // A carrier's base is solid, so looking into one should stop at its floor rather than carrying
-    // on through to the deck. The shell stays see-through; only the bottom face is filled in.
-    if (encloses && isCarrier(model)) {
-      const floor = new THREE.InstancedMesh(
-        // Unit geometry: `placeInstance` supplies the real size through the instance matrix, so a
-        // pre-sized plane would be scaled by its own dimensions a second time.
-        new THREE.PlaneGeometry(1, 1),
-        new THREE.MeshStandardMaterial({ color: colorFor(model), roughness: 0.7 }),
-        instances.length,
-      );
-      instances.forEach((globalIndex, slot) => {
-        // A hair above its own base, or it fights the deck surface it stands on for depth.
-        const at = [sx, sy, 1, sx / 2, sy / 2, 0.3];
-        placeInstance(floor, slot, world.matrices[globalIndex], ...at);
-        remember(globalIndex, floor, slot, at);
-      });
-      floor.instanceMatrix.needsUpdate = true;
-      floor.userData.lit = floor.material;
-      own(buildMeshes, floor, floor.geometry, floor.material);
-      view.add(floor);
-      overlays.push(floor);
-    }
-
-    if (isVessel) {
-      // The wall, standing outside the cavity. Grown rather than inset, because the box IS the
-      // cavity - and grown rather than left as the box itself, because a box and a cavity on the
-      // same plane are two surfaces at the same depth, which is what made the side of every well
-      // shimmer. Nothing is coplanar with anything now.
-      const wall = new THREE.InstancedMesh(
-        geometryFor(model),
-        new THREE.MeshStandardMaterial({
-          color: VESSEL_RIM,
-          roughness: 0.6,
-          transparent: true,
-          opacity: VESSEL_WALL_OPACITY,
-        }),
-        instances.length,
-      );
-      instances.forEach((globalIndex, slot) => {
-        const at = [sx + 2 * VESSEL_WALL, sy + 2 * VESSEL_WALL, sz, sx / 2, sy / 2, sz / 2];
-        placeInstance(wall, slot, world.matrices[globalIndex], ...at);
-        remember(globalIndex, wall, slot, at);
-      });
-      wall.instanceMatrix.needsUpdate = true;
-      wall.userData.lit = wall.material;
-      own(buildMeshes, wall, wall.material);
-      wall.userData.behind = true; // painted before the cavity it surrounds
-      view.add(wall);
-      overlays.push(wall);
-
-      const inner = new THREE.InstancedMesh(
-        geometryFor(model),
-        // Flagged transparent although it is fully opaque, so that it sits in the same pass as the
-        // wall around it. Three draws every transparent object after every opaque one whatever the
-        // render order says, so an opaque cavity inside a see-through wall is painted first and
-        // then covered by the wall's own top face - which is what hid the well from above.
-        new THREE.MeshStandardMaterial({
-          color: 0xffffff,
-          roughness: 0.55,
-          transparent: true,
-          opacity: 1,
-        }),
-        instances.length,
-      );
-      const white = new THREE.Color(VESSEL_EMPTY);
-      instances.forEach((globalIndex, slot) => {
-        // The cavity IS the box. A container's size is what it holds, and the material around it
-        // stands outside that - so the inside fills the resource's own extent exactly, and a wall
-        // is never drawn within it. Drawn inset, as this was, the walls were inside the box, which
-        // is the opposite of what the box means. A hair taller only, so that from directly above it
-        // does not fight the box's own top face for depth.
-        const at = [sx, sy, sz * 1.02, sx / 2, sy / 2, (sz * 1.02) / 2];
-        // A spot holding a tip shows the tip, and the white of an empty hole would lie across its
-        // bore - over the filter, which sits just below the spot.
-        remember(globalIndex, inner, slot, at, model.category === "tip_spot");
-        if (model.category === "tip_spot" && world.childrenOf[globalIndex].length > 0) {
-          inner.setMatrixAt(slot, ZERO);
-        } else {
-          placeInstance(inner, slot, world.matrices[globalIndex], ...at);
-        }
-        inner.setColorAt(slot, white);
-        vesselOf.set(globalIndex, { mesh: inner, slot, model });
-      });
-      inner.instanceMatrix.needsUpdate = true;
-      inner.instanceColor.needsUpdate = true;
-      inner.userData.lit = inner.material;
-      own(buildMeshes, inner, inner.material);
-      view.add(inner);
-      overlays.push(inner);
-    }
-    if (model.category === "tip" && model.has_filter && Number.isFinite(model.collar_height)) {
-      overlays.push(buildFilterDiscs(modelIndex, instances, model, sx, sy, sz));
-    }
-    if (model.category === "tip") overlays.push(buildPlanDiscs(instances, sx, sy, sz));
-    const entry = meshes[meshes.length - 1];
-    entry.overlays = overlays;
-    entry.isVessel = isVessel;
-    entry.holdsEnclosure = holdsEnclosure;
     entry.enclosedModels = [...enclosedModels];
+    // Set once this model's declared .glb has arrived and been placed, which every scene does
+    // again; and whether the box is holding the place of a model too small to be worth drawing.
+    entry.modelDrawn = false;
+    entry.standsIn = false;
+    placeDrawing(entry, touched);
+    meshes.push(entry);
+  }
+  for (const mesh of touched) {
+    mesh.instanceMatrix.needsUpdate = true;
+    mesh.boundingSphere = null;
+  }
+
+  // What has no place in this scene goes, overlays and outlines with it: both rules that show and
+  // hide an overlay walk `meshes`, and one left in the view keeps whatever it was last told.
+  for (const entry of kept.values()) {
+    for (const object of drawnObjects(entry)) view.remove(object);
+    disposeOwned(entry);
   }
 }
 
@@ -437,7 +425,8 @@ function boreWidthAt(object, z, cx, cy) {
  * nearest distance from the axis.
  */
 export function fitFilterDiscs(modelIndex, scene, scale, up) {
-  const discs = filterDiscsOf.get(modelIndex);
+  const entry = meshes.find((e) => e.modelIndex === modelIndex);
+  const discs = entry?.filterDiscs;
   if (!discs) return;
   scene.scale.setScalar(scale);
   if (up === "Y") scene.rotation.x = Math.PI / 2;
@@ -445,11 +434,9 @@ export function fitFilterDiscs(modelIndex, scene, scale, up) {
   const width = boreWidthAt(scene, discs.z, discs.cx, discs.cy);
   if (width === null) return;
   const touched = new Set();
-  for (const { index, at } of discs.placed) {
-    at[0] = width;
-    at[1] = width;
-    placeParts(index, touched);
-  }
+  discs.at[0] = width;
+  discs.at[1] = width;
+  for (const index of entry.instances) placeParts(index, touched);
   for (const mesh of touched) {
     mesh.instanceMatrix.needsUpdate = true;
     mesh.boundingSphere = null;

@@ -103,17 +103,17 @@ function replaceInScene(root, index) {
 const MESH_UNITS = { mm: 1, cm: 10, m: 1000 };
 
 /**
- * Draw one model for every resource standing on it, in one instanced mesh per mesh in its file.
+ * One model for every resource standing on it, in one instanced mesh per mesh in its file.
  *
  * A cloned model is a draw call apiece: a tip carrier's five racks came to 1,544 of the 1,962 draws
  * a close view cost, for geometry that is the same tip ninety-six times over. Instanced, a model
  * costs one draw however many resources it is drawn for, and the geometry and the materials are
  * the ones the file was parsed into - shared, as the clones shared them.
  *
- * Each instance is registered the way a box's own parts are, so a resource that moves or is
- * switched off takes its geometry with it without this knowing anything about either.
+ * Made for a count of instances and nothing about which ones: `placeInstancedModel` puts in where
+ * each stands and which resource it is, so the same meshes serve scene after scene.
  */
-function buildInstancedModel(modelIndex, instances, gltf, scale, up) {
+function makeInstancedModel(key, count, gltf, scale, up) {
   const carrier = new THREE.Group();
   const scene = gltf.scene.clone(true);
   scene.scale.setScalar(scale);
@@ -122,15 +122,14 @@ function buildInstancedModel(modelIndex, instances, gltf, scale, up) {
   carrier.add(scene);
   carrier.updateMatrixWorld(true);
 
-  const meshes = [];
+  const built = { key, meshes: [] };
   scene.traverse((o) => {
     if (!o.isMesh) return;
-    // Where this mesh sits inside the file, with the file's units and its up-axis already in it.
-    const local = o.matrixWorld.clone();
     const material = o.material.clone();
-    const mesh = new THREE.InstancedMesh(o.geometry, material, instances.length);
-    own(buildDeclaredMeshes, mesh, material);
-    mesh.userData.instances = instances;
+    const mesh = new THREE.InstancedMesh(o.geometry, material, count);
+    own(built, mesh, material);
+    // Where this mesh sits inside the file, with the file's units and its up-axis already in it.
+    mesh.userData.at = [o.matrixWorld.clone()];
     mesh.userData.lit = material;
     mesh.userData.asModelled = {
       transparent: o.material.transparent,
@@ -139,16 +138,36 @@ function buildInstancedModel(modelIndex, instances, gltf, scale, up) {
       color: o.material.color.getHex(),
       glazed: o.material.transparent && o.material.opacity <= GLAZED_MAX_OPACITY,
     };
+    view.add(mesh);
+    built.meshes.push(mesh);
+  });
+  return built;
+}
+
+/**
+ * Put every instance of a model where the tree has it, registered the way a box's own parts are,
+ * so a resource that moves or is switched off takes its geometry with it.
+ */
+function placeInstancedModel(built, modelIndex, instances) {
+  built.modelIndex = modelIndex;
+  built.instances = instances;
+  for (const mesh of built.meshes) {
+    mesh.userData.instances = instances;
     instances.forEach((index, slot) => {
-      placeInstance(mesh, slot, world.matrices[index], local);
-      remember(index, mesh, slot, [local]);
+      placeInstance(mesh, slot, world.matrices[index], mesh.userData.at[0]);
+      remember(index, mesh, slot, mesh.userData.at);
     });
     mesh.instanceMatrix.needsUpdate = true;
-    view.add(mesh);
-    meshes.push(mesh);
-  });
-  modelMeshes.push({ modelIndex, instances, meshes });
-  return meshes;
+    mesh.boundingSphere = null;
+  }
+  modelMeshes.push(built);
+}
+
+// What identifies an instanced model across rebuilds: the file it is drawn from and the resources
+// standing on it, in order. Any other set needs new meshes, built from the parsed file in the same turn.
+function instancedKey(modelIndex, instances) {
+  const names = instances.map((index) => world.names[index]);
+  return JSON.stringify([world.models[modelIndex].mesh, names]);
 }
 
 export function buildDeclaredMeshes() {
@@ -159,11 +178,8 @@ export function buildDeclaredMeshes() {
   sceneGeneration++;
   const onScreen = new Map();
   for (const root of meshRoots) onScreen.set(root.userData.key, root);
-  // An instanced mesh holds a fixed number of instances, so a scene with a different number of
-  // them needs new ones. The file behind it is already parsed, so they are built again in this
-  // same turn and nothing is ever off screen.
-  for (const built of modelMeshes) for (const mesh of built.meshes) view.remove(mesh);
-  disposeOwned(buildDeclaredMeshes);
+  const instanced = new Map();
+  for (const built of modelMeshes) instanced.set(built.key, built);
   clearModels();
 
   // One load per distinct model, however many instances stand on it. A file of several hundred
@@ -215,7 +231,12 @@ export function buildDeclaredMeshes() {
       const riding = instances.filter((index) => travels(index));
       const standing = instances.filter((index) => !travels(index));
       if (standing.length > 0) {
-        buildInstancedModel(modelIndex, standing, gltf, scale, declared.up ?? "Y");
+        const key = instancedKey(modelIndex, standing);
+        const built =
+          instanced.get(key) ??
+          makeInstancedModel(key, standing.length, gltf, scale, declared.up ?? "Y");
+        instanced.delete(key);
+        placeInstancedModel(built, modelIndex, standing);
       }
 
       riding.forEach((index) => {
@@ -291,4 +312,11 @@ export function buildDeclaredMeshes() {
       console.warn(`could not load the mesh declared by ${names[0]}`, error),
     );
   }
+  // Whatever is left was drawn for a set of resources this scene does not have. Let go here, so a
+  // file that lands later finds nothing to reuse and builds its meshes afresh.
+  for (const built of instanced.values()) {
+    for (const mesh of built.meshes) view.remove(mesh);
+    disposeOwned(built);
+  }
+  instanced.clear();
 }

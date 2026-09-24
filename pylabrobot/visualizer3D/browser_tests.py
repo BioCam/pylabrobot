@@ -311,6 +311,33 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       panel = await browser.evaluate("document.querySelector('.uml-panel')?.textContent ?? ''")
       self.assertIn("rider", panel)
 
+  async def test_a_scene_keeps_the_meshes_of_what_did_not_change(self):
+    """A deck being laid out sends a scene on every assignment, and an instanced mesh built afresh
+    costs the renderer a shader state on its first frame: half a second a rebuild on a full deck.
+    A model whose resources are unchanged keeps its mesh; one whose set changed gets a new one."""
+    async with Browser() as browser:
+      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
+      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
+      # Each model's mesh, told apart by how big the model is: 200 is the carrier, 40 the rider.
+      mesh = "Object.fromEntries(window.plrViewer.detail().map((e) => [e.mm, e.id]))"
+      before = await browser.evaluate(mesh)
+      self.facility.assign_child_resource(
+        Resource(name="late", size_x=10, size_y=10, size_z=10), location=Coordinate(0, 0, 0)
+      )
+      await browser.settle("window.plrViewer.resources().includes('late')", 30)
+      after = await browser.evaluate(mesh)
+      self.assertEqual(after["200"], before["200"], "the carrier's mesh was built again")
+      self.assertEqual(after["40"], before["40"], "the rider's mesh was built again")
+      self.assertIn("10", after)
+      # A second resource of the rider's model: two instances, which a mesh of one cannot hold.
+      self.carrier.assign_child_resource(
+        Resource(name="rider_2", size_x=40, size_y=40, size_z=20), location=Coordinate(120, 20, 50)
+      )
+      await browser.settle("window.plrViewer.resources().includes('rider_2')", 30)
+      final = await browser.evaluate(mesh)
+      self.assertEqual(final["200"], before["200"], "the carrier's mesh was built again")
+      self.assertNotEqual(final["40"], after["40"], "a mesh of one instance was kept for two")
+
   async def test_a_click_on_a_row_selects_unless_it_is_on_the_arrow(self):
     """The fold zone was measured from the element under the pointer, not from the row, so the
     first twenty pixels of the name folded the row instead of selecting it."""

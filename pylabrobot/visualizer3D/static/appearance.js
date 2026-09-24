@@ -107,6 +107,18 @@ function boxOpacity(entry) {
   );
 }
 
+// The flags a pipeline is built from, with the renderer told only when one of them changed: a bump
+// that changes nothing still re-keys the material, and a line material never keys the same twice.
+function setPipelineFlags(material, flags) {
+  let changed = false;
+  for (const [flag, value] of Object.entries(flags)) {
+    if (material[flag] === value) continue;
+    material[flag] = value;
+    changed = true;
+  }
+  if (changed) material.needsUpdate = true;
+}
+
 function setRenderMode(plan) {
   for (const entry of meshes) {
     // Lit, at every angle. The lights ride with the camera, so a surface is shaded by its own shape
@@ -124,12 +136,10 @@ function setRenderMode(plan) {
     const isSpace = GROUND.has(entry.model.category);
     const rides = entry.instances.some((i) => travels(i));
 
-    material.transparent = true;
     material.opacity = boxOpacity(entry);
-    material.side = isShell || isSpace ? THREE.BackSide : THREE.FrontSide;
     // Ground stays out of the depth buffer in either view - a wash over the picture, not a surface
     // anything is behind.
-    material.depthTest = !isSpace;
+    //
     // Everything writes depth, in either view, so the nearest surface wins per pixel - which is
     // right about every instance of a model at once, where an order could only ever be right about
     // the model.
@@ -146,7 +156,12 @@ function setRenderMode(plan) {
     // What it does stop is the part shading itself - an arm is several surfaces and it carries
     // channels and an iSWAP, and with nothing to separate them each overlap blended again, so the
     // arm came out at a third of its own opacity here and two thirds there as it travelled.
-    material.depthWrite = !isSpace;
+    setPipelineFlags(material, {
+      transparent: true,
+      side: isShell || isSpace ? THREE.BackSide : THREE.FrontSide,
+      depthTest: !isSpace,
+      depthWrite: !isSpace,
+    });
     // A shell that is not a container shows its outline and nothing else: a device drawn as a
     // sheet the size of the device sits under everything standing on it. A container keeps its
     // walls, which is what makes it read as one.
@@ -166,12 +181,9 @@ function setRenderMode(plan) {
       // are painted in their own resource's layer, which is as far as they can reach. From any
       // other angle depth is right - what stands in front of a well does cover it - and there they
       // test like everything else.
-      overlay.material.depthTest = !plan;
-      overlay.material.depthWrite = !plan;
+      setPipelineFlags(overlay.material, { depthTest: !plan, depthWrite: !plan });
       overlay.renderOrder = plan ? layer + (overlay.userData.behind ? 0.5 : 1) : 0;
-      overlay.material.needsUpdate = true;
     }
-    material.needsUpdate = true;
   }
 
   for (const surface of surfaces) {
@@ -195,12 +207,13 @@ function setRenderMode(plan) {
     // still reads through it. It does not write depth for the same reason; it still tests, so
     // the machine's own structure above it covers it as it should.
     const lifted = plan && rides;
-    o.material.transparent = lifted ? true : modelled.transparent;
     o.material.opacity = lifted ? Math.min(modelled.opacity, MOVING_OPACITY) : modelled.opacity;
-    o.material.depthWrite = lifted ? true : modelled.depthWrite;
-    o.material.depthTest = true;
+    setPipelineFlags(o.material, {
+      transparent: lifted ? true : modelled.transparent,
+      depthWrite: lifted ? true : modelled.depthWrite,
+      depthTest: true,
+    });
     o.renderOrder = lifted ? CARRIED_LAYER : 0;
-    o.material.needsUpdate = true;
   }
 
   for (const mark of gridMarks) {
@@ -257,6 +270,8 @@ function setRenderMode(plan) {
     line.renderOrder = plan ? paintOrderOf(index) + 1 : 0;
     const wanted = plan ? line.userData.footprintGeometry : line.userData.boxGeometry;
     if (wanted && line.geometry !== wanted) line.geometry = wanted;
+    // Told every pass, not only when a flag changed: a line material told only then draws a plan
+    // view's outlines faintly, so three reads more off it than the values above and its flags.
     line.material.needsUpdate = true;
   }
 }
