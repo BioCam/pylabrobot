@@ -440,6 +440,43 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       )
       await browser.settle("window.plrViewer.quality().level >= 1", 20)
 
+  async def test_a_recorded_frame_is_bounded_whatever_the_pixel_ratio(self):
+    """A frame was kept at the drawing buffer's size, which at a pixel ratio of 2 is four times
+    the viewport: tens of megabytes a frame, held until the GIF was rendered from all of them."""
+    async with Browser() as browser:
+      await browser._call(
+        "Emulation.setDeviceMetricsOverride",
+        {"width": 1200, "height": 800, "deviceScaleFactor": 2, "mobile": False},
+      )
+      await browser._call("Browser.setDownloadBehavior", {"behavior": "deny"})
+      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/?quality=high")
+      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
+      buffer_width = int(await browser.evaluate("document.querySelector('#viewport canvas').width"))
+      self.assertGreater(buffer_width, 960)
+      await browser.evaluate(
+        "const objectUrl = URL.createObjectURL.bind(URL);"
+        "URL.createObjectURL = (blob) => {"
+        "  blob.slice(0, 10).arrayBuffer().then((head) => {"
+        "    const h = new Uint8Array(head);"
+        "    window.__gifSize = [h[6] + 256 * h[7], h[8] + 256 * h[9]];"
+        "  });"
+        "  return objectUrl(blob);"
+        "};"
+        "document.getElementById('toolbar-gif-btn').click();"
+        "document.getElementById('start-recording-button').click(); true"
+      )
+      await asyncio.sleep(1.0)
+      await browser.evaluate("document.getElementById('stop-recording-button').click(); true")
+      await browser.settle("document.getElementById('gif-download').style.display === 'flex'", 60)
+      await browser.evaluate("document.getElementById('gif-download-button').click(); true")
+      width, height = await browser.settle("window.__gifSize", 10)
+      self.assertLessEqual(width, 960)
+      buffer_height = int(
+        await browser.evaluate("document.querySelector('#viewport canvas').height")
+      )
+      # Smaller, not reframed: the GIF keeps the viewport's aspect.
+      self.assertAlmostEqual(width / height, buffer_width / buffer_height, delta=0.02)
+
   async def test_a_well_shows_the_volume_it_holds_not_the_one_an_operation_would_leave(self):
     """The page drew the pending volume, so a well filled at the start of an aspirate that then
     failed kept a volume that never happened: a rollback publishes nothing. The existing visualizer
