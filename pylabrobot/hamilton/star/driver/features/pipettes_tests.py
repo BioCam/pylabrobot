@@ -1876,6 +1876,30 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       (first.tracker.get_used_volume(), full.tracker.get_used_volume()), (0.0, 300.0)
     )
 
+  async def test_a_failed_command_books_what_the_pistons_drew(self):
+    original = self.driver.send_command
+
+    async def failing_after_channel_0_drew(module: str, command: str, **kwargs: Any):
+      result = await original(module=module, command=command, **kwargs)
+      if command == "AS":
+        # The simulator drew on both channels; the device stopped before channel 1 did.
+        self.driver.dispensing_drive_uL[1] = 0.0
+        raise STARFirmwareError(errors={}, raw_response="")
+      return result
+
+    self.driver.send_command = failing_after_channel_0_drew  # type: ignore[assignment]
+    with self.assertLogs(
+      "pylabrobot.hamilton.star.driver.features.pipettes", level="WARNING"
+    ) as logs:
+      with self.assertRaises(STARFirmwareError):
+        await self.pipettes.aspirate(self.wells[:2], piston_volumes=[50.0, 20.0])
+    self.assertEqual(len(logs.output), 1)
+    self.assertIn("channel 0 drew 50.0 uL", logs.output[0])
+    self.assertEqual([w.tracker.get_used_volume() for w in self.wells[:2]], [100.0, 100.0])
+    self.assertEqual([w.tracker.volume for w in self.wells[:2]], [100.0, 100.0])
+    tips = [self.pipettes.get_mounted_tip(channel) for channel in (0, 1)]
+    self.assertEqual([tip.tracker.volume for tip in tips if tip is not None], [50.0, 0.0])
+
   async def test_without_tracking_the_surface_has_to_be_given_or_searched_for(self):
     from pylabrobot.resources import set_volume_tracking
 

@@ -5236,6 +5236,13 @@ class Pipettes:
       await search(batch)
       # The model gives before the device draws, so a short container or a full tip refuses here,
       # before this batch's command; committed as the command succeeds.
+      # Where each piston stands before the command, to tell after a failure how far it drew.
+      pistons = (
+        [await self.dispensing_drive_request_uL_position(ch) for ch in batch.channels]
+        if tracking
+        else []
+      )
+      moves: List[float] = []
       trackers = []
       try:
         if tracking:
@@ -5257,10 +5264,35 @@ class Pipettes:
             trackers += [containers[job].tracker, tips[job].tracker]
             containers[job].tracker.remove_liquid(moved)
             tips[job].tracker.add_liquid(moved)
+            moves.append(moved)
         await send(batch)
       except BaseException:
         for tracker in trackers:
           tracker.rollback()
+        # A command that failed part way drew on some channels: each piston stands past its
+        # blow-out air by the liquid it took, up to what its container gave.
+        if tracking and len(moves) == len(jobs):
+          air = per_container_settings.get("blow_out_air_volumes") or [0.0] * n
+          for index, (channel, job) in enumerate(zip(batch.channels, jobs)):
+            try:
+              now = await self.dispensing_drive_request_uL_position(channel)
+            except Exception:
+              logger.warning(
+                "could not read channel %d's piston; what it drew is not in the model", channel
+              )
+              continue
+            drew = round(min(max(now - pistons[index] - air[job], 0.0), moves[index]), 1)
+            if drew > 0:
+              containers[job].tracker.remove_liquid(drew)
+              tips[job].tracker.add_liquid(drew)
+              containers[job].tracker.commit()
+              tips[job].tracker.commit()
+              logger.warning(
+                "channel %d drew %.1f uL from %s before the command failed; the model has it",
+                channel,
+                drew,
+                containers[job].name,
+              )
         raise
       for tracker in trackers:
         tracker.commit()
