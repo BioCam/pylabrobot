@@ -874,7 +874,9 @@ class Pipettes:
     # missing measurement - it is the channel driving into whatever is under it.
     self.default_clld_probe_speed: float = 10.0
     self.default_clld_sensitivity: int = 3
-    self.default_clld_detect_mode: int = 2
+    # Read only by `probe_z_using_clld`: onto the calibration block with a needle, modes 0 and 1
+    # detected at 21.86 mm and mode 2 went through to the end of the search.
+    self.default_clld_detect_mode: int = 0
     if use_v1_aspirate_dispense:
       self.configuration.use_v1_aspirate_dispense = True
     self.setup_finished: bool = False
@@ -2880,7 +2882,8 @@ class Pipettes:
       detect_mode: cLLD detect mode. Defaults to `default_clld_detect_mode`.
       allow_without_tip: whether to probe without a mounted tip. False requires one.
       post_detection_distance: how far above the liquid the tip rests afterwards, in mm. The seek
-        itself lands back at the start first, as the firmware returns it there.
+        leaves the tip where it stopped, about 0.1 mm past the surface, when this is 0. A seek
+        that detects nothing raises the tip back to the start.
       move_channels_to_safe_pos_after: whether to raise every channel to Z safety instead.
 
     Returns:
@@ -2955,14 +2958,16 @@ class Pipettes:
       seek_velocity_z=search_speed,
       seek_height=search_start_position,
       min_seek_height=search_end_position,
-      final_position_z=search_start_position,
+      # The seek ends at the higher of this and where it stopped: the search end leaves the tip
+      # where it stopped, and saves a return to the start and back down.
+      final_position_z=search_end_position,
       lld_sensitivity=sensitivity,
       detect_mode=detect_mode,
     )
     try:
-      # Where the move is going, recorded as it is sent: on the answer the model would already be a
-      # whole move behind the device. The read below still has the last word.
-      self.update_location_by_reference_point(channel_idx, z=search_start_position)
+      # The lowest the seek can leave the channel, recorded as it is sent: on the answer the model
+      # would already be a whole move behind the device. The read below still has the last word.
+      self.update_location_by_reference_point(channel_idx, z=search_end_position)
       results = await self._unchecked_fw_z_seek_lld_position([seek])
     finally:
       await self._record_where_they_stopped()
@@ -2972,7 +2977,9 @@ class Pipettes:
     surface = None if result is None or not result.detected else round(float(result.position), 2)
     if move_channels_to_safe_pos_after:
       await self.move_to_safe_z()
-    elif surface is not None and post_detection_distance:
+    elif surface is None:
+      await self.move_tool_bottom_to_z_position(channel_idx, search_start_position)
+    elif post_detection_distance:
       await self.move_tool_bottom_to_z_position(channel_idx, surface + post_detection_distance)
     return surface
 

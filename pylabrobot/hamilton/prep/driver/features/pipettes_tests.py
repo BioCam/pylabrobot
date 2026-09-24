@@ -622,6 +622,30 @@ def test_simulated_z_probe_detects_the_top_of_a_resource_below(probe):
   _run(_t())
 
 
+def test_probe_z_using_clld_leaves_the_channel_where_it_detected():
+  """With no post-detection distance the seek is the only move, and it ends at the surface."""
+
+  async def _t():
+    p = PrepSimulationDriver(deck=_deck_with_block(285.0, 295.0))
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.move_to_y_positions({0: 340.0, 1: 300.0})
+    sent = _record(p)
+    found = await p.pipettes.probe_z_using_clld(
+      1,
+      search_start_position=160.0,
+      search_end_position=20.0,
+      allow_without_tip=True,
+      post_detection_distance=0,
+    )
+    assert found == pytest.approx(60.0)
+    assert (await p.pipettes.request_locations())[1].z == pytest.approx(60.0)
+    assert not {"PrepMoveZAbsolute", "PrepMoveToPosition"} & {type(c).__name__ for c in sent}
+    await p.stop()
+
+  _run(_t())
+
+
 def test_probe_z_using_ztouch_seeks_with_the_channels_own_z_axis():
   """The channel's Z axis is sent start, floor and final height in its drive frame; nothing met is None."""
 
@@ -807,7 +831,7 @@ def test_probes_check_the_tip_before_anything_else():
 
 
 def test_probe_z_using_clld_seeks_where_the_channel_stands():
-  """The seek is sent at the channel's current X and Y with every other argument written out."""
+  """The seek is sent where the channel stands, every argument written out; a miss is raised back."""
 
   async def _t():
     p = PrepSimulationDriver(deck=PrepDeck())
@@ -826,8 +850,8 @@ def test_probe_z_using_clld_seeks_where_the_channel_stands():
     assert (seek.seek_position_x, seek.seek_position_y) == pytest.approx(
       (before.x, before.y), abs=1e-3
     )
-    assert (seek.seek_height, seek.min_seek_height, seek.final_position_z) == (160.0, 100.0, 160.0)
-    assert (seek.seek_velocity_z, seek.lld_sensitivity, seek.detect_mode) == (10.0, 3, 2)
+    assert (seek.seek_height, seek.min_seek_height, seek.final_position_z) == (160.0, 100.0, 100.0)
+    assert (seek.seek_velocity_z, seek.lld_sensitivity, seek.detect_mode) == (10.0, 3, 0)
     after = (await p.pipettes.request_locations())[1]
     assert (after.x, after.y, after.z) == pytest.approx((before.x, before.y, 160.0), abs=1e-3)
     await p.stop()

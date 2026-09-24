@@ -751,7 +751,8 @@ class SimulatedPipettes(_Simulated, Pipettes):
   def _answer_seeks(self, request: TCPCommand, method: str) -> Optional[Tuple[Any, str]]:
     """The cLLD and obstacle searches, each stopping at the first resource in the way."""
     if isinstance(request, PrepCmd.PrepZSeekLldPosition):
-      # Each channel seeks down toward its floor and is left at its final height.
+      # Each channel seeks down toward its floor and ends at the higher of its final height and
+      # where it stopped, as the firmware does.
       results = []
       found = False
       for seek in request.seek_parameters:
@@ -769,7 +770,8 @@ class SimulatedPipettes(_Simulated, Pipettes):
             SIMULATED_CLLD_PROBE_DIAMETER / 2,
           )
           touched = None if top is None else top - offset
-          self._move(seeking, None, None, seek.final_position_z)
+          stopped = seek.min_seek_height if touched is None else touched
+          self._move(seeking, None, None, max(seek.final_position_z, stopped))
         found = found or touched is not None
         results.append(
           PrepCmd.SeekResultParameters(
