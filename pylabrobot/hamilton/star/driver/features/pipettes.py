@@ -5700,8 +5700,9 @@ class Pipettes:
         if values is not None
       }
       down = [job for job in jobs if job in searched or job in touched]
+      raised_to = start if batch is batches[0] else during
       kwargs_to_start_from_current_positions: Dict[str, Any] = {
-        "minimum_traverse_height_start": min(surfaces[job] for job in down) if down else during,
+        "minimum_traverse_height_start": min(surfaces[job] for job in down) if down else raised_to,
         "lld_modes": [self.LLDMode.OFF] * len(jobs),
       }
       await self._aspirate_in_one_move(
@@ -6453,8 +6454,9 @@ class Pipettes:
         if values is not None
       }
       down = [job for job in jobs if job in searched or job in touched]
+      raised_to = start if batch is batches[0] else during
       kwargs_to_start_from_current_positions: Dict[str, Any] = {
-        "minimum_traverse_height_start": min(surfaces[job] for job in down) if down else during,
+        "minimum_traverse_height_start": min(surfaces[job] for job in down) if down else raised_to,
         "lld_modes": [self.LLDMode.OFF] * len(jobs),
       }
       await self._dispense_in_one_move(

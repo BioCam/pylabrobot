@@ -1642,6 +1642,20 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertEqual(sent, [])
     self.assertEqual([w.tracker.get_used_volume() for w in self.wells[:2]], [150.0, 100.0])
 
+  async def test_the_first_batch_starts_from_where_it_was_raised_to(self):
+    sent = self._record_aspirations()
+    await self.pipettes.aspirate(
+      [self.wells[0], self.plate.get_well("A2")],
+      piston_volumes=[10.0, 10.0],
+      use_channels=[0],
+      minimum_traverse_height_start=200.0,
+      minimum_traverse_height_during=230.0,
+    )
+    # Raised to 200 before the first batch: its command starts there, not at 230, which would
+    # raise the tips a second time; the second batch starts from the 230 it was raised to.
+    self.assertIn("th2000te2300", sent[0])
+    self.assertIn("th2300te2450", sent[1])
+
   async def test_two_cycles_are_two_commands_and_one_raise(self):
     for row in "EFGH":
       self.plate.get_well(f"{row}1").tracker.set_volume(100.0)
