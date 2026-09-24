@@ -33,8 +33,8 @@ from pylabrobot.hamilton.star.driver.errors import (
   channels_that_faulted,
 )
 from pylabrobot.hamilton.star.driver.lock import CHANNEL_MODULE_LETTERS, _FirmwareLock
-from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.base import HamiltonLiquidClass
-from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.star import get_star_liquid_class
+from pylabrobot.hamilton.liquid_classes import HamiltonLiquidClass
+from pylabrobot.hamilton.star.liquid_classes import get_star_liquid_class
 from pylabrobot.lib.liquid_handling.channel_positioning import compute_channel_offsets
 from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import (
   ChannelBatch,

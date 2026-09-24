@@ -51,7 +51,7 @@ from pylabrobot.hamilton.transport.tcp.hoi_error import HoiError
 from pylabrobot.hamilton.transport.tcp.messages import HoiParamsParser, parse_into_struct
 from pylabrobot.hamilton.transport.tcp.packets import Address
 from pylabrobot.legacy.liquid_handling.errors import ChannelizedError
-from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.base import HamiltonLiquidClass
+from pylabrobot.hamilton.liquid_classes import HamiltonLiquidClass
 from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import plan_batches
 from pylabrobot.resources import Container, Coordinate, Tip
 from pylabrobot.resources.errors import HasTipError, NoTipError

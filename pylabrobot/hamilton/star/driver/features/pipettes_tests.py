@@ -1459,7 +1459,7 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     return f"{round((bottom + height) * 10):04}"
 
   async def test_the_wells_give_and_the_tips_take_in_one_command(self):
-    from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.star import (
+    from pylabrobot.hamilton.star.liquid_classes.mapping import (
       StandardVolumeFilter_Water_DispenseSurface as water,
     )
 
@@ -1494,7 +1494,7 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertEqual([w.tracker.get_used_volume() for w in wells], [140.0, 90.0, 40.0] + [90.0] * 4)
 
   async def test_piston_volumes_are_drawn_as_given_and_never_with_a_class(self):
-    from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.star import (
+    from pylabrobot.hamilton.star.liquid_classes.mapping import (
       StandardVolumeFilter_Water_DispenseSurface as water,
     )
 
@@ -1513,7 +1513,7 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertEqual(len(sent), 1)
 
   async def test_a_given_class_corrects_and_fills_what_is_not_given(self):
-    from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.star import (
+    from pylabrobot.hamilton.star.liquid_classes.mapping import (
       StandardVolumeFilter_Water_DispenseJet_Empty as jet_empty,
     )
 
