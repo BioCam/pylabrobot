@@ -1115,9 +1115,6 @@ class Head8:
       loc = container.get_location_wrt(self._require_deck(), "c", "c", "cavity_bottom")
       ref_x, ref_y = loc.x, loc.y + 3.5 * PROBE_PITCH_MM
       wg = _absolute_z_from_well(container, self._require_deck(), liquid_height)
-      ref_segments = container_segments or (
-        _get_container_segments(container) if auto_container_geometry else []
-      )
       ref_resource = container
     else:
       wells_list = list(wells)  # type: ignore[arg-type]
@@ -1131,14 +1128,20 @@ class Head8:
       ref_loc = wells_list[0].get_location_wrt(self._require_deck(), "c", "c", "cavity_bottom")
       ref_x, ref_y = ref_loc.x, ref_loc.y
       wg = _absolute_z_from_well(wells_list[0], self._require_deck(), liquid_height)
-      ref_segments = container_segments or (
-        _get_container_segments(wells_list[0]) if auto_container_geometry else []
-      )
       ref_resource = wells_list[0]
 
     resolved_z_fluid = z_fluid if z_fluid is not None else wg.liquid_surface
     resolved_z_air = z_air if z_air is not None else wg.z_air
     resolved_z_minimum = z_minimum if z_minimum is not None else wg.well_bottom
+    # the firmware counts segment 0 from z_minimum
+    cavity_bottom_z = ref_resource.get_location_wrt(
+      self._require_deck(), "c", "c", "cavity_bottom"
+    ).z
+    ref_segments = container_segments or (
+      _get_container_segments(ref_resource, profile_start=resolved_z_minimum - cavity_bottom_z)
+      if auto_container_geometry
+      else []
+    )
     resolved_z_bottom_search_offset = (
       z_bottom_search_offset if z_bottom_search_offset is not None else 2.0
     )
@@ -1337,9 +1340,6 @@ class Head8:
       loc = container.get_location_wrt(self._require_deck(), "c", "c", "cavity_bottom")
       ref_x, ref_y = loc.x, loc.y + 3.5 * PROBE_PITCH_MM
       wg = _absolute_z_from_well(container, self._require_deck(), liquid_height)
-      ref_segments = container_segments or (
-        _get_container_segments(container) if auto_container_geometry else []
-      )
       ref_resource = container
     else:
       wells_list = list(wells)  # type: ignore[arg-type]
@@ -1353,14 +1353,20 @@ class Head8:
       ref_loc = wells_list[0].get_location_wrt(self._require_deck(), "c", "c", "cavity_bottom")
       ref_x, ref_y = ref_loc.x, ref_loc.y
       wg = _absolute_z_from_well(wells_list[0], self._require_deck(), liquid_height)
-      ref_segments = container_segments or (
-        _get_container_segments(wells_list[0]) if auto_container_geometry else []
-      )
       ref_resource = wells_list[0]
 
     resolved_z_fluid = z_fluid if z_fluid is not None else wg.liquid_surface
     resolved_z_air = z_air if z_air is not None else wg.z_air
     resolved_z_minimum = z_minimum if z_minimum is not None else wg.well_bottom
+    # the firmware counts segment 0 from z_minimum
+    cavity_bottom_z = ref_resource.get_location_wrt(
+      self._require_deck(), "c", "c", "cavity_bottom"
+    ).z
+    ref_segments = container_segments or (
+      _get_container_segments(ref_resource, profile_start=resolved_z_minimum - cavity_bottom_z)
+      if auto_container_geometry
+      else []
+    )
     resolved_z_bottom_search_offset = (
       z_bottom_search_offset if z_bottom_search_offset is not None else 2.0
     )
