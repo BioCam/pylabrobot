@@ -52,8 +52,9 @@ from pylabrobot.hamilton.transport.tcp.messages import HoiParamsParser, parse_in
 from pylabrobot.hamilton.transport.tcp.packets import Address
 from pylabrobot.legacy.liquid_handling.errors import ChannelizedError
 from pylabrobot.hamilton.liquid_classes import HamiltonLiquidClass
+from pylabrobot.lib.liquid_handling.liquid_height import get_liquid_height_from_volume
 from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import plan_batches
-from pylabrobot.resources import Container, Coordinate, Tip
+from pylabrobot.resources import Container, Coordinate, Tip, does_volume_tracking
 from pylabrobot.resources.errors import HasTipError, NoTipError
 from pylabrobot.resources.hamilton import HamiltonTip, TipSize
 from pylabrobot.resources.hamilton.core_grippers import HamiltonCoreGrippers
@@ -4636,54 +4637,148 @@ class Pipettes:
       for r, t, v, o, lh, fr, bav in zip(resources, tips, vols, offs, lhs, frs, bavs)
     ]
 
+  def _get_liquid_heights(
+    self,
+    containers: Sequence[Container],
+    liquid_heights: Optional[Sequence[Optional[float]]],
+    effective_lld: bool,
+  ) -> List[Optional[float]]:
+    """Each container's liquid height above its cavity bottom: as given, else from its volume.
+
+    Args:
+      containers: the containers, in the call's order.
+      liquid_heights: the heights given, in mm, None where not given.
+      effective_lld: whether an LLD search runs; it finds the surface, so no height is needed.
+
+    Returns:
+      The height of each container, in mm, None where the search is left to find it.
+
+    Raises:
+      ValueError: If the heights and containers differ in number.
+      RuntimeError: If a height is missing, volume tracking is off and no LLD runs.
+    """
+    heights = list(liquid_heights) if liquid_heights is not None else [None] * len(containers)
+    if len(heights) != len(containers):
+      raise ValueError(f"liquid_heights length must match containers ({len(containers)})")
+    tracking = does_volume_tracking()
+    resolved: List[Optional[float]] = []
+    for container, height in zip(containers, heights):
+      if height is None and not effective_lld:
+        if not tracking:
+          raise RuntimeError(
+            f"no liquid height given for {container.name}, volume tracking is off and no LLD "
+            "runs, so nothing knows where its liquid is"
+          )
+        height = get_liquid_height_from_volume(container, container.tracker.get_used_volume())
+      resolved.append(height)
+    return resolved
+
   async def aspirate(
     self,
-    resources: Sequence[Container],
-    vols: Sequence[float],
+    containers: Sequence[Container],
+    volumes: Sequence[float],
     use_channels: Optional[List[int]] = None,
+    resource_offsets: Optional[List[Coordinate]] = None,
+    liquid_heights: Optional[Sequence[Optional[float]]] = None,
+    lld_mode: Optional[Pipettes.LLDMode] = None,
+    flow_rates: Optional[Sequence[Optional[float]]] = None,
     *,
-    flow_rates: Optional[List[Optional[float]]] = None,
-    offsets: Optional[List[Coordinate]] = None,
-    liquid_height: Optional[List[Optional[float]]] = None,
-    blow_out_air_volume: Optional[List[Optional[float]]] = None,
-    z_final: Optional[List[float]] = None,
-    z_fluid: Optional[List[float]] = None,
-    z_air: Optional[List[float]] = None,
-    settling_time: Optional[List[float]] = None,
-    transport_air_volume: Optional[List[float]] = None,
-    z_liquid_exit_speed: Optional[List[float]] = None,
-    prewet_volume: Optional[List[float]] = None,
-    z_minimum: Optional[List[float]] = None,
-    z_bottom_search_offset: Optional[List[float]] = None,
-    lld_mode: Optional[List[Any]] = None,
+    hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
+    disable_volume_correction: Optional[List[bool]] = None,
+    blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
+    pre_wetting_volumes: Optional[List[float]] = None,
     lld: Optional[PrepCmd.LldParameters] = None,
     p_lld: Optional[PrepCmd.PLldParameters] = None,
     c_lld: Optional[PrepCmd.CLldParameters] = None,
+    z_fluid: Optional[List[float]] = None,
+    minimum_allowed_z_position_during: Optional[List[float]] = None,
+    z_bottom_search_offset: Optional[List[float]] = None,
+    settling_times: Optional[List[float]] = None,
+    swap_speeds: Optional[List[float]] = None,
+    transport_air_volumes: Optional[List[float]] = None,
+    z_air: Optional[List[float]] = None,
+    minimum_traverse_height_end: Optional[float] = None,
     tadm: Optional[PrepCmd.TadmParameters] = None,
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
     auto_container_geometry: bool = False,
-    hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
-    disable_volume_correction: Optional[List[bool]] = None,
     read_timeout: Optional[float] = None,
     command_version: Optional[Literal["v1", "v2"]] = None,
-  ):
-    """Aspirate from containers using mounted tips.
+  ) -> None:
+    """Draw liquid from each container with a channel's tip, every channel in one command.
 
-    Explicit kwargs override Hamilton liquid-class defaults; HLC supplies
-    unspecified fields and the volume correction curve unless disabled.
+    The arguments are named as the STAR's `aspirate` names them. `volumes` is the liquid wanted;
+    a Hamilton liquid class turns it into what the piston draws, by its correction curve, and fills
+    the flow rate, the air volumes, the settling time and the swap speed where they are not given.
+    With volume tracking on, every container gives up its volume and every tip takes it. The
+    keyword arguments come in the order the aspiration runs; the per-container ones are one entry
+    per container, in the containers' order.
+
+    Args:
+      containers: one per channel used.
+      volumes: how much liquid to take from each container, in uL.
+      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
+      resource_offsets: added to where each channel goes in its container, in mm. The z shifts
+        the heights.
+      liquid_heights: where the liquid stands above each cavity bottom, in mm. None takes it from
+        the tracked volume, or, with an LLD mode, leaves it to the search.
+      lld_mode: how the liquid is found, one mode for every channel. None runs a search only
+        when `lld` is given.
+      flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
+      hamilton_liquid_classes: the class for each container's volume. Looked up for the
+        channel's tip, water, when None.
+      disable_volume_correction: per container, whether the volume is sent as the piston's,
+        uncorrected by the class.
+      blow_out_air_volumes: air drawn before the liquid, in uL, per container. The liquid
+        class's, else 0.0, when None.
+      pre_wetting_volumes: drawn and returned first, in uL, per container. The liquid class's
+        over-aspirate volume, else 0.0, when None.
+      lld: the LLD search's start, speed and submerge depth. From the container's top when None.
+      p_lld: pressure LLD settings. The firmware's own when None, unless the mode needs them.
+      c_lld: capacitive LLD settings. Sensitivity 3, detect mode 0 when None and a search runs.
+      z_fluid: the tip bottom height to aspirate at without LLD, in mm, per container. The cavity
+        bottom plus the liquid height when None.
+      minimum_allowed_z_position_during: how low each tip bottom may go, in mm, per container.
+        The cavity bottom when None.
+      z_bottom_search_offset: in mm, per container. 2.0 when None.
+      settling_times: how long the tip waits in the liquid, in s, per container. The liquid
+        class's, else 1.0, when None.
+      swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid
+        class's, else 10.0, when None.
+      transport_air_volumes: air drawn after the liquid, in uL, per container. The liquid
+        class's, else 0.0, when None.
+      z_air: the tip bottom height above each container the tip leaves from, in mm. 2 mm over
+        the container's top when None.
+      minimum_traverse_height_end: the tip bottom height every tip is left at, in mm. The
+        traverse height less each tip's overhang when None.
+      tadm: TADM settings; given, the aspiration is monitored.
+      container_segments: each container's cross-sections, per container. None sends none,
+        unless `auto_container_geometry`.
+      auto_container_geometry: whether to build the segments from each container's shape.
+      read_timeout: how long to wait for the answer, in s. Long enough for the search when an
+        LLD search runs and this is None.
+      command_version: "v1" or "v2" aspirate commands. What the firmware supports when None.
+
+    Raises:
+      ValueError: If an argument is out of range or the lists do not match.
+      RuntimeError: If a channel used carries no tip, or nothing knows where a container's
+        liquid stands: no height given, volume tracking off, no LLD.
+      TooLittleLiquidError: If a container holds less than it is asked for.
     """
-    resources = list(resources)
-    use_channels = use_channels if use_channels is not None else list(range(len(resources)))
-    ops = self._build_transfers(
-      resources,
-      vols,
-      use_channels,
-      offsets=offsets,
-      liquid_height=liquid_height,
-      flow_rates=flow_rates,
-      blow_out_air_volume=blow_out_air_volume,
+    containers = list(containers)
+    use_channels = use_channels if use_channels is not None else list(range(len(containers)))
+    n = len(containers)
+    effective_lld = self._resolve_effective_lld(
+      None if lld_mode is None else [lld_mode] * n, lld, n
     )
-    effective_lld = self._resolve_effective_lld(lld_mode, lld, len(ops))
+    ops = self._build_transfers(
+      containers,
+      volumes,
+      use_channels,
+      offsets=resource_offsets,
+      liquid_height=self._get_liquid_heights(containers, liquid_heights, effective_lld),
+      flow_rates=flow_rates,
+      blow_out_air_volume=blow_out_air_volumes,
+    )
     is_tadm = tadm is not None
     use_v2 = self._resolve_command_version(command_version)
 
@@ -4691,14 +4786,14 @@ class Pipettes:
       ops,
       use_channels,
       effective_lld,
-      z_final=z_final,
+      z_final=None if minimum_traverse_height_end is None else [minimum_traverse_height_end] * n,
       z_fluid=z_fluid,
       z_air=z_air,
-      settling_time=settling_time,
-      transport_air_volume=transport_air_volume,
-      z_liquid_exit_speed=z_liquid_exit_speed,
-      prewet_volume=prewet_volume,
-      z_minimum=z_minimum,
+      settling_time=settling_times,
+      transport_air_volume=transport_air_volumes,
+      z_liquid_exit_speed=swap_speeds,
+      prewet_volume=pre_wetting_volumes,
+      z_minimum=minimum_allowed_z_position_during,
       z_bottom_search_offset=z_bottom_search_offset,
       lld=lld,
       p_lld=p_lld,
@@ -4708,7 +4803,7 @@ class Pipettes:
       auto_container_geometry=auto_container_geometry,
       hamilton_liquid_classes=hamilton_liquid_classes,
       disable_volume_correction=disable_volume_correction,
-      lld_mode=self._single_lld_mode(lld_mode),
+      lld_mode=lld_mode,
     )
 
     lld_read_timeout = read_timeout
