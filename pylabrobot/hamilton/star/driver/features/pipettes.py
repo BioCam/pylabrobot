@@ -4422,56 +4422,45 @@ class Pipettes:
   ) -> None:
     """Aspirate at each place given, the channels together, in one `C0 AS`.
 
-    Knows nothing of containers: what it is given is where on the deck each channel's tip bottom
-    goes, how much it draws there, and the heights that bound it. `aspirate` is the one that plans
-    the batches and keeps the model. Every value is in mm, uL, mm/s, uL/s and s; the firmware's
-    tenths are made here. What is per channel is what a container or its liquid class decides;
-    what is one value is what legacy set alike for every channel. Fields legacy never varied,
-    the aspiration type, TADM, recording and the second-section search, are sent as it sent them.
-
-    The arguments come in the order the aspiration runs: travel, finding the liquid, entering it,
-    mixing, drawing, waiting, leaving, monitoring, the end.
+    Positions and heights on the deck in mm, volumes in uL, speeds in mm/s or uL/s, times in s.
+    Arguments in the order the aspiration runs. No model update: `aspirate` does that. Fields
+    legacy never varied (aspiration type, TADM, recording, second-section search) go as it sent them.
 
     Args:
-      use_channels: which channels, 0-indexed from the back, ascending. Every list below has one
+      use_channels: which channels, 0-indexed from the back, ascending. Every list below is one
         entry per channel, in this order.
-      locations: where each channel's tip bottom goes, on the deck in mm. The z is the liquid
-        surface the tip is taken to when no LLD runs.
-      lld_search_heights: where each LLD search starts, in mm.
-      minimum_allowed_z_position_during: how low each tip bottom may go, in mm.
-      piston_volumes: how much each channel's piston draws, in uL.
-      minimum_traverse_height_start: how high the channels travel first, in mm. As high as the
-        mounted tips allow when None.
-      lld_mode: how the liquid is found. Z touch finds a floor, not a liquid, and is warned about.
+      locations: where each tip bottom goes; the z is the liquid surface when no LLD runs.
+      lld_search_heights: where each LLD search starts.
+      minimum_allowed_z_position_during: how low each tip bottom may go.
+      piston_volumes: what each piston draws.
+      minimum_traverse_height_start: travel height before the command. The tips' highest when None.
+      lld_mode: how the liquid is found. ZTOUCH finds a floor, not a liquid, and logs a warning.
       gamma_lld_sensitivity: capacitive LLD sensitivity, 1 high to 4 low.
       dp_lld_sensitivity: pressure LLD sensitivity, 1 high to 4 low.
-      detection_height_difference_for_dual_lld: the two detections' allowed difference, in mm.
-      aspirate_position_above_z_touch_off: how far above a Z touch the aspiration is, in mm.
-      clot_detection_heights: how far the tip may be held back by a clot, in mm. 0.0 when None.
-      immersion_depths: how far into the liquid each tip goes, in mm; negative is out of it. 0.0
-        when None.
-      blow_out_air_volumes: air drawn before the liquid, in uL. 0.0 when None.
-      pre_wetting_volumes: drawn and returned first, in uL. 0.0 when None.
-      mix: how each channel mixes before drawing, a `Mix` per channel, None for no mixing: its
-        volume, cycles, flow rate and how far it follows the surface. Nothing mixes when None.
-      mix_position_from_liquid_surface: how far under the surface mixing is, in mm.
-      flow_rates: in uL/s. 100.0 when None.
-      surface_following_distances: how far each tip follows the sinking surface, in mm. 0.0 when
-        None.
-      second_section_height: how tall the container's narrower lower section is, in mm above
-        `minimum_allowed_z_position_during`; the surface following runs on it.
+      detection_height_difference_for_dual_lld: allowed difference of the two detections.
+      aspirate_position_above_z_touch_off: aspiration height above a Z touch.
+      clot_detection_heights: how far a clot may hold the tip back. 0.0 when None.
+      immersion_depths: how far into the liquid each tip goes; negative is out of it. 0.0 when None.
+      blow_out_air_volumes: air drawn before the liquid. 0.0 when None.
+      pre_wetting_volumes: drawn and returned first. 0.0 when None.
+      mix: a `Mix` per channel, None for no mixing.
+      mix_position_from_liquid_surface: mixing depth under the surface.
+      flow_rates: 100.0 when None.
+      surface_following_distances: how far each tip follows the sinking surface. 0.0 when None.
+      second_section_height: height of the container's narrower lower section above
+        `minimum_allowed_z_position_during`, for the surface following.
       second_section_ratio: that section's bottom to top ratio, in tenths.
-      settling_times: how long it waits in the liquid, in s. 0.0 when None.
-      swap_speeds: how fast the tip leaves the liquid, in mm/s. 100.0 when None.
-      pull_out_distance_transport_air: how far the tip rises before drawing transport air, in mm.
-      transport_air_volumes: air drawn after the liquid, in uL. 0.0 when None.
-      limit_curve_index: the TADM limit curve, 0 for none.
-      minimum_traverse_height_end: how high they end, in mm. The same when None.
+      settling_times: wait in the liquid. 0.0 when None.
+      swap_speeds: speed of leaving the liquid. 100.0 when None.
+      pull_out_distance_transport_air: rise before drawing transport air.
+      transport_air_volumes: air drawn after the liquid. 0.0 when None.
+      limit_curve_index: TADM limit curve, 0 for none.
+      minimum_traverse_height_end: height at the end. As the start when None.
 
     Raises:
-      ValueError: If a list is not one entry per channel, a value is out of the firmware's range,
-        a position cannot be reached, or a tip would fill past its capacity.
-      RuntimeError: If a channel used carries no tip.
+      ValueError: A list not one entry per channel, a value out of the firmware's range, an
+        unreachable position, or a tip filled past its capacity.
+      RuntimeError: A channel used carries no tip.
     """
     n = len(use_channels)
 
@@ -4765,85 +4754,65 @@ class Pipettes:
   ) -> None:
     """Draw liquid from each container with a channel's tip.
 
-    As `probe_liquid_heights` goes about it: the containers are dealt to the channels in cycles,
-    one per channel each cycle, each cycle is planned into the fewest batches the channels can
-    reach at once, and the channels of a batch aspirate together in one `C0 AS`. The heights come
-    from the model: the tip may go no lower than the cavity bottom, an LLD search starts
-    `search_start_clearance` above the top, and the surface is the given liquid height above the
-    bottom, else what the container's tracked volume stands at.
-
-    The volume is given one of two ways. `volumes` is the liquid wanted, and a Hamilton liquid
-    class turns it into what the piston draws, by its correction curve, and fills the flow rate,
-    the air volumes, the clot retract height, the swap speed and the settling time where they are
-    not given; the class is looked up for each channel's tip as legacy looks it up, water, unless
-    `hamilton_liquid_classes` gives it. `piston_volumes` is what the piston draws, as given, with
-    no class and legacy's plain defaults. With volume tracking on, every container gives up its
-    volume and every tip takes it, refused before anything moves when a container has too little
-    or a tip too little room, and committed only once every batch is done.
-    The keyword arguments come in the order the aspiration runs, as `_aspirate_in_one_move` has
-    them; the per-container ones are one entry per container, in the containers' order.
+    Batched as `probe_liquid_heights`: containers dealt to channels in cycles, each cycle planned
+    into batches, one `C0 AS` per batch. Heights from the model: floor at the cavity bottom, LLD
+    search from `search_start_clearance` above the top, surface from `liquid_heights`, else the
+    tracked volume. Either `volumes` with a liquid class, which corrects the piston volume and
+    fills flow rate, air volumes, clot height, swap speed and settling time where not given, or
+    `piston_volumes` as given. With volume tracking on the trackers move first, so a short
+    container or a full tip refuses before anything moves; committed after the last batch.
+    Keyword arguments in the order the aspiration runs; per-container ones in the containers' order.
 
     Args:
-      containers: any number; a whole plate is fine.
-      volumes: how much liquid to take from each container, in uL, corrected by a liquid class.
-        One of this and `piston_volumes`.
-      use_channels: which channels, 0-indexed from the back. The first len(containers) when None,
-        up to every channel.
-      resource_offsets: added to where each channel goes in its container, in mm. Planned when
-        None, spreading channels that share a container. The z shifts the heights.
-      liquid_heights: where the liquid stands above each cavity bottom, in mm. None takes it from
-        the tracked volume, or, with an LLD mode, leaves it to the search.
-      lld_mode: how the liquid is found. Off goes to the surface as given.
-      flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
-      hamilton_liquid_classes: the class for each container's volume. Looked up when None, for
-        the channel's tip, water, `jet` and `blow_out`, as legacy does.
-      jet: whether the later dispense is a jet, per container, for the lookup. False when None.
-      blow_out: whether the later dispense blows out, per container, for the lookup. False when
-        None.
-      piston_volumes: how much each channel's piston draws, in uL, per container, as given. One of
-        this and `volumes`; no liquid class applies.
+      containers: any number.
+      volumes: liquid to take from each container, corrected by a liquid class. One of this and
+        `piston_volumes`.
+      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
+      resource_offsets: offset of each channel in its container, in mm. Planned when None. The z
+        shifts the heights.
+      liquid_heights: liquid height above each cavity bottom, in mm. None: the tracked volume, or
+        the search with an LLD mode.
+      lld_mode: how the liquid is found. OFF goes to the surface as given.
+      flow_rates: in uL/s. The class's, else 100.0, when None.
+      hamilton_liquid_classes: one per container. Looked up for the channel's tip, water, `jet`
+        and `blow_out` when None.
+      jet: whether the later dispense is a jet, for the lookup. False when None.
+      blow_out: whether the later dispense blows out, for the lookup. False when None.
+      piston_volumes: what each piston draws, in uL, as given. One of this and `volumes`.
       gamma_lld_sensitivity: capacitive LLD sensitivity, 1 high to 4 low.
       dp_lld_sensitivity: pressure LLD sensitivity, 1 high to 4 low.
-      detection_height_difference_for_dual_lld: the two detections' allowed difference, in mm.
-      aspirate_position_above_z_touch_off: how far above a Z touch the aspiration is, in mm.
-      clot_detection_heights: how far the tip may be held back by a clot, in mm, per container.
-        The liquid class's, else 0.0, when None.
-      immersion_depths: how far into the liquid each tip goes, in mm, per container; negative is
-        out of it.
-      blow_out_air_volumes: air drawn before the liquid, in uL, per container. The liquid
-        class's, else 0.0, when None.
-      pre_wetting_volumes: drawn and returned first, in uL, per container.
-      mix: how each container is mixed before the draw, a `Mix` per container, None for no mixing.
-        Its surface following distance counts here, which legacy's channels ignored.
-      mix_position_from_liquid_surface: how far under the surface mixing is, in mm.
-      surface_following_distances: how far each tip follows the sinking surface, in mm, per
-        container.
-      second_section_height: how tall the container's narrower lower section is, in mm.
+      detection_height_difference_for_dual_lld: allowed difference of the two detections, in mm.
+      aspirate_position_above_z_touch_off: aspiration height above a Z touch, in mm.
+      clot_detection_heights: how far a clot may hold the tip back, in mm. The class's, else 0.0,
+        when None.
+      immersion_depths: how far into the liquid each tip goes, in mm; negative is out of it.
+      blow_out_air_volumes: air drawn before the liquid, in uL. The class's, else 0.0, when None.
+      pre_wetting_volumes: drawn and returned first, in uL.
+      mix: a `Mix` per container, None for no mixing.
+      mix_position_from_liquid_surface: mixing depth under the surface, in mm.
+      surface_following_distances: how far each tip follows the sinking surface, in mm.
+      second_section_height: height of the container's narrower lower section, in mm.
       second_section_ratio: that section's bottom to top ratio, in tenths.
-      settling_times: how long the tip waits in the liquid, in s, per container. The liquid
-        class's, else 0.0, when None.
-      swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid class's,
-        else 100.0, when None.
-      pull_out_distance_transport_air: how far the tip rises before drawing transport air, in mm.
-      transport_air_volumes: air drawn after the liquid, in uL, per container. The liquid class's,
-        else 0.0, when None.
-      limit_curve_index: the TADM limit curve, 0 for none.
-      minimum_traverse_height_start: the height every low channel's lowest point is raised to
-        before the first batch, in mm. Z safety when None.
-      minimum_traverse_height_during: the same, between batches, and where each batch ends. Z
+      settling_times: wait in the liquid, in s. The class's, else 0.0, when None.
+      swap_speeds: speed of leaving the liquid, in mm/s. The class's, else 100.0, when None.
+      pull_out_distance_transport_air: rise before drawing transport air, in mm.
+      transport_air_volumes: air drawn after the liquid, in uL. The class's, else 0.0, when None.
+      limit_curve_index: TADM limit curve, 0 for none.
+      minimum_traverse_height_start: raise of every low channel before the first batch, in mm.
+        Z safety when None.
+      minimum_traverse_height_during: the same between batches, and each batch's end height. Z
         safety when None.
-      minimum_traverse_height_end: where the tips used are left, in mm. Z safety when None.
-      x_grouping_tolerance: containers within this X distance share a batch, in mm.
+      minimum_traverse_height_end: where the tips are left, in mm. Z safety when None.
+      x_grouping_tolerance: X distance within which containers share a batch, in mm.
         `default_x_grouping_tolerance` when None.
 
     Raises:
-      ValueError: If an argument is out of range, the lists do not match, both or neither of
-        `volumes` and `piston_volumes` are given, a class is given with `piston_volumes`, or no
-        class is known for a channel's tip.
-      RuntimeError: If a channel used carries no tip, the driver was given no deck, or nothing
-        knows where a container's liquid stands: no height given, volume tracking off, LLD off.
-      TooLittleLiquidError: If a container holds less than it is asked for.
-      TooLittleVolumeError: If a tip has no room for what it is asked to draw.
+      ValueError: An argument out of range, lists that do not match, both or neither of `volumes`
+        and `piston_volumes`, a class beside `piston_volumes`, or no class for a channel's tip.
+      RuntimeError: A channel without a tip, no deck, or no way to know where a liquid stands:
+        no height given, tracking off, LLD off.
+      TooLittleLiquidError: A container holding less than asked.
+      TooLittleVolumeError: A tip without room for what it is to draw.
     """
     deck = self._driver.deck
     if deck is None:
