@@ -329,8 +329,8 @@ def test_probe_resource_exists_ztouches_the_front_tool_over_its_centre(surface, 
   center = plate.get_location_wrt(deck, x="c", y="c", z="c")
   assert seek.kwargs["search_end_position"] == pytest.approx(center.z)
   assert seek.kwargs["allow_without_tip"] is True
-  # Travelled at Z safety, and the probe is the one to leave the channels there.
-  assert seek.kwargs["minimum_traverse_height_end"] is None
+  # Travelled at Z safety, and the probe is the one to leave the channels there, not 2 mm up.
+  assert seek.kwargs["post_detection_distance"] == 0.0
   assert seek.kwargs["move_channels_to_safe_pos_after"] is True
   assert commands.move_to_safe_z.await_count == 1
 

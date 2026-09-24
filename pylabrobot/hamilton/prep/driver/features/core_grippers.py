@@ -1168,11 +1168,13 @@ class CoreGrippers:
       search_start_position=top.z + search_distance,
       search_speed=search_speed,
       search_end_position=center.z,
-      minimum_traverse_height_end=minimum_traverse_height_end,
       allow_without_tip=True,
+      post_detection_distance=0.0,
       move_channels_to_safe_pos_after=minimum_traverse_height_end is None,
       push_force_pwm=push_force_pwm,
     )
+    if minimum_traverse_height_end is not None:
+      await self._raise_to_traverse(minimum_traverse_height_end)
 
     if surface is None:
       logger.info(

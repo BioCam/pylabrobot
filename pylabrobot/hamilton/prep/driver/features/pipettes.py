@@ -2857,8 +2857,9 @@ class Pipettes:
     search_end_position: Optional[float] = None,
     sensitivity: Optional[int] = None,
     detect_mode: Optional[int] = None,
-    minimum_traverse_height_end: Optional[float] = None,
     allow_without_tip: bool = False,
+    post_detection_distance: float = 2.0,
+    move_channels_to_safe_pos_after: bool = False,
   ) -> Optional[float]:
     """Lower a channel where it stands until its cLLD triggers.
 
@@ -2870,8 +2871,10 @@ class Pipettes:
         None: a seek that detects nothing goes that far down.
       sensitivity: cLLD sensitivity. Defaults to `default_clld_sensitivity`.
       detect_mode: cLLD detect mode. Defaults to `default_clld_detect_mode`.
-      minimum_traverse_height_end: height to finish at in mm. Defaults to `search_start_position`.
       allow_without_tip: whether to probe without a mounted tip. False requires one.
+      post_detection_distance: how far above the liquid the tip rests afterwards, in mm. The seek
+        itself lands back at the start first, as the firmware returns it there.
+      move_channels_to_safe_pos_after: whether to raise every channel to Z safety instead.
 
     Returns:
       Detected height in mm, rounded to 0.01 mm, or None.
@@ -2906,9 +2909,6 @@ class Pipettes:
     search_speed = self.default_clld_probe_speed if search_speed is None else search_speed
     sensitivity = self.default_clld_sensitivity if sensitivity is None else sensitivity
     detect_mode = self.default_clld_detect_mode if detect_mode is None else detect_mode
-    minimum_traverse_height_end = (
-      search_start_position if minimum_traverse_height_end is None else minimum_traverse_height_end
-    )
     # The Z window is the stop disc's and these heights are the tip bottom's, so what the channel
     # carries moves the range down with it.
     window = (
@@ -2933,7 +2933,6 @@ class Pipettes:
       for name, value in (
         ("search_start_position", search_start_position),
         ("search_end_position", search_end_position),
-        ("minimum_traverse_height_end", minimum_traverse_height_end),
       ):
         if reach_z is not None and not reach_z[0] <= value <= reach_z[1]:
           raise ValueError(
@@ -2949,23 +2948,26 @@ class Pipettes:
       seek_velocity_z=search_speed,
       seek_height=search_start_position,
       min_seek_height=search_end_position,
-      final_position_z=minimum_traverse_height_end,
+      final_position_z=search_start_position,
       lld_sensitivity=sensitivity,
       detect_mode=detect_mode,
     )
     try:
       # Where the move is going, recorded as it is sent: on the answer the model would already be a
       # whole move behind the device. The read below still has the last word.
-      self.update_location_by_reference_point(channel_idx, z=minimum_traverse_height_end)
+      self.update_location_by_reference_point(channel_idx, z=search_start_position)
       results = await self._unchecked_fw_z_seek_lld_position([seek])
     finally:
       await self._record_where_they_stopped()
     result = next(
       (r for r in results if int(r.channel) == int(self.channel_enum(channel_idx))), None
     )
-    if result is None or not result.detected:
-      return None
-    return round(float(result.position), 2)
+    surface = None if result is None or not result.detected else round(float(result.position), 2)
+    if move_channels_to_safe_pos_after:
+      await self.move_to_safe_z()
+    elif surface is not None and post_detection_distance:
+      await self.move_tool_bottom_to_z_position(channel_idx, surface + post_detection_distance)
+    return surface
 
   async def _unchecked_fw_z_axis_seek_obstacle(
     self,
@@ -3008,8 +3010,8 @@ class Pipettes:
     search_start_position: Optional[float] = None,
     search_speed: float = 10.0,
     search_end_position: Optional[float] = None,
-    minimum_traverse_height_end: Optional[float] = None,
     allow_without_tip: bool = False,
+    post_detection_distance: float = 2.0,
     move_channels_to_safe_pos_after: bool = False,
     end_tolerance: float = 1.2,
     push_force_pwm: Optional[int] = None,
@@ -3032,9 +3034,10 @@ class Pipettes:
       search_speed: seek speed in mm/s.
       search_end_position: where the search ends, in mm. The bottom of the channel's Z range when
         None: a seek that detects nothing goes that far down.
-      minimum_traverse_height_end: height to finish at in mm. Defaults to `search_start_position`.
       allow_without_tip: whether to probe without a mounted tip. False requires one.
-      move_channels_to_safe_pos_after: whether to move all channels to Z safety afterwards.
+      post_detection_distance: how far above what it met the channel rests afterwards, in mm. The
+        seek itself lands back at the start first, as the firmware returns it there.
+      move_channels_to_safe_pos_after: whether to raise every channel to Z safety instead.
       end_tolerance: how close to `search_end_position` an answer counts as the end of an untouched search
         rather than a surface, in mm.
       push_force_pwm: the Z drive's PWM to hold for the seek, 40 to 125, put back afterwards. None leaves the
@@ -3091,11 +3094,9 @@ class Pipettes:
     reach = window
     start = round(here.z, 2) if search_start_position is None else search_start_position
     floor = reach[0] if search_end_position is None else search_end_position
-    final = start if minimum_traverse_height_end is None else minimum_traverse_height_end
     for name, value in (
       ("search_start_position", start),
       ("search_end_position", floor),
-      ("minimum_traverse_height_end", final),
     ):
       if not reach[0] <= value <= reach[1]:
         raise ValueError(
@@ -3117,27 +3118,30 @@ class Pipettes:
           channel.zaxis,
           start_position=start + extension + offset,
           end_position=floor + extension + offset,
-          final_position=final + extension + offset,
+          final_position=start + extension + offset,
           speed=search_speed,
           read_timeout=(abs(here.z - start) + start - floor) / search_speed + 30,
         )
     finally:
       await self._record_where_they_stopped()
+    surface: Optional[float] = None
+    if result.obstacle_detected:
+      met = float(result.position) - offset - extension
+      if abs(met - floor) <= end_tolerance:
+        logger.info(
+          "channel %d reached the end of its search at %.3f mm without meeting anything; the "
+          "firmware answers that as a detection at %.3f mm",
+          channel_idx,
+          floor,
+          met,
+        )
+      else:
+        surface = round(met, 2)
     if move_channels_to_safe_pos_after:
       await self.move_to_safe_z()
-    if not result.obstacle_detected:
-      return None
-    surface = float(result.position) - offset - extension
-    if abs(surface - floor) <= end_tolerance:
-      logger.info(
-        "channel %d reached the end of its search at %.3f mm without meeting anything; the firmware answers "
-        "that as a detection at %.3f mm",
-        channel_idx,
-        floor,
-        surface,
-      )
-      return None
-    return round(surface, 2)
+    elif surface is not None and post_detection_distance:
+      await self.move_tool_bottom_to_z_position(channel_idx, surface + post_detection_distance)
+    return surface
 
   # -- shutdown / serialization --------------------------------------------------------------------
 

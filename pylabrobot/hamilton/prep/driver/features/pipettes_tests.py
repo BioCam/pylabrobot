@@ -599,7 +599,7 @@ def test_simulated_x_probe_stops_the_arm_at_the_first_resource_in_the_way():
 
 @pytest.mark.parametrize("probe", ["probe_z_using_clld", "probe_z_using_ztouch"])
 def test_simulated_z_probe_detects_the_top_of_a_resource_below(probe):
-  """A Z probe over a resource detects its top; the channel is left at its final height."""
+  """A Z probe over a resource detects its top; the channel is left 2 mm above it."""
 
   async def _t():
     p = PrepSimulationDriver(deck=_deck_with_block(285.0, 295.0))
@@ -610,7 +610,7 @@ def test_simulated_z_probe_detects_the_top_of_a_resource_below(probe):
       1, search_start_position=160.0, search_end_position=20.0, allow_without_tip=True
     )
     assert found == pytest.approx(60.0)
-    assert (await p.pipettes.request_locations())[1].z == pytest.approx(160.0)
+    assert (await p.pipettes.request_locations())[1].z == pytest.approx(62.0)
     await p.stop()
 
   _run(_t())
@@ -634,7 +634,6 @@ def test_probe_z_using_ztouch_seeks_with_the_channels_own_z_axis():
       search_start_position=160.0,
       search_speed=5.0,
       search_end_position=100.0,
-      minimum_traverse_height_end=150.0,
       allow_without_tip=True,
     )
     assert found is None
@@ -642,9 +641,9 @@ def test_probe_z_using_ztouch_seeks_with_the_channels_own_z_axis():
     offset = SIMULATED_Z_DRIVE_OFFSETS[1]
     assert seek.dest == p.pipettes.channels[1].zaxis
     assert (seek.start_position, seek.end_position, seek.final_position, seek.velocity) == (
-      pytest.approx((160.0 + offset, 100.0 + offset, 150.0 + offset, 5.0))
+      pytest.approx((160.0 + offset, 100.0 + offset, 160.0 + offset, 5.0))
     )
-    assert (await p.pipettes.request_locations())[1].z == pytest.approx(150.0)
+    assert (await p.pipettes.request_locations())[1].z == pytest.approx(160.0)
     await p.stop()
 
   _run(_t())
@@ -671,7 +670,6 @@ def test_probe_z_using_ztouch_seeks_the_tip_bottom_and_can_end_at_z_safety():
       1,
       search_start_position=100.0,
       search_end_position=70.0,  # above the spot below it, so the seek touches nothing
-      minimum_traverse_height_end=90.0,
     )
     assert await probe() is None
     assert await probe(tip_len=70.0, move_channels_to_safe_pos_after=True) is None
@@ -761,7 +759,6 @@ def test_probe_z_using_ztouch_refuses_seeks_it_cannot_make():
       ({"search_speed": 0}, "search_speed must be above 0"),
       ({"search_start_position": 100.0, "search_end_position": 120.0}, "must be below"),
       ({"search_end_position": 5.0}, "outside channel 1 range"),
-      ({"minimum_traverse_height_end": 400.0}, "outside channel 1 range"),
     ):
       with pytest.raises(ValueError, match=message):
         await probe(**kwargs)
