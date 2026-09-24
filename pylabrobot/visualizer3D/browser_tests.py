@@ -447,6 +447,7 @@ if __name__ == "__main__":
   unittest.main()
 
 
+@unittest.skipUnless(CHROME, "no headless browser to drive")
 class SimulationTests(unittest.IsolatedAsyncioTestCase):
   """A run on the simulated STAR leaves the page where the tree is."""
 
