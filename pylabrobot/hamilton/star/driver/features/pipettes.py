@@ -2129,11 +2129,11 @@ class Pipettes:
       zi=f"{post_detection_distance:04}",
     )
 
-  async def request_last_lld_heights(self) -> List[float]:
-    """Request the height each channel last detected liquid at, by cLLD or pLLD. `C0 RL`.
+  async def request_last_lld_z_positions(self) -> List[float]:
+    """Request where each channel last detected liquid, by cLLD or pLLD. `C0 RL`.
 
     Returns:
-      The heights in mm, back to front.
+      The tip bottom's Z position at detection, in mm on the deck, by channel.
     """
     resp = await self._driver.send_command(module="C0", command="RL", fmt="lh#### (n)")
     return [round(increments / 10, 1) for increments in cast(List[int], resp["lh"])]
@@ -2285,7 +2285,7 @@ class Pipettes:
       return None
     if move_channels_to_safe_pos_after:
       await self.move_to_safe_z()
-    return (await self.request_last_lld_heights())[channel_idx]
+    return (await self.request_last_lld_z_positions())[channel_idx]
 
   async def _unchecked_fw_probe_z_using_plld(
     self,
@@ -3129,7 +3129,7 @@ class Pipettes:
         ),
         return_exceptions=True,
       )
-      heights = await self.request_last_lld_heights()
+      heights = await self.request_last_lld_z_positions()
       for (channel, job, _, _), result in zip(searches, results):
         if isinstance(result, STARFirmwareError) and self._found_nothing(
           result, self.channel_id(channel)

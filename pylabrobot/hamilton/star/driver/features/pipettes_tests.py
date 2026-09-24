@@ -1163,9 +1163,9 @@ class TestLiquidProbingInSimulation(unittest.IsolatedAsyncioTestCase):
   async def test_a_miss_zeroes_the_channels_latched_height(self):
     a1, d1 = self.wells[0], self.wells[3]
     await self.pipettes.probe_liquid_heights([a1], use_channels=[0])
-    self.assertGreater((await self.pipettes.request_last_lld_heights())[0], 0.0)
+    self.assertGreater((await self.pipettes.request_last_lld_z_positions())[0], 0.0)
     await self.pipettes.probe_liquid_heights([d1], use_channels=[0])
-    self.assertEqual((await self.pipettes.request_last_lld_heights())[0], 0.0)
+    self.assertEqual((await self.pipettes.request_last_lld_z_positions())[0], 0.0)
 
   async def test_a_container_without_volume_functions_says_what_it_needs(self):
     from pylabrobot.resources.container import Container
