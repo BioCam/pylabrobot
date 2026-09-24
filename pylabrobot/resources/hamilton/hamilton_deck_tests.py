@@ -17,6 +17,7 @@ from pylabrobot.resources.hamilton import (
   hamilton_96_tiprack_1000uL,
   hamilton_96_tiprack_1000uL_filter,
 )
+from pylabrobot.resources.hamilton.core_gripper_tools import hamilton_core_gripper_tool
 from pylabrobot.resources.stanley.cups import (
   StanleyCup_QUENCHER_FLOWSTATE_TUMBLER,
 )
@@ -32,6 +33,21 @@ class HamiltonDeckTests(unittest.TestCase):
     # The 1000 uL rack decides: 334.7 - 87.1 - 5.
     self.assertEqual(deck.update_safe_deck_height_from_tips(334.7), 242.6)
     self.assertEqual(deck.safe_deck_height, 242.6)
+
+  def test_what_hangs_from_a_carried_tool_is_not_checked(self):
+    deck = STARDeck()
+    arm = Resource(name="arm", size_x=10, size_y=10, size_z=10, category="x_arm")
+    deck.assign_child_resource(arm, location=Coordinate(0, 0, 300))
+    tool = hamilton_core_gripper_tool("tool")
+    arm.assign_child_resource(tool, location=Coordinate.zero())
+    with self.assertNoLogs("pylabrobot.resources.hamilton.hamilton_decks", level="WARNING"):
+      tool.assign_child_resource(
+        Resource(name="plate", size_x=5, size_y=5, size_z=5), location=None
+      )
+    with self.assertLogs("pylabrobot.resources.hamilton.hamilton_decks", level="WARNING"):
+      deck.assign_child_resource(
+        Resource(name="tower", size_x=5, size_y=5, size_z=5), location=Coordinate(500, 100, 300)
+      )
 
   def test_rails_is_deprecated(self):
     """`rails` still places a resource, and says it is deprecated."""

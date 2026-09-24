@@ -496,6 +496,12 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
       for child in resource.comparable_children():
         check_z_height(child)
 
+    # Hanging from what the device carries, e.g. a plate in the grippers' jaws, it rides with that.
+    up: Optional[Resource] = resource.parent
+    while up is not None and up is not self:
+      if up.category in ("x_arm", "head96") or isinstance(up, HeadTool):
+        return
+      up = up.parent
     check_z_height(resource)
 
   def update_safe_deck_height_from_tips(self, stop_disc_z_max: float, margin: float = 5.0) -> float:
