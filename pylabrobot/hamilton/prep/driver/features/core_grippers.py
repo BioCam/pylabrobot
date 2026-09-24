@@ -1207,7 +1207,7 @@ class CoreGrippers:
     drop_z_speed: Optional[float] = None,
     drop_y_clearance: float = 2.5,
     minimum_traverse_height_end: Optional[float] = None,
-    return_grippers: bool = True,
+    return_grippers: bool = False,
   ) -> None:
     """Move a resource with the CoRe grippers, mounting them first if needed.
 
