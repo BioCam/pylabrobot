@@ -1716,14 +1716,24 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertAlmostEqual(wells[3].tracker.get_used_volume(), 90.0, delta=2.0)
     self.assertEqual(wells[5].tracker.get_used_volume(), 100.0)
 
-  async def test_too_little_liquid_is_refused_before_anything_is_sent(self):
-    from pylabrobot.resources.errors import TooLittleLiquidError
-
+  async def test_a_draw_past_what_the_well_holds_takes_air_with_a_warning(self):
     sent = self._record_aspirations()
-    with self.assertRaises(TooLittleLiquidError):
-      await self.pipettes.aspirate([self.wells[3]], [10.0])
-    self.assertEqual(sent, [])
-    self.assertEqual(self.wells[3].tracker.get_used_volume(), 0.0)
+    self.wells[2].tracker.set_volume(30.0)
+    with self.assertLogs(
+      "pylabrobot.hamilton.star.driver.features.pipettes", level="WARNING"
+    ) as logs:
+      await self.pipettes.aspirate(self.wells[2:4], piston_volumes=[50.0, 10.0])
+    # Both draws go: the well with 30 uL gives its 30, the empty one nothing, the tips take what
+    # moved; the pistons still draw the full 50 and 10.
+    self.assertEqual(len(sent), 1)
+    self.assertIn("av00500 00100", sent[0])
+    self.assertEqual(len(logs.output), 2)
+    self.assertIn("holds 30.0 uL", logs.output[0])
+    self.assertEqual([w.tracker.get_used_volume() for w in self.wells[2:4]], [0.0, 0.0])
+    tips = [self.pipettes.get_mounted_tip(channel) for channel in (0, 1)]
+    self.assertEqual(
+      [tip.tracker.get_used_volume() for tip in tips if tip is not None], [30.0, 0.0]
+    )
 
   async def test_without_tracking_the_surface_has_to_be_given_or_searched_for(self):
     from pylabrobot.resources import set_volume_tracking

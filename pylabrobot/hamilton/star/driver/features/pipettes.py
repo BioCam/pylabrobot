@@ -4761,11 +4761,11 @@ class Pipettes:
     any other's; surface from `liquid_heights`, else the tracked volume. CAPACITIVE and PRESSURE
     search first, set the tracker to the measured volume, warning when it is 20 % off the tracked
     one, refuse a container without liquid, and aspirate from where the tips rest with the
-    firmware's LLD off.
-    `volumes` with a liquid class, which corrects the piston volume and fills what is not given,
-    or `piston_volumes` as given. Trackers move per batch, before its command, committed on
-    success. Keyword arguments in the order the aspiration runs; per-container lists in the
-    containers' order.
+    firmware's LLD off. A draw past what a container holds goes ahead and takes air, with a
+    warning. `volumes` with a liquid class, which corrects the piston volume and fills what is not
+    given, or `piston_volumes` as given. Trackers move the liquid that is there per batch, before
+    its command, committed on success. Keyword arguments in the order the aspiration runs;
+    per-container lists in the containers' order.
 
     Args:
       containers: any number.
@@ -4822,7 +4822,6 @@ class Pipettes:
       RuntimeError: A channel without a tip, no deck, no way to know where a liquid stands (no
         height given, tracking off, LLD off), a container without height-volume functions under
         CAPACITIVE or PRESSURE, or no liquid found where the channels searched.
-      TooLittleLiquidError: A container holding less than asked.
       TooLittleVolumeError: A tip without room for what it is to draw.
     """
     deck = self._driver.deck
@@ -5088,9 +5087,21 @@ class Pipettes:
       # before this batch's command; committed as the command succeeds.
       trackers = []
       if tracking:
-        for job in jobs:
-          containers[job].tracker.remove_liquid(liquid[job])
-          tips[job].tracker.add_liquid(liquid[job])
+        for channel, job in zip(batch.channels, jobs):
+          # A draw past what the container holds takes the rest as air, which is how a well is
+          # emptied on purpose; the model records the liquid that moved.
+          held = containers[job].tracker.get_used_volume()
+          moved = min(liquid[job], held)
+          if moved < liquid[job]:
+            logger.warning(
+              "channel %d draws %.1f uL from %s, which holds %.1f uL; the rest is air",
+              channel,
+              liquid[job],
+              containers[job].name,
+              held,
+            )
+          containers[job].tracker.remove_liquid(moved)
+          tips[job].tracker.add_liquid(moved)
           trackers += [containers[job].tracker, tips[job].tracker]
       try:
         await send(batch)
