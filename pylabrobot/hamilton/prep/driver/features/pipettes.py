@@ -4780,6 +4780,7 @@ class Pipettes:
     *,
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
     piston_volumes: Optional[Sequence[float]] = None,
+    clld_sensitivity: Optional[int] = None,
     immersion_depths: Optional[Sequence[float]] = None,
     blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
     pre_wetting_volumes: Optional[List[float]] = None,
@@ -4820,6 +4821,7 @@ class Pipettes:
         channel's tip, water, when None.
       piston_volumes: how much each piston draws, in uL, per container, as given, with no liquid
         class. One of this and `volumes`.
+      clld_sensitivity: capacitive LLD sensitivity for every channel. 3 when None.
       immersion_depths: how far under the surface each tip aspirates, in mm, per container.
         With LLD the search's `z_submerge`, 2.0 when None; without, off `z_fluid`, 0.0 when None.
       blow_out_air_volumes: air drawn before the liquid, in uL, per container. The liquid
@@ -4871,6 +4873,9 @@ class Pipettes:
       raise ValueError("give one of volumes and piston_volumes")
     if piston_volumes is not None and hamilton_liquid_classes is not None:
       raise ValueError("piston_volumes are sent as given; no liquid class applies")
+    if clld_sensitivity is not None:
+      base = c_lld or default_lld_params(True, lld_mode=Pipettes.LLDMode.CAPACITIVE).c_lld
+      c_lld = replace(base, sensitivity=clld_sensitivity)
     effective_lld = self._resolve_effective_lld(
       None if lld_mode is None else [lld_mode] * n, lld, n
     )

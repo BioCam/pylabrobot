@@ -254,6 +254,32 @@ def test_aspirate_takes_volumes_by_a_liquid_class_or_piston_volumes_as_given():
   _run(_t())
 
 
+def test_aspirate_sends_the_clld_sensitivity_it_is_given():
+  """clld_sensitivity replaces only the sensitivity in the capacitive LLD block."""
+
+  async def _t():
+    deck = PrepDeck()
+    tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
+    plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+    p = PrepSimulationDriver(deck=deck)
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
+    sent = _record(p)
+    await p.pipettes.aspirate(
+      [plate.get_item("A1")],
+      piston_volumes=[0.0],
+      use_channels=[0],
+      lld_mode=Pipettes.LLDMode.CAPACITIVE,
+      clld_sensitivity=2,
+    )
+    c_lld = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0].c_lld
+    assert (c_lld.default_values, c_lld.sensitivity, c_lld.detect_mode) == (False, 2, 0)
+    await p.stop()
+
+  _run(_t())
+
+
 def test_channels_sharing_a_container_spread_across_it():
   """Two channels into one dish go either side of its centre, at least their spacing apart."""
 
