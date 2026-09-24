@@ -311,10 +311,16 @@ def test_y_and_z_moves_send_the_speed_they_are_given():
     for refused in (
       lambda: p.pipettes.move_to_y_positions({0: 370.0}, speed=0),
       lambda: p.pipettes.move_to_y_position(0, 370.0, speed=-5.0),
-      lambda: p.pipettes.move_tool_bottom_to_z_positions({0: 150.0}, speed=0),
-      lambda: p.pipettes.move_tool_bottom_to_z_position(0, 150.0, speed=-1.0),
     ):
       with pytest.raises(ValueError, match="speed must be above 0 mm/s"):
+        await refused()
+    # Z: within the speeds the drive has been sent at and runs.
+    for refused in (
+      lambda: p.pipettes.move_tool_bottom_to_z_positions({0: 150.0}, speed=0),
+      lambda: p.pipettes.move_tool_bottom_to_z_position(0, 150.0, speed=9.9),
+      lambda: p.pipettes.move_tool_bottom_to_z_position(0, 150.0, speed=142.1),
+    ):
+      with pytest.raises(ValueError, match="speed must be between 10.0 and 142.0 mm/s"):
         await refused()
     assert sent == []
     await p.stop()
