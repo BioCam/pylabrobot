@@ -4,6 +4,8 @@ import * as THREE from "three";
 // it can be changed without knowing anything about how the scene is built.
 
 export const DEG = Math.PI / 180;
+// What this page and the server agree on; the scene carries the server's number. See server.py.
+export const PROTOCOL = 1;
 
 // The existing visualizer's resource colours, so the same deck reads the same in both.
 export const RESOURCE_COLORS = {

@@ -63,6 +63,7 @@ import {
   MOVING_PARTS,
   NO_REFERENCE_MARK,
   PICKABLE_PARTS,
+  PROTOCOL,
   QUALITY_FAST_MS,
   QUALITY_HOLD_MS,
   QUALITY_LEVELS,
@@ -4005,6 +4006,11 @@ function atBoundary(surface) {
   // is what stops it settling.
   stats: () => stats,
   resources: () => world?.names ?? [],
+  // What a resource last published, as the page holds it: what its colour and panel are drawn from.
+  stateOf: (name) => {
+    const index = world?.indexOfName.get(name);
+    return index === undefined ? null : (stateOf.get(index) ?? null);
+  },
   // What the pointer at a point of the page would be over, by name.
   pickAt: (clientX, clientY) => {
     const hit = world ? pick({ clientX, clientY }) : null;
@@ -4699,6 +4705,12 @@ function connect() {
     // draws it in. There is no message that only touches the panels around the viewport.
     invalidate();
     if (kind === "scene") {
+      // A page is fetched fresh on every load; the Python serving it is as old as its process. A
+      // scene from another protocol is not drawn, since what it says would be misread.
+      if (data.protocol !== PROTOCOL) {
+        window.dispatchEvent(new CustomEvent("plr:mismatch"));
+        return;
+      }
       const _tScene = performance.now();
       // New pipelines to compile: the frame cost is not judged again until they have been.
       sceneCameAt = _tScene;

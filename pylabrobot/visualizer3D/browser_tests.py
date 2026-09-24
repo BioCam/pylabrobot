@@ -26,9 +26,11 @@ from pylabrobot.resources import does_volume_tracking, set_volume_tracking
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.corning import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.hamilton import hamilton_96_tiprack_50uL_NTR
+from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.resource_holder import ResourceHolder
 from pylabrobot.visualizer3D.facility import Facility
+from pylabrobot.visualizer3D.demo import build_facility, declare_channel_access, star_of
 from pylabrobot.visualizer3D.server import Viewer3D
 
 
@@ -162,6 +164,19 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
   async def world_x(self, browser: Browser, name: str) -> float:
     """Where the viewer draws a resource, read off the scene it holds."""
     return float(await browser.evaluate(f"window.plrViewer.worldOf({name!r})[0]"))
+
+  async def test_a_scene_from_another_protocol_is_named_not_drawn(self):
+    """The page is fetched fresh on every load while the Python serving it is as old as its
+    process, and a page reading a scene from an older server misread it in silence: positions
+    stopped updating and nothing said why."""
+    async with Browser(CDP_PORT + 7) as browser:
+      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
+      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
+      await self.viewer._broadcast("scene", {**self.viewer._scene_message(), "protocol": 0})
+      await browser.settle(
+        "document.getElementById('boot-diagnosis')?.textContent.includes('older than this page')",
+        10,
+      )
 
   async def test_a_frame_the_page_cannot_read_does_not_stop_the_next_one(self):
     """The page parsed every frame unguarded and applied a state without looking at it, so one
@@ -350,3 +365,69 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
   unittest.main()
+
+
+class SimulationTests(unittest.IsolatedAsyncioTestCase):
+  """A run on the simulated STAR leaves the page where the tree is."""
+
+  async def test_after_a_run_every_resource_is_drawn_where_the_tree_has_it(self):
+    """Positions travel three ways - in the scene, in a state's `locations`, and in a move - and
+    volumes in the state; each is checked on its own elsewhere. This drives all of them at once on
+    the demo facility and reads the page back against the tree, resource by resource. A joint's
+    angle travels rounded to a tenth of a degree, which at the reach of an arm's link is a fifth
+    of a millimetre, so that is how close the drawing is held to the tree."""
+    was_tracking = does_volume_tracking()
+    set_volume_tracking(True)
+    facility = build_facility()
+    star = star_of(facility)
+    await star.setup()
+    declare_channel_access(star)
+    viewer = Viewer3D(facility, open_browser=False, fs_port=FS_PORT + 7, ws_port=WS_PORT + 7)
+    await viewer.start()
+    try:
+      async with Browser(CDP_PORT + 8) as browser:
+        await browser.open(f"http://127.0.0.1:{viewer.fs_port}/")
+        await browser.settle("window.plrViewer && window.plrViewer.resources().length > 3000", 60)
+
+        source = star.deck.get_resource("source_0")
+        destination = star.deck.get_resource("destination_0")
+        assert isinstance(source, Plate) and isinstance(destination, Plate)
+        for well in ("A1", "B2", "H12"):
+          source.get_item(well).tracker.set_volume(200.0)
+          source.get_item(well).tracker.remove_liquid(50.0)
+          destination.get_item(well).tracker.add_liquid(50.0)
+          source.get_item(well).tracker.commit()
+          destination.get_item(well).tracker.commit()
+        x_range = star.x_arm.configuration.x_range
+        assert x_range is not None
+        low, high = x_range
+        await star.x_arm.move_to_x_position(round(low + (high - low) * 0.6, 1))
+        plate = star.deck.get_resource("source_1")
+        holder = star.deck.get_resource("destination_carrier").children[4]
+        assert isinstance(holder, ResourceHolder)
+        plate.unassign()
+        holder.assign_child_resource(plate)
+        await browser.settle(
+          "window.plrViewer.worldOf('source_1') && window.plrViewer.worldOf('source_1')[0] > 0", 30
+        )
+        await asyncio.sleep(1.0)
+
+        drawn = await browser.evaluate(
+          "Object.fromEntries(window.plrViewer.resources().map((n) => [n, window.plrViewer.worldOf(n)]))"
+        )
+        astray = []
+        for resource in facility.get_all_children():
+          at = resource.get_absolute_location()
+          x, y, z = drawn[resource.name]
+          if max(abs(x - at.x), abs(y - at.y), abs(z - at.z)) > 0.25:
+            astray.append((resource.name, (round(x, 1), round(y, 1), round(z, 1)), at))
+        self.assertEqual(astray[:5], [], f"{len(astray)} of {len(drawn)} drawn elsewhere")
+
+        for plate_, well in ((source, "A1"), (destination, "B2")):
+          shown = await browser.evaluate(
+            f"window.plrViewer.stateOf({plate_.get_item(well).name!r})"
+          )
+          self.assertEqual(shown["volume"], plate_.get_item(well).tracker.get_used_volume())
+    finally:
+      await viewer.stop()
+      set_volume_tracking(was_tracking)

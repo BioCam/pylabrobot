@@ -125,6 +125,10 @@ def _models_on_disk(root: str) -> Dict[str, str]:
 
 # How far a taken port is walked up before the viewer gives up on binding.
 PORT_TRIES = 20
+# What the page and this server agree on. The page is fetched fresh on every load while the
+# Python side lives as long as its process, so the two can drift apart; the scene carries this,
+# and a page that expects another number says so rather than drawing what it misreads.
+PROTOCOL = 1
 
 
 def _port_taken(error: OSError) -> bool:
@@ -387,7 +391,12 @@ class Viewer3D:
 
     walk(self.root, None)
     if moves:
-      self._scene_payload = {**scene.serialize(), "epoch": self._epoch, "stats": self._stats}
+      self._scene_payload = {
+        **scene.serialize(),
+        "epoch": self._epoch,
+        "stats": self._stats,
+        "protocol": PROTOCOL,
+      }
     # Every place the kept scene knows is current again, so a snapshot need not carry any of them.
     self._moved = set()
     return moves
@@ -474,6 +483,7 @@ class Viewer3D:
       **payload,
       "epoch": self._epoch,
       "stats": self._stats,
+      "protocol": PROTOCOL,
     }
     return self._scene_payload
 

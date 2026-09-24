@@ -165,6 +165,21 @@ window.addEventListener("plr:gone", () => {
   });
 });
 
+// The server's scene is from another protocol than this page: its Python is older than the files
+// it serves, which happens when the package is updated under a running kernel.
+window.addEventListener("plr:mismatch", () => {
+  showDiagnosis({
+    title: "The viewer is older than this page",
+    checks: [
+      [true, "renderer started"],
+      [false, "the viewer's Python speaks another protocol than this page"],
+    ],
+    hint:
+      "The Python process serving this page was started before the viewer's files changed on " +
+      "disk. Restart the kernel or the script, then reload this page.",
+  });
+});
+
 let started = false;
 try {
   await import("./app.js");
