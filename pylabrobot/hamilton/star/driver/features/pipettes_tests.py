@@ -2269,6 +2269,12 @@ class TestDispenseInSimulation(_SimulatedPlateWithWater):
     self.assertIn(f"zx{floor}", sent[-1])
     self.assertEqual(self.wells[3].tracker.get_used_volume(), 10.0)
 
+  async def test_a_channel_the_device_does_not_have_is_refused(self):
+    sent = self._record()
+    with self.assertRaises(ValueError):
+      await self.pipettes.dispense(self.wells[:1], piston_volumes=[10.0], use_channels=[9])
+    self.assertEqual(sent, [])
+
   async def test_a_piston_without_travel_is_refused_before_anything_moves(self):
     sent = self._record()
     with self.assertRaises(ValueError) as refused:

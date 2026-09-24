@@ -5015,8 +5015,14 @@ class Pipettes:
 
   def _get_channel_of_each_container(self, n: int, use_channels: Optional[List[int]]) -> List[int]:
     """The channel each of `n` containers is dealt to, in cycles, as `_prepare_batched` deals
-    them: the first `n` channels when `use_channels` is None."""
+    them: the first `n` channels when `use_channels` is None.
+
+    Raises:
+      ValueError: A channel this device does not have.
+    """
     dealt = use_channels or list(range(min(n, self.num_channels)))
+    for channel in dealt:
+      self._require_channel(channel)
     return [dealt[job % len(dealt)] for job in range(n)]
 
   async def _sense_pipetting_channels(
