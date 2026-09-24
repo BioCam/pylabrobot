@@ -378,7 +378,7 @@ class TestRequireISWAPParked(unittest.IsolatedAsyncioTestCase):
     async def not_parked(*args: Any, **kwargs: Any) -> bool:
       return False
 
-    iswap.request_parked = not_parked  # type: ignore[method-assign]
+    iswap.request_is_parked = not_parked  # type: ignore[method-assign]
     with self.assertRaises(RuntimeError):
       await self.pipettes._require_iswap_parked()
 

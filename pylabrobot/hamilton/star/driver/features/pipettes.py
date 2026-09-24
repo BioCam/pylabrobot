@@ -456,7 +456,7 @@ class Pipettes:
       RuntimeError: If it is not parked.
     """
     iswap = self.arm.iswap
-    if iswap is not None and not await iswap.request_parked():
+    if iswap is not None and not await iswap.request_is_parked():
       raise RuntimeError(
         "the iSWAP is not parked, and the channels move where it stands. "
         "Call `await star.iswap.park()` first."

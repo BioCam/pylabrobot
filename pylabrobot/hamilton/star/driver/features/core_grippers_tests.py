@@ -175,7 +175,7 @@ class TestPickUpAndDropTools(unittest.IsolatedAsyncioTestCase):
     async def not_parked(*args: Any, **kwargs: Any) -> bool:
       return False
 
-    iswap.request_parked = not_parked  # type: ignore[method-assign]
+    iswap.request_is_parked = not_parked  # type: ignore[method-assign]
     with self.assertRaises(RuntimeError):
       await self.grippers.pick_up_tools_at_location(1337.5, 225.0, 107.0, 125.0)
     self.assertEqual(self.tool_commands(), [])
