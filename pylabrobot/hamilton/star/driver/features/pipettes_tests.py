@@ -1579,12 +1579,24 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertEqual(bottoms, [self.pipettes.default_minimum_traverse_height] * 2)
 
   async def test_the_pistons_stand_at_what_they_drew(self):
+    # Initialization read them once already.
+    self.assertEqual(self.pipettes.piston_positions, [0.0] * 8)
     self.assertEqual(await self.pipettes.dispensing_drives_request_uL_positions(), [0.0] * 8)
     await self.pipettes.aspirate(self.wells[:2], piston_volumes=[50.0, 20.0])
+    # The reads before each batch's command already recorded where the pistons stood then.
+    self.assertEqual(self.pipettes.piston_positions, [0.0] * 8)
     positions = await self.pipettes.dispensing_drives_request_uL_positions()
     self.assertEqual(positions[:2], [50.0, 20.0])
     self.assertEqual(positions[2:], [0.0] * 6)
     self.assertEqual(await self.pipettes.dispensing_drive_request_uL_position(0), 50.0)
+    self.assertEqual(self.pipettes.piston_positions, positions)
+    # Asking for some channels answers None for the others and leaves their record alone.
+    self.pipettes.piston_positions[0] = 99.0
+    self.assertEqual(
+      await self.pipettes.dispensing_drives_request_uL_positions([1, 3]),
+      [None, 20.0, None, 0.0, None, None, None, None],
+    )
+    self.assertEqual(self.pipettes.piston_positions[:2], [99.0, 20.0])
 
   async def test_two_cycles_are_two_commands_and_one_raise(self):
     for row in "EFGH":
