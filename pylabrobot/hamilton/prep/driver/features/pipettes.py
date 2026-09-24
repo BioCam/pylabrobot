@@ -778,6 +778,7 @@ class PipetteChannel:
     calibration: Optional[Address] = None,
     clld: Optional[Address] = None,
     zaxis: Optional[Address] = None,
+    tadm: Optional[Address] = None,
   ) -> None:
     self.index = index
     self._driver = driver
@@ -789,6 +790,7 @@ class PipetteChannel:
     self.calibration = calibration
     self.clld = clld
     self.zaxis = zaxis
+    self.tadm = tadm
     self.bounds = bounds  # x_min..z_max from firmware, or None if unavailable
 
   def __repr__(self) -> str:
@@ -914,6 +916,38 @@ class PipetteChannel:
       raise RuntimeError(f"channel {self.index} has no CLld object in the firmware tree")
     status = await self._driver.send_command(PrepCmd.PrepCLldGetStatus(dest=self.clld))
     return any(status.detected)
+
+  def _require_tadm(self) -> Address:
+    """This channel's Tadm object.
+
+    Raises:
+      RuntimeError: If the channel has no Tadm object.
+    """
+    if self.tadm is None:
+      raise RuntimeError(f"channel {self.index} has no Tadm object in the firmware tree")
+    return self.tadm
+
+  async def request_tadm_pressure(self) -> int:
+    """Request this channel's live TADM pressure.
+
+    Returns:
+      The pressure in the sensor's counts, as the device gives it.
+
+    Raises:
+      RuntimeError: If the channel has no Tadm object.
+    """
+    response = await self._driver.send_command(
+      PrepCmd.PrepTadmGetPressure(dest=self._require_tadm())
+    )
+    return int(response.pressure[0])
+
+  async def request_tadm_status(self) -> PrepCmd.PrepTadmGetStatus.Response:
+    """Request this channel's TADM buffer: entries held, its size, its sample rate.
+
+    Raises:
+      RuntimeError: If the channel has no Tadm object.
+    """
+    return await self._driver.send_command(PrepCmd.PrepTadmGetStatus(dest=self._require_tadm()))
 
 
 # =============================================================================
@@ -1309,6 +1343,7 @@ class Pipettes:
         calibration=_drive_addr(drive_map.calibration_addrs, i),
         clld=_drive_addr(drive_map.clld_addrs, i),
         zaxis=_drive_addr(drive_map.zaxis_addrs, i),
+        tadm=_drive_addr(drive_map.tadm_addrs, i),
       )
       for i in range(num_channels)
     ]
@@ -1968,6 +2003,27 @@ class Pipettes:
     if channel not in volumes:
       raise RuntimeError(f"the device reported no dispensing drive volume for channel {channel}")
     return volumes[channel]
+
+  # -- total aspiration and dispense monitoring (TADM) ---------------------------------------------
+
+  async def read_tadm_curve(self, channel: int) -> Optional[PrepCmd.TadmReturnParameters]:
+    """Read the TADM data a channel recorded. `Pipettor.RetrieveTadmData`.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+
+    Returns:
+      Its entries, error flag and pressures in sensor counts, or None when it holds none.
+
+    Raises:
+      ValueError: If the channel does not exist.
+    """
+    if not 0 <= channel < self.num_channels:
+      raise ValueError(f"channel must be between 0 and {self.num_channels - 1}, is {channel}")
+    response = await self._driver.send_command(
+      PrepCmd.PrepRetrieveTadmData(channel=self.channel_enum(channel))
+    )
+    return response.tadm_data if response.tadm_data.entries else None
 
   # -- x position ----------------------------------------------------------------------------------
 
@@ -5848,6 +5904,8 @@ class Pipettes:
     z_air: Optional[List[float]] = None,
     minimum_traverse_height_end: Optional[float] = None,
     tadm: Optional[PrepCmd.TadmParameters] = None,
+    limit_curve_indices: Optional[Sequence[int]] = None,
+    tadm_storage_level: Optional[Literal["errors_only", "all"]] = None,
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
     surface_following_distances: Optional[Sequence[float]] = None,
     read_timeout: Optional[float] = None,
@@ -5908,6 +5966,10 @@ class Pipettes:
       minimum_traverse_height_end: the tip bottom height every tip is left at, in mm. The
         traverse height less each tip's overhang when None.
       tadm: TADM settings; given, the aspiration is monitored.
+      limit_curve_indices: TADM limit curve, 0 for none, per container. Only 0 until TADM is
+        verified on the device.
+      tadm_storage_level: which TADM curves the channel keeps. None records none; only None until
+        TADM is verified on the device.
       container_segments: each container's cross-sections, sent as they are, per container. None
         builds them from each container's profile.
       surface_following_distances: how far each tip follows the sinking surface, in mm, per
@@ -5926,7 +5988,8 @@ class Pipettes:
       ValueError: If an argument is out of range, the lists do not match, a channel repeats, there
         are more containers than channels, both or neither of `volumes` and `piston_volumes` are
         given, a class is given with `piston_volumes`, no class is known for a channel's tip, a
-        mode is not an `LLDMode`, a pressure mode is mixed with another or has no `p_lld`.
+        mode is not an `LLDMode`, a pressure mode is mixed with another or has no `p_lld`, or a
+        limit curve or a TADM storage level is given.
       RuntimeError: If a channel used carries no tip, or nothing knows where a container's
         liquid stands: no height given, volume tracking off, no LLD.
       TooLittleLiquidError: If a container holds less than it is asked for.
@@ -5955,6 +6018,7 @@ class Pipettes:
       "blow_out_air_volumes": blow_out_air_volumes,
       "pre_wetting_volumes": pre_wetting_volumes,
       "clot_detection_heights": clot_detection_heights,
+      "limit_curve_indices": limit_curve_indices,
       "z_fluid": z_fluid,
       "minimum_allowed_z_position_during": minimum_allowed_z_position_during,
       "z_bottom_search_offset": z_bottom_search_offset,
@@ -5969,6 +6033,10 @@ class Pipettes:
     for name, values in per_container.items():
       if values is not None and len(values) != n:
         raise ValueError(f"{name} length must match containers ({n})")
+    if any(index != 0 for index in limit_curve_indices or []) or tadm_storage_level is not None:
+      raise ValueError(
+        "TADM is not verified on the Prep yet; give limit curve 0 and no storage level"
+      )
     modes = self._get_lld_modes(lld_mode, n)
     offsets = (
       resource_offsets

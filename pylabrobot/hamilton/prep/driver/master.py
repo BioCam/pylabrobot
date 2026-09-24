@@ -180,7 +180,8 @@ class ChannelDriveMap:
   The Y axis (``YAxis``) and its drive (``YAxis.YDrive``) are listed for the
   channels that have one; the 8-channel head's channels do not. So are the
   channel's ``Calibration`` object (which starts and stops continuous cLLD
-  detection), its ``CLld`` object (which reports it), and its Z axis (``ZAxis``).
+  detection), its ``CLld`` object (which reports it), its ``Tadm`` object (its TADM pressure
+  and buffer), and its Z axis (``ZAxis``).
   """
 
   sleeve_sensor_addrs: List[Address]
@@ -191,6 +192,7 @@ class ChannelDriveMap:
   calibration_addrs: List[Address] = field(default_factory=list)
   clld_addrs: List[Address] = field(default_factory=list)
   zaxis_addrs: List[Address] = field(default_factory=list)
+  tadm_addrs: List[Address] = field(default_factory=list)
 
   @property
   def num_channels_discovered(self) -> int:
@@ -208,6 +210,7 @@ class ChannelDriveMap:
       "calibration_addrs": list(self.calibration_addrs),
       "clld_addrs": list(self.clld_addrs),
       "zaxis_addrs": list(self.zaxis_addrs),
+      "tadm_addrs": list(self.tadm_addrs),
     }
 
 
@@ -865,6 +868,7 @@ class PrepDriver:
     - ``<root>.Channel.ZAxis`` / ``.ZDrive`` → Z axis and Z drive
     - ``<root>.Channel.YAxis`` / ``.YDrive`` → Y axis and Y drive, where the channel has one
     - ``<root>.Channel.Calibration`` / ``.CLld`` → continuous cLLD detection and its status
+    - ``<root>.Channel.Tadm``               → TADM pressure and buffer
     - ``<root>.NodeInformation``            → per-channel firmware strings
 
     Uses ``get_subobject_address`` / ``get_object`` along the known path shape —
@@ -899,6 +903,7 @@ class PrepDriver:
     calibration: List[Address] = []
     clld: List[Address] = []
     zaxis: List[Address] = []
+    tadm: List[Address] = []
 
     for ch_root in channel_root_addrs:
       top = await intro.find_children_by_name(ch_root, "Channel", "NodeInformation")
@@ -911,7 +916,7 @@ class PrepDriver:
         continue
 
       axes = await intro.find_children_by_name(
-        channel_addr, "Squeeze", "ZAxis", "YAxis", "Calibration", "CLld"
+        channel_addr, "Squeeze", "ZAxis", "YAxis", "Calibration", "CLld", "Tadm"
       )
       if (sq_parent := axes.get("Squeeze")) is not None:
         sq = await intro.find_children_by_name(sq_parent, "SDrive")
@@ -931,6 +936,8 @@ class PrepDriver:
         calibration.append(cal)
       if (cl := axes.get("CLld")) is not None:
         clld.append(cl)
+      if (td := axes.get("Tadm")) is not None:
+        tadm.append(td)
 
     logger.debug("Discovered %d %s channel drive pair(s)", len(channel_root_addrs), root_name)
     return ChannelDriveMap(
@@ -942,6 +949,7 @@ class PrepDriver:
       calibration_addrs=calibration,
       clld_addrs=clld,
       zaxis_addrs=zaxis,
+      tadm_addrs=tadm,
     )
 
   # ----------------------------------------
