@@ -387,9 +387,10 @@ def collect_state(root: Resource) -> Dict[str, Dict[str, Any]]:
   state: Dict[str, Dict[str, Any]] = {}
 
   def walk(resource: Resource) -> None:
-    published, _ = state_signature(resource.serialize_state())
-    if published:
-      state[resource.name] = resource.serialize_state()
+    published = resource.serialize_state()
+    cleaned, _ = state_signature(published)
+    if cleaned:
+      state[resource.name] = published
     for child in resource.children:
       walk(child)
 

@@ -573,10 +573,24 @@ export function initDeviceTools({ getWorld, modelOf, stateOf, onSelect }) {
     }
   }
 
-  /** Redraw what is open. The tree is the source, so this is all that a state change needs. */
-  function refresh() {
-    for (const panel of open.values()) render(panel);
-    layOut();
+  /** Whether any of these resources stands under this device. */
+  function under(device, indices) {
+    const world = getWorld();
+    for (let index of indices) {
+      for (; index >= 0; index = world.parentOf[index]) if (index === device) return true;
+    }
+    return false;
+  }
+
+  /** Redraw what is open, or only the panels a change to `changed` reaches. */
+  function refresh(changed) {
+    let drawn = false;
+    for (const panel of open.values()) {
+      if (changed !== undefined && !under(panel.device, changed)) continue;
+      render(panel);
+      drawn = true;
+    }
+    if (drawn) layOut();
   }
 
   window.addEventListener("resize", layOut);

@@ -110,9 +110,6 @@ import {
 
 const timings = { moduleMs: performance.now() - _t0 };
 
-// Every fat-line material, so a resize can refresh the resolution each one is sized against.
-const edgeMaterials = new Set();
-
 // ---------------------------------------------------------------- ownership
 
 // What each builder made for itself last time - geometries, materials, textures, instance buffers -
@@ -126,10 +123,7 @@ function own(owner, ...things) {
 
 /** Release what an owner made. The renderer keeps a draw's state until its material is disposed. */
 function disposeOwned(owner) {
-  for (const thing of ownedBy.get(owner) ?? []) {
-    edgeMaterials.delete(thing);
-    thing.dispose();
-  }
+  for (const thing of ownedBy.get(owner) ?? []) thing.dispose();
   ownedBy.delete(owner);
 }
 
@@ -996,8 +990,6 @@ function buildArms() {
       linewidth: ARM_EDGE_WIDTH_3D,
       worldUnits: false,
     });
-    outlineMaterial.resolution?.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
-    edgeMaterials.add(outlineMaterial);
     own(buildArms, outlineGeometry, outlineMaterial);
     const outline = new LineSegments2(outlineGeometry, outlineMaterial);
     outline.frustumCulled = false;
@@ -2138,7 +2130,6 @@ function floorMaterial(axis) {
     linewidth: axis ? FLOOR_AXIS_WIDTH : FLOOR_LINE_WIDTH,
     worldUnits: false,
   });
-  material.resolution?.set(viewportEl.clientWidth || 1, Math.max(viewportEl.clientHeight, 1));
   return material;
 }
 
@@ -2479,8 +2470,6 @@ function buildMeshes() {
         linewidth: EDGE_WIDTH_3D,
         worldUnits: false,
       });
-      edgeMaterial.resolution?.set(viewportEl.clientWidth || 1, viewportEl.clientHeight || 1);
-      edgeMaterials.add(edgeMaterial);
       own(buildMeshes, edgeGeometry, edgeMaterial);
       for (const globalIndex of instances) {
         const line = new LineSegments2(edgeGeometry, edgeMaterial);
@@ -2764,9 +2753,12 @@ function applyState(payload) {
     mesh.instanceMatrix.needsUpdate = true;
     mesh.boundingSphere = null;
   }
-  if (selected >= 0 && infoPanel?.isConnected) renderInfoPanel();
+  // Only a panel showing something this message touched is drawn again: drawing the rest
+  // afresh reset what the reader had opened in it, on every well of a protocol.
+  const changed = new Set(Object.keys(of).map((name) => world.indexOfName.get(name)));
+  if (changed.has(selected) && infoPanel?.isConnected) renderInfoPanel();
   refreshTreeInfo();
-  deviceTools.refresh();
+  deviceTools.refresh(changed);
 }
 
 function refreshOverlays(index, touched) {
@@ -3682,7 +3674,6 @@ function buildDeltaAnnotation() {
         opacity,
         depthTest: false,
       });
-      edgeMaterials.add(material);
       const line = new LineSegments2(geometry, material);
       line.frustumCulled = false;
       line.renderOrder = order;
@@ -4851,10 +4842,6 @@ function resize() {
   // the buffer by the pixel ratio, and with no CSS size the element lays out at that buffer size -
   // twice the viewport on a 2x display, overflowing down and right.
   renderer.setSize(w, h);
-  for (const material of edgeMaterials) material.resolution?.set(w, Math.max(h, 1));
-  // Kept apart from the edge materials: that set is emptied and refilled with every scene, and a
-  // fat line sized against a stale resolution is drawn at the wrong width or not at all.
-  for (const line of grid ?? []) line.material.resolution?.set(w, Math.max(h, 1));
   perspectiveCamera.aspect = w / Math.max(h, 1);
   perspectiveCamera.updateProjectionMatrix();
   if (projection === "orthographic") {

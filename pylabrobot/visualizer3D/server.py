@@ -338,6 +338,12 @@ class Viewer3D:
     if not self._scene_dirty:
       return
     self._scene_dirty = False
+    if not self._clients:
+      # Nobody to tell. The kept scene is dropped, so the next client is greeted with one built
+      # for it then, rather than this one being built now for no one.
+      self._scene = None
+      self._scene_payload = None
+      return
     moves = self._moves()
     if moves is None:
       self.rebuilds += 1
@@ -668,7 +674,11 @@ class Viewer3D:
         pass
 
       def end_headers(self):
-        self.send_header("Cache-Control", "no-store")
+        # The page carries this run's token and a mesh this run's id: never kept. The rest is
+        # revalidated and answered 304 when unchanged, rather than fetched again on every load.
+        path = self.path.split("?", 1)[0]
+        fresh = path in ("/", "/index.html") or path.startswith("/mesh/")
+        self.send_header("Cache-Control", "no-store" if fresh else "no-cache")
         super().end_headers()
 
       def do_HEAD(self):

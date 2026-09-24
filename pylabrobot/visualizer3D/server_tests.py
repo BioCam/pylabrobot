@@ -223,6 +223,23 @@ class FileServerTests(unittest.IsolatedAsyncioTestCase):
   async def asyncTearDown(self):
     await self.viewer.stop()
 
+  async def test_static_files_are_kept_and_revalidated_while_the_page_is_not(self):
+    """Every response said `no-store`, so a browser fetched three megabytes of scripts and
+    models on every reload. The page carries this run's token and stays uncached; the rest is
+    revalidated, and an unchanged file is answered 304 with no body."""
+    base = f"http://127.0.0.1:{self.viewer.fs_port}"
+    page = await asyncio.to_thread(urllib.request.urlopen, f"{base}/")
+    self.assertEqual(page.headers["Cache-Control"], "no-store")
+    script = await asyncio.to_thread(urllib.request.urlopen, f"{base}/vendor/three.core.min.js")
+    self.assertEqual(script.headers["Cache-Control"], "no-cache")
+    again = urllib.request.Request(
+      f"{base}/vendor/three.core.min.js",
+      headers={"If-Modified-Since": script.headers["Last-Modified"]},
+    )
+    with self.assertRaises(urllib.error.HTTPError) as unchanged:
+      await asyncio.to_thread(urllib.request.urlopen, again)
+    self.assertEqual(unchanged.exception.code, 304)
+
   async def test_a_download_abandoned_by_the_browser_prints_no_traceback(self):
     """A page left mid-download closes its end of the socket, which the threaded server used to
     report as an exception in the request thread, a full traceback on every reload."""
@@ -363,6 +380,28 @@ class AbandonedLoopTests(unittest.TestCase):
 
 class RebuildTests(unittest.IsolatedAsyncioTestCase):
   """A scene rebuilt from reused models is the scene it was."""
+
+  async def test_a_tree_changed_with_nobody_watching_costs_no_rebuild(self):
+    """Every structural change rebuilt the scene and packed a full snapshot before finding there
+    was no client to send them to: a third of a second on the demo facility, on every assignment
+    of a deck laid out before the page was opened. The next client is greeted with a scene built
+    for it then, and it holds what was assigned meanwhile."""
+    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    viewer = Viewer3D(facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
+    await viewer.start()
+    try:
+      facility.assign_child_resource(
+        Resource(name="late", size_x=10, size_y=10, size_z=10), location=Coordinate(0, 0, 0)
+      )
+      await asyncio.sleep(0.2)
+      self.assertEqual(viewer.rebuilds, 0)
+      async with websockets.connect(
+        viewer.ws_url, origin=Origin(f"http://127.0.0.1:{viewer.fs_port}")
+      ) as ws:
+        scene = json.loads(await asyncio.wait_for(ws.recv(), 5))["data"]
+        self.assertIn("late", scene["instances"]["names"])
+    finally:
+      await viewer.stop()
 
   async def test_a_model_given_a_mesh_does_not_split_on_the_next_build(self):
     """Registering meshes used to write into the interned model dicts, so on the next build the

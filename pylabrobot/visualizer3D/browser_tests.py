@@ -265,6 +265,21 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       self.assertEqual(await browser.evaluate(f"{click}('name')"), [True, "▶"])
       self.assertEqual(await browser.evaluate(f"{click}('arrow')"), [True, "▼"])
 
+  async def test_a_state_message_leaves_a_panel_it_does_not_touch_alone(self):
+    """The info panel was drawn again on every state message whether or not it showed anything
+    the message touched, so a section the reader had opened in it snapped shut on every well of a
+    running protocol."""
+    async with Browser(CDP_PORT + 9) as browser:
+      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
+      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
+      await browser.evaluate("window.plrViewer.focus('carrier', 'top')")
+      opened = "document.querySelector('.uml-panel details')"
+      await browser.settle(f"!!{opened}", 10)
+      await browser.evaluate(f"{opened}.open = true")
+      self.rider.location = Coordinate(25, 25, 50)
+      await browser.settle("window.plrViewer.worldOf('rider')[0] === 125", 10)
+      self.assertTrue(await browser.evaluate(f"{opened}.open"))
+
   async def test_slow_frames_step_the_quality_down_on_their_own(self):
     """The frame cost was this thread's time around the render call, which a GPU or a rasteriser
     in another process never shows up in, so the machines the levels exist for never stepped down.
