@@ -2818,3 +2818,18 @@ class TestPressureMonitoring(unittest.IsolatedAsyncioTestCase):
   async def test_auto_adjust_pressure_sensor(self):
     await self.pipettes.auto_adjust_pressure_sensor(7)
     self.assertEqual(self.send.call_args.kwargs, {"module": "P8", "command": "AC"})
+
+  async def test_set_and_request_tadm_mode(self):
+    await self.pipettes.set_tadm_mode(7)
+    self.assertEqual(self.send.call_args.kwargs, {"module": "P8", "command": "AF", "af": "1"})
+    await self.pipettes.set_tadm_mode(7, enabled=False)
+    self.assertEqual(self.send.call_args.kwargs["af"], "0")
+    self.answer("P8QFid0001qf1", "P8QFid0002qf0")
+    self.assertTrue(await self.pipettes.request_tadm_mode(7))
+    self.assertFalse(await self.pipettes.request_tadm_mode(7))
+
+  async def test_fifo_and_limit_curves(self):
+    await self.pipettes.clear_tadm_fifo(7)
+    self.assertEqual(self.send.call_args.kwargs, {"module": "P8", "command": "AN"})
+    await self.pipettes.reset_tadm_limit_curves(7)
+    self.assertEqual(self.send.call_args.kwargs, {"module": "P8", "command": "AQ"})

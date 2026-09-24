@@ -4363,6 +4363,52 @@ class Pipettes:
     self._require_channel(channel)
     await self._driver.send_command(module=self.channel_id(channel), command="AC")
 
+  # -- total aspiration and dispense monitoring (TADM) ---------------------------------------------
+
+  async def set_tadm_mode(self, channel: int, enabled: bool = True) -> None:
+    """Switch a channel between TADM mode and pressure/capacitive LLD mode. `Px AF`.
+
+    A curve is recorded only in TADM mode, and the FIFO is readable only while the mode stays on.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+      enabled: True for TADM mode, False for LLD mode.
+    """
+    self._require_channel(channel)
+    await self._driver.send_command(
+      module=self.channel_id(channel), command="AF", af="1" if enabled else "0"
+    )
+
+  async def request_tadm_mode(self, channel: int) -> bool:
+    """Whether a channel is in TADM mode. `Px QF`.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+    """
+    self._require_channel(channel)
+    resp = await self._driver.send_command(module=self.channel_id(channel), command="QF")
+    return "qf1" in resp
+
+  async def clear_tadm_fifo(self, channel: int) -> None:
+    """Empty a channel's TADM curve FIFO. `Px AN`.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+    """
+    self._require_channel(channel)
+    await self._driver.send_command(module=self.channel_id(channel), command="AN")
+
+  async def reset_tadm_limit_curves(self, channel: int) -> None:
+    """Erase a channel's limit-curve bank and load the default curve at index 0. `Px AQ`.
+
+    Enforcing a limit curve fails with an invalid-index error until the default is loaded.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+    """
+    self._require_channel(channel)
+    await self._driver.send_command(module=self.channel_id(channel), command="AQ")
+
   # ----------------------------------------
   # Liquid handling
   # ----------------------------------------
