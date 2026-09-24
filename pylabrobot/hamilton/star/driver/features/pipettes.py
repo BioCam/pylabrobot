@@ -4358,7 +4358,7 @@ class Pipettes:
   # -- pressure sensor -----------------------------------------------------------------------------
 
   async def request_channel_pressure(self, channel: int) -> int:
-    """Read a channel's pressure sensor now. `Px RP`. Not yet validated on hardware.
+    """Read a channel's pressure sensor now. `Px RP`.
 
     Args:
       channel: which channel, 0-indexed from the back.
@@ -4373,7 +4373,7 @@ class Pipettes:
   async def auto_adjust_pressure_sensor(self, channel: int) -> None:
     """Auto-adjust a channel's pressure sensor gain and offset. `Px AC`.
 
-    A mis-adjusted sensor floors the recorded aspirate trace; re-running this restores it.
+    The channel must be open to the air, tips off; under pressure the firmware refuses with error 72.
 
     Args:
       channel: which channel, 0-indexed from the back.
@@ -4505,8 +4505,6 @@ class Pipettes:
 
   async def read_tadm_curve(self, channel: int, points_per_read: int = 50) -> Optional[TADMCurve]:
     """Read the next recorded curve from a channel's TADM FIFO.
-
-    Only a `points_per_read` of 1 is verified on hardware; drop to it if a batched read misbehaves.
 
     Args:
       channel: which channel, 0-indexed from the back.
