@@ -17,7 +17,7 @@ export const RESOURCE_COLORS = {
   tip_carrier: 0x4e3149, // darkest of the three: the carrier
   trough_carrier: 0x756793,
   tube_carrier: 0x756793,
-  plate: 0x3a3a3a,
+  plate: 0x5c6c8f, // the carrier's blue: a plate is read by its wells, not by its own box
   well: 0xbcc7cf,
   tip_rack: 0x9b6690, // mid: the rack sitting in it
   tip_spot: 0x6b4f66, // the spot's rim
@@ -193,9 +193,9 @@ export const GLAZED_MAX_OPACITY = 0.5;
 // depth control counts levels, and these are a level - so opening to the depth that shows a plate
 // on a carrier would open ninety-six wells with it. They open when they are asked for by name.
 export const CONTENTS = new Set(["well", "tip_spot", "tube", "tip_mounting_shaft"]);
-// A tip rack is drawn see-through at this rather than at SHELL_OPACITY: you read a rack by which of
-// its positions still hold a tip, and at the shell's opacity the tips inside are hard to count.
-export const TIP_RACK_OPACITY = 0.7;
+// Drawn see-through at an opacity of their own rather than the box's or the shell's: a tip rack is
+// read by which of its positions still hold a tip, a plate by the wells standing in it.
+export const CATEGORY_OPACITY = { tip_rack: 0.7, plate: 0.25 };
 
 export const ARM_EDGE = 0x1a1f24;
 export const ARM_EDGE_WIDTH_FLAT = 2.2;

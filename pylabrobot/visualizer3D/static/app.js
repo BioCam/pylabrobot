@@ -33,6 +33,7 @@ import {
   BULLSEYE_HOVER,
   BULLSEYE_PX,
   BULLSEYE_WRT,
+  CATEGORY_OPACITY,
   CHANNEL_RAMP,
   CHANNEL_RAMP_DARK_INK_STEPS,
   CONTAINERS,
@@ -80,7 +81,6 @@ import {
   SPACE_OPACITY,
   structureEdgeStyle,
   TIP_PLAN_FILL,
-  TIP_RACK_OPACITY,
   TREE_HIDDEN,
   VESSEL_EMPTY,
   VESSEL_RIM,
@@ -1632,10 +1632,10 @@ function keepsWalls(entry) {
 
 // How see-through a resource is drawn, whatever the angle it is seen from. A part that travels is
 // the see-through one, because drawn solid it hides whatever it happens to be above.
-function OPACITY_OF(isSpace, moves, isTipRack, isShell, standsIn) {
+function OPACITY_OF(isSpace, moves, own, isShell, standsIn) {
   if (isSpace) return SPACE_OPACITY;
   if (moves) return MOVING_OPACITY;
-  if (isTipRack) return TIP_RACK_OPACITY;
+  if (own !== undefined) return own;
   // A box that is holding the place of a model is no longer a statement about extent: it is the
   // picture of the thing, and it is drawn as solidly as the model would have been. A tip at
   // BOX_OPACITY over a white rack composites to about #a3a3a3, which is the colour of an empty
@@ -1652,9 +1652,7 @@ function boxOpacity(entry) {
   return OPACITY_OF(
     GROUND.has(entry.model.category),
     MOVING_PARTS.has(entry.model.category),
-    // A tip rack is read by which of its positions still hold a tip, so it is drawn see-through at
-    // its own opacity rather than at the shell's - both in a plan view and in a free one.
-    entry.model.category === "tip_rack",
+    CATEGORY_OPACITY[entry.model.category],
     entry.holdsEnclosure,
     entry.standsIn === true,
   );
