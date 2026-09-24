@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from typing import Any, List
+import hashlib
+from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -17,12 +18,16 @@ from pylabrobot.hamilton.prep.driver.features.pipettes import (
   _get_profile_drop,
 )
 from pylabrobot.hamilton.prep.driver.features.pipettes import logger as pipettes_logger
+from pylabrobot.hamilton.prep.driver.master import _ResolvedPrepCommand
 from pylabrobot.hamilton.prep.driver.simulator import (
   SIMULATED_X_AXIS_OFFSET,
   SIMULATED_X_SPEED,
   SIMULATED_Y_DRIVE_OFFSETS,
   SIMULATED_Z_DRIVE_OFFSETS,
   _SimulatedIO,
+)
+from pylabrobot.hamilton.star.liquid_classes.mapping import (
+  StandardVolumeFilter_Water_DispenseJet_Empty as _WATER_50,
 )
 from pylabrobot.hamilton.transport.tcp.hoi_error import HoiError
 from pylabrobot.hamilton.transport.tcp.packets import Address
@@ -32,7 +37,12 @@ from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import ChannelBatch
 from pylabrobot.resources import Container, Coordinate, PetriDish, Resource, Well
 from pylabrobot.resources.corning.axygen.plates import cor_axy_96_wellplate_500uL_Ub
 from pylabrobot.resources.corning.plates import cor_96_wellplate_360uL_Fb
-from pylabrobot.resources.errors import HasTipError, NoTipError
+from pylabrobot.resources.errors import (
+  HasTipError,
+  NoTipError,
+  TooLittleLiquidError,
+  TooLittleVolumeError,
+)
 from pylabrobot.resources.hamilton import (
   PrepDeck,
   STARLetDeck,
@@ -2838,7 +2848,7 @@ def test_aspirate_scales_the_profile_to_a_surface_following_distance():
     entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
     assert entry.container_description == []
     assert entry.common.tube_radius == 0.0
-    with pytest.raises(ValueError, match="surface following distances for"):
+    with pytest.raises(ValueError, match="surface_following_distances length"):
       await p.pipettes.aspirate(
         [well],
         piston_volumes=[20.0],
@@ -2847,5 +2857,379 @@ def test_aspirate_scales_the_profile_to_a_surface_following_distance():
         surface_following_distances=[0.5, 0.5],
       )
     await p.stop()
+
+  _run(_t())
+
+
+_ASPIRATE_COMMANDS = tuple(Pipettes._ASPIRATE_CMD.values())
+_ASPIRATE_TWO = {"piston_volumes": [20.0, 30.0], "liquid_heights": [3.0, 4.0]}
+_ASPIRATE_SEGMENTS = [
+  [
+    PrepCmd.SegmentDescriptor(area_top=30.0, area_bottom=10.0, height=4.0),
+    PrepCmd.SegmentDescriptor(area_top=30.0, area_bottom=30.0, height=6.0),
+  ],
+  [],
+]
+
+# name: (tip volume, where, use_channels, keyword arguments)
+_GOLDEN_ASPIRATE_CALLS: Dict[str, Tuple[int, str, Optional[List[int]], Dict[str, Any]]] = {
+  "piston volumes, heights": (300, "A1:B1", [0, 1], _ASPIRATE_TWO),
+  "class volumes, tracked heights": (300, "A1:B1", [0, 1], {"volumes": [20.0, 30.0]}),
+  "50 uL tips, classes given": (
+    50,
+    "A1:B1",
+    [0, 1],
+    {"volumes": [10.0, 20.0], "hamilton_liquid_classes": [_WATER_50, _WATER_50]},
+  ),
+  "channel 0 alone": (300, "A1", [0], {"piston_volumes": [20.0], "liquid_heights": [3.0]}),
+  "channel 1 alone": (300, "B1", [1], {"piston_volumes": [20.0], "liquid_heights": [3.0]}),
+  "channels given front first": (300, "B1,A1", [1, 0], _ASPIRATE_TWO),
+  "use_channels None": (300, "A1:B1", None, _ASPIRATE_TWO),
+  "v1": (300, "A1:B1", [0, 1], {**_ASPIRATE_TWO, "command_version": "v1"}),
+  "v2 given": (300, "A1:B1", [0, 1], {**_ASPIRATE_TWO, "command_version": "v2"}),
+  "capacitive LLD": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {"volumes": [10.0, 10.0], "lld_mode": Pipettes.LLDMode.CAPACITIVE},
+  ),
+  "capacitive LLD, v1, sensitivity, immersion": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {
+      "volumes": [10.0, 10.0],
+      "lld_mode": Pipettes.LLDMode.CAPACITIVE,
+      "command_version": "v1",
+      "clld_sensitivity": 2,
+      "immersion_depths": [1.0, 1.5],
+    },
+  ),
+  "capacitive LLD, read_timeout given": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {"volumes": [10.0, 10.0], "lld_mode": Pipettes.LLDMode.CAPACITIVE, "read_timeout": 30.0},
+  ),
+  "mix, immersion": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {
+      **_ASPIRATE_TWO,
+      "immersion_depths": [1.0, 1.0],
+      "mix": [Mix(20.0, 2, 40.0), None],
+      "mix_position_from_liquid_surface": 1.0,
+    },
+  ),
+  "tadm, end height, z_air": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {
+      **_ASPIRATE_TWO,
+      "tadm": PrepCmd.TadmParameters(
+        default_values=False,
+        limit_curve_index=1,
+        recording_mode=PrepCmd.TadmRecordingModes.Errors,
+      ),
+      "minimum_traverse_height_end": 110.0,
+      "z_air": [60.0, 61.0],
+    },
+  ),
+  "z values given, v1": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {
+      **_ASPIRATE_TWO,
+      "command_version": "v1",
+      "z_fluid": [10.0, 11.0],
+      "minimum_allowed_z_position_during": [5.0, 6.0],
+      "z_bottom_search_offset": [1.0, 1.5],
+    },
+  ),
+  "times, speeds, volumes given": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {
+      "volumes": [20.0, 20.0],
+      "liquid_heights": [3.0, 4.0],
+      "flow_rates": [50.0, None],
+      "settling_times": [0.5, 0.5],
+      "swap_speeds": [20.0, 20.0],
+      "transport_air_volumes": [5.0, 5.0],
+      "pre_wetting_volumes": [2.0, 2.0],
+      "blow_out_air_volumes": [3.0, None],
+    },
+  ),
+  "offsets of one X": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {**_ASPIRATE_TWO, "resource_offsets": [Coordinate(0.5, 0.5, 1.0), Coordinate(0.5, 0, 0)]},
+  ),
+  "channels sharing a dish": (
+    300,
+    "dish",
+    [0, 1],
+    {"piston_volumes": [20.0, 30.0], "liquid_heights": [5.0, 5.0]},
+  ),
+  "container segments given": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {**_ASPIRATE_TWO, "container_segments": _ASPIRATE_SEGMENTS},
+  ),
+  "surface following distances": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {**_ASPIRATE_TWO, "surface_following_distances": [0.0, 2.0]},
+  ),
+}
+
+
+async def _capture_aspirate(name: str) -> List[str]:
+  """Each aspirate frame a golden call sends: its read timeout, then its bytes as hex.
+
+  The frame is built with source 2.1.65535 and sequence 0. Volume tracking is on, 200 uL a well.
+  """
+  tip_volume, where, use_channels, kwargs = _GOLDEN_ASPIRATE_CALLS[name]
+  set_volume_tracking(True)
+  try:
+    deck = PrepDeck()
+    tip_rack = hamilton_96_tiprack_300uL_NTR if tip_volume == 300 else hamilton_96_tiprack_50uL_NTR
+    rack = deck[1] = tip_rack(name="tips", with_tips=True)
+    plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+    dish = PetriDish(name="dish", diameter=77.0, height=30.0, material_z_thickness=2.0)
+    deck[6].assign_child_by_anchor(
+      dish, parent_anchor=("c", "c", "t"), child_anchor=("c", "c", "b")
+    )
+    for well in plate.get_all_items():
+      well.tracker.set_volume(200.0)
+    dish.tracker.set_volume(20000.0)
+    containers: List[Container] = (
+      [dish, dish] if where == "dish" else [w for part in where.split(",") for w in plate[part]]
+    )
+    channels = sorted(use_channels if use_channels is not None else range(len(containers)))
+    p = PrepSimulationDriver(deck=deck)
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.pick_up_tips([rack.get_item(c) for c in channels], use_channels=channels)
+    session = p.io._session
+    exchange = session.exchange
+    frames: List[str] = []
+
+    async def record(command, *args, **kw):
+      request = command.request if isinstance(command, _ResolvedPrepCommand) else command
+      if isinstance(request, _ASPIRATE_COMMANDS):
+        frames.append(f"{kw.get('read_timeout')} {command.build(Address(2, 1, 65535), 0).hex()}")
+      return await exchange(command, *args, **kw)
+
+    session.exchange = record  # type: ignore[method-assign]
+    await p.pipettes.aspirate(containers, use_channels=use_channels, **kwargs)
+  finally:
+    set_volume_tracking(False)
+  return frames
+
+
+# name: each aspirate frame's read timeout, then the SHA-256 of its bytes
+_GOLDEN_ASPIRATE_FRAMES: Dict[str, List[str]] = {
+  "piston volumes, heights": [
+    "60.0 4a9e16bf10ef7f31d6d6e7b1312115061c5c6950d4ee9205e6c6c774bd4dd740",
+  ],
+  "class volumes, tracked heights": [
+    "60.0 38d6bfbc3a9e4d36258e6a98791191f1dfbc44d52b4d9ac69a6cbdb5ae556b6e",
+  ],
+  "50 uL tips, classes given": [
+    "60.0 f8fe364b8b35b10c77daa56cf99db9fe1ad5bab2366339f425f8c4efb7135ae3",
+  ],
+  "channel 0 alone": ["60.0 e5cdcb46ec932553d7901c07a227d03769424d7c694e3df42d14aeea7540b68a"],
+  "channel 1 alone": ["60.0 fd6b68d105f381b4e96a8423d7509b9e122c251ca112def419e9e27cae4578f7"],
+  "channels given front first": [
+    "60.0 b5c6148899a435077a8ab70d22581417679a4865b7fabe1a9f881a3b8a09cd60",
+  ],
+  "use_channels None": ["60.0 4a9e16bf10ef7f31d6d6e7b1312115061c5c6950d4ee9205e6c6c774bd4dd740"],
+  "v1": ["60.0 ee7d3df414101f7df8178f8979539534afabc3d89e7af8cbe1a1749391d16071"],
+  "v2 given": ["60.0 4a9e16bf10ef7f31d6d6e7b1312115061c5c6950d4ee9205e6c6c774bd4dd740"],
+  "capacitive LLD": ["62.094 f26ce6d307a03e855b6c46edb53e2c82ec87d7ed83efafd48d517a2c6e77b4ef"],
+  "capacitive LLD, v1, sensitivity, immersion": [
+    "62.094 48befe0ba080ccf5e048dfe4549889bf71683f06e26ae81ae27e2ff9b5ca019f",
+  ],
+  "capacitive LLD, read_timeout given": [
+    "30.0 f26ce6d307a03e855b6c46edb53e2c82ec87d7ed83efafd48d517a2c6e77b4ef",
+  ],
+  "mix, immersion": ["60.0 920c42c02c8749b7b00d022c097838e57086103dadcb94ecaf967e990c83cbda"],
+  "tadm, end height, z_air": [
+    "60.0 bfad748ab52d3c51608b0985da1030ce83a3107349303a9648cd3abc579af733",
+  ],
+  "z values given, v1": ["60.0 d9fe620d4ba996942e435c6977876e05bc26acf4a5d388604e92e619e910ba14"],
+  "times, speeds, volumes given": [
+    "60.0 da7e1372a80c75a5fecbc12a41113b74712b5bcf83622c69f4dc5d01886ab66c",
+  ],
+  "offsets of one X": ["60.0 5d7b5dc2a0df517e456fda99f4c3391d762d8c9c18ec585afef53f6bf2fc051b"],
+  "channels sharing a dish": [
+    "60.0 dffe23c5435a3ee76833db413d916081ae356229328b223b71cff8df56572891",
+  ],
+  "container segments given": [
+    "60.0 f5f9d38f58411c840e3f5b558c7f667d31a5e258b5e3792ebabef4a37fc9d57f",
+  ],
+  "surface following distances": [
+    "60.0 5763eca12d07f7f4c0a21d83b7608adaa1bc5fe3c5b2a6caa0818b54576b50d9",
+  ],
+}
+
+
+def _digest(frames: List[str]) -> List[str]:
+  """Each frame's read timeout, then the SHA-256 of its bytes."""
+  digests = []
+  for frame in frames:
+    timeout, hexed = frame.split()
+    digests.append(f"{timeout} {hashlib.sha256(bytes.fromhex(hexed)).hexdigest()}")
+  return digests
+
+
+def test_aspirate_sends_the_golden_frames():
+  """Every golden aspirate call sends exactly the frames and read timeouts recorded for it."""
+  assert list(_GOLDEN_ASPIRATE_FRAMES) == list(_GOLDEN_ASPIRATE_CALLS)
+  for name, frames in _GOLDEN_ASPIRATE_FRAMES.items():
+    assert _digest(asyncio.run(_capture_aspirate(name))) == frames, name
+
+
+def test_aspirate_runs_one_command_per_x_and_books_each_batch_on_its_own():
+  """Two X: a move before one command per X; each batch booked on its own, a failed one undone."""
+
+  async def _t():
+    set_volume_tracking(True)
+    try:
+      deck = PrepDeck()
+      rack = deck[1] = hamilton_96_tiprack_300uL_NTR(name="tips", with_tips=True)
+      plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+      for well in plate.get_all_items():
+        well.tracker.set_volume(200.0)
+      p = PrepSimulationDriver(deck=deck)
+      await p.setup()
+      assert p.pipettes is not None
+      await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+      tips = [p.pipettes.get_mounted_tip(ch) for ch in (0, 1)]
+      sent: List[Any] = []
+      at_second: List[float] = []
+      fail_second = False
+      send = p.send_command
+
+      async def record(command, *args, **kwargs):
+        if isinstance(command, _ASPIRATE_COMMANDS) and any(
+          isinstance(c, _ASPIRATE_COMMANDS) for c in sent
+        ):
+          at_second.extend([rear.tracker.volume, front.tracker.volume])
+          at_second.append(front.tracker.pending_volume)
+          if fail_second:
+            sent.append(command)
+            raise RuntimeError("refused")
+        sent.append(command)
+        return await send(command, *args, **kwargs)
+
+      p.send_command = record  # type: ignore[method-assign]
+      rear, front = plate.get_item("A1"), plate.get_item("B2")
+      heights = {"piston_volumes": [10.0, 20.0], "liquid_heights": [3.0, 3.0]}
+      await p.pipettes.aspirate(
+        [rear, front],
+        use_channels=[0, 1],
+        minimum_traverse_height_during=100.0,
+        minimum_traverse_height_end=110.0,
+        **heights,
+      )
+      first, second = [i for i, c in enumerate(sent) if isinstance(c, _ASPIRATE_COMMANDS)]
+      for index, well, z_final in ((first, rear, 100.0), (second, front, 110.0)):
+        (entry,) = sent[index].aspirate_parameters
+        x = well.get_location_wrt(deck, "c", "c", "cavity_bottom").x
+        assert entry.aspirate.x_position == pytest.approx(x)
+        assert entry.common.z_final == z_final
+      moves = [i for i, c in enumerate(sent) if isinstance(c, PrepCmd.PrepMoveToPosition)]
+      assert len(moves) == 2 and moves[0] < first < moves[1] < second
+      # At the second command the first batch is committed and the second only pending.
+      assert at_second == [190.0, 200.0, 180.0]
+      assert (rear.tracker.volume, front.tracker.volume) == (190.0, 180.0)
+
+      rear, front = plate.get_item("A5"), plate.get_item("B6")
+      sent.clear()
+      at_second.clear()
+      fail_second = True
+      with pytest.raises(RuntimeError, match="refused"):
+        await p.pipettes.aspirate([rear, front], use_channels=[0, 1], **heights)
+      assert (rear.tracker.volume, front.tracker.volume) == (190.0, 200.0)
+      assert front.tracker.pending_volume == 200.0
+      assert [tip.tracker.get_used_volume() for tip in tips if tip is not None] == [20.0, 20.0]
+      failed = max(i for i, c in enumerate(sent) if isinstance(c, _ASPIRATE_COMMANDS))
+      assert any(isinstance(c, PrepCmd.PrepMoveZUpToSafe) for c in sent[failed + 1 :])
+    finally:
+      set_volume_tracking(False)
+
+  _run(_t())
+
+
+def test_aspirate_refuses_what_the_model_decides_before_any_command():
+  """Each refusal the model can decide is raised with no command sent, not a tip sense or a move."""
+
+  async def _t():
+    set_volume_tracking(True)
+    try:
+      deck = PrepDeck()
+      rack_300 = deck[1] = hamilton_96_tiprack_300uL_NTR(name="tips_300", with_tips=True)
+      rack_50 = deck[3] = hamilton_96_tiprack_50uL_NTR(name="tips_50", with_tips=True)
+      plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+      dish = PetriDish(name="dish", diameter=77.0, height=30.0, material_z_thickness=2.0)
+      deck[6].assign_child_by_anchor(
+        dish, parent_anchor=("c", "c", "t"), child_anchor=("c", "c", "b")
+      )
+      for well in plate.get_all_items():
+        well.tracker.set_volume(200.0)
+      dish.tracker.set_volume(180.0)
+      p = PrepSimulationDriver(deck=deck)
+      await p.setup()
+      assert p.pipettes is not None
+      await p.pipettes.pick_up_tips([rack_300.get_item("A1")], use_channels=[0])
+      two = plate["A1:B1"]
+      one = {"use_channels": [0], "piston_volumes": [10.0], "liquid_heights": [3.0]}
+      both = {"use_channels": [0, 1], "piston_volumes": [10.0, 10.0], "liquid_heights": [3.0] * 2}
+      apart = [Coordinate(-5.0, 0, 0), Coordinate(5.0, 0, 0)]
+      sent = _record(p)
+      refusals: List[Tuple[Any, str, List[Container], Dict[str, Any]]] = [
+        (NoTipError, "no tip is mounted", two, both),
+      ]
+      for error, match, containers, kwargs in refusals:
+        with pytest.raises(error, match=match):
+          await p.pipettes.aspirate(containers, **kwargs)
+        assert sent == [], match
+      await p.pipettes.pick_up_tips([rack_50.get_item("B1")], use_channels=[1])
+      sent.clear()
+      refusals = [
+        (ValueError, "no liquid class", two, {"use_channels": [0, 1], "volumes": [10.0, 10.0]}),
+        (ValueError, "one distinct channel", two, {**both, "use_channels": [0, 0]}),
+        (ValueError, "3 containers for 2 channels", plate["A1:C1"], {"piston_volumes": [1.0] * 3}),
+        (ValueError, "flow_rates length", plate["A1"], {**one, "flow_rates": [50.0, 50.0]}),
+        (ValueError, "flow_rates must be above 0", plate["A1"], {**one, "flow_rates": [0.0]}),
+        (ValueError, "clot detection", plate["A1"], {**one, "clot_detection_heights": [1.5]}),
+        (ValueError, "outside channel", two, {**both, "minimum_traverse_height_end": 200.0}),
+        (
+          TooLittleLiquidError,
+          "dish holds 180.0 uL, 190.0 uL asked for",
+          [dish, dish],
+          {**both, "piston_volumes": [150.0, 40.0], "resource_offsets": apart},
+        ),
+        (TooLittleVolumeError, "room for", two, {**both, "piston_volumes": [10.0, 70.0]}),
+      ]
+      for error, match, containers, kwargs in refusals:
+        with pytest.raises(error, match=match):
+          await p.pipettes.aspirate(containers, **kwargs)
+        assert sent == [], match
+      set_volume_tracking(False)
+      with pytest.raises(RuntimeError, match="nothing knows where its liquid is"):
+        await p.pipettes.aspirate(two, use_channels=[0, 1], piston_volumes=[10.0, 10.0])
+      assert sent == []
+    finally:
+      set_volume_tracking(False)
 
   _run(_t())

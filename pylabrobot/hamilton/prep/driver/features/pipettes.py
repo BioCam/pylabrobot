@@ -64,7 +64,12 @@ from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import (
   validate_channel_selections,
 )
 from pylabrobot.resources import Container, Coordinate, Tip, does_volume_tracking
-from pylabrobot.resources.errors import HasTipError, NoTipError
+from pylabrobot.resources.errors import (
+  HasTipError,
+  NoTipError,
+  TooLittleLiquidError,
+  TooLittleVolumeError,
+)
 from pylabrobot.resources.hamilton import HamiltonTip, TipSize
 from pylabrobot.resources.hamilton.core_grippers import HamiltonCoreGrippers
 from pylabrobot.resources.n_channel_pipettes import TipMountingShaft
@@ -3325,17 +3330,16 @@ class Pipettes:
         found[job].append(height)
     return found
 
-  async def _prepare_batched(
+  def _plan_batched(
     self,
     deck: Resource,
     containers: Sequence[Container],
     use_channels: Optional[List[int]],
     resource_offsets: Optional[List[Coordinate]],
     x_grouping_tolerance: Optional[float],
-    minimum_traverse_height_start: Optional[float],
     minimum_traverse_height_end: Optional[float] = None,
   ) -> Tuple[List[int], List[ChannelBatch]]:
-    """Check the channels and their tips, raise them, and plan the batches; X and Y stay put.
+    """Check the channels against the containers and plan the batches; nothing is sent.
 
     More containers than channels are dealt in cycles, one per channel each cycle, each cycle
     planned into batches.
@@ -3349,8 +3353,6 @@ class Pipettes:
         container. Planned when None.
       x_grouping_tolerance: containers within this X distance share a batch, in mm.
         `default_x_grouping_tolerance` when None.
-      minimum_traverse_height_start: the height every low channel's tip bottom is raised to, in mm.
-        Z safety when None.
       minimum_traverse_height_end: where the tips are to be left at the end, in mm, checked here
         against each channel's reach.
 
@@ -3358,9 +3360,8 @@ class Pipettes:
       The channel each container gets, per container; and the batches in the order to run them.
 
     Raises:
-      ValueError: If the channels or offsets do not match the containers, or a channel cannot reach
-        the end.
-      RuntimeError: If a channel used carries no tip.
+      ValueError: If the channels or offsets do not match the containers, a channel cannot reach
+        the end, or no batch holds a container's channel.
     """
     if use_channels is None:
       use_channels = list(range(min(len(containers), self.num_channels)))
@@ -3376,24 +3377,9 @@ class Pipettes:
     channels = [use_channels[job % cycle] for job in range(len(containers))]
     for dealt in cycles:
       validate_channel_selections(dealt, self.num_channels, use_channels[: len(dealt)])
-    presence = await self.sense_tip_presence()
-    bare = [channel for channel in use_channels if not presence[channel]]
-    if bare:
-      raise RuntimeError(f"channels {bare} carry no tip")
     if minimum_traverse_height_end is not None:
       for channel in use_channels:
         self._check_reachable(channel, "z", minimum_traverse_height_end)
-    if minimum_traverse_height_start is None:
-      await self.move_to_safe_z()
-    else:
-      here = await self.request_locations()
-      raises = {
-        ch: minimum_traverse_height_start
-        for ch, location in enumerate(here)
-        if location.z < minimum_traverse_height_start
-      }
-      if raises:
-        await self.move_tool_bottom_to_z_positions(raises)
     tolerance = (
       self.default_x_grouping_tolerance if x_grouping_tolerance is None else x_grouping_tolerance
     )
@@ -3411,6 +3397,71 @@ class Pipettes:
       ):
         # The planner counts jobs within the cycle; the rest counts them over every container.
         batches.append(replace(batch, indices=[first + job for job in batch.indices]))
+    return channels, batches
+
+  async def _check_tips_and_raise(
+    self, use_channels: Sequence[int], minimum_traverse_height_start: Optional[float]
+  ) -> None:
+    """Sense a tip on every channel used, then raise every low channel; X and Y stay put.
+
+    Args:
+      use_channels: which channels, 0-indexed from the back.
+      minimum_traverse_height_start: the height every low channel's tip bottom is raised to, in mm.
+        Z safety when None.
+
+    Raises:
+      RuntimeError: If a channel used carries no tip.
+    """
+    presence = await self.sense_tip_presence()
+    bare = [channel for channel in use_channels if not presence[channel]]
+    if bare:
+      raise RuntimeError(f"channels {bare} carry no tip")
+    if minimum_traverse_height_start is None:
+      await self.move_to_safe_z()
+    else:
+      here = await self.request_locations()
+      raises = {
+        ch: minimum_traverse_height_start
+        for ch, location in enumerate(here)
+        if location.z < minimum_traverse_height_start
+      }
+      if raises:
+        await self.move_tool_bottom_to_z_positions(raises)
+
+  async def _prepare_batched(
+    self,
+    deck: Resource,
+    containers: Sequence[Container],
+    use_channels: Optional[List[int]],
+    resource_offsets: Optional[List[Coordinate]],
+    x_grouping_tolerance: Optional[float],
+    minimum_traverse_height_start: Optional[float],
+    minimum_traverse_height_end: Optional[float] = None,
+  ) -> Tuple[List[int], List[ChannelBatch]]:
+    """Plan the batches, sense the tips and raise the channels; X and Y stay put.
+
+    Every other argument is `_plan_batched`'s.
+
+    Args:
+      minimum_traverse_height_start: the height every low channel's tip bottom is raised to, in mm.
+        Z safety when None.
+
+    Returns:
+      The channel each container gets, per container; and the batches in the order to run them.
+
+    Raises:
+      ValueError: As `_plan_batched`.
+      RuntimeError: If a channel used carries no tip.
+    """
+    channels, batches = self._plan_batched(
+      deck,
+      containers,
+      use_channels,
+      resource_offsets,
+      x_grouping_tolerance,
+      minimum_traverse_height_end,
+    )
+    await self._check_tips_and_raise(list(dict.fromkeys(channels)), minimum_traverse_height_start)
     return channels, batches
 
   async def _execute_batched(
@@ -4976,6 +5027,7 @@ class Pipettes:
     tadm: Optional[PrepCmd.TadmParameters] = None,
     read_timeout: Optional[float] = None,
     command_version: Optional[Literal["v1", "v2"]] = None,
+    check_only: bool = False,
   ) -> None:
     """Aspirate at each place given, the channels together, in one command.
 
@@ -5015,6 +5067,7 @@ class Pipettes:
       tadm: the TADM block as it is; given, the aspiration is monitored.
       read_timeout: answer timeout in s. Long enough for the search when LLD runs and None.
       command_version: "v1" or "v2". What the firmware supports when None.
+      check_only: refuse what would be refused, and send nothing.
 
     Raises:
       ValueError: If the lists do not match or a channel is out of range.
@@ -5105,6 +5158,8 @@ class Pipettes:
         min(minimum_allowed_z_position_during),
         approach_from_z=self.default_minimum_traverse_height,
       )
+    if check_only:
+      return
     await self._unchecked_fw_aspirate(
       kits,
       effective_lld,
@@ -5412,129 +5467,72 @@ class Pipettes:
         offsets[i] = offset
     return offsets
 
-  async def aspirate(
+  async def _aspirate_batch(
     self,
-    containers: Sequence[Container],
-    volumes: Optional[Sequence[float]] = None,
-    use_channels: Optional[List[int]] = None,
-    resource_offsets: Optional[List[Coordinate]] = None,
-    liquid_heights: Optional[Sequence[Optional[float]]] = None,
-    lld_mode: Optional[Pipettes.LLDMode] = None,
-    flow_rates: Optional[Sequence[Optional[float]]] = None,
+    x_position: float,
+    containers: List[Container],
+    drawn: List[float],
+    use_channels: List[int],
+    resource_offsets: List[Coordinate],
+    effective_lld: bool,
+    by_liquid_class: bool,
+    liquid_heights: Optional[List[Optional[float]]],
+    lld_mode: Optional[Pipettes.LLDMode],
+    flow_rates: Optional[List[Optional[float]]],
     *,
-    hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
-    piston_volumes: Optional[Sequence[float]] = None,
-    clld_sensitivity: Optional[int] = None,
-    immersion_depths: Optional[Sequence[float]] = None,
-    blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
-    pre_wetting_volumes: Optional[List[float]] = None,
-    lld: Optional[PrepCmd.LldParameters] = None,
-    p_lld: Optional[PrepCmd.PLldParameters] = None,
-    clot_detection_heights: Optional[Sequence[float]] = None,
-    z_fluid: Optional[List[float]] = None,
-    minimum_allowed_z_position_during: Optional[List[float]] = None,
-    z_bottom_search_offset: Optional[List[float]] = None,
-    mix: Optional[Sequence[Optional[Mix]]] = None,
-    mix_position_from_liquid_surface: float = 0.0,
-    settling_times: Optional[List[float]] = None,
-    swap_speeds: Optional[List[float]] = None,
-    transport_air_volumes: Optional[List[float]] = None,
-    z_air: Optional[List[float]] = None,
-    minimum_traverse_height_end: Optional[float] = None,
-    tadm: Optional[PrepCmd.TadmParameters] = None,
-    container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
-    surface_following_distances: Optional[Sequence[float]] = None,
-    read_timeout: Optional[float] = None,
-    command_version: Optional[Literal["v1", "v2"]] = None,
-  ) -> None:
-    """Draw liquid from each container with a channel's tip, every channel in one command.
+    hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]],
+    clld_sensitivity: Optional[int],
+    immersion_depths: Optional[List[float]],
+    blow_out_air_volumes: Optional[List[Optional[float]]],
+    pre_wetting_volumes: Optional[List[float]],
+    lld: Optional[PrepCmd.LldParameters],
+    p_lld: Optional[PrepCmd.PLldParameters],
+    clot_detection_heights: Optional[List[float]],
+    z_fluid: Optional[List[float]],
+    minimum_allowed_z_position_during: Optional[List[float]],
+    z_bottom_search_offset: Optional[List[float]],
+    mix: Optional[List[Optional[Mix]]],
+    mix_position_from_liquid_surface: float,
+    settling_times: Optional[List[float]],
+    swap_speeds: Optional[List[float]],
+    transport_air_volumes: Optional[List[float]],
+    z_air: Optional[List[float]],
+    minimum_traverse_height_end: Optional[float],
+    tadm: Optional[PrepCmd.TadmParameters],
+    container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]],
+    surface_following_distances: Optional[List[float]],
+    read_timeout: Optional[float],
+    command_version: Optional[Literal["v1", "v2"]],
+    check_only: bool,
+  ) -> List[float]:
+    """Aspirate one batch in one command, the channels already over it; book and settle volumes.
+
+    Every other argument is `aspirate`'s, one entry per container of the batch where per container.
 
     Args:
-      containers: one per channel used.
-      volumes: how much liquid to take from each container, in uL, corrected by the liquid class.
-        One of this and `piston_volumes`.
-      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
-      resource_offsets: added to where each channel goes in its container, in mm. The z shifts
-        the heights. Channels sharing a container spread across it in Y when None.
-      liquid_heights: where the liquid stands above each cavity bottom, in mm. None takes it from
-        the tracked volume, or, with an LLD mode, leaves it to the search.
-      lld_mode: how the liquid is found, one mode for every channel. None runs a search only
-        when `lld` is given.
-      flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
-      hamilton_liquid_classes: the class for each container's volume. Looked up for the
-        channel's tip, water, when None.
-      piston_volumes: how much each piston draws, in uL, per container, as given, with no liquid
-        class. One of this and `volumes`.
-      clld_sensitivity: capacitive LLD sensitivity for every channel. 3 when None.
-      immersion_depths: how far under the surface each tip aspirates, in mm, per container.
-        With LLD the search's `z_submerge`, 2.0 when None; without, off `z_fluid`, 0.0 when None.
-      blow_out_air_volumes: air drawn before the liquid, in uL, per container. The liquid
-        class's, else 0.0, when None.
-      pre_wetting_volumes: drawn and returned first, in uL, per container. The liquid class's
-        over-aspirate volume, else 0.0, when None.
-      lld: the LLD search's start, speed and submerge depth. From the container's top when None.
-      p_lld: pressure LLD settings. The firmware's own when None, unless the mode needs them.
-      clot_detection_heights: how far a clot may hold each tip back, in mm, per container. 0.0 when
-        None; only 0.0 until the check is verified on the device.
-      z_fluid: the tip bottom height to aspirate at without LLD, in mm, per container. The cavity
-        bottom plus the liquid height when None.
-      minimum_allowed_z_position_during: how low each tip bottom may go, in mm, per container.
-        The cavity bottom when None.
-      z_bottom_search_offset: in mm, per container. 2.0 when None.
-      mix: a `Mix` per container, mixed before aspirating; None for none. Its
-        `surface_following_distance` is not sent.
-      mix_position_from_liquid_surface: mixing depth under the aspirate height, in mm.
-      settling_times: how long the tip waits in the liquid, in s, per container. The liquid
-        class's, else 1.0, when None.
-      swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid
-        class's, else 10.0, when None.
-      transport_air_volumes: air drawn after the liquid, in uL, per container. The liquid
-        class's, else 0.0, when None.
-      z_air: the tip bottom height above each container the tip leaves from, in mm. 2 mm over
-        the container's top when None.
-      minimum_traverse_height_end: the tip bottom height every tip is left at, in mm. The
-        traverse height less each tip's overhang when None.
-      tadm: TADM settings; given, the aspiration is monitored.
-      container_segments: each container's cross-sections, sent as they are, per container. None
-        builds them from each container's profile.
-      surface_following_distances: how far each tip follows the sinking surface, in mm, per
-        container: its profile scaled to that. None follows the profile as it is; 0 does not follow.
-      read_timeout: how long to wait for the answer, in s. Long enough for the search when an
-        LLD search runs and this is None.
-      command_version: "v1" or "v2" aspirate commands. What the firmware supports when None.
+      x_position: the batch's X, sent for every channel, in mm.
+      drawn: the volumes, or the piston volumes, per container, in uL.
+      resource_offsets: as `aspirate` resolved them.
+      effective_lld: whether an LLD search runs.
+      by_liquid_class: whether `drawn` are liquid volumes, corrected by a liquid class.
+      minimum_traverse_height_end: the tip bottom height every tip is left at, in mm.
+      check_only: refuse what would be refused; nothing is booked or sent.
 
-    Raises:
-      ValueError: If an argument is out of range, the lists do not match, both or neither of
-        `volumes` and `piston_volumes` are given, a class is given with `piston_volumes`, or no
-        class is known for a channel's tip.
-      RuntimeError: If a channel used carries no tip, or nothing knows where a container's
-        liquid stands: no height given, volume tracking off, no LLD.
-      TooLittleLiquidError: If a container holds less than it is asked for.
+    Returns:
+      The liquid volume each channel takes, in uL.
     """
-    containers = list(containers)
-    use_channels = use_channels if use_channels is not None else list(range(len(containers)))
     n = len(containers)
-    drawn = volumes if volumes is not None else piston_volumes
-    if drawn is None or (volumes is not None and piston_volumes is not None):
-      raise ValueError("give one of volumes and piston_volumes")
-    if piston_volumes is not None and hamilton_liquid_classes is not None:
-      raise ValueError("piston_volumes are sent as given; no liquid class applies")
-    effective_lld = self._resolve_effective_lld(
-      None if lld_mode is None else [lld_mode] * n, lld, n
-    )
     ops = self._build_transfers(
       containers,
       drawn,
       use_channels,
-      offsets=resource_offsets
-      if resource_offsets is not None
-      else self._get_resource_offsets(containers, use_channels),
+      offsets=resource_offsets,
       liquid_height=self._get_liquid_heights(containers, liquid_heights, effective_lld),
       flow_rates=flow_rates,
       blow_out_air_volume=blow_out_air_volumes,
     )
     classes: List[Optional[HamiltonLiquidClass]] = [None] * n
-    if piston_volumes is None:
+    if by_liquid_class:
       classes = resolve_hamilton_liquid_classes(
         None if hamilton_liquid_classes is None else list(hamilton_liquid_classes),
         ops,
@@ -5557,10 +5555,6 @@ class Pipettes:
       hamilton_liquid_classes=classes,
     )
     deck = self._require_deck()
-    if surface_following_distances is not None and len(surface_following_distances) != len(ops):
-      raise ValueError(
-        f"{len(surface_following_distances)} surface following distances for {len(ops)} containers"
-      )
     # The firmware reads the profile at the tip's height, counted from z_minimum
     bottoms = [op.resource.get_location_wrt(deck, "c", "c", "cavity_bottom").z for op in ops]
     distances = [
@@ -5581,8 +5575,8 @@ class Pipettes:
     ]
     locations = [
       Coordinate(
-        (loc := op.resource.get_location_wrt(deck, "c", "c", "cavity_bottom")).x + op.offset.x,
-        loc.y + op.offset.y,
+        x_position,
+        op.resource.get_location_wrt(deck, "c", "c", "cavity_bottom").y + op.offset.y,
         ctx.z_fluid[i],
       )
       for i, op in enumerate(ops)
@@ -5597,7 +5591,8 @@ class Pipettes:
       )
       for i, (ch, op) in enumerate(zip(use_channels, ops))
     ]
-    queue_volume_transfers(volume_intents)
+    if not check_only:
+      queue_volume_transfers(volume_intents)
 
     aspirated = {ch: False for ch in use_channels}
     try:
@@ -5649,12 +5644,11 @@ class Pipettes:
         container_segments=segments,
         lld=lld,
         p_lld=p_lld,
-        clot_detection_heights=None
-        if clot_detection_heights is None
-        else list(clot_detection_heights),
+        clot_detection_heights=clot_detection_heights,
         tadm=tadm,
         read_timeout=read_timeout,
         command_version=command_version,
+        check_only=check_only,
       )
       aspirated = all_channels_succeeded(use_channels)
     except ChannelizedError as e:
@@ -5663,7 +5657,260 @@ class Pipettes:
       raise
     finally:
       # What each channel took is what its tip now holds, and the well no longer does
-      finalize_volume_ops(volume_intents, aspirated)
+      if not check_only:
+        finalize_volume_ops(volume_intents, aspirated)
+    return ctx.volumes
+
+  def _check_volumes_suffice(
+    self, containers: Sequence[Container], tips: Sequence[Tip], volumes: Sequence[float]
+  ) -> None:
+    """Refuse more than a container holds over all its jobs, or than a tip has room for.
+
+    Args:
+      containers: per job.
+      tips: the tip each job fills, per job.
+      volumes: the liquid volume each job takes, in uL.
+
+    Raises:
+      TooLittleLiquidError: If a container holds less than all its jobs take.
+      TooLittleVolumeError: If a tip has less room than its job takes.
+    """
+    if not does_volume_tracking():
+      return
+    asked: Dict[int, float] = {}
+    for container, volume in zip(containers, volumes):
+      asked[id(container)] = asked.get(id(container), 0.0) + volume
+    for container in {id(c): c for c in containers}.values():
+      held = container.tracker.get_used_volume()
+      if not container.tracker.is_disabled and asked[id(container)] - held > 1e-6:
+        raise TooLittleLiquidError(
+          f"{container.name} holds {held} uL, {asked[id(container)]} uL asked for"
+        )
+    for tip, volume in zip(tips, volumes):
+      room = tip.tracker.get_free_volume()
+      if not tip.tracker.is_disabled and volume - room > 1e-6:
+        raise TooLittleVolumeError(f"a tip with room for {room} uL asked to take {volume} uL")
+
+  async def aspirate(
+    self,
+    containers: Sequence[Container],
+    volumes: Optional[Sequence[float]] = None,
+    use_channels: Optional[List[int]] = None,
+    resource_offsets: Optional[List[Coordinate]] = None,
+    liquid_heights: Optional[Sequence[Optional[float]]] = None,
+    lld_mode: Optional[Pipettes.LLDMode] = None,
+    flow_rates: Optional[Sequence[Optional[float]]] = None,
+    *,
+    hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
+    piston_volumes: Optional[Sequence[float]] = None,
+    clld_sensitivity: Optional[int] = None,
+    immersion_depths: Optional[Sequence[float]] = None,
+    blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
+    pre_wetting_volumes: Optional[List[float]] = None,
+    lld: Optional[PrepCmd.LldParameters] = None,
+    p_lld: Optional[PrepCmd.PLldParameters] = None,
+    clot_detection_heights: Optional[Sequence[float]] = None,
+    z_fluid: Optional[List[float]] = None,
+    minimum_allowed_z_position_during: Optional[List[float]] = None,
+    z_bottom_search_offset: Optional[List[float]] = None,
+    mix: Optional[Sequence[Optional[Mix]]] = None,
+    mix_position_from_liquid_surface: float = 0.0,
+    settling_times: Optional[List[float]] = None,
+    swap_speeds: Optional[List[float]] = None,
+    transport_air_volumes: Optional[List[float]] = None,
+    z_air: Optional[List[float]] = None,
+    minimum_traverse_height_end: Optional[float] = None,
+    tadm: Optional[PrepCmd.TadmParameters] = None,
+    container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
+    surface_following_distances: Optional[Sequence[float]] = None,
+    read_timeout: Optional[float] = None,
+    command_version: Optional[Literal["v1", "v2"]] = None,
+    minimum_traverse_height_start: Optional[float] = None,
+    minimum_traverse_height_during: Optional[float] = None,
+    x_grouping_tolerance: Optional[float] = None,
+  ) -> None:
+    """Draw liquid from each container with a channel's tip, one command per batch.
+
+    One channel per container. Containers within `x_grouping_tolerance` of one X share a batch;
+    the channels go to each batch in ascending X, and its volumes are booked when it aspirates.
+
+    Args:
+      containers: one per channel used, at most as many as there are channels.
+      volumes: how much liquid to take from each container, in uL, corrected by the liquid class.
+        One of this and `piston_volumes`.
+      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
+      resource_offsets: added to where each channel goes in its container, in mm. The z shifts
+        the heights. Channels sharing a container spread across it in Y when None.
+      liquid_heights: where the liquid stands above each cavity bottom, in mm. None takes it from
+        the tracked volume, or, with an LLD mode, leaves it to the search.
+      lld_mode: how the liquid is found, one mode for every channel. None runs a search only
+        when `lld` is given.
+      flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
+      hamilton_liquid_classes: the class for each container's volume. Looked up for the
+        channel's tip, water, when None.
+      piston_volumes: how much each piston draws, in uL, per container, as given, with no liquid
+        class. One of this and `volumes`.
+      clld_sensitivity: capacitive LLD sensitivity for every channel. 3 when None.
+      immersion_depths: how far under the surface each tip aspirates, in mm, per container.
+        With LLD the search's `z_submerge`, 2.0 when None; without, off `z_fluid`, 0.0 when None.
+      blow_out_air_volumes: air drawn before the liquid, in uL, per container. The liquid
+        class's, else 0.0, when None.
+      pre_wetting_volumes: drawn and returned first, in uL, per container. The liquid class's
+        over-aspirate volume, else 0.0, when None.
+      lld: the LLD search's start, speed and submerge depth. From the container's top when None.
+      p_lld: pressure LLD settings. The firmware's own when None, unless the mode needs them.
+      clot_detection_heights: how far a clot may hold each tip back, in mm, per container. 0.0 when
+        None; only 0.0 until the check is verified on the device.
+      z_fluid: the tip bottom height to aspirate at without LLD, in mm, per container. The cavity
+        bottom plus the liquid height when None.
+      minimum_allowed_z_position_during: how low each tip bottom may go, in mm, per container.
+        The cavity bottom when None.
+      z_bottom_search_offset: in mm, per container. 2.0 when None.
+      mix: a `Mix` per container, mixed before aspirating; None for none. Its
+        `surface_following_distance` is not sent.
+      mix_position_from_liquid_surface: mixing depth under the aspirate height, in mm.
+      settling_times: how long the tip waits in the liquid, in s, per container. The liquid
+        class's, else 1.0, when None.
+      swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid
+        class's, else 10.0, when None.
+      transport_air_volumes: air drawn after the liquid, in uL, per container. The liquid
+        class's, else 0.0, when None.
+      z_air: the tip bottom height above each container the tip leaves from, in mm. 2 mm over
+        the container's top when None.
+      minimum_traverse_height_end: the tip bottom height every tip is left at, in mm. The
+        traverse height less each tip's overhang when None.
+      tadm: TADM settings; given, the aspiration is monitored.
+      container_segments: each container's cross-sections, sent as they are, per container. None
+        builds them from each container's profile.
+      surface_following_distances: how far each tip follows the sinking surface, in mm, per
+        container: its profile scaled to that. None follows the profile as it is; 0 does not follow.
+      read_timeout: how long to wait for the answer, in s. Long enough for the search when an
+        LLD search runs and this is None.
+      command_version: "v1" or "v2" aspirate commands. What the firmware supports when None.
+      minimum_traverse_height_start: the height every low channel's tip bottom is raised to before
+        the first batch, in mm. Z safety when None.
+      minimum_traverse_height_during: each tip bottom's height at the end of every batch but the
+        last, in mm. The traverse height less each tip's overhang when None, then Z safety.
+      x_grouping_tolerance: containers within this X distance share a batch, in mm.
+        `default_x_grouping_tolerance` when None.
+
+    Raises:
+      ValueError: If an argument is out of range, the lists do not match, a channel repeats, there
+        are more containers than channels, both or neither of `volumes` and `piston_volumes` are
+        given, a class is given with `piston_volumes`, or no class is known for a channel's tip.
+      RuntimeError: If a channel used carries no tip, or nothing knows where a container's
+        liquid stands: no height given, volume tracking off, no LLD.
+      TooLittleLiquidError: If a container holds less than it is asked for.
+    """
+    containers = list(containers)
+    n = len(containers)
+    use_channels = use_channels if use_channels is not None else list(range(n))
+    drawn = volumes if volumes is not None else piston_volumes
+    if drawn is None or (volumes is not None and piston_volumes is not None):
+      raise ValueError("give one of volumes and piston_volumes")
+    if piston_volumes is not None and hamilton_liquid_classes is not None:
+      raise ValueError("piston_volumes are sent as given; no liquid class applies")
+    if not containers:
+      raise ValueError("no containers to aspirate from")
+    if n > self.num_channels:
+      raise ValueError(f"{n} containers for {self.num_channels} channels, one channel each")
+    if len(use_channels) != n or len(set(use_channels)) != n:
+      raise ValueError(f"use_channels must name one distinct channel per container: {use_channels}")
+    per_container: Dict[str, Optional[Sequence[Any]]] = {
+      "volumes" if volumes is not None else "piston_volumes": drawn,
+      "resource_offsets": resource_offsets,
+      "liquid_heights": liquid_heights,
+      "flow_rates": flow_rates,
+      "hamilton_liquid_classes": hamilton_liquid_classes,
+      "immersion_depths": immersion_depths,
+      "blow_out_air_volumes": blow_out_air_volumes,
+      "pre_wetting_volumes": pre_wetting_volumes,
+      "clot_detection_heights": clot_detection_heights,
+      "z_fluid": z_fluid,
+      "minimum_allowed_z_position_during": minimum_allowed_z_position_during,
+      "z_bottom_search_offset": z_bottom_search_offset,
+      "mix": mix,
+      "settling_times": settling_times,
+      "swap_speeds": swap_speeds,
+      "transport_air_volumes": transport_air_volumes,
+      "z_air": z_air,
+      "container_segments": container_segments,
+      "surface_following_distances": surface_following_distances,
+    }
+    for name, values in per_container.items():
+      if values is not None and len(values) != n:
+        raise ValueError(f"{name} length must match containers ({n})")
+    effective_lld = self._resolve_effective_lld(
+      None if lld_mode is None else [lld_mode] * n, lld, n
+    )
+    offsets = (
+      resource_offsets
+      if resource_offsets is not None
+      else self._get_resource_offsets(containers, use_channels)
+    )
+    _, batches = self._plan_batched(
+      self._require_deck(),
+      containers,
+      use_channels,
+      offsets,
+      x_grouping_tolerance,
+      minimum_traverse_height_end,
+    )
+
+    def pick(values: Optional[Sequence[_T]], batch: ChannelBatch) -> Optional[List[_T]]:
+      """The batch's entries of a per-container list, None when it is None."""
+      return None if values is None else [values[job] for job in batch.indices]
+
+    async def aspirate_batch(batch: ChannelBatch, check_only: bool = False) -> List[float]:
+      """Aspirate the batch's containers in one command; the last leaves the tips at the end."""
+      last = batch is batches[-1]
+      return await self._aspirate_batch(
+        batch.x_position,
+        [containers[job] for job in batch.indices],
+        [drawn[job] for job in batch.indices],
+        batch.channels,
+        [offsets[job] for job in batch.indices],
+        effective_lld,
+        piston_volumes is None,
+        pick(liquid_heights, batch),
+        lld_mode,
+        pick(flow_rates, batch),
+        hamilton_liquid_classes=pick(hamilton_liquid_classes, batch),
+        clld_sensitivity=clld_sensitivity,
+        immersion_depths=pick(immersion_depths, batch),
+        blow_out_air_volumes=pick(blow_out_air_volumes, batch),
+        pre_wetting_volumes=pick(pre_wetting_volumes, batch),
+        lld=lld,
+        p_lld=p_lld,
+        clot_detection_heights=pick(clot_detection_heights, batch),
+        z_fluid=pick(z_fluid, batch),
+        minimum_allowed_z_position_during=pick(minimum_allowed_z_position_during, batch),
+        z_bottom_search_offset=pick(z_bottom_search_offset, batch),
+        mix=pick(mix, batch),
+        mix_position_from_liquid_surface=mix_position_from_liquid_surface,
+        settling_times=pick(settling_times, batch),
+        swap_speeds=pick(swap_speeds, batch),
+        transport_air_volumes=pick(transport_air_volumes, batch),
+        z_air=pick(z_air, batch),
+        minimum_traverse_height_end=(
+          minimum_traverse_height_end if last else minimum_traverse_height_during
+        ),
+        tadm=tadm,
+        container_segments=pick(container_segments, batch),
+        surface_following_distances=pick(surface_following_distances, batch),
+        read_timeout=read_timeout,
+        command_version=command_version,
+        check_only=check_only,
+      )
+
+    # Every refusal the model can decide comes before the first command.
+    taken = [0.0] * n
+    for batch in batches:
+      for job, volume in zip(batch.indices, await aspirate_batch(batch, check_only=True)):
+        taken[job] = volume
+    self._check_volumes_suffice(containers, self._require_mounted_tips(use_channels), taken)
+    await self._check_tips_and_raise(use_channels, minimum_traverse_height_start)
+    await self._execute_batched(aspirate_batch, batches, minimum_traverse_height_during)
 
   async def dispense(
     self,
