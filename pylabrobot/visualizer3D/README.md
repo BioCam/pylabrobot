@@ -170,13 +170,31 @@ The client is plain ES modules, loaded straight by the browser. There is no buil
 one is not on the table: the page has to keep working from a checkout, offline.
 
 ```
-static/app.js         the scene: geometry, camera, tree, info panel, interaction, transport
+static/boot.js        checks the browser can draw and reach the server before loading the page
+static/app.js         the page: builds the scene from a message and wires the modules together
+static/world.js       the tree as the page holds it: names, parents, models, placements
+static/transport.js   the websocket: scene, state and move messages, reconnecting
+static/frame.js       the frame loop: draws on request, adapts quality, reports its cost
+static/renderer.js    the renderer, cameras, lights, controls and the view helper
+static/drawn.js       what is drawn per resource, and the ownership registry that disposes it
+static/boxes.js       every resource as a box, with outlines, cavities and discs
+static/models.js      resources drawn from model files, with joints the state drives
+static/appearance.js  detail level, view mode, opacity and paint order
+static/marks.js       arms, grids, reference marks, origin, floor and channel halos
+static/live.js        state, moves, glides and visibility applied to what is drawn
+static/panel.js       the selection, its boxes and the info panel
+static/tree.js        the resource tree, its search and its side panel
+static/tools.js       panning, picking, the hover readout, the coordinate tool, the toolbar
+static/coords.js      the get-location tool's measurements and reference dropdown
+static/device_tools.js  what a device pipettes and grips with, listed from the tree
+static/gif.js         recording the viewport
 static/constants.js   the palette and the thresholds, as data
 static/format.js      turning values into the text the info panel shows
 static/dom.js         element lookups that say which kind of element is being asked for
-static/coords.js      the get-location tool
-static/gif.js         recording the viewport
 ```
+
+Modules import downwards only: `app.js` imports everything, `tools.js` imports `tree.js` and
+`panel.js`, and nothing imports `app.js`. Within a module a helper is declared above its callers.
 
 ## Type checking
 
