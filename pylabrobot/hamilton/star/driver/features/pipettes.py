@@ -4952,6 +4952,8 @@ class Pipettes:
     bare = sorted({channel for channel in channel_of if not presence[channel]})
     if bare:
       raise RuntimeError(f"channels {bare} carry no tip; an aspiration needs one on each")
+    # Where the pistons stand, read once; each batch's command moves the model on from there.
+    await self.dispensing_drives_request_uL_positions(sorted(set(channel_of)))
     for job in touched:
       self._require_ztouch_firmware(channel_of[job])
     if touched:
@@ -5040,6 +5042,9 @@ class Pipettes:
         "transport_air_volumes", transport_air_volumes, "aspiration_air_transport_volume"
       ),
     }
+    # What each piston travels besides the liquid: blow-out air before it, transport air after.
+    blow_out_air = per_container_settings["blow_out_air_volumes"] or [0.0] * n
+    transport_air = per_container_settings["transport_air_volumes"] or [0.0] * n
 
     # The heights on the deck, in mm: the floor, where a search starts, and the surface.
     dz = [0.0] * n if resource_offsets is None else [offset.z for offset in resource_offsets]
@@ -5252,12 +5257,6 @@ class Pipettes:
       await search(batch)
       # The model gives before the device draws, so a short container or a full tip refuses here,
       # before this batch's command; committed as the command succeeds.
-      # Where each piston stands before the command, to tell after a failure how far it drew.
-      pistons = (
-        [await self.dispensing_drive_request_uL_position(ch) for ch in batch.channels]
-        if tracking
-        else []
-      )
       moves: List[float] = []
       trackers = []
       try:
@@ -5288,8 +5287,8 @@ class Pipettes:
         # A command that failed part way drew on some channels: each piston stands past its
         # blow-out air by the liquid it took, up to what its container gave.
         if tracking and len(moves) == len(jobs):
-          air = per_container_settings.get("blow_out_air_volumes") or [0.0] * n
           for index, (channel, job) in enumerate(zip(batch.channels, jobs)):
+            before = self.piston_positions[channel]
             try:
               now = await self.dispensing_drive_request_uL_position(channel)
             except Exception:
@@ -5297,7 +5296,7 @@ class Pipettes:
                 "could not read channel %d's piston; what it drew is not in the model", channel
               )
               continue
-            drew = round(min(max(now - pistons[index] - air[job], 0.0), moves[index]), 1)
+            drew = round(min(max(now - before - blow_out_air[job], 0.0), moves[index]), 1)
             if drew > 0:
               containers[job].tracker.remove_liquid(drew)
               tips[job].tracker.add_liquid(drew)
@@ -5312,5 +5311,9 @@ class Pipettes:
         raise
       for tracker in trackers:
         tracker.commit()
+      for channel, job in zip(batch.channels, jobs):
+        self.piston_positions[channel] = round(
+          self.piston_positions[channel] + drawn[job] + blow_out_air[job] + transport_air[job], 1
+        )
 
     await self._execute_batched(run, batches, during)

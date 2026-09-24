@@ -1583,8 +1583,8 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertEqual(self.pipettes.piston_positions, [0.0] * 8)
     self.assertEqual(await self.pipettes.dispensing_drives_request_uL_positions(), [0.0] * 8)
     await self.pipettes.aspirate(self.wells[:2], piston_volumes=[50.0, 20.0])
-    # The reads before each batch's command already recorded where the pistons stood then.
-    self.assertEqual(self.pipettes.piston_positions, [0.0] * 8)
+    # Read once at the start, then moved on by what each command drew, without a read.
+    self.assertEqual(self.pipettes.piston_positions, [50.0, 20.0] + [0.0] * 6)
     positions = await self.pipettes.dispensing_drives_request_uL_positions()
     self.assertEqual(positions[:2], [50.0, 20.0])
     self.assertEqual(positions[2:], [0.0] * 6)
