@@ -928,6 +928,26 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
     )
     self.pipettes._record_after_command.assert_awaited_once()  # type: ignore[attr-defined]
 
+  async def test_the_end_height_is_any_the_tips_reach(self):
+    await self.pipettes._aspirate_in_one_move(
+      [0, 1],
+      self.locations,
+      self.searches,
+      self.floors,
+      [10.0, 10.0],
+      minimum_traverse_height_end=180.0,
+    )
+    self.assertEqual(self.sent()["minimum_z_end_position"], 1800)
+    with self.assertRaises(ValueError):
+      await self.pipettes._aspirate_in_one_move(
+        [0, 1],
+        self.locations,
+        self.searches,
+        self.floors,
+        [10.0, 10.0],
+        minimum_traverse_height_end=400.0,
+      )
+
   async def test_a_negative_immersion_depth_is_sent_as_a_direction(self):
     await self.pipettes._aspirate_in_one_move(
       [0, 1],
@@ -1111,6 +1131,8 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.safe_z.await_count, 2, "up before the first batch and at the end")
 
   async def test_two_columns_are_two_batches_with_safe_z_between(self):
+    # A search leaves its channel down; the stubbed link records nothing, so the model is told.
+    self.pipettes._get_channels_below_safe_z = unittest.mock.Mock(return_value=[0])  # type: ignore[method-assign]
     await self.pipettes.probe_liquid_heights(self._wells("A1", "A2"))
     self.assertEqual(self.xy.await_count, 2)
     self.assertEqual([c[:4] for c in self.sent], ["P1ZL", "C0RL", "P2ZL", "C0RL"])
@@ -1478,12 +1500,12 @@ class TestLiquidProbingInSimulation(_SimulatedPlateWithWater):
 class TestAspirateInSimulation(_SimulatedPlateWithWater):
   """`aspirate` over containers: one `C0 AS` per batch, the model giving what the device draws."""
 
-  def _record_aspirations(self) -> List[str]:
+  def _record_aspirations(self, *also: str) -> List[str]:
     sent: List[str] = []
     log = self.driver._log_exchange
 
     def recorded(written: str, read: Optional[str]) -> None:
-      if written.startswith("C0AS"):
+      if written.startswith(("C0AS",) + also):
         sent.append(written)
       log(written, read)
 
@@ -1521,13 +1543,15 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     discs = await self.pipettes.request_stop_disc_z_positions()
     self.assertEqual([discs[channel] for channel in range(4)], [top] * 4)
 
-  async def test_two_cycles_are_two_commands(self):
+  async def test_two_cycles_are_two_commands_and_one_raise(self):
     for row in "EFGH":
       self.plate.get_well(f"{row}1").tracker.set_volume(100.0)
     wells = [self.plate.get_well(f"{row}1") for row in "ABCEFGH"]
-    sent = self._record_aspirations()
+    sent = self._record_aspirations("C0ZA", "C0JZ")
     await self.pipettes.aspirate(wells, [10.0] * 7, use_channels=[0, 1, 2, 3])
-    self.assertEqual(len(sent), 2)
+    # Z safety once, before the first batch; each command ends the tips at their highest, so
+    # nothing is raised between the batches or after the last.
+    self.assertEqual([c[:4] for c in sent], ["C0ZA", "C0AS", "C0AS"])
     self.assertEqual([w.tracker.get_used_volume() for w in wells], [140.0, 90.0, 40.0] + [90.0] * 4)
 
   async def test_piston_volumes_are_drawn_as_given_and_never_with_a_class(self):

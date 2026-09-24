@@ -1731,6 +1731,22 @@ class Pipettes:
 
   # -- x and y together ----------------------------------------------------------------------------
 
+  def _get_channels_below_safe_z(self) -> List[int]:
+    """The channels the model does not have at Z safety, so a raise there would move them.
+
+    A channel the model knows nothing about counts as below, so the raise runs.
+
+    Returns:
+      The channels, 0-indexed from the back.
+    """
+    top = self.configuration.z_range[1]
+    below = []
+    for channel in range(self.num_channels):
+      point = self.get_reference_point_location(channel)
+      if point is None or point.z < top - 0.1:
+        below.append(channel)
+    return below
+
   async def _traverse_raise_targets(self, height: float) -> Dict[int, float]:
     """The stop disc target of every channel whose lowest point is below `height`, checked.
 
@@ -3056,7 +3072,8 @@ class Pipettes:
     """Take the channels to each batch in turn and run `func` there; on any failure, Z safety.
 
     Between batches the channels come up to `minimum_traverse_height_during`, or to Z safety when
-    None; then the arm and the channels travel to the batch together, `X0 XP` and `C0 JY`.
+    None, unless the model has them there already; then the arm and the channels travel to the
+    batch together, `X0 XP` and `C0 JY`.
 
     Args:
       func: what to do at a batch. It moves nothing in X or Y.
@@ -3072,7 +3089,8 @@ class Pipettes:
       for index, batch in enumerate(batches):
         if index > 0:
           if minimum_traverse_height_during is None:
-            await self.move_to_safe_z()
+            if self._get_channels_below_safe_z():
+              await self.move_to_safe_z()
           else:
             raises = await self._traverse_raise_targets(minimum_traverse_height_during)
             if raises:
@@ -4455,7 +4473,7 @@ class Pipettes:
       pull_out_distance_transport_air: rise before drawing transport air.
       transport_air_volumes: air drawn after the liquid. 0.0 when None.
       limit_curve_index: TADM limit curve, 0 for none.
-      minimum_traverse_height_end: height at the end. As the start when None.
+      minimum_traverse_height_end: tip bottom height at the end. The tips' highest when None.
 
     Raises:
       ValueError: A list not one entry per channel, a value out of the firmware's range, an
@@ -4522,7 +4540,16 @@ class Pipettes:
     xs, ys, pattern = self._tip_command_positions(dict(zip(use_channels, places)))
     mounted = list(tips.values())
     traverse_start = tenths(self._tip_traverse_height(mounted, minimum_traverse_height_start))
-    traverse_end = tenths(self._tip_traverse_height(mounted, minimum_traverse_height_end))
+    # The end is where the command leaves the tips, any height they reach; the travel rule is
+    # the start's alone.
+    if minimum_traverse_height_end is None:
+      traverse_end = tenths(self._tip_traverse_height(mounted, None))
+    else:
+      for channel, tip in tips.items():
+        self._check_reachable(
+          "z", round(minimum_traverse_height_end + tip.get_size_z() - tip.fitting_depth, 2)
+        )
+      traverse_end = tenths(minimum_traverse_height_end)
 
     c = self.configuration
     # A master command takes heights in tenths of a millimetre, not the Z drive's own increments.
@@ -4942,8 +4969,21 @@ class Pipettes:
         )
       surfaces.append(round(floors[job] + above_bottom, 2))
 
+    _, _, batches = await self._prepare_batched(
+      deck,
+      containers,
+      use_channels,
+      resource_offsets,
+      x_grouping_tolerance,
+      minimum_traverse_height_start,
+      minimum_traverse_height_end,
+    )
+
     async def run(batch: ChannelBatch) -> None:
       jobs = batch.indices
+      # The last batch ends where the caller wants the channels left; the others at the height
+      # the next batch starts from.
+      last = batch is batches[-1]
       await self._aspirate_in_one_move(
         batch.channels,
         [
@@ -4965,7 +5005,9 @@ class Pipettes:
         second_section_ratio=second_section_ratio,
         pull_out_distance_transport_air=pull_out_distance_transport_air,
         limit_curve_index=limit_curve_index,
-        minimum_traverse_height_end=minimum_traverse_height_during,
+        minimum_traverse_height_end=(
+          minimum_traverse_height_end if last else minimum_traverse_height_during
+        ),
         **{
           name: [values[job] for job in jobs]
           for name, values in per_container_settings.items()
@@ -4982,15 +5024,6 @@ class Pipettes:
         tip.tracker.add_liquid(volume)
         trackers += [container.tracker, tip.tracker]
     try:
-      channels, _, batches = await self._prepare_batched(
-        deck,
-        containers,
-        use_channels,
-        resource_offsets,
-        x_grouping_tolerance,
-        minimum_traverse_height_start,
-        minimum_traverse_height_end,
-      )
       await self._execute_batched(run, batches, minimum_traverse_height_during)
     except BaseException:
       for tracker in trackers:
@@ -4998,9 +5031,3 @@ class Pipettes:
       raise
     for tracker in trackers:
       tracker.commit()
-    if minimum_traverse_height_end is None:
-      await self.move_to_safe_z()
-    else:
-      await self.move_tool_bottom_to_z_positions(
-        {channel: minimum_traverse_height_end for channel in sorted(set(channels))}
-      )
