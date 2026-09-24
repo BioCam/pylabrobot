@@ -1629,6 +1629,20 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertAlmostEqual(self.wells[0].tracker.get_used_volume(), 70.0, delta=2.0)
     self.assertAlmostEqual(self.wells[1].tracker.get_used_volume(), 80.0, delta=2.0)
 
+  async def test_a_container_without_height_volume_functions_is_refused_before_any_batch(self):
+    for row in "EFGH":
+      self.plate.get_well(f"{row}1").tracker.set_volume(100.0)
+    wells = [self.plate.get_well(f"{row}1") for row in "ABCEFGH"]
+    wells[5].supports_compute_height_volume_functions = unittest.mock.Mock(return_value=False)  # type: ignore[method-assign]
+    sent = self._record_aspirations("P1ZL", "C0RL")
+    with self.assertRaises(RuntimeError) as refused:
+      await self.pipettes.aspirate(
+        wells, [10.0] * 7, use_channels=[0, 1, 2, 3], lld_mode=Pipettes.LLDMode.CAPACITIVE
+      )
+    self.assertIn("height_volume_data", str(refused.exception))
+    self.assertEqual(sent, [])
+    self.assertEqual(wells[0].tracker.get_used_volume(), 150.0)
+
   async def test_no_liquid_found_is_refused_and_earlier_batches_stand(self):
     for row in "EFGH":
       self.plate.get_well(f"{row}1").tracker.set_volume(100.0)

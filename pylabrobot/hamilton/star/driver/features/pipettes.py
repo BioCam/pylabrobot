@@ -4794,7 +4794,8 @@ class Pipettes:
       ValueError: An argument out of range, lists that do not match, both or neither of `volumes`
         and `piston_volumes`, a class beside `piston_volumes`, or no class for a channel's tip.
       RuntimeError: A channel without a tip, no deck, no way to know where a liquid stands (no
-        height given, tracking off, LLD off), or no liquid found where the channels searched.
+        height given, tracking off, LLD off), a container without height-volume functions under
+        CAPACITIVE or PRESSURE, or no liquid found where the channels searched.
       TooLittleLiquidError: A container holding less than asked.
       TooLittleVolumeError: A tip without room for what it is to draw.
     """
@@ -4938,6 +4939,17 @@ class Pipettes:
         )
       surfaces.append(round(floors[job] + above_bottom, 2))
 
+    searching = lld_mode in (self.LLDMode.CAPACITIVE, self.LLDMode.PRESSURE)
+    if searching:
+      # What a search finds becomes a volume by the container's own functions: refused here,
+      # before anything moves, not at the batch that would need them.
+      lacking = [c.name for c in containers if not c.supports_compute_height_volume_functions()]
+      if lacking:
+        raise RuntimeError(
+          f"{lacking} have no height-volume functions, so what a search finds in them cannot become "
+          "a volume. Generate a height_volume_data dictionary for each and consider contributing "
+          "it back to PyLabRobot :)"
+        )
     _, overhangs, batches = await self._prepare_batched(
       deck,
       containers,
@@ -4948,7 +4960,6 @@ class Pipettes:
       end,
     )
     tops = [round(c.get_location_wrt(deck, "c", "c", "t").z + z, 2) for c, z in zip(containers, dz)]
-    searching = lld_mode in (self.LLDMode.CAPACITIVE, self.LLDMode.PRESSURE)
 
     async def search(batch: ChannelBatch) -> None:
       """Find the liquid in the batch's containers, and put what was found into the model."""
