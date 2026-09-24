@@ -2947,7 +2947,6 @@ class Pipettes:
     acceleration: float = 800.0,
     detection_limiter_pwm: int = 1,
     push_force_pwm: int = 0,
-    end_tolerance: float = 0.5,
     allow_without_tip: bool = False,
     post_detection_distance: float = 2.0,
     move_channels_to_safe_pos_after: bool = False,
@@ -2956,7 +2955,7 @@ class Pipettes:
 
     Approach at `approach_speed`, search at `search_speed` with the force held to
     `detection_limiter_pwm`. Afterwards `post_detection_distance` above what it met, or Z safety
-    when asked. None when the search reached its end within `end_tolerance`. Channel firmware
+    when asked. None when the search reached its end and met nothing. Channel firmware
     from 2022 on.
 
     Args:
@@ -2969,7 +2968,6 @@ class Pipettes:
       acceleration: in mm/s2.
       detection_limiter_pwm: the force at which the search stops, 0 to 125.
       push_force_pwm: the push-down force once stopped, 0 to 125; 0 switches the drive off.
-      end_tolerance: how close to the end counts as having touched nothing, in mm.
       allow_without_tip: whether to probe without a tip, on the stop disc. False requires one.
       post_detection_distance: how far the channel backs off afterwards, in mm; 0 stays.
       move_channels_to_safe_pos_after: whether to raise every channel to Z safety afterwards,
@@ -3021,7 +3019,7 @@ class Pipettes:
       raise
     await self._record_where_they_stopped("z")
     tip_bottom = round(stop_disc - overhang, 2)
-    touched = None if tip_bottom - search_end_position <= end_tolerance else tip_bottom
+    touched = None if tip_bottom - search_end_position <= self._ztouch_end_allowance else tip_bottom
     if move_channels_to_safe_pos_after:
       await self.move_to_safe_z()
     elif post_detection_distance:

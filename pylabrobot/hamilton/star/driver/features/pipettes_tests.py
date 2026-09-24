@@ -508,7 +508,8 @@ class TestZTouchProbing(unittest.IsolatedAsyncioTestCase):
     self.back_off.assert_not_awaited()
 
   async def test_reaching_the_end_is_none(self):
-    self.rz = self.pipettes.configuration.z_drive_mm_to_increments(100.3)
+    # The drive lands a few hundredths off the end it ran to.
+    self.rz = self.pipettes.configuration.z_drive_mm_to_increments(100.05)
     self.assertIsNone(await self.pipettes.probe_z_using_ztouch(0))
     self.back_off.assert_awaited_once()
 
