@@ -47,7 +47,7 @@ def _make_grippers(deck: PrepDeck, stub_pick_and_drop: bool = True) -> Tuple[Cor
   pipettes = SimpleNamespace(
     configuration=SimpleNamespace(channels=[]),  # no reported windows
     num_channels=2,
-    default_z_speed=113.6,
+    default_z_speed=125.0,
     move_to_safe_z=AsyncMock(),
     move_tool_bottom_to_z_positions=AsyncMock(),
     move_to_y_positions=AsyncMock(),

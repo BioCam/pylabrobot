@@ -859,10 +859,10 @@ class Pipettes:
     # The firmware's own. YAxis.MoveRelative takes a per-move level (1-7, about 233 mm/s2 each); the
     # driver does not use it yet.
     self.default_y_acceleration: float = 760.0
-    # Z: 80 % of 142 mm/s, fitted from timed `MoveToPosition` moves of 2 to 30 mm (rms 4.5 ms).
+    # Z: about 90 % of 142 mm/s, fitted from timed `MoveToPosition` moves of 2 to 30 mm (rms 4.5 ms).
     # `move_tool_bottom_to_z_positions` sends the speed with `MoveZAbsolute`, in mm/s;
     # `MoveToPosition` carries none.
-    self.default_z_speed: float = 113.6
+    self.default_z_speed: float = 125.0
     # The Z drives' own, read with `ZDrive.GetAcceleration` and matched by that fit. Setup
     # overwrites it with what the firmware holds.
     self.default_z_acceleration: float = 800.0
