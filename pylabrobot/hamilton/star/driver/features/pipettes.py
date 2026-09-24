@@ -51,8 +51,8 @@ from pylabrobot.resources.n_channel_pipettes import NChannelPipette, TipMounting
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip import Tip
 from pylabrobot.resources.tip_rack import TipSpot, tip_origin
-from pylabrobot.resources.well import Well
 from pylabrobot.resources.volume_tracker import does_volume_tracking
+from pylabrobot.resources.well import Well
 
 if TYPE_CHECKING:
   from pylabrobot.hamilton.star.driver.features.x_arm import XArm
@@ -4335,8 +4335,8 @@ class Pipettes:
     blow_out_air_volume: List[int],
     pre_wetting_volume: List[int],
     lld_mode: List[int],
-    gamma_lld_sensitivity: List[int],
-    dp_lld_sensitivity: List[int],
+    clld_sensitivity: List[int],
+    plld_sensitivity: List[int],
     aspirate_position_above_z_touch_off: List[int],
     detection_height_difference_for_dual_lld: List[int],
     swap_speed: List[int],
@@ -4388,8 +4388,8 @@ class Pipettes:
       ba=[f"{ba:04}" for ba in blow_out_air_volume],
       oa=[f"{oa:03}" for oa in pre_wetting_volume],
       lm=[f"{lm}" for lm in lld_mode],
-      ll=[f"{ll}" for ll in gamma_lld_sensitivity],
-      lv=[f"{lv}" for lv in dp_lld_sensitivity],
+      ll=[f"{ll}" for ll in clld_sensitivity],
+      lv=[f"{lv}" for lv in plld_sensitivity],
       zo=[f"{zo:03}" for zo in aspirate_position_above_z_touch_off],
       ld=[f"{ld:02}" for ld in detection_height_difference_for_dual_lld],
       de=[f"{de:04}" for de in swap_speed],
@@ -4420,8 +4420,8 @@ class Pipettes:
     *,
     minimum_traverse_height_start: Optional[float] = None,
     lld_mode: "Pipettes.LLDMode" = LLDMode.OFF,
-    gamma_lld_sensitivity: int = 1,
-    dp_lld_sensitivity: int = 1,
+    clld_sensitivity: int = 1,
+    plld_sensitivity: int = 1,
     detection_height_difference_for_dual_lld: float = 0.0,
     aspirate_position_above_z_touch_off: float = 0.0,
     clot_detection_heights: Optional[List[float]] = None,
@@ -4457,8 +4457,8 @@ class Pipettes:
       minimum_traverse_height_start: travel height before the command.
         `default_minimum_traverse_height` when None.
       lld_mode: how the liquid is found. ZTOUCH finds a floor, not a liquid, and logs a warning.
-      gamma_lld_sensitivity: capacitive LLD sensitivity, 1 high to 4 low.
-      dp_lld_sensitivity: pressure LLD sensitivity, 1 high to 4 low.
+      clld_sensitivity: capacitive LLD sensitivity, 1 high to 4 low.
+      plld_sensitivity: pressure LLD sensitivity, 1 high to 4 low.
       detection_height_difference_for_dual_lld: allowed difference of the two detections.
       aspirate_position_above_z_touch_off: aspiration height above a Z touch.
       clot_detection_heights: how far a clot may hold the tip back. 0.0 when None.
@@ -4632,8 +4632,8 @@ class Pipettes:
         [tenths(second_section_ratio)],
         c.second_section_ratio_range_increments,
       ),
-      ("gamma_lld_sensitivity", [gamma_lld_sensitivity], c.lld_sensitivity_range),
-      ("dp_lld_sensitivity", [dp_lld_sensitivity], c.lld_sensitivity_range),
+      ("clld_sensitivity", [clld_sensitivity], c.lld_sensitivity_range),
+      ("plld_sensitivity", [plld_sensitivity], c.lld_sensitivity_range),
       (
         "aspirate_position_above_z_touch_off, in 0.1 mm,",
         [tenths(aspirate_position_above_z_touch_off)],
@@ -4685,8 +4685,8 @@ class Pipettes:
         blow_out_air_volume=[tenths(v) for v in blow_out],
         pre_wetting_volume=[tenths(v) for v in pre_wet],
         lld_mode=[lld_mode.value] * n,
-        gamma_lld_sensitivity=[gamma_lld_sensitivity] * n,
-        dp_lld_sensitivity=[dp_lld_sensitivity] * n,
+        clld_sensitivity=[clld_sensitivity] * n,
+        plld_sensitivity=[plld_sensitivity] * n,
         aspirate_position_above_z_touch_off=[tenths(aspirate_position_above_z_touch_off)] * n,
         detection_height_difference_for_dual_lld=[tenths(detection_height_difference_for_dual_lld)]
         * n,
@@ -4759,8 +4759,9 @@ class Pipettes:
     jet: Optional[Sequence[bool]] = None,
     blow_out: Optional[Sequence[bool]] = None,
     piston_volumes: Optional[Sequence[float]] = None,
-    gamma_lld_sensitivity: int = 1,
-    dp_lld_sensitivity: int = 1,
+    search_speed: float = 10.0,
+    clld_sensitivity: int = 1,
+    plld_sensitivity: int = 1,
     detection_height_difference_for_dual_lld: float = 0.0,
     aspirate_position_above_z_touch_off: float = 0.0,
     clot_detection_heights: Optional[Sequence[float]] = None,
@@ -4810,8 +4811,9 @@ class Pipettes:
       jet: whether the later dispense is a jet, for the lookup. False when None.
       blow_out: whether the later dispense blows out, for the lookup. False when None.
       piston_volumes: what each piston draws, in uL, as given. One of this and `volumes`.
-      gamma_lld_sensitivity: capacitive LLD sensitivity, 1 high to 4 low.
-      dp_lld_sensitivity: pressure LLD sensitivity, 1 high to 4 low.
+      search_speed: of the driver's own CAPACITIVE or PRESSURE search, in mm/s.
+      clld_sensitivity: capacitive LLD sensitivity, 1 high to 4 low.
+      plld_sensitivity: pressure LLD sensitivity, 1 high to 4 low.
       detection_height_difference_for_dual_lld: allowed difference of the two detections, in mm.
       aspirate_position_above_z_touch_off: aspiration height above a Z touch, in mm.
       clot_detection_heights: how far a clot may hold the tip back, in mm. The class's, else 0.0,
@@ -4841,8 +4843,8 @@ class Pipettes:
     Raises:
       ValueError: An argument out of range, lists that do not match, both or neither of `volumes`
         and `piston_volumes`, a class beside `piston_volumes`, or no class for a channel's tip.
-      RuntimeError: A channel without a tip, no deck, or no way to know where a liquid stands:
-        no height given, tracking off, LLD off.
+      RuntimeError: A channel without a tip, no deck, no way to know where a liquid stands (no
+        height given, tracking off, LLD off), or no liquid found where the channels searched.
       TooLittleLiquidError: A container holding less than asked.
       TooLittleVolumeError: A tip without room for what it is to draw.
     """
@@ -4986,7 +4988,7 @@ class Pipettes:
         )
       surfaces.append(round(floors[job] + above_bottom, 2))
 
-    _, _, batches = await self._prepare_batched(
+    _, overhangs, batches = await self._prepare_batched(
       deck,
       containers,
       use_channels,
@@ -4995,8 +4997,32 @@ class Pipettes:
       start,
       end,
     )
+    tops = [round(c.get_location_wrt(deck, "c", "c", "t").z + z, 2) for c, z in zip(containers, dz)]
+    searching = lld_mode in (self.LLDMode.CAPACITIVE, self.LLDMode.PRESSURE)
 
-    async def run(batch: ChannelBatch) -> None:
+    async def search(batch: ChannelBatch) -> None:
+      """Find the liquid in the batch's containers, and put what was found into the model."""
+      found = await self._probe_batch_liquid_heights(
+        batch,
+        containers,
+        overhangs=overhangs,
+        z_cavity_bottom=floors,
+        z_top=tops,
+        lld_modes=[lld_mode] * n,
+        search_speed=search_speed,
+        n_replicates=1,
+      )
+      for channel, job in zip(batch.channels, batch.indices):
+        height = found[job][0]
+        if height is None:
+          raise RuntimeError(f"channel {channel} found no liquid in {containers[job].name}")
+        surfaces[job] = height
+        if tracking:
+          measured = containers[job].compute_volume_from_height(round(height - floors[job], 2))
+          containers[job].tracker.set_volume(measured)
+
+    async def send(batch: ChannelBatch) -> None:
+      """One `C0 AS` for the batch, from the heights as they stand."""
       jobs = batch.indices
       # The last batch ends where the caller wants the channels left; the others at the height
       # the next batch starts from.
@@ -5013,8 +5039,8 @@ class Pipettes:
         minimum_traverse_height_start=during,
         pre_mixes=[mixes[job] for job in jobs],
         lld_mode=lld_mode,
-        gamma_lld_sensitivity=gamma_lld_sensitivity,
-        dp_lld_sensitivity=dp_lld_sensitivity,
+        clld_sensitivity=clld_sensitivity,
+        plld_sensitivity=plld_sensitivity,
         detection_height_difference_for_dual_lld=detection_height_difference_for_dual_lld,
         aspirate_position_above_z_touch_off=aspirate_position_above_z_touch_off,
         mix_position_from_liquid_surface=mix_position_from_liquid_surface,
@@ -5030,19 +5056,25 @@ class Pipettes:
         },
       )
 
-    # The model gives before the device draws, so a container with too little liquid or a tip
-    # with too little room refuses here, before anything has moved; nothing is kept until the end.
-    trackers = []
-    if tracking:
-      for container, tip, volume in zip(containers, tips, liquid):
-        container.tracker.remove_liquid(volume)
-        tip.tracker.add_liquid(volume)
-        trackers += [container.tracker, tip.tracker]
-    try:
-      await self._execute_batched(run, batches, during)
-    except BaseException:
+    async def run(batch: ChannelBatch) -> None:
+      jobs = batch.indices
+      if searching:
+        await search(batch)
+      # The model gives before the device draws, so a short container or a full tip refuses here,
+      # before this batch's command; committed as the command succeeds.
+      trackers = []
+      if tracking:
+        for job in jobs:
+          containers[job].tracker.remove_liquid(liquid[job])
+          tips[job].tracker.add_liquid(liquid[job])
+          trackers += [containers[job].tracker, tips[job].tracker]
+      try:
+        await send(batch)
+      except BaseException:
+        for tracker in trackers:
+          tracker.rollback()
+        raise
       for tracker in trackers:
-        tracker.rollback()
-      raise
-    for tracker in trackers:
-      tracker.commit()
+        tracker.commit()
+
+    await self._execute_batched(run, batches, during)

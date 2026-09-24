@@ -799,8 +799,8 @@ class TestAspirateFirmware(unittest.IsolatedAsyncioTestCase):
       blow_out_air_volume=[0] * n,
       pre_wetting_volume=[0] * n,
       lld_mode=[0] * n,
-      gamma_lld_sensitivity=[1] * n,
-      dp_lld_sensitivity=[1] * n,
+      clld_sensitivity=[1] * n,
+      plld_sensitivity=[1] * n,
       aspirate_position_above_z_touch_off=[0] * n,
       detection_height_difference_for_dual_lld=[0] * n,
       swap_speed=[1000] * n,
@@ -984,7 +984,7 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
       ([over, 10.0], {"transport_air_volumes": [5.0, 0.0]}, "over its tip's"),
       ([10.0], {}, "one entry per channel"),
       (ten, {"flow_rates": [0.0, 10.0]}, "flow_rates"),
-      (ten, {"gamma_lld_sensitivity": 5}, "gamma_lld_sensitivity"),
+      (ten, {"clld_sensitivity": 5}, "clld_sensitivity"),
     ]
     for volumes, kwargs, message in refusals:
       with self.assertRaises(ValueError, msg=message) as refused:
@@ -1610,6 +1610,37 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       "mv00300 00000 00300&mc03 00 03&mp000 000 000&ms0500 1000 0500&mh0015 0000 0015&", sent[1]
     )
 
+  async def test_a_capacitive_aspiration_searches_first_and_takes_what_it_measured(self):
+    sent = self._record_aspirations("P1ZL", "P2ZL", "C0RL")
+    self.wells[0].tracker.set_volume(120.0)  # The model is wrong; the search will say 150 is 120.
+    await self.pipettes.aspirate(self.wells[:2], [50.0, 20.0], lld_mode=Pipettes.LLDMode.CAPACITIVE)
+    self.assertEqual([c[:4] for c in sent], ["P1ZL", "P2ZL", "C0RL", "C0AS"])
+    self.assertIn(
+      f"zl{self._surface_field(self.wells[0], 120.0)} {self._surface_field(self.wells[1], 100.0)}",
+      sent[-1],
+    )
+    # Measured volume less what was drawn, to the resolution of the well's height-volume model.
+    self.assertAlmostEqual(self.wells[0].tracker.get_used_volume(), 70.0, delta=1.0)
+    self.assertAlmostEqual(self.wells[1].tracker.get_used_volume(), 80.0, delta=1.0)
+
+  async def test_no_liquid_found_is_refused_and_earlier_batches_stand(self):
+    for row in "EFGH":
+      self.plate.get_well(f"{row}1").tracker.set_volume(100.0)
+    self.plate.get_well("F1").tracker.set_volume(0.0)
+    wells = [self.plate.get_well(f"{row}1") for row in "ABCEFGH"]
+    sent = self._record_aspirations()
+    with self.assertRaises(RuntimeError) as refused:
+      await self.pipettes.aspirate(
+        wells, [10.0] * 7, use_channels=[0, 1, 2, 3], lld_mode=Pipettes.LLDMode.CAPACITIVE
+      )
+    self.assertIn("no liquid", str(refused.exception))
+    # The first batch, A1 to E1 on the four channels, searched, drew and is committed. The second
+    # was refused at its first well and never sent its command; its other wells are untouched.
+    self.assertEqual(len(sent), 1)
+    self.assertAlmostEqual(wells[0].tracker.get_used_volume(), 140.0, delta=1.0)
+    self.assertAlmostEqual(wells[3].tracker.get_used_volume(), 90.0, delta=1.0)
+    self.assertEqual(wells[5].tracker.get_used_volume(), 100.0)
+
   async def test_too_little_liquid_is_refused_before_anything_is_sent(self):
     from pylabrobot.resources.errors import TooLittleLiquidError
 
@@ -1631,8 +1662,10 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     bottom = self.wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
     await self.pipettes.aspirate(self.wells[:1], [10.0], liquid_heights=[2.0])
     self.assertIn(f"zl{round((bottom + 2.0) * 10):04}", sent[0])
+    # A capacitive search first: the simulator answers it from the tracker, the surface it found
+    # is sent, and with tracking off the tracker is left alone.
     await self.pipettes.aspirate(self.wells[:1], [10.0], lld_mode=Pipettes.LLDMode.CAPACITIVE)
-    self.assertIn(f"zl{round(bottom * 10):04}", sent[1])
+    self.assertIn(f"zl{self._surface_field(self.wells[0], 150.0)}", sent[1])
     self.assertIn("lm1", sent[1])
     self.assertEqual(self.wells[0].tracker.get_used_volume(), 150.0)
 
