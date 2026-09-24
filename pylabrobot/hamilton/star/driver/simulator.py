@@ -440,9 +440,9 @@ class SimulatedPipettes(_Simulated, Pipettes):
           pushed = sum(int(kwargs[field][used]) for field in ("ta", "dv")) / 10
           if mode in ("1", "3"):
             pushed += int(kwargs["ba"][used]) / 10
-          self.device.dispensing_drive_uL[index] = (
-            0.0 if mode == "4" else round(max(standing - pushed, 0.0), 1)
-          )
+          left = 0.0 if mode == "4" else max(standing - pushed, 0.0)
+          # The stop-back volume is drawn back at the end.
+          self.device.dispensing_drive_uL[index] = round(left + int(kwargs["rv"][used]) / 10, 1)
           used += 1
         return None
 

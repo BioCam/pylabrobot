@@ -2300,6 +2300,14 @@ class TestDispenseInSimulation(_SimulatedPlateWithWater):
     assert tip is not None
     self.assertEqual(tip.tracker.get_used_volume(), 0.0)
 
+  async def test_the_stop_back_leaves_the_piston_that_much_up(self):
+    await self.pipettes.aspirate(self.wells[:1], piston_volumes=[50.0])
+    sent = self._record()
+    await self.pipettes.dispense(self.wells[3:4], piston_volumes=[30.0], stop_back_volumes=[5.0])
+    self.assertIn("rv050", sent[0])
+    self.assertEqual(self.pipettes.piston_positions[0], 25.0)
+    self.assertEqual((await self.pipettes.dispensing_drives_request_uL_positions())[0], 25.0)
+
   async def test_a_failed_command_books_what_the_pistons_gave(self):
     await self.pipettes.aspirate(self.wells[:2], piston_volumes=[50.0, 20.0])
     original = self.driver.send_command

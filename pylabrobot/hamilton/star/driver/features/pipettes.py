@@ -6365,9 +6365,10 @@ class Pipettes:
       "swap_speeds": from_class("swap_speeds", swap_speeds, "dispense_swap_speed"),
     }
     # What each piston travels: the transport air before the liquid, the blow-out air after it in
-    # a blow-out mode; an empty takes the piston to rest.
+    # a blow-out mode; an empty takes the piston to rest. The stop-back is drawn back at the end.
     transport_air = per_container_settings["transport_air_volumes"] or [0.0] * n
     blow_out_air = per_container_settings["blow_out_air_volumes"] or [0.0] * n
+    stop_back = per_container_settings["stop_back_volumes"] or [0.0] * n
     travels = [
       transport_air[job]
       + pushed[job]
@@ -6477,9 +6478,8 @@ class Pipettes:
       )
 
     def piston_after(standing: float, job: int) -> float:
-      if dispensing_modes[job] == 4:
-        return 0.0
-      return float(round(max(standing - travels[job], 0.0), 1))
+      left = 0.0 if dispensing_modes[job] == 4 else max(standing - travels[job], 0.0)
+      return float(round(left + stop_back[job], 1))
 
     async def run(batch: ChannelBatch) -> None:
       # The tip gives before the device pushes; a tip holding less gives what it holds, the rest
