@@ -222,6 +222,29 @@ class Scene:
     }
 
 
+def _all_names(resource: Resource) -> List[str]:
+  """Every resource name in the tree, so a link to one can be recognised as a link."""
+  found = [resource.name]
+  for child in resource.children:
+    found.extend(_all_names(child))
+  return found
+
+
+def _serialized_children(data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+  """A serialized resource's children by name. A parent may leave one out: a tip spot its tip."""
+  return {child["name"]: child for child in data.get("children", ())}
+
+
+def _legacy_shape(resource: Resource, data: Dict[str, Any]) -> Dict[str, Any]:
+  """The comparison's payload shape: one node per resource, listing every child, left out or not."""
+  serialized = _serialized_children(data)
+  data["children"] = [
+    _legacy_shape(child, serialized.get(child.name) or child.serialize())
+    for child in resource.children
+  ]
+  return data
+
+
 def build_scene(
   root: Resource,
   measure_legacy: bool = False,
@@ -233,11 +256,13 @@ def build_scene(
   Traversal is depth-first and parents are emitted before children, so a client can resolve world
   transforms in one forward pass without sorting.
 
+  `Resource.serialize()` serializes the whole subtree, so a node is serialized once and the nested
+  children handed down the walk: serializing at every node costs each resource once per ancestor.
+
   Args:
     root: the resource to flatten.
-    measure_legacy: also serialize the tree the way the existing visualizer sends it, to report
-      what the split saves. It costs a second full serialization, so it is off by default and
-      belongs in a benchmark rather than in a running viewer.
+    measure_legacy: also measure the tree the way the existing visualizer sends it, to report what
+      the split saves. Off by default: a running viewer measures it once, a benchmark every time.
     known: models derived by an earlier pass, by resource name. A name found here is taken to have
       the model it had then, which is what makes a rebuild cost only what actually changed.
     known_names: the names that pass saw. Reuse is only sound while the tree holds the same names,
@@ -248,7 +273,7 @@ def build_scene(
   scene = Scene(names=names)
   reuse = known if (known and known_names == names) else {}
 
-  def walk(resource: Resource, parent: int) -> None:
+  def walk(resource: Resource, parent: int, data: Optional[Dict[str, Any]] = None) -> None:
     model = reuse.get(resource.name)
     if model is not None:
       index = scene.add_known(resource, parent, model)
@@ -257,8 +282,8 @@ def build_scene(
         walk(child, index)
       return
 
-    data = resource.serialize()
-    data.pop("children", None)
+    if data is None:
+      data = resource.serialize()
     # Read off the resource, as `add_known` does: a tip's serialized data has no location.
     if resource.location is not None:
       data["location"] = resource.location.serialize()
@@ -270,28 +295,14 @@ def build_scene(
     index = scene.add(
       data, parent, type(resource), describe_grid(resource), describe_bands(resource), declared
     )
+    serialized = _serialized_children(data)
     for child in resource.children:
-      walk(child, index)
+      walk(child, index, serialized.get(child.name))
 
   walk(root, -1)
   if measure_legacy:
-    scene.legacy_bytes = len(json.dumps(_serialize_tree(root)))
+    scene.legacy_bytes = len(json.dumps(_legacy_shape(root, root.serialize())))
   return scene
-
-
-def _all_names(resource: Resource) -> List[str]:
-  """Every resource name in the tree, so a link to one can be recognised as a link."""
-  found = [resource.name]
-  for child in resource.children:
-    found.extend(_all_names(child))
-  return found
-
-
-def _serialize_tree(resource: Resource) -> Dict[str, Any]:
-  """The existing visualizer's payload shape, for the comparison only."""
-  data = resource.serialize()
-  data["children"] = [_serialize_tree(child) for child in resource.children]
-  return data
 
 
 # A rotation nobody has turned. It is published by every resource that publishes anything at all,

@@ -6,8 +6,9 @@ import unittest
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.corning import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.hamilton import hamilton_96_tiprack_1000uL
+from pylabrobot.resources.resource import Resource
 from pylabrobot.visualizer3D.facility import Facility
-from pylabrobot.visualizer3D.scene import build_scene, pack_state
+from pylabrobot.visualizer3D.scene import _model_of, build_scene, pack_state
 
 
 def facility_with(plates: int) -> Facility:
@@ -17,6 +18,15 @@ def facility_with(plates: int) -> Facility:
     facility.assign_child_resource(
       cor_96_wellplate_360uL_Fb(name=f"plate_{i}"), location=Coordinate(150 * i, 0, 0)
     )
+  return facility
+
+
+def facility_with_a_full_rack() -> Facility:
+  """A facility holding a tip rack full of tips: a tip spot serializes without its tip."""
+  facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+  facility.assign_child_resource(
+    hamilton_96_tiprack_1000uL(name="rack", with_tips=True), location=Coordinate(100, 100, 0)
+  )
   return facility
 
 
@@ -88,6 +98,42 @@ class SceneTests(unittest.TestCase):
       json.dumps(warm.serialize(), sort_keys=True),
       json.dumps(build_scene(facility).serialize(), sort_keys=True),
     )
+
+  def test_a_model_is_the_resources_own_whether_or_not_its_parent_serialized_it(self):
+    """A parent's serialization feeds its children's models, and a child it left out serializes
+    itself: either way the model is what the resource itself says it is."""
+    facility = facility_with_a_full_rack()
+    facility.assign_child_resource(
+      cor_96_wellplate_360uL_Fb(name="plate"), location=Coordinate(300, 100, 0)
+    )
+    scene = build_scene(facility)
+    resources: list = []
+
+    def gather(resource: Resource) -> None:
+      resources.append(resource)
+      for child in resource.children:
+        gather(child)
+
+    gather(facility)
+    self.assertEqual(scene.names, [resource.name for resource in resources])
+    names = frozenset(scene.names)
+    for resource, model_index in zip(resources, scene.model_of_instance):
+      expected = _model_of(resource.serialize(), names)
+      model = scene.models[model_index]
+      self.assertEqual({k: model[k] for k in expected}, expected, resource.name)
+
+  def test_the_legacy_size_counts_one_node_per_resource(self):
+    """The comparison lists every resource as a node, including the tip its spot serializes
+    without, so a serialization that hands children down must not lose the ones a parent drops."""
+    facility = facility_with_a_full_rack()
+    scene = build_scene(facility, measure_legacy=True)
+
+    def one_node_each(resource: Resource) -> dict:
+      data = resource.serialize()
+      data["children"] = [one_node_each(child) for child in resource.children]
+      return data
+
+    self.assertEqual(scene.legacy_bytes, len(json.dumps(one_node_each(facility))))
 
 
 class PackStateTests(unittest.TestCase):
