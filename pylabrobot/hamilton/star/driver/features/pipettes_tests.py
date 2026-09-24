@@ -984,10 +984,10 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
         self.searches,
         self.floors,
         [10.0, 10.0],
-        lld_mode=Pipettes.LLDMode.ZTOUCH,
+        lld_modes=[Pipettes.LLDMode.ZTOUCH, Pipettes.LLDMode.OFF],
       )
-    self.assertIn("Z touch", logs.output[0])
-    self.assertEqual(self.sent()["lld_mode"], [4, 4])
+    self.assertIn("channels [0]", logs.output[0])
+    self.assertEqual(self.sent()["lld_mode"], [4, 0])
 
   async def test_refusals_come_before_anything_is_sent(self):
     over = self.tip.maximal_volume
@@ -996,7 +996,7 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
       ([over, 10.0], {"transport_air_volumes": [5.0, 0.0]}, "over its tip's"),
       ([10.0], {}, "one entry per channel"),
       (ten, {"flow_rates": [0.0, 10.0]}, "flow_rates"),
-      (ten, {"clld_sensitivity": 5}, "clld_sensitivity"),
+      (ten, {"clld_sensitivities": [5, 1]}, "clld_sensitivities"),
     ]
     for volumes, kwargs, message in refusals:
       with self.assertRaises(ValueError, msg=message) as refused:
@@ -1697,6 +1697,26 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertIn("150.0 uL", logs.output[0])
     self.assertEqual(len(sent), 1)
     self.assertAlmostEqual(self.wells[0].tracker.get_used_volume(), 90.0, delta=2.0)
+
+  async def test_modes_mix_within_one_batch(self):
+    sent = self._record_aspirations("P1ZL", "P2ZL", "P3ZE", "P4ZL", "C0RL")
+    modes = [
+      Pipettes.LLDMode.OFF,
+      Pipettes.LLDMode.CAPACITIVE,
+      Pipettes.LLDMode.PRESSURE,
+      Pipettes.LLDMode.OFF,
+    ]
+    await self.pipettes.aspirate(self.wells, piston_volumes=[10.0] * 4, lld_mode=modes)
+    # Only the two searching channels search, each its own way; then one command for all four,
+    # the LLD off everywhere, starting at the lower of the two measured surfaces.
+    self.assertEqual([c[:4] for c in sent], ["P2ZL", "P3ZE", "C0RL", "C0AS"])
+    self.assertIn("lm0 0 0 0", sent[-1])
+    self.assertIn(f"th{self._surface_field(self.wells[2], 50.0)}te2450", sent[-1])
+    self.assertIn(
+      f"zl{self._surface_field(self.wells[0], 150.0)} {self._surface_field(self.wells[1], 100.0)} "
+      f"{self._surface_field(self.wells[2], 50.0)} {self._surface_field(self.wells[3], 0.0)}",
+      sent[-1],
+    )
 
   async def test_no_liquid_found_is_refused_and_earlier_batches_stand(self):
     for row in "EFGH":
