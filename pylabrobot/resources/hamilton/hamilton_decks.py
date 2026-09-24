@@ -6,7 +6,6 @@ import warnings
 from abc import ABCMeta
 from typing import Optional, cast
 
-from pylabrobot.lib.spatial.clearance import get_longest_tip_overhang
 from pylabrobot.resources.carrier import Carrier, ResourceHolder
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.deck import Deck
@@ -502,24 +501,13 @@ class HamiltonDeck(Deck, metaclass=ABCMeta):
   def update_safe_deck_height_from_tips(self, stop_disc_z_max: float, margin: float = 5.0) -> float:
     """Set `safe_deck_height` from the longest tip this deck holds, then check what stands on it.
 
-    The height is the stop discs' highest point less that tip's overhang below it, less `margin`.
-    Called only when wanted: the class default holds for the longest tip the device can use.
-
-    Args:
-      stop_disc_z_max: the highest the channels' stop discs travel at, in mm of the deck's frame,
-        e.g. the top of the pipettes' Z range.
-      margin: kept clear under the longest tip, in mm.
-
-    Returns:
-      The height set, in mm.
-
-    Raises:
-      ValueError: If the deck holds no tip, so no tip decides the height.
+    Called only when wanted: the class default holds for the longest tip the device can use. See
+    `get_safe_deck_height_from_tips` for the arguments. The height set, in mm.
     """
-    overhang = get_longest_tip_overhang(self)
-    if overhang is None:
-      raise ValueError("the deck holds no tip, so no tip decides how high a resource may stand")
-    self.safe_deck_height = round(stop_disc_z_max - overhang - margin, 2)
+    # Here, not at the top: lib/spatial imports resources, whose package imports this deck.
+    from pylabrobot.lib.spatial.clearance import get_safe_deck_height_from_tips
+
+    self.safe_deck_height = get_safe_deck_height_from_tips(self, stop_disc_z_max, margin)
     for child in self.children:
       self._check_safe_z_height(child)
     return self.safe_deck_height
