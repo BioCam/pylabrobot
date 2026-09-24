@@ -6,6 +6,7 @@ import io
 import json
 import os
 import socket
+import threading
 import unittest
 import urllib.error
 import urllib.request
@@ -35,6 +36,19 @@ def free_ports(count: int) -> List[int]:
       sock.close()
 
 
+def empty_facility() -> Facility:
+  """A facility with nothing in it, of a size every test here can place things in."""
+  return Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+
+
+def track_volumes(test: unittest.TestCase) -> None:
+  """Turn volume tracking on for one test and put it back after."""
+  # It is global: left on, it breaks every other suite that aspirates from a well it never filled.
+  was_tracking = does_volume_tracking()
+  set_volume_tracking(True)
+  test.addCleanup(set_volume_tracking, was_tracking)
+
+
 FS_PORT, WS_PORT = free_ports(2)
 # Any model file shipped with the package: what it draws does not matter, that it registers does.
 MESH_FILE = os.path.join(
@@ -48,11 +62,8 @@ MESH_FILE = os.path.join(
 
 class StateChannelTests(unittest.IsolatedAsyncioTestCase):
   async def asyncSetUp(self):
-    # Volume tracking is global, so remember what it was and put it back: leaving it on breaks
-    # every other suite that aspirates from a well it never filled.
-    self._volume_tracking = does_volume_tracking()
-    set_volume_tracking(True)
-    self.facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    track_volumes(self)
+    self.facility = empty_facility()
     self.plate = cor_96_wellplate_360uL_Fb(name="plate")
     self.facility.assign_child_resource(self.plate, location=Coordinate(10, 10, 0))
     self.viewer = Viewer3D(
@@ -62,7 +73,6 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
 
   async def asyncTearDown(self):
     await self.viewer.stop()
-    set_volume_tracking(self._volume_tracking)
 
   async def connect(self):
     """Open a client and take the scene and the snapshot it is greeted with."""
@@ -96,7 +106,7 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
     ws, _, snapshot = await self.connect()
     try:
       self.assertEqual(snapshot["locations"], {})
-      self.assertLessEqual(len(snapshot["states"]), 2)
+      self.assertEqual(len(snapshot["states"]), 1)  # every empty well; the plate publishes nothing
     finally:
       await ws.close()
 
@@ -109,7 +119,7 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
     try:
       spots = [spot.name for spot in rack.get_all_items()]
       self.assertEqual(len({snapshot["of"][name] for name in spots}), 1)
-      self.assertLessEqual(len(snapshot["states"]), 3)
+      self.assertEqual(len(snapshot["states"]), 3)  # the wells, the spots and the tips
     finally:
       await ws.close()
 
@@ -162,8 +172,12 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
     try:
       self.plate.get_item("A1").tracker.set_volume(150.0)
       self.assertIsNotNone(await self.next_state(ws))
+      # A sentinel changed in the same batch: the message it arrives in is the one A1 would be in.
       self.plate.get_item("A1").tracker.set_volume(150.0)
-      self.assertIsNone(await self.next_state(ws, timeout=1.0))
+      self.plate.get_item("B1").tracker.set_volume(10.0)
+      update = await self.next_state(ws)
+      self.assertIsNotNone(update)
+      self.assertEqual(list(update["of"]), ["plate_well_B1"])
     finally:
       await ws.close()
 
@@ -174,7 +188,10 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
       self.plate.get_item("A1").tracker.set_volume(150.0)
       self.assertIsNotNone(await self.next_state(ws))
       self.plate.get_item("A1").tracker.set_volume(150.04)
-      self.assertIsNone(await self.next_state(ws, timeout=1.0))
+      self.plate.get_item("B1").tracker.set_volume(10.0)
+      update = await self.next_state(ws)
+      self.assertIsNotNone(update)
+      self.assertEqual(list(update["of"]), ["plate_well_B1"])
     finally:
       await ws.close()
 
@@ -280,7 +297,7 @@ class FileServerTests(unittest.IsolatedAsyncioTestCase):
   """The file server keeps quiet about what is not its fault."""
 
   async def asyncSetUp(self):
-    self.facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    self.facility = empty_facility()
     self.viewer = Viewer3D(self.facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
     await self.viewer.start()
 
@@ -314,9 +331,16 @@ class FileServerTests(unittest.IsolatedAsyncioTestCase):
         sock.sendall(b"GET /vendor/three.webgpu.min.js HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
         sock.recv(1024)  # the start of the body, then gone
 
+    def request_threads() -> int:
+      return sum(thread.name.startswith("Thread-") for thread in threading.enumerate())
+
+    idle = request_threads()
     with contextlib.redirect_stderr(captured):
       await asyncio.to_thread(abandon)
-      await asyncio.sleep(0.5)  # the request thread notices the closed socket
+      # The request thread ends once its write fails, having reported by then or not at all.
+      deadline = asyncio.get_running_loop().time() + 5
+      while request_threads() > idle and asyncio.get_running_loop().time() < deadline:
+        await asyncio.sleep(0.02)
     self.assertEqual(captured.getvalue(), "")
 
 
@@ -327,7 +351,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     """`stop` used to close the file server and leave the websocket server listening, so the next
     viewer in the same process found its port taken and moved up: the ports drifted by one on
     every restart, and a page served by the earlier viewer kept its stale token forever."""
-    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    facility = empty_facility()
     first = Viewer3D(facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
     await first.start()
     self.assertEqual((first.fs_port, first.ws_port), (FS_PORT, WS_PORT))
@@ -342,7 +366,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
   async def test_stop_does_not_hold_the_loop(self):
     """Shutting the file server down waited on its serving thread's half-second poll from the
     loop's own thread, so everything else on the loop stood still for that long."""
-    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    facility = empty_facility()
     viewer = Viewer3D(facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
     viewer.FS_POLL_S = 0.5  # a shutdown that waits on the loop would then hold it this long
     await viewer.start()
@@ -366,7 +390,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
     """`stop` used to leave every state and assignment callback in place, so a stopped viewer
     kept serializing every change for nobody, and each viewer started on a tree in one session
     added its own callbacks to every resource for the life of the tree."""
-    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    facility = empty_facility()
     part = Resource(name="part", size_x=10, size_y=10, size_z=10)
     facility.assign_child_resource(part, location=Coordinate(0, 0, 0))
     before = len(part._resource_state_updated_callbacks)
@@ -383,7 +407,7 @@ class LifecycleTests(unittest.IsolatedAsyncioTestCase):
   async def test_a_resource_put_back_is_listened_to_once(self):
     """Every assignment subscribed the resource again, so a tip picked up and put back twenty
     times carried twenty-one callbacks and its every change was serialized twenty-one times."""
-    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    facility = empty_facility()
     part = Resource(name="part", size_x=10, size_y=10, size_z=10)
     viewer = Viewer3D(facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
     await viewer.start()
@@ -403,7 +427,7 @@ class BindTests(unittest.IsolatedAsyncioTestCase):
   async def test_a_host_that_cannot_be_bound_is_raised_at_once(self):
     """Every bind error used to read as a taken port, so an address this machine does not have
     walked up through all sixty-five thousand ports, took seconds, and then overflowed."""
-    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    facility = empty_facility()
     viewer = Viewer3D(
       facility, host="203.0.113.1", open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT
     )
@@ -414,7 +438,7 @@ class BindTests(unittest.IsolatedAsyncioTestCase):
   async def test_an_ipv6_host_serves_both_ports(self):
     """The file server was bound as IPv4 whatever the host, so `::1` bound the websocket and then
     hung forever walking ports for a file server that could never bind one."""
-    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    facility = empty_facility()
     viewer = Viewer3D(facility, host="::1", open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
     await viewer.start()
     try:
@@ -430,7 +454,7 @@ class AbandonedLoopTests(unittest.TestCase):
     """A script that starts a viewer and returns from `asyncio.run` without stopping it used to
     turn every later location change into `RuntimeError: Event loop is closed`, raised out of the
     resource, and an assignment raised after the child was already attached."""
-    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    facility = empty_facility()
     part = Resource(name="part", size_x=10, size_y=10, size_z=10)
     facility.assign_child_resource(part, location=Coordinate(0, 0, 0))
 
@@ -454,14 +478,15 @@ class RebuildTests(unittest.IsolatedAsyncioTestCase):
     was no client to send them to: a third of a second on the demo facility, on every assignment
     of a deck laid out before the page was opened. The next client is greeted with a scene built
     for it then, and it holds what was assigned meanwhile."""
-    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    facility = empty_facility()
     viewer = Viewer3D(facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT)
     await viewer.start()
     try:
       facility.assign_child_resource(
         Resource(name="late", size_x=10, size_y=10, size_z=10), location=Coordinate(0, 0, 0)
       )
-      await asyncio.sleep(0.2)
+      # Twice the debounce: the rebuild the assignment scheduled has had its chance to run.
+      await asyncio.sleep(2 * Viewer3D.SCENE_DEBOUNCE_S)
       self.assertEqual(viewer.rebuilds, 0)
       async with websockets.connect(
         viewer.ws_url, origin=Origin(f"http://127.0.0.1:{viewer.fs_port}")
@@ -475,7 +500,7 @@ class RebuildTests(unittest.IsolatedAsyncioTestCase):
     """Registering meshes used to write into the interned model dicts, so on the next build the
     one carrying a mesh no longer matched the twins the scene had kept, and every rebuild grew the
     model table: fifty-three models became sixty-seven on the demo facility."""
-    facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    facility = empty_facility()
     for i in range(3):
       part = Resource(name=f"part_{i}", size_x=10, size_y=10, size_z=10, model="part")
       # Declared the way a resource module declares it: a field the base class does not know.
@@ -492,7 +517,7 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
   """Only the page this viewer served, reached by a name this machine answers to, may watch."""
 
   async def asyncSetUp(self):
-    self.facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
+    self.facility = empty_facility()
     self.viewer = Viewer3D(
       self.facility, open_browser=False, fs_port=FS_PORT, ws_port=WS_PORT, name="tests"
     )

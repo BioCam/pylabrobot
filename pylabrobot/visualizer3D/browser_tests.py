@@ -25,22 +25,24 @@ from typing import Any, List, Optional
 
 import websockets
 
-from pylabrobot.resources import does_volume_tracking, set_volume_tracking
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.corning import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.hamilton import hamilton_96_tiprack_50uL_NTR
 from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.resource_holder import ResourceHolder
+from pylabrobot.resources.tip_rack import TipRack
 from pylabrobot.visualizer3D.demo import build_facility, declare_channel_access, star_of
 from pylabrobot.visualizer3D.facility import Facility
 from pylabrobot.visualizer3D.server import Viewer3D
-from pylabrobot.visualizer3D.server_tests import free_ports
+from pylabrobot.visualizer3D.server_tests import free_ports, track_volumes
 
 
 def _find_chrome() -> str:
-  """Where a headless Chrome is, or empty where there is none. A runner has one on the path and a
-  Mac has it where the installer puts it, so the same tests run in both places."""
+  """Where a headless Chrome is, or empty: `PLR_CHROME`, then the path, then the macOS install."""
+  named = os.environ.get("PLR_CHROME", "")
+  if named:
+    return named
   for name in ("google-chrome", "google-chrome-stable", "chromium", "chromium-browser"):
     found = shutil.which(name)
     if found is not None:
@@ -87,21 +89,31 @@ class Browser:
       stdout=subprocess.DEVNULL,
       stderr=subprocess.DEVNULL,
     )
-    for _ in range(120):
-      try:
-        tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self._cdp_port}/json"))
-        url = next(t["webSocketDebuggerUrl"] for t in tabs if t["type"] == "page")
-        self._socket = await websockets.connect(url, max_size=None)
-        return self
-      except Exception:
-        await asyncio.sleep(0.25)
-    raise RuntimeError("could not attach to a headless browser")
+    # A browser nobody attached to would outlive the test, so a failed attach lets go of it.
+    try:
+      deadline = time.monotonic() + 30
+      while True:
+        try:
+          tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{self._cdp_port}/json"))
+          url = next(t["webSocketDebuggerUrl"] for t in tabs if t["type"] == "page")
+          self._socket = await websockets.connect(url, max_size=None)
+          return self
+        except Exception:
+          if time.monotonic() >= deadline:
+            raise RuntimeError("could not attach to a headless browser") from None
+          await asyncio.sleep(0.1)
+    except BaseException:
+      await self.__aexit__()
+      raise
 
   async def __aexit__(self, *_: Any) -> None:
     if self._socket is not None:
       await self._socket.close()
+      self._socket = None
     if self._chrome is not None:
       self._chrome.kill()
+      self._chrome.wait(timeout=5)  # reaped, or every test leaves a zombie behind
+      self._chrome = None
     shutil.rmtree(self._profile, ignore_errors=True)
 
   async def _call(self, method: str, params: Optional[dict] = None, timeout: float = 20.0) -> Any:
@@ -120,6 +132,13 @@ class Browser:
           return message
 
     return await asyncio.wait_for(reply(), timeout)
+
+  async def emulate_scale(self, factor: int) -> None:
+    """Give the screen `factor` device pixels per CSS pixel, as a retina one has: headless has 1."""
+    await self._call(
+      "Emulation.setDeviceMetricsOverride",
+      {"width": 1200, "height": 800, "deviceScaleFactor": factor, "mobile": False},
+    )
 
   async def open(self, url: str) -> None:
     await self._call("Page.enable")
@@ -149,21 +168,31 @@ class Browser:
     return sum(1 for v in pixels if v < 200) / len(pixels)
 
   async def settle(self, expression: str, seconds: float = 25.0) -> Any:
-    """Wait for an expression to answer something truthy, then answer with it.
-
-    Bounded by the clock rather than by a number of tries, so a slow answer cannot multiply into a
-    suite that never finishes.
-    """
+    """Wait for an expression to answer something truthy, asked at once and then every 0.1 s."""
+    # Bounded by the clock rather than by a number of tries, so a slow answer cannot multiply
+    # into a suite that never finishes.
     deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-      await asyncio.sleep(0.25)
+    while True:
       try:
         value = await self.evaluate(expression)
-      except (RuntimeError, TimeoutError):
-        continue
+      except (RuntimeError, asyncio.TimeoutError):
+        value = None
       if value:
         return value
-    raise AssertionError(f"the page never answered within {seconds:.0f}s: {expression}")
+      if time.monotonic() >= deadline:
+        raise AssertionError(f"the page never answered within {seconds:.0f}s: {expression}")
+      await asyncio.sleep(0.1)
+
+  async def frames(self, count: int = 2) -> None:
+    """Wait for `count` animation frames: what the page drew before them is on screen by then."""
+    step = "(n) => (n ? requestAnimationFrame(() => step(n - 1)) : done())"
+    await self._call(
+      "Runtime.evaluate",
+      {
+        "expression": f"new Promise((done) => {{ const step = {step}; step({count}); }})",
+        "awaitPromise": True,
+      },
+    )
 
 
 def _png_luminance(png: bytes) -> List[List[int]]:
@@ -211,6 +240,33 @@ def _png_luminance(png: bytes) -> List[List[int]]:
   return rows
 
 
+# Clicks the row of a named resource three pixels into its arrow or its name, and answers whether
+# the row is selected and what its arrow shows.
+ROW_CLICK = (
+  "((name, where) => {"
+  "  const index = window.plrViewer.resources().indexOf(name);"
+  "  const row = document.querySelector(`.tree-node-row[data-index='${index}']`);"
+  "  const target = row.querySelector(where === 'arrow' ? '.tree-node-arrow' : '.tree-node-name');"
+  "  const box = target.getBoundingClientRect();"
+  "  target.dispatchEvent(new MouseEvent('click', {"
+  "    bubbles: true, clientX: box.left + 3, clientY: box.top + box.height / 2 }));"
+  "  const arrow = row.querySelector('.tree-node-arrow').textContent;"
+  "  return [row.classList.contains('selected'), arrow];"
+  "})"
+)
+# What the arrow of a named resource's row shows.
+ROW_ARROW = (
+  "((name) => document.querySelector(`.tree-node-row[data-index="
+  "'${window.plrViewer.resources().indexOf(name)}'] .tree-node-arrow`).textContent)"
+)
+
+
+def modelled(viewer: Viewer3D) -> int:
+  """How many resources the page draws from a file: what `models()` counts once all have arrived."""
+  scene = viewer._scene_message()
+  return sum(1 for model in scene["instances"]["model"] if "mesh" in scene["models"][model])
+
+
 @unittest.skipUnless(CHROME, "no headless browser to drive")
 class BrowserTests(unittest.IsolatedAsyncioTestCase):
   async def asyncSetUp(self):
@@ -227,6 +283,12 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
   async def asyncTearDown(self):
     await self.viewer.stop()
 
+  async def page(self, browser: Browser, ready: str = "rider") -> None:
+    """Open the viewer and wait until the page lists `ready`."""
+    await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
+    listed = f"window.plrViewer && window.plrViewer.resources().includes({ready!r})"
+    await browser.settle(listed, 30)
+
   async def world_x(self, browser: Browser, name: str) -> float:
     """Where the viewer draws a resource, read off the scene it holds."""
     return float(await browser.evaluate(f"window.plrViewer.worldOf({name!r})[0]"))
@@ -236,20 +298,21 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     process, and a page reading a scene from an older server misread it in silence: positions
     stopped updating and nothing said why."""
     async with Browser() as browser:
-      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
-      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
-      await self.viewer._broadcast("scene", {**self.viewer._scene_message(), "protocol": 0})
+      await self.page(browser)
+      foreign = {**self.viewer._scene_message(), "protocol": 0, "stats": {"instances": 999}}
+      await self.viewer._broadcast("scene", foreign)
       await browser.settle(
         "document.getElementById('boot-diagnosis')?.textContent.includes('older than this page')",
         10,
       )
+      # Named, and nothing else: its measurements are set once a scene is taken up.
+      self.assertNotEqual((await browser.evaluate("window.plrViewer.stats()"))["instances"], 999)
 
   async def test_a_frame_the_page_cannot_read_does_not_stop_the_next_one(self):
     """The page parsed every frame unguarded and applied a state without looking at it, so one
     message that was not JSON, or a state with nothing in it, threw inside the handler."""
     async with Browser() as browser:
-      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
-      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
+      await self.page(browser)
       await browser.evaluate(
         "window.__plrErrors = 0; window.addEventListener('error', () => { window.__plrErrors++; })"
       )
@@ -265,8 +328,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
 
   async def test_a_move_reaches_the_picture_and_carries_its_children(self):
     async with Browser() as browser:
-      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
-      await browser.settle("window.plrViewer && window.plrViewer.resources().length > 0")
+      await self.page(browser)
 
       self.assertEqual(await self.world_x(browser, "carrier"), 100)
       self.assertEqual(await self.world_x(browser, "rider"), 120)
@@ -279,27 +341,25 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       self.assertEqual(await self.world_x(browser, "rider"), 720)
 
   async def test_a_quality_level_changes_the_pixel_ratio_and_the_lighting(self):
-    """The page steps quality down on its own when frames are slow; the levels are driven here."""
+    """The page steps quality down on its own when frames are slow; the levels are driven here.
+    On a screen of two device pixels per CSS pixel, or the lowest level's ratio is the full one."""
     async with Browser() as browser:
-      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
-      await browser.settle("window.plrViewer && window.plrViewer.resources().length > 0")
+      await browser.emulate_scale(2)
+      await self.page(browser)
       full = await browser.evaluate("window.plrViewer.quality()")
-      self.assertEqual(full["level"], 0)
-      self.assertTrue(full["environment"])
+      self.assertEqual((full["level"], full["pixelRatio"], full["environment"]), (0, 2, True))
       lowest = await browser.evaluate("window.plrViewer.quality(2)")
       self.assertEqual(
         (lowest["level"], lowest["pixelRatio"], lowest["environment"]), (2, 1, False)
       )
       back = await browser.evaluate("window.plrViewer.quality(0)")
-      self.assertEqual((back["level"], back["environment"]), (0, True))
-      self.assertEqual(back["pixelRatio"], full["pixelRatio"])
+      self.assertEqual((back["level"], back["pixelRatio"], back["environment"]), (0, 2, True))
 
   async def test_a_scene_keeps_what_the_reader_had_open(self):
     """Every scene rebuilt the tree folded, dropped the selection and closed the panel, and a
     deck being laid out sends a scene on every assignment."""
     async with Browser() as browser:
-      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
-      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
+      await self.page(browser)
       await browser.evaluate("window.plrViewer.focus('rider', 'top')")
       row = "document.querySelector(`.tree-node-row[data-index='${window.plrViewer.resources().indexOf('rider')}']`)"
       await browser.settle(f"{row}?.classList.contains('selected')", 10)
@@ -316,8 +376,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     costs the renderer a shader state on its first frame: half a second a rebuild on a full deck.
     A model whose resources are unchanged keeps its mesh; one whose set changed gets a new one."""
     async with Browser() as browser:
-      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
-      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
+      await self.page(browser)
       # Each model's mesh, told apart by how big the model is: 200 is the carrier, 40 the rider.
       mesh = "Object.fromEntries(window.plrViewer.detail().map((e) => [e.mm, e.id]))"
       before = await browser.evaluate(mesh)
@@ -342,21 +401,21 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     """The fold zone was measured from the element under the pointer, not from the row, so the
     first twenty pixels of the name folded the row instead of selecting it."""
     async with Browser() as browser:
-      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
-      await browser.settle(
-        "window.plrViewer && window.plrViewer.resources().includes('carrier')", 30
+      await self.page(browser, "carrier")
+      # The arrow folds without selecting; the name, on an open row, selects without folding.
+      self.assertEqual(await browser.evaluate(f"{ROW_CLICK}('carrier', 'arrow')"), [False, "▼"])
+      self.assertEqual(await browser.evaluate(f"{ROW_CLICK}('carrier', 'name')"), [True, "▼"])
+
+  async def test_a_scene_keeps_a_row_the_reader_opened(self):
+    """A row opened by its arrow, with nothing selected, is open again once a scene has arrived."""
+    async with Browser() as browser:
+      await self.page(browser, "carrier")
+      self.assertEqual(await browser.evaluate(f"{ROW_CLICK}('carrier', 'arrow')"), [False, "▼"])
+      self.facility.assign_child_resource(
+        Resource(name="late", size_x=10, size_y=10, size_z=10), location=Coordinate(0, 0, 0)
       )
-      click = (
-        "((where) => {"
-        "  const row = document.querySelector(`.tree-node-row[data-index='${window.plrViewer.resources().indexOf('carrier')}']`);"
-        "  const target = row.querySelector(where === 'arrow' ? '.tree-node-arrow' : '.tree-node-name');"
-        "  const box = target.getBoundingClientRect();"
-        "  target.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: box.left + 3, clientY: box.top + box.height / 2 }));"
-        "  return [row.classList.contains('selected'), row.querySelector('.tree-node-arrow').textContent];"
-        "})"
-      )
-      self.assertEqual(await browser.evaluate(f"{click}('name')"), [True, "▶"])
-      self.assertEqual(await browser.evaluate(f"{click}('arrow')"), [True, "▼"])
+      await browser.settle("window.plrViewer.resources().includes('late')", 30)
+      self.assertEqual(await browser.evaluate(f"{ROW_ARROW}('carrier')"), "▼")
 
   async def test_the_websocket_is_reached_the_way_the_page_was(self):
     """A page served over https may only open wss:, and one reached by a name connects to that
@@ -377,16 +436,15 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     """Placed beside the pointer, the readout ran off the right and bottom edges at a resource
     that stood near them."""
     async with Browser() as browser:
-      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
-      await browser.settle(
-        "window.plrViewer && window.plrViewer.resources().includes('carrier')", 30
-      )
-      # Close enough that the carrier fills the viewport, corners included.
+      await self.page(browser, "carrier")
+      # Close enough that the carrier fills the viewport, corners included: eight steps of 0.8.
+      zoom = "window.plrViewer.camera().zoom"
+      await browser.evaluate("window.plrViewer.focus('carrier', 'top')")
+      framed = await browser.evaluate(zoom)
       await browser.evaluate(
-        "window.plrViewer.focus('carrier', 'top');"
         "for (let i = 0; i < 8; i++) document.getElementById('zoom-in-btn').click(); true"
       )
-      await asyncio.sleep(1.0)
+      await browser.settle(f"{zoom} > 5 * {framed}")
       await browser.evaluate(
         "(() => {"
         "  const canvas = document.querySelector('#viewport canvas');"
@@ -416,8 +474,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     the message touched, so a section the reader had opened in it snapped shut on every well of a
     running protocol."""
     async with Browser() as browser:
-      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
-      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
+      await self.page(browser)
       await browser.evaluate("window.plrViewer.focus('carrier', 'top')")
       opened = "document.querySelector('.uml-panel details')"
       await browser.settle(f"!!{opened}", 10)
@@ -431,8 +488,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     in another process never shows up in, so the machines the levels exist for never stepped down.
     Here the frames are made slow where the page cannot see it: in the gap between them."""
     async with Browser() as browser:
-      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
-      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
+      await self.page(browser)
       await browser.evaluate(
         "const raf = window.requestAnimationFrame.bind(window);"
         "window.requestAnimationFrame = (cb) => setTimeout(() => raf(cb), 60);"
@@ -481,42 +537,24 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     """The page drew the pending volume, so a well filled at the start of an aspirate that then
     failed kept a volume that never happened: a rollback publishes nothing. The existing visualizer
     draws the committed volume, and so does this one now."""
-    was_tracking = does_volume_tracking()
-    set_volume_tracking(True)
-    try:
-      plate = cor_96_wellplate_360uL_Fb(name="plate")
-      self.facility.assign_child_resource(plate, location=Coordinate(600, 400, 0))
-      well = plate.get_item("A1")
-      async with Browser() as browser:
-        await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
-        await browser.settle(
-          f"window.plrViewer && window.plrViewer.resources().includes({well.name!r})", 30
-        )
-        await browser.evaluate(f"window.plrViewer.focus({well.name!r}, 'top')")
-        panel = "document.querySelector('.uml-panel')?.textContent.replace(/\\u00a0/g, ' ')"
-        await browser.settle(f"{panel}?.includes('0 / 360 uL')", 10)
-        well.tracker.add_liquid(50)
-        await asyncio.sleep(0.5)
-        self.assertIn("0 / 360 uL", await browser.evaluate(panel))
-        self.assertNotIn("50 / 360 uL", await browser.evaluate(panel))
-        well.tracker.commit()
-        await browser.settle(f"{panel}?.includes('50 / 360 uL')", 10)
-    finally:
-      set_volume_tracking(was_tracking)
-
-  @staticmethod
-  async def settled_model_count(browser, quiet: float = 0.4, limit: float = 10.0):
-    """How many models are drawn, once no more of them are arriving."""
-    await browser.settle("window.plrViewer?.models().length")
-    deadline = asyncio.get_running_loop().time() + limit
-    last = -1
-    while asyncio.get_running_loop().time() < deadline:
-      count = int(await browser.evaluate("window.plrViewer.models().length"))
-      if count == last:
-        return count
-      last = count
-      await asyncio.sleep(quiet)
-    return last
+    track_volumes(self)
+    plate = cor_96_wellplate_360uL_Fb(name="plate")
+    self.facility.assign_child_resource(plate, location=Coordinate(600, 400, 0))
+    well = plate.get_item("A1")
+    async with Browser() as browser:
+      await self.page(browser, well.name)
+      await browser.evaluate(f"window.plrViewer.focus({well.name!r}, 'top')")
+      panel = "document.querySelector('.uml-panel')?.textContent.replace(/\\u00a0/g, ' ')"
+      await browser.settle(f"{panel}?.includes('0 / 360 uL')", 10)
+      # A sentinel well set in the same batch: once it shows, whatever A1 published has too.
+      well.tracker.add_liquid(50)
+      sentinel = plate.get_item("H12")
+      sentinel.tracker.set_volume(30)
+      await browser.settle(f"window.plrViewer.stateOf({sentinel.name!r})?.volume === 30", 10)
+      self.assertIn("0 / 360 uL", await browser.evaluate(panel))
+      self.assertNotIn("50 / 360 uL", await browser.evaluate(panel))
+      well.tracker.commit()
+      await browser.settle(f"{panel}?.includes('50 / 360 uL')", 10)
 
   async def test_a_tree_that_changes_shape_keeps_the_models_it_had(self):
     """A scene arrives whole whenever the tree changes shape. Rebuilding the geometry for it took
@@ -528,40 +566,38 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     holder.assign_child_resource(rack)
 
     async with Browser() as browser:
-      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
-      # Not the first model to arrive: the files are fetched and parsed in parallel and the count
-      # climbs as they land, so a baseline taken at the first is a baseline taken too early - and
-      # how early depends on how big the files are and how fast the machine is, which is a test
-      # that passes or fails for reasons that have nothing to do with what it is checking.
-      drawn = int(await self.settled_model_count(browser))
+      await self.page(browser, "rack")
+      # Every model, not the first to arrive: the files are fetched and parsed in parallel and the
+      # count climbs as they land, so a baseline taken early is taken too early.
+      drawn = modelled(self.viewer)
+      await browser.settle(f"window.plrViewer.models().length === {drawn}")
 
-      # Watch while the tree changes shape under it: the rack goes somewhere else, which is a
-      # reparent, which sends a whole scene.
+      # Watch while the tree changes shape under it: the rack goes somewhere else and a resource
+      # arrives. A name the client does not have is what still costs a whole scene.
       await browser.evaluate(
         "window.__seen = [];"
         "window.__watch = setInterval(() => window.__seen.push(window.plrViewer.models().length), 20);"
         "true"
       )
-      # Off one and onto the other in the same breath, which is what moving a resource is - and
-      # what the server coalesces into one scene.
+      # Off one and onto the other in the same breath, which is what moving a resource is, and
+      # the arrival with it: the server coalesces the burst into one scene.
       holder.unassign_child_resource(rack)
       self.carrier.assign_child_resource(rack, location=Coordinate(10, 10, 50))
+      self.facility.assign_child_resource(
+        Resource(name="late", size_x=10, size_y=10, size_z=10), location=Coordinate(0, 0, 0)
+      )
       # The carrier stands at x 100, so the rack on it lands at 110.
-      await browser.settle("window.plrViewer.worldOf('rack')[0] === 110")
-      await asyncio.sleep(1.0)
+      await browser.settle(
+        "window.plrViewer.resources().includes('late')"
+        " && window.plrViewer.worldOf('rack')[0] === 110"
+      )
+      # Sampled until every model is back: at once if they were kept, after a reload if not.
+      await browser.settle(f"window.plrViewer.models().length === {drawn}")
       seen = await browser.evaluate("clearInterval(window.__watch); window.__seen")
 
-      self.assertGreater(len(seen), 10, "nothing was sampled while the scene was rebuilt")
+      self.assertEqual(self.viewer.rebuilds, 1, "the arrival did not cost the scene it must")
+      self.assertGreater(len(seen), 0, "nothing was sampled while the scene was rebuilt")
       self.assertEqual(min(seen), drawn, f"the models went away and came back: {seen}")
-      self.assertEqual(
-        int(await browser.evaluate("window.plrViewer.models().length")),
-        drawn,
-        "the models did not survive the rebuild",
-      )
-
-
-if __name__ == "__main__":
-  unittest.main()
 
 
 @unittest.skipUnless(CHROME, "no headless browser to drive")
@@ -578,8 +614,7 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
     It also reads the pixels, before the run and after it in the other projection: every other
     test here reads the page's model of the scene, and a page once drew nothing at all until its
     quality level happened to change, on GPUs other than the one the change was made on."""
-    was_tracking = does_volume_tracking()
-    set_volume_tracking(True)
+    track_volumes(self)
     facility = build_facility()
     star = star_of(facility)
     await star.setup()
@@ -591,8 +626,8 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
       async with Browser() as browser:
         await browser.open(f"http://127.0.0.1:{viewer.fs_port}/")
         await browser.settle("window.plrViewer && window.plrViewer.resources().length > 3000", 60)
-        await BrowserTests.settled_model_count(browser)
-        await asyncio.sleep(2.0)
+        await browser.settle(f"window.plrViewer.models().length === {modelled(viewer)}", 60)
+        await browser.frames()
         self.assertGreater(await browser.drawn_fraction("#viewport"), 0.02, "the opening view")
 
         source = star.deck.get_resource("source_0")
@@ -608,6 +643,17 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
         assert x_range is not None
         low, high = x_range
         await star.x_arm.move_to_x_position(round(low + (high - low) * 0.6, 1))
+        # A simulated pick-up and an aspirate, with the channel panel open through both: the
+        # mounted tip is a new name, so this costs a scene, and what it then holds is drawn.
+        await browser.evaluate(
+          "document.querySelector('.dt-btn[title=\"Single-channel pipettes\"]').click(); true"
+        )
+        rack = star.deck.get_resource("tips_0")
+        assert isinstance(rack, TipRack) and star.pipettes is not None
+        await star.pipettes.pick_up_tips([rack.get_item("A1")])
+        tip = star.pipettes.get_mounted_tip(0)
+        assert tip is not None
+        await star.pipettes.aspirate([source.get_item("A1")], [50.0])
         plate = star.deck.get_resource("source_1")
         holder = star.deck.get_resource("destination_carrier").children[4]
         assert isinstance(holder, ResourceHolder)
@@ -616,7 +662,18 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
         await browser.settle(
           "window.plrViewer.worldOf('source_1') && window.plrViewer.worldOf('source_1')[0] > 0", 30
         )
-        await asyncio.sleep(1.0)
+        # The arm's position and the last volume travelled before that move, and are read once
+        # they are on the page: nothing else is still in flight.
+        arm = star.x_arm.resource
+        assert arm is not None
+        await browser.settle(
+          f"Math.abs(window.plrViewer.worldOf({arm.name!r})[0] - {arm.get_absolute_location().x})"
+          " < 0.25",
+          30,
+        )
+        await browser.settle(
+          f"window.plrViewer.stateOf({destination.get_item('H12').name!r})?.volume === 50", 30
+        )
 
         drawn = await browser.evaluate(
           "Object.fromEntries(window.plrViewer.resources().map((n) => [n, window.plrViewer.worldOf(n)]))"
@@ -635,9 +692,20 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
           )
           self.assertEqual(shown["volume"], plate_.get_item(well).tracker.get_used_volume())
 
+        await browser.settle(f"window.plrViewer.stateOf({tip.name!r})?.volume === 50", 10)
+        # The liquid is the one translucent fill in the panel's drawing of a tip.
+        tip_fill = (
+          "((name) => !!document.querySelector(`.mt-panel-single g[data-index="
+          "'${window.plrViewer.resources().indexOf(name)}'] [fill^='rgba(']`))"
+        )
+        await browser.settle(f"{tip_fill}({tip.name!r})", 10)
+
         await browser.evaluate("window.plrViewer.view('iso')")
-        await asyncio.sleep(2.0)
+        await browser.frames()
         self.assertGreater(await browser.drawn_fraction("#viewport"), 0.02, "the iso view")
     finally:
       await viewer.stop()
-      set_volume_tracking(was_tracking)
+
+
+if __name__ == "__main__":
+  unittest.main()

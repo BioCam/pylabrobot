@@ -8,7 +8,18 @@ from pylabrobot.resources.corning import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.hamilton import hamilton_96_tiprack_1000uL
 from pylabrobot.resources.resource import Resource
 from pylabrobot.visualizer3D.facility import Facility
-from pylabrobot.visualizer3D.scene import _model_of, build_scene, pack_state, state_signature
+from pylabrobot.visualizer3D.scene import (
+  Scene,
+  _model_of,
+  build_scene,
+  pack_state,
+  state_signature,
+)
+
+
+def canonical(scene: Scene) -> str:
+  """The scene as it is sent, in a key order that lets two of them be compared byte for byte."""
+  return json.dumps(scene.serialize(), sort_keys=True)
 
 
 def facility_with(plates: int) -> Facility:
@@ -44,27 +55,15 @@ class SceneTests(unittest.TestCase):
     self.assertEqual(len(many.models), len(one.models))
     self.assertEqual(len(many.names), 1 + 20 * 97)  # facility, then plate and its 96 wells
 
-  def test_reused_models_give_an_identical_scene(self):
-    """Skipping the derive must not change a single byte of what is sent."""
-    facility = facility_with(3)
-    cold = build_scene(facility)
-    warm = build_scene(facility, known=cold.derived, known_names=frozenset(cold.names))
-    self.assertEqual(
-      json.dumps(cold.serialize(), sort_keys=True),
-      json.dumps(warm.serialize(), sort_keys=True),
-    )
-
   def test_a_move_is_seen_through_reused_models(self):
-    """A model is reused, a position never is: moving something must still show up."""
+    """Skipping the derive must not change a byte of what is sent: a model is reused, a position
+    never is, so moving something must still show up."""
     facility = facility_with(3)
     first = build_scene(facility)
     names = frozenset(first.names)
     facility.get_resource("plate_0").location = Coordinate(999, 888, 0)
     warm = build_scene(facility, known=first.derived, known_names=names)
-    self.assertEqual(
-      json.dumps(warm.serialize(), sort_keys=True),
-      json.dumps(build_scene(facility).serialize(), sort_keys=True),
-    )
+    self.assertEqual(canonical(warm), canonical(build_scene(facility)))
 
   def test_a_racked_tip_hangs_from_its_collar(self):
     """A tip serializes without its location; the scene places it where its spot put it."""
@@ -94,10 +93,7 @@ class SceneTests(unittest.TestCase):
     self.assertNotEqual(
       warm.derived["plate_0"], first.derived["plate_0"], "the model kept its link"
     )
-    self.assertEqual(
-      json.dumps(warm.serialize(), sort_keys=True),
-      json.dumps(build_scene(facility).serialize(), sort_keys=True),
-    )
+    self.assertEqual(canonical(warm), canonical(build_scene(facility)))
 
   def test_a_discard_reuses_the_models_that_do_not_link_to_it(self):
     """Any change of names threw every derived model away, so an assign or a discard cost the

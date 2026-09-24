@@ -30,18 +30,19 @@ array, and the inspector prints whatever fields arrived.
 
 | | value |
 |---|---|
-| instances | 1,490 |
-| distinct models | 18 |
-| tree JSON, as the current visualizer sends it | 847.3 kB |
-| models plus a packed instance array | 100.1 kB |
-| ratio | 8.46x |
-| draw calls | 24 to 34 |
+| instances | 3,276 |
+| distinct models | 53 |
+| tree JSON, as the current visualizer sends it | 1,758.4 kB |
+| models plus a packed instance array | 338.3 kB |
+| ratio | 5.2x |
+| draw calls, WebGPU, by view | 888 to 945 |
 
-A single 96-well plate goes from 59,870 to 8,261 bytes, 7.25x. Transforms ride as base64
-little-endian float32, six per instance.
+A facility holding a single 96-well plate goes from 59,178 to 14,238 bytes, 4.16x. Transforms
+ride as base64 little-endian float32, six per instance.
 
-Getting there needed one correction worth keeping. Splitting on `Resource.serialize()` alone gives
-421 models for 1,490 instances, because identity leaks below the top level: a tip spot carries the
+Getting there needed one correction worth keeping. Splitting on `Resource.serialize()` alone, with
+only the top-level instance fields taken off, gives 1,127 models for 3,276 instances, because
+identity leaks below the top level: a tip spot carries the
 name of its prototype tip, and a plate carries a map of identifier to the name of the well it
 holds. Two general rules fix it, both in `scene.py`: a key called `name` at any depth names one
 particular thing, and inside a nested structure a string matching a resource in this tree is a link
@@ -86,8 +87,8 @@ even though none of them need a GPU. The same symptom also comes from a websocke
 **Where it breaks.** WebGL2 is often missing even on capable hardware: the browser blocklists the GPU, a
 sandbox can't reach the driver, or the session has no GPU (VMs, some remote desktops, CI). Chrome also no longer
 falls back to software rendering on its own. The browser tests don't catch any of this. They are
-headless (always software rendering), and they skip where `_find_chrome` finds no Chrome on the
-path or at the macOS install location.
+headless (always software rendering), and they skip where `_find_chrome` finds no Chrome named by
+`PLR_CHROME`, on the path or at the macOS install location.
 
 **On the Jetson AGX Orin workcell host** (JetPack 5, Xorg, no `/dev/dri`), verified 2026-09-16:
 
@@ -197,8 +198,10 @@ static/format.js      turning values into the text the info panel shows
 static/dom.js         element lookups that say which kind of element is being asked for
 ```
 
-Modules import downwards only: `app.js` imports everything, `tools.js` imports `tree.js` and
-`panel.js`, and nothing imports `app.js`. Within a module a helper is declared above its callers.
+Modules import downwards only: `app.js` imports the modules that draw and connect, and reaches
+`coords.js`, `dom.js` and `format.js` through them; `tools.js` imports `tree.js` and `panel.js`.
+Only `boot.js` imports `app.js`, dynamically, once it can say why the import failed. Within a
+module a helper is declared above its callers.
 
 ## Protocol and model contract
 
@@ -208,7 +211,8 @@ a trough's capacity is genuinely infinite and bare `Infinity` is not JSON.
 
 **Access.** Every run makes a token (`secrets.token_urlsafe(32)`) and bakes it, the websocket
 port and the source name into `index.html` in place of `{{ ws_token }}`, `{{ ws_port }}` and
-`{{ source_filename }}`; the page connects to `ws://<hostname>:<ws_port>/?token=<token>`. A
+`{{ source_filename }}`; the page connects to `ws://<hostname>:<ws_port>/?token=<token>`, or
+`wss:` when it was served over https, at the hostname it was reached by. A
 handshake without this run's token, or with an `Origin` whose hostname is not an IP literal,
 `localhost`, this machine's name, `<name>.local`, the bound host or one of `allowed_hosts`, is
 answered 403. The file server applies the same hostname rule to the HTTP `Host` header.
