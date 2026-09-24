@@ -995,6 +995,22 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
     self.assertIn("channels [0]", logs.output[0])
     self.assertEqual(self.sent()["lld_mode"], [4, 0])
 
+  async def test_what_the_tip_holds_counts_towards_its_capacity(self):
+    self.tip.tracker.set_volume(310.0)
+    with self.assertRaises(ValueError) as refused:
+      await self.pipettes._aspirate_in_one_move(
+        [0, 1],
+        self.locations,
+        self.searches,
+        self.floors,
+        [40.0, 10.0],
+        transport_air_volumes=[20.0, 0.0],
+      )
+    self.assertIn(
+      "370.0 uL with its transport air, 310.0 uL in the tip already", str(refused.exception)
+    )
+    self.fw.assert_not_awaited()
+
   async def test_refusals_come_before_anything_is_sent(self):
     over = self.tip.maximal_volume
     ten = [10.0, 10.0]

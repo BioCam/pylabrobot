@@ -4557,14 +4557,15 @@ class Pipettes:
     mix_following = [(m.surface_following_distance or 0.0) if m is not None else 0.0 for m in mixes]
 
     # A tip fills to one of two peaks that never coexist: the volume with the pre-wetting drawn
-    # first, or the volume with the transport air drawn after it.
+    # first, or the volume with the transport air drawn after it, over what the tip holds already.
     for index, channel in enumerate(use_channels):
+      held = tips[channel].tracker.volume
       for label, extra in (("pre-wetting", pre_wet[index]), ("transport air", transport[index])):
-        peak = volume[index] + extra
+        peak = held + volume[index] + extra
         if peak > tips[channel].maximal_volume:
           raise ValueError(
-            f"channel {channel} would draw {peak:.1f} uL with its {label}, over its tip's "
-            f"{tips[channel].maximal_volume:.1f} uL"
+            f"channel {channel} would hold {peak:.1f} uL with its {label}, {held:.1f} uL in the tip "
+            f"already, over its tip's {tips[channel].maximal_volume:.1f} uL"
           )
 
     xs, ys, pattern = self._tip_command_positions(dict(zip(use_channels, places)))
