@@ -181,6 +181,9 @@ class PipettesConfiguration:
   """Counted in increments per second squared, unlike the Z drive's."""
   dispensing_drive_current_limit_range: Tuple[int, int] = (0, 7)
   dispensing_drive_volume_range_increments: Tuple[int, int] = (0, 26_666)
+  # `Px DC`, the standalone air draw: its volume and its mechanical clearance steps.
+  blow_out_air_draw_range_increments: Tuple[int, int] = (0, 9_999)
+  mechanical_clearance_steps_range: Tuple[int, int] = (0, 999)
   # The aspiration and dispense commands' fields: volumes in 0.1 uL, speeds in 0.1 uL/s,
   # distances in 0.1 mm, times in 0.1 s.
   pipetting_volume_range_increments: Tuple[int, int] = (0, 12_500)
@@ -1806,6 +1809,88 @@ class Pipettes:
     for channel, uL in zip(asked, read):
       positions[channel] = uL
     return positions
+
+  # -- blow-out air --------------------------------------------------------------------------------
+
+  async def _unchecked_fw_aspirate_blow_out_air(
+    self,
+    channel: int,
+    air_volume: int,
+    clearance_steps: int,
+    speed: int,
+    acceleration: int,
+    current_limit: int,
+  ) -> None:
+    """Send the blow-out air draw as it is given, in dispensing drive increments. `Px DC`.
+
+    Args:
+      channel: 0-indexed from the back.
+      air_volume: in dispensing drive increments (`dh`).
+      clearance_steps: the mechanical clearance reversed after the draw, in increments (`de`).
+      speed: in increments/s (`dv`).
+      acceleration: in thousands of increments/s2 (`dr`).
+      current_limit: 0 to 7 (`dw`).
+    """
+    await self._driver.send_command(
+      module=self.channel_id(channel),
+      command="DC",
+      dh=f"{air_volume:04}",
+      de=f"{clearance_steps:03}",
+      dv=f"{speed:05}",
+      dr=f"{acceleration:03}",
+      dw=f"{current_limit}",
+    )
+
+  async def _aspirate_blow_out_air(
+    self,
+    channel: int,
+    volume: float,
+    *,
+    clearance_steps: int = 100,
+    speed: float = 14.5,
+    acceleration: float = 0.2,
+    current_limit: int = 5,
+  ) -> float:
+    """Draw blow-out air into one channel's tip where it stands, and move the piston model by it.
+
+    The firmware's own aspiration draws its blow-out air first, before the descent; a command
+    started with the tip on the liquid would draw liquid instead, so this draws it beforehand.
+
+    Args:
+      channel: 0-indexed from the back.
+      volume: in uL.
+      clearance_steps: the mechanical clearance reversed after the draw, in increments.
+      speed: in mm/s.
+      acceleration: in mm/s2, as `_plld_search` carries it.
+      current_limit: 0 to 7.
+
+    Returns:
+      The volume drawn as the drive counts it, in uL.
+
+    Raises:
+      ValueError: A field out of the drive's range.
+    """
+    self._require_channel(channel)
+    c = self.configuration
+    increments = c.dispensing_drive_uL_to_increments(volume)
+    dv = c.dispensing_drive_mm_to_increments(speed)
+    dr = c.dispensing_drive_mm_to_increments(acceleration)
+    for checked, (low, high), name in (
+      (increments, c.blow_out_air_draw_range_increments, "volume, in dispensing drive increments,"),
+      (clearance_steps, c.mechanical_clearance_steps_range, "clearance_steps"),
+      (dv, c.dispensing_drive_speed_range_increments, "speed, in increments/s,"),
+      (dr, c.dispensing_drive_acceleration_range_increments, "acceleration, in increments,"),
+      (current_limit, c.dispensing_drive_current_limit_range, "current_limit"),
+    ):
+      if not low <= checked <= high:
+        raise ValueError(f"{name} must be between {low} and {high}, is {checked}")
+    await self._unchecked_fw_aspirate_blow_out_air(
+      channel, increments, clearance_steps, dv, dr, current_limit
+    )
+    drawn = c.dispensing_drive_increments_to_uL(increments)
+    self.piston_positions += [0.0] * (self.num_channels - len(self.piston_positions))
+    self.piston_positions[channel] = round(self.piston_positions[channel] + drawn, 1)
+    return drawn
 
   # -- x and y together ----------------------------------------------------------------------------
 
@@ -5517,19 +5602,21 @@ class Pipettes:
   ) -> None:
     """Draw liquid from each container with a channel's tip.
 
-    Batched as `probe_liquid_heights`, one `C0 AS` per batch. Every height in the command is what
-    is given, or 0: OFF draws at `liquid_heights` above the cavity bottom, the cavity bottom when
-    None, with no immersion and no following unless given. The firmware never searches: CAPACITIVE
-    and PRESSURE search first, as `probe_liquid_heights`, from `well_search_start_clearance` above
-    a well's top or `search_start_clearance` above any other's, draw at the surface found, set the
-    tracker to the measured volume, warning when it is 20 % off, and refuse a container without
-    liquid; ZTOUCH touches the floor first, as `probe_z_heights_using_ztouch`, draws from it, and
-    refuses a container whose floor is not met; DUAL is not implemented. A draw past what a
+    Batched as `probe_liquid_heights`, one `C0 AS` per batch. Every height in the command is
+    what is given, or 0: OFF draws at `liquid_heights` above the cavity bottom, the cavity
+    bottom when None, with no immersion and no following unless given. The firmware never
+    searches: CAPACITIVE and PRESSURE search first, as `probe_liquid_heights`, from
+    `well_search_start_clearance` above a well's top or `search_start_clearance` above any
+    other's, draw at the surface found, set the tracker to the measured volume, warning when it
+    is 20 % off, and refuse a container without liquid; their blow-out air is drawn beforehand
+    at the traverse height, by `Px DC`, since the command would draw it with the tip on the
+    liquid; ZTOUCH touches the floor first, as `probe_z_heights_using_ztouch`, draws from it,
+    and refuses a container whose floor is not met; DUAL is not implemented. A draw past what a
     container holds goes ahead and takes air, with a warning, an info line under ZTOUCH, where
     emptying is the point. `volumes` with a liquid class, which corrects the piston volume and
-    fills what is not given, or `piston_volumes` as given. The tracker books what moved per batch,
-    before its command, committed on success; it never places a tip. Keyword arguments in the order
-    the aspiration runs; per-container lists in the containers' order.
+    fills what is not given, or `piston_volumes` as given. The tracker books what moved per
+    batch, before its command, committed on success; it never places a tip. Keyword arguments in
+    the order the aspiration runs; per-container lists in the containers' order.
 
     Args:
       containers: any number.
@@ -5551,6 +5638,7 @@ class Pipettes:
       search_speed: of the driver's own search, liquid or floor, in mm/s.
       approach_speed: down to that search's start, `lp` or the top, in mm/s.
       blow_out_air_volumes: air drawn before the liquid, in uL. The class's, else 0.0, when None.
+        Under an LLD mode drawn beforehand, at most 468.7 uL.
       immersion_depths: how far into the liquid each tip goes, in mm; negative is out of it.
       minimum_allowed_z_positions_during: how low each tip bottom may go, in mm on the deck. The
         cavity bottom plus the offset's z when None. Below the cavity bottom is allowed: the tip
@@ -5681,6 +5769,22 @@ class Pipettes:
     blow_out_air = per_container_settings["blow_out_air_volumes"] or [0.0] * n
     transport_air = per_container_settings["transport_air_volumes"] or [0.0] * n
     pre_wetting = per_container_settings["pre_wetting_volumes"] or [0.0] * n
+    # The command draws its blow-out air first, before the descent. A searched or touched job
+    # starts with its tip on the liquid, so its air is drawn beforehand, at the traverse height.
+    air_in_command = [
+      blow_out_air[job] if modes[job] == self.LLDMode.OFF else 0.0 for job in range(n)
+    ]
+    air_beforehand = [blow_out_air[job] - air_in_command[job] for job in range(n)]
+    per_container_settings["blow_out_air_volumes"] = air_in_command
+    most = self.configuration.dispensing_drive_increments_to_uL(
+      self.configuration.blow_out_air_draw_range_increments[1]
+    )
+    for job in range(n):
+      if air_beforehand[job] > most:
+        raise ValueError(
+          f"{containers[job].name} asks for {air_beforehand[job]:.1f} uL of blow-out air under "
+          f"an LLD mode, more than the {most:.1f} uL one draw takes"
+        )
     # From where it stands, each piston has to have room for its draws, in the order they come:
     # the blow-out air, then the pre-wetting drawn and returned, then the liquid and transport air.
     # Each tip the same, from what it holds.
@@ -5725,7 +5829,22 @@ class Pipettes:
     )
 
     async def search(batch: ChannelBatch) -> None:
-      """Touch the floors and find the liquid where the batch's channels are to, model included."""
+      """Draw the blow-out air, touch the floors and find the liquid where the batch's channels
+      are to, model included."""
+      drawing = [
+        (ch, job) for ch, job in zip(batch.channels, batch.indices) if air_beforehand[job] > 0
+      ]
+      if drawing:
+        # Together, where the tips stand in air. A draw that failed part way leaves the pistons
+        # wherever they stopped: the model takes what the drives say before the failure goes on.
+        results = await asyncio.gather(
+          *(self._aspirate_blow_out_air(ch, air_beforehand[job]) for ch, job in drawing),
+          return_exceptions=True,
+        )
+        failed = [result for result in results if isinstance(result, BaseException)]
+        if failed:
+          await self.dispensing_drives_request_uL_positions([ch for ch, _ in drawing])
+          raise failed[0]
       await self._touch_floors_of_batch(
         batch,
         touched=touched,
@@ -5791,7 +5910,7 @@ class Pipettes:
       )
 
     def piston_after(standing: float, job: int) -> float:
-      return float(round(standing + drawn[job] + blow_out_air[job] + transport_air[job], 1))
+      return float(round(standing + drawn[job] + air_in_command[job] + transport_air[job], 1))
 
     async def run(batch: ChannelBatch) -> None:
       # The container gives before the device draws; a draw past what it holds takes the rest as
@@ -5805,7 +5924,7 @@ class Pipettes:
         givers=[container.tracker for container in containers],
         takers=[tip.tracker for tip in tips],
         shortfall_expected=touched,
-        air_before_liquid=blow_out_air,
+        air_before_liquid=air_in_command,
         piston_sign=1,
         piston_after=piston_after,
         tracking=tracking,

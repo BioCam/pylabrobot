@@ -1640,6 +1640,40 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.sent, [])
 
 
+class TestBlowOutAirDraw(unittest.IsolatedAsyncioTestCase):
+  """`Px DC`: the raw command as the firmware takes it, the checked layer from uL."""
+
+  async def asyncSetUp(self):
+    self.pipettes = await simulated_channels()
+    self.sent: List[str] = []
+
+    async def recorded(module: str, command: str, **kwargs: Any):
+      for swallowed in ("fmt", "read_timeout", "subsystem", "tip_pattern"):
+        kwargs.pop(swallowed, None)
+      self.sent.append(assemble_command(module=module, command=command, id_=None, **kwargs))
+
+    self.pipettes._driver.send_command = recorded  # type: ignore[assignment]
+
+  async def test_the_raw_draw_carries_the_five_fields(self):
+    await self.pipettes._unchecked_fw_aspirate_blow_out_air(0, 640, 100, 5303, 73, 5)
+    self.assertEqual(self.sent, ["P1DCdh0640de100dv05303dr073dw5"])
+
+  async def test_the_checked_draw_converts_and_moves_the_piston_model(self):
+    self.pipettes.piston_positions = [0.0] * self.pipettes.num_channels
+    drawn = await self.pipettes._aspirate_blow_out_air(1, 30.0)
+    # 30 uL is 640 increments of the dispensing drive, at 14.5 mm/s and the drive's defaults.
+    self.assertEqual(self.sent, ["P2DCdh0640de100dv05303dr073dw5"])
+    self.assertEqual(drawn, 30.0)
+    self.assertEqual(self.pipettes.piston_positions[1], 30.0)
+
+  async def test_more_than_one_draw_takes_is_refused_before_anything_is_sent(self):
+    with self.assertRaises(ValueError):
+      await self.pipettes._aspirate_blow_out_air(0, 500.0)
+    with self.assertRaises(ValueError):
+      await self.pipettes._aspirate_blow_out_air(0, 10.0, current_limit=8)
+    self.assertEqual(self.sent, [])
+
+
 class _SimulatedPlateWithWater(unittest.IsolatedAsyncioTestCase):
   """300 uL filter tips on four channels, a Corning plate with water in three wells of a column and
   none in the fourth. The plate knows height and volume both ways. Tracking is on for tips and
@@ -2236,6 +2270,130 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertIn(f"zl{surface}", sent[1])
     self.assertIn(f"zx{surface}", sent[1])
     self.assertEqual(self.wells[2].tracker.get_used_volume(), 40.0)
+
+
+class TestBlowOutAirBeforeTheSearch(_SimulatedPlateWithWater):
+  """A searched or touched aspiration draws its blow-out air before the search, in air, and its
+  `C0 AS` carries none; an OFF aspiration keeps it in the command."""
+
+  def _jet_class(self):
+    from pylabrobot.hamilton.star.liquid_classes.mapping import get_star_liquid_class
+    from pylabrobot.resources.liquid import Liquid
+
+    tip = self.pipettes.get_mounted_tip(0)
+    assert tip is not None
+    found = get_star_liquid_class(
+      tip_volume=tip.maximal_volume,
+      is_core=False,
+      is_tip=True,
+      has_filter=tip.has_filter,
+      liquid=Liquid.WATER,
+      jet=True,
+      blow_out=True,
+    )
+    assert found is not None and found.aspiration_blow_out_volume > 0
+    return found
+
+  def _record(self, *also: str) -> List[str]:
+    sent: List[str] = []
+    log = self.driver._log_exchange
+
+    def recorded(written: str, read: Optional[str]) -> None:
+      if written.startswith(("C0AS",) + also):
+        sent.append(written)
+      log(written, read)
+
+    self.driver._log_exchange = recorded  # type: ignore[method-assign]
+    return sent
+
+  async def test_a_searched_aspiration_draws_its_air_first_and_sends_none(self):
+    jet = self._jet_class()
+    sent = self._record("P1DC", "P1ZL", "C0RL")
+    await self.pipettes.aspirate(
+      self.wells[:1], [50.0], jet=[True], blow_out=[True], lld_mode=Pipettes.LLDMode.CAPACITIVE
+    )
+    self.assertEqual([c[:4] for c in sent], ["P1DC", "P1ZL", "C0RL", "C0AS"])
+    increments = self.pipettes.configuration.dispensing_drive_uL_to_increments(
+      jet.aspiration_blow_out_volume
+    )
+    self.assertIn(f"dh{increments:04}", sent[0])
+    self.assertIn("ba0000", sent[-1])
+    # The piston model has the air, the corrected volume and the transport air; the drive agrees.
+    expected = round(
+      jet.aspiration_blow_out_volume
+      + jet.compute_corrected_volume(50.0)
+      + jet.aspiration_air_transport_volume,
+      1,
+    )
+    self.assertAlmostEqual(self.pipettes.piston_positions[0], expected, delta=0.1)
+    read = await self.pipettes.dispensing_drives_request_uL_positions()
+    self.assertEqual(read[0], self.pipettes.piston_positions[0])
+
+  async def test_in_a_mixed_batch_only_the_searched_channel_draws_beforehand(self):
+    jet = self._jet_class()
+    sent = self._record("P1DC", "P2DC", "P2ZL")
+    await self.pipettes.aspirate(
+      self.wells[:2],
+      [50.0, 20.0],
+      jet=[True, True],
+      blow_out=[True, True],
+      lld_mode=[Pipettes.LLDMode.OFF, Pipettes.LLDMode.CAPACITIVE],
+    )
+    self.assertEqual([c[:4] for c in sent], ["P2DC", "P2ZL", "C0AS"])
+    air = round(jet.aspiration_blow_out_volume * 10)
+    self.assertIn(f"ba{air:04} 0000", sent[-1])
+    read = await self.pipettes.dispensing_drives_request_uL_positions()
+    self.assertEqual(read[:2], self.pipettes.piston_positions[:2])
+
+  async def test_a_touched_aspiration_draws_its_air_beforehand_too(self):
+    self._jet_class()
+    sent = self._record("P1DC", "P1ZH")
+    await self.pipettes.aspirate(
+      self.wells[3:4], [10.0], jet=[True], blow_out=[True], lld_mode=Pipettes.LLDMode.ZTOUCH
+    )
+    self.assertEqual([c[:4] for c in sent], ["P1DC", "P1ZH", "C0AS"])
+    self.assertIn("ba0000", sent[-1])
+
+  async def test_a_failed_air_draw_reads_the_pistons_back_and_moves_nothing_else(self):
+    self._jet_class()
+    original = self.driver.send_command
+
+    async def failing_on_the_draw(module: str, command: str, **kwargs: Any):
+      if command == "DC":
+        raise STARFirmwareError(errors={}, raw_response="")
+      return await original(module=module, command=command, **kwargs)
+
+    self.driver.send_command = failing_on_the_draw  # type: ignore[assignment]
+    sent = self._record("P1ZL")
+    with self.assertRaises(STARFirmwareError):
+      await self.pipettes.aspirate(
+        self.wells[:1], [50.0], jet=[True], blow_out=[True], lld_mode=Pipettes.LLDMode.CAPACITIVE
+      )
+    self.assertEqual(sent, [])
+    self.assertEqual(self.wells[0].tracker.get_used_volume(), 150.0)
+    read = await self.pipettes.dispensing_drives_request_uL_positions()
+    self.assertEqual(read[0], self.pipettes.piston_positions[0])
+    discs = await self.pipettes.request_stop_disc_z_positions()
+    self.assertAlmostEqual(discs[0], self.pipettes.configuration.z_range[1], delta=0.5)
+
+  async def test_a_failed_command_after_the_draw_books_the_liquid_not_the_air(self):
+    self._jet_class()
+    original = self.driver.send_command
+
+    async def failing_after_the_draw(module: str, command: str, **kwargs: Any):
+      result = await original(module=module, command=command, **kwargs)
+      if command == "AS":
+        raise STARFirmwareError(errors={}, raw_response="")
+      return result
+
+    self.driver.send_command = failing_after_the_draw  # type: ignore[assignment]
+    with self.assertLogs("pylabrobot.hamilton.star.driver.features.pipettes", level="WARNING"):
+      with self.assertRaises(STARFirmwareError):
+        await self.pipettes.aspirate(
+          self.wells[:1], [50.0], jet=[True], blow_out=[True], lld_mode=Pipettes.LLDMode.CAPACITIVE
+        )
+    # The air was in the baseline already: the 50 uL of liquid is what the failure books.
+    self.assertAlmostEqual(self.wells[0].tracker.volume, 100.0, delta=2.0)
 
 
 class TestDispenseFirmware(unittest.IsolatedAsyncioTestCase):
