@@ -4455,19 +4455,28 @@ class Pipettes:
     (False, False, False): PrepCmd.PrepAspirateNoLldMonitoring,
   }
 
-  def _aspirate_command(
+  async def _unchecked_fw_aspirate(
     self,
     kits: list[_AspirateChannelKit],
     effective_lld: bool,
     is_tadm: bool,
     use_v2: bool,
-  ) -> TCPCommand[None]:
-    """The aspirate command for these channels, with the param types this firmware takes."""
+    read_timeout: Optional[float] = None,
+  ) -> None:
+    """Send the aspiration as it is given: one entry per channel, its structs as they are.
+
+    Args:
+      kits: each channel's firmware structs.
+      effective_lld: whether the LLD variant is sent.
+      is_tadm: whether the TADM variant is sent.
+      use_v2: whether the v2 command is sent, with its container description.
+      read_timeout: answer timeout in s. The link's when None.
+    """
     cmd_cls = self._ASPIRATE_CMD[(effective_lld, is_tadm, use_v2)]
     assembler = self._assemble_aspirate_v2 if use_v2 else self._assemble_aspirate_v1
     params = [assembler(k, effective_lld, is_tadm) for k in kits]
     command: TCPCommand[None] = cmd_cls(aspirate_parameters=params)  # type: ignore[arg-type]
-    return command
+    await self._driver.send_command(command, read_timeout=read_timeout)
 
   # -- dispense: resolve, assemble, send -----------------------------------------------------------
 
@@ -4955,8 +4964,11 @@ class Pipettes:
 
     aspirated = {ch: False for ch in use_channels}
     try:
-      await self._driver.send_command(
-        self._aspirate_command(kits, effective_lld, is_tadm, use_v2),
+      await self._unchecked_fw_aspirate(
+        kits,
+        effective_lld,
+        is_tadm,
+        use_v2,
         read_timeout=lld_read_timeout if effective_lld else None,
       )
       aspirated = all_channels_succeeded(use_channels)
