@@ -354,10 +354,10 @@ class Pipettes:
   default_minimum_traverse_height: float = 245.0
   # Containers within this X distance are probed in one batch, in mm.
   default_x_grouping_tolerance: float = 0.1
-  # How far above a container's top a liquid search starts, in mm. An aspiration starts closer
-  # above a well, legacy's 2.7, than above anything else, legacy's 5.
+  # How far above a container's top a liquid search starts, in mm: enough to clear a brim-full
+  # well; more above a trough or tube, whose fill can dome. Legacy had 2.7 and 5, unexplained.
   search_start_clearance: float = 5.0
-  well_search_start_clearance: float = 2.7
+  well_search_start_clearance: float = 2.0
 
   def __init__(self, driver: "STARDriver", configuration: Optional[PipettesConfiguration] = None):
     """

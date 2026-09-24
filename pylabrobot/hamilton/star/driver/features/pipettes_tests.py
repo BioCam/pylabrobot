@@ -1529,9 +1529,9 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       f"zl{self._surface_field(self.wells[0], 150.0)} {self._surface_field(self.wells[1], 100.0)}",
       sent[0],
     )
-    # A well's LLD search starts legacy's 2.7 mm above its top.
+    # A well's LLD search starts 2 mm above its top.
     top = self.wells[0].get_location_wrt(self.deck, "c", "c", "t").z
-    self.assertIn(f"lp{round((top + 2.7) * 10):04}", sent[0])
+    self.assertIn(f"lp{round((top + 2.0) * 10):04}", sent[0])
     # The 300 uL filter tip's water class, looked up as legacy looks it up: the piston draws the
     # corrected volume at the class's flow rate, and the wells give what was asked.
     drawn = [round(water.compute_corrected_volume(v) * 10) for v in (50.0, 20.0)]
