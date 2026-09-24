@@ -2983,6 +2983,7 @@ class Pipettes:
     x_grouping_tolerance: Optional[float],
     minimum_traverse_height_start: Optional[float],
     minimum_traverse_height_end: Optional[float] = None,
+    presence: Optional[Sequence[int]] = None,
   ) -> Tuple[List[int], Dict[int, float], List[ChannelBatch]]:
     """Check the channels and their tips, raise them, and plan the batches; X and Y stay put.
 
@@ -3002,6 +3003,7 @@ class Pipettes:
         in mm. Z safety when None.
       minimum_traverse_height_end: where the tips are to be left at the end, in mm, checked here
         against each tip's reach so the refusal comes before anything is in a container.
+      presence: what `sense_tip_presence` answered a moment ago, to spare asking again.
 
     Returns:
       The channel each container gets, per container; each channel's tip overhang in mm keyed by
@@ -3026,14 +3028,17 @@ class Pipettes:
     channels = [use_channels[job % cycle] for job in range(len(containers))]
     for dealt in cycles:
       validate_channel_selections(dealt, self.num_channels, use_channels[: len(dealt)])
-    presence = await self.sense_tip_presence()
+    if presence is None:
+      presence = await self.sense_tip_presence()
     bare = [channel for channel in use_channels if not presence[channel]]
     if bare:
       raise RuntimeError(f"channels {bare} carry no tip")
-    # The overhang is the stop disc over the tip bottom, both read where they stand.
+    # The overhang is the stop disc over the tip bottom, both read where they stand, on the
+    # channels used.
     lowest = await self._unchecked_fw_request_lowest_z_positions()
-    stop_discs = await self.request_stop_disc_z_positions()
-    overhangs = {ch: round(stop_discs[ch] - lowest[ch], 2) for ch in use_channels}
+    overhangs = {
+      ch: round(await self.request_stop_disc_z_position(ch) - lowest[ch], 2) for ch in use_channels
+    }
     if minimum_traverse_height_end is not None:
       top = self.configuration.z_range[1]
       too_high = {ch: round(top - overhangs[ch], 2) for ch in use_channels}
@@ -3641,14 +3646,19 @@ class Pipettes:
       pattern.append(False)
     return xs, ys, pattern
 
-  async def _record_after_command(self) -> None:
-    """Read back where a command left the arm and the channels, and record it."""
+  async def _record_after_command(self, channels: Optional[Iterable[int]] = None) -> None:
+    """Read back where a command left the arm and the channels, and record it.
+
+    Args:
+      channels: the channels the command moved along Z; every channel when None. Y is one read
+        for all channels either way.
+    """
     try:
       await self.arm.request_position()
     except Exception:
       logger.warning("could not read where the arm stopped; its model is stale")
     await self._record_where_they_stopped("y")
-    await self._record_where_they_stopped("z")
+    await self._record_where_they_stopped("z", channels)
 
   # -- tip pickup ----------------------------------------------------------------------------
 
@@ -4721,7 +4731,7 @@ class Pipettes:
         cup_upper_edge=[0] * n,
       )
     finally:
-      await self._record_after_command()
+      await self._record_after_command(use_channels)
 
   def _get_liquid_height_from_volume(self, container: Container, volume: float) -> float:
     """How high `volume` stands above the container's cavity bottom, in mm, by its own model.
@@ -5081,6 +5091,7 @@ class Pipettes:
       x_grouping_tolerance,
       start,
       end,
+      presence=presence,
     )
 
     async def search(batch: ChannelBatch) -> None:
