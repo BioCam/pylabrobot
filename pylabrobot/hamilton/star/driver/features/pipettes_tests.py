@@ -893,11 +893,16 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
 
   async def test_a_negative_immersion_depth_is_sent_as_a_direction(self):
     await self.pipettes._aspirate_in_one_move(
-      [0, 1], self.locations, self.searches, self.floors, [10.0, 10.0], immersion_depth=-1.5
+      [0, 1],
+      self.locations,
+      self.searches,
+      self.floors,
+      [10.0, 10.0],
+      immersion_depths=[-1.5, 2.0],
     )
     sent = self.sent()
     self.assertEqual(
-      (sent["immersion_depth"], sent["immersion_depth_direction"]), ([15, 15], [1, 1])
+      (sent["immersion_depth"], sent["immersion_depth_direction"]), ([15, 20], [1, 0])
     )
 
   async def test_z_touch_is_sent_with_a_warning(self):
@@ -1296,9 +1301,9 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
 
 
 class _SimulatedPlateWithWater(unittest.IsolatedAsyncioTestCase):
-  """Tips on four channels, an Azenta plate with water in three wells of a column and none in the
-  fourth, as the device notebook has it. The plate knows volume from height only, so the simulator
-  inverts it. Tracking is on for tips and volumes."""
+  """300 uL filter tips on four channels, an Azenta plate with water in three wells of a column and
+  none in the fourth, as the device notebook has it. The plate knows volume from height only, so
+  the simulator inverts it. Tracking is on for tips and volumes."""
 
   async def asyncSetUp(self):
     from pylabrobot.resources import set_tip_tracking, set_volume_tracking
@@ -1306,7 +1311,7 @@ class _SimulatedPlateWithWater(unittest.IsolatedAsyncioTestCase):
     from pylabrobot.resources.hamilton import (
       PLT_CAR_L5AC_A00,
       TIP_CAR_480_A00,
-      hamilton_96_tiprack_300uL,
+      hamilton_96_tiprack_300uL_filter,
     )
 
     set_tip_tracking(True)
@@ -1315,7 +1320,7 @@ class _SimulatedPlateWithWater(unittest.IsolatedAsyncioTestCase):
     self.addCleanup(set_volume_tracking, False)
     self.deck = STARDeck()
     tips = TIP_CAR_480_A00(name="tips")
-    tips[1] = self.rack = hamilton_96_tiprack_300uL(name="rack")
+    tips[1] = self.rack = hamilton_96_tiprack_300uL_filter(name="rack")
     self.deck.assign_child_resource(tips, track=22)
     plates = PLT_CAR_L5AC_A00(name="plates")
     plates[0] = self.plate = azenta_96_wellplate_200uL_Vb_4titudeframestar(name="plate")
@@ -1454,6 +1459,10 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     return f"{round((bottom + height) * 10):04}"
 
   async def test_the_wells_give_and_the_tips_take_in_one_command(self):
+    from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.star import (
+      StandardVolumeFilter_Water_DispenseSurface as water,
+    )
+
     sent = self._record_aspirations()
     await self.pipettes.aspirate(self.wells[:2], [50.0, 20.0])
     self.assertEqual(len(sent), 1)
@@ -1461,7 +1470,11 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       f"zl{self._surface_field(self.wells[0], 150.0)} {self._surface_field(self.wells[1], 100.0)}",
       sent[0],
     )
-    self.assertIn("av00500 00200", sent[0])
+    # The 300 uL filter tip's water class, looked up as legacy looks it up: the piston draws the
+    # corrected volume at the class's flow rate, and the wells give what was asked.
+    drawn = [round(water.compute_corrected_volume(v) * 10) for v in (50.0, 20.0)]
+    self.assertIn(f"av{drawn[0]:05} {drawn[1]:05}", sent[0])
+    self.assertIn(f"as{round(water.aspiration_flow_rate * 10):04}", sent[0])
     self.assertEqual([w.tracker.get_used_volume() for w in self.wells[:2]], [100.0, 80.0])
     tips = [self.pipettes.get_mounted_tip(channel) for channel in (0, 1)]
     self.assertEqual(
@@ -1479,6 +1492,39 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     await self.pipettes.aspirate(wells, [10.0] * 7, use_channels=[0, 1, 2, 3])
     self.assertEqual(len(sent), 2)
     self.assertEqual([w.tracker.get_used_volume() for w in wells], [140.0, 90.0, 40.0] + [90.0] * 4)
+
+  async def test_piston_volumes_are_drawn_as_given_and_never_with_a_class(self):
+    from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.star import (
+      StandardVolumeFilter_Water_DispenseSurface as water,
+    )
+
+    sent = self._record_aspirations()
+    await self.pipettes.aspirate(self.wells[:1], piston_volumes=[50.0])
+    self.assertIn("av00500", sent[0])
+    self.assertIn("as1000", sent[0])
+    self.assertEqual(self.wells[0].tracker.get_used_volume(), 100.0)
+    for kwargs in (
+      {},
+      {"volumes": [10.0], "piston_volumes": [10.0]},
+      {"piston_volumes": [10.0], "hamilton_liquid_classes": [water]},
+    ):
+      with self.assertRaises(ValueError):
+        await self.pipettes.aspirate(self.wells[:1], **kwargs)
+    self.assertEqual(len(sent), 1)
+
+  async def test_a_given_class_corrects_and_fills_what_is_not_given(self):
+    from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.star import (
+      StandardVolumeFilter_Water_DispenseJet_Empty as jet_empty,
+    )
+
+    sent = self._record_aspirations()
+    await self.pipettes.aspirate(
+      self.wells[:1], [50.0], hamilton_liquid_classes=[jet_empty], flow_rates=[42.0]
+    )
+    self.assertIn(f"av{round(jet_empty.compute_corrected_volume(50.0) * 10):05}", sent[0])
+    self.assertIn("as0420", sent[0])
+    self.assertIn(f"ta{round(jet_empty.aspiration_air_transport_volume * 10):03}", sent[0])
+    self.assertIn(f"de{round(jet_empty.aspiration_swap_speed * 10):04}", sent[0])
 
   async def test_too_little_liquid_is_refused_before_anything_is_sent(self):
     from pylabrobot.resources.errors import TooLittleLiquidError

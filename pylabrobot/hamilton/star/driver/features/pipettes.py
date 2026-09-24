@@ -33,6 +33,8 @@ from pylabrobot.hamilton.star.driver.errors import (
   channels_that_faulted,
 )
 from pylabrobot.hamilton.star.driver.lock import CHANNEL_MODULE_LETTERS, _FirmwareLock
+from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.base import HamiltonLiquidClass
+from pylabrobot.legacy.liquid_handling.liquid_classes.hamilton.star import get_star_liquid_class
 from pylabrobot.lib.liquid_handling.channel_positioning import compute_channel_offsets
 from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import (
   ChannelBatch,
@@ -43,6 +45,7 @@ from pylabrobot.resources.container import Container
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.errors import HasTipError, NoTipError
 from pylabrobot.resources.hamilton.tip_creators import HamiltonTip, TipDropMethod, TipPickupMethod
+from pylabrobot.resources.liquid import Liquid
 from pylabrobot.resources.n_channel_pipettes import NChannelPipette, TipMountingShaft
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip import Tip
@@ -4400,16 +4403,16 @@ class Pipettes:
     detection_height_difference_for_dual_lld: float = 0.0,
     aspirate_position_above_z_touch_off: float = 0.0,
     clot_detection_heights: Optional[List[float]] = None,
-    immersion_depth: float = 0.0,
+    immersion_depths: Optional[List[float]] = None,
     blow_out_air_volumes: Optional[List[float]] = None,
     pre_wetting_volumes: Optional[List[float]] = None,
     mix_volumes: Optional[List[float]] = None,
     mix_cycles: Optional[List[int]] = None,
     mix_speeds: Optional[List[float]] = None,
     mix_position_from_liquid_surface: float = 0.0,
-    mix_surface_following_distance: float = 0.0,
+    mix_surface_following_distances: Optional[List[float]] = None,
     flow_rates: Optional[List[float]] = None,
-    surface_following_distance: float = 0.0,
+    surface_following_distances: Optional[List[float]] = None,
     second_section_height: float = 3.2,
     second_section_ratio: float = 618.0,
     settling_times: Optional[List[float]] = None,
@@ -4447,16 +4450,18 @@ class Pipettes:
       detection_height_difference_for_dual_lld: the two detections' allowed difference, in mm.
       aspirate_position_above_z_touch_off: how far above a Z touch the aspiration is, in mm.
       clot_detection_heights: how far the tip may be held back by a clot, in mm. 0.0 when None.
-      immersion_depth: how far into the liquid the tip goes, in mm; negative is out of it.
+      immersion_depths: how far into the liquid each tip goes, in mm; negative is out of it. 0.0
+        when None.
       blow_out_air_volumes: air drawn before the liquid, in uL. 0.0 when None.
       pre_wetting_volumes: drawn and returned first, in uL. 0.0 when None.
       mix_volumes: per mixing cycle, in uL. 0.0 when None.
       mix_cycles: how many. 0 when None.
       mix_speeds: in uL/s. 100.0 when None.
       mix_position_from_liquid_surface: how far under the surface mixing is, in mm.
-      mix_surface_following_distance: how far mixing follows the surface, in mm.
+      mix_surface_following_distances: how far mixing follows the surface, in mm. 0.0 when None.
       flow_rates: in uL/s. 100.0 when None.
-      surface_following_distance: how far the tip follows the sinking surface, in mm.
+      surface_following_distances: how far each tip follows the sinking surface, in mm. 0.0 when
+        None.
       second_section_height: how tall the container's narrower lower section is, in mm above
         `minimum_allowed_z_position_during`; the surface following runs on it.
       second_section_ratio: that section's bottom to top ratio, in tenths.
@@ -4508,6 +4513,11 @@ class Pipettes:
     blow_out = per_channel("blow_out_air_volumes", blow_out_air_volumes, 0.0)
     pre_wet = per_channel("pre_wetting_volumes", pre_wetting_volumes, 0.0)
     clot = per_channel("clot_detection_heights", clot_detection_heights, 0.0)
+    immersion = per_channel("immersion_depths", immersion_depths, 0.0)
+    following = per_channel("surface_following_distances", surface_following_distances, 0.0)
+    mix_following = per_channel(
+      "mix_surface_following_distances", mix_surface_following_distances, 0.0
+    )
     swap = per_channel("swap_speeds", swap_speeds, 100.0)
     settling = per_channel("settling_times", settling_times, 0.0)
     mix_volume = per_channel("mix_volumes", mix_volumes, 0.0)
@@ -4584,13 +4594,13 @@ class Pipettes:
         c.pipetting_speed_range_increments,
       ),
       (
-        "immersion_depth, in 0.1 mm,",
-        [abs(tenths(immersion_depth))],
+        "immersion_depths, in 0.1 mm,",
+        [abs(tenths(v)) for v in immersion],
         c.pipetting_distance_range_increments,
       ),
       (
-        "surface_following_distance, in 0.1 mm,",
-        [tenths(surface_following_distance)],
+        "surface_following_distances, in 0.1 mm,",
+        [tenths(v) for v in following],
         c.pipetting_distance_range_increments,
       ),
       (
@@ -4626,8 +4636,8 @@ class Pipettes:
         c.mix_position_range_increments,
       ),
       (
-        "mix_surface_following_distance, in 0.1 mm,",
-        [tenths(mix_surface_following_distance)],
+        "mix_surface_following_distances, in 0.1 mm,",
+        [tenths(v) for v in mix_following],
         c.pipetting_distance_range_increments,
       ),
       ("limit_curve_index", [limit_curve_index], c.limit_curve_index_range),
@@ -4652,9 +4662,9 @@ class Pipettes:
         second_section_height=[tenths(second_section_height)] * n,
         second_section_ratio=[tenths(second_section_ratio)] * n,
         minimum_height=floors,
-        immersion_depth=[abs(tenths(immersion_depth))] * n,
-        immersion_depth_direction=[1 if immersion_depth < 0 else 0] * n,
-        surface_following_distance=[tenths(surface_following_distance)] * n,
+        immersion_depth=[abs(tenths(v)) for v in immersion],
+        immersion_depth_direction=[1 if v < 0 else 0 for v in immersion],
+        surface_following_distance=[tenths(v) for v in following],
         aspiration_volumes=[tenths(v) for v in volume],
         aspiration_speed=[tenths(v) for v in flow],
         transport_air_volume=[tenths(v) for v in transport],
@@ -4672,7 +4682,7 @@ class Pipettes:
         mix_cycles=list(mix_count),
         mix_position_from_liquid_surface=[tenths(mix_position_from_liquid_surface)] * n,
         mix_speed=[tenths(v) for v in mix_speed],
-        mix_surface_following_distance=[tenths(mix_surface_following_distance)] * n,
+        mix_surface_following_distance=[tenths(v) for v in mix_following],
         limit_curve_index=[limit_curve_index] * n,
         tadm_algorithm=False,
         recording_mode=0,
@@ -4724,27 +4734,31 @@ class Pipettes:
   async def aspirate(
     self,
     containers: Sequence[Container],
-    piston_volumes: Sequence[float],
+    volumes: Optional[Sequence[float]] = None,
     use_channels: Optional[List[int]] = None,
     resource_offsets: Optional[List[Coordinate]] = None,
     liquid_heights: Optional[Sequence[Optional[float]]] = None,
     lld_mode: "Pipettes.LLDMode" = LLDMode.OFF,
     flow_rates: Optional[Sequence[float]] = None,
     *,
+    hamilton_liquid_classes: Optional[Sequence[HamiltonLiquidClass]] = None,
+    jet: Optional[Sequence[bool]] = None,
+    blow_out: Optional[Sequence[bool]] = None,
+    piston_volumes: Optional[Sequence[float]] = None,
     gamma_lld_sensitivity: int = 1,
     dp_lld_sensitivity: int = 1,
     detection_height_difference_for_dual_lld: float = 0.0,
     aspirate_position_above_z_touch_off: float = 0.0,
     clot_detection_heights: Optional[Sequence[float]] = None,
-    immersion_depth: float = 0.0,
+    immersion_depths: Optional[Sequence[float]] = None,
     blow_out_air_volumes: Optional[Sequence[float]] = None,
     pre_wetting_volumes: Optional[Sequence[float]] = None,
     mix_volumes: Optional[Sequence[float]] = None,
     mix_cycles: Optional[Sequence[int]] = None,
     mix_speeds: Optional[Sequence[float]] = None,
     mix_position_from_liquid_surface: float = 0.0,
-    mix_surface_following_distance: float = 0.0,
-    surface_following_distance: float = 0.0,
+    mix_surface_following_distances: Optional[Sequence[float]] = None,
+    surface_following_distances: Optional[Sequence[float]] = None,
     second_section_height: float = 3.2,
     second_section_ratio: float = 618.0,
     settling_times: Optional[Sequence[float]] = None,
@@ -4764,15 +4778,23 @@ class Pipettes:
     reach at once, and the channels of a batch aspirate together in one `C0 AS`. The heights come
     from the model: the tip may go no lower than the cavity bottom, an LLD search starts
     `search_start_clearance` above the top, and the surface is the given liquid height above the
-    bottom, else what the container's tracked volume stands at. With volume tracking on, every
-    container gives up its volume and every tip takes it, refused before anything moves when a
-    container has too little or a tip too little room, and committed only once every batch is done.
+    bottom, else what the container's tracked volume stands at.
+
+    The volume is given one of two ways. `volumes` is the liquid wanted, and a Hamilton liquid
+    class turns it into what the piston draws, by its correction curve, and fills the flow rate,
+    the air volumes, the clot retract height, the swap speed and the settling time where they are
+    not given; the class is looked up for each channel's tip as legacy looks it up, water, unless
+    `hamilton_liquid_classes` gives it. `piston_volumes` is what the piston draws, as given, with
+    no class and legacy's plain defaults. With volume tracking on, every container gives up its
+    volume and every tip takes it, refused before anything moves when a container has too little
+    or a tip too little room, and committed only once every batch is done.
     The keyword arguments come in the order the aspiration runs, as `_aspirate_in_one_move` has
     them; the per-container ones are one entry per container, in the containers' order.
 
     Args:
       containers: any number; a whole plate is fine.
-      piston_volumes: how much each channel's piston draws, in uL, per container.
+      volumes: how much liquid to take from each container, in uL, corrected by a liquid class.
+        One of this and `piston_volumes`.
       use_channels: which channels, 0-indexed from the back. The first len(containers) when None,
         up to every channel.
       resource_offsets: added to where each channel goes in its container, in mm. Planned when
@@ -4780,27 +4802,41 @@ class Pipettes:
       liquid_heights: where the liquid stands above each cavity bottom, in mm. None takes it from
         the tracked volume, or, with an LLD mode, leaves it to the search.
       lld_mode: how the liquid is found. Off goes to the surface as given.
-      flow_rates: in uL/s, per container. 100.0 when None.
+      flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
+      hamilton_liquid_classes: the class for each container's volume. Looked up when None, for
+        the channel's tip, water, `jet` and `blow_out`, as legacy does.
+      jet: whether the later dispense is a jet, per container, for the lookup. False when None.
+      blow_out: whether the later dispense blows out, per container, for the lookup. False when
+        None.
+      piston_volumes: how much each channel's piston draws, in uL, per container, as given. One of
+        this and `volumes`; no liquid class applies.
       gamma_lld_sensitivity: capacitive LLD sensitivity, 1 high to 4 low.
       dp_lld_sensitivity: pressure LLD sensitivity, 1 high to 4 low.
       detection_height_difference_for_dual_lld: the two detections' allowed difference, in mm.
       aspirate_position_above_z_touch_off: how far above a Z touch the aspiration is, in mm.
       clot_detection_heights: how far the tip may be held back by a clot, in mm, per container.
-      immersion_depth: how far into the liquid the tip goes, in mm; negative is out of it.
-      blow_out_air_volumes: air drawn before the liquid, in uL, per container.
+        The liquid class's, else 0.0, when None.
+      immersion_depths: how far into the liquid each tip goes, in mm, per container; negative is
+        out of it.
+      blow_out_air_volumes: air drawn before the liquid, in uL, per container. The liquid
+        class's, else 0.0, when None.
       pre_wetting_volumes: drawn and returned first, in uL, per container.
       mix_volumes: per mixing cycle, in uL, per container.
       mix_cycles: how many, per container.
       mix_speeds: in uL/s, per container.
       mix_position_from_liquid_surface: how far under the surface mixing is, in mm.
-      mix_surface_following_distance: how far mixing follows the surface, in mm.
-      surface_following_distance: how far the tip follows the sinking surface, in mm.
+      mix_surface_following_distances: how far mixing follows the surface, in mm, per container.
+      surface_following_distances: how far each tip follows the sinking surface, in mm, per
+        container.
       second_section_height: how tall the container's narrower lower section is, in mm.
       second_section_ratio: that section's bottom to top ratio, in tenths.
-      settling_times: how long the tip waits in the liquid, in s, per container.
-      swap_speeds: how fast the tip leaves the liquid, in mm/s, per container.
+      settling_times: how long the tip waits in the liquid, in s, per container. The liquid
+        class's, else 0.0, when None.
+      swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid class's,
+        else 100.0, when None.
       pull_out_distance_transport_air: how far the tip rises before drawing transport air, in mm.
-      transport_air_volumes: air drawn after the liquid, in uL, per container.
+      transport_air_volumes: air drawn after the liquid, in uL, per container. The liquid class's,
+        else 0.0, when None.
       limit_curve_index: the TADM limit curve, 0 for none.
       minimum_traverse_height_start: the height every low channel's lowest point is raised to
         before the first batch, in mm. Z safety when None.
@@ -4811,7 +4847,9 @@ class Pipettes:
         `default_x_grouping_tolerance` when None.
 
     Raises:
-      ValueError: If an argument is out of range, or the lists do not match.
+      ValueError: If an argument is out of range, the lists do not match, both or neither of
+        `volumes` and `piston_volumes` are given, a class is given with `piston_volumes`, or no
+        class is known for a channel's tip.
       RuntimeError: If a channel used carries no tip, the driver was given no deck, or nothing
         knows where a container's liquid stands: no height given, volume tracking off, LLD off.
       TooLittleLiquidError: If a container holds less than it is asked for.
@@ -4829,20 +4867,95 @@ class Pipettes:
         raise ValueError(f"{name} must have one entry per container, {n}, has {len(given)}")
       return list(given)
 
-    volumes = per_container("piston_volumes", piston_volumes)
-    assert volumes is not None
+    if (volumes is None) == (piston_volumes is None):
+      raise ValueError(
+        "give volumes, which a liquid class corrects, or piston_volumes, drawn as given; not both "
+        "and not neither"
+      )
+    if piston_volumes is not None and hamilton_liquid_classes is not None:
+      raise ValueError("piston_volumes are drawn as given; a liquid class would correct them")
+
+    # The channels the containers are dealt to, as `_prepare_batched` deals them, and their tips.
+    dealt = use_channels or list(range(min(n, self.num_channels)))
+    channel_of = [dealt[job % len(dealt)] for job in range(n)]
+    tips: List[HamiltonTip] = []
+    for channel in channel_of:
+      tip = self.get_mounted_tip(channel)
+      if tip is None:
+        raise RuntimeError(f"channel {channel} is not modelled with a tip; an aspiration needs one")
+      if not isinstance(tip, HamiltonTip):
+        raise TypeError(f"channel {channel} carries {tip.name}, not a Hamilton tip")
+      tips.append(tip)
+
+    classes: Optional[List[HamiltonLiquidClass]] = None
+    if volumes is not None:
+      liquid = per_container("volumes", volumes)
+      assert liquid is not None
+      classes = per_container("hamilton_liquid_classes", hamilton_liquid_classes)
+      if classes is None:
+        jets = per_container("jet", jet) or [False] * n
+        blow_outs = per_container("blow_out", blow_out) or [False] * n
+        classes = []
+        for job, tip in enumerate(tips):
+          found = get_star_liquid_class(
+            tip_volume=tip.maximal_volume,
+            is_core=False,
+            is_tip=True,
+            has_filter=tip.has_filter,
+            liquid=Liquid.WATER,
+            jet=jets[job],
+            blow_out=blow_outs[job],
+          )
+          if found is None:
+            raise ValueError(
+              f"no liquid class is known for channel {channel_of[job]}'s tip on "
+              f"{containers[job].name}: {tip.maximal_volume} uL, "
+              f"{'with' if tip.has_filter else 'without'} filter, water, jet={jets[job]}, "
+              f"blow_out={blow_outs[job]}. Give hamilton_liquid_classes, or piston_volumes"
+            )
+          classes.append(found)
+      drawn = [
+        round(hlc.compute_corrected_volume(volume), 2) for hlc, volume in zip(classes, liquid)
+      ]
+    else:
+      assert piston_volumes is not None
+      drawn = per_container("piston_volumes", piston_volumes) or []
+      liquid = drawn
     heights = per_container("liquid_heights", liquid_heights) or [None] * n
+
+    def from_class(
+      name: str, given: Optional[Sequence[Any]], attribute: str
+    ) -> Optional[List[Any]]:
+      """What is given, else what the liquid classes say, else nothing: legacy's own defaults."""
+      values = per_container(name, given)
+      if values is None and classes is not None:
+        values = [getattr(hlc, attribute) for hlc in classes]
+      return values
+
     per_container_settings = {
-      "flow_rates": per_container("flow_rates", flow_rates),
-      "clot_detection_heights": per_container("clot_detection_heights", clot_detection_heights),
-      "blow_out_air_volumes": per_container("blow_out_air_volumes", blow_out_air_volumes),
+      "flow_rates": from_class("flow_rates", flow_rates, "aspiration_flow_rate"),
+      "clot_detection_heights": from_class(
+        "clot_detection_heights", clot_detection_heights, "aspiration_clot_retract_height"
+      ),
+      "blow_out_air_volumes": from_class(
+        "blow_out_air_volumes", blow_out_air_volumes, "aspiration_blow_out_volume"
+      ),
       "pre_wetting_volumes": per_container("pre_wetting_volumes", pre_wetting_volumes),
+      "immersion_depths": per_container("immersion_depths", immersion_depths),
+      "surface_following_distances": per_container(
+        "surface_following_distances", surface_following_distances
+      ),
+      "mix_surface_following_distances": per_container(
+        "mix_surface_following_distances", mix_surface_following_distances
+      ),
       "mix_volumes": per_container("mix_volumes", mix_volumes),
       "mix_cycles": per_container("mix_cycles", mix_cycles),
       "mix_speeds": per_container("mix_speeds", mix_speeds),
-      "settling_times": per_container("settling_times", settling_times),
-      "swap_speeds": per_container("swap_speeds", swap_speeds),
-      "transport_air_volumes": per_container("transport_air_volumes", transport_air_volumes),
+      "settling_times": from_class("settling_times", settling_times, "aspiration_settling_time"),
+      "swap_speeds": from_class("swap_speeds", swap_speeds, "aspiration_swap_speed"),
+      "transport_air_volumes": from_class(
+        "transport_air_volumes", transport_air_volumes, "aspiration_air_transport_volume"
+      ),
     }
 
     # The heights on the deck, in mm: the floor, where a search starts, and the surface.
@@ -4885,17 +4998,14 @@ class Pipettes:
         ],
         [searches[job] for job in jobs],
         [floors[job] for job in jobs],
-        [volumes[job] for job in jobs],
+        [drawn[job] for job in jobs],
         minimum_traverse_height_start=minimum_traverse_height_during,
         lld_mode=lld_mode,
         gamma_lld_sensitivity=gamma_lld_sensitivity,
         dp_lld_sensitivity=dp_lld_sensitivity,
         detection_height_difference_for_dual_lld=detection_height_difference_for_dual_lld,
         aspirate_position_above_z_touch_off=aspirate_position_above_z_touch_off,
-        immersion_depth=immersion_depth,
         mix_position_from_liquid_surface=mix_position_from_liquid_surface,
-        mix_surface_following_distance=mix_surface_following_distance,
-        surface_following_distance=surface_following_distance,
         second_section_height=second_section_height,
         second_section_ratio=second_section_ratio,
         pull_out_distance_transport_air=pull_out_distance_transport_air,
@@ -4912,14 +5022,7 @@ class Pipettes:
     # with too little room refuses here, before anything has moved; nothing is kept until the end.
     trackers = []
     if tracking:
-      channels_for = use_channels or list(range(min(n, self.num_channels)))
-      for job, (container, volume) in enumerate(zip(containers, volumes)):
-        channel = channels_for[job % len(channels_for)]
-        tip = self.get_mounted_tip(channel)
-        if tip is None:
-          raise RuntimeError(
-            f"channel {channel} is not modelled with a tip; an aspiration needs one"
-          )
+      for container, tip, volume in zip(containers, tips, liquid):
         container.tracker.remove_liquid(volume)
         tip.tracker.add_liquid(volume)
         trackers += [container.tracker, tip.tracker]
