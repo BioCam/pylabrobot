@@ -4417,8 +4417,8 @@ class Pipettes:
       lld_search_heights: where each LLD search starts.
       minimum_allowed_z_position_during: how low each tip bottom may go.
       piston_volumes: what each piston draws.
-      minimum_traverse_height_start: travel height before the command.
-        `default_minimum_traverse_height` when None.
+      minimum_traverse_height_start: tip bottom height the channels are raised to before the
+        command, if below it. `default_minimum_traverse_height` when None.
       lld_mode: how the liquid is found. ZTOUCH finds a floor, not a liquid, and logs a warning.
       clld_sensitivity: capacitive LLD sensitivity, 1 high to 4 low.
       plld_sensitivity: pressure LLD sensitivity, 1 high to 4 low.
@@ -4506,16 +4506,16 @@ class Pipettes:
           )
 
     xs, ys, pattern = self._tip_command_positions(dict(zip(use_channels, places)))
-    mounted = list(tips.values())
+    # Both heights are the firmware's fields, any height the tips reach: the start is a floor the
+    # channels are raised to if below it, so one under them raises nothing. `aspirate` travels.
     default = self.default_minimum_traverse_height
     start = default if minimum_traverse_height_start is None else minimum_traverse_height_start
     end = default if minimum_traverse_height_end is None else minimum_traverse_height_end
-    traverse_start = tenths(self._tip_traverse_height(mounted, start))
-    # The end is where the command leaves the tips, any height they reach; the travel rule is
-    # the start's alone.
     for channel, tip in tips.items():
-      self._check_reachable("z", round(end + tip.get_size_z() - tip.fitting_depth, 2))
-    traverse_end = tenths(end)
+      overhang = tip.get_size_z() - tip.fitting_depth
+      self._check_reachable("z", round(start + overhang, 2))
+      self._check_reachable("z", round(end + overhang, 2))
+    traverse_start, traverse_end = tenths(start), tenths(end)
 
     c = self.configuration
     # A master command takes heights in tenths of a millimetre, not the Z drive's own increments.
@@ -4758,7 +4758,8 @@ class Pipettes:
     Batched as `probe_liquid_heights`, one `C0 AS` per batch. Floor at the cavity bottom; LLD
     search from `well_search_start_clearance` above a well's top, `search_start_clearance` above
     any other's; surface from `liquid_heights`, else the tracked volume. CAPACITIVE and PRESSURE
-    search first, set the tracker to the measured volume, and refuse a container without liquid.
+    search first, set the tracker to the measured volume, refuse a container without liquid, and
+    aspirate from where the tips rest with the firmware's LLD off.
     `volumes` with a liquid class, which corrects the piston volume and fills what is not given,
     or `piston_volumes` as given. Trackers move per batch, before its command, committed on
     success. Keyword arguments in the order the aspiration runs; per-container lists in the
@@ -5016,6 +5017,21 @@ class Pipettes:
       # The last batch ends where the caller wants the channels left; the others at the height
       # the next batch starts from.
       last = batch is batches[-1]
+      # After the driver's own search the tips rest on their surfaces: the command starts at the
+      # lowest of them, which raises none, with the firmware's LLD off, the surfaces being known.
+      per_channel_settings: Dict[str, Any] = {
+        name: [values[job] for job in jobs]
+        for name, values in per_container_settings.items()
+        if values is not None
+      }
+      kwargs_to_start_from_current_positions: Dict[str, Any] = (
+        {
+          "minimum_traverse_height_start": min(surfaces[job] for job in jobs),
+          "lld_mode": self.LLDMode.OFF,
+        }
+        if searching
+        else {"minimum_traverse_height_start": during, "lld_mode": lld_mode}
+      )
       await self._aspirate_in_one_move(
         batch.channels,
         [
@@ -5025,12 +5041,10 @@ class Pipettes:
         [searches[job] for job in jobs],
         [floors[job] for job in jobs],
         [drawn[job] for job in jobs],
-        minimum_traverse_height_start=during,
         pre_mixes=[mixes[job] for job in jobs],
         surface_following_distances=[
           computed_following[job] if following is None else following[job] for job in jobs
         ],
-        lld_mode=lld_mode,
         clld_sensitivity=clld_sensitivity,
         plld_sensitivity=plld_sensitivity,
         detection_height_difference_for_dual_lld=detection_height_difference_for_dual_lld,
@@ -5041,11 +5055,8 @@ class Pipettes:
         pull_out_distance_transport_air=pull_out_distance_transport_air,
         limit_curve_index=limit_curve_index,
         minimum_traverse_height_end=end if last else during,
-        **{
-          name: [values[job] for job in jobs]
-          for name, values in per_container_settings.items()
-          if values is not None
-        },
+        **kwargs_to_start_from_current_positions,
+        **per_channel_settings,
       )
 
     async def run(batch: ChannelBatch) -> None:

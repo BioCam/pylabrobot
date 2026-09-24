@@ -936,16 +936,20 @@ class TestAspirateInOneMove(unittest.IsolatedAsyncioTestCase):
     )
     self.assertEqual(self.sent()["y_positions"], [1457, 1367, 0])
 
-  async def test_the_end_height_is_any_the_tips_reach(self):
+  async def test_both_traverse_heights_are_any_the_tips_reach(self):
     await self.pipettes._aspirate_in_one_move(
       [0, 1],
       self.locations,
       self.searches,
       self.floors,
       [10.0, 10.0],
+      minimum_traverse_height_start=150.0,
       minimum_traverse_height_end=180.0,
     )
-    self.assertEqual(self.sent()["minimum_z_end_position"], 1800)
+    sent = self.sent()
+    self.assertEqual(
+      (sent["minimum_traverse_height_start"], sent["minimum_z_end_position"]), (1500, 1800)
+    )
     with self.assertRaises(ValueError):
       await self.pipettes._aspirate_in_one_move(
         [0, 1],
@@ -1629,6 +1633,12 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.wells[0].tracker.set_volume(120.0)  # The model is wrong; the search will say 150 is 120.
     await self.pipettes.aspirate(self.wells[:2], [50.0, 20.0], lld_mode=Pipettes.LLDMode.CAPACITIVE)
     self.assertEqual([c[:4] for c in sent], ["P1ZL", "P2ZL", "C0RL", "C0AS"])
+    # The command starts where the tips rest, the lower of the two surfaces, with the LLD off.
+    lowest = min(
+      self._surface_field(self.wells[0], 120.0), self._surface_field(self.wells[1], 100.0)
+    )
+    self.assertIn(f"th{lowest}te2450", sent[-1])
+    self.assertIn("lm0 0", sent[-1])
     self.assertIn(
       f"zl{self._surface_field(self.wells[0], 120.0)} {self._surface_field(self.wells[1], 100.0)}",
       sent[-1],
@@ -1702,8 +1712,10 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     # A capacitive search first: the simulator answers it from the tracker, the surface it found
     # is sent, and with tracking off the tracker is left alone.
     await self.pipettes.aspirate(self.wells[:1], [10.0], lld_mode=Pipettes.LLDMode.CAPACITIVE)
-    self.assertIn(f"zl{self._surface_field(self.wells[0], 150.0)}", sent[1])
-    self.assertIn("lm1", sent[1])
+    surface = self._surface_field(self.wells[0], 150.0)
+    self.assertIn(f"th{surface}te2450", sent[1])
+    self.assertIn(f"zl{surface}", sent[1])
+    self.assertIn("lm0", sent[1])
     self.assertEqual(self.wells[0].tracker.get_used_volume(), 150.0)
 
 
