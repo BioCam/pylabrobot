@@ -4334,6 +4334,36 @@ class Pipettes:
     )
 
   # ----------------------------------------
+  # Pressure monitoring
+  # ----------------------------------------
+
+  # -- pressure sensor -----------------------------------------------------------------------------
+
+  async def request_channel_pressure(self, channel: int) -> int:
+    """Read a channel's pressure sensor now. `Px RP`. Not yet validated on hardware.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+
+    Returns:
+      The signed pressure in Pa.
+    """
+    self._require_channel(channel)
+    resp = await self._driver.send_command(module=self.channel_id(channel), command="RP")
+    return int(resp.split("rp")[-1].strip())
+
+  async def auto_adjust_pressure_sensor(self, channel: int) -> None:
+    """Auto-adjust a channel's pressure sensor gain and offset. `Px AC`.
+
+    A mis-adjusted sensor floors the recorded aspirate trace; re-running this restores it.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+    """
+    self._require_channel(channel)
+    await self._driver.send_command(module=self.channel_id(channel), command="AC")
+
+  # ----------------------------------------
   # Liquid handling
   # ----------------------------------------
 

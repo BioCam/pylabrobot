@@ -2797,3 +2797,24 @@ class TestNestedTipRacksGroundTruth(unittest.IsolatedAsyncioTestCase):
             f"C0ERxs{xs}xd0yh{a1_y}za2162zh2450ze2450",
           ],
         )
+
+
+class TestPressureMonitoring(unittest.IsolatedAsyncioTestCase):
+  """The pressure sensor and TADM commands, answered with replies recorded from a device."""
+
+  async def asyncSetUp(self):
+    self.pipettes, _ = await channels(width=REPORTED_WIDTH, positions=FRONTMOST)
+    self.send = unittest.mock.AsyncMock(return_value="")
+    self.pipettes._driver.send_command = self.send  # type: ignore[assignment]
+
+  def answer(self, *replies: str) -> None:
+    self.send.side_effect = list(replies)
+
+  async def test_request_channel_pressure(self):
+    self.answer("P8RPid0001rp-0123")
+    self.assertEqual(await self.pipettes.request_channel_pressure(7), -123)
+    self.assertEqual(self.send.call_args.kwargs, {"module": "P8", "command": "RP"})
+
+  async def test_auto_adjust_pressure_sensor(self):
+    await self.pipettes.auto_adjust_pressure_sensor(7)
+    self.assertEqual(self.send.call_args.kwargs, {"module": "P8", "command": "AC"})
