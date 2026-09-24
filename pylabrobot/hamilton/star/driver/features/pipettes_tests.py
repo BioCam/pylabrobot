@@ -1721,31 +1721,67 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertAlmostEqual(self.wells[0].tracker.get_used_volume(), 90.0, delta=2.0)
 
   async def test_modes_mix_within_one_batch(self):
-    sent = self._record_aspirations("P2ZA", "P3ZA", "P1ZL", "P2ZL", "P3ZE", "P4ZL", "C0RL")
+    sent = self._record_aspirations(
+      "P2ZA", "P3ZA", "P4ZA", "P1ZL", "P2ZL", "P3ZE", "P4ZL", "P4ZH", "C0RL"
+    )
     modes = [
       Pipettes.LLDMode.OFF,
       Pipettes.LLDMode.CAPACITIVE,
       Pipettes.LLDMode.PRESSURE,
-      Pipettes.LLDMode.OFF,
+      Pipettes.LLDMode.ZTOUCH,
     ]
     await self.pipettes.aspirate(self.wells, piston_volumes=[10.0] * 4, lld_mode=modes)
-    # Only the two searching channels search, each its own way; then one command for all four,
-    # the LLD off everywhere, starting at the lower of the two measured surfaces.
-    self.assertEqual([c[:4] for c in sent], ["P2ZA", "P3ZA", "P2ZL", "P3ZE", "C0RL", "C0AS"])
+    # The touch first, then the two liquid searches, each its own way; then one command for all
+    # four, the LLD off everywhere, starting at the lowest height any tip rests at: the floor.
+    self.assertEqual(
+      [c[:4] for c in sent], ["P4ZA", "P4ZH", "P2ZA", "P3ZA", "P2ZL", "P3ZE", "C0RL", "C0AS"]
+    )
     self.assertIn("lm0 0 0 0", sent[-1])
     # The approach takes the two searching tips to the command's lp, 2 mm above the well, and the
     # searches start there.
     top = self.wells[1].get_location_wrt(self.deck, "c", "c", "t").z
     overhang = await self.pipettes.request_tip_overhang(1)
     start = self.pipettes.configuration.z_drive_mm_to_increments(round(top + 2.0 + overhang, 2))
-    self.assertIn(f"zc{start:05}", sent[2])
+    self.assertIn(f"zc{start:05}", sent[4])
     self.assertIn(f"lp{round((top + 2.0) * 10):04}", sent[-1])
-    self.assertIn(f"th{self._surface_field(self.wells[2], 50.0)}te2450", sent[-1])
+    floor = self._surface_field(self.wells[3], 0.0)
+    self.assertIn(f"th{floor}te2450", sent[-1])
     self.assertIn(
       f"zl{self._surface_field(self.wells[0], 150.0)} {self._surface_field(self.wells[1], 100.0)} "
-      f"{self._surface_field(self.wells[2], 50.0)} {self._surface_field(self.wells[3], 0.0)}",
+      f"{self._surface_field(self.wells[2], 50.0)} {floor}",
       sent[-1],
     )
+
+  async def test_a_z_touch_draws_from_the_floor(self):
+    sent = self._record_aspirations("P1ZA", "P1ZH")
+    with self.assertLogs("pylabrobot.hamilton.star.driver.features.pipettes", level="INFO") as logs:
+      await self.pipettes.aspirate(
+        self.wells[3:4], piston_volumes=[10.0], lld_mode=Pipettes.LLDMode.ZTOUCH
+      )
+    # Approach to the top, the touch, the draw from the floor with zx there and the LLD off; the
+    # empty well gives nothing and the air is an info line, not a warning.
+    self.assertEqual([c[:4] for c in sent], ["P1ZA", "P1ZH", "C0AS"])
+    floor = self._surface_field(self.wells[3], 0.0)
+    self.assertIn(f"th{floor}te2450", sent[-1])
+    self.assertIn(f"zl{floor}", sent[-1])
+    self.assertIn(f"zx{floor}", sent[-1])
+    self.assertIn("lm0", sent[-1])
+    self.assertTrue(any("Z touch" in line and "WARNING" in line for line in logs.output))
+    self.assertTrue(any("rest is air" in line and "INFO" in line for line in logs.output))
+
+  async def test_dual_is_not_implemented(self):
+    with self.assertRaises(NotImplementedError):
+      await self.pipettes.aspirate(self.wells[:1], [10.0], lld_mode=Pipettes.LLDMode.DUAL)
+
+  async def test_no_floor_met_is_refused(self):
+    self.pipettes._probe_batch_floors = unittest.mock.AsyncMock(return_value={0: [None]})  # type: ignore[method-assign]
+    sent = self._record_aspirations()
+    with self.assertRaises(RuntimeError) as refused:
+      await self.pipettes.aspirate(
+        self.wells[:1], piston_volumes=[10.0], lld_mode=Pipettes.LLDMode.ZTOUCH
+      )
+    self.assertIn("met no floor", str(refused.exception))
+    self.assertEqual(sent, [])
 
   async def test_no_liquid_found_is_refused_and_earlier_batches_stand(self):
     for row in "EFGH":
