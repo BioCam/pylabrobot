@@ -785,8 +785,8 @@ class CoreGrippers:
         None goes to Z safety.
       z_acceleration: the Z drives' acceleration from the grip on, in mm/s2, then restored. None
         is `default_z_acceleration_with_resource_held`.
-      z_speed: how fast the jaws rise with the plate, in mm/s. None leaves it to the firmware
-        (~133 mm/s). The way down, empty, is the firmware's.
+      z_speed: how fast the jaws rise with the plate, in mm/s. None is the pipettes'
+        `default_z_speed`. The way down, empty, is the firmware's.
       on_gripped: called once the jaws have closed, before they rise.
     """
     self._require_mounted()
@@ -803,10 +803,10 @@ class CoreGrippers:
       make_space=True,
       minimum_traverse_height_start=0,
     )
-    raise_to: Optional[float] = None
-    if z_speed is not None:
-      here = (await self._pipettes.request_locations())[self._back_channel].z
-      raise_to = here if minimum_traverse_height_end is None else minimum_traverse_height_end
+    if z_speed is None:
+      z_speed = self._pipettes.default_z_speed
+    here = (await self._pipettes.request_locations())[self._back_channel].z
+    raise_to = here if minimum_traverse_height_end is None else minimum_traverse_height_end
     plate_top_center = PrepCmd.XYZCoord(
       default_values=False,
       x_position=location.x,
@@ -846,10 +846,7 @@ class CoreGrippers:
       self._taken_from = None
       if on_gripped is not None:
         on_gripped()
-      if z_speed is None or raise_to is None:
-        await self._raise_to_traverse(minimum_traverse_height_end)
-      else:
-        await self._move_jaws_to_z(raise_to, z_speed)
+      await self._move_jaws_to_z(raise_to, z_speed)
 
   async def _drop_at(
     self,
@@ -876,8 +873,8 @@ class CoreGrippers:
         None goes to Z safety.
       z_acceleration: the Z drives' acceleration until it is let go, in mm/s2, then restored. None
         is `default_z_acceleration_with_resource_held`.
-      z_speed: how fast it is lowered to where it is let go, in mm/s. None leaves it to the
-        firmware (~133 mm/s).
+      z_speed: how fast it is lowered to where it is let go, in mm/s. None is the pipettes'
+        `default_z_speed`.
       on_released: called once the jaws have let go, before they rise.
     """
     if self._holding_resource_width is None:
@@ -892,8 +889,10 @@ class CoreGrippers:
       await self.move_resource_to_xy_position(
         location.x, location.y, acceleration_scale_x=acceleration_scale_x
       )
-      if z_speed is not None:
-        await self._move_jaws_to_z(location.z + FIRMWARE_Z_LEG, z_speed)
+      await self._move_jaws_to_z(
+        location.z + FIRMWARE_Z_LEG,
+        self._pipettes.default_z_speed if z_speed is None else z_speed,
+      )
       plate_top_center = self._compute_plate_top(location)
       try:
         await self._driver.send_command(
@@ -968,7 +967,7 @@ class CoreGrippers:
         safety.
       z_acceleration: the Z drives' acceleration from the grip on, in mm/s2, then restored. None is
         `default_z_acceleration_with_resource_held`.
-      z_speed: how fast the jaws rise with it, in mm/s. None leaves it to the firmware (~133 mm/s).
+      z_speed: how fast the jaws rise with it, in mm/s. None is the pipettes' `default_z_speed`.
         The way down, empty, is the firmware's.
 
     Raises:
@@ -1038,8 +1037,8 @@ class CoreGrippers:
       offset: added to where it is let go.
       y_clearance: how far each gripper stands from the resource, either side, as it moves in to
         grip it and out after letting go, in mm.
-      z_speed: how fast it is lowered to where it is let go, in mm/s. None leaves it to the
-        firmware (~133 mm/s).
+      z_speed: how fast it is lowered to where it is let go, in mm/s. None is the pipettes'
+        `default_z_speed`.
     """
     child: Optional[Coordinate] = None
     if isinstance(to, Coordinate):
@@ -1234,14 +1233,15 @@ class CoreGrippers:
       squeeze_mm: how far past touching the jaws close, in mm.
       pickup_z_acceleration: the Z drives' acceleration from the grip on, in mm/s2. None is
         `default_z_acceleration_with_resource_held`.
-      pickup_z_speed: how fast the jaws rise with it, in mm/s. None leaves it to the firmware.
+      pickup_z_speed: how fast the jaws rise with it, in mm/s. None is the pipettes'
+        `default_z_speed`.
       minimum_traverse_height_during: the height to carry it at, in mm. None goes to Z safety.
       acceleration_scale_x: X-axis acceleration scale while carrying it.
       drop_offset: added to where it is let go, in mm.
       drop_z_acceleration: the Z drives' acceleration until it is let go, in mm/s2. None is
         `default_z_acceleration_with_resource_held`.
-      drop_z_speed: how fast it is lowered to where it is let go, in mm/s. None leaves it to the
-        firmware.
+      drop_z_speed: how fast it is lowered to where it is let go, in mm/s. None is the pipettes'
+        `default_z_speed`.
       drop_y_clearance: how far each gripper stands from the resource, either side, as it moves
         out after letting go, in mm.
       minimum_traverse_height_end: the height to leave the destination at, in mm. None goes to Z

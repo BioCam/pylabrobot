@@ -47,6 +47,7 @@ def _make_grippers(deck: PrepDeck, stub_pick_and_drop: bool = True) -> Tuple[Cor
   pipettes = SimpleNamespace(
     configuration=SimpleNamespace(channels=[]),  # no reported windows
     num_channels=2,
+    default_z_speed=113.6,
     move_to_safe_z=AsyncMock(),
     move_tool_bottom_to_z_positions=AsyncMock(),
     move_to_y_positions=AsyncMock(),
@@ -262,10 +263,10 @@ def test_private_pick_up_at_enables_drop_at():
       place.y,
     )
     assert held == 85.0
-    # Travelled, gripped, travelled and released: each end of each goes to Z safety, because
-    # there is very little room on a Prep deck.
-    assert commands.move_to_safe_z.await_count == 4
-    assert commands.move_tool_bottom_to_z_positions.await_count == 0
+    # Up to Z safety before each carry and after letting go; the jaws raise it after the grip and
+    # lower it to the let-go at a known speed.
+    assert commands.move_to_safe_z.await_count == 3
+    assert commands.move_tool_bottom_to_z_positions.await_count == 2
     with pytest.raises(RuntimeError, match="Not holding anything"):
       await grippers._drop_at(place)
 
@@ -851,8 +852,9 @@ def test_move_resource_to_xy_position_keeps_the_dimension_it_is_not_given():
     assert last_move() == pytest.approx((62.55, 200.0, 149.6))
     await grippers.move_resource_to_xy_position(x=150.0, y=200.0)
     assert last_move() == pytest.approx((150.0, 200.0, 149.6))
-    # Asked every time: the height is never taken from what was remembered.
-    assert locations.await_count == 3
+    # Asked every time: the height is never taken from what was remembered. The pick-up asks once
+    # too, for the height it rises back to.
+    assert locations.await_count == 4
 
   asyncio.run(_run())
 
@@ -863,6 +865,9 @@ def test_a_z_acceleration_holds_from_the_grip_until_it_is_let_go():
   plate = deck[0] = azenta_96_wellplate_200uL_Vb_4titudeframestar(name="plate")
   grippers, commands = _make_grippers(deck, stub_pick_and_drop=False)
   commands.move_to_safe_z.side_effect = lambda *args, **kwargs: commands.order.append("safe_z")
+  commands.move_tool_bottom_to_z_positions.side_effect = lambda *args, **kwargs: (
+    commands.order.append("jaws_z")
+  )
 
   async def _run() -> None:
     await grippers.pick_up_resource(plate, z_acceleration=100.0)
@@ -872,20 +877,21 @@ def test_a_z_acceleration_holds_from_the_grip_until_it_is_let_go():
       "safe_z",  # up, empty
       "move_to_xy_positions",  # over it, empty
       "z_acceleration=100.0",
-      "PrepPickUpPlate",  # gripped and lifted
-      "safe_z",
+      "PrepPickUpPlate",  # gripped
+      "jaws_z",  # lifted
       "z_acceleration restored",
       "z_acceleration=50.0",
       "safe_z",
       "PrepMovePlate",
-      "PrepDropPlate",  # lowered and let go
+      "jaws_z",  # lowered
+      "PrepDropPlate",  # let go
       "z_acceleration restored",
       "safe_z",  # up, empty
       "safe_z",
       "move_to_xy_positions",
       "z_acceleration=150.0",  # named none: default_z_acceleration_with_resource_held
       "PrepPickUpPlate",
-      "safe_z",
+      "jaws_z",
       "z_acceleration restored",
     ]
 
@@ -1263,7 +1269,16 @@ def test_the_plate_is_taken_at_the_grip_and_put_down_at_the_let_go_before_the_ja
       at_each_raise.append((parent, (where.x, where.y, where.z)))
       await raise_(minimum_traverse_height_end)
 
+    move_jaws = grippers._move_jaws_to_z
+
+    async def recording_jaws(z: float, speed: float) -> None:
+      parent = None if plate.parent is None else plate.parent.name
+      where = plate.get_absolute_location()
+      at_each_raise.append((parent, (where.x, where.y, where.z)))
+      await move_jaws(z, speed)
+
     grippers._raise_to_traverse = recording  # type: ignore[method-assign]
+    grippers._move_jaws_to_z = recording_jaws  # type: ignore[method-assign]
     assert spot is not None and front_tool is not None
 
     await grippers.pick_up_resource(plate)
@@ -1272,8 +1287,9 @@ def test_the_plate_is_taken_at_the_grip_and_put_down_at_the_let_go_before_the_ja
 
     at_each_raise.clear()
     await grippers.return_resource()
-    assert [parent for parent, _ in at_each_raise] == [front_tool.name, spot.name]
-    assert at_each_raise[1][1] == pytest.approx(stood_at, abs=0.01)  # put down where it stood
+    # Carried up, lowered to the let-go, and the jaws up empty.
+    assert [parent for parent, _ in at_each_raise] == [front_tool.name, front_tool.name, spot.name]
+    assert at_each_raise[2][1] == pytest.approx(stood_at, abs=0.01)  # put down where it stood
     await p.stop()
 
   asyncio.run(_run())
