@@ -2855,8 +2855,7 @@ class Pipettes:
       channel_idx: which channel, 0-indexed from the back.
       search_start_position: tip bottom height the search starts from, in mm. As high as the tip
         goes when None.
-      search_end_position: stop disc height the search goes no lower than, in mm. The drive's
-        floor when None.
+      search_end_position: lowest tip bottom height, in mm. The drive's floor when None.
       search_speed: in mm/s.
       approach_speed: down to the start, in mm/s.
       acceleration: in mm/s2.
@@ -2881,24 +2880,24 @@ class Pipettes:
     overhang = await self._overhang_that_probes(channel_idx, allow_without_tip)
     c = self.configuration
     lowest, highest = (c.z_drive_increments_to_mm(i) for i in c.z_range_increments)
-    top = highest - overhang
+    top, floor = highest - overhang, round(lowest - overhang, 2)
     if search_start_position is None:
       search_start_position = top
     if search_end_position is None:
-      search_end_position = lowest
-    if not lowest <= search_end_position <= highest:
+      search_end_position = floor
+    if not floor <= search_end_position <= top:
       raise ValueError(
-        f"search_end_position must be between {lowest} and {highest} mm, is {search_end_position}"
+        f"search_end_position must be between {floor} and {top} mm, is {search_end_position}"
       )
-    if not search_end_position - overhang <= search_start_position <= top:
+    if not search_end_position <= search_start_position <= top:
       raise ValueError(
-        f"search_start_position must be between {search_end_position - overhang} and {top} mm, "
+        f"search_start_position must be between {search_end_position} and {top} mm, "
         f"is {search_start_position}"
       )
     try:
       stop_disc = await self._ztouch_search(
         channel_idx,
-        search_end_position,
+        round(search_end_position + overhang, 2),
         round(search_start_position + overhang, 2),
         search_speed=search_speed,
         approach_speed=approach_speed,
@@ -2912,9 +2911,8 @@ class Pipettes:
       await self.move_to_safe_z()
       raise
     await self._record_where_they_stopped("z")
-    touched = (
-      None if stop_disc - search_end_position <= end_tolerance else round(stop_disc - overhang, 2)
-    )
+    tip_bottom = round(stop_disc - overhang, 2)
+    touched = None if tip_bottom - search_end_position <= end_tolerance else tip_bottom
     if move_channels_to_safe_pos_after:
       await self.move_to_safe_z()
     elif post_detection_distance:

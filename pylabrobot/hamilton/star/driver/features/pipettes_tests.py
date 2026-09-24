@@ -494,12 +494,12 @@ class TestZTouchProbing(unittest.IsolatedAsyncioTestCase):
     self.back_off.assert_awaited_once_with(0, round(stop_disc + 2.0, 2))
     self.safe_z.assert_not_awaited()
 
-  async def test_a_window_is_the_tip_bottom_start_and_the_stop_disc_end(self):
+  async def test_a_window_is_given_in_tip_bottom_heights_and_sent_on_the_stop_disc(self):
     await self.pipettes.probe_z_using_ztouch(
       2, search_start_position=250.0, search_end_position=150.0, post_detection_distance=0
     )
     c = self.pipettes.configuration
-    start, end = c.z_drive_mm_to_increments(301.9), c.z_drive_mm_to_increments(150.0)
+    start, end = c.z_drive_mm_to_increments(301.9), c.z_drive_mm_to_increments(201.9)
     self.assertEqual(self.sent, [f"P3ZHzb{start:05}za{end:05}zv11652zr075zu00932cg001cf000"])
     self.back_off.assert_not_awaited()
 
