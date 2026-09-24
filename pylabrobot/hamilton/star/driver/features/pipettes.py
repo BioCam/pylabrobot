@@ -3147,21 +3147,19 @@ class Pipettes:
     batch: ChannelBatch,
     overhangs: Dict[int, float],
     z_cavity_bottom: Sequence[float],
-    z_top: Sequence[float],
-    above_top: float,
+    z_start: Sequence[float],
     below_bottom: float,
   ) -> List[Tuple[int, int, float, float]]:
     """The stop disc window each channel of a batch searches, lowest channel number first.
 
-    `above_top` over the top, capped at the drive's top, down to `below_bottom` under the cavity
-    bottom, both plus the channel's overhang.
+    From `z_start`, capped at the drive's top, down to `below_bottom` under the cavity bottom,
+    both plus the channel's overhang.
 
     Args:
       batch: the channels and which container each has, by job index.
       overhangs: each channel's tip overhang in mm, keyed by channel.
       z_cavity_bottom: per job, on the deck in mm.
-      z_top: per job, on the deck in mm.
-      above_top: how far above the top the search starts, in mm.
+      z_start: per job, tip bottom height the search starts from, on the deck in mm.
       below_bottom: how far under the cavity bottom it may go, in mm.
 
     Returns:
@@ -3171,7 +3169,7 @@ class Pipettes:
     windows = []
     for channel, job in sorted(zip(batch.channels, batch.indices)):
       end = round(z_cavity_bottom[job] - below_bottom + overhangs[channel], 2)
-      start = round(min(z_top[job] + overhangs[channel] + above_top, top), 2)
+      start = round(min(z_start[job] + overhangs[channel], top), 2)
       windows.append((channel, job, end, start))
     return windows
 
@@ -3182,15 +3180,16 @@ class Pipettes:
     *,
     overhangs: Dict[int, float],
     z_cavity_bottom: Sequence[float],
-    z_top: Sequence[float],
+    z_start: Sequence[float],
     lld_modes: Sequence["Pipettes.LLDMode"],
     search_speed: float,
     n_replicates: int,
+    approach_speed: Optional[float] = None,
   ) -> Dict[int, List[Optional[float]]]:
     """Search for the liquid in every container of one batch, the channels together, n times.
 
-    From `search_start_clearance` above the top to the cavity bottom, on the stop disc. One
-    `C0 RL` per round; None where a channel found nothing.
+    From `z_start` to the cavity bottom, on the stop disc. One `C0 RL` per round; None where a
+    channel found nothing.
 
     Args:
       batch: the channels and which container each has, by job index.
@@ -3198,10 +3197,12 @@ class Pipettes:
         answers the searches from their trackers.
       overhangs: each channel's tip overhang in mm, keyed by channel.
       z_cavity_bottom: per job, on the deck in mm.
-      z_top: per job, on the deck in mm.
+      z_start: per job, tip bottom height the search starts from, on the deck in mm.
       lld_modes: per job, capacitive or pressure.
       search_speed: in mm/s.
       n_replicates: how many rounds.
+      approach_speed: the channels go to their starts together first, at this speed in mm/s.
+        None leaves the approach to the search command, at the drive's stored speed.
 
     Returns:
       The heights found, in mm on the deck, one list per job index; None where nothing was found.
@@ -3209,11 +3210,13 @@ class Pipettes:
     Raises:
       STARFirmwareError: Anything a channel answered other than that it found nothing.
     """
-    searches = self._get_stop_disc_search_windows(
-      batch, overhangs, z_cavity_bottom, z_top, self.search_start_clearance, 0.0
-    )
+    searches = self._get_stop_disc_search_windows(batch, overhangs, z_cavity_bottom, z_start, 0.0)
     found: Dict[int, List[Optional[float]]] = {job: [] for job in batch.indices}
     for _ in range(n_replicates):
+      if approach_speed is not None:
+        await self.move_stop_disc_to_z_positions(
+          {channel: start for channel, _, _, start in searches}, speed=approach_speed
+        )
       results = await asyncio.gather(
         *(
           self._clld_search(channel, end, start, search_speed=search_speed)
@@ -3316,7 +3319,7 @@ class Pipettes:
         containers,
         overhangs=overhangs,
         z_cavity_bottom=z_cavity_bottom,
-        z_top=z_top,
+        z_start=[round(top + self.search_start_clearance, 2) for top in z_top],
         lld_modes=modes,
         search_speed=search_speed,
         n_replicates=n_replicates,
@@ -3426,7 +3429,7 @@ class Pipettes:
       STARFirmwareError: As a channel answered.
     """
     searches = self._get_stop_disc_search_windows(
-      batch, overhangs, z_cavity_bottom, z_top, 0.0, below_floor
+      batch, overhangs, z_cavity_bottom, z_top, below_floor
     )
     found: Dict[int, List[Optional[float]]] = {job: [] for job in batch.indices}
     for _ in range(n_replicates):
@@ -4750,6 +4753,7 @@ class Pipettes:
     blow_out: Optional[Sequence[bool]] = None,
     piston_volumes: Optional[Sequence[float]] = None,
     search_speed: float = 10.0,
+    approach_speed: float = 125.0,
     clld_sensitivities: Optional[Sequence[int]] = None,
     plld_sensitivities: Optional[Sequence[int]] = None,
     detection_height_differences_for_dual_lld: Optional[Sequence[float]] = None,
@@ -4805,6 +4809,7 @@ class Pipettes:
       blow_out: whether the later dispense blows out, for the lookup. False when None.
       piston_volumes: what each piston draws, in uL, as given. One of this and `volumes`.
       search_speed: of the driver's own CAPACITIVE or PRESSURE search, in mm/s.
+      approach_speed: down to that search's start, `lp`, in mm/s.
       clld_sensitivities: capacitive LLD sensitivity, 1 high to 4 low, per container. 1 when None.
       plld_sensitivities: pressure LLD sensitivity, 1 high to 4 low, per container. 1 when None.
       detection_height_differences_for_dual_lld: allowed difference of the two detections, in mm,
@@ -5045,7 +5050,6 @@ class Pipettes:
       start,
       end,
     )
-    tops = [round(c.get_location_wrt(deck, "c", "c", "t").z + z, 2) for c, z in zip(containers, dz)]
 
     async def search(batch: ChannelBatch) -> None:
       """Find the liquid where the batch's channels search for it, and put it into the model."""
@@ -5060,10 +5064,11 @@ class Pipettes:
         containers,
         overhangs=overhangs,
         z_cavity_bottom=floors,
-        z_top=tops,
+        z_start=searches,
         lld_modes=modes,
         search_speed=search_speed,
         n_replicates=1,
+        approach_speed=approach_speed,
       )
       for channel, job in pairs:
         height = found[job][0]
