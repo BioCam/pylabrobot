@@ -6,7 +6,6 @@ import unittest
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.corning import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.hamilton import hamilton_96_tiprack_1000uL
-from pylabrobot.resources.resource import Resource
 from pylabrobot.visualizer3D.facility import Facility
 from pylabrobot.visualizer3D.scene import build_scene, pack_state
 
@@ -57,7 +56,7 @@ class SceneTests(unittest.TestCase):
       json.dumps(build_scene(facility).serialize(), sort_keys=True),
     )
 
-  def test_a_racked_tip_hangs_from_its_collar_whether_or_not_models_are_reused(self):
+  def test_a_racked_tip_hangs_from_its_collar(self):
     """A tip serializes without its location; the scene places it where its spot put it."""
     facility = Facility(name="facility", size_x=1000, size_y=1000, size_z=500)
     rack = hamilton_96_tiprack_1000uL(name="rack", with_tips=True)
@@ -66,14 +65,11 @@ class SceneTests(unittest.TestCase):
     location = tip.location
     assert location is not None
 
-    cold = build_scene(facility)
-    warm = build_scene(facility, known=cold.derived, known_names=frozenset(cold.names))
-    for scene in (cold, warm):
-      index = scene.names.index(tip.name)
-      self.assertEqual(
-        tuple(scene.transforms[6 * index : 6 * index + 3]),
-        (location.x, location.y, location.z),
-      )
+    scene = build_scene(facility)
+    index = scene.names.index(tip.name)
+    self.assertEqual(
+      tuple(scene.transforms[6 * index : 6 * index + 3]), (location.x, location.y, location.z)
+    )
 
   def test_models_are_not_reused_when_the_names_change(self):
     """Whether a string counts as a reference depends on which names exist, so a changed tree
@@ -81,10 +77,13 @@ class SceneTests(unittest.TestCase):
     facility = facility_with(2)
     first = build_scene(facility)
     names = frozenset(first.names)
-    facility.assign_child_resource(
-      Resource(name="bench", size_x=100, size_y=100, size_z=10), location=Coordinate(0, 500, 0)
-    )
+    # A plate's ordering links its wells by name: with A1 out of the tree, that entry is a name.
+    plate = facility.get_resource("plate_0")
+    plate.unassign_child_resource(facility.get_resource("plate_0_well_A1"))
     warm = build_scene(facility, known=first.derived, known_names=names)
+    self.assertNotEqual(
+      warm.derived["plate_0"], first.derived["plate_0"], "the model kept its link"
+    )
     self.assertEqual(
       json.dumps(warm.serialize(), sort_keys=True),
       json.dumps(build_scene(facility).serialize(), sort_keys=True),

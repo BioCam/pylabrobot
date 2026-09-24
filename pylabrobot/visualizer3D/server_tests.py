@@ -22,8 +22,20 @@ from pylabrobot.resources.resource import Resource
 from pylabrobot.visualizer3D.facility import Facility
 from pylabrobot.visualizer3D.server import Viewer3D
 
-# Away from the defaults, so a viewer someone left open does not answer these.
-FS_PORT, WS_PORT = 8731, 8732
+
+def free_ports(count: int) -> List[int]:
+  """Distinct ports nothing on this machine listens on, so two suites can run at once."""
+  sockets = [socket.socket() for _ in range(count)]
+  try:
+    for sock in sockets:
+      sock.bind(("127.0.0.1", 0))
+    return [sock.getsockname()[1] for sock in sockets]
+  finally:
+    for sock in sockets:
+      sock.close()
+
+
+FS_PORT, WS_PORT = free_ports(2)
 # Any model file shipped with the package: what it draws does not matter, that it registers does.
 MESH_FILE = os.path.join(
   os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -83,8 +95,7 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
     resource, so carrying it here would give every resource a state of its own."""
     ws, _, snapshot = await self.connect()
     try:
-      for state in snapshot["states"]:
-        self.assertNotIn("location", state)
+      self.assertEqual(snapshot["locations"], {})
       self.assertLessEqual(len(snapshot["states"]), 2)
     finally:
       await ws.close()
@@ -383,7 +394,8 @@ class AbandonedLoopTests(unittest.TestCase):
 
     async def start_and_forget() -> None:
       # Its ports stay bound in this process: nothing can stop it once its loop has gone.
-      await Viewer3D(facility, open_browser=False, fs_port=FS_PORT + 6, ws_port=WS_PORT + 6).start()
+      fs_port, ws_port = free_ports(2)
+      await Viewer3D(facility, open_browser=False, fs_port=fs_port, ws_port=ws_port).start()
 
     asyncio.run(start_and_forget())
     part.location = Coordinate(1, 2, 3)
@@ -500,9 +512,10 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
     self.assertIn(self.viewer.token, page)
     self.assertNotIn("{{ ws_token }}", page)
 
-  async def test_every_run_has_its_own_token(self):
+  async def test_a_token_from_another_run_is_refused(self):
+    """A page served by an earlier run keeps that run's token, and it must not open this one."""
     other = Viewer3D(self.facility, open_browser=False)
-    self.assertNotEqual(other.token, self.viewer.token)
+    await self.assert_refused(self.ws(other.token))
 
 
 if __name__ == "__main__":

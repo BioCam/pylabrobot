@@ -44,6 +44,20 @@ def enclosing_function(lines, index):
   return None
 
 
+def module_statement(lines, index):
+  """The top-level statement holding a module-level line, out to the blank lines either side."""
+  start, end = index, index
+  while start > 0 and lines[start - 1].strip():
+    start -= 1
+  while end + 1 < len(lines) and lines[end + 1].strip():
+    end += 1
+  return "\n".join(lines[start : end + 1])
+
+
+# What the module-level listeners are wired to: the inputs, and the camera's own change event.
+LISTENED_FOR = ("pointerdown", "keydown", "click", "pointermove", "wheel", "mouseover", "change")
+
+
 class InvalidationTests(unittest.TestCase):
   def test_only_the_edges_ask_for_a_frame(self):
     stray = []
@@ -67,11 +81,26 @@ class InvalidationTests(unittest.TestCase):
 
   def test_every_edge_is_still_wired(self):
     """The rule above only helps while the edges themselves still ask."""
-    found = set()
+    asked = set()
+    statements = []
     for _, lines in page_sources():
-      found |= {enclosing_function(lines, i) for i, t in enumerate(lines) if "invalidate" in t}
+      for index, text in enumerate(lines):
+        if "invalidate" not in text or text.lstrip().startswith(("import", "//", "*")):
+          continue
+        where = enclosing_function(lines, index)
+        asked.add(where)
+        if where is None:
+          statements.append(module_statement(lines, index))
     for name, why in BOUNDARIES.items():
-      self.assertIn(name, found, f"nothing asks for a frame on {why}")
+      if name is not None:
+        self.assertIn(name, asked, f"nothing asks for a frame on {why}")
+    # At module level only a listener may ask: a call on load or a timer is a frame nobody wanted.
+    loose = [s for s in statements if "addEventListener(" not in s and not s.startswith("import")]
+    self.assertEqual(loose, [], "invalidate() at module level outside a listener")
+    for event in LISTENED_FOR:
+      self.assertTrue(
+        any(f'"{event}"' in s for s in statements), f"no listener asks for a frame on {event}"
+      )
 
 
 if __name__ == "__main__":

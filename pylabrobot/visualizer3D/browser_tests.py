@@ -35,6 +35,7 @@ from pylabrobot.resources.resource_holder import ResourceHolder
 from pylabrobot.visualizer3D.demo import build_facility, declare_channel_access, star_of
 from pylabrobot.visualizer3D.facility import Facility
 from pylabrobot.visualizer3D.server import Viewer3D
+from pylabrobot.visualizer3D.server_tests import free_ports
 
 
 def _find_chrome() -> str:
@@ -56,15 +57,15 @@ PLATFORM_FLAGS = (
   if sys.platform == "darwin"
   else ["--use-angle=swiftshader", "--no-sandbox", "--disable-dev-shm-usage"]
 )
-FS_PORT, WS_PORT, CDP_PORT = 8741, 8742, 8743
+FS_PORT, WS_PORT = free_ports(2)
 
 
 class Browser:
   """Headless Chrome, driven over the devtools protocol. Enough of it to load a page and ask it
-  questions."""
+  questions. Each one has a devtools port of its own: the last may still be letting go of its."""
 
-  def __init__(self, cdp_port: int):
-    self._cdp_port = cdp_port
+  def __init__(self) -> None:
+    self._cdp_port = free_ports(1)[0]
     self._profile = tempfile.mkdtemp()
     self._chrome: Optional[subprocess.Popen] = None
     self._socket: Any = None
@@ -234,7 +235,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     """The page is fetched fresh on every load while the Python serving it is as old as its
     process, and a page reading a scene from an older server misread it in silence: positions
     stopped updating and nothing said why."""
-    async with Browser(CDP_PORT + 7) as browser:
+    async with Browser() as browser:
       await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
       await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
       await self.viewer._broadcast("scene", {**self.viewer._scene_message(), "protocol": 0})
@@ -246,7 +247,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
   async def test_a_frame_the_page_cannot_read_does_not_stop_the_next_one(self):
     """The page parsed every frame unguarded and applied a state without looking at it, so one
     message that was not JSON, or a state with nothing in it, threw inside the handler."""
-    async with Browser(CDP_PORT) as browser:
+    async with Browser() as browser:
       await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
       await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
       await browser.evaluate(
@@ -263,7 +264,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       self.assertEqual(errors, 0)
 
   async def test_a_move_reaches_the_picture_and_carries_its_children(self):
-    async with Browser(CDP_PORT) as browser:
+    async with Browser() as browser:
       await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
       await browser.settle("window.plrViewer && window.plrViewer.resources().length > 0")
 
@@ -279,7 +280,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
 
   async def test_a_quality_level_changes_the_pixel_ratio_and_the_lighting(self):
     """The page steps quality down on its own when frames are slow; the levels are driven here."""
-    async with Browser(CDP_PORT + 2) as browser:
+    async with Browser() as browser:
       await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
       await browser.settle("window.plrViewer && window.plrViewer.resources().length > 0")
       full = await browser.evaluate("window.plrViewer.quality()")
@@ -296,7 +297,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
   async def test_a_scene_keeps_what_the_reader_had_open(self):
     """Every scene rebuilt the tree folded, dropped the selection and closed the panel, and a
     deck being laid out sends a scene on every assignment."""
-    async with Browser(CDP_PORT + 5) as browser:
+    async with Browser() as browser:
       await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
       await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
       await browser.evaluate("window.plrViewer.focus('rider', 'top')")
@@ -313,7 +314,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
   async def test_a_click_on_a_row_selects_unless_it_is_on_the_arrow(self):
     """The fold zone was measured from the element under the pointer, not from the row, so the
     first twenty pixels of the name folded the row instead of selecting it."""
-    async with Browser(CDP_PORT + 6) as browser:
+    async with Browser() as browser:
       await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
       await browser.settle(
         "window.plrViewer && window.plrViewer.resources().includes('carrier')", 30
@@ -334,7 +335,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     """The info panel was drawn again on every state message whether or not it showed anything
     the message touched, so a section the reader had opened in it snapped shut on every well of a
     running protocol."""
-    async with Browser(CDP_PORT + 9) as browser:
+    async with Browser() as browser:
       await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
       await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
       await browser.evaluate("window.plrViewer.focus('carrier', 'top')")
@@ -349,7 +350,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     """The frame cost was this thread's time around the render call, which a GPU or a rasteriser
     in another process never shows up in, so the machines the levels exist for never stepped down.
     Here the frames are made slow where the page cannot see it: in the gap between them."""
-    async with Browser(CDP_PORT + 3) as browser:
+    async with Browser() as browser:
       await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
       await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
       await browser.evaluate(
@@ -369,7 +370,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       plate = cor_96_wellplate_360uL_Fb(name="plate")
       self.facility.assign_child_resource(plate, location=Coordinate(600, 400, 0))
       well = plate.get_item("A1")
-      async with Browser(CDP_PORT + 4) as browser:
+      async with Browser() as browser:
         await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
         await browser.settle(
           f"window.plrViewer && window.plrViewer.resources().includes({well.name!r})", 30
@@ -409,8 +410,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     rack = hamilton_96_tiprack_50uL_NTR(name="rack")
     holder.assign_child_resource(rack)
 
-    # Its own devtools port: the browser the test before it drove may still be letting go of one.
-    async with Browser(CDP_PORT + 1) as browser:
+    async with Browser() as browser:
       await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
       # Not the first model to arrive: the files are fetched and parsed in parallel and the count
       # climbs as they land, so a baseline taken at the first is a baseline taken too early - and
@@ -467,10 +467,11 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
     star = star_of(facility)
     await star.setup()
     declare_channel_access(star)
-    viewer = Viewer3D(facility, open_browser=False, fs_port=FS_PORT + 7, ws_port=WS_PORT + 7)
+    fs_port, ws_port = free_ports(2)
+    viewer = Viewer3D(facility, open_browser=False, fs_port=fs_port, ws_port=ws_port)
     await viewer.start()
     try:
-      async with Browser(CDP_PORT + 8) as browser:
+      async with Browser() as browser:
         await browser.open(f"http://127.0.0.1:{viewer.fs_port}/")
         await browser.settle("window.plrViewer && window.plrViewer.resources().length > 3000", 60)
         await BrowserTests.settled_model_count(browser)
