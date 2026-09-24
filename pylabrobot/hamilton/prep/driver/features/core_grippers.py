@@ -1123,7 +1123,7 @@ class CoreGrippers:
     offset: Coordinate = Coordinate.zero(),
     *,
     minimum_traverse_height_start: Optional[float] = None,
-    search_distance: float = 30.0,
+    search_distance: float = 20.0,
     search_speed: float = 10.0,
     push_force_pwm: Optional[int] = None,
     minimum_traverse_height_end: Optional[float] = None,
