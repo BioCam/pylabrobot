@@ -5040,6 +5040,8 @@ class Pipettes:
     blow_out_air_volumes = fill_in_defaults(blow_out_air_volumes, [0.0] * n)
     pre_wetting_volumes = fill_in_defaults(pre_wetting_volumes, [0.0] * n)
     flow_rates = fill_in_defaults(flow_rates, [100.0] * n)
+    if any(f <= 0 for f in flow_rates):
+      raise ValueError(f"flow_rates must be above 0, got {flow_rates}")
     settling_times = fill_in_defaults(settling_times, [1.0] * n)
     swap_speeds = fill_in_defaults(swap_speeds, [10.0] * n)
     transport_air_volumes = fill_in_defaults(transport_air_volumes, [0.0] * n)
@@ -5607,7 +5609,9 @@ class Pipettes:
         clld_sensitivity=clld_sensitivity,
         immersion_depths=None if immersion_depths is None else list(immersion_depths),
         blow_out_air_volumes=[
-          op.blow_out_air_volume or (hlc.aspiration_blow_out_volume if hlc is not None else 0.0)
+          op.blow_out_air_volume
+          if op.blow_out_air_volume is not None
+          else (hlc.aspiration_blow_out_volume if hlc is not None else 0.0)
           for op, hlc in zip(ops, classes)
         ],
         pre_wetting_volumes=fill_in_defaults(
@@ -5617,7 +5621,9 @@ class Pipettes:
         pre_mixes=mix,
         mix_position_from_liquid_surface=mix_position_from_liquid_surface,
         flow_rates=[
-          op.flow_rate or (hlc.aspiration_flow_rate if hlc is not None else 100.0)
+          op.flow_rate
+          if op.flow_rate is not None
+          else (hlc.aspiration_flow_rate if hlc is not None else 100.0)
           for op, hlc in zip(ops, classes)
         ],
         settling_times=fill_in_defaults(
