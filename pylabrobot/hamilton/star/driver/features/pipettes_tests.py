@@ -1278,7 +1278,7 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     c = self.pipettes.configuration
     bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
     top = wells[0].get_location_wrt(self.deck, "c", "c", "t").z
-    end = c.z_drive_mm_to_increments(round(bottom - 5.0 + 51.9, 2))
+    end = c.z_drive_mm_to_increments(round(bottom - 1.0 + 51.9, 2))
     start = c.z_drive_mm_to_increments(round(top + 51.9, 2))
     self.assertEqual(
       self.sent,
