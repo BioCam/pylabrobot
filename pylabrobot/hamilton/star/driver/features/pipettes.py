@@ -4981,25 +4981,6 @@ class Pipettes:
       )
     return round(container.compute_height_from_volume(volume), 2)
 
-  def _get_surface_following_distance(
-    self, container: Container, liquid_height: float, volume: float
-  ) -> float:
-    """How far the surface sinks when `volume` leaves a container filled to `liquid_height`, in mm.
-
-    Args:
-      container: the container, with its height-volume functions.
-      liquid_height: above the cavity bottom, in mm.
-      volume: drawn, in uL.
-
-    Returns:
-      The drop in mm, 0.0 for a container without height-volume functions.
-    """
-    if not container.supports_compute_height_volume_functions():
-      return 0.0
-    now = container.compute_volume_from_height(liquid_height)
-    after = container.compute_height_from_volume(max(now - volume, 0.0))
-    return round(max(liquid_height - after, 0.0), 2)
-
   # -- what aspirating and dispensing share --------------------------------------------------------
 
   @staticmethod
@@ -5266,16 +5247,13 @@ class Pipettes:
     surfaces: List[float],
     sent_floors: List[float],
     floors_given: bool,
-    computed_following: List[float],
-    volume_leaving: Sequence[float],
     tracking: bool,
   ) -> None:
     """Search for the liquid under the batch's searched jobs and put what is found into the model.
 
     The surface becomes the surface found; a surface found below the modelled cavity bottom moves
-    the floor sent there, unless the caller gave one; the following distance becomes what
-    `volume_leaving` does to that surface, negative for liquid arriving; with tracking on the
-    container's tracker takes the measured volume, warning when 20 % off.
+    the floor sent there, unless the caller gave one; with tracking on the container's tracker
+    takes the measured volume, warning when 20 % off.
 
     Raises:
       RuntimeError: No liquid found.
@@ -5317,15 +5295,12 @@ class Pipettes:
         )
         continue
       try:
-        computed_following[job] = self._get_surface_following_distance(
-          containers[job], above_bottom, volume_leaving[job]
-        )
         measured = containers[job].compute_volume_from_height(above_bottom)
       except ValueError:
         # A plate seated off the model, or a fill past the data: the surface found still counts.
         logger.warning(
           "channel %d found the liquid of %s %.2f mm above its modelled cavity bottom, outside "
-          "its height-volume data; the tip follows nothing and the model keeps %.1f uL",
+          "its height-volume data; the model keeps %.1f uL",
           channel,
           containers[job].name,
           above_bottom,
@@ -5520,8 +5495,7 @@ class Pipettes:
       mix_positions_from_liquid_surface: mixing depth under the surface, in mm, per container. 0.0
         when None.
       surface_following_distances: how far each tip follows the sinking surface, in mm. 0.0 when
-        None; after a search, the drop the draw makes from the surface found, by the container's
-        height-volume functions.
+        None.
       second_section_heights: height of each container's narrower lower section, in mm. 3.2 when
         None.
       second_section_ratios: that section's bottom to top ratio, in tenths. 618.0 when None.
@@ -5670,7 +5644,6 @@ class Pipettes:
     )
     tracking = does_volume_tracking()
     following = self._per_container("surface_following_distances", surface_following_distances, n)
-    computed_following = [0.0] * n
     _, overhangs, batches = await self._prepare_batched(
       deck,
       containers,
@@ -5710,8 +5683,6 @@ class Pipettes:
         surfaces,
         sent_floors,
         given_floors is not None,
-        computed_following,
-        liquid,
         tracking,
       )
 
@@ -5743,9 +5714,7 @@ class Pipettes:
         [sent_floors[job] for job in jobs],
         [drawn[job] for job in jobs],
         pre_mixes=[mixes[job] for job in jobs],
-        surface_following_distances=[
-          computed_following[job] if following is None else following[job] for job in jobs
-        ],
+        surface_following_distances=None if following is None else [following[job] for job in jobs],
         minimum_traverse_height_end=end if last else during,
         **kwargs_to_start_from_current_positions,
         **per_channel_settings,
@@ -6271,8 +6240,7 @@ class Pipettes:
       cut_off_speeds: the flow each dispense ends at, in uL/s. 5.0 when None.
       stop_back_volumes: drawn back after each dispense, in uL. The class's, else 0.0, when None.
       surface_following_distances: how far each tip follows the rising surface, in mm. 0.0 when
-        None; after a search, the rise the dispense makes from the surface found, by the
-        container's height-volume functions.
+        None.
       second_section_heights: height of each container's narrower lower section, in mm. 3.2 when
         None.
       second_section_ratios: that section's bottom to top ratio, in tenths. 618.0 when None.
@@ -6429,7 +6397,6 @@ class Pipettes:
     )
     tracking = does_volume_tracking()
     following = self._per_container("surface_following_distances", surface_following_distances, n)
-    computed_following = [0.0] * n
     _, overhangs, batches = await self._prepare_batched(
       deck,
       containers,
@@ -6456,7 +6423,6 @@ class Pipettes:
         sent_floors,
         given_floors is not None,
       )
-      # The surface rises by what comes in: the following distance is that rise.
       await self._search_liquid_of_batch(
         batch,
         searched,
@@ -6470,8 +6436,6 @@ class Pipettes:
         surfaces,
         sent_floors,
         given_floors is not None,
-        computed_following,
-        [-v for v in liquid],
         tracking,
       )
 
@@ -6503,9 +6467,7 @@ class Pipettes:
         empties=[empties[job] for job in jobs],
         side_touch_off_distance=side_touch_off_distance,
         post_mixes=[mixes[job] for job in jobs],
-        surface_following_distances=[
-          computed_following[job] if following is None else following[job] for job in jobs
-        ],
+        surface_following_distances=None if following is None else [following[job] for job in jobs],
         minimum_traverse_height_end=end if last else during,
         **kwargs_to_start_from_current_positions,
         **per_channel_settings,

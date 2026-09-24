@@ -1746,15 +1746,8 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       f"zl{self._surface_field(self.wells[0], 120.0)} {self._surface_field(self.wells[1], 100.0)}",
       sent[-1],
     )
-    # Each tip follows the surface by the drop its own draw makes in its own well.
-    drops = []
-    for well, drawn in zip(self.wells[:2], (50.0, 20.0)):
-      now = well.compute_height_from_volume(well.tracker.get_used_volume() + drawn)
-      drops.append(
-        round((now - well.compute_height_from_volume(well.tracker.get_used_volume())) * 10)
-      )
-    self.assertIn(f"fp{drops[0]:04} {drops[1]:04}", sent[-1])
-    self.assertGreater(drops[0], drops[1])
+    # The tips follow nothing unless told to, as legacy sends it.
+    self.assertIn("fp0000 0000", sent[-1])
     # Measured volume less what was drawn, to the resolution of the well's height-volume model.
     self.assertAlmostEqual(self.wells[0].tracker.get_used_volume(), 70.0, delta=2.0)
     self.assertAlmostEqual(self.wells[1].tracker.get_used_volume(), 80.0, delta=2.0)
@@ -1790,7 +1783,6 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     self.assertEqual(len(sent), 1)
     self.assertEqual(len(logs.output), 1)
     self.assertIn("outside its height-volume data", logs.output[0])
-    self.assertIn("fp0000", sent[0])
     self.assertEqual(self.wells[0].tracker.get_used_volume(), 340.0)
 
   async def test_a_measurement_far_off_the_model_is_a_warning_not_a_refusal(self):
