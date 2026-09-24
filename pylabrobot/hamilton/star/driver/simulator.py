@@ -177,32 +177,10 @@ class SimulatedPipettes(_Simulated, Pipettes):
     await super().initialize(*args, **kwargs)
     self.device.tips_mounted = [False] * len(self.device.tips_mounted)
 
-  def update_location_by_reference_point(
-    self, channel: int, y: Optional[float] = None, z: Optional[float] = None
-  ) -> None:
-    """Record where a channel is, and charge the device for the time the drives would take.
-
-    A simulated device answers at once, so a run is over before anything watching it has been given
-    a turn. What a move would have taken is owed here and waited out before the next command, which
-    paces a run without any command pretending to be slow in itself.
-    """
-    if self.device.simulate_motion_time:
-      self.device.owe_motion_time(
-        self._travel_time(
-          0.0 if y is None else y - self._modelled_y(channel), self.default_y_speed, None
-        ),
-        self._travel_time(
-          0.0 if z is None else z - self._modelled_z(channel),
-          self.default_z_speed,
-          self.default_z_acceleration,
-        ),
-      )
-    super().update_location_by_reference_point(channel, y=y, z=z)
-
   @staticmethod
-  def _travel_time(distance: float, speed: float, acceleration: Optional[float]) -> float:
+  def _get_travel_time(distance: float, speed: float, acceleration: Optional[float]) -> float:
     """How long a move of `distance` takes at `speed`, speeding up and slowing down at
-    `acceleration`. With no acceleration stated it is the cruise alone."""
+    `acceleration`, in seconds. With no acceleration stated it is the cruise alone."""
     distance = abs(distance)
     if distance == 0.0:
       return 0.0
@@ -364,6 +342,28 @@ class SimulatedPipettes(_Simulated, Pipettes):
     point = self.get_reference_point_location(channel)
     return self.configuration.z_range[1] if point is None else point.z
 
+  def update_location_by_reference_point(
+    self, channel: int, y: Optional[float] = None, z: Optional[float] = None
+  ) -> None:
+    """Record where a channel is, and charge the device for the time the drives would take.
+
+    A simulated device answers at once, so a run is over before anything watching it has been given
+    a turn. What a move would have taken is owed here and waited out before the next command, which
+    paces a run without any command pretending to be slow in itself.
+    """
+    if self.device.simulate_motion_time:
+      self.device.owe_motion_time(
+        self._get_travel_time(
+          0.0 if y is None else y - self._modelled_y(channel), self.default_y_speed, None
+        ),
+        self._get_travel_time(
+          0.0 if z is None else z - self._modelled_z(channel),
+          self.default_z_speed,
+          self.default_z_acceleration,
+        ),
+      )
+    super().update_location_by_reference_point(channel, y=y, z=z)
+
   async def answer(self, module: str, command: str, **kwargs: Any) -> Optional[Tuple[Any, str]]:
     """What a read of the channels answers, taken from the model.
 
@@ -492,12 +492,26 @@ class SimulatedPipettes(_Simulated, Pipettes):
       parameter = kwargs["ra"]
       return {parameter: stored[parameter]}, f"what channel {channel}'s drive holds"
 
+    # A channel's drive keeps what `AA` writes, and what its own `ZA` moves with.
+    stored = self.device.channel_drive_parameters.setdefault(
+      channel, dict(SIMULATED_CHANNEL_DRIVE_PARAMETERS)
+    )
+    if command in ("AA", "ZA"):
+      for parameter in stored:
+        if parameter in kwargs:
+          stored[parameter] = int(kwargs[parameter])
+      return None
+
+    if command == "RA" and kwargs.get("ra") in stored:
+      parameter = kwargs["ra"]
+      return {parameter: stored[parameter]}, f"what channel {channel}'s drive holds"
+
     return None
 
   async def probe_z_max(self) -> List[float]:
     # The firmware retract inside the probe is what puts the channels at their ceiling, and the
     # probe reads them back before it returns, so the model is written before the read rather
-    # than after. `move_to_safe_z` needs no override: it is an ordinary move, recorded below.
+    # than after. `move_to_safe_z` runs this probe, so it needs no override of its own.
     for channel in range(self.num_channels):
       self.update_location_by_reference_point(channel, z=self.configuration.z_range[1])
     return await super().probe_z_max()
@@ -1385,6 +1399,9 @@ class STARSimulationDriver(STARDriver):
     Args:
       tips_mounted: one entry per channel, `True` where a tip sits on the channel. Defaults to no
         tips on any of them.
+      simulate_motion_time: whether a command that moves the channels takes the time the drives
+        would take, so a run can be followed rather than being over at once.
+      motion_time_scale: the share of that time a move takes when it does.
       deck: the deck to reflect this device into. Required: a simulated device has no firmware
         to ask, so the resource model is the only thing it can answer from.
       initialized: whether the device and its modules report themselves already initialized. One
@@ -1441,12 +1458,6 @@ class STARSimulationDriver(STARDriver):
     if len(tips_mounted) != channels:
       raise ValueError(f"tips_mounted has {len(tips_mounted)} entries, expected {channels}")
     self.tips_mounted = list(tips_mounted)
-    # How long a simulated command takes, in seconds. A device that answers instantly leaves a run
-    # finished before anything watching it has been given a turn; a delay gives it a duration and
-    # lets whatever is following along keep up.
-    # Whether a command that moves the channels takes the time the drives would take, so a run
-    # can be followed rather than being over before anything watching it has been given a turn,
-    # and the share of that time it takes when it does. As the Prep's simulator states them.
     self.simulate_motion_time = simulate_motion_time
     self.motion_time_scale = motion_time_scale
     # What the drives would still be doing, in seconds: the longest move recorded since the last
@@ -1568,6 +1579,18 @@ class STARSimulationDriver(STARDriver):
     await super()._pre_initialize(read_timeout=read_timeout)
     self.initialized["C0"] = True
 
+  async def pay_motion_time(self) -> None:
+    """Wait out what the moves recorded since the last wait would have taken. Nothing owed, nothing
+    waited, so this costs nothing on a device that is not keeping time."""
+    owed, self._motion_owed = self._motion_owed, 0.0
+    if owed:
+      await asyncio.sleep(owed * self.motion_time_scale)
+
+  def owe_motion_time(self, *seconds: float) -> None:
+    """Charge the device for a move, in seconds. The longest one owed stands: the drives move at
+    once, so a command takes as long as its slowest axis."""
+    self._motion_owed = max(self._motion_owed, *seconds)
+
   def _describe_link(self) -> str:
     return "simulation (no link)"
 
@@ -1644,18 +1667,6 @@ class STARSimulationDriver(STARDriver):
     value, source = answered
     self._log_exchange(cmd, f"simulation: {value} from model {source}")
     return value
-
-  async def pay_motion_time(self) -> None:
-    """Wait out what the moves recorded since the last wait would have taken. Nothing owed, nothing
-    waited, so this costs nothing on a device that is not keeping time."""
-    owed, self._motion_owed = self._motion_owed, 0.0
-    if owed:
-      await asyncio.sleep(owed * self.motion_time_scale)
-
-  def owe_motion_time(self, *seconds: float) -> None:
-    """Charge the device for a move, in seconds. The longest one owed stands: the drives move at
-    once, so a command takes as long as its slowest axis."""
-    self._motion_owed = max(self._motion_owed, *seconds)
 
   async def send_raw_command(self, command: str, *args: Any, **kwargs: Any) -> None:
     self._log_exchange(command, None)

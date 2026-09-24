@@ -4,13 +4,16 @@ import pathlib
 import random
 import tempfile
 import unittest
-from typing import List, Optional, cast
+from typing import Any, List, Optional, cast
+from unittest.mock import patch
 
 from pylabrobot.hamilton.star.device import RECORDING_STAR, RECORDING_STARLET
 from pylabrobot.hamilton.star.driver.configuration import read_configuration
+from pylabrobot.hamilton.star.driver.errors import STARFirmwareError, check_fw_string_error
 from pylabrobot.hamilton.star.driver.features.head96 import Head96, Head96Configuration
 from pylabrobot.hamilton.star.driver.features.x_arm import XArm
 from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
+from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.hamilton import STARDeck, STARLetDeck
 from pylabrobot.resources.n_channel_pipettes import NChannelPipette
 from pylabrobot.serializer import serialize
@@ -211,3 +214,48 @@ class TestHead96Tips(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([spot.tip for spot in spots], tips)
         self.assertFalse(any(shaft.has_tip() for shaft in shafts))
         self.tip_rack.fill()
+
+  async def test_tips_dropped_in_the_trash_belong_to_nothing(self):
+    await self.head.pick_up_tips(self.tip_rack)
+    tips = [shaft.tip for shaft in self.head_resource.get_all_items()]
+    await self.head.drop_tips(self.deck.get_trash_area96())
+    self.assertFalse(any(shaft.has_tip() for shaft in self.head_resource.get_all_items()))
+    self.assertFalse(any(spot.has_tip() for spot in self.tip_rack.get_all_items()))
+    self.assertTrue(all(tip is not None and tip.parent is None for tip in tips))
+
+  async def test_a_refused_pickup_moves_nothing(self):
+    """An empty rack is refused before anything is sent; an unreachable one after the tip type."""
+    with self.assertRaises(ValueError):
+      await self.head.pick_up_tips(self.tip_rack, offset=Coordinate(0, 1000, 0))
+    self.assertEqual(self.sent, ["C0TTtt01tf1tl0519tv03600tg2tu0"])
+    self.tip_rack.empty()
+    self.sent.clear()
+    with self.assertRaises(ValueError):
+      await self.head.pick_up_tips(self.tip_rack)
+    self.assertEqual(self.sent, [])
+
+  async def test_a_failed_command_leaves_the_tips_where_they_were(self):
+    answer = self.driver._answer
+    spots = self.tip_rack.get_all_items()
+    shafts = self.head_resource.get_all_items()
+
+    def failing(failed: str):
+      async def answering(module: str, command: str, **kwargs: Any):
+        if command == failed:
+          check_fw_string_error(f"C0{failed}id0001er99/00")
+        return await answer(module, command, **kwargs)
+
+      return answering
+
+    with patch.object(self.driver, "_answer", failing("EP")):
+      with self.assertRaises(STARFirmwareError):
+        await self.head.pick_up_tips(self.tip_rack)
+    self.assertTrue(all(spot.has_tip() for spot in spots))
+    self.assertFalse(any(shaft.has_tip() for shaft in shafts))
+
+    await self.head.pick_up_tips(self.tip_rack)
+    with patch.object(self.driver, "_answer", failing("ER")):
+      with self.assertRaises(STARFirmwareError):
+        await self.head.drop_tips(self.tip_rack)
+    self.assertTrue(all(shaft.has_tip() for shaft in shafts))
+    self.assertFalse(any(spot.has_tip() for spot in spots))

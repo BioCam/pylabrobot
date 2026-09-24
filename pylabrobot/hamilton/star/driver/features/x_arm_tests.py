@@ -271,8 +271,7 @@ class TestModelFollowsTheArm(unittest.IsolatedAsyncioTestCase):
       ),  # type: ignore[arg-type]
       side="left",
     )
-    deck = cast(HamiltonDeck, driver.deck)
-    arm.resource = deck.get_resource("left_x_arm")
+    arm.resource = cast(HamiltonDeck, driver.deck).get_resource("left_x_arm")
     await arm.move_to_x_position(500.0)
     self.assertEqual(reads, 5)
     seated = cast(Coordinate, arm.resource.location)

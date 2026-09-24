@@ -456,6 +456,7 @@ class Head96(Head):
       ValueError: If the rack does not have 96 spots or holds no tips, or a position cannot be
         reached.
       TypeError: If its tips are not Hamilton tips.
+      RuntimeError: If the driver was given no deck.
     """
     deck = self._driver.deck
     if deck is None:
@@ -529,6 +530,7 @@ class Head96(Head):
 
     Raises:
       ValueError: If a tip rack does not have 96 spots, or a position cannot be reached.
+      RuntimeError: If the driver was given no deck.
     """
     deck = self._driver.deck
     if deck is None:

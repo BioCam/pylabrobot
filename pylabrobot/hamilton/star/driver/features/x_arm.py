@@ -555,8 +555,8 @@ class XArm:
     """Move this arm to an X position with all attached components in Z-safety position. Nothing is
     guarded and nothing is recorded.
 
-    The master raises what the arm carries before it travels, where `move_to_x_position` travels with
-    the arm as it stands and leaves getting to Z safety to the caller.
+    The master raises what the arm carries before it travels, where `move_to_x_position` travels
+    with the arm as it stands and leaves getting to Z safety to the caller.
 
     Args:
       x: where to send the arm, in mm at its reference point.
