@@ -4888,6 +4888,11 @@ class Pipettes:
     # The channels the containers are dealt to, as `_prepare_batched` deals them, and their tips.
     dealt = use_channels or list(range(min(n, self.num_channels)))
     channel_of = [dealt[job % len(dealt)] for job in range(n)]
+    # The channels say what they carry before anything else is worked out from the model's tips.
+    presence = await self.sense_tip_presence()
+    bare = sorted({channel for channel in channel_of if not presence[channel]})
+    if bare:
+      raise RuntimeError(f"channels {bare} carry no tip; an aspiration needs one on each")
     tips: List[HamiltonTip] = []
     for channel in channel_of:
       tip = self.get_mounted_tip(channel)

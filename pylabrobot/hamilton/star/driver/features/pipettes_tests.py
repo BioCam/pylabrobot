@@ -1628,6 +1628,14 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       "mv00300 00000 00300&mc03 00 03&mp000 000 000&ms0500 1000 0500&mh0015 0000 0015&", sent[1]
     )
 
+  async def test_a_bare_channel_is_refused_before_anything_else(self):
+    # Channel 4 has no tip; the sensed refusal comes before the class lookup or any command.
+    sent = self._record_aspirations("C0RT", "C0RZ", "C0ZA")
+    with self.assertRaises(RuntimeError) as refused:
+      await self.pipettes.aspirate(self.wells[:1], [10.0], use_channels=[4])
+    self.assertIn("channels [4] carry no tip", str(refused.exception))
+    self.assertEqual([c[:4] for c in sent], ["C0RT"])
+
   async def test_the_floor_can_be_set_below_the_cavity_bottom(self):
     sent = self._record_aspirations()
     bottom = self.wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
