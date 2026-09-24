@@ -53,6 +53,7 @@ from pylabrobot.hamilton.transport.tcp.messages import HoiParamsParser, parse_in
 from pylabrobot.hamilton.transport.tcp.packets import Address
 from pylabrobot.legacy.liquid_handling.errors import ChannelizedError
 from pylabrobot.lib.liquid_handling.liquid_height import get_liquid_height_from_volume
+from pylabrobot.lib.liquid_handling.mix import Mix
 from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import plan_batches
 from pylabrobot.resources import Container, Coordinate, Tip, does_volume_tracking
 from pylabrobot.resources.errors import HasTipError, NoTipError
@@ -296,6 +297,47 @@ def lld_seek_timeout(
   if distance <= 0:
     return None
   return max(distance / speed + LLD_READ_TIMEOUT_PAD_S, LLD_READ_TIMEOUT_FLOOR_S)
+
+
+def get_mix_parameters(
+  mix: Optional[Sequence[Optional[Mix]]],
+  n: int,
+  mix_position_from_liquid_surface: float,
+) -> List[PrepCmd.MixParameters]:
+  """One mix block per container; the default, which mixes nothing, where there is no `Mix`.
+
+  Args:
+    mix: a `Mix` per container, None for none.
+    n: how many containers.
+    mix_position_from_liquid_surface: mixing depth under the aspirate height, in mm.
+
+  Returns:
+    One mix block per container, in the containers' order.
+
+  Raises:
+    ValueError: If `mix` and the containers differ in number, or a `Mix` repeats fewer than 1 or
+      more than 255 times.
+  """
+  mixes = list(mix) if mix is not None else [None] * n
+  if len(mixes) != n:
+    raise ValueError(f"mix length must match containers ({n})")
+  blocks: List[PrepCmd.MixParameters] = []
+  for m in mixes:
+    if m is None:
+      blocks.append(PrepCmd.MixParameters.default())
+      continue
+    if not 1 <= m.repetitions <= 255:
+      raise ValueError(f"a Mix repeats 1 to 255 times, is {m.repetitions}")
+    blocks.append(
+      PrepCmd.MixParameters(
+        default_values=False,
+        z_offset=mix_position_from_liquid_surface,
+        volume=m.volume,
+        cycles=m.repetitions,
+        speed=m.flow_rate,
+      )
+    )
+  return blocks
 
 
 def _effective_radius(resource) -> float:
@@ -4176,6 +4218,8 @@ class Pipettes:
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
     disable_volume_correction: Optional[List[bool]] = None,
     lld_mode: Optional[Pipettes.LLDMode] = None,
+    mix: Optional[Sequence[Optional[Mix]]] = None,
+    mix_position_from_liquid_surface: float = 0.0,
   ) -> list[_AspirateChannelKit]:
     """Resolve all per-channel values for aspirate (pure computation, no I/O)."""
     ctx = self._resolve_channel_context(
@@ -4219,6 +4263,7 @@ class Pipettes:
 
     lld_defaults = self._default_lld_params(effective_lld, p_lld, c_lld, lld_mode=lld_mode)
     _tadm = tadm or PrepCmd.TadmParameters.default()
+    mix_blocks = get_mix_parameters(mix, len(ops), mix_position_from_liquid_surface)
 
     kits: list[_AspirateChannelKit] = []
     for ch in range(self.num_channels):
@@ -4254,7 +4299,7 @@ class Pipettes:
           c_lld=lld_defaults.c_lld,
           monitoring=PrepCmd.AspirateMonitoringParameters.default(),
           tadm=_tadm,
-          mix=PrepCmd.MixParameters.default(),
+          mix=mix_blocks[idx],
           adc=PrepCmd.AdcParameters.default(),
         )
       )
@@ -4693,6 +4738,8 @@ class Pipettes:
     z_fluid: Optional[List[float]] = None,
     minimum_allowed_z_position_during: Optional[List[float]] = None,
     z_bottom_search_offset: Optional[List[float]] = None,
+    mix: Optional[Sequence[Optional[Mix]]] = None,
+    mix_position_from_liquid_surface: float = 0.0,
     settling_times: Optional[List[float]] = None,
     swap_speeds: Optional[List[float]] = None,
     transport_air_volumes: Optional[List[float]] = None,
@@ -4740,6 +4787,9 @@ class Pipettes:
       minimum_allowed_z_position_during: how low each tip bottom may go, in mm, per container.
         The cavity bottom when None.
       z_bottom_search_offset: in mm, per container. 2.0 when None.
+      mix: a `Mix` per container, mixed before aspirating; None for none. Its
+        `surface_following_distance` is not sent.
+      mix_position_from_liquid_surface: mixing depth under the aspirate height, in mm.
       settling_times: how long the tip waits in the liquid, in s, per container. The liquid
         class's, else 1.0, when None.
       swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid
@@ -4804,6 +4854,8 @@ class Pipettes:
       hamilton_liquid_classes=hamilton_liquid_classes,
       disable_volume_correction=disable_volume_correction,
       lld_mode=lld_mode,
+      mix=mix,
+      mix_position_from_liquid_surface=mix_position_from_liquid_surface,
     )
 
     lld_read_timeout = read_timeout

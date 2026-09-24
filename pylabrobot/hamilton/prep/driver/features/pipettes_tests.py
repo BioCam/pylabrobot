@@ -21,6 +21,7 @@ from pylabrobot.hamilton.prep.driver.simulator import (
 from pylabrobot.hamilton.transport.tcp.hoi_error import HoiError
 from pylabrobot.hamilton.transport.tcp.packets import Address
 from pylabrobot.hamilton.transport.tcp.wire_types import HcResultEntry
+from pylabrobot.lib.liquid_handling.mix import Mix
 from pylabrobot.resources import Coordinate, Resource
 from pylabrobot.resources.corning.axygen.plates import cor_axy_96_wellplate_500uL_Ub
 from pylabrobot.resources.corning.plates import cor_96_wellplate_360uL_Fb
@@ -189,6 +190,45 @@ def test_aspirate_takes_a_missing_liquid_height_from_the_tracked_volume():
     finally:
       set_tip_tracking(False)
       set_volume_tracking(False)
+
+  _run(_t())
+
+
+def test_aspirate_sends_a_mix_per_container_and_the_default_block_where_none():
+  """A `Mix` becomes that channel's mix block; a container without one is sent the default."""
+
+  async def _t():
+    deck = PrepDeck()
+    tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
+    plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+    p = PrepSimulationDriver(deck=deck)
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.pick_up_tips(tip_rack["A1:B1"], use_channels=[0, 1])
+    sent = _record(p)
+    await p.pipettes.aspirate(
+      plate["A1:B1"],
+      volumes=[10.0, 10.0],
+      use_channels=[0, 1],
+      liquid_heights=[2.0, 2.0],
+      mix=[Mix(volume=30.0, repetitions=3, flow_rate=50.0), None],
+      mix_position_from_liquid_surface=1.5,
+    )
+    entries = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters
+    mixed, plain = entries
+    assert (mixed.mix.default_values, mixed.mix.volume, mixed.mix.cycles) == (False, 30.0, 3)
+    assert (mixed.mix.speed, mixed.mix.z_offset) == (50.0, 1.5)
+    assert plain.mix == PrepCmd.MixParameters.default()
+
+    with pytest.raises(ValueError, match="mix length"):
+      await p.pipettes.aspirate(
+        plate["A1:B1"],
+        volumes=[10.0, 10.0],
+        use_channels=[0, 1],
+        liquid_heights=[2.0, 2.0],
+        mix=[None],
+      )
+    await p.stop()
 
   _run(_t())
 
