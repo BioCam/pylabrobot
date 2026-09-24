@@ -410,7 +410,7 @@ class CoreGrippers:
       await self._move_to_safe_z_after_failure()
       raise
     finally:
-      await pipettes._record_after_tip_command()
+      await pipettes._record_after_command()
     # No safe Z on success: ZT leaves the tools' lowest point at `th`, the traverse height.
     self._back_channel, self._front_channel = back_channel, front_channel
     self._tools_taken_from = (
@@ -470,7 +470,7 @@ class CoreGrippers:
       await self._move_to_safe_z_after_failure()
       raise
     finally:
-      await pipettes._record_after_tip_command()
+      await pipettes._record_after_command()
     await pipettes.move_to_safe_z()
     self._tools_taken_from = None
     self._back_channel = self._front_channel = None
@@ -870,7 +870,7 @@ class CoreGrippers:
           minimum_z_position_end=round(minimum_traverse_height_end * 10),
         )
     finally:
-      await pipettes._record_after_tip_command()
+      await pipettes._record_after_command()
     self._pickup_distance_from_top = from_top
     self._holding_resource_width = resource_size_y
     self._held_resource = resource
@@ -977,7 +977,7 @@ class CoreGrippers:
           x_acceleration_level=x_acceleration_level,
         )
     finally:
-      await pipettes._record_after_tip_command()
+      await pipettes._record_after_command()
     place_resource(held, destination, location=child)
     self._clear_held_state()
 
@@ -1121,6 +1121,6 @@ class CoreGrippers:
           else:
             return False
     finally:
-      await pipettes._record_after_tip_command()
+      await pipettes._record_after_command()
 
     return True
