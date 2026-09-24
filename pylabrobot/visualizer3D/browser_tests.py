@@ -22,7 +22,9 @@ from typing import Any, Optional
 
 import websockets
 
+from pylabrobot.resources import does_volume_tracking, set_volume_tracking
 from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.corning import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.hamilton import hamilton_96_tiprack_50uL_NTR
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.resource_holder import ResourceHolder
@@ -210,6 +212,47 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       back = await browser.evaluate("window.plrViewer.quality(0)")
       self.assertEqual((back["level"], back["environment"]), (0, True))
       self.assertEqual(back["pixelRatio"], full["pixelRatio"])
+
+  async def test_slow_frames_step_the_quality_down_on_their_own(self):
+    """The frame cost was this thread's time around the render call, which a GPU or a rasteriser
+    in another process never shows up in, so the machines the levels exist for never stepped down.
+    Here the frames are made slow where the page cannot see it: in the gap between them."""
+    async with Browser(CDP_PORT + 3) as browser:
+      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
+      await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
+      await browser.evaluate(
+        "const raf = window.requestAnimationFrame.bind(window);"
+        "window.requestAnimationFrame = (cb) => setTimeout(() => raf(cb), 60);"
+        "setInterval(() => window.plrViewer.view('iso'), 30);"
+      )
+      await browser.settle("window.plrViewer.quality().level >= 1", 20)
+
+  async def test_a_well_shows_the_volume_it_holds_not_the_one_an_operation_would_leave(self):
+    """The page drew the pending volume, so a well filled at the start of an aspirate that then
+    failed kept a volume that never happened: a rollback publishes nothing. The existing visualizer
+    draws the committed volume, and so does this one now."""
+    was_tracking = does_volume_tracking()
+    set_volume_tracking(True)
+    try:
+      plate = cor_96_wellplate_360uL_Fb(name="plate")
+      self.facility.assign_child_resource(plate, location=Coordinate(600, 400, 0))
+      well = plate.get_item("A1")
+      async with Browser(CDP_PORT + 4) as browser:
+        await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
+        await browser.settle(
+          f"window.plrViewer && window.plrViewer.resources().includes({well.name!r})", 30
+        )
+        await browser.evaluate(f"window.plrViewer.focus({well.name!r}, 'top')")
+        panel = "document.querySelector('.uml-panel')?.textContent.replace(/\\u00a0/g, ' ')"
+        await browser.settle(f"{panel}?.includes('0 / 360 uL')", 10)
+        well.tracker.add_liquid(50)
+        await asyncio.sleep(0.5)
+        self.assertIn("0 / 360 uL", await browser.evaluate(panel))
+        self.assertNotIn("50 / 360 uL", await browser.evaluate(panel))
+        well.tracker.commit()
+        await browser.settle(f"{panel}?.includes('50 / 360 uL')", 10)
+    finally:
+      set_volume_tracking(was_tracking)
 
   @staticmethod
   async def settled_model_count(browser, quiet: float = 0.4, limit: float = 10.0):

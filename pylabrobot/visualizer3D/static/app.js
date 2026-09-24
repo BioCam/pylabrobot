@@ -2775,7 +2775,9 @@ function refreshOverlays(index, touched) {
 
   const vessel = vesselOf.get(index);
   if (vessel && Number.isFinite(vessel.model.max_volume)) {
-    const volume = state ? (state.pending_volume ?? state.volume ?? 0) : 0;
+    // The committed volume, as the existing visualizer draws it: what is in the well, not what an
+    // operation under way would leave there if it succeeds - and a rollback publishes nothing.
+    const volume = state?.volume ?? 0;
     const fraction = Math.max(0, Math.min(1, volume / (vessel.model.max_volume || 1)));
     // Empty is white; any liquid at all steps clear of white so a nearly empty well still reads.
     const t = fraction > 0 ? 0.35 + 0.65 * fraction : 0;
@@ -2938,7 +2940,7 @@ function summaryOf(index) {
 
   if (!children.length) {
     const state = stateOf.get(index);
-    if (state && state.pending_volume !== undefined) return `${fmt(state.pending_volume)} uL`;
+    if (state?.volume !== undefined) return `${fmt(state.volume)} uL`;
     // A vacant site is labelled `<empty>` in place of its name, so a summary would repeat it.
     return "";
   }
@@ -3333,7 +3335,7 @@ function renderInfoPanel() {
 
   const contents = [];
   if (model.max_volume !== undefined) {
-    const volume = state ? (state.pending_volume ?? state.volume ?? 0) : 0;
+    const volume = state?.volume ?? 0;
     contents.push(["volume", `${fmt(volume)}${NBSP}/${NBSP}${fmt(model.max_volume)}${NBSP}uL`]);
   }
 
@@ -4773,7 +4775,14 @@ function reopenRowsUnder(index) {
 
 statusDot.addEventListener("click", connect);
 
-const gif = initGif({ renderer, view, camera });
+// The camera is read at capture time: a view change swaps it, and the recording follows the view.
+const gif = initGif({
+  renderer,
+  view,
+  get camera() {
+    return camera;
+  },
+});
 
 // ---------------------------------------------------------------- loop
 
@@ -4967,7 +4976,10 @@ function drawFrame() {
   updateScaleBar();
 
   renderer.render(view, camera);
-  lastFrameMs = performance.now() - frameStarted;
+  // What a frame costs is the longer of this thread's work and the gap since the last frame: the
+  // GPU, or a rasteriser in another process, shows up only in the gap. The gap of an idle spell is
+  // discarded where the loop is woken, so the first frame back is costed by its work alone.
+  lastFrameMs = Math.max(performance.now() - frameStarted, delta * 1000);
   adaptQuality(lastFrameMs);
   if (viewHelper) {
     // The helper renders a second pass into a corner of the same canvas. Without turning auto-clear

@@ -8,10 +8,11 @@ import { button, input } from "./dom.js";
  * owns everything else it touches. The returned `tick` belongs in the animation loop, after the
  * frame has been drawn.
  *
- * @param {{renderer: any, view: any, camera: any}} deps
+ * @param {{renderer: any, view: any, camera: any}} deps `camera` is read at every capture.
  * @returns {{isRecording: () => boolean, tick: () => void}}
  */
-export function initGif({ renderer, view, camera }) {
+export function initGif(deps) {
+  const { renderer, view } = deps;
   let recording = false;
   let capturedFrames = [];
   let frameInterval = 8;
@@ -106,7 +107,7 @@ export function initGif({ renderer, view, camera }) {
         captureTarget = new THREE.RenderTarget(width, height);
       }
       renderer.setRenderTarget(captureTarget);
-      renderer.render(view, camera);
+      renderer.render(view, deps.camera);
       const pixels = await renderer.readRenderTargetPixelsAsync(captureTarget, 0, 0, width, height);
       renderer.setRenderTarget(null);
 
