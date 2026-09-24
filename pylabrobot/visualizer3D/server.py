@@ -6,7 +6,7 @@ protocol runs on the instrument host. What changed is the payload.
 """
 
 import asyncio
-import atexit
+import errno
 import functools
 import hashlib
 import hmac
@@ -22,7 +22,7 @@ import socket
 import sys
 import threading
 import webbrowser
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import parse_qs, urlsplit
 
 import websockets
@@ -123,6 +123,15 @@ def _models_on_disk(root: str) -> Dict[str, str]:
   return found
 
 
+# How far a taken port is walked up before the viewer gives up on binding.
+PORT_TRIES = 20
+
+
+def _port_taken(error: OSError) -> bool:
+  """Whether a bind failed because the port is in use: the one failure the next port can cure."""
+  return error.errno == errno.EADDRINUSE
+
+
 class Viewer3D:
   """A parallel visualizer that takes any resource as its world.
 
@@ -220,10 +229,13 @@ class Viewer3D:
     self.rebuilds = 0  # how many scene rebuilds a run actually cost
     self.clients_seen: List[Dict[str, Optional[str]]] = []  # what each page said it draws with
 
+    # Every resource this viewer listens to, with the callback it gave, so `stop` can take it back.
+    # By identity: a tip compares by value and is not hashable.
+    self._subscribed: Dict[int, Tuple[Resource, Callable[[dict], None]]] = {}
     self._subscribe(root)
     # A newly assigned resource has to start publishing too, or its state never reaches the viewer.
     root.register_did_assign_resource_callback(self._on_assign)
-    root.register_did_unassign_resource_callback(lambda _r: self._resend())
+    root.register_did_unassign_resource_callback(self._on_unassign)
 
   # -- wiring ----------------------------------------------------------------
 
@@ -231,19 +243,41 @@ class Viewer3D:
     self._subscribe(resource)
     self._resend()
 
+  def _on_unassign(self, _resource: Resource) -> None:
+    self._resend()
+
   def _subscribe(self, resource: Resource) -> None:
+    # A resource put back after being taken out is still listened to: one callback, not one more.
+    if id(resource) in self._subscribed:
+      return
+
     def on_update(_state: dict, r: Resource = resource) -> None:
       self._on_state_update(r)
 
     resource.register_state_update_callback(on_update)
+    self._subscribed[id(resource)] = (resource, on_update)
     for child in resource.children:
       self._subscribe(child)
 
+  def _unsubscribe(self) -> None:
+    for resource, on_update in self._subscribed.values():
+      resource.deregister_state_update_callback(on_update)
+    self._subscribed.clear()
+    self.root.deregister_did_assign_resource_callback(self._on_assign)
+    self.root.deregister_did_unassign_resource_callback(self._on_unassign)
+
+  def _live_loop(self) -> Optional[asyncio.AbstractEventLoop]:
+    """The loop to hand a change to, or None: after `stop`, and once the loop the viewer was
+    started on has closed under it, as it does when a script's `asyncio.run` returns."""
+    loop = self._loop
+    return loop if loop is not None and not loop.is_closed() else None
+
   def _on_state_update(self, resource: Resource) -> None:
     """Batch state updates so a 96-channel operation is one message, not ninety-six."""
-    if self._loop is None:
+    loop = self._live_loop()
+    if loop is None:
       return
-    self._loop.call_soon_threadsafe(self._enqueue, resource.name, resource.serialize_state())
+    loop.call_soon_threadsafe(self._enqueue, resource.name, resource.serialize_state())
 
   def _enqueue(self, name: str, state: dict) -> None:
     self._pending[name] = state
@@ -280,9 +314,10 @@ class Viewer3D:
 
   def _resend(self) -> None:
     """The tree changed shape, so the flattening is stale. Schedule one rebuild for the burst."""
-    if self._loop is None:
+    loop = self._live_loop()
+    if loop is None:
       return
-    self._loop.call_soon_threadsafe(self._mark_scene_dirty)
+    loop.call_soon_threadsafe(self._mark_scene_dirty)
 
   def _mark_scene_dirty(self) -> None:
     self._scene_dirty = True
@@ -671,6 +706,8 @@ class Viewer3D:
         return super().do_GET()
 
     class Server(http.server.ThreadingHTTPServer):
+      address_family = socket.AF_INET6 if ":" in self.host else socket.AF_INET
+
       def handle_error(self, request, client_address):
         # A browser that leaves a page mid-download closes its end; that is no error of ours,
         # and a traceback on every reload buries anything that is.
@@ -680,14 +717,17 @@ class Viewer3D:
 
     # Threaded: a page loads its meshes in parallel, and a server answering one request at a time
     # was seen closing one of twenty-two without a response, which drew that resource as a box.
-    while True:
+    for attempt in range(PORT_TRIES):
       try:
-        self._httpd = Server((self.host, self.fs_port), Handler)
+        httpd = Server((self.host, self.fs_port), Handler)
         break
-      except OSError:
+      except OSError as error:
+        if not _port_taken(error) or attempt == PORT_TRIES - 1:
+          raise
         self.fs_port += 1
+    self._httpd = httpd
 
-    thread = threading.Thread(target=self._httpd.serve_forever, daemon=True, name="viz3d_fs")
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True, name="viz3d_fs")
     thread.start()
 
   # -- lifecycle -------------------------------------------------------------
@@ -699,19 +739,18 @@ class Viewer3D:
     # server bakes that number into what it serves. Started the other way round, a viewer whose
     # preferred port is already taken serves a page pointing at the viewer that took it, and then
     # quietly shows someone else's facility.
-    while True:
+    for attempt in range(PORT_TRIES):
       try:
         self._ws_server = await websockets.serve(
           self._handler, self.host, self.ws_port, process_request=self._check_websocket
         )
         break
-      except OSError:
+      except OSError as error:
+        if not _port_taken(error) or attempt == PORT_TRIES - 1:
+          raise
         self.ws_port += 1
 
     self._start_file_server()
-    # Ports are let go when the interpreter exits, even if nobody called `stop`, so the next run
-    # binds the same ones rather than moving up past a viewer that is no longer answering.
-    atexit.register(self._release_ports)
 
     url = f"http://{self.host}:{self.fs_port}"
     print(f"viewer on {url}  (websocket {self.ws_port})")
@@ -719,9 +758,10 @@ class Viewer3D:
       webbrowser.open(url)
 
   async def stop(self) -> None:
-    """Close both servers, so the ports are free for the next viewer to bind."""
-    atexit.unregister(self._release_ports)
-    self._loop = None  # a state change arriving now has nowhere to go
+    """Close both servers, so the ports are free for the next viewer, and stop listening to the
+    tree, so a stopped viewer costs the resources nothing and a change is never handed to no loop."""
+    self._unsubscribe()
+    self._loop = None
     if self._ws_server is not None:
       self._ws_server.close()
       await self._ws_server.wait_closed()
@@ -729,15 +769,5 @@ class Viewer3D:
     self._clients.clear()
     if self._httpd is not None:
       self._httpd.shutdown()
-      self._httpd.server_close()
-      self._httpd = None
-
-  def _release_ports(self) -> None:
-    """Close the listening sockets without the event loop, which at exit may already be gone."""
-    if self._ws_server is not None:
-      for sock in self._ws_server.sockets:
-        sock.close()
-      self._ws_server = None
-    if self._httpd is not None:
       self._httpd.server_close()
       self._httpd = None
