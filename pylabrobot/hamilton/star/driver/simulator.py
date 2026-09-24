@@ -409,16 +409,20 @@ class SimulatedPipettes(_Simulated, Pipettes):
         # The command moves the channels itself: each involved one to its Y and, at the end, its
         # tip bottom to `te`. That is what the model has to show when the driver reads back.
         end = int(kwargs["te"]) / 10
-        drawn = kwargs["av"]
+        # The per-channel lists run over the channels involved, in order, not over the pattern.
+        used = 0
         for index, (involved, y) in enumerate(zip(kwargs["tm"], kwargs["yp"])):
-          if involved:
-            self.update_location_by_reference_point(
-              index, y=int(y) / 10, z=round(end + self._below_stop_disc(index), 2)
-            )
-            # The piston moves by the volume drawn, and stands there until it is dispensed.
-            self.device.dispensing_drive_uL[index] = round(
-              self.device.dispensing_drive_uL.get(index, 0.0) + int(drawn[index]) / 10, 1
-            )
+          if not involved:
+            continue
+          self.update_location_by_reference_point(
+            index, y=int(y) / 10, z=round(end + self._below_stop_disc(index), 2)
+          )
+          # The piston draws the blow-out air, the volume and the transport air, and stands there.
+          drawn = sum(int(kwargs[field][used]) for field in ("ba", "av", "ta")) / 10
+          self.device.dispensing_drive_uL[index] = round(
+            self.device.dispensing_drive_uL.get(index, 0.0) + drawn, 1
+          )
+          used += 1
         return None
 
       return None
