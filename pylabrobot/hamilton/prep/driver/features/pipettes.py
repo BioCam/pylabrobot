@@ -6208,6 +6208,8 @@ class Pipettes:
     flow_rates: Optional[Sequence[Optional[float]]] = None,
     *,
     hamilton_liquid_classes: Optional[Sequence[HamiltonLiquidClass]] = None,
+    jet: Optional[Sequence[bool]] = None,
+    blow_out: Optional[Sequence[bool]] = None,
     piston_volumes: Optional[Sequence[float]] = None,
     search_speed: float = 10.0,
     approach_speed: float = 125.0,
@@ -6259,7 +6261,9 @@ class Pipettes:
         container. OFF goes to the height given.
       flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
       hamilton_liquid_classes: the class for each container's volume. Looked up for the
-        channel's tip, water, when None.
+        channel's tip, water, `jet` and `blow_out` when None.
+      jet: whether the later dispense is a jet, for the lookup only. False when None.
+      blow_out: whether the later dispense blows out, for the lookup only. False when None.
       piston_volumes: how much each piston draws, in uL, per container, as given, with no liquid
         class. One of this and `volumes`.
       search_speed: of the driver's own search, liquid or floor, in mm/s.
@@ -6340,6 +6344,8 @@ class Pipettes:
       "liquid_heights": liquid_heights,
       "flow_rates": flow_rates,
       "hamilton_liquid_classes": hamilton_liquid_classes,
+      "jet": jet,
+      "blow_out": blow_out,
       "immersion_depths": immersion_depths,
       "blow_out_air_volumes": blow_out_air_volumes,
       "pre_wetting_volumes": pre_wetting_volumes,
@@ -6372,8 +6378,8 @@ class Pipettes:
       volumes,
       piston_volumes,
       hamilton_liquid_classes,
-      [False] * n,
-      [False] * n,
+      [False] * n if jet is None else list(jet),
+      [False] * n if blow_out is None else list(blow_out),
     )
 
     def by_class(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:
@@ -6707,6 +6713,8 @@ class Pipettes:
     flow_rates: Optional[Sequence[Optional[float]]] = None,
     *,
     hamilton_liquid_classes: Optional[Sequence[HamiltonLiquidClass]] = None,
+    jet: Optional[Sequence[bool]] = None,
+    blow_out: Optional[Sequence[bool]] = None,
     piston_volumes: Optional[Sequence[float]] = None,
     search_speed: float = 10.0,
     approach_speed: float = 125.0,
@@ -6756,7 +6764,10 @@ class Pipettes:
         container: OFF, CAPACITIVE or ZTOUCH. OFF goes to the height given.
       flow_rates: in uL/s, per container. The liquid class's, else 120.0, when None.
       hamilton_liquid_classes: the class for each container's volume. Looked up for the
-        channel's tip, water, when None.
+        channel's tip, water, `jet` and `blow_out` when None.
+      jet: whether each dispense is a jet, for the lookup only: the Prep sends no dispensing mode.
+        False when None.
+      blow_out: whether each dispense blows out, for the lookup only. False when None.
       piston_volumes: how much each piston pushes out, in uL, per container, as given, with no
         liquid class. One of this and `volumes`.
       search_speed: of the driver's own search, liquid or floor, in mm/s.
@@ -6837,6 +6848,8 @@ class Pipettes:
       "liquid_heights": liquid_heights,
       "flow_rates": flow_rates,
       "hamilton_liquid_classes": hamilton_liquid_classes,
+      "jet": jet,
+      "blow_out": blow_out,
       "immersion_depths": immersion_depths,
       "minimum_allowed_z_positions_during": minimum_allowed_z_positions_during,
       "transport_air_volumes": transport_air_volumes,
@@ -6872,8 +6885,8 @@ class Pipettes:
       volumes,
       piston_volumes,
       hamilton_liquid_classes,
-      [False] * n,
-      [False] * n,
+      [False] * n if jet is None else list(jet),
+      [False] * n if blow_out is None else list(blow_out),
     )
 
     def by_class(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:

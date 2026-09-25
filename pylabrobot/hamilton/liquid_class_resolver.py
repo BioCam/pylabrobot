@@ -119,21 +119,23 @@ def get_volumes_and_classes(
   if classes is None:
     classes = []
     for job, tip in enumerate(tips):
-      found = lookup(
+      keys = dict(
         tip_volume=tip.maximal_volume,
         is_core=False,
         is_tip=True,
         has_filter=tip.has_filter,
         liquid=Liquid.WATER,
         jet=jets[job],
-        blow_out=blow_outs[job],
       )
+      found = lookup(**keys, blow_out=blow_outs[job])
       if found is None:
+        other = not blow_outs[job] and lookup(**keys, blow_out=True) is not None
         raise ValueError(
           f"no liquid class is known for channel {channel_of[job]}'s tip on "
           f"{containers[job].name}: {tip.maximal_volume} uL, "
           f"{'with' if tip.has_filter else 'without'} filter, water, jet={jets[job]}, "
-          f"blow_out={blow_outs[job]}. Give hamilton_liquid_classes, or piston_volumes"
+          f"blow_out={blow_outs[job]}. Give hamilton_liquid_classes, "
+          f"{'blow_out=True, which has one, ' if other else ''}or piston_volumes"
         )
       classes.append(found)
   piston = [round(hlc.compute_corrected_volume(v), 2) for hlc, v in zip(classes, liquid)]

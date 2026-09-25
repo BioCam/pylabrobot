@@ -2906,15 +2906,16 @@ class TestEachTipsWaterClass(unittest.IsolatedAsyncioTestCase):
         ):
           self.assertEqual(self._field(sent[2], name), [round(value * 10)] * 2, name)
 
-  async def test_a_50_uL_tip_has_no_class_with_jet_and_blow_out_false(self):
+  async def test_a_50_uL_tip_has_no_class_without_blow_out(self):
     from pylabrobot.resources.hamilton import hamilton_96_tiprack_50uL
 
     driver, plate, sent = await self._channels_carrying(hamilton_96_tiprack_50uL)
     assert driver.pipettes is not None
     wells = [plate.get_well("A1"), plate.get_well("B1")]
-    with self.assertRaisesRegex(ValueError, r"no liquid class is known for channel 0's tip"):
+    refusal = r"no liquid class is known for channel 0's tip.*blow_out=True, which has one"
+    with self.assertRaisesRegex(ValueError, refusal):
       await driver.pipettes.aspirate(wells, [10.0, 10.0], liquid_heights=[3.0, 3.0])
-    with self.assertRaisesRegex(ValueError, r"no liquid class is known for channel 0's tip"):
+    with self.assertRaisesRegex(ValueError, refusal):
       await driver.pipettes.dispense(wells, [10.0, 10.0])
     self.assertEqual(sent, [])
 

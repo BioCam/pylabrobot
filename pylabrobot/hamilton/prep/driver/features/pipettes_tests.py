@@ -408,8 +408,12 @@ def test_the_trackers_book_the_liquid_not_the_corrected_piston_volume():
   _run(_t())
 
 
-def test_a_50_uL_tip_has_no_class_with_jet_and_blow_out_false():
-  """The STAR's table has no 50 uL water class for a partial dispense: refused before sending."""
+def test_a_50_uL_tip_has_a_class_only_with_blow_out():
+  """The STAR's table has 50 uL water classes only with blow-out: without, refused before sending,
+  the refusal naming blow_out=True; with it, `Tip_50ul_Water_DispenseSurface_Empty`."""
+  from pylabrobot.hamilton.star.liquid_classes.mapping import (
+    Tip_50ul_Water_DispenseSurface_Empty as water,
+  )
 
   async def _t():
     deck = PrepDeck()
@@ -420,14 +424,35 @@ def test_a_50_uL_tip_has_no_class_with_jet_and_blow_out_false():
     assert p.pipettes is not None
     await p.pipettes.pick_up_tips([tip_rack.get_item("A1"), tip_rack.get_item("B1")], [0, 1])
     sent = _record(p)
-    with pytest.raises(ValueError, match="no liquid class"):
+    refusal = "no liquid class is known for channel 0's tip.*blow_out=True, which has one"
+    with pytest.raises(ValueError, match=refusal):
       await p.pipettes.aspirate(
         plate["A1:B1"], volumes=[10.0, 10.0], use_channels=[0, 1], liquid_heights=[3.0, 3.0]
       )
-    with pytest.raises(ValueError, match="no liquid class"):
+    with pytest.raises(ValueError, match=refusal):
       await p.pipettes.dispense(plate["A1:B1"], volumes=[10.0, 10.0], use_channels=[0, 1])
     assert not [c for c in sent if hasattr(c, "aspirate_parameters")]
     assert not [c for c in sent if hasattr(c, "dispense_parameters")]
+    await p.pipettes.aspirate(
+      plate["A1:B1"],
+      volumes=[50.0, 10.0],
+      use_channels=[0, 1],
+      liquid_heights=[3.0, 3.0],
+      blow_out=[True, True],
+    )
+    (command,) = [c for c in sent if hasattr(c, "aspirate_parameters")]
+    by_channel = {p.pipettes.channel_of(int(e.channel)): e for e in command.aspirate_parameters}
+    assert by_channel[0].common.liquid_volume == pytest.approx(54.2)
+    assert by_channel[0].aspirate.blowout_volume == pytest.approx(water.aspiration_blow_out_volume)
+    await p.pipettes.dispense(
+      plate["C1:D1"], volumes=[50.0, 10.0], use_channels=[0, 1], blow_out=[True, True]
+    )
+    (command,) = [c for c in sent if hasattr(c, "dispense_parameters")]
+    by_channel = {p.pipettes.channel_of(int(e.channel)): e for e in command.dispense_parameters}
+    assert by_channel[0].common.liquid_volume == pytest.approx(54.2)
+    assert by_channel[1].common.liquid_volume == pytest.approx(
+      round(water.compute_corrected_volume(10.0), 2)
+    )
     await p.stop()
 
   _run(_t())
