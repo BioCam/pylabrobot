@@ -1,12 +1,15 @@
 """Tests for probing tip presence by pick-up, against a fake device's calls."""
 
 import asyncio
+import math
+import random
 from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 import pytest
 
 from pylabrobot.lib.liquid_handling.tip_presence_probing import (
   TipProbeBatch,
+  plan_tip_inventory,
   plan_tip_presence_probes,
   probe_tip_inventory,
   probe_tip_presence_via_pickup,
@@ -471,3 +474,65 @@ def test_the_inventory_refuses_no_channels_and_a_channel_twice():
   with pytest.raises(ValueError, match="named once"):
     _inventory(device, spots, [1, 1])
   assert device.calls == []
+
+
+# -- scattered spots ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("channels", [[0, 1], list(range(8))])
+def test_scattered_spots_take_no_more_pick_ups_than_their_columns_need(channels):
+  rack = _rack()
+  spots = random.Random(7).sample(rack.get_all_items(), 12)
+  batches = plan_tip_inventory(spots, channels)
+  per_column: dict = {}
+  for spot in spots:
+    per_column.setdefault(spot.get_absolute_location().x, []).append(spot)
+  assert len(batches) == sum(math.ceil(len(c) / len(channels)) for c in per_column.values())
+  assert sorted(s.name for b in batches for s in b.tip_spots) == sorted(s.name for s in spots)
+  for batch in batches:
+    assert len({spot.get_absolute_location().x for spot in batch.tip_spots}) == 1
+    ys = [spot.get_absolute_location().y for spot in batch.tip_spots]
+    assert ys == sorted(ys, reverse=True)
+    assert batch.use_channels == sorted(channels)[: len(batch.tip_spots)]
+
+
+def test_the_columns_go_in_ascending_x_and_rear_to_front_within_one():
+  rack = _rack()
+  spots = _spots(rack, "H3 A1 D3 C1 B3")
+  batches = plan_tip_inventory(spots, [1, 0])
+  assert [_names(b.tip_spots) for b in batches] == [
+    ["rack_tipspot_A1", "rack_tipspot_C1"],
+    ["rack_tipspot_B3", "rack_tipspot_D3"],
+    ["rack_tipspot_H3"],
+  ]
+  assert [b.use_channels for b in batches] == [[0, 1], [0, 1], [0]]
+
+
+def test_the_inventory_plan_parts_racks_at_different_deck_x():
+  deck = Deck(size_x=1000, size_y=600, size_z=200)
+  left, right = _rack("left"), _rack("right")
+  deck.assign_child_resource(left, location=Coordinate(100, 100, 0))
+  deck.assign_child_resource(right, location=Coordinate(300, 100, 0))
+  batches = plan_tip_inventory([right.get_item("A1"), left.get_item("A1")], [0, 1])
+  assert [_names(b.tip_spots) for b in batches] == [["left_tipspot_A1"], ["right_tipspot_A1"]]
+
+
+def test_the_inventory_plan_refuses_a_spot_given_twice():
+  rack = _rack()
+  with pytest.raises(ValueError, match="given once"):
+    plan_tip_inventory(_spots(rack, "A1 A1"), [0, 1])
+
+
+def test_scattered_spots_are_probed_in_column_pairs_and_answered_in_the_order_given():
+  rack = _rack()
+  spots = _spots(rack, "H2 A1 C2 B1 E7")
+  device = _Device(empty={rack.get_item("C2").name})
+  found = _inventory(device, spots, [0, 1])
+  assert list(found) == _names(spots)
+  assert [found[s.name] for s in spots] == [True, True, False, True, True]
+  picks = [names for kind, names, _ in device.calls if kind == "pick up"]
+  assert picks == [
+    ["rack_tipspot_A1", "rack_tipspot_B1"],
+    ["rack_tipspot_C2", "rack_tipspot_H2"],
+    ["rack_tipspot_E7"],
+  ]
