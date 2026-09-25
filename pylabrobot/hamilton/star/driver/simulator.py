@@ -411,6 +411,15 @@ class SimulatedPipettes(_Simulated, Pipettes):
           },
           "what each channel last detected liquid at",
         )
+      if command in ("TP", "TR"):
+        # As a device showed: a pick-up takes the pistons to 0, a drop leaves them 10 uL up; the
+        # old tip's air goes with it.
+        for index, involved in enumerate(kwargs["tm"]):
+          if int(involved):
+            standing = self.device.dispensing_drive_uL.get(index, 0.0)
+            self.device.dispensing_drive_uL[index] = 0.0 if command == "TP" else standing + 10.0
+            self.device.transport_air_uL.pop(index, None)
+        return None
       if command == "AS":
         # The command moves the channels itself: each involved one to its Y and, at the end, its
         # tip bottom to `te`. That is what the model has to show when the driver reads back.

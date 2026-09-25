@@ -3844,6 +3844,15 @@ class Pipettes:
 
   # -- tip pickup ----------------------------------------------------------------------------
 
+  async def _reread_pistons_after_tip_command(self, channels: List[int]) -> None:
+    """Read the pistons a tip command moved, and forget the air the old tips held.
+
+    A device showed `C0 TP` taking the pistons to 0 and `C0 TR` leaving them 10 uL up.
+    """
+    await self.dispensing_drives_request_uL_positions(channels)
+    for channel in channels:
+      self._held_transport_air.pop(channel, None)
+
   async def _unchecked_fw_pick_up_tips(
     self,
     x_positions: List[int],
@@ -4029,6 +4038,7 @@ class Pipettes:
           raise
         logger.exception("could not record which tips the channels collected")
       await self._record_after_command()
+    await self._reread_pistons_after_tip_command(use_channels)
     return picked_up
 
   async def pick_up_tips(
@@ -4293,6 +4303,7 @@ class Pipettes:
           raise
         logger.exception("could not record which tips the channels let go of")
       await self._record_after_command()
+    await self._reread_pistons_after_tip_command(use_channels)
     return dropped
 
   async def drop_tips(

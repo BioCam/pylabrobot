@@ -3039,6 +3039,17 @@ class TestDispenseInSimulation(_SimulatedPlateWithWater):
       await self.pipettes.dispense(self.wells[3:4], piston_volumes=[20.0])
     self.assertEqual(sent, [])
 
+  async def test_a_tip_command_leaves_the_pistons_where_a_device_did(self):
+    # A drop leaves each piston 10 uL up, a pick-up takes it to 0; the old tip's air goes with it.
+    await self.pipettes.aspirate(self.wells[:1], piston_volumes=[20.0], transport_air_volumes=[5.0])
+    await self.pipettes.drop_tips([self.rack.get_item("A1")], use_channels=[0])
+    self.assertEqual(self.pipettes.piston_positions[0], 35.0)
+    await self.pipettes.pick_up_tips([self.rack.get_item("A2")], use_channels=[0])
+    self.assertEqual(self.pipettes.piston_positions[0], 0.0)
+    await self.pipettes.aspirate(self.wells[:1], piston_volumes=[20.0])
+    await self.pipettes.dispense(self.wells[3:4], piston_volumes=[20.0])
+    self.assertEqual(self.pipettes.piston_positions[0], 0.0)
+
   async def test_a_failed_command_books_what_the_pistons_gave(self):
     await self.pipettes.aspirate(self.wells[:2], piston_volumes=[50.0, 20.0])
     original = self.driver.send_command
