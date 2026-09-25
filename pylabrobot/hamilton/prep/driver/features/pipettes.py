@@ -6380,6 +6380,7 @@ class Pipettes:
       hamilton_liquid_classes,
       [False] * n if jet is None else list(jet),
       [False] * n if blow_out is None else list(blow_out),
+      lookup=self._driver.liquid_class_lookup,
     )
 
     def by_class(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:
@@ -6887,6 +6888,7 @@ class Pipettes:
       hamilton_liquid_classes,
       [False] * n if jet is None else list(jet),
       [False] * n if blow_out is None else list(blow_out),
+      lookup=self._driver.liquid_class_lookup,
     )
 
     def by_class(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:

@@ -15,7 +15,8 @@ from pylabrobot.resources.container import Container
 from pylabrobot.resources.liquid import Liquid
 from pylabrobot.resources.tip import Tip
 
-_Lookup = Callable[..., Optional[HamiltonLiquidClass]]
+# Finds a class, with `get_star_liquid_class`'s keywords.
+LiquidClassLookup = Callable[..., Optional[HamiltonLiquidClass]]
 
 # What an aspirate argument takes from a class when it is not given.
 ASPIRATE_CLASS_ATTRIBUTES: Dict[str, Callable[[HamiltonLiquidClass], float]] = {
@@ -85,7 +86,7 @@ def get_volumes_and_classes(
   hamilton_liquid_classes: Optional[Sequence[HamiltonLiquidClass]],
   jets: Sequence[bool],
   blow_outs: Sequence[bool],
-  lookup: _Lookup = get_star_liquid_class,
+  lookup: LiquidClassLookup = get_star_liquid_class,
 ) -> Tuple[List[float], List[float], Optional[List[HamiltonLiquidClass]]]:
   """The liquid asked per container, the piston volume that moves it, and the classes used.
 

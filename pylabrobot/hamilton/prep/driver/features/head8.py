@@ -1157,6 +1157,7 @@ class Head8:
       cast(Optional[List[HamiltonLiquidClass]], given),
       [jet] * NUM_PROBES,
       [blow_out] * NUM_PROBES,
+      lookup=self._driver.liquid_class_lookup,
     )
     if classes is not None and any(hlc is not classes[0] for hlc in classes):
       raise ValueError("the 8 probes move on one piston: give one liquid class for all of them")
