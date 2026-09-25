@@ -68,7 +68,6 @@ from pylabrobot.resources import Container, Coordinate, Tip, does_volume_trackin
 from pylabrobot.resources.errors import (
   HasTipError,
   NoTipError,
-  TooLittleLiquidError,
   TooLittleVolumeError,
 )
 from pylabrobot.resources.hamilton import HamiltonTip, PrepDeck, TipSize
@@ -5784,6 +5783,8 @@ class Pipettes:
   ) -> List[float]:
     """Aspirate one batch in one command, the channels already over it; book and settle volumes.
 
+    A container holding less than asked gives what it holds, the rest is air, with a warning.
+
     Every other argument is `aspirate`'s, one entry per container of the batch where per container.
 
     Args:
@@ -5796,7 +5797,7 @@ class Pipettes:
       minimum_traverse_height_end: the tip bottom height every tip is left at, in mm.
       check_only: refuse what would be refused; nothing is booked or sent.
       floor_touched: whether `z_fluid` is a Z-touch's floor: no liquid height is needed, and a
-        container holding less than asked gives what it holds, the rest is air.
+        container holding less than asked is an info line, not a warning.
       surface_found: whether `z_fluid` is the surface a search found: no liquid height is needed.
 
     Returns:
@@ -5863,7 +5864,7 @@ class Pipettes:
       for i, op in enumerate(ops)
     ]
     booked = list(ctx.volumes)
-    if floor_touched and not check_only and does_volume_tracking():
+    if not check_only and does_volume_tracking():
       # A draw past what a container holds takes the rest as air, which is how a well is emptied
       # on purpose, so under ZTOUCH that is an info line.
       held = {id(op.resource): op.resource.tracker.get_used_volume() for op in ops}
@@ -5872,7 +5873,7 @@ class Pipettes:
           continue
         booked[i] = min(ctx.volumes[i], max(held[id(op.resource)], 0.0))
         if booked[i] < ctx.volumes[i]:
-          logger.info(
+          (logger.info if floor_touched else logger.warning)(
             "channel %d draws %.1f uL from %s, which holds %.1f uL; the rest is air",
             ch,
             ctx.volumes[i],
@@ -5957,37 +5958,18 @@ class Pipettes:
         finalize_volume_ops(volume_intents, aspirated)
     return ctx.volumes
 
-  def _check_volumes_suffice(
-    self,
-    containers: Sequence[Container],
-    tips: Sequence[Tip],
-    volumes: Sequence[float],
-    shortfall_expected: Collection[int] = (),
-  ) -> None:
-    """Refuse more than a container holds over all its jobs, or than a tip has room for.
+  def _check_tips_have_room(self, tips: Sequence[Tip], volumes: Sequence[float]) -> None:
+    """Refuse more than a tip has room for.
 
     Args:
-      containers: per job.
       tips: the tip each job fills, per job.
       volumes: the liquid volume each job takes, in uL.
-      shortfall_expected: the jobs whose container may hold less: the rest is air.
 
     Raises:
-      TooLittleLiquidError: If a container holds less than all its jobs take.
       TooLittleVolumeError: If a tip has less room than its job takes.
     """
     if not does_volume_tracking():
       return
-    asked: Dict[int, float] = {}
-    for job, (container, volume) in enumerate(zip(containers, volumes)):
-      if job not in shortfall_expected:
-        asked[id(container)] = asked.get(id(container), 0.0) + volume
-    for container in {id(c): c for c in containers if id(c) in asked}.values():
-      held = container.tracker.get_used_volume()
-      if not container.tracker.is_disabled and asked[id(container)] - held > 1e-6:
-        raise TooLittleLiquidError(
-          f"{container.name} holds {held} uL, {asked[id(container)]} uL asked for"
-        )
     for tip, volume in zip(tips, volumes):
       room = tip.tracker.get_free_volume()
       if not tip.tracker.is_disabled and volume - room > 1e-6:
@@ -6266,8 +6248,8 @@ class Pipettes:
     the surface found without LLD, sets the tracker to the measured volume, warning when it is
     20 % off, and refuses a container without liquid; ZTOUCH touches the floor first, as
     `_probe_batch_floors`, draws from it without LLD, and refuses a container whose floor is not
-    met; PRESSURE and DUAL refuse. A draw past what a container holds is refused, except under
-    ZTOUCH, where emptying is the point: it takes air, with an info line.
+    met; PRESSURE and DUAL refuse. A draw past what a container holds goes ahead and takes air,
+    with a warning, an info line under ZTOUCH, where emptying is the point.
 
     Args:
       containers: one per channel used, at most as many as there are channels.
@@ -6343,7 +6325,7 @@ class Pipettes:
         stands: no height given, volume tracking off, no LLD; a CAPACITIVE container has no
         height-volume functions, no liquid is found where a channel searched, or no floor is met
         where a channel touched.
-      TooLittleLiquidError: If a container not under ZTOUCH holds less than it is asked for.
+      TooLittleVolumeError: If a tip has less room than it is to take.
     """
     containers = list(containers)
     n = len(containers)
@@ -6527,9 +6509,7 @@ class Pipettes:
     for batch in batches:
       for job, volume in zip(batch.indices, await aspirate_batch(batch, check_only=True)):
         taken[job] = volume
-    self._check_volumes_suffice(
-      containers, self._require_mounted_tips(use_channels), taken, shortfall_expected=touched
-    )
+    self._check_tips_have_room(self._require_mounted_tips(use_channels), taken)
     await self._check_tips_and_raise(use_channels, minimum_traverse_height_start)
     await self._execute_batched(aspirate_batch, batches, minimum_traverse_height_during)
 
@@ -6564,6 +6544,8 @@ class Pipettes:
     check_only: bool,
   ) -> List[float]:
     """Dispense one batch in one command, the channels already over it; book and settle volumes.
+
+    A tip holding less than asked gives what it holds, the rest is air, with a warning.
 
     Every other argument is `dispense`'s, one entry per container of the batch where per container.
 
@@ -6674,12 +6656,25 @@ class Pipettes:
     await dispense_in_one_move(check_only=True)
     if check_only:
       return ctx.volumes
+    booked = list(ctx.volumes)
+    if does_volume_tracking():
+      for i, (ch, op) in enumerate(zip(use_channels, ops)):
+        held = op.tip.tracker.get_used_volume()
+        if not op.tip.tracker.is_disabled and held < ctx.volumes[i]:
+          booked[i] = max(held, 0.0)
+          logger.warning(
+            "channel %d dispenses %.1f uL into %s from a tip holding %.1f uL; the rest is air",
+            ch,
+            ctx.volumes[i],
+            op.resource.name,
+            held,
+          )
     volume_intents = [
       VolumeTransferIntent(
         channel=ch,
         container=op.resource,
         tip=op.tip,
-        volume_ul=ctx.volumes[i],
+        volume_ul=booked[i],
         direction="dispense",
       )
       for i, (ch, op) in enumerate(zip(use_channels, ops))
@@ -6699,26 +6694,20 @@ class Pipettes:
       finalize_volume_ops(volume_intents, dispensed)
     return ctx.volumes
 
-  def _check_tips_hold_enough(
-    self, tips: Sequence[Tip], containers: Sequence[Container], volumes: Sequence[float]
+  def _check_containers_have_room(
+    self, containers: Sequence[Container], volumes: Sequence[float]
   ) -> None:
-    """Refuse more than a tip holds, or than a container has room for over all its jobs.
+    """Refuse more than a container has room for over all its jobs.
 
     Args:
-      tips: the tip each job empties, per job.
       containers: per job.
       volumes: the liquid volume each job gives, in uL.
 
     Raises:
-      TooLittleLiquidError: If a tip holds less than its job gives.
       TooLittleVolumeError: If a container has less room than all its jobs give.
     """
     if not does_volume_tracking():
       return
-    for tip, volume in zip(tips, volumes):
-      held = tip.tracker.get_used_volume()
-      if not tip.tracker.is_disabled and volume - held > 1e-6:
-        raise TooLittleLiquidError(f"a tip holding {held} uL asked to give {volume} uL")
     asked: Dict[int, float] = {}
     for container, volume in zip(containers, volumes):
       asked[id(container)] = asked.get(id(container), 0.0) + volume
@@ -6774,7 +6763,7 @@ class Pipettes:
     at the surface found without LLD, sets the tracker to the measured volume, warning when it is
     20 % off, and refuses a container without liquid; ZTOUCH touches the floor first, as
     `_probe_batch_floors`, and dispenses `ztouch_dispense_height_above_bottom` above it without
-    LLD.
+    LLD. A dispense past what a tip holds goes ahead and pushes air, with a warning.
 
     Args:
       containers: one per channel used, at most as many as there are channels.
@@ -6845,7 +6834,6 @@ class Pipettes:
       RuntimeError: If a channel used carries no tip, a CAPACITIVE container has no height-volume
         functions, no liquid is found where a channel searched or a container has less room than
         measured, or no floor is met where a channel touched.
-      TooLittleLiquidError: If a tip holds less than it is to give.
       TooLittleVolumeError: If a container has less room than it is to take.
     """
     containers = list(containers)
@@ -7035,7 +7023,7 @@ class Pipettes:
     for batch in batches:
       for job, volume in zip(batch.indices, await dispense_batch(batch, check_only=True)):
         given[job] = volume
-    self._check_tips_hold_enough(self._require_mounted_tips(use_channels), containers, given)
+    self._check_containers_have_room(containers, given)
     await self._check_tips_and_raise(use_channels, minimum_traverse_height_start)
     await self._execute_batched(dispense_batch, batches, minimum_traverse_height_during)
 

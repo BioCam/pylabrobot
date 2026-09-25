@@ -46,7 +46,6 @@ from pylabrobot.resources.corning.plates import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.errors import (
   HasTipError,
   NoTipError,
-  TooLittleLiquidError,
   TooLittleVolumeError,
 )
 from pylabrobot.resources.hamilton import (
@@ -3377,13 +3376,8 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
       rack_300 = deck[1] = hamilton_96_tiprack_300uL_NTR(name="tips_300", with_tips=True)
       rack_50 = deck[3] = hamilton_96_tiprack_50uL_NTR(name="tips_50", with_tips=True)
       plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
-      dish = PetriDish(name="dish", diameter=77.0, height=30.0, material_z_thickness=2.0)
-      deck[6].assign_child_by_anchor(
-        dish, parent_anchor=("c", "c", "t"), child_anchor=("c", "c", "b")
-      )
       for well in plate.get_all_items():
         well.tracker.set_volume(200.0)
-      dish.tracker.set_volume(180.0)
       p = PrepSimulationDriver(deck=deck)
       await p.setup()
       assert p.pipettes is not None
@@ -3392,7 +3386,6 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
       one = {"use_channels": [0], "piston_volumes": [10.0], "liquid_heights": [3.0]}
       both = {"use_channels": [0, 1], "piston_volumes": [10.0, 10.0], "liquid_heights": [3.0] * 2}
       searching = {"use_channels": [0, 1], "piston_volumes": [10.0, 10.0]}
-      apart = [Coordinate(-5.0, 0, 0), Coordinate(5.0, 0, 0)]
       capacitive, pressure = Pipettes.LLDMode.CAPACITIVE, Pipettes.LLDMode.PRESSURE
       sent = _record(p)
       refusals: List[Tuple[Any, str, List[Container], Dict[str, Any]]] = [
@@ -3418,12 +3411,6 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
           {**one, "z_air": [60.0], "pull_out_distances_transport_air": [5.0]},
         ),
         (ValueError, "outside channel", two, {**both, "minimum_traverse_height_end": 200.0}),
-        (
-          TooLittleLiquidError,
-          "dish holds 180.0 uL, 190.0 uL asked for",
-          [dish, dish],
-          {**both, "piston_volumes": [150.0, 40.0], "resource_offsets": apart},
-        ),
         (TooLittleVolumeError, "room for", two, {**both, "piston_volumes": [10.0, 70.0]}),
         (ValueError, "PRESSURE LLD has no seek", two, {**searching, "lld_mode": pressure}),
         (ValueError, "must be LLDMode", two, {**both, "lld_mode": [capacitive, "capacitive"]}),
@@ -4528,10 +4515,6 @@ def test_dispense_refuses_before_booking_or_sending():
       ):
         with pytest.raises(ValueError, match=match):
           await p.pipettes.dispense([well], use_channels=[0], liquid_heights=[2.0], **kwargs)
-      with pytest.raises(TooLittleLiquidError, match="a tip holding 0 uL asked to give 5.0"):
-        await p.pipettes.dispense(
-          [well], use_channels=[0], liquid_heights=[2.0], piston_volumes=[5.0]
-        )
       assert sent == []
       assert well.tracker.get_used_volume() == 0.0
       await p.stop()
@@ -4744,6 +4727,54 @@ def test_dispense_on_capacitive_searches_then_dispenses_at_the_surface_without_l
             [well], use_channels=[0], piston_volumes=[5.0], lld_mode=_CAPACITIVE
           )
       assert not any(isinstance(c, _DISPENSE_COMMANDS) for _, c in sent)
+      await p.stop()
+    finally:
+      set_volume_tracking(False)
+
+  _run(_t())
+
+
+@pytest.mark.parametrize("tracking", [True, False])
+def test_shortfalls_warn_and_move_air_only_while_volumes_are_tracked(tracking):
+  """A container holding less than drawn, or a tip less than dispensed: the command goes ahead,
+  the rest is air, with a warning while tracking; with tracking off, nothing is checked."""
+
+  async def _t():
+    set_volume_tracking(tracking)
+    try:
+      deck = PrepDeck()
+      rack = deck[1] = hamilton_96_tiprack_300uL_NTR(name="tips", with_tips=True)
+      plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+      dish = PetriDish(name="dish", diameter=77.0, height=30.0, material_z_thickness=2.0)
+      deck[6].assign_child_by_anchor(
+        dish, parent_anchor=("c", "c", "t"), child_anchor=("c", "c", "b")
+      )
+      if tracking:
+        dish.tracker.set_volume(180.0)
+      p = PrepSimulationDriver(deck=deck)
+      await p.setup()
+      assert p.pipettes is not None
+      await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+      sent = _record(p, only=(*_ASPIRATE_COMMANDS, *_DISPENSE_COMMANDS))
+      with patch.object(pipettes_logger, "warning") as warning:
+        await p.pipettes.aspirate(
+          [dish, dish],
+          use_channels=[0, 1],
+          piston_volumes=[150.0, 40.0],
+          liquid_heights=[5.0, 5.0],
+          resource_offsets=[Coordinate(-5.0, 0, 0), Coordinate(5.0, 0, 0)],
+        )
+        well = plate.get_item("A1")
+        await p.pipettes.dispense([well], use_channels=[0], piston_volumes=[200.0])
+      warned = " ".join(c.args[0] % c.args[1:] for c in warning.call_args_list)
+      assert len(sent) == 3
+      if tracking:
+        assert "which holds 30.0 uL; the rest is air" in warned
+        assert "from a tip holding 150.0 uL; the rest is air" in warned
+        assert dish.tracker.get_used_volume() == 0.0
+        assert well.tracker.get_used_volume() == 150.0
+      else:
+        assert "the rest is air" not in warned
       await p.stop()
     finally:
       set_volume_tracking(False)
