@@ -7,6 +7,7 @@ import copy
 import functools
 import hashlib
 import inspect
+import time
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock, patch
 
@@ -3824,6 +3825,50 @@ def test_aspirate_on_ztouch_touches_each_floor_then_draws_there_without_lld(seco
       assert [t.tracker.get_used_volume() for t in tips if t is not None] == [5.0, 10.0]
     finally:
       set_volume_tracking(False)
+    await p.stop()
+
+  _run(_t())
+
+
+def test_parallel_ztouch_seeks_set_off_in_a_cascade_lowest_channel_first():
+  """With a second session the seeks start `ztouch_cascade_interval` apart, channel 0 first."""
+
+  async def _t():
+    p, rack, plate, sent = _ztouch_setup(True, touch=0.3)
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+    p.pipettes.ztouch_cascade_interval = 0.2
+    started: Dict[Any, float] = {}
+    main_send, second_send = p.send_command, p.send_command_on_second_session
+
+    async def on_main(command, *args, **kwargs):
+      if isinstance(command, PrepCmd.PrepZAxisSeekObstacle):
+        started[command.dest] = time.monotonic()
+      return await main_send(command, *args, **kwargs)
+
+    async def on_second(command, *args, **kwargs):
+      if isinstance(command, PrepCmd.PrepZAxisSeekObstacle):
+        started[command.dest] = time.monotonic()
+      return await second_send(command, *args, **kwargs)
+
+    p.send_command = on_main  # type: ignore[method-assign]
+    p.send_command_on_second_session = on_second  # type: ignore[method-assign]
+    floors = await p.pipettes._probe_batch_floors(
+      ChannelBatch(
+        x_position=plate["A1"][0].get_location_wrt(p.deck, "c", "c", "c").x,
+        indices=[0, 1],
+        channels=[1, 0],
+      ),
+      z_cavity_bottom=[
+        plate[w][0].get_location_wrt(p.deck, "c", "c", "cavity_bottom").z for w in ("B1", "A1")
+      ],
+      z_top=[plate[w][0].get_location_wrt(p.deck, "c", "c", "t").z for w in ("B1", "A1")],
+      search_speed=10.0,
+    )
+    rear, front = (p.pipettes.channels[ch].zaxis for ch in (0, 1))
+    assert started[front] - started[rear] >= 0.19
+    assert all(len(v) == 1 and v[0] is not None for v in floors.values())
     await p.stop()
 
   _run(_t())

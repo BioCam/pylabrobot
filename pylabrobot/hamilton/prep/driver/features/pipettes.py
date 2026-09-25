@@ -1157,6 +1157,9 @@ class Pipettes:
     # A Z-touch floor search goes this far below the modelled cavity bottom, in mm: the model's
     # bottom can be well off the real one.
     self.ztouch_search_limit_below_cavity_bottom: float = 10.0
+    # The channels of a batch set off on their Z-touch one after another, this long apart, in s,
+    # so their pushes on what lies underneath do not add up.
+    self.ztouch_cascade_interval: float = 0.25
     # A Z-touch dispense lifts the tip this far off the cavity bottom it touched, in mm, so the
     # orifice is not sealed on it.
     self.ztouch_dispense_height_above_bottom: float = 0.2
@@ -3470,6 +3473,13 @@ class Pipettes:
     )
     return end if window is None else max(end, window[0])
 
+  @staticmethod
+  async def _after(delay: float, search: Awaitable[_T]) -> _T:
+    """Run `search` once `delay` seconds have passed, so gathered searches set off in a cascade."""
+    if delay > 0:
+      await asyncio.sleep(delay)
+    return await search
+
   async def _probe_batch_floors(
     self,
     batch: ChannelBatch,
@@ -3483,9 +3493,9 @@ class Pipettes:
     """Z-touch the floor of every container of one batch, by each channel's own seek, n times.
 
     From the top to `ztouch_search_limit_below_cavity_bottom` under the cavity bottom, on the tip
-    bottom. The channels go to their starts together at `approach_speed`, then seek: together with a
-    second session, one after the other without it. Each seek ends back at its start. None where a
-    channel reached the limit.
+    bottom. The channels go to their starts together at `approach_speed`, then seek: with a second
+    session in a cascade `ztouch_cascade_interval` apart, lowest channel first; one after the other
+    without it. Each seek ends back at its start. None where a channel reached the limit.
 
     Args:
       batch: the channels and which container each has, by job index.
@@ -3543,8 +3553,13 @@ class Pipettes:
         searches.append((channel, start, ends[job], offset, parallel and i > 0))
       try:
         if parallel:
+          rank = {channel: i for i, channel in enumerate(sorted(batch.channels))}
           results = await asyncio.gather(
-            *(seek(*search) for search in searches), return_exceptions=True
+            *(
+              self._after(rank[search[0]] * self.ztouch_cascade_interval, seek(*search))
+              for search in searches
+            ),
+            return_exceptions=True,
           )
         else:
           results = [await seek(*search) for search in searches]
