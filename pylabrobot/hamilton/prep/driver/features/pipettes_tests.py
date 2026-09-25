@@ -3058,9 +3058,8 @@ _GOLDEN_ASPIRATE_CALLS: Dict[str, Tuple[int, str, Optional[List[int]], Dict[str,
     {
       **_ASPIRATE_TWO,
       "command_version": "v1",
-      "z_fluid": [10.0, 11.0],
+      "liquid_heights": [2.97, 3.97],
       "minimum_allowed_z_positions_during": [5.0, 6.0],
-      "z_bottom_search_offset": [1.0, 1.5],
     },
   ),
   "times, speeds, volumes given": (
@@ -3188,7 +3187,9 @@ _GOLDEN_ASPIRATE_FRAMES: Dict[str, List[str]] = {
   "tadm, end height, z_air": [
     "60.0 bfad748ab52d3c51608b0985da1030ce83a3107349303a9648cd3abc579af733",
   ],
-  "z values given, v1": ["60.0 d9fe620d4ba996942e435c6977876e05bc26acf4a5d388604e92e619e910ba14"],
+  "z values given, v1": [
+    "60.0 c2a0947b72bc91fc092d5a5eb08acda4c36fa82882bd35ad1aa9ec890d674ba4",
+  ],
   "times, speeds, volumes given": [
     "60.0 da7e1372a80c75a5fecbc12a41113b74712b5bcf83622c69f4dc5d01886ab66c",
   ],
@@ -3235,7 +3236,13 @@ def test_aspirate_keywords_are_the_stars_in_its_order_and_the_preps_own_after():
   prep, star = _keywords(Pipettes.aspirate), _keywords(STARPipettes.aspirate)
   shared = [name for name in star if name in prep]
   assert prep[: len(shared)] == shared
-  for old in ("minimum_allowed_z_position_during", "mix", "mix_position_from_liquid_surface"):
+  for old in (
+    "minimum_allowed_z_position_during",
+    "mix",
+    "mix_position_from_liquid_surface",
+    "z_fluid",
+    "z_bottom_search_offset",
+  ):
     assert old not in prep
 
 
@@ -3710,10 +3717,9 @@ _GOLDEN_DISPENSE_CALLS: Dict[
     [0, 1],
     {
       "minimum_traverse_height_end": 100.0,
-      "z_fluid": [10.0, 11.0],
+      "liquid_heights": [2.97, 3.97],
       "z_air": [60.0, 61.0],
       "minimum_allowed_z_positions_during": [5.0, 6.0],
-      "z_bottom_search_offset": [1.0, 1.5],
     },
   ),
   "times, speeds, volumes given": (
@@ -4157,14 +4163,14 @@ _GOLDEN_DISPENSE_FRAMES: Dict[str, List[str]] = {
     "0000280004000000a0401f0000001e006400170102000000170102000100280004000000a040280004000000"
     "c842280004000000004028000400cdcc4441280004000000f042280004000000a040280004001f855b402800"
     "0400000000002800040000000000280004000000803f06000400000000001e002c0017010200000028000400"
-    "000020412800040000007042170102000000280004000000803f28000400000000001e002400170102000100"
+    "000020412800040000007042170102000000280004000000004028000400000000001e002400170102000100"
     "280004000000000028000400000000000401020000002800040000007a431e00140017010200010017010200"
     "010028000400000090401e00140017010200010005000200000020000400010000001e002c01170102000000"
     "20000400010000001e002600170102000000280004001f854f41280004004861854228000400000000002800"
     "04000000a0401f0000001e006400170102000000170102000100280004000000c040280004000000c8422800"
     "040000000040280004009a99b941280004000000f042280004000000a040280004001f855b40280004000000"
     "00002800040000000000280004000000803f06000400000000001e002c001701020000002800040000003041"
-    "2800040000007442170102000000280004000000c03f28000400000000001e00240017010200010028000400"
+    "2800040000007442170102000000280004000000004028000400000000001e00240017010200010028000400"
     "0000000028000400000000000401020000002800040000007a431e0014001701020001001701020001002800"
     "0400000090401e0014001701020001000500020000002000040001000000",
   ],
@@ -4394,6 +4400,8 @@ def test_dispense_keywords_are_the_stars_in_its_order_and_the_preps_own_after():
   prep, star = _keywords(Pipettes.dispense), _keywords(STARPipettes.dispense)
   shared = [name for name in star if name in prep]
   assert prep[: len(shared)] == shared
+  for old in ("z_fluid", "z_bottom_search_offset", "auto_container_geometry"):
+    assert old not in prep
 
 
 @pytest.mark.parametrize(
