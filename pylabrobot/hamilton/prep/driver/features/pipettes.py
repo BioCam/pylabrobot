@@ -1148,8 +1148,8 @@ class Pipettes:
     # well; more above a trough or tube, whose fill can dome.
     self.search_start_clearance: float = 5.0
     self.well_search_start_clearance: float = 2.0
-    # A search for a floor stops looking this far below the modelled cavity bottom, in mm: the
-    # seating error of a plate, no more.
+    # A search, for liquid or a floor, stops looking this far below the modelled cavity bottom, in
+    # mm: the seating error of a plate, no more.
     self.search_limit_below_cavity_bottom: float = 1.0
     # A Z-touch dispense lifts the tip this far off the cavity bottom it touched, in mm, so the
     # orifice is not sealed on it.
@@ -6060,6 +6060,24 @@ class Pipettes:
       floors.append(height)
     return floors
 
+  def _get_liquid_search_end(self, channel: int, z_cavity_bottom: float) -> float:
+    """Where a channel's liquid search stops: `search_limit_below_cavity_bottom` under the bottom.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+      z_cavity_bottom: the modelled cavity bottom, on the deck in mm.
+
+    Returns:
+      The tip bottom height, in mm, no lower than the channel reaches.
+    """
+    end = round(z_cavity_bottom - self.search_limit_below_cavity_bottom, 2)
+    window = (
+      self.configuration.channels[channel].z_range
+      if channel < len(self.configuration.channels)
+      else None
+    )
+    return end if window is None else max(end, window[0])
+
   async def _search_liquid_of_batch(
     self,
     batch: ChannelBatch,
@@ -6073,13 +6091,14 @@ class Pipettes:
   ) -> List[float]:
     """Search for the liquid in the batch's containers, as `_probe_batch_liquid_heights`.
 
-    With volume tracking on, each container's tracker takes the measured volume, warning when it
-    is 20 % off. The tips stay at the surfaces found.
+    Down to `search_limit_below_cavity_bottom` under the modelled cavity bottom. With volume
+    tracking on, each container's tracker takes the measured volume, warning when it is 20 % off;
+    a surface under the model is warned of and books nothing. The tips stay at the surfaces found.
 
     Args:
       batch: the channels and which container each has, by job index.
       containers: per job.
-      z_cavity_bottom: per job, where the search ends, on the deck in mm.
+      z_cavity_bottom: per job, the modelled cavity bottom, on the deck in mm.
       z_top: per job, on the deck in mm; the search starts `well_search_start_clearance` above a
         well's, `search_start_clearance` above any other's.
       search_speed: in mm/s.
@@ -6096,10 +6115,13 @@ class Pipettes:
       self.well_search_start_clearance if isinstance(c, Well) else self.search_start_clearance
       for c in containers
     ]
+    ends = list(z_cavity_bottom)
+    for channel, job in zip(batch.channels, batch.indices):
+      ends[job] = self._get_liquid_search_end(channel, z_cavity_bottom[job])
     found = await self._probe_batch_liquid_heights(
       batch,
       containers,
-      z_cavity_bottom=z_cavity_bottom,
+      z_cavity_bottom=ends,
       z_start=[round(top + clearance, 2) for top, clearance in zip(z_top, clearances)],
       lld_modes=[self.LLDMode.CAPACITIVE] * len(containers),
       search_speed=search_speed,
@@ -6116,6 +6138,16 @@ class Pipettes:
       surfaces.append(height)
       container = containers[job]
       above_bottom = round(height - z_cavity_bottom[job], 2)
+      if above_bottom < 0:
+        # The plate sits lower than the model: the floor sent follows the surface found.
+        logger.warning(
+          "channel %d found the liquid of %s %.2f mm below its modelled cavity bottom; the floor "
+          "sent is the surface found",
+          channel,
+          container.name,
+          -above_bottom,
+        )
+        continue
       try:
         measured = container.compute_volume_from_height(above_bottom)
       except ValueError:
@@ -6457,6 +6489,9 @@ class Pipettes:
             sensitivity=clld_sensitivity,
           )
         )
+        # A surface under the modelled bottom lowers the floor sent, or the tip would stop above it.
+        if lowest is None and any(z < z_cavity_bottom[j] for j, z in zip(batch.indices, heights_z)):
+          lowest = [min(z_cavity_bottom[j], z) for j, z in zip(batch.indices, heights_z)]
         batch_modes = [self.LLDMode.OFF] * len(batch.indices)
       if on_ztouch:
         # The draw goes without LLD, at the floor touched; the check before any motion has the
@@ -6970,6 +7005,9 @@ class Pipettes:
             sensitivity=clld_sensitivity,
           )
         )
+        # A surface under the modelled bottom lowers the floor sent, or the tip would stop above it.
+        if lowest is None and any(z < z_cavity_bottom[j] for j, z in zip(batch.indices, heights_z)):
+          lowest = [min(z_cavity_bottom[j], z) for j, z in zip(batch.indices, heights_z)]
         batch_modes = [self.LLDMode.OFF] * len(batch.indices)
         # The search may have found more liquid than the model had: the room is checked again.
         for channel, job in zip(batch.channels, batch.indices):

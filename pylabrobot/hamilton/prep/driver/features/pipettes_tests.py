@@ -82,7 +82,7 @@ def _record(p: PrepSimulationDriver, only: Any = object, names: bool = False) ->
 
 
 def _clld_setup(second_session: bool, found: Optional[float]):
-  """A simulated Prep whose capacitive seeks find liquid `found` mm above their end, the bottom.
+  """A simulated Prep whose capacitive seeks find liquid `found` mm above the modelled bottom.
 
   None finds nothing. Every command is recorded with the link it went on.
   """
@@ -98,8 +98,9 @@ def _clld_setup(second_session: bool, found: Optional[float]):
   def answer(command: Any) -> PrepCmd.PrepZAxisSeekCapacitiveLld.Response:
     if found is None:
       return PrepCmd.PrepZAxisSeekCapacitiveLld.Response(lld_detected=False, detect_position=0.0)
+    # The search ends 1 mm under the modelled cavity bottom.
     return PrepCmd.PrepZAxisSeekCapacitiveLld.Response(
-      lld_detected=True, detect_position=command.position + found
+      lld_detected=True, detect_position=command.position + 1.0 + found
     )
 
   async def on_main(command, *args, **kwargs):
@@ -4781,6 +4782,41 @@ def test_shortfalls_warn_and_move_air_only_while_volumes_are_tracked(tracking):
         assert well.tracker.get_used_volume() == 150.0
       else:
         assert "the rest is air" not in warned
+      await p.stop()
+    finally:
+      set_volume_tracking(False)
+
+  _run(_t())
+
+
+def test_capacitive_search_goes_under_the_model_and_the_floor_follows_a_surface_found_there():
+  """The search ends 1 mm under the modelled bottom; a surface under it is warned of, books
+  nothing, and becomes the aspirate height and the floor sent."""
+
+  async def _t():
+    p, rack, plate, sent = _clld_setup(second_session=False, found=-0.5)
+    set_volume_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      await p.pipettes.pick_up_tips(rack["A1"], use_channels=[0])
+      well = plate.get_item("A1")
+      well.tracker.set_volume(100.0)
+      bottom = well.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z
+      sent.clear()
+      with patch.object(pipettes_logger, "warning") as warning:
+        await p.pipettes.aspirate(
+          [well], use_channels=[0], piston_volumes=[10.0], lld_mode=_CAPACITIVE
+        )
+      warned = " ".join(c.args[0] % c.args[1:] for c in warning.call_args_list)
+      assert "0.50 mm below its modelled cavity bottom" in warned
+      (seek,) = [c for _, c in sent if isinstance(c, PrepCmd.PrepZAxisSeekCapacitiveLld)]
+      assert seek.position - SIMULATED_Z_DRIVE_OFFSETS[0] == pytest.approx(bottom - 1.0, abs=0.02)
+      (draw,) = [c for _, c in sent if isinstance(c, _ASPIRATE_COMMANDS)]
+      entry = draw.aspirate_parameters[0]
+      assert entry.no_lld.z_fluid == pytest.approx(bottom - 0.5, abs=0.01)
+      assert entry.common.z_minimum == pytest.approx(bottom - 0.5, abs=0.01)
+      assert well.tracker.get_used_volume() == pytest.approx(90.0)
       await p.stop()
     finally:
       set_volume_tracking(False)
