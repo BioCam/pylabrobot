@@ -67,6 +67,12 @@ from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import (
   plan_batches,
   validate_channel_selections,
 )
+from pylabrobot.lib.liquid_handling.tip_presence_probing import (
+  probe_tip_inventory as _probe_tip_inventory,
+)
+from pylabrobot.lib.liquid_handling.tip_presence_probing import (
+  probe_tip_presence_via_pickup as _probe_tip_presence_via_pickup,
+)
 from pylabrobot.resources import Container, Coordinate, Tip, does_volume_tracking
 from pylabrobot.resources.errors import (
   HasTipError,
@@ -4867,6 +4873,98 @@ class Pipettes:
     if not isinstance(waste, Trash):
       raise RuntimeError("tips are discarded into the deck's waste block; this deck has none")
     await self.drop_tips([waste] * len(use_channels), use_channels=use_channels, **kwargs)
+
+  async def _require_ready_to_probe(
+    self, tip_spots: Sequence[TipSpot], use_channels: Sequence[int]
+  ) -> None:
+    """Refuse spots the model holds no tip in, and channels holding one, before anything moves.
+
+    A channel that already holds a tip would read as one that took the spot's: it is refused, not
+    put back into a spot it never came from.
+    """
+    empty = [spot.name for spot in tip_spots if not spot.tracker.has_tip]
+    if empty:
+      raise ValueError(
+        f"the model holds no tip in {empty}; only spots it holds a tip in can be probed"
+      )
+    sensed = await self.sense_tip_presence()
+    holding = [
+      ch
+      for ch in use_channels
+      if self.get_mounted_tip(ch) is not None or (ch < len(sensed) and sensed[ch])
+    ]
+    if holding:
+      raise HasTipError(f"{channels_named(holding)} holds a tip: probe with empty channels")
+
+  async def _pick_up_to_probe(self, tip_spots: List[TipSpot], use_channels: List[int]) -> None:
+    """`pick_up_tips` as the probe calls it."""
+    await self.pick_up_tips(tip_spots, use_channels=use_channels)
+
+  async def _drop_to_probe(self, tip_spots: List[TipSpot], use_channels: List[int]) -> None:
+    """`drop_tips` as the probe calls it."""
+    await self.drop_tips(tip_spots, use_channels=use_channels)
+
+  async def probe_tip_presence_via_pickup(
+    self, tip_spots: List[TipSpot], use_channels: Optional[List[int]] = None
+  ) -> Dict[str, bool]:
+    """Find which spots hold a tip by picking each up and putting it back, as legacy's.
+
+    After a pick-up that fails, the sleeve sensors say which channels came up empty; the tips
+    taken go back into their own spots. Only spots the model holds a tip in can be probed; the
+    trackers are left as the pick-up and the drop leave them.
+
+    Args:
+      tip_spots: the spots to probe.
+      use_channels: the channel for each spot, 0-indexed from the back. The first ones when None.
+
+    Returns:
+      Each spot's name, and whether it held a tip.
+
+    Raises:
+      ValueError: If the counts differ, a channel is given twice, or the model holds no tip in a
+        spot, before anything moves.
+      HasTipError: If a channel to probe with holds a tip, before anything moves.
+    """
+    tip_spots = list(tip_spots)
+    use_channels = list(range(len(tip_spots))) if use_channels is None else list(use_channels)
+    await self._require_ready_to_probe(tip_spots, use_channels)
+    return await _probe_tip_presence_via_pickup(
+      tip_spots,
+      use_channels,
+      pick_up_tips=self._pick_up_to_probe,
+      drop_tips=self._drop_to_probe,
+      sense_tip_presence=self.sense_tip_presence,
+    )
+
+  async def probe_tip_inventory(
+    self, tip_spots: List[TipSpot], use_channels: Optional[List[int]] = None
+  ) -> Dict[str, bool]:
+    """Probe any number of spots, as many at a time as there are channels.
+
+    As `probe_tip_presence_via_pickup`, the spots dealt to the channels in turn.
+
+    Args:
+      tip_spots: the spots to probe, in the order they are dealt to the channels.
+      use_channels: the channels to probe with, 0-indexed from the back. Every channel when None.
+
+    Returns:
+      Each spot's name, and whether it held a tip.
+
+    Raises:
+      ValueError: If a channel is given twice, or the model holds no tip in a spot, before
+        anything moves.
+      HasTipError: If a channel to probe with holds a tip, before anything moves.
+    """
+    tip_spots = list(tip_spots)
+    use_channels = list(range(self.num_channels)) if use_channels is None else list(use_channels)
+    await self._require_ready_to_probe(tip_spots, use_channels)
+    return await _probe_tip_inventory(
+      tip_spots,
+      use_channels,
+      pick_up_tips=self._pick_up_to_probe,
+      drop_tips=self._drop_to_probe,
+      sense_tip_presence=self.sense_tip_presence,
+    )
 
   async def _move_relative_and_check(
     self, command: PrepCmd.PrepCommand, expected: Dict[int, Coordinate], tolerance: float = 1.0

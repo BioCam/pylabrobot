@@ -5258,6 +5258,90 @@ def _probe_setup():
   return p, rack, sent
 
 
+def test_probing_full_spots_picks_each_tip_up_and_puts_it_back():
+  async def _t():
+    p, rack, sent = _probe_setup()
+    set_tip_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      spots = rack["A1:B1"]
+      found = await p.pipettes.probe_tip_presence_via_pickup(spots)
+      assert found == {spot.name: True for spot in spots}
+      assert sent == ["PrepPickUpTips", "PrepDropTips"]
+      assert [spot.tracker.has_tip for spot in spots] == [True, True]
+      assert [p.pipettes.get_mounted_tip(ch) for ch in (0, 1)] == [None, None]
+    finally:
+      set_tip_tracking(False)
+    await p.stop()
+
+  _run(_t())
+
+
+def test_a_spot_that_gives_no_tip_is_found_by_the_sleeve_sensors_and_the_other_tip_goes_back():
+  """A pick-up that fails on the front channel, as the device answers it; the rear tip goes back."""
+
+  async def _t():
+    p, rack, sent = _probe_setup()
+    set_tip_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      spots = rack["A1:B1"]
+      pick_up = p.pipettes.pick_up_tips
+
+      async def front_misses(tip_spots, use_channels):
+        await pick_up(tip_spots[:1], use_channels=use_channels[:1])
+        raise ChannelizedError(errors={1: RuntimeError("A tip is not held.")})
+
+      with patch.object(p.pipettes, "pick_up_tips", front_misses):
+        found = await p.pipettes.probe_tip_presence_via_pickup(spots)
+      assert found == {spots[0].name: True, spots[1].name: False}
+      assert sent == ["PrepPickUpTips", "PrepDropTips"]
+      assert [p.pipettes.get_mounted_tip(ch) for ch in (0, 1)] == [None, None]
+      # The model is the caller's to correct: the missed spot still holds its tip there.
+      assert [spot.tracker.has_tip for spot in spots] == [True, True]
+    finally:
+      set_tip_tracking(False)
+    await p.stop()
+
+  _run(_t())
+
+
+def test_a_spot_the_model_holds_no_tip_in_is_refused_before_anything_moves():
+  async def _t():
+    p, rack, sent = _probe_setup()
+    await p.setup()
+    assert p.pipettes is not None
+    rack.get_item("B1").tracker.remove_tip()
+    for probe in (p.pipettes.probe_tip_presence_via_pickup, p.pipettes.probe_tip_inventory):
+      with pytest.raises(ValueError, match="holds no tip in"):
+        await probe(rack["A1:B1"])
+    assert sent == []
+    await p.stop()
+
+  _run(_t())
+
+
+def test_the_inventory_of_a_column_takes_two_spots_at_a_time():
+  async def _t():
+    p, rack, sent = _probe_setup()
+    set_tip_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      column = rack["A1:H1"]
+      found = await p.pipettes.probe_tip_inventory(column)
+      assert found == {spot.name: True for spot in column}
+      assert sent == ["PrepPickUpTips", "PrepDropTips"] * 4
+      assert all(spot.tracker.has_tip for spot in column)
+    finally:
+      set_tip_tracking(False)
+    await p.stop()
+
+  _run(_t())
+
+
 def _front_missed(p: PrepSimulationDriver) -> ChannelizedError:
   """What the session raises for a pick-up the front channel found no tip for.
 
@@ -5339,3 +5423,53 @@ def test_a_non_pickup_error_keeps_the_devices_own_error():
   )
   command = object()
   assert _keyed_by_node(error, {0x00EC: 0, 0x00EE: 1}, command).errors == {0: cause}  # type: ignore
+
+
+def test_the_probe_finds_the_front_spot_empty_and_puts_the_rear_tip_back():
+  """As the device answered it at 21:03: the rear took G7's tip, the front met none in H7."""
+
+  async def _t():
+    p, rack, sent = _probe_setup()
+    set_tip_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      spots = rack["A1:B1"]
+      pipettes = p.pipettes
+
+      async def sensed():  # the sleeve sensors as the device read them: what each channel holds
+        return [pipettes.get_mounted_tip(ch) is not None for ch in range(2)]
+
+      with _pick_ups_missed_by_the_front(p), patch.object(pipettes, "sense_tip_presence", sensed):
+        found = await p.pipettes.probe_tip_presence_via_pickup(spots)
+      assert found == {spots[0].name: True, spots[1].name: False}
+      assert sent == ["PrepPickUpTips", "PrepDropTips"]
+      assert [p.pipettes.get_mounted_tip(ch) for ch in (0, 1)] == [None, None]
+      assert spots[0].tracker.has_tip
+    finally:
+      set_tip_tracking(False)
+    await p.stop()
+
+  _run(_t())
+
+
+def test_probing_with_a_channel_that_holds_a_tip_is_refused_before_anything_moves():
+  """Its tip would read as the spot's and be put into a spot it never came from."""
+
+  async def _t():
+    p, rack, sent = _probe_setup()
+    set_tip_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      await p.pipettes.pick_up_tips(rack["H12"], use_channels=[1])
+      sent.clear()
+      for probe in (p.pipettes.probe_tip_presence_via_pickup, p.pipettes.probe_tip_inventory):
+        with pytest.raises(HasTipError, match="holds a tip"):
+          await probe(rack["A1:B1"], use_channels=[0, 1])
+      assert sent == []
+    finally:
+      set_tip_tracking(False)
+    await p.stop()
+
+  _run(_t())
