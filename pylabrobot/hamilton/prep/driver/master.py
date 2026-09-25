@@ -183,7 +183,7 @@ class ChannelDriveMap:
   channels that have one; the 8-channel head's channels do not. So are the
   channel's ``Calibration`` object (which starts and stops continuous cLLD
   detection), its ``CLld`` object (which reports it), its ``Tadm`` object (its TADM pressure
-  and buffer), and its Z axis (``ZAxis``).
+  and buffer), its Z axis (``ZAxis``) and its dispensing drive (``Dispenser.DDrive``).
   """
 
   sleeve_sensor_addrs: List[Address]
@@ -195,6 +195,7 @@ class ChannelDriveMap:
   clld_addrs: List[Address] = field(default_factory=list)
   zaxis_addrs: List[Address] = field(default_factory=list)
   tadm_addrs: List[Address] = field(default_factory=list)
+  ddrive_addrs: List[Address] = field(default_factory=list)
 
   @property
   def num_channels_discovered(self) -> int:
@@ -213,6 +214,7 @@ class ChannelDriveMap:
       "clld_addrs": list(self.clld_addrs),
       "zaxis_addrs": list(self.zaxis_addrs),
       "tadm_addrs": list(self.tadm_addrs),
+      "ddrive_addrs": list(self.ddrive_addrs),
     }
 
 
@@ -910,6 +912,7 @@ class PrepDriver:
     clld: List[Address] = []
     zaxis: List[Address] = []
     tadm: List[Address] = []
+    ddrive: List[Address] = []
 
     for ch_root in channel_root_addrs:
       top = await intro.find_children_by_name(ch_root, "Channel", "NodeInformation")
@@ -922,7 +925,7 @@ class PrepDriver:
         continue
 
       axes = await intro.find_children_by_name(
-        channel_addr, "Squeeze", "ZAxis", "YAxis", "Calibration", "CLld", "Tadm"
+        channel_addr, "Squeeze", "ZAxis", "YAxis", "Calibration", "CLld", "Tadm", "Dispenser"
       )
       if (sq_parent := axes.get("Squeeze")) is not None:
         sq = await intro.find_children_by_name(sq_parent, "SDrive")
@@ -944,6 +947,10 @@ class PrepDriver:
         clld.append(cl)
       if (td := axes.get("Tadm")) is not None:
         tadm.append(td)
+      if (dispenser := axes.get("Dispenser")) is not None:
+        dd = await intro.find_children_by_name(dispenser, "DDrive")
+        if "DDrive" in dd:
+          ddrive.append(dd["DDrive"])
 
     logger.debug("Discovered %d %s channel drive pair(s)", len(channel_root_addrs), root_name)
     return ChannelDriveMap(
@@ -956,6 +963,7 @@ class PrepDriver:
       clld_addrs=clld,
       zaxis_addrs=zaxis,
       tadm_addrs=tadm,
+      ddrive_addrs=ddrive,
     )
 
   # ----------------------------------------

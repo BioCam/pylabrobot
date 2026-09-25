@@ -3717,6 +3717,27 @@ class PrepCLldGetStatus(PrepStatusRequest["PrepCLldGetStatus.Response"]):
 
 
 @dataclass(frozen=True)
+class PrepDDriveMoveAbsolute(PrepCommand[None]):
+  """Move a channel's dispensing drive to a position, in uL (cmd=2, dest=Dispenser.DDrive)."""
+
+  command_id = 2
+  firmware_path = None
+  dest: Address  # type: ignore[misc]
+  # Defaults only because `dest` comes first; every caller names them.
+  volume: F32 = math.nan
+  speed: F32 = math.nan
+
+  def build_parameters(self) -> HoiParams:
+    """Encode fields in firmware-defined order."""
+    return HoiParams().add(self.volume, F32).add(self.speed, F32)
+
+  @classmethod
+  def parse_response_parameters(cls, data: bytes) -> None:
+    """Decode the declared success response."""
+    return None
+
+
+@dataclass(frozen=True)
 class PrepTadmGetPressure(PrepStatusRequest["PrepTadmGetPressure.Response"]):
   """Get a channel's live TADM pressure, in sensor counts (cmd=7, dest=Tadm)."""
 
