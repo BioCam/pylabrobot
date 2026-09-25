@@ -190,6 +190,10 @@ class PipettesConfiguration:
   """Counted in increments per second squared, unlike the Z drive's."""
   dispensing_drive_current_limit_range: Tuple[int, int] = (0, 7)
   dispensing_drive_volume_range_increments: Tuple[int, int] = (0, 26_666)
+  # `Px DS`, the piston moved where it stands: its target (-45 to 1250 uL) and acceleration.
+  dispensing_drive_position_range_increments: Tuple[int, int] = (-960, 26_666)
+  dispensing_drive_move_acceleration_range_increments: Tuple[int, int] = (5, 600)
+  """Counted in thousands of increments per second squared, unlike `Px DC`'s."""
   # `Px DC`, the standalone air draw: its volume and its mechanical clearance steps.
   blow_out_air_draw_range_increments: Tuple[int, int] = (0, 9_999)
   mechanical_clearance_steps_range: Tuple[int, int] = (0, 999)
@@ -2003,6 +2007,176 @@ class Pipettes:
     if shaft is None or not shaft.has_tip():
       return None
     return cast(Tip, shaft.release_tip())
+
+  # -- emptying tips -------------------------------------------------------------------------------
+
+  async def _unchecked_fw_dispensing_drive_move(
+    self,
+    channel: int,
+    distance: int,
+    speed: int,
+    acceleration: int,
+    current_limit: int,
+  ) -> None:
+    """Send the piston move as it is given, in dispensing drive increments. `Px DS`.
+
+    Args:
+      channel: 0-indexed from the back.
+      distance: signed, in increments; positive draws, negative pushes (`ds`, `dt`).
+      speed: in increments/s (`dv`).
+      acceleration: in thousands of increments/s2 (`dr`).
+      current_limit: 0 to 7 (`dw`).
+    """
+    await self._driver.send_command(
+      module=self.channel_id(channel),
+      command="DS",
+      ds=f"{abs(distance):05}",
+      dt="0" if distance >= 0 else "1",
+      dv=f"{speed:05}",
+      dr=f"{acceleration:03}",
+      dw=f"{current_limit}",
+    )
+
+  async def dispensing_drive_move_to_uL_position(
+    self,
+    channel: int,
+    position: float,
+    *,
+    flow_rate: float = 200.0,
+    acceleration: float = 3000.0,
+    current_limit: int = 5,
+  ) -> None:
+    """Move one channel's piston to a position where the tip stands, and read it back. `Px DS`.
+
+    Reads the piston first: the command moves by a distance. A push sends the tip's held
+    transport air out first. The tip's tracker is left alone.
+
+    Args:
+      channel: 0-indexed from the back.
+      position: in uL, 0.0 at rest; -45.0 is the bottom limit.
+      flow_rate: in uL/s.
+      acceleration: in uL/s2.
+      current_limit: 0 to 7.
+
+    Raises:
+      ValueError: A field out of the drive's range, before anything is sent.
+    """
+    self._require_channel(channel)
+    c = self.configuration
+    target = c.dispensing_drive_uL_to_increments(position)
+    dv = c.dispensing_drive_uL_to_increments(flow_rate)
+    dr = round(c.dispensing_drive_uL_to_increments(acceleration) / 1000)
+    for checked, (low, high), name in (
+      (target, c.dispensing_drive_position_range_increments, "position, in increments,"),
+      (dv, c.dispensing_drive_speed_range_increments, "flow_rate, in increments/s,"),
+      (dr, c.dispensing_drive_move_acceleration_range_increments, "acceleration, in increments,"),
+      (current_limit, c.dispensing_drive_current_limit_range, "current_limit"),
+    ):
+      if not low <= checked <= high:
+        raise ValueError(f"{name} must be between {low} and {high}, is {checked}")
+    standing = await self.dispensing_drive_request_uL_position(channel)
+    moved = round(position - standing, 1)
+    distance = c.dispensing_drive_uL_to_increments(abs(moved))
+    await self._unchecked_fw_dispensing_drive_move(
+      channel, distance if moved >= 0 else -distance, dv, dr, current_limit
+    )
+    if moved < 0:
+      left = round(self._held_transport_air.pop(channel, 0.0) + moved, 1)
+      if left > 0:
+        self._held_transport_air[channel] = left
+    await self.dispensing_drive_request_uL_position(channel)
+
+  async def empty_tip(
+    self,
+    channel: int,
+    position: Optional[float] = None,
+    *,
+    flow_rate: float = 200.0,
+    acceleration: float = 3000.0,
+    current_limit: int = 5,
+    reset_dispensing_drive_after: bool = True,
+  ) -> None:
+    """Push everything out of one channel's tip where it stands, the piston at or below rest.
+
+    The tip's tracker goes to 0; the liquid goes nowhere tracked. Returning to 0 draws the piston
+    back up, so the tip should be out of the liquid.
+
+    Args:
+      channel: 0-indexed from the back.
+      position: where to take the piston, in uL, at most 0.0. The bottom limit, -45.0, when None.
+      flow_rate: in uL/s.
+      acceleration: in uL/s2.
+      current_limit: 0 to 7.
+      reset_dispensing_drive_after: whether the piston returns to 0 afterwards.
+
+    Raises:
+      ValueError: A position above rest, or a field out of the drive's range, before anything is
+        sent.
+    """
+    if position is None:
+      bottom = self.configuration.dispensing_drive_position_range_increments[0]
+      position = self.configuration.dispensing_drive_increments_to_uL(bottom)
+    if position > 0:
+      raise ValueError(
+        f"position must be at most 0.0 uL to empty a tip, is {position}; "
+        "`dispensing_drive_move_to_uL_position` moves the piston anywhere"
+      )
+    targets = [position, 0.0] if reset_dispensing_drive_after else [position]
+    for target in targets:
+      await self.dispensing_drive_move_to_uL_position(
+        channel,
+        target,
+        flow_rate=flow_rate,
+        acceleration=acceleration,
+        current_limit=current_limit,
+      )
+    tip = self.get_mounted_tip(channel)
+    if tip is not None:
+      tip.tracker.set_volume(0.0)
+
+  async def empty_tips(
+    self,
+    channels: Optional[List[int]] = None,
+    position: Optional[float] = None,
+    *,
+    flow_rate: float = 200.0,
+    acceleration: float = 3000.0,
+    current_limit: int = 5,
+    reset_dispensing_drive_after: bool = True,
+  ) -> None:
+    """Empty several channels' tips where they stand, the channels in parallel. See `empty_tip`.
+
+    Args:
+      channels: 0-indexed from the back. Every channel that senses a tip when None.
+      position: where to take the pistons, in uL, at most 0.0. The bottom limit when None.
+      flow_rate: in uL/s.
+      acceleration: in uL/s2.
+      current_limit: 0 to 7.
+      reset_dispensing_drive_after: whether the pistons return to 0 afterwards.
+
+    Raises:
+      ValueError: A channel the device does not have or named twice, or a field out of range.
+    """
+    if channels is None:
+      presence = await self.sense_tip_presence()
+      channels = [channel for channel, mounted in enumerate(presence) if mounted]
+    for channel in channels:
+      self._require_channel(channel)
+    if len(set(channels)) != len(channels):
+      raise ValueError(f"channels must each be named once, are {channels}")
+    await asyncio.gather(
+      *(
+        self.empty_tip(
+          channel,
+          position,
+          flow_rate=flow_rate,
+          acceleration=acceleration,
+          current_limit=current_limit,
+          reset_dispensing_drive_after=reset_dispensing_drive_after,
+        )
+        for channel in channels
+      )
+    )
 
   # -- channel initialization ------------------------------------------------
 
