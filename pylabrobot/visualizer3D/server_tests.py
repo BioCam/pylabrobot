@@ -731,6 +731,40 @@ class MeshTests(unittest.TestCase):
         self.assertIsNone(meshes[escaping], escaping)
 
 
+class WaitForBrowserTests(unittest.IsolatedAsyncioTestCase):
+  """A simulated run is over in milliseconds: it waits for a page that is drawing, or none sees it."""
+
+  async def asyncSetUp(self):
+    fs_port, ws_port = free_ports(2)
+    self.viewer = Viewer3D(empty_facility(), open_browser=False, fs_port=fs_port, ws_port=ws_port)
+    await self.viewer.start()
+
+  async def asyncTearDown(self):
+    await self.viewer.stop()
+
+  async def say_hello(self, **data: Any) -> None:
+    with contextlib.redirect_stdout(io.StringIO()):
+      async with websockets.connect(self.viewer.ws_url, max_size=None) as ws:
+        await ws.send(json.dumps({"event": "hello", "data": data}))
+        await (await ws.ping())  # answered once the hello before it has been read
+
+  async def test_the_wait_ends_when_a_page_says_it_is_drawing(self):
+    waiting = asyncio.ensure_future(self.viewer.wait_for_browser(timeout=5))
+    await asyncio.sleep(0.1)
+    self.assertFalse(waiting.done())
+    await self.say_hello(backend="WebGL2")
+    await asyncio.wait_for(waiting, 1)
+
+  async def test_a_page_that_could_not_draw_does_not_end_the_wait(self):
+    await self.say_hello(backend=None, error="this browser offers neither WebGPU nor WebGL2")
+    with self.assertRaises(asyncio.TimeoutError):
+      await self.viewer.wait_for_browser(timeout=0.2)
+
+  async def test_waiting_before_start_is_refused(self):
+    with self.assertRaises(RuntimeError):
+      await Viewer3D(empty_facility(), open_browser=False).wait_for_browser(timeout=0.1)
+
+
 class AccessTests(unittest.IsolatedAsyncioTestCase):
   """Only the page this viewer served, reached by a name this machine answers to, may watch."""
 

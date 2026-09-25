@@ -17,6 +17,10 @@ It opens a browser on `http://127.0.0.1:1338/#token=<token>`, the link it prints
 `?view=iso` or `?view=front` (before the `#`) picks another, and `?quality=low` pins the low-cost
 level. From the console, `plrViewer.focus("destination_0")` frames and selects a named resource.
 
+A simulated run is over in milliseconds, and a script that ends stops its viewer with it. Call
+`await viewer.wait_for_browser()` before the run, as `demo.py` does: it returns once a page says it
+is drawing, so the page shows the run from the start.
+
 `demo.py` sets the STAR deck's height to the top of the X-arm riding above it (334.7 mm of
 channel travel plus the arm's own 140 mm). The deck's own `size_z` of 900 mm is the working
 envelope from the instrument's configuration file, not the deck's extent: drawn as is, it
@@ -250,7 +254,7 @@ ports while the bind fails with `EADDRINUSE`; any other error is raised.
 | `scene` | the first message to a new client (the kept scene, not a rebuild); broadcast, with a full `state` after it, when a name appears in or disappears from the tree | `protocol`, `epoch`, `stats`, `models`, `instances` |
 | `state` | a snapshot after every `scene`; a delta whenever a batch of tracker updates holds something that looks different from what was last sent | `epoch`, `states`, `of`, `locations` |
 | `moves` | the tree changed shape but holds the same names: a reparent or a relocation, applied to the scene the page has | `epoch`, `moves` |
-| `hello` | page to server, once per socket: what it draws with, or from `boot.js` why it could not | `backend`, `renderer`, `software`, `quality`, `userAgent`, `error` |
+| `hello` | page to server, once per socket: what it draws with, or from `boot.js` why it could not; the first without an `error` ends `wait_for_browser` | `backend`, `renderer`, `software`, `quality`, `userAgent`, `error` |
 
 **`scene`.** `protocol` is `PROTOCOL` in `server.py`, currently 1, and the page holds its own
 copy in `constants.js`: on a mismatch `rebuildScene` draws nothing and raises `plr:mismatch`, and

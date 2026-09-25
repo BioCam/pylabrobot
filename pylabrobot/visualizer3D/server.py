@@ -201,6 +201,7 @@ class Viewer3D:
   _scene_payload: Optional[Dict[str, Any]]
   _scene: Optional[Scene]
   _refused_a_token: bool
+  _browser_drawing: Optional[asyncio.Event]
   _moved: Set[str]
   _scene_timer: Optional[asyncio.TimerHandle]
   _subscribed: Dict[int, Tuple[Resource, Callable[[Dict[str, Any]], None]]]
@@ -582,6 +583,8 @@ class Viewer3D:
     if data.get("software") is True:
       drawing += " - software rendering, expect it to be slow"
     print(f"viewer: a browser connected, drawing with {drawing}")
+    if self._browser_drawing is not None:
+      self._browser_drawing.set()
     return True
 
   async def _handler(self, websocket: ServerConnection) -> None:
@@ -769,6 +772,7 @@ class Viewer3D:
     self._scene_timer = None
     self.rebuilds = 0  # how many scene rebuilds a run actually cost
     self.clients_seen = []  # what each page said it draws with
+    self._browser_drawing = None  # made on the loop `start` runs on
 
     # Every resource this viewer listens to, with the callback it gave, so `stop` can take it back.
     # By identity: a tip compares by value and is not hashable.
@@ -780,6 +784,7 @@ class Viewer3D:
 
   async def start(self) -> None:
     self._loop = asyncio.get_running_loop()
+    self._browser_drawing = asyncio.Event()
     # Off the loop, before a client can connect: the package walk for model files, and the size of
     # the tree as one node per resource, which the stats panel compares against.
     self._legacy_bytes, _ = await asyncio.gather(
@@ -804,6 +809,22 @@ class Viewer3D:
     print(f"viewer on {self.url}  (websocket {self.ws_port})")
     if self.open_browser:
       webbrowser.open(self.url)
+
+  async def wait_for_browser(self, timeout: Optional[float] = None) -> None:
+    """Wait until a browser has connected and says it is drawing the scene.
+
+    A simulated run takes milliseconds: call this before it, so a page shows it from the start.
+
+    Args:
+      timeout: seconds to wait, or None to wait for as long as it takes.
+
+    Raises:
+      RuntimeError: the viewer has not been started.
+      asyncio.TimeoutError: no browser was drawing within `timeout`.
+    """
+    if self._browser_drawing is None:
+      raise RuntimeError("start the viewer before waiting for a browser")
+    await asyncio.wait_for(self._browser_drawing.wait(), timeout)
 
   async def stop(self) -> None:
     """Close both servers and stop listening to the tree.

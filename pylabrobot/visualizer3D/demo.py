@@ -284,7 +284,7 @@ async def main() -> None:
   viewer = Viewer3D(facility, name="demo.py")
   await viewer.start()
 
-  await asyncio.sleep(1.5)  # let a browser connect before anything moves
+  await viewer.wait_for_browser()  # nothing moves before a page is drawing
   await run(facility)
   # The arm and the iSWAP move at once, as they do on the device: they are on the same carriage
   # and neither waits for the other.
