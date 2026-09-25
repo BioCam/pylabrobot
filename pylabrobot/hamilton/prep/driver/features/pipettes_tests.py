@@ -41,6 +41,7 @@ from pylabrobot.hamilton.star.liquid_classes.mapping import get_star_liquid_clas
 from pylabrobot.hamilton.transport.tcp.hoi_error import HoiError
 from pylabrobot.hamilton.transport.tcp.packets import Address
 from pylabrobot.hamilton.transport.tcp.wire_types import HcResultEntry
+from pylabrobot.legacy.liquid_handling.errors import ChannelizedError
 from pylabrobot.lib.liquid_handling.mix import Mix
 from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import ChannelBatch
 from pylabrobot.resources import Container, Coordinate, PetriDish, Resource, Well
@@ -5246,3 +5247,95 @@ def test_transport_air_height_is_the_pipetting_height_plus_the_pull_out_distance
     await p.stop()
 
   _run(_t())
+
+
+def _probe_setup():
+  """A simulated Prep over a full 50 uL rack; every pick-up and drop recorded."""
+  deck = PrepDeck()
+  rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
+  p = PrepSimulationDriver(deck=deck)
+  sent = _record(p, only=(PrepCmd.PrepPickUpTips, PrepCmd.PrepDropTips), names=True)
+  return p, rack, sent
+
+
+def _front_missed(p: PrepSimulationDriver) -> ChannelizedError:
+  """What the session raises for a pick-up the front channel found no tip for.
+
+  The answer lists the front's entry alone, so the session keys it by its place: channel 0.
+  """
+  assert p.pipettes is not None
+  front = p.pipettes.channels[1].zdrive
+  assert front is not None
+  entry = HcResultEntry(
+    module_id=1, node_id=front.node, object_id=0x100, interface_id=1, action_id=1, result=0x0F08
+  )
+  cause = RuntimeError("A tip is not held.")
+  return ChannelizedError(
+    errors={0: cause}, raw_response=b"", hoi_entries=[entry], hoi_exceptions={0: cause}
+  )
+
+
+def _pick_ups_missed_by_the_front(p: PrepSimulationDriver):
+  """The session's execute, with every pick-up answered as the front channel missing its tip."""
+  execute = p.io._session.execute
+
+  async def missed(command, *args, **kwargs):
+    answer = await execute(command, *args, **kwargs)
+    if isinstance(getattr(command, "request", command), PrepCmd.PrepPickUpTips):
+      raise _front_missed(p)
+    return answer
+
+  return patch.object(p.io._session, "execute", missed)
+
+
+def test_a_channel_error_is_keyed_by_the_node_that_sent_it_not_its_place_in_the_answer():
+  """The front's `0x0F08`, alone in the answer, is the front's: the rear keeps the tip it took."""
+
+  async def _t():
+    p, rack, _ = _probe_setup()
+    set_tip_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      spots = rack["A1:B1"]
+      with _pick_ups_missed_by_the_front(p):
+        with pytest.raises(ChannelizedError) as raised:
+          await p.pipettes.pick_up_tips(spots, use_channels=[0, 1])
+      assert list(raised.value.errors) == [1]
+      assert isinstance(raised.value.errors[1], NoTipError)
+      assert "channel 1 picked up no tip" in str(raised.value.errors[1])
+      assert p.pipettes.get_mounted_tip(0) is not None
+      assert p.pipettes.get_mounted_tip(1) is None
+    finally:
+      set_tip_tracking(False)
+    await p.stop()
+
+  _run(_t())
+
+
+def test_an_error_from_a_node_that_is_no_pipette_channel_is_left_as_it_was():
+  from pylabrobot.hamilton.prep.driver.master import _keyed_by_node
+
+  entry = HcResultEntry(
+    module_id=1, node_id=0x00E8, object_id=0x100, interface_id=1, action_id=1, result=0x0F08
+  )
+  cause = RuntimeError("A tip is not held.")
+  error = ChannelizedError(
+    errors={3: cause}, raw_response=b"", hoi_entries=[entry], hoi_exceptions={0: cause}
+  )
+  command = PrepCmd.PrepPickUpTips.__new__(PrepCmd.PrepPickUpTips)
+  assert _keyed_by_node(error, {0x00EC: 0, 0x00EE: 1}, command).errors == {3: cause}
+
+
+def test_a_non_pickup_error_keeps_the_devices_own_error():
+  from pylabrobot.hamilton.prep.driver.master import _keyed_by_node
+
+  entry = HcResultEntry(
+    module_id=1, node_id=0x00EC, object_id=0x100, interface_id=1, action_id=1, result=0x0F10
+  )
+  cause = RuntimeError("pLLD did not detect liquid.")
+  error = ChannelizedError(
+    errors={0: cause}, raw_response=b"", hoi_entries=[entry], hoi_exceptions={0: cause}
+  )
+  command = object()
+  assert _keyed_by_node(error, {0x00EC: 0, 0x00EE: 1}, command).errors == {0: cause}  # type: ignore

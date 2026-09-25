@@ -34,8 +34,10 @@ from pylabrobot.hamilton.transport.tcp.session import TCPSession
 from pylabrobot.hamilton.transport.tcp.tcp import HamiltonTCPClient
 from pylabrobot.hamilton.transport.tcp.wire_types import HamiltonDataType, HcResultEntry
 from pylabrobot.io.socket import Socket
+from pylabrobot.legacy.liquid_handling.errors import ChannelizedError
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.deck import Deck
+from pylabrobot.resources.errors import NoTipError
 from pylabrobot.resources.hamilton.core_grippers import HamiltonCoreGrippers
 from pylabrobot.resources.hamilton.prep_decks import PrepDeck
 from pylabrobot.resources.hamilton.tip_creators import (
@@ -163,6 +165,35 @@ def _hamilton_tip_for_reach(reach: float, has_filter: bool, name: str) -> Option
   if not matching:
     return None
   return next((tip for tip in matching if tip.has_filter == has_filter), matching[0])
+
+
+# A pick-up that met no tip: "A tip is not held.", from the channel node that met none.
+_TIP_NOT_HELD = 0x0F08
+_PICK_UPS = (PrepCmd.PrepPickUpTips, PrepCmd.PrepPickUpTipsById)
+
+
+def _keyed_by_node(
+  error: ChannelizedError, channel_of_node: Dict[int, int], command: TCPCommand
+) -> ChannelizedError:
+  """Key a device's per-channel errors by the node each entry came from, not its place in it.
+
+  The answer lists only the channels that failed, so its first entry is not the first channel asked.
+  Left as it is when an entry comes from no pipette channel node (the 8-channel head's probes). A
+  pick-up's `0x0F08` becomes a `NoTipError`.
+  """
+  entries = error.kwargs.get("hoi_entries") or []
+  exceptions = error.kwargs.get("hoi_exceptions") or {}
+  if not entries or any(entry.node_id not in channel_of_node for entry in entries):
+    return error
+  keyed: Dict[int, Exception] = {}
+  for index, entry in enumerate(entries):
+    channel = channel_of_node[entry.node_id]
+    cause = exceptions.get(index) or error.errors.get(channel) or error
+    if isinstance(command, _PICK_UPS) and entry.result == _TIP_NOT_HELD:
+      cause = NoTipError(f"channel {channel} picked up no tip: {cause}")
+    keyed.setdefault(channel, cause)
+  error.errors = keyed
+  return error
 
 
 def _refused_with(error: BaseException, code: int) -> bool:
@@ -728,6 +759,16 @@ class PrepDriver:
       ) from exc
     return _ResolvedPrepCommand(dest=address, request=command)
 
+  def _channel_of_node(self) -> Dict[int, int]:
+    """Each pipette channel's firmware node, and the channel, 0-indexed from the back."""
+    if self.pipettes is None:
+      return {}
+    return {
+      channel.zdrive.node: index
+      for index, channel in enumerate(self.pipettes.channels)
+      if channel.zdrive is not None
+    }
+
   async def send_command(
     self, command: TCPCommand[ResultT], *, read_timeout: Optional[float] = None
   ) -> ResultT:
@@ -747,10 +788,13 @@ class PrepDriver:
     read_timeout = self.default_read_timeout if read_timeout is None else read_timeout
     session = self.io._session
     resolved = await self._resolve_command(command)
-    if isinstance(resolved, _ResolvedPrepCommand):
-      data = await session.execute(resolved, read_timeout=read_timeout)
-      return command.parse_response_parameters(data)
-    return await session.execute(command, read_timeout=read_timeout)
+    try:
+      if isinstance(resolved, _ResolvedPrepCommand):
+        data = await session.execute(resolved, read_timeout=read_timeout)
+        return command.parse_response_parameters(data)
+      return await session.execute(command, read_timeout=read_timeout)
+    except ChannelizedError as error:
+      raise _keyed_by_node(error, self._channel_of_node(), command)
 
   async def send_command_on_second_session(
     self, command: TCPCommand[ResultT], *, read_timeout: Optional[float] = None
@@ -773,7 +817,10 @@ class PrepDriver:
     if isinstance(command, PrepCommand) and command.dest == _UNRESOLVED:
       raise RuntimeError(f"{type(command).__name__} needs a dest= on the second session")
     read_timeout = self.default_read_timeout if read_timeout is None else read_timeout
-    return await self.second_io._session.execute(command, read_timeout=read_timeout)
+    try:
+      return await self.second_io._session.execute(command, read_timeout=read_timeout)
+    except ChannelizedError as error:
+      raise _keyed_by_node(error, self._channel_of_node(), command)
 
   async def exchange(
     self, command: TCPCommand[object], *, read_timeout: Optional[float] = None
