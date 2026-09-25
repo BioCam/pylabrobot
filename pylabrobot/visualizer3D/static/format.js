@@ -67,6 +67,14 @@ export function withUnit(key, value) {
   return unit ? `${fmt(value)}${NBSP}${unit}` : fmt(value);
 }
 
+// The committed volume against the capacity, which a tip's state and model carry under other
+// names than a well's model. Undefined for a resource that holds no liquid.
+export function liquid(model, state) {
+  const max = state?.max_volume ?? model.maximal_volume ?? model.max_volume;
+  if (max === undefined) return undefined;
+  return `${fmt(state?.volume ?? 0)}${NBSP}/${NBSP}${fmt(max)}${NBSP}uL`;
+}
+
 export function section(title, rows, note) {
   if (!rows.length) return "";
   return (

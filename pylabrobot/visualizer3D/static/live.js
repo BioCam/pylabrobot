@@ -224,7 +224,7 @@ function refreshOverlays(index, touched) {
   const vessel = vesselOf.get(index);
   if (vessel && Number.isFinite(vessel.model.max_volume)) {
     // The committed volume, as the existing visualizer draws it: what is in the well, not what an
-    // operation under way would leave there if it succeeds - and a rollback publishes nothing.
+    // operation under way would leave there if it succeeds.
     const volume = state?.volume ?? 0;
     const fraction = Math.max(0, Math.min(1, volume / (vessel.model.max_volume || 1)));
     // Empty is white; any liquid at all steps clear of white so a nearly empty well still reads.

@@ -551,9 +551,11 @@ onChange((change) => {
     selectionBox.box.copy(worldBox(change.index));
     refreshPlacement(change.index);
   } else if (change.kind === "state") {
-    // Only a panel showing something this message touched is drawn again: drawing the rest
-    // afresh reset what the reader had opened in it, on every well of a protocol.
-    if (change.changed.has(selected) && infoPanel?.isConnected) renderInfoPanel();
+    // Only a panel showing something this message touched, or holding a tip it touched, is drawn
+    // again: drawing the rest afresh reset what the reader had opened, on every well of a protocol.
+    const shown = (i) =>
+      i === selected || (world.parentOf[i] === selected && modelOf(i).category === "tip");
+    if (infoPanel?.isConnected && [...change.changed].some(shown)) renderInfoPanel();
     refreshTreeInfo();
     deviceTools.refresh(change.changed);
   } else if (change.kind === "moves") {

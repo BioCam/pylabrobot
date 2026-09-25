@@ -5,7 +5,7 @@ import * as THREE from "three";
 
 import { HOVER, SELECT, SELECTION_SHOWN_MS } from "./constants.js";
 import { OVERLAY_ORDER, stateOf, worldBox } from "./drawn.js";
-import { escapeHtml, fmt, NBSP, section, tuple, withUnit } from "./format.js";
+import { escapeHtml, fmt, liquid, NBSP, section, tuple, withUnit } from "./format.js";
 import { invalidate } from "./frame.js";
 import { view } from "./renderer.js";
 import { modelOf, sizeOf, world } from "./world.js";
@@ -98,6 +98,18 @@ const HANDLED = new Set([
   "ordering",
 ]);
 
+// State shown under Placement or Contents, or that names the resource itself (`thing`).
+const STATE_HANDLED = new Set([
+  "rotation",
+  "volume",
+  "pending_volume",
+  "max_volume",
+  "thing",
+  "tip",
+  "pending_tip",
+  "tip_state",
+]);
+
 // A field that records how a resource was constructed rather than what it is now. These are kept,
 // not hidden, but put under a heading that says what they are: a deck reports `with_trash: false`
 // while holding a trash, and a reader has to be able to see that without being misled by it.
@@ -150,9 +162,13 @@ export function renderInfoPanel() {
   if (model.ordering) geometry.push(["items", String(Object.keys(model.ordering).length)]);
 
   const contents = [];
-  if (model.max_volume !== undefined) {
-    const volume = state?.volume ?? 0;
-    contents.push(["volume", `${fmt(volume)}${NBSP}/${NBSP}${fmt(model.max_volume)}${NBSP}uL`]);
+  const volume = liquid(model, state);
+  if (volume) contents.push(["volume", `<span data-live="volume">${volume}</span>`]);
+  // A spot or a shaft holds its tip as a child, and the tip's own state says what is in it.
+  const tip = world.childrenOf[index].find((i) => modelOf(i).category === "tip");
+  if (tip !== undefined) {
+    const held = `${escapeHtml(world.names[tip])}, ${liquid(modelOf(tip), stateOf.get(tip))}`;
+    contents.push(["tip", `<span data-live="tip">${held}</span>`]);
   }
 
   const specifics = [];
@@ -164,12 +180,7 @@ export function renderInfoPanel() {
 
   const tracker = state
     ? Object.entries(state)
-        .filter(
-          ([k]) =>
-            !["rotation", "pending_volume", "volume", "tip", "pending_tip", "tip_state"].includes(
-              k,
-            ),
-        )
+        .filter(([k]) => !STATE_HANDLED.has(k))
         .map(([k, v]) => [k, withUnit(k, v)])
     : [];
 

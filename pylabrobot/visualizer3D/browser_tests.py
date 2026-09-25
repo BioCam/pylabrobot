@@ -32,6 +32,7 @@ from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.resource_holder import ResourceHolder
 from pylabrobot.resources.tip_rack import TipRack
+from pylabrobot.resources.tip_tracking import does_tip_tracking, set_tip_tracking
 from pylabrobot.visualizer3D.demo import build_facility, declare_channel_access, star_of
 from pylabrobot.visualizer3D.facility import Facility
 from pylabrobot.visualizer3D.server import Viewer3D
@@ -258,6 +259,11 @@ ROW_CLICK = (
 ROW_ARROW = (
   "((name) => document.querySelector(`.tree-node-row[data-index="
   "'${window.plrViewer.resources().indexOf(name)}'] .tree-node-arrow`).textContent)"
+)
+# The text of one live value in the info panel, with its non-breaking spaces as plain ones.
+LIVE = (
+  "((key) => document.querySelector(`.uml-panel [data-live='${key}']`)"
+  "?.textContent.replace(/\\u00a0/g, ' ') ?? null)"
 )
 
 
@@ -535,8 +541,8 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
 
   async def test_a_well_shows_the_volume_it_holds_not_the_one_an_operation_would_leave(self):
     """The page drew the pending volume, so a well filled at the start of an aspirate that then
-    failed kept a volume that never happened: a rollback publishes nothing. The existing visualizer
-    draws the committed volume, and so does this one now."""
+    failed kept a volume that never happened. The existing visualizer draws the committed volume,
+    and so does this one now."""
     track_volumes(self)
     plate = cor_96_wellplate_360uL_Fb(name="plate")
     self.facility.assign_child_resource(plate, location=Coordinate(600, 400, 0))
@@ -555,6 +561,24 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       self.assertNotIn("50 / 360 uL", await browser.evaluate(panel))
       well.tracker.commit()
       await browser.settle(f"{panel}?.includes('50 / 360 uL')", 10)
+
+  async def test_a_tip_shows_the_volume_it_holds(self):
+    """A tip's capacity is its `maximal_volume`, not a `max_volume`, so its panel showed no liquid
+    at all while its state carried the volume the device tools draw from."""
+    track_volumes(self)
+    rack = hamilton_96_tiprack_50uL_NTR(name="rack")
+    self.facility.assign_child_resource(rack, location=Coordinate(600, 400, 0))
+    tip = rack.get_item("A1").tip
+    assert tip is not None
+    async with Browser() as browser:
+      await self.page(browser, tip.name)
+      await browser.evaluate(f"window.plrViewer.focus({tip.name!r}, 'top')")
+      await browser.settle(f"{LIVE}('volume') === '0 / 65 uL'", 10)
+      # Once, in Contents: the state's own copy of the capacity is not listed again.
+      panel = await browser.evaluate("document.querySelector('.uml-panel').textContent")
+      self.assertNotIn("max_volume", panel)
+      tip.tracker.set_volume(12.5)
+      await browser.settle(f"{LIVE}('volume') === '12.50 / 65 uL'", 10)
 
   async def test_a_tree_that_changes_shape_keeps_the_models_it_had(self):
     """A scene arrives whole whenever the tree changes shape. Rebuilding the geometry for it took
@@ -704,6 +728,50 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
         await browser.evaluate("window.plrViewer.view('iso')")
         await browser.frames()
         self.assertGreater(await browser.drawn_fraction("#viewport"), 0.02, "the iso view")
+    finally:
+      await viewer.stop()
+
+  async def test_a_tip_is_listed_by_what_holds_it(self):
+    """A tip spot or a channel's shaft holds its tip as a child, and its panel said nothing of it:
+    what it held, and what was in that, could only be read off the tree and the device tools."""
+    track_volumes(self)
+    was_tracking = does_tip_tracking()
+    set_tip_tracking(True)  # or the spot keeps a tip of its own and the shaft gets a new one
+    self.addCleanup(set_tip_tracking, was_tracking)
+    facility = build_facility()
+    star = star_of(facility)
+    await star.setup()
+    declare_channel_access(star)
+    fs_port, ws_port = free_ports(2)
+    viewer = Viewer3D(facility, open_browser=False, fs_port=fs_port, ws_port=ws_port)
+    await viewer.start()
+    try:
+      async with Browser() as browser:
+        await browser.open(f"http://127.0.0.1:{viewer.fs_port}/")
+        await browser.settle("window.plrViewer && window.plrViewer.resources().length > 3000", 60)
+        rack = star.deck.get_resource("tips_0")
+        assert isinstance(rack, TipRack) and star.pipettes is not None
+        spot = rack.get_item("A1")
+        tip = spot.tip
+        assert tip is not None
+        capacity = f"{tip.maximal_volume:g} uL"
+        header = "document.querySelector('.uml-header-name')?.textContent"
+        await browser.evaluate(f"window.plrViewer.focus({spot.name!r}, 'top')")
+        await browser.settle(f"{LIVE}('tip') === '{tip.name}, 0 / {capacity}'", 10)
+
+        await star.pipettes.pick_up_tips([spot])
+        shaft = tip.parent
+        assert shaft is not None and shaft is not spot
+        # The move draws the spot's panel again, without the tip it gave up.
+        await browser.settle(f"{header} === {spot.name!r} && {LIVE}('tip') === null", 30)
+
+        source = star.deck.get_resource("source_0")
+        assert isinstance(source, Plate)
+        source.get_item("A1").tracker.set_volume(200.0)
+        await star.pipettes.aspirate([source.get_item("A1")], [50.0])
+        await browser.settle(f"window.plrViewer.stateOf({tip.name!r})?.volume === 50", 30)
+        await browser.evaluate(f"window.plrViewer.focus({shaft.name!r}, 'top')")
+        await browser.settle(f"{LIVE}('tip') === '{tip.name}, 50 / {capacity}'", 10)
     finally:
       await viewer.stop()
 
