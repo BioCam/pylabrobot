@@ -279,6 +279,29 @@ class HamiltonDeckTests(unittest.TestCase):
       for name in ("waste_block", "trash", "trash_core96", "teaching_tip_rack", "core_grippers"):
         self.assertTrue(deck.has_resource(f"{deck.name}_{name}"), name)
 
+  def test_core_gripper_tools_belong_to_the_mount_and_are_not_structure(self):
+    """The deck owns the two parked tools; a serialized deck leaves them out, as it leaves out the
+    tips in its racks, since what a holder holds is state a driver reads off the device."""
+    for deck_factory in (STARDeck, STARLetDeck):
+      with self.subTest(deck=deck_factory.__name__):
+        deck = deck_factory(with_teaching_rack=False)
+        mount = deck.get_resource("core_grippers")
+        self.assertIsInstance(mount, HamiltonCoreGrippers)
+        assert isinstance(mount, HamiltonCoreGrippers)
+        self.assertEqual(len(mount.children), 2)
+        self.assertIsNot(mount.front_tool, mount.back_tool)
+        for tool in (mount.front_tool, mount.back_tool):
+          self.assertIs(tool.parent, mount)
+          self.assertIs(deck.get_resource(tool.name), tool)
+          self.assertEqual(tool.collar_height, 10)
+
+        restored = Resource.deserialize(deck.serialize())
+        self.assertEqual(restored.serialize(), deck.serialize())
+        restored_mount = restored.get_resource("core_grippers")
+        assert isinstance(restored_mount, HamiltonCoreGrippers)
+        self.assertEqual(restored_mount._comparable_children(), [])
+        self.assertEqual(len(restored_mount.children), 0)
+
   def test_named_decks_preserve_accessories_when_saved_and_cleared(self):
     """Named deck accessories remain discoverable after serialization and deck clearing."""
     for factory in (STARDeck, STARLetDeck, STARPlusDeck):

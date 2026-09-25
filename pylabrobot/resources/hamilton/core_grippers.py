@@ -119,17 +119,19 @@ def prep_core_gripper_holder(name: str = "core_grippers") -> HamiltonCoreGripper
   return holder
 
 
-def prep_core_gripper_mount() -> HamiltonCoreGrippers:
+def prep_core_gripper_mount(name: str = "core_grippers") -> HamiltonCoreGrippers:
   """Deprecated alias for `prep_core_gripper_holder`."""
   warnings.warn(
     "prep_core_gripper_mount is deprecated. Use 'prep_core_gripper_holder' instead.",
     DeprecationWarning,
     stacklevel=2,
   )
-  return prep_core_gripper_holder(name="core_grippers")
+  return prep_core_gripper_holder(name=name)
 
 
-def hamilton_core_gripper_1000ul_at_waste(name: str = "core_grippers") -> HamiltonCoreGrippers:
+def hamilton_core_gripper_1000ul_at_waste(
+  name: str = "core_grippers",
+) -> HamiltonCoreGrippers:
   # inner hole diameter is 8.6mm
   # distance from base of rack to outer base of containers: -7mm
   # left outer edge of rack is 22.5mm
@@ -155,7 +157,9 @@ def hamilton_core_gripper_1000ul_at_waste(name: str = "core_grippers") -> Hamilt
   return mount
 
 
-def hamilton_core_gripper_1000ul_5ml_on_waste(name: str = "core_grippers") -> HamiltonCoreGrippers:
+def hamilton_core_gripper_1000ul_5ml_on_waste(
+  name: str = "core_grippers",
+) -> HamiltonCoreGrippers:
   # distance from base of rack to outer base of containers: 0mm
   # inner hole diameter is 8.6mm
   # left outer edge of rack is 19.5mm

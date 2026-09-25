@@ -189,6 +189,53 @@ class TestXYMove(unittest.IsolatedAsyncioTestCase):
     await self.pipettes.move_to_xy_positions(500.0, {0: 420.0})
     self.assertTrue(y_sent.is_set())
 
+  async def test_two_low_channels_rise_together_then_x_and_y(self):
+    """Both raises go out before either answers: sent one after the other, this would time out."""
+    await self.pipettes.move_stop_disc_to_z_positions({1: 220.0})
+    self.sent.clear()
+    recorded = self.pipettes._driver.send_command
+    both_sent = asyncio.Event()
+    raising: List[str] = []
+
+    async def raises_wait_for_each_other(module: str, command: str, **kwargs: Any):
+      if command == "ZA" and module != "C0":
+        raising.append(module)
+        if len(raising) == 2:
+          both_sent.set()
+        await asyncio.wait_for(both_sent.wait(), timeout=2)
+      return await recorded(module=module, command=command, **kwargs)
+
+    self.pipettes._driver.send_command = raises_wait_for_each_other  # type: ignore[assignment]
+    await self.pipettes.move_to_xy_positions(500.0, {0: 420.0})
+    self.assertEqual(raising, ["P1", "P2"])
+    moves = [command for command in self.sent if command[2:4] in ("ZA", "XP", "JY")]
+    # The raises answer in whichever order the drives finish; X and Y follow both.
+    self.assertEqual(
+      sorted(moves[:2]), ["P1ZAza22838zv11652zr075zw3", "P2ZAza22838zv11652zr075zw3"]
+    )
+    self.assertEqual(
+      moves[2:], ["X0XPla05000lr3lw7", jy("4200 3000 2000 1600 1420 1240 1060 0880")]
+    )
+
+  async def test_a_raise_out_of_reach_moves_nothing(self):
+    with self.assertRaises(ValueError):
+      await self.pipettes.move_to_xy_positions(500.0, {0: 420.0}, minimum_traverse_height_start=400)
+    moves = [command for command in self.sent if command[2:4] in ("ZA", "XP", "JY")]
+    self.assertEqual(moves, [])
+
+  async def test_a_failed_x_is_raised_once_y_has_gone_out(self):
+    recorded = self.pipettes._driver.send_command
+
+    async def x_fails(module: str, command: str, **kwargs: Any):
+      if command == "XP":
+        raise RuntimeError("X refused")
+      return await recorded(module=module, command=command, **kwargs)
+
+    self.pipettes._driver.send_command = x_fails  # type: ignore[assignment]
+    with self.assertRaisesRegex(RuntimeError, "X refused"):
+      await self.pipettes.move_to_xy_positions(500.0, {0: 420.0})
+    self.assertEqual(self.sent[-1], jy("4200 3000 2000 1600 1420 1240 1060 0880"))
+
 
 async def simulated_channels() -> Pipettes:
   """The channels of a simulated device, as setup leaves them.
@@ -295,6 +342,26 @@ class TestSafeZ(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(
       self.sent, [f"P{i}AAzv04661" for i in "12345678"] + [f"P{i}AAzv11652" for i in "12345678"]
     )
+
+  async def test_stop_disc_moves_are_checked_before_any_is_sent(self):
+    with self.assertRaises(ValueError):
+      await self.pipettes.move_stop_disc_to_z_positions({0: 300.0, 3: 50.0})
+    self.assertEqual(self.sent, [])
+
+  async def test_a_failing_channel_does_not_stop_the_others(self):
+    moved: List[int] = []
+    move = self.pipettes.move_stop_disc_to_z_position
+
+    async def one(channel: int, z: float, **kwargs: Any):
+      if channel == 2:
+        raise RuntimeError("channel 2")
+      moved.append(channel)
+      return await move(channel, z, **kwargs)
+
+    self.pipettes.move_stop_disc_to_z_position = one  # type: ignore[method-assign, assignment]
+    with self.assertRaises(RuntimeError):
+      await self.pipettes.move_stop_disc_to_z_positions({ch: 300.0 for ch in range(8)})
+    self.assertEqual(sorted(moved), [0, 1, 3, 4, 5, 6, 7])
 
 
 class TestXYCLLDProbing(unittest.IsolatedAsyncioTestCase):
@@ -3383,12 +3450,12 @@ class TestTipHandlingUntracked(unittest.IsolatedAsyncioTestCase):
 
 
 class TestNestedTipRacksGroundTruth(unittest.IsolatedAsyncioTestCase):
-  """The commands for Hamilton's tip racks are what Hamilton's own software sends.
+  """The commands for Hamilton's tip racks match recorded runs.
 
-  Each rack on the holders Hamilton's software picked up from, with the channels and with the
-  96-head, as recorded, but for `td`:
-  Hamilton's software sends `td1`, and PyLabRobot sends `td0`, letting the firmware take the pick-up
-  process from the tip type. Tip tracking is on, so each tip goes back into its spot.
+  Each rack on the holders the recordings picked up from, with the channels and with the 96-head,
+  as recorded, but for `td`: the recordings carry `td1`, and PyLabRobot sends `td0`, letting the
+  firmware take the pick-up process from the tip type. Tip tracking is on, so each tip goes back
+  into its spot.
   """
 
   def setUp(self):
