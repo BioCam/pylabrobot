@@ -328,8 +328,8 @@
   try {
     if (linked) sessionStorage.setItem("plr.token", linked);
     kept = sessionStorage.getItem("plr.token");
-  } catch {}
-  window.plrToken = linked ?? kept ?? "";
+  } catch (error) {}
+  window.plrToken = linked || kept || "";
   if (linked) history.replaceState(null, "", location.pathname + location.search);
   // The page's own scheme and host: one served over https (a proxy, JupyterHub) may only open
   // wss:, and the viewer is reached by the name the page was, not by 127.0.0.1.
@@ -337,20 +337,35 @@
     `${page.protocol === "https:" ? "wss:" : "ws:"}//${page.hostname}` +
     `:{{ ws_port }}/?token=${encodeURIComponent(window.plrToken)}`;
   window.WS_URL = window.wsUrlFor(location);
-  // boot.js explains every failure it can see, but a browser too old to run it at all sees nothing.
-  // It names the same versions boot.js does, which are the first that read the import map above.
+  // boot.js explains every failure it can see, but a browser too old to run it at all sees nothing,
+  // and neither does one whose viewer stopped before boot.js arrived. No syntax past ES2015 here.
   setTimeout(() => {
     if (window.__plrBooted) return;
-    const label = document.getElementById("status-label");
-    label.textContent = "Browser too old";
-    label.className = "disconnected";
-    const panel = document.createElement("section");
-    panel.id = "boot-diagnosis";
-    panel.setAttribute("role", "alert");
-    panel.innerHTML =
-      "<h2>This browser is too old for the viewer</h2>" +
-      "<p>It needs Chrome 89, Firefox 108 or Safari 16.4 or newer.</p>";
-    document.body.appendChild(panel);
+    const say = (status, title, text) => {
+      const label = document.getElementById("status-label");
+      label.textContent = status;
+      label.className = "disconnected";
+      const panel = document.createElement("section");
+      panel.id = "boot-diagnosis";
+      panel.setAttribute("role", "alert");
+      panel.innerHTML = "<h2>" + title + "</h2><p>" + text + "</p>";
+      document.body.appendChild(panel);
+    };
+    fetch("./index.html", { method: "HEAD", cache: "no-store" }).then(
+      () =>
+        say(
+          "Browser too old",
+          "This browser is too old for the viewer",
+          "It needs Chrome 89, Firefox 108 or Safari 16.4 or newer."
+        ),
+      () =>
+        say(
+          "Viewer stopped",
+          "The viewer stopped while this page loaded",
+          "Its run has ended: a script stops its viewer when it finishes. Keep the script running, " +
+            "or call viewer.wait_for_browser() before its run, then open the link it prints."
+        )
+    );
   }, 5000);
 </script>
 <script type="module" src="./boot.js"></script>

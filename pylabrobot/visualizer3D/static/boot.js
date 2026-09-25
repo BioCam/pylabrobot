@@ -48,6 +48,25 @@ async function probeWebGPU() {
   }
 }
 
+/** Whether the viewer that served this page still serves it: a script that ends stops it. */
+async function pageStillServed() {
+  try {
+    await fetch("./index.html", { method: "HEAD", cache: "no-store" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// A run that ends stops its viewer, and a page still loading then fails to import its own files.
+const STOPPED_WHILE_LOADING = {
+  title: "The viewer stopped while this page loaded",
+  checks: [[false, "the viewer that served this page no longer answers"]],
+  hint:
+    "Its run has ended: a script stops its viewer when it finishes. Keep the script running, or " +
+    "call viewer.wait_for_browser() before its run, then open the link it prints.",
+};
+
 /** Whether the server answers, told apart from whether the page could draw. */
 function probeWebsocket(hello) {
   return new Promise((resolve) => {
@@ -228,46 +247,51 @@ try {
   await import("./app.js");
   started = true;
 } catch (error) {
-  const webgpu = await probeWebGPU();
-  const tooOld = importMaps === false;
-  const noGPU = !webgpu && !webgl.webgl2;
-  // renderer.js hangs its canvas in the viewport once the renderer has started. WebGL2 offered
-  // to the probe and then not drawn with is a driver the browser should not be trusting.
-  const drew = !!document.querySelector("#viewport canvas");
-  const reason = tooOld
-    ? `this browser has no import maps: the viewer needs ${NEEDS}`
-    : noGPU
-      ? "this browser offers neither WebGPU nor WebGL2"
-      : `${error?.name ?? "Error"}: ${error?.message ?? error}`;
-  const reachable = await probeWebsocket({
-    backend: null,
-    renderer: webgl.renderer,
-    software: webgl.software,
-    error: reason,
-    userAgent: navigator.userAgent,
-  });
-  setStatus("Viewer failed");
-  const checks = [
-    ...gpuChecks(webgpu, webgl, drew || tooOld ? "" : ", but the renderer could not use it"),
-    [reachable, reachable ? "server reachable" : "server not reachable"],
-  ];
-  if (tooOld) checks.unshift([false, `no import maps: the viewer needs ${NEEDS}`]);
-  showDiagnosis({
-    title: tooOld
-      ? "This browser is too old for the viewer"
+  if (!(await pageStillServed())) {
+    setStatus("Viewer stopped");
+    showDiagnosis(STOPPED_WHILE_LOADING);
+  } else {
+    const webgpu = await probeWebGPU();
+    const tooOld = importMaps === false;
+    const noGPU = !webgpu && !webgl.webgl2;
+    // renderer.js hangs its canvas in the viewport once the renderer has started. WebGL2 offered
+    // to the probe and then not drawn with is a driver the browser should not be trusting.
+    const drew = !!document.querySelector("#viewport canvas");
+    const reason = tooOld
+      ? `this browser has no import maps: the viewer needs ${NEEDS}`
       : noGPU
-        ? "No 3D graphics in this browser"
-        : "The viewer could not start",
-    checks,
-    hint: tooOld
-      ? "Update the browser, or open this page in a current one."
-      : noGPU || (reachable && !drew)
-        ? browserHint()
-        : reachable
-          ? null
-          : websocketHint(),
-    detail: noGPU || tooOld ? null : reason,
-  });
+        ? "this browser offers neither WebGPU nor WebGL2"
+        : `${error?.name ?? "Error"}: ${error?.message ?? error}`;
+    const reachable = await probeWebsocket({
+      backend: null,
+      renderer: webgl.renderer,
+      software: webgl.software,
+      error: reason,
+      userAgent: navigator.userAgent,
+    });
+    setStatus("Viewer failed");
+    const checks = [
+      ...gpuChecks(webgpu, webgl, drew || tooOld ? "" : ", but the renderer could not use it"),
+      [reachable, reachable ? "server reachable" : "server not reachable"],
+    ];
+    if (tooOld) checks.unshift([false, `no import maps: the viewer needs ${NEEDS}`]);
+    showDiagnosis({
+      title: tooOld
+        ? "This browser is too old for the viewer"
+        : noGPU
+          ? "No 3D graphics in this browser"
+          : "The viewer could not start",
+      checks,
+      hint: tooOld
+        ? "Update the browser, or open this page in a current one."
+        : noGPU || (reachable && !drew)
+          ? browserHint()
+          : reachable
+            ? null
+            : websocketHint(),
+      detail: noGPU || tooOld ? null : reason,
+    });
+  }
   console.error(error);
 }
 clearTimeout(stall);

@@ -457,6 +457,28 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       await asyncio.sleep(0.5)  # an injected image would have failed to load by now
       self.assertIsNone(await browser.evaluate("window.pwned"))
 
+  async def diagnosis_with_blocked(self, blocked: List[str], seconds: float) -> str:
+    """The page's diagnosis heading with `blocked` failing as a server that went away fails."""
+    async with Browser() as browser:
+      await browser._call("Network.enable")
+      await browser._call("Network.setBlockedURLs", {"urls": blocked})
+      await browser.open(self.viewer.url)
+      heading = "document.querySelector('#boot-diagnosis h2')?.textContent"
+      return str(await browser.settle(heading, seconds))
+
+  async def test_a_page_whose_viewer_stopped_while_it_loaded_says_so(self):
+    """A run over before the page loaded its files was reported as a renderer that could not
+    start, or as a browser too old: the page blamed the GPU for a server that had gone."""
+    stopped = "The viewer stopped while this page loaded"
+    # app.js fails to import, and the page's own address no longer answers.
+    self.assertEqual(await self.diagnosis_with_blocked(["*/app.js", "*/index.html"], 30), stopped)
+    # boot.js never arrives, so only the guard in the page is left to say it.
+    self.assertEqual(await self.diagnosis_with_blocked(["*/boot.js", "*/index.html"], 30), stopped)
+    # The page is still served: a failed import is the renderer's, as before.
+    self.assertEqual(
+      await self.diagnosis_with_blocked(["*/app.js"], 30), "The viewer could not start"
+    )
+
   async def test_the_token_leaves_the_address_and_a_reload_still_connects(self):
     """The token stood in the address bar, so it went into bookmarks and onto a shared screen."""
     async with Browser() as browser:
