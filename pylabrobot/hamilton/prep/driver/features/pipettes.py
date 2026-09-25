@@ -1151,9 +1151,12 @@ class Pipettes:
     # well; more above a trough or tube, whose fill can dome.
     self.search_start_clearance: float = 5.0
     self.well_search_start_clearance: float = 2.0
-    # A search, for liquid or a floor, stops looking this far below the modelled cavity bottom, in
-    # mm: the seating error of a plate, no more.
+    # A liquid search stops looking this far below the modelled cavity bottom, in mm: the seating
+    # error of a plate, no more.
     self.search_limit_below_cavity_bottom: float = 1.0
+    # A Z-touch floor search goes this far below the modelled cavity bottom, in mm: the model's
+    # bottom can be well off the real one.
+    self.ztouch_search_limit_below_cavity_bottom: float = 10.0
     # A Z-touch dispense lifts the tip this far off the cavity bottom it touched, in mm, so the
     # orifice is not sealed on it.
     self.ztouch_dispense_height_above_bottom: float = 0.2
@@ -3450,30 +3453,22 @@ class Pipettes:
     return found
 
   def _get_floor_search_end(self, channel: int, z_cavity_bottom: float) -> float:
-    """Where a channel's Z-touch stops looking: `search_limit_below_cavity_bottom` under the bottom.
+    """Where a channel's Z-touch stops: `ztouch_search_limit_below_cavity_bottom` under the bottom.
 
     Args:
       channel: which channel, 0-indexed from the back.
       z_cavity_bottom: the modelled cavity bottom, on the deck in mm.
 
     Returns:
-      The tip bottom height, in mm.
-
-    Raises:
-      ValueError: If the channel cannot reach it.
+      The tip bottom height, in mm, no lower than the channel reaches.
     """
-    end = round(z_cavity_bottom - self.search_limit_below_cavity_bottom, 2)
+    end = round(z_cavity_bottom - self.ztouch_search_limit_below_cavity_bottom, 2)
     window = (
       self.configuration.channels[channel].z_range
       if channel < len(self.configuration.channels)
       else None
     )
-    if window is not None and not window[0] <= end <= window[1]:
-      raise ValueError(
-        f"a floor search to {end} mm is outside channel {channel} range "
-        f"[{window[0]:.1f}, {window[1]:.1f}]"
-      )
-    return end
+    return end if window is None else max(end, window[0])
 
   async def _probe_batch_floors(
     self,
@@ -3487,8 +3482,8 @@ class Pipettes:
   ) -> Dict[int, List[Optional[float]]]:
     """Z-touch the floor of every container of one batch, by each channel's own seek, n times.
 
-    From the top to `search_limit_below_cavity_bottom` under the cavity bottom, on the tip bottom.
-    The channels go to their starts together at `approach_speed`, then seek: together with a
+    From the top to `ztouch_search_limit_below_cavity_bottom` under the cavity bottom, on the tip
+    bottom. The channels go to their starts together at `approach_speed`, then seek: together with a
     second session, one after the other without it. Each seek ends back at its start. None where a
     channel reached the limit.
 
@@ -6003,7 +5998,7 @@ class Pipettes:
       if height is None:
         raise RuntimeError(
           f"channel {channel} met no floor in {containers[job].name} down to "
-          f"{self.search_limit_below_cavity_bottom} mm under its modelled cavity bottom"
+          f"{self.ztouch_search_limit_below_cavity_bottom} mm under its modelled cavity bottom"
         )
       logger.info(
         "channel %d touched the floor of %s at %.2f mm, the model has it at %.2f mm",

@@ -1642,6 +1642,21 @@ def test_probe_z_using_clld_defaults_lowest_z_to_the_bottom_of_the_channel_z_ran
   _run(_t())
 
 
+def test_a_floor_search_under_the_channel_reach_ends_at_its_lowest_z():
+  """10 mm under the modelled bottom, but no lower than the channel's Z range."""
+
+  async def _t():
+    p = PrepSimulationDriver(deck=PrepDeck())
+    await p.setup()
+    assert p.pipettes is not None
+    p.pipettes.configuration.channels[0].z_range = (18.0, 167.5)
+    assert p.pipettes._get_floor_search_end(0, 40.0) == pytest.approx(30.0)
+    assert p.pipettes._get_floor_search_end(0, 22.0) == pytest.approx(18.0)
+    await p.stop()
+
+  _run(_t())
+
+
 def test_channel_order_comes_from_the_device():
   """Channels are ordered back to front by how far back they reach; the legacy order is the fallback."""
 
@@ -3740,9 +3755,9 @@ def _ztouch_setup(second_session: bool, touch: Optional[float]):
   main_send, second_send = p.send_command, p.send_command_on_second_session
 
   def answer(command: Any) -> PrepCmd.PrepZAxisSeekObstacle.Response:
-    # The search ends 1 mm under the modelled cavity bottom.
+    # The search ends 10 mm under the modelled cavity bottom.
     end = command.end_position
-    met = end - 0.9 if touch is None else end + 1.0 - touch
+    met = end - 0.9 if touch is None else end + 10.0 - touch
     return PrepCmd.PrepZAxisSeekObstacle.Response(obstacle_detected=True, position=met)
 
   async def on_main(command, *args, **kwargs):
