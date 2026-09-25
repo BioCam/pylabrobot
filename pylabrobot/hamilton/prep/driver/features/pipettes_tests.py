@@ -301,10 +301,13 @@ def test_aspirate_takes_volumes_by_a_liquid_class_or_piston_volumes_as_given():
     well = plate.get_item("A1")
     await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
     for kwargs, match in (
-      ({}, "one of volumes and piston_volumes"),
-      ({"volumes": [5.0], "piston_volumes": [5.0]}, "one of volumes and piston_volumes"),
-      ({"piston_volumes": [5.0], "hamilton_liquid_classes": [None]}, "no liquid class applies"),
-      ({"volumes": [5.0]}, "no liquid class for"),
+      ({}, "not both and not neither"),
+      ({"volumes": [5.0], "piston_volumes": [5.0]}, "not both and not neither"),
+      (
+        {"piston_volumes": [5.0], "hamilton_liquid_classes": [None]},
+        "a liquid class would correct them",
+      ),
+      ({"volumes": [5.0]}, "no liquid class is known for channel 0"),
     ):
       with pytest.raises(ValueError, match=match):
         await p.pipettes.aspirate([well], use_channels=[0], liquid_heights=[2.0], **kwargs)
@@ -4591,7 +4594,7 @@ def test_dispense_refuses_before_booking_or_sending():
       await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
       sent = _record(p)
       for kwargs, match in (
-        ({"volumes": [5.0]}, "no liquid class for"),
+        ({"volumes": [5.0]}, "no liquid class is known for channel 0"),
         ({"piston_volumes": [5.0], "flow_rates": [0.0]}, "flow_rates must be above 0"),
         ({"piston_volumes": [5.0], "blow_out_air_volumes": [1.0]}, "blow-out air on aspirate"),
         ({"piston_volumes": [5.0], "swap_speeds": [1.0, 1.0]}, "swap_speeds length"),

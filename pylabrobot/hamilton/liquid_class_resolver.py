@@ -14,6 +14,7 @@ from pylabrobot.hamilton.star.liquid_classes.mapping import get_star_liquid_clas
 from pylabrobot.resources.container import Container
 from pylabrobot.resources.hamilton import HamiltonTip
 from pylabrobot.resources.liquid import Liquid
+from pylabrobot.resources.tip import Tip
 
 _Lookup = Callable[..., Optional[HamiltonLiquidClass]]
 
@@ -78,7 +79,7 @@ def check_volume_arguments(
 def get_volumes_and_classes(
   containers: Sequence[Container],
   channel_of: Sequence[int],
-  tips: Sequence[HamiltonTip],
+  tips: Sequence[Tip],
   volumes: Optional[Sequence[float]],
   piston_volumes: Optional[Sequence[float]],
   hamilton_liquid_classes: Optional[Sequence[HamiltonLiquidClass]],
@@ -146,7 +147,8 @@ def from_class(
   classes: Optional[Sequence[HamiltonLiquidClass]],
   attributes: Dict[str, Callable[[HamiltonLiquidClass], float]],
 ) -> Optional[List[Any]]:
-  """What is given, else what the liquid classes say, else None: the driver's own default.
+  """What is given, else what the liquid classes say, else None: the driver's own default. A None
+  entry of `given` takes its class's value.
 
   Args:
     name: the argument, a key of `attributes`.
@@ -156,9 +158,11 @@ def from_class(
     attributes: `ASPIRATE_CLASS_ATTRIBUTES` or `DISPENSE_CLASS_ATTRIBUTES`.
   """
   values = per_container(name, given, n)
-  if values is None and classes is not None:
-    values = [attributes[name](hlc) for hlc in classes]
-  return values
+  if classes is None:
+    return values
+  if values is None:
+    return [attributes[name](hlc) for hlc in classes]
+  return [attributes[name](hlc) if v is None else v for v, hlc in zip(values, classes)]
 
 
 def resolve_hamilton_liquid_classes(

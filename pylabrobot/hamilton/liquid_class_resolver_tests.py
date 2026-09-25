@@ -133,6 +133,8 @@ def test_from_class_takes_what_is_given_else_the_class_else_none():
   assert from_class("flow_rates", None, 1, [hlc], ASPIRATE_CLASS_ATTRIBUTES) == [1.0]
   assert from_class("flow_rates", None, 1, [hlc], DISPENSE_CLASS_ATTRIBUTES) == [9.0]
   assert from_class("flow_rates", None, 1, None, DISPENSE_CLASS_ATTRIBUTES) is None
+  assert from_class("flow_rates", [None], 1, [hlc], ASPIRATE_CLASS_ATTRIBUTES) == [1.0]
+  assert from_class("flow_rates", [None], 1, None, ASPIRATE_CLASS_ATTRIBUTES) == [None]
   with pytest.raises(ValueError, match="one entry per container"):
     from_class("flow_rates", [1.0, 2.0], 1, [hlc], ASPIRATE_CLASS_ATTRIBUTES)
 
