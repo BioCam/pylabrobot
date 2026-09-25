@@ -6391,8 +6391,7 @@ class Pipettes:
     settling_times = by_class("settling_times", settling_times)
     swap_speeds = by_class("swap_speeds", swap_speeds)
     transport_air_volumes = by_class("transport_air_volumes", transport_air_volumes)
-    if pre_wetting_volumes is None and classes is not None:
-      pre_wetting_volumes = [hlc.aspiration_over_aspirate_volume for hlc in classes]
+    pre_wetting_volumes = by_class("pre_wetting_volumes", pre_wetting_volumes)
     modes = self._get_lld_modes(lld_mode, n)
     pressure = [m.name for m in modes if m in (self.LLDMode.PRESSURE, self.LLDMode.DUAL)]
     if pressure:

@@ -2889,7 +2889,7 @@ class TestEachTipsWaterClass(unittest.IsolatedAsyncioTestCase):
           ("de", water.aspiration_swap_speed),
           ("wt", water.aspiration_settling_time),
           ("ch", water.aspiration_clot_retract_height),
-          ("oa", 0.0),
+          ("oa", water.aspiration_over_aspirate_volume),
         ):
           self.assertEqual(self._field(sent[0], name), [round(value * 10)] * 2, name)
         # The class's dispense transport air is more than its aspiration's: travel for it first.

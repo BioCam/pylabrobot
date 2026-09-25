@@ -5593,7 +5593,8 @@ class Pipettes:
       minimum_allowed_z_positions_during: how low each tip bottom may go, in mm on the deck. The
         cavity bottom plus the offset's z when None. Below the cavity bottom is allowed: the tip
         then presses onto the well's floor and draws with suction, as a harvest wants.
-      pre_wetting_volumes: drawn and returned first, in uL.
+      pre_wetting_volumes: drawn and returned first, in uL. The class's over-aspirate volume, else
+        0.0, when None.
       pre_mixes: a `Mix` per container, mixed before the draw, None for no mixing.
       mix_positions_from_liquid_surface: mixing depth under the surface, in mm, per container. 0.0
         when None.
@@ -5685,7 +5686,7 @@ class Pipettes:
       "flow_rates": by_class("flow_rates", flow_rates),
       "clot_detection_heights": by_class("clot_detection_heights", clot_detection_heights),
       "blow_out_air_volumes": by_class("blow_out_air_volumes", blow_out_air_volumes),
-      "pre_wetting_volumes": per_container("pre_wetting_volumes", pre_wetting_volumes, n),
+      "pre_wetting_volumes": by_class("pre_wetting_volumes", pre_wetting_volumes),
       "immersion_depths": per_container("immersion_depths", immersion_depths, n),
       "mix_positions_from_liquid_surface": per_container(
         "mix_positions_from_liquid_surface", mix_positions_from_liquid_surface, n

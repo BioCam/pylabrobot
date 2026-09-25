@@ -23,6 +23,7 @@ ASPIRATE_CLASS_ATTRIBUTES: Dict[str, Callable[[HamiltonLiquidClass], float]] = {
   "flow_rates": lambda hlc: hlc.aspiration_flow_rate,
   "clot_detection_heights": lambda hlc: hlc.aspiration_clot_retract_height,
   "blow_out_air_volumes": lambda hlc: hlc.aspiration_blow_out_volume,
+  "pre_wetting_volumes": lambda hlc: hlc.aspiration_over_aspirate_volume,
   "settling_times": lambda hlc: hlc.aspiration_settling_time,
   "swap_speeds": lambda hlc: hlc.aspiration_swap_speed,
   "transport_air_volumes": lambda hlc: hlc.aspiration_air_transport_volume,
