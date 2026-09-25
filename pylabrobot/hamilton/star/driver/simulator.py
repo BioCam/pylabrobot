@@ -428,6 +428,8 @@ class SimulatedPipettes(_Simulated, Pipettes):
           self.device.dispensing_drive_uL[index] = round(
             self.device.dispensing_drive_uL.get(index, 0.0) + drawn, 1
           )
+          held = self.device.transport_air_uL.get(index, 0.0)
+          self.device.transport_air_uL[index] = round(held + int(kwargs["ta"][used]) / 10, 1)
           used += 1
         return None
       if command == "DS":
@@ -439,16 +441,20 @@ class SimulatedPipettes(_Simulated, Pipettes):
           self.update_location_by_reference_point(
             index, y=int(y) / 10, z=round(end + self._below_stop_disc(index), 2)
           )
-          # The piston pushes out the transport air and the volume; the blow-out air too in a
-          # blow-out mode; everything in an empty.
+          # The piston pushes out the transport air the tip holds and the volume; the blow-out air
+          # too in a blow-out mode; everything in an empty.
           standing = self.device.dispensing_drive_uL.get(index, 0.0)
           mode = str(kwargs["dm"][used])
-          pushed = sum(int(kwargs[field][used]) for field in ("ta", "dv")) / 10
+          pushed = self.device.transport_air_uL.get(index, 0.0) + int(kwargs["dv"][used]) / 10
           if mode in ("1", "3"):
             pushed += int(kwargs["ba"][used]) / 10
           left = 0.0 if mode == "4" else max(standing - pushed, 0.0)
-          # The stop-back volume is drawn back at the end.
-          self.device.dispensing_drive_uL[index] = round(left + int(kwargs["rv"][used]) / 10, 1)
+          # Then it draws this command's transport air, and the stop-back volume.
+          air = 0.0 if mode == "4" else int(kwargs["ta"][used]) / 10
+          self.device.transport_air_uL[index] = air
+          self.device.dispensing_drive_uL[index] = round(
+            left + air + int(kwargs["rv"][used]) / 10, 1
+          )
           used += 1
         return None
 
@@ -1577,6 +1583,8 @@ class STARSimulationDriver(STARDriver):
     self.last_lld_heights: Dict[int, float] = {}
     # Where each channel's piston stands, in uL: what its aspirations drew.
     self.dispensing_drive_uL: Dict[int, float] = {}
+    # The transport air each channel's tip holds, in uL: the next dispense pushes it out first.
+    self.transport_air_uL: Dict[int, float] = {}
     # Where the 96-head's stop disc last detected liquid, in mm on the deck; 0.0 until one does.
     self.head96_last_lld_z: float = 0.0
     # Where the 96-head's piston stands, in uL: what its strokes drew.

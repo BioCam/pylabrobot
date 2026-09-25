@@ -3019,6 +3019,26 @@ class TestDispenseInSimulation(_SimulatedPlateWithWater):
     self.assertEqual(self.pipettes.piston_positions[0], 25.0)
     self.assertEqual((await self.pipettes.dispensing_drives_request_uL_positions())[0], 25.0)
 
+  async def test_the_transport_air_a_tip_holds_goes_out_ahead_of_the_next_dispense(self):
+    # As a device showed: an aspirate's `ta` stays in the tip through later aspirates; a dispense
+    # pushes it out ahead of its liquid, then draws its own `ta`, which the next one pushes out.
+    await self.pipettes.aspirate(self.wells[:1], piston_volumes=[50.0], transport_air_volumes=[5.0])
+    await self.pipettes.aspirate(self.wells[:1], piston_volumes=[10.0])
+    self.assertEqual(self.pipettes.piston_positions[0], 65.0)
+    for volume, air, standing in ((20.0, 0.0, 40.0), (10.0, 5.0, 35.0), (10.0, 0.0, 20.0)):
+      await self.pipettes.dispense(
+        self.wells[3:4], piston_volumes=[volume], transport_air_volumes=[air]
+      )
+      self.assertEqual(self.pipettes.piston_positions[0], standing)
+      self.assertEqual((await self.pipettes.dispensing_drives_request_uL_positions())[0], standing)
+
+  async def test_a_piston_without_the_travel_for_the_air_it_holds_is_refused(self):
+    await self.pipettes.aspirate(self.wells[:1], piston_volumes=[19.0], transport_air_volumes=[5.0])
+    sent = self._record()
+    with self.assertRaisesRegex(ValueError, "holds 24.0 uL of travel for the 25.0 uL"):
+      await self.pipettes.dispense(self.wells[3:4], piston_volumes=[20.0])
+    self.assertEqual(sent, [])
+
   async def test_a_failed_command_books_what_the_pistons_gave(self):
     await self.pipettes.aspirate(self.wells[:2], piston_volumes=[50.0, 20.0])
     original = self.driver.send_command

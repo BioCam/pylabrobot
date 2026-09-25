@@ -442,6 +442,9 @@ class Pipettes:
     self.resources: List[Resource] = []
     # Where each piston stands, in uL, by channel, as last read; empty until a piston is read.
     self.piston_positions: List[float] = []
+    # The transport air each channel's tip holds, in uL, by channel: an aspirate adds its own, and
+    # the next dispense pushes it all out ahead of the liquid, then draws its own.
+    self._held_transport_air: Dict[int, float] = {}
     self.configuration = configuration or PipettesConfiguration()
 
   # -- addressing ------------------------------------------------------------
@@ -5868,6 +5871,9 @@ class Pipettes:
           "channel %d drew %.1f uL from %s before the command failed; the model has it"
         ),
       )
+      for channel, job in zip(batch.channels, batch.indices):
+        held = self._held_transport_air.get(channel, 0.0)
+        self._held_transport_air[channel] = round(held + transport_air[job], 1)
 
     await self._execute_batched(run, batches, during)
 
@@ -6029,7 +6035,8 @@ class Pipettes:
       dispense_positions_above_z_touch_off: dispense height above a Z touch. 0.0 when None.
       side_touch_off_distance: sideways move against the wall to shed the drop; 0 for none.
       immersion_depths: how far into the liquid each tip goes; negative is out of it. 0.0 when None.
-      transport_air_volumes: air pushed out before the liquid. 0.0 when None.
+      transport_air_volumes: air drawn after the dispense, pushed out ahead of the next. 0.0 when
+        None.
       flow_rates: 120.0 when None.
       cut_off_speeds: the flow the dispense ends at. 5.0 when None.
       stop_back_volumes: drawn back after the dispense. 0.0 when None.
@@ -6364,8 +6371,8 @@ class Pipettes:
       immersion_depths: how far into the liquid each tip goes, in mm; negative is out of it.
       minimum_allowed_z_positions_during: how low each tip bottom may go, in mm on the deck. The
         cavity bottom plus the offset's z when None.
-      transport_air_volumes: air pushed out before the liquid, in uL. The class's, else 0.0, when
-        None.
+      transport_air_volumes: air drawn after each dispense, in uL, pushed out ahead of the next.
+        The class's, else 0.0, when None.
       cut_off_speeds: the flow each dispense ends at, in uL/s. 5.0 when None.
       stop_back_volumes: drawn back after each dispense, in uL. The class's, else 0.0, when None.
       surface_following_distances: how far each tip follows the rising surface, in mm. 0.0 when
@@ -6478,22 +6485,25 @@ class Pipettes:
       "settling_times": by_class("settling_times", settling_times),
       "swap_speeds": by_class("swap_speeds", swap_speeds),
     }
-    # What each piston travels: the transport air before the liquid, the blow-out air after it in
-    # a blow-out mode; an empty takes the piston to rest. The stop-back is drawn back at the end.
+    # What each piston pushes out: the transport air its tip holds, the liquid, the blow-out air
+    # in a blow-out mode; then it draws the dispense's own transport air and the stop-back. An
+    # empty takes the piston to rest.
     transport_air = per_container_settings["transport_air_volumes"] or [0.0] * n
     blow_out_air = per_container_settings["blow_out_air_volumes"] or [0.0] * n
     stop_back = per_container_settings["stop_back_volumes"] or [0.0] * n
-    travels = [
-      transport_air[job]
-      + pushed[job]
-      + (blow_out_air[job] if dispensing_modes[job] in (1, 3) else 0.0)
-      for job in range(n)
-    ]
     # From where it stands, each piston has to have the travel for its dispenses, and each
     # container the room for them, cycle by cycle.
     standing = {channel: self.piston_positions[channel] for channel in channel_of}
+    air = {channel: self._held_transport_air.get(channel, 0.0) for channel in channel_of}
+    air_ahead: List[float] = []
+    travels: List[float] = []
     room = {id(container): container.tracker.get_free_volume() for container in containers}
     for job, channel in enumerate(channel_of):
+      air_ahead.append(air[channel])
+      travels.append(
+        air[channel] + pushed[job] + (blow_out_air[job] if dispensing_modes[job] in (1, 3) else 0.0)
+      )
+      air[channel] = 0.0 if dispensing_modes[job] == 4 else transport_air[job]
       if dispensing_modes[job] != 4 and standing[channel] - travels[job] < -0.05:
         raise ValueError(
           f"channel {channel}'s piston holds {standing[channel]:.1f} uL of travel for the "
@@ -6504,7 +6514,9 @@ class Pipettes:
           f"{containers[job].name} has room for {room[id(containers[job])]:.1f} uL, not the "
           f"{liquid[job]:.1f} uL channel {channel} is to dispense"
         )
-      standing[channel] = 0.0 if dispensing_modes[job] == 4 else standing[channel] - travels[job]
+      standing[channel] = (
+        0.0 if dispensing_modes[job] == 4 else standing[channel] - travels[job] + air[channel]
+      )
       room[id(containers[job])] -= liquid[job]
 
     given_floors = per_container(
@@ -6605,8 +6617,10 @@ class Pipettes:
       )
 
     def piston_after(standing: float, job: int) -> float:
-      left = 0.0 if dispensing_modes[job] == 4 else max(standing - travels[job], 0.0)
-      return float(round(left + stop_back[job], 1))
+      if dispensing_modes[job] == 4:
+        return float(round(stop_back[job], 1))
+      left = max(standing - travels[job], 0.0)
+      return float(round(left + transport_air[job] + stop_back[job], 1))
 
     async def run(batch: ChannelBatch) -> None:
       # The tip gives before the device pushes; a tip holding less gives what it holds, the rest
@@ -6620,7 +6634,7 @@ class Pipettes:
         givers=[tip.tracker for tip in tips],
         takers=[container.tracker for container in containers],
         shortfall_expected=[],
-        air_before_liquid=transport_air,
+        air_before_liquid=air_ahead,
         piston_sign=-1,
         piston_after=piston_after,
         tracking=tracking,
@@ -6631,5 +6645,9 @@ class Pipettes:
           "channel %d gave %.1f uL into %s before the command failed; the model has it"
         ),
       )
+      for channel, job in zip(batch.channels, batch.indices):
+        self._held_transport_air[channel] = (
+          0.0 if dispensing_modes[job] == 4 else transport_air[job]
+        )
 
     await self._execute_batched(run, batches, during)
