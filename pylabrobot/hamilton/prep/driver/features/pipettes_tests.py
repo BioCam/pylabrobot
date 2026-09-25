@@ -3325,7 +3325,7 @@ _GOLDEN_ASPIRATE_FRAMES: Dict[str, List[str]] = {
     "60.0 6ad183795e5b3311e414ecd3e35eba9e88563e12f859fba06a7c4a9b1217ced6",
   ],
   "class volumes, tracked heights": [
-    "60.0 a1b8039eb9ded58e15417b3c9989536497c747254d2acb0fcd11e331394ec5d8",
+    "60.0 3a7b64219ab9cbdef35f5ca2420a56e77363748646508080bbe86b6cb40d9de8",
   ],
   "50 uL tips, classes given": [
     "60.0 82000cfb56c2f719cc2daaa3fe4f5a3215b77390dbe98202bb80bfdad27d2dd3",

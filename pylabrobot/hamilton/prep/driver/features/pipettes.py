@@ -6365,7 +6365,7 @@ class Pipettes:
       raise ValueError(
         "TADM is not verified on the Prep yet; give limit curve 0 and no storage level"
       )
-    liquid, _, classes = get_volumes_and_classes(
+    liquid, drawn, classes = get_volumes_and_classes(
       containers,
       use_channels,
       self._require_mounted_tips(use_channels),
@@ -6374,11 +6374,6 @@ class Pipettes:
       hamilton_liquid_classes,
       [False] * n,
       [False] * n,
-    )
-    drawn = (
-      liquid
-      if classes is None
-      else [hlc.compute_corrected_volume(v) for hlc, v in zip(classes, liquid)]
     )
 
     def by_class(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:
@@ -6870,7 +6865,7 @@ class Pipettes:
       raise ValueError("post-mixing is not verified on the Prep yet; give no post_mixes")
     if any(index != 0 for index in limit_curve_indices or []):
       raise ValueError("TADM is not verified on the Prep yet; give limit curve 0")
-    liquid, _, classes = get_volumes_and_classes(
+    liquid, pushed, classes = get_volumes_and_classes(
       containers,
       use_channels,
       self._require_mounted_tips(use_channels),
@@ -6879,11 +6874,6 @@ class Pipettes:
       hamilton_liquid_classes,
       [False] * n,
       [False] * n,
-    )
-    pushed = (
-      liquid
-      if classes is None
-      else [hlc.compute_corrected_volume(v) for hlc, v in zip(classes, liquid)]
     )
 
     def by_class(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:
