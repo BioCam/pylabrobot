@@ -6288,8 +6288,8 @@ class Pipettes:
         class's, else 1.0, when None.
       swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid
         class's, else 10.0, when None.
-      clot_detection_heights: how far a clot may hold each tip back, in mm, per container. 0.0 when
-        None; only 0.0 until the check is verified on the device.
+      clot_detection_heights: how far a clot may hold each tip back, in mm, per container. The
+        liquid class's, else 0.0, when None; only 0.0 until the check is verified on the device.
       pull_out_distances_transport_air: rise from the aspirate height before drawing transport
         air, in mm, per container. 10.0 when None; refused beside `z_air`.
       transport_air_volumes: air drawn after the liquid, in uL, per container. The liquid
@@ -6392,6 +6392,7 @@ class Pipettes:
     swap_speeds = by_class("swap_speeds", swap_speeds)
     transport_air_volumes = by_class("transport_air_volumes", transport_air_volumes)
     pre_wetting_volumes = by_class("pre_wetting_volumes", pre_wetting_volumes)
+    clot_detection_heights = by_class("clot_detection_heights", clot_detection_heights)
     modes = self._get_lld_modes(lld_mode, n)
     pressure = [m.name for m in modes if m in (self.LLDMode.PRESSURE, self.LLDMode.DUAL)]
     if pressure:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import functools
 import hashlib
 import inspect
@@ -553,6 +554,17 @@ def test_aspirate_refuses_a_clot_check_until_it_is_verified():
         use_channels=[0],
         liquid_heights=[3.0],
         clot_detection_heights=[1.5],
+      )
+    # A class's clot height is taken when none is given, and refused the same.
+    clotting = copy.copy(_WATER_50)
+    clotting.aspiration_clot_retract_height = 1.5
+    with pytest.raises(ValueError, match="clot detection is not verified"):
+      await p.pipettes.aspirate(
+        [well],
+        volumes=[5.0],
+        hamilton_liquid_classes=[clotting],
+        use_channels=[0],
+        liquid_heights=[3.0],
       )
     assert not any(hasattr(c, "aspirate_parameters") for c in sent)
     await p.stop()
