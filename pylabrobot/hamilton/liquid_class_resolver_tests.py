@@ -8,7 +8,11 @@ from typing import Any, Dict
 import pytest
 
 from pylabrobot.hamilton.liquid_class_resolver import (
+  ASPIRATE_CLASS_ATTRIBUTES,
+  DISPENSE_CLASS_ATTRIBUTES,
   corrected_volumes_for_ops,
+  from_class,
+  get_volumes_and_classes,
   resolve_hamilton_liquid_classes,
 )
 from pylabrobot.hamilton.liquid_classes import HamiltonLiquidClass
@@ -110,3 +114,50 @@ def test_corrected_volumes_respects_disable_and_none_hlc():
 def test_corrected_volumes_length_mismatch_raises():
   with pytest.raises(ValueError, match="hlcs length"):
     corrected_volumes_for_ops([SimpleNamespace(volume=1.0)], [])
+
+
+def _tip(maximal_volume: float = 300.0) -> HamiltonTip:
+  return HamiltonTip(
+    name="tip",
+    has_filter=False,
+    size_z=59.9,
+    maximal_volume=maximal_volume,
+    tip_size=TipSize.STANDARD_VOLUME,
+    pickup_method=TipPickupMethod.OUT_OF_RACK,
+  )
+
+
+def test_from_class_takes_what_is_given_else_the_class_else_none():
+  hlc = _hlc()
+  assert from_class("flow_rates", [3.0], 1, [hlc], ASPIRATE_CLASS_ATTRIBUTES) == [3.0]
+  assert from_class("flow_rates", None, 1, [hlc], ASPIRATE_CLASS_ATTRIBUTES) == [1.0]
+  assert from_class("flow_rates", None, 1, [hlc], DISPENSE_CLASS_ATTRIBUTES) == [9.0]
+  assert from_class("flow_rates", None, 1, None, DISPENSE_CLASS_ATTRIBUTES) is None
+  with pytest.raises(ValueError, match="one entry per container"):
+    from_class("flow_rates", [1.0, 2.0], 1, [hlc], ASPIRATE_CLASS_ATTRIBUTES)
+
+
+def test_get_volumes_and_classes_looks_up_corrects_and_rounds():
+  hlc = _hlc(curve={0.0: 0.0, 100.0: 100.123456})
+  keys: list = []
+
+  def lookup(**kwargs):
+    keys.append(kwargs)
+    return hlc
+
+  well = SimpleNamespace(name="w")
+  liquid, piston, classes = get_volumes_and_classes(
+    [well], [0], [_tip()], [100.0], None, None, [True], [False], lookup=lookup
+  )
+  assert (liquid, piston, classes) == ([100.0], [100.12], [hlc])
+  assert keys[0]["jet"] is True and keys[0]["blow_out"] is False
+  assert keys[0]["liquid"] == Liquid.WATER and keys[0]["tip_volume"] == 300.0
+  assert get_volumes_and_classes([well], [0], [_tip()], None, [5.0], None, [False], [False]) == (
+    [5.0],
+    [5.0],
+    None,
+  )
+  with pytest.raises(ValueError, match="no liquid class is known for channel 1's tip on w"):
+    get_volumes_and_classes(
+      [well], [1], [_tip()], [1.0], None, None, [False], [False], lookup=lambda **kw: None
+    )
