@@ -2136,7 +2136,7 @@ class Pipettes:
 
   async def empty_tips(
     self,
-    channels: Optional[List[int]] = None,
+    use_channels: Optional[List[int]] = None,
     position: Optional[float] = None,
     *,
     flow_rate: float = 200.0,
@@ -2147,7 +2147,7 @@ class Pipettes:
     """Empty several channels' tips where they stand, the channels in parallel. See `empty_tip`.
 
     Args:
-      channels: 0-indexed from the back. Every channel that senses a tip when None.
+      use_channels: 0-indexed from the back. Every channel that senses a tip when None.
       position: where to take the pistons, in uL, at most 0.0. The bottom limit when None.
       flow_rate: in uL/s.
       acceleration: in uL/s2.
@@ -2157,13 +2157,13 @@ class Pipettes:
     Raises:
       ValueError: A channel the device does not have or named twice, or a field out of range.
     """
-    if channels is None:
+    if use_channels is None:
       presence = await self.sense_tip_presence()
-      channels = [channel for channel, mounted in enumerate(presence) if mounted]
-    for channel in channels:
+      use_channels = [channel for channel, mounted in enumerate(presence) if mounted]
+    for channel in use_channels:
       self._require_channel(channel)
-    if len(set(channels)) != len(channels):
-      raise ValueError(f"channels must each be named once, are {channels}")
+    if len(set(use_channels)) != len(use_channels):
+      raise ValueError(f"use_channels must each be named once, are {use_channels}")
     await asyncio.gather(
       *(
         self.empty_tip(
@@ -2174,7 +2174,7 @@ class Pipettes:
           current_limit=current_limit,
           reset_dispensing_drive_after=reset_dispensing_drive_after,
         )
-        for channel in channels
+        for channel in use_channels
       )
     )
 

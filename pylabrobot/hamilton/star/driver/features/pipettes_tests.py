@@ -2694,7 +2694,7 @@ class TestEmptyTipsInSimulation(_SimulatedPlateWithWater):
     for tip in tips:
       assert tip is not None
       self.assertEqual(tip.tracker.get_used_volume(), 0.0)
-    await self.pipettes.empty_tips([0, 1])
+    await self.pipettes.empty_tips(use_channels=[0, 1])
     read = await self.pipettes.dispensing_drives_request_uL_positions([0, 1])
     self.assertEqual(read[:2], [0.0, 0.0])
     self.assertEqual(self.pipettes.piston_positions[:2], [0.0, 0.0])
