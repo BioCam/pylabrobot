@@ -415,11 +415,15 @@ class Pipettes:
 
   well_search_start_clearance: float = 2.0
 
-  # A search, for liquid or a floor, stops looking this far below the modelled cavity bottom, in
-
-  # mm: the seating error of a plate, no more.
+  # A liquid search stops looking this far below the modelled cavity bottom, in mm: the seating
+  # error of a plate, no more.
 
   search_limit_below_cavity_bottom: float = 1.0
+
+  # A Z-touch looks this far below the modelled cavity bottom, in mm: a floor off the model is
+  # still met; each end no lower than the channel reaches.
+
+  ztouch_search_limit_below_cavity_bottom: float = 10.0
 
   # The channels of a batch set off on their Z-touch one after another, this long apart, in s.
 
@@ -3384,7 +3388,7 @@ class Pipettes:
     """The stop disc window each channel of a batch searches, lowest channel number first.
 
     From `z_start`, capped at the drive's top, down to `below_bottom` under the cavity bottom,
-    both plus the channel's overhang.
+    capped at the drive's bottom, both plus the channel's overhang.
 
     Args:
       batch: the channels and which container each has, by job index.
@@ -3396,10 +3400,10 @@ class Pipettes:
     Returns:
       (channel, job, end, start) per channel, the heights in mm.
     """
-    top = self.configuration.z_range[1]
+    bottom, top = self.configuration.z_range
     windows = []
     for channel, job in sorted(zip(batch.channels, batch.indices)):
-      end = round(z_cavity_bottom[job] - below_bottom + overhangs[channel], 2)
+      end = round(max(z_cavity_bottom[job] - below_bottom + overhangs[channel], bottom), 2)
       start = round(min(z_start[job] + overhangs[channel], top), 2)
       windows.append((channel, job, end, start))
     return windows
@@ -3634,7 +3638,7 @@ class Pipettes:
   ) -> Dict[int, List[Optional[float]]]:
     """Z-touch the floor of every container of one batch, the channels in a cascade, n times.
 
-    From the top to `search_limit_below_cavity_bottom` under the cavity bottom, on the stop
+    From the top to `ztouch_search_limit_below_cavity_bottom` under the cavity bottom, on the stop
     disc. The channels go to their starts together at `approach_speed`, then set off
     `ztouch_cascade_interval` apart, lowest channel first. None where a channel reached the limit.
     They stay where they stopped; the next round approaches again.
@@ -3656,7 +3660,7 @@ class Pipettes:
       STARFirmwareError: As a channel answered.
     """
     searches = self._get_stop_disc_search_windows(
-      batch, overhangs, z_cavity_bottom, z_top, self.search_limit_below_cavity_bottom
+      batch, overhangs, z_cavity_bottom, z_top, self.ztouch_search_limit_below_cavity_bottom
     )
     found: Dict[int, List[Optional[float]]] = {job: [] for job in batch.indices}
     for _ in range(n_replicates):
@@ -3700,7 +3704,7 @@ class Pipettes:
     """Touch the floor of each container with a channel's tip, and say how high it is.
 
     Batched as `probe_liquid_heights`, the z-touch in place of the liquid search: from the top to
-    `search_limit_below_cavity_bottom` under the cavity bottom, the channels of a batch to
+    `ztouch_search_limit_below_cavity_bottom` under the cavity bottom, the channels of a batch to
     their starts together at `approach_speed`, then a cascade `ztouch_cascade_interval` apart.
     Channel firmware from 2022 on.
 
@@ -4862,7 +4866,7 @@ class Pipettes:
       if height is None:
         raise RuntimeError(
           f"channel {channel} met no floor in {containers[job].name} down to "
-          f"{self.search_limit_below_cavity_bottom} mm under its modelled cavity bottom"
+          f"{self.ztouch_search_limit_below_cavity_bottom} mm under its modelled cavity bottom"
         )
       logger.info(
         "channel %d touched the floor of %s at %.2f mm, the model has it at %.2f mm",

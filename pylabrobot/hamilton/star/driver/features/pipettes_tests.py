@@ -1712,7 +1712,7 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     c = self.pipettes.configuration
     bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
     top = wells[0].get_location_wrt(self.deck, "c", "c", "t").z
-    end = c.z_drive_mm_to_increments(round(bottom - 1.0 + 51.9, 2))
+    end = c.z_drive_mm_to_increments(round(bottom - 10.0 + 51.9, 2))
     start = c.z_drive_mm_to_increments(round(top + 51.9, 2))
     self.assertEqual(
       self.sent,
@@ -1727,6 +1727,16 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     )
     self.tool_bottoms.assert_not_awaited()
     self.assertEqual(self.safe_z.await_count, 2)
+
+  async def test_a_floor_search_ends_no_lower_than_the_drive_reaches(self):
+    self.pipettes._record_where_they_stopped = unittest.mock.AsyncMock()  # type: ignore[method-assign]
+    wells = self._wells("A1")
+    c = self.pipettes.configuration
+    bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    lowest = round(bottom - 3.0 + 51.9, 2)
+    c.z_range = (lowest, c.z_range[1])
+    await self.pipettes.probe_z_heights_using_ztouch(wells)
+    self.assertIn(f"za{c.z_drive_mm_to_increments(lowest):05}", self.sent[0])
 
   async def test_floors_set_off_in_a_cascade_from_the_back(self):
     self.pipettes._record_where_they_stopped = unittest.mock.AsyncMock()  # type: ignore[method-assign]
@@ -1764,7 +1774,7 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.pipettes._record_where_they_stopped = unittest.mock.AsyncMock()  # type: ignore[method-assign]
     wells = self._wells("A1")
     bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
-    self.rz = self.pipettes.configuration.z_drive_mm_to_increments(round(bottom - 5.0 + 51.9, 2))
+    self.rz = self.pipettes.configuration.z_drive_mm_to_increments(round(bottom - 10.0 + 51.9, 2))
     self.assertEqual(await self.pipettes.probe_z_heights_using_ztouch(wells), [None])
 
   async def test_an_interrupted_batch_brings_the_channels_up_before_it_propagates(self):
@@ -1781,7 +1791,9 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.pipettes._record_where_they_stopped = unittest.mock.AsyncMock()  # type: ignore[method-assign]
     wells = self._wells("A1")
     bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
-    at_the_end = self.pipettes.configuration.z_drive_mm_to_increments(round(bottom - 5.0 + 51.9, 2))
+    at_the_end = self.pipettes.configuration.z_drive_mm_to_increments(
+      round(bottom - 10.0 + 51.9, 2)
+    )
     self.rz = [at_the_end, 22300]
     with self.assertRaises(RuntimeError):
       await self.pipettes.probe_z_heights_using_ztouch(wells, n_replicates=2)
