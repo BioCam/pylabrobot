@@ -458,12 +458,11 @@ class SimulatedPipettes(_Simulated, Pipettes):
           if mode in ("1", "3"):
             pushed += int(kwargs["ba"][used]) / 10
           left = 0.0 if mode == "4" else max(standing - pushed, 0.0)
-          # Then it draws this command's transport air, and the stop-back volume.
-          air = 0.0 if mode == "4" else int(kwargs["ta"][used]) / 10
+          # Then it draws this command's transport air, after an empty too; the stop-back leaves
+          # the piston where the dispense did.
+          air = int(kwargs["ta"][used]) / 10
           self.device.transport_air_uL[index] = air
-          self.device.dispensing_drive_uL[index] = round(
-            left + air + int(kwargs["rv"][used]) / 10, 1
-          )
+          self.device.dispensing_drive_uL[index] = round(left + air, 1)
           used += 1
         return None
 

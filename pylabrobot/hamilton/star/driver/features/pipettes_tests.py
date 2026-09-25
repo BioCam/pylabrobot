@@ -3157,13 +3157,27 @@ class TestDispenseInSimulation(_SimulatedPlateWithWater):
     assert tip is not None
     self.assertEqual(tip.tracker.get_used_volume(), 0.0)
 
-  async def test_the_stop_back_leaves_the_piston_that_much_up(self):
+  async def test_the_stop_back_leaves_the_piston_where_the_dispense_did(self):
+    # As a device showed: a 5 uL stop-back after 10 uL moved the piston by the 10 and the air held.
     await self.pipettes.aspirate(self.wells[:1], piston_volumes=[50.0])
     sent = self._record()
     await self.pipettes.dispense(self.wells[3:4], piston_volumes=[30.0], stop_back_volumes=[5.0])
     self.assertIn("rv050", sent[0])
-    self.assertEqual(self.pipettes.piston_positions[0], 25.0)
-    self.assertEqual((await self.pipettes.dispensing_drives_request_uL_positions())[0], 25.0)
+    self.assertEqual(self.pipettes.piston_positions[0], 20.0)
+    self.assertEqual((await self.pipettes.dispensing_drives_request_uL_positions())[0], 20.0)
+
+  async def test_an_empty_draws_its_transport_air_and_the_next_dispense_pushes_it(self):
+    # As a device showed three times: an empty with 5 uL of transport air leaves the piston at 5.
+    await self.pipettes.aspirate(self.wells[:1], piston_volumes=[50.0])
+    await self.pipettes.dispense(
+      self.wells[3:4], piston_volumes=[20.0], empty=[True], transport_air_volumes=[5.0]
+    )
+    self.assertEqual(self.pipettes.piston_positions[0], 5.0)
+    self.assertEqual((await self.pipettes.dispensing_drives_request_uL_positions())[0], 5.0)
+    await self.pipettes.aspirate(self.wells[:1], piston_volumes=[20.0])
+    await self.pipettes.dispense(self.wells[3:4], piston_volumes=[10.0])
+    self.assertEqual(self.pipettes.piston_positions[0], 10.0)
+    self.assertEqual((await self.pipettes.dispensing_drives_request_uL_positions())[0], 10.0)
 
   async def test_the_transport_air_a_tip_holds_goes_out_ahead_of_the_next_dispense(self):
     # As a device showed: an aspirate's `ta` stays in the tip through later aspirates; a dispense
