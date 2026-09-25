@@ -801,6 +801,11 @@ class TestZTouchProbing(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.sent, [f"P3ZHzb{start:05}za{end:05}zv11652zr075zu00932cg001cf000"])
     self.back_off.assert_not_awaited()
 
+  async def test_safe_z_afterwards_instead_of_a_back_off(self):
+    await self.pipettes.probe_z_using_ztouch(0, move_to_safe_z_position_after=True)
+    self.safe_z.assert_awaited_once()
+    self.back_off.assert_not_awaited()
+
   async def test_reaching_the_end_is_none(self):
     # The drive lands a few hundredths off the end it ran to.
     self.rz = self.pipettes.configuration.z_drive_mm_to_increments(100.05)
@@ -821,8 +826,15 @@ class TestZTouchProbing(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.sent, [])
 
   async def test_an_argument_out_of_range_is_refused_before_anything_is_sent(self):
-    with self.assertRaises(ValueError):
-      await self.pipettes.probe_z_using_ztouch(0, search_speed=999.0)
+    for kwargs in (
+      {"search_speed": 999.0},
+      {"search_end_position": 40.0},
+      {"search_start_position": 150.0, "search_end_position": 200.0},
+      {"detection_limiter_pwm": 126},
+      {"push_force_pwm": -1},
+    ):
+      with self.assertRaises(ValueError):
+        await self.pipettes.probe_z_using_ztouch(0, **kwargs)  # type: ignore[arg-type]
     self.assertEqual(self.sent, [])
     self.recorded_z.assert_not_awaited()
     self.back_off.assert_not_awaited()
@@ -1062,6 +1074,114 @@ class TestCLLDProbing(unittest.IsolatedAsyncioTestCase):
     self.pipettes.request_y_positions = unittest.mock.AsyncMock(return_value=ys)  # type: ignore[method-assign]
     with self.assertRaises(ValueError):
       await self.pipettes.probe_y_using_clld(1, "forward", search_start_position=399.0)
+    self.assertEqual(self.sent, [])
+
+  def _answer_the_heights_with(self, reply: Any):
+    """Record everything, and answer every command with `reply`."""
+    recorded = self.pipettes._driver.send_command
+
+    async def answering(module: str, command: str, **kwargs: Any):
+      await recorded(module=module, command=command, **kwargs)
+      return reply
+
+    self.pipettes._driver.send_command = answering  # type: ignore[assignment]
+
+  async def test_z_probe_window_is_in_tip_bottom_heights_and_sent_on_the_stop_disc(self):
+    self._mount_a_tip(51.9)
+    self._answer_the_heights_with({"lh": [1234] * self.pipettes.num_channels})
+    await self.pipettes.probe_z_using_clld(
+      2,
+      search_start_position=250.0,
+      search_end_position=150.0,
+      move_to_safe_z_position_after=True,
+    )
+    c = self.pipettes.configuration
+    start, end = c.z_drive_mm_to_increments(301.9), c.z_drive_mm_to_increments(201.9)
+    self.assertEqual(
+      self.sent, [f"P3ZLzh{end:05}zc{start:05}zl00932zr075gt0010gl0002zj1zi0186", "C0RL"]
+    )
+    self.moves.assert_awaited_once()
+
+  async def test_z_probe_refuses_a_window_or_a_setting_out_of_range(self):
+    self._mount_a_tip(51.9)
+    for kwargs in (
+      {"search_end_position": 40.0},
+      {"search_start_position": 300.0},
+      {"search_start_position": 150.0, "search_end_position": 200.0},
+      {"detection_drop": 1024},
+      {"post_detection_distance": 110.0},
+      {"post_detection_trajectory": 2},
+    ):
+      with self.assertRaises(ValueError):
+        await self.pipettes.probe_z_using_clld(0, **kwargs)  # type: ignore[arg-type]
+    self.assertEqual(self.sent, [])
+    self.moves.assert_not_awaited()
+
+  async def test_pressure_probe_in_foam_mode_answers_the_foam_and_then_the_liquid(self):
+    self._mount_a_tip(51.9)
+    self._answer_the_heights_with({"if": [22964, 20000]})
+    self.pipettes.get_mounted_tip = unittest.mock.Mock(  # type: ignore[method-assign]
+      return_value=unittest.mock.Mock(has_filter=True)
+    )
+    heights = await self.pipettes.probe_z_using_plld(
+      2,
+      search_start_position=250.0,
+      search_end_position=150.0,
+      pressure_mode=Pipettes.PressureLLDMode.FOAM,
+      dispense_back_volume=10.0,
+      move_to_safe_z_position_after=True,
+    )
+    c = self.pipettes.configuration
+    start, end = c.z_drive_mm_to_increments(301.9), c.z_drive_mm_to_increments(201.9)
+    back = c.dispensing_drive_uL_to_increments(10.0)
+    self.assertEqual(
+      self.sent,
+      [
+        f"P3ZEzh{end:05}zc{start:05}zi0186zj1gf1gt0010gl0002gu0030gn0010gm0gz0466cj1co0030cp0030"
+        f"cq0030cl00932cc1cd{back:05}zv11186zl00932zr075zw3dl01829dr073dv05303dw3"
+      ],
+    )
+    self.assertEqual(
+      heights,
+      [round(c.z_drive_increments_to_mm(i) - 51.9, 2) for i in (22964, 20000)],
+    )
+    self.moves.assert_awaited_once()
+
+  async def test_pressure_probe_refuses_a_setting_out_of_range_before_anything_is_sent(self):
+    self._mount_a_tip(51.9)
+    self.pipettes.get_mounted_tip = unittest.mock.Mock(  # type: ignore[method-assign]
+      return_value=None
+    )
+    for kwargs in (
+      {"search_end_position": 40.0},
+      {"foam_ad_values": 5000},
+      {"dispensing_current_limit": 8},
+      {"z_current_limit": 8},
+      {"max_delta_plld_clld": 110.0},
+      {"dispense_back_volume": 1300.0},
+      {"post_detection_trajectory": 2},
+    ):
+      with self.assertRaises(ValueError):
+        await self.pipettes.probe_z_using_plld(0, **kwargs)  # type: ignore[arg-type]
+    self.assertEqual(self.sent, [])
+    self.moves.assert_not_awaited()
+
+  async def test_pressure_probe_raises_any_other_channel_error_after_safe_z(self):
+    self._mount_a_tip(51.9)
+    self.pipettes.get_mounted_tip = unittest.mock.Mock(  # type: ignore[method-assign]
+      return_value=None
+    )
+    self._answer_the_search_with("ZE", "P2ZEid0001er99")
+    with self.assertRaises(STARFirmwareError):
+      await self.pipettes.probe_z_using_plld(1)
+    self.moves.assert_awaited_once()
+
+  async def test_pressure_probe_refuses_a_channel_without_a_tip(self):
+    self.pipettes.sense_tip_presence = unittest.mock.AsyncMock(  # type: ignore[method-assign]
+      return_value=[0] * self.pipettes.num_channels
+    )
+    with self.assertRaises(RuntimeError):
+      await self.pipettes.probe_z_using_plld(0)
     self.assertEqual(self.sent, [])
 
 
@@ -1405,7 +1525,7 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     )
 
   async def test_plld_firmware(self):
-    await self.pipettes._unchecked_fw_probe_z_using_plld(
+    found = await self.pipettes._unchecked_fw_probe_z_using_plld(
       1,
       9320,
       31200,
@@ -1441,6 +1561,7 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
         "cl00932cc0cd00000zv11186zl00932zr075zw3dl01829dr073dv05303dw3"
       ],
     )
+    self.assertEqual(found, [12345, 0])
 
   async def test_one_column_is_searched_at_once_and_read_in_one_go(self):
     wells = self._wells("A1", "B1", "C1", "D1")
@@ -1875,6 +1996,49 @@ class TestLiquidProbingInSimulation(_SimulatedPlateWithWater):
       else:
         assert found is not None
         self.assertAlmostEqual(found, expected, delta=0.1)
+        self.assertAlmostEqual((await self.pipettes.request_last_lld_z_positions())[0], found)
+
+  async def _over(self, well) -> float:
+    """Put channel 0 over `well`; the well's cavity bottom height, in mm."""
+    centre = well.get_location_wrt(self.deck, "c", "c", "cavity_bottom")
+    await self.pipettes.move_to_safe_z()
+    await self.pipettes.move_to_xy_positions(centre.x, {0: centre.y}, make_space=True)
+    return float(centre.z)
+
+  async def test_a_clld_miss_answers_none_zeroes_the_latch_and_comes_up(self):
+    floor = await self._over(self.wells[3])
+    self.assertIsNone(await self.pipettes.probe_z_using_clld(0, search_end_position=floor))
+    self.assertEqual((await self.pipettes.request_last_lld_z_positions())[0], 0.0)
+    top = self.pipettes.configuration.z_range[1]
+    self.assertEqual((await self.pipettes.request_stop_disc_z_positions())[0], top)
+
+  async def test_the_pressure_probe_finds_what_the_clld_probe_finds(self):
+    floor = await self._over(self.wells[0])
+    capacitive = await self.pipettes.probe_z_using_clld(0, search_end_position=floor)
+    pressure = await self.pipettes.probe_z_using_plld(0, search_end_position=floor)
+    assert capacitive is not None and pressure is not None
+    self.assertEqual(len(pressure), 1)
+    self.assertAlmostEqual(pressure[0], capacitive, delta=0.1)
+
+  async def test_a_pressure_miss_answers_none_and_comes_up(self):
+    floor = await self._over(self.wells[3])
+    self.assertIsNone(await self.pipettes.probe_z_using_plld(0, search_end_position=floor))
+    top = self.pipettes.configuration.z_range[1]
+    self.assertEqual((await self.pipettes.request_stop_disc_z_positions())[0], top)
+
+  async def test_the_ztouch_probe_stops_on_the_floor_of_the_well(self):
+    floor = await self._over(self.wells[3])
+    touched = await self.pipettes.probe_z_using_ztouch(0)
+    assert touched is not None
+    self.assertAlmostEqual(touched, floor, delta=0.1)
+    stop_disc = (await self.pipettes.request_stop_disc_z_positions())[0]
+    overhang = await self.pipettes.request_tip_overhang(0)
+    self.assertAlmostEqual(stop_disc, touched + overhang + 2.0, delta=0.1)
+
+  async def test_a_ztouch_over_nothing_runs_to_the_end_and_answers_none(self):
+    await self._over(self.wells[3])
+    await self.pipettes.move_to_x_position(200.0)
+    self.assertIsNone(await self.pipettes.probe_z_using_ztouch(0))
 
 
 class TestAspirateInSimulation(_SimulatedPlateWithWater):
