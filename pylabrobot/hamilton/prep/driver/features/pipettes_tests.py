@@ -3685,7 +3685,12 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
         ),
         (ValueError, "outside channel", two, {**both, "minimum_traverse_height_end": 200.0}),
         (TooLittleVolumeError, "room for", two, {**both, "piston_volumes": [10.0, 70.0]}),
-        (ValueError, "PRESSURE LLD has no seek", two, {**searching, "lld_mode": pressure}),
+        (
+          NotImplementedError,
+          "PRESSURE LLD is not supported",
+          two,
+          {**searching, "lld_mode": pressure},
+        ),
         (ValueError, "must be LLDMode", two, {**both, "lld_mode": [capacitive, "capacitive"]}),
         (ValueError, "1 lld modes for 2", two, {**both, "lld_mode": [capacitive]}),
         (

@@ -6313,14 +6313,14 @@ class Pipettes:
       ValueError: If an argument is out of range, the lists do not match, a channel repeats, there
         are more containers than channels, both or neither of `volumes` and `piston_volumes` are
         given, a class is given with `piston_volumes`, no class is known for a channel's tip, a
-        mode is not an `LLDMode`, a mode is PRESSURE or DUAL, a liquid height is given beside an
-        LLD mode, a floor search is out of reach, or a limit curve or a TADM storage level is
-        given.
+        mode is not an `LLDMode`, a liquid height is given beside an LLD mode, or a limit curve or
+        a TADM storage level is given.
       RuntimeError: If a channel used carries no tip, nothing knows where a container's liquid
         stands: no height given, volume tracking off, no LLD; a CAPACITIVE container has no
         height-volume functions, no liquid is found where a channel searched, or no floor is met
         where a channel touched.
       TooLittleVolumeError: If a tip has less room than it is to take.
+      NotImplementedError: If a mode is PRESSURE or DUAL.
     """
     containers = list(containers)
     n = len(containers)
@@ -6392,7 +6392,10 @@ class Pipettes:
     modes = self._get_lld_modes(lld_mode, n)
     pressure = [m.name for m in modes if m in (self.LLDMode.PRESSURE, self.LLDMode.DUAL)]
     if pressure:
-      raise ValueError(f"{pressure[0]} LLD has no seek of its own; CAPACITIVE or ZTOUCH search")
+      raise NotImplementedError(
+        f"{pressure[0]} LLD is not supported on the Prep: its pressure search has not detected "
+        "liquid, and a missed search keeps drawing. Use CAPACITIVE or ZTOUCH."
+      )
     touched = [j for j in range(n) if modes[j] == self.LLDMode.ZTOUCH]
     offsets = (
       resource_offsets

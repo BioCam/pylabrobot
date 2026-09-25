@@ -613,6 +613,11 @@ class Head8:
             f"Dispense does not support {lld_mode.name} LLD — only CAPACITIVE or OFF. "
             "Pressure-based LLD requires aspiration (plunger movement)."
           )
+        if lld_mode in (Pipettes.LLDMode.PRESSURE, Pipettes.LLDMode.DUAL):
+          raise NotImplementedError(
+            f"{lld_mode.name} LLD is not supported on the Prep: its pressure search has not "
+            "detected liquid, and a missed search keeps drawing. Use CAPACITIVE."
+          )
         return True
       return False
     return lld is not None
