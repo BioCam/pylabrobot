@@ -555,8 +555,8 @@ class Viewer3D:
 
   # -- clients -----------------------------------------------------------------
 
-  def _on_client_message(self, message: Any) -> None:
-    """Print what a page draws with, or why it could not draw at all.
+  def _on_client_message(self, message: Any) -> bool:
+    """Print what a page draws with, or why it could not draw at all; whether it was a hello.
 
     Printed, not logged: the person to tell is the one watching the notebook. Every value came from
     a browser, so it is shortened and stripped to printable text first.
@@ -564,32 +564,36 @@ class Viewer3D:
     try:
       parsed = json.loads(message)
     except (TypeError, ValueError):
-      return
+      return False
     if not isinstance(parsed, dict) or parsed.get("event") != "hello":
-      return
+      return False
     data = parsed.get("data")
     if not isinstance(data, dict):
-      return
+      return False
     self.clients_seen.append({k: _printable(data.get(k)) for k in HELLO_FIELDS})
     hello = self.clients_seen[-1]
     if hello["error"]:
       print(f"viewer: a browser could not show the scene: {hello['error']}")
       print(f"  renderer: {hello['renderer'] or 'none'}  browser: {hello['userAgent']}")
-      return
+      return True
     drawing = hello["backend"] or "unknown backend"
     if hello["renderer"]:
       drawing += f" on {hello['renderer']}"
     if data.get("software") is True:
       drawing += " - software rendering, expect it to be slow"
     print(f"viewer: a browser connected, drawing with {drawing}")
+    return True
 
   async def _handler(self, websocket: ServerConnection) -> None:
     self._clients.add(websocket)
     await websocket.send(_encode("scene", self._scene_message()))
     await websocket.send(_encode("state", pack_state(self._snapshot(), self._epoch)))
+    greeted = False
     try:
       async for message in websocket:
-        self._on_client_message(message)
+        # A page says hello once. A repeat is still read, or keepalive stalls, but not kept.
+        if not greeted:
+          greeted = self._on_client_message(message)
     except Exception:
       pass
     finally:
@@ -599,6 +603,9 @@ class Viewer3D:
 
   # How often the serving thread looks up from its socket, which is how long `stop` waits for it.
   FS_POLL_S = 0.05
+  # How long a file server connection may sit idle or take over one request before it is closed:
+  # each holds a thread, and keep-alive would hold it for as long as the other end likes.
+  FS_TIMEOUT_S = 30.0
 
   def _start_file_server(self) -> None:
     directory = STATIC_DIR
@@ -606,10 +613,12 @@ class Viewer3D:
     name = self.name
     mesh_files = self._mesh_files
     host_allowed = self._host_allowed
+    idle_timeout = self.FS_TIMEOUT_S
 
     class Handler(http.server.SimpleHTTPRequestHandler):
       # Keep-alive, so a page fetching two dozen meshes at once reuses a few connections.
       protocol_version = "HTTP/1.1"
+      timeout = idle_timeout
 
       def __init__(self, *args: Any, **kwargs: Any) -> None:
         super().__init__(*args, directory=directory, **kwargs)
@@ -672,9 +681,9 @@ class Viewer3D:
       address_family = socket.AF_INET6 if ":" in self.host else socket.AF_INET
 
       def handle_error(self, request: Any, client_address: Any) -> None:
-        # A browser that leaves a page mid-download closes its end; that is no error of ours,
-        # and a traceback on every reload buries anything that is.
-        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError)):
+        # A browser that leaves a page mid-download, or stalls past the timeout, is no error of
+        # ours, and a traceback on every reload buries anything that is.
+        if isinstance(sys.exc_info()[1], (BrokenPipeError, ConnectionResetError, socket.timeout)):
           return
         super().handle_error(request, client_address)
 

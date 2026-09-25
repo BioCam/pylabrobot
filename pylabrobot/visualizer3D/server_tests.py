@@ -466,6 +466,24 @@ class FileServerTests(unittest.IsolatedAsyncioTestCase):
     self.assertIn("&lt;b&gt;run&lt;/b&gt;", page)
     self.assertNotIn("<b>run</b>", page)
 
+  async def test_an_idle_connection_is_closed(self):
+    """Keep-alive with no timeout held a thread per connection for as long as the other end liked:
+    two hundred idle sockets were two hundred threads."""
+    fs_port, ws_port = free_ports(2)
+    viewer = Viewer3D(empty_facility(), open_browser=False, fs_port=fs_port, ws_port=ws_port)
+    viewer.FS_TIMEOUT_S = 0.2
+    await viewer.start()
+
+    def idle() -> bytes:
+      with socket.create_connection(("127.0.0.1", viewer.fs_port)) as sock:
+        sock.settimeout(5)
+        return sock.recv(1)  # nothing is sent, so only the server closing returns
+
+    try:
+      self.assertEqual(await asyncio.to_thread(idle), b"")
+    finally:
+      await viewer.stop()
+
   async def test_a_download_abandoned_by_the_browser_prints_no_traceback(self):
     """A page left mid-download closes its end of the socket, which the threaded server used to
     report as an exception in the request thread, a full traceback on every reload."""
@@ -781,6 +799,19 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
     self.assertNotIn(self.viewer.token, page)
     self.assertNotIn("{{", page)
     self.assertTrue(self.viewer.url.endswith(f"/#token={self.viewer.token}"))
+
+  async def test_a_socket_is_heard_once(self):
+    """Every hello was kept and printed, so one socket could grow the list and flood the output."""
+    hello = json.dumps({"event": "hello", "data": {"backend": "WebGL2"}})
+    printed = io.StringIO()
+    with contextlib.redirect_stdout(printed):
+      async with websockets.connect(self.ws(self.viewer.token), max_size=None) as ws:
+        for _ in range(3):
+          await ws.send(hello)
+        await ws.send("not json")
+        await (await ws.ping())  # answered once everything sent before it has been read
+    self.assertEqual(len(self.viewer.clients_seen), 1)
+    self.assertEqual(printed.getvalue().count("a browser connected"), 1)
 
   async def test_a_token_from_another_run_is_refused(self):
     """A page served by an earlier run keeps that run's token, and it must not open this one."""
