@@ -418,6 +418,11 @@ class Pipettes:
 
   ztouch_cascade_interval: float = 0.25
 
+  # A Z-touch aspirate lifts the tip this far off the cavity bottom it touched, in mm, so the
+  # channels drawing together do not press on what lies underneath.
+
+  ztouch_aspirate_height_above_bottom: float = 0.2
+
   # A Z-touch dispense lifts the tip this far off the cavity bottom it touched, in mm, so the
 
   # orifice is not sealed on it.
@@ -5571,13 +5576,14 @@ class Pipettes:
     other's, draw at the surface found, set the tracker to the measured volume, warning when it
     is 20 % off, and refuse a container without liquid; their blow-out air is drawn beforehand
     at the traverse height, by `Px DC`, since the command would draw it with the tip on the
-    liquid; ZTOUCH touches the floor first, as `probe_z_heights_using_ztouch`, draws from it,
-    and refuses a container whose floor is not met; DUAL is not implemented. A draw past what a
-    container holds goes ahead and takes air, with a warning, an info line under ZTOUCH, where
-    emptying is the point. `volumes` with a liquid class, which corrects the piston volume and
-    fills what is not given, or `piston_volumes` as given. The tracker books what moved per
-    batch, before its command, committed on success; it never places a tip. Keyword arguments in
-    the order the aspiration runs; per-container lists in the containers' order.
+    liquid; ZTOUCH touches the floor first, as `probe_z_heights_using_ztouch`, draws
+    `ztouch_aspirate_height_above_bottom` above it, and refuses a container whose floor is not
+    met; DUAL is not implemented. A draw past what a container holds goes ahead and takes air,
+    with a warning, an info line under ZTOUCH, where emptying is the point. `volumes` with a
+    liquid class, which corrects the piston volume and fills what is not given, or
+    `piston_volumes` as given. The tracker books what moved per batch, before its command,
+    committed on success; it never places a tip. Keyword arguments in the order the aspiration
+    runs; per-container lists in the containers' order.
 
     Args:
       containers: any number.
@@ -5805,6 +5811,13 @@ class Pipettes:
         sent_floors=sent_floors,
         given_floors=given_floors,
       )
+      # The tip lifts off the bottom it touched, and so does the floor sent, so the draw does not
+      # press on it.
+      for job in batch.indices:
+        if job in touched:
+          surfaces[job] = round(surfaces[job] + self.ztouch_aspirate_height_above_bottom, 2)
+          if given_floors is None:
+            sent_floors[job] = surfaces[job]
       await self._search_liquid_of_batch(
         batch,
         searched=searched,

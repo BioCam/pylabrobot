@@ -1160,6 +1160,9 @@ class Pipettes:
     # The channels of a batch set off on their Z-touch one after another, this long apart, in s,
     # so their pushes on what lies underneath do not add up.
     self.ztouch_cascade_interval: float = 0.25
+    # A Z-touch aspirate lifts the tip this far off the cavity bottom it touched, in mm, so the
+    # channels drawing together do not press on what lies underneath.
+    self.ztouch_aspirate_height_above_bottom: float = 0.2
     # A Z-touch dispense lifts the tip this far off the cavity bottom it touched, in mm, so the
     # orifice is not sealed on it.
     self.ztouch_dispense_height_above_bottom: float = 0.2
@@ -6254,9 +6257,10 @@ class Pipettes:
     The firmware never searches: CAPACITIVE searches first, as `probe_liquid_heights`, draws at
     the surface found without LLD, sets the tracker to the measured volume, warning when it is
     20 % off, and refuses a container without liquid; ZTOUCH touches the floor first, as
-    `_probe_batch_floors`, draws from it without LLD, and refuses a container whose floor is not
-    met; PRESSURE and DUAL refuse. A draw past what a container holds goes ahead and takes air,
-    with a warning, an info line under ZTOUCH, where emptying is the point.
+    `_probe_batch_floors`, draws `ztouch_aspirate_height_above_bottom` above it without LLD,
+    and refuses a container whose floor is not met; PRESSURE and DUAL refuse. A draw past what a
+    container holds goes ahead and takes air, with a warning, an info line under ZTOUCH, where
+    emptying is the point.
 
     Args:
       containers: one per channel used, at most as many as there are channels.
@@ -6488,8 +6492,8 @@ class Pipettes:
           lowest = [min(z_cavity_bottom[j], z) for j, z in zip(batch.indices, heights_z)]
         batch_modes = [self.LLDMode.OFF] * len(batch.indices)
       if on_ztouch:
-        # The draw goes without LLD, at the floor touched; the check before any motion has the
-        # modelled one.
+        # The draw goes without LLD, off the floor touched so it does not press on it; the check
+        # before any motion has the modelled floor.
         floors = (
           [z_cavity_bottom[job] for job in batch.indices]
           if check_only
@@ -6502,8 +6506,8 @@ class Pipettes:
             approach_speed=approach_speed,
           )
         )
-        heights_z = floors
-        lowest = floors if lowest is None else lowest
+        heights_z = [round(f + self.ztouch_aspirate_height_above_bottom, 2) for f in floors]
+        lowest = heights_z if lowest is None else lowest
         batch_modes = [self.LLDMode.OFF] * len(batch.indices)
       return await self._aspirate_batch(
         batch.x_position,

@@ -2377,7 +2377,8 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     ]
     await self.pipettes.aspirate(self.wells, piston_volumes=[10.0] * 4, lld_mode=modes)
     # The touch first, then the two liquid searches, each its own way; then one command for all
-    # four, the LLD off everywhere, starting at the lowest height any tip rests at: the floor.
+    # four, the LLD off everywhere, starting at the lowest height any tip rests at: 0.2 mm off
+    # the floor touched.
     self.assertEqual(
       [c[:4] for c in sent], ["P4ZA", "P4ZH", "P2ZA", "P3ZA", "P2ZL", "P3ZE", "C0RL", "C0AS"]
     )
@@ -2389,7 +2390,7 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
     start = self.pipettes.configuration.z_drive_mm_to_increments(round(top + 2.0 + overhang, 2))
     self.assertIn(f"zc{start:05}", sent[4])
     self.assertIn(f"lp{round((top + 2.0) * 10):04}", sent[-1])
-    floor = self._surface_field(self.wells[3], 0.0)
+    floor = f"{int(self._surface_field(self.wells[3], 0.0)) + 2:04}"
     self.assertIn(f"th{floor}te2450", sent[-1])
     # The OFF channel draws at the cavity bottom, the searched ones where they found the liquid.
     self.assertIn(
@@ -2398,16 +2399,16 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       sent[-1],
     )
 
-  async def test_a_z_touch_draws_from_the_floor(self):
+  async def test_a_z_touch_draws_just_off_the_floor(self):
     sent = self._record_aspirations("P1ZA", "P1ZH")
     with self.assertLogs("pylabrobot.hamilton.star.driver.features.pipettes", level="INFO") as logs:
       await self.pipettes.aspirate(
         self.wells[3:4], piston_volumes=[10.0], lld_mode=Pipettes.LLDMode.ZTOUCH
       )
-    # Approach to the top, the touch, the draw from the floor with zx there and the LLD off; the
-    # empty well gives nothing and the air is an info line, not a warning.
+    # Approach to the top, the touch, the draw 0.2 mm off the floor with zx there and the LLD off;
+    # the empty well gives nothing and the air is an info line, not a warning.
     self.assertEqual([c[:4] for c in sent], ["P1ZA", "P1ZH", "C0AS"])
-    floor = self._surface_field(self.wells[3], 0.0)
+    floor = f"{int(self._surface_field(self.wells[3], 0.0)) + 2:04}"
     self.assertIn(f"th{floor}te2450", sent[-1])
     self.assertIn(f"zl{floor}", sent[-1])
     self.assertIn(f"zx{floor}", sent[-1])

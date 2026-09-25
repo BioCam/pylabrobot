@@ -3784,8 +3784,8 @@ def _ztouch_setup(second_session: bool, touch: Optional[float]):
 
 
 @pytest.mark.parametrize("second_session", [False, True])
-def test_aspirate_on_ztouch_touches_each_floor_then_draws_there_without_lld(second_session):
-  """Each channel's seek on its own link, both before the draw; the draw at the floor, no LLD."""
+def test_aspirate_on_ztouch_touches_each_floor_then_draws_just_off_it_without_lld(second_session):
+  """Each channel's seek on its own link, both before the draw; the draw 0.2 mm off the floor."""
 
   async def _t():
     p, rack, plate, sent = _ztouch_setup(second_session, touch=0.3)
@@ -3817,8 +3817,8 @@ def test_aspirate_on_ztouch_touches_each_floor_then_draws_there_without_lld(seco
       assert commands.index(draw) > commands.index(seeks[-1][1])
       for entry, well in zip(draw.aspirate_parameters, wells):
         floor = well.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z - 0.3
-        assert entry.no_lld.z_fluid == pytest.approx(floor)
-        assert entry.common.z_minimum == pytest.approx(floor)
+        assert entry.no_lld.z_fluid == pytest.approx(floor + 0.2)
+        assert entry.common.z_minimum == pytest.approx(floor + 0.2)
       # A1 held 5 uL: it gives those, and the tip takes the rest as air.
       assert [w.tracker.get_used_volume() for w in wells] == [0.0, 190.0]
       tips = [p.pipettes.get_mounted_tip(ch) for ch in (0, 1)]
@@ -3928,7 +3928,8 @@ def test_aspirate_runs_ztouch_and_off_in_batches_of_their_own():
     assert [type(c) for c in draws] == [PrepCmd.PrepAspirateNoLldMonitoringV2] * 2
     bottoms = [w.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z for w in wells]
     heights = sorted(e.no_lld.z_fluid for c in draws for e in c.aspirate_parameters)
-    assert heights == pytest.approx(sorted([bottoms[0] - 0.2, bottoms[1] + 3.0]))
+    # The touched floor 0.2 under the model, the draw 0.2 over it.
+    assert heights == pytest.approx(sorted([bottoms[0] - 0.2 + 0.2, bottoms[1] + 3.0]))
     await p.stop()
 
   _run(_t())
