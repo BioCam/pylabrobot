@@ -291,7 +291,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
 
   async def page(self, browser: Browser, ready: str = "rider") -> None:
     """Open the viewer and wait until the page lists `ready`."""
-    await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/")
+    await browser.open(self.viewer.url)
     listed = f"window.plrViewer && window.plrViewer.resources().includes({ready!r})"
     await browser.settle(listed, 30)
 
@@ -427,7 +427,7 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     """A page served over https may only open wss:, and one reached by a name connects to that
     name, not to 127.0.0.1."""
     async with Browser() as browser:
-      await browser.open(f"http://localhost:{self.viewer.fs_port}/")
+      await browser.open(f"http://localhost:{self.viewer.fs_port}/#token={self.viewer.token}")
       await browser.settle("window.plrViewer && window.plrViewer.resources().length", 30)
       self.assertTrue(
         (await browser.evaluate("window.WS_URL")).startswith(f"ws://localhost:{WS_PORT}/?token=")
@@ -437,6 +437,15 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
           await browser.evaluate("window.wsUrlFor({ protocol: 'https:', hostname: 'lab.example' })")
         ).startswith(f"wss://lab.example:{WS_PORT}/?token=")
       )
+
+  async def test_the_token_leaves_the_address_and_a_reload_still_connects(self):
+    """The token stood in the address bar, so it went into bookmarks and onto a shared screen."""
+    async with Browser() as browser:
+      await self.page(browser, "carrier")
+      self.assertEqual(await browser.evaluate("location.href"), f"{self.viewer.url.split('#')[0]}")
+      await browser.evaluate("location.reload()")
+      await browser.settle("window.plrViewer && window.plrViewer.resources().length", 30)
+      self.assertIn(self.viewer.token, await browser.evaluate("window.WS_URL"))
 
   async def test_the_hover_readout_stays_inside_the_viewport(self):
     """Placed beside the pointer, the readout ran off the right and bottom edges at a resource
@@ -511,7 +520,9 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         {"width": 1200, "height": 800, "deviceScaleFactor": 2, "mobile": False},
       )
       await browser._call("Browser.setDownloadBehavior", {"behavior": "deny"})
-      await browser.open(f"http://127.0.0.1:{self.viewer.fs_port}/?quality=high")
+      await browser.open(
+        f"http://127.0.0.1:{self.viewer.fs_port}/?quality=high#token={self.viewer.token}"
+      )
       await browser.settle("window.plrViewer && window.plrViewer.resources().includes('rider')", 30)
       buffer_width = int(await browser.evaluate("document.querySelector('#viewport canvas').width"))
       self.assertGreater(buffer_width, 960)
@@ -648,7 +659,7 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
     await viewer.start()
     try:
       async with Browser() as browser:
-        await browser.open(f"http://127.0.0.1:{viewer.fs_port}/")
+        await browser.open(viewer.url)
         await browser.settle("window.plrViewer && window.plrViewer.resources().length > 3000", 60)
         await browser.settle(f"window.plrViewer.models().length === {modelled(viewer)}", 60)
         await browser.frames()
@@ -747,7 +758,7 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
     await viewer.start()
     try:
       async with Browser() as browser:
-        await browser.open(f"http://127.0.0.1:{viewer.fs_port}/")
+        await browser.open(viewer.url)
         await browser.settle("window.plrViewer && window.plrViewer.resources().length > 3000", 60)
         rack = star.deck.get_resource("tips_0")
         assert isinstance(rack, TipRack) and star.pipettes is not None

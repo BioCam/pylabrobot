@@ -6,7 +6,6 @@ Two servers: static files over HTTP, and a websocket carrying the scene, its sta
 import asyncio
 import errno
 import functools
-import hashlib
 import hmac
 import http.server
 import ipaddress
@@ -167,9 +166,10 @@ class Viewer3D:
     allowed_hosts: extra hostnames a browser may reach the viewer by. IP addresses, `localhost`,
       this machine's hostname and `<hostname>.local` are always accepted.
 
-  Access: each run makes a token, bakes it into the page it serves, and refuses a websocket
-  without it. Both servers refuse an unrecognised hostname, in the HTTP `Host` header and in the
-  websocket `Origin`; an IP literal is always accepted, since it cannot be rebound.
+  Access: each run makes a token, hands it out only in the link it prints and opens (`url`, as
+  its `#token=` fragment, which no request carries), and refuses a websocket without it. Both
+  servers refuse an unrecognised hostname, in the HTTP `Host` header and in the websocket
+  `Origin`; an IP literal is always accepted, since it cannot be rebound.
   """
 
   root: Resource
@@ -191,6 +191,7 @@ class Viewer3D:
   _loop: Optional[asyncio.AbstractEventLoop]
   _legacy_bytes: int
   _mesh_files: Dict[str, str]
+  _mesh_ids: Dict[str, str]
   _epoch: int
   _index_of: Dict[str, int]
   _published: Dict[str, str]
@@ -216,7 +217,7 @@ class Viewer3D:
     Three sources, in this order: a declared `mesh` (path, units, up axis, joints), a
     `reference_glb` relative to `models_root`, or a `<model>.glb` under the package (a `tip` whose
     name ends in `FILTER_SUFFIX` falls back to its unfiltered twin's file). The path never reaches
-    the page: the file is served under a stable id.
+    the page: the file is served under a random id, the same for the whole run, and only a `.glb`.
     """
     on_disk = _models_on_disk(PACKAGE_ROOT)
     # Copies, never the interned dicts: a model the scene derived is kept to be reused on the next
@@ -247,22 +248,31 @@ class Viewer3D:
             reference,
           )
         else:
-          model["mesh"] = {
-            "path": os.path.join(self.models_root, reference),
-            "units": self.REFERENCE_GLB_UNITS,
-            "up": self.REFERENCE_GLB_UP,
-          }
+          path = os.path.realpath(os.path.join(self.models_root, str(reference)))
+          if not path.startswith(os.path.join(self.models_root, "")):
+            logger.warning(
+              "reference_glb=%r leads out of models_root, so it is drawn as a box", reference
+            )
+          else:
+            model["mesh"] = {
+              "path": path,
+              "units": self.REFERENCE_GLB_UNITS,
+              "up": self.REFERENCE_GLB_UP,
+            }
 
     for model in models:
       mesh = model.get("mesh")
       if not isinstance(mesh, dict) or "path" not in mesh:
         continue
-      path = os.path.abspath(os.path.expanduser(str(mesh["path"])))
-      if not os.path.isfile(path):
-        logger.warning("declared mesh not found, drawing the box instead: %s", path)
+      path = os.path.realpath(os.path.expanduser(str(mesh["path"])))
+      if not path.lower().endswith(MODEL_SUFFIX) or not os.path.isfile(path):
+        logger.warning(
+          "declared mesh is no %s file, drawing the box instead: %s", MODEL_SUFFIX, path
+        )
         model.pop("mesh")
         continue
-      mesh_id = hashlib.sha1(path.encode("utf-8")).hexdigest()[:16] + os.path.splitext(path)[1]
+      # Random, not derived from the path: the file server serves a mesh without the token.
+      mesh_id = self._mesh_ids.setdefault(path, secrets.token_hex(8) + MODEL_SUFFIX)
       self._mesh_files[mesh_id] = path
       model["mesh"] = {k: v for k, v in mesh.items() if k != "path"}
       model["mesh"]["url"] = f"mesh/{mesh_id}"
@@ -302,6 +312,14 @@ class Viewer3D:
     return _is_ip_literal(hostname) or hostname in self.allowed_hosts
 
   @property
+  def url(self) -> str:
+    """The page with this run's token: the one link that can watch."""
+    # A wildcard bind is no address to browse to, and an IPv6 literal needs its brackets.
+    host = {"0.0.0.0": "127.0.0.1", "::": "::1"}.get(self.host, self.host)
+    host = f"[{host}]" if ":" in host else host
+    return f"http://{host}:{self.fs_port}/#token={self.token}"
+
+  @property
   def ws_url(self) -> str:
     """Where a client outside a browser connects, token included."""
     return f"ws://127.0.0.1:{self.ws_port}/?token={self.token}"
@@ -315,8 +333,8 @@ class Viewer3D:
     if not hmac.compare_digest(offered.encode(), self.token.encode()):
       if not self._refused_a_token:
         logger.warning(
-          "refused a websocket without this viewer's token, likely a page left open from an "
-          "earlier viewer: close it. Repeats are logged at debug."
+          "refused a websocket without this viewer's token: a page left open from an earlier "
+          "viewer, or one opened without the link it printed. Repeats are logged at debug."
         )
         self._refused_a_token = True
       else:
@@ -585,7 +603,6 @@ class Viewer3D:
     directory = STATIC_DIR
     ws_port = self.ws_port
     name = self.name
-    token = self.token
     mesh_files = self._mesh_files
     host_allowed = self._host_allowed
 
@@ -600,8 +617,8 @@ class Viewer3D:
         pass
 
       def end_headers(self) -> None:
-        # The page carries this run's token and a mesh this run's id: never kept. The rest is
-        # revalidated and answered 304 when unchanged, rather than fetched again on every load.
+        # The page carries this run's websocket port and a mesh this run's id: never kept. The rest
+        # is revalidated and answered 304 when unchanged, rather than fetched again on every load.
         path = self.path.split("?", 1)[0]
         fresh = path in ("/", "/index.html") or path.startswith("/mesh/")
         self.send_header("Cache-Control", "no-store" if fresh else "no-cache")
@@ -640,7 +657,6 @@ class Viewer3D:
         if path in ("/", "/index.html"):
           with open(os.path.join(directory, "index.html"), "r", encoding="utf-8") as f:
             content = f.read().replace("{{ ws_port }}", str(ws_port))
-            content = content.replace("{{ ws_token }}", token)
             content = content.replace("{{ source_filename }}", name)
           body = content.encode("utf-8")
           self.send_response(200)
@@ -704,7 +720,7 @@ class Viewer3D:
     }
     # Where a resource's `reference_glb` is resolved from. One root for the whole scene, so a
     # resource names its model the same way wherever the tree is built and whoever runs it.
-    self.models_root = os.path.abspath(os.path.expanduser(models_root)) if models_root else None
+    self.models_root = os.path.realpath(os.path.expanduser(models_root)) if models_root else None
 
     self._clients = set()
     self._httpd = None
@@ -716,6 +732,8 @@ class Viewer3D:
     # Files a resource declared as its own geometry, by the id the page fetches them under. Only a
     # path that a resource named is ever served, so this doubles as the whitelist.
     self._mesh_files = {}
+    # The id each served file got, so a rebuild names a file as the last scene did.
+    self._mesh_ids = {}
     # Which scene was last built, and where in it each name stands: what a move or a published
     # position is compared against. State itself is addressed by name.
     self._epoch = 0
@@ -773,10 +791,9 @@ class Viewer3D:
 
     self._start_file_server()
 
-    url = f"http://{self.host}:{self.fs_port}"
-    print(f"viewer on {url}  (websocket {self.ws_port})")
+    print(f"viewer on {self.url}  (websocket {self.ws_port})")
     if self.open_browser:
-      webbrowser.open(url)
+      webbrowser.open(self.url)
 
   async def stop(self) -> None:
     """Close both servers and stop listening to the tree.

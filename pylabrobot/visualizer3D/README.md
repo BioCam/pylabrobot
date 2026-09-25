@@ -13,9 +13,9 @@ Needs the v1 STAR branch on the path and `websockets`.
 python -m pylabrobot.visualizer3D.demo
 ```
 
-It opens a browser on `http://127.0.0.1:1338`, in a top view; `?view=iso` or `?view=front` picks
-another, and `?quality=low` pins the low-cost level. From the console,
-`plrViewer.focus("destination_0")` frames and selects a named resource.
+It opens a browser on `http://127.0.0.1:1338/#token=<token>`, the link it prints, in a top view;
+`?view=iso` or `?view=front` (before the `#`) picks another, and `?quality=low` pins the low-cost
+level. From the console, `plrViewer.focus("destination_0")` frames and selects a named resource.
 
 `demo.py` sets the STAR deck's height to the top of the X-arm riding above it (334.7 mm of
 channel travel plus the arm's own 140 mm). The deck's own `size_z` of 900 mm is the working
@@ -140,7 +140,8 @@ without the variable renders on the CPU, and the URL opens in it, so start it th
    try/catch. A failure becomes an on-page diagnosis with a per-browser fix instead of "Loading...". The client
    sends its backend and renderer string over the websocket, and Python prints it, e.g.
    `viewer: a browser connected, drawing with WebGL2 on llvmpipe - software rendering, expect it to be slow`.
-4. **Done.** Check the websocket `Origin` (and the HTTP `Host`) and require a per-run token baked into `index.html`. Browsers don't apply same-origin
+4. **Done.** Check the websocket `Origin` (and the HTTP `Host`) and require a per-run token,
+   carried in the link's `#token=` fragment. Browsers don't apply same-origin
    rules to websockets, so without this any web page open in the operator's browser could read the deck state.
 5. Serve HTTP and the websocket on one port (websockets `process_request`), and connect with
    `new URL("ws", location)`. That leaves one tunnel, and it works behind a proxy or HTTPS. If the port is taken,
@@ -215,21 +216,25 @@ Everything crosses one websocket as JSON, `{"event": kind, "data": ...}`. Non-fi
 written as the strings `"Infinity"`, `"-Infinity"` and `"NaN"` (`_finite` in `server.py`), since
 a trough's capacity is genuinely infinite and bare `Infinity` is not JSON.
 
-**Access.** Every run makes a token (`secrets.token_urlsafe(32)`) and bakes it, the websocket
-port and the source name into `index.html` in place of `{{ ws_token }}`, `{{ ws_port }}` and
-`{{ source_filename }}`; the page connects to `ws://<hostname>:<ws_port>/?token=<token>`, or
-`wss:` when it was served over https, at the hostname it was reached by. A
+**Access.** Every run makes a token (`secrets.token_urlsafe(32)`) and hands it out only in the
+link it prints and opens, `Viewer3D.url`, as the fragment `#token=<token>`. A browser never sends
+a fragment, so the token is in no request, no log and no `Referer`, and anyone who can reach the
+file server but was not given the link gets a page that cannot connect. The page keeps the token
+in the tab's `sessionStorage`, so a reload reconnects, and takes the fragment off the address with
+`history.replaceState`, so it is not bookmarked or shown on a shared screen. The page itself carries
+only the websocket port and the source name, in place of `{{ ws_port }}` and
+`{{ source_filename }}`; it connects to `ws://<hostname>:<ws_port>/?token=<token>`, or `wss:` when
+it was served over https, at the hostname it was reached by. A
 handshake without this run's token, or with an `Origin` whose hostname is not an IP literal,
 `localhost`, this machine's name, `<name>.local`, the bound host or one of `allowed_hosts`, is
-answered 403. The file server applies the same hostname rule to the HTTP `Host` header. The
-token only protects anything while a foreign page cannot read ours, which DNS rebinding would
-allow: a hostile name resolved to 127.0.0.1 makes that page same-origin with the viewer. That is
-why an unrecognised hostname is refused, and why any IP address is accepted: it cannot be rebound,
-which is what keeps an SSH tunnel or a LAN address working without configuration.
+answered 403. The file server applies the same hostname rule to the HTTP `Host` header: DNS
+rebinding, a hostile name resolved to 127.0.0.1, would make that name's page same-origin with the
+viewer. That is why an unrecognised hostname is refused, and why any IP address is accepted: it
+cannot be rebound, which is what keeps an SSH tunnel or a LAN address working without configuration.
 
 **Cache headers.** `/`, `/index.html` and `/mesh/<id>` are `Cache-Control: no-store`, since the
-page carries this run's token and a mesh id belongs to this run. Everything else is `no-cache`:
-revalidated and answered 304 when unchanged.
+page carries this run's websocket port and a mesh id belongs to this run. Everything else is
+`no-cache`: revalidated and answered 304 when unchanged.
 
 **Ports.** The websocket binds first, so the page can be told the port it actually got, then the
 file server; the other way round, a viewer whose preferred port is taken would serve a page
@@ -286,9 +291,11 @@ arriving is handed the kept scene rather than a rebuild, which would renumber ev
 clients already watching. The page re-parents it in `world.childrenOf`, sets its local transform
 and recomputes the subtree.
 
-**Meshes.** `/mesh/<id>` serves a file the scene named, as `model/gltf-binary`; `<id>` is the
-first sixteen hex digits of the SHA-1 of the absolute path plus its extension, and only registered
-ids are served.
+**Meshes.** `/mesh/<id>` serves a file the scene named, as `model/gltf-binary`, without the token;
+`<id>` is sixteen random hex digits plus `.glb`, drawn once per file per run, so only a client
+that was sent the scene knows it, and only registered ids are served. Only a `.glb` is registered,
+and a `reference_glb` that resolves outside `models_root` (an absolute path, `..`, a symlink) is
+drawn as a box.
 
 ### The model
 

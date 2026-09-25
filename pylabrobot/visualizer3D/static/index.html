@@ -321,11 +321,21 @@
 { "imports": { "three": "./vendor/three.webgpu.min.js", "three/addons/": "./vendor/" } }
 </script>
 <script>
+  // The token rides in the link's fragment, which no request carries, so the served page lacks it.
+  // Kept for this tab and taken off the address, so a reload reconnects and the bar never shows it.
+  const linked = new URLSearchParams(location.hash.slice(1)).get("token");
+  let kept = null;
+  try {
+    if (linked) sessionStorage.setItem("plr.token", linked);
+    kept = sessionStorage.getItem("plr.token");
+  } catch {}
+  window.plrToken = linked ?? kept ?? "";
+  if (linked) history.replaceState(null, "", location.pathname + location.search);
   // The page's own scheme and host: one served over https (a proxy, JupyterHub) may only open
   // wss:, and the viewer is reached by the name the page was, not by 127.0.0.1.
   window.wsUrlFor = (page) =>
     `${page.protocol === "https:" ? "wss:" : "ws:"}//${page.hostname}` +
-    `:{{ ws_port }}/?token={{ ws_token }}`;
+    `:{{ ws_port }}/?token=${encodeURIComponent(window.plrToken)}`;
   window.WS_URL = window.wsUrlFor(location);
   // boot.js explains every failure it can see, but a browser too old to run it at all sees nothing.
   // It names the same versions boot.js does, which are the first that read the import map above.

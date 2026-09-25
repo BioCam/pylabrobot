@@ -149,6 +149,12 @@ function showDiagnosis({ title, checks, hint, detail, dismissible }) {
 }
 
 function websocketHint() {
+  if (!window.plrToken) {
+    return (
+      "This page was opened without its key: use the link the viewer printed, which ends in " +
+      "#token=..."
+    );
+  }
   const { protocol, host } = new URL(window.WS_URL);
   return (
     "The page was served, but the viewer's websocket at " +

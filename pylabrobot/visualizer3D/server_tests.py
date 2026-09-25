@@ -2,10 +2,13 @@
 
 import asyncio
 import contextlib
+import hashlib
 import io
 import json
 import os
+import shutil
 import socket
+import tempfile
 import threading
 import unittest
 import unittest.mock
@@ -640,6 +643,61 @@ class RebuildTests(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(second["models"], first["models"])
 
 
+class MeshTests(unittest.TestCase):
+  """The file server hands out a mesh without the token, so which files it will serve is narrow."""
+
+  def meshes(self, facility: Resource, models_root: Optional[str] = None) -> Dict[str, Any]:
+    """Each part's mesh as the page is told it, by the part's model name; None drawn as a box."""
+    viewer = Viewer3D(facility, open_browser=False, models_root=models_root)
+    models = viewer._scene_message(rebuild=True)["models"]
+    self.viewer = viewer
+    return {m["model"]: m.get("mesh") for m in models if m.get("model")}
+
+  def part(self, facility: Resource, name: str, **declared: Any) -> None:
+    part = Resource(name=name, size_x=10, size_y=10, size_z=10, model=name)
+    for key, value in declared.items():
+      setattr(part, key, value)
+    facility.assign_child_resource(part, location=Coordinate(0, 0, 0))
+
+  def test_a_mesh_id_does_not_name_its_file(self):
+    """The id was the SHA-1 of the file's path, so anyone who could guess a path could fetch it."""
+    facility = empty_facility()
+    self.part(facility, "a", mesh={"path": MESH_FILE})
+    self.part(facility, "b", mesh={"path": MESH_FILE})
+    meshes = self.meshes(facility)
+    mesh_id = meshes["a"]["url"][len("mesh/") :]
+    self.assertEqual(meshes["b"]["url"], meshes["a"]["url"])  # one file, one id
+    self.assertNotIn(hashlib.sha1(MESH_FILE.encode()).hexdigest()[:16], mesh_id)
+    self.assertEqual(self.viewer._mesh_files[mesh_id], os.path.realpath(MESH_FILE))
+
+  def test_only_a_glb_is_served(self):
+    with tempfile.TemporaryDirectory() as directory:
+      secret = os.path.join(directory, "secret.txt")
+      with open(secret, "w") as f:
+        f.write("not a model")
+      facility = empty_facility()
+      self.part(facility, "text", mesh={"path": secret})
+      self.assertIsNone(self.meshes(facility)["text"])
+      self.assertEqual(self.viewer._mesh_files, {})
+
+  def test_a_reference_glb_outside_models_root_is_drawn_as_a_box(self):
+    with tempfile.TemporaryDirectory() as directory:
+      root = os.path.join(directory, "models")
+      os.makedirs(root)
+      shutil.copy(MESH_FILE, os.path.join(root, "inside.glb"))
+      shutil.copy(MESH_FILE, os.path.join(directory, "outside.glb"))
+      os.symlink(os.path.join(directory, "outside.glb"), os.path.join(root, "link.glb"))
+      facility = empty_facility()
+      self.part(facility, "inside", reference_glb="inside.glb")
+      self.part(facility, "absolute", reference_glb=os.path.join(directory, "outside.glb"))
+      self.part(facility, "dotdot", reference_glb="../outside.glb")
+      self.part(facility, "link", reference_glb="link.glb")
+      meshes = self.meshes(facility, models_root=root)
+      self.assertIsNotNone(meshes["inside"])
+      for escaping in ("absolute", "dotdot", "link"):
+        self.assertIsNone(meshes[escaping], escaping)
+
+
 class AccessTests(unittest.IsolatedAsyncioTestCase):
   """Only the page this viewer served, reached by a name this machine answers to, may watch."""
 
@@ -697,14 +755,17 @@ class AccessTests(unittest.IsolatedAsyncioTestCase):
     with ours and let it read the token out of the HTML."""
     self.assertEqual(await asyncio.to_thread(self.get, "attacker.example:1338"), 403)
 
-  async def test_the_page_carries_the_token_for_a_known_name(self):
+  async def test_the_page_is_served_to_a_known_name_without_the_token(self):
+    """The page used to carry the token, so anyone who could reach the file server, a LAN peer
+    for one, could watch. Only the link the viewer prints carries it, in a fragment."""
     for host in ("127.0.0.1:1338", "localhost:1338", "[::1]:1338"):
       self.assertEqual(await asyncio.to_thread(self.get, host), 200, host)
     page = await asyncio.to_thread(
       lambda: urllib.request.urlopen(f"http://127.0.0.1:{self.viewer.fs_port}/").read().decode()
     )
-    self.assertIn(self.viewer.token, page)
-    self.assertNotIn("{{ ws_token }}", page)
+    self.assertNotIn(self.viewer.token, page)
+    self.assertNotIn("{{", page)
+    self.assertTrue(self.viewer.url.endswith(f"/#token={self.viewer.token}"))
 
   async def test_a_token_from_another_run_is_refused(self):
     """A page served by an earlier run keeps that run's token, and it must not open this one."""
