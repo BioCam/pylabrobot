@@ -138,9 +138,10 @@ export function renderInfoPanel() {
   const identity = [
     ["name", escapeHtml(world.names[index])],
     ["type", escapeHtml(model.type)],
+    // Always shown: a resource without a model says so rather than leaving the row out.
+    ["model", model.model ? escapeHtml(String(model.model)) : "none"],
+    ["category", escapeHtml(model.category ?? "uncategorised")],
   ];
-  if (model.model) identity.push(["model", escapeHtml(String(model.model))]);
-  identity.push(["category", escapeHtml(model.category ?? "uncategorised")]);
 
   const placement = [
     ["location", `<span data-live="location">${tuple(xf[o], xf[o + 1], xf[o + 2], "mm")}</span>`],
