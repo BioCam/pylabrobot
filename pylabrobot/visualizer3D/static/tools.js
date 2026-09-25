@@ -14,8 +14,8 @@ import {
 } from "./constants.js";
 import { initCoords } from "./coords.js";
 import { input } from "./dom.js";
-import { isVisible, meshes, OVERLAY_ORDER } from "./drawn.js";
-import { hexOf } from "./format.js";
+import { isVisible, meshes, OVERLAY_ORDER, stateOf } from "./drawn.js";
+import { hexOf, liquid } from "./format.js";
 import { invalidate, lastFrameMs } from "./frame.js";
 import { setGlideSeconds } from "./live.js";
 import {
@@ -456,7 +456,9 @@ function showHoverFor(event) {
   readout.textContent =
     activeTool === "coords"
       ? coordinateLabel(hit.index)
-      : [world.names[hit.index], model.type, model.model].filter(Boolean).join("\n");
+      : [world.names[hit.index], model.type, model.model, liquid(model, stateOf.get(hit.index))]
+          .filter(Boolean)
+          .join("\n");
   readout.style.display = "block";
   placeReadout(event); // once it has its text, so it is measured at the size it will show at
   showHoverBox(hit.index);
