@@ -5,7 +5,7 @@ from pylabrobot.utils.interpolation import interpolate_1d
 
 
 class HamiltonLiquidClass(SerializableMixin):
-  """A liquid class like used in VENUS / Venus on Vantage."""
+  """A Hamilton liquid class."""
 
   def __init__(
     self,

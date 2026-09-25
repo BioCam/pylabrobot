@@ -3069,7 +3069,8 @@ class Pipettes:
     soft = sorted(
       channel
       for channel in channels
-      if isinstance(tip := self.get_mounted_tip(channel), HamiltonTip) and tip.nominal_volume == 50
+      if isinstance(tip := self.get_mounted_tip(channel), HamiltonTip)
+      and tip.model in ("hamilton_tip_50uL", "hamilton_tip_50uL_filter")
     )
     if soft:
       logger.warning(
@@ -4515,7 +4516,8 @@ class Pipettes:
   async def auto_adjust_pressure_sensor(self, channel: int) -> None:
     """Auto-adjust a channel's pressure sensor gain and offset. `Px AC`.
 
-    The channel must be open to the air, tips off; under pressure the firmware refuses with error 72.
+    The channel must be open to the air, tips off; under pressure the firmware refuses with
+    error 72.
 
     Args:
       channel: which channel, 0-indexed from the back.
@@ -4526,7 +4528,6 @@ class Pipettes:
   # -- total aspiration and dispense monitoring (TADM) ---------------------------------------------
 
   # Index is the `gk` wire value.
-
   _TADM_STORAGE_LEVELS = ("none", "errors_only", "all")
 
   async def set_tadm_mode(self, channel: int, enabled: bool = True) -> None:
@@ -5438,10 +5439,13 @@ class Pipettes:
       ),
       ("limit_curve_indices", list(limit_curve), c.limit_curve_index_range),
     ]
+    errors: List[str] = []
     for name, values, (low, high) in fields:
-      for value in values:
+      for channel, value in zip(use_channels, values):
         if not low <= value <= high:
-          raise ValueError(f"{name} must be between {low} and {high}, is {value}")
+          errors.append(f"channel {channel}: {name} must be between {low} and {high}, is {value}")
+    if errors:
+      raise ValueError("Invalid aspiration parameters:\n" + "\n".join(errors))
 
     try:
       await self._unchecked_fw_aspirate(

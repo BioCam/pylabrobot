@@ -812,6 +812,19 @@ class TestZTouchProbing(unittest.IsolatedAsyncioTestCase):
     self.assertIsNone(await self.pipettes.probe_z_using_ztouch(0))
     self.back_off.assert_awaited_once()
 
+  async def test_a_50_uL_tip_under_a_z_touch_is_a_warning(self):
+    from pylabrobot.resources.hamilton.tip_creators import hamilton_tip_50uL
+
+    self.pipettes.get_mounted_tip = unittest.mock.Mock(  # type: ignore[method-assign]
+      return_value=hamilton_tip_50uL("soft")
+    )
+    with self.assertLogs(
+      "pylabrobot.hamilton.star.driver.features.pipettes", level="WARNING"
+    ) as logs:
+      await self.pipettes.probe_z_using_ztouch(2)
+    self.assertEqual(len(logs.output), 1)
+    self.assertIn("channels [2] carry 50 uL tips, which bend", logs.output[0])
+
   async def test_old_firmware_and_a_bare_channel_are_refused_before_anything_is_sent(self):
     recorded = self.pipettes.configuration.channels[0].firmware_version
     self.pipettes.configuration.channels[0].firmware_version = "4.0S 2012-04-25"
@@ -1793,6 +1806,37 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.xy.await_count, 2)
     bottom = wells[0].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
     self.assertEqual(heights, [round(150.0 - bottom, 2)] * 6)
+
+  async def test_a_turned_plate_is_searched_where_its_wells_stand(self):
+    turned = cor_axy_96_wellplate_500uL_Ub("turned")
+    turned.rotate(z=90)
+    self.deck.assign_child_resource(turned, location=Coordinate(700, 200, 100))
+    wells = [turned.get_well(name) for name in ("A2", "A1")]
+    await self.pipettes.probe_liquid_heights(wells)
+
+    # Turned a quarter, a row runs along Y: one X, so one batch.
+    end, start = self._window(wells[0])
+    self.assertEqual(
+      self.sent,
+      [f"P{ch + 1}ZLzh{end:05}zc{start:05}zl00932zr075gt0010gl0002zj1zi0000" for ch in range(2)]
+      + ["C0RL"],
+    )
+    self.xy.assert_awaited_once()
+    assert self.xy.await_args is not None
+    x, ys = self.xy.await_args.args
+    centres = [well.get_location_wrt(self.deck, "c", "c", "b") for well in wells]
+    self.assertAlmostEqual(x, centres[0].x)
+    self.assertAlmostEqual(ys[0], centres[0].y)
+    self.assertAlmostEqual(ys[1], centres[1].y)
+
+  async def test_an_offset_moves_the_channel_within_its_container(self):
+    wells = self._wells("A1")
+    await self.pipettes.probe_liquid_heights(wells, resource_offsets=[Coordinate(1.0, -2.0, 0)])
+    assert self.xy.await_args is not None
+    x, ys = self.xy.await_args.args
+    centre = wells[0].get_location_wrt(self.deck, "c", "c", "b")
+    self.assertAlmostEqual(x, centre.x + 1.0)
+    self.assertAlmostEqual(ys[0], centre.y - 2.0)
 
   async def test_offsets_must_match_the_containers(self):
     with self.assertRaises(ValueError):
@@ -3085,10 +3129,12 @@ class TestEachTipsWaterClass(unittest.IsolatedAsyncioTestCase):
 
 
 class TestBatchPlanning(unittest.IsolatedAsyncioTestCase):
-  """A v1 device plans with `pylabrobot.lib.liquid_handling`, from its own minimum channel spacing."""
+  """A v1 device plans with `pylabrobot.lib.liquid_handling`, from its own minimum channel
+  spacing."""
 
   async def test_one_column_is_one_move_and_two_columns_are_two(self):
-    """Four wells down one column fit one X/Y move at the channels' spacing; spread across columns they do not."""
+    """Four wells down one column fit one X/Y move at the channels' spacing; spread across
+    columns they do not."""
     deck = STARDeck()
     plate = cor_axy_96_wellplate_500uL_Ub("plate")
     deck.assign_child_resource(plate, location=Coordinate(400, 100, 100))
@@ -3605,6 +3651,14 @@ class TestWhereATipCommandLeavesTheChannels(unittest.IsolatedAsyncioTestCase):
         pipettes._min_spacing_between(channel, channel + 1),
         f"channels {channel} and {channel + 1} stand too close: {order}",
       )
+
+  async def test_spots_a_pitch_apart_in_floating_point_are_accepted(self):
+    # 130.7 - 121.7 is 8.999999999999986 in floating point; the command carries 9.0 mm.
+    pipettes, _, _ = await channels_over_a_rack()
+    _, ys, _ = pipettes._tip_command_positions(
+      {0: Coordinate(300.0, 130.7, 150.0), 1: Coordinate(300.0, 121.7, 150.0)}
+    )
+    self.assertEqual(ys[:2], [1307, 1217])
 
 
 class TestTipsOfDifferentKinds(unittest.IsolatedAsyncioTestCase):

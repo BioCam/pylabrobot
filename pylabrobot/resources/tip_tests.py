@@ -138,7 +138,7 @@ class TipTests(unittest.TestCase):
         self.assertEqual(first.get_size_y(), TIP_DIAMETER[size])
 
   def test_state_carries_the_volume_and_a_change_to_it_is_announced(self):
-    """A tip's tracker was neither published nor wired to the state callbacks, so a viewer drawing
+    """A tip's tracker was neither published nor wired to the state callbacks, so anything drawing
     what a tip holds read a field that never arrived and drew the tip empty however full it was."""
     tip = Tip(
       name="tip", diameter=5, size_z=50, has_filter=False, maximal_volume=300, fitting_depth=8

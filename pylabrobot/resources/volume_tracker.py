@@ -175,4 +175,6 @@ class VolumeTracker(SerializableMixin):
     self.max_volume = state["max_volume"]
 
   def register_callback(self, callback: VolumeTrackerCallback) -> None:
-    self._callbacks.append(callback)
+    """Call `callback` on every change; one already registered is not added again."""
+    if callback not in self._callbacks:
+      self._callbacks.append(callback)
