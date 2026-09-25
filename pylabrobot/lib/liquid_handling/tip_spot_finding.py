@@ -3,7 +3,9 @@
 from itertools import groupby
 from typing import List, Optional, Tuple
 
-from pylabrobot.resources import Resource, TipRack, TipSpot
+from pylabrobot.resources import Coordinate, Resource, Rotation, TipRack, TipSpot
+from pylabrobot.resources.errors import NoLocationError
+from pylabrobot.utils.linalg import matrix_vector_multiply_3x3
 
 
 def _matches_tip_filters(
@@ -32,36 +34,52 @@ def _matches_tip_filters(
   return has_filter is None or tip.has_filter == has_filter
 
 
-def _get_centred_spots(
-  tip_rack: TipRack, spots: List[TipSpot]
-) -> List[Tuple[TipSpot, float, float]]:
-  """Each spot with its absolute centre x (rounded to 0.001 mm) and y.
+Frame = Tuple[Coordinate, List[List[float]]]
+"""A resource's origin and rotation matrix, in the root's frame."""
 
-  The rack's origin and rotation are resolved once and applied to each spot's rack-local centre,
-  instead of walking the resource tree per spot. A spot with its own rotation is resolved alone.
+
+def _get_tip_racks(root: Resource) -> List[Tuple[TipRack, Frame]]:
+  """Tip racks under root, root included, depth first, each with its frame in root's frame.
+
+  The frames are accumulated on the way down, as `get_absolute_location` does from the top of the
+  tree, so every rack costs one step of the walk. Racks are not descended into.
+
+  Raises:
+    NoLocationError: If a resource between root and a rack has no location.
   """
-  origin = tip_rack.get_absolute_location()
-  matrix = tip_rack.get_absolute_rotation().get_rotation_matrix()
+  racks: List[Tuple[TipRack, Frame]] = []
+
+  def walk(resource: Resource, origin: Coordinate, rotation: Rotation) -> None:
+    matrix = rotation.get_rotation_matrix()
+    if isinstance(resource, TipRack):
+      racks.append((resource, (origin, matrix)))
+      return
+    for child in resource.children:
+      if child.location is None:
+        raise NoLocationError(f"Resource '{child.name}' has no location.")
+      offset = Coordinate(*matrix_vector_multiply_3x3(matrix, child.location.vector()))
+      walk(child, origin + offset, rotation + child.rotation)
+
+  walk(root, Coordinate.zero(), Rotation())
+  return racks
+
+
+def _get_centred_spots(frame: Frame, spots: List[TipSpot]) -> List[Tuple[TipSpot, float, float]]:
+  """Each spot with its centre x (rounded to 0.001 mm) and y in the root's frame."""
+  origin, matrix = frame
   centred: List[Tuple[TipSpot, float, float]] = []
   for spot in spots:
-    if spot.rotation.x or spot.rotation.y or spot.rotation.z or spot.location is None:
-      centre = spot.get_absolute_location(x="c", y="c")
-      x, y = centre.x, centre.y
-    else:
-      local_x = spot.location.x + spot.get_size_x() / 2
-      local_y = spot.location.y + spot.get_size_y() / 2
-      local_z = spot.location.z
-      x = origin.x + matrix[0][0] * local_x + matrix[0][1] * local_y + matrix[0][2] * local_z
-      y = origin.y + matrix[1][0] * local_x + matrix[1][1] * local_y + matrix[1][2] * local_z
+    assert spot.location is not None
+    anchor = spot.get_anchor(x="c", y="c")
+    if spot.rotation.x or spot.rotation.y or spot.rotation.z:
+      anchor = Coordinate(
+        *matrix_vector_multiply_3x3(spot.rotation.get_rotation_matrix(), anchor.vector())
+      )
+    local = spot.location + anchor
+    x = origin.x + matrix[0][0] * local.x + matrix[0][1] * local.y + matrix[0][2] * local.z
+    y = origin.y + matrix[1][0] * local.x + matrix[1][1] * local.y + matrix[1][2] * local.z
     centred.append((spot, round(x, 3), y))
   return centred
-
-
-def _get_tip_racks(root: Resource) -> List[TipRack]:
-  """Tip racks in the tree under root, root included, depth first; racks are not descended into."""
-  if isinstance(root, TipRack):
-    return [root]
-  return [rack for child in root.children for rack in _get_tip_racks(child)]
 
 
 def find_tip_spots(
@@ -81,8 +99,8 @@ def find_tip_spots(
   its first column. This suits channels on one X arm that cannot pass each other.
 
   Args:
-    root: Resource whose tree is searched for tip racks. Racks need a location, as positions
-      are compared in the frame of the tree's topmost resource.
+    root: Resource whose tree is searched for tip racks. Positions are compared in root's own
+      frame, so a deck gives the channels' order however the device sits above it.
     has_tip: True for spots holding a tip, False for empty spots, None for both.
     volume: Tip nominal volume in uL. Read from the present tip, or from the configured tip when
       has_tip is False; with has_tip None, only spots holding a tip match.
@@ -98,11 +116,13 @@ def find_tip_spots(
 
   Raises:
     ValueError: If count is not positive.
+    NoLocationError: If a resource between root and a rack has no location.
   """
   if count is not None and count <= 0:
     raise ValueError(f"count must be positive, got {count}")
 
-  tip_racks = _get_tip_racks(root)
+  racks = _get_tip_racks(root)
+  tip_racks = [rack for rack, _ in racks]
 
   started = [any(not spot.has_tip() for spot in rack.get_all_items()) for rack in tip_racks]
   rack_order = sorted(range(len(tip_racks)), key=lambda index: (not started[index], index))
@@ -110,11 +130,11 @@ def find_tip_spots(
   # Racks are visited in consumption order, so a batch is complete as soon as it is found.
   batch: List[Tuple[TipSpot, float, float]] = []
   for rack_index in rack_order:
-    rack = tip_racks[rack_index]
+    rack, frame = racks[rack_index]
     matching = [
       s for s in rack.get_all_items() if _matches_tip_filters(s, has_tip, volume, has_filter)
     ]
-    centred = sorted(_get_centred_spots(rack, matching), key=lambda item: (item[1], -item[2]))
+    centred = sorted(_get_centred_spots(frame, matching), key=lambda item: (item[1], -item[2]))
 
     if x_aligned:
       for _, column_items in groupby(centred, key=lambda item: item[1]):

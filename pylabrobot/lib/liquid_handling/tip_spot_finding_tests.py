@@ -209,3 +209,27 @@ def test_root_can_be_any_level_of_the_tree() -> None:
     "other_bench_rack_tipspot_H12",
   ]
   assert find_tip_spots(Resource("empty", size_x=1, size_y=1, size_z=1), count=1) == []
+
+
+@pytest.mark.parametrize("turn", [90, 180, 270])
+def test_order_is_in_the_root_frame(turn: int) -> None:
+  """Turning the resource above root leaves root's order unchanged; the topmost frame would not."""
+
+  def build(facility_turn: int) -> Resource:
+    facility = Resource("facility", size_x=5000, size_y=5000, size_z=100)
+    device = Resource("device", size_x=1500, size_y=700, size_z=100)
+    device.rotate(z=facility_turn)
+    facility.assign_child_resource(device, location=Coordinate(2500, 2500, 0))
+    deck = Resource("deck", size_x=1500, size_y=700, size_z=100)
+    device.assign_child_resource(deck, location=Coordinate(0, 0, 0))
+    for index, x in enumerate([100, 300]):
+      rack = hamilton_96_tiprack_300uL_filter(f"rack_{index}")
+      rack.set_tip_state([i % 3 != 0 for i in range(96)])
+      deck.assign_child_resource(rack, location=Coordinate(x, 100, 0))
+    return deck
+
+  upright, turned = build(0), build(turn)
+  for count, x_aligned in [(None, False), (5, False), (2, True)]:
+    expected = find_tip_spots(upright, has_tip=True, count=count, x_aligned=x_aligned)
+    found = find_tip_spots(turned, has_tip=True, count=count, x_aligned=x_aligned)
+    assert expected and _ids(found) == _ids(expected)
