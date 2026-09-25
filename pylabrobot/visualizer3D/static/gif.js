@@ -66,10 +66,79 @@ export function initGif(deps) {
     showGifBox("recording");
   });
 
-  function finishRecording() {
+  // Copying the canvas directly comes back blank: the drawing buffer is gone by the time a copy
+  // runs. Rendering the frame into a render target and reading it back works on both backends.
+  // Only the viewport is captured, not the floating panels over it. The read-back returns the
+  // pixels; handed an array as well, three took it for a texture index and the capture failed.
+  let captureTarget = null;
+  let capturing = false;
+  // The capture still reading back, if any: a stop waits for it rather than losing its frame.
+  let pendingCapture = null;
+  const viewportBefore = new THREE.Vector4();
+
+  /** The viewport as a frame: drawn into a render target and read back, top row first. */
+  async function readFrame() {
+    const { width, height } = captureSize(renderer.domElement.width, renderer.domElement.height);
+    if (!captureTarget || captureTarget.width !== width || captureTarget.height !== height) {
+      captureTarget?.dispose();
+      captureTarget = new THREE.RenderTarget(width, height);
+    }
+    // The WebGL backend draws a target through the renderer's viewport, in CSS pixels: the
+    // frame's size for the capture, the half pixel keeping the floor on the whole pixel.
+    const pixelRatio = renderer.getPixelRatio();
+    renderer.getViewport(viewportBefore);
+    renderer.setViewport(0, 0, (width + 0.5) / pixelRatio, (height + 0.5) / pixelRatio);
+    // As the output target it is drawn in the screen's colour space. Everything is put back
+    // before the readback is awaited, so the frames the loop draws meanwhile go to the screen.
+    renderer.setOutputRenderTarget(captureTarget);
+    renderer.setRenderTarget(captureTarget);
+    renderer.render(view, deps.camera);
+    renderer.setRenderTarget(null);
+    renderer.setOutputRenderTarget(null);
+    renderer.setViewport(viewportBefore);
+    const pixels = await renderer.readRenderTargetPixelsAsync(captureTarget, 0, 0, width, height);
+    if (pixels.length !== width * height * 4) {
+      throw new Error(`a readback of ${pixels.length} bytes for ${width}x${height}`);
+    }
+    const frame = new ImageData(width, height);
+    if (renderer.coordinateSystem === THREE.WebGLCoordinateSystem) {
+      // WebGL reads the rows back from the bottom; WebGPU from the top.
+      for (let row = 0; row < height; row++) {
+        const from = (height - 1 - row) * width * 4;
+        frame.data.set(pixels.subarray(from, from + width * 4), row * width * 4);
+      }
+    } else {
+      frame.data.set(pixels);
+    }
+    return frame;
+  }
+
+  /** A capture that failed is said, and recording switched off, rather than an empty GIF made. */
+  function captureFailed(error) {
+    // Both backends read a render target back; a failure is something else.
+    console.warn("frame capture failed", error);
+    recording = false;
+    captureBroken = true;
+    showGifBox("start");
+    gifNotice.textContent = `Recording failed on this browser: ${error?.message ?? error}`;
+    startButton.disabled = true;
+  }
+
+  async function finishRecording() {
+    if (!recording) return;
     recording = false;
     showGifBox("processing");
     const progress = document.getElementById("progressBar");
+    // A slow renderer may have no frame back yet: the one reading back is waited for, and with
+    // none the view on screen is read, so a recording holds at least what it was stopped on.
+    await pendingCapture;
+    if (!capturedFrames.length && !captureBroken) {
+      try {
+        capturedFrames.push(await readFrame());
+      } catch (error) {
+        captureFailed(error);
+      }
+    }
     if (!capturedFrames.length) {
       progress.textContent = "No frames captured.";
       setTimeout(() => showGifBox("start"), 1500);
@@ -109,65 +178,17 @@ export function initGif(deps) {
     showGifBox("start");
   });
 
-  // Copying the canvas directly comes back blank: the drawing buffer is gone by the time a copy
-  // runs. Rendering the frame into a render target and reading it back works on both backends.
-  // Only the viewport is captured, not the floating panels over it. The read-back returns the
-  // pixels; handed an array as well, three took it for a texture index and the capture failed.
-  let captureTarget = null;
-  let capturing = false;
-  const viewportBefore = new THREE.Vector4();
-
   async function captureFrame() {
     if (capturing) return;
     capturing = true;
     try {
-      const { width, height } = captureSize(renderer.domElement.width, renderer.domElement.height);
-      if (!captureTarget || captureTarget.width !== width || captureTarget.height !== height) {
-        captureTarget?.dispose();
-        captureTarget = new THREE.RenderTarget(width, height);
-      }
-      // The WebGL backend draws a target through the renderer's viewport, in CSS pixels: the
-      // frame's size for the capture, the half pixel keeping the floor on the whole pixel.
-      const pixelRatio = renderer.getPixelRatio();
-      renderer.getViewport(viewportBefore);
-      renderer.setViewport(0, 0, (width + 0.5) / pixelRatio, (height + 0.5) / pixelRatio);
-      // As the output target it is drawn in the screen's colour space. Everything is put back
-      // before the readback is awaited, so the frames the loop draws meanwhile go to the screen.
-      renderer.setOutputRenderTarget(captureTarget);
-      renderer.setRenderTarget(captureTarget);
-      renderer.render(view, deps.camera);
-      renderer.setRenderTarget(null);
-      renderer.setOutputRenderTarget(null);
-      renderer.setViewport(viewportBefore);
-      const pixels = await renderer.readRenderTargetPixelsAsync(captureTarget, 0, 0, width, height);
-      if (!recording) return;
-      if (pixels.length !== width * height * 4) {
-        throw new Error(`a readback of ${pixels.length} bytes for ${width}x${height}`);
-      }
-      const frame = new ImageData(width, height);
-      if (renderer.coordinateSystem === THREE.WebGLCoordinateSystem) {
-        // WebGL reads the rows back from the bottom; WebGPU from the top.
-        for (let row = 0; row < height; row++) {
-          const from = (height - 1 - row) * width * 4;
-          frame.data.set(pixels.subarray(from, from + width * 4), row * width * 4);
-        }
-      } else {
-        frame.data.set(pixels);
-      }
-      capturedFrames.push(frame);
-      if (capturedFrames.length >= CAPTURE_MAX_FRAMES) {
+      capturedFrames.push(await readFrame());
+      if (recording && capturedFrames.length >= CAPTURE_MAX_FRAMES) {
         gifNotice.textContent = `Stopped at ${CAPTURE_MAX_FRAMES} frames, the most one holds.`;
         finishRecording();
       }
     } catch (error) {
-      // Both backends read a render target back; a failure is something else, and is said rather
-      // than producing an empty GIF.
-      console.warn("frame capture failed", error);
-      recording = false;
-      captureBroken = true;
-      showGifBox("start");
-      gifNotice.textContent = `Recording failed on this browser: ${error?.message ?? error}`;
-      startButton.disabled = true;
+      captureFailed(error);
     } finally {
       capturing = false;
     }
@@ -179,7 +200,7 @@ export function initGif(deps) {
     isRecording: () => recording,
     tick() {
       if (recording && performance.now() >= captureDue) {
-        captureFrame();
+        if (!capturing) pendingCapture = captureFrame();
         captureDue = performance.now() + Math.max(80, frameInterval * 20);
       }
     },

@@ -552,6 +552,19 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       )
       await browser.settle("window.plrViewer.quality().level >= 1", 20)
 
+  async def test_a_recording_stopped_before_its_first_frame_holds_the_view(self):
+    """On a slow renderer a short recording had captured nothing by its stop, and the panel said
+    "No frames captured". The view it was stopped on is its frame."""
+    async with Browser() as browser:
+      await self.page(browser, "carrier")
+      # One script turn: no frame is drawn between the start and the stop, so none is captured.
+      await browser.evaluate(
+        "document.getElementById('toolbar-gif-btn').click();"
+        "document.getElementById('start-recording-button').click();"
+        "document.getElementById('stop-recording-button').click(); true"
+      )
+      await browser.settle("document.getElementById('gif-download').style.display === 'flex'", 30)
+
   async def test_a_recorded_frame_is_bounded_whatever_the_pixel_ratio(self):
     """A frame was kept at the drawing buffer's size, which at a pixel ratio of 2 is four times
     the viewport: tens of megabytes a frame, held until the GIF was rendered from all of them."""
