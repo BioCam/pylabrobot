@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any, Dict
 
 import pytest
@@ -14,6 +13,7 @@ from pylabrobot.hamilton.liquid_class_resolver import (
   get_volumes_and_classes,
 )
 from pylabrobot.hamilton.liquid_classes import HamiltonLiquidClass
+from pylabrobot.resources.container import Container
 from pylabrobot.resources.hamilton import HamiltonTip, TipPickupMethod, TipSize
 from pylabrobot.resources.liquid import Liquid
 
@@ -74,7 +74,7 @@ def test_get_volumes_and_classes_looks_up_corrects_and_rounds():
     keys.append(kwargs)
     return hlc
 
-  well = SimpleNamespace(name="w")
+  well = Container(name="w", size_x=1, size_y=1, size_z=1)
   liquid, piston, classes = get_volumes_and_classes(
     [well], [0], [_tip()], [100.0], None, None, [True], [False], lookup=lookup
   )

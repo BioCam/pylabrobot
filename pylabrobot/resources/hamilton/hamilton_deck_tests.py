@@ -1,3 +1,4 @@
+import logging
 import textwrap
 import unittest
 from typing import cast
@@ -42,11 +43,15 @@ class HamiltonDeckTests(unittest.TestCase):
     deck.assign_child_resource(arm, location=Coordinate(0, 0, 300))
     tool = hamilton_core_gripper_tool("tool")
     arm.assign_child_resource(tool, location=Coordinate.zero())
-    with self.assertNoLogs("pylabrobot.resources.hamilton.hamilton_decks", level="WARNING"):
+    logger_name = "pylabrobot.resources.hamilton.hamilton_decks"
+    # assertNoLogs needs Python 3.10; a sentinel gives assertLogs something, and nothing else may.
+    with self.assertLogs(logger_name, level="WARNING") as captured:
+      logging.getLogger(logger_name).warning("sentinel")
       tool.assign_child_resource(
         Resource(name="plate", size_x=5, size_y=5, size_z=5), location=None
       )
-    with self.assertLogs("pylabrobot.resources.hamilton.hamilton_decks", level="WARNING"):
+    self.assertEqual(captured.output, [f"WARNING:{logger_name}:sentinel"])
+    with self.assertLogs(logger_name, level="WARNING"):
       deck.assign_child_resource(
         Resource(name="tower", size_x=5, size_y=5, size_z=5), location=Coordinate(500, 100, 300)
       )

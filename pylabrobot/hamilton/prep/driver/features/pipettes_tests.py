@@ -8,7 +8,7 @@ import functools
 import hashlib
 import inspect
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -549,7 +549,11 @@ def test_aspirate_sends_an_explicit_zero_blow_out_and_refuses_a_zero_flow_rate()
     well = plate.get_item("A1")
     await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
     assert water.aspiration_blow_out_volume > 0
-    classes = {"hamilton_liquid_classes": [water], "liquid_heights": [2.0], "use_channels": [0]}
+    classes: Dict[str, Any] = {
+      "hamilton_liquid_classes": [water],
+      "liquid_heights": [2.0],
+      "use_channels": [0],
+    }
     sent = _record(p)
     await p.pipettes.aspirate([well], volumes=[5.0], blow_out_air_volumes=[0.0], **classes)
     entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
@@ -3015,6 +3019,7 @@ def test_probe_batch_liquid_heights_refuses_pressure_lld():
 def test_container_segments_are_one_step_per_height_volume_knot():
   """Each knot interval of the data is one segment of its own dV/dh."""
   well = cor_96_wellplate_360uL_Fb(name="plate")["A1"][0]
+  assert well.height_volume_data is not None
   knots = sorted(well.height_volume_data.items())
   segments = _get_container_segments(well)
   assert len(segments) == len(knots) - 1
@@ -3281,7 +3286,8 @@ def test_aspirate_scales_the_profile_to_a_surface_following_distance():
   _run(_t())
 
 
-_ASPIRATE_COMMANDS = tuple(Pipettes._ASPIRATE_CMD.values())
+# Any, as `sent` holds commands: an isinstance against these classes narrows to what they share.
+_ASPIRATE_COMMANDS: Tuple[Any, ...] = tuple(Pipettes._ASPIRATE_CMD.values())
 _ASPIRATE_TWO = {"piston_volumes": [20.0, 30.0], "liquid_heights": [3.0, 4.0]}
 _ASPIRATE_SEGMENTS = [
   [
@@ -3603,7 +3609,7 @@ def test_aspirate_runs_one_command_per_x_and_books_each_batch_on_its_own():
 
       p.send_command = record  # type: ignore[method-assign]
       rear, front = plate.get_item("A1"), plate.get_item("B2")
-      heights = {"piston_volumes": [10.0, 20.0], "liquid_heights": [3.0, 3.0]}
+      heights: Dict[str, Any] = {"piston_volumes": [10.0, 20.0], "liquid_heights": [3.0, 3.0]}
       await p.pipettes.aspirate(
         [rear, front],
         use_channels=[0, 1],
@@ -3657,12 +3663,16 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
       assert p.pipettes is not None
       await p.pipettes.pick_up_tips([rack_300.get_item("A1")], use_channels=[0])
       two = plate["A1:B1"]
-      one = {"use_channels": [0], "piston_volumes": [10.0], "liquid_heights": [3.0]}
-      both = {"use_channels": [0, 1], "piston_volumes": [10.0, 10.0], "liquid_heights": [3.0] * 2}
-      searching = {"use_channels": [0, 1], "piston_volumes": [10.0, 10.0]}
+      one: Dict[str, Any] = {"use_channels": [0], "piston_volumes": [10.0], "liquid_heights": [3.0]}
+      both: Dict[str, Any] = {
+        "use_channels": [0, 1],
+        "piston_volumes": [10.0, 10.0],
+        "liquid_heights": [3.0] * 2,
+      }
+      searching: Dict[str, Any] = {"use_channels": [0, 1], "piston_volumes": [10.0, 10.0]}
       capacitive, pressure = Pipettes.LLDMode.CAPACITIVE, Pipettes.LLDMode.PRESSURE
       sent = _record(p)
-      refusals: List[Tuple[Any, str, List[Container], Dict[str, Any]]] = [
+      refusals: List[Tuple[Any, str, Sequence[Container], Dict[str, Any]]] = [
         (NoTipError, "no tip is mounted", two, both),
       ]
       for error, match, containers, kwargs in refusals:
@@ -3935,7 +3945,7 @@ def test_aspirate_runs_ztouch_and_off_in_batches_of_their_own():
   _run(_t())
 
 
-_DISPENSE_COMMANDS = (
+_DISPENSE_COMMANDS: Tuple[Any, ...] = (
   PrepCmd.PrepDispenseNoLld,
   PrepCmd.PrepDispenseWithLld,
   PrepCmd.PrepDispenseNoLldV2,
