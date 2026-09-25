@@ -3577,6 +3577,8 @@ _WATER_300 = get_star_liquid_class(
   hamilton_tip_300uL("t").maximal_volume, False, True, False, Liquid.WATER, False, False
 )
 _TWO = [10.0, 20.0]
+# A well of the golden plate; its cavity bottom is 7.03 mm above the deck
+_PLATE_WELL = cor_96_wellplate_360uL_Fb(name="plate")["A1"][0]
 
 
 def _as_piston_volumes(
@@ -3699,14 +3701,23 @@ _GOLDEN_DISPENSE_CALLS: Dict[
     [0, 1],
     {"container_segments": _SEGMENTS, "command_version": "v1"},
   ),
-  "auto container geometry": (300, "A1:B1", _TWO, [0, 1], {"auto_container_geometry": True}),
-  "auto container geometry, v1, z_minimum": (
+  "container segments of the profile": (
+    300,
+    "A1:B1",
+    _TWO,
+    [0, 1],
+    {"container_segments": [_get_container_segments(_PLATE_WELL)] * 2},
+  ),
+  "container segments of the profile, v1, z_minimum": (
     300,
     "A1:B1",
     _TWO,
     [0, 1],
     {
-      "auto_container_geometry": True,
+      "container_segments": [
+        _get_container_segments(_PLATE_WELL, profile_start=5.0 - 7.03),
+        _get_container_segments(_PLATE_WELL, profile_start=6.0 - 7.03),
+      ],
       "command_version": "v1",
       "minimum_allowed_z_positions_during": [5.0, 6.0],
     },
@@ -4120,7 +4131,7 @@ _GOLDEN_DISPENSE_FRAMES: Dict[str, List[str]] = {
     "000000000401020000002800040000007a431e00140017010200010017010200010028000400000090401e00"
     "14001701020001000500020000002000040001000000",
   ],
-  "auto container geometry": [
+  "container segments of the profile": [
     "60.0 "
     "7c040630000002000100ffff00e0010000100000021378040000000001032a0000011f0058041e0028021701"
     "0200000020000400020000001e002600170102000000280004001f854f412800040048619742280004000000"
@@ -4150,7 +4161,7 @@ _GOLDEN_DISPENSE_FRAMES: Dict[str, List[str]] = {
     "7a431e00140017010200010017010200010028000400000090401e0014001701020001000500020000002000"
     "040001000000",
   ],
-  "auto container geometry, v1, z_minimum": [
+  "container segments of the profile, v1, z_minimum": [
     "60.0 "
     "7c020630000002000100ffff00e001000010000002137802000000000103050000011f0058021e0028011701"
     "0200000020000400020000001e002600170102000000280004001f854f412800040048619742280004000000"

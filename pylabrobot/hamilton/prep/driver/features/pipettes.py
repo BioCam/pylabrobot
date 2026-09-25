@@ -1059,7 +1059,6 @@ class _ChannelContext(Generic[_OpT]):
   z_fluid: List[float]
   z_air: List[float]
   z_bottom_search_offset: List[float]
-  ch_segments: dict[int, list[PrepCmd.SegmentDescriptor]]
 
 
 class Pipettes:
@@ -4985,14 +4984,12 @@ class Pipettes:
     z_air: Optional[List[float]] = None,
     z_minimum: Optional[List[float]] = None,
     z_bottom_search_offset: Optional[List[float]] = None,
-    container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
-    auto_container_geometry: bool = False,
     hamilton_liquid_classes: Optional[Sequence[Optional[HamiltonLiquidClass]]] = None,
   ) -> _ChannelContext[_OpT]:
     """Resolve shared per-channel state for aspirate or dispense.
 
-    Validates inputs, resolves HLCs, computes volume corrections, well geometry,
-    z-parameter defaults, and container segments. Operation-specific defaults
+    Validates inputs, resolves HLCs, computes volume corrections, well geometry and
+    z-parameter defaults. Operation-specific defaults
     (settling_time, flow_rate, etc.) are left to the caller.
     """
     if len(ops) != len(use_channels):
@@ -5011,8 +5008,6 @@ class Pipettes:
       jet=False,
       blow_out=False,
     )
-    indexed_ops = {ch: op for ch, op in zip(use_channels, ops)}
-
     volumes = corrected_volumes_for_ops(ops, hlcs)
 
     well_geometry = [
@@ -5024,21 +5019,6 @@ class Pipettes:
     z_air = fill_in_defaults(z_air, [g.z_air for g in well_geometry])
     z_bottom_search_offset = fill_in_defaults(z_bottom_search_offset, [2.0] * n)
 
-    ch_segments: dict[int, list[PrepCmd.SegmentDescriptor]] = {}
-    for i, ch in enumerate(use_channels):
-      if container_segments is not None and i < len(container_segments):
-        ch_segments[ch] = container_segments[i]
-      elif auto_container_geometry:
-        ch_segments[ch] = _get_container_segments(
-          indexed_ops[ch].resource,
-          profile_start=z_minimum[i]
-          - indexed_ops[ch]
-          .resource.get_location_wrt(self._require_deck(), "c", "c", "cavity_bottom")
-          .z,
-        )
-      else:
-        ch_segments[ch] = []
-
     return _ChannelContext(
       volumes=volumes,
       well_geometry=well_geometry,
@@ -5046,7 +5026,6 @@ class Pipettes:
       z_fluid=z_fluid,
       z_air=z_air,
       z_bottom_search_offset=z_bottom_search_offset,
-      ch_segments=ch_segments,
     )
 
   # -- aspirate: assemble, send --------------------------------------------------------------------
@@ -5831,7 +5810,6 @@ class Pipettes:
       z_air=z_air,
       z_minimum=minimum_allowed_z_positions_during,
       z_bottom_search_offset=z_bottom_search_offset,
-      container_segments=container_segments,
       hamilton_liquid_classes=classes,
     )
     deck = self._require_deck()
@@ -6455,7 +6433,6 @@ class Pipettes:
     z_bottom_search_offset: Optional[List[float]],
     z_air: Optional[List[float]],
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]],
-    auto_container_geometry: bool,
     read_timeout: Optional[float],
     command_version: Optional[Literal["v1", "v2"]],
     check_only: bool,
@@ -6505,8 +6482,6 @@ class Pipettes:
       z_air=z_air,
       z_minimum=minimum_allowed_z_positions_during,
       z_bottom_search_offset=z_bottom_search_offset,
-      container_segments=container_segments,
-      auto_container_geometry=auto_container_geometry,
       hamilton_liquid_classes=classes,
     )
     settling_times = fill_in_defaults(
@@ -6562,7 +6537,7 @@ class Pipettes:
         minimum_traverse_height_end=minimum_traverse_height_end,
         z_air=ctx.z_air,
         z_bottom_search_offset=ctx.z_bottom_search_offset,
-        container_segments=[ctx.ch_segments[ch] for ch in use_channels],
+        container_segments=container_segments,
         lld=lld,
         read_timeout=read_timeout,
         command_version=command_version,
@@ -6658,7 +6633,6 @@ class Pipettes:
     z_bottom_search_offset: Optional[List[float]] = None,
     z_air: Optional[List[float]] = None,
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
-    auto_container_geometry: bool = False,
     read_timeout: Optional[float] = None,
     command_version: Optional[Literal["v1", "v2"]] = None,
   ) -> None:
@@ -6715,9 +6689,8 @@ class Pipettes:
       z_bottom_search_offset: in mm, per container. 2.0 when None.
       z_air: the tip bottom height where each slow exit ends, in mm. 2 mm over the container's
         top when None.
-      container_segments: each container's cross-sections, sent as they are, per container.
-      auto_container_geometry: build the cross-sections from each container's profile when
-        `container_segments` is None.
+      container_segments: each container's cross-sections, sent as they are, per container. None
+        sends none.
       read_timeout: how long to wait for the answer, in s. Long enough for the search when an
         LLD search runs and this is None.
       command_version: "v1" or "v2" dispense commands. What the firmware supports when None.
@@ -6878,7 +6851,6 @@ class Pipettes:
         z_bottom_search_offset=pick(z_bottom_search_offset, batch),
         z_air=pick(z_air, batch),
         container_segments=pick(container_segments, batch),
-        auto_container_geometry=auto_container_geometry,
         read_timeout=read_timeout,
         command_version=command_version,
         check_only=check_only,
