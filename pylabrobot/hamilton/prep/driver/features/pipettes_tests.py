@@ -4404,3 +4404,97 @@ def test_dispense_refuses_before_booking_or_sending():
       set_volume_tracking(False)
 
   _run(_t())
+
+
+@pytest.mark.parametrize("second_session", [False, True])
+def test_dispense_on_ztouch_touches_each_floor_then_dispenses_just_above_it_without_lld(
+  second_session,
+):
+  """Each channel's seek on its own link before the dispense, which goes 0.2 mm off the floor."""
+
+  async def _t():
+    p, rack, plate, sent = _ztouch_setup(second_session, touch=0.3)
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+    wells = plate["A1:B1"]
+    sent.clear()
+    with patch.object(pipettes_logger, "warning") as warning:
+      await p.pipettes.dispense(wells, piston_volumes=[5.0, 5.0], lld_mode=_ZTOUCH)
+    assert "dispense on Z touch" in " ".join(str(c.args) for c in warning.call_args_list)
+    seeks = [(link, c) for link, c in sent if isinstance(c, PrepCmd.PrepZAxisSeekObstacle)]
+    assert [link for link, _ in seeks] == (["main", "second"] if second_session else ["main"] * 2)
+    assert [c.dest for _, c in seeks] == [p.pipettes.channels[ch].zaxis for ch in (0, 1)]
+    commands = [c for _, c in sent]
+    (push,) = [c for c in commands if isinstance(c, _DISPENSE_COMMANDS)]
+    assert isinstance(push, PrepCmd.PrepDispenseNoLldV2)
+    assert commands.index(push) > commands.index(seeks[-1][1])
+    for entry, well in zip(push.dispense_parameters, wells):
+      floor = well.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z - 0.3
+      assert entry.no_lld.z_fluid == pytest.approx(floor + 0.2)
+      assert entry.common.z_minimum == pytest.approx(floor)
+    await p.stop()
+
+  _run(_t())
+
+
+def test_dispense_on_ztouch_refuses_an_untouched_floor_with_nothing_dispensed():
+  """A seek that reaches its end untouched refuses the batch before its dispense."""
+
+  async def _t():
+    p, rack, plate, sent = _ztouch_setup(second_session=True, touch=None)
+    set_volume_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+      tips = [p.pipettes.get_mounted_tip(ch) for ch in (0, 1)]
+      for tip in tips:
+        assert tip is not None
+        tip.tracker.set_volume(20.0)
+      wells = plate["A1:B1"]
+      sent.clear()
+      with pytest.raises(RuntimeError, match="channel 0 met no floor in plate_well_A1"):
+        await p.pipettes.dispense(wells, piston_volumes=[5.0, 5.0], lld_mode=_ZTOUCH)
+      commands = [c for _, c in sent]
+      seeks = [i for i, c in enumerate(commands) if isinstance(c, PrepCmd.PrepZAxisSeekObstacle)]
+      assert len(seeks) == 2
+      assert not any(isinstance(c, _DISPENSE_COMMANDS) for c in commands)
+      assert any(isinstance(c, PrepCmd.PrepMoveZUpToSafe) for c in commands[seeks[-1] :])
+      assert [t.tracker.get_used_volume() for t in tips if t is not None] == [20.0, 20.0]
+      assert [w.tracker.get_used_volume() for w in wells] == [0.0, 0.0]
+    finally:
+      set_volume_tracking(False)
+    await p.stop()
+
+  _run(_t())
+
+
+def test_dispense_runs_ztouch_and_off_in_batches_of_their_own():
+  """ZTOUCH beside OFF at one X: a command each, both without LLD; only the ZTOUCH one seeks."""
+
+  async def _t():
+    p, rack, plate, sent = _ztouch_setup(second_session=False, touch=0.0)
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+    wells = plate["A1:B1"]
+    sent.clear()
+    await p.pipettes.dispense(
+      wells,
+      use_channels=[0, 1],
+      piston_volumes=[5.0, 5.0],
+      liquid_heights=[None, 3.0],
+      lld_mode=[_ZTOUCH, Pipettes.LLDMode.OFF],
+    )
+    commands = [c for _, c in sent]
+    seeks = [c for c in commands if isinstance(c, PrepCmd.PrepZAxisSeekObstacle)]
+    assert [c.dest for c in seeks] == [p.pipettes.channels[0].zaxis]
+    pushes = [c for c in commands if isinstance(c, _DISPENSE_COMMANDS)]
+    assert [type(c) for c in pushes] == [PrepCmd.PrepDispenseNoLldV2] * 2
+    bottoms = [w.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z for w in wells]
+    heights = sorted(e.no_lld.z_fluid for c in pushes for e in c.dispense_parameters)
+    assert heights == pytest.approx(sorted([bottoms[0] + 0.2, bottoms[1] + 3.0]))
+    await p.stop()
+
+  _run(_t())

@@ -1156,6 +1156,9 @@ class Pipettes:
     # A search for a floor stops looking this far below the modelled cavity bottom, in mm: the
     # seating error of a plate, no more.
     self.search_limit_below_cavity_bottom: float = 1.0
+    # A Z-touch dispense lifts the tip this far off the cavity bottom it touched, in mm, so the
+    # orifice is not sealed on it.
+    self.ztouch_dispense_height_above_bottom: float = 0.2
     # A seek that reached its end untouched answers a detection about 1 mm below it: a stop this
     # close above the end, or below it, in mm, met nothing.
     self._ztouch_end_allowance: float = 0.1
@@ -4941,7 +4944,7 @@ class Pipettes:
       if len(lld_mode) != n:
         raise ValueError(f"lld_mode length must match len(ops): {len(lld_mode)} != {n}")
       if Pipettes.LLDMode.ZTOUCH in lld_mode:
-        raise ValueError("ZTOUCH is the driver's own, never sent: `aspirate` runs it")
+        raise ValueError("ZTOUCH is the driver's own, never sent: `aspirate` and `dispense` run it")
       if allowed_modes is not None:
         for m in lld_mode:
           if m != Pipettes.LLDMode.OFF and m not in allowed_modes:
@@ -6020,6 +6023,53 @@ class Pipettes:
       if not tip.tracker.is_disabled and volume - room > 1e-6:
         raise TooLittleVolumeError(f"a tip with room for {room} uL asked to take {volume} uL")
 
+  def _check_ztouch(
+    self,
+    containers: Sequence[Container],
+    use_channels: Sequence[int],
+    touched: Sequence[int],
+    z_cavity_bottom: Sequence[float],
+    *,
+    liquid_heights: Optional[Sequence[Optional[float]]],
+    z_fluid: Optional[Sequence[float]],
+    search_speed: float,
+    approach_speed: float,
+  ) -> None:
+    """Refuse a Z-touch the channels cannot make, before anything moves; warn of 50 uL tips.
+
+    Args:
+      containers: per job.
+      use_channels: the channel of each container, per job.
+      touched: the jobs on Z touch.
+      z_cavity_bottom: per job, on the deck in mm.
+      liquid_heights: as the caller gave them.
+      z_fluid: as the caller gave them.
+      search_speed: in mm/s.
+      approach_speed: in mm/s.
+
+    Raises:
+      ValueError: A height given for a touched job, a speed out of range, or a search end out of
+        reach.
+    """
+    told = [
+      containers[job].name
+      for job in touched
+      if z_fluid is not None or (liquid_heights is not None and liquid_heights[job] is not None)
+    ]
+    if told:
+      raise ValueError(
+        f"liquid_heights or z_fluid given for {told}, whose Z touch finds the floor itself; give "
+        "None there"
+      )
+    if search_speed <= 0:
+      raise ValueError(f"search_speed must be above 0 mm/s, is {search_speed}")
+    low, high = self.configuration.z_speed_range
+    if not low <= approach_speed <= high:
+      raise ValueError(f"approach_speed must be between {low} and {high} mm/s, is {approach_speed}")
+    for job in touched:
+      self._get_floor_search_end(use_channels[job], z_cavity_bottom[job])
+    self._warn_ztouch_on_soft_tips(use_channels[job] for job in touched)
+
   async def _touch_floors_of_batch(
     self,
     batch: ChannelBatch,
@@ -6278,16 +6328,6 @@ class Pipettes:
       )
     modes = self._get_lld_modes(lld_mode, n)
     touched = [] if modes is None else [j for j in range(n) if modes[j] == self.LLDMode.ZTOUCH]
-    told = [
-      containers[job].name
-      for job in touched
-      if z_fluid is not None or (liquid_heights is not None and liquid_heights[job] is not None)
-    ]
-    if told:
-      raise ValueError(
-        f"liquid_heights or z_fluid given for {told}, whose Z touch finds the floor itself; give "
-        "None there"
-      )
     offsets = (
       resource_offsets
       if resource_offsets is not None
@@ -6302,21 +6342,21 @@ class Pipettes:
       round(c.get_location_wrt(deck, "c", "c", "t").z + o.z, 2) for c, o in zip(containers, offsets)
     ]
     if touched:
-      if search_speed <= 0:
-        raise ValueError(f"search_speed must be above 0 mm/s, is {search_speed}")
-      low, high = self.configuration.z_speed_range
-      if not low <= approach_speed <= high:
-        raise ValueError(
-          f"approach_speed must be between {low} and {high} mm/s, is {approach_speed}"
-        )
-      for job in touched:
-        self._get_floor_search_end(use_channels[job], z_cavity_bottom[job])
+      self._check_ztouch(
+        containers,
+        use_channels,
+        touched,
+        z_cavity_bottom,
+        liquid_heights=liquid_heights,
+        z_fluid=z_fluid,
+        search_speed=search_speed,
+        approach_speed=approach_speed,
+      )
       logger.warning(
         "channels %s aspirate on Z touch: from the floor of %s, air where no liquid is",
         sorted({use_channels[job] for job in touched}),
         [containers[job].name for job in touched],
       )
-      self._warn_ztouch_on_soft_tips(use_channels[job] for job in touched)
     # One command carries one LLD category, so each mode is planned on its own.
     groups = (
       [list(range(n))]
@@ -6634,6 +6674,8 @@ class Pipettes:
     *,
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
     piston_volumes: Optional[Sequence[float]] = None,
+    search_speed: float = 10.0,
+    approach_speed: float = 125.0,
     minimum_allowed_z_positions_during: Optional[List[float]] = None,
     transport_air_volumes: Optional[List[float]] = None,
     cut_off_speeds: Optional[List[float]] = None,
@@ -6660,6 +6702,8 @@ class Pipettes:
     Batched as `aspirate`: one channel per container, containers within `x_grouping_tolerance` of
     one X share a batch, the channels go to each batch in ascending X, and its volumes are booked
     when it dispenses. Every refusal the model can decide comes before the first move.
+    CAPACITIVE searches in the command; ZTOUCH touches the floor first, as `_probe_batch_floors`,
+    and dispenses `ztouch_dispense_height_above_bottom` above it without LLD.
 
     Args:
       containers: one per channel used, at most as many as there are channels.
@@ -6669,15 +6713,17 @@ class Pipettes:
       resource_offsets: added to where each channel goes in its container, in mm. The z shifts
         the heights. Channels sharing a container spread across it in Y when None.
       liquid_heights: where the liquid stands above each cavity bottom, in mm. 0 when None.
-      lld_mode: how the liquid is found, one for all or one per container: OFF or CAPACITIVE.
-        None runs a search only when `lld` is given.
+      lld_mode: how the liquid, or under ZTOUCH the floor, is found, one for all or one per
+        container: OFF, CAPACITIVE or ZTOUCH. None runs a search only when `lld` is given.
       flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
       hamilton_liquid_classes: the class for each container's volume. Looked up for the
         channel's tip, water, when None.
       piston_volumes: how much each piston pushes out, in uL, per container, as given, with no
         liquid class. One of this and `volumes`.
+      search_speed: of the driver's own search, the Z-touch, in mm/s.
+      approach_speed: down to that search's start, the container's top, in mm/s.
       minimum_allowed_z_positions_during: how low each tip bottom may go, in mm, per container.
-        The cavity bottom when None.
+        The cavity bottom when None; under ZTOUCH the floor touched.
       transport_air_volumes: the firmware's transport air volume, in uL, per container. The
         liquid class's, else 0.0, when None.
       cut_off_speeds: the firmware's cutoff speed, per container. The liquid class's stop flow
@@ -6713,11 +6759,12 @@ class Pipettes:
 
     Raises:
       ValueError: If an argument is out of range, the lists do not match, a channel repeats, there
-        are more containers than channels, the LLD mode is not OFF or CAPACITIVE, both or neither
-        of `volumes` and `piston_volumes` are given, a class is given with `piston_volumes`, no
-        class is known for a channel's tip, a flow rate is not above 0, or a blow-out air volume
-        is above 0.
-      RuntimeError: If a channel used carries no tip.
+        are more containers than channels, the LLD mode is not OFF, CAPACITIVE or ZTOUCH, both or
+        neither of `volumes` and `piston_volumes` are given, a class is given with
+        `piston_volumes`, no class is known for a channel's tip, a flow rate is not above 0, a
+        blow-out air volume is above 0, a liquid height or `z_fluid` is given beside ZTOUCH, or a
+        floor search is out of reach.
+      RuntimeError: If a channel used carries no tip, or no floor is met where a channel touched.
       TooLittleLiquidError: If a tip holds less than it is to give.
       TooLittleVolumeError: If a container has less room than it is to take.
     """
@@ -6762,12 +6809,36 @@ class Pipettes:
       if values is not None and len(values) != n:
         raise ValueError(f"{name} length must match containers ({n})")
     modes = self._get_lld_modes(lld_mode, n)
+    touched = [] if modes is None else [j for j in range(n) if modes[j] == self.LLDMode.ZTOUCH]
     offsets = (
       resource_offsets
       if resource_offsets is not None
       else self._get_resource_offsets(containers, use_channels)
     )
     deck = self._require_deck()
+    z_cavity_bottom = [
+      round(c.get_location_wrt(deck, "c", "c", "cavity_bottom").z + o.z, 2)
+      for c, o in zip(containers, offsets)
+    ]
+    z_top = [
+      round(c.get_location_wrt(deck, "c", "c", "t").z + o.z, 2) for c, o in zip(containers, offsets)
+    ]
+    if touched:
+      self._check_ztouch(
+        containers,
+        use_channels,
+        touched,
+        z_cavity_bottom,
+        liquid_heights=liquid_heights,
+        z_fluid=z_fluid,
+        search_speed=search_speed,
+        approach_speed=approach_speed,
+      )
+      logger.warning(
+        "channels %s dispense on Z touch: onto the floor of %s",
+        sorted({use_channels[job] for job in touched}),
+        [containers[job].name for job in touched],
+      )
     # One command carries one LLD category, so each mode is planned on its own.
     groups = (
       [list(range(n))]
@@ -6795,6 +6866,26 @@ class Pipettes:
       """Dispense the batch's containers in one command; the last leaves the tips at the end."""
       last = batch is batches[-1]
       batch_modes = pick(modes, batch)
+      heights_z = pick(z_fluid, batch)
+      lowest = pick(minimum_allowed_z_positions_during, batch)
+      if batch_modes is not None and batch_modes[0] == self.LLDMode.ZTOUCH:
+        # The dispense goes without LLD, off the floor touched so the orifice is not sealed on
+        # it; the check before any motion has the modelled floor.
+        floors = (
+          [z_cavity_bottom[job] for job in batch.indices]
+          if check_only
+          else await self._touch_floors_of_batch(
+            batch,
+            containers,
+            z_cavity_bottom=z_cavity_bottom,
+            z_top=z_top,
+            search_speed=search_speed,
+            approach_speed=approach_speed,
+          )
+        )
+        heights_z = [round(f + self.ztouch_dispense_height_above_bottom, 2) for f in floors]
+        lowest = floors if lowest is None else lowest
+        batch_modes = [self.LLDMode.OFF] * len(batch.indices)
       return await self._dispense_batch(
         batch.x_position,
         [containers[job] for job in batch.indices],
@@ -6806,7 +6897,7 @@ class Pipettes:
         None if batch_modes is None else batch_modes[0],
         pick(flow_rates, batch),
         hamilton_liquid_classes=pick(hamilton_liquid_classes, batch),
-        minimum_allowed_z_positions_during=pick(minimum_allowed_z_positions_during, batch),
+        minimum_allowed_z_positions_during=lowest,
         transport_air_volumes=pick(transport_air_volumes, batch),
         cut_off_speeds=pick(cut_off_speeds, batch),
         stop_back_volumes=pick(stop_back_volumes, batch),
@@ -6818,7 +6909,7 @@ class Pipettes:
         ),
         clld_sensitivity=clld_sensitivity,
         lld=lld,
-        z_fluid=pick(z_fluid, batch),
+        z_fluid=heights_z,
         z_bottom_search_offset=pick(z_bottom_search_offset, batch),
         z_air=pick(z_air, batch),
         container_segments=pick(container_segments, batch),
