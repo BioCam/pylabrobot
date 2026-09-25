@@ -82,6 +82,44 @@ def _record(p: PrepSimulationDriver, only: Any = object, names: bool = False) ->
   return sent
 
 
+def _clld_setup(second_session: bool, found: Optional[float]):
+  """A simulated Prep whose capacitive seeks find liquid `found` mm above their end, the bottom.
+
+  None finds nothing. Every command is recorded with the link it went on.
+  """
+  deck = PrepDeck()
+  rack = deck[1] = hamilton_96_tiprack_300uL_NTR(name="tips", with_tips=True)
+  plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+  p = PrepSimulationDriver(deck=deck)
+  if second_session:
+    p.second_io = _SimulatedIO(p)
+  sent: List[Tuple[str, Any]] = []
+  main_send, second_send = p.send_command, p.send_command_on_second_session
+
+  def answer(command: Any) -> PrepCmd.PrepZAxisSeekCapacitiveLld.Response:
+    if found is None:
+      return PrepCmd.PrepZAxisSeekCapacitiveLld.Response(lld_detected=False, detect_position=0.0)
+    return PrepCmd.PrepZAxisSeekCapacitiveLld.Response(
+      lld_detected=True, detect_position=command.position + found
+    )
+
+  async def on_main(command, *args, **kwargs):
+    sent.append(("main", command))
+    if isinstance(command, PrepCmd.PrepZAxisSeekCapacitiveLld):
+      return answer(command)
+    return await main_send(command, *args, **kwargs)
+
+  async def on_second(command, *args, **kwargs):
+    sent.append(("second", command))
+    if isinstance(command, PrepCmd.PrepZAxisSeekCapacitiveLld):
+      return answer(command)
+    return await second_send(command, *args, **kwargs)
+
+  p.send_command = on_main  # type: ignore[method-assign]
+  p.send_command_on_second_session = on_second  # type: ignore[method-assign]
+  return p, rack, plate, sent
+
+
 def _index(sent: List[Any], command_type: Any) -> int:
   """Where the first command of `command_type` is in `sent`."""
   return next(i for i, c in enumerate(sent) if isinstance(c, command_type))
@@ -216,20 +254,17 @@ def test_aspirate_takes_a_missing_liquid_height_from_the_tracked_volume():
   _run(_t())
 
 
-def test_aspirate_immerses_the_tip_below_the_surface_with_and_without_lld():
-  """Without LLD the aspirate height drops by the depth; with LLD the depth is the search's submerge."""
+def test_aspirate_immerses_the_tip_below_the_surface_given_or_found():
+  """The aspirate height drops by the depth, under a height given and under a surface found."""
 
   async def _t():
-    deck = PrepDeck()
-    tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
-    plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
-    p = PrepSimulationDriver(deck=deck)
+    p, rack, plate, sent = _clld_setup(second_session=False, found=4.0)
     await p.setup()
     assert p.pipettes is not None
     well = plate.get_item("A1")
-    bottom = well.get_location_wrt(deck, "c", "c", "cavity_bottom").z
-    await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
-    sent = _record(p)
+    bottom = well.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z
+    await p.pipettes.pick_up_tips([rack.get_item("A1")], use_channels=[0])
+    sent.clear()
     await p.pipettes.aspirate(
       [well], piston_volumes=[0.0], use_channels=[0], liquid_heights=[5.0], immersion_depths=[2.0]
     )
@@ -240,9 +275,12 @@ def test_aspirate_immerses_the_tip_below_the_surface_with_and_without_lld():
       lld_mode=Pipettes.LLDMode.CAPACITIVE,
       immersion_depths=[1.5],
     )
-    plain, searched = [c.aspirate_parameters[0] for c in sent if hasattr(c, "aspirate_parameters")]
+    plain, searched = [
+      c.aspirate_parameters[0] for _, c in sent if hasattr(c, "aspirate_parameters")
+    ]
     assert plain.no_lld.z_fluid == pytest.approx(bottom + 3.0, abs=0.01)
-    assert searched.lld.z_submerge == pytest.approx(1.5)
+    assert isinstance(searched, PrepCmd.AspirateParametersNoLldAndMonitoring2)
+    assert searched.no_lld.z_fluid == pytest.approx(bottom + 2.5, abs=0.01)
     await p.stop()
 
   _run(_t())
@@ -349,14 +387,30 @@ def test_aspirate_refuses_a_clot_check_until_it_is_verified():
     assert p.pipettes is not None
     await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
     well = plate.get_item("A1")
-    kwargs = {"piston_volumes": [5.0], "use_channels": [0], "lld_mode": Pipettes.LLDMode.CAPACITIVE}
+    bottom = well.get_location_wrt(deck, "c", "c", "cavity_bottom")
+    top = well.get_location_wrt(deck, "c", "c", "t").z
     sent = _record(p)
-    await p.pipettes.aspirate([well], clot_detection_heights=[0.0], **kwargs)
+    await p.pipettes._aspirate_in_one_move(
+      [0],
+      [bottom + Coordinate(0, 0, 3.0)],
+      [top],
+      [bottom.z],
+      [5.0],
+      tube_radii=[3.0],
+      lld_mode=Pipettes.LLDMode.CAPACITIVE,
+      clot_detection_heights=[0.0],
+    )
     c_lld = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0].c_lld
     assert (c_lld.clot_check_enable, c_lld.z_clot_check) == (False, 0.0)
     sent.clear()
     with pytest.raises(ValueError, match="clot detection is not verified"):
-      await p.pipettes.aspirate([well], clot_detection_heights=[1.5], **kwargs)
+      await p.pipettes.aspirate(
+        [well],
+        piston_volumes=[5.0],
+        use_channels=[0],
+        liquid_heights=[3.0],
+        clot_detection_heights=[1.5],
+      )
     assert not any(hasattr(c, "aspirate_parameters") for c in sent)
     await p.stop()
 
@@ -411,18 +465,15 @@ def test_tadm_reads_answer_each_channel():
   _run(_t())
 
 
-def test_aspirate_sends_the_clld_sensitivity_it_is_given():
-  """clld_sensitivity replaces only the sensitivity in the capacitive LLD block."""
+def test_aspirate_searches_with_the_clld_sensitivity_it_is_given():
+  """clld_sensitivity goes to the driver's capacitive search; the draw after it has no LLD."""
 
   async def _t():
-    deck = PrepDeck()
-    tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
-    plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
-    p = PrepSimulationDriver(deck=deck)
+    p, rack, plate, sent = _clld_setup(second_session=False, found=4.0)
     await p.setup()
     assert p.pipettes is not None
-    await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
-    sent = _record(p)
+    await p.pipettes.pick_up_tips([rack.get_item("A1")], use_channels=[0])
+    sent.clear()
     await p.pipettes.aspirate(
       [plate.get_item("A1")],
       piston_volumes=[0.0],
@@ -430,8 +481,10 @@ def test_aspirate_sends_the_clld_sensitivity_it_is_given():
       lld_mode=Pipettes.LLDMode.CAPACITIVE,
       clld_sensitivity=2,
     )
-    c_lld = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0].c_lld
-    assert (c_lld.default_values, c_lld.sensitivity, c_lld.detect_mode) == (False, 2, 0)
+    (seek,) = [c for _, c in sent if isinstance(c, PrepCmd.PrepZAxisSeekCapacitiveLld)]
+    assert seek.sensitivity == 2
+    (draw,) = [c for _, c in sent if hasattr(c, "aspirate_parameters")]
+    assert isinstance(draw, PrepCmd.PrepAspirateNoLldMonitoringV2)
     await p.stop()
 
   _run(_t())
@@ -3019,12 +3072,6 @@ _GOLDEN_ASPIRATE_CALLS: Dict[str, Tuple[int, str, Optional[List[int]], Dict[str,
       "immersion_depths": [1.0, 1.5],
     },
   ),
-  "capacitive LLD, read_timeout given": (
-    300,
-    "A1:B1",
-    [0, 1],
-    {"volumes": [10.0, 10.0], "lld_mode": Pipettes.LLDMode.CAPACITIVE, "read_timeout": 30.0},
-  ),
   "mix, immersion": (
     300,
     "A1:B1",
@@ -3173,15 +3220,14 @@ _GOLDEN_ASPIRATE_FRAMES: Dict[str, List[str]] = {
   "use_channels None": ["60.0 4a9e16bf10ef7f31d6d6e7b1312115061c5c6950d4ee9205e6c6c774bd4dd740"],
   "v1": ["60.0 ee7d3df414101f7df8178f8979539534afabc3d89e7af8cbe1a1749391d16071"],
   "v2 given": ["60.0 4a9e16bf10ef7f31d6d6e7b1312115061c5c6950d4ee9205e6c6c774bd4dd740"],
-  "capacitive LLD": ["62.094 f26ce6d307a03e855b6c46edb53e2c82ec87d7ed83efafd48d517a2c6e77b4ef"],
+  "capacitive LLD": [
+    "60.0 f196c0775b56b8783c405013acb727535059da77c97d0c5936897fae77a00969",
+  ],
   "capacitive LLD, one per container": [
-    "62.094 f26ce6d307a03e855b6c46edb53e2c82ec87d7ed83efafd48d517a2c6e77b4ef",
+    "60.0 f196c0775b56b8783c405013acb727535059da77c97d0c5936897fae77a00969",
   ],
   "capacitive LLD, v1, sensitivity, immersion": [
-    "62.094 48befe0ba080ccf5e048dfe4549889bf71683f06e26ae81ae27e2ff9b5ca019f",
-  ],
-  "capacitive LLD, read_timeout given": [
-    "30.0 f26ce6d307a03e855b6c46edb53e2c82ec87d7ed83efafd48d517a2c6e77b4ef",
+    "60.0 111cebd5c033ba1742950d0ddc186310d35f38b61e45734663f511b737b67ff7",
   ],
   "mix, immersion": ["60.0 920c42c02c8749b7b00d022c097838e57086103dadcb94ecaf967e990c83cbda"],
   "tadm, end height, z_air": [
@@ -3242,6 +3288,9 @@ def test_aspirate_keywords_are_the_stars_in_its_order_and_the_preps_own_after():
     "mix_position_from_liquid_surface",
     "z_fluid",
     "z_bottom_search_offset",
+    "lld",
+    "p_lld",
+    "read_timeout",
   ):
     assert old not in prep
 
@@ -3345,13 +3394,6 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
       searching = {"use_channels": [0, 1], "piston_volumes": [10.0, 10.0]}
       apart = [Coordinate(-5.0, 0, 0), Coordinate(5.0, 0, 0)]
       capacitive, pressure = Pipettes.LLDMode.CAPACITIVE, Pipettes.LLDMode.PRESSURE
-      seek_0 = PrepCmd.PLldParameters(
-        default_values=False,
-        sensitivity=1,
-        dispenser_seek_speed=0.0,
-        lld_height_difference=0.0,
-        detect_mode=0,
-      )
       sent = _record(p)
       refusals: List[Tuple[Any, str, List[Container], Dict[str, Any]]] = [
         (NoTipError, "no tip is mounted", two, both),
@@ -3383,8 +3425,7 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
           {**both, "piston_volumes": [150.0, 40.0], "resource_offsets": apart},
         ),
         (TooLittleVolumeError, "room for", two, {**both, "piston_volumes": [10.0, 70.0]}),
-        (ValueError, "PRESSURE LLD needs p_lld", two, {**searching, "lld_mode": pressure}),
-        (ValueError, "1 to 630", two, {**searching, "lld_mode": capacitive, "p_lld": seek_0}),
+        (ValueError, "PRESSURE LLD has no seek", two, {**searching, "lld_mode": pressure}),
         (ValueError, "must be LLDMode", two, {**both, "lld_mode": [capacitive, "capacitive"]}),
         (ValueError, "1 lld modes for 2", two, {**both, "lld_mode": [capacitive]}),
         (
@@ -3392,12 +3433,6 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
           "finds the surface or the floor itself",
           two,
           {**both, "lld_mode": capacitive},
-        ),
-        (
-          ValueError,
-          "an LLD mode that searches",
-          two,
-          {**both, "lld": PrepCmd.LldParameters.default()},
         ),
         (ValueError, "cannot be mixed", two, {**both, "lld_mode": [capacitive, pressure]}),
       ]
@@ -3415,8 +3450,8 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
   _run(_t())
 
 
-def test_aspirate_sends_one_lld_category_per_command():
-  """Modes OFF and CAPACITIVE at one X: one command each, the pressure block the firmware's own."""
+def test_aspirate_sends_one_command_per_lld_mode():
+  """Modes OFF and CAPACITIVE at one X: one command each, both without the firmware's LLD."""
 
   async def _t():
     deck = PrepDeck()
@@ -3434,12 +3469,8 @@ def test_aspirate_sends_one_lld_category_per_command():
       liquid_heights=[3.0, None],
       lld_mode=[Pipettes.LLDMode.OFF, Pipettes.LLDMode.CAPACITIVE],
     )
-    assert [type(c) for c in sent] == [
-      PrepCmd.PrepAspirateNoLldMonitoringV2,
-      PrepCmd.PrepAspirateWithLldV2,
-    ]
+    assert [type(c) for c in sent] == [PrepCmd.PrepAspirateNoLldMonitoringV2] * 2
     assert [len(c.aspirate_parameters) for c in sent] == [1, 1]
-    assert sent[1].aspirate_parameters[0].p_lld == PrepCmd.PLldParameters.default()
     await p.stop()
 
   _run(_t())
@@ -3655,19 +3686,12 @@ _GOLDEN_DISPENSE_CALLS: Dict[
     [0, 1],
     {"lld_mode": _CAPACITIVE, "command_version": "v1"},
   ),
-  "LLD by an lld block": (
+  "LLD with clld_sensitivity": (
     300,
     "A1:B1",
     _TWO,
     [0, 1],
-    {"lld_mode": _CAPACITIVE, "lld": PrepCmd.LldParameters(False, 50.0, 4.0, 1.0, 0.5)},
-  ),
-  "LLD with clld_sensitivity, read_timeout": (
-    300,
-    "A1:B1",
-    _TWO,
-    [0, 1],
-    {"lld_mode": _CAPACITIVE, "clld_sensitivity": 2, "read_timeout": 90.0},
+    {"lld_mode": _CAPACITIVE, "clld_sensitivity": 2},
   ),
   "LLD with heights given, v1": (
     300,
@@ -3800,7 +3824,6 @@ _GOLDEN_DISPENSE_CALLS: Dict[
     {"piston_volumes": [5.0, 10.0], "lld_mode": Pipettes.LLDMode.OFF},
   ),
   "channels sharing a dish": (300, "dish", _TWO, [0, 1], {"liquid_heights": [5.0, 5.0]}),
-  "read_timeout without LLD": (300, "A1:B1", _TWO, [0, 1], {"read_timeout": 30.0}),
 }
 
 
@@ -3956,104 +3979,76 @@ _GOLDEN_DISPENSE_FRAMES: Dict[str, List[str]] = {
     "0400000090401e0014001701020001000500020000002000040001000000",
   ],
   "capacitive LLD": [
-    "62.094 "
-    "c8020630000002000100ffff00e00100001000000213c4020000000001032b0000011f00a4021e004e011701"
+    "60.0 "
+    "84020630000002000100ffff00e0010000100000021380020000000001032a0000011f0060021e002c011701"
     "0200000020000400020000001e002600170102000000280004001f854f412800040048619742280004000000"
     "0000280004000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333"
     "e742280004000000004028000400cdcc4441280004000000f042280004000000a040280004001f855b402800"
-    "0400000000002800040000000000280004000000803f06000400000000001e00260017010200000028000400"
-    "9a998d41280004000000a040280004000000004028000400000000001e002400170102000000200004000300"
-    "0000170102000000280004000000000020000400000000001e00240017010200010028000400000000002800"
-    "0400000000000401020000002800040000007a431e0014001701020001001701020001002800040000009040"
-    "1e00140017010200010005000200000020000400010000001e004e0117010200000020000400010000001e00"
-    "2600170102000000280004001f854f4128000400486185422800040000000000280004000000a0401f000000"
-    "1e00640017010200000017010200010028000400c3f5e040280004003333e742280004000000004028000400"
-    "9a99b941280004000000f042280004000000a040280004001f855b4028000400000000002800040000000000"
-    "280004000000803f06000400000000001e002600170102000000280004009a998d41280004000000a0402800"
-    "04000000004028000400000000001e0024001701020000002000040003000000170102000000280004000000"
-    "000020000400000000001e002400170102000100280004000000000028000400000000000401020000002800"
-    "040000007a431e00140017010200010017010200010028000400000090401e00140017010200010005000200"
-    "00002000040001000000",
+    "0400000000002800040000000000280004000000803f06000400000000001e002c0017010200000028000400"
+    "9a998d41280004009a999d41170102000000280004000000004028000400000000001e002400170102000100"
+    "280004000000000028000400000000000401020000002800040000007a431e00140017010200010017010200"
+    "010028000400000090401e00140017010200010005000200000020000400010000001e002c01170102000000"
+    "20000400010000001e002600170102000000280004001f854f41280004004861854228000400000000002800"
+    "04000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333e7422800"
+    "040000000040280004009a99b941280004000000f042280004000000a040280004001f855b40280004000000"
+    "00002800040000000000280004000000803f06000400000000001e002c00170102000000280004009a998d41"
+    "280004009a999d41170102000000280004000000004028000400000000001e00240017010200010028000400"
+    "0000000028000400000000000401020000002800040000007a431e0014001701020001001701020001002800"
+    "0400000090401e0014001701020001000500020000002000040001000000",
   ],
   "capacitive LLD, v1": [
-    "62.094 "
-    "c0020630000002000100ffff00e00100001000000213bc02000000000103060000011f009c021e004a011701"
+    "60.0 "
+    "7c020630000002000100ffff00e001000010000002137802000000000103050000011f0058021e0028011701"
     "0200000020000400020000001e002600170102000000280004001f854f412800040048619742280004000000"
     "0000280004000000a0401e00640017010200000017010200010028000400c3f5e040280004003333e7422800"
     "04000000004028000400cdcc4441280004000000f042280004000000a040280004001f855b40280004000000"
-    "00002800040000000000280004000000803f06000400000000001e002600170102000000280004009a998d41"
-    "280004000000a040280004000000004028000400000000001e00240017010200000020000400030000001701"
-    "02000000280004000000000020000400000000001e0024001701020001002800040000000000280004000000"
-    "00000401020000002800040000007a431e00140017010200010017010200010028000400000090401e001400"
-    "17010200010005000200000020000400010000001e004a0117010200000020000400010000001e0026001701"
-    "02000000280004001f854f4128000400486185422800040000000000280004000000a0401e00640017010200"
-    "000017010200010028000400c3f5e040280004003333e7422800040000000040280004009a99b94128000400"
-    "0000f042280004000000a040280004001f855b4028000400000000002800040000000000280004000000803f"
-    "06000400000000001e002600170102000000280004009a998d41280004000000a04028000400000000402800"
-    "0400000000001e00240017010200000020000400030000001701020000002800040000000000200004000000"
-    "00001e002400170102000100280004000000000028000400000000000401020000002800040000007a431e00"
-    "140017010200010017010200010028000400000090401e001400170102000100050002000000200004000100"
-    "0000",
+    "00002800040000000000280004000000803f06000400000000001e002c00170102000000280004009a998d41"
+    "280004009a999d41170102000000280004000000004028000400000000001e00240017010200010028000400"
+    "0000000028000400000000000401020000002800040000007a431e0014001701020001001701020001002800"
+    "0400000090401e00140017010200010005000200000020000400010000001e00280117010200000020000400"
+    "010000001e002600170102000000280004001f854f4128000400486185422800040000000000280004000000"
+    "a0401e00640017010200000017010200010028000400c3f5e040280004003333e74228000400000000402800"
+    "04009a99b941280004000000f042280004000000a040280004001f855b402800040000000000280004000000"
+    "0000280004000000803f06000400000000001e002c00170102000000280004009a998d41280004009a999d41"
+    "170102000000280004000000004028000400000000001e002400170102000100280004000000000028000400"
+    "000000000401020000002800040000007a431e00140017010200010017010200010028000400000090401e00"
+    "14001701020001000500020000002000040001000000",
   ],
-  "LLD by an lld block": [
-    "70.1175 "
-    "c8020630000002000100ffff00e00100001000000213c4020000000001032b0000011f00a4021e004e011701"
+  "LLD with clld_sensitivity": [
+    "60.0 "
+    "84020630000002000100ffff00e0010000100000021380020000000001032a0000011f0060021e002c011701"
     "0200000020000400020000001e002600170102000000280004001f854f412800040048619742280004000000"
     "0000280004000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333"
     "e742280004000000004028000400cdcc4441280004000000f042280004000000a040280004001f855b402800"
-    "0400000000002800040000000000280004000000803f06000400000000001e00260017010200000028000400"
-    "000048422800040000008040280004000000803f280004000000003f1e002400170102000000200004000300"
-    "0000170102000000280004000000000020000400000000001e00240017010200010028000400000000002800"
-    "0400000000000401020000002800040000007a431e0014001701020001001701020001002800040000009040"
-    "1e00140017010200010005000200000020000400010000001e004e0117010200000020000400010000001e00"
-    "2600170102000000280004001f854f4128000400486185422800040000000000280004000000a0401f000000"
-    "1e00640017010200000017010200010028000400c3f5e040280004003333e742280004000000004028000400"
-    "9a99b941280004000000f042280004000000a040280004001f855b4028000400000000002800040000000000"
-    "280004000000803f06000400000000001e002600170102000000280004000000484228000400000080402800"
-    "04000000803f280004000000003f1e0024001701020000002000040003000000170102000000280004000000"
-    "000020000400000000001e002400170102000100280004000000000028000400000000000401020000002800"
-    "040000007a431e00140017010200010017010200010028000400000090401e00140017010200010005000200"
-    "00002000040001000000",
-  ],
-  "LLD with clld_sensitivity, read_timeout": [
-    "90.0 "
-    "c8020630000002000100ffff00e00100001000000213c4020000000001032b0000011f00a4021e004e011701"
-    "0200000020000400020000001e002600170102000000280004001f854f412800040048619742280004000000"
-    "0000280004000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333"
-    "e742280004000000004028000400cdcc4441280004000000f042280004000000a040280004001f855b402800"
-    "0400000000002800040000000000280004000000803f06000400000000001e00260017010200000028000400"
-    "9a998d41280004000000a040280004000000004028000400000000001e002400170102000000200004000200"
-    "0000170102000000280004000000000020000400000000001e00240017010200010028000400000000002800"
-    "0400000000000401020000002800040000007a431e0014001701020001001701020001002800040000009040"
-    "1e00140017010200010005000200000020000400010000001e004e0117010200000020000400010000001e00"
-    "2600170102000000280004001f854f4128000400486185422800040000000000280004000000a0401f000000"
-    "1e00640017010200000017010200010028000400c3f5e040280004003333e742280004000000004028000400"
-    "9a99b941280004000000f042280004000000a040280004001f855b4028000400000000002800040000000000"
-    "280004000000803f06000400000000001e002600170102000000280004009a998d41280004000000a0402800"
-    "04000000004028000400000000001e0024001701020000002000040002000000170102000000280004000000"
-    "000020000400000000001e002400170102000100280004000000000028000400000000000401020000002800"
-    "040000007a431e00140017010200010017010200010028000400000090401e00140017010200010005000200"
-    "00002000040001000000",
+    "0400000000002800040000000000280004000000803f06000400000000001e002c0017010200000028000400"
+    "9a998d41280004009a999d41170102000000280004000000004028000400000000001e002400170102000100"
+    "280004000000000028000400000000000401020000002800040000007a431e00140017010200010017010200"
+    "010028000400000090401e00140017010200010005000200000020000400010000001e002c01170102000000"
+    "20000400010000001e002600170102000000280004001f854f41280004004861854228000400000000002800"
+    "04000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333e7422800"
+    "040000000040280004009a99b941280004000000f042280004000000a040280004001f855b40280004000000"
+    "00002800040000000000280004000000803f06000400000000001e002c00170102000000280004009a998d41"
+    "280004009a999d41170102000000280004000000004028000400000000001e00240017010200010028000400"
+    "0000000028000400000000000401020000002800040000007a431e0014001701020001001701020001002800"
+    "0400000090401e0014001701020001000500020000002000040001000000",
   ],
   "LLD with heights given, v1": [
-    "62.5 "
-    "c0020630000002000100ffff00e00100001000000213bc02000000000103060000011f009c021e004a011701"
+    "60.0 "
+    "7c020630000002000100ffff00e001000010000002137802000000000103050000011f0058021e0028011701"
     "0200000020000400020000001e002600170102000000280004001f854f412800040048619742280004000000"
     "0000280004000000a0401e006400170102000000170102000100280004000000a040280004000000c8422800"
     "04000000004028000400cdcc4441280004000000f042280004000000a040280004001f855b40280004000000"
-    "00002800040000000000280004000000803f06000400000000001e002600170102000000280004009a998d41"
-    "280004000000a040280004000000004028000400000000001e00240017010200000020000400030000001701"
-    "02000000280004000000000020000400000000001e0024001701020001002800040000000000280004000000"
-    "00000401020000002800040000007a431e00140017010200010017010200010028000400000090401e001400"
-    "17010200010005000200000020000400010000001e004a0117010200000020000400010000001e0026001701"
-    "02000000280004001f854f4128000400486185422800040000000000280004000000a0401e00640017010200"
-    "0000170102000100280004000000c040280004000000c8422800040000000040280004009a99b94128000400"
-    "0000f042280004000000a040280004001f855b4028000400000000002800040000000000280004000000803f"
-    "06000400000000001e002600170102000000280004009a998d41280004000000a04028000400000000402800"
-    "0400000000001e00240017010200000020000400030000001701020000002800040000000000200004000000"
-    "00001e002400170102000100280004000000000028000400000000000401020000002800040000007a431e00"
-    "140017010200010017010200010028000400000090401e001400170102000100050002000000200004000100"
-    "0000",
+    "00002800040000000000280004000000803f06000400000000001e002c00170102000000280004009a998d41"
+    "2800040000007042170102000000280004000000004028000400000000001e00240017010200010028000400"
+    "0000000028000400000000000401020000002800040000007a431e0014001701020001001701020001002800"
+    "0400000090401e00140017010200010005000200000020000400010000001e00280117010200000020000400"
+    "010000001e002600170102000000280004001f854f4128000400486185422800040000000000280004000000"
+    "a0401e006400170102000000170102000100280004000000c040280004000000c84228000400000000402800"
+    "04009a99b941280004000000f042280004000000a040280004001f855b402800040000000000280004000000"
+    "0000280004000000803f06000400000000001e002c00170102000000280004009a998d412800040000007442"
+    "170102000000280004000000004028000400000000001e002400170102000100280004000000000028000400"
+    "000000000401020000002800040000007a431e00140017010200010017010200010028000400000090401e00"
+    "14001701020001000500020000002000040001000000",
   ],
   "lld_mode all OFF": [
     "60.0 "
@@ -4132,24 +4127,22 @@ _GOLDEN_DISPENSE_FRAMES: Dict[str, List[str]] = {
     "0400000090401e0014001701020001000500020000002000040001000000",
   ],
   "capacitive LLD, immersion": [
-    "62.094 "
-    "c8020630000002000100ffff00e00100001000000213c4020000000001032b0000011f00a4021e004e011701"
+    "60.0 "
+    "84020630000002000100ffff00e0010000100000021380020000000001032a0000011f0060021e002c011701"
     "0200000020000400020000001e002600170102000000280004001f854f412800040048619742280004000000"
     "0000280004000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333"
     "e742280004000000004028000400cdcc4441280004000000f042280004000000a040280004001f855b402800"
-    "0400000000002800040000000000280004000000803f06000400000000001e00260017010200000028000400"
-    "9a998d41280004000000a040280004000000803f28000400000000001e002400170102000000200004000300"
-    "0000170102000000280004000000000020000400000000001e00240017010200010028000400000000002800"
-    "0400000000000401020000002800040000007a431e0014001701020001001701020001002800040000009040"
-    "1e00140017010200010005000200000020000400010000001e004e0117010200000020000400010000001e00"
-    "2600170102000000280004001f854f4128000400486185422800040000000000280004000000a0401f000000"
-    "1e00640017010200000017010200010028000400c3f5e040280004003333e742280004000000004028000400"
-    "9a99b941280004000000f042280004000000a040280004001f855b4028000400000000002800040000000000"
-    "280004000000803f06000400000000001e002600170102000000280004009a998d41280004000000a0402800"
-    "04000000c03f28000400000000001e0024001701020000002000040003000000170102000000280004000000"
-    "000020000400000000001e002400170102000100280004000000000028000400000000000401020000002800"
-    "040000007a431e00140017010200010017010200010028000400000090401e00140017010200010005000200"
-    "00002000040001000000",
+    "0400000000002800040000000000280004000000803f06000400000000001e002c0017010200000028000400"
+    "9a998541280004009a999d41170102000000280004000000004028000400000000001e002400170102000100"
+    "280004000000000028000400000000000401020000002800040000007a431e00140017010200010017010200"
+    "010028000400000090401e00140017010200010005000200000020000400010000001e002c01170102000000"
+    "20000400010000001e002600170102000000280004001f854f41280004004861854228000400000000002800"
+    "04000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333e7422800"
+    "040000000040280004009a99b941280004000000f042280004000000a040280004001f855b40280004000000"
+    "00002800040000000000280004000000803f06000400000000001e002c00170102000000280004009a998141"
+    "280004009a999d41170102000000280004000000004028000400000000001e00240017010200010028000400"
+    "0000000028000400000000000401020000002800040000007a431e0014001701020001001701020001002800"
+    "0400000090401e0014001701020001000500020000002000040001000000",
   ],
   "pull-out distances": [
     "60.0 "
@@ -4380,24 +4373,6 @@ _GOLDEN_DISPENSE_FRAMES: Dict[str, List[str]] = {
     "0000000028000400000000000401020000002800040000007a431e0014001701020001001701020001002800"
     "0400000090401e0014001701020001000500020000002000040001000000",
   ],
-  "read_timeout without LLD": [
-    "60.0 "
-    "84020630000002000100ffff00e0010000100000021380020000000001032a0000011f0060021e002c011701"
-    "0200000020000400020000001e002600170102000000280004001f854f412800040048619742280004000000"
-    "0000280004000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333"
-    "e742280004000000004028000400cdcc4441280004000000f042280004000000a040280004001f855b402800"
-    "0400000000002800040000000000280004000000803f06000400000000001e002c0017010200000028000400"
-    "c3f5e040280004009a999d41170102000000280004000000004028000400000000001e002400170102000100"
-    "280004000000000028000400000000000401020000002800040000007a431e00140017010200010017010200"
-    "010028000400000090401e00140017010200010005000200000020000400010000001e002c01170102000000"
-    "20000400010000001e002600170102000000280004001f854f41280004004861854228000400000000002800"
-    "04000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333e7422800"
-    "040000000040280004009a99b941280004000000f042280004000000a040280004001f855b40280004000000"
-    "00002800040000000000280004000000803f06000400000000001e002c0017010200000028000400c3f5e040"
-    "280004009a999d41170102000000280004000000004028000400000000001e00240017010200010028000400"
-    "0000000028000400000000000401020000002800040000007a431e0014001701020001001701020001002800"
-    "0400000090401e0014001701020001000500020000002000040001000000",
-  ],
 }
 
 
@@ -4413,7 +4388,13 @@ def test_dispense_keywords_are_the_stars_in_its_order_and_the_preps_own_after():
   prep, star = _keywords(Pipettes.dispense), _keywords(STARPipettes.dispense)
   shared = [name for name in star if name in prep]
   assert prep[: len(shared)] == shared
-  for old in ("z_fluid", "z_bottom_search_offset", "auto_container_geometry"):
+  for old in (
+    "z_fluid",
+    "z_bottom_search_offset",
+    "auto_container_geometry",
+    "lld",
+    "read_timeout",
+  ):
     assert old not in prep
 
 
@@ -4544,10 +4525,6 @@ def test_dispense_refuses_before_booking_or_sending():
           {"piston_volumes": [5.0], "lld_mode": _CAPACITIVE},
           "finds the surface or the floor itself",
         ),
-        (
-          {"piston_volumes": [5.0], "lld": PrepCmd.LldParameters.default()},
-          "an LLD mode that searches",
-        ),
       ):
         with pytest.raises(ValueError, match=match):
           await p.pipettes.dispense([well], use_channels=[0], liquid_heights=[2.0], **kwargs)
@@ -4654,5 +4631,121 @@ def test_dispense_runs_ztouch_and_off_in_batches_of_their_own():
     heights = sorted(e.no_lld.z_fluid for c in pushes for e in c.dispense_parameters)
     assert heights == pytest.approx(sorted([bottoms[0] + 0.2, bottoms[1] + 3.0]))
     await p.stop()
+
+  _run(_t())
+
+
+@pytest.mark.parametrize("second_session", [False, True])
+def test_aspirate_on_capacitive_searches_each_channel_then_draws_at_the_surface_without_lld(
+  second_session,
+):
+  """Each channel's seek on its own link before the draw; the draw at the surface, no LLD; the
+  tracker takes the measured volume, with a warning when it is 20 % off."""
+
+  async def _t():
+    p, rack, plate, sent = _clld_setup(second_session, found=4.0)
+    set_volume_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+      wells = plate["A1:B1"]
+      wells[0].tracker.set_volume(120.0)
+      wells[1].tracker.set_volume(200.0)
+      sent.clear()
+      with patch.object(pipettes_logger, "warning") as warning:
+        await p.pipettes.aspirate(
+          wells, use_channels=[0, 1], piston_volumes=[10.0, 10.0], lld_mode=_CAPACITIVE
+        )
+      warned = [str(c.args) for c in warning.call_args_list if "measured" in str(c.args)]
+      assert len(warned) == 1 and "plate_well_B1" in warned[0]
+      seeks = [(link, c) for link, c in sent if isinstance(c, PrepCmd.PrepZAxisSeekCapacitiveLld)]
+      assert [link for link, _ in seeks] == (["main", "second"] if second_session else ["main"] * 2)
+      commands = [c for _, c in sent]
+      (draw,) = [c for c in commands if isinstance(c, _ASPIRATE_COMMANDS)]
+      assert isinstance(draw, PrepCmd.PrepAspirateNoLldMonitoringV2)
+      assert commands.index(draw) > commands.index(seeks[-1][1])
+      for entry, well in zip(draw.aspirate_parameters, wells):
+        bottom = well.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z
+        assert entry.no_lld.z_fluid == pytest.approx(bottom + 4.0)
+        assert well.tracker.get_used_volume() == pytest.approx(126.0 - 10.0)
+      await p.stop()
+    finally:
+      set_volume_tracking(False)
+
+  _run(_t())
+
+
+def test_capacitive_refuses_a_container_without_liquid_or_height_volume_functions():
+  """No liquid found: refused, nothing drawn or booked. No height-volume functions: refused before
+  any command."""
+
+  async def _t():
+    p, rack, plate, sent = _clld_setup(second_session=False, found=None)
+    set_volume_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      await p.pipettes.pick_up_tips(rack["A1"], use_channels=[0])
+      well = plate.get_item("A1")
+      well.tracker.set_volume(100.0)
+      sent.clear()
+      with pytest.raises(RuntimeError, match="channel 0 found no liquid in plate_well_A1"):
+        await p.pipettes.aspirate(
+          [well], use_channels=[0], piston_volumes=[10.0], lld_mode=_CAPACITIVE
+        )
+      assert not any(isinstance(c, _ASPIRATE_COMMANDS) for _, c in sent)
+      assert well.tracker.get_used_volume() == 100.0
+      dish = PetriDish(name="dish", diameter=77.0, height=30.0, material_z_thickness=2.0)
+      p.deck[6].assign_child_by_anchor(
+        dish, parent_anchor=("c", "c", "t"), child_anchor=("c", "c", "b")
+      )
+      sent.clear()
+      for call in (p.pipettes.aspirate, p.pipettes.dispense):
+        with pytest.raises(RuntimeError, match="no height-volume functions"):
+          await call([dish], use_channels=[0], piston_volumes=[1.0], lld_mode=_CAPACITIVE)
+      assert sent == []
+      await p.stop()
+    finally:
+      set_volume_tracking(False)
+
+  _run(_t())
+
+
+def test_dispense_on_capacitive_searches_then_dispenses_at_the_surface_without_lld():
+  """The dispense goes at the surface found, no LLD; too little room as measured refuses it."""
+
+  async def _t():
+    p, rack, plate, sent = _clld_setup(second_session=False, found=4.0)
+    set_volume_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      await p.pipettes.pick_up_tips(rack["A1"], use_channels=[0])
+      plate.get_item("H12").tracker.set_volume(100.0)
+      await p.pipettes.aspirate(
+        [plate.get_item("H12")], use_channels=[0], piston_volumes=[20.0], liquid_heights=[5.0]
+      )
+      well = plate.get_item("A1")
+      sent.clear()
+      await p.pipettes.dispense(
+        [well], use_channels=[0], piston_volumes=[5.0], lld_mode=_CAPACITIVE
+      )
+      (push,) = [c for _, c in sent if isinstance(c, _DISPENSE_COMMANDS)]
+      assert isinstance(push, PrepCmd.PrepDispenseNoLldV2)
+      bottom = well.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z
+      assert push.dispense_parameters[0].no_lld.z_fluid == pytest.approx(bottom + 4.0)
+      assert well.tracker.get_used_volume() == pytest.approx(126.0 + 5.0)
+      sent.clear()
+      well.tracker.set_volume(0.0)
+      with patch.object(well, "compute_volume_from_height", return_value=356.0):
+        with pytest.raises(RuntimeError, match="room for 4.0 uL as measured"):
+          await p.pipettes.dispense(
+            [well], use_channels=[0], piston_volumes=[5.0], lld_mode=_CAPACITIVE
+          )
+      assert not any(isinstance(c, _DISPENSE_COMMANDS) for _, c in sent)
+      await p.stop()
+    finally:
+      set_volume_tracking(False)
 
   _run(_t())
