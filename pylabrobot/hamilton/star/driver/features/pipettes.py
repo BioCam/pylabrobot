@@ -2532,7 +2532,7 @@ class Pipettes:
     post_detection_trajectory: Literal[0, 1] = 1,
     allow_without_tip: bool = False,
     post_detection_distance: float = 2.0,
-    move_channels_to_safe_pos_after: bool = False,
+    move_to_safe_z_position_after: bool = False,
   ) -> Optional[float]:
     """Lower a channel's tip until its cLLD triggers, and read the height it detected at.
 
@@ -2550,7 +2550,7 @@ class Pipettes:
       post_detection_trajectory: 0 moves down after detection, 1 up.
       allow_without_tip: whether to probe without a tip, on the stop disc. False requires one.
       post_detection_distance: how far it moves after detection, in mm.
-      move_channels_to_safe_pos_after: whether to raise every channel to Z safety afterwards,
+      move_to_safe_z_position_after: whether to raise every channel to Z safety afterwards,
         instead of resting where the search left it.
 
     Returns:
@@ -2594,7 +2594,7 @@ class Pipettes:
       if not self._found_nothing(error, self.channel_id(channel_idx)):
         raise
       return None
-    if move_channels_to_safe_pos_after:
+    if move_to_safe_z_position_after:
       await self.move_to_safe_z()
     return (await self.request_last_lld_z_positions())[channel_idx]
 
@@ -2886,7 +2886,7 @@ class Pipettes:
     pressure_mode: Optional["Pipettes.PressureLLDMode"] = None,
     allow_without_tip: bool = False,
     post_detection_distance: float = 2.0,
-    move_channels_to_safe_pos_after: bool = False,
+    move_to_safe_z_position_after: bool = False,
     **search: Any,
   ) -> Optional[List[float]]:
     """Lower a channel's tip until the pressure says it met the liquid, and read the height.
@@ -2901,7 +2901,7 @@ class Pipettes:
       pressure_mode: what the search stops at. The liquid when None.
       allow_without_tip: whether to probe without a tip, on the stop disc. False requires one.
       post_detection_distance: how far it moves after detection, in mm.
-      move_channels_to_safe_pos_after: whether to raise every channel to Z safety afterwards,
+      move_to_safe_z_position_after: whether to raise every channel to Z safety afterwards,
         instead of resting where the search left it.
       search: the rest of `_plld_search`'s settings, by name.
 
@@ -2943,7 +2943,7 @@ class Pipettes:
       if not self._found_nothing(error, self.channel_id(channel_idx)):
         raise
       return None
-    if move_channels_to_safe_pos_after:
+    if move_to_safe_z_position_after:
       await self.move_to_safe_z()
     return [round(stop_disc - overhang, 2) for stop_disc in detected]
 
@@ -3085,7 +3085,7 @@ class Pipettes:
     push_force_pwm: int = 0,
     allow_without_tip: bool = False,
     post_detection_distance: float = 2.0,
-    move_channels_to_safe_pos_after: bool = False,
+    move_to_safe_z_position_after: bool = False,
   ) -> Optional[float]:
     """Lower a channel's tip until it presses on something, and read the height.
 
@@ -3106,7 +3106,7 @@ class Pipettes:
       push_force_pwm: the push-down force once stopped, 0 to 125; 0 switches the drive off.
       allow_without_tip: whether to probe without a tip, on the stop disc. False requires one.
       post_detection_distance: how far the channel backs off afterwards, in mm; 0 stays.
-      move_channels_to_safe_pos_after: whether to raise every channel to Z safety afterwards,
+      move_to_safe_z_position_after: whether to raise every channel to Z safety afterwards,
         instead of resting where the search left it.
 
     Returns:
@@ -3156,7 +3156,7 @@ class Pipettes:
     await self._record_where_they_stopped("z")
     tip_bottom = round(stop_disc - overhang, 2)
     touched = None if tip_bottom - search_end_position <= self._ztouch_end_allowance else tip_bottom
-    if move_channels_to_safe_pos_after:
+    if move_to_safe_z_position_after:
       await self.move_to_safe_z()
     elif post_detection_distance:
       await self.move_stop_disc_to_z_position(

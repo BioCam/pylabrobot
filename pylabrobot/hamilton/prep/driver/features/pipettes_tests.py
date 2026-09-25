@@ -1056,7 +1056,7 @@ def test_probe_z_using_ztouch_seeks_the_tip_bottom_and_can_end_at_z_safety():
       search_end_position=70.0,  # above the spot below it, so the seek touches nothing
     )
     assert await probe() is None
-    assert await probe(tip_len=70.0, move_channels_to_safe_pos_after=True) is None
+    assert await probe(tip_len=70.0, move_to_safe_z_position_after=True) is None
     seeks = [c for c in sent if isinstance(c, PrepCmd.PrepZAxisSeekObstacle)]
     stop_disc_offset = drive - (here + 51.9)
     assert seeks[0].start_position == pytest.approx(100.0 + 51.9 + stop_disc_offset)

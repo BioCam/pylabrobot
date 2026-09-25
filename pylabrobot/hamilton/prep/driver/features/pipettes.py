@@ -3174,7 +3174,7 @@ class Pipettes:
     detect_mode: Optional[int] = None,
     allow_without_tip: bool = False,
     post_detection_distance: float = 2.0,
-    move_channels_to_safe_pos_after: bool = False,
+    move_to_safe_z_position_after: bool = False,
   ) -> Optional[float]:
     """Lower a channel where it stands until its cLLD triggers.
 
@@ -3191,7 +3191,7 @@ class Pipettes:
       post_detection_distance: how far above the liquid the tip rests afterwards, in mm. The seek
         leaves the tip where it stopped, about 0.1 mm past the surface, when this is 0. A seek
         that detects nothing raises the tip back to the start.
-      move_channels_to_safe_pos_after: whether to raise every channel to Z safety instead.
+      move_to_safe_z_position_after: whether to raise every channel to Z safety instead.
 
     Returns:
       Detected height in mm, rounded to 0.01 mm, or None.
@@ -3282,7 +3282,7 @@ class Pipettes:
       (r for r in results if int(r.channel) == int(self.channel_enum(channel_idx))), None
     )
     surface = None if result is None or not result.detected else round(float(result.position), 2)
-    if move_channels_to_safe_pos_after:
+    if move_to_safe_z_position_after:
       await self.move_to_safe_z()
     elif surface is None:
       await self.move_tool_bottom_to_z_position(channel_idx, search_start_position)
@@ -3937,7 +3937,7 @@ class Pipettes:
     tip_len: Optional[float] = None,
     allow_without_tip: bool = False,
     post_detection_distance: float = 2.0,
-    move_channels_to_safe_pos_after: bool = False,
+    move_to_safe_z_position_after: bool = False,
   ) -> Optional[float]:
     """Lower a channel where it stands until it meets resistance, with its Z axis's obstacle seek.
 
@@ -3965,7 +3965,7 @@ class Pipettes:
       allow_without_tip: whether to probe without a mounted tip. False requires one.
       post_detection_distance: how far above what it met the channel rests afterwards, in mm. The
         seek itself lands back at the start first, as the firmware returns it there.
-      move_channels_to_safe_pos_after: whether to raise every channel to Z safety instead.
+      move_to_safe_z_position_after: whether to raise every channel to Z safety instead.
 
     Returns:
       Height where the channel met the obstacle in mm, rounded to 0.01 mm, or None.
@@ -4061,7 +4061,7 @@ class Pipettes:
         )
       else:
         surface = round(met, 2)
-    if move_channels_to_safe_pos_after:
+    if move_to_safe_z_position_after:
       await self.move_to_safe_z()
     elif surface is not None and post_detection_distance:
       await self.move_tool_bottom_to_z_position(channel_idx, surface + post_detection_distance)
