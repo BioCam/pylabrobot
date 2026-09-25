@@ -1053,15 +1053,11 @@ class _ChannelContext(Generic[_OpT]):
   methods add their own parameters on top.
   """
 
-  n: int
-  hlcs: List[Optional[HamiltonLiquidClass]]
-  disable_volume_correction: List[bool]
   volumes: List[float]
   well_geometry: List[_WellGeometry]
   z_minimum: List[float]
   z_fluid: List[float]
   z_air: List[float]
-  z_final: List[float]
   z_bottom_search_offset: List[float]
   ch_segments: dict[int, list[PrepCmd.SegmentDescriptor]]
 
@@ -4973,18 +4969,6 @@ class Pipettes:
     return default_lld_params(effective_lld, p_lld, c_lld, lld_mode=lld_mode)
 
   @staticmethod
-  def _single_lld_mode(
-    lld_mode: Optional[Sequence[Pipettes.LLDMode]],
-  ) -> Optional[Pipettes.LLDMode]:
-    """The non-OFF mode from a per-channel list, or OFF / None when none apply."""
-    if lld_mode is None:
-      return None
-    for mode in lld_mode:
-      if mode != Pipettes.LLDMode.OFF:
-        return mode
-    return Pipettes.LLDMode.OFF
-
-  @staticmethod
   def _lld_for_well(
     effective_lld: bool, lld: Optional[PrepCmd.LldParameters], top_of_well_z: float
   ) -> PrepCmd.LldParameters:
@@ -4997,7 +4981,6 @@ class Pipettes:
     ops: Sequence[_OpT],
     use_channels: List[int],
     *,
-    z_final: Optional[List[float]] = None,
     z_fluid: Optional[List[float]] = None,
     z_air: Optional[List[float]] = None,
     z_minimum: Optional[List[float]] = None,
@@ -5005,7 +4988,6 @@ class Pipettes:
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
     auto_container_geometry: bool = False,
     hamilton_liquid_classes: Optional[Sequence[Optional[HamiltonLiquidClass]]] = None,
-    disable_volume_correction: Optional[List[bool]] = None,
   ) -> _ChannelContext[_OpT]:
     """Resolve shared per-channel state for aspirate or dispense.
 
@@ -5029,24 +5011,17 @@ class Pipettes:
       jet=False,
       blow_out=False,
     )
-    dvc = disable_volume_correction if disable_volume_correction is not None else [False] * n
-    if len(dvc) != n:
-      raise ValueError(f"disable_volume_correction length must match len(ops): {len(dvc)} != {n}")
     indexed_ops = {ch: op for ch, op in zip(use_channels, ops)}
 
-    volumes = corrected_volumes_for_ops(ops, hlcs, dvc)
+    volumes = corrected_volumes_for_ops(ops, hlcs)
 
     well_geometry = [
       _absolute_z_from_well(op.resource, self._require_deck(), op.liquid_height, op.offset.z)
       for op in ops
     ]
-    raw_traverse = self._resolve_traverse_height(None)
     z_minimum = fill_in_defaults(z_minimum, [g.well_bottom for g in well_geometry])
     z_fluid = fill_in_defaults(z_fluid, [g.liquid_surface for g in well_geometry])
     z_air = fill_in_defaults(z_air, [g.z_air for g in well_geometry])
-    z_final = fill_in_defaults(
-      z_final, [raw_traverse - (op.tip.get_size_z() - op.tip.fitting_depth) for op in ops]
-    )
     z_bottom_search_offset = fill_in_defaults(z_bottom_search_offset, [2.0] * n)
 
     ch_segments: dict[int, list[PrepCmd.SegmentDescriptor]] = {}
@@ -5065,15 +5040,11 @@ class Pipettes:
         ch_segments[ch] = []
 
     return _ChannelContext(
-      n=n,
-      hlcs=hlcs,
-      disable_volume_correction=dvc,
       volumes=volumes,
       well_geometry=well_geometry,
       z_minimum=z_minimum,
       z_fluid=z_fluid,
       z_air=z_air,
-      z_final=z_final,
       z_bottom_search_offset=z_bottom_search_offset,
       ch_segments=ch_segments,
     )
@@ -5312,6 +5283,7 @@ class Pipettes:
 
     Raises:
       ValueError: If the lists do not match or a channel is out of range.
+      RuntimeError: If `minimum_traverse_height_end` is None and a channel carries no tip.
     """
     n = len(use_channels)
     for name, length in (
@@ -5643,7 +5615,7 @@ class Pipettes:
         )
       )
 
-    if read_timeout is None and effective_lld and kits:
+    if read_timeout is None and effective_lld:
       read_timeout = lld_seek_timeout(
         kits[0].lld,
         min(minimum_allowed_z_position_during),
@@ -6513,12 +6485,6 @@ class Pipettes:
       blow_out_air_volume=blow_out_air_volumes,
     )
     n = len(ops)
-    self._resolve_effective_lld(
-      None if lld_mode is None else [lld_mode] * n,
-      lld,
-      n,
-      allowed_modes=frozenset({Pipettes.LLDMode.CAPACITIVE}),
-    )
     classes: List[Optional[HamiltonLiquidClass]] = [None] * n
     if by_liquid_class:
       classes = resolve_hamilton_liquid_classes(
@@ -6532,7 +6498,6 @@ class Pipettes:
           raise ValueError(
             f"no liquid class for {op.tip}; give hamilton_liquid_classes, or piston_volumes"
           )
-    version: Literal["v1", "v2"] = "v2" if self._resolve_command_version(command_version) else "v1"
     ctx = self._resolve_channel_context(
       ops,
       use_channels,
@@ -6600,7 +6565,7 @@ class Pipettes:
         container_segments=[ctx.ch_segments[ch] for ch in use_channels],
         lld=lld,
         read_timeout=read_timeout,
-        command_version=version,
+        command_version=command_version,
         check_only=check_only,
       )
 
