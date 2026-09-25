@@ -6416,113 +6416,63 @@ class Pipettes:
     await self._check_tips_and_raise(use_channels, minimum_traverse_height_start)
     await self._execute_batched(aspirate_batch, batches, minimum_traverse_height_during)
 
-  async def dispense(
+  async def _dispense_batch(
     self,
-    containers: Sequence[Container],
-    volumes: Optional[Sequence[float]] = None,
-    use_channels: Optional[List[int]] = None,
-    resource_offsets: Optional[List[Coordinate]] = None,
-    liquid_heights: Optional[Sequence[Optional[float]]] = None,
-    lld_mode: Optional[Pipettes.LLDMode] = None,
-    flow_rates: Optional[Sequence[Optional[float]]] = None,
+    x_position: float,
+    containers: List[Container],
+    pushed: List[float],
+    use_channels: List[int],
+    resource_offsets: List[Coordinate],
+    by_liquid_class: bool,
+    liquid_heights: Optional[List[Optional[float]]],
+    lld_mode: Optional[Pipettes.LLDMode],
+    flow_rates: Optional[List[Optional[float]]],
     *,
-    hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
-    piston_volumes: Optional[Sequence[float]] = None,
-    minimum_allowed_z_positions_during: Optional[List[float]] = None,
-    transport_air_volumes: Optional[List[float]] = None,
-    cut_off_speeds: Optional[List[float]] = None,
-    stop_back_volumes: Optional[List[float]] = None,
-    blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
-    settling_times: Optional[List[float]] = None,
-    swap_speeds: Optional[List[float]] = None,
-    minimum_traverse_height_end: Optional[float] = None,
-    clld_sensitivity: Optional[int] = None,
-    lld: Optional[PrepCmd.LldParameters] = None,
-    z_fluid: Optional[List[float]] = None,
-    z_bottom_search_offset: Optional[List[float]] = None,
-    z_air: Optional[List[float]] = None,
-    container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
-    auto_container_geometry: bool = False,
-    read_timeout: Optional[float] = None,
-    command_version: Optional[Literal["v1", "v2"]] = None,
-  ) -> None:
-    """Push liquid into each container from a channel's tip, every channel in one command.
+    hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]],
+    minimum_allowed_z_positions_during: Optional[List[float]],
+    transport_air_volumes: Optional[List[float]],
+    cut_off_speeds: Optional[List[float]],
+    stop_back_volumes: Optional[List[float]],
+    blow_out_air_volumes: Optional[List[Optional[float]]],
+    settling_times: Optional[List[float]],
+    swap_speeds: Optional[List[float]],
+    minimum_traverse_height_end: Optional[float],
+    clld_sensitivity: Optional[int],
+    lld: Optional[PrepCmd.LldParameters],
+    z_fluid: Optional[List[float]],
+    z_bottom_search_offset: Optional[List[float]],
+    z_air: Optional[List[float]],
+    container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]],
+    auto_container_geometry: bool,
+    read_timeout: Optional[float],
+    command_version: Optional[Literal["v1", "v2"]],
+    check_only: bool,
+  ) -> List[float]:
+    """Dispense one batch in one command, the channels already over it; book and settle volumes.
+
+    Every other argument is `dispense`'s, one entry per container of the batch where per container.
 
     Args:
-      containers: one per channel used.
-      volumes: how much liquid to put in each container, in uL, corrected by the liquid class.
-        One of this and `piston_volumes`.
-      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
-      resource_offsets: added to where each channel goes in its container, in mm. The z shifts
-        the heights. Channels sharing a container spread across it in Y when None.
-      liquid_heights: where the liquid stands above each cavity bottom, in mm. 0 when None.
-      lld_mode: how the liquid is found, one mode for every channel: OFF or CAPACITIVE. None runs
-        a search only when `lld` is given.
-      flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
-      hamilton_liquid_classes: the class for each container's volume. Looked up for the
-        channel's tip, water, when None.
-      piston_volumes: how much each piston pushes out, in uL, per container, as given, with no
-        liquid class. One of this and `volumes`.
-      minimum_allowed_z_positions_during: how low each tip bottom may go, in mm, per container.
-        The cavity bottom when None.
-      transport_air_volumes: the firmware's transport air volume, in uL, per container. The
-        liquid class's, else 0.0, when None.
-      cut_off_speeds: the firmware's cutoff speed, per container. The liquid class's stop flow
-        rate, else 100.0, when None.
-      stop_back_volumes: the firmware's stop-back volume, in uL, per container. The liquid
-        class's, else 0.0, when None.
-      blow_out_air_volumes: None or 0 per container: the dispense sends out all the tip holds.
-      settling_times: how long the tip waits in the liquid, in s, per container. The liquid
-        class's, else 0.0, when None.
-      swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid
-        class's, else 10.0, when None.
-      minimum_traverse_height_end: the tip bottom height every tip is left at, in mm. The
-        traverse height less each tip's overhang when None.
-      clld_sensitivity: capacitive LLD sensitivity for every channel. 3 when None.
-      lld: the LLD search's start, speed and submerge depth. From the container's top when None.
-      z_fluid: the tip bottom height to dispense at without LLD, in mm, per container. The cavity
-        bottom plus the liquid height when None.
-      z_bottom_search_offset: in mm, per container. 2.0 when None.
-      z_air: the tip bottom height where each slow exit ends, in mm. 2 mm over the container's
-        top when None.
-      container_segments: each container's cross-sections, sent as they are, per container.
-      auto_container_geometry: build the cross-sections from each container's profile when
-        `container_segments` is None.
-      read_timeout: how long to wait for the answer, in s. Long enough for the search when an
-        LLD search runs and this is None.
-      command_version: "v1" or "v2" dispense commands. What the firmware supports when None.
+      x_position: the batch's X, sent for every channel, in mm.
+      pushed: the volumes, or the piston volumes, per container, in uL.
+      resource_offsets: as `dispense` resolved them.
+      by_liquid_class: whether `pushed` are liquid volumes, corrected by a liquid class.
+      minimum_traverse_height_end: the tip bottom height every tip is left at, in mm.
+      check_only: refuse what would be refused; nothing is booked or sent.
 
-    Raises:
-      ValueError: If the lists do not match, a channel is out of range, the LLD mode is not OFF or
-        CAPACITIVE, both or neither of `volumes` and `piston_volumes` are given, a class is given
-        with `piston_volumes`, no class is known for a channel's tip, a flow rate is not above 0,
-        or a blow-out air volume is above 0.
-      RuntimeError: If a channel used carries no tip.
+    Returns:
+      The liquid volume each channel gives, in uL.
     """
-    containers = list(containers)
-    n = len(containers)
-    use_channels = use_channels if use_channels is not None else list(range(n))
-    pushed = volumes if volumes is not None else piston_volumes
-    if pushed is None or (volumes is not None and piston_volumes is not None):
-      raise ValueError("give one of volumes and piston_volumes")
-    if piston_volumes is not None and hamilton_liquid_classes is not None:
-      raise ValueError("piston_volumes are sent as given; no liquid class applies")
-    if blow_out_air_volumes is not None and any(v for v in blow_out_air_volumes):
-      raise ValueError(
-        "the dispense sends out all the tip holds; set blow-out air on aspirate, "
-        f"got blow_out_air_volumes={list(blow_out_air_volumes)}"
-      )
     ops = self._build_transfers(
       containers,
       pushed,
       use_channels,
-      offsets=resource_offsets
-      if resource_offsets is not None
-      else self._get_resource_offsets(containers, use_channels),
+      offsets=resource_offsets,
       liquid_height=liquid_heights,
       flow_rates=flow_rates,
       blow_out_air_volume=blow_out_air_volumes,
     )
+    n = len(ops)
     self._resolve_effective_lld(
       None if lld_mode is None else [lld_mode] * n,
       lld,
@@ -6530,7 +6480,7 @@ class Pipettes:
       allowed_modes=frozenset({Pipettes.LLDMode.CAPACITIVE}),
     )
     classes: List[Optional[HamiltonLiquidClass]] = [None] * n
-    if piston_volumes is None:
+    if by_liquid_class:
       classes = resolve_hamilton_liquid_classes(
         None if hamilton_liquid_classes is None else list(hamilton_liquid_classes),
         ops,
@@ -6575,8 +6525,8 @@ class Pipettes:
     deck = self._require_deck()
     locations = [
       Coordinate(
-        (loc := op.resource.get_location_wrt(deck, "c", "c", "cavity_bottom")).x + op.offset.x,
-        loc.y + op.offset.y,
+        x_position,
+        op.resource.get_location_wrt(deck, "c", "c", "cavity_bottom").y + op.offset.y,
         ctx.z_fluid[i],
       )
       for i, op in enumerate(ops)
@@ -6615,6 +6565,8 @@ class Pipettes:
       )
 
     await dispense_in_one_move(check_only=True)
+    if check_only:
+      return ctx.volumes
     volume_intents = [
       VolumeTransferIntent(
         channel=ch,
@@ -6638,6 +6590,252 @@ class Pipettes:
     finally:
       # What each channel put down is what the well now holds, and its tip no longer does
       finalize_volume_ops(volume_intents, dispensed)
+    return ctx.volumes
+
+  def _check_tips_hold_enough(
+    self, tips: Sequence[Tip], containers: Sequence[Container], volumes: Sequence[float]
+  ) -> None:
+    """Refuse more than a tip holds, or than a container has room for over all its jobs.
+
+    Args:
+      tips: the tip each job empties, per job.
+      containers: per job.
+      volumes: the liquid volume each job gives, in uL.
+
+    Raises:
+      TooLittleLiquidError: If a tip holds less than its job gives.
+      TooLittleVolumeError: If a container has less room than all its jobs give.
+    """
+    if not does_volume_tracking():
+      return
+    for tip, volume in zip(tips, volumes):
+      held = tip.tracker.get_used_volume()
+      if not tip.tracker.is_disabled and volume - held > 1e-6:
+        raise TooLittleLiquidError(f"a tip holding {held} uL asked to give {volume} uL")
+    asked: Dict[int, float] = {}
+    for container, volume in zip(containers, volumes):
+      asked[id(container)] = asked.get(id(container), 0.0) + volume
+    for container in {id(c): c for c in containers}.values():
+      room = container.tracker.get_free_volume()
+      if not container.tracker.is_disabled and asked[id(container)] - room > 1e-6:
+        raise TooLittleVolumeError(
+          f"{container.name} has room for {room} uL, {asked[id(container)]} uL asked to go in"
+        )
+
+  async def dispense(
+    self,
+    containers: Sequence[Container],
+    volumes: Optional[Sequence[float]] = None,
+    use_channels: Optional[List[int]] = None,
+    resource_offsets: Optional[List[Coordinate]] = None,
+    liquid_heights: Optional[Sequence[Optional[float]]] = None,
+    lld_mode: Union[Pipettes.LLDMode, Sequence[Pipettes.LLDMode], None] = None,
+    flow_rates: Optional[Sequence[Optional[float]]] = None,
+    *,
+    hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
+    piston_volumes: Optional[Sequence[float]] = None,
+    minimum_allowed_z_positions_during: Optional[List[float]] = None,
+    transport_air_volumes: Optional[List[float]] = None,
+    cut_off_speeds: Optional[List[float]] = None,
+    stop_back_volumes: Optional[List[float]] = None,
+    blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
+    settling_times: Optional[List[float]] = None,
+    swap_speeds: Optional[List[float]] = None,
+    minimum_traverse_height_start: Optional[float] = None,
+    minimum_traverse_height_during: Optional[float] = None,
+    minimum_traverse_height_end: Optional[float] = None,
+    x_grouping_tolerance: Optional[float] = None,
+    clld_sensitivity: Optional[int] = None,
+    lld: Optional[PrepCmd.LldParameters] = None,
+    z_fluid: Optional[List[float]] = None,
+    z_bottom_search_offset: Optional[List[float]] = None,
+    z_air: Optional[List[float]] = None,
+    container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
+    auto_container_geometry: bool = False,
+    read_timeout: Optional[float] = None,
+    command_version: Optional[Literal["v1", "v2"]] = None,
+  ) -> None:
+    """Push liquid into each container from a channel's tip, one command per batch.
+
+    Batched as `aspirate`: one channel per container, containers within `x_grouping_tolerance` of
+    one X share a batch, the channels go to each batch in ascending X, and its volumes are booked
+    when it dispenses. Every refusal the model can decide comes before the first move.
+
+    Args:
+      containers: one per channel used, at most as many as there are channels.
+      volumes: how much liquid to put in each container, in uL, corrected by the liquid class.
+        One of this and `piston_volumes`.
+      use_channels: which channels, 0-indexed from the back. The first len(containers) when None.
+      resource_offsets: added to where each channel goes in its container, in mm. The z shifts
+        the heights. Channels sharing a container spread across it in Y when None.
+      liquid_heights: where the liquid stands above each cavity bottom, in mm. 0 when None.
+      lld_mode: how the liquid is found, one for all or one per container: OFF or CAPACITIVE.
+        None runs a search only when `lld` is given.
+      flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
+      hamilton_liquid_classes: the class for each container's volume. Looked up for the
+        channel's tip, water, when None.
+      piston_volumes: how much each piston pushes out, in uL, per container, as given, with no
+        liquid class. One of this and `volumes`.
+      minimum_allowed_z_positions_during: how low each tip bottom may go, in mm, per container.
+        The cavity bottom when None.
+      transport_air_volumes: the firmware's transport air volume, in uL, per container. The
+        liquid class's, else 0.0, when None.
+      cut_off_speeds: the firmware's cutoff speed, per container. The liquid class's stop flow
+        rate, else 100.0, when None.
+      stop_back_volumes: the firmware's stop-back volume, in uL, per container. The liquid
+        class's, else 0.0, when None.
+      blow_out_air_volumes: None or 0 per container: the dispense sends out all the tip holds.
+      settling_times: how long the tip waits in the liquid, in s, per container. The liquid
+        class's, else 0.0, when None.
+      swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid
+        class's, else 10.0, when None.
+      minimum_traverse_height_start: the height every low channel's tip bottom is raised to before
+        the first batch, in mm. Z safety when None.
+      minimum_traverse_height_during: each tip bottom's height at the end of every batch but the
+        last, in mm. The traverse height less each tip's overhang when None, then Z safety.
+      minimum_traverse_height_end: the tip bottom height every tip is left at, in mm. The
+        traverse height less each tip's overhang when None.
+      x_grouping_tolerance: containers within this X distance share a batch, in mm.
+        `default_x_grouping_tolerance` when None.
+      clld_sensitivity: capacitive LLD sensitivity for every channel. 3 when None.
+      lld: the LLD search's start, speed and submerge depth. From the container's top when None.
+      z_fluid: the tip bottom height to dispense at without LLD, in mm, per container. The cavity
+        bottom plus the liquid height when None.
+      z_bottom_search_offset: in mm, per container. 2.0 when None.
+      z_air: the tip bottom height where each slow exit ends, in mm. 2 mm over the container's
+        top when None.
+      container_segments: each container's cross-sections, sent as they are, per container.
+      auto_container_geometry: build the cross-sections from each container's profile when
+        `container_segments` is None.
+      read_timeout: how long to wait for the answer, in s. Long enough for the search when an
+        LLD search runs and this is None.
+      command_version: "v1" or "v2" dispense commands. What the firmware supports when None.
+
+    Raises:
+      ValueError: If an argument is out of range, the lists do not match, a channel repeats, there
+        are more containers than channels, the LLD mode is not OFF or CAPACITIVE, both or neither
+        of `volumes` and `piston_volumes` are given, a class is given with `piston_volumes`, no
+        class is known for a channel's tip, a flow rate is not above 0, or a blow-out air volume
+        is above 0.
+      RuntimeError: If a channel used carries no tip.
+      TooLittleLiquidError: If a tip holds less than it is to give.
+      TooLittleVolumeError: If a container has less room than it is to take.
+    """
+    containers = list(containers)
+    n = len(containers)
+    use_channels = use_channels if use_channels is not None else list(range(n))
+    pushed = volumes if volumes is not None else piston_volumes
+    if pushed is None or (volumes is not None and piston_volumes is not None):
+      raise ValueError("give one of volumes and piston_volumes")
+    if piston_volumes is not None and hamilton_liquid_classes is not None:
+      raise ValueError("piston_volumes are sent as given; no liquid class applies")
+    if blow_out_air_volumes is not None and any(v for v in blow_out_air_volumes):
+      raise ValueError(
+        "the dispense sends out all the tip holds; set blow-out air on aspirate, "
+        f"got blow_out_air_volumes={list(blow_out_air_volumes)}"
+      )
+    if not containers:
+      raise ValueError("no containers to dispense into")
+    if n > self.num_channels:
+      raise ValueError(f"{n} containers for {self.num_channels} channels, one channel each")
+    if len(use_channels) != n or len(set(use_channels)) != n:
+      raise ValueError(f"use_channels must name one distinct channel per container: {use_channels}")
+    per_container: Dict[str, Optional[Sequence[Any]]] = {
+      "volumes" if volumes is not None else "piston_volumes": pushed,
+      "resource_offsets": resource_offsets,
+      "liquid_heights": liquid_heights,
+      "flow_rates": flow_rates,
+      "hamilton_liquid_classes": hamilton_liquid_classes,
+      "minimum_allowed_z_positions_during": minimum_allowed_z_positions_during,
+      "transport_air_volumes": transport_air_volumes,
+      "cut_off_speeds": cut_off_speeds,
+      "stop_back_volumes": stop_back_volumes,
+      "blow_out_air_volumes": blow_out_air_volumes,
+      "settling_times": settling_times,
+      "swap_speeds": swap_speeds,
+      "z_fluid": z_fluid,
+      "z_bottom_search_offset": z_bottom_search_offset,
+      "z_air": z_air,
+      "container_segments": container_segments,
+    }
+    for name, values in per_container.items():
+      if values is not None and len(values) != n:
+        raise ValueError(f"{name} length must match containers ({n})")
+    modes = self._get_lld_modes(lld_mode, n)
+    offsets = (
+      resource_offsets
+      if resource_offsets is not None
+      else self._get_resource_offsets(containers, use_channels)
+    )
+    deck = self._require_deck()
+    # One command carries one LLD category, so each mode is planned on its own.
+    groups = (
+      [list(range(n))]
+      if modes is None
+      else [[job for job in range(n) if modes[job] == mode] for mode in dict.fromkeys(modes)]
+    )
+    batches: List[ChannelBatch] = []
+    for group in groups:
+      _, planned = self._plan_batched(
+        deck,
+        [containers[job] for job in group],
+        [use_channels[job] for job in group],
+        [offsets[job] for job in group],
+        x_grouping_tolerance,
+        minimum_traverse_height_end,
+      )
+      batches.extend(replace(b, indices=[group[job] for job in b.indices]) for b in planned)
+    batches.sort(key=lambda b: b.x_position)
+
+    def pick(values: Optional[Sequence[_T]], batch: ChannelBatch) -> Optional[List[_T]]:
+      """The batch's entries of a per-container list, None when it is None."""
+      return None if values is None else [values[job] for job in batch.indices]
+
+    async def dispense_batch(batch: ChannelBatch, check_only: bool = False) -> List[float]:
+      """Dispense the batch's containers in one command; the last leaves the tips at the end."""
+      last = batch is batches[-1]
+      batch_modes = pick(modes, batch)
+      return await self._dispense_batch(
+        batch.x_position,
+        [containers[job] for job in batch.indices],
+        [pushed[job] for job in batch.indices],
+        batch.channels,
+        [offsets[job] for job in batch.indices],
+        piston_volumes is None,
+        pick(liquid_heights, batch),
+        None if batch_modes is None else batch_modes[0],
+        pick(flow_rates, batch),
+        hamilton_liquid_classes=pick(hamilton_liquid_classes, batch),
+        minimum_allowed_z_positions_during=pick(minimum_allowed_z_positions_during, batch),
+        transport_air_volumes=pick(transport_air_volumes, batch),
+        cut_off_speeds=pick(cut_off_speeds, batch),
+        stop_back_volumes=pick(stop_back_volumes, batch),
+        blow_out_air_volumes=pick(blow_out_air_volumes, batch),
+        settling_times=pick(settling_times, batch),
+        swap_speeds=pick(swap_speeds, batch),
+        minimum_traverse_height_end=(
+          minimum_traverse_height_end if last else minimum_traverse_height_during
+        ),
+        clld_sensitivity=clld_sensitivity,
+        lld=lld,
+        z_fluid=pick(z_fluid, batch),
+        z_bottom_search_offset=pick(z_bottom_search_offset, batch),
+        z_air=pick(z_air, batch),
+        container_segments=pick(container_segments, batch),
+        auto_container_geometry=auto_container_geometry,
+        read_timeout=read_timeout,
+        command_version=command_version,
+        check_only=check_only,
+      )
+
+    # Every refusal the model can decide comes before the first command.
+    given = [0.0] * n
+    for batch in batches:
+      for job, volume in zip(batch.indices, await dispense_batch(batch, check_only=True)):
+        given[job] = volume
+    self._check_tips_hold_enough(self._require_mounted_tips(use_channels), containers, given)
+    await self._check_tips_and_raise(use_channels, minimum_traverse_height_start)
+    await self._execute_batched(dispense_batch, batches, minimum_traverse_height_during)
 
   # ----------------------------------------
   # Auto-calibration (only for experienced users)

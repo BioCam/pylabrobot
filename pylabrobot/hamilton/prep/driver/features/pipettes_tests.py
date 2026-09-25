@@ -4008,22 +4008,26 @@ _GOLDEN_DISPENSE_FRAMES: Dict[str, List[str]] = {
     "0400000090401e0014001701020001000500020000002000040001000000",
   ],
   "heights, offsets, flow rates, blow-out air": [
+    # Two X, 0.5 mm apart: a batch each, lower X first; each entry is the bytes it had when the
+    # two went in one command.
     "60.0 "
-    "84020630000002000100ffff00e0010000100000021380020000000001032a0000011f0060021e002c011701"
+    "54010630000002000100ffff00e0010000100000021350010000000001032a0000011f0030011e002c011701"
+    "0200000020000400010000001e002600170102000000280004001f854f412800040048618542280004000000"
+    "0000280004000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333"
+    "e7422800040000000040280004009a99b941280004000000f042280004000000a040280004001f855b402800"
+    "0400000000002800040000000000280004000000803f06000400000000001e002c0017010200000028000400"
+    "c3f5e040280004009a999d41170102000000280004000000004028000400000000001e002400170102000100"
+    "280004000000000028000400000000000401020000002800040000007a431e00140017010200010017010200"
+    "010028000400000090401e0014001701020001000500020000002000040001000000",
+    "60.0 "
+    "54010630000002000100ffff00e0010000100000021350010000000001032a0000011f0030011e002c011701"
     "0200000020000400020000001e002600170102000000280004001f8557412800040048619642280004000000"
     "0000280004000000a0401f0000001e00640017010200000017010200010028000400e17a0041280004003333"
     "e742280004000000004028000400cdcc44412800040000004842280004000000a040280004001f855b402800"
     "0400000000002800040000000000280004000000803f06000400000000001e002c0017010200000028000400"
     "e17a3041280004009a999d41170102000000280004000000004028000400000000001e002400170102000100"
     "280004000000000028000400000000000401020000002800040000007a431e00140017010200010017010200"
-    "010028000400000090401e00140017010200010005000200000020000400010000001e002c01170102000000"
-    "20000400010000001e002600170102000000280004001f854f41280004004861854228000400000000002800"
-    "04000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333e7422800"
-    "040000000040280004009a99b941280004000000f042280004000000a040280004001f855b40280004000000"
-    "00002800040000000000280004000000803f06000400000000001e002c0017010200000028000400c3f5e040"
-    "280004009a999d41170102000000280004000000004028000400000000001e00240017010200010028000400"
-    "0000000028000400000000000401020000002800040000007a431e0014001701020001001701020001002800"
-    "0400000090401e0014001701020001000500020000002000040001000000",
+    "010028000400000090401e0014001701020001000500020000002000040001000000",
   ],
   "heights finer than the location keeps": [
     "60.0 "
@@ -4282,6 +4286,89 @@ def test_dispense_sends_the_golden_frames():
     assert asyncio.run(_capture_dispense(name)) == frames, name
 
 
+def test_dispense_keywords_are_the_stars_in_its_order_and_the_preps_own_after():
+  """Every keyword the STAR's dispense also has comes first, in the STAR's order."""
+  prep, star = _keywords(Pipettes.dispense), _keywords(STARPipettes.dispense)
+  shared = [name for name in star if name in prep]
+  assert prep[: len(shared)] == shared
+
+
+def test_dispense_of_one_batch_senses_the_tips_and_moves_over_it_before_its_command():
+  """One X: the tips sensed, Z safety, one move over the batch at its X speed, then the command."""
+
+  async def _t():
+    deck = PrepDeck()
+    rack = deck[1] = hamilton_96_tiprack_300uL_NTR(name="tips", with_tips=True)
+    plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+    p = PrepSimulationDriver(deck=deck)
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+    sent = _record(p, names=True)
+    await p.pipettes.dispense(
+      plate["A1:B1"], piston_volumes=[10.0, 10.0], use_channels=[0, 1], liquid_heights=[3.0] * 2
+    )
+    assert sent == [
+      "PrepProbeRequest",
+      "PrepProbeRequest",
+      "PrepMoveZUpToSafe",
+      "PrepGetPositions",
+      "PrepGetPositions",
+      "PrepGetXSpeedScale",
+      "PrepSetXSpeedScale",
+      "PrepMoveToPosition",
+      "PrepSetXSpeedScale",
+      "PrepGetPositions",
+      "PrepDispenseNoLldV2",
+    ]
+    await p.stop()
+
+  _run(_t())
+
+
+def test_dispense_runs_one_command_per_x_and_books_each_batch_on_its_own():
+  """Two X: a move before one command per X, each leaving the tips where told; each booked."""
+
+  async def _t():
+    set_volume_tracking(True)
+    try:
+      deck = PrepDeck()
+      rack = deck[1] = hamilton_96_tiprack_300uL_NTR(name="tips", with_tips=True)
+      plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+      p = PrepSimulationDriver(deck=deck)
+      await p.setup()
+      assert p.pipettes is not None
+      await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+      tips = [p.pipettes.get_mounted_tip(ch) for ch in (0, 1)]
+      for tip in tips:
+        assert tip is not None
+        tip.tracker.set_volume(50.0)
+      rear, front = plate.get_item("A1"), plate.get_item("B2")
+      sent = _record(p)
+      await p.pipettes.dispense(
+        [rear, front],
+        use_channels=[0, 1],
+        piston_volumes=[10.0, 20.0],
+        liquid_heights=[3.0, 3.0],
+        minimum_traverse_height_during=100.0,
+        minimum_traverse_height_end=110.0,
+      )
+      first, second = [i for i, c in enumerate(sent) if isinstance(c, _DISPENSE_COMMANDS)]
+      for index, well, z_final in ((first, rear, 100.0), (second, front, 110.0)):
+        (entry,) = sent[index].dispense_parameters
+        x = well.get_location_wrt(deck, "c", "c", "cavity_bottom").x
+        assert entry.dispense.x_position == pytest.approx(x)
+        assert entry.common.z_final == z_final
+      moves = [i for i, c in enumerate(sent) if isinstance(c, PrepCmd.PrepMoveToPosition)]
+      assert len(moves) == 2 and moves[0] < first < moves[1] < second
+      assert (rear.tracker.volume, front.tracker.volume) == (10.0, 20.0)
+      assert [t.tracker.get_used_volume() for t in tips if t is not None] == [40.0, 30.0]
+    finally:
+      set_volume_tracking(False)
+
+  _run(_t())
+
+
 def test_dispense_refuses_before_booking_or_sending():
   """No class for volumes, a flow rate of 0 and blow-out air are refused; nothing moves."""
 
@@ -4301,10 +4388,16 @@ def test_dispense_refuses_before_booking_or_sending():
         ({"volumes": [5.0]}, "no liquid class for"),
         ({"piston_volumes": [5.0], "flow_rates": [0.0]}, "flow_rates must be above 0"),
         ({"piston_volumes": [5.0], "blow_out_air_volumes": [1.0]}, "blow-out air on aspirate"),
+        ({"piston_volumes": [5.0], "swap_speeds": [1.0, 1.0]}, "swap_speeds length"),
+        ({"piston_volumes": [5.0], "minimum_traverse_height_end": 500.0}, "outside channel"),
       ):
         with pytest.raises(ValueError, match=match):
           await p.pipettes.dispense([well], use_channels=[0], liquid_heights=[2.0], **kwargs)
-      assert not any(isinstance(c, _DISPENSE_COMMANDS) for c in sent)
+      with pytest.raises(TooLittleLiquidError, match="a tip holding 0 uL asked to give 5.0"):
+        await p.pipettes.dispense(
+          [well], use_channels=[0], liquid_heights=[2.0], piston_volumes=[5.0]
+        )
+      assert sent == []
       assert well.tracker.get_used_volume() == 0.0
       await p.stop()
     finally:
