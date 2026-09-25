@@ -313,29 +313,34 @@ def lld_seek_timeout(
 
 
 def get_mix_parameters(
-  mix: Optional[Sequence[Optional[Mix]]],
+  pre_mixes: Optional[Sequence[Optional[Mix]]],
   n: int,
-  mix_position_from_liquid_surface: float,
+  mix_positions_from_liquid_surface: Optional[Sequence[float]] = None,
 ) -> List[PrepCmd.MixParameters]:
   """One mix block per container; the default, which mixes nothing, where there is no `Mix`.
 
   Args:
-    mix: a `Mix` per container, None for none.
+    pre_mixes: a `Mix` per container, None for none.
     n: how many containers.
-    mix_position_from_liquid_surface: mixing depth under the aspirate height, in mm.
+    mix_positions_from_liquid_surface: mixing depth under the aspirate height, in mm, per
+      container. 0.0 when None.
 
   Returns:
     One mix block per container, in the containers' order.
 
   Raises:
-    ValueError: If `mix` and the containers differ in number, or a `Mix` repeats fewer than 1 or
+    ValueError: If a list and the containers differ in number, or a `Mix` repeats fewer than 1 or
       more than 255 times.
   """
-  mixes = list(mix) if mix is not None else [None] * n
+  mixes = list(pre_mixes) if pre_mixes is not None else [None] * n
   if len(mixes) != n:
-    raise ValueError(f"mix length must match containers ({n})")
+    raise ValueError(f"pre_mixes length must match containers ({n})")
+  depths = fill_in_defaults(
+    None if mix_positions_from_liquid_surface is None else list(mix_positions_from_liquid_surface),
+    [0.0] * n,
+  )
   blocks: List[PrepCmd.MixParameters] = []
-  for m in mixes:
+  for m, depth in zip(mixes, depths):
     if m is None:
       blocks.append(PrepCmd.MixParameters.default())
       continue
@@ -344,7 +349,7 @@ def get_mix_parameters(
     blocks.append(
       PrepCmd.MixParameters(
         default_values=False,
-        z_offset=mix_position_from_liquid_surface,
+        z_offset=depth,
         volume=m.volume,
         cycles=m.repetitions,
         speed=m.flow_rate,
@@ -5102,7 +5107,7 @@ class Pipettes:
     blow_out_air_volumes: Optional[List[float]] = None,
     pre_wetting_volumes: Optional[List[float]] = None,
     pre_mixes: Optional[Sequence[Optional[Mix]]] = None,
-    mix_position_from_liquid_surface: float = 0.0,
+    mix_positions_from_liquid_surface: Optional[List[float]] = None,
     flow_rates: Optional[List[float]] = None,
     settling_times: Optional[List[float]] = None,
     swap_speeds: Optional[List[float]] = None,
@@ -5140,7 +5145,7 @@ class Pipettes:
       blow_out_air_volumes: air drawn before the liquid. 0.0 when None.
       pre_wetting_volumes: drawn and returned first. 0.0 when None.
       pre_mixes: a `Mix` per channel, mixed before the draw, None for no mixing.
-      mix_position_from_liquid_surface: mixing depth under the aspirate height.
+      mix_positions_from_liquid_surface: mixing depth under the aspirate height. 0.0 when None.
       flow_rates: 100.0 when None.
       settling_times: wait in the liquid. 1.0 when None.
       swap_speeds: speed of leaving the liquid. 10.0 when None.
@@ -5204,7 +5209,7 @@ class Pipettes:
       traverse = self._resolve_traverse_height(None)
       tips = self._require_mounted_tips(use_channels)
       z_finals = [traverse - (tip.get_size_z() - tip.fitting_depth) for tip in tips]
-    mix_blocks = get_mix_parameters(pre_mixes, n, mix_position_from_liquid_surface)
+    mix_blocks = get_mix_parameters(pre_mixes, n, mix_positions_from_liquid_surface)
 
     kits: list[_AspirateChannelKit] = []
     for i in sorted(range(n), key=lambda j: use_channels[j]):
@@ -5642,10 +5647,10 @@ class Pipettes:
     p_lld: Optional[PrepCmd.PLldParameters],
     clot_detection_heights: Optional[List[float]],
     z_fluid: Optional[List[float]],
-    minimum_allowed_z_position_during: Optional[List[float]],
+    minimum_allowed_z_positions_during: Optional[List[float]],
     z_bottom_search_offset: Optional[List[float]],
-    mix: Optional[List[Optional[Mix]]],
-    mix_position_from_liquid_surface: float,
+    pre_mixes: Optional[List[Optional[Mix]]],
+    mix_positions_from_liquid_surface: Optional[List[float]],
     settling_times: Optional[List[float]],
     swap_speeds: Optional[List[float]],
     transport_air_volumes: Optional[List[float]],
@@ -5702,7 +5707,7 @@ class Pipettes:
       use_channels,
       z_fluid=z_fluid,
       z_air=z_air,
-      z_minimum=minimum_allowed_z_position_during,
+      z_minimum=minimum_allowed_z_positions_during,
       z_bottom_search_offset=z_bottom_search_offset,
       container_segments=container_segments,
       hamilton_liquid_classes=classes,
@@ -5772,8 +5777,8 @@ class Pipettes:
           pre_wetting_volumes,
           [hlc.aspiration_over_aspirate_volume if hlc is not None else 0.0 for hlc in classes],
         ),
-        pre_mixes=mix,
-        mix_position_from_liquid_surface=mix_position_from_liquid_surface,
+        pre_mixes=pre_mixes,
+        mix_positions_from_liquid_surface=mix_positions_from_liquid_surface,
         flow_rates=[
           op.flow_rate
           if op.flow_rate is not None
@@ -5886,33 +5891,33 @@ class Pipettes:
     *,
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
     piston_volumes: Optional[Sequence[float]] = None,
-    clld_sensitivity: Optional[int] = None,
-    immersion_depths: Optional[Sequence[float]] = None,
     blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
+    immersion_depths: Optional[Sequence[float]] = None,
+    minimum_allowed_z_positions_during: Optional[List[float]] = None,
     pre_wetting_volumes: Optional[List[float]] = None,
-    lld: Optional[PrepCmd.LldParameters] = None,
-    p_lld: Optional[PrepCmd.PLldParameters] = None,
-    clot_detection_heights: Optional[Sequence[float]] = None,
-    z_fluid: Optional[List[float]] = None,
-    minimum_allowed_z_position_during: Optional[List[float]] = None,
-    z_bottom_search_offset: Optional[List[float]] = None,
-    mix: Optional[Sequence[Optional[Mix]]] = None,
-    mix_position_from_liquid_surface: float = 0.0,
+    pre_mixes: Optional[Sequence[Optional[Mix]]] = None,
+    mix_positions_from_liquid_surface: Optional[Sequence[float]] = None,
+    surface_following_distances: Optional[Sequence[float]] = None,
     settling_times: Optional[List[float]] = None,
     swap_speeds: Optional[List[float]] = None,
+    clot_detection_heights: Optional[Sequence[float]] = None,
     transport_air_volumes: Optional[List[float]] = None,
-    z_air: Optional[List[float]] = None,
-    minimum_traverse_height_end: Optional[float] = None,
-    tadm: Optional[PrepCmd.TadmParameters] = None,
     limit_curve_indices: Optional[Sequence[int]] = None,
-    tadm_storage_level: Optional[Literal["errors_only", "all"]] = None,
-    container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
-    surface_following_distances: Optional[Sequence[float]] = None,
-    read_timeout: Optional[float] = None,
-    command_version: Optional[Literal["v1", "v2"]] = None,
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_during: Optional[float] = None,
+    minimum_traverse_height_end: Optional[float] = None,
     x_grouping_tolerance: Optional[float] = None,
+    clld_sensitivity: Optional[int] = None,
+    lld: Optional[PrepCmd.LldParameters] = None,
+    p_lld: Optional[PrepCmd.PLldParameters] = None,
+    z_fluid: Optional[List[float]] = None,
+    z_bottom_search_offset: Optional[List[float]] = None,
+    z_air: Optional[List[float]] = None,
+    tadm: Optional[PrepCmd.TadmParameters] = None,
+    tadm_storage_level: Optional[Literal["errors_only", "all"]] = None,
+    container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
+    read_timeout: Optional[float] = None,
+    command_version: Optional[Literal["v1", "v2"]] = None,
   ) -> None:
     """Draw liquid from each container with a channel's tip, one command per batch.
 
@@ -5935,54 +5940,55 @@ class Pipettes:
         channel's tip, water, when None.
       piston_volumes: how much each piston draws, in uL, per container, as given, with no liquid
         class. One of this and `volumes`.
-      clld_sensitivity: capacitive LLD sensitivity for every channel. 3 when None.
-      immersion_depths: how far under the surface each tip aspirates, in mm, per container.
-        With LLD the search's `z_submerge`, 2.0 when None; without, off `z_fluid`, 0.0 when None.
       blow_out_air_volumes: air drawn before the liquid, in uL, per container. The liquid
         class's, else 0.0, when None.
+      immersion_depths: how far under the surface each tip aspirates, in mm, per container.
+        With LLD the search's `z_submerge`, 2.0 when None; without, off `z_fluid`, 0.0 when None.
+      minimum_allowed_z_positions_during: how low each tip bottom may go, in mm, per container.
+        The cavity bottom when None.
       pre_wetting_volumes: drawn and returned first, in uL, per container. The liquid class's
         over-aspirate volume, else 0.0, when None.
-      lld: the LLD search's start, speed and submerge depth. From the container's top when None.
-      p_lld: pressure LLD settings, seeking at 1 to 630 uL/s; needed for PRESSURE and DUAL. The
-        firmware's own when None.
-      clot_detection_heights: how far a clot may hold each tip back, in mm, per container. 0.0 when
-        None; only 0.0 until the check is verified on the device.
-      z_fluid: the tip bottom height to aspirate at without LLD, in mm, per container. The cavity
-        bottom plus the liquid height when None.
-      minimum_allowed_z_position_during: how low each tip bottom may go, in mm, per container.
-        The cavity bottom when None.
-      z_bottom_search_offset: in mm, per container. 2.0 when None.
-      mix: a `Mix` per container, mixed before aspirating; None for none. Its
+      pre_mixes: a `Mix` per container, mixed before the draw, None for no mixing. Its
         `surface_following_distance` is not sent.
-      mix_position_from_liquid_surface: mixing depth under the aspirate height, in mm.
+      mix_positions_from_liquid_surface: mixing depth under the aspirate height, in mm, per
+        container. 0.0 when None.
+      surface_following_distances: how far each tip follows the sinking surface, in mm, per
+        container: its profile scaled to that. None follows the profile as it is; 0 does not follow.
       settling_times: how long the tip waits in the liquid, in s, per container. The liquid
         class's, else 1.0, when None.
       swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid
         class's, else 10.0, when None.
+      clot_detection_heights: how far a clot may hold each tip back, in mm, per container. 0.0 when
+        None; only 0.0 until the check is verified on the device.
       transport_air_volumes: air drawn after the liquid, in uL, per container. The liquid
         class's, else 0.0, when None.
-      z_air: the tip bottom height above each container the tip leaves from, in mm. 2 mm over
-        the container's top when None.
-      minimum_traverse_height_end: the tip bottom height every tip is left at, in mm. The
-        traverse height less each tip's overhang when None.
-      tadm: TADM settings; given, the aspiration is monitored.
       limit_curve_indices: TADM limit curve, 0 for none, per container. Only 0 until TADM is
         verified on the device.
-      tadm_storage_level: which TADM curves the channel keeps. None records none; only None until
-        TADM is verified on the device.
-      container_segments: each container's cross-sections, sent as they are, per container. None
-        builds them from each container's profile.
-      surface_following_distances: how far each tip follows the sinking surface, in mm, per
-        container: its profile scaled to that. None follows the profile as it is; 0 does not follow.
-      read_timeout: how long to wait for the answer, in s. Long enough for the search when an
-        LLD search runs and this is None.
-      command_version: "v1" or "v2" aspirate commands. What the firmware supports when None.
       minimum_traverse_height_start: the height every low channel's tip bottom is raised to before
         the first batch, in mm. Z safety when None.
       minimum_traverse_height_during: each tip bottom's height at the end of every batch but the
         last, in mm. The traverse height less each tip's overhang when None, then Z safety.
+      minimum_traverse_height_end: the tip bottom height every tip is left at, in mm. The
+        traverse height less each tip's overhang when None.
       x_grouping_tolerance: containers within this X distance share a batch, in mm.
         `default_x_grouping_tolerance` when None.
+      clld_sensitivity: capacitive LLD sensitivity for every channel. 3 when None.
+      lld: the LLD search's start, speed and submerge depth. From the container's top when None.
+      p_lld: pressure LLD settings, seeking at 1 to 630 uL/s; needed for PRESSURE and DUAL. The
+        firmware's own when None.
+      z_fluid: the tip bottom height to aspirate at without LLD, in mm, per container. The cavity
+        bottom plus the liquid height when None.
+      z_bottom_search_offset: in mm, per container. 2.0 when None.
+      z_air: the tip bottom height above each container the tip leaves from, in mm. 2 mm over
+        the container's top when None.
+      tadm: TADM settings; given, the aspiration is monitored.
+      tadm_storage_level: which TADM curves the channel keeps. None records none; only None until
+        TADM is verified on the device.
+      container_segments: each container's cross-sections, sent as they are, per container. None
+        builds them from each container's profile.
+      read_timeout: how long to wait for the answer, in s. Long enough for the search when an
+        LLD search runs and this is None.
+      command_version: "v1" or "v2" aspirate commands. What the firmware supports when None.
 
     Raises:
       ValueError: If an argument is out of range, the lists do not match, a channel repeats, there
@@ -6020,9 +6026,10 @@ class Pipettes:
       "clot_detection_heights": clot_detection_heights,
       "limit_curve_indices": limit_curve_indices,
       "z_fluid": z_fluid,
-      "minimum_allowed_z_position_during": minimum_allowed_z_position_during,
+      "minimum_allowed_z_positions_during": minimum_allowed_z_positions_during,
       "z_bottom_search_offset": z_bottom_search_offset,
-      "mix": mix,
+      "pre_mixes": pre_mixes,
+      "mix_positions_from_liquid_surface": mix_positions_from_liquid_surface,
       "settling_times": settling_times,
       "swap_speeds": swap_speeds,
       "transport_air_volumes": transport_air_volumes,
@@ -6090,10 +6097,10 @@ class Pipettes:
         p_lld=p_lld,
         clot_detection_heights=pick(clot_detection_heights, batch),
         z_fluid=pick(z_fluid, batch),
-        minimum_allowed_z_position_during=pick(minimum_allowed_z_position_during, batch),
+        minimum_allowed_z_positions_during=pick(minimum_allowed_z_positions_during, batch),
         z_bottom_search_offset=pick(z_bottom_search_offset, batch),
-        mix=pick(mix, batch),
-        mix_position_from_liquid_surface=mix_position_from_liquid_surface,
+        pre_mixes=pick(pre_mixes, batch),
+        mix_positions_from_liquid_surface=pick(mix_positions_from_liquid_surface, batch),
         settling_times=pick(settling_times, batch),
         swap_speeds=pick(swap_speeds, batch),
         transport_air_volumes=pick(transport_air_volumes, batch),

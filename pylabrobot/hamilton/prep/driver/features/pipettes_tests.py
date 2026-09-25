@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import hashlib
+import inspect
 from typing import Any, Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock, patch
 
@@ -29,6 +30,7 @@ from pylabrobot.hamilton.prep.driver.simulator import (
   SIMULATED_Z_DRIVE_OFFSETS,
   _SimulatedIO,
 )
+from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes as STARPipettes
 from pylabrobot.hamilton.star.liquid_classes.mapping import (
   StandardVolumeFilter_Water_DispenseJet_Empty as _WATER_50,
 )
@@ -479,8 +481,8 @@ def test_aspirate_sends_a_mix_per_container_and_the_default_block_where_none():
       piston_volumes=[10.0, 10.0],
       use_channels=[0, 1],
       liquid_heights=[2.0, 2.0],
-      mix=[Mix(volume=30.0, repetitions=3, flow_rate=50.0), None],
-      mix_position_from_liquid_surface=1.5,
+      pre_mixes=[Mix(volume=30.0, repetitions=3, flow_rate=50.0), None],
+      mix_positions_from_liquid_surface=[1.5, 1.5],
     )
     entries = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters
     mixed, plain = entries
@@ -488,13 +490,21 @@ def test_aspirate_sends_a_mix_per_container_and_the_default_block_where_none():
     assert (mixed.mix.speed, mixed.mix.z_offset) == (50.0, 1.5)
     assert plain.mix == PrepCmd.MixParameters.default()
 
-    with pytest.raises(ValueError, match="mix length"):
+    with pytest.raises(ValueError, match="pre_mixes length"):
       await p.pipettes.aspirate(
         plate["A1:B1"],
         piston_volumes=[10.0, 10.0],
         use_channels=[0, 1],
         liquid_heights=[2.0, 2.0],
-        mix=[None],
+        pre_mixes=[None],
+      )
+    with pytest.raises(ValueError, match="mix_positions_from_liquid_surface length"):
+      await p.pipettes.aspirate(
+        plate["A1:B1"],
+        piston_volumes=[10.0, 10.0],
+        use_channels=[0, 1],
+        liquid_heights=[2.0, 2.0],
+        mix_positions_from_liquid_surface=[1.5],
       )
     await p.stop()
 
@@ -2901,7 +2911,7 @@ def test_aspirate_sends_the_containers_profile_from_z_minimum():
       piston_volumes=[20.0],
       use_channels=[0],
       liquid_heights=[3.0],
-      minimum_allowed_z_position_during=[
+      minimum_allowed_z_positions_during=[
         well.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z + 1.0
       ],
     )
@@ -3022,8 +3032,8 @@ _GOLDEN_ASPIRATE_CALLS: Dict[str, Tuple[int, str, Optional[List[int]], Dict[str,
     {
       **_ASPIRATE_TWO,
       "immersion_depths": [1.0, 1.0],
-      "mix": [Mix(20.0, 2, 40.0), None],
-      "mix_position_from_liquid_surface": 1.0,
+      "pre_mixes": [Mix(20.0, 2, 40.0), None],
+      "mix_positions_from_liquid_surface": [1.0, 1.0],
     },
   ),
   "tadm, end height, z_air": (
@@ -3049,7 +3059,7 @@ _GOLDEN_ASPIRATE_CALLS: Dict[str, Tuple[int, str, Optional[List[int]], Dict[str,
       **_ASPIRATE_TWO,
       "command_version": "v1",
       "z_fluid": [10.0, 11.0],
-      "minimum_allowed_z_position_during": [5.0, 6.0],
+      "minimum_allowed_z_positions_during": [5.0, 6.0],
       "z_bottom_search_offset": [1.0, 1.5],
     },
   ),
@@ -3203,6 +3213,21 @@ def test_aspirate_sends_the_golden_frames():
   assert list(_GOLDEN_ASPIRATE_FRAMES) == list(_GOLDEN_ASPIRATE_CALLS)
   for name, frames in _GOLDEN_ASPIRATE_FRAMES.items():
     assert _digest(asyncio.run(_capture_aspirate(name))) == frames, name
+
+
+def _keywords(method: Any) -> List[str]:
+  """The keyword-only arguments of a method, in order."""
+  parameters = inspect.signature(method).parameters.values()
+  return [p.name for p in parameters if p.kind == inspect.Parameter.KEYWORD_ONLY]
+
+
+def test_aspirate_keywords_are_the_stars_in_its_order_and_the_preps_own_after():
+  """Every keyword the STAR's aspirate also has comes first, in the STAR's order."""
+  prep, star = _keywords(Pipettes.aspirate), _keywords(STARPipettes.aspirate)
+  shared = [name for name in star if name in prep]
+  assert prep[: len(shared)] == shared
+  for old in ("minimum_allowed_z_position_during", "mix", "mix_position_from_liquid_surface"):
+    assert old not in prep
 
 
 def test_aspirate_runs_one_command_per_x_and_books_each_batch_on_its_own():
