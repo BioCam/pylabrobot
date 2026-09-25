@@ -5942,7 +5942,7 @@ class Pipettes:
         ),
         pull_out_distances_transport_air=pull_out_distances_transport_air,
         minimum_traverse_height_end=minimum_traverse_height_end,
-        z_air=ctx.z_air if pull_out_distances_transport_air is None else None,
+        z_air=z_air,
         container_segments=segments,
         clot_detection_heights=clot_detection_heights,
         tadm=tadm,
@@ -6332,7 +6332,7 @@ class Pipettes:
       clot_detection_heights: how far a clot may hold each tip back, in mm, per container. 0.0 when
         None; only 0.0 until the check is verified on the device.
       pull_out_distances_transport_air: rise from the aspirate height before drawing transport
-        air, in mm, per container. None draws it at `z_air`; refused beside `z_air`.
+        air, in mm, per container. 10.0 when None; refused beside `z_air`.
       transport_air_volumes: air drawn after the liquid, in uL, per container. The liquid
         class's, else 0.0, when None.
       limit_curve_indices: TADM limit curve, 0 for none, per container. Only 0 until TADM is
@@ -6346,8 +6346,8 @@ class Pipettes:
       x_grouping_tolerance: containers within this X distance share a batch, in mm.
         `default_x_grouping_tolerance` when None.
       clld_sensitivity: the capacitive search's sensitivity. `default_clld_sensitivity` when None.
-      z_air: the tip bottom height above each container the tip leaves from, in mm. 2 mm over
-        the container's top when None.
+      z_air: the tip bottom height to draw transport air at, in mm, in place of the pull-out
+        distance. The aspirate height plus the pull-out distance when None.
       tadm: TADM settings; given, the aspiration is monitored.
       tadm_storage_level: which TADM curves the channel keeps. None records none; only None until
         TADM is verified on the device.
@@ -6691,7 +6691,7 @@ class Pipettes:
         pull_out_distances_transport_air=pull_out_distances_transport_air,
         transport_air_volumes=transport_air_volumes,
         minimum_traverse_height_end=minimum_traverse_height_end,
-        z_air=ctx.z_air if pull_out_distances_transport_air is None else None,
+        z_air=z_air,
         container_segments=container_segments,
         command_version=command_version,
         check_only=check_only,
@@ -6851,7 +6851,7 @@ class Pipettes:
       swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid
         class's, else 10.0, when None.
       pull_out_distances_transport_air: rise from the dispense height where the slow exit ends,
-        in mm, per container. None ends it at `z_air`; refused beside `z_air`.
+        in mm, per container. 10.0 when None; refused beside `z_air`.
       limit_curve_indices: TADM limit curve, 0 for none, per container. Only 0 until TADM is
         verified on the device.
       minimum_traverse_height_start: the height every low channel's tip bottom is raised to before
@@ -6863,8 +6863,8 @@ class Pipettes:
       x_grouping_tolerance: containers within this X distance share a batch, in mm.
         `default_x_grouping_tolerance` when None.
       clld_sensitivity: the capacitive search's sensitivity. `default_clld_sensitivity` when None.
-      z_air: the tip bottom height where each slow exit ends, in mm. 2 mm over the container's
-        top when None.
+      z_air: the tip bottom height where each slow exit ends, in mm, in place of the pull-out
+        distance. The dispense height plus the pull-out distance when None.
       container_segments: each container's cross-sections, sent as they are, per container. None
         sends none.
       command_version: "v1" or "v2" dispense commands. What the firmware supports when None.
