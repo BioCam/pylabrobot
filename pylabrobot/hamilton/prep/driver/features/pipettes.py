@@ -6431,6 +6431,7 @@ class Pipettes:
     flow_rates: Optional[List[Optional[float]]],
     *,
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]],
+    immersion_depths: Optional[List[float]],
     minimum_allowed_z_positions_during: Optional[List[float]],
     transport_air_volumes: Optional[List[float]],
     cut_off_speeds: Optional[List[float]],
@@ -6535,6 +6536,7 @@ class Pipettes:
         tube_radii=[_effective_radius(op.resource) for op in ops],
         lld_mode=lld_mode,
         clld_sensitivity=clld_sensitivity,
+        immersion_depths=immersion_depths,
         flow_rates=[
           op.flow_rate
           if op.flow_rate is not None
@@ -6628,6 +6630,7 @@ class Pipettes:
     piston_volumes: Optional[Sequence[float]] = None,
     search_speed: float = 10.0,
     approach_speed: float = 125.0,
+    immersion_depths: Optional[Sequence[float]] = None,
     minimum_allowed_z_positions_during: Optional[List[float]] = None,
     transport_air_volumes: Optional[List[float]] = None,
     cut_off_speeds: Optional[List[float]] = None,
@@ -6673,6 +6676,9 @@ class Pipettes:
         liquid class. One of this and `volumes`.
       search_speed: of the driver's own search, the Z-touch, in mm/s.
       approach_speed: down to that search's start, the container's top, in mm/s.
+      immersion_depths: how far under the surface each tip dispenses, in mm, per container.
+        With LLD the search's `z_submerge`, 2.0 when None; without, below the dispense height,
+        0.0 when None.
       minimum_allowed_z_positions_during: how low each tip bottom may go, in mm, per container.
         The cavity bottom when None; under ZTOUCH the floor touched.
       transport_air_volumes: the firmware's transport air volume, in uL, per container. The
@@ -6743,6 +6749,7 @@ class Pipettes:
       "liquid_heights": liquid_heights,
       "flow_rates": flow_rates,
       "hamilton_liquid_classes": hamilton_liquid_classes,
+      "immersion_depths": immersion_depths,
       "minimum_allowed_z_positions_during": minimum_allowed_z_positions_during,
       "transport_air_volumes": transport_air_volumes,
       "cut_off_speeds": cut_off_speeds,
@@ -6847,6 +6854,7 @@ class Pipettes:
         None if batch_modes is None else batch_modes[0],
         pick(flow_rates, batch),
         hamilton_liquid_classes=pick(hamilton_liquid_classes, batch),
+        immersion_depths=pick(immersion_depths, batch),
         minimum_allowed_z_positions_during=lowest,
         transport_air_volumes=pick(transport_air_volumes, batch),
         cut_off_speeds=pick(cut_off_speeds, batch),
