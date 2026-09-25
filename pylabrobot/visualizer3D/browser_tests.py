@@ -554,12 +554,25 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         "  });"
         "  return objectUrl(blob);"
         "};"
+        "window.__gifWarnings = [];"
+        "const warn = console.warn.bind(console);"
+        "console.warn = (...args) => { window.__gifWarnings.push(args.map(String).join(' '));"
+        "  warn(...args); };"
         "document.getElementById('toolbar-gif-btn').click();"
         "document.getElementById('start-recording-button').click(); true"
       )
       await asyncio.sleep(1.0)
       await browser.evaluate("document.getElementById('stop-recording-button').click(); true")
-      await browser.settle("document.getElementById('gif-download').style.display === 'flex'", 60)
+      try:
+        await browser.settle("document.getElementById('gif-download').style.display === 'flex'", 60)
+      except AssertionError as timed_out:
+        # What the GIF panel says is what tells a runner that renders differently apart.
+        said = await browser.evaluate(
+          "JSON.stringify({progress: document.getElementById('progressBar')?.textContent,"
+          " notice: document.querySelector('#gif-panel > p')?.textContent,"
+          " warnings: window.__gifWarnings})"
+        )
+        raise AssertionError(f"{timed_out}; the GIF panel said {said}") from None
       await browser.evaluate("document.getElementById('gif-download-button').click(); true")
       width, height = await browser.settle("window.__gifSize", 10)
       self.assertLessEqual(width, 960)
