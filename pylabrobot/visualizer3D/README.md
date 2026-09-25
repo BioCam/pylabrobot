@@ -332,8 +332,12 @@ missing `units` as mm and a missing `up` as Y.
 | anything else | subclass `serialize` | `panel.js` | listed under "Specifics", or "Construction" for `with_*` and `core_grippers`, with units from `UNITS` in `format.js` |
 
 State keys the page reads: `rotation` (absent means zero), `location`, `volume`, `tracker.x`
-(an arm's tracked X), `joints`, and a tip's `volume` and `max_volume` in the device tools. The
-panel prints the rest under "Tracker state".
+(an arm's tracked X), `joints`, and a tip's `volume` and `max_volume` in the device tools and the
+info panel, `max_volume` falling back to the model's `maximal_volume`. `volume` is the committed
+volume, never `pending_volume`; a tracker publishes on a rollback too, so a failed operation
+leaves the committed state as the last one sent. A tracker's `thing` is its resource's name, so
+it is dropped before signing: a rack of empty tips is one state, not ninety-six. The panel prints
+the rest under "Tracker state".
 
 ### Categories
 

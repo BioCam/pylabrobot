@@ -8,9 +8,10 @@ import os
 import socket
 import threading
 import unittest
+import unittest.mock
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import websockets
 from websockets.typing import Origin
@@ -19,7 +20,11 @@ from pylabrobot.resources import does_volume_tracking, set_volume_tracking
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.corning import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.hamilton import hamilton_96_tiprack_1000uL
+from pylabrobot.resources.plate import Plate
 from pylabrobot.resources.resource import Resource
+from pylabrobot.resources.tip import Tip
+from pylabrobot.resources.tip_rack import TipRack
+from pylabrobot.visualizer3D.demo import build_facility, declare_channel_access, star_of
 from pylabrobot.visualizer3D.facility import Facility
 from pylabrobot.visualizer3D.server import Viewer3D
 
@@ -123,6 +128,21 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
     finally:
       await ws.close()
 
+  async def test_a_tip_in_a_rack_is_greeted_with_what_it_holds(self):
+    """The info panel reads a tip's `volume` and `max_volume` from its state, so a client is
+    greeted with both."""
+    rack = hamilton_96_tiprack_1000uL(name="rack", with_tips=True)
+    self.facility.assign_child_resource(rack, location=Coordinate(300, 10, 0))
+    tip = rack.get_item("A1").get_tip()
+    tip.tracker.set_volume(30.0)
+    ws, _, snapshot = await self.connect()
+    try:
+      state = snapshot["states"][snapshot["of"][tip.name]]
+      self.assertEqual(state["volume"], 30.0)
+      self.assertEqual(state["max_volume"], tip.maximal_volume)
+    finally:
+      await ws.close()
+
   async def test_a_tip_publishes_what_it_holds(self):
     """A tip's tracker was never published, so the channel panel drew every tip empty."""
     rack = hamilton_96_tiprack_1000uL(name="rack", with_tips=True)
@@ -130,10 +150,10 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
     tip = rack.get_item("A1").get_tip()
     ws, _, _ = await self.connect()
     try:
-      tip.tracker.set_volume(250.0)
+      tip.tracker.set_volume(12.5)
       update = await self.next_state(ws)
       self.assertIsNotNone(update)
-      self.assertEqual(update["states"][update["of"][tip.name]]["volume"], 250.0)
+      self.assertEqual(update["states"][update["of"][tip.name]]["volume"], 12.5)
     finally:
       await ws.close()
 
@@ -291,6 +311,113 @@ class StateChannelTests(unittest.IsolatedAsyncioTestCase):
         return states, message["data"]
       if message["event"] == "state":
         states.append(message["data"])
+
+
+class CommandFailed(Exception):
+  """What a held aspirate raises when it is told to fail."""
+
+
+class SimulatedAspirateTests(unittest.IsolatedAsyncioTestCase):
+  """A mounted tip's liquid on the simulated STAR, as the info panel reads it: committed."""
+
+  async def asyncSetUp(self):
+    track_volumes(self)
+    facility = build_facility()
+    self.star = star_of(facility)
+    await self.star.setup()
+    declare_channel_access(self.star)
+    assert self.star.pipettes is not None
+    self.pipettes = self.star.pipettes
+    source = self.star.deck.get_resource("source_0")
+    rack = self.star.deck.get_resource("tips_0")
+    assert isinstance(source, Plate) and isinstance(rack, TipRack)
+    self.well = source.get_item("A1")
+    self.well.tracker.set_volume(200.0)
+    self.rack = rack
+    fs_port, ws_port = free_ports(2)
+    self.viewer = Viewer3D(facility, open_browser=False, fs_port=fs_port, ws_port=ws_port)
+    await self.viewer.start()
+    self.addAsyncCleanup(self.viewer.stop)
+    self.drawing = asyncio.Event()
+    self.release = asyncio.Event()
+
+  def hold_the_command(self, fail: bool) -> None:
+    """Hold each aspirate at its command until `release` is set, then send it or raise."""
+    send = self.pipettes._aspirate_in_one_move
+
+    async def held(*args: Any, **kwargs: Any) -> None:
+      self.drawing.set()
+      await self.release.wait()
+      if fail:
+        raise CommandFailed()
+      await send(*args, **kwargs)
+
+    patcher = unittest.mock.patch.object(self.pipettes, "_aspirate_in_one_move", held)
+    patcher.start()
+    self.addCleanup(patcher.stop)
+
+  async def told(self, ws, name: str, quiet: float = 0.5) -> List[Dict[str, Any]]:
+    """Every state a client is told for `name` until the server stays quiet for `quiet` s."""
+    told: List[Dict[str, Any]] = []
+    try:
+      while True:
+        message = json.loads(await asyncio.wait_for(ws.recv(), quiet))
+        data = message["data"]
+        if message["event"] == "state" and name in data["of"]:
+          told.append(data["states"][data["of"][name]])
+    except asyncio.TimeoutError:
+      return told
+
+  async def aspirate_held(self, ws) -> Tuple[Tip, List[Dict[str, Any]], "asyncio.Future[None]"]:
+    """Mount a tip, start an aspirate into it and hold it at its command.
+
+    Returns the tip, what the client was told of it while held, and the aspirate.
+    """
+    await self.pipettes.pick_up_tips([self.rack.get_item("A1")])
+    tip = self.pipettes.get_mounted_tip(0)
+    assert tip is not None
+    await self.told(ws, tip.name)  # the pick-up's scene and snapshot
+    aspirating = asyncio.ensure_future(self.pipettes.aspirate([self.well], [50.0]))
+    await asyncio.wait_for(self.drawing.wait(), 10)
+    return tip, await self.told(ws, tip.name), aspirating
+
+  async def test_a_mounted_tip_is_told_its_committed_volume(self):
+    """While the command runs the tip's booking is pending, and the page shows `volume`: it
+    reads the new volume only once the command is done."""
+    self.hold_the_command(fail=False)
+    ws = await websockets.connect(self.viewer.ws_url, max_size=None)
+    try:
+      tip, during, aspirating = await self.aspirate_held(ws)
+      self.release.set()
+      await aspirating
+      after = await self.told(ws, tip.name)
+    finally:
+      self.release.set()
+      await ws.close()
+    drawn = round(tip.tracker.volume, 1)
+    self.assertGreater(drawn, 0)
+    self.assertEqual([(s["volume"], s["pending_volume"]) for s in during], [(0, drawn)])
+    self.assertEqual([s["volume"] for s in after], [drawn])
+
+  async def test_a_failed_aspirate_leaves_a_mounted_tip_told_what_it_held(self):
+    """A failed command rolls the tip's booking back, and the client is told it was: the last
+    state it has for the tip is the committed one, pending included."""
+    self.hold_the_command(fail=True)
+    ws = await websockets.connect(self.viewer.ws_url, max_size=None)
+    try:
+      tip, during, aspirating = await self.aspirate_held(ws)
+      self.release.set()
+      with self.assertRaises(CommandFailed):
+        await aspirating
+      after = await self.told(ws, tip.name)
+    finally:
+      self.release.set()
+      await ws.close()
+    self.assertEqual(tip.tracker.volume, 0)
+    self.assertGreater(during[-1]["pending_volume"], 0)
+    self.assertEqual([s["volume"] for s in during + after], [0] * len(during + after))
+    self.assertTrue(after, "the rollback told the client nothing")
+    self.assertEqual((after[-1]["volume"], after[-1]["pending_volume"]), (0, 0))
 
 
 class FileServerTests(unittest.IsolatedAsyncioTestCase):
