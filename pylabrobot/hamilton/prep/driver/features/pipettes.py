@@ -67,13 +67,14 @@ from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import (
   plan_batches,
   validate_channel_selections,
 )
+from pylabrobot.lib.liquid_handling.tip_consolidation import plan_tip_consolidation
 from pylabrobot.lib.liquid_handling.tip_presence_probing import (
   probe_tip_inventory as _probe_tip_inventory,
 )
 from pylabrobot.lib.liquid_handling.tip_presence_probing import (
   probe_tip_presence_via_pickup as _probe_tip_presence_via_pickup,
 )
-from pylabrobot.resources import Container, Coordinate, Tip, does_volume_tracking
+from pylabrobot.resources import Container, Coordinate, Tip, TipRack, does_volume_tracking
 from pylabrobot.resources.errors import (
   HasTipError,
   NoTipError,
@@ -4891,6 +4892,27 @@ class Pipettes:
     if not isinstance(waste, Trash):
       raise RuntimeError("tips are discarded into the deck's waste block; this deck has none")
     await self.drop_tips([waste] * len(use_channels), use_channels=use_channels, **kwargs)
+
+  async def consolidate_tip_inventory(
+    self, tip_racks: List[TipRack], use_channels: Optional[List[int]] = None
+  ) -> None:
+    """Move tips between partly filled racks of one tip model until they fill the fewest racks.
+
+    Planned by `plan_tip_consolidation` from the tracked tips; full and empty racks are left.
+
+    Args:
+      tip_racks: the racks to consolidate.
+      use_channels: which channels, 0-indexed from the back. Every channel when None.
+    """
+    batches = plan_tip_consolidation(
+      tip_racks,
+      num_channels=self.num_channels,
+      can_pick_up_tip=lambda _channel, tip: isinstance(tip, HamiltonTip),
+      use_channels=use_channels,
+    )
+    for batch in batches:
+      await self.pick_up_tips(batch.origin_tip_spots, use_channels=batch.use_channels)
+      await self.drop_tips(batch.target_tip_spots, use_channels=batch.use_channels)
 
   async def _require_ready_to_probe(
     self, tip_spots: Sequence[TipSpot], use_channels: Sequence[int]

@@ -5550,3 +5550,55 @@ def test_a_channel_still_sensing_a_tip_after_probing_is_raised():
     await p.stop()
 
   _run(_t())
+
+
+def test_consolidating_moves_the_last_tips_into_the_first_empty_spots_two_at_a_time():
+  """Ten tips at the end of a rack go to its first ten spots: five pairs, one column each.
+
+  Spots 9 mm apart in one column are taken in one move, the channels' closest spacing.
+  """
+
+  async def _t():
+    p, rack, _ = _probe_setup()
+    set_tip_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      rack.set_tip_state([index >= 86 for index in range(96)])
+      tips = [spot.tracker.get_tip() for spot in rack.get_all_items()[86:]]
+      sent = _record(p, only=(PrepCmd.PrepPickUpTips, PrepCmd.PrepDropTips))
+      await p.pipettes.consolidate_tip_inventory([rack])
+      spots = rack.get_all_items()
+      assert [spot.has_tip() for spot in spots] == [True] * 10 + [False] * 86
+      assert [spot.tracker.get_tip() for spot in spots[:10]] == tips
+      assert all(p.pipettes.get_mounted_tip(ch) is None for ch in range(p.pipettes.num_channels))
+      assert [type(c).__name__ for c in sent] == ["PrepPickUpTips", "PrepDropTips"] * 5
+      assert all(len(c.tip_positions) == 2 for c in sent)
+    finally:
+      set_tip_tracking(False)
+    await p.stop()
+
+  _run(_t())
+
+
+def test_consolidating_a_rack_that_mixes_tip_models_is_refused_with_nothing_sent():
+  """The planner refuses a rack holding two tip models; no pick-up is sent."""
+
+  async def _t():
+    p, rack, _ = _probe_setup()
+    set_tip_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      rack.set_tip_state([index >= 90 for index in range(96)])
+      rack.get_item("H12").tracker.remove_tip()
+      rack.get_item("H12").tracker.add_tip(hamilton_tip_300uL("other"))
+      sent = _record(p, only=PrepCmd.PrepPickUpTips)
+      with pytest.raises(ValueError, match="mixed tip models"):
+        await p.pipettes.consolidate_tip_inventory([rack])
+      assert sent == []
+    finally:
+      set_tip_tracking(False)
+    await p.stop()
+
+  _run(_t())
