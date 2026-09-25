@@ -4304,6 +4304,23 @@ def test_dispense_keywords_are_the_stars_in_its_order_and_the_preps_own_after():
   assert prep[: len(shared)] == shared
 
 
+@pytest.mark.parametrize(
+  "prep_method, star_method",
+  [
+    (Pipettes._aspirate_in_one_move, STARPipettes._aspirate_in_one_move),
+    (Pipettes._dispense_in_one_move, STARPipettes._dispense_in_one_move),
+  ],
+)
+def test_one_move_keywords_are_the_stars_in_its_order_and_the_preps_own_after(
+  prep_method, star_method
+):
+  """The STAR's one-move keywords come first, in its order; `lld_mode` is one for all channels."""
+  singular = {"lld_mode": "lld_modes", "clld_sensitivity": "clld_sensitivities"}
+  prep = [singular.get(k, k) for k in _keywords(prep_method)]
+  shared = [k for k in _keywords(star_method) if k in prep]
+  assert prep[: len(shared)] == shared
+
+
 def test_dispense_of_one_batch_senses_the_tips_and_moves_over_it_before_its_command():
   """One X: the tips sensed, Z safety, one move over the batch at its X speed, then the command."""
 

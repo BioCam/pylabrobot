@@ -5195,26 +5195,26 @@ class Pipettes:
     minimum_allowed_z_position_during: List[float],
     piston_volumes: List[float],
     *,
-    tube_radii: List[float],
     lld_mode: Optional[Pipettes.LLDMode] = None,
     clld_sensitivity: Optional[int] = None,
-    immersion_depths: Optional[List[float]] = None,
     blow_out_air_volumes: Optional[List[float]] = None,
+    immersion_depths: Optional[List[float]] = None,
     pre_wetting_volumes: Optional[List[float]] = None,
     pre_mixes: Optional[Sequence[Optional[Mix]]] = None,
     mix_positions_from_liquid_surface: Optional[List[float]] = None,
     flow_rates: Optional[List[float]] = None,
     settling_times: Optional[List[float]] = None,
     swap_speeds: Optional[List[float]] = None,
-    pull_out_distance_transport_air: float = 10.0,
+    clot_detection_heights: Optional[List[float]] = None,
+    pull_out_distances_transport_air: Optional[List[float]] = None,
     transport_air_volumes: Optional[List[float]] = None,
     minimum_traverse_height_end: Optional[float] = None,
+    tube_radii: List[float],
     z_air: Optional[List[float]] = None,
     z_bottom_search_offset: Optional[List[float]] = None,
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
     lld: Optional[PrepCmd.LldParameters] = None,
     p_lld: Optional[PrepCmd.PLldParameters] = None,
-    clot_detection_heights: Optional[List[float]] = None,
     tadm: Optional[PrepCmd.TadmParameters] = None,
     read_timeout: Optional[float] = None,
     command_version: Optional[Literal["v1", "v2"]] = None,
@@ -5231,30 +5231,31 @@ class Pipettes:
       lld_search_heights: where each LLD search starts.
       minimum_allowed_z_position_during: how low each tip bottom may go.
       piston_volumes: what each piston draws.
-      tube_radii: each container's radius, for the firmware's surface following.
       lld_mode: how the liquid is found, one mode for every channel. None runs a search only when
         `lld` is given.
       clld_sensitivity: capacitive LLD sensitivity. 3 when None.
+      blow_out_air_volumes: air drawn before the liquid. 0.0 when None.
       immersion_depths: how far under the surface each tip aspirates. With LLD the search's
         `z_submerge`, 2.0 when None; without, off the location's z, 0.0 when None.
-      blow_out_air_volumes: air drawn before the liquid. 0.0 when None.
       pre_wetting_volumes: drawn and returned first. 0.0 when None.
       pre_mixes: a `Mix` per channel, mixed before the draw, None for no mixing.
       mix_positions_from_liquid_surface: mixing depth under the aspirate height. 0.0 when None.
       flow_rates: 100.0 when None.
       settling_times: wait in the liquid. 1.0 when None.
       swap_speeds: speed of leaving the liquid. 10.0 when None.
-      pull_out_distance_transport_air: rise above the surface before drawing transport air.
+      clot_detection_heights: how far a clot may hold each tip back, in mm. 0.0 when None; only 0.0
+        until the check is verified on the device.
+      pull_out_distances_transport_air: rise above the surface before drawing transport air. 10.0
+        when None.
       transport_air_volumes: air drawn after the liquid. 0.0 when None.
       minimum_traverse_height_end: tip bottom height at the end. The traverse height less each
         tip's overhang when None.
+      tube_radii: each container's radius, for the firmware's surface following.
       z_air: each tip bottom height to draw transport air at, in place of the pull-out distance.
       z_bottom_search_offset: 2.0 when None.
       container_segments: each container's cross-sections. None sends none.
       lld: the LLD search's block as it is, in place of the one built here.
       p_lld: the pressure LLD block as it is.
-      clot_detection_heights: how far a clot may hold each tip back, in mm. 0.0 when None; only 0.0
-        until the check is verified on the device.
       tadm: the TADM block as it is; given, the aspiration is monitored.
       read_timeout: answer timeout in s. Long enough for the search when LLD runs and None.
       command_version: "v1" or "v2". What the firmware supports when None.
@@ -5296,7 +5297,12 @@ class Pipettes:
     swap_speeds = fill_in_defaults(swap_speeds, [10.0] * n)
     transport_air_volumes = fill_in_defaults(transport_air_volumes, [0.0] * n)
     z_bottom_search_offset = fill_in_defaults(z_bottom_search_offset, [2.0] * n)
-    z_air = fill_in_defaults(z_air, [loc.z + pull_out_distance_transport_air for loc in locations])
+    pull_out_distances_transport_air = fill_in_defaults(
+      pull_out_distances_transport_air, [10.0] * n
+    )
+    z_air = fill_in_defaults(
+      z_air, [loc.z + d for loc, d in zip(locations, pull_out_distances_transport_air)]
+    )
     if immersion_depths is not None and len(immersion_depths) != n:
       raise ValueError(f"immersion_depths length must match use_channels ({n})")
     if minimum_traverse_height_end is not None:
@@ -5459,18 +5465,18 @@ class Pipettes:
     minimum_allowed_z_position_during: List[float],
     piston_volumes: List[float],
     *,
-    tube_radii: List[float],
     lld_mode: Optional[Pipettes.LLDMode] = None,
     clld_sensitivity: Optional[int] = None,
     immersion_depths: Optional[List[float]] = None,
+    transport_air_volumes: Optional[List[float]] = None,
     flow_rates: Optional[List[float]] = None,
     cut_off_speeds: Optional[List[float]] = None,
     stop_back_volumes: Optional[List[float]] = None,
     settling_times: Optional[List[float]] = None,
     swap_speeds: Optional[List[float]] = None,
-    pull_out_distance_transport_air: float = 10.0,
-    transport_air_volumes: Optional[List[float]] = None,
+    pull_out_distances_transport_air: Optional[List[float]] = None,
     minimum_traverse_height_end: Optional[float] = None,
+    tube_radii: List[float],
     z_air: Optional[List[float]] = None,
     z_bottom_search_offset: Optional[List[float]] = None,
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
@@ -5490,21 +5496,22 @@ class Pipettes:
       lld_search_heights: where each LLD search starts.
       minimum_allowed_z_position_during: how low each tip bottom may go.
       piston_volumes: what each piston pushes out.
-      tube_radii: each container's radius, for the firmware's surface following.
       lld_mode: how the liquid is found, one mode for every channel: OFF or CAPACITIVE. None runs
         a search only when `lld` is given.
       clld_sensitivity: capacitive LLD sensitivity. 3 when None.
       immersion_depths: how far under the surface each tip dispenses. With LLD the search's
         `z_submerge`, 2.0 when None; without, off the location's z, 0.0 when None.
+      transport_air_volumes: the firmware's transport air volume. 0.0 when None.
       flow_rates: 100.0 when None.
       cut_off_speeds: the firmware's cutoff speed. 100.0 when None.
       stop_back_volumes: the firmware's stop-back volume. 0.0 when None.
       settling_times: wait in the liquid. 0.0 when None.
       swap_speeds: speed of leaving the liquid. 10.0 when None.
-      pull_out_distance_transport_air: rise above the surface where the slow exit ends.
-      transport_air_volumes: the firmware's transport air volume. 0.0 when None.
+      pull_out_distances_transport_air: rise above the surface where the slow exit ends. 10.0 when
+        None.
       minimum_traverse_height_end: tip bottom height at the end. The traverse height less each
         tip's overhang when None.
+      tube_radii: each container's radius, for the firmware's surface following.
       z_air: each tip bottom height where the slow exit ends, in place of the pull-out distance.
       z_bottom_search_offset: 2.0 when None.
       container_segments: each container's cross-sections. None sends none.
@@ -5550,7 +5557,12 @@ class Pipettes:
     swap_speeds = fill_in_defaults(swap_speeds, [10.0] * n)
     transport_air_volumes = fill_in_defaults(transport_air_volumes, [0.0] * n)
     z_bottom_search_offset = fill_in_defaults(z_bottom_search_offset, [2.0] * n)
-    z_air = fill_in_defaults(z_air, [loc.z + pull_out_distance_transport_air for loc in locations])
+    pull_out_distances_transport_air = fill_in_defaults(
+      pull_out_distances_transport_air, [10.0] * n
+    )
+    z_air = fill_in_defaults(
+      z_air, [loc.z + d for loc, d in zip(locations, pull_out_distances_transport_air)]
+    )
     if immersion_depths is not None and len(immersion_depths) != n:
       raise ValueError(f"immersion_depths length must match use_channels ({n})")
     if minimum_traverse_height_end is not None:
