@@ -12,7 +12,12 @@ import { initFrame, invalidate } from "./frame.js";
 export const viewportEl = document.getElementById("viewport");
 // No `preserveDrawingBuffer`: this three never reads it, and a GIF frame is captured through a
 // render target rather than off the canvas.
-export const renderer = new THREE.WebGPURenderer({ antialias: true });
+export const renderer = new THREE.WebGPURenderer({
+  antialias: true,
+  // Software WebGPU loses its device within a second of drawing; software WebGL2 keeps drawing.
+  // boot.js has measured which this browser is before this runs.
+  forceWebGL: window.plrCapability?.software === true,
+});
 const _tInit = performance.now();
 await renderer.init();
 export const rendererInitMs = performance.now() - _tInit;

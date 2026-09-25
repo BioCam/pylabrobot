@@ -67,9 +67,10 @@ interface is worth doing again once state itself can carry that distinction.
 
 ## What it is not
 
-- No WebGPU verification. The headless browser used to check it has no adapter, so it exercised the
-  WebGL2 fallback path. Frame rates seen there are software rendering and mean nothing; draw calls
-  are the figure that transfers.
+- No WebGPU verification in CI. The headless browser there draws in software, and software WebGPU
+  loses its device within a second of drawing, so a browser that renders in software (`boot.js`'s
+  probe) draws with WebGL2; WebGPU is exercised only on a machine with a GPU. Frame rates seen in
+  software mean nothing; draw calls are the figure that transfers.
 - Liquid is driven from tracker state only: the demo moves the volume trackers directly, and a
   real command moves the same trackers. Tips are not drawn from tracker state at all: a tip is
   drawn when it stands in the tree as a resource.
@@ -134,8 +135,9 @@ without the variable renders on the CPU, and the URL opens in it, so start it th
 
 1. **Done** for finding Chrome: `shutil.which` first, the macOS install path second. Still to add:
    runs with no GPU, and with the page served but the websocket port closed.
-2. Construct `WebGPURenderer` with `forceWebGL: true`, and make WebGPU opt-in (`?backend=webgpu`). At 24–34 draw
-   calls WebGPU gains nothing and doubles the paths to test.
+2. **Done where it breaks:** a browser that renders in software gets `forceWebGL`, since software
+   WebGPU loses its device while drawing. Still open: WebGPU opt-in everywhere
+   (`?backend=webgpu`), as at 24–34 draw calls it gains nothing and doubles the paths to test.
 3. **Done.** Add a small `boot.js` that checks capability and websocket reachability, then `import("./app.js")` inside
    try/catch. A failure becomes an on-page diagnosis with a per-browser fix instead of "Loading...". The client
    sends its backend and renderer string over the websocket, and Python prints it, e.g.
