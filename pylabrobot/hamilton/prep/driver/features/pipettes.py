@@ -6093,9 +6093,9 @@ class Pipettes:
     return floors
 
   def _get_lld_modes(
-    self, lld_mode: Union[Pipettes.LLDMode, Sequence[Pipettes.LLDMode], None], n: int
-  ) -> Optional[List[Pipettes.LLDMode]]:
-    """One LLD mode per container, or None when none is given.
+    self, lld_mode: Union[Pipettes.LLDMode, Sequence[Pipettes.LLDMode]], n: int
+  ) -> List[Pipettes.LLDMode]:
+    """One LLD mode per container.
 
     Args:
       lld_mode: one for all, or one per container.
@@ -6105,8 +6105,6 @@ class Pipettes:
       ValueError: If a mode is not an `LLDMode`, the list is not one per container, or a pressure
         mode is mixed with another mode.
     """
-    if lld_mode is None:
-      return None
     if isinstance(lld_mode, self.LLDMode):
       return [lld_mode] * n
     if isinstance(lld_mode, str) or not isinstance(lld_mode, Sequence):
@@ -6129,7 +6127,7 @@ class Pipettes:
     use_channels: Optional[List[int]] = None,
     resource_offsets: Optional[List[Coordinate]] = None,
     liquid_heights: Optional[Sequence[Optional[float]]] = None,
-    lld_mode: Union[Pipettes.LLDMode, Sequence[Pipettes.LLDMode], None] = None,
+    lld_mode: Union[Pipettes.LLDMode, Sequence[Pipettes.LLDMode]] = LLDMode.OFF,
     flow_rates: Optional[Sequence[Optional[float]]] = None,
     *,
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
@@ -6182,7 +6180,7 @@ class Pipettes:
       liquid_heights: where the liquid stands above each cavity bottom, in mm. None takes it from
         the tracked volume, or, with an LLD mode, leaves it to the search.
       lld_mode: how the liquid, or under ZTOUCH the floor, is found, one for all or one per
-        container. None runs a search only when `lld` is given.
+        container. OFF goes to the height given.
       flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
       hamilton_liquid_classes: the class for each container's volume. Looked up for the
         channel's tip, water, when None.
@@ -6226,7 +6224,8 @@ class Pipettes:
       x_grouping_tolerance: containers within this X distance share a batch, in mm.
         `default_x_grouping_tolerance` when None.
       clld_sensitivity: capacitive LLD sensitivity for every channel. 3 when None.
-      lld: the LLD search's start, speed and submerge depth. From the container's top when None.
+      lld: the LLD search's start, speed and submerge depth, only beside a mode that searches.
+        From the container's top when None.
       p_lld: pressure LLD settings, seeking at 1 to 630 uL/s; needed for PRESSURE and DUAL. The
         firmware's own when None.
       z_air: the tip bottom height above each container the tip leaves from, in mm. 2 mm over
@@ -6245,8 +6244,8 @@ class Pipettes:
         are more containers than channels, both or neither of `volumes` and `piston_volumes` are
         given, a class is given with `piston_volumes`, no class is known for a channel's tip, a
         mode is not an `LLDMode`, a pressure mode is mixed with another or has no `p_lld`, a
-        liquid height is given beside ZTOUCH, a floor search is out of reach, or a
-        limit curve or a TADM storage level is given.
+        liquid height is given beside ZTOUCH, `lld` is given with no mode that searches, a floor
+        search is out of reach, or a limit curve or a TADM storage level is given.
       RuntimeError: If a channel used carries no tip, nothing knows where a container's liquid
         stands: no height given, volume tracking off, no LLD; or no floor is met where a channel
         touched.
@@ -6298,7 +6297,9 @@ class Pipettes:
         "TADM is not verified on the Prep yet; give limit curve 0 and no storage level"
       )
     modes = self._get_lld_modes(lld_mode, n)
-    touched = [] if modes is None else [j for j in range(n) if modes[j] == self.LLDMode.ZTOUCH]
+    if lld is not None and not set(modes) - {self.LLDMode.OFF, self.LLDMode.ZTOUCH}:
+      raise ValueError("lld is the firmware search's block; give it with an LLD mode that searches")
+    touched = [j for j in range(n) if modes[j] == self.LLDMode.ZTOUCH]
     offsets = (
       resource_offsets
       if resource_offsets is not None
@@ -6328,11 +6329,7 @@ class Pipettes:
         [containers[job].name for job in touched],
       )
     # One command carries one LLD category, so each mode is planned on its own.
-    groups = (
-      [list(range(n))]
-      if modes is None
-      else [[job for job in range(n) if modes[job] == mode] for mode in dict.fromkeys(modes)]
-    )
+    groups = [[job for job in range(n) if modes[job] == mode] for mode in dict.fromkeys(modes)]
     batches: List[ChannelBatch] = []
     for group in groups:
       _, planned = self._plan_batched(
@@ -6353,10 +6350,10 @@ class Pipettes:
     async def aspirate_batch(batch: ChannelBatch, check_only: bool = False) -> List[float]:
       """Aspirate the batch's containers in one command; the last leaves the tips at the end."""
       last = batch is batches[-1]
-      batch_modes = pick(modes, batch)
+      batch_modes = [modes[job] for job in batch.indices]
       heights_z: Optional[List[float]] = None
       lowest = pick(minimum_allowed_z_positions_during, batch)
-      on_ztouch = batch_modes is not None and batch_modes[0] == self.LLDMode.ZTOUCH
+      on_ztouch = batch_modes[0] == self.LLDMode.ZTOUCH
       if on_ztouch:
         # The draw goes without LLD, at the floor touched; the check before any motion has the
         # modelled one.
@@ -6384,7 +6381,7 @@ class Pipettes:
         self._resolve_effective_lld(batch_modes, lld, len(batch.indices)),
         piston_volumes is None,
         pick(liquid_heights, batch),
-        None if batch_modes is None else batch_modes[0],
+        batch_modes[0],
         pick(flow_rates, batch),
         hamilton_liquid_classes=pick(hamilton_liquid_classes, batch),
         clld_sensitivity=clld_sensitivity,
@@ -6632,7 +6629,7 @@ class Pipettes:
     use_channels: Optional[List[int]] = None,
     resource_offsets: Optional[List[Coordinate]] = None,
     liquid_heights: Optional[Sequence[Optional[float]]] = None,
-    lld_mode: Union[Pipettes.LLDMode, Sequence[Pipettes.LLDMode], None] = None,
+    lld_mode: Union[Pipettes.LLDMode, Sequence[Pipettes.LLDMode]] = LLDMode.OFF,
     flow_rates: Optional[Sequence[Optional[float]]] = None,
     *,
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
@@ -6680,7 +6677,7 @@ class Pipettes:
         the heights. Channels sharing a container spread across it in Y when None.
       liquid_heights: where the liquid stands above each cavity bottom, in mm. 0 when None.
       lld_mode: how the liquid, or under ZTOUCH the floor, is found, one for all or one per
-        container: OFF, CAPACITIVE or ZTOUCH. None runs a search only when `lld` is given.
+        container: OFF, CAPACITIVE or ZTOUCH. OFF goes to the height given.
       flow_rates: in uL/s, per container. The liquid class's, else 120.0, when None.
       hamilton_liquid_classes: the class for each container's volume. Looked up for the
         channel's tip, water, when None.
@@ -6723,7 +6720,8 @@ class Pipettes:
       x_grouping_tolerance: containers within this X distance share a batch, in mm.
         `default_x_grouping_tolerance` when None.
       clld_sensitivity: capacitive LLD sensitivity for every channel. 3 when None.
-      lld: the LLD search's start, speed and submerge depth. From the container's top when None.
+      lld: the LLD search's start, speed and submerge depth, only beside a mode that searches.
+        From the container's top when None.
       z_air: the tip bottom height where each slow exit ends, in mm. 2 mm over the container's
         top when None.
       container_segments: each container's cross-sections, sent as they are, per container. None
@@ -6737,8 +6735,8 @@ class Pipettes:
         are more containers than channels, the LLD mode is not OFF, CAPACITIVE or ZTOUCH, both or
         neither of `volumes` and `piston_volumes` are given, a class is given with
         `piston_volumes`, no class is known for a channel's tip, a flow rate is not above 0, a
-        blow-out air volume is above 0, a liquid height is given beside ZTOUCH, or a
-        floor search is out of reach.
+        blow-out air volume is above 0, a liquid height is given beside ZTOUCH, `lld` is given
+        with no mode that searches, or a floor search is out of reach.
       RuntimeError: If a channel used carries no tip, or no floor is met where a channel touched.
       TooLittleLiquidError: If a tip holds less than it is to give.
       TooLittleVolumeError: If a container has less room than it is to take.
@@ -6797,7 +6795,9 @@ class Pipettes:
     if any(index != 0 for index in limit_curve_indices or []):
       raise ValueError("TADM is not verified on the Prep yet; give limit curve 0")
     modes = self._get_lld_modes(lld_mode, n)
-    touched = [] if modes is None else [j for j in range(n) if modes[j] == self.LLDMode.ZTOUCH]
+    if lld is not None and not set(modes) - {self.LLDMode.OFF, self.LLDMode.ZTOUCH}:
+      raise ValueError("lld is the firmware search's block; give it with an LLD mode that searches")
+    touched = [j for j in range(n) if modes[j] == self.LLDMode.ZTOUCH]
     offsets = (
       resource_offsets
       if resource_offsets is not None
@@ -6827,11 +6827,7 @@ class Pipettes:
         [containers[job].name for job in touched],
       )
     # One command carries one LLD category, so each mode is planned on its own.
-    groups = (
-      [list(range(n))]
-      if modes is None
-      else [[job for job in range(n) if modes[job] == mode] for mode in dict.fromkeys(modes)]
-    )
+    groups = [[job for job in range(n) if modes[job] == mode] for mode in dict.fromkeys(modes)]
     batches: List[ChannelBatch] = []
     for group in groups:
       _, planned = self._plan_batched(
@@ -6852,10 +6848,10 @@ class Pipettes:
     async def dispense_batch(batch: ChannelBatch, check_only: bool = False) -> List[float]:
       """Dispense the batch's containers in one command; the last leaves the tips at the end."""
       last = batch is batches[-1]
-      batch_modes = pick(modes, batch)
+      batch_modes = [modes[job] for job in batch.indices]
       heights_z: Optional[List[float]] = None
       lowest = pick(minimum_allowed_z_positions_during, batch)
-      if batch_modes is not None and batch_modes[0] == self.LLDMode.ZTOUCH:
+      if batch_modes[0] == self.LLDMode.ZTOUCH:
         # The dispense goes without LLD, off the floor touched so the orifice is not sealed on
         # it; the check before any motion has the modelled floor.
         floors = (
@@ -6881,7 +6877,7 @@ class Pipettes:
         [offsets[job] for job in batch.indices],
         piston_volumes is None,
         pick(liquid_heights, batch),
-        None if batch_modes is None else batch_modes[0],
+        batch_modes[0],
         pick(flow_rates, batch),
         hamilton_liquid_classes=pick(hamilton_liquid_classes, batch),
         immersion_depths=pick(immersion_depths, batch),

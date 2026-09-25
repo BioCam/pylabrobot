@@ -3386,6 +3386,12 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
         (ValueError, "1 to 630", two, {**both, "lld_mode": capacitive, "p_lld": seek_0}),
         (ValueError, "must be LLDMode", two, {**both, "lld_mode": [capacitive, "capacitive"]}),
         (ValueError, "1 lld modes for 2", two, {**both, "lld_mode": [capacitive]}),
+        (
+          ValueError,
+          "an LLD mode that searches",
+          two,
+          {**both, "lld": PrepCmd.LldParameters.default()},
+        ),
         (ValueError, "cannot be mixed", two, {**both, "lld_mode": [capacitive, pressure]}),
       ]
       for error, match, containers, kwargs in refusals:
@@ -3647,7 +3653,7 @@ _GOLDEN_DISPENSE_CALLS: Dict[
     "A1:B1",
     _TWO,
     [0, 1],
-    {"lld": PrepCmd.LldParameters(False, 50.0, 4.0, 1.0, 0.5)},
+    {"lld_mode": _CAPACITIVE, "lld": PrepCmd.LldParameters(False, 50.0, 4.0, 1.0, 0.5)},
   ),
   "LLD with clld_sensitivity, read_timeout": (
     300,
@@ -4527,6 +4533,10 @@ def test_dispense_refuses_before_booking_or_sending():
         ({"piston_volumes": [5.0], "limit_curve_indices": [1]}, "limit curve 0"),
         ({"piston_volumes": [5.0], "post_mixes": [None, None]}, "post_mixes length"),
         ({"piston_volumes": [5.0], "minimum_traverse_height_end": 500.0}, "outside channel"),
+        (
+          {"piston_volumes": [5.0], "lld": PrepCmd.LldParameters.default()},
+          "an LLD mode that searches",
+        ),
       ):
         with pytest.raises(ValueError, match=match):
           await p.pipettes.dispense([well], use_channels=[0], liquid_heights=[2.0], **kwargs)
