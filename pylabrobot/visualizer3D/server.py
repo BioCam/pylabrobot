@@ -7,6 +7,7 @@ import asyncio
 import errno
 import functools
 import hmac
+import html
 import http.server
 import ipaddress
 import json
@@ -657,7 +658,7 @@ class Viewer3D:
         if path in ("/", "/index.html"):
           with open(os.path.join(directory, "index.html"), "r", encoding="utf-8") as f:
             content = f.read().replace("{{ ws_port }}", str(ws_port))
-            content = content.replace("{{ source_filename }}", name)
+            content = content.replace("{{ source_filename }}", html.escape(name))
           body = content.encode("utf-8")
           self.send_response(200)
           self.send_header("Content-type", "text/html; charset=utf-8")

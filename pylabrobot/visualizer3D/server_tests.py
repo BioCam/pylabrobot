@@ -451,6 +451,21 @@ class FileServerTests(unittest.IsolatedAsyncioTestCase):
       await asyncio.to_thread(urllib.request.urlopen, again)
     self.assertEqual(unchanged.exception.code, 304)
 
+  async def test_the_name_in_the_header_is_text_not_markup(self):
+    fs_port, ws_port = free_ports(2)
+    viewer = Viewer3D(
+      empty_facility(), open_browser=False, fs_port=fs_port, ws_port=ws_port, name="<b>run</b>"
+    )
+    await viewer.start()
+    try:
+      page = await asyncio.to_thread(
+        lambda: urllib.request.urlopen(f"http://127.0.0.1:{viewer.fs_port}/").read().decode()
+      )
+    finally:
+      await viewer.stop()
+    self.assertIn("&lt;b&gt;run&lt;/b&gt;", page)
+    self.assertNotIn("<b>run</b>", page)
+
   async def test_a_download_abandoned_by_the_browser_prints_no_traceback(self):
     """A page left mid-download closes its end of the socket, which the threaded server used to
     report as an exception in the request thread, a full traceback on every reload."""

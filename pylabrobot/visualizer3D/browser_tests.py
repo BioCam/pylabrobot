@@ -438,6 +438,25 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
         ).startswith(f"wss://lab.example:{WS_PORT}/?token=")
       )
 
+  async def test_a_declared_colour_cannot_write_markup_into_the_search(self):
+    """A search result spliced the colour into its markup, so a string colour closed the
+    attribute and ran whatever followed."""
+    painted = Resource(name="painted", size_x=10, size_y=10, size_z=10)
+    setattr(painted, "appearance", {"color": '0"><img src=x onerror="window.pwned=1">'})
+    self.facility.assign_child_resource(painted, location=Coordinate(500, 100, 0))
+    async with Browser() as browser:
+      await self.page(browser, "painted")
+      search = (
+        "(() => { const input = document.getElementById('search-input');"
+        " input.value = 'painted'; input.dispatchEvent(new Event('input'));"
+        " const results = document.getElementById('search-results');"
+        " return [results.querySelectorAll('.search-result').length,"
+        " results.querySelectorAll('img').length]; })()"
+      )
+      self.assertEqual(await browser.evaluate(search), [1, 0])
+      await asyncio.sleep(0.5)  # an injected image would have failed to load by now
+      self.assertIsNone(await browser.evaluate("window.pwned"))
+
   async def test_the_token_leaves_the_address_and_a_reload_still_connects(self):
     """The token stood in the address bar, so it went into bookmarks and onto a shared screen."""
     async with Browser() as browser:

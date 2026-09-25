@@ -534,9 +534,13 @@ function runSearch() {
     row.className = "search-result";
     row.tabIndex = 0;
     row.innerHTML =
-      `<span class="tree-node-dot" style="background:${hexOf(colorFor(modelOf(index)))}"></span>` +
       `<span class="sr-name">${escapeHtml(world.names[index])}</span>` +
       `<span class="sr-type">${escapeHtml(modelOf(index).type)}</span>`;
+    // A property, not markup: a declared colour is resource data, and could close the attribute.
+    const dot = document.createElement("span");
+    dot.className = "tree-node-dot";
+    dot.style.backgroundColor = hexOf(colorFor(modelOf(index)));
+    row.prepend(dot);
     row.addEventListener("mouseenter", () => showHoverBox(index));
     row.addEventListener("mouseleave", () => (hoverBox.visible = false));
     row.addEventListener("click", () => {
