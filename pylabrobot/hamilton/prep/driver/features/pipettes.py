@@ -5748,6 +5748,7 @@ class Pipettes:
     lld_mode: Optional[Pipettes.LLDMode],
     flow_rates: Optional[List[Optional[float]]],
     *,
+    liquid: List[float],
     clld_sensitivity: Optional[int],
     immersion_depths: Optional[List[float]],
     blow_out_air_volumes: Optional[List[Optional[float]]],
@@ -5780,6 +5781,7 @@ class Pipettes:
     Args:
       x_position: the batch's X, sent for every channel, in mm.
       drawn: the piston volumes, per container, in uL.
+      liquid: the liquid each takes, per container, in uL: what is booked.
       resource_offsets: as `aspirate` resolved them.
       z_fluid: the tip bottom height to aspirate at, in mm, per container: the floor touched under
         ZTOUCH, the surface found under CAPACITIVE. From the liquid heights when None.
@@ -5837,7 +5839,7 @@ class Pipettes:
       )
       for i, op in enumerate(ops)
     ]
-    booked = list(ctx.volumes)
+    booked = list(liquid)
     if not check_only and does_volume_tracking():
       # A draw past what a container holds takes the rest as air, which is how a well is emptied
       # on purpose, so under ZTOUCH that is an info line.
@@ -5845,12 +5847,12 @@ class Pipettes:
       for i, (ch, op) in enumerate(zip(use_channels, ops)):
         if op.resource.tracker.is_disabled:
           continue
-        booked[i] = min(ctx.volumes[i], max(held[id(op.resource)], 0.0))
-        if booked[i] < ctx.volumes[i]:
+        booked[i] = min(liquid[i], max(held[id(op.resource)], 0.0))
+        if booked[i] < liquid[i]:
           (logger.info if floor_touched else logger.warning)(
             "channel %d draws %.1f uL from %s, which holds %.1f uL; the rest is air",
             ch,
-            ctx.volumes[i],
+            liquid[i],
             op.resource.name,
             held[id(op.resource)],
           )
@@ -5911,7 +5913,7 @@ class Pipettes:
       # What each channel took is what its tip now holds, and the well no longer does
       if not check_only:
         finalize_volume_ops(volume_intents, aspirated)
-    return ctx.volumes
+    return liquid
 
   def _check_tips_have_room(self, tips: Sequence[Tip], volumes: Sequence[float]) -> None:
     """Refuse more than a tip has room for.
@@ -6497,6 +6499,7 @@ class Pipettes:
         pick(liquid_heights, batch),
         batch_modes[0],
         pick(flow_rates, batch),
+        liquid=[liquid[job] for job in batch.indices],
         clld_sensitivity=clld_sensitivity,
         immersion_depths=pick(immersion_depths, batch),
         blow_out_air_volumes=pick(blow_out_air_volumes, batch),
@@ -6543,6 +6546,7 @@ class Pipettes:
     lld_mode: Optional[Pipettes.LLDMode],
     flow_rates: Optional[List[Optional[float]]],
     *,
+    liquid: List[float],
     immersion_depths: Optional[List[float]],
     minimum_allowed_z_positions_during: Optional[List[float]],
     transport_air_volumes: Optional[List[float]],
@@ -6569,6 +6573,7 @@ class Pipettes:
     Args:
       x_position: the batch's X, sent for every channel, in mm.
       pushed: the piston volumes, per container, in uL.
+      liquid: the liquid each gives, per container, in uL: what is booked.
       resource_offsets: as `dispense` resolved them.
       z_fluid: the tip bottom height to dispense at, in mm, per container: above the floor
         touched under ZTOUCH, the surface found under CAPACITIVE. From the liquid heights when
@@ -6633,17 +6638,17 @@ class Pipettes:
 
     await dispense_in_one_move(check_only=True)
     if check_only:
-      return ctx.volumes
-    booked = list(ctx.volumes)
+      return liquid
+    booked = list(liquid)
     if does_volume_tracking():
       for i, (ch, op) in enumerate(zip(use_channels, ops)):
         held = op.tip.tracker.get_used_volume()
-        if not op.tip.tracker.is_disabled and held < ctx.volumes[i]:
+        if not op.tip.tracker.is_disabled and held < liquid[i]:
           booked[i] = max(held, 0.0)
           logger.warning(
             "channel %d dispenses %.1f uL into %s from a tip holding %.1f uL; the rest is air",
             ch,
-            ctx.volumes[i],
+            liquid[i],
             op.resource.name,
             held,
           )
@@ -6670,7 +6675,7 @@ class Pipettes:
     finally:
       # What each channel put down is what the well now holds, and its tip no longer does
       finalize_volume_ops(volume_intents, dispensed)
-    return ctx.volumes
+    return liquid
 
   def _check_containers_have_room(
     self, containers: Sequence[Container], volumes: Sequence[float]
@@ -7002,6 +7007,7 @@ class Pipettes:
         pick(liquid_heights, batch),
         batch_modes[0],
         pick(flow_rates, batch),
+        liquid=[liquid[job] for job in batch.indices],
         immersion_depths=pick(immersion_depths, batch),
         minimum_allowed_z_positions_during=lowest,
         transport_air_volumes=pick(transport_air_volumes, batch),

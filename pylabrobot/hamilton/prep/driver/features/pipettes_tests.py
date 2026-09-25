@@ -377,6 +377,37 @@ def test_aspirate_and_dispense_take_the_tips_water_class(rack):
   _run(_t())
 
 
+def test_the_trackers_book_the_liquid_not_the_corrected_piston_volume():
+  """As the STAR: the class corrects what the piston moves; the wells and tips book the liquid."""
+
+  async def _t():
+    set_volume_tracking(True)
+    try:
+      deck = PrepDeck()
+      tip_rack = deck[1] = hamilton_96_tiprack_300uL_NTR(name="tips", with_tips=True)
+      plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+      plate.get_item("A1").tracker.set_volume(200.0)
+      p = PrepSimulationDriver(deck=deck)
+      await p.setup()
+      assert p.pipettes is not None
+      await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], [0])
+      sent = _record(p)
+      await p.pipettes.aspirate([plate.get_item("A1")], volumes=[20.0], use_channels=[0])
+      (command,) = [c for c in sent if hasattr(c, "aspirate_parameters")]
+      assert command.aspirate_parameters[0].common.liquid_volume > 20.5
+      tip = p.pipettes.get_mounted_tip(0)
+      assert tip is not None and tip.tracker.get_used_volume() == pytest.approx(20.0)
+      assert plate.get_item("A1").tracker.get_used_volume() == pytest.approx(180.0)
+      await p.pipettes.dispense([plate.get_item("B1")], volumes=[20.0], use_channels=[0])
+      assert tip.tracker.get_used_volume() == pytest.approx(0.0)
+      assert plate.get_item("B1").tracker.get_used_volume() == pytest.approx(20.0)
+      await p.stop()
+    finally:
+      set_volume_tracking(False)
+
+  _run(_t())
+
+
 def test_a_50_uL_tip_has_no_class_with_jet_and_blow_out_false():
   """The STAR's table has no 50 uL water class for a partial dispense: refused before sending."""
 
