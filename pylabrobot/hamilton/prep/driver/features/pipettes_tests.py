@@ -4490,7 +4490,7 @@ def test_dispense_runs_one_command_per_x_and_books_each_batch_on_its_own():
 
 
 def test_dispense_refuses_before_booking_or_sending():
-  """No class for volumes, a flow rate of 0 and blow-out air are refused; nothing moves."""
+  """No class for volumes, a flow rate of 0, blow-out air and unverified slots refused; no move."""
 
   async def _t():
     set_volume_tracking(True)
@@ -4513,6 +4513,11 @@ def test_dispense_refuses_before_booking_or_sending():
           {"piston_volumes": [5.0], "z_air": [60.0], "pull_out_distances_transport_air": [5.0]},
           "one of z_air and pull_out",
         ),
+        ({"piston_volumes": [5.0], "side_touch_off_distance": 1.0}, "no side touch-off"),
+        ({"piston_volumes": [5.0], "post_mixes": [Mix(5.0, 2, 50.0)]}, "post-mixing"),
+        ({"piston_volumes": [5.0], "mix_positions_from_liquid_surface": [1.0]}, "post-mixing"),
+        ({"piston_volumes": [5.0], "limit_curve_indices": [1]}, "limit curve 0"),
+        ({"piston_volumes": [5.0], "post_mixes": [None, None]}, "post_mixes length"),
         ({"piston_volumes": [5.0], "minimum_traverse_height_end": 500.0}, "outside channel"),
       ):
         with pytest.raises(ValueError, match=match):

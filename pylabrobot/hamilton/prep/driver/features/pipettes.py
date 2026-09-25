@@ -6641,15 +6641,19 @@ class Pipettes:
     piston_volumes: Optional[Sequence[float]] = None,
     search_speed: float = 10.0,
     approach_speed: float = 125.0,
+    side_touch_off_distance: float = 0.0,
     immersion_depths: Optional[Sequence[float]] = None,
     minimum_allowed_z_positions_during: Optional[List[float]] = None,
     transport_air_volumes: Optional[List[float]] = None,
     cut_off_speeds: Optional[List[float]] = None,
     stop_back_volumes: Optional[List[float]] = None,
     blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
+    post_mixes: Optional[Sequence[Optional[Mix]]] = None,
+    mix_positions_from_liquid_surface: Optional[Sequence[float]] = None,
     settling_times: Optional[List[float]] = None,
     swap_speeds: Optional[List[float]] = None,
     pull_out_distances_transport_air: Optional[Sequence[float]] = None,
+    limit_curve_indices: Optional[Sequence[int]] = None,
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_during: Optional[float] = None,
     minimum_traverse_height_end: Optional[float] = None,
@@ -6688,6 +6692,8 @@ class Pipettes:
         liquid class. One of this and `volumes`.
       search_speed: of the driver's own search, the Z-touch, in mm/s.
       approach_speed: down to that search's start, the container's top, in mm/s.
+      side_touch_off_distance: sideways move against the wall to shed the drop, in mm. Only 0: the
+        Prep has none.
       immersion_depths: how far under the surface each tip dispenses, in mm, per container.
         With LLD the search's `z_submerge`, 2.0 when None; without, below the dispense height,
         0.0 when None.
@@ -6700,12 +6706,18 @@ class Pipettes:
       stop_back_volumes: the firmware's stop-back volume, in uL, per container. The liquid
         class's, else 0.0, when None.
       blow_out_air_volumes: None or 0 per container: the dispense sends out all the tip holds.
+      post_mixes: a `Mix` per container, mixed after the dispense, None for no mixing. Only None
+        until post-mixing is verified on the device.
+      mix_positions_from_liquid_surface: mixing depth under the surface, in mm, per container. 0.0
+        when None; only 0.0 until post-mixing is verified on the device.
       settling_times: how long the tip waits in the liquid, in s, per container. The liquid
         class's, else 0.0, when None.
       swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid
         class's, else 10.0, when None.
       pull_out_distances_transport_air: rise from the dispense height where the slow exit ends,
         in mm, per container. None ends it at `z_air`; refused beside `z_air`.
+      limit_curve_indices: TADM limit curve, 0 for none, per container. Only 0 until TADM is
+        verified on the device.
       minimum_traverse_height_start: the height every low channel's tip bottom is raised to before
         the first batch, in mm. Z safety when None.
       minimum_traverse_height_during: each tip bottom's height at the end of every batch but the
@@ -6769,9 +6781,12 @@ class Pipettes:
       "cut_off_speeds": cut_off_speeds,
       "stop_back_volumes": stop_back_volumes,
       "blow_out_air_volumes": blow_out_air_volumes,
+      "post_mixes": post_mixes,
+      "mix_positions_from_liquid_surface": mix_positions_from_liquid_surface,
       "settling_times": settling_times,
       "swap_speeds": swap_speeds,
       "pull_out_distances_transport_air": pull_out_distances_transport_air,
+      "limit_curve_indices": limit_curve_indices,
       "z_fluid": z_fluid,
       "z_bottom_search_offset": z_bottom_search_offset,
       "z_air": z_air,
@@ -6782,6 +6797,14 @@ class Pipettes:
         raise ValueError(f"{name} length must match containers ({n})")
     if z_air is not None and pull_out_distances_transport_air is not None:
       raise ValueError("give one of z_air and pull_out_distances_transport_air")
+    if side_touch_off_distance != 0:
+      raise ValueError(f"the Prep has no side touch-off; give 0, not {side_touch_off_distance}")
+    if any(m is not None for m in post_mixes or []) or any(
+      d != 0 for d in mix_positions_from_liquid_surface or []
+    ):
+      raise ValueError("post-mixing is not verified on the Prep yet; give no post_mixes")
+    if any(index != 0 for index in limit_curve_indices or []):
+      raise ValueError("TADM is not verified on the Prep yet; give limit curve 0")
     modes = self._get_lld_modes(lld_mode, n)
     touched = [] if modes is None else [j for j in range(n) if modes[j] == self.LLDMode.ZTOUCH]
     offsets = (
