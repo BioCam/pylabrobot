@@ -4636,10 +4636,16 @@ def test_aspirate_on_capacitive_searches_each_channel_then_draws_at_the_surface_
       wells[0].tracker.set_volume(120.0)
       wells[1].tracker.set_volume(200.0)
       sent.clear()
-      with patch.object(pipettes_logger, "warning") as warning:
+      probe = p.pipettes._probe_batch_liquid_heights
+      with (
+        patch.object(pipettes_logger, "warning") as warning,
+        patch.object(p.pipettes, "_probe_batch_liquid_heights", wraps=probe) as spy,
+      ):
         await p.pipettes.aspirate(
           wells, use_channels=[0, 1], piston_volumes=[10.0, 10.0], lld_mode=_CAPACITIVE
         )
+      tops = [w.get_location_wrt(p.deck, "c", "c", "t").z for w in wells]
+      assert spy.call_args.kwargs["z_start"] == pytest.approx([t + 2.0 for t in tops], abs=0.01)
       warned = [str(c.args) for c in warning.call_args_list if "measured" in str(c.args)]
       assert len(warned) == 1 and "plate_well_B1" in warned[0]
       seeks = [(link, c) for link, c in sent if isinstance(c, PrepCmd.PrepZAxisSeekCapacitiveLld)]
@@ -4685,7 +4691,7 @@ def test_capacitive_refuses_a_container_without_liquid_or_height_volume_function
       )
       sent.clear()
       for call in (p.pipettes.aspirate, p.pipettes.dispense):
-        with pytest.raises(RuntimeError, match="no height-volume functions"):
+        with pytest.raises(RuntimeError, match="Generate a height_volume_data dictionary"):
           await call([dish], use_channels=[0], piston_volumes=[1.0], lld_mode=_CAPACITIVE)
       assert sent == []
       await p.stop()

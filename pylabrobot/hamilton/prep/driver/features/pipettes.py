@@ -1144,8 +1144,10 @@ class Pipettes:
     self.default_clld_detect_mode: int = 0
     # Containers within this X distance share a batch, in mm.
     self.default_x_grouping_tolerance: float = 0.1
-    # How far above a container's top a liquid search starts, in mm.
+    # How far above a container's top a liquid search starts, in mm: enough to clear a brim-full
+    # well; more above a trough or tube, whose fill can dome.
     self.search_start_clearance: float = 5.0
+    self.well_search_start_clearance: float = 2.0
     # A search for a floor stops looking this far below the modelled cavity bottom, in mm: the
     # seating error of a plate, no more.
     self.search_limit_below_cavity_bottom: float = 1.0
@@ -6064,7 +6066,7 @@ class Pipettes:
     containers: Sequence[Container],
     *,
     z_cavity_bottom: Sequence[float],
-    z_start: Sequence[float],
+    z_top: Sequence[float],
     search_speed: float,
     approach_speed: float,
     sensitivity: Optional[int],
@@ -6078,7 +6080,8 @@ class Pipettes:
       batch: the channels and which container each has, by job index.
       containers: per job.
       z_cavity_bottom: per job, where the search ends, on the deck in mm.
-      z_start: per job, tip bottom height the search starts from, on the deck in mm.
+      z_top: per job, on the deck in mm; the search starts `well_search_start_clearance` above a
+        well's, `search_start_clearance` above any other's.
       search_speed: in mm/s.
       approach_speed: down to the starts, in mm/s.
       sensitivity: cLLD sensitivity. `default_clld_sensitivity` when None.
@@ -6089,11 +6092,15 @@ class Pipettes:
     Raises:
       RuntimeError: No liquid found.
     """
+    clearances = [
+      self.well_search_start_clearance if isinstance(c, Well) else self.search_start_clearance
+      for c in containers
+    ]
     found = await self._probe_batch_liquid_heights(
       batch,
       containers,
       z_cavity_bottom=z_cavity_bottom,
-      z_start=z_start,
+      z_start=[round(top + clearance, 2) for top, clearance in zip(z_top, clearances)],
       lld_modes=[self.LLDMode.CAPACITIVE] * len(containers),
       search_speed=search_speed,
       n_replicates=1,
@@ -6199,7 +6206,8 @@ class Pipettes:
     if lacking:
       raise RuntimeError(
         f"{lacking} have no height-volume functions, so what a search finds in them cannot become "
-        "a volume"
+        "a volume. Generate a height_volume_data dictionary for each and consider contributing "
+        "it back to PyLabRobot :)"
       )
 
   async def aspirate(
@@ -6212,22 +6220,22 @@ class Pipettes:
     lld_mode: Union[Pipettes.LLDMode, Sequence[Pipettes.LLDMode]] = LLDMode.OFF,
     flow_rates: Optional[Sequence[Optional[float]]] = None,
     *,
-    hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
+    hamilton_liquid_classes: Optional[Sequence[HamiltonLiquidClass]] = None,
     piston_volumes: Optional[Sequence[float]] = None,
     search_speed: float = 10.0,
     approach_speed: float = 125.0,
     blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
     immersion_depths: Optional[Sequence[float]] = None,
-    minimum_allowed_z_positions_during: Optional[List[float]] = None,
-    pre_wetting_volumes: Optional[List[float]] = None,
+    minimum_allowed_z_positions_during: Optional[Sequence[float]] = None,
+    pre_wetting_volumes: Optional[Sequence[float]] = None,
     pre_mixes: Optional[Sequence[Optional[Mix]]] = None,
     mix_positions_from_liquid_surface: Optional[Sequence[float]] = None,
     surface_following_distances: Optional[Sequence[float]] = None,
-    settling_times: Optional[List[float]] = None,
-    swap_speeds: Optional[List[float]] = None,
+    settling_times: Optional[Sequence[float]] = None,
+    swap_speeds: Optional[Sequence[float]] = None,
     clot_detection_heights: Optional[Sequence[float]] = None,
     pull_out_distances_transport_air: Optional[Sequence[float]] = None,
-    transport_air_volumes: Optional[List[float]] = None,
+    transport_air_volumes: Optional[Sequence[float]] = None,
     limit_curve_indices: Optional[Sequence[int]] = None,
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_during: Optional[float] = None,
@@ -6268,12 +6276,13 @@ class Pipettes:
       piston_volumes: how much each piston draws, in uL, per container, as given, with no liquid
         class. One of this and `volumes`.
       search_speed: of the driver's own search, liquid or floor, in mm/s.
-      approach_speed: down to that search's start, in mm/s: `search_start_clearance` over the
-        container's top for the liquid, the top for the floor.
+      approach_speed: down to that search's start, in mm/s: `well_search_start_clearance` over a
+        well's top or `search_start_clearance` over any other's for the liquid, the top for the
+        floor.
       blow_out_air_volumes: air drawn before the liquid, in uL, per container. The liquid
         class's, else 0.0, when None.
-      immersion_depths: how far under the surface, given or found, each tip aspirates, in mm, per
-        container. 0.0 when None.
+      immersion_depths: how far into the liquid each tip goes, in mm; negative is out of it. 0.0
+        when None.
       minimum_allowed_z_positions_during: how low each tip bottom may go, in mm, per container.
         The cavity bottom when None; under ZTOUCH the floor touched.
       pre_wetting_volumes: drawn and returned first, in uL, per container. The liquid class's
@@ -6442,7 +6451,7 @@ class Pipettes:
             batch,
             containers,
             z_cavity_bottom=z_cavity_bottom,
-            z_start=[round(top + self.search_start_clearance, 2) for top in z_top],
+            z_top=z_top,
             search_speed=search_speed,
             approach_speed=approach_speed,
             sensitivity=clld_sensitivity,
@@ -6728,21 +6737,21 @@ class Pipettes:
     lld_mode: Union[Pipettes.LLDMode, Sequence[Pipettes.LLDMode]] = LLDMode.OFF,
     flow_rates: Optional[Sequence[Optional[float]]] = None,
     *,
-    hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
+    hamilton_liquid_classes: Optional[Sequence[HamiltonLiquidClass]] = None,
     piston_volumes: Optional[Sequence[float]] = None,
     search_speed: float = 10.0,
     approach_speed: float = 125.0,
     side_touch_off_distance: float = 0.0,
     immersion_depths: Optional[Sequence[float]] = None,
-    minimum_allowed_z_positions_during: Optional[List[float]] = None,
-    transport_air_volumes: Optional[List[float]] = None,
-    cut_off_speeds: Optional[List[float]] = None,
-    stop_back_volumes: Optional[List[float]] = None,
+    minimum_allowed_z_positions_during: Optional[Sequence[float]] = None,
+    transport_air_volumes: Optional[Sequence[float]] = None,
+    cut_off_speeds: Optional[Sequence[float]] = None,
+    stop_back_volumes: Optional[Sequence[float]] = None,
     blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
     post_mixes: Optional[Sequence[Optional[Mix]]] = None,
     mix_positions_from_liquid_surface: Optional[Sequence[float]] = None,
-    settling_times: Optional[List[float]] = None,
-    swap_speeds: Optional[List[float]] = None,
+    settling_times: Optional[Sequence[float]] = None,
+    swap_speeds: Optional[Sequence[float]] = None,
     pull_out_distances_transport_air: Optional[Sequence[float]] = None,
     limit_curve_indices: Optional[Sequence[int]] = None,
     minimum_traverse_height_start: Optional[float] = None,
@@ -6782,12 +6791,13 @@ class Pipettes:
       piston_volumes: how much each piston pushes out, in uL, per container, as given, with no
         liquid class. One of this and `volumes`.
       search_speed: of the driver's own search, liquid or floor, in mm/s.
-      approach_speed: down to that search's start, in mm/s: `search_start_clearance` over the
-        container's top for the liquid, the top for the floor.
+      approach_speed: down to that search's start, in mm/s: `well_search_start_clearance` over a
+        well's top or `search_start_clearance` over any other's for the liquid, the top for the
+        floor.
       side_touch_off_distance: sideways move against the wall to shed the drop, in mm. Only 0: the
         Prep has none.
-      immersion_depths: how far under the surface, given or found, each tip dispenses, in mm, per
-        container. 0.0 when None.
+      immersion_depths: how far into the liquid each tip goes, in mm; negative is out of it. 0.0
+        when None.
       minimum_allowed_z_positions_during: how low each tip bottom may go, in mm, per container.
         The cavity bottom when None; under ZTOUCH the floor touched.
       transport_air_volumes: the firmware's transport air volume, in uL, per container. The
@@ -6954,7 +6964,7 @@ class Pipettes:
             batch,
             containers,
             z_cavity_bottom=z_cavity_bottom,
-            z_start=[round(top + self.search_start_clearance, 2) for top in z_top],
+            z_top=z_top,
             search_speed=search_speed,
             approach_speed=approach_speed,
             sensitivity=clld_sensitivity,
