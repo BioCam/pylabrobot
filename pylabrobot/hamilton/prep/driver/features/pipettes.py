@@ -634,7 +634,7 @@ def _absolute_z_from_well(
   loc = resource.get_location_wrt(deck, "c", "c", "cavity_bottom")
   well_bottom_z = loc.z + offset_z
   liquid_surface_z = well_bottom_z + (liquid_height or 0.0)
-  top_of_well_z = loc.z + resource.get_size_z()
+  top_of_well_z = resource.get_location_wrt(deck, "c", "c", "t").z
   z_air_z = top_of_well_z + z_air_margin_mm
   return _WellGeometry(well_bottom_z, liquid_surface_z, top_of_well_z, z_air_z)
 

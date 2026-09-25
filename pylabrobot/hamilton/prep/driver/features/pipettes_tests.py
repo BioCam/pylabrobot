@@ -18,6 +18,7 @@ from pylabrobot.hamilton.prep.driver import prep_commands as PrepCmd
 from pylabrobot.hamilton.prep.driver.features.pipettes import (
   MAX_CONTAINER_SEGMENTS,
   Pipettes,
+  _absolute_z_from_well,
   _get_container_segments,
   _get_profile_drop,
 )
@@ -42,6 +43,7 @@ from pylabrobot.hamilton.transport.tcp.wire_types import HcResultEntry
 from pylabrobot.lib.liquid_handling.mix import Mix
 from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import ChannelBatch
 from pylabrobot.resources import Container, Coordinate, PetriDish, Resource, Well
+from pylabrobot.resources.azenta.plates import azenta_96_wellplate_200uL_Vb_4titudeframestar
 from pylabrobot.resources.corning.axygen.plates import cor_axy_96_wellplate_500uL_Ub
 from pylabrobot.resources.corning.plates import cor_96_wellplate_360uL_Fb
 from pylabrobot.resources.errors import (
@@ -3094,6 +3096,22 @@ def test_a_surface_following_distance_counts_from_z_minimum():
     well, start, 25.0, surface_following_distance=0.3, profile_start=2.0
   )
   assert _get_profile_drop(segments, start - 2.0, 25.0) == pytest.approx(0.3, abs=1e-4)
+
+
+def test_a_containers_top_is_its_own_top_on_the_deck():
+  """The top, and z_air above it, is the container's top: its material thickness counted once."""
+  deck = PrepDeck()
+  glass = PetriDish(name="glass", diameter=77.0, height=86.0, material_z_thickness=11.0)
+  deck[6].assign_child_by_anchor(glass, parent_anchor=("c", "c", "t"), child_anchor=("c", "c", "b"))
+  plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+  azenta = deck[2] = azenta_96_wellplate_200uL_Vb_4titudeframestar(name="azenta")
+  wells = [plate.get_well("A1"), azenta.get_well("A1")]
+  for container in [glass, *wells]:
+    top = container.get_location_wrt(deck, "c", "c", "t").z
+    geometry = _absolute_z_from_well(container, deck)
+    assert geometry.top_of_well == pytest.approx(top)
+    assert geometry.z_air == pytest.approx(top + 2.0)
+  assert _absolute_z_from_well(glass, deck).top_of_well == pytest.approx(99.5)
 
 
 def _probe_liquid_setup():
