@@ -3410,6 +3410,154 @@ def test_aspirate_sends_one_lld_category_per_command():
   _run(_t())
 
 
+_ZTOUCH = Pipettes.LLDMode.ZTOUCH
+
+
+def _ztouch_setup(second_session: bool, touch: Optional[float]):
+  """A simulated Prep whose seeks for a floor answer `touch` mm under the modelled cavity bottom.
+
+  None answers as an untouched search does: a detection about 1 mm below its end. Every command
+  is recorded with the link it went on.
+  """
+  deck = PrepDeck()
+  rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
+  plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
+  p = PrepSimulationDriver(deck=deck)
+  if second_session:
+    p.second_io = _SimulatedIO(p)
+  sent: List[Tuple[str, Any]] = []
+  main_send, second_send = p.send_command, p.send_command_on_second_session
+
+  def answer(command: Any) -> PrepCmd.PrepZAxisSeekObstacle.Response:
+    # The search ends 1 mm under the modelled cavity bottom.
+    end = command.end_position
+    met = end - 0.9 if touch is None else end + 1.0 - touch
+    return PrepCmd.PrepZAxisSeekObstacle.Response(obstacle_detected=True, position=met)
+
+  async def on_main(command, *args, **kwargs):
+    sent.append(("main", command))
+    if isinstance(command, PrepCmd.PrepZAxisSeekObstacle):
+      return answer(command)
+    return await main_send(command, *args, **kwargs)
+
+  async def on_second(command, *args, **kwargs):
+    sent.append(("second", command))
+    if isinstance(command, PrepCmd.PrepZAxisSeekObstacle):
+      return answer(command)
+    return await second_send(command, *args, **kwargs)
+
+  p.send_command = on_main  # type: ignore[method-assign]
+  p.send_command_on_second_session = on_second  # type: ignore[method-assign]
+  return p, rack, plate, sent
+
+
+@pytest.mark.parametrize("second_session", [False, True])
+def test_aspirate_on_ztouch_touches_each_floor_then_draws_there_without_lld(second_session):
+  """Each channel's seek on its own link, both before the draw; the draw at the floor, no LLD."""
+
+  async def _t():
+    p, rack, plate, sent = _ztouch_setup(second_session, touch=0.3)
+    set_volume_tracking(True)
+    try:
+      await p.setup()
+      assert p.pipettes is not None
+      await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+      wells = plate["A1:B1"]
+      wells[0].tracker.set_volume(5.0)
+      wells[1].tracker.set_volume(200.0)
+      sent.clear()
+      with (
+        patch.object(pipettes_logger, "warning") as warning,
+        patch.object(pipettes_logger, "info") as info,
+      ):
+        await p.pipettes.aspirate(
+          wells, use_channels=[0, 1], piston_volumes=[10.0, 10.0], lld_mode=_ZTOUCH
+        )
+      warned = " ".join(str(c.args) for c in warning.call_args_list)
+      assert "aspirate on Z touch" in warned and "50 uL tips" in warned
+      assert any("the rest is air" in str(c.args) for c in info.call_args_list)
+      seeks = [(link, c) for link, c in sent if isinstance(c, PrepCmd.PrepZAxisSeekObstacle)]
+      assert [link for link, _ in seeks] == (["main", "second"] if second_session else ["main"] * 2)
+      assert [c.dest for _, c in seeks] == [p.pipettes.channels[ch].zaxis for ch in (0, 1)]
+      commands = [c for _, c in sent]
+      (draw,) = [c for c in commands if isinstance(c, _ASPIRATE_COMMANDS)]
+      assert isinstance(draw, PrepCmd.PrepAspirateNoLldMonitoringV2)
+      assert commands.index(draw) > commands.index(seeks[-1][1])
+      for entry, well in zip(draw.aspirate_parameters, wells):
+        floor = well.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z - 0.3
+        assert entry.no_lld.z_fluid == pytest.approx(floor)
+        assert entry.common.z_minimum == pytest.approx(floor)
+      # A1 held 5 uL: it gives those, and the tip takes the rest as air.
+      assert [w.tracker.get_used_volume() for w in wells] == [0.0, 190.0]
+      tips = [p.pipettes.get_mounted_tip(ch) for ch in (0, 1)]
+      assert [t.tracker.get_used_volume() for t in tips if t is not None] == [5.0, 10.0]
+    finally:
+      set_volume_tracking(False)
+    await p.stop()
+
+  _run(_t())
+
+
+def test_aspirate_on_ztouch_refuses_an_untouched_floor_with_nothing_drawn():
+  """A seek that reaches its end untouched refuses the batch before its draw; a height beside
+  ZTOUCH is refused before anything is sent."""
+
+  async def _t():
+    p, rack, plate, sent = _ztouch_setup(second_session=True, touch=None)
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+    wells = plate["A1:B1"]
+    sent.clear()
+    with pytest.raises(ValueError, match="whose Z touch finds the floor itself"):
+      await p.pipettes.aspirate(
+        wells, piston_volumes=[5.0, 5.0], liquid_heights=[2.0, None], lld_mode=_ZTOUCH
+      )
+    assert sent == []
+    with pytest.raises(RuntimeError, match="channel 0 met no floor in plate_well_A1"):
+      await p.pipettes.aspirate(wells, piston_volumes=[5.0, 5.0], lld_mode=_ZTOUCH)
+    commands = [c for _, c in sent]
+    seeks = [i for i, c in enumerate(commands) if isinstance(c, PrepCmd.PrepZAxisSeekObstacle)]
+    assert len(seeks) == 2
+    assert not any(isinstance(c, _ASPIRATE_COMMANDS) for c in commands)
+    assert any(isinstance(c, PrepCmd.PrepMoveZUpToSafe) for c in commands[seeks[-1] :])
+    tips = [p.pipettes.get_mounted_tip(ch) for ch in (0, 1)]
+    assert [t.tracker.get_used_volume() for t in tips if t is not None] == [0.0, 0.0]
+    await p.stop()
+
+  _run(_t())
+
+
+def test_aspirate_runs_ztouch_and_off_in_batches_of_their_own():
+  """ZTOUCH beside OFF at one X: a command each, both without LLD; only the ZTOUCH one seeks."""
+
+  async def _t():
+    p, rack, plate, sent = _ztouch_setup(second_session=False, touch=0.2)
+    await p.setup()
+    assert p.pipettes is not None
+    await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
+    wells = plate["A1:B1"]
+    sent.clear()
+    await p.pipettes.aspirate(
+      wells,
+      use_channels=[0, 1],
+      piston_volumes=[5.0, 5.0],
+      liquid_heights=[None, 3.0],
+      lld_mode=[_ZTOUCH, Pipettes.LLDMode.OFF],
+    )
+    commands = [c for _, c in sent]
+    seeks = [c for c in commands if isinstance(c, PrepCmd.PrepZAxisSeekObstacle)]
+    assert [c.dest for c in seeks] == [p.pipettes.channels[0].zaxis]
+    draws = [c for c in commands if isinstance(c, _ASPIRATE_COMMANDS)]
+    assert [type(c) for c in draws] == [PrepCmd.PrepAspirateNoLldMonitoringV2] * 2
+    bottoms = [w.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z for w in wells]
+    heights = sorted(e.no_lld.z_fluid for c in draws for e in c.aspirate_parameters)
+    assert heights == pytest.approx(sorted([bottoms[0] - 0.2, bottoms[1] + 3.0]))
+    await p.stop()
+
+  _run(_t())
+
+
 _DISPENSE_COMMANDS = (
   PrepCmd.PrepDispenseNoLld,
   PrepCmd.PrepDispenseWithLld,

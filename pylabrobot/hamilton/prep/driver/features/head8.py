@@ -591,6 +591,8 @@ class Head8:
     single LLDMode because the ganged head operates as one unit.
     """
     if lld_mode is not None:
+      if lld_mode == Pipettes.LLDMode.ZTOUCH:
+        raise ValueError("ZTOUCH is run for the pipetting channels only, not the 8MPH")
       if lld_mode != Pipettes.LLDMode.OFF:
         if allowed_modes is not None and lld_mode not in allowed_modes:
           raise ValueError(

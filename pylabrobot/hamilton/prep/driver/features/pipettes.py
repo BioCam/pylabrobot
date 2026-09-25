@@ -31,6 +31,7 @@ from typing import (
   Collection,
   Dict,
   Generic,
+  Iterable,
   List,
   Literal,
   NamedTuple,
@@ -1080,13 +1081,16 @@ class Pipettes:
     CAPACITIVE (value=1) is named GAMMA on the STAR — CAPACITIVE is the correct term.
     The Prep firmware uses separate command variants for LLD vs no-LLD, so all
     channels in a single aspirate/dispense call must use the same mode category
-    (any LLD mode, or OFF).
+    (any LLD mode, or OFF). Z touch finds a floor, not a liquid: an aspiration with it expects
+    liquid where there may be none, so `aspirate` warns when asked for it. The driver runs it; the
+    firmware is never sent it.
     """
 
     OFF = 0
     CAPACITIVE = 1  # STARBackend.LLDMode.GAMMA — capacitive (cLLD)
     PRESSURE = 2  # pressure-based (pLLD)
     DUAL = 3  # both capacitive and pressure
+    ZTOUCH = 4  # the Z axis's obstacle seek onto the floor, then the draw without LLD
 
   @dataclass(frozen=True)
   class _LldDefaults:
@@ -1149,6 +1153,12 @@ class Pipettes:
     self.default_x_grouping_tolerance: float = 0.1
     # How far above a container's top a liquid search starts, in mm.
     self.search_start_clearance: float = 5.0
+    # A search for a floor stops looking this far below the modelled cavity bottom, in mm: the
+    # seating error of a plate, no more.
+    self.search_limit_below_cavity_bottom: float = 1.0
+    # A seek that reached its end untouched answers a detection about 1 mm below it: a stop this
+    # close above the end, or below it, in mm, met nothing.
+    self._ztouch_end_allowance: float = 0.1
     if use_v1_aspirate_dispense:
       self.configuration.use_v1_aspirate_dispense = True
     self.setup_finished: bool = False
@@ -3286,6 +3296,7 @@ class Pipettes:
     final_position: float,
     speed: float,
     read_timeout: Optional[float] = None,
+    on_second_session: bool = False,
   ) -> PrepCmd.PrepZAxisSeekObstacle.Response:
     """Send `ZAxis.SeekObstacle` without checks.
 
@@ -3296,20 +3307,21 @@ class Pipettes:
       final_position: height to finish at in the channel's Z drive frame, in mm.
       speed: search speed in mm/s.
       read_timeout: answer timeout in seconds. Defaults to the link's.
+      on_second_session: whether to send it on the driver's second session.
 
     Returns:
       The firmware's answer, with the position in the Z drive frame.
     """
-    return await self._driver.send_command(
-      PrepCmd.PrepZAxisSeekObstacle(
-        dest=zaxis,
-        start_position=start_position,
-        end_position=end_position,
-        final_position=final_position,
-        velocity=speed,
-      ),
-      read_timeout=read_timeout,
+    command = PrepCmd.PrepZAxisSeekObstacle(
+      dest=zaxis,
+      start_position=start_position,
+      end_position=end_position,
+      final_position=final_position,
+      velocity=speed,
     )
+    if on_second_session:
+      return await self._driver.send_command_on_second_session(command, read_timeout=read_timeout)
+    return await self._driver.send_command(command, read_timeout=read_timeout)
 
   async def _unchecked_fw_z_axis_seek_capacitive_lld(
     self,
@@ -3427,6 +3439,119 @@ class Pipettes:
         await self._record_where_they_stopped()
       for (_, job), height in zip(jobs, heights):
         found[job].append(height)
+    return found
+
+  def _get_floor_search_end(self, channel: int, z_cavity_bottom: float) -> float:
+    """Where a channel's Z-touch stops looking: `search_limit_below_cavity_bottom` under the bottom.
+
+    Args:
+      channel: which channel, 0-indexed from the back.
+      z_cavity_bottom: the modelled cavity bottom, on the deck in mm.
+
+    Returns:
+      The tip bottom height, in mm.
+
+    Raises:
+      ValueError: If the channel cannot reach it.
+    """
+    end = round(z_cavity_bottom - self.search_limit_below_cavity_bottom, 2)
+    window = (
+      self.configuration.channels[channel].z_range
+      if channel < len(self.configuration.channels)
+      else None
+    )
+    if window is not None and not window[0] <= end <= window[1]:
+      raise ValueError(
+        f"a floor search to {end} mm is outside channel {channel} range "
+        f"[{window[0]:.1f}, {window[1]:.1f}]"
+      )
+    return end
+
+  async def _probe_batch_floors(
+    self,
+    batch: ChannelBatch,
+    *,
+    z_cavity_bottom: Sequence[float],
+    z_top: Sequence[float],
+    search_speed: float,
+    approach_speed: Optional[float] = None,
+    n_replicates: int = 1,
+  ) -> Dict[int, List[Optional[float]]]:
+    """Z-touch the floor of every container of one batch, by each channel's own seek, n times.
+
+    From the top to `search_limit_below_cavity_bottom` under the cavity bottom, on the tip bottom.
+    The channels go to their starts together at `approach_speed`, then seek: together with a
+    second session, one after the other without it. Each seek ends back at its start. None where a
+    channel reached the limit.
+
+    Args:
+      batch: the channels and which container each has, by job index.
+      z_cavity_bottom: per job, on the deck in mm.
+      z_top: per job, on the deck in mm.
+      search_speed: in mm/s.
+      approach_speed: down to the starts, in mm/s. `default_z_speed` when None.
+      n_replicates: how many rounds.
+
+    Returns:
+      The tip bottom heights touched, in mm on the deck, one list per job index; None where
+      nothing was touched.
+
+    Raises:
+      ValueError: If `search_speed` is not above 0, or a channel cannot reach its search end.
+      RuntimeError: If a channel has no Z axis in the firmware tree.
+    """
+    if search_speed <= 0:
+      raise ValueError(f"search_speed must be above 0 mm/s, is {search_speed}")
+    jobs = list(zip(batch.channels, batch.indices))
+    ends = {job: self._get_floor_search_end(channel, z_cavity_bottom[job]) for channel, job in jobs}
+    for channel, _ in jobs:
+      if channel >= len(self.channels) or self.channels[channel].zaxis is None:
+        raise RuntimeError(f"channel {channel} has no Z axis in the firmware tree")
+    parallel = self._driver.second_io is not None
+
+    async def seek(
+      channel: int, start: float, end: float, offset: float, second: bool
+    ) -> Optional[float]:
+      answer = await self._unchecked_fw_z_axis_seek_obstacle(
+        cast(Address, self.channels[channel].zaxis),
+        start_position=start + offset,
+        end_position=end + offset,
+        final_position=start + offset,
+        speed=search_speed,
+        read_timeout=(start - end) / search_speed + 30,
+        on_second_session=second,
+      )
+      met = float(answer.position) - offset
+      if not answer.obstacle_detected or met - end <= self._ztouch_end_allowance:
+        return None
+      return round(met, 2)
+
+    found: Dict[int, List[Optional[float]]] = {job: [] for _, job in jobs}
+    for _ in range(n_replicates):
+      await self.move_tool_bottom_to_z_positions(
+        {channel: z_top[job] for channel, job in jobs}, speed=approach_speed
+      )
+      here = await self.request_locations()
+      searches = []
+      for i, (channel, job) in enumerate(jobs):
+        # The drive frame is the tip bottom plus an offset, read where the channel now stands
+        offset = await self.channels[channel].request_z_drive_position() - here[channel].z
+        start = round(here[channel].z, 2)
+        searches.append((channel, start, ends[job], offset, parallel and i > 0))
+      try:
+        if parallel:
+          results = await asyncio.gather(
+            *(seek(*search) for search in searches), return_exceptions=True
+          )
+        else:
+          results = [await seek(*search) for search in searches]
+      finally:
+        await self._record_where_they_stopped()
+      failed = [result for result in results if isinstance(result, BaseException)]
+      if failed:
+        raise failed[0]
+      for (_, job), height in zip(jobs, results):
+        found[job].append(cast(Optional[float], height))
     return found
 
   def _plan_batched(
@@ -3814,13 +3939,14 @@ class Pipettes:
   ) -> Optional[float]:
     """Lower a channel where it stands until it meets resistance, with its Z axis's obstacle seek.
 
-    Sent as `ZAxis.SeekObstacle`. What it does, measured on PRPAA1087 on 2026-09-16: it goes to the start at
-    full speed, searches down at `search_speed`, and on contact keeps pressing until the Z drive's following error
-    reaches its limit of 150 increments (1.6 mm), then stops and answers. Its answer sits about 0.15 mm above
-    where the drive actually stopped. Only a firm surface is detected: a finger is pushed through, because it
-    yields and no following error builds. Reaching the end of the search untouched is also answered as a
-    detection, about 1 mm below the end, which `end_tolerance` turns back into None. Heights are of the tip bottom,
-    or of the stop disc without a tip.
+    Sent as `ZAxis.SeekObstacle`. What it does, as measured: it goes to the start at full speed,
+    searches down at `search_speed`, and on contact keeps pressing until the Z drive's following
+    error reaches its limit of 150 increments (1.6 mm), then stops and answers. Its answer sits
+    about 0.15 mm above where the drive actually stopped. Only a firm surface is detected: a finger
+    is pushed through, because it yields and no following error builds. Reaching the end of the
+    search untouched is also answered as a detection, about 1 mm below the end, which
+    `end_tolerance` turns back into None. Heights are of the tip bottom, or of the stop disc
+    without a tip.
 
     Args:
       channel_idx: which channel, 0-indexed from the back.
@@ -4001,6 +4127,20 @@ class Pipettes:
     if empty:
       raise NoTipError(f"no tip is mounted on {channels_named(empty)}; call pick_up_tips first.")
     return [tip for tip in mounted.values() if tip is not None]
+
+  def _warn_ztouch_on_soft_tips(self, channels: Iterable[int]) -> None:
+    """Warn where a channel carries a 50 uL tip: it bends under the force a Z-touch presses with."""
+    soft = sorted(
+      channel
+      for channel in channels
+      if isinstance(tip := self.get_mounted_tip(channel), HamiltonTip) and tip.nominal_volume == 50
+    )
+    if soft:
+      logger.warning(
+        "channels %s carry 50 uL tips, which bend under a Z-touch: the height touched may be off "
+        "and the tip may stay bent",
+        soft,
+      )
 
   async def _pick_up_tips_in_one_move(
     self,
@@ -4800,6 +4940,8 @@ class Pipettes:
     if lld_mode is not None:
       if len(lld_mode) != n:
         raise ValueError(f"lld_mode length must match len(ops): {len(lld_mode)} != {n}")
+      if Pipettes.LLDMode.ZTOUCH in lld_mode:
+        raise ValueError("ZTOUCH is the driver's own, never sent: `aspirate` runs it")
       if allowed_modes is not None:
         for m in lld_mode:
           if m != Pipettes.LLDMode.OFF and m not in allowed_modes:
@@ -5662,6 +5804,7 @@ class Pipettes:
     read_timeout: Optional[float],
     command_version: Optional[Literal["v1", "v2"]],
     check_only: bool,
+    floor_touched: bool = False,
   ) -> List[float]:
     """Aspirate one batch in one command, the channels already over it; book and settle volumes.
 
@@ -5675,6 +5818,8 @@ class Pipettes:
       by_liquid_class: whether `drawn` are liquid volumes, corrected by a liquid class.
       minimum_traverse_height_end: the tip bottom height every tip is left at, in mm.
       check_only: refuse what would be refused; nothing is booked or sent.
+      floor_touched: whether `z_fluid` is a Z-touch's floor: no liquid height is needed, and a
+        container holding less than asked gives what it holds, the rest is air.
 
     Returns:
       The liquid volume each channel takes, in uL.
@@ -5685,7 +5830,9 @@ class Pipettes:
       drawn,
       use_channels,
       offsets=resource_offsets,
-      liquid_height=self._get_liquid_heights(containers, liquid_heights, effective_lld),
+      liquid_height=self._get_liquid_heights(
+        containers, liquid_heights, effective_lld or floor_touched
+      ),
       flow_rates=flow_rates,
       blow_out_air_volume=blow_out_air_volumes,
     )
@@ -5739,12 +5886,30 @@ class Pipettes:
       )
       for i, op in enumerate(ops)
     ]
+    booked = list(ctx.volumes)
+    if floor_touched and not check_only and does_volume_tracking():
+      # A draw past what a container holds takes the rest as air, which is how a well is emptied
+      # on purpose, so under ZTOUCH that is an info line.
+      held = {id(op.resource): op.resource.tracker.get_used_volume() for op in ops}
+      for i, (ch, op) in enumerate(zip(use_channels, ops)):
+        if op.resource.tracker.is_disabled:
+          continue
+        booked[i] = min(ctx.volumes[i], max(held[id(op.resource)], 0.0))
+        if booked[i] < ctx.volumes[i]:
+          logger.info(
+            "channel %d draws %.1f uL from %s, which holds %.1f uL; the rest is air",
+            ch,
+            ctx.volumes[i],
+            op.resource.name,
+            held[id(op.resource)],
+          )
+        held[id(op.resource)] -= booked[i]
     volume_intents = [
       VolumeTransferIntent(
         channel=ch,
         container=op.resource,
         tip=op.tip,
-        volume_ul=ctx.volumes[i],
+        volume_ul=booked[i],
         direction="aspirate",
       )
       for i, (ch, op) in enumerate(zip(use_channels, ops))
@@ -5820,7 +5985,11 @@ class Pipettes:
     return ctx.volumes
 
   def _check_volumes_suffice(
-    self, containers: Sequence[Container], tips: Sequence[Tip], volumes: Sequence[float]
+    self,
+    containers: Sequence[Container],
+    tips: Sequence[Tip],
+    volumes: Sequence[float],
+    shortfall_expected: Collection[int] = (),
   ) -> None:
     """Refuse more than a container holds over all its jobs, or than a tip has room for.
 
@@ -5828,6 +5997,7 @@ class Pipettes:
       containers: per job.
       tips: the tip each job fills, per job.
       volumes: the liquid volume each job takes, in uL.
+      shortfall_expected: the jobs whose container may hold less: the rest is air.
 
     Raises:
       TooLittleLiquidError: If a container holds less than all its jobs take.
@@ -5836,9 +6006,10 @@ class Pipettes:
     if not does_volume_tracking():
       return
     asked: Dict[int, float] = {}
-    for container, volume in zip(containers, volumes):
-      asked[id(container)] = asked.get(id(container), 0.0) + volume
-    for container in {id(c): c for c in containers}.values():
+    for job, (container, volume) in enumerate(zip(containers, volumes)):
+      if job not in shortfall_expected:
+        asked[id(container)] = asked.get(id(container), 0.0) + volume
+    for container in {id(c): c for c in containers if id(c) in asked}.values():
       held = container.tracker.get_used_volume()
       if not container.tracker.is_disabled and asked[id(container)] - held > 1e-6:
         raise TooLittleLiquidError(
@@ -5848,6 +6019,57 @@ class Pipettes:
       room = tip.tracker.get_free_volume()
       if not tip.tracker.is_disabled and volume - room > 1e-6:
         raise TooLittleVolumeError(f"a tip with room for {room} uL asked to take {volume} uL")
+
+  async def _touch_floors_of_batch(
+    self,
+    batch: ChannelBatch,
+    containers: Sequence[Container],
+    *,
+    z_cavity_bottom: Sequence[float],
+    z_top: Sequence[float],
+    search_speed: float,
+    approach_speed: float,
+  ) -> List[float]:
+    """Z-touch the floor under each of the batch's containers, as `_probe_batch_floors`.
+
+    Args:
+      batch: the channels and which container each has, by job index.
+      containers: per job.
+      z_cavity_bottom: per job, on the deck in mm.
+      z_top: per job, on the deck in mm.
+      search_speed: in mm/s.
+      approach_speed: down to the tops, in mm/s.
+
+    Returns:
+      The tip bottom height touched, on the deck in mm, in the batch's job order.
+
+    Raises:
+      RuntimeError: A floor not met.
+    """
+    found = await self._probe_batch_floors(
+      batch,
+      z_cavity_bottom=z_cavity_bottom,
+      z_top=z_top,
+      search_speed=search_speed,
+      approach_speed=approach_speed,
+    )
+    floors = []
+    for channel, job in zip(batch.channels, batch.indices):
+      height = found[job][0]
+      if height is None:
+        raise RuntimeError(
+          f"channel {channel} met no floor in {containers[job].name} down to "
+          f"{self.search_limit_below_cavity_bottom} mm under its modelled cavity bottom"
+        )
+      logger.info(
+        "channel %d touched the floor of %s at %.2f mm, the model has it at %.2f mm",
+        channel,
+        containers[job].name,
+        height,
+        z_cavity_bottom[job],
+      )
+      floors.append(height)
+    return floors
 
   def _get_lld_modes(
     self, lld_mode: Union[Pipettes.LLDMode, Sequence[Pipettes.LLDMode], None], n: int
@@ -5891,6 +6113,8 @@ class Pipettes:
     *,
     hamilton_liquid_classes: Optional[List[HamiltonLiquidClass]] = None,
     piston_volumes: Optional[Sequence[float]] = None,
+    search_speed: float = 10.0,
+    approach_speed: float = 125.0,
     blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
     immersion_depths: Optional[Sequence[float]] = None,
     minimum_allowed_z_positions_during: Optional[List[float]] = None,
@@ -5923,6 +6147,10 @@ class Pipettes:
 
     One channel per container. Containers within `x_grouping_tolerance` of one X share a batch;
     the channels go to each batch in ascending X, and its volumes are booked when it aspirates.
+    CAPACITIVE, PRESSURE and DUAL search in the command; ZTOUCH touches the floor first, as
+    `_probe_batch_floors`, draws from it without LLD, and refuses a container whose floor is not
+    met. A draw past what a container holds is refused, except under ZTOUCH, where emptying is the
+    point: it takes air, with an info line.
 
     Args:
       containers: one per channel used, at most as many as there are channels.
@@ -5933,19 +6161,21 @@ class Pipettes:
         the heights. Channels sharing a container spread across it in Y when None.
       liquid_heights: where the liquid stands above each cavity bottom, in mm. None takes it from
         the tracked volume, or, with an LLD mode, leaves it to the search.
-      lld_mode: how to search, one for all or one per container. None runs a search only when
-        `lld` is given.
+      lld_mode: how the liquid, or under ZTOUCH the floor, is found, one for all or one per
+        container. None runs a search only when `lld` is given.
       flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
       hamilton_liquid_classes: the class for each container's volume. Looked up for the
         channel's tip, water, when None.
       piston_volumes: how much each piston draws, in uL, per container, as given, with no liquid
         class. One of this and `volumes`.
+      search_speed: of the driver's own search, the Z-touch, in mm/s.
+      approach_speed: down to that search's start, the container's top, in mm/s.
       blow_out_air_volumes: air drawn before the liquid, in uL, per container. The liquid
         class's, else 0.0, when None.
       immersion_depths: how far under the surface each tip aspirates, in mm, per container.
         With LLD the search's `z_submerge`, 2.0 when None; without, off `z_fluid`, 0.0 when None.
       minimum_allowed_z_positions_during: how low each tip bottom may go, in mm, per container.
-        The cavity bottom when None.
+        The cavity bottom when None; under ZTOUCH the floor touched.
       pre_wetting_volumes: drawn and returned first, in uL, per container. The liquid class's
         over-aspirate volume, else 0.0, when None.
       pre_mixes: a `Mix` per container, mixed before the draw, None for no mixing. Its
@@ -5994,11 +6224,13 @@ class Pipettes:
       ValueError: If an argument is out of range, the lists do not match, a channel repeats, there
         are more containers than channels, both or neither of `volumes` and `piston_volumes` are
         given, a class is given with `piston_volumes`, no class is known for a channel's tip, a
-        mode is not an `LLDMode`, a pressure mode is mixed with another or has no `p_lld`, or a
+        mode is not an `LLDMode`, a pressure mode is mixed with another or has no `p_lld`, a
+        liquid height or `z_fluid` is given beside ZTOUCH, a floor search is out of reach, or a
         limit curve or a TADM storage level is given.
-      RuntimeError: If a channel used carries no tip, or nothing knows where a container's
-        liquid stands: no height given, volume tracking off, no LLD.
-      TooLittleLiquidError: If a container holds less than it is asked for.
+      RuntimeError: If a channel used carries no tip, nothing knows where a container's liquid
+        stands: no height given, volume tracking off, no LLD; or no floor is met where a channel
+        touched.
+      TooLittleLiquidError: If a container not under ZTOUCH holds less than it is asked for.
     """
     containers = list(containers)
     n = len(containers)
@@ -6045,11 +6277,46 @@ class Pipettes:
         "TADM is not verified on the Prep yet; give limit curve 0 and no storage level"
       )
     modes = self._get_lld_modes(lld_mode, n)
+    touched = [] if modes is None else [j for j in range(n) if modes[j] == self.LLDMode.ZTOUCH]
+    told = [
+      containers[job].name
+      for job in touched
+      if z_fluid is not None or (liquid_heights is not None and liquid_heights[job] is not None)
+    ]
+    if told:
+      raise ValueError(
+        f"liquid_heights or z_fluid given for {told}, whose Z touch finds the floor itself; give "
+        "None there"
+      )
     offsets = (
       resource_offsets
       if resource_offsets is not None
       else self._get_resource_offsets(containers, use_channels)
     )
+    deck = self._require_deck()
+    z_cavity_bottom = [
+      round(c.get_location_wrt(deck, "c", "c", "cavity_bottom").z + o.z, 2)
+      for c, o in zip(containers, offsets)
+    ]
+    z_top = [
+      round(c.get_location_wrt(deck, "c", "c", "t").z + o.z, 2) for c, o in zip(containers, offsets)
+    ]
+    if touched:
+      if search_speed <= 0:
+        raise ValueError(f"search_speed must be above 0 mm/s, is {search_speed}")
+      low, high = self.configuration.z_speed_range
+      if not low <= approach_speed <= high:
+        raise ValueError(
+          f"approach_speed must be between {low} and {high} mm/s, is {approach_speed}"
+        )
+      for job in touched:
+        self._get_floor_search_end(use_channels[job], z_cavity_bottom[job])
+      logger.warning(
+        "channels %s aspirate on Z touch: from the floor of %s, air where no liquid is",
+        sorted({use_channels[job] for job in touched}),
+        [containers[job].name for job in touched],
+      )
+      self._warn_ztouch_on_soft_tips(use_channels[job] for job in touched)
     # One command carries one LLD category, so each mode is planned on its own.
     groups = (
       [list(range(n))]
@@ -6059,7 +6326,7 @@ class Pipettes:
     batches: List[ChannelBatch] = []
     for group in groups:
       _, planned = self._plan_batched(
-        self._require_deck(),
+        deck,
         [containers[job] for job in group],
         [use_channels[job] for job in group],
         [offsets[job] for job in group],
@@ -6077,6 +6344,27 @@ class Pipettes:
       """Aspirate the batch's containers in one command; the last leaves the tips at the end."""
       last = batch is batches[-1]
       batch_modes = pick(modes, batch)
+      heights_z = pick(z_fluid, batch)
+      lowest = pick(minimum_allowed_z_positions_during, batch)
+      on_ztouch = batch_modes is not None and batch_modes[0] == self.LLDMode.ZTOUCH
+      if on_ztouch:
+        # The draw goes without LLD, at the floor touched; the check before any motion has the
+        # modelled one.
+        floors = (
+          [z_cavity_bottom[job] for job in batch.indices]
+          if check_only
+          else await self._touch_floors_of_batch(
+            batch,
+            containers,
+            z_cavity_bottom=z_cavity_bottom,
+            z_top=z_top,
+            search_speed=search_speed,
+            approach_speed=approach_speed,
+          )
+        )
+        heights_z = floors
+        lowest = floors if lowest is None else lowest
+        batch_modes = [self.LLDMode.OFF] * len(batch.indices)
       return await self._aspirate_batch(
         batch.x_position,
         [containers[job] for job in batch.indices],
@@ -6096,8 +6384,8 @@ class Pipettes:
         lld=lld,
         p_lld=p_lld,
         clot_detection_heights=pick(clot_detection_heights, batch),
-        z_fluid=pick(z_fluid, batch),
-        minimum_allowed_z_positions_during=pick(minimum_allowed_z_positions_during, batch),
+        z_fluid=heights_z,
+        minimum_allowed_z_positions_during=lowest,
         z_bottom_search_offset=pick(z_bottom_search_offset, batch),
         pre_mixes=pick(pre_mixes, batch),
         mix_positions_from_liquid_surface=pick(mix_positions_from_liquid_surface, batch),
@@ -6114,6 +6402,7 @@ class Pipettes:
         read_timeout=read_timeout,
         command_version=command_version,
         check_only=check_only,
+        floor_touched=on_ztouch,
       )
 
     # Every refusal the model can decide comes before the first command.
@@ -6121,7 +6410,9 @@ class Pipettes:
     for batch in batches:
       for job, volume in zip(batch.indices, await aspirate_batch(batch, check_only=True)):
         taken[job] = volume
-    self._check_volumes_suffice(containers, self._require_mounted_tips(use_channels), taken)
+    self._check_volumes_suffice(
+      containers, self._require_mounted_tips(use_channels), taken, shortfall_expected=touched
+    )
     await self._check_tips_and_raise(use_channels, minimum_traverse_height_start)
     await self._execute_batched(aspirate_batch, batches, minimum_traverse_height_during)
 
