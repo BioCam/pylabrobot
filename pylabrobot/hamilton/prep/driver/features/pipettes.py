@@ -5761,6 +5761,7 @@ class Pipettes:
     mix_positions_from_liquid_surface: Optional[List[float]],
     settling_times: Optional[List[float]],
     swap_speeds: Optional[List[float]],
+    pull_out_distances_transport_air: Optional[List[float]],
     transport_air_volumes: Optional[List[float]],
     z_air: Optional[List[float]],
     minimum_traverse_height_end: Optional[float],
@@ -5926,8 +5927,9 @@ class Pipettes:
           transport_air_volumes,
           [hlc.aspiration_air_transport_volume if hlc is not None else 0.0 for hlc in classes],
         ),
+        pull_out_distances_transport_air=pull_out_distances_transport_air,
         minimum_traverse_height_end=minimum_traverse_height_end,
-        z_air=ctx.z_air,
+        z_air=ctx.z_air if pull_out_distances_transport_air is None else None,
         z_bottom_search_offset=ctx.z_bottom_search_offset,
         container_segments=segments,
         lld=lld,
@@ -6137,6 +6139,7 @@ class Pipettes:
     settling_times: Optional[List[float]] = None,
     swap_speeds: Optional[List[float]] = None,
     clot_detection_heights: Optional[Sequence[float]] = None,
+    pull_out_distances_transport_air: Optional[Sequence[float]] = None,
     transport_air_volumes: Optional[List[float]] = None,
     limit_curve_indices: Optional[Sequence[int]] = None,
     minimum_traverse_height_start: Optional[float] = None,
@@ -6202,6 +6205,8 @@ class Pipettes:
         class's, else 10.0, when None.
       clot_detection_heights: how far a clot may hold each tip back, in mm, per container. 0.0 when
         None; only 0.0 until the check is verified on the device.
+      pull_out_distances_transport_air: rise from the aspirate height before drawing transport
+        air, in mm, per container. None draws it at `z_air`; refused beside `z_air`.
       transport_air_volumes: air drawn after the liquid, in uL, per container. The liquid
         class's, else 0.0, when None.
       limit_curve_indices: TADM limit curve, 0 for none, per container. Only 0 until TADM is
@@ -6276,6 +6281,7 @@ class Pipettes:
       "mix_positions_from_liquid_surface": mix_positions_from_liquid_surface,
       "settling_times": settling_times,
       "swap_speeds": swap_speeds,
+      "pull_out_distances_transport_air": pull_out_distances_transport_air,
       "transport_air_volumes": transport_air_volumes,
       "z_air": z_air,
       "container_segments": container_segments,
@@ -6284,6 +6290,8 @@ class Pipettes:
     for name, values in per_container.items():
       if values is not None and len(values) != n:
         raise ValueError(f"{name} length must match containers ({n})")
+    if z_air is not None and pull_out_distances_transport_air is not None:
+      raise ValueError("give one of z_air and pull_out_distances_transport_air")
     if any(index != 0 for index in limit_curve_indices or []) or tadm_storage_level is not None:
       raise ValueError(
         "TADM is not verified on the Prep yet; give limit curve 0 and no storage level"
@@ -6393,6 +6401,7 @@ class Pipettes:
         mix_positions_from_liquid_surface=pick(mix_positions_from_liquid_surface, batch),
         settling_times=pick(settling_times, batch),
         swap_speeds=pick(swap_speeds, batch),
+        pull_out_distances_transport_air=pick(pull_out_distances_transport_air, batch),
         transport_air_volumes=pick(transport_air_volumes, batch),
         z_air=pick(z_air, batch),
         minimum_traverse_height_end=(
@@ -6439,6 +6448,7 @@ class Pipettes:
     blow_out_air_volumes: Optional[List[Optional[float]]],
     settling_times: Optional[List[float]],
     swap_speeds: Optional[List[float]],
+    pull_out_distances_transport_air: Optional[List[float]],
     minimum_traverse_height_end: Optional[float],
     clld_sensitivity: Optional[int],
     lld: Optional[PrepCmd.LldParameters],
@@ -6547,9 +6557,10 @@ class Pipettes:
         stop_back_volumes=stop_back_volumes,
         settling_times=settling_times,
         swap_speeds=swap_speeds,
+        pull_out_distances_transport_air=pull_out_distances_transport_air,
         transport_air_volumes=transport_air_volumes,
         minimum_traverse_height_end=minimum_traverse_height_end,
-        z_air=ctx.z_air,
+        z_air=ctx.z_air if pull_out_distances_transport_air is None else None,
         z_bottom_search_offset=ctx.z_bottom_search_offset,
         container_segments=container_segments,
         lld=lld,
@@ -6638,6 +6649,7 @@ class Pipettes:
     blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
     settling_times: Optional[List[float]] = None,
     swap_speeds: Optional[List[float]] = None,
+    pull_out_distances_transport_air: Optional[Sequence[float]] = None,
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_during: Optional[float] = None,
     minimum_traverse_height_end: Optional[float] = None,
@@ -6692,6 +6704,8 @@ class Pipettes:
         class's, else 0.0, when None.
       swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid
         class's, else 10.0, when None.
+      pull_out_distances_transport_air: rise from the dispense height where the slow exit ends,
+        in mm, per container. None ends it at `z_air`; refused beside `z_air`.
       minimum_traverse_height_start: the height every low channel's tip bottom is raised to before
         the first batch, in mm. Z safety when None.
       minimum_traverse_height_during: each tip bottom's height at the end of every batch but the
@@ -6757,6 +6771,7 @@ class Pipettes:
       "blow_out_air_volumes": blow_out_air_volumes,
       "settling_times": settling_times,
       "swap_speeds": swap_speeds,
+      "pull_out_distances_transport_air": pull_out_distances_transport_air,
       "z_fluid": z_fluid,
       "z_bottom_search_offset": z_bottom_search_offset,
       "z_air": z_air,
@@ -6765,6 +6780,8 @@ class Pipettes:
     for name, values in per_container.items():
       if values is not None and len(values) != n:
         raise ValueError(f"{name} length must match containers ({n})")
+    if z_air is not None and pull_out_distances_transport_air is not None:
+      raise ValueError("give one of z_air and pull_out_distances_transport_air")
     modes = self._get_lld_modes(lld_mode, n)
     touched = [] if modes is None else [j for j in range(n) if modes[j] == self.LLDMode.ZTOUCH]
     offsets = (
@@ -6862,6 +6879,7 @@ class Pipettes:
         blow_out_air_volumes=pick(blow_out_air_volumes, batch),
         settling_times=pick(settling_times, batch),
         swap_speeds=pick(swap_speeds, batch),
+        pull_out_distances_transport_air=pick(pull_out_distances_transport_air, batch),
         minimum_traverse_height_end=(
           minimum_traverse_height_end if last else minimum_traverse_height_during
         ),

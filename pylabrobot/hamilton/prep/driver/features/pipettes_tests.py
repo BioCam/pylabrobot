@@ -3102,6 +3102,12 @@ _GOLDEN_ASPIRATE_CALLS: Dict[str, Tuple[int, str, Optional[List[int]], Dict[str,
     [0, 1],
     {**_ASPIRATE_TWO, "surface_following_distances": [0.0, 2.0]},
   ),
+  "pull-out distances": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {**_ASPIRATE_TWO, "pull_out_distances_transport_air": [5.0, 7.5]},
+  ),
 }
 
 
@@ -3195,6 +3201,9 @@ _GOLDEN_ASPIRATE_FRAMES: Dict[str, List[str]] = {
   ],
   "surface following distances": [
     "60.0 5763eca12d07f7f4c0a21d83b7608adaa1bc5fe3c5b2a6caa0818b54576b50d9",
+  ],
+  "pull-out distances": [
+    "60.0 a058cd6c0b7e44a00c1e24e6e54b944b8844f4b86c372570793d57e0650164d3",
   ],
 }
 
@@ -3352,6 +3361,12 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
         (ValueError, "flow_rates length", plate["A1"], {**one, "flow_rates": [50.0, 50.0]}),
         (ValueError, "flow_rates must be above 0", plate["A1"], {**one, "flow_rates": [0.0]}),
         (ValueError, "clot detection", plate["A1"], {**one, "clot_detection_heights": [1.5]}),
+        (
+          ValueError,
+          "one of z_air and pull_out",
+          plate["A1"],
+          {**one, "z_air": [60.0], "pull_out_distances_transport_air": [5.0]},
+        ),
         (ValueError, "outside channel", two, {**both, "minimum_traverse_height_end": 200.0}),
         (
           TooLittleLiquidError,
@@ -3680,6 +3695,13 @@ _GOLDEN_DISPENSE_CALLS: Dict[
     _TWO,
     [0, 1],
     {"lld_mode": _CAPACITIVE, "immersion_depths": [1.0, 1.5]},
+  ),
+  "pull-out distances": (
+    300,
+    "A1:B1",
+    _TWO,
+    [0, 1],
+    {"liquid_heights": [3.0, 4.0], "pull_out_distances_transport_air": [5.0, 7.5]},
   ),
   "z values given": (
     300,
@@ -4110,6 +4132,24 @@ _GOLDEN_DISPENSE_FRAMES: Dict[str, List[str]] = {
     "040000007a431e00140017010200010017010200010028000400000090401e00140017010200010005000200"
     "00002000040001000000",
   ],
+  "pull-out distances": [
+    "60.0 "
+    "84020630000002000100ffff00e0010000100000021380020000000001032a0000011f0060021e002c011701"
+    "0200000020000400020000001e002600170102000000280004001f854f412800040048619742280004000000"
+    "0000280004000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333"
+    "e742280004000000004028000400cdcc4441280004000000f042280004000000a040280004001f855b402800"
+    "0400000000002800040000000000280004000000803f06000400000000001e002c0017010200000028000400"
+    "e17a204128000400e17a7041170102000000280004000000004028000400000000001e002400170102000100"
+    "280004000000000028000400000000000401020000002800040000007a431e00140017010200010017010200"
+    "010028000400000090401e00140017010200010005000200000020000400010000001e002c01170102000000"
+    "20000400010000001e002600170102000000280004001f854f41280004004861854228000400000000002800"
+    "04000000a0401f0000001e00640017010200000017010200010028000400c3f5e040280004003333e7422800"
+    "040000000040280004009a99b941280004000000f042280004000000a040280004001f855b40280004000000"
+    "00002800040000000000280004000000803f06000400000000001e002c0017010200000028000400e17a3041"
+    "28000400713d9441170102000000280004000000004028000400000000001e00240017010200010028000400"
+    "0000000028000400000000000401020000002800040000007a431e0014001701020001001701020001002800"
+    "0400000090401e0014001701020001000500020000002000040001000000",
+  ],
   "z values given": [
     "60.0 "
     "84020630000002000100ffff00e0010000100000021380020000000001032a0000011f0060021e002c011701"
@@ -4469,6 +4509,10 @@ def test_dispense_refuses_before_booking_or_sending():
         ({"piston_volumes": [5.0], "flow_rates": [0.0]}, "flow_rates must be above 0"),
         ({"piston_volumes": [5.0], "blow_out_air_volumes": [1.0]}, "blow-out air on aspirate"),
         ({"piston_volumes": [5.0], "swap_speeds": [1.0, 1.0]}, "swap_speeds length"),
+        (
+          {"piston_volumes": [5.0], "z_air": [60.0], "pull_out_distances_transport_air": [5.0]},
+          "one of z_air and pull_out",
+        ),
         ({"piston_volumes": [5.0], "minimum_traverse_height_end": 500.0}, "outside channel"),
       ):
         with pytest.raises(ValueError, match=match):
