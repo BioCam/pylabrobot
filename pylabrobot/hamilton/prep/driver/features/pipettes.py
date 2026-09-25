@@ -5502,8 +5502,8 @@ class Pipettes:
       immersion_depths: how far under the surface each tip dispenses. With LLD the search's
         `z_submerge`, 2.0 when None; without, off the location's z, 0.0 when None.
       transport_air_volumes: the firmware's transport air volume. 0.0 when None.
-      flow_rates: 100.0 when None.
-      cut_off_speeds: the firmware's cutoff speed. 100.0 when None.
+      flow_rates: 120.0 when None.
+      cut_off_speeds: the firmware's cutoff speed. 5.0 when None.
       stop_back_volumes: the firmware's stop-back volume. 0.0 when None.
       settling_times: wait in the liquid. 0.0 when None.
       swap_speeds: speed of leaving the liquid. 10.0 when None.
@@ -5548,10 +5548,10 @@ class Pipettes:
       base = default_lld_params(True, lld_mode=Pipettes.LLDMode.CAPACITIVE).c_lld
       c_lld = replace(base, sensitivity=clld_sensitivity)
     lld_defaults = self._default_lld_params(effective_lld, c_lld=c_lld, lld_mode=lld_mode)
-    flow_rates = fill_in_defaults(flow_rates, [100.0] * n)
+    flow_rates = fill_in_defaults(flow_rates, [120.0] * n)
     if any(f <= 0 for f in flow_rates):
       raise ValueError(f"flow_rates must be above 0, got {flow_rates}")
-    cut_off_speeds = fill_in_defaults(cut_off_speeds, [100.0] * n)
+    cut_off_speeds = fill_in_defaults(cut_off_speeds, [5.0] * n)
     stop_back_volumes = fill_in_defaults(stop_back_volumes, [0.0] * n)
     settling_times = fill_in_defaults(settling_times, [0.0] * n)
     swap_speeds = fill_in_defaults(swap_speeds, [10.0] * n)
@@ -6523,7 +6523,7 @@ class Pipettes:
     )
     cut_off_speeds = fill_in_defaults(
       cut_off_speeds,
-      [hlc.dispense_stop_flow_rate if hlc is not None else 100.0 for hlc in classes],
+      [hlc.dispense_stop_flow_rate if hlc is not None else 5.0 for hlc in classes],
     )
     deck = self._require_deck()
     locations = [
@@ -6550,7 +6550,7 @@ class Pipettes:
         flow_rates=[
           op.flow_rate
           if op.flow_rate is not None
-          else (hlc.dispense_flow_rate if hlc is not None else 100.0)
+          else (hlc.dispense_flow_rate if hlc is not None else 120.0)
           for op, hlc in zip(ops, classes)
         ],
         cut_off_speeds=cut_off_speeds,
@@ -6681,7 +6681,7 @@ class Pipettes:
       liquid_heights: where the liquid stands above each cavity bottom, in mm. 0 when None.
       lld_mode: how the liquid, or under ZTOUCH the floor, is found, one for all or one per
         container: OFF, CAPACITIVE or ZTOUCH. None runs a search only when `lld` is given.
-      flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
+      flow_rates: in uL/s, per container. The liquid class's, else 120.0, when None.
       hamilton_liquid_classes: the class for each container's volume. Looked up for the
         channel's tip, water, when None.
       piston_volumes: how much each piston pushes out, in uL, per container, as given, with no
@@ -6696,7 +6696,7 @@ class Pipettes:
       transport_air_volumes: the firmware's transport air volume, in uL, per container. The
         liquid class's, else 0.0, when None.
       cut_off_speeds: the firmware's cutoff speed, per container. The liquid class's stop flow
-        rate, else 100.0, when None.
+        rate, else 5.0, when None.
       stop_back_volumes: the firmware's stop-back volume, in uL, per container. The liquid
         class's, else 0.0, when None.
       blow_out_air_volumes: None or 0 per container: the dispense sends out all the tip holds.
