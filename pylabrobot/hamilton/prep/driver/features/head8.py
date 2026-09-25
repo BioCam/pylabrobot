@@ -29,14 +29,12 @@ from typing import (
   NamedTuple,
   Optional,
   Sequence,
+  Tuple,
   Union,
   cast,
 )
 
-from pylabrobot.hamilton.liquid_class_resolver import (
-  corrected_volumes_for_ops,
-  resolve_hamilton_liquid_classes,
-)
+from pylabrobot.hamilton.liquid_class_resolver import get_volumes_and_classes
 from pylabrobot.hamilton.liquid_classes import HamiltonLiquidClass
 from pylabrobot.hamilton.transport.tcp.packets import Address
 from pylabrobot.legacy.liquid_handling.errors import ChannelizedError
@@ -1111,6 +1109,59 @@ class Head8:
 
   # -- aspirate / dispense orchestrators -----------------------------------------------------------
 
+  def _get_volume_and_class(
+    self,
+    containers: Sequence[Container],
+    volume: float,
+    hamilton_liquid_classes: Optional[
+      Union[HamiltonLiquidClass, List[Optional[HamiltonLiquidClass]]]
+    ],
+    jet: bool,
+    blow_out: bool,
+    disable_volume_correction: bool,
+  ) -> Tuple[float, float, Optional[HamiltonLiquidClass]]:
+    """The liquid, the piston volume that moves it, and the one class the 8 probes share.
+
+    Args:
+      containers: per probe.
+      volume: the liquid per probe, in uL; the piston volume with `disable_volume_correction`.
+      hamilton_liquid_classes: one for all, or one per probe; looked up per probe's tip, water,
+        `jet` and `blow_out` when None.
+      jet: for the lookup.
+      blow_out: for the lookup.
+      disable_volume_correction: send `volume` as given, with no class.
+
+    Raises:
+      ValueError: Not one class or 8, a class beside `disable_volume_correction`, no class known
+        for a probe's tip, or probes with different classes: one piston moves them all.
+    """
+    given: Optional[List[Optional[HamiltonLiquidClass]]]
+    if hamilton_liquid_classes is None or isinstance(hamilton_liquid_classes, HamiltonLiquidClass):
+      given = None if hamilton_liquid_classes is None else [hamilton_liquid_classes] * NUM_PROBES
+    else:
+      given = list(hamilton_liquid_classes)
+      if len(given) != NUM_PROBES:
+        raise ValueError("hamilton_liquid_classes must be a single HLC or length-8 list")
+      if any(hlc is None for hlc in given):
+        raise ValueError("hamilton_liquid_classes must name a class for every probe")
+    if disable_volume_correction and given is not None:
+      raise ValueError(
+        "disable_volume_correction sends the volume as given; a class would correct it"
+      )
+    liquid, piston, classes = get_volumes_and_classes(
+      containers,
+      list(range(NUM_PROBES)),
+      self._require_mounted_tips(),
+      None if disable_volume_correction else [volume] * NUM_PROBES,
+      [volume] * NUM_PROBES if disable_volume_correction else None,
+      cast(Optional[List[HamiltonLiquidClass]], given),
+      [jet] * NUM_PROBES,
+      [blow_out] * NUM_PROBES,
+    )
+    if classes is not None and any(hlc is not classes[0] for hlc in classes):
+      raise ValueError("the 8 probes move on one piston: give one liquid class for all of them")
+    return liquid[0], piston[0], None if classes is None else classes[0]
+
   async def aspirate(
     self,
     containers: Sequence[Container],
@@ -1140,6 +1191,8 @@ class Head8:
     hamilton_liquid_classes: Optional[
       Union[HamiltonLiquidClass, List[Optional[HamiltonLiquidClass]]]
     ] = None,
+    jet: bool = False,
+    blow_out: bool = False,
     disable_volume_correction: bool = False,
     read_timeout: Optional[float] = None,
     command_version: Optional[Literal["v1", "v2"]] = None,
@@ -1162,32 +1215,20 @@ class Head8:
     targets = self._resolve_liquid_targets(containers, "aspirate")
     tip = self._require_mounted_tip()
 
-    explicit: Optional[List[Optional[HamiltonLiquidClass]]]
-    if isinstance(hamilton_liquid_classes, HamiltonLiquidClass) or hamilton_liquid_classes is None:
-      explicit = None if hamilton_liquid_classes is None else [hamilton_liquid_classes]
-    else:
-      explicit = list(hamilton_liquid_classes)
-      if len(explicit) == NUM_PROBES:
-        explicit = [explicit[0]]
-      elif len(explicit) != 1:
-        raise ValueError("hamilton_liquid_classes must be a single HLC or length-8 list")
-
-    class _TipVol:
-      def __init__(self, tip: Tip, volume: float):
-        self.tip = tip
-        self.volume = volume
-
-    tip_vol = _TipVol(tip, float(volume))
-    hlcs = resolve_hamilton_liquid_classes(explicit, [tip_vol], jet=False, blow_out=False)
-    hlc = hlcs[0]
-    corrected = corrected_volumes_for_ops([tip_vol], hlcs, [disable_volume_correction])[0]
-
     traverse_z = self._resolve_traverse_height()
     end_resolved = (
       z_final if z_final is not None else traverse_z - (tip.get_size_z() - tip.fitting_depth)
     )
 
     wg = _absolute_z_from_well(targets.ref_resource, self._require_deck(), liquid_height)
+    liquid, corrected, hlc = self._get_volume_and_class(
+      targets.volume_containers,
+      float(volume),
+      hamilton_liquid_classes,
+      jet,
+      blow_out,
+      disable_volume_correction,
+    )
     resolved_z_fluid = z_fluid if z_fluid is not None else wg.liquid_surface
     resolved_z_air = z_air if z_air is not None else wg.z_air
     resolved_z_minimum = z_minimum if z_minimum is not None else wg.well_bottom
@@ -1298,7 +1339,7 @@ class Head8:
         channel=ch,
         container=targets.volume_containers[ch],
         tip=mounted[ch],
-        volume_ul=corrected,
+        volume_ul=liquid,
         direction="aspirate",
       )
       for ch in use_channels
@@ -1348,6 +1389,8 @@ class Head8:
     hamilton_liquid_classes: Optional[
       Union[HamiltonLiquidClass, List[Optional[HamiltonLiquidClass]]]
     ] = None,
+    jet: bool = False,
+    blow_out: bool = False,
     disable_volume_correction: bool = False,
     read_timeout: Optional[float] = None,
     command_version: Optional[Literal["v1", "v2"]] = None,
@@ -1370,32 +1413,20 @@ class Head8:
     targets = self._resolve_liquid_targets(containers, "dispense")
     tip = self._require_mounted_tip()
 
-    explicit: Optional[List[Optional[HamiltonLiquidClass]]]
-    if isinstance(hamilton_liquid_classes, HamiltonLiquidClass) or hamilton_liquid_classes is None:
-      explicit = None if hamilton_liquid_classes is None else [hamilton_liquid_classes]
-    else:
-      explicit = list(hamilton_liquid_classes)
-      if len(explicit) == NUM_PROBES:
-        explicit = [explicit[0]]
-      elif len(explicit) != 1:
-        raise ValueError("hamilton_liquid_classes must be a single HLC or length-8 list")
-
-    class _TipVol:
-      def __init__(self, tip: Tip, volume: float):
-        self.tip = tip
-        self.volume = volume
-
-    tip_vol = _TipVol(tip, float(volume))
-    hlcs = resolve_hamilton_liquid_classes(explicit, [tip_vol], jet=False, blow_out=False)
-    hlc = hlcs[0]
-    corrected = corrected_volumes_for_ops([tip_vol], hlcs, [disable_volume_correction])[0]
-
     traverse_z = self._resolve_traverse_height()
     end_resolved = (
       z_final if z_final is not None else traverse_z - (tip.get_size_z() - tip.fitting_depth)
     )
 
     wg = _absolute_z_from_well(targets.ref_resource, self._require_deck(), liquid_height)
+    liquid, corrected, hlc = self._get_volume_and_class(
+      targets.volume_containers,
+      float(volume),
+      hamilton_liquid_classes,
+      jet,
+      blow_out,
+      disable_volume_correction,
+    )
     resolved_z_fluid = z_fluid if z_fluid is not None else wg.liquid_surface
     resolved_z_air = z_air if z_air is not None else wg.z_air
     resolved_z_minimum = z_minimum if z_minimum is not None else wg.well_bottom
@@ -1500,7 +1531,7 @@ class Head8:
         channel=ch,
         container=targets.volume_containers[ch],
         tip=mounted[ch],
-        volume_ul=corrected,
+        volume_ul=liquid,
         direction="dispense",
       )
       for ch in use_channels

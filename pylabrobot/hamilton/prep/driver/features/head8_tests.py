@@ -143,8 +143,12 @@ def test_head8_full_flow():
 
     spots = tip_rack.column(0)
     await p.head8.pick_up_tips(spots)
-    await p.head8.aspirate(containers=src_plate.column(0), volume=20)
-    await p.head8.dispense(containers=dst_plate.column(0), volume=20)
+    await p.head8.aspirate(
+      containers=src_plate.column(0), volume=20, disable_volume_correction=True
+    )
+    await p.head8.dispense(
+      containers=dst_plate.column(0), volume=20, disable_volume_correction=True
+    )
     await p.head8.drop_tips(spots)
 
     await p.stop()
@@ -258,6 +262,7 @@ def test_head8_partial_channel_aspirate_raises_value_error():
       await p.head8.aspirate(
         containers=src_plate.column(0)[:4],
         volume=10,
+        disable_volume_correction=True,
         use_channels=(0, 1, 2, 3),
       )
 
@@ -284,7 +289,9 @@ def test_head8_v2_aspirate_sends_mphaspiratenolldmonitoring2():
 
     spots = tip_rack.column(0)
     await p.head8.pick_up_tips(spots)
-    await p.head8.aspirate(containers=src_plate.column(0), volume=10)
+    await p.head8.aspirate(
+      containers=src_plate.column(0), volume=10, disable_volume_correction=True
+    )
 
     asp_cmds = [c for c in captured if isinstance(c, PrepCmd.MphAspirateNoLldMonitoring2)]
     v1_cmds = [
@@ -320,7 +327,10 @@ def test_head8_aspirate_container_segments_start_at_z_minimum():
     cavity_bottom_z = wells[0].get_location_wrt(deck, "c", "c", "cavity_bottom").z
     profile_top = sum(s.height for s in _get_container_segments(wells[0]))
     await p.head8.aspirate(
-      containers=wells, volume=10, z_minimum=cavity_bottom_z + 1.5
+      containers=wells,
+      volume=10,
+      disable_volume_correction=True,
+      z_minimum=cavity_bottom_z + 1.5,
     )
 
     asp = [c for c in captured if isinstance(c, PrepCmd.MphAspirateNoLldMonitoring2)]
@@ -347,8 +357,12 @@ def test_head8_v2_dispense_sends_mphdispensetnolld2():
 
     spots = tip_rack.column(0)
     await p.head8.pick_up_tips(spots)
-    await p.head8.aspirate(containers=src_plate.column(0), volume=10)
-    await p.head8.dispense(containers=dst_plate.column(0), volume=10)
+    await p.head8.aspirate(
+      containers=src_plate.column(0), volume=10, disable_volume_correction=True
+    )
+    await p.head8.dispense(
+      containers=dst_plate.column(0), volume=10, disable_volume_correction=True
+    )
 
     disp_cmds = [c for c in captured if isinstance(c, PrepCmd.MphDispenseNoLld2)]
     v1_cmds = [
@@ -377,8 +391,12 @@ def test_head8_v1_fallback_when_use_v1_flag_set():
 
     spots = tip_rack.column(0)
     await p.head8.pick_up_tips(spots)
-    await p.head8.aspirate(containers=src_plate.column(0), volume=10)
-    await p.head8.dispense(containers=dst_plate.column(0), volume=10)
+    await p.head8.aspirate(
+      containers=src_plate.column(0), volume=10, disable_volume_correction=True
+    )
+    await p.head8.dispense(
+      containers=dst_plate.column(0), volume=10, disable_volume_correction=True
+    )
 
     v2_asp = [c for c in captured if isinstance(c, PrepCmd.MphAspirateNoLldMonitoring2)]
     v2_disp = [c for c in captured if isinstance(c, PrepCmd.MphDispenseNoLld2)]
@@ -425,6 +443,7 @@ def test_head8_aspirate_tadm_sends_mphaspirate_tadm2():
     await p.head8.aspirate(
       containers=src_plate.column(0),
       volume=10,
+      disable_volume_correction=True,
       tadm=PrepCmd.TadmParameters.default(),
     )
 
@@ -458,6 +477,7 @@ def test_head8_aspirate_clld_sends_mphaspirate_with_lld2():
     await p.head8.aspirate(
       containers=src_plate.column(0),
       volume=10,
+      disable_volume_correction=True,
       lld_mode=Pipettes.LLDMode.CAPACITIVE,
     )
 
@@ -486,7 +506,10 @@ def test_head8_aspirate_pressure_without_p_lld_raises():
     captured, _ = _record_send(p)
     with pytest.raises(ValueError, match="needs p_lld"):
       await p.head8.aspirate(
-        containers=src_plate.column(0), volume=10, lld_mode=Pipettes.LLDMode.PRESSURE
+        containers=src_plate.column(0),
+        volume=10,
+        disable_volume_correction=True,
+        lld_mode=Pipettes.LLDMode.PRESSURE,
       )
     assert captured == []
 
@@ -511,6 +534,7 @@ def test_head8_aspirate_lld_and_tadm_sends_mphaspirate_with_lld_tadm2():
     await p.head8.aspirate(
       containers=src_plate.column(0),
       volume=10,
+      disable_volume_correction=True,
       lld_mode=Pipettes.LLDMode.CAPACITIVE,
       tadm=PrepCmd.TadmParameters.default(),
     )
@@ -534,12 +558,15 @@ def test_head8_dispense_lld_pressure_raises():
 
     spots = tip_rack.column(0)
     await p.head8.pick_up_tips(spots)
-    await p.head8.aspirate(containers=src_plate.column(0), volume=10)
+    await p.head8.aspirate(
+      containers=src_plate.column(0), volume=10, disable_volume_correction=True
+    )
 
     with pytest.raises(ValueError, match="PRESSURE"):
       await p.head8.dispense(
         containers=dst_plate.column(0),
         volume=10,
+        disable_volume_correction=True,
         lld_mode=Pipettes.LLDMode.PRESSURE,
       )
 
@@ -564,11 +591,13 @@ def test_head8_command_version_override_v1():
     await p.head8.aspirate(
       containers=src_plate.column(0),
       volume=10,
+      disable_volume_correction=True,
       command_version="v1",
     )
     await p.head8.dispense(
       containers=dst_plate.column(0),
       volume=10,
+      disable_volume_correction=True,
       command_version="v1",
     )
 
@@ -617,7 +646,9 @@ def test_head8_surface_following_distance_scales_or_disables_following():
       0.5, abs=1e-3
     )
 
-    await p.head8.dispense(containers=wells, volume=20, liquid_height=3.0)
+    await p.head8.dispense(
+      containers=wells, volume=20, liquid_height=3.0, disable_volume_correction=True
+    )
     captured.clear()
     await p.head8.aspirate(
       containers=wells,
@@ -631,6 +662,56 @@ def test_head8_surface_following_distance_scales_or_disables_following():
     assert params.container_description == []
     assert params.common.tube_radius == 0.0
 
+
+# ---------------------------------------------------------------------------
+# Liquid classes
+# ---------------------------------------------------------------------------
+
+
+def test_head8_takes_the_tips_class_and_refuses_what_one_piston_cannot_do():
+  """Per probe through the resolver, as `Pipettes`: a missing class, 8 different ones and a class
+  beside `disable_volume_correction` are refused before sending; the class corrects the piston."""
+  from pylabrobot.hamilton.star.liquid_classes.mapping import (
+    StandardVolume_Water_DispenseSurface_Part,
+    Tip_50ul_Water_DispenseSurface_Empty,
+  )
+  from pylabrobot.resources import set_volume_tracking
+
+  async def _run() -> None:
+    deck, tip_rack, src_plate, dst_plate = _make_deck()
+    p = PrepSimulationDriver(deck=deck, declared_configuration_json=RECORDING_PREP_HEAD8)
+    await p.setup()
+    assert p.head8 is not None
+    await p.head8.pick_up_tips(tip_rack.column(0))
+    captured, _ = _record_send(p)
+    wells = src_plate.column(0)
+    water = Tip_50ul_Water_DispenseSurface_Empty
+    other = StandardVolume_Water_DispenseSurface_Part
+    for kwargs, refusal in (
+      ({}, "no liquid class is known for channel 0's tip.*blow_out=True, which has one"),
+      ({"hamilton_liquid_classes": [water] * 7 + [other]}, "give one liquid class for all"),
+      ({"hamilton_liquid_classes": [water] * 7}, "a single HLC or length-8 list"),
+      ({"hamilton_liquid_classes": water, "disable_volume_correction": True}, "as given"),
+    ):
+      with pytest.raises(ValueError, match=refusal):
+        await p.head8.aspirate(containers=wells, volume=50, liquid_height=2.0, **kwargs)
+    assert not [c for c in captured if hasattr(c, "aspirate_parameters")]
+    set_volume_tracking(True)
+    try:
+      for well in wells:
+        well.tracker.set_volume(100.0)
+      await p.head8.aspirate(containers=wells, volume=50, blow_out=True)
+      await p.head8.dispense(containers=dst_plate.column(0), volume=50, blow_out=True)
+    finally:
+      set_volume_tracking(False)
+    (aspirate,) = [c for c in captured if hasattr(c, "aspirate_parameters")]
+    (dispense,) = [c for c in captured if hasattr(c, "dispense_parameters")]
+    assert aspirate.aspirate_parameters[0].common.liquid_volume == pytest.approx(54.2)
+    assert aspirate.aspirate_parameters[0].aspirate.blowout_volume == pytest.approx(1.0)
+    assert dispense.dispense_parameters[0].common.liquid_volume == pytest.approx(54.2)
+    # The wells and tips book the liquid, not the corrected piston volume.
+    assert [w.tracker.get_used_volume() for w in wells] == [pytest.approx(50.0)] * 8
+    assert [w.tracker.get_used_volume() for w in dst_plate.column(0)] == [pytest.approx(50.0)] * 8
     await p.stop()
 
   asyncio.run(_run())
