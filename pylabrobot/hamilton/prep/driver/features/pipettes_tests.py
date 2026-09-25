@@ -3342,6 +3342,7 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
       two = plate["A1:B1"]
       one = {"use_channels": [0], "piston_volumes": [10.0], "liquid_heights": [3.0]}
       both = {"use_channels": [0, 1], "piston_volumes": [10.0, 10.0], "liquid_heights": [3.0] * 2}
+      searching = {"use_channels": [0, 1], "piston_volumes": [10.0, 10.0]}
       apart = [Coordinate(-5.0, 0, 0), Coordinate(5.0, 0, 0)]
       capacitive, pressure = Pipettes.LLDMode.CAPACITIVE, Pipettes.LLDMode.PRESSURE
       seek_0 = PrepCmd.PLldParameters(
@@ -3382,10 +3383,16 @@ def test_aspirate_refuses_what_the_model_decides_before_any_command():
           {**both, "piston_volumes": [150.0, 40.0], "resource_offsets": apart},
         ),
         (TooLittleVolumeError, "room for", two, {**both, "piston_volumes": [10.0, 70.0]}),
-        (ValueError, "PRESSURE LLD needs p_lld", two, {**both, "lld_mode": pressure}),
-        (ValueError, "1 to 630", two, {**both, "lld_mode": capacitive, "p_lld": seek_0}),
+        (ValueError, "PRESSURE LLD needs p_lld", two, {**searching, "lld_mode": pressure}),
+        (ValueError, "1 to 630", two, {**searching, "lld_mode": capacitive, "p_lld": seek_0}),
         (ValueError, "must be LLDMode", two, {**both, "lld_mode": [capacitive, "capacitive"]}),
         (ValueError, "1 lld modes for 2", two, {**both, "lld_mode": [capacitive]}),
+        (
+          ValueError,
+          "finds the surface or the floor itself",
+          two,
+          {**both, "lld_mode": capacitive},
+        ),
         (
           ValueError,
           "an LLD mode that searches",
@@ -3424,7 +3431,7 @@ def test_aspirate_sends_one_lld_category_per_command():
       plate["A1:B1"],
       use_channels=[0, 1],
       piston_volumes=[10.0, 20.0],
-      liquid_heights=[3.0, 3.0],
+      liquid_heights=[3.0, None],
       lld_mode=[Pipettes.LLDMode.OFF, Pipettes.LLDMode.CAPACITIVE],
     )
     assert [type(c) for c in sent] == [
@@ -3537,7 +3544,7 @@ def test_aspirate_on_ztouch_refuses_an_untouched_floor_with_nothing_drawn():
     await p.pipettes.pick_up_tips(rack["A1:B1"], use_channels=[0, 1])
     wells = plate["A1:B1"]
     sent.clear()
-    with pytest.raises(ValueError, match="whose Z touch finds the floor itself"):
+    with pytest.raises(ValueError, match="finds the surface or the floor itself"):
       await p.pipettes.aspirate(
         wells, piston_volumes=[5.0, 5.0], liquid_heights=[2.0, None], lld_mode=_ZTOUCH
       )
@@ -4533,6 +4540,10 @@ def test_dispense_refuses_before_booking_or_sending():
         ({"piston_volumes": [5.0], "limit_curve_indices": [1]}, "limit curve 0"),
         ({"piston_volumes": [5.0], "post_mixes": [None, None]}, "post_mixes length"),
         ({"piston_volumes": [5.0], "minimum_traverse_height_end": 500.0}, "outside channel"),
+        (
+          {"piston_volumes": [5.0], "lld_mode": _CAPACITIVE},
+          "finds the surface or the floor itself",
+        ),
         (
           {"piston_volumes": [5.0], "lld": PrepCmd.LldParameters.default()},
           "an LLD mode that searches",

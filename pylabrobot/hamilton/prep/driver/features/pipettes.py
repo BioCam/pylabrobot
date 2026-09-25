@@ -6004,7 +6004,6 @@ class Pipettes:
     touched: Sequence[int],
     z_cavity_bottom: Sequence[float],
     *,
-    liquid_heights: Optional[Sequence[Optional[float]]],
     search_speed: float,
     approach_speed: float,
   ) -> None:
@@ -6015,23 +6014,12 @@ class Pipettes:
       use_channels: the channel of each container, per job.
       touched: the jobs on Z touch.
       z_cavity_bottom: per job, on the deck in mm.
-      liquid_heights: as the caller gave them.
       search_speed: in mm/s.
       approach_speed: in mm/s.
 
     Raises:
-      ValueError: A height given for a touched job, a speed out of range, or a search end out of
-        reach.
+      ValueError: A speed out of range, or a search end out of reach.
     """
-    told = [
-      containers[job].name
-      for job in touched
-      if liquid_heights is not None and liquid_heights[job] is not None
-    ]
-    if told:
-      raise ValueError(
-        f"liquid_heights given for {told}, whose Z touch finds the floor itself; give None there"
-      )
     if search_speed <= 0:
       raise ValueError(f"search_speed must be above 0 mm/s, is {search_speed}")
     low, high = self.configuration.z_speed_range
@@ -6120,6 +6108,33 @@ class Pipettes:
       raise ValueError(f"a pressure LLD mode cannot be mixed with another in one call: {modes}")
     return modes
 
+  def _check_no_heights_beside_lld(
+    self,
+    containers: Sequence[Container],
+    liquid_heights: Optional[Sequence[Optional[float]]],
+    modes: Sequence[Pipettes.LLDMode],
+  ) -> None:
+    """Refuse a liquid height given for a container whose LLD mode finds the surface or floor.
+
+    Args:
+      containers: per job.
+      liquid_heights: as the caller gave them.
+      modes: per job.
+
+    Raises:
+      ValueError: A height given beside a mode other than OFF.
+    """
+    told = [
+      containers[job].name
+      for job, mode in enumerate(modes)
+      if mode != self.LLDMode.OFF and liquid_heights is not None and liquid_heights[job] is not None
+    ]
+    if told:
+      raise ValueError(
+        f"liquid_heights given for {told}, whose LLD mode finds the surface or the floor itself; "
+        "give None there"
+      )
+
   async def aspirate(
     self,
     containers: Sequence[Container],
@@ -6178,7 +6193,7 @@ class Pipettes:
       resource_offsets: added to where each channel goes in its container, in mm. The z shifts
         the heights. Channels sharing a container spread across it in Y when None.
       liquid_heights: where the liquid stands above each cavity bottom, in mm. None takes it from
-        the tracked volume, or, with an LLD mode, leaves it to the search.
+        the tracked volume. Refused beside an LLD mode, whose search finds the surface.
       lld_mode: how the liquid, or under ZTOUCH the floor, is found, one for all or one per
         container. OFF goes to the height given.
       flow_rates: in uL/s, per container. The liquid class's, else 100.0, when None.
@@ -6244,8 +6259,8 @@ class Pipettes:
         are more containers than channels, both or neither of `volumes` and `piston_volumes` are
         given, a class is given with `piston_volumes`, no class is known for a channel's tip, a
         mode is not an `LLDMode`, a pressure mode is mixed with another or has no `p_lld`, a
-        liquid height is given beside ZTOUCH, `lld` is given with no mode that searches, a floor
-        search is out of reach, or a limit curve or a TADM storage level is given.
+        liquid height is given beside an LLD mode, `lld` is given with no mode that searches, a
+        floor search is out of reach, or a limit curve or a TADM storage level is given.
       RuntimeError: If a channel used carries no tip, nothing knows where a container's liquid
         stands: no height given, volume tracking off, no LLD; or no floor is met where a channel
         touched.
@@ -6313,13 +6328,13 @@ class Pipettes:
     z_top = [
       round(c.get_location_wrt(deck, "c", "c", "t").z + o.z, 2) for c, o in zip(containers, offsets)
     ]
+    self._check_no_heights_beside_lld(containers, liquid_heights, modes)
     if touched:
       self._check_ztouch(
         containers,
         use_channels,
         touched,
         z_cavity_bottom,
-        liquid_heights=liquid_heights,
         search_speed=search_speed,
         approach_speed=approach_speed,
       )
@@ -6676,6 +6691,7 @@ class Pipettes:
       resource_offsets: added to where each channel goes in its container, in mm. The z shifts
         the heights. Channels sharing a container spread across it in Y when None.
       liquid_heights: where the liquid stands above each cavity bottom, in mm. 0 when None.
+        Refused beside an LLD mode, whose search finds the surface.
       lld_mode: how the liquid, or under ZTOUCH the floor, is found, one for all or one per
         container: OFF, CAPACITIVE or ZTOUCH. OFF goes to the height given.
       flow_rates: in uL/s, per container. The liquid class's, else 120.0, when None.
@@ -6735,8 +6751,8 @@ class Pipettes:
         are more containers than channels, the LLD mode is not OFF, CAPACITIVE or ZTOUCH, both or
         neither of `volumes` and `piston_volumes` are given, a class is given with
         `piston_volumes`, no class is known for a channel's tip, a flow rate is not above 0, a
-        blow-out air volume is above 0, a liquid height is given beside ZTOUCH, `lld` is given
-        with no mode that searches, or a floor search is out of reach.
+        blow-out air volume is above 0, a liquid height is given beside an LLD mode, `lld` is
+        given with no mode that searches, or a floor search is out of reach.
       RuntimeError: If a channel used carries no tip, or no floor is met where a channel touched.
       TooLittleLiquidError: If a tip holds less than it is to give.
       TooLittleVolumeError: If a container has less room than it is to take.
@@ -6811,13 +6827,13 @@ class Pipettes:
     z_top = [
       round(c.get_location_wrt(deck, "c", "c", "t").z + o.z, 2) for c, o in zip(containers, offsets)
     ]
+    self._check_no_heights_beside_lld(containers, liquid_heights, modes)
     if touched:
       self._check_ztouch(
         containers,
         use_channels,
         touched,
         z_cavity_bottom,
-        liquid_heights=liquid_heights,
         search_speed=search_speed,
         approach_speed=approach_speed,
       )
