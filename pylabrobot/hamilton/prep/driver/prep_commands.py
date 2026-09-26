@@ -13,7 +13,7 @@ import datetime
 import math
 from dataclasses import dataclass, field
 from enum import IntEnum
-from typing import Annotated, ClassVar, Optional, Set, Tuple, TypeVar
+from typing import Annotated, ClassVar, Dict, Optional, Set, Tuple, TypeVar
 
 from pylabrobot.hamilton.transport.tcp.commands import TCPCommand
 from pylabrobot.hamilton.transport.tcp.messages import HoiParams, HoiParamsParser, parse_into_struct
@@ -1950,6 +1950,13 @@ channel_order_legacy_prep: Tuple[ChannelIndex, ...] = (
   ChannelIndex.RearChannel,
   ChannelIndex.FrontChannel,
 )
+# Channel Root ``Address.node`` → ``ChannelIndex``. Firmware error nodes name Front at 0xE8 and Rear at
+# 0xEC; on recorded Prep firmware the front channel's Channel Root sits on the Pipettor node 0xEE.
+CHANNEL_ROOT_NODE_TO_INDEX: Dict[int, ChannelIndex] = {
+  0xE8: ChannelIndex.FrontChannel,
+  0xEC: ChannelIndex.RearChannel,
+  0xEE: ChannelIndex.FrontChannel,
+}
 # A firmware error names a channel by its ChannelIndex. A command cannot reach the driver's channel order, so
 # errors are attributed with the legacy one.
 _CHANNEL_TO_INDEX = {int(channel): index for index, channel in enumerate(channel_order_legacy_prep)}
