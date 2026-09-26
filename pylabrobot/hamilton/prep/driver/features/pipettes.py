@@ -605,6 +605,60 @@ def _get_container_segments(
   return _scale_areas(segments, math.sqrt(low * high))
 
 
+def _resolve_surface_following(
+  resource: object,
+  *,
+  container_segments: Optional[List[PrepCmd.SegmentDescriptor]] = None,
+  surface_following_distance: Optional[float] = None,
+  auto_container_geometry: bool = False,
+  liquid_height: Optional[float] = None,
+  piston_volume: Optional[float] = None,
+  profile_start: float = 0.0,
+) -> tuple[list[PrepCmd.SegmentDescriptor], float]:
+  """Segments and tube_radius for one container's surface following.
+
+  Precedence: explicit ``container_segments`` > ``surface_following_distance`` >
+  ``auto_container_geometry`` > off. Omit, ``None``, or ``0`` does not follow unless
+  segments or auto geometry are given. Without segments the firmware still follows a
+  non-zero ``tube_radius``, so off always sends radius 0.
+
+  Args:
+    resource: the container.
+    container_segments: cross-sections sent as given. None builds them below.
+    surface_following_distance: how far the tip follows the surface, in mm. None or 0
+      does not follow; above 0 scales the profile to that travel.
+    auto_container_geometry: send the container's full unscaled profile when no
+      segments or distance enable following.
+    liquid_height: above the cavity bottom, in mm. Needed to scale a distance.
+    piston_volume: what the piston moves, in uL. Needed to scale a distance.
+    profile_start: ``z_minimum`` above the cavity bottom, in mm.
+
+  Returns:
+    The segments to send and the ``tube_radius`` for ``CommonParameters``.
+  """
+  if container_segments is not None:
+    segments = list(container_segments)
+    return segments, 0.0 if not segments else _effective_radius(resource)
+  distance = 0.0 if surface_following_distance is None else surface_following_distance
+  if distance < 0:
+    raise ValueError(f"surface_following_distance must be at least 0, is {distance}")
+  if distance > 0:
+    return (
+      _get_container_segments(
+        resource,
+        liquid_height=liquid_height,
+        piston_volume=piston_volume,
+        surface_following_distance=distance,
+        profile_start=profile_start,
+      ),
+      _effective_radius(resource),
+    )
+  if auto_container_geometry:
+    segments = _get_container_segments(resource, profile_start=profile_start)
+    return segments, 0.0 if not segments else _effective_radius(resource)
+  return [], 0.0
+
+
 class _WellGeometry(NamedTuple):
   """Absolute Z positions derived from well geometry."""
 
@@ -6096,6 +6150,7 @@ class Pipettes:
     tadm: Optional[PrepCmd.TadmParameters],
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]],
     surface_following_distances: Optional[List[float]],
+    auto_container_geometry: bool,
     command_version: Optional[Literal["v1", "v2"]],
     check_only: bool,
     floor_touched: bool = False,
@@ -6144,22 +6199,22 @@ class Pipettes:
     deck = self._require_deck()
     # The firmware reads the profile at the tip's height, counted from z_minimum
     bottoms = [op.resource.get_location_wrt(deck, "c", "c", "cavity_bottom").z for op in ops]
-    distances = [
-      None if surface_following_distances is None else surface_following_distances[i]
-      for i in range(len(ops))
-    ]
-    segments = [
-      container_segments[i]
-      if container_segments is not None
-      else _get_container_segments(
+    following = [
+      _resolve_surface_following(
         op.resource,
+        container_segments=None if container_segments is None else container_segments[i],
+        surface_following_distance=(
+          None if surface_following_distances is None else surface_following_distances[i]
+        ),
+        auto_container_geometry=auto_container_geometry,
         liquid_height=ctx.z_fluid[i] - bottoms[i],
         piston_volume=ctx.volumes[i],
-        surface_following_distance=distances[i],
         profile_start=ctx.z_minimum[i] - bottoms[i],
       )
       for i, op in enumerate(ops)
     ]
+    segments = [s for s, _ in following]
+    tube_radii = [r for _, r in following]
     locations = [
       Coordinate(
         x_position,
@@ -6207,10 +6262,7 @@ class Pipettes:
         [g.top_of_well for g in ctx.well_geometry],
         ctx.z_minimum,
         ctx.volumes,
-        # Without segments the firmware follows tube_radius, and 0 does not follow
-        tube_radii=[
-          0.0 if d == 0 else _effective_radius(op.resource) for d, op in zip(distances, ops)
-        ],
+        tube_radii=tube_radii,
         lld_mode=lld_mode,
         clld_sensitivity=clld_sensitivity,
         immersion_depths=None if immersion_depths is None else list(immersion_depths),
@@ -6564,6 +6616,7 @@ class Pipettes:
     tadm: Optional[PrepCmd.TadmParameters] = None,
     tadm_storage_level: Optional[Literal["errors_only", "all"]] = None,
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
+    auto_container_geometry: bool = False,
     command_version: Optional[Literal["v1", "v2"]] = None,
   ) -> None:
     """Draw liquid from each container with a channel's tip, one command per batch.
@@ -6613,7 +6666,7 @@ class Pipettes:
       mix_positions_from_liquid_surface: mixing depth under the aspirate height, in mm, per
         container. 0.0 when None.
       surface_following_distances: how far each tip follows the sinking surface, in mm, per
-        container: its profile scaled to that. None follows the profile as it is; 0 does not follow.
+        container. 0.0 when None: no following. Above 0 scales the profile to that travel.
       settling_times: how long the tip waits in the liquid, in s, per container. The liquid
         class's, else 1.0, when None.
       swap_speeds: how fast the tip leaves the liquid, in mm/s, per container. The liquid
@@ -6640,8 +6693,9 @@ class Pipettes:
       tadm: TADM settings; given, the aspiration is monitored.
       tadm_storage_level: which TADM curves the channel keeps. None records none; only None until
         TADM is verified on the device.
-      container_segments: each container's cross-sections, sent as they are, per container. None
-        builds them from each container's profile.
+      container_segments: each container's cross-sections, sent as they are, per container.
+      auto_container_geometry: send each container's full unscaled profile when no segments or
+        distance enables following.
       command_version: "v1" or "v2" aspirate commands. What the firmware supports when None.
 
     Raises:
@@ -6855,6 +6909,7 @@ class Pipettes:
         tadm=tadm,
         container_segments=pick(container_segments, batch),
         surface_following_distances=pick(surface_following_distances, batch),
+        auto_container_geometry=auto_container_geometry,
         command_version=command_version,
         check_only=check_only,
         floor_touched=on_ztouch,
@@ -6896,6 +6951,8 @@ class Pipettes:
     z_fluid: Optional[List[float]],
     z_air: Optional[List[float]],
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]],
+    surface_following_distances: Optional[List[float]],
+    auto_container_geometry: bool,
     command_version: Optional[Literal["v1", "v2"]],
     check_only: bool,
   ) -> List[float]:
@@ -6936,6 +6993,23 @@ class Pipettes:
       z_minimum=minimum_allowed_z_positions_during,
     )
     deck = self._require_deck()
+    bottoms = [op.resource.get_location_wrt(deck, "c", "c", "cavity_bottom").z for op in ops]
+    following = [
+      _resolve_surface_following(
+        op.resource,
+        container_segments=None if container_segments is None else container_segments[i],
+        surface_following_distance=(
+          None if surface_following_distances is None else surface_following_distances[i]
+        ),
+        auto_container_geometry=auto_container_geometry,
+        liquid_height=ctx.z_fluid[i] - bottoms[i],
+        piston_volume=ctx.volumes[i],
+        profile_start=ctx.z_minimum[i] - bottoms[i],
+      )
+      for i, op in enumerate(ops)
+    ]
+    segments = [s for s, _ in following]
+    tube_radii = [r for _, r in following]
     locations = [
       Coordinate(
         x_position,
@@ -6953,7 +7027,7 @@ class Pipettes:
         [g.top_of_well for g in ctx.well_geometry],
         ctx.z_minimum,
         ctx.volumes,
-        tube_radii=[_effective_radius(op.resource) for op in ops],
+        tube_radii=tube_radii,
         lld_mode=lld_mode,
         clld_sensitivity=clld_sensitivity,
         immersion_depths=immersion_depths,
@@ -6966,7 +7040,7 @@ class Pipettes:
         transport_air_volumes=transport_air_volumes,
         minimum_traverse_height_end=minimum_traverse_height_end,
         z_air=z_air,
-        container_segments=container_segments,
+        container_segments=segments,
         command_version=command_version,
         check_only=check_only,
       )
@@ -7058,6 +7132,7 @@ class Pipettes:
     transport_air_volumes: Optional[Sequence[float]] = None,
     cut_off_speeds: Optional[Sequence[float]] = None,
     stop_back_volumes: Optional[Sequence[float]] = None,
+    surface_following_distances: Optional[Sequence[float]] = None,
     blow_out_air_volumes: Optional[Sequence[Optional[float]]] = None,
     post_mixes: Optional[Sequence[Optional[Mix]]] = None,
     mix_positions_from_liquid_surface: Optional[Sequence[float]] = None,
@@ -7072,6 +7147,7 @@ class Pipettes:
     clld_sensitivity: Optional[int] = None,
     z_air: Optional[List[float]] = None,
     container_segments: Optional[List[List[PrepCmd.SegmentDescriptor]]] = None,
+    auto_container_geometry: bool = False,
     command_version: Optional[Literal["v1", "v2"]] = None,
   ) -> None:
     """Push liquid into each container from a channel's tip, one command per batch.
@@ -7120,6 +7196,8 @@ class Pipettes:
         rate, else 5.0, when None.
       stop_back_volumes: the firmware's stop-back volume, in uL, per container. The liquid
         class's, else 0.0, when None.
+      surface_following_distances: how far each tip follows the rising surface, in mm, per
+        container. 0.0 when None: no following. Above 0 scales the profile to that travel.
       blow_out_air_volumes: None or 0 per container: the dispense sends out all the tip holds.
       post_mixes: a `Mix` per container, mixed after the dispense, None for no mixing. Only None
         until post-mixing is verified on the device.
@@ -7144,8 +7222,9 @@ class Pipettes:
       clld_sensitivity: the capacitive search's sensitivity. `default_clld_sensitivity` when None.
       z_air: the tip bottom height where each slow exit ends, in mm, in place of the pull-out
         distance. The dispense height plus the pull-out distance when None.
-      container_segments: each container's cross-sections, sent as they are, per container. None
-        sends none.
+      container_segments: each container's cross-sections, sent as they are, per container.
+      auto_container_geometry: send each container's full unscaled profile when no segments or
+        distance enables following.
       command_version: "v1" or "v2" dispense commands. What the firmware supports when None.
 
     Raises:
@@ -7198,6 +7277,7 @@ class Pipettes:
       "limit_curve_indices": limit_curve_indices,
       "z_air": z_air,
       "container_segments": container_segments,
+      "surface_following_distances": surface_following_distances,
     }
     for name, values in per_container.items():
       if values is not None and len(values) != n:
@@ -7362,6 +7442,8 @@ class Pipettes:
         z_fluid=heights_z,
         z_air=pick(z_air, batch),
         container_segments=pick(container_segments, batch),
+        surface_following_distances=pick(surface_following_distances, batch),
+        auto_container_geometry=auto_container_geometry,
         command_version=command_version,
         check_only=check_only,
       )
