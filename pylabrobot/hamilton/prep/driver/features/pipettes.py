@@ -604,6 +604,7 @@ def _get_container_segments(
     low, high = (scale, high) if drop > surface_following_distance else (low, scale)
   return _scale_areas(segments, math.sqrt(low * high))
 
+
 def _resolve_surface_following(
   resource: object,
   *,

@@ -3327,9 +3327,7 @@ def test_dispense_surface_following_matches_aspirate_semantics():
     entry = next(c for c in sent if hasattr(c, "dispense_parameters")).dispense_parameters[0]
     assert _get_profile_drop(entry.container_description, 3.0, 20.0) == pytest.approx(0.5, abs=1e-3)
 
-    await p.pipettes.aspirate(
-      [well], piston_volumes=[20.0], use_channels=[0], liquid_heights=[3.0]
-    )
+    await p.pipettes.aspirate([well], piston_volumes=[20.0], use_channels=[0], liquid_heights=[3.0])
     sent.clear()
     await p.pipettes.dispense(
       [well],
@@ -3342,9 +3340,7 @@ def test_dispense_surface_following_matches_aspirate_semantics():
     assert entry.container_description == []
     assert entry.common.tube_radius == 0.0
 
-    await p.pipettes.aspirate(
-      [well], piston_volumes=[20.0], use_channels=[0], liquid_heights=[3.0]
-    )
+    await p.pipettes.aspirate([well], piston_volumes=[20.0], use_channels=[0], liquid_heights=[3.0])
     sent.clear()
     await p.pipettes.dispense(
       [well],
@@ -3356,9 +3352,7 @@ def test_dispense_surface_following_matches_aspirate_semantics():
     assert entry.container_description == []
     assert entry.common.tube_radius == 0.0
 
-    await p.pipettes.aspirate(
-      [well], piston_volumes=[20.0], use_channels=[0], liquid_heights=[3.0]
-    )
+    await p.pipettes.aspirate([well], piston_volumes=[20.0], use_channels=[0], liquid_heights=[3.0])
     sent.clear()
     await p.pipettes.dispense(
       [well],
