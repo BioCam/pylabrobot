@@ -62,8 +62,7 @@ from .pipettes import (
   PipetteChannel,
   Pipettes,
   _absolute_z_from_well,
-  _effective_radius,
-  _get_container_segments,
+  _resolve_surface_following,
 )
 from .pipettes import (
   default_lld_params as _default_lld_params_fn,
@@ -1194,6 +1193,7 @@ class Head8:
     tadm: Optional[PrepCmd.TadmParameters] = None,
     container_segments: Optional[List[PrepCmd.SegmentDescriptor]] = None,
     surface_following_distance: Optional[float] = None,
+    auto_container_geometry: bool = False,
     hamilton_liquid_classes: Optional[
       Union[HamiltonLiquidClass, List[Optional[HamiltonLiquidClass]]]
     ] = None,
@@ -1209,11 +1209,12 @@ class Head8:
       containers: one container wide enough for all eight channels, or eight wells at channel
         pitch in row-A-first order — same resource vocabulary as `Pipettes.aspirate`.
       volume: how much each tip draws, in uL (one piston for the whole head).
-      surface_following_distance: how far the tips follow the sinking surface, in mm. None
-        follows each container's profile as it is; 0 does not follow — same meaning as
+      surface_following_distance: how far the tips follow the sinking surface, in mm. 0.0 when
+        None: no following. Above 0 scales the profile to that travel — same meaning as
         `Pipettes.aspirate`'s `surface_following_distances`.
-      container_segments: cross-sections sent as given. None builds them from the container
-        profile and `surface_following_distance`.
+      auto_container_geometry: send the container's full unscaled profile when no segments or
+        distance enables following.
+      container_segments: cross-sections sent as given.
     """
     del offset  # geometry uses container absolute locations
     use_channels = list(use_channels) if use_channels is not None else list(range(NUM_PROBES))
@@ -1242,16 +1243,15 @@ class Head8:
     cavity_bottom_z = targets.ref_resource.get_location_wrt(
       self._require_deck(), "c", "c", "cavity_bottom"
     ).z
-    if container_segments is not None:
-      ref_segments = container_segments
-    else:
-      ref_segments = _get_container_segments(
-        targets.ref_resource,
-        liquid_height=resolved_z_fluid - cavity_bottom_z,
-        piston_volume=corrected,
-        surface_following_distance=surface_following_distance,
-        profile_start=resolved_z_minimum - cavity_bottom_z,
-      )
+    ref_segments, tube_radius = _resolve_surface_following(
+      targets.ref_resource,
+      container_segments=container_segments,
+      surface_following_distance=surface_following_distance,
+      auto_container_geometry=auto_container_geometry,
+      liquid_height=resolved_z_fluid - cavity_bottom_z,
+      piston_volume=corrected,
+      profile_start=resolved_z_minimum - cavity_bottom_z,
+    )
     resolved_z_bottom_search_offset = (
       z_bottom_search_offset if z_bottom_search_offset is not None else 2.0
     )
@@ -1294,10 +1294,6 @@ class Head8:
       round(resolved_flow, 3),
     )
 
-    # Without segments the firmware follows tube_radius, and 0 does not follow
-    tube_radius = (
-      0.0 if surface_following_distance == 0 else _effective_radius(targets.ref_resource)
-    )
     effective_lld = self._resolve_effective_lld(lld_mode, lld)
     is_tadm = tadm is not None
     use_v2 = self._resolve_command_version(command_version)
@@ -1392,6 +1388,7 @@ class Head8:
     c_lld: Optional[PrepCmd.CLldParameters] = None,
     container_segments: Optional[List[PrepCmd.SegmentDescriptor]] = None,
     surface_following_distance: Optional[float] = None,
+    auto_container_geometry: bool = False,
     hamilton_liquid_classes: Optional[
       Union[HamiltonLiquidClass, List[Optional[HamiltonLiquidClass]]]
     ] = None,
@@ -1407,10 +1404,11 @@ class Head8:
       containers: one container wide enough for all eight channels, or eight wells at channel
         pitch in row-A-first order — same resource vocabulary as `Pipettes.dispense`.
       volume: how much each tip pushes, in uL (one piston for the whole head).
-      surface_following_distance: how far the tips follow the rising surface, in mm. None
-        follows each container's profile as it is; 0 does not follow.
-      container_segments: cross-sections sent as given. None builds them from the container
-        profile and `surface_following_distance`.
+      surface_following_distance: how far the tips follow the rising surface, in mm. 0.0 when
+        None: no following. Above 0 scales the profile to that travel.
+      auto_container_geometry: send the container's full unscaled profile when no segments or
+        distance enables following.
+      container_segments: cross-sections sent as given.
     """
     del offset
     del blow_out_air_volume  # dispense blowout not on Prep dispense wire path today
@@ -1440,16 +1438,15 @@ class Head8:
     cavity_bottom_z = targets.ref_resource.get_location_wrt(
       self._require_deck(), "c", "c", "cavity_bottom"
     ).z
-    if container_segments is not None:
-      ref_segments = container_segments
-    else:
-      ref_segments = _get_container_segments(
-        targets.ref_resource,
-        liquid_height=resolved_z_fluid - cavity_bottom_z,
-        piston_volume=corrected,
-        surface_following_distance=surface_following_distance,
-        profile_start=resolved_z_minimum - cavity_bottom_z,
-      )
+    ref_segments, tube_radius = _resolve_surface_following(
+      targets.ref_resource,
+      container_segments=container_segments,
+      surface_following_distance=surface_following_distance,
+      auto_container_geometry=auto_container_geometry,
+      liquid_height=resolved_z_fluid - cavity_bottom_z,
+      piston_volume=corrected,
+      profile_start=resolved_z_minimum - cavity_bottom_z,
+    )
     resolved_z_bottom_search_offset = (
       z_bottom_search_offset if z_bottom_search_offset is not None else 2.0
     )
@@ -1490,9 +1487,6 @@ class Head8:
       round(resolved_flow, 3),
     )
 
-    tube_radius = (
-      0.0 if surface_following_distance == 0 else _effective_radius(targets.ref_resource)
-    )
     _DISPENSE_ALLOWED_LLD = frozenset({Pipettes.LLDMode.CAPACITIVE})
     effective_lld = self._resolve_effective_lld(lld_mode, lld, allowed_modes=_DISPENSE_ALLOWED_LLD)
     use_v2 = self._resolve_command_version(command_version)

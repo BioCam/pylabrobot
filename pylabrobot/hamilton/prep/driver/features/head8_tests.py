@@ -312,7 +312,7 @@ def test_head8_v2_aspirate_sends_mphaspiratenolldmonitoring2():
 
 
 def test_head8_aspirate_container_segments_start_at_z_minimum():
-  """With container geometry following, segment 0 begins at the z_minimum the command sends."""
+  """With auto_container_geometry, segment 0 begins at the z_minimum the command sends."""
 
   async def _run() -> None:
     deck, tip_rack, src_plate, _ = _make_deck()
@@ -331,6 +331,7 @@ def test_head8_aspirate_container_segments_start_at_z_minimum():
       volume=10,
       disable_volume_correction=True,
       z_minimum=cavity_bottom_z + 1.5,
+      auto_container_geometry=True,
     )
 
     asp = [c for c in captured if isinstance(c, PrepCmd.MphAspirateNoLldMonitoring2)]
@@ -625,7 +626,7 @@ def test_head8_command_version_override_v1():
 
 
 def test_head8_surface_following_distance_scales_or_disables_following():
-  """A distance scales the profile so the tip sinks that far; 0 sends none and tube_radius 0."""
+  """A distance scales the profile; omit/0 send none; auto_container_geometry sends the profile."""
 
   async def _run() -> None:
     deck = PrepDeck()
@@ -655,8 +656,42 @@ def test_head8_surface_following_distance_scales_or_disables_following():
     )
 
     await p.head8.dispense(
-      containers=wells, volume=20, liquid_height=3.0, disable_volume_correction=True
+      containers=wells,
+      volume=20,
+      liquid_height=3.0,
+      surface_following_distance=0.5,
+      disable_volume_correction=True,
     )
+    disp = [c for c in captured if isinstance(c, PrepCmd.MphDispenseNoLld2)]
+    params = disp[-1].dispense_parameters[0]
+    assert _get_profile_drop(params.container_description, 3.0, 20.0) == pytest.approx(
+      0.5, abs=1e-3
+    )
+
+    captured.clear()
+    await p.head8.aspirate(
+      containers=wells,
+      volume=20,
+      liquid_height=3.0,
+      disable_volume_correction=True,
+    )
+    asp = [c for c in captured if isinstance(c, PrepCmd.MphAspirateNoLldMonitoring2)]
+    params = asp[0].aspirate_parameters[0]
+    assert params.container_description == []
+    assert params.common.tube_radius == 0.0
+
+    captured.clear()
+    await p.head8.dispense(
+      containers=wells,
+      volume=20,
+      liquid_height=3.0,
+      disable_volume_correction=True,
+    )
+    disp = [c for c in captured if isinstance(c, PrepCmd.MphDispenseNoLld2)]
+    params = disp[0].dispense_parameters[0]
+    assert params.container_description == []
+    assert params.common.tube_radius == 0.0
+
     captured.clear()
     await p.head8.aspirate(
       containers=wells,
@@ -669,6 +704,26 @@ def test_head8_surface_following_distance_scales_or_disables_following():
     params = asp[0].aspirate_parameters[0]
     assert params.container_description == []
     assert params.common.tube_radius == 0.0
+
+    await p.head8.dispense(
+      containers=wells, volume=20, liquid_height=3.0, disable_volume_correction=True
+    )
+    captured.clear()
+    await p.head8.aspirate(
+      containers=wells,
+      volume=20,
+      liquid_height=3.0,
+      auto_container_geometry=True,
+      disable_volume_correction=True,
+    )
+    asp = [c for c in captured if isinstance(c, PrepCmd.MphAspirateNoLldMonitoring2)]
+    params = asp[0].aspirate_parameters[0]
+    assert len(params.container_description) == len(_get_container_segments(wells[0]))
+    assert params.common.tube_radius > 0.0
+
+    await p.stop()
+
+  asyncio.run(_run())
 
 
 # ---------------------------------------------------------------------------
