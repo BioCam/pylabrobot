@@ -256,8 +256,13 @@ class _RecordedTree:
   def channel_of(self, address: Address) -> Optional[int]:
     """Which pipetting channel an object belongs to, 0-indexed from the back, or None for none.
 
-    Each channel's objects share its node, and the tree lists the channel roots rear first.
+    Each channel's objects share its Channel Root node. That node maps to a firmware ChannelIndex,
+    then to the PLR index (rear first), so tip sensing matches tip commands even when the firmware
+    tree lists Channel Roots front first.
     """
+    channel_enum = PrepCmd.CHANNEL_ROOT_NODE_TO_INDEX.get(int(address.node))
+    if channel_enum is not None:
+      return _CHANNEL_INDEX.get(int(channel_enum))
     roots = [child for child in self.root.children if child.name == "Channel Root"]
     return next(
       (index for index, root in enumerate(roots) if root.address.node == address.node), None

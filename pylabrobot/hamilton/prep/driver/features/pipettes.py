@@ -6,10 +6,10 @@ queries live alongside tip pickup/drop and aspirate/dispense orchestration.
 The firmware object tree exposes channel internals as a single template under
 ``MLPrepRoot.Channel Root.Channel`` (and an analogous ``MLPrepRoot.MPH Channel
 Root.Channel`` for MPH). Individual physical channels share that template —
-per-channel identity lives in the node-ID component of the Address. We probe
-the full object tree and match children by **path prefix**
-(``"<root>.Channel Root.Channel.Squeeze.SDrive"``) rather than computing node
-IDs directly.
+per-channel identity lives in the node-ID component of the Address. Drive
+addresses are discovered under each Channel Root, then lined up with
+``channel_order`` using that node id so sleeve sensors and axes match tip
+commands (firmware tree order is not always rear-first).
 """
 
 from __future__ import annotations
@@ -1305,6 +1305,25 @@ class Pipettes:
       return None
     return await self.channels[channel].request_firmware_version()
 
+  @staticmethod
+  def _drive_indices_in_channel_order(
+    drive_nodes: Sequence[int], channel_order: Sequence[int]
+  ) -> Optional[List[int]]:
+    """Map each entry of ``channel_order`` to an index in a tree-order drive list.
+
+    Each Channel Root's ``Address.node`` identifies which firmware ChannelIndex owns that root's
+    drives. Returns None when the nodes do not identify every channel in ``channel_order``.
+    """
+    enum_to_drive: Dict[int, int] = {}
+    for drive_i, node in enumerate(drive_nodes):
+      channel_enum = PrepCmd.CHANNEL_ROOT_NODE_TO_INDEX.get(int(node))
+      if channel_enum is None:
+        continue
+      enum_to_drive.setdefault(int(channel_enum), drive_i)
+    if not channel_order or not all(int(c) in enum_to_drive for c in channel_order):
+      return None
+    return [enum_to_drive[int(c)] for c in channel_order]
+
   async def discover(self):
     """Find each channel in the firmware tree, and read what it reports about itself.
 
@@ -1327,8 +1346,23 @@ class Pipettes:
     self.channel_order = self._order_channels(present, raw_bounds)
     bounds_by_channel = self._bounds_by_channel(raw_bounds)
 
+    drive_nodes = [addr.node for addr in drive_map.sleeve_sensor_addrs]
+    drive_indices = self._drive_indices_in_channel_order(drive_nodes, self.channel_order)
+    if drive_indices is None:
+      drive_indices = list(range(num_channels))
+      if drive_nodes:
+        logger.warning(
+          "Channel Root nodes %s do not identify every channel in order %s; "
+          "using firmware tree order for sleeve sensors and drives",
+          drive_nodes,
+          self.channel_order,
+        )
+
     def _drive_addr(seq: List[Address], i: int) -> Optional[Address]:
-      return seq[i] if i < len(seq) else None
+      if i >= len(drive_indices):
+        return None
+      drive_i = drive_indices[i]
+      return seq[drive_i] if drive_i < len(seq) else None
 
     self.channels = [
       PipetteChannel(

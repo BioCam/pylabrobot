@@ -1381,6 +1381,18 @@ def test_channel_order_comes_from_the_device():
   assert Pipettes._order_channels([PrepCmd.ChannelIndex.FrontChannel], []) == (1,)
 
 
+def test_drive_indices_follow_channel_order_not_tree_order():
+  """Sleeve sensors and drives line up with channel_order even when Channel Roots are front first."""
+  rear, front = int(PrepCmd.ChannelIndex.RearChannel), int(PrepCmd.ChannelIndex.FrontChannel)
+  # Recorded Prep: rear root 0xEC, front root 0xEE (Pipettor node).
+  rear_first = [0xEC, 0xEE]
+  front_first = [0xEE, 0xEC]
+  assert Pipettes._drive_indices_in_channel_order(rear_first, (rear, front)) == [0, 1]
+  assert Pipettes._drive_indices_in_channel_order(front_first, (rear, front)) == [1, 0]
+  assert Pipettes._drive_indices_in_channel_order(front_first, (front,)) == [0]
+  assert Pipettes._drive_indices_in_channel_order([0x01, 0x02], (rear, front)) is None
+
+
 def test_minimum_y_spacing_comes_from_the_channel_windows():
   """The offset between neighbouring channels' Y windows is the spacing kept between them."""
 

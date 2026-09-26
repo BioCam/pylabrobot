@@ -1182,8 +1182,15 @@ class PrepDriver:
       channel: which channel, 0-indexed from the back.
       distance: how far, in mm; positive is towards the back.
     """
-    yaxes = (await self.request_channel_drives()).yaxis_addrs
-    await self.send_command(PrepCmd.PrepYAxisMoveRelative(dest=yaxes[channel], distance=distance))
+    yaxis: Optional[Address] = None
+    if self.pipettes is not None and channel < len(self.pipettes.channels):
+      yaxis = self.pipettes.channels[channel].yaxis
+    if yaxis is None:
+      yaxes = (await self.request_channel_drives()).yaxis_addrs
+      if not 0 <= channel < len(yaxes):
+        raise ValueError(f"channel {channel} has no Y axis in the firmware tree")
+      yaxis = yaxes[channel]
+    await self.send_command(PrepCmd.PrepYAxisMoveRelative(dest=yaxis, distance=distance))
 
   async def _request_plate_held(self) -> bool:
     """Whether the device records a plate gripped (PrepGetPlateHeld): its record, not a sensor."""
