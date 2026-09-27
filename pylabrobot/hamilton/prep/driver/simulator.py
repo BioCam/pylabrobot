@@ -1269,6 +1269,11 @@ class SimulatedHead8(_Simulated, Head8):
   """
 
   async def answer(self, request: TCPCommand, path: str, method: str) -> Optional[Tuple[Any, str]]:
+    sensor = self.channels[0].sleeve_sensor if self.channels else None
+    if method == "GetTipPresent" and sensor is not None and request.dest == sensor:
+      # The sleeve senses what sits on the shafts.
+      present = any(tip is not None for tip in self.get_mounted_tips())
+      return HoiParams().add(int(present), U32), "the 8-channel head's shafts"
     pipettes = self.device.pipettes
     if path != MPH_OBJECT_PATH or not isinstance(pipettes, SimulatedPipettes):
       return None
