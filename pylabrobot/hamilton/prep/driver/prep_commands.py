@@ -3559,6 +3559,27 @@ class PrepYAxisMoveRelative(PrepCommand[None]):
 
 
 @dataclass(frozen=True)
+class PrepDDriveMoveAbsolute(PrepCommand[None]):
+  """Move a channel's dispensing drive to a position, in uL (cmd=2, dest=Dispenser.DDrive)."""
+
+  command_id = 2
+  firmware_path = None
+  dest: Address  # type: ignore[misc]
+  # Defaults only because `dest` comes first; every caller names them.
+  volume: F32 = math.nan
+  speed: F32 = math.nan
+
+  def build_parameters(self) -> HoiParams:
+    """Encode fields in firmware-defined order."""
+    return HoiParams().add(self.volume, F32).add(self.speed, F32)
+
+  @classmethod
+  def parse_response_parameters(cls, data: bytes) -> None:
+    """Decode the declared success response."""
+    return None
+
+
+@dataclass(frozen=True)
 class PrepZAxisSeekObstacle(PrepCommand["PrepZAxisSeekObstacle.Response"]):
   """Seek a channel down, in its Z drive frame, until it meets an obstacle (cmd=14, dest=ZAxis)."""
 
@@ -3718,27 +3739,6 @@ class PrepCLldGetStatus(PrepStatusRequest["PrepCLldGetStatus.Response"]):
   def parse_response_parameters(cls, data: bytes) -> PrepCLldGetStatus.Response:
     """Decode the declared success response."""
     return parse_into_struct(HoiParamsParser(data), cls.Response)
-
-
-@dataclass(frozen=True)
-class PrepDDriveMoveAbsolute(PrepCommand[None]):
-  """Move a channel's dispensing drive to a position, in uL (cmd=2, dest=Dispenser.DDrive)."""
-
-  command_id = 2
-  firmware_path = None
-  dest: Address  # type: ignore[misc]
-  # Defaults only because `dest` comes first; every caller names them.
-  volume: F32 = math.nan
-  speed: F32 = math.nan
-
-  def build_parameters(self) -> HoiParams:
-    """Encode fields in firmware-defined order."""
-    return HoiParams().add(self.volume, F32).add(self.speed, F32)
-
-  @classmethod
-  def parse_response_parameters(cls, data: bytes) -> None:
-    """Decode the declared success response."""
-    return None
 
 
 @dataclass(frozen=True)

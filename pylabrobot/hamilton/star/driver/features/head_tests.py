@@ -1081,7 +1081,7 @@ class TestHead96AspirateDispense(unittest.IsolatedAsyncioTestCase):
     self.assertAlmostEqual(fields["surface_following_distance"], drop * 10, delta=1)
 
   async def test_auto_surface_following_refused_beside_a_distance_or_without_a_surface(self):
-    refused = [
+    refused: List[Dict[str, Any]] = [
       {"surface_following_distance": 1.0},
       {"lld_mode": LLDMode.OFF},
     ]

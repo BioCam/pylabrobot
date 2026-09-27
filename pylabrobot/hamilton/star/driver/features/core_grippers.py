@@ -139,7 +139,10 @@ class CoreGrippers:
     return bool((await self._pipettes.sense_tip_presence())[channel])
 
   def _require_mounted(self) -> Tuple[int, int]:
-    """Raise unless the channels hold the tools, taken by either pick-up. The back and front channel.
+    """Raise unless the channels hold the tools, taken by either pick-up.
+
+    Returns:
+      The back and front channel.
 
     Raises:
       RuntimeError: If they do not.
@@ -323,7 +326,7 @@ class CoreGrippers:
     )
 
   async def _move_to_safe_z_after_failure(self) -> None:
-    """`pipettes.move_to_safe_z`, logging rather than raising so the command's error is the one seen."""
+    """`pipettes.move_to_safe_z`, logged not raised, so the command's error is the one seen."""
     try:
       await self._pipettes.move_to_safe_z()
     except Exception:
@@ -517,7 +520,8 @@ class CoreGrippers:
     )
     pair = (cast(int, self._back_channel), cast(int, self._front_channel))
 
-    # A taken tool rides where the channel rides, as a tip does. The back channel takes the rear tool.
+    # A taken tool rides where the channel rides, as a tip does.
+    # The back channel takes the rear tool.
     self._parked_tools = [(tool, tool.parent, tool.location) for tool in tools]
     rear_first = sorted(tools, key=lambda tool: tool.get_location_wrt(deck, y="c").y)
     taken = []
@@ -930,7 +934,8 @@ class CoreGrippers:
 
     child: Optional[Coordinate] = None
     if isinstance(to, Coordinate):
-      # The arms move, and what they carry goes with them: only what stands on the deck is in the way.
+      # The arms move, and what they carry goes with them:
+      # only what stands on the deck is in the way.
       arms = [c for c in self._deck.children if c.category == "x_arm"]
       occupant = get_resource_at_location(to, self._deck, exclude=[held, *arms])
       if occupant is not None:

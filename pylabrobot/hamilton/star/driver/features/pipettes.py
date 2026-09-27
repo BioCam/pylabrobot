@@ -358,7 +358,7 @@ class TADMCurve:
   pressures: List[int]
 
 
-def _channels_that_met_no_tip(error: Exception) -> Optional[List[int]]:
+def _get_channels_that_met_no_tip(error: Exception) -> Optional[List[int]]:
   """The channels a pick-up's error says met no tip; None when anything failed otherwise.
 
   A channel over an empty spot answers `08/75`, "No tip picked up", as measured on the device.
@@ -378,13 +378,10 @@ class Pipettes:
   """The pipetting channels.
 
   Reached as `driver.pipettes`. Individual channels are addressed as `P1`..`PG`. The commands
-
   that act on all of them at once go to the master, so this feature speaks to both.
 
   `configuration` holds what every channel shares, and one entry per channel in
-
   `configuration.channels`.
-
   """
 
   # The STAR's one LLD enum, as its channels have always reached it.
@@ -394,74 +391,42 @@ class Pipettes:
     """What a pressure search stops at: the liquid, or the foam and then the liquid under it."""
 
     LIQUID = 0
-
     FOAM = 1
 
   # Y speed when the caller names none, in mm/s.
-
   default_y_speed: float = 250.0
-
   # Y acceleration level when the caller names none, 1 (gentlest) to 4.
-
   default_y_acceleration_level: int = 3
-
   # Z speed when the caller names none, in mm/s.
-
   default_z_speed: float = 125.0
-
   # Z acceleration when the caller names none, in mm/s2.
-
   default_z_acceleration: float = 800.0
-
   # Z drive current limit when the caller names none.
-
   default_z_current_limit: int = 3
-
   # Height the channels travel at when a command names none, in mm.
-
   default_minimum_traverse_height: float = 245.0
-
   # Containers within this X distance are probed in one batch, in mm.
-
   default_x_grouping_tolerance: float = 0.1
-
   # How far above a container's top a liquid search starts, in mm: enough to clear a brim-full
-
-  # well; more above a trough or tube, whose fill can dome. Legacy had 2.7 and 5, unexplained.
-
+  # well; more above a trough or tube, whose fill can dome.
   search_start_clearance: float = 5.0
-
   well_search_start_clearance: float = 2.0
-
   # A liquid search stops looking this far below the modelled cavity bottom, in mm: the seating
   # error of a plate, no more.
-
   search_limit_below_cavity_bottom: float = 1.0
-
   # A Z-touch looks this far below the modelled cavity bottom, in mm: a floor off the model is
   # still met; each end no lower than the channel reaches.
-
   ztouch_search_limit_below_cavity_bottom: float = 10.0
-
   # The channels of a batch set off on their Z-touch one after another, this long apart, in s.
-
   ztouch_cascade_interval: float = 0.25
-
   # A Z-touch aspirate lifts the tip this far off the cavity bottom it touched, in mm, so the
   # channels drawing together do not press on what lies underneath.
-
   ztouch_aspirate_height_above_bottom: float = 0.2
-
   # A Z-touch dispense lifts the tip this far off the cavity bottom it touched, in mm, so the
-
   # orifice is not sealed on it.
-
   ztouch_dispense_height_above_bottom: float = 0.2
-
   # A drive that ran to the search limit lands a few hundredths off it: a stop this close to the
-
   # limit, in mm, reached it and met nothing.
-
   _ztouch_end_allowance: float = 0.1
 
   def __init__(self, driver: "STARDriver", configuration: Optional[PipettesConfiguration] = None):
@@ -769,7 +734,7 @@ class Pipettes:
       -shaft.get_size_z(),
     )
 
-  # -- channel spacing -------------------------------------------------------------------------------
+  # -- channel spacing -----------------------------------------------------------------------------
 
   def _min_pair_spacing(self, i: int, j: int) -> float:
     """The smallest Y gap two channels may sit at by themselves, in mm, whatever lies between them.
@@ -2284,7 +2249,7 @@ class Pipettes:
       if involved:
         self._release_modelled_tip(channel)
     # The command drives every channel: along Y to its initialization position, and along Z to
-    # `minimum_traverse_height_end`. Read both back, or the model still has them where they were.
+    # `minimum_traverse_height_end`. Read both back, or the model has them where they were.
     await self._record_where_they_stopped("y")
     await self._record_where_they_stopped("z")
     # Initialization homes the pistons as well: the first read of where they stand comes here.
@@ -3164,8 +3129,7 @@ class Pipettes:
     detection_limiter_pwm: int,
     push_force_pwm: int,
   ) -> int:
-    """Send the z-touch search as it is given, in Z increments; the stop disc where it stopped.
-    `Px ZH`.
+    """Send the z-touch search as given, in Z increments; the stop disc where it stopped. `Px ZH`.
 
     Args:
       channel: 0-indexed from the back.
@@ -4152,8 +4116,8 @@ class Pipettes:
       begin_tip_pick_up_process: where the pick-up begins, in mm. The lowest location plus the
         collar height when None.
       end_tip_pick_up_process: where it ends, in mm. The lowest location when None.
-      minimum_traverse_height_start: how high the channels travel first, in mm.
-        `default_minimum_traverse_height` when None.
+      minimum_traverse_height_start: how high the channels travel first, in mm. As high as the
+        tips allow when None; never below 245.0.
       pickup_method: out of a rack or out of wash liquid. The tip's own when None.
 
     Returns:
@@ -4275,8 +4239,8 @@ class Pipettes:
       begin_tip_pick_up_process: where the pick-up begins, in mm. The spot plus the collar height
         when None.
       end_tip_pick_up_process: where it ends, in mm. The spot when None.
-      minimum_traverse_height_start: how high the channels travel first, in mm.
-        `default_minimum_traverse_height` when None.
+      minimum_traverse_height_start: how high the channels travel first, in mm. As high as the
+        tips allow when None; never below 245.0.
       pickup_method: out of a rack or out of wash liquid. The tip's own when None.
       x_tolerance: how far apart in X two spots may be and still go out in one command, in mm.
         None lets any two share one, as legacy sends them: the firmware works through the columns
@@ -4402,7 +4366,8 @@ class Pipettes:
       drop_method: how to let the tips go.
       begin_tip_deposit_process: where the deposit begins, in mm.
       end_tip_deposit_process: where it ends, in mm.
-      minimum_traverse_height_start: how high the channels travel first, in mm.
+      minimum_traverse_height_start: how high the channels travel first, in mm. As high as the
+        tips allow when None; never below 245.0.
       minimum_traverse_height_end: where the channels are left, in mm.
 
     Returns:
@@ -4544,7 +4509,8 @@ class Pipettes:
         None.
       begin_tip_deposit_process: where the deposit begins, in mm.
       end_tip_deposit_process: where it ends, in mm.
-      minimum_traverse_height_start: how high the channels travel first, in mm.
+      minimum_traverse_height_start: how high the channels travel first, in mm. As high as the
+        tips allow when None; never below 245.0.
       minimum_traverse_height_end: where the channels are left, in mm.
       x_tolerance: how far apart in X two spots may be and still go out in one command, in mm.
         None lets any two share one, as legacy sends them.
@@ -4821,7 +4787,7 @@ class Pipettes:
       use_channels,
       pick_up_tips=functools.partial(self._pick_up_to_probe, heights=heights),
       drop_tips=functools.partial(self._drop_to_probe, heights=heights),
-      missed_channels=_channels_that_met_no_tip,
+      missed_channels=_get_channels_that_met_no_tip,
     )
     await self._require_emptied(use_channels)
     return found
@@ -4866,7 +4832,7 @@ class Pipettes:
       use_channels,
       pick_up_tips=functools.partial(self._pick_up_to_probe, heights=heights),
       drop_tips=functools.partial(self._drop_to_probe, heights=heights),
-      missed_channels=_channels_that_met_no_tip,
+      missed_channels=_get_channels_that_met_no_tip,
     )
     await self._require_emptied(use_channels)
     return found
@@ -7066,9 +7032,8 @@ class Pipettes:
       "settling_times": by_class("settling_times", settling_times),
       "swap_speeds": by_class("swap_speeds", swap_speeds),
     }
-    # What each piston pushes out: the transport air its tip holds, the liquid, the blow-out air
-    # in a blow-out mode; then it draws the dispense's own transport air, after an empty too. The
-    # stop-back leaves the piston where the dispense did, as a device showed.
+    # Each piston pushes out its tip's transport air, the liquid and, in a blow-out mode, the air;
+    # then draws this dispense's transport air, after an empty too. The stop-back leaves it there.
     transport_air = per_container_settings["transport_air_volumes"] or [0.0] * n
     blow_out_air = per_container_settings["blow_out_air_volumes"] or [0.0] * n
     # From where it stands, each piston has to have the travel for its dispenses, and each
