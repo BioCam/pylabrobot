@@ -10,7 +10,7 @@ Covers core logic that must survive refactors:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Dict, List
 
 import pytest
 
@@ -714,7 +714,7 @@ def test_head8_auto_surface_following_refused_beside_a_distance_or_without_a_sur
     assert p.head8 is not None
     await p.head8.pick_up_tips(tip_rack.column(0))
     captured, _ = _record_send(p)
-    refused = [
+    refused: List[Dict[str, Any]] = [
       {"surface_following_distance": 1.0},
       {"lld_mode": Pipettes.LLDMode.OFF},
     ]
