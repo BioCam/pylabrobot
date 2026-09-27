@@ -1487,7 +1487,8 @@ class Head8:
     else:
       ref_segments = _get_container_segments(
         targets.ref_resource,
-        liquid_height=resolved_z_fluid - cavity_bottom_z,
+        # A surface raised by d from h is the one a draw of the same volume lowers from h + d.
+        liquid_height=resolved_z_fluid - cavity_bottom_z + (following or 0.0),
         piston_volume=corrected,
         surface_following_distance=following,
         profile_start=resolved_z_minimum - cavity_bottom_z,
