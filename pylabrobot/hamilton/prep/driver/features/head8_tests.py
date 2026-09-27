@@ -18,6 +18,7 @@ from pylabrobot.hamilton.prep import PrepDriver, PrepSimulationDriver
 from pylabrobot.hamilton.prep.driver import prep_commands as PrepCmd
 from pylabrobot.hamilton.prep.driver.features.head8 import PROBE_PITCH_MM, Head8
 from pylabrobot.hamilton.prep.driver.features.pipettes import (
+  HEAD8_CLEARANCE_Y,
   Pipettes,
   _build_pipettor_gantry_move_parameters,
   _get_container_segments,
@@ -785,6 +786,50 @@ def test_head8_takes_the_tips_class_and_refuses_what_one_piston_cannot_do():
     # The wells and tips book the liquid, not the corrected piston volume.
     assert [w.tracker.get_used_volume() for w in wells] == [pytest.approx(50.0)] * 8
     assert [w.tracker.get_used_volume() for w in dst_plate.column(0)] == [pytest.approx(50.0)] * 8
+    await p.stop()
+
+  asyncio.run(_run())
+
+
+def test_the_head_pushes_the_channels_forward_to_its_clearance():
+  """The head sent forward leaves the rear channel its clearance in front of probe 0."""
+
+  async def _run() -> None:
+    deck, *_ = _make_deck()
+    p = PrepSimulationDriver(deck=deck, declared_configuration_json=RECORDING_PREP_HEAD8)
+    await p.setup()
+    assert p.head8 is not None and p.pipettes is not None
+    await p.head8.move_to_position(150.0, 250.0, 167.5)
+    head = p.head8.get_reference_point_location()
+    rear = p.pipettes.get_reference_point_location(0)
+    assert head is not None and rear is not None
+    assert (head.x, head.y) == (pytest.approx(150.0), pytest.approx(250.0))
+    assert rear.y == pytest.approx(250.0 - HEAD8_CLEARANCE_Y)
+    await p.stop()
+
+  asyncio.run(_run())
+
+
+def test_a_channel_sent_into_the_heads_clearance_is_refused_unless_it_may_make_space():
+  """Without make_space nothing moves; with it the head goes back just far enough."""
+
+  async def _run() -> None:
+    deck, *_ = _make_deck()
+    p = PrepSimulationDriver(deck=deck, declared_configuration_json=RECORDING_PREP_HEAD8)
+    await p.setup()
+    assert p.head8 is not None and p.pipettes is not None
+    await p.head8.move_to_position(150.0, 150.0, 167.5)
+    captured, _ = _record_send(p)
+    with pytest.raises(ValueError, match="make_space=True moves the head back"):
+      await p.pipettes.move_to_xy_positions(150.0, {0: 300.0, 1: 280.0})
+    assert not [c for c in captured if isinstance(c, PrepCmd.PrepMoveToPosition)]
+
+    await p.pipettes.move_to_xy_positions(150.0, {0: 300.0, 1: 280.0}, make_space=True)
+    head = p.head8.get_reference_point_location()
+    rear = p.pipettes.get_reference_point_location(0)
+    assert head is not None and rear is not None
+    assert head.y == pytest.approx(300.0 + HEAD8_CLEARANCE_Y)
+    assert rear.y == pytest.approx(300.0)
     await p.stop()
 
   asyncio.run(_run())

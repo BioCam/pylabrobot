@@ -54,6 +54,7 @@ from pylabrobot.resources.hamilton.tip_creators import (
   hamilton_tip_1000uL,
   hamilton_tip_1000uL_filter,
 )
+from pylabrobot.resources.n_channel_pipettes import NChannelPipette
 from pylabrobot.resources.resource import Resource
 
 from . import prep_commands as PrepCmd
@@ -79,6 +80,7 @@ from .prep_commands import (
   DECK_CONFIGURATION_OBJECT_PATH,
   HEATER_SHAKER_ROOT_PATH,
   MLPREP_CPU_OBJECT_PATH,
+  MLPREP_DEBUG_OBJECT_PATH,
   MLPREP_OBJECT_PATH,
   MLPREP_SERVICE_OBJECT_PATH,
   MODULE_INFORMATION_OBJECT_PATH,
@@ -504,6 +506,8 @@ class PrepDriver:
       if self.pipettes.head8_installed:
         if self.head8 is None:
           self.head8 = Head8(self, use_v1_aspirate_dispense=use_v1_aspirate_dispense)
+        elif use_v1_aspirate_dispense:
+          self.head8._use_v1_aspirate_dispense = True
         await self.head8._on_setup()
         # One height governs the arm: the head rides the channels' gantry, so it travels at what
         # they travel at rather than at a second number that happens to match.
@@ -535,8 +539,8 @@ class PrepDriver:
         logger.warning("not everything is at Z safety after setup: %s", "; ".join(low))
       if self.head8 is not None:
         # TODO: the head is left where it stands, and every lateral move travels it there. No move
-        # of its Z alone is known, and the device reports neither its position nor its bounds, so
-        # nothing here can tell that it is low or lift it. `MoveZUpToSafe` takes ChannelIndex values
+        # of its Z alone is known, so nothing here can lift it, though GetPositions reports where
+        # it is (its `MPHChannel` entry). `MoveZUpToSafe` takes ChannelIndex values
         # and the MPH has one (3): try it on a device with a head fitted, and if it answers, raise
         # the head in `Pipettes.move_to_xy_positions` and `XArm.move_to_x_position` as the channels
         # are raised.
@@ -1711,7 +1715,7 @@ class PrepDriver:
     """
     if not isinstance(self.deck, PrepDeck) or self.x_arm is None or self.pipettes is None:
       return
-    positions = await self.pipettes.request_locations()
+    positions, head_at = await self.pipettes._unchecked_fw_request_positions_and_head()
     if not positions:
       logger.warning("the channels reported no positions, so the arm and channels are not modelled")
       return
@@ -1757,8 +1761,15 @@ class PrepDriver:
         )
       self.pipettes.add_tip_mounting_shaft(resource)
       self.pipettes.resources.append(resource)
+    # The 8-channel head rides the arm too, where the same read reports it; one there is reused.
+    if self.head8 is not None and head_at is not None:
+      head = next((c for c in arm.resource.children if c.name == self.head8.resource.name), None)
+      if isinstance(head, NChannelPipette):
+        self.head8.resource = head
+      elif head is None:
+        arm.resource.assign_child_resource(self.head8.resource, location=Coordinate.zero())
     # Seat each where it was read, now that there is something to record it on.
-    self.pipettes._record_positions(positions)
+    self.pipettes._record_positions(positions, head=head_at)
 
   # ----------------------------------------
   # CoRe grippers
@@ -1783,7 +1794,11 @@ class PrepDriver:
   # ----------------------------------------
 
   async def park_device(self) -> None:
-    await self.send_command(PrepCmd.PrepPark())
+    try:
+      await self.send_command(PrepCmd.PrepPark())
+    finally:
+      if self.x_arm is not None:
+        await self.x_arm._record_where_it_stopped()
 
   async def spread(self) -> None:
     await self.send_command(PrepCmd.PrepSpread())
@@ -1823,6 +1838,35 @@ class PrepDriver:
 
   async def cancel_power_down(self) -> None:
     await self.send_command(PrepCmd.PrepCancelPowerDown())
+
+  # ----------------------------------------
+  # Door
+  # ----------------------------------------
+
+  async def set_door_state_override(
+    self, *, enabled: bool, enclosure_present: bool, door_open: bool
+  ) -> None:
+    """Replace what the enclosure and door sensors report with the given state, or stop replacing it.
+
+    The command's id is read from MLPrepDebug's method table by name.
+
+    Args:
+      enabled: True to report the given state, False to report the sensors again.
+      enclosure_present: the enclosure state to report while enabled.
+      door_open: the door state to report while enabled.
+    """
+    debug = await self.resolve_path(MLPREP_DEBUG_OBJECT_PATH)
+    method = await self.request_method_by_name(debug, "OverrideDoorState")
+    await self.send_command(
+      PrepCmd.PrepOverrideDoorState(
+        dest=debug,
+        command_id=method.method_id,
+        interface_id=method.interface_id,
+        override_enable=enabled,
+        enclosure_present=enclosure_present,
+        door_open=door_open,
+      )
+    )
 
   # ----------------------------------------
   # Deck light
