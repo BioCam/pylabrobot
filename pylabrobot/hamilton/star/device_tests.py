@@ -14,7 +14,7 @@ from pylabrobot.hamilton.star.device import (
   STAR_DECK_LOCATION,
   STAR_SIZE_X,
   STARDevice,
-  STARLet,
+  STARlet,
   STARPlus,
 )
 from pylabrobot.hamilton.star.driver.configuration import (
@@ -85,7 +85,7 @@ class TestFactories(unittest.IsolatedAsyncioTestCase):
 
   def test_each_factory_builds_its_own_deck(self):
     self.assertEqual(STAR(simulation=True).deck.num_tracks, STAR_NUM_TRACKS)
-    self.assertEqual(STARLet(simulation=True).deck.num_tracks, STARLET_NUM_TRACKS)
+    self.assertEqual(STARlet(simulation=True).deck.num_tracks, STARLET_NUM_TRACKS)
 
   def test_extension_housing_stands_to_the_left(self):
     """The housing is a resource beside the chassis, not something that grows the device.
@@ -159,7 +159,7 @@ class TestComponentNames(unittest.IsolatedAsyncioTestCase):
     cases: Tuple[Tuple[Callable[..., STARDevice], str, Optional[str], bool], ...] = (
       (STAR, "star_a", None, False),
       (STAR, "star_b", RECORDING_STAR_HEAD384, False),
-      (STARLet, "starlet", None, True),
+      (STARlet, "starlet", None, True),
       (STARPlus, "starplus", None, False),
     )
     for index, (factory, name, recording, side_panel) in enumerate(cases):
@@ -219,7 +219,7 @@ class TestTurnedDevice(unittest.IsolatedAsyncioTestCase):
   """A device turned in the room sets up as one standing square."""
 
   async def test_a_turned_device_puts_its_parts_where_an_upright_one_does(self):
-    for factory in (STARLet, STARPlus):
+    for factory in (STARlet, STARPlus):
       for angle in (90, -90, 37.5):
         with self.subTest(device=factory.__name__, angle=angle):
           placed = []

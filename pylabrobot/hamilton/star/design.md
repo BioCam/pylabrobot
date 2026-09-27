@@ -8,7 +8,7 @@ last section lists where it is not, which is what this document is for.
 
 ```
 device.py           STARDevice, a Resource. Its deck is its child, so the device and everything
-                    on it is one tree. Frame factories: STAR / STARLet / STARPlus.
+                    on it is one tree. Frame factories: STAR / STARlet / STARPlus.
 driver/master.py    STARDriver. Owns the link, the reply router, the subsystem lock, discovery,
                     initialization order, the saved configuration, and the resource model.
 driver/features/    One class per thing the device is fitted with: pipettes, head96, head384,
