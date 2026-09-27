@@ -98,7 +98,7 @@ def _clld_setup(second_session: bool, found: Optional[float]):
   plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
   p = PrepSimulationDriver(deck=deck)
   if second_session:
-    p.second_io = _SimulatedIO(p)
+    p._second_io = _SimulatedIO(p)
   sent: List[Tuple[str, Any]] = []
   main_send, second_send = p.send_command, p.send_command_on_second_session
 
@@ -227,6 +227,10 @@ def test_channels_tip_and_volume_trackers_follow_pick_up_aspirate_dispense_and_d
   _run(_t())
 
 
+# Any, as `sent` holds commands: an isinstance against these classes narrows to what they share.
+_ASPIRATE_COMMANDS: Tuple[Any, ...] = tuple(Pipettes._ASPIRATE_CMD.values())
+
+
 def test_aspirate_takes_a_missing_liquid_height_from_the_tracked_volume():
   """No height given: the tip goes to where the tracked volume stands; untracked, it refuses."""
 
@@ -245,7 +249,7 @@ def test_aspirate_takes_a_missing_liquid_height_from_the_tracked_volume():
       await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], use_channels=[0])
       sent = _record(p)
       await p.pipettes.aspirate([well], piston_volumes=[20.0], use_channels=[0])
-      entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
+      entry = next(c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)).aspirate_parameters[0]
       bottom = well.get_location_wrt(deck, "c", "c", "cavity_bottom").z
       height = well.compute_height_from_volume(100.0)
       assert entry.no_lld.z_fluid == pytest.approx(bottom + height, abs=0.01)
@@ -283,7 +287,7 @@ def test_aspirate_immerses_the_tip_below_the_surface_given_or_found():
       immersion_depths=[1.5],
     )
     plain, searched = [
-      c.aspirate_parameters[0] for _, c in sent if hasattr(c, "aspirate_parameters")
+      c.aspirate_parameters[0] for _, c in sent if isinstance(c, _ASPIRATE_COMMANDS)
     ]
     assert plain.no_lld.z_fluid == pytest.approx(bottom + 3.0, abs=0.01)
     assert isinstance(searched, PrepCmd.AspirateParametersNoLldAndMonitoring2)
@@ -318,7 +322,7 @@ def test_aspirate_takes_volumes_by_a_liquid_class_or_piston_volumes_as_given():
         await p.pipettes.aspirate([well], use_channels=[0], liquid_heights=[2.0], **kwargs)
     sent = _record(p)
     await p.pipettes.aspirate([well], piston_volumes=[5.0], use_channels=[0], liquid_heights=[2.0])
-    entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
+    entry = next(c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)).aspirate_parameters[0]
     assert entry.common.liquid_volume == pytest.approx(5.0)
     await p.stop()
 
@@ -348,7 +352,7 @@ def test_aspirate_and_dispense_take_the_tips_water_class(rack):
     await p.pipettes.aspirate(
       plate["A1:B1"], volumes=volumes, use_channels=[0, 1], liquid_heights=[3.0, 3.0]
     )
-    (command,) = [c for c in sent if hasattr(c, "aspirate_parameters")]
+    (command,) = [c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)]
     by_channel = {p.pipettes.channel_of(int(e.channel)): e for e in command.aspirate_parameters}
     for channel, volume in zip((0, 1), volumes):
       entry = by_channel[channel]
@@ -430,7 +434,7 @@ def test_a_driver_given_its_own_table_looks_up_there_once_per_container():
       (400.0, True, False, Liquid.WATER),
       (400.0, False, False, Liquid.WATER),
     ]
-    (command,) = [c for c in sent if hasattr(c, "aspirate_parameters")]
+    (command,) = [c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)]
     by_channel = {p.pipettes.channel_of(int(e.channel)): e for e in command.aspirate_parameters}
     assert [by_channel[ch].common.liquid_volume for ch in (0, 1)] == [30.0, 60.0]
     entry = by_channel[0]
@@ -468,7 +472,7 @@ def test_the_trackers_book_the_liquid_not_the_corrected_piston_volume():
       await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], [0])
       sent = _record(p)
       await p.pipettes.aspirate([plate.get_item("A1")], volumes=[20.0], use_channels=[0])
-      (command,) = [c for c in sent if hasattr(c, "aspirate_parameters")]
+      (command,) = [c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)]
       assert command.aspirate_parameters[0].common.liquid_volume > 20.5
       tip = p.pipettes.get_mounted_tip(0)
       assert tip is not None and tip.tracker.get_used_volume() == pytest.approx(20.0)
@@ -506,7 +510,7 @@ def test_a_50_uL_tip_has_a_class_only_with_blow_out():
       )
     with pytest.raises(ValueError, match=refusal):
       await p.pipettes.dispense(plate["A1:B1"], volumes=[10.0, 10.0], use_channels=[0, 1])
-    assert not [c for c in sent if hasattr(c, "aspirate_parameters")]
+    assert not [c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)]
     assert not [c for c in sent if hasattr(c, "dispense_parameters")]
     await p.pipettes.aspirate(
       plate["A1:B1"],
@@ -515,7 +519,7 @@ def test_a_50_uL_tip_has_a_class_only_with_blow_out():
       liquid_heights=[3.0, 3.0],
       blow_out=[True, True],
     )
-    (command,) = [c for c in sent if hasattr(c, "aspirate_parameters")]
+    (command,) = [c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)]
     by_channel = {p.pipettes.channel_of(int(e.channel)): e for e in command.aspirate_parameters}
     assert by_channel[0].common.liquid_volume == pytest.approx(54.2)
     assert by_channel[0].aspirate.blowout_volume == pytest.approx(water.aspiration_blow_out_volume)
@@ -557,12 +561,12 @@ def test_aspirate_sends_an_explicit_zero_blow_out_and_refuses_a_zero_flow_rate()
     }
     sent = _record(p)
     await p.pipettes.aspirate([well], volumes=[5.0], blow_out_air_volumes=[0.0], **classes)
-    entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
+    entry = next(c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)).aspirate_parameters[0]
     assert entry.aspirate.blowout_volume == 0.0
     sent.clear()
     with pytest.raises(ValueError, match="flow_rates must be above 0"):
       await p.pipettes.aspirate([well], volumes=[5.0], flow_rates=[0.0], **classes)
-    assert not any(hasattr(c, "aspirate_parameters") for c in sent)
+    assert not any(isinstance(c, _ASPIRATE_COMMANDS) for c in sent)
     await p.stop()
 
   _run(_t())
@@ -622,7 +626,7 @@ def test_aspirate_refuses_a_clot_check_until_it_is_verified():
       lld_mode=Pipettes.LLDMode.CAPACITIVE,
       clot_detection_heights=[0.0],
     )
-    c_lld = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0].c_lld
+    c_lld = next(c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)).aspirate_parameters[0].c_lld
     assert (c_lld.clot_check_enable, c_lld.z_clot_check) == (False, 0.0)
     sent.clear()
     with pytest.raises(ValueError, match="clot detection is not verified"):
@@ -644,7 +648,7 @@ def test_aspirate_refuses_a_clot_check_until_it_is_verified():
         use_channels=[0],
         liquid_heights=[3.0],
       )
-    assert not any(hasattr(c, "aspirate_parameters") for c in sent)
+    assert not any(isinstance(c, _ASPIRATE_COMMANDS) for c in sent)
     await p.stop()
 
   _run(_t())
@@ -671,7 +675,7 @@ def test_aspirate_refuses_tadm_until_it_is_verified():
       await p.pipettes.aspirate([well], limit_curve_indices=[1], **kwargs)
     with pytest.raises(ValueError, match="TADM is not verified"):
       await p.pipettes.aspirate([well], tadm_storage_level="all", **kwargs)
-    assert not any(hasattr(c, "aspirate_parameters") for c in sent)
+    assert not any(isinstance(c, _ASPIRATE_COMMANDS) for c in sent)
     await p.stop()
 
   _run(_t())
@@ -716,7 +720,7 @@ def test_aspirate_searches_with_the_clld_sensitivity_it_is_given():
     )
     (seek,) = [c for _, c in sent if isinstance(c, PrepCmd.PrepZAxisSeekCapacitiveLld)]
     assert seek.sensitivity == 2
-    (draw,) = [c for _, c in sent if hasattr(c, "aspirate_parameters")]
+    (draw,) = [c for _, c in sent if isinstance(c, _ASPIRATE_COMMANDS)]
     assert isinstance(draw, PrepCmd.PrepAspirateNoLldMonitoringV2)
     await p.stop()
 
@@ -770,7 +774,7 @@ def test_aspirate_sends_a_mix_per_container_and_the_default_block_where_none():
       pre_mixes=[Mix(volume=30.0, repetitions=3, flow_rate=50.0), None],
       mix_positions_from_liquid_surface=[1.5, 1.5],
     )
-    entries = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters
+    entries = next(c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)).aspirate_parameters
     mixed, plain = entries
     assert (mixed.mix.default_values, mixed.mix.volume, mixed.mix.cycles) == (False, 30.0, 3)
     assert (mixed.mix.speed, mixed.mix.z_offset) == (50.0, 1.5)
@@ -2940,14 +2944,14 @@ def test_every_y_and_z_move_is_recorded_from_where_the_device_says_the_channels_
 
 
 def _batch_probe_setup(second_session: bool):
-  """A simulated Prep with tips on both channels over a 30 mm block, and each seek's link recorded."""
+  """A simulated Prep with tips on both channels over a 30 mm block; each seek's link recorded."""
   deck = PrepDeck()
   tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
   block = Resource(name="block", size_x=40, size_y=40, size_z=30)
   deck[6].assign_child_resource(block, location=Coordinate(10, 10, 0))
   p = PrepSimulationDriver(deck=deck)
   if second_session:
-    p.second_io = _SimulatedIO(p)
+    p._second_io = _SimulatedIO(p)
   links: List[str] = []
   main_send, second_send = p.send_command, p.send_command_on_second_session
 
@@ -2967,7 +2971,10 @@ def _batch_probe_setup(second_session: bool):
 
 @pytest.mark.parametrize("second_session", [False, True])
 def test_probe_batch_liquid_heights_seeks_each_channel_and_stays_where_it_detects(second_session):
-  """Both channels to their starts, then each one's own seek: together on two sessions, in turn on one."""
+  """Both channels to their starts, then each one's own seek.
+
+  Together on two sessions, in turn on one.
+  """
 
   async def _t():
     p, tip_rack, block, links = _batch_probe_setup(second_session)
@@ -3137,7 +3144,10 @@ def test_a_containers_top_is_its_own_top_on_the_deck():
 
 
 def _probe_liquid_setup():
-  """A simulated Prep with a plate, a dish without height-volume functions, and tips on both channels."""
+  """A simulated Prep with a plate and a dish without height-volume functions.
+
+  Both channels carry a tip.
+  """
   deck = PrepDeck()
   tip_rack = deck[3] = hamilton_96_tiprack_50uL_NTR(name="ntr", with_tips=True)
   plate = deck[4] = cor_96_wellplate_360uL_Fb(name="plate")
@@ -3233,7 +3243,7 @@ def test_aspirate_sends_the_containers_profile_from_z_minimum():
         well.get_location_wrt(p.deck, "c", "c", "cavity_bottom").z + 1.0
       ],
     )
-    entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
+    entry = next(c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)).aspirate_parameters[0]
     expected = _get_container_segments(well, profile_start=1.0)
     assert [(s.area_bottom, s.height) for s in entry.container_description] == [
       (pytest.approx(s.area_bottom), pytest.approx(s.height)) for s in expected
@@ -3260,7 +3270,7 @@ def test_aspirate_scales_the_profile_to_a_surface_following_distance():
       liquid_heights=[3.0],
       surface_following_distances=[0.5],
     )
-    entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
+    entry = next(c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)).aspirate_parameters[0]
     assert _get_profile_drop(entry.container_description, 3.0, 20.0) == pytest.approx(0.5, abs=1e-3)
     await p.pipettes.dispense([well], piston_volumes=[20.0], use_channels=[0], liquid_heights=[3.0])
     sent.clear()
@@ -3271,7 +3281,7 @@ def test_aspirate_scales_the_profile_to_a_surface_following_distance():
       liquid_heights=[3.0],
       surface_following_distances=[0.0],
     )
-    entry = next(c for c in sent if hasattr(c, "aspirate_parameters")).aspirate_parameters[0]
+    entry = next(c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)).aspirate_parameters[0]
     assert entry.container_description == []
     assert entry.common.tube_radius == 0.0
     with pytest.raises(ValueError, match="surface_following_distances length"):
@@ -3287,8 +3297,6 @@ def test_aspirate_scales_the_profile_to_a_surface_following_distance():
   _run(_t())
 
 
-# Any, as `sent` holds commands: an isinstance against these classes narrows to what they share.
-_ASPIRATE_COMMANDS: Tuple[Any, ...] = tuple(Pipettes._ASPIRATE_CMD.values())
 _ASPIRATE_TWO = {"piston_volumes": [20.0, 30.0], "liquid_heights": [3.0, 4.0]}
 _ASPIRATE_SEGMENTS = [
   [
@@ -3767,7 +3775,7 @@ def _ztouch_setup(second_session: bool, touch: Optional[float]):
   plate = deck[0] = cor_96_wellplate_360uL_Fb(name="plate")
   p = PrepSimulationDriver(deck=deck)
   if second_session:
-    p.second_io = _SimulatedIO(p)
+    p._second_io = _SimulatedIO(p)
   sent: List[Tuple[str, Any]] = []
   main_send, second_send = p.send_command, p.send_command_on_second_session
 

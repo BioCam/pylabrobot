@@ -452,14 +452,14 @@ def _get_profile_segments(resource: object) -> list[PrepCmd.SegmentDescriptor]:
     heights = [depth * i / steps for i in range(steps + 1)]
     knots = [(h, resource.compute_volume_from_height(h)) for h in heights]
   else:
-    cross_section = getattr(resource, "cross_section_type", None)
+    cross_section = resource.cross_section_type if isinstance(resource, Well) else None
     if cross_section == CrossSectionType.CIRCLE:
       area = math.pi * (resource.get_size_x() / 2) ** 2
     elif cross_section == CrossSectionType.RECTANGLE:
       area = resource.get_size_x() * resource.get_size_y()
     else:
       return []
-    bottom = getattr(resource, "bottom_type", None)
+    bottom = resource.bottom_type if isinstance(resource, Well) else None
     if (
       bottom in (WellBottomType.V, WellBottomType.U)
       and resource.name not in _warned_cylinder_fallback
@@ -2165,7 +2165,7 @@ class Pipettes:
       raise ValueError(f"use_channels must each be named once, are {use_channels}")
     for channel in use_channels:
       self.channels[channel]._require_ddrive()
-    if self._driver.second_io is not None:
+    if self._driver._second_io is not None:
       await asyncio.gather(
         *(
           self._empty_tip(channel, position, flow_rate, reset_dispensing_drive_after, i > 0)
@@ -3561,7 +3561,7 @@ class Pipettes:
         )
       if channel >= len(self.channels) or self.channels[channel].zaxis is None:
         raise RuntimeError(f"channel {channel} has no Z axis in the firmware tree")
-    parallel = self._driver.second_io is not None
+    parallel = self._driver._second_io is not None
     found: Dict[int, List[Optional[float]]] = {job: [] for _, job in jobs}
     for _ in range(n_replicates):
       await self.move_tool_bottom_to_z_positions(
@@ -3665,7 +3665,7 @@ class Pipettes:
     for channel, _ in jobs:
       if channel >= len(self.channels) or self.channels[channel].zaxis is None:
         raise RuntimeError(f"channel {channel} has no Z axis in the firmware tree")
-    parallel = self._driver.second_io is not None
+    parallel = self._driver._second_io is not None
 
     async def seek(
       channel: int, start: float, end: float, offset: float, second: bool

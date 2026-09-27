@@ -143,14 +143,12 @@ from pylabrobot.resources import (
   Well,
 )
 from pylabrobot.resources.barcode import Barcode, Barcode1DSymbology
-from pylabrobot.resources.errors import ResourceNotFoundError
 from pylabrobot.resources.hamilton import (
-  HamiltonCoreGripperTool,
+  HamiltonSTARDeck,
   HamiltonTip,
   TipDropMethod,
   TipPickupMethod,
   TipSize,
-  hamilton_core_gripper_tool,
 )
 from pylabrobot.resources.hamilton.hamilton_decks import (
   HamiltonCoreGrippers,
@@ -1786,7 +1784,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
         *[
           _detect_func(lld_mode[orig_idx])(
             channel_idx=channel,
-            search_end_position=lip,
+            lowest_immers_pos=lip,
             start_pos_search=sps,
             channel_speed=search_speed,
           )
@@ -6121,15 +6119,19 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   # -------------- 3.5.5 CoRe gripper commands --------------
 
-  def _get_core_grippers(self) -> HamiltonCoreGrippers:
-    """The CO-RE grippers on the deck, wherever they are parked and whatever they are called."""
-    for resource in self.deck.get_all_children():
-      if isinstance(resource, HamiltonCoreGrippers):
-        return resource
-    raise ResourceNotFoundError("this deck carries no CO-RE grippers")
+  def _get_core_gripper_mount(self) -> HamiltonCoreGrippers:
+    """Find the CoRe gripper mount on a default or named STAR deck."""
+    name = (
+      self.deck.get_component_name("core_grippers")
+      if isinstance(self.deck, HamiltonSTARDeck)
+      else "core_grippers"
+    )
+    mount = self.deck.get_resource(name)
+    assert isinstance(mount, HamiltonCoreGrippers), "core_grippers must be CoReGrippers"
+    return mount
 
   def _get_core_front_back(self):
-    core_grippers = self._get_core_grippers()
+    core_grippers = self._get_core_gripper_mount()
     back_channel_y_center = int(
       (
         core_grippers.get_location_wrt(self.deck).y
@@ -6154,7 +6156,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
   def _get_core_x(self) -> float:
     """Get the X coordinate for the CoRe grippers: the holder's centre x, plus the adjustment."""
-    core_grippers = self._get_core_grippers()
+    core_grippers = self._get_core_gripper_mount()
     return core_grippers.get_location_wrt(self.deck, x="c").x + self.core_adjustment.x
 
   async def get_core(self, p1: int, p2: int):
@@ -6168,13 +6170,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     front_channel: int,
     front_offset: Optional[Coordinate] = None,
     back_offset: Optional[Coordinate] = None,
-    tool: Optional[HamiltonCoreGripperTool] = None,
   ):
-    """Get CoRe gripper tool from wasteblock mount.
-
-    Args:
-      tool: the grip tools on the mount. Defaults to the 1000 uL channel's CO-RE grip tool.
-    """
+    """Pick up the CO-RE gripper tools stored on the deck's wasteblock mount."""
 
     if not 0 < front_channel < self.num_channels:
       raise ValueError(f"front_channel must be between 1 and {self.num_channels - 1} (inclusive)")
@@ -6198,9 +6195,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     begin_z_coord = round(235.0 + self.core_adjustment.z + z_offset)
     end_z_coord = round(225.0 + self.core_adjustment.z + z_offset)
 
-    ttti = await self.get_or_assign_tip_type_index(
-      tool or hamilton_core_gripper_tool(name="core_gripper_tool")
-    )
+    core_grippers = self._get_core_gripper_mount()
+    front_tool, back_tool = core_grippers.front_tool, core_grippers.back_tool
+    if front_tool.model != back_tool.model:
+      raise ValueError("CO-RE gripper tools must have the same model.")
+    ttti = await self.get_or_assign_tip_type_index(front_tool)
 
     command_output = await self.send_command(
       module="C0",
@@ -7750,7 +7749,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     self,
     start_pos_search: Optional[float] = None,
     tip_len: Optional[float] = None,
-    search_end_position: Optional[float] = None,
+    lowest_immers_pos: Optional[float] = None,
     approach_speed: Optional[float] = None,
     speed: float = 10.0,
     acceleration: float = 300.0,
@@ -7781,7 +7780,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     Args:
       tip_len: mounted tip length in mm, used to map tip-bottom positions to the stop disk. None
         (default) measures it via `head96_request_tip_length`.
-      search_end_position: lowest tip-bottom the search may reach in mm; None is the deepest safe value.
+      lowest_immers_pos: lowest tip-bottom the search may reach in mm; None is the deepest safe value.
       start_pos_search: tip-bottom position the search starts from in mm; None is the highest safe.
       speed: cLLD search speed in mm/sec.
       acceleration: search acceleration in mm/sec**2.
@@ -7864,13 +7863,13 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     height_min = max(z_min - tip_overhang, deck)
     height_max = z_max - tip_overhang
 
-    if search_end_position is None:
-      search_end_position = height_min
+    if lowest_immers_pos is None:
+      lowest_immers_pos = height_min
     if start_pos_search is None:
       start_pos_search = height_max
-    if not (height_min <= search_end_position <= height_max):
+    if not (height_min <= lowest_immers_pos <= height_max):
       raise ValueError(
-        f"search_end_position={search_end_position} mm out of reach "
+        f"lowest_immers_pos={lowest_immers_pos} mm out of reach "
         f"[{round(height_min, 1)}, {round(height_max, 1)}] mm (tip-bottom)"
       )
     if not (height_min <= start_pos_search <= height_max):
@@ -7895,8 +7894,8 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       )
 
     # Back to stop-disk space (zh / zc) via the overhang.
-    search_end_position_increments = self._head96_z_drive_mm_to_increment(
-      search_end_position + tip_overhang
+    lowest_immers_pos_increments = self._head96_z_drive_mm_to_increment(
+      lowest_immers_pos + tip_overhang
     )
     start_pos_search_increments = self._head96_z_drive_mm_to_increment(
       start_pos_search + tip_overhang
@@ -7922,7 +7921,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       zr_field = f"{acceleration_increments // 1000:03}"  # [1000 increment/second**2]
       zw_field = f"{current_protection_limiter:01}"
     zl_params: Dict[str, Any] = {
-      "zh": f"{search_end_position_increments:05}",  # lowest immersion position [increment]
+      "zh": f"{lowest_immers_pos_increments:05}",  # lowest immersion position [increment]
       "zc": f"{start_pos_search_increments:05}",  # start position of LLD search [increment]
       "zi": f"{post_detection_dist_increments:04}",  # immersion depth after LLD [increment]
       "zj": f"{post_detection_direction}",  # direction of immersion depth (0 down, 1 up)
@@ -12904,7 +12903,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   async def _move_z_drive_to_liquid_surface_using_clld(
     self,
     channel_idx: int,  # 0-based indexing of channels!
-    search_end_position: float = 99.98,  # mm
+    lowest_immers_pos: float = 99.98,  # mm
     start_pos_search: float = 334.7,  # mm
     channel_speed: float = 10.0,  # mm
     channel_acceleration: float = 800.0,  # mm/sec**2
@@ -12916,14 +12915,14 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     """Move the tip on a channel to the liquid surface using capacitive LLD (cLLD).
 
     Runs a downward capacitive liquid-level detection (cLLD) search on the specified
-    0-indexed channel. The search will not go below search_end_position. After detection,
+    0-indexed channel. The search will not go below lowest_immers_pos. After detection,
     the channel performs the configured post-detection move (by default retracting 2.0 mm).
 
     This is a low level method that takes parameters in "head space", not using the tip length.
 
     Args:
       channel_idx: Channel index (0-based).
-      search_end_position: Lowest allowed search position in mm (hard stop). Defaults to 99.98.
+      lowest_immers_pos: Lowest allowed search position in mm (hard stop). Defaults to 99.98.
       start_pos_search: Search start position in mm. If None, computed from tip length.
       channel_speed: Search speed in mm/s. Defaults to 10.0.
       channel_acceleration: Search acceleration in mm/s^2. Defaults to 800.0.
@@ -12945,7 +12944,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       raise ValueError(f"channel_idx must be in [0, {self.num_channels - 1}], is {channel_idx}")
 
     # Conversions & machine-compatibility check of parameters
-    search_end_position_increments = STARBackend.mm_to_z_drive_increment(search_end_position)
+    lowest_immers_pos_increments = STARBackend.mm_to_z_drive_increment(lowest_immers_pos)
     start_pos_search_increments = STARBackend.mm_to_z_drive_increment(start_pos_search)
     channel_speed_increments = STARBackend.mm_to_z_drive_increment(channel_speed)
     channel_acceleration_thousand_increments = STARBackend.mm_to_z_drive_increment(
@@ -12953,9 +12952,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
     post_detection_dist_increments = STARBackend.mm_to_z_drive_increment(post_detection_dist)
 
-    assert 9_320 <= search_end_position_increments <= 31_200, (
+    assert 9_320 <= lowest_immers_pos_increments <= 31_200, (
       f"Lowest immersion position must be between \n{STARBackend.z_drive_increment_to_mm(9_320)}"
-      + f" and {STARBackend.z_drive_increment_to_mm(31_200)} mm, is {search_end_position} mm"
+      + f" and {STARBackend.z_drive_increment_to_mm(31_200)} mm, is {lowest_immers_pos} mm"
     )
     assert 9_320 <= start_pos_search_increments <= 31_200, (
       f"Start position of LLD search must be between \n{STARBackend.z_drive_increment_to_mm(9_320)}"
@@ -12983,7 +12982,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     await self.send_command(
       module=STARBackend.channel_id(channel_idx),
       command="ZL",
-      zh=f"{search_end_position_increments:05}",  # Lowest immersion position [increment]
+      zh=f"{lowest_immers_pos_increments:05}",  # Lowest immersion position [increment]
       zc=f"{start_pos_search_increments:05}",  # Start position of LLD search [increment]
       zl=f"{channel_speed_increments:05}",  # Speed of channel movement
       zr=f"{channel_acceleration_thousand_increments:03}",  # Acceleration [1000 increment/second^2]
@@ -12996,7 +12995,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   async def clld_probe_z_height_using_channel(
     self,
     channel_idx: int,  # 0-based indexing of channels!
-    search_end_position: float = 99.98,
+    lowest_immers_pos: float = 99.98,
     start_pos_search: Optional[float] = None,
     channel_speed: float = 10.0,
     channel_acceleration: float = 800.0,
@@ -13023,7 +13022,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     Args:
       channel_idx: Channel index to probe with (0-based; backmost channel = 0).
-      search_end_position: Lowest allowed search position in mm, expressed in the *tip-referenced* coordinate system (i.e., the position you would use for commands that include tip length). Internally converted to channel Z-drive coordinates before issuing `ZL`.
+      lowest_immers_pos: Lowest allowed search position in mm, expressed in the *tip-referenced* coordinate system (i.e., the position you would use for commands that include tip length). Internally converted to channel Z-drive coordinates before issuing `ZL`.
       start_pos_search: Start position for the cLLD search in mm, expressed in the *tip-referenced* coordinate system. Internally converted to channel Z-drive coordinates before issuing `ZL`. If None, the highest safe position is used based on tip length.
       channel_speed: Search speed in mm/s. Defaults to 10.0.
       channel_acceleration: Search acceleration in mm/s^2. Defaults to 800.0.
@@ -13056,30 +13055,28 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     if start_pos_search is None:
       start_pos_search = safe_tip_top_z_pos
 
-    # Check if search_end_position is allowed
-    if search_end_position < STARBackend.MINIMUM_CHANNEL_Z_POSITION:
-      raise ValueError(
-        f"search_end_position must be at least 99.98 mm but is {search_end_position} mm"
-      )
+    # Check if lowest_immers_pos is allowed
+    if lowest_immers_pos < STARBackend.MINIMUM_CHANNEL_Z_POSITION:
+      raise ValueError(f"lowest_immers_pos must be at least 99.98 mm but is {lowest_immers_pos} mm")
 
     # Correct for tip length + fitting depth (low level command is in head space, we are in tip space)
-    search_end_position_head_space = (
-      search_end_position + tip_len - STARBackend.DEFAULT_TIP_FITTING_DEPTH
+    lowest_immers_pos_head_space = (
+      lowest_immers_pos + tip_len - STARBackend.DEFAULT_TIP_FITTING_DEPTH
     )  # tip space -> head space
     channel_head_start_pos = round(
       start_pos_search + tip_len - STARBackend.DEFAULT_TIP_FITTING_DEPTH, 2
     )
 
     # Check that start position is within allowed range
-    if not (search_end_position <= start_pos_search <= safe_tip_top_z_pos):
+    if not (lowest_immers_pos <= start_pos_search <= safe_tip_top_z_pos):
       raise ValueError(
-        f"Start position of LLD search must be between \n{search_end_position} and {safe_tip_top_z_pos} mm, is {start_pos_search} mm"
+        f"Start position of LLD search must be between \n{lowest_immers_pos} and {safe_tip_top_z_pos} mm, is {start_pos_search} mm"
       )
 
     try:
       await self._move_z_drive_to_liquid_surface_using_clld(
         channel_idx=channel_idx,
-        search_end_position=search_end_position_head_space,
+        lowest_immers_pos=lowest_immers_pos_head_space,
         start_pos_search=channel_head_start_pos,
         channel_speed=channel_speed,
         channel_acceleration=channel_acceleration,
@@ -13101,7 +13098,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   async def _search_for_surface_using_plld(
     self,
     channel_idx: int,  # 0-based indexing of channels!
-    search_end_position: float = 99.98,  # mm of the head_probe!
+    lowest_immers_pos: float = 99.98,  # mm of the head_probe!
     start_pos_search: float = 334.7,  # mm of the head_probe!
     channel_speed_above_start_pos_search: float = 120.0,  # mm/sec
     channel_speed: float = 10.0,  # mm
@@ -13133,11 +13130,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     Notes:
     - This command is implemented  via the PX command module, i.e. it IS parallelisable
-    - search_end_position & start_pos_search refer to the head_probe z-coordinate (not the tip)
+    - lowest_immers_pos & start_pos_search refer to the head_probe z-coordinate (not the tip)
     - The return values represent head_probe z-positions (not the tip) in mm
 
     Args:
-      search_end_position: Lowest allowed Z during the search (mm). Default 99.98.
+      lowest_immers_pos: Lowest allowed Z during the search (mm). Default 99.98.
       start_pos_search: Z position where the search begins (mm). Default 334.7.
       channel_speed_above_start_pos_search: Z speed above the start position (mm/s). Default 120.0.
       channel_speed: Z search speed (mm/s). Default 10.0.
@@ -13191,7 +13188,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       )
 
     # Conversions to machine units
-    search_end_position_increments = STARBackend.mm_to_z_drive_increment(search_end_position)
+    lowest_immers_pos_increments = STARBackend.mm_to_z_drive_increment(lowest_immers_pos)
     start_pos_search_increments = STARBackend.mm_to_z_drive_increment(start_pos_search)
 
     channel_speed_above_start_pos_search_increments = STARBackend.mm_to_z_drive_increment(
@@ -13218,9 +13215,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     plld_foam_search_speed_increments = STARBackend.mm_to_z_drive_increment(plld_foam_search_speed)
 
     # Machine-compatibility parameter checks
-    assert 9320 <= search_end_position_increments <= 31_200, (
+    assert 9320 <= lowest_immers_pos_increments <= 31_200, (
       f"Lowest immersion position must be between \n{STARBackend.z_drive_increment_to_mm(9_320)}"
-      + f" and {STARBackend.z_drive_increment_to_mm(31_200)} mm, is {search_end_position} mm"
+      + f" and {STARBackend.z_drive_increment_to_mm(31_200)} mm, is {lowest_immers_pos} mm"
     )
     assert 9320 <= start_pos_search_increments <= 31_200, (
       f"Start position of LLD search must be between \n{STARBackend.z_drive_increment_to_mm(9_320)}"
@@ -13329,7 +13326,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     resp_raw = await self.send_command(
       module=STARBackend.channel_id(channel_idx),
       command="ZE",
-      zh=f"{search_end_position_increments:05}",
+      zh=f"{lowest_immers_pos_increments:05}",
       zc=f"{start_pos_search_increments:05}",
       zi=f"{post_detection_dist_increments:04}",
       zj=f"{post_detection_trajectory:01}",
@@ -13374,7 +13371,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
   async def plld_probe_z_height_using_channel(
     self,
     channel_idx: int,  # 0-based indexing of channels!
-    search_end_position: float = 99.98,  # mm
+    lowest_immers_pos: float = 99.98,  # mm
     start_pos_search: Optional[float] = None,  # mm
     channel_speed_above_start_pos_search: float = 120.0,  # mm/sec
     channel_speed: float = 10.0,  # mm
@@ -13407,11 +13404,11 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
 
     Notes:
     - This command is implemented  via BOTH the PX and C0 command modules, i.e. it is NOT parallelisable!
-    - search_end_position & start_pos_search refer to the tip z-coordinate (not the head_probe)!
+    - lowest_immers_pos & start_pos_search refer to the tip z-coordinate (not the head_probe)!
     - The return values represent tip z-positions (not the head_probe) in mm!
 
     Args:
-      search_end_position: Lowest allowed search position in mm, expressed in the *tip-referenced* coordinate system (i.e., the position you would use for commands that include tip length). Internally converted to channel Z-drive coordinates before issuing `ZL`.
+      lowest_immers_pos: Lowest allowed search position in mm, expressed in the *tip-referenced* coordinate system (i.e., the position you would use for commands that include tip length). Internally converted to channel Z-drive coordinates before issuing `ZL`.
       start_pos_search: Start position for the cLLD search in mm, expressed in the *tip-referenced* coordinate system. Internally converted to channel Z-drive coordinates before issuing `ZL`. If None, the highest safe position is used based on tip length.
       channel_speed_above_start_pos_search: Z speed above the start position (mm/s). Default 120.0.
       channel_speed: Z search speed (mm/s). Default 10.0.
@@ -13461,30 +13458,28 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     if start_pos_search is None:
       start_pos_search = safe_tip_top_z_pos
 
-    # Check if search_end_position is allowed
-    if search_end_position < STARBackend.MINIMUM_CHANNEL_Z_POSITION:
-      raise ValueError(
-        f"search_end_position must be at least 99.98 mm but is {search_end_position} mm"
-      )
+    # Check if lowest_immers_pos is allowed
+    if lowest_immers_pos < STARBackend.MINIMUM_CHANNEL_Z_POSITION:
+      raise ValueError(f"lowest_immers_pos must be at least 99.98 mm but is {lowest_immers_pos} mm")
 
     # Correct for tip length + fitting depth (low level command is in head space, we are in tip space)
-    search_end_position_head_space = (
-      search_end_position + tip_len - STARBackend.DEFAULT_TIP_FITTING_DEPTH
+    lowest_immers_pos_head_space = (
+      lowest_immers_pos + tip_len - STARBackend.DEFAULT_TIP_FITTING_DEPTH
     )  # tip space -> head space
     channel_head_start_pos = round(
       start_pos_search + tip_len - STARBackend.DEFAULT_TIP_FITTING_DEPTH, 2
     )
 
     # Check that start position is within allowed range
-    if not (search_end_position <= start_pos_search <= safe_tip_top_z_pos):
+    if not (lowest_immers_pos <= start_pos_search <= safe_tip_top_z_pos):
       raise ValueError(
-        f"Start position of LLD search must be between \n{search_end_position} and {safe_tip_top_z_pos} mm, is {start_pos_search} mm"
+        f"Start position of LLD search must be between \n{lowest_immers_pos} and {safe_tip_top_z_pos} mm, is {start_pos_search} mm"
       )
 
     try:
       resp_probe_mm = await self._search_for_surface_using_plld(
         channel_idx=channel_idx,
-        search_end_position=search_end_position_head_space,
+        lowest_immers_pos=lowest_immers_pos_head_space,
         start_pos_search=channel_head_start_pos,
         channel_speed_above_start_pos_search=channel_speed_above_start_pos_search,
         channel_speed=channel_speed,
@@ -13580,7 +13575,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     self,
     channel_idx: int,  # 0-based indexing of channels!
     tip_len: Optional[float] = None,  # mm
-    search_end_position: float = 99.98,  # mm
+    lowest_immers_pos: float = 99.98,  # mm
     start_pos_search: Optional[float] = None,  # mm
     channel_speed: float = 10.0,  # mm/sec
     channel_acceleration: float = 800.0,  # mm/sec**2
@@ -13598,7 +13593,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       channel_idx: The index of the channel to use for probing. Backmost channel = 0.
       tip_len: override the tip length (of tip on channel `channel_idx`). Default is the tip length
         of the tip that was picked up.
-      search_end_position: The lowest immersion position in mm.
+      lowest_immers_pos: The lowest immersion position in mm.
       start_pos_lld_search: The start position for z-touch search in mm.
       channel_speed: The speed of channel movement in mm/sec.
       channel_acceleration: The acceleration of the channel in mm/sec**2.
@@ -13645,7 +13640,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     )
     safe_head_top_z_pos = STARBackend.MAXIMUM_CHANNEL_Z_POSITION
 
-    search_end_position_increments = STARBackend.mm_to_z_drive_increment(search_end_position)
+    lowest_immers_pos_increments = STARBackend.mm_to_z_drive_increment(lowest_immers_pos)
     start_pos_search_increments = STARBackend.mm_to_z_drive_increment(channel_head_start_pos)
     channel_speed_increments = STARBackend.mm_to_z_drive_increment(channel_speed)
     channel_acceleration_thousand_increments = STARBackend.mm_to_z_drive_increment(
@@ -13656,9 +13651,9 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
     assert 0 <= channel_idx <= 15, f"channel_idx must be between 0 and 15, is {channel_idx}"
     assert 20 <= tip_len <= 120, "Total tip length must be between 20 and 120"
 
-    assert 9320 <= search_end_position_increments <= 31_200, (
+    assert 9320 <= lowest_immers_pos_increments <= 31_200, (
       "Lowest immersion position must be between \n99.98"
-      + f" and 334.7 mm, is {search_end_position} mm"
+      + f" and 334.7 mm, is {lowest_immers_pos} mm"
     )
     assert safe_head_bottom_z_pos <= channel_head_start_pos <= safe_head_top_z_pos, (
       f"Start position of LLD search must be between \n{safe_head_bottom_z_pos}"
@@ -13684,7 +13679,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       f"Post detection distance must be between 0 and 245 mm, is {post_detection_dist}"
     )
 
-    search_end_position_str = f"{search_end_position_increments:05}"
+    lowest_immers_pos_str = f"{lowest_immers_pos_increments:05}"
     start_pos_search_str = f"{start_pos_search_increments:05}"
     channel_speed_str = f"{channel_speed_increments:05}"
     channel_acc_str = f"{channel_acceleration_thousand_increments:03}"
@@ -13696,7 +13691,7 @@ class STARBackend(HamiltonLiquidHandler, HamiltonHeaterShakerInterface):
       module=STARBackend.channel_id(channel_idx),
       command="ZH",
       zb=start_pos_search_str,  # begin of searching range [increment]
-      za=search_end_position_str,  # end of searching range [increment]
+      za=lowest_immers_pos_str,  # end of searching range [increment]
       zv=channel_speed_up_str,  # speed z-drive upper section [increment/second]
       zr=channel_acc_str,  # acceleration z-drive [1000 increment/second]
       zu=channel_speed_str,  # speed z-drive lower section [increment/second]
