@@ -409,9 +409,9 @@ class PrepDeck(Deck):
     # from, and keeps its own back edge.
     device = self.parent
     if device is None or self.location is None:
-      y = self.get_absolute_size_y() - size_y
+      y = self.get_size_y() - size_y
     else:
-      y = device.get_absolute_size_y() - self.location.y - size_y
+      y = device.get_size_y() - self.location.y - size_y
     # The reach, as the viewer draws it: from the arm's front edge.
     if reference_y_range is not None:
       low, high = reference_y_range
