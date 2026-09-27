@@ -629,7 +629,8 @@ class Head8:
     ending height. The head drops the column at once, so every shaft takes part.
 
     Args:
-      destinations: the spot each shaft drops its tip into, or the waste.
+      destinations: the spot each shaft drops its tip into, or the waste. Waste drops use the
+        PrepDeck's `waste_mph` position.
       use_channels: which shafts drop them. The head drops all of them, so this only says so.
       offset: how far the destinations are missed by, in mm.
       z_seek_offset: how far above the destination the tip bottom stops, in mm. A height the drop
@@ -656,9 +657,18 @@ class Head8:
       [s.name.rsplit("_", 1)[-1] for s in destinations],
     )
 
-    loc = ref_spot.get_location_wrt(self._require_deck(), "c", "c", "t")
-    if not is_trash:
-      loc = loc + offset
+    deck = self._require_deck()
+    if is_trash:
+      if not isinstance(deck, PrepDeck):
+        raise RuntimeError("tips are discarded into a PrepDeck's waste")
+      waste = deck.waste_positions.get("waste_mph")
+      if waste is None:
+        raise RuntimeError("the deck has no waste position 'waste_mph'")
+      loc = waste.get_location_wrt(deck, "c", "c", "t")
+      # The waste site locates the tip's end; the drop parameters locate its collar.
+      loc = Coordinate(loc.x, loc.y, loc.z + tip.get_size_z() - tip.collar_height)
+    else:
+      loc = ref_spot.get_location_wrt(deck, "c", "c", "t") + offset
     drop_type = PrepCmd.TipDropType.Stall if is_trash else PrepCmd.TipDropType.FixedHeight
 
     tip_position = PrepCmd.TipDropParameters.for_op(
@@ -738,35 +748,48 @@ class Head8:
       spots.append(spot)
     await self.drop_tips(spots, use_channels=channels, **kwargs)
 
-  async def discard_tips(self, make_tip: Optional[Callable[[str], Tip]] = None, **kwargs) -> None:
-    """Drop all eight tips into the 8-channel head's waste (`waste_mph`).
+  async def discard_tips(
+    self,
+    use_channels: Optional[Sequence[int]] = None,
+    make_tip: Optional[Callable[[str], Tip]] = None,
+    **kwargs,
+  ) -> None:
+    """Discard all eight tips into the deck's waste at its MPH position.
+
+    Do nothing when no tips are mounted. A partly loaded head is rejected.
 
     Args:
+      use_channels: all eight channels, in order. Defaults to all eight channels.
       make_tip: builds each shaft's tip when the model holds none but the sleeve sensor sees some,
-        e.g. `hamilton_tip_50uL` after a session that ended with tips on. None drops the model's.
+        e.g. `hamilton_tip_50uL` after a session that ended with tips on.
       kwargs: passed on to `drop_tips`.
 
     Raises:
-      ValueError: If `make_tip` is given while the model holds tips.
-      RuntimeError: If the deck has no `waste_mph`, or there are no tips to discard.
+      ValueError: If `use_channels` does not select all eight channels in order, or `make_tip` is
+        given while the model holds tips.
+      RuntimeError: If there is no deck, only some channels carry tips, the deck is not a PrepDeck
+        with a waste block and an MPH waste position, or `make_tip` is given and no tips are sensed.
     """
+    channels = list(use_channels) if use_channels is not None else list(range(NUM_PROBES))
+    self._require_all_channels(channels, "discard_tips")
     deck = self._require_deck()
-    waste = deck.waste_positions.get("waste_mph") if isinstance(deck, PrepDeck) else None
-    if waste is None:
-      raise RuntimeError("the deck has no waste_mph to discard the 8-channel head's tips into")
-    held = [tip is not None for tip in self.get_mounted_tips()]
     if make_tip is not None:
-      if any(held):
+      if any(tip is not None for tip in self.get_mounted_tips()):
         raise ValueError("make_tip is for tips the model does not hold, and it holds some")
+      if not isinstance(deck, PrepDeck) or deck.waste_block is None:
+        raise RuntimeError("tips are discarded into a PrepDeck's waste block")
       if not any(await self.sense_tip_presence()):
         raise RuntimeError("the 8-channel head senses no tips to discard")
       for ch in range(NUM_PROBES):
         self.shaft(ch).mount_tip(make_tip(f"{self.resource.name}_sensed_tip_{ch}"))
-    elif not all(held):
-      raise RuntimeError(
-        "the model holds no tips on the 8-channel head; for tips it senses, pass make_tip"
-      )
-    await self.drop_tips([waste] * NUM_PROBES, **kwargs)
+    if all(tip is None for tip in self.get_mounted_tips()):
+      return
+    if not isinstance(deck, PrepDeck):
+      raise RuntimeError("tips are discarded into a PrepDeck's waste block")
+    waste = deck.waste_block
+    if waste is None:
+      raise RuntimeError("tips are discarded into the deck's waste block; this deck has none")
+    await self.drop_tips([waste] * NUM_PROBES, use_channels=channels, **kwargs)
     self._unmodelled_tips_sensed = False
 
   # -- shared LLD / TADM resolution helpers --------------------------------------------------------
