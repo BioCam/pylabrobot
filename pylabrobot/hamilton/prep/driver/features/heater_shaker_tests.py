@@ -155,15 +155,19 @@ def test_a_range_not_yet_read_is_refused():
   asyncio.run(run())
 
 
-def test_start_shaking_locks_first_and_sends_every_parameter():
-  """The lock closes, then EnableShaking carries speed, time, lock, direction and acceleration."""
+@pytest.mark.parametrize("already_shaking", [False, True])
+def test_start_shaking_stops_then_locks_and_sends_every_parameter(already_shaking):
+  """Every start stops first, even when idle, then locks and sends the shaking parameters."""
 
   async def run():
     p = await _prep()
+    if already_shaking:
+      await _hs(p).start_shaking(500)
     captured = _record_send(p)
     await _hs(p).start_shaking(800, direction="counter_clockwise", acceleration=2000)
     sent = [x for x in captured if not isinstance(x, PrepCmd.PrepHHSGetShakingStatus)]
     assert sent == [
+      PrepCmd.PrepHHSDisableShaking(),
       PrepCmd.PrepHHSSetPlateLockState(locked=True),
       PrepCmd.PrepHHSEnableShaking(
         shaking_speed=800,
@@ -173,6 +177,47 @@ def test_start_shaking_locks_first_and_sends_every_parameter():
         acceleration=2000,
       ),
     ]
+    await p.stop()
+
+  asyncio.run(run())
+
+
+@pytest.mark.parametrize("already_shaking", [False, True])
+def test_start_periodic_shaking_stops_then_locks(already_shaking):
+  """Periodic shaking stops first whether the shaker is idle or running."""
+
+  async def run():
+    p = await _prep()
+    if already_shaking:
+      await _hs(p).start_shaking(500)
+    captured = _record_send(p)
+    await _hs(p).start_periodic_shaking(800, period=10, on_time=5)
+    assert captured == [
+      PrepCmd.PrepHHSDisableShaking(),
+      PrepCmd.PrepHHSSetPlateLockState(locked=True),
+      PrepCmd.PrepHHSEnablePeriodicShaking(
+        shaking_speed=800,
+        shaking_period=10,
+        shaking_on_time=5,
+        shaking_time=0,
+        leave_locked=True,
+        direction=PrepCmd.ShakeDirection.Forward,
+        acceleration=1000,
+      ),
+    ]
+    await p.stop()
+
+  asyncio.run(run())
+
+
+def test_measure_temperature_rounds_to_two_decimal_places():
+  """The measured temperature rounds the device's floating-point response."""
+
+  async def run():
+    p = await _prep()
+    hs = _hs(p)
+    await hs.start_temperature_control(37.126)
+    assert await hs.measure_temperature() == 37.13
     await p.stop()
 
   asyncio.run(run())
@@ -284,7 +329,8 @@ def test_spot_0_3_becomes_the_heater_shakers_holder():
 
   async def run():
     deck = PrepDeck()
-    before = deck.get_resource("spot_0_3")
+    before = deck[3]
+    assert before.name == "spot_0_3"
     plate = Resource(name="plate", size_x=127.76, size_y=85.48, size_z=14.0)
     before.assign_child_resource(plate)
     assert before.location is not None
