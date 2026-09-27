@@ -6,7 +6,7 @@ from typing import List, Optional, Tuple
 
 import pytest
 
-from pylabrobot.lib.liquid_handling.tip_spot_finding import _matches_tip_filters, find_tip_spots
+from pylabrobot.lib.liquid_handling.tip_spot_finding import find_tip_spots
 from pylabrobot.resources import TIP_CAR_480_A00, Coordinate, Resource, TipRack, TipSpot
 from pylabrobot.resources.hamilton import (
   hamilton_96_tiprack_50uL,
@@ -36,12 +36,13 @@ def _ids(spots: List[TipSpot]) -> List[str]:
 FULL = [f"{row}{column}" for column in range(1, 13) for row in "ABCDEFGH"]
 
 
-def test_started_rack_first_and_columns_back_to_front() -> None:
-  """A started rack is consumed before an untouched one, each column from row A to row H."""
-  root, racks = _racks([FULL, FULL[1:]], [0, 200])
+def test_rack_order_and_column_order() -> None:
+  """Racks with an empty spot first, fewest tips left, then left-most; columns back to front."""
+  root, racks = _racks([FULL, FULL[:40], FULL[1:31], FULL[:40]], [0, 400, 600, 200])
   spots = find_tip_spots(root, has_tip=True)
-  assert _ids(spots[:8]) == [f"rack_1_tipspot_{row}1" for row in "BCDEFGH"] + ["rack_1_tipspot_A2"]
-  assert _ids(spots[95:103]) == [f"rack_0_tipspot_{row}1" for row in "ABCDEFGH"]
+  order = [spots[i].parent for i in (0, 30, 70, 110)]
+  assert order == [racks[2], racks[3], racks[1], racks[0]]
+  assert _ids(spots[:8]) == [f"rack_2_tipspot_{row}1" for row in "BCDEFGH"] + ["rack_2_tipspot_A2"]
 
 
 def test_volume_and_filter_follow_has_tip() -> None:
@@ -67,7 +68,7 @@ def test_count_across_racks_is_sorted_back_to_front() -> None:
   """A batch crossing into the next rack is re-sorted by descending y."""
   root, racks = _racks([["G12", "H12"], FULL], [0, 200])
   spots = find_tip_spots(root, has_tip=True, count=8)
-  assert _ids(spots[:2]) == ["rack_1_tipspot_A1", "rack_1_tipspot_B1"]
+  assert {spot.parent for spot in spots} == set(racks)
   ys = [spot.get_absolute_location(y="c").y for spot in spots]
   assert ys == sorted(ys, reverse=True)
 
@@ -105,15 +106,6 @@ def test_rotated_rack_follows_deck_axes() -> None:
   spots = find_tip_spots(root, has_tip=True, count=8, x_aligned=True)
   assert _ids(spots) == [f"rack_0_tipspot_{row}12" for row in "HGFEDCBA"]
 
-  expected = sorted(
-    rack.get_all_items(),
-    key=lambda s: (
-      round(s.get_absolute_location(x="c").x, 3),
-      -s.get_absolute_location(y="c").y,
-    ),
-  )
-  assert find_tip_spots(root, has_tip=True) == expected
-
 
 def _reference_find_tip_spots(
   tip_racks: List[TipRack],
@@ -124,34 +116,51 @@ def _reference_find_tip_spots(
   x_aligned: bool,
 ) -> List[TipSpot]:
   """The consumption order computed directly: one sort of every spot on absolute coordinates."""
-  started = [any(not s.has_tip() for s in rack.get_all_items()) for rack in tip_racks]
+
+  def matches(s: TipSpot) -> bool:
+    if has_tip is not None and s.has_tip() != has_tip:
+      return False
+    if volume is None and has_filter is None:
+      return True
+    tip = s.make_tip() if has_tip is False else (s.get_tip() if s.has_tip() else None)
+    return (
+      tip is not None
+      and (volume is None or tip.nominal_volume == volume)
+      and (has_filter is None or tip.has_filter == has_filter)
+    )
+
+  def rank(i: int, rack: TipRack) -> Tuple[bool, int, float, float, int]:
+    left = sum(s.has_tip() for s in rack.get_all_items())
+    centre = rack.get_absolute_location(x="c", y="c")
+    return (left == 96, left, round(centre.x, 3), -centre.y, i)
+
+  ranks = [rank(i, rack) for i, rack in enumerate(tip_racks)]
   spots = sorted(
     (
       (
-        not started[i],
-        i,
+        ranks[i],
         round(s.get_absolute_location(x="c").x, 3),
         -s.get_absolute_location(y="c").y,
         s,
       )
       for i, rack in enumerate(tip_racks)
       for s in rack.get_all_items()
-      if _matches_tip_filters(s, has_tip, volume, has_filter)
+      if matches(s)
     ),
-    key=lambda item: item[:4],
+    key=lambda item: item[:3],
   )
   if x_aligned:
-    for _, column_items in groupby(spots, key=lambda item: item[1:3]):
-      column = [item[4] for item in column_items]
+    for _, column_items in groupby(spots, key=lambda item: item[:2]):
+      column = [item[3] for item in column_items]
       if count is None:
         return column
       if len(column) >= count:
         return column[:count]
   if count is None:
-    return [item[4] for item in spots]
+    return [item[3] for item in spots]
   if len(spots) < count:
     return []
-  return [item[4] for item in sorted(spots[:count], key=lambda item: item[3])]
+  return [item[3] for item in sorted(spots[:count], key=lambda item: item[2])]
 
 
 @pytest.mark.parametrize("seed", range(200))

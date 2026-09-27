@@ -302,6 +302,25 @@ class HamiltonDeckTests(unittest.TestCase):
       for name in ("waste_block", "trash", "trash_core96", "teaching_tip_rack", "core_grippers"):
         self.assertTrue(deck.has_resource(f"{deck.name}_{name}"), name)
 
+  def test_core_gripper_tools_stand_where_the_channels_take_them(self):
+    """Both holders are centred on the x the channels take the tools at, and so are their tools."""
+    pickup_x = {
+      ("STARDeck", "1000uL-at-waste"): 1338.0,
+      ("STARDeck", "1000uL-5mL-on-waste"): 1337.5,
+      ("STARLetDeck", "1000uL-at-waste"): 798.0,
+      ("STARLetDeck", "1000uL-5mL-on-waste"): 797.5,
+    }
+    for factory in (STARDeck, STARLetDeck):
+      for grippers in ("1000uL-at-waste", "1000uL-5mL-on-waste"):
+        x = pickup_x[(factory.__name__, grippers)]
+        with self.subTest(deck=factory.__name__, grippers=grippers):
+          deck = factory(core_grippers=grippers)
+          holder = deck.get_resource("core_grippers")
+          assert isinstance(holder, HamiltonCoreGrippers)
+          self.assertAlmostEqual(holder.get_location_wrt(deck, x="c").x, x)
+          for tool in (holder.front_tool, holder.back_tool):
+            self.assertAlmostEqual(tool.get_location_wrt(deck, x="c").x, x)
+
   def test_core_gripper_tools_belong_to_the_mount_and_are_not_structure(self):
     """The deck owns the two parked tools; a serialized deck leaves them out, as it leaves out the
     tips in its racks, since what a holder holds is state a driver reads off the device."""
@@ -342,9 +361,11 @@ class HamiltonDeckTests(unittest.TestCase):
           self.assertEqual(mount.back_tool.name, "custom_deck_core_grippers_back")
           restored = Resource.deserialize(deck.serialize())
           restored.load_all_state(deck.serialize_all_state())
+          # The tools parked in the mount are state, so the restored deck has everything but them.
+          parked = {mount.front_tool.name, mount.back_tool.name}
           self.assertEqual(
             sorted(child.name for child in restored.get_all_children()),
-            sorted(child.name for child in deck.get_all_children()),
+            sorted(child.name for child in deck.get_all_children() if child.name not in parked),
           )
           self.assertEqual(restored.get_resource(mount.name).serialize(), mount.serialize())
           plate = cor_96_wellplate_360uL_Fb("user_plate")

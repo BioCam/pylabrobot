@@ -204,9 +204,9 @@ class NestedTipCarrierTests(unittest.TestCase):
   def test_standard_tiprack_sinks_into_the_mfx_tiprackholder_as_into_a_tip_carrier(self):
     """The rack's skirt drops into the module, so its spots stand where a tip carrier puts them."""
     from pylabrobot.resources.hamilton import (
-      hamilton_tip_carrier_L5,
       hamilton_96_tiprack_1000uL_filter,
       hamilton_mfx_tiprackholder_standard,
+      hamilton_tip_carrier_L5,
     )
 
     deck = STARDeck()
@@ -232,11 +232,11 @@ class NestedTipCarrierTests(unittest.TestCase):
 
   def test_a_solid_coreii_rack_has_the_spots_of_a_framed_rack_at_its_top(self):
     from pylabrobot.resources.hamilton import (
-      hamilton_tip_carrier_L5,
       hamilton_96_tiprack_300uL,
       hamilton_96_tiprack_raised_core_i,
       hamilton_96_tiprack_raised_core_ii,
       hamilton_tip_300uL,
+      hamilton_tip_carrier_L5,
     )
 
     carrier = hamilton_tip_carrier_L5("tip_carrier")

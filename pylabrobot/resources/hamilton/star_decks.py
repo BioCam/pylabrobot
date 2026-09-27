@@ -147,8 +147,7 @@ class HamiltonSTARDeck(HamiltonDeck):
       if with_teaching_needle_rack:
         raise RuntimeError("Teaching needle rack cannot be created when no waste block is present.")
 
-    # `x` is where the channels take the tools, the holder's centre x; the holder is placed by its
-    # left edge.
+    # `x` is where the channels take the tools, the holder's centre x.
     if core_grippers == "1000uL-at-waste":  # "at waste"
       x: float = 1338 if self.num_tracks == STAR_NUM_TRACKS else 798
       holder = hamilton_core_gripper_1000ul_at_waste(name=self.get_component_name("core_grippers"))

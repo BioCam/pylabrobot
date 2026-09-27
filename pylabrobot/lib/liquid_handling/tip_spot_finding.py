@@ -82,6 +82,21 @@ def _get_centred_spots(frame: Frame, spots: List[TipSpot]) -> List[Tuple[TipSpot
   return centred
 
 
+def _get_rack_rank(rack: TipRack, frame: Frame, index: int) -> Tuple[bool, int, float, float, int]:
+  """Sort key for racks: racks with an empty spot first, then fewest tips left, left-most, rear-most.
+
+  Position is the rack's centre in the root's frame; `index` (tree order) only separates racks at
+  the same position.
+  """
+  spots = rack.get_all_items()
+  tips_left = sum(spot.has_tip() for spot in spots)
+  origin, matrix = frame
+  centre = rack.get_anchor(x="c", y="c")
+  x = origin.x + matrix[0][0] * centre.x + matrix[0][1] * centre.y + matrix[0][2] * centre.z
+  y = origin.y + matrix[1][0] * centre.x + matrix[1][1] * centre.y + matrix[1][2] * centre.z
+  return (tips_left == len(spots), tips_left, round(x, 3), -y, index)
+
+
 def find_tip_spots(
   root: Resource,
   has_tip: Optional[bool] = None,
@@ -93,10 +108,11 @@ def find_tip_spots(
   """Find tip spots in consumption order.
 
   Searches every tip rack in the tree under root, root included: a deck, a carrier, a bench
-  resource holding several racks, a whole facility, or a single rack. Racks with a missing tip
-  come first, then the remaining racks in tree order (depth first). Within a rack, spots run
-  column by column, each column back to front (descending y), so an untouched rack is opened at
-  its first column. This suits channels on one X arm that cannot pass each other.
+  resource holding several racks, a whole facility, or a single rack. Racks with an empty spot
+  come first; among them, and then among full racks, the one with the fewest tips left, then the
+  left-most, then the rear-most. Within a rack, spots run left to right, each column back to
+  front, so a rack is opened at its left-most column. This suits channels on one X arm that
+  cannot pass each other.
 
   Args:
     root: Resource whose tree is searched for tip racks. Positions are compared in root's own
@@ -122,10 +138,8 @@ def find_tip_spots(
     raise ValueError(f"count must be positive, got {count}")
 
   racks = _get_tip_racks(root)
-  tip_racks = [rack for rack, _ in racks]
 
-  started = [any(not spot.has_tip() for spot in rack.get_all_items()) for rack in tip_racks]
-  rack_order = sorted(range(len(tip_racks)), key=lambda index: (not started[index], index))
+  rack_order = sorted(range(len(racks)), key=lambda index: _get_rack_rank(*racks[index], index))
 
   # Racks are visited in consumption order, so a batch is complete as soon as it is found.
   batch: List[Tuple[TipSpot, float, float]] = []

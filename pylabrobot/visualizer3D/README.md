@@ -7,7 +7,7 @@ files ship with the package, and `pylabrobot.visualizer3D` exports `Viewer3D`.
 
 ## Running it
 
-Needs the v1 STAR branch on the path and `websockets`.
+Needs `websockets` 14 or newer.
 
 ```
 python -m pylabrobot.visualizer3D.demo
@@ -101,7 +101,7 @@ falls back to software rendering on its own. The browser tests don't catch any o
 headless (always software rendering), and they skip where `_find_chrome` finds no Chrome named by
 `PLR_CHROME`, on the path or at the macOS install location.
 
-**On the Jetson AGX Orin workcell host** (JetPack 5, Xorg, no `/dev/dri`), verified 2026-09-16:
+**On the Jetson AGX Orin workcell host** (JetPack 5, Xorg, no `/dev/dri`):
 
 | browser | default | fix |
 |---|---|---|
