@@ -82,6 +82,7 @@ prefix proposal, which splits them by what is on the other end:
 | what it touches | prefix | here |
 |---|---|---|
 | the machine, doing work | `move_`, `aspirate_`, `dispense_`, `pickup_`, `shake_` | `move_to_y_position`, `move_to_safe_z` |
+| the machine, a process started and left running | `start_`, `stop_` | `start_tadm_monitoring`, `stop_tadm_monitoring` |
 | the machine's sensors | `read_`, `capture_`, `measure_`, `sense_` | `sense_tip_presence`, `sense_carrier_presence_on_deck` |
 | the machine's memory, reading | `request_` | `request_y_positions`, `request_gripper_width` |
 | the machine's memory, writing | `set_` | `set_drive_parameter`, `set_loading_indicators` |
@@ -89,9 +90,11 @@ prefix proposal, which splits them by what is on the other end:
 | the resource model, writing | `update_`, `assign_`, `unassign_` | `elbow_drive_update_angle`, `update_location_by_reference_point` |
 
 `get_` and `request_` are not the same question: `get_` asks this driver's model, `request_` asks
-the device. On a feature with several drives the drive's name comes first: `wheel_*`, `scanner_*`,
-`gripper_*`, `elbow_*`, `wrist_*`. Arguments are ordered as the execution uses them, not
-by type. `discover` / `initialize` / `park` are the lifecycle and take no prefix.
+the device. `set_` only writes device memory: a process started and left running is a `start_` /
+`stop_` pair, as in `start_temperature_control` / `stop_temperature_control` and `start_shaking` /
+`stop_shaking`. On a feature with several drives the drive's name comes first: `wheel_*`,
+`scanner_*`, `gripper_*`, `elbow_*`, `wrist_*`. Arguments are ordered as the execution uses them,
+not by type. `discover` / `initialize` / `park` are the lifecycle and take no prefix.
 
 **P11. Locking is by subsystem, not by module.** The master routes: `C0 DI` drives the channels and
 `C0 II` the autoload, and the device runs those together. So a command names the subsystem it
