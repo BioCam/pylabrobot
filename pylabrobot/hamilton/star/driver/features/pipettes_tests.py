@@ -12,6 +12,7 @@ from pylabrobot.hamilton.star.driver.features.pipettes import (
   Pipettes,
   PipettesConfiguration,
   TADMCurve,
+  _channels_that_met_no_tip,
 )
 from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
 from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import plan_batches
@@ -3823,6 +3824,112 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
     await pipettes.initialize()
     self.assertIsNone(pipettes.get_mounted_tip(0))
     self.assertIsNone(tip.parent)
+
+
+def _answer_pick_ups_as_the_device(pipettes: Pipettes, rack: Any, empty: List[str], other=""):
+  """Answer `C0 TP` over the `empty` spots as the device does, `P<n>08/75`, or with `other` in
+  their place; the other channels pick their tips up and sense them, until a drop takes them."""
+  driver = cast(Any, pipettes._driver)
+  answer, deck = driver._answer, driver.deck
+  centres = [
+    spot.get_location_wrt(deck, "c", "c", "b")
+    for spot in rack.get_all_items()
+    if spot.name in empty
+  ]
+
+  async def answered(module: str, command: str, **kwargs: Any):
+    involved = [ch for ch, on in enumerate(kwargs.get("tm", [])) if int(on)]
+    if module == "C0" and command == "TP":
+      missed = [
+        ch
+        for ch in involved
+        for c in centres
+        if abs(int(kwargs["xp"][ch]) / 10 - c.x) < 0.2
+        and abs(int(kwargs["yp"][ch]) / 10 - c.y) < 0.2
+      ]
+      if missed:
+        for ch in involved:
+          driver.tips_mounted[ch] = ch not in missed
+        check_fw_string_error(
+          "C0TPid0000er99/00 " + " ".join(f"P{ch + 1}{other or '08/75'}" for ch in missed)
+        )
+    if module == "C0" and command == "TR":
+      for ch in involved:
+        driver.tips_mounted[ch] = False
+    return await answer(module, command, **kwargs)
+
+  driver._answer = answered
+
+
+class TestProbeTipPresenceViaPickup(unittest.IsolatedAsyncioTestCase):
+  """Spots probed by picking their tips up and putting them back; empty ones as the device answers."""
+
+  async def test_full_spots_are_picked_up_and_put_back(self):
+    pipettes, rack, sent = await channels_over_a_rack()
+    spots = [rack.get_item(w) for w in ("A1", "B1")]
+    found = await pipettes.probe_tip_presence_via_pickup(spots, use_channels=[0, 1])
+    self.assertEqual(found, {spot.name: True for spot in spots})
+    self.assertEqual([c[:4] for c in sent], ["C0TT", "C0TP", "C0TR"])
+    self.assertTrue(all(spot.has_tip() for spot in spots))
+    self.assertEqual([pipettes.get_mounted_tip(ch) for ch in (0, 1)], [None, None])
+
+  async def test_an_empty_spot_is_found_and_the_other_tip_goes_back(self):
+    pipettes, rack, sent = await channels_over_a_rack()
+    spots = [rack.get_item(w) for w in ("A1", "B1")]
+    _answer_pick_ups_as_the_device(pipettes, rack, empty=["rack_tipspot_B1"])
+    found = await pipettes.probe_tip_presence_via_pickup(spots, use_channels=[0, 1])
+    self.assertEqual(found, {spots[0].name: True, spots[1].name: False})
+    drop = [c for c in sent if c.startswith("C0TR")]
+    self.assertEqual(len(drop), 1)
+    self.assertEqual(drop[0].split("&tm")[1].split("&")[0].split()[:2], ["1", "0"])
+    self.assertEqual([pipettes.get_mounted_tip(ch) for ch in (0, 1)], [None, None])
+    # The model is the caller's to correct: the missed spot still holds its tip there.
+    self.assertTrue(spots[1].has_tip())
+
+  async def test_any_other_pick_up_error_is_raised(self):
+    pipettes, rack, sent = await channels_over_a_rack()
+    spots = [rack.get_item(w) for w in ("A1", "B1")]
+    _answer_pick_ups_as_the_device(pipettes, rack, empty=["rack_tipspot_B1"], other="07/76")
+    with self.assertRaises(STARFirmwareError):
+      await pipettes.probe_tip_presence_via_pickup(spots, use_channels=[0, 1])
+    self.assertFalse(any(c.startswith("C0TR") for c in sent))
+
+  async def test_refusals_come_before_anything_moves(self):
+    from pylabrobot.resources.errors import HasTipError
+
+    pipettes, rack, sent = await channels_over_a_rack()
+    rack.get_item("B1").tracker.remove_tip()
+    with self.assertRaisesRegex(ValueError, "holds no tip in"):
+      await pipettes.probe_tip_presence_via_pickup([rack.get_item("B1")], use_channels=[0])
+    await pipettes.pick_up_tips([rack.get_item("C1")], use_channels=[1])
+    sent.clear()
+    with self.assertRaises(HasTipError):
+      await pipettes.probe_tip_presence_via_pickup([rack.get_item("A1")], use_channels=[1])
+    self.assertEqual(sent, [])
+
+  async def test_the_inventory_deals_a_column_two_channels_at_a_time(self):
+    pipettes, rack, sent = await channels_over_a_rack()
+    column = [rack.get_item(f"{row}1") for row in "ABCDEFGH"]
+    _answer_pick_ups_as_the_device(pipettes, rack, empty=["rack_tipspot_F1"])
+    found = await pipettes.probe_tip_inventory(column, use_channels=[0, 1])
+    self.assertEqual(found, {spot.name: spot.name != "rack_tipspot_F1" for spot in column})
+    # Four pick-ups of two; the third's rear tip alone goes back. A refused command is not logged.
+    drops = [c.split("&tm")[1].split("&")[0].split()[:2] for c in sent if c.startswith("C0TR")]
+    self.assertEqual(drops, [["1", "1"], ["1", "1"], ["1", "0"], ["1", "1"]])
+    self.assertEqual([pipettes.get_mounted_tip(ch) for ch in (0, 1)], [None, None])
+
+  def test_only_no_tip_picked_up_on_every_channel_named_is_a_miss(self):
+    def raised(response: str) -> Exception:
+      try:
+        check_fw_string_error(response)
+      except Exception as error:
+        return error
+      raise AssertionError("no error raised")
+
+    self.assertEqual(_channels_that_met_no_tip(raised("C0TPid0001er99/00 P108/75 P308/75")), [0, 2])
+    self.assertIsNone(_channels_that_met_no_tip(raised("C0TPid0001er99/00 P108/75 P207/76")))
+    self.assertIsNone(_channels_that_met_no_tip(raised("C0TPid0001er08/00")))
+    self.assertIsNone(_channels_that_met_no_tip(RuntimeError("the link dropped")))
 
 
 class TestWhereATipCommandLeavesTheChannels(unittest.IsolatedAsyncioTestCase):
