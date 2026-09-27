@@ -12,7 +12,7 @@ from pylabrobot.hamilton.star.driver.features.pipettes import (
   Pipettes,
   PipettesConfiguration,
   TADMCurve,
-  _channels_that_met_no_tip,
+  _get_channels_that_met_no_tip,
 )
 from pylabrobot.hamilton.star.driver.simulator import STARSimulationDriver
 from pylabrobot.lib.liquid_handling.pipette_batch_scheduling import plan_batches
@@ -2587,9 +2587,8 @@ class TestAspirateInSimulation(_SimulatedPlateWithWater):
       Pipettes.LLDMode.ZTOUCH,
     ]
     await self.pipettes.aspirate(self.wells, piston_volumes=[10.0] * 4, lld_mode=modes)
-    # The touch first, then the two liquid searches, each its own way; then one command for all
-    # four, the LLD off everywhere, starting at the lowest height any tip rests at: 0.2 mm off
-    # the floor touched.
+    # The touch, then the two searches, each its own way; then one command for all four, LLD off,
+    # from the lowest height any tip rests at: 0.2 mm off the floor touched.
     self.assertEqual(
       [c[:4] for c in sent], ["P4ZA", "P4ZH", "P2ZA", "P3ZA", "P2ZL", "P3ZE", "C0RL", "C0AS"]
     )
@@ -4018,7 +4017,7 @@ def _answer_pick_ups_as_the_device(pipettes: Pipettes, rack: Any, empty: List[st
 
 
 class TestProbeTipPresenceViaPickup(unittest.IsolatedAsyncioTestCase):
-  """Spots probed by picking their tips up and putting them back; empty ones as the device answers."""
+  """Spots probed by picking their tips up and putting them back; empty ones answer as a device."""
 
   async def test_full_spots_are_picked_up_and_put_back(self):
     pipettes, rack, sent = await channels_over_a_rack()
@@ -4082,10 +4081,12 @@ class TestProbeTipPresenceViaPickup(unittest.IsolatedAsyncioTestCase):
         return error
       raise AssertionError("no error raised")
 
-    self.assertEqual(_channels_that_met_no_tip(raised("C0TPid0001er99/00 P108/75 P308/75")), [0, 2])
-    self.assertIsNone(_channels_that_met_no_tip(raised("C0TPid0001er99/00 P108/75 P207/76")))
-    self.assertIsNone(_channels_that_met_no_tip(raised("C0TPid0001er08/00")))
-    self.assertIsNone(_channels_that_met_no_tip(RuntimeError("the link dropped")))
+    self.assertEqual(
+      _get_channels_that_met_no_tip(raised("C0TPid0001er99/00 P108/75 P308/75")), [0, 2]
+    )
+    self.assertIsNone(_get_channels_that_met_no_tip(raised("C0TPid0001er99/00 P108/75 P207/76")))
+    self.assertIsNone(_get_channels_that_met_no_tip(raised("C0TPid0001er08/00")))
+    self.assertIsNone(_get_channels_that_met_no_tip(RuntimeError("the link dropped")))
 
 
 class TestWhereATipCommandLeavesTheChannels(unittest.IsolatedAsyncioTestCase):

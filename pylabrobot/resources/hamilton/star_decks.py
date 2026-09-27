@@ -53,7 +53,7 @@ class HamiltonSTARDeck(HamiltonDeck):
 
     `with_trash` and `with_teaching_needle_rack` require `with_waste_block` to be true. What the
     deck builds is named by `get_component_name`. `num_rails` is deprecated: it counted two more
-    than `num_tracks`.
+    than `num_tracks`. `with_teaching_rack` is deprecated: use `with_teaching_needle_rack`.
     """
 
     if with_teaching_rack is not None:

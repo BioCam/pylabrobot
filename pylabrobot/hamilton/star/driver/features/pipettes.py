@@ -358,7 +358,7 @@ class TADMCurve:
   pressures: List[int]
 
 
-def _channels_that_met_no_tip(error: Exception) -> Optional[List[int]]:
+def _get_channels_that_met_no_tip(error: Exception) -> Optional[List[int]]:
   """The channels a pick-up's error says met no tip; None when anything failed otherwise.
 
   A channel over an empty spot answers `08/75`, "No tip picked up", as measured on the device.
@@ -378,13 +378,10 @@ class Pipettes:
   """The pipetting channels.
 
   Reached as `driver.pipettes`. Individual channels are addressed as `P1`..`PG`. The commands
-
   that act on all of them at once go to the master, so this feature speaks to both.
 
   `configuration` holds what every channel shares, and one entry per channel in
-
   `configuration.channels`.
-
   """
 
   # The STAR's one LLD enum, as its channels have always reached it.
@@ -769,7 +766,7 @@ class Pipettes:
       -shaft.get_size_z(),
     )
 
-  # -- channel spacing -------------------------------------------------------------------------------
+  # -- channel spacing -----------------------------------------------------------------------------
 
   def _min_pair_spacing(self, i: int, j: int) -> float:
     """The smallest Y gap two channels may sit at by themselves, in mm, whatever lies between them.
@@ -4152,8 +4149,8 @@ class Pipettes:
       begin_tip_pick_up_process: where the pick-up begins, in mm. The lowest location plus the
         collar height when None.
       end_tip_pick_up_process: where it ends, in mm. The lowest location when None.
-      minimum_traverse_height_start: how high the channels travel first, in mm.
-        `default_minimum_traverse_height` when None.
+      minimum_traverse_height_start: how high the channels travel first, in mm. As high as the
+        tips allow when None; never below 245.0.
       pickup_method: out of a rack or out of wash liquid. The tip's own when None.
 
     Returns:
@@ -4275,8 +4272,8 @@ class Pipettes:
       begin_tip_pick_up_process: where the pick-up begins, in mm. The spot plus the collar height
         when None.
       end_tip_pick_up_process: where it ends, in mm. The spot when None.
-      minimum_traverse_height_start: how high the channels travel first, in mm.
-        `default_minimum_traverse_height` when None.
+      minimum_traverse_height_start: how high the channels travel first, in mm. As high as the
+        tips allow when None; never below 245.0.
       pickup_method: out of a rack or out of wash liquid. The tip's own when None.
       x_tolerance: how far apart in X two spots may be and still go out in one command, in mm.
         None lets any two share one, as legacy sends them: the firmware works through the columns
@@ -4402,7 +4399,8 @@ class Pipettes:
       drop_method: how to let the tips go.
       begin_tip_deposit_process: where the deposit begins, in mm.
       end_tip_deposit_process: where it ends, in mm.
-      minimum_traverse_height_start: how high the channels travel first, in mm.
+      minimum_traverse_height_start: how high the channels travel first, in mm. As high as the
+        tips allow when None; never below 245.0.
       minimum_traverse_height_end: where the channels are left, in mm.
 
     Returns:
@@ -4544,7 +4542,8 @@ class Pipettes:
         None.
       begin_tip_deposit_process: where the deposit begins, in mm.
       end_tip_deposit_process: where it ends, in mm.
-      minimum_traverse_height_start: how high the channels travel first, in mm.
+      minimum_traverse_height_start: how high the channels travel first, in mm. As high as the
+        tips allow when None; never below 245.0.
       minimum_traverse_height_end: where the channels are left, in mm.
       x_tolerance: how far apart in X two spots may be and still go out in one command, in mm.
         None lets any two share one, as legacy sends them.
@@ -4821,7 +4820,7 @@ class Pipettes:
       use_channels,
       pick_up_tips=functools.partial(self._pick_up_to_probe, heights=heights),
       drop_tips=functools.partial(self._drop_to_probe, heights=heights),
-      missed_channels=_channels_that_met_no_tip,
+      missed_channels=_get_channels_that_met_no_tip,
     )
     await self._require_emptied(use_channels)
     return found
@@ -4866,7 +4865,7 @@ class Pipettes:
       use_channels,
       pick_up_tips=functools.partial(self._pick_up_to_probe, heights=heights),
       drop_tips=functools.partial(self._drop_to_probe, heights=heights),
-      missed_channels=_channels_that_met_no_tip,
+      missed_channels=_get_channels_that_met_no_tip,
     )
     await self._require_emptied(use_channels)
     return found
@@ -7066,9 +7065,8 @@ class Pipettes:
       "settling_times": by_class("settling_times", settling_times),
       "swap_speeds": by_class("swap_speeds", swap_speeds),
     }
-    # What each piston pushes out: the transport air its tip holds, the liquid, the blow-out air
-    # in a blow-out mode; then it draws the dispense's own transport air, after an empty too. The
-    # stop-back leaves the piston where the dispense did, as a device showed.
+    # Each piston pushes out its tip's transport air, the liquid and, in a blow-out mode, the air;
+    # then draws this dispense's transport air, after an empty too. The stop-back leaves it there.
     transport_air = per_container_settings["transport_air_volumes"] or [0.0] * n
     blow_out_air = per_container_settings["blow_out_air_volumes"] or [0.0] * n
     # From where it stands, each piston has to have the travel for its dispenses, and each

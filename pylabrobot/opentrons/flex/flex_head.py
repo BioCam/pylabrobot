@@ -58,6 +58,7 @@ from pylabrobot.resources import (
 )
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.itemized_resource import ItemizedResource
+from pylabrobot.resources.opentrons import FlexDeck
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.tip import Tip
 
@@ -110,6 +111,24 @@ class _FlexHead:
     if self.flex._require_run() is not self._run:
       raise RuntimeError(
         "This instrument belongs to an earlier Flex run; use the current instrument"
+      )
+
+  @instrument_operation
+  async def move_to_safe_z(self) -> None:
+    """Raise the tip or nozzle to traversal height; never lower or move laterally.
+
+    Uses the deck's computed traversal height and the robot's current tip/nozzle
+    position. No mounted tip is required. Automatic calls after tip and liquid
+    operations happen after bookkeeping commits, so a failed retraction does
+    not undo a successful pickup, drop, or liquid transfer.
+    """
+    position = await self._run.get_position(self.pipette_id)
+    if not all(math.isfinite(v) for v in (position.x, position.y, position.z)):
+      raise ValueError("Cannot retract from a non-finite reported position")
+    distance = self.flex.traversal_height - position.z
+    if distance > 0:
+      await self.flex._execute_command(
+        "moveRelative", {"pipetteId": self.pipette_id, "axis": "z", "distance": distance}
       )
 
   async def _travel_guard(self, params: Dict[str, Any]) -> None:
@@ -426,24 +445,16 @@ class _FlexHead:
   def _check_pipetting_clearance(self, target: Container, position: Coordinate) -> None:
     """Validate head-specific clearance before any pipetting motion."""
 
-  async def _pipette(
+  def _pipetting_position(
     self,
-    verb: str,
     target: Container,
-    volume: float,
-    flow_rate: Optional[float],
     offset: Optional[Coordinate],
     liquid_height: Optional[float],
-    container_trackers: List[VolumeTracker],
-  ) -> None:
-    """Position from PLR geometry, pipette in place, then retract vertically.
-
-    Heights are measured from the cavity floor. Bare containers center the
-    complete nozzle array; wells locate the active primary nozzle. Stage
-    volumes before motion and commit once the plunger command succeeds.
-    """
-    position = target.get_absolute_location(x="c", y="c", z="cavity_bottom")
-    if not isinstance(target, Well):
+    center_nozzle_array: bool = False,
+  ) -> Coordinate:
+    """Resolve and validate a pipetting destination in the Flex deck frame."""
+    position = target.get_location_wrt(self.flex.deck, x="c", y="c", z="cavity_bottom")
+    if center_nozzle_array:
       if self.channels == 8:
         position.y += _EIGHT_CHANNEL_Y_SPAN / 2
       elif self.channels == 96:
@@ -454,6 +465,27 @@ class _FlexHead:
     if not all(math.isfinite(v) for v in (position.x, position.y, position.z)):
       raise ValueError("Pipetting coordinates must be finite")
     self._check_pipetting_clearance(target, position)
+    return position
+
+  async def _pipette(
+    self,
+    verb: str,
+    target: Container,
+    volume: float,
+    flow_rate: Optional[float],
+    offset: Optional[Coordinate],
+    liquid_height: Optional[float],
+    container_trackers: List[VolumeTracker],
+    *,
+    center_nozzle_array: bool = False,
+  ) -> None:
+    """Position from PLR geometry, pipette in place, then retract vertically.
+
+    Heights are measured from the cavity floor. Container operations center the
+    complete nozzle array; well operations locate the active primary nozzle. Stage
+    volumes before motion and commit once the plunger command succeeds.
+    """
+    position = self._pipetting_position(target, offset, liquid_height, center_nozzle_array)
     clearance = max(self.flex.traversal_height, position.z)
     tip_trackers = [tip.tracker for tip in self._channel_tips if tip is not None]
     sources, destinations = (
@@ -462,16 +494,18 @@ class _FlexHead:
       else (tip_trackers, container_trackers)
     )
     with track_liquid_transfer(sources, destinations, volume):
-      await self.move_to(x=position.x, y=position.y, z=clearance, minimum_z_height=clearance)
+      await self.move_to_position(
+        x=position.x, y=position.y, z=clearance, minimum_z_height=clearance
+      )
       if verb == "aspirate":
         await self.prepare_to_aspirate()
-      current = await self.position()
+      current = await self.request_position()
       await self.move_relative("z", position.z - current.z)
       if verb == "aspirate":
         await self.aspirate_in_place(volume, flow_rate=flow_rate)
       else:
         await self.dispense_in_place(volume, flow_rate=flow_rate)
-    await self._retract_to_traversal_height()
+    await self.move_to_safe_z()
 
   async def _configure_nozzle_layout(self, configuration_params: Dict[str, Any]) -> None:
     """Send ``configureNozzleLayout``, refusing while any channel holds a tip.
@@ -561,11 +595,13 @@ class _FlexHead:
     except OpentronsCommandError as e:
       if e.error_type == "liquidNotFound":
         raise OpentronsError(
-          "LiquidNotFoundError", f"liquid_probe found no liquid in {where}."
+          "LiquidNotFoundError", f"probe_liquid_heights found no liquid in {where}."
         ) from e
       raise
     if z is None:
-      raise OpentronsError("LiquidNotFoundError", f"liquid_probe found no liquid in {where}.")
+      raise OpentronsError(
+        "LiquidNotFoundError", f"probe_liquid_heights found no liquid in {where}."
+      )
     return z
 
   @staticmethod
@@ -660,24 +696,8 @@ class _FlexHead:
 
   # --- Direct head motion (teaching / recovery jog) ---
 
-  async def _retract_to_traversal_height(self) -> None:
-    """Raise vertically after a completed operation; never lower or move laterally.
-
-    Read the robot's current tip/nozzle position after its tip state changes.
-    Bookkeeping is already committed when called: a failed retraction must
-    not undo a successful pickup, drop, or liquid transfer.
-    """
-    position = await self._run.get_position(self.pipette_id)
-    if not all(math.isfinite(v) for v in (position.x, position.y, position.z)):
-      raise ValueError("Cannot retract from a non-finite reported position")
-    distance = self.flex.traversal_height - position.z
-    if distance > 0:
-      await self.flex._execute_command(
-        "moveRelative", {"pipetteId": self.pipette_id, "axis": "z", "distance": distance}
-      )
-
   @instrument_operation
-  async def position(self) -> Coordinate:
+  async def request_position(self) -> Coordinate:
     """The head's current deck-frame position -- one ``savePosition`` query.
 
     Reports the pipette's critical point: the bottom of the mounted tip, or
@@ -685,11 +705,11 @@ class _FlexHead:
     the deck frame, so the reported position needs no conversion.
     """
     if self.channels == 96:
-      warnings.warn("FlexHead96.position has not been tested on hardware.", stacklevel=2)
+      warnings.warn("FlexHead96.request_position has not been tested on hardware.", stacklevel=2)
     return await self._run.get_position(self.pipette_id)
 
   @instrument_operation
-  async def move_to(
+  async def move_to_position(
     self,
     x: Optional[float] = None,
     y: Optional[float] = None,
@@ -700,7 +720,7 @@ class _FlexHead:
     """Move the head to an absolute deck-frame position, holding any axis left
     unspecified -- ONE ``moveToCoordinates`` command.
 
-    Axes left unspecified are filled from ``position()`` first, so a combined
+    Axes left unspecified are filled from ``request_position()`` first, so a combined
     move travels a single path instead of an axis-by-axis staircase (the read
     is skipped when all three axes are given). A mounted tip is NOT required:
     jogging is for teaching and recovery, and the target refers to the bottom
@@ -709,11 +729,11 @@ class _FlexHead:
     jog arcs over deck labware; ``speed`` is in mm/s (robot default if None).
     """
     if self.channels == 96:
-      warnings.warn("FlexHead96.move_to has not been tested on hardware.", stacklevel=2)
+      warnings.warn("FlexHead96.move_to_position has not been tested on hardware.", stacklevel=2)
     if x is None and y is None and z is None:
-      raise ValueError("move_to: supply at least one of x, y, z.")
+      raise ValueError("move_to_position: supply at least one of x, y, z.")
     if x is None or y is None or z is None:
-      current = await self.position()
+      current = await self.request_position()
       x = current.x if x is None else x
       y = current.y if y is None else y
       z = current.z if z is None else z
@@ -742,9 +762,9 @@ class _FlexHead:
   ) -> None:
     """Move to a well, named rather than measured -- ONE ``moveToWell`` command.
 
-    Prefer this over :meth:`move_to` for anything positioned relative to
+    Prefer this over :meth:`move_to_position` for anything positioned relative to
     labware: naming the well lets the robot work out where that is and refuse
-    a move it cannot make, where ``move_to`` sends raw coordinates nothing
+    a move it cannot make, where ``move_to_position`` sends raw coordinates nothing
     bounds-checks. ``origin`` is where the offset is measured from ("top",
     "bottom", "center", or "meniscus", the last needing a probed liquid
     level), so 10 mm above the well is ``origin="top"`` with
@@ -777,7 +797,7 @@ class _FlexHead:
     """Jog one axis by ``distance`` mm from wherever the head is now.
 
     ``axis`` is "x", "y" or "z". A negative distance moves the other way.
-    Relative to the head's current position, so unlike :meth:`move_to` it
+    Relative to the head's current position, so unlike :meth:`move_to_position` it
     needs no reading first.
     """
     if self.channels == 96:
@@ -828,7 +848,7 @@ class _FlexHead:
     """Aspirate ``volume`` uL where the head already is -- one ``aspirateInPlace`` command.
 
     Names no well, so no ``Well``/``Container`` tracker moves with it:
-    position the head first (``move_to_well``/``move_to``) and account for the
+    position the head first (``move_to_well``/``move_to_position``) and account for the
     liquid yourself. Draw with the tip UNDER the surface and far enough off the
     floor not to seal against it; drawing from above the liquid takes air.
     ``flow_rate`` (uL/s) defaults to the aspirate default.
@@ -899,14 +919,16 @@ class _FlexHead:
   # --- Tip-presence sensor (command form) ---
 
   @instrument_operation
-  async def get_tip_presence(self) -> Optional[str]:
+  async def request_tip_presence(self) -> Optional[str]:
     """Read this head's tip sensor: "present", "absent" or "unknown".
 
     One reading per pipette, not per channel. ``has_tip_on_hardware()`` is
     the same reading as a bool. ``None`` when the command reports no status.
     """
     if self.channels == 96:
-      warnings.warn("FlexHead96.get_tip_presence has not been tested on hardware.", stacklevel=2)
+      warnings.warn(
+        "FlexHead96.request_tip_presence has not been tested on hardware.", stacklevel=2
+      )
     return await self._read_tip_presence()
 
   @instrument_operation
@@ -914,7 +936,7 @@ class _FlexHead:
     """Have the robot fail the command unless its tip sensor reads ``expected_state``.
 
     ``expected_state=True`` requires a tip; ``False`` requires no tip.
-    Where ``get_tip_presence``
+    Where ``request_tip_presence``
     reports and leaves the judgement to the caller, this one raises the
     mismatch from the robot side, so it reads as a checkpoint in a sequence.
     """
@@ -1133,7 +1155,7 @@ class FlexHead1(_FlexHead):
 
     await self._execute_pickup("pickUpTip", params, staged_trackers)
     self._channel_tips[0] = tip
-    await self._retract_to_traversal_height()
+    await self.move_to_safe_z()
 
   @instrument_operation
   async def drop_tips(
@@ -1154,7 +1176,7 @@ class FlexHead1(_FlexHead):
       await self._execute_trash_drop(target)
       self._channel_tips[0] = None
       await self._confirm_tips_cleared()
-      await self._retract_to_traversal_height()
+      await self.move_to_safe_z()
       return
 
     tip = self._channel_tips[0]
@@ -1177,7 +1199,7 @@ class FlexHead1(_FlexHead):
     await self._execute_liquid_op("dropTip", params, staged_trackers)
     self._channel_tips[0] = None
     await self._confirm_tips_cleared()
-    await self._retract_to_traversal_height()
+    await self.move_to_safe_z()
 
   @instrument_operation
   async def discard_tips(self, trash: Trash) -> None:
@@ -1252,12 +1274,12 @@ class FlexHead1(_FlexHead):
     )
 
   @instrument_operation
-  async def liquid_probe(self, well: Well) -> float:
+  async def probe_liquid_heights(self, well: Well) -> float:
     """Probe downward in ``well`` until the pressure sensor detects liquid; return its z (mm).
 
     One ``liquidProbe`` command naming ``well``. Requires a mounted tip
     (checked before any wire command). Raises ``OpentronsError`` if no
-    liquid is found; use ``try_liquid_probe`` for the non-raising variant.
+    liquid is found; use ``try_probe_liquid_heights`` for the non-raising variant.
     """
     self._require_mounted_tip()
     parent = self._require_itemized_parent(well)
@@ -1266,8 +1288,8 @@ class FlexHead1(_FlexHead):
     return await self._liquid_probe_z(labware_id, well_name, f"well {well.name!r}")
 
   @instrument_operation
-  async def try_liquid_probe(self, well: Well) -> Optional[float]:
-    """Like ``liquid_probe`` but return ``None`` instead of raising when no liquid is found."""
+  async def try_probe_liquid_heights(self, well: Well) -> Optional[float]:
+    """Like ``probe_liquid_heights`` but return ``None`` instead of raising when no liquid is found."""
     self._require_mounted_tip()
     parent = self._require_itemized_parent(well)
     labware_id = await self.flex._ensure_labware_loaded(parent)
@@ -1588,7 +1610,7 @@ class FlexHead8(_FlexHead):
     await self._execute_pickup("pickUpTip", params, staged_trackers)
     for ch, tip in tips.items():
       self._channel_tips[ch] = tip
-    await self._retract_to_traversal_height()
+    await self.move_to_safe_z()
 
   async def _pick_up_column(
     self,
@@ -1653,7 +1675,7 @@ class FlexHead8(_FlexHead):
     await self._execute_pickup("pickUpTip", params, staged_trackers)
     for i, tip in enumerate(tips):
       self._channel_tips[i] = tip
-    await self._retract_to_traversal_height()
+    await self.move_to_safe_z()
 
   @instrument_operation
   async def drop_tips(
@@ -1681,7 +1703,7 @@ class FlexHead8(_FlexHead):
       await self._execute_trash_drop(target)
       self._channel_tips = [None] * self.channels
       await self._confirm_tips_cleared()
-      await self._retract_to_traversal_height()
+      await self.move_to_safe_z()
       await self._ensure_all_mode()
       return
 
@@ -1717,7 +1739,7 @@ class FlexHead8(_FlexHead):
     for i in range(len(column_spots)):
       self._channel_tips[i] = None
     await self._confirm_tips_cleared()
-    await self._retract_to_traversal_height()
+    await self.move_to_safe_z()
 
   @instrument_operation
   async def discard_tips(self, trash: Trash) -> None:
@@ -1878,11 +1900,11 @@ class FlexHead8(_FlexHead):
     if primary not in channels:
       raise ValueError("The partial layout's primary channel must have a target well")
     anchor = wells[channels.index(primary)]
-    anchor_position = anchor.get_absolute_location(x="c", y="c", z="cavity_bottom")
+    anchor_position = anchor.get_location_wrt(self.flex.deck, x="c", y="c", z="cavity_bottom")
     for channel, well in zip(channels, wells):
       if well.parent is not parent:
         raise ValueError("Partial-column wells must share a parent")
-      position = well.get_absolute_location(x="c", y="c", z="cavity_bottom")
+      position = well.get_location_wrt(self.flex.deck, x="c", y="c", z="cavity_bottom")
       expected_y = anchor_position.y + (primary - channel) * 9
       if not (
         math.isclose(position.x, anchor_position.x, abs_tol=0.01)
@@ -1948,6 +1970,84 @@ class FlexHead8(_FlexHead):
     await self._pipette(
       "aspirate", column_wells[0], volume, flow_rate, offset, liquid_height, staged_trackers
     )
+
+  @instrument_operation
+  async def mix(
+    self,
+    target: Union[Plate, Sequence[Well]],
+    volume: float,
+    repetitions: int = 1,
+    *,
+    column: Optional[int] = None,
+    use_channels: Optional[Sequence[int]] = None,
+    liquid_height: Optional[float] = None,
+    offset: Optional[Coordinate] = None,
+    aspirate_flow_rate: Optional[float] = None,
+    dispense_flow_rate: Optional[float] = None,
+    final_push_out: Optional[float] = None,
+  ) -> None:
+    """Mix a plate column in place, positioning and retracting only once.
+
+    ``volume`` is per mounted tip and ``repetitions`` must be a positive integer.
+    Pass ``plate.column(c)`` or a ``Plate`` with a zero-based ``column``.
+    Partial columns use the mounted layout and ``use_channels``, as in aspirate.
+    Tips must start empty. ``liquid_height`` is measured above the cavity floor
+    (default 1 mm); offsets and clearance checks use the deck frame.
+
+    Prime above the plate, then alternate in-place aspiration and dispensing.
+    Intermediate dispenses use zero push-out so the next draw needs no priming.
+    ``final_push_out=None`` leaves the last push-out to the robot's default.
+    Flow rates are in uL/s and default to the pipette's tip-dependent rates.
+    Each successful stroke commits its own volume transfer; a failure leaves
+    the completed strokes tracked and does not attempt further movement.
+    """
+    if isinstance(repetitions, bool) or not isinstance(repetitions, int) or repetitions < 1:
+      raise ValueError("repetitions must be a positive integer")
+    if not math.isfinite(volume) or volume <= 0:
+      raise ValueError("volume must be finite and positive")
+    for rate in (aspirate_flow_rate, dispense_flow_rate):
+      if rate is not None and (not math.isfinite(rate) or rate <= 0):
+        raise ValueError("flow rates must be finite and positive")
+    if final_push_out is not None and (not math.isfinite(final_push_out) or final_push_out < 0):
+      raise ValueError("final_push_out must be finite and non-negative")
+    self._require_mounted_tip()
+    self._require_use_channels_match_mounted(use_channels)
+    tips = [tip for tip in self._channel_tips if tip is not None]
+    if any(tip.tracker.get_used_volume() > 0 for tip in tips):
+      raise ValueError("Mixing requires empty tips")
+    if any(volume > min(tip.maximal_volume, self.max_volume) for tip in tips):
+      raise ValueError("Mix volume exceeds pipette or tip capacity")
+    if isinstance(target, Plate):
+      if column is None:
+        raise ValueError("Provide column when mixing a Plate")
+      _, wells = self._column_anchor_and_items(target, column)
+    else:
+      if column is not None:
+        raise ValueError("column requires a Plate target")
+      wells = list(target)
+    if not wells:
+      raise ValueError("mix: the target well sequence is empty")
+    anchor, trackers = await self._liquid_column_target(wells, use_channels)
+    position = self._pipetting_position(anchor, offset, liquid_height)
+    clearance = max(self.flex.traversal_height, position.z)
+    tip_trackers = [tip.tracker for tip in tips]
+    for cycle in range(repetitions):
+      with track_liquid_transfer(trackers, tip_trackers, volume):
+        if cycle == 0:
+          await self.move_to_position(
+            x=position.x, y=position.y, z=clearance, minimum_z_height=clearance
+          )
+          await self.prepare_to_aspirate()
+          current = await self.request_position()
+          await self.move_relative("z", position.z - current.z)
+        await self.aspirate_in_place(volume, flow_rate=aspirate_flow_rate)
+      with track_liquid_transfer(tip_trackers, trackers, volume):
+        await self.dispense_in_place(
+          volume,
+          flow_rate=dispense_flow_rate,
+          push_out=final_push_out if cycle == repetitions - 1 else 0,
+        )
+    await self.move_to_safe_z()
 
   @instrument_operation
   async def dispense(
@@ -2087,6 +2187,7 @@ class FlexHead8(_FlexHead):
       offset,
       liquid_height,
       staged_trackers,
+      center_nozzle_array=True,
     )
 
   @instrument_operation
@@ -2115,6 +2216,7 @@ class FlexHead8(_FlexHead):
       offset,
       liquid_height,
       staged_trackers,
+      center_nozzle_array=True,
     )
 
   @instrument_operation
@@ -2141,14 +2243,14 @@ class FlexHead8(_FlexHead):
     )
 
   @instrument_operation
-  async def liquid_probe(self, plate: Plate, column: int) -> float:
+  async def probe_liquid_heights(self, plate: Plate, column: int) -> float:
     """Probe for liquid in a column -- one ``liquidProbe`` command anchored at
     its rearmost well; return the found liquid z (mm).
 
     Requires at least one mounted tip and a valid column (both checked
     before any wire command) and ALL nozzle mode (reset first if a
     single-tip op left the layout otherwise). Raises ``OpentronsError`` if
-    no liquid is found; use ``try_liquid_probe`` for the non-raising
+    no liquid is found; use ``try_probe_liquid_heights`` for the non-raising
     variant.
     """
     self._require_mounted_tip()
@@ -2158,8 +2260,8 @@ class FlexHead8(_FlexHead):
     return await self._liquid_probe_z(labware_id, well_name, f"column {column} of {plate.name!r}")
 
   @instrument_operation
-  async def try_liquid_probe(self, plate: Plate, column: int) -> Optional[float]:
-    """Like ``liquid_probe`` but return ``None`` instead of raising when no liquid is found."""
+  async def try_probe_liquid_heights(self, plate: Plate, column: int) -> Optional[float]:
+    """Like ``probe_liquid_heights`` but return ``None`` instead of raising when no liquid is found."""
     self._require_mounted_tip()
     well_name, _ = self._column_anchor_and_items(plate, column)
     await self._ensure_all_mode()
@@ -2181,7 +2283,12 @@ class FlexHead8(_FlexHead):
     never sees the run commands this driver posts, so nothing downstream would
     catch an out-of-extents anchor.
     """
-    well_y: float = labware.get_item(well).get_absolute_location(y="c").y
+    deck = labware.parent
+    while deck is not None and not isinstance(deck, FlexDeck):
+      deck = deck.parent
+    if deck is None:
+      raise ValueError("Labware must be assigned to a Flex deck")
+    well_y: float = labware.get_item(well).get_location_wrt(deck, y="c").y
     mount_y = well_y - _SINGLE_NOZZLE_Y[nozzle]
     return (
       mount_y + _PIPETTE_BODY_BACK_Y >= _ROBOT_FRONT_LIMIT
@@ -2430,7 +2537,7 @@ class FlexHead8(_FlexHead):
 
     await self._execute_pickup("pickUpTip", params, staged_trackers)
     self._channel_tips[channel] = tip
-    await self._retract_to_traversal_height()
+    await self.move_to_safe_z()
 
   @instrument_operation
   async def aspirate_single(
@@ -2482,7 +2589,7 @@ class FlexHead8(_FlexHead):
     await self._execute_trash_drop(trash)
     self._channel_tips[channel] = None
     await self._confirm_tips_cleared()
-    await self._retract_to_traversal_height()
+    await self.move_to_safe_z()
     await self._ensure_all_mode()
 
 
@@ -2503,7 +2610,7 @@ class FlexHead96(_FlexHead):
   machinery ``FlexHead8`` uses for its column ops, applied to the whole
   plate/rack instead of one column.
 
-  Liquid probing (``liquid_probe``/``try_liquid_probe``) is not implemented
+  Liquid probing (``probe_liquid_heights``/``try_probe_liquid_heights``) is not implemented
   on this head -- only the mount heads (``FlexHead1``/``FlexHead8``)
   expose it.
 
@@ -2583,7 +2690,7 @@ class FlexHead96(_FlexHead):
     await self._execute_pickup("pickUpTip", params, staged_trackers)
     for i, tip in enumerate(tips):
       self._channel_tips[i] = tip
-    await self._retract_to_traversal_height()
+    await self.move_to_safe_z()
 
   @instrument_operation
   async def drop_tips(
@@ -2606,7 +2713,7 @@ class FlexHead96(_FlexHead):
       await self._execute_trash_drop(target)
       self._channel_tips = [None] * self.channels
       await self._confirm_tips_cleared()
-      await self._retract_to_traversal_height()
+      await self.move_to_safe_z()
       return
 
     spots = self._check_full_coverage(target)
@@ -2630,7 +2737,7 @@ class FlexHead96(_FlexHead):
     for i in range(len(spots)):
       self._channel_tips[i] = None
     await self._confirm_tips_cleared()
-    await self._retract_to_traversal_height()
+    await self.move_to_safe_z()
 
   @instrument_operation
   async def discard_tips(self, trash: Trash) -> None:
@@ -2669,7 +2776,14 @@ class FlexHead96(_FlexHead):
       anchor = target
       staged_trackers = self._container_trackers(target)
     await self._pipette(
-      "aspirate", anchor, volume, flow_rate, offset, liquid_height, staged_trackers
+      "aspirate",
+      anchor,
+      volume,
+      flow_rate,
+      offset,
+      liquid_height,
+      staged_trackers,
+      center_nozzle_array=not isinstance(target, Plate),
     )
 
   @instrument_operation
@@ -2699,7 +2813,14 @@ class FlexHead96(_FlexHead):
       anchor = target
       staged_trackers = self._container_trackers(target)
     await self._pipette(
-      "dispense", anchor, volume, flow_rate, offset, liquid_height, staged_trackers
+      "dispense",
+      anchor,
+      volume,
+      flow_rate,
+      offset,
+      liquid_height,
+      staged_trackers,
+      center_nozzle_array=not isinstance(target, Plate),
     )
 
   @instrument_operation

@@ -223,8 +223,7 @@ class NestedTipCarrierTests(unittest.TestCase):
     self.assertAlmostEqual(module_z, 100 + 18.2 + 96.5 - 6.0 + 7.5)
     self.assertLess(abs(module_z - carrier_z), 0.3)
 
-    # Hamilton's pick-up positions for a framed rack on the tip module, from the `1_Tip` and `3_Tip`
-    # sites of an MFX carrier its software defines: the rack centred on the module, in slot 0.
+    # Pick-up positions for a framed rack on the tip module: the rack centred on the module, in slot 0.
     for spot, expected in (("A1", (950.5, 146.0)), ("H12", (1049.5, 83.0))):
       actual = on_module.get_item(spot).get_absolute_location("c", "c", "b")
       self.assertAlmostEqual(actual.x, expected[0])
@@ -243,7 +242,7 @@ class NestedTipCarrierTests(unittest.TestCase):
     carrier[0] = framed = hamilton_96_tiprack_300uL("framed")
     carrier[1] = solid = hamilton_96_tiprack_raised_core_ii("solid", make_tip=hamilton_tip_300uL)
     carrier[2] = corei = hamilton_96_tiprack_raised_core_i("corei", make_tip=hamilton_tip_300uL)
-    # Hamilton's definitions: 16.0 and 12.5 mm above the site
+    # 16.0 and 12.5 mm above the site
     for rack, above in ((solid, 16.0), (corei, 12.5)):
       spot_z = rack.get_item("A1").get_absolute_location("c", "c", "b").z
       self.assertAlmostEqual(spot_z - 114.95, above)

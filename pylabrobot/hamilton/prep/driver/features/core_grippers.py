@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from contextlib import asynccontextmanager
 from typing import (
   TYPE_CHECKING,
@@ -48,6 +49,18 @@ JAW_Y_MARGIN = 0.6
 # How far below its top a resource may be gripped, in mm: lower, its top presses into the pipetting
 # head the grippers hang from.
 MAX_PICKUP_DISTANCE_FROM_TOP = 20.0
+
+
+def _x_acceleration_scale(x_acceleration_scale: int, acceleration_scale_x: Optional[int]) -> int:
+  """`x_acceleration_scale`, or the deprecated `acceleration_scale_x` where one is given."""
+  if acceleration_scale_x is None:
+    return x_acceleration_scale
+  warnings.warn(
+    "`acceleration_scale_x` is deprecated, use `x_acceleration_scale`.",
+    DeprecationWarning,
+    stacklevel=3,
+  )
+  return acceleration_scale_x
 
 
 class CoreGrippers:
@@ -462,6 +475,7 @@ class CoreGrippers:
     y: Optional[float] = None,
     *,
     x_acceleration_scale: int = 1,
+    acceleration_scale_x: Optional[int] = None,
   ) -> None:
     """Carry the held resource across the deck, at the height it is already at (PrepMovePlate).
 
@@ -471,11 +485,13 @@ class CoreGrippers:
       x: where to take its centre, in mm. None keeps it where it is in x.
       y: where to take its centre, in mm. None keeps it where it is in y.
       x_acceleration_scale: X-axis acceleration scale; showed no effect at 2.
+      acceleration_scale_x: deprecated, use `x_acceleration_scale`.
 
     Raises:
       ValueError: If neither x nor y is given.
       RuntimeError: If nothing is held, or it was gripped without an offset being recorded.
     """
+    x_acceleration_scale = _x_acceleration_scale(x_acceleration_scale, acceleration_scale_x)
     if x is None and y is None:
       raise ValueError("give x, y or both: with neither there is nowhere to move it")
     if self._holding_resource_width is None:
@@ -1028,6 +1044,7 @@ class CoreGrippers:
     minimum_traverse_height_end: Optional[float] = None,
     z_acceleration: Optional[float] = None,
     z_speed: Optional[float] = None,
+    acceleration_scale_x: Optional[int] = None,
   ) -> None:
     """Put the held resource down; the tree follows once it is down.
 
@@ -1039,7 +1056,9 @@ class CoreGrippers:
         grip it and out after letting go, in mm.
       z_speed: how fast it is lowered to where it is let go, in mm/s. None is the pipettes'
         `default_z_speed`.
+      acceleration_scale_x: deprecated, use `x_acceleration_scale`.
     """
+    x_acceleration_scale = _x_acceleration_scale(x_acceleration_scale, acceleration_scale_x)
     child: Optional[Coordinate] = None
     if isinstance(to, Coordinate):
       if self._held_resource is None:
@@ -1083,12 +1102,14 @@ class CoreGrippers:
     minimum_traverse_height_end: Optional[float] = None,
     z_acceleration: Optional[float] = None,
     z_speed: Optional[float] = None,
+    acceleration_scale_x: Optional[int] = None,
   ) -> None:
     """Put the held resource back where :meth:`pick_up_resource` took it from.
 
     Raises:
       RuntimeError: If nothing is held, or it was not taken from a parent in the tree.
     """
+    x_acceleration_scale = _x_acceleration_scale(x_acceleration_scale, acceleration_scale_x)
     if self._taken_from is None:
       raise RuntimeError(
         "nothing to return it to: return_resource needs a pick_up_resource of a resource that "
@@ -1209,6 +1230,7 @@ class CoreGrippers:
     drop_y_clearance: float = 2.5,
     minimum_traverse_height_end: Optional[float] = None,
     return_grippers: bool = False,
+    acceleration_scale_x: Optional[int] = None,
   ) -> None:
     """Move a resource with the CoRe grippers, mounting them first if needed.
 
@@ -1247,11 +1269,13 @@ class CoreGrippers:
       minimum_traverse_height_end: the height to leave the destination at, in mm. None goes to Z
         safety.
       return_grippers: put the tools back in their holder once the resource is down.
+      acceleration_scale_x: deprecated, use `x_acceleration_scale`.
 
     Raises:
       HasTipError: If a channel carries a tip.
       RuntimeError: If the driver has no pipettes to carry the grippers.
     """
+    x_acceleration_scale = _x_acceleration_scale(x_acceleration_scale, acceleration_scale_x)
     tipped = [ch for ch, tip in enumerate(self._pipettes.get_mounted_tips()) if tip is not None]
     if tipped:
       raise HasTipError(
