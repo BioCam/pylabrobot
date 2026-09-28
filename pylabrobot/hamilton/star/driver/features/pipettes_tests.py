@@ -3182,7 +3182,7 @@ class TestDispenseInSimulation(_SimulatedPlateWithWater):
     # Only the mixing channel's container is read; one draw of 20 uL lowers the risen surface.
     self.assertEqual(_get_fields(sent[-1], "mh")[:2], [round(20.0 / area * 10), 0])
 
-  async def test_a_jet_with_blow_out_takes_the_classs_fields_and_the_pistons_rest(self):
+  async def test_a_jet_with_blow_out_takes_the_liquid_class_fields_and_the_pistons_rest(self):
     from pylabrobot.hamilton.star.liquid_classes.mapping import get_star_liquid_class
     from pylabrobot.resources.liquid import Liquid
 
@@ -3981,6 +3981,16 @@ class TestTipHandling(unittest.IsolatedAsyncioTestCase):
     await pipettes.initialize()
     self.assertIsNone(pipettes.get_mounted_tip(0))
     self.assertIsNone(tip.parent)
+
+  async def test_initialize_leaves_the_channels_at_minimum_traverse_height_end(self):
+    pipettes, _, _ = await channels_over_a_rack()
+    send = unittest.mock.AsyncMock(wraps=pipettes._driver.send_command)
+    with unittest.mock.patch.object(pipettes._driver, "send_command", send):
+      await pipettes.initialize(minimum_traverse_height_end=200.0)
+      with self.assertWarns(DeprecationWarning):
+        await pipettes.initialize(z_position_at_end_of_a_command=210.0)
+    sent = [call.kwargs["te"] for call in send.call_args_list if call.kwargs.get("command") == "DI"]
+    self.assertEqual(sent, ["2000", "2100"])
 
 
 def _answer_pick_ups_as_the_device(pipettes: Pipettes, rack: Any, empty: List[str], other=""):

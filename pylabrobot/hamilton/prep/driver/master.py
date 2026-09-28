@@ -1823,12 +1823,10 @@ class PrepDriver:
   async def set_door_state_override(
     self, *, enabled: bool, enclosure_present: bool, door_open: bool
   ) -> None:
-    """Replace what the enclosure and door sensors report with the given state, or stop replacing it.
-
-    The command's id is read from MLPrepDebug's method table by name.
+    """Override the enclosure and door states the sensors report; stays set until changed.
 
     Args:
-      enabled: True to report the given state, False to report the sensors again.
+      enabled: True to report the given states, False to report the sensors again.
       enclosure_present: the enclosure state to report while enabled.
       door_open: the door state to report while enabled.
     """

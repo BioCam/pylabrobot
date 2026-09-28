@@ -290,9 +290,9 @@ class HamiltonDeckTests(unittest.TestCase):
       ],
     )
 
-  def test_core_grippers_on_waste_as_probed(self):
-    # Probed on a STAR: holder top 220.0, 19.5 mm tall, tool tops (collar tops) 235.0. The collars
-    # stand where the legacy pick-up sends the channels: x on the holder's centre, y 107.0 and 125.0.
+  def test_core_gripper_holder_on_the_waste_block_as_probed(self):
+    # Probed on a STAR: holder top 220.0, 19.5 mm tall, tool (collar) tops 235.0. Its centre is the
+    # x the channels take the tools at; they take the collars at y 107.0 and 125.0.
     for deck, x in ((STARDeck(), 1337.5), (STARLetDeck(), 797.5)):
       with self.subTest(deck=type(deck).__name__):
         holder = deck.get_resource("core_grippers")
@@ -300,7 +300,7 @@ class HamiltonDeckTests(unittest.TestCase):
         self.assertAlmostEqual(holder.get_location_wrt(deck, x="c").x, x)
         self.assertAlmostEqual(holder.get_location_wrt(deck).z, 200.5)
         self.assertAlmostEqual(holder.get_location_wrt(deck, z="t").z, 220.0)
-        front, back = holder.children[0], holder.children[1]
+        front, back = holder.front_tool, holder.back_tool
         for tool in (front, back):
           self.assertAlmostEqual(tool.get_location_wrt(deck, x="c", z="t").x, x)
           self.assertAlmostEqual(tool.get_location_wrt(deck, z="t").z, 235.0)

@@ -8,6 +8,7 @@ import functools
 import logging
 import math
 import re
+import warnings
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import (
@@ -2193,6 +2194,7 @@ class Pipettes:
     tip_pattern: Optional[List[bool]] = None,
     tip_type: Optional[int] = None,
     discarding_method: Optional[int] = None,
+    z_position_at_end_of_a_command: Optional[float] = None,
   ):
     """Initialize the channels, discarding whatever is mounted on them.
 
@@ -2209,7 +2211,16 @@ class Pipettes:
       tip_pattern: which channels take part. Defaults to all of them.
       tip_type: tip type table index.
       discarding_method: how tips are discarded.
+      z_position_at_end_of_a_command: deprecated, use `minimum_traverse_height_end`.
     """
+    if z_position_at_end_of_a_command is not None:
+      warnings.warn(
+        "`z_position_at_end_of_a_command` is deprecated, use `minimum_traverse_height_end`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
+      if minimum_traverse_height_end is None:
+        minimum_traverse_height_end = z_position_at_end_of_a_command
     c = self.configuration
     if x_position is None:
       if self._driver.configuration is None:
