@@ -18,7 +18,7 @@ from pylabrobot.hamilton.prep.driver.features.core_grippers import (
   CoreGrippers,
 )
 from pylabrobot.hamilton.transport.tcp.hoi_error import HoiError
-from pylabrobot.resources import Coordinate, Resource
+from pylabrobot.resources import Coordinate, Lid, Resource
 from pylabrobot.resources.azenta import azenta_96_wellplate_200uL_Vb_4titudeframestar
 from pylabrobot.resources.corning.axygen.plates import cor_axy_96_wellplate_500uL_Ub
 from pylabrobot.resources.hamilton import HamiltonCoreGrippers, PrepDeck
@@ -754,6 +754,54 @@ def test_return_resource_off_a_plain_parent_puts_it_on_the_deck_where_it_stood()
     dropped = commands.drop_at.await_args.args[0]
     assert plate.parent is deck and plate.location == Coordinate(40.0, 50.0, 10.0)
     assert (dropped.x, dropped.y, dropped.z) == pytest.approx((picked.x, picked.y, picked.z))
+
+  asyncio.run(_run())
+
+
+def test_a_lid_dropped_on_a_plate_goes_on_top_of_it():
+  """Released at the plate's lid seat, and seated there in the model, not at the plate's bottom."""
+  deck = PrepDeck(with_core_grippers=True)
+  source = deck[4] = cor_axy_96_wellplate_500uL_Ub("source")
+  lid = Lid(name="lid", size_x=127.76, size_y=85.48, size_z=10.0, nesting_z_height=2.0)
+  source.assign_child_resource(lid)
+  plate = deck[2] = cor_axy_96_wellplate_500uL_Ub("plate")
+  grippers, commands = _make_grippers(deck)
+
+  async def _run() -> None:
+    await grippers.pick_up_resource(lid, pickup_distance_from_top=4.0)
+    await grippers.drop_resource(plate)
+    dropped: Coordinate = commands.drop_at.await_args.args[0]
+    seat = plate.get_absolute_location("l", "f", "b") + plate.get_lid_location(lid)
+    assert dropped.z == pytest.approx(seat.z + lid.get_absolute_size_z() - 4.0)
+    assert plate.lid is lid
+    assert lid.location == plate.get_lid_location(lid)
+
+  asyncio.run(_run())
+
+
+def test_discard_resource_lets_go_past_the_waste_block_and_forgets_it():
+  """Gripped 20 mm to -x of its centre, let go at the nearer reach less 1 mm, bottom on the block."""
+  deck = PrepDeck(with_core_grippers=True)
+  plate = deck[4] = cor_axy_96_wellplate_500uL_Ub("plate")
+  grippers, commands = _make_grippers(deck)
+  grippers._driver.pipettes.configuration.channels = [
+    SimpleNamespace(x_range=(0.0, 300.0)),
+    SimpleNamespace(x_range=(0.0, 305.0)),
+  ]
+  block = deck.waste_block
+  assert block is not None
+
+  async def _run() -> None:
+    centre = plate.get_absolute_location("c", "c", "b")
+    await grippers.discard_resource(plate, pickup_distance_from_top=10.0)
+    picked: Coordinate = commands.pick_up_at.await_args.args[0]
+    dropped: Coordinate = commands.drop_at.await_args.args[0]
+    assert (picked.x, picked.y) == pytest.approx((centre.x - 20.0, centre.y))
+    block_top = block.get_location_wrt(deck, z="t").z
+    assert dropped == Coordinate(299.0, picked.y, block_top + plate.get_absolute_size_z() - 10.0)
+    assert commands.drop_at.await_args.kwargs["y_clearance"] == 2.0
+    assert plate.parent is None
+    assert grippers._held_resource is None
 
   asyncio.run(_run())
 

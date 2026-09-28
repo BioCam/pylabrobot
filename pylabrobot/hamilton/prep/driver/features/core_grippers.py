@@ -23,6 +23,7 @@ from pylabrobot.resources.deck import Deck
 from pylabrobot.resources.errors import HasTipError
 from pylabrobot.resources.hamilton.prep_decks import PrepDeck
 from pylabrobot.resources.head_tool import HeadTool
+from pylabrobot.resources.lid import Lid, Liddable
 from pylabrobot.resources.resource_holder import ResourceHolder
 from pylabrobot.resources.resource_state import place_resource
 
@@ -1072,6 +1073,9 @@ class CoreGrippers:
       child = to - Coordinate(center.x, center.y, 0)
     else:
       destination = to
+      if isinstance(self._held_resource, Lid) and isinstance(destination, Liddable):
+        # A lid goes on top, sunk by its nesting height, not to the destination's bottom.
+        child = destination.get_lid_location(self._held_resource)
     if self._holding_resource_width is None:
       raise RuntimeError("Not holding anything")
     if self._held_resource is None or self._pickup_distance_from_top is None:
@@ -1134,6 +1138,62 @@ class CoreGrippers:
     center = held.center().rotated(held.get_absolute_rotation())
     lfb = parent.get_location_wrt(self._deck, "l", "f", "b") + location
     await self.drop_resource(lfb + Coordinate(center.x, center.y, 0), **kwargs)
+
+  async def discard_resource(
+    self,
+    resource: Resource,
+    offset: Coordinate = Coordinate(-20.0, 0.0, 0.0),
+    pickup_distance_from_top: Optional[float] = None,
+    *,
+    y_clearance: float = 2.0,
+    z_acceleration: Optional[float] = None,
+    z_speed: Optional[float] = None,
+  ) -> None:
+    """Drop a resource into the trash, past the waste block, and take it out of the tree.
+
+    Gripped `offset` from its centre, so it overhangs towards +x; let go at the channels' furthest
+    x less 1 mm, its bottom level with the waste block's top, it tips off into the trash.
+
+    Args:
+      resource: what to throw away.
+      offset: added to the grip point, in mm. -20 mm in x leaves it overhanging the block.
+      pickup_distance_from_top: as `pick_up_resource`.
+      y_clearance: as `pick_up_resource`.
+      z_acceleration: as `pick_up_resource`.
+      z_speed: as `pick_up_resource`.
+
+    Raises:
+      RuntimeError: If the deck has no waste block, or the channels report no x reach.
+    """
+    deck = self._deck
+    block = deck.waste_block if isinstance(deck, PrepDeck) else None
+    if block is None:
+      raise RuntimeError("discard_resource needs a Prep deck with a waste block")
+    reaches = [c.x_range[1] for c in self._pipettes.configuration.channels if c.x_range is not None]
+    if not reaches:
+      raise RuntimeError("discard_resource needs the channels' x reach, read at setup")
+
+    from_top = self._resolve_pickup_distance(resource, pickup_distance_from_top)
+    grip = self._compute_pickup_location(resource, offset, from_top)
+    await self.pick_up_resource(
+      resource,
+      offset=offset,
+      pickup_distance_from_top=from_top,
+      y_clearance=y_clearance,
+      z_acceleration=z_acceleration,
+      z_speed=z_speed,
+    )
+    block_top = block.get_location_wrt(deck, z="t").z
+    let_go = Coordinate(
+      min(reaches) - 1.0, grip.y, block_top + resource.get_absolute_size_z() - from_top
+    )
+    await self._drop_at(
+      let_go,
+      y_clearance=y_clearance,
+      z_acceleration=z_acceleration,
+      z_speed=z_speed,
+      on_released=resource.unassign,
+    )
 
   # -- probing -------------------------------------------------------------------------------------
 
