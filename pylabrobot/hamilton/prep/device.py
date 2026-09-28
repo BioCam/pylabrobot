@@ -93,6 +93,7 @@ class PrepDevice(Resource):
     default_minimum_traverse_height: Optional[float] = None,
     use_v1_aspirate_dispense: bool = False,
     enable_safe_speeds: bool = False,
+    deck_components_offset: Optional[Coordinate] = None,
   ):
     """Bring the device up.
 
@@ -103,6 +104,8 @@ class PrepDevice(Resource):
       default_minimum_traverse_height: as `PrepDriver.setup` takes it.
       use_v1_aspirate_dispense: as `PrepDriver.setup` takes it.
       enable_safe_speeds: as `PrepDriver.setup` takes it.
+      deck_components_offset: shift every labware spot by this, as `update_deck_components` does.
+        None leaves them where they are.
     """
     await self.driver.setup(
       smart=smart,
@@ -114,6 +117,8 @@ class PrepDevice(Resource):
     )
     if self.driver.hs is not None:
       self.model = PREP_HEATER_SHAKER_MODEL
+    if deck_components_offset is not None:
+      self.update_deck_components(deck_components_offset)
 
   async def stop(self, skip_raise_to_z_safety: bool = False):
     """Put the device down.
@@ -123,6 +128,16 @@ class PrepDevice(Resource):
         The next lateral move will crash a channel that is low.
     """
     await self.driver.stop(skip_raise_to_z_safety=skip_raise_to_z_safety)
+
+  def update_deck_components(self, offset: Coordinate) -> None:
+    """Shift every labware spot by `offset`, in software only: nothing is written to the device.
+
+    Args:
+      offset: how far to move each spot, in mm on the deck.
+    """
+    for spot in self.deck.spots:
+      if spot.location is not None:
+        spot.location = spot.location + offset
 
   # -- what the device carries ------------------------------------------------------------
   # Read through: they do not exist until setup has run.
