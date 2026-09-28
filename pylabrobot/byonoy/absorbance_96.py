@@ -333,14 +333,17 @@ def byonoy_sbs_adapter(name: str) -> ResourceHolder:
   )
 
 
-def byonoy_a96a_illumination_unit(name: str) -> Resource:
+def byonoy_a96a_illumination_unit(name: str) -> ResourceHolder:
+  """The A96A illumination unit; a plate lid can rest centred on its top face."""
   size_x = 155.26
   size_y = 95.48
-  return Resource(
+  size_z = 42.898
+  return ResourceHolder(
     name=name,
     size_x=size_x,
     size_y=size_y,
-    size_z=42.898,
+    size_z=size_z,
+    child_location=Coordinate(x=(size_x - 127.76) / 2, y=(size_y - 85.48) / 2, z=size_z),
     model="byonoy_a96a_illumination_unit",
     preferred_pickup_location=Coordinate(x=size_x / 2, y=size_y / 2, z=29.5),
   )

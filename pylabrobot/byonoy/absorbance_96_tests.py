@@ -30,3 +30,11 @@ class IlluminationUnitHeightCheckTests(unittest.TestCase):
     )
     with self.assertRaises(RuntimeError):
       self._check_with(plate)
+
+
+class IlluminationUnitLidRestTests(unittest.TestCase):
+  def test_a_plate_lid_rests_centred_on_its_top_face(self):
+    unit = byonoy_a96a_illumination_unit(name="illumination_unit")
+    lid = Lid(name="lid", size_x=127.76, size_y=85.48, size_z=10.0, nesting_z_height=2.0)
+    unit.assign_child_resource(lid)
+    self.assertEqual(lid.get_location_wrt(unit, "c", "c", "b"), unit.get_anchor("c", "c", "t"))
