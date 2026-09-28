@@ -1487,6 +1487,8 @@ class PrepSimulationDriver(PrepDriver):
       self.head8 = SimulatedHead8(self)
     if configuration.heater_shaker_installed:
       self.hs = SimulatedHeaterShaker(self)
+    if configuration.head8_installed:
+      self.head8 = SimulatedHead8(self)
 
   def describe_link(self) -> str:
     return "simulation (no link)"

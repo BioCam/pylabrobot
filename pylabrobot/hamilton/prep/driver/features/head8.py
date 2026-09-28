@@ -66,6 +66,7 @@ from ..prep_commands import MPH_OBJECT_PATH
 from .pipettes import (
   PipetteChannel,
   Pipettes,
+  PipettesConfiguration,
   _absolute_z_from_well,
   _effective_radius,
   _get_container_segments,
@@ -113,14 +114,17 @@ class _Head8LiquidTargets(NamedTuple):
   volume_containers: List[Container]
 
 
-def head8_pipette(name: str = "head8") -> NChannelPipette:
+def head8_pipette(
+  name: str = "head8", size_z: float = PipettesConfiguration.channel_size_z
+) -> NChannelPipette:
   """The 8MPH as a resource: one column of eight tip mounting shafts, probe 0 at the back.
 
-  Only its channels are modelled, the grid the device reports, not the body around them: the
-  resource spans the shafts and nothing more. A tip a probe carries is its shaft's child.
+  As tall as a channel, its shafts hanging below it as a channel's does. Only the probes' grid is
+  modelled, not the body around it. A tip a probe carries is its shaft's child.
 
   Args:
     name: what to call it.
+    size_z: how tall it is above its shafts, in mm.
 
   Returns:
     The pipette.
@@ -130,9 +134,9 @@ def head8_pipette(name: str = "head8") -> NChannelPipette:
     name=name,
     size_x=SHAFT_DIAMETER,
     size_y=span_y + SHAFT_DIAMETER,
-    size_z=SHAFT_LENGTH,
+    size_z=size_z,
     # Where a tip is picked up: the axis of probe 0's shaft, at its end.
-    reference_point=Coordinate(SHAFT_DIAMETER / 2, span_y + SHAFT_DIAMETER / 2, 0),
+    reference_point=Coordinate(SHAFT_DIAMETER / 2, span_y + SHAFT_DIAMETER / 2, -SHAFT_LENGTH),
     ordered_items=create_ordered_items_2d(
       TipMountingShaft,
       name_prefix=name,
@@ -140,7 +144,7 @@ def head8_pipette(name: str = "head8") -> NChannelPipette:
       num_items_y=NUM_PROBES,
       dx=0,
       dy=0,
-      dz=0,
+      dz=-SHAFT_LENGTH,
       item_dx=PROBE_PITCH_MM,
       item_dy=PROBE_PITCH_MM,
       tip_pickup_mode="core",
@@ -463,6 +467,26 @@ class Head8:
         )
     finally:
       await self._record_where_it_stopped()
+
+  async def move_to_safe_z(self) -> float:
+    """Raise the head straight up to its traverse height, where it stands in X and Y.
+
+    An ordinary move to a known height, as the STAR's heads raise: `move_to_position` to where the
+    device reports the head, at `default_minimum_traverse_height`.
+
+    Returns:
+      Where the bottom of what probe 0 carries is sent, in mm.
+
+    Raises:
+      RuntimeError: If nothing models where the head is.
+    """
+    await self._record_where_it_stopped()
+    at = self.get_reference_point_location()
+    if at is None:
+      raise RuntimeError("where the head is is not known; have you called `prep.setup()`?")
+    z = self.default_minimum_traverse_height - self._mounted_length()
+    await self.move_to_position(at.x, at.y, z)
+    return z
 
   # ----------------------------------------
   # Tips and liquid handling
