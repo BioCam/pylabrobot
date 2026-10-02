@@ -36,6 +36,7 @@ from pylabrobot.brooks.precise_flex.errors import (
   PreciseFlexError,
   PreciseFlexVisionError,
 )
+from pylabrobot.brooks.precise_flex.gripper import PreciseFlexGripper
 from pylabrobot.brooks.precise_flex.kinematics import (
   ElbowOrientation,
   PreciseFlexCartesianPose,
@@ -57,6 +58,7 @@ __all__ = [
   "PreciseFlexCollisionError",
   "PreciseFlexConfiguration",
   "PreciseFlexError",
+  "PreciseFlexGripper",
   "PreciseFlexVisionError",
   "WorkEnvelope",
   "Wrist",

@@ -9,7 +9,12 @@ import unittest
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Type
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from pylabrobot.brooks.precise_flex import Axis, PreciseFlex, PreciseFlexCartesianPose
+from pylabrobot.brooks.precise_flex import (
+  Axis,
+  PreciseFlex,
+  PreciseFlexCartesianPose,
+  PreciseFlexGripper,
+)
 from pylabrobot.resources import Coordinate, Rotation
 
 # Replies a PF400 gave, from IO-level logs of a real arm; its serial and build dates left out.
@@ -1026,7 +1031,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_gripper_open",
-    lambda arm: arm.move_gripper(110.0),
+    lambda arm: arm.gripper.move_gripper(110.0),
     [
       "GripOpenPos 121.0",
       "gripper 1",
@@ -1035,7 +1040,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_gripper_close",
-    lambda arm: arm.move_gripper(90.0, force_sensing=True),
+    lambda arm: arm.gripper.move_gripper(90.0, force_sensing=True),
     [
       "GripClosePos 101.0",
       "gripper 2",
@@ -1044,7 +1049,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_gripper_joint_position",
-    lambda arm: arm.move_gripper_joint_position(120.0),
+    lambda arm: arm.gripper.move_gripper_joint_position(120.0),
     [
       "GripOpenPos 120.0",
       "gripper 1",
@@ -1053,7 +1058,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_gripper_joint_position_force",
-    lambda arm: arm.move_gripper_joint_position(90.0, force_sensing=True),
+    lambda arm: arm.gripper.move_gripper_joint_position(90.0, force_sensing=True),
     [
       "GripClosePos 90.0",
       "gripper 2",
@@ -1062,7 +1067,7 @@ _CASES: List[_Case] = [
   ),
   (
     "is_gripper_closed",
-    lambda arm: arm.is_gripper_closed(),
+    lambda arm: arm.gripper.is_gripper_closed(),
     [
       "IsFullyClosed",
     ],
@@ -1070,7 +1075,7 @@ _CASES: List[_Case] = [
   ),
   (
     "are_grippers_closed",
-    lambda arm: arm.are_grippers_closed(),
+    lambda arm: arm.gripper.are_grippers_closed(),
     [],
     ValueError,
   ),
@@ -1442,14 +1447,16 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
 
   async def test_grasp_defaults_set_on_the_arm(self):
     arm, fake = await self._arm()
-    arm.default_finger_speed_pct = 30.0
-    arm.default_grasp_force = 5.0
+    arm.gripper.default_finger_speed_pct = 30.0
+    arm.gripper.default_grasp_force = 5.0
     await arm.pick_up_at_joint_position(_J, resource_width=85.0)
     self.assertEqual(fake.sent[0], "GraspData 85.0 30.0 5.0")
 
   async def test_grasp_default_set_on_the_class(self):
-    self.addCleanup(setattr, PreciseFlex, "default_grasp_force", PreciseFlex.default_grasp_force)
-    PreciseFlex.default_grasp_force = 7.0
+    self.addCleanup(
+      setattr, PreciseFlexGripper, "default_grasp_force", PreciseFlexGripper.default_grasp_force
+    )
+    PreciseFlexGripper.default_grasp_force = 7.0
     arm, fake = await self._arm()
     await arm.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0)
     self.assertEqual(fake.sent[0], "GraspData 85.0 50.0 7.0")

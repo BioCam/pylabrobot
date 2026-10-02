@@ -14,6 +14,7 @@ PreciseFlex
   :recursive:
 
     PreciseFlex
+    PreciseFlexGripper
     PreciseFlexConfiguration
     PreciseFlexCartesianPose
     WorkEnvelope

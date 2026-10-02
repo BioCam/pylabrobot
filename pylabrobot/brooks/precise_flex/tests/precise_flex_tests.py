@@ -44,16 +44,16 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
 
   async def test_move_gripper_force_sensing_false_opens_with_position(self):
     # 80 mm ⇒ 500 + (80 - 60) = 520 firmware units.
-    await self.arm.move_gripper(width=80.0, force_sensing=False)
+    await self.arm.gripper.move_gripper(width=80.0, force_sensing=False)
     self.assertEqual(self._sent_commands(), ["GripOpenPos 520.0", "gripper 1"])
 
   async def test_move_gripper_force_sensing_true_closes_with_position(self):
     # 60 mm (the closed reference) ⇒ exactly closed_gripper_position.
-    await self.arm.move_gripper(width=60.0, force_sensing=True)
+    await self.arm.gripper.move_gripper(width=60.0, force_sensing=True)
     self.assertEqual(self._sent_commands(), ["GripClosePos 500.0", "gripper 2"])
 
   async def test_move_gripper_position_command_precedes_move(self):
-    await self.arm.move_gripper(width=120.0, force_sensing=False)
+    await self.arm.gripper.move_gripper(width=120.0, force_sensing=False)
     commands = self._sent_commands()
     self.assertLess(
       commands.index("GripOpenPos 560.0"),
@@ -62,8 +62,8 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
     )
 
   async def test_force_sensing_branches_use_different_firmware_commands(self):
-    await self.arm.move_gripper(width=90.0, force_sensing=False)
-    await self.arm.move_gripper(width=90.0, force_sensing=True)
+    await self.arm.gripper.move_gripper(width=90.0, force_sensing=False)
+    await self.arm.gripper.move_gripper(width=90.0, force_sensing=True)
     commands = self._sent_commands()
     self.assertIn("gripper 1", commands)
     self.assertIn("gripper 2", commands)
@@ -71,22 +71,22 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
     self.assertIn("GripClosePos 530.0", commands)
 
   async def test_min_max_gripper_width_advertised(self):
-    self.assertEqual(self.arm.min_gripper_width, 60.0)
-    self.assertEqual(self.arm.max_gripper_width, 145.0)
+    self.assertEqual(self.arm.gripper.min_gripper_width, 60.0)
+    self.assertEqual(self.arm.gripper.max_gripper_width, 145.0)
 
   async def test_closed_gripper_position_shifts_units(self):
     # Different anchor ⇒ same width yields a different firmware-unit target.
     arm = _make_arm(closed_gripper_position=1000.0)
-    await arm.move_gripper(width=80.0, force_sensing=False)
+    await arm.gripper.move_gripper(width=80.0, force_sensing=False)
     commands = [c.args[0] for c in mocked(arm.send_command).call_args_list]
     # 80 mm ⇒ 1000 + (80 - 60) = 1020 units.
     self.assertEqual(commands, ["GripOpenPos 1020.0", "gripper 1"])
 
   def test_mm_to_firmware_units_helper(self):
     # Direct check of the linear mapping.
-    self.assertEqual(self.arm._mm_to_firmware_units(60.0), 500.0)
-    self.assertEqual(self.arm._mm_to_firmware_units(145.0), 585.0)
-    self.assertEqual(self.arm._mm_to_firmware_units(100.0), 540.0)
+    self.assertEqual(self.arm.gripper._mm_to_firmware_units(60.0), 500.0)
+    self.assertEqual(self.arm.gripper._mm_to_firmware_units(145.0), 585.0)
+    self.assertEqual(self.arm.gripper._mm_to_firmware_units(100.0), 540.0)
 
 
 class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
@@ -97,7 +97,7 @@ class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
     event_bus.subscribe(events.append)
 
     with use_event_bus(event_bus):
-      await arm.move_gripper(width=80.0)
+      await arm.gripper.move_gripper(width=80.0)
 
     self.assertEqual(events[0].data["width"], 80.0)
     self.assertNotIn("width_mm", events[0].data)
@@ -123,7 +123,7 @@ class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
         destination={"name": "destination_nest"},
       ),
     ):
-      await arm.move_gripper_joint_position(520.0)
+      await arm.gripper.move_gripper_joint_position(520.0)
 
     self.assertEqual(events[0].name, "precise_flex.move_gripper_joint_position.started")
     self.assertEqual(events[-1].name, "precise_flex.move_gripper_joint_position.completed")

@@ -25,6 +25,7 @@ from pylabrobot.io.socket import Socket
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.rotation import Rotation
 
+from ._references import _controller_reference
 from .confirmed_firmware_versions import (
   SUPPORTED_ROBOT_TYPES,
   is_confirmed,
@@ -33,6 +34,7 @@ from .confirmed_firmware_versions import (
 )
 from .data_ids import DataID, PowerState
 from .errors import OutOfRangeOfMotionError, PreciseFlexError
+from .gripper import PreciseFlexGripper
 from .interrupt import halt_and_resync, halt_on_interrupt
 from .kinematics import ElbowOrientation, PreciseFlexCartesianPose, Wrist
 from .tcs_modules import missing_required_modules
@@ -45,16 +47,6 @@ logger = logging.getLogger(__name__)
 
 # InRange sentinel that lets the controller blend through waypoints instead of stopping at each one.
 BLEND_IN_RANGE = -1
-
-
-def _controller_reference(controller: "PreciseFlex") -> dict[str, object]:
-  """Return the stable controller identity used by structured execution events."""
-  return {
-    "name": "precise_flex",
-    "type": type(controller).__name__,
-    "host": controller.io._host,
-    "port": controller.io._port,
-  }
 
 
 def _joint_state_reference(position: JointState) -> dict[str, float]:
@@ -169,8 +161,6 @@ class PreciseFlex:
 
   # What the driver sends when a caller leaves the value out. Tune one arm by assigning on the
   # instance, or every arm by assigning on the class.
-  default_finger_speed_pct: float = 50.0
-  default_grasp_force: float = 10.0
   default_recovery_speed_pct: float = 20.0
 
   def __init__(
@@ -209,7 +199,7 @@ class PreciseFlex:
         autonomous motion - an out-of-range axis then raises instead, carrying recovery instructions.
         Every recovery is logged.
       closed_gripper_position: firmware-unit value (passed to ``GripClosePos`` /
-        ``GripOpenPos``) at which the jaws are at :attr:`min_gripper_width`.
+        ``GripOpenPos``) at which the jaws are at :attr:`PreciseFlexGripper.min_gripper_width`.
         Depends on the mounted gripper. The conversion mm → firmware units is
         linear with slope 1: ``units = closed_gripper_position + (width_mm -
         min_gripper_width)``.
@@ -240,8 +230,9 @@ class PreciseFlex:
     self.horizontal_compliance: bool = False
     self.horizontal_compliance_torque: int = 0
     self._has_rail = has_rail
-    self._is_dual_gripper = is_dual_gripper
-    self.closed_gripper_position = closed_gripper_position
+    self.gripper = PreciseFlexGripper(
+      self, closed_gripper_position=closed_gripper_position, is_dual_gripper=is_dual_gripper
+    )
     self._kinematics_params = kinematics.PF400Params(
       gripper_length=gripper_length, gripper_z_offset=gripper_z_offset
     )
@@ -1452,86 +1443,9 @@ class PreciseFlex:
     """
     await self.send_command(f"ChangeConfig2 {grip_mode}")
 
-  async def _request_grip_close_pos(self) -> float:
-    """Get the gripper close position for the servoed gripper.
-
-    Returns:
-      float: The current gripper close position.
-    """
-    data = await self.send_command("GripClosePos")
-    return float(data)
-
-  async def _set_grip_close_pos(self, close_position: float) -> None:
-    """Set the gripper close position for the servoed gripper.
-
-    The close position may be changed by a force-controlled grip operation.
-
-    Args:
-      close_position: The new gripper close position.
-    """
-    await self.send_command(f"GripClosePos {close_position}")
-
-  async def _request_grip_open_pos(self) -> float:
-    """Get the gripper open position for the servoed gripper.
-
-    Returns:
-      float: The current gripper open position.
-    """
-    data = await self.send_command("GripOpenPos")
-    return float(data)
-
-  async def _set_grip_open_pos(self, open_position: float) -> None:
-    """Set the gripper open position for the servoed gripper.
-
-    Args:
-      open_position: The new gripper open position.
-    """
-    await self.send_command(f"GripOpenPos {open_position}")
-
-  async def _request_grasp_data(self) -> tuple[float, float, float]:
-    """Get the data to be used for the next force-controlled PickPlate command grip operation.
-
-    Returns:
-      A tuple containing (plate_width_mm, finger_speed_pct, grasp_force)
-    """
-    data = await self.send_command("GraspData")
-    parts = data.split()
-    if len(parts) != 3:
-      raise PreciseFlexError(-1, "Unexpected response format from GraspData command.")
-    return (float(parts[0]), float(parts[1]), float(parts[2]))
-
-  async def _set_grasp_data(
-    self, plate_width: float, finger_speed_pct: float, grasp_force: float
-  ) -> None:
-    """Set the data to be used for the next force-controlled PickPlate command grip operation.
-
-    This data remains in effect until the next GraspData command or the system is restarted.
-
-    Args:
-      plate_width: The plate width in mm.
-      finger_speed_pct: The finger speed during grasp as a percentage (0-100). 100 = full speed.
-      grasp_force: The gripper squeezing force, in Newtons.
-      A positive value indicates the fingers must close to grasp.
-      A negative value indicates the fingers must open to grasp.
-
-    Raises:
-      ValueError: If finger_speed_pct is not between 0 and 100.
-    """
-    if not 0 <= finger_speed_pct <= 100:
-      raise ValueError(f"finger_speed_pct must be between 0 and 100, got {finger_speed_pct}")
-    await self.send_command(f"GraspData {plate_width} {finger_speed_pct} {grasp_force}")
-
   async def _set_grip_detail(self):
     """Configure a default vertical station type for pick/place operations."""
     await self.send_command(f"StationType {self.location_index} 1 0 100 0 10")
-
-  def _mm_to_firmware_units(self, width_mm: float) -> float:
-    """Convert a jaw width (mm) to the firmware's native position unit.
-
-    Anchored at :attr:`closed_gripper_position`, which is the firmware value
-    when the jaws are at :attr:`min_gripper_width`. Slope is 1 (1 mm = 1 unit).
-    """
-    return self.closed_gripper_position + (width_mm - self.min_gripper_width)
 
   # -- rail primitives ----------------------------------------------------------------------
 
@@ -1889,12 +1803,9 @@ class PreciseFlex:
     device link lengths, and the rail / dual-gripper command paths follow the axes
     the controller actually reports.
     """
-    gmin, gmax = config.gripper_width_range
-    self._gripper_soft_min, self._gripper_soft_max = gmin, gmax
-    self.min_gripper_width, self.max_gripper_width = gmin, gmax
+    self.gripper._adopt_configuration(config)
     self._kinematics_params = config.kinematics
     self._has_rail = config.has_rail
-    self._is_dual_gripper = config.is_dual_gripper
 
   def _assess_configuration(self, config: "PreciseFlexConfiguration") -> None:
     """Warn about an unsupported model, a missing TCS module, or an untested combo.
@@ -2479,110 +2390,6 @@ class PreciseFlex:
     """
     await self.send_command(f"hereC {location_index}")
 
-  # -- gripper ------------------------------------------------------------------------------
-
-  # Physical jaw range for the PF400 servoed gripper. Overridden at setup from the
-  # gripper-axis soft limits (DataIDs 16078/16077, Axis.GRIPPER) when discoverable.
-  min_gripper_width: float = 60.0
-  max_gripper_width: float = 145.0
-  # Gripper-axis soft limits (GripOpenPos/GripClosePos units), read at setup; None until then.
-  _gripper_soft_min: Optional[float] = None
-  _gripper_soft_max: Optional[float] = None
-
-  @evented_operation(
-    "precise_flex.move_gripper",
-    lambda self, width, force_sensing=False: {
-      "device": _controller_reference(self),
-      "width": float(width),
-      "force_sensing": force_sensing,
-    },
-  )
-  async def move_gripper(
-    self,
-    width: float,
-    force_sensing: bool = False,
-  ):
-    """Move the PreciseFlex gripper jaws.
-
-    ``force_sensing=False`` drives to the open position (``gripper 1``);
-    ``force_sensing=True`` drives to the close position with force feedback
-    (``gripper 2``), which may stop short of ``width`` on contact.
-
-    Not interruptible: the ``gripper`` firmware command blocks the controller's command interpreter
-    until the jaws finish (hardware-verified, like ``waitForEom``), so a user interrupt cannot halt it
-    mid-travel - it is intentionally not wrapped by the motion-wait interrupt guard. The move is short
-    and force-limited, so this is a documented limitation rather than a hazard.
-    """
-    logger.info(
-      "[PreciseFlex %s] move_gripper: width_mm=%s force_sensing=%s",
-      self.io._host,
-      width,
-      force_sensing,
-    )
-    units = self._mm_to_firmware_units(width)
-    if (
-      self._gripper_soft_min is not None
-      and self._gripper_soft_max is not None
-      and not (self._gripper_soft_min <= units <= self._gripper_soft_max)
-    ):
-      raise ValueError(
-        f"gripper width {width} mm maps to firmware units {units:.1f}, outside the gripper "
-        f"axis range [{self._gripper_soft_min}, {self._gripper_soft_max}] - check "
-        f"closed_gripper_position (currently {self.closed_gripper_position})."
-      )
-    if force_sensing:
-      await self._set_grip_close_pos(units)
-      await self.send_command("gripper 2")
-    else:
-      await self._set_grip_open_pos(units)
-      await self.send_command("gripper 1")
-
-  @evented_operation(
-    "precise_flex.move_gripper_joint_position",
-    lambda self, position, force_sensing=False: {
-      "device": _controller_reference(self),
-      "gripper_joint_position": float(position),
-      "force_sensing": force_sensing,
-    },
-  )
-  async def move_gripper_joint_position(
-    self,
-    position: float,
-    force_sensing: bool = False,
-  ) -> None:
-    """Move the gripper to a controller-native joint position.
-
-    This is the counterpart to :meth:`move_gripper` for integrations with
-    taught joint-space routes. The caller owns the joint calibration.
-    """
-    if force_sensing:
-      await self._set_grip_close_pos(position)
-      await self.send_command("gripper 2")
-    else:
-      await self._set_grip_open_pos(position)
-      await self.send_command("gripper 1")
-
-  async def is_gripper_closed(self) -> bool:
-    """(Single Gripper Only) Tests if the gripper is fully closed by checking the end-of-travel sensor.
-
-    Returns:
-      For standard gripper: True if the gripper is within 2mm of fully closed, otherwise False.
-    """
-    if self._is_dual_gripper:
-      raise ValueError("IsGripperClosed command is only valid for single gripper robots.")
-    response = await self.send_command("IsFullyClosed")
-    return int(response) == -1
-
-  async def are_grippers_closed(self) -> tuple[bool, bool]:
-    """(Dual Gripper Only) Tests if each gripper is fully closed by checking the end-of-travel sensors."""
-    if not self._is_dual_gripper:
-      raise ValueError("AreGrippersClosed command is only valid for dual gripper robots.")
-    response = await self.send_command("IsFullyClosed")
-    ret_int = int(response)
-    gripper_1_closed = (ret_int & 1) != 0
-    gripper_2_closed = (ret_int & 2) != 0
-    return (gripper_1_closed, gripper_2_closed)
-
   # -- rail ---------------------------------------------------------------------------------
 
   @evented_operation(
@@ -2615,9 +2422,11 @@ class PreciseFlex:
       "target_joint_position": _joint_state_reference(position),
       "resource_width": float(resource_width),
       "finger_speed_pct": float(
-        self.default_finger_speed_pct if finger_speed_pct is None else finger_speed_pct
+        self.gripper.default_finger_speed_pct if finger_speed_pct is None else finger_speed_pct
       ),
-      "grasp_force": float(self.default_grasp_force if grasp_force is None else grasp_force),
+      "grasp_force": float(
+        self.gripper.default_grasp_force if grasp_force is None else grasp_force
+      ),
     },
   )
   async def pick_up_at_joint_position(
@@ -2637,16 +2446,16 @@ class PreciseFlex:
       grasp_force: Grasp force in Newtons. ``default_grasp_force`` when None.
     """
     if finger_speed_pct is None:
-      finger_speed_pct = self.default_finger_speed_pct
+      finger_speed_pct = self.gripper.default_finger_speed_pct
     if grasp_force is None:
-      grasp_force = self.default_grasp_force
+      grasp_force = self.gripper.default_grasp_force
     logger.info(
       "[PreciseFlex %s] pick_up: joints=%s, resource_width_mm=%s",
       self.io._host,
       position,
       resource_width,
     )
-    await self._set_grasp_data(
+    await self.gripper._set_grasp_data(
       plate_width=resource_width,
       finger_speed_pct=finger_speed_pct,
       grasp_force=grasp_force,
@@ -2693,9 +2502,11 @@ class PreciseFlex:
       ),
       "resource_width": float(resource_width),
       "finger_speed_pct": float(
-        self.default_finger_speed_pct if finger_speed_pct is None else finger_speed_pct
+        self.gripper.default_finger_speed_pct if finger_speed_pct is None else finger_speed_pct
       ),
-      "grasp_force": float(self.default_grasp_force if grasp_force is None else grasp_force),
+      "grasp_force": float(
+        self.gripper.default_grasp_force if grasp_force is None else grasp_force
+      ),
     },
   )
   async def pick_up_at_location(
@@ -2724,9 +2535,9 @@ class PreciseFlex:
       rail_position: Linear rail position in mm. Required when the arm has a rail.
     """
     if finger_speed_pct is None:
-      finger_speed_pct = self.default_finger_speed_pct
+      finger_speed_pct = self.gripper.default_finger_speed_pct
     if grasp_force is None:
-      grasp_force = self.default_grasp_force
+      grasp_force = self.gripper.default_grasp_force
     logger.info(
       "[PreciseFlex %s] pick_up: x=%s, y=%s, z=%s, direction=%s, resource_width_mm=%s",
       self.io._host,
@@ -2748,7 +2559,7 @@ class PreciseFlex:
       orientation=orientation,
       wrist=wrist,
     )
-    await self._set_grasp_data(
+    await self.gripper._set_grasp_data(
       plate_width=resource_width,
       finger_speed_pct=finger_speed_pct,
       grasp_force=grasp_force,
