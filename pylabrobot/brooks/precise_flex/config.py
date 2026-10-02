@@ -1,4 +1,4 @@
-"""Per-arm configuration resolved from the controller during setup, and the axis enumeration.
+"""Per-arm configuration resolved from the controller during setup.
 
 The identity, limit, and envelope fields are read from the controller once at setup into a single
 immutable `PreciseFlexConfiguration` record; the kinematics/flags tier is supplied or derived. The
@@ -7,25 +7,12 @@ backend holds it as `Optional[PreciseFlexConfiguration]` (None pre-setup).
 
 import dataclasses
 from dataclasses import dataclass
-from enum import IntEnum
 from typing import Dict, Literal
 
-from pylabrobot.brooks.precise_flex.kinematics import JointPose
+from pylabrobot.brooks.precise_flex.kinematics import Axis, JointState
 
 from . import kinematics
 from .kinematics import WorkEnvelope
-
-# -- axis addressing -------------------------------------------------------
-
-
-class Axis(IntEnum):
-  BASE = 1
-  SHOULDER = 2
-  ELBOW = 3
-  WRIST = 4
-  GRIPPER = 5
-  RAIL = 6
-
 
 # ---------------------------------------------------------------------------
 # Configuration - resolved once at setup
@@ -117,7 +104,7 @@ class PreciseFlexConfiguration:
       shoulder = sh_lo + (sh_hi - sh_lo) * i / steps
       for j in range(steps + 1):
         elbow = el_lo + (el_hi - el_lo) * j / steps
-        joints: JointPose = {
+        joints: JointState = {
           Axis.BASE: 0.0,
           Axis.SHOULDER: shoulder,
           Axis.ELBOW: elbow,

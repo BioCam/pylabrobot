@@ -889,8 +889,8 @@ _CASES: List[_Case] = [
     None,
   ),
   (
-    "request_joint_position",
-    lambda arm: arm.request_joint_position(),
+    "request_joint_state",
+    lambda arm: arm.request_joint_state(),
     [
       "wherej",
       "wherej",
@@ -1206,8 +1206,8 @@ _RAIL_CASES: List[_Case] = [
     None,
   ),
   (
-    "rail_request_joint_position",
-    lambda arm: arm.request_joint_position(),
+    "rail_request_joint_state",
+    lambda arm: arm.request_joint_state(),
     [
       "wherej",
       "wherej",

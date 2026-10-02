@@ -19,7 +19,7 @@ from typing import (
 
 from pylabrobot.brooks.precise_flex import kinematics
 from pylabrobot.brooks.precise_flex.config import Axis, PreciseFlexConfiguration
-from pylabrobot.brooks.precise_flex.kinematics import JointPose
+from pylabrobot.brooks.precise_flex.kinematics import JointState
 from pylabrobot.events import coordinate_reference, emit_event, evented_operation
 from pylabrobot.io.socket import Socket
 from pylabrobot.resources.coordinate import Coordinate
@@ -57,8 +57,8 @@ def _controller_reference(controller: "PreciseFlex") -> dict[str, object]:
   }
 
 
-def _joint_pose_reference(position: JointPose) -> dict[str, float]:
-  """Convert an axis-keyed joint pose into a JSON-friendly target description."""
+def _joint_state_reference(position: JointState) -> dict[str, float]:
+  """Convert a joint state into a JSON-friendly target description."""
   return {
     (axis.name.lower() if isinstance(axis, Axis) else str(axis)): float(value)
     for axis, value in position.items()
@@ -119,7 +119,9 @@ def _zip_axis_ranges(
   return {axis: (low[axis], high[axis]) for axis in low.keys() & high.keys()}
 
 
-def _snap_to_current(ik_joints: JointPose, current: JointPose, wrist: Optional[Wrist]) -> JointPose:
+def _snap_to_current(
+  ik_joints: JointState, current: JointState, wrist: Optional[Wrist]
+) -> JointState:
   """Shift each rotary joint by 360° multiples toward `current`, then re-enforce
   the wrist-sign half on J4 so the result still matches `wrist`. Avoids
   gratuitous full-turn moves when multiple IK solutions are equivalent.
@@ -149,17 +151,17 @@ class PreciseFlex:
   # purpose - ``park()`` fills it from the discovered travel (3/4 of it) so one orientation works on
   # any reach; set Axis.BASE yourself to override. The gripper and rail are left untouched so parking
   # never drops a held plate or assumes a rail. Assign one to ``parking_position`` to change the park.
-  PARKING_POSITION_BACK: ClassVar[JointPose] = {
+  PARKING_POSITION_BACK: ClassVar[JointState] = {
     Axis.SHOULDER: 90.0,
     Axis.ELBOW: 180.0,
     Axis.WRIST: 90.0,
   }
-  PARKING_POSITION_RIGHT: ClassVar[JointPose] = {
+  PARKING_POSITION_RIGHT: ClassVar[JointState] = {
     Axis.SHOULDER: 0.0,
     Axis.ELBOW: 180.0,
     Axis.WRIST: 180.0,
   }
-  PARKING_POSITION_FRONT: ClassVar[JointPose] = {
+  PARKING_POSITION_FRONT: ClassVar[JointState] = {
     Axis.SHOULDER: -90.0,
     Axis.ELBOW: 180.0,
     Axis.WRIST: 270.0,
@@ -183,7 +185,7 @@ class PreciseFlex:
     has_rail: bool = False,
     read_kinematics_from_device: bool = True,
     recover_out_of_range: bool = True,
-    parking_position: Optional[JointPose] = None,
+    parking_position: Optional[JointState] = None,
     vision_host: Optional[str] = None,
   ) -> None:
     """
@@ -727,7 +729,7 @@ class PreciseFlex:
       float(parts[5]),
     )
 
-  def _parse_angles_response(self, parts: List[str]) -> JointPose:
+  def _parse_angles_response(self, parts: List[str]) -> JointState:
     """Parse angle values from a response string.
 
     For self._has_rail=True:  wire order is [base, shoulder, elbow, wrist, gripper, rail]
@@ -880,7 +882,7 @@ class PreciseFlex:
 
   # -- motion primitives --------------------------------------------------------------------
 
-  async def _move_j(self, profile_index: int, joint_coords: JointPose) -> None:
+  async def _move_j(self, profile_index: int, joint_coords: JointState) -> None:
     """Move the robot using joint coordinates, handling rail configuration. Raw moveJ - the
     out-of-range guard lives in the caller (``_guarded_move_j``), not in this primitive."""
     if self._has_rail:
@@ -940,7 +942,7 @@ class PreciseFlex:
   async def _set_joint_angles(
     self,
     location_index: int,
-    joint_position: JointPose,
+    joint_position: JointState,
   ) -> None:
     """Set joint angles for stored location, handling rail configuration."""
     if self._has_rail:
@@ -963,7 +965,7 @@ class PreciseFlex:
         f"{joint_position[Axis.GRIPPER]}"
       )
 
-  async def _cart_to_joints(self, cart: PreciseFlexCartesianPose) -> JointPose:
+  async def _cart_to_joints(self, cart: PreciseFlexCartesianPose) -> JointState:
     """Convert a Cartesian location into a full joint dict using our IK.
 
     Any of cart.orientation, cart.wrist, and cart.rail_position left as None
@@ -1872,9 +1874,9 @@ class PreciseFlex:
 
   async def _request_state(
     self,
-  ) -> tuple[JointPose, PreciseFlexCartesianPose]:
+  ) -> tuple[JointState, PreciseFlexCartesianPose]:
     """Single-query snapshot of joint state and the derived Cartesian pose."""
-    joints = await self.request_joint_position()
+    joints = await self.request_joint_state()
     pose = kinematics.fk(joints, self._kinematics_params)
     # PF400 gripper stays level: pitch=90, roll=-180.
     pose = dataclasses.replace(pose, rotation=Rotation(x=-180, y=90, z=pose.rotation.yaw))
@@ -2001,7 +2003,7 @@ class PreciseFlex:
     """
     if speed_pct is None:
       speed_pct = self.default_recovery_speed_pct
-    outside = self._axes_outside_soft_limits(await self.request_joint_position())
+    outside = self._axes_outside_soft_limits(await self.request_joint_state())
     if not outside:
       return {}
     prior_speed = await self._request_speed()
@@ -2066,7 +2068,7 @@ class PreciseFlex:
       )
       return
 
-    outside = self._axes_outside_soft_limits(await self.request_joint_position())
+    outside = self._axes_outside_soft_limits(await self.request_joint_state())
     if not outside:
       return
     logger.warning(
@@ -2076,7 +2078,7 @@ class PreciseFlex:
     )
     if self._recover_out_of_range:
       await self.recover_axes_within_limits()
-      outside = self._axes_outside_soft_limits(await self.request_joint_position())
+      outside = self._axes_outside_soft_limits(await self.request_joint_state())
     if outside:
       raise OutOfRangeOfMotionError(
         f"axis outside its soft limit after setup: {self._fmt_axes(outside)}. The controller rejects all "
@@ -2086,7 +2088,7 @@ class PreciseFlex:
         axes=outside,
       )
 
-  def _axes_outside_soft_limits(self, joints: JointPose) -> Dict[Axis, tuple]:
+  def _axes_outside_soft_limits(self, joints: JointState) -> Dict[Axis, tuple]:
     """Axes whose value lies outside their soft limit, as ``axis -> (value, (lo, hi))``.
 
     Iterates the soft-limit set (keyed by :class:`Axis`) and looks each axis up in
@@ -2110,7 +2112,7 @@ class PreciseFlex:
       f"{axis.name} at {value} (soft limit {limit})" for axis, (value, limit) in axes.items()
     )
 
-  def _assert_within_soft_limits(self, current: JointPose, target: JointPose) -> None:
+  def _assert_within_soft_limits(self, current: JointState, target: JointState) -> None:
     """Guard a commanded move. The controller rejects every move with -1012 while an axis is out of
     range - whether that is the *current* pose or the commanded *target*. They are distinct failures
     with distinct types:
@@ -2139,7 +2141,7 @@ class PreciseFlex:
         f"would reject the move (-1012). Re-teach this pose within the envelope."
       )
 
-  async def _guarded_move_j(self, build_target: Callable[[JointPose], JointPose]) -> None:
+  async def _guarded_move_j(self, build_target: Callable[[JointState], JointState]) -> None:
     """The single guarded path to the raw ``_move_j`` primitive: read the live pose, check it and
     the target against the soft limits, send the move, and on out-of-range recover once and retry.
     Both ``move_to_joint_position`` (a partial spec merged over the live pose) and
@@ -2157,7 +2159,7 @@ class PreciseFlex:
     """
 
     async def attempt() -> None:
-      current = await self.request_joint_position()
+      current = await self.request_joint_state()
       target = build_target(current)
       self._assert_within_soft_limits(current, target)
       await self._move_j(profile_index=self.profile_index, joint_coords=target)
@@ -2187,7 +2189,7 @@ class PreciseFlex:
 
   # -- joint-space motion -------------------------------------------------------------------
 
-  async def request_joint_position(self) -> JointPose:
+  async def request_joint_state(self) -> JointState:
     """Get the current joint position of the arm."""
     await self._wait_for_eom()
     num_tries = 2
@@ -2204,20 +2206,20 @@ class PreciseFlex:
     "precise_flex.move_to_joint_position",
     lambda self, position, speed_pct=None: {
       "device": _controller_reference(self),
-      "target_joint_position": _joint_pose_reference(position),
+      "target_joint_position": _joint_state_reference(position),
       "speed_pct": speed_pct,
     },
   )
   async def move_to_joint_position(
     self,
-    position: JointPose,
+    position: JointState,
     speed_pct: Optional[float] = None,
   ) -> None:
     """Move the arm to the specified joint position. A partial spec is merged over the live pose;
     the move is guarded against out-of-range axes (see ``_guarded_move_j``).
 
     Args:
-      position: Target joint pose. Omitted axes keep their live values.
+      position: Target joint state. Omitted axes keep their live values.
       speed_pct: Movement speed override as a percentage (0-100). If None, uses the current
         speed setting.
     """
@@ -2289,7 +2291,7 @@ class PreciseFlex:
 
   async def _plan_cartesian_pose_route(
     self, poses: Sequence[PreciseFlexCartesianPose]
-  ) -> List[JointPose]:
+  ) -> List[JointState]:
     """Plan a Cartesian pose route into joint targets, snapshotting state once.
 
     Unlike :meth:`_cart_to_joints`, this does not query the controller for every waypoint: it
@@ -2298,7 +2300,7 @@ class PreciseFlex:
     continuous across the route.
     """
     prev_joints, prev_pose = await self._request_state()
-    targets: List[JointPose] = []
+    targets: List[JointState] = []
     for pose in poses:
       cart = dataclasses.replace(
         pose,
@@ -2434,7 +2436,7 @@ class PreciseFlex:
     config = int(parts[6])
     return (x, y, z, yaw, pitch, roll, config)
 
-  async def dest_j(self, arg1: int = 0) -> JointPose:
+  async def dest_j(self, arg1: int = 0) -> JointState:
     """Get the destination or current joint location of the robot.
 
     Args:
@@ -2610,7 +2612,7 @@ class PreciseFlex:
     "precise_flex.pick_up_at_joint_position",
     lambda self, position, resource_width, finger_speed_pct=None, grasp_force=None: {
       "device": _controller_reference(self),
-      "target_joint_position": _joint_pose_reference(position),
+      "target_joint_position": _joint_state_reference(position),
       "resource_width": float(resource_width),
       "finger_speed_pct": float(
         self.default_finger_speed_pct if finger_speed_pct is None else finger_speed_pct
@@ -2620,7 +2622,7 @@ class PreciseFlex:
   )
   async def pick_up_at_joint_position(
     self,
-    position: JointPose,
+    position: JointState,
     resource_width: float,
     finger_speed_pct: Optional[float] = None,
     grasp_force: Optional[float] = None,
@@ -2628,7 +2630,7 @@ class PreciseFlex:
     """Pick up at the specified joint position.
 
     Args:
-      position: Joint pose to pick from.
+      position: Joint state to pick from.
       resource_width: Width of the resource to grasp, in mm.
       finger_speed_pct: Finger closing speed as a percentage (0-100).
         ``default_finger_speed_pct`` when None.
@@ -2655,19 +2657,19 @@ class PreciseFlex:
     "precise_flex.drop_at_joint_position",
     lambda self, position, resource_width: {
       "device": _controller_reference(self),
-      "target_joint_position": _joint_pose_reference(position),
+      "target_joint_position": _joint_state_reference(position),
       "resource_width": float(resource_width),
     },
   )
   async def drop_at_joint_position(
     self,
-    position: JointPose,
+    position: JointState,
     resource_width: float,
   ) -> None:
     """Drop at the specified joint position.
 
     Args:
-      position: Joint pose to drop at.
+      position: Joint state to drop at.
       resource_width: Width of the held resource, in mm.
     """
     logger.info(
@@ -2810,7 +2812,7 @@ class PreciseFlex:
     )
     await self._place_plate_c(cartesian_position=coords)
 
-  async def _pick_plate_j(self, joint_position: JointPose):
+  async def _pick_plate_j(self, joint_position: JointState):
     """Pick a plate from the specified position using joint coordinates."""
     await self._set_joint_angles(self.location_index, joint_position)
     await self._set_grip_detail()
@@ -2821,7 +2823,7 @@ class PreciseFlex:
     if ret_code == "0":
       raise PreciseFlexError(-1, "the force-controlled gripper detected no plate present.")
 
-  async def _place_plate_j(self, joint_position: JointPose):
+  async def _place_plate_j(self, joint_position: JointState):
     """Place a plate at the specified position using joint coordinates."""
     await self._set_joint_angles(self.location_index, joint_position)
     await self._set_grip_detail()
@@ -2843,18 +2845,18 @@ class PreciseFlex:
   # -- parking ------------------------------------------------------------------------------
 
   @property
-  def parking_position(self) -> Optional[JointPose]:
+  def parking_position(self) -> Optional[JointState]:
     """The pose ``park()`` moves to. Assign one of the ``PARKING_POSITION_BACK/RIGHT/FRONT`` class
-    constants or any JointPose; the assignment is validated (keys must be ``Axis`` members, values must
+    constants or any JointState; the assignment is validated (keys must be ``Axis`` members, values must
     be within the soft limits once the configuration is known). None until setup, where it defaults to
     ``PARKING_POSITION_RIGHT``. A pose that omits ``Axis.BASE`` has its Z filled at park time."""
     return self._parking_position
 
   @parking_position.setter
-  def parking_position(self, position: Optional[JointPose]) -> None:
+  def parking_position(self, position: Optional[JointState]) -> None:
     if position is not None:
       self._validate_parking_position(position)
-    self._parking_position: Optional[JointPose] = dict(position) if position is not None else None
+    self._parking_position: Optional[JointState] = dict(position) if position is not None else None
 
   @evented_operation(
     "precise_flex.park",
@@ -2865,7 +2867,7 @@ class PreciseFlex:
 
     ``parking_position`` is filled at setup with ``PARKING_POSITION_RIGHT`` (a planar fold facing
     right, Z column at 3/4 of its discovered travel); assign one of the ``PARKING_POSITION_*`` class
-    constants or any JointPose to park elsewhere. Falls back to the firmware ``movetosafe`` while it is
+    constants or any JointState to park elsewhere. Falls back to the firmware ``movetosafe`` while it is
     unset. No collision checks against 3rd-party obstacles.
     """
     if self.parking_position is not None:
@@ -2875,10 +2877,10 @@ class PreciseFlex:
     else:
       await self.send_command("movetosafe")
 
-  def _validate_parking_position(self, position: JointPose) -> None:
-    """Reject anything that is not a JointPose of in-range axes (limits checked once known)."""
+  def _validate_parking_position(self, position: JointState) -> None:
+    """Reject anything that is not a JointState of in-range axes (limits checked once known)."""
     if not isinstance(position, dict) or not position:
-      raise ValueError(f"parking_position must be a non-empty JointPose, got {position!r}")
+      raise ValueError(f"parking_position must be a non-empty JointState, got {position!r}")
     for axis, value in position.items():
       if not isinstance(axis, Axis):
         raise ValueError(f"parking_position keys must be Axis members, got {axis!r}")
@@ -2891,7 +2893,7 @@ class PreciseFlex:
             f"parking_position[{axis.name}]={value} is outside the soft limits [{lo}, {hi}]"
           )
 
-  def _parking_pose_with_default_z(self, position: JointPose) -> JointPose:
+  def _parking_pose_with_default_z(self, position: JointState) -> JointState:
     """Fill the Z column (``Axis.BASE``) at 3/4 of the discovered travel when the pose omits it."""
     if Axis.BASE in position or self._configuration is None:
       return position
