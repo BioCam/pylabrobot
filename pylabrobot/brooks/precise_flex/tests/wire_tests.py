@@ -1577,3 +1577,14 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
     fake._replies["wherej"] = "0 200 0 180 0 67"
     self.assertEqual(await arm.recover_axes_within_limits(), {Axis.GRIPPER: 70.0})
     self.assertIn("MoveOneAxis 5 70.0 1", fake.sent)
+
+
+class TestRefusals(unittest.IsolatedAsyncioTestCase):
+  """Arguments the controller would not accept are refused before anything is sent."""
+
+  async def test_zero_torque_on_no_axis_is_refused(self):
+    fake = _FakeController()
+    arm = _make_arm(fake)
+    with self.assertRaisesRegex(ValueError, "axis_mask"):
+      await arm.zero_torque(True, 0)
+    self.assertEqual(fake.sent, [])
