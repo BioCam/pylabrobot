@@ -53,12 +53,16 @@ class PreciseFlexGripper:
     self.closed_gripper_position = closed_gripper_position
     self._is_dual_gripper = is_dual_gripper
 
+  # -- session / discovery -------------------------------------------------------------------------
+
   def _adopt_configuration(self, config: "PreciseFlexConfiguration") -> None:
     """Take the jaw range from the gripper-axis soft limits, and whether two are fitted."""
     gmin, gmax = config.gripper_width_range
     self._gripper_soft_min, self._gripper_soft_max = gmin, gmax
     self.jaw_width_range = (gmin, gmax)
     self._is_dual_gripper = config.is_dual_gripper
+
+  # -- open and close positions --------------------------------------------------------------------
 
   async def _request_close_position(self) -> float:
     """Get the gripper close position for the servoed gripper.
@@ -96,6 +100,8 @@ class PreciseFlexGripper:
     """
     await self._driver.send_command(f"GripOpenPos {open_position}")
 
+  # -- grasp, for the force-controlled pickplate ---------------------------------------------------
+
   async def _request_grasp_data(self) -> tuple[float, float, float]:
     """Get the data to be used for the next force-controlled PickPlate command grip operation.
 
@@ -129,6 +135,8 @@ class PreciseFlexGripper:
       raise ValueError(f"finger_speed_pct must be between 0 and 100, got {finger_speed_pct}")
     await self._driver.send_command(f"GraspData {plate_width} {finger_speed_pct} {grasp_force}")
 
+  # -- conversions: the wire counts in the axis's units, the driver speaks mm ----------------------
+
   def _mm_to_firmware_units(self, width_mm: float) -> float:
     """Convert a jaw width (mm) to the firmware's native position unit.
 
@@ -136,6 +144,8 @@ class PreciseFlexGripper:
     when the jaws are at the narrow end of :attr:`jaw_width_range`. Slope is 1 (1 mm = 1 unit).
     """
     return self.closed_gripper_position + (width_mm - self.jaw_width_range[0])
+
+  # -- jaw motion: closing senses force unless asked not to ----------------------------------------
 
   async def _closes(self, units: float) -> bool:
     """Whether driving the jaws to `units` closes them, against the live gripper axis."""
@@ -227,6 +237,8 @@ class PreciseFlexGripper:
     else:
       await self._set_open_position(position)
       await self._driver.send_command("gripper 1")
+
+  # -- sensors -------------------------------------------------------------------------------------
 
   async def sense_fully_closed(self) -> bool:
     """(Single Gripper Only) Tests if the gripper is fully closed by checking the end-of-travel sensor.
