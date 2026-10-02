@@ -92,6 +92,8 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
 class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
   async def test_gripper_event_uses_default_length_unit_field(self):
     arm = _make_arm()
+    # The jaws stand closed, so the move opens them.
+    arm.request_joint_state = AsyncMock(return_value={Axis.GRIPPER: 0.0})  # type: ignore[method-assign]
     events: list[PLREvent] = []
     event_bus = EventBus()
     event_bus.subscribe(events.append)
@@ -111,6 +113,7 @@ class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
     )
     arm.io.write = AsyncMock()  # type: ignore[method-assign]
     arm.io.readline = AsyncMock(return_value=b"0\n")  # type: ignore[method-assign]
+    arm.request_joint_state = AsyncMock(return_value={Axis.GRIPPER: 0.0})  # type: ignore[method-assign]
     events: list[PLREvent] = []
     event_bus = EventBus()
     event_bus.subscribe(events.append)

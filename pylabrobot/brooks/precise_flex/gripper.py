@@ -2,6 +2,7 @@
 
 Reached as `driver.gripper`. The jaws are the controller's gripper axis (`Axis.GRIPPER`), commanded
 through their open and close positions; a force-controlled grasp for `pickplate` is set up here.
+Every move that closes the jaws senses force unless the caller passes `force_sensing=False`.
 """
 
 import logging
@@ -11,6 +12,7 @@ from pylabrobot.events import evented_operation
 
 from ._references import _controller_reference
 from .errors import PreciseFlexError
+from .kinematics import Axis
 
 if TYPE_CHECKING:
   from .config import PreciseFlexConfiguration
@@ -136,9 +138,13 @@ class PreciseFlexGripper:
     """
     return self.closed_gripper_position + (width_mm - self.min_gripper_width)
 
+  async def _closes(self, units: float) -> bool:
+    """Whether driving the jaws to `units` closes them, against the live gripper axis."""
+    return units < (await self._driver.request_joint_state())[Axis.GRIPPER]
+
   @evented_operation(
     "precise_flex.move_gripper",
-    lambda self, width, force_sensing=False: {
+    lambda self, width, force_sensing=None: {
       "device": _controller_reference(self._driver),
       "width": float(width),
       "force_sensing": force_sensing,
@@ -147,13 +153,18 @@ class PreciseFlexGripper:
   async def move_gripper(
     self,
     width: float,
-    force_sensing: bool = False,
+    force_sensing: Optional[bool] = None,
   ):
     """Move the PreciseFlex gripper jaws.
 
-    ``force_sensing=False`` drives to the open position (``gripper 1``);
-    ``force_sensing=True`` drives to the close position with force feedback
-    (``gripper 2``), which may stop short of ``width`` on contact.
+    With force sensing the jaws drive to the close position with force feedback (``gripper 2``),
+    which may stop short of ``width`` on contact; without it they drive to the open position
+    (``gripper 1``) whichever way that is.
+
+    Args:
+      width: the jaw width to move to, in mm.
+      force_sensing: None senses force when the move closes the jaws, read against the live
+        gripper axis, and not when it opens them. Pass False only to close without it on purpose.
 
     Not interruptible: the ``gripper`` firmware command blocks the controller's command interpreter
     until the jaws finish (hardware-verified, like ``waitForEom``), so a user interrupt cannot halt it
@@ -177,6 +188,8 @@ class PreciseFlexGripper:
         f"axis range [{self._gripper_soft_min}, {self._gripper_soft_max}] - check "
         f"closed_gripper_position (currently {self.closed_gripper_position})."
       )
+    if force_sensing is None:
+      force_sensing = await self._closes(units)
     if force_sensing:
       await self._set_grip_close_pos(units)
       await self._driver.send_command("gripper 2")
@@ -186,7 +199,7 @@ class PreciseFlexGripper:
 
   @evented_operation(
     "precise_flex.move_gripper_joint_position",
-    lambda self, position, force_sensing=False: {
+    lambda self, position, force_sensing=None: {
       "device": _controller_reference(self._driver),
       "gripper_joint_position": float(position),
       "force_sensing": force_sensing,
@@ -195,13 +208,20 @@ class PreciseFlexGripper:
   async def move_gripper_joint_position(
     self,
     position: float,
-    force_sensing: bool = False,
+    force_sensing: Optional[bool] = None,
   ) -> None:
     """Move the gripper to a controller-native joint position.
 
     This is the counterpart to :meth:`move_gripper` for integrations with
     taught joint-space routes. The caller owns the joint calibration.
+
+    Args:
+      position: the gripper axis position, in the controller's units.
+      force_sensing: None senses force when the move closes the jaws and not when it opens them.
+        Pass False only to close without it on purpose.
     """
+    if force_sensing is None:
+      force_sensing = await self._closes(position)
     if force_sensing:
       await self._set_grip_close_pos(position)
       await self._driver.send_command("gripper 2")

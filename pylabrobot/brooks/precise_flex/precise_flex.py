@@ -1413,7 +1413,9 @@ class PreciseFlex:
 
   # -- gripper primitives -------------------------------------------------------------------
 
-  async def change_config(self, grip_mode: int = 0) -> None:
+  async def change_config(
+    self, grip_mode: int = 0, *, close_gripper_without_force_sensing: bool = False
+  ) -> None:
     """Change Robot configuration from Righty to Lefty or vice versa using customizable locations.
 
     Uses customizable locations to avoid hitting robot during change.
@@ -1424,11 +1426,23 @@ class PreciseFlex:
       grip_mode: Gripper control mode.
       0 = do not change gripper (default)
       1 = open gripper
-      2 = close gripper
+      2 = close gripper, which senses no force; refused unless
+        ``close_gripper_without_force_sensing``.
+      close_gripper_without_force_sensing: allow ``grip_mode=2``.
+
+    Raises:
+      ValueError: If ``grip_mode`` is 2 and closing without force sensing was not allowed.
     """
+    if grip_mode == 2 and not close_gripper_without_force_sensing:
+      raise ValueError(
+        "grip_mode=2 closes the gripper without sensing force; close it with "
+        "gripper.move_gripper, or pass close_gripper_without_force_sensing=True"
+      )
     await self.send_command(f"ChangeConfig {grip_mode}")
 
-  async def change_config2(self, grip_mode: int = 0) -> None:
+  async def change_config2(
+    self, grip_mode: int = 0, *, close_gripper_without_force_sensing: bool = False
+  ) -> None:
     """Change Robot configuration from Righty to Lefty or vice versa using algorithm.
 
     Uses an algorithm to avoid hitting robot during change.
@@ -1439,8 +1453,18 @@ class PreciseFlex:
       grip_mode: Gripper control mode.
       0 = do not change gripper (default)
       1 = open gripper
-      2 = close gripper
+      2 = close gripper, which senses no force; refused unless
+        ``close_gripper_without_force_sensing``.
+      close_gripper_without_force_sensing: allow ``grip_mode=2``.
+
+    Raises:
+      ValueError: If ``grip_mode`` is 2 and closing without force sensing was not allowed.
     """
+    if grip_mode == 2 and not close_gripper_without_force_sensing:
+      raise ValueError(
+        "grip_mode=2 closes the gripper without sensing force; close it with "
+        "gripper.move_gripper, or pass close_gripper_without_force_sensing=True"
+      )
     await self.send_command(f"ChangeConfig2 {grip_mode}")
 
   async def _set_grip_detail(self):
@@ -1910,7 +1934,8 @@ class PreciseFlex:
     Returns:
       The axes moved, as ``axis -> recovered target``. Empty when nothing recoverable
       is out of range or the configuration was not discovered. The wrist and rail are
-      never auto-recovered (see :attr:`_RECOVERY_ORDER`).
+      never auto-recovered (see :attr:`_RECOVERY_ORDER`), nor a gripper open past its limit,
+      since bringing it in would close it without sensing force.
     """
     if speed_pct is None:
       speed_pct = self.default_recovery_speed_pct
@@ -1929,6 +1954,8 @@ class PreciseFlex:
         overshoot = (value - hi) if above else (lo - value)
         if max_distance is not None and overshoot > max_distance:
           continue  # too far out to move unattended; left for the post-condition to raise
+        if axis == Axis.GRIPPER and above:
+          continue  # bringing it in would close it without force sensing; left for the caller
         # Land just inside the violated limit, toward the in-range region. Clamp the
         # 1-unit margin to half the range so the target stays within [lo, hi] even if
         # the range is narrower than the margin (degenerate, but keeps direction sound).
@@ -2052,7 +2079,24 @@ class PreciseFlex:
         f"would reject the move (-1012). Re-teach this pose within the envelope."
       )
 
-  async def _guarded_move_j(self, build_target: Callable[[JointState], JointState]) -> None:
+  def _refuse_closing_the_gripper(self, current: JointState, target: JointState) -> None:
+    """Refuse a joint move that would close the jaws: a joint move senses no force.
+
+    Raises:
+      ValueError: If the target's gripper axis is below the live one.
+    """
+    if target[Axis.GRIPPER] < current[Axis.GRIPPER]:
+      raise ValueError(
+        f"the joint move would close the gripper from {current[Axis.GRIPPER]} to "
+        f"{target[Axis.GRIPPER]} without sensing force; close it with gripper.move_gripper, or "
+        f"pass close_gripper_without_force_sensing=True"
+      )
+
+  async def _guarded_move_j(
+    self,
+    build_target: Callable[[JointState], JointState],
+    close_gripper_without_force_sensing: bool = False,
+  ) -> None:
     """The single guarded path to the raw ``_move_j`` primitive: read the live pose, check it and
     the target against the soft limits, send the move, and on out-of-range recover once and retry.
     Both ``move_to_joint_position`` (a partial spec merged over the live pose) and
@@ -2061,7 +2105,8 @@ class PreciseFlex:
 
     ``build_target`` maps the freshly-read pose to the full target joints - the only part that
     differs between the two callers. It re-runs each attempt, so a recovery move that shifts an
-    unspecified axis is reflected in the next merge.
+    unspecified axis is reflected in the next merge. A target that closes the gripper is refused
+    unless ``close_gripper_without_force_sensing`` is set.
 
     When an axis is out of range the controller blocks the move (-1012). With ``recover_out_of_range``
     set, this drives the offending axes back into range once (``recover_axes_within_limits``) and
@@ -2072,6 +2117,8 @@ class PreciseFlex:
     async def attempt() -> None:
       current = await self.request_joint_state()
       target = build_target(current)
+      if not close_gripper_without_force_sensing:
+        self._refuse_closing_the_gripper(current, target)
       self._assert_within_soft_limits(current, target)
       await self._move_j(profile_index=self.profile_index, joint_coords=target)
 
@@ -2125,6 +2172,8 @@ class PreciseFlex:
     self,
     position: JointState,
     speed_pct: Optional[float] = None,
+    *,
+    close_gripper_without_force_sensing: bool = False,
   ) -> None:
     """Move the arm to the specified joint position. A partial spec is merged over the live pose;
     the move is guarded against out-of-range axes (see ``_guarded_move_j``).
@@ -2133,10 +2182,15 @@ class PreciseFlex:
       position: Target joint state. Omitted axes keep their live values.
       speed_pct: Movement speed override as a percentage (0-100). If None, uses the current
         speed setting.
+      close_gripper_without_force_sensing: allow a gripper axis below the live one. A joint move
+        senses no force, so it is refused otherwise.
     """
     if speed_pct is not None:
       await self._set_speed(speed_pct)
-    await self._guarded_move_j(lambda current: {**current, **position})
+    await self._guarded_move_j(
+      lambda current: {**current, **position},
+      close_gripper_without_force_sensing=close_gripper_without_force_sensing,
+    )
 
   async def request_gripper_pose(self) -> PreciseFlexCartesianPose:
     """Get the current pose using our kinematics model (no firmware `wherec`)."""
