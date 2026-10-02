@@ -37,6 +37,7 @@ from .errors import OutOfRangeOfMotionError, PreciseFlexError
 from .gripper import PreciseFlexGripper
 from .interrupt import halt_and_resync, halt_on_interrupt
 from .kinematics import ElbowOrientation, PreciseFlexCartesianPose, Wrist
+from .rail import PreciseFlexRail
 from .tcs_modules import missing_required_modules
 
 if TYPE_CHECKING:
@@ -227,10 +228,11 @@ class PreciseFlex:
     self.vision: Optional["PreciseFlexVisionBackend"] = None
     self.profile_index: int = 1
     self.location_index: int = 1
-    self._rail_position_index = 1
     self.horizontal_compliance: bool = False
     self.horizontal_compliance_torque: int = 0
     self._has_rail = has_rail
+    # Built only on an arm that has a rail; discovery decides at setup.
+    self.rail: Optional[PreciseFlexRail] = PreciseFlexRail(self) if has_rail else None
     self.gripper = PreciseFlexGripper(
       self, closed_gripper_position=closed_gripper_position, is_dual_gripper=is_dual_gripper
     )
@@ -1472,29 +1474,6 @@ class PreciseFlex:
     """Configure a default vertical station type for pick/place operations."""
     await self.send_command(f"StationType {self.location_index} 1 0 100 0 10")
 
-  # -- rail primitives ----------------------------------------------------------------------
-
-  async def _set_rail_position(self, station_id: int, rail_position: float) -> None:
-    """Set the rail position for the specified station.
-
-    Args:
-      station_id: The station index.
-      rail_position: The rail position in mm.
-    """
-    await self.send_command(f"Rail {station_id} {rail_position}")
-
-  async def _move_rail(self, station_id: Optional[int] = None, mode: int = 1) -> None:
-    """Move the rail to the position stored at the specified station.
-
-    Args:
-      station_id: The station index whose rail position to move to.
-      mode: Motion mode (0 = normal).
-    """
-    if station_id is not None:
-      await self.send_command(f"MoveRail {station_id} {mode}")
-    else:
-      await self.send_command(f"MoveRail {mode}")
-
   # -- identity & status reads --------------------------------------------------------------
 
   async def request_manufacturer(self) -> str:
@@ -1831,6 +1810,7 @@ class PreciseFlex:
     self.gripper._adopt_configuration(config)
     self._kinematics_params = config.kinematics
     self._has_rail = config.has_rail
+    self.rail = (self.rail or PreciseFlexRail(self)) if config.has_rail else None
 
   def _assess_configuration(self, config: "PreciseFlexConfiguration") -> None:
     """Warn about an unsupported model, a missing TCS module, or an untested combo.
@@ -2200,6 +2180,16 @@ class PreciseFlex:
 
   # -- cartesian motion ---------------------------------------------------------------------
 
+  def _require_rail(self) -> PreciseFlexRail:
+    """The rail, on an arm that has one.
+
+    Raises:
+      RuntimeError: If the arm does not have a rail.
+    """
+    if self.rail is None:
+      raise RuntimeError("This arm does not have a rail.")
+    return self.rail
+
   @evented_operation(
     "precise_flex.move_to_location",
     lambda self, location, direction, speed_pct=None, orientation=None, wrist=None, rail_position=None: {
@@ -2240,7 +2230,7 @@ class PreciseFlex:
       await self._set_speed(speed_pct)
 
     if rail_position is not None:
-      await self.move_rail(rail_position)
+      await self._require_rail().move_rail(rail_position)
     elif self._has_rail:
       raise ValueError(
         "Rail position must be specified for move_to_location when using a rail-equipped arm."
@@ -2445,29 +2435,6 @@ class PreciseFlex:
     """
     await self.send_command(f"hereC {location_index}")
 
-  # -- rail ---------------------------------------------------------------------------------
-
-  @evented_operation(
-    "precise_flex.move_rail",
-    lambda self, rail_position: {
-      "device": _controller_reference(self),
-      "rail_position": float(rail_position),
-    },
-  )
-  async def move_rail(self, rail_position: float) -> None:
-    """Move the rail to the specified position.
-
-    Args:
-      rail_position: Rail destination in mm.
-
-    Raises:
-      RuntimeError: If the arm does not have a rail.
-    """
-    if not self._has_rail:
-      raise RuntimeError("This arm does not have a rail.")
-    await self._set_rail_position(self._rail_position_index, rail_position)
-    await self._move_rail(station_id=self._rail_position_index)
-
   # -- pick & place -------------------------------------------------------------------------
 
   @evented_operation(
@@ -2603,7 +2570,7 @@ class PreciseFlex:
       resource_width,
     )
     if rail_position is not None:
-      await self.move_rail(rail_position)
+      await self._require_rail().move_rail(rail_position)
     elif self._has_rail:
       raise ValueError(
         "rail_position must be specified for pick_up_at_location when using a rail-equipped arm."
@@ -2665,7 +2632,7 @@ class PreciseFlex:
       resource_width,
     )
     if rail_position is not None:
-      await self.move_rail(rail_position)
+      await self._require_rail().move_rail(rail_position)
     elif self._has_rail:
       raise ValueError(
         "rail_position must be specified for drop_at_location when using a rail-equipped arm."

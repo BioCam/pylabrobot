@@ -14,6 +14,7 @@ from pylabrobot.brooks.precise_flex import (
   PreciseFlex,
   PreciseFlexCartesianPose,
   PreciseFlexGripper,
+  PreciseFlexRail,
 )
 from pylabrobot.resources import Coordinate, Rotation
 
@@ -170,6 +171,13 @@ _POSES = [
   PreciseFlexCartesianPose(location=Coordinate(400.0, 100.0, 150.0), rotation=Rotation(z=0)),
   PreciseFlexCartesianPose(location=Coordinate(420.0, 80.0, 160.0), rotation=Rotation(z=10)),
 ]
+
+
+def _rail(arm: PreciseFlex) -> PreciseFlexRail:
+  """The rail of an arm the test set up with one."""
+  assert arm.rail is not None
+  return arm.rail
+
 
 _Case = Tuple[str, Callable[[PreciseFlex], Awaitable[Any]], List[str], Optional[Type[Exception]]]
 
@@ -1086,12 +1094,6 @@ _CASES: List[_Case] = [
     ValueError,
   ),
   (
-    "move_rail",
-    lambda arm: arm.move_rail(100.0),
-    [],
-    RuntimeError,
-  ),
-  (
     "pick_up_at_joint_position",
     lambda arm: arm.pick_up_at_joint_position(_J, resource_width=85.0),
     [
@@ -1166,12 +1168,32 @@ _CASES: List[_Case] = [
     ],
     None,
   ),
+  (
+    "move_to_location_rail_position_without_rail",
+    lambda arm: arm.move_to_location(_LOC, direction=0.0, rail_position=300.0),
+    [],
+    RuntimeError,
+  ),
+  (
+    "pick_up_at_location_rail_position_without_rail",
+    lambda arm: arm.pick_up_at_location(
+      _LOC, direction=0.0, resource_width=85.0, rail_position=300.0
+    ),
+    [],
+    RuntimeError,
+  ),
+  (
+    "drop_at_location_rail_position_without_rail",
+    lambda arm: arm.drop_at_location(_LOC, direction=0.0, resource_width=85.0, rail_position=300.0),
+    [],
+    RuntimeError,
+  ),
 ]
 
 _RAIL_CASES: List[_Case] = [
   (
     "rail_move_rail",
-    lambda arm: arm.move_rail(250.0),
+    lambda arm: _rail(arm).move_rail(250.0),
     [
       "Rail 1 250.0",
       "MoveRail 1 1",
@@ -1412,6 +1434,12 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
 
   async def test_rail_arm(self):
     await self._check(_RAIL_CASES, has_rail=True)
+
+  async def test_only_an_arm_with_a_rail_has_one(self):
+    rail_less, _ = await self._run_setup(has_rail=False)
+    self.assertIsNone(rail_less.rail)
+    with_rail, _ = await self._run_setup(has_rail=True)
+    self.assertIsInstance(with_rail.rail, PreciseFlexRail)
 
   async def test_recovering_an_axis_out_of_range(self):
     fake = _FakeController({"Speed 1": "0 1 60"})

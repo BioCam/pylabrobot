@@ -47,6 +47,7 @@ from pylabrobot.brooks.precise_flex.precise_flex import (
   MotionProfile,
   PreciseFlex,
 )
+from pylabrobot.brooks.precise_flex.rail import PreciseFlexRail
 
 __all__ = [
   "Axis",
@@ -59,6 +60,7 @@ __all__ = [
   "PreciseFlexConfiguration",
   "PreciseFlexError",
   "PreciseFlexGripper",
+  "PreciseFlexRail",
   "PreciseFlexVisionError",
   "WorkEnvelope",
   "Wrist",
