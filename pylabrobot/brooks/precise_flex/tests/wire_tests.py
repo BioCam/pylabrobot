@@ -1402,6 +1402,65 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
   async def test_rail_arm(self):
     await self._check(_RAIL_CASES, has_rail=True)
 
+  async def test_recovering_an_axis_out_of_range(self):
+    fake = _FakeController({"Speed 1": "0 1 60"})
+    arm = _make_arm(fake)
+    await arm.setup(skip_vision=True)
+    fake.sent.clear()
+    fake._replies["wherej"] = "0 200 93.5 180 0 100"
+    self.assertEqual(await arm.recover_axes_within_limits(), {Axis.SHOULDER: 92.0})
+    self.assert_wire(
+      fake.sent,
+      [
+        "wherej",
+        "wherej",
+        "wherej",
+        "Speed 1",
+        "Speed 1 20.0",
+        "MoveOneAxis 2 92.0 1",
+        "wherej",
+        "wherej",
+        "Speed 1 60.0",
+      ],
+    )
+
+
+class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
+  """A `default_*` attribute set on an arm, or on the class, is what goes out."""
+
+  def setUp(self) -> None:
+    sleep = patch("pylabrobot.brooks.precise_flex.precise_flex.asyncio.sleep", new=AsyncMock())
+    sleep.start()
+    self.addCleanup(sleep.stop)
+
+  async def _arm(self) -> Tuple[PreciseFlex, _FakeController]:
+    fake = _FakeController({"Speed 1": "0 1 60"})
+    arm = _make_arm(fake)
+    await arm.setup(skip_vision=True)
+    fake.sent.clear()
+    return arm, fake
+
+  async def test_grasp_defaults_set_on_the_arm(self):
+    arm, fake = await self._arm()
+    arm.default_finger_speed_pct = 30.0
+    arm.default_grasp_force = 5.0
+    await arm.pick_up_at_joint_position(_J, resource_width=85.0)
+    self.assertEqual(fake.sent[0], "GraspData 85.0 30.0 5.0")
+
+  async def test_grasp_default_set_on_the_class(self):
+    self.addCleanup(setattr, PreciseFlex, "default_grasp_force", PreciseFlex.default_grasp_force)
+    PreciseFlex.default_grasp_force = 7.0
+    arm, fake = await self._arm()
+    await arm.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0)
+    self.assertEqual(fake.sent[0], "GraspData 85.0 50.0 7.0")
+
+  async def test_recovery_speed_default_set_on_the_arm(self):
+    arm, fake = await self._arm()
+    arm.default_recovery_speed_pct = 10.0
+    fake._replies["wherej"] = "0 200 93.5 180 0 100"
+    await arm.recover_axes_within_limits()
+    self.assertIn("Speed 1 10.0", fake.sent)
+
 
 if __name__ == "__main__":
   unittest.main()

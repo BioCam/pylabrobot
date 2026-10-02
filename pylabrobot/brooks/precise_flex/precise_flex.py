@@ -165,6 +165,12 @@ class PreciseFlex:
     Axis.WRIST: 270.0,
   }
 
+  # What the driver sends when a caller leaves the value out. Tune one arm by assigning on the
+  # instance, or every arm by assigning on the class.
+  default_finger_speed_pct: float = 50.0
+  default_grasp_force: float = 10.0
+  default_recovery_speed_pct: float = 20.0
+
   def __init__(
     self,
     host: str,
@@ -1970,7 +1976,7 @@ class PreciseFlex:
   _RECOVERY_ORDER = (Axis.GRIPPER, Axis.BASE, Axis.SHOULDER, Axis.ELBOW)
 
   async def recover_axes_within_limits(
-    self, speed_pct: float = 20.0, max_distance: Optional[float] = 5.0
+    self, speed_pct: Optional[float] = None, max_distance: Optional[float] = 5.0
   ) -> Dict[Axis, float]:
     """Bring out-of-range axes back inside their soft limits, one axis at a time.
 
@@ -1981,7 +1987,8 @@ class PreciseFlex:
     soft limit, slowly, waiting for each to finish, in :attr:`_RECOVERY_ORDER`.
 
     Args:
-      speed_pct: Profile speed for the recovery moves (default 20%, deliberately slow).
+      speed_pct: Profile speed for the recovery moves, in percent; deliberately slow.
+        ``default_recovery_speed_pct`` when None.
       max_distance: only move an axis that is out of range by at most this much (deg
         for the rotary axes, mm for base/gripper). An axis further out is left in place:
         a large unattended single-axis sweep risks a collision, so it is left for the
@@ -1992,6 +1999,8 @@ class PreciseFlex:
       is out of range or the configuration was not discovered. The wrist and rail are
       never auto-recovered (see :attr:`_RECOVERY_ORDER`).
     """
+    if speed_pct is None:
+      speed_pct = self.default_recovery_speed_pct
     outside = self._axes_outside_soft_limits(await self.request_joint_position())
     if not outside:
       return {}
@@ -2599,20 +2608,22 @@ class PreciseFlex:
 
   @evented_operation(
     "precise_flex.pick_up_at_joint_position",
-    lambda self, position, resource_width, finger_speed_pct=50.0, grasp_force=10.0: {
+    lambda self, position, resource_width, finger_speed_pct=None, grasp_force=None: {
       "device": _controller_reference(self),
       "target_joint_position": _joint_pose_reference(position),
       "resource_width": float(resource_width),
-      "finger_speed_pct": float(finger_speed_pct),
-      "grasp_force": float(grasp_force),
+      "finger_speed_pct": float(
+        self.default_finger_speed_pct if finger_speed_pct is None else finger_speed_pct
+      ),
+      "grasp_force": float(self.default_grasp_force if grasp_force is None else grasp_force),
     },
   )
   async def pick_up_at_joint_position(
     self,
     position: JointPose,
     resource_width: float,
-    finger_speed_pct: float = 50.0,
-    grasp_force: float = 10.0,
+    finger_speed_pct: Optional[float] = None,
+    grasp_force: Optional[float] = None,
   ) -> None:
     """Pick up at the specified joint position.
 
@@ -2620,8 +2631,13 @@ class PreciseFlex:
       position: Joint pose to pick from.
       resource_width: Width of the resource to grasp, in mm.
       finger_speed_pct: Finger closing speed as a percentage (0-100).
-      grasp_force: Grasp force in Newtons.
+        ``default_finger_speed_pct`` when None.
+      grasp_force: Grasp force in Newtons. ``default_grasp_force`` when None.
     """
+    if finger_speed_pct is None:
+      finger_speed_pct = self.default_finger_speed_pct
+    if grasp_force is None:
+      grasp_force = self.default_grasp_force
     logger.info(
       "[PreciseFlex %s] pick_up: joints=%s, resource_width_mm=%s",
       self.io._host,
@@ -2664,7 +2680,7 @@ class PreciseFlex:
 
   @evented_operation(
     "precise_flex.pick_up_at_location",
-    lambda self, location, direction, resource_width, finger_speed_pct=50.0, grasp_force=10.0, orientation=None, wrist=None, rail_position=None: {
+    lambda self, location, direction, resource_width, finger_speed_pct=None, grasp_force=None, orientation=None, wrist=None, rail_position=None: {
       "device": _controller_reference(self),
       "target": _cartesian_target_reference(
         location,
@@ -2674,8 +2690,10 @@ class PreciseFlex:
         rail_position=rail_position,
       ),
       "resource_width": float(resource_width),
-      "finger_speed_pct": float(finger_speed_pct),
-      "grasp_force": float(grasp_force),
+      "finger_speed_pct": float(
+        self.default_finger_speed_pct if finger_speed_pct is None else finger_speed_pct
+      ),
+      "grasp_force": float(self.default_grasp_force if grasp_force is None else grasp_force),
     },
   )
   async def pick_up_at_location(
@@ -2683,8 +2701,8 @@ class PreciseFlex:
     location: Coordinate,
     direction: float,
     resource_width: float,
-    finger_speed_pct: float = 50.0,
-    grasp_force: float = 10.0,
+    finger_speed_pct: Optional[float] = None,
+    grasp_force: Optional[float] = None,
     orientation: Optional[ElbowOrientation] = None,
     wrist: Optional[Wrist] = None,
     rail_position: Optional[float] = None,
@@ -2696,12 +2714,17 @@ class PreciseFlex:
       direction: Approach direction, applied as the pose's z rotation in degrees.
       resource_width: Width of the resource to grasp, in mm.
       finger_speed_pct: Finger closing speed as a percentage (0-100).
-      grasp_force: Grasp force in Newtons.
+        ``default_finger_speed_pct`` when None.
+      grasp_force: Grasp force in Newtons. ``default_grasp_force`` when None.
       orientation: Elbow orientation (``"lefty"`` or ``"righty"``). If None, the robot
         picks the closest configuration.
       wrist: Wrist configuration. If None, the robot picks the closest configuration.
       rail_position: Linear rail position in mm. Required when the arm has a rail.
     """
+    if finger_speed_pct is None:
+      finger_speed_pct = self.default_finger_speed_pct
+    if grasp_force is None:
+      grasp_force = self.default_grasp_force
     logger.info(
       "[PreciseFlex %s] pick_up: x=%s, y=%s, z=%s, direction=%s, resource_width_mm=%s",
       self.io._host,
