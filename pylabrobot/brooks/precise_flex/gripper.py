@@ -151,6 +151,22 @@ class PreciseFlexGripper:
     """Whether driving the jaws to `units` closes them, against the live gripper axis."""
     return units < (await self._driver.request_joint_state())[Axis.GRIPPER]
 
+  async def _move_jaws(self, units: float, force_sensing: Optional[bool]) -> None:
+    """The one path that drives the jaws: to `units` on the gripper axis.
+
+    Args:
+      units: the gripper axis position, in the controller's units.
+      force_sensing: None senses force when the move closes the jaws and not when it opens them.
+    """
+    if force_sensing is None:
+      force_sensing = await self._closes(units)
+    if force_sensing:
+      await self._set_close_position(units)
+      await self._driver.send_command("gripper 2")
+    else:
+      await self._set_open_position(units)
+      await self._driver.send_command("gripper 1")
+
   @evented_operation(
     "precise_flex.move_gripper",
     lambda self, width, force_sensing=None: {
@@ -197,14 +213,7 @@ class PreciseFlexGripper:
         f"axis range [{self._gripper_soft_min}, {self._gripper_soft_max}] - check "
         f"closed_gripper_position (currently {self.closed_gripper_position})."
       )
-    if force_sensing is None:
-      force_sensing = await self._closes(units)
-    if force_sensing:
-      await self._set_close_position(units)
-      await self._driver.send_command("gripper 2")
-    else:
-      await self._set_open_position(units)
-      await self._driver.send_command("gripper 1")
+    await self._move_jaws(units, force_sensing)
 
   @evented_operation(
     "precise_flex.move_gripper_joint_position",
@@ -229,14 +238,7 @@ class PreciseFlexGripper:
       force_sensing: None senses force when the move closes the jaws and not when it opens them.
         Pass False only to close without it on purpose.
     """
-    if force_sensing is None:
-      force_sensing = await self._closes(position)
-    if force_sensing:
-      await self._set_close_position(position)
-      await self._driver.send_command("gripper 2")
-    else:
-      await self._set_open_position(position)
-      await self._driver.send_command("gripper 1")
+    await self._move_jaws(position, force_sensing)
 
   # -- sensors -------------------------------------------------------------------------------------
 
