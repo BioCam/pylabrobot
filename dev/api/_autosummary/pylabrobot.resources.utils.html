@@ -63,11 +63,11 @@
     <link rel="icon" href="../../_static/favicon.ico"/>
     <link rel="index" title="Index" href="../../genindex.html" />
     <link rel="search" title="Search" href="../../search.html" />
-    <link rel="next" title="pylabrobot.resources.utils.create_equally_spaced_x" href="pylabrobot.resources.utils.create_equally_spaced_x.html" />
+    <link rel="next" title="pylabrobot.resources.utils.compute_circle_child_poses" href="pylabrobot.resources.utils.compute_circle_child_poses.html" />
     <link rel="prev" title="pylabrobot.resources.volume_tracker.VolumeTracker.validate_remove_liquid" href="pylabrobot.resources.volume_tracker.VolumeTracker.validate_remove_liquid.html" />
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <meta name="docsearch:language" content="en"/>
-  <meta name="docsearch:version" content="0.2.2" />
+  <meta name="docsearch:version" content="1.0.0b1" />
   
     
     <script src="../../_static/searchtools.js"></script>
@@ -586,31 +586,34 @@
 <p class="rubric">Functions</p>
 <div class="pst-scrollable-table-container"><table class="autosummary longtable table">
 <tbody>
-<tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.utils.create_equally_spaced_2d.html#pylabrobot.resources.utils.create_equally_spaced_2d" title="pylabrobot.resources.utils.create_equally_spaced_2d"><code class="xref py py-obj docutils literal notranslate"><span class="pre">create_equally_spaced_2d</span></code></a>(klass, num_items_x, ...)</p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.utils.compute_circle_child_poses.html#pylabrobot.resources.utils.compute_circle_child_poses" title="pylabrobot.resources.utils.compute_circle_child_poses"><code class="xref py py-obj docutils literal notranslate"><span class="pre">compute_circle_child_poses</span></code></a>(n, radius[, z, ...])</p></td>
+<td><p>Compute n poses evenly spaced on a circle, relative to the circle's front left bottom.</p></td>
+</tr>
+<tr class="row-even"><td><p><a class="reference internal" href="pylabrobot.resources.utils.create_equally_spaced_2d.html#pylabrobot.resources.utils.create_equally_spaced_2d" title="pylabrobot.resources.utils.create_equally_spaced_2d"><code class="xref py py-obj docutils literal notranslate"><span class="pre">create_equally_spaced_2d</span></code></a>(klass, num_items_x, ...)</p></td>
 <td><p>Make equally spaced resources in a 2D grid.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="pylabrobot.resources.utils.create_equally_spaced_x.html#pylabrobot.resources.utils.create_equally_spaced_x" title="pylabrobot.resources.utils.create_equally_spaced_x"><code class="xref py py-obj docutils literal notranslate"><span class="pre">create_equally_spaced_x</span></code></a>(klass, num_items_x, ...)</p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.utils.create_equally_spaced_x.html#pylabrobot.resources.utils.create_equally_spaced_x" title="pylabrobot.resources.utils.create_equally_spaced_x"><code class="xref py py-obj docutils literal notranslate"><span class="pre">create_equally_spaced_x</span></code></a>(klass, num_items_x, ...)</p></td>
 <td><p>Make equally spaced resources over the x-axis.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.utils.create_equally_spaced_y.html#pylabrobot.resources.utils.create_equally_spaced_y" title="pylabrobot.resources.utils.create_equally_spaced_y"><code class="xref py py-obj docutils literal notranslate"><span class="pre">create_equally_spaced_y</span></code></a>(klass, num_items_y, ...)</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="pylabrobot.resources.utils.create_equally_spaced_y.html#pylabrobot.resources.utils.create_equally_spaced_y" title="pylabrobot.resources.utils.create_equally_spaced_y"><code class="xref py py-obj docutils literal notranslate"><span class="pre">create_equally_spaced_y</span></code></a>(klass, num_items_y, ...)</p></td>
 <td><p>Make equally spaced resources over the y-axis.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="pylabrobot.resources.utils.create_ordered_items_2d.html#pylabrobot.resources.utils.create_ordered_items_2d" title="pylabrobot.resources.utils.create_ordered_items_2d"><code class="xref py py-obj docutils literal notranslate"><span class="pre">create_ordered_items_2d</span></code></a>(klass, num_items_x, ...)</p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.utils.create_ordered_items_2d.html#pylabrobot.resources.utils.create_ordered_items_2d" title="pylabrobot.resources.utils.create_ordered_items_2d"><code class="xref py py-obj docutils literal notranslate"><span class="pre">create_ordered_items_2d</span></code></a>(klass, num_items_x, ...)</p></td>
 <td><p>Make ordered resources in a 2D grid, with the keys being the identifiers in transposed MS-Excel style.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.utils.label_to_row_index.html#pylabrobot.resources.utils.label_to_row_index" title="pylabrobot.resources.utils.label_to_row_index"><code class="xref py py-obj docutils literal notranslate"><span class="pre">label_to_row_index</span></code></a>(label)</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="pylabrobot.resources.utils.label_to_row_index.html#pylabrobot.resources.utils.label_to_row_index" title="pylabrobot.resources.utils.label_to_row_index"><code class="xref py py-obj docutils literal notranslate"><span class="pre">label_to_row_index</span></code></a>(label)</p></td>
 <td><p>Convert a letter label to a 0-based row index.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="pylabrobot.resources.utils.query.html#pylabrobot.resources.utils.query" title="pylabrobot.resources.utils.query"><code class="xref py py-obj docutils literal notranslate"><span class="pre">query</span></code></a>(root, type_, name, x, y, z)</p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.utils.query.html#pylabrobot.resources.utils.query" title="pylabrobot.resources.utils.query"><code class="xref py py-obj docutils literal notranslate"><span class="pre">query</span></code></a>(root, type_, name, x, y, z)</p></td>
 <td><p>Query resources based on their attributes.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.utils.row_index_to_label.html#pylabrobot.resources.utils.row_index_to_label" title="pylabrobot.resources.utils.row_index_to_label"><code class="xref py py-obj docutils literal notranslate"><span class="pre">row_index_to_label</span></code></a>(index)</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="pylabrobot.resources.utils.row_index_to_label.html#pylabrobot.resources.utils.row_index_to_label" title="pylabrobot.resources.utils.row_index_to_label"><code class="xref py py-obj docutils literal notranslate"><span class="pre">row_index_to_label</span></code></a>(index)</p></td>
 <td><p>Convert a 0-based row index to a letter label.</p></td>
 </tr>
-<tr class="row-even"><td><p><a class="reference internal" href="pylabrobot.resources.utils.sort_by_xy_and_chunk_by_x.html#pylabrobot.resources.utils.sort_by_xy_and_chunk_by_x" title="pylabrobot.resources.utils.sort_by_xy_and_chunk_by_x"><code class="xref py py-obj docutils literal notranslate"><span class="pre">sort_by_xy_and_chunk_by_x</span></code></a>(resources, ...[, ...])</p></td>
+<tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.utils.sort_by_xy_and_chunk_by_x.html#pylabrobot.resources.utils.sort_by_xy_and_chunk_by_x" title="pylabrobot.resources.utils.sort_by_xy_and_chunk_by_x"><code class="xref py py-obj docutils literal notranslate"><span class="pre">sort_by_xy_and_chunk_by_x</span></code></a>(resources, ...[, ...])</p></td>
 <td><p>Sort resources spatially and partition them into chunks for channel processing.</p></td>
 </tr>
-<tr class="row-odd"><td><p><a class="reference internal" href="pylabrobot.resources.utils.split_identifier.html#pylabrobot.resources.utils.split_identifier" title="pylabrobot.resources.utils.split_identifier"><code class="xref py py-obj docutils literal notranslate"><span class="pre">split_identifier</span></code></a>(identifier)</p></td>
+<tr class="row-even"><td><p><a class="reference internal" href="pylabrobot.resources.utils.split_identifier.html#pylabrobot.resources.utils.split_identifier" title="pylabrobot.resources.utils.split_identifier"><code class="xref py py-obj docutils literal notranslate"><span class="pre">split_identifier</span></code></a>(identifier)</p></td>
 <td><p>Split a well identifier into its row-letter and column-number parts.</p></td>
 </tr>
 </tbody>
@@ -638,11 +641,11 @@
       </div>
     </a>
     <a class="right-next"
-       href="pylabrobot.resources.utils.create_equally_spaced_x.html"
+       href="pylabrobot.resources.utils.compute_circle_child_poses.html"
        title="next page">
       <div class="prev-next-info">
         <p class="prev-next-subtitle">next</p>
-        <p class="prev-next-title">pylabrobot.resources.utils.create_equally_spaced_x</p>
+        <p class="prev-next-title">pylabrobot.resources.utils.compute_circle_child_poses</p>
       </div>
       <i class="fa-solid fa-angle-right"></i>
     </a>
