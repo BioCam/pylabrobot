@@ -12,13 +12,28 @@ except ImportError as e:
   _SERIAL_IMPORT_ERROR = e
 
 from pylabrobot.io.serial import Serial
+from pylabrobot.resources import Coordinate, PlateHolder, Resource
+
+# How big the XPeel is, feet included (drawing 440000-DX).
+XPEEL_SIZE_X = 374.0
+XPEEL_SIZE_Y = 645.5
+XPEEL_SIZE_Z = 373.5
+
+# The plate carrier's top plate, where it stands with the conveyor out, and where a plate seats on
+# it: centred between its corner guides, on the plane 15.55 mm above its underside.
+XPEEL_PLATE_CARRIER_SIZE_X = 138.1
+XPEEL_PLATE_CARRIER_SIZE_Y = 96.1
+XPEEL_PLATE_CARRIER_SIZE_Z = 20.6
+XPEEL_PLATE_CARRIER_LOCATION = Coordinate(25.9, 30.8, 121.1)
+XPEEL_PLATE_LOCATION = Coordinate(5.17, 5.31, 15.55)
 
 
-class XPeel:
+class XPeel(Resource):
   """Serial driver for the Azenta XPeel automated plate seal remover (RS-232).
 
   Owns the hardware connection and provides generic send/receive plus device-level operations
-  (status, reset, conveyor/elevator movement, tape, seal sensor).
+  (status, reset, conveyor/elevator movement, tape, seal sensor). The device is itself a resource,
+  drawn from `azenta_xpeel.glb`; its plate carrier is its child, `plate_carrier`.
   """
 
   BAUDRATE = 9600
@@ -47,13 +62,35 @@ class XPeel:
     52: ErrorInfo(52, "Circuitry fault detected: remove power"),
   }
 
-  def __init__(self, port: str, timeout: Optional[float] = None):
+  def __init__(self, port: str, name: str = "xpeel", timeout: Optional[float] = None):
+    """
+    Args:
+      port: the serial port the XPeel is on.
+      name: the resource's name; its plate carrier is named after it.
+      timeout: how long to wait for a response, in seconds. Defaults to RESPONSE_TIMEOUT.
+    """
     if not HAS_SERIAL:
       raise RuntimeError(
         "pyserial is not installed. Install with: pip install pylabrobot[serial]. "
         f"Import error: {_SERIAL_IMPORT_ERROR}"
       )
-    super().__init__()
+    super().__init__(
+      name=name,
+      size_x=XPEEL_SIZE_X,
+      size_y=XPEEL_SIZE_Y,
+      size_z=XPEEL_SIZE_Z,
+      model="azenta_xpeel",
+    )
+    self.plate_carrier = PlateHolder(
+      name=f"{name}_plate_carrier",
+      size_x=XPEEL_PLATE_CARRIER_SIZE_X,
+      size_y=XPEEL_PLATE_CARRIER_SIZE_Y,
+      size_z=XPEEL_PLATE_CARRIER_SIZE_Z,
+      child_location=XPEEL_PLATE_LOCATION,
+      pedestal_size_z=0,
+      model="azenta_xpeel_plate_carrier",
+    )
+    self.assign_child_resource(self.plate_carrier, location=XPEEL_PLATE_CARRIER_LOCATION)
     self.logger = logging.getLogger(__name__)
     self.port = port
     self.response_timeout = timeout if timeout is not None else self.RESPONSE_TIMEOUT
