@@ -3,7 +3,7 @@
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-  from .precise_flex import PreciseFlex
+  from .driver.master import PreciseFlex
 
 
 def _controller_reference(controller: "PreciseFlex") -> dict[str, object]:

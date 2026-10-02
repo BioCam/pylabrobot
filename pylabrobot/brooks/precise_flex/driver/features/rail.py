@@ -7,10 +7,10 @@ from typing import TYPE_CHECKING, Optional
 
 from pylabrobot.events import evented_operation
 
-from ._references import _controller_reference
+from ..._references import _controller_reference
 
 if TYPE_CHECKING:
-  from .precise_flex import PreciseFlex
+  from ..master import PreciseFlex
 
 
 class PreciseFlexRail:

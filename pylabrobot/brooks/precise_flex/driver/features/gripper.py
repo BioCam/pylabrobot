@@ -10,13 +10,13 @@ from typing import TYPE_CHECKING, Optional, Tuple
 
 from pylabrobot.events import evented_operation
 
-from ._references import _controller_reference
-from .errors import PreciseFlexError
-from .kinematics import Axis
+from ..._references import _controller_reference
+from ...errors import PreciseFlexError
+from ...kinematics import Axis
 
 if TYPE_CHECKING:
-  from .config import PreciseFlexConfiguration
-  from .precise_flex import PreciseFlex
+  from ...config import PreciseFlexConfiguration
+  from ..master import PreciseFlex
 
 logger = logging.getLogger(__name__)
 

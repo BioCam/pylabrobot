@@ -30,24 +30,24 @@ from pylabrobot.brooks.precise_flex.config import (
   Axis,
   PreciseFlexConfiguration,
 )
+from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGripper
+from pylabrobot.brooks.precise_flex.driver.features.rail import PreciseFlexRail
+from pylabrobot.brooks.precise_flex.driver.master import (
+  MotionProfile,
+  PreciseFlex,
+)
 from pylabrobot.brooks.precise_flex.errors import (
   OutOfRangeOfMotionError,
   PreciseFlexCollisionError,
   PreciseFlexError,
   PreciseFlexVisionError,
 )
-from pylabrobot.brooks.precise_flex.gripper import PreciseFlexGripper
 from pylabrobot.brooks.precise_flex.kinematics import (
   ElbowOrientation,
   PreciseFlexCartesianPose,
   WorkEnvelope,
   Wrist,
 )
-from pylabrobot.brooks.precise_flex.precise_flex import (
-  MotionProfile,
-  PreciseFlex,
-)
-from pylabrobot.brooks.precise_flex.rail import PreciseFlexRail
 
 __all__ = [
   "Axis",

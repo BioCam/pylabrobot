@@ -25,23 +25,23 @@ from pylabrobot.io.socket import Socket
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.rotation import Rotation
 
-from ._references import _controller_reference
-from .confirmed_firmware_versions import (
+from .._references import _controller_reference
+from ..confirmed_firmware_versions import (
   SUPPORTED_ROBOT_TYPES,
   is_confirmed,
   is_supported_model,
   suggest_entry,
 )
-from .data_ids import DataID, PowerState
-from .errors import OutOfRangeOfMotionError, PreciseFlexError
-from .gripper import PreciseFlexGripper
-from .interrupt import halt_and_resync, halt_on_interrupt
-from .kinematics import ElbowOrientation, PreciseFlexCartesianPose, Wrist
-from .rail import PreciseFlexRail
-from .tcs_modules import missing_required_modules
+from ..data_ids import DataID, PowerState
+from ..errors import OutOfRangeOfMotionError, PreciseFlexError
+from ..interrupt import halt_and_resync, halt_on_interrupt
+from ..kinematics import ElbowOrientation, PreciseFlexCartesianPose, Wrist
+from ..tcs_modules import missing_required_modules
+from .features.gripper import PreciseFlexGripper
+from .features.rail import PreciseFlexRail
 
 if TYPE_CHECKING:
-  from .vision_backend import PreciseFlexVisionBackend
+  from ..vision_backend import PreciseFlexVisionBackend
 
 logger = logging.getLogger(__name__)
 
@@ -441,8 +441,8 @@ class PreciseFlex:
     Args:
       vision_host: address of the PreciseVision engine, or ``None`` for controller-only vision.
     """
-    from .vision_backend import PreciseFlexVisionBackend
-    from .vision_driver import PreciseVisionDriver
+    from ..vision_backend import PreciseFlexVisionBackend
+    from ..vision_driver import PreciseVisionDriver
 
     vision_driver: Optional[PreciseVisionDriver] = None
     if vision_host:

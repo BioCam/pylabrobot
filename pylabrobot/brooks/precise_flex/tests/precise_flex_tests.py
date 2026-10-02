@@ -347,7 +347,7 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
     ]
 
     with patch(
-      "pylabrobot.brooks.precise_flex.precise_flex.kinematics.ik",
+      "pylabrobot.brooks.precise_flex.driver.master.kinematics.ik",
       side_effect=[
         {1: 110.0, 2: 10.0, 3: 20.0, 4: 30.0, 6: 123.0},
         {1: 120.0, 2: 11.0, 3: 21.0, 4: 31.0, 6: 123.0},
@@ -378,7 +378,7 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
     )
 
     with patch(
-      "pylabrobot.brooks.precise_flex.precise_flex.kinematics.ik",
+      "pylabrobot.brooks.precise_flex.driver.master.kinematics.ik",
       return_value={1: 110.0, 2: 10.0, 3: 20.0, 4: 30.0, 6: 123.0},
     ):
       await self.arm.move_through_cartesian_poses([pose])
@@ -399,7 +399,7 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
     )
 
     with patch(
-      "pylabrobot.brooks.precise_flex.precise_flex.kinematics.ik",
+      "pylabrobot.brooks.precise_flex.driver.master.kinematics.ik",
       return_value={1: 110.0, 2: 10.0, 3: 20.0, 4: 30.0, 6: 123.0},
     ):
       await self.arm.move_through_cartesian_poses([pose], blend=False)
@@ -416,7 +416,7 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
     self.arm._assert_within_soft_limits = MagicMock(side_effect=ValueError("bad target"))  # type: ignore[method-assign]
 
     with patch(
-      "pylabrobot.brooks.precise_flex.precise_flex.kinematics.ik",
+      "pylabrobot.brooks.precise_flex.driver.master.kinematics.ik",
       return_value={1: 110.0, 2: 10.0, 3: 20.0, 4: 30.0, 6: 123.0},
     ):
       with self.assertRaisesRegex(ValueError, "bad target"):
@@ -427,7 +427,7 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
     mocked(self.arm._wait_for_eom).assert_not_awaited()
 
 
-_LOGGER = "pylabrobot.brooks.precise_flex.precise_flex"
+_LOGGER = "pylabrobot.brooks.precise_flex.driver.master"
 
 
 class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):

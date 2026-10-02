@@ -1383,7 +1383,7 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
   """Each public method sends exactly the commands it sends today."""
 
   def setUp(self) -> None:
-    sleep = patch("pylabrobot.brooks.precise_flex.precise_flex.asyncio.sleep", new=AsyncMock())
+    sleep = patch("pylabrobot.brooks.precise_flex.driver.master.asyncio.sleep", new=AsyncMock())
     sleep.start()
     self.addCleanup(sleep.stop)
 
@@ -1468,7 +1468,7 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
   """A `default_*` attribute set on an arm, or on the class, is what goes out."""
 
   def setUp(self) -> None:
-    sleep = patch("pylabrobot.brooks.precise_flex.precise_flex.asyncio.sleep", new=AsyncMock())
+    sleep = patch("pylabrobot.brooks.precise_flex.driver.master.asyncio.sleep", new=AsyncMock())
     sleep.start()
     self.addCleanup(sleep.stop)
 
@@ -1511,7 +1511,7 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
   """No public command closes the jaws without force sensing unless the caller asks for it."""
 
   def setUp(self) -> None:
-    sleep = patch("pylabrobot.brooks.precise_flex.precise_flex.asyncio.sleep", new=AsyncMock())
+    sleep = patch("pylabrobot.brooks.precise_flex.driver.master.asyncio.sleep", new=AsyncMock())
     sleep.start()
     self.addCleanup(sleep.stop)
 

@@ -32,7 +32,7 @@ from typing import (
 if TYPE_CHECKING:
   import numpy as np
 
-  from .precise_flex import PreciseFlex
+  from .driver.master import PreciseFlex
 
 from pylabrobot.resources import Coordinate, Rotation
 
