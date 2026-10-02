@@ -199,10 +199,11 @@ class PreciseFlex:
         autonomous motion - an out-of-range axis then raises instead, carrying recovery instructions.
         Every recovery is logged.
       closed_gripper_position: firmware-unit value (passed to ``GripClosePos`` /
-        ``GripOpenPos``) at which the jaws are at :attr:`PreciseFlexGripper.min_gripper_width`.
+        ``GripOpenPos``) at which the jaws are at the narrow end of
+        :attr:`PreciseFlexGripper.jaw_width_range`.
         Depends on the mounted gripper. The conversion mm → firmware units is
         linear with slope 1: ``units = closed_gripper_position + (width_mm -
-        min_gripper_width)``.
+        jaw_width_range[0])``.
       parking_position: initial value for the public, runtime-settable ``parking_position`` that
         ``park()`` moves to. Leave None (the default) and setup fills the generic default RIGHT pose
         (planar fold, Z column at 3/4 of the discovered travel); reassign it any time to park
@@ -1436,7 +1437,7 @@ class PreciseFlex:
     if grip_mode == 2 and not close_gripper_without_force_sensing:
       raise ValueError(
         "grip_mode=2 closes the gripper without sensing force; close it with "
-        "gripper.move_gripper, or pass close_gripper_without_force_sensing=True"
+        "gripper.move_to_jaw_position, or pass close_gripper_without_force_sensing=True"
       )
     await self.send_command(f"ChangeConfig {grip_mode}")
 
@@ -1463,7 +1464,7 @@ class PreciseFlex:
     if grip_mode == 2 and not close_gripper_without_force_sensing:
       raise ValueError(
         "grip_mode=2 closes the gripper without sensing force; close it with "
-        "gripper.move_gripper, or pass close_gripper_without_force_sensing=True"
+        "gripper.move_to_jaw_position, or pass close_gripper_without_force_sensing=True"
       )
     await self.send_command(f"ChangeConfig2 {grip_mode}")
 
@@ -2088,7 +2089,7 @@ class PreciseFlex:
     if target[Axis.GRIPPER] < current[Axis.GRIPPER]:
       raise ValueError(
         f"the joint move would close the gripper from {current[Axis.GRIPPER]} to "
-        f"{target[Axis.GRIPPER]} without sensing force; close it with gripper.move_gripper, or "
+        f"{target[Axis.GRIPPER]} without sensing force; close it with gripper.move_to_jaw_position, or "
         f"pass close_gripper_without_force_sensing=True"
       )
 

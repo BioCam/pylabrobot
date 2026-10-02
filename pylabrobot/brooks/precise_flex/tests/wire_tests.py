@@ -1031,7 +1031,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_gripper_open",
-    lambda arm: arm.gripper.move_gripper(110.0),
+    lambda arm: arm.gripper.move_to_jaw_position(110.0),
     [
       "wherej",
       "wherej",
@@ -1043,7 +1043,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_gripper_close",
-    lambda arm: arm.gripper.move_gripper(90.0, force_sensing=True),
+    lambda arm: arm.gripper.move_to_jaw_position(90.0, force_sensing=True),
     [
       "GripClosePos 101.0",
       "gripper 2",
@@ -1051,8 +1051,8 @@ _CASES: List[_Case] = [
     None,
   ),
   (
-    "move_gripper_joint_position",
-    lambda arm: arm.gripper.move_gripper_joint_position(120.0),
+    "move_to_jaw_position_firmware_units",
+    lambda arm: arm.gripper.move_to_jaw_position_firmware_units(120.0),
     [
       "wherej",
       "wherej",
@@ -1064,7 +1064,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_gripper_joint_position_force",
-    lambda arm: arm.gripper.move_gripper_joint_position(90.0, force_sensing=True),
+    lambda arm: arm.gripper.move_to_jaw_position_firmware_units(90.0, force_sensing=True),
     [
       "GripClosePos 90.0",
       "gripper 2",
@@ -1072,16 +1072,16 @@ _CASES: List[_Case] = [
     None,
   ),
   (
-    "is_gripper_closed",
-    lambda arm: arm.gripper.is_gripper_closed(),
+    "sense_fully_closed",
+    lambda arm: arm.gripper.sense_fully_closed(),
     [
       "IsFullyClosed",
     ],
     None,
   ),
   (
-    "are_grippers_closed",
-    lambda arm: arm.gripper.are_grippers_closed(),
+    "sense_each_fully_closed",
+    lambda arm: arm.gripper.sense_each_fully_closed(),
     [],
     ValueError,
   ),
@@ -1497,17 +1497,17 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
 
   async def test_a_jaw_move_that_closes_senses_force(self):
     arm, fake = await self._arm()
-    await arm.gripper.move_gripper(70.0)
+    await arm.gripper.move_to_jaw_position(70.0)
     self.assertEqual(fake.sent[-2:], ["GripClosePos 81.0", "gripper 2"])
 
   async def test_a_jaw_move_in_firmware_units_that_closes_senses_force(self):
     arm, fake = await self._arm()
-    await arm.gripper.move_gripper_joint_position(90.0)
+    await arm.gripper.move_to_jaw_position_firmware_units(90.0)
     self.assertEqual(fake.sent[-2:], ["GripClosePos 90.0", "gripper 2"])
 
   async def test_closing_without_force_sensing_only_when_asked(self):
     arm, fake = await self._arm()
-    await arm.gripper.move_gripper(70.0, force_sensing=False)
+    await arm.gripper.move_to_jaw_position(70.0, force_sensing=False)
     self.assertEqual(fake.sent, ["GripOpenPos 81.0", "gripper 1"])
 
   async def test_a_joint_move_that_closes_the_gripper_is_refused(self):
