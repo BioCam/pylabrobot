@@ -7,8 +7,6 @@ from typing import TYPE_CHECKING, Optional
 
 from pylabrobot.events import evented_operation
 
-from ..._references import _controller_reference
-
 if TYPE_CHECKING:
   from ..master import PreciseFlex
 
@@ -56,7 +54,7 @@ class PreciseFlexRail:
   @evented_operation(
     "precise_flex.move_rail",
     lambda self, rail_position: {
-      "device": _controller_reference(self._driver),
+      "device": self._driver._controller_reference(),
       "rail_position": float(rail_position),
     },
   )

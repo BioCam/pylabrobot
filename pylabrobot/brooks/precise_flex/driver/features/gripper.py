@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Optional, Tuple
 
 from pylabrobot.events import evented_operation
 
-from ..._references import _controller_reference
 from ...errors import PreciseFlexError
 from ...kinematics import Axis
 
@@ -170,7 +169,7 @@ class PreciseFlexGripper:
   @evented_operation(
     "precise_flex.move_gripper",
     lambda self, width, force_sensing=None: {
-      "device": _controller_reference(self._driver),
+      "device": self._driver._controller_reference(),
       "width": float(width),
       "force_sensing": force_sensing,
     },
@@ -218,7 +217,7 @@ class PreciseFlexGripper:
   @evented_operation(
     "precise_flex.move_gripper_joint_position",
     lambda self, position, force_sensing=None: {
-      "device": _controller_reference(self._driver),
+      "device": self._driver._controller_reference(),
       "gripper_joint_position": float(position),
       "force_sensing": force_sensing,
     },

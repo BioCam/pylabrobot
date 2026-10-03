@@ -26,7 +26,6 @@ from pylabrobot.io.socket import Socket
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.rotation import Rotation
 
-from .._references import _controller_reference
 from ..confirmed_firmware_versions import (
   SUPPORTED_ROBOT_TYPES,
   is_confirmed,
@@ -354,6 +353,15 @@ class PreciseFlex:
 
   # -- communication ---------------------------------------------------------
 
+  def _controller_reference(self) -> Dict[str, object]:
+    """The controller's identity, as structured execution events name it."""
+    return {
+      "name": "precise_flex",
+      "type": type(self).__name__,
+      "host": self.io._host,
+      "port": self.io._port,
+    }
+
   async def _locked_exchange(self, command: str) -> str:
     """Write one command and read its single reply line as one atomic, lock-held exchange.
 
@@ -389,7 +397,7 @@ class PreciseFlex:
     operation context.
     """
     event_data = {
-      "device": _controller_reference(self),
+      "device": self._controller_reference(),
       "command": command,
     }
     emit_event("precise_flex.firmware_command.started", **event_data)
@@ -603,7 +611,7 @@ class PreciseFlex:
   @evented_operation(
     "precise_flex.setup",
     lambda self, skip_home=False, skip_vision=False: {
-      "device": _controller_reference(self),
+      "device": self._controller_reference(),
       "skip_home": skip_home,
       "skip_vision": skip_vision,
     },
@@ -678,7 +686,7 @@ class PreciseFlex:
 
   @evented_operation(
     "precise_flex.stop",
-    lambda self: {"device": _controller_reference(self)},
+    lambda self: {"device": self._controller_reference()},
   )
   async def stop(self):
     """Stop the PreciseFlex driver."""
@@ -739,7 +747,7 @@ class PreciseFlex:
 
   @evented_operation(
     "precise_flex.power_on",
-    lambda self: {"device": _controller_reference(self)},
+    lambda self: {"device": self._controller_reference()},
   )
   async def power_on_robot(self):
     """Power on the robot."""
@@ -759,7 +767,7 @@ class PreciseFlex:
 
   @evented_operation(
     "precise_flex.recover_from_fault",
-    lambda self: {"device": _controller_reference(self)},
+    lambda self: {"device": self._controller_reference()},
   )
   async def recover_from_fault(self) -> None:
     """Recover after a collision / fault that stopped the arm and dropped power, leaving it usable.
@@ -788,7 +796,7 @@ class PreciseFlex:
 
   @evented_operation(
     "precise_flex.power_off",
-    lambda self: {"device": _controller_reference(self)},
+    lambda self: {"device": self._controller_reference()},
   )
   async def power_off_robot(self):
     """Power off the robot."""
@@ -846,7 +854,7 @@ class PreciseFlex:
 
   @evented_operation(
     "precise_flex.home",
-    lambda self: {"device": _controller_reference(self)},
+    lambda self: {"device": self._controller_reference()},
   )
   async def home(self) -> None:
     """Home the robot associated with this thread.
@@ -1591,7 +1599,7 @@ class PreciseFlex:
   @evented_operation(
     "precise_flex.start_freedrive",
     lambda self, free_axes=None: {
-      "device": _controller_reference(self),
+      "device": self._controller_reference(),
       "free_axes": [int(axis) for axis in free_axes] if free_axes is not None else None,
     },
   )
@@ -1617,7 +1625,7 @@ class PreciseFlex:
 
   @evented_operation(
     "precise_flex.stop_freedrive",
-    lambda self: {"device": _controller_reference(self)},
+    lambda self: {"device": self._controller_reference()},
   )
   async def stop_freedrive_mode(self) -> None:
     """Exit freedrive mode for all axes."""
@@ -1625,7 +1633,7 @@ class PreciseFlex:
 
   @evented_operation(
     "precise_flex.halt",
-    lambda self: {"device": _controller_reference(self)},
+    lambda self: {"device": self._controller_reference()},
   )
   async def halt(self):
     """Stops the current robot immediately but leaves power on."""
@@ -2361,7 +2369,7 @@ class PreciseFlex:
   @evented_operation(
     "precise_flex.move_to_joint_position",
     lambda self, position, speed_pct=None: {
-      "device": _controller_reference(self),
+      "device": self._controller_reference(),
       "target_joint_position": _joint_state_reference(position),
       "speed_pct": speed_pct,
     },
@@ -2410,7 +2418,7 @@ class PreciseFlex:
   @evented_operation(
     "precise_flex.move_to_location",
     lambda self, location, direction, speed_pct=None, orientation=None, wrist=None, rail_position=None: {
-      "device": _controller_reference(self),
+      "device": self._controller_reference(),
       "target": _cartesian_target_reference(
         location,
         direction,
@@ -2504,7 +2512,7 @@ class PreciseFlex:
   @evented_operation(
     "precise_flex.move_through_cartesian_poses",
     lambda self, poses, speed_pct=None, blend=True: {
-      "device": _controller_reference(self),
+      "device": self._controller_reference(),
       "waypoint_count": len(poses),
       "start_target": (
         _cartesian_target_reference(
@@ -2657,7 +2665,7 @@ class PreciseFlex:
   @evented_operation(
     "precise_flex.pick_up_at_joint_position",
     lambda self, position, resource_width, finger_speed_pct=None, grasp_force=None: {
-      "device": _controller_reference(self),
+      "device": self._controller_reference(),
       "target_joint_position": _joint_state_reference(position),
       "resource_width": float(resource_width),
       "finger_speed_pct": float(
@@ -2704,7 +2712,7 @@ class PreciseFlex:
   @evented_operation(
     "precise_flex.drop_at_joint_position",
     lambda self, position, resource_width: {
-      "device": _controller_reference(self),
+      "device": self._controller_reference(),
       "target_joint_position": _joint_state_reference(position),
       "resource_width": float(resource_width),
     },
@@ -2731,7 +2739,7 @@ class PreciseFlex:
   @evented_operation(
     "precise_flex.pick_up_at_location",
     lambda self, location, direction, resource_width, finger_speed_pct=None, grasp_force=None, orientation=None, wrist=None, rail_position=None: {
-      "device": _controller_reference(self),
+      "device": self._controller_reference(),
       "target": _cartesian_target_reference(
         location,
         direction,
@@ -2808,7 +2816,7 @@ class PreciseFlex:
   @evented_operation(
     "precise_flex.drop_at_location",
     lambda self, location, direction, resource_width, orientation=None, wrist=None, rail_position=None: {
-      "device": _controller_reference(self),
+      "device": self._controller_reference(),
       "target": _cartesian_target_reference(
         location,
         direction,
@@ -2910,7 +2918,7 @@ class PreciseFlex:
 
   @evented_operation(
     "precise_flex.park",
-    lambda self: {"device": _controller_reference(self)},
+    lambda self: {"device": self._controller_reference()},
   )
   async def park(self) -> None:
     """Move to ``self.parking_position``; defaults at setup, reassignable at runtime.
