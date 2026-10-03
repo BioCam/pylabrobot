@@ -127,7 +127,7 @@ class PreciseFlexArm:
     """
     self._driver = driver
     self.profile_index: int = 1
-    self.location_index: int = 1
+    self.station_index: int = 1
     self.horizontal_compliance: bool = False
     self.horizontal_compliance_torque: int = 0
 
@@ -284,41 +284,41 @@ class PreciseFlexArm:
     """
     await self._driver.send_command(f"MoveOneAxis {int(axis)} {position} {self.profile_index}")
 
-  async def _move_to_stored_location(self, location_index: int, profile_index: int) -> None:
-    """Move to the location specified by the station index using the specified profile.
+  async def _move_to_station(self, station_index: int, profile_index: int) -> None:
+    """Move to the station using the specified profile.
 
     Args:
-      location_index: The index of the location to which the robot moves.
+      station_index: The station to which the robot moves.
       profile_index: The profile index for this move.
 
     Note:
       Requires that the robot be attached.
     """
-    await self._driver.send_command(f"move {location_index} {profile_index}")
+    await self._driver.send_command(f"move {station_index} {profile_index}")
 
-  async def _move_to_stored_location_appro(self, location_index: int, profile_index: int) -> None:
-    """Approach the location specified by the station index using the specified profile.
+  async def _move_to_station_approach(self, station_index: int, profile_index: int) -> None:
+    """Approach the station using the specified profile.
 
-    This is similar to `_move_to_stored_location` except that the Z clearance value is included.
+    This is similar to `_move_to_station` except that the Z clearance value is included.
 
     Args:
-      location_index: The index of the location to which the robot moves.
+      station_index: The station to which the robot moves.
       profile_index: The profile index for this move.
 
     Note:
       Requires that the robot be attached.
     """
-    await self._driver.send_command(f"moveAppro {location_index} {profile_index}")
+    await self._driver.send_command(f"moveAppro {station_index} {profile_index}")
 
   async def _set_joint_angles(
     self,
-    location_index: int,
+    station_index: int,
     joint_position: JointState,
   ) -> None:
-    """Set joint angles for stored location, handling rail configuration."""
+    """Set joint angles for a station, handling rail configuration."""
     if self._driver._has_rail:
       await self._driver.send_command(
-        f"locAngles {location_index} "
+        f"locAngles {station_index} "
         f"{joint_position[Axis.RAIL]} "
         f"{joint_position[Axis.BASE]} "
         f"{joint_position[Axis.SHOULDER]} "
@@ -328,7 +328,7 @@ class PreciseFlexArm:
       )
     else:
       await self._driver.send_command(
-        f"locAngles {location_index} "
+        f"locAngles {station_index} "
         f"{joint_position[Axis.BASE]} "
         f"{joint_position[Axis.SHOULDER]} "
         f"{joint_position[Axis.ELBOW]} "
@@ -1577,23 +1577,28 @@ class PreciseFlexArm:
         if should_restore_profile and original_profile is not None:
           await self.set_motion_profile_values(*original_profile)
 
-  async def dest_c(self, arg1: int = 0) -> tuple[float, float, float, float, float, float, int]:
-    """Get the destination or current Cartesian location of the robot.
+  async def _unchecked_fw_request_cartesian_destination(
+    self, mode: int = 0
+  ) -> tuple[float, float, float, float, float, float, int]:
+    """Ask the controller for its own Cartesian destination or current location.
+
+    The controller computes this answer itself. `request_gripper_pose` reads the joints and runs
+    PLR's kinematics, and is what anything relying on a Cartesian position should call.
 
     Args:
-      arg1: Selects return value. Defaults to 0.
+      mode: Selects return value. Defaults to 0.
       0 = Return current Cartesian location if robot is not moving
       1 = Return target Cartesian location of the previous or current move
 
     Returns:
       A tuple containing (X, Y, Z, yaw, pitch, roll, config)
-      If arg1 = 1 or robot is moving, returns the target location.
-      If arg1 = 0 and robot is not moving, returns the current location.
+      If mode = 1 or robot is moving, returns the target location.
+      If mode = 0 and robot is not moving, returns the current location.
     """
-    if arg1 == 0:
+    if mode == 0:
       data = await self._driver.send_command("destC")
     else:
-      data = await self._driver.send_command(f"destC {arg1}")
+      data = await self._driver.send_command(f"destC {mode}")
     parts = data.split()
     if len(parts) != 7:
       raise PreciseFlexError(-1, "Unexpected response format from destC command.")
@@ -1601,52 +1606,54 @@ class PreciseFlexArm:
     config = int(parts[6])
     return (x, y, z, yaw, pitch, roll, config)
 
-  async def dest_j(self, arg1: int = 0) -> JointState:
+  async def request_destination_joint_state(self, mode: int = 0) -> JointState:
     """Get the destination or current joint location of the robot.
 
     Args:
-      arg1: Selects return value. Defaults to 0.
+      mode: Selects return value. Defaults to 0.
       0 = Return current joint location if robot is not moving
       1 = Return target joint location of the previous or current move
 
     Returns:
       A dict mapping Axis to float values.
-      If arg1 = 1 or robot is moving, returns the target joint positions.
-      If arg1 = 0 and robot is not moving, returns the current joint positions.
+      If mode = 1 or robot is moving, returns the target joint positions.
+      If mode = 0 and robot is not moving, returns the current joint positions.
     """
-    if arg1 == 0:
+    if mode == 0:
       data = await self._driver.send_command("destJ")
     else:
-      data = await self._driver.send_command(f"destJ {arg1}")
+      data = await self._driver.send_command(f"destJ {mode}")
     parts = data.split()
     if not parts:
       raise PreciseFlexError(-1, "Unexpected response format from destJ command.")
     return self._parse_angles_response(parts)
 
-  async def here_j(self, location_index: int) -> None:
+  async def set_station_to_current_joint_state(self, station_index: int) -> None:
     """Record the current position of the selected robot into the specified Location as angles.
 
     The Location is automatically set to type "angles".
 
     Args:
-      location_index: The station index, from 1 to N_LOC.
+      station_index: The station index, from 1 to N_LOC.
     """
-    await self._driver.send_command(f"hereJ {location_index}")
+    await self._driver.send_command(f"hereJ {station_index}")
 
-  async def here_c(self, location_index: int) -> None:
+  async def _unchecked_fw_set_station_to_current_cartesian_location(
+    self, station_index: int
+  ) -> None:
     """Record the current position of the selected robot into the specified Location as Cartesian.
 
     The Location object is automatically set to type "Cartesian".
     Can be used to change the pallet origin (index 1,1,1) value.
 
     Args:
-      location_index: The station index, from 1 to N_LOC.
+      station_index: The station index, from 1 to N_LOC.
     """
-    await self._driver.send_command(f"hereC {location_index}")
+    await self._driver.send_command(f"hereC {station_index}")
 
   # -- elbow orientation change --------------------------------------------------------------------
 
-  async def change_config(
+  async def change_elbow_orientation(
     self, grip_mode: int = 0, *, close_gripper_without_force_sensing: bool = False
   ) -> None:
     """Change Robot configuration from Righty to Lefty or vice versa using customizable locations.
@@ -1673,7 +1680,7 @@ class PreciseFlexArm:
       )
     await self._driver.send_command(f"ChangeConfig {grip_mode}")
 
-  async def change_config2(
+  async def change_elbow_orientation_by_algorithm(
     self, grip_mode: int = 0, *, close_gripper_without_force_sensing: bool = False
   ) -> None:
     """Change Robot configuration from Righty to Lefty or vice versa using algorithm.
@@ -1704,26 +1711,26 @@ class PreciseFlexArm:
 
   async def _set_grip_detail(self):
     """Configure a default vertical station type for pick/place operations."""
-    await self._driver.send_command(f"StationType {self.location_index} 1 0 100 0 10")
+    await self._driver.send_command(f"StationType {self.station_index} 1 0 100 0 10")
 
   async def _pick_plate_j(self, joint_position: JointState):
     """Pick a plate from the specified position using joint coordinates."""
-    await self._set_joint_angles(self.location_index, joint_position)
+    await self._set_joint_angles(self.station_index, joint_position)
     await self._set_grip_detail()
     horizontal_compliance_int = 1 if self.horizontal_compliance else 0
     ret_code = await self._driver.send_command(
-      f"pickplate {self.location_index} {horizontal_compliance_int} {self.horizontal_compliance_torque}"
+      f"pickplate {self.station_index} {horizontal_compliance_int} {self.horizontal_compliance_torque}"
     )
     if ret_code == "0":
       raise PreciseFlexError(-1, "the force-controlled gripper detected no plate present.")
 
   async def _place_plate_j(self, joint_position: JointState):
     """Place a plate at the specified position using joint coordinates."""
-    await self._set_joint_angles(self.location_index, joint_position)
+    await self._set_joint_angles(self.station_index, joint_position)
     await self._set_grip_detail()
     horizontal_compliance_int = 1 if self.horizontal_compliance else 0
     await self._driver.send_command(
-      f"placeplate {self.location_index} {horizontal_compliance_int} {self.horizontal_compliance_torque}"
+      f"placeplate {self.station_index} {horizontal_compliance_int} {self.horizontal_compliance_torque}"
     )
 
   async def _pick_plate_c(self, cartesian_position: PreciseFlexCartesianPose):

@@ -643,7 +643,7 @@ _CASES: List[_Case] = [
   ),
   (
     "change_config",
-    lambda arm: arm.arm.change_config(1),
+    lambda arm: arm.arm.change_elbow_orientation(1),
     [
       "ChangeConfig 1",
     ],
@@ -651,7 +651,7 @@ _CASES: List[_Case] = [
   ),
   (
     "change_config2",
-    lambda arm: arm.arm.change_config2(1),
+    lambda arm: arm.arm.change_elbow_orientation_by_algorithm(1),
     [
       "ChangeConfig2 1",
     ],
@@ -1008,7 +1008,7 @@ _CASES: List[_Case] = [
   ),
   (
     "dest_c",
-    lambda arm: arm.arm.dest_c(),
+    lambda arm: arm.arm._unchecked_fw_request_cartesian_destination(),
     [
       "destC",
     ],
@@ -1016,7 +1016,7 @@ _CASES: List[_Case] = [
   ),
   (
     "dest_j",
-    lambda arm: arm.arm.dest_j(),
+    lambda arm: arm.arm.request_destination_joint_state(),
     [
       "destJ",
     ],
@@ -1024,7 +1024,7 @@ _CASES: List[_Case] = [
   ),
   (
     "here_j",
-    lambda arm: arm.arm.here_j(2),
+    lambda arm: arm.arm.set_station_to_current_joint_state(2),
     [
       "hereJ 2",
     ],
@@ -1032,7 +1032,7 @@ _CASES: List[_Case] = [
   ),
   (
     "here_c",
-    lambda arm: arm.arm.here_c(2),
+    lambda arm: arm.arm._unchecked_fw_set_station_to_current_cartesian_location(2),
     [
       "hereC 2",
     ],
@@ -1555,12 +1555,12 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
 
   async def test_changing_config_with_the_gripper_closing_is_refused(self):
     arm, fake = await self._arm()
-    for change in (arm.arm.change_config, arm.arm.change_config2):
+    for change in (arm.arm.change_elbow_orientation, arm.arm.change_elbow_orientation_by_algorithm):
       with self.subTest(change.__name__), self.assertRaisesRegex(ValueError, "without sensing"):
         await change(2)
     self.assertEqual(fake.sent, [])
-    await arm.arm.change_config(2, close_gripper_without_force_sensing=True)
-    await arm.arm.change_config2(2, close_gripper_without_force_sensing=True)
+    await arm.arm.change_elbow_orientation(2, close_gripper_without_force_sensing=True)
+    await arm.arm.change_elbow_orientation_by_algorithm(2, close_gripper_without_force_sensing=True)
     self.assertEqual(fake.sent, ["ChangeConfig 2", "ChangeConfig2 2"])
 
   async def test_recovery_leaves_an_over_open_gripper(self):
@@ -1657,6 +1657,26 @@ _DEPRECATED_KEYWORDS: List[
     lambda a: a.arm.pick_up_at_joint_state(_J, resource_width=85.0, finger_speed_percent=30),
   ),
   (
+    "dest_c",
+    lambda a: a.dest_c(arg1=0),
+    lambda a: a.arm._unchecked_fw_request_cartesian_destination(mode=0),
+  ),
+  (
+    "dest_j",
+    lambda a: a.dest_j(arg1=0),
+    lambda a: a.arm.request_destination_joint_state(mode=0),
+  ),
+  (
+    "here_j",
+    lambda a: a.here_j(location_index=2),
+    lambda a: a.arm.set_station_to_current_joint_state(station_index=2),
+  ),
+  (
+    "here_c",
+    lambda a: a.here_c(location_index=2),
+    lambda a: a.arm._unchecked_fw_set_station_to_current_cartesian_location(station_index=2),
+  ),
+  (
     "drop_at_joint_position",
     lambda a: a.drop_at_joint_position(position=_J, resource_width=85.0),
     lambda a: a.arm.drop_at_joint_state(_J, resource_width=85.0),
@@ -1681,8 +1701,12 @@ _DEPRECATED_KEYWORDS: List[
   ),
   ("stop_freedrive_mode", lambda a: a.stop_freedrive_mode(), lambda a: a.arm.stop_freedrive_mode()),
   ("halt", lambda a: a.halt(), lambda a: a.arm.halt()),
-  ("change_config", lambda a: a.change_config(1), lambda a: a.arm.change_config(1)),
-  ("change_config2", lambda a: a.change_config2(1), lambda a: a.arm.change_config2(1)),
+  ("change_config", lambda a: a.change_config(1), lambda a: a.arm.change_elbow_orientation(1)),
+  (
+    "change_config2",
+    lambda a: a.change_config2(1),
+    lambda a: a.arm.change_elbow_orientation_by_algorithm(1),
+  ),
   (
     "request_joint_limits",
     lambda a: a.request_joint_limits(),
@@ -1834,10 +1858,14 @@ _MOVED_TO_FEATURES: List[
     lambda a: a.recover_axes_within_limits(),
     lambda a: a.arm.recover_axes_within_limits(),
   ),
-  ("dest_c", lambda a: a.dest_c(), lambda a: a.arm.dest_c()),
-  ("dest_j", lambda a: a.dest_j(), lambda a: a.arm.dest_j()),
-  ("here_j", lambda a: a.here_j(2), lambda a: a.arm.here_j(2)),
-  ("here_c", lambda a: a.here_c(2), lambda a: a.arm.here_c(2)),
+  ("dest_c", lambda a: a.dest_c(), lambda a: a.arm._unchecked_fw_request_cartesian_destination()),
+  ("dest_j", lambda a: a.dest_j(), lambda a: a.arm.request_destination_joint_state()),
+  ("here_j", lambda a: a.here_j(2), lambda a: a.arm.set_station_to_current_joint_state(2)),
+  (
+    "here_c",
+    lambda a: a.here_c(2),
+    lambda a: a.arm._unchecked_fw_set_station_to_current_cartesian_location(2),
+  ),
   (
     "move_gripper",
     lambda a: a.move_gripper(110.0),
@@ -1984,16 +2012,16 @@ class TestDeprecatedDriverMembers(unittest.IsolatedAsyncioTestCase):
 
   def test_pick_and_parking_attributes(self):
     arm = _make_arm(_FakeController())
-    for name, value in (
-      ("location_index", 3),
-      ("horizontal_compliance", True),
-      ("horizontal_compliance_torque", 20),
-      ("parking_position", {Axis.SHOULDER: 0.0}),
+    for name, successor, value in (
+      ("location_index", "station_index", 3),
+      ("horizontal_compliance", "horizontal_compliance", True),
+      ("horizontal_compliance_torque", "horizontal_compliance_torque", 20),
+      ("parking_position", "parking_position", {Axis.SHOULDER: 0.0}),
     ):
       with self.subTest(name):
         with self.assertWarns(DeprecationWarning):
           setattr(arm, name, value)
-        self.assertEqual(getattr(arm.arm, name), value)
+        self.assertEqual(getattr(arm.arm, successor), value)
         with self.assertWarns(DeprecationWarning):
           self.assertEqual(getattr(arm, name), value)
     for name in ("PARKING_POSITION_BACK", "PARKING_POSITION_RIGHT", "PARKING_POSITION_FRONT"):

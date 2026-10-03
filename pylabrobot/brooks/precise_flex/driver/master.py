@@ -1178,24 +1178,46 @@ class PreciseFlex:
     return await self.arm.recover_axes_within_limits(*args, **kwargs)
 
   async def dest_c(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``arm.dest_c``."""
-    warnings.warn("`dest_c` is deprecated, use `arm.dest_c`.", DeprecationWarning, stacklevel=2)
-    return await self.arm.dest_c(*args, **kwargs)
+    """Deprecated: use ``arm.request_gripper_pose``."""
+    warnings.warn(
+      "`dest_c` is deprecated, use `arm.request_gripper_pose`.", DeprecationWarning, stacklevel=2
+    )
+    if "arg1" in kwargs:
+      kwargs["mode"] = kwargs.pop("arg1")
+    return await self.arm._unchecked_fw_request_cartesian_destination(*args, **kwargs)
 
   async def dest_j(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``arm.dest_j``."""
-    warnings.warn("`dest_j` is deprecated, use `arm.dest_j`.", DeprecationWarning, stacklevel=2)
-    return await self.arm.dest_j(*args, **kwargs)
+    """Deprecated: use ``arm.request_destination_joint_state``."""
+    warnings.warn(
+      "`dest_j` is deprecated, use `arm.request_destination_joint_state`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    if "arg1" in kwargs:
+      kwargs["mode"] = kwargs.pop("arg1")
+    return await self.arm.request_destination_joint_state(*args, **kwargs)
 
   async def here_j(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``arm.here_j``."""
-    warnings.warn("`here_j` is deprecated, use `arm.here_j`.", DeprecationWarning, stacklevel=2)
-    return await self.arm.here_j(*args, **kwargs)
+    """Deprecated: use ``arm.set_station_to_current_joint_state``."""
+    warnings.warn(
+      "`here_j` is deprecated, use `arm.set_station_to_current_joint_state`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    if "location_index" in kwargs:
+      kwargs["station_index"] = kwargs.pop("location_index")
+    return await self.arm.set_station_to_current_joint_state(*args, **kwargs)
 
   async def here_c(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``arm.here_c``."""
-    warnings.warn("`here_c` is deprecated, use `arm.here_c`.", DeprecationWarning, stacklevel=2)
-    return await self.arm.here_c(*args, **kwargs)
+    """Deprecated: use ``arm.set_station_to_current_joint_state``."""
+    warnings.warn(
+      "`here_c` is deprecated, use `arm.set_station_to_current_joint_state`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    if "location_index" in kwargs:
+      kwargs["station_index"] = kwargs.pop("location_index")
+    return await self.arm._unchecked_fw_set_station_to_current_cartesian_location(*args, **kwargs)
 
   async def move_gripper(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``gripper.move_to_jaw_position``."""
@@ -1558,18 +1580,22 @@ class PreciseFlex:
     return await self.arm.halt(*args, **kwargs)
 
   async def change_config(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``arm.change_config``."""
+    """Deprecated: use ``arm.change_elbow_orientation``."""
     warnings.warn(
-      "`change_config` is deprecated, use `arm.change_config`.", DeprecationWarning, stacklevel=2
+      "`change_config` is deprecated, use `arm.change_elbow_orientation`.",
+      DeprecationWarning,
+      stacklevel=2,
     )
-    return await self.arm.change_config(*args, **kwargs)
+    return await self.arm.change_elbow_orientation(*args, **kwargs)
 
   async def change_config2(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``arm.change_config2``."""
+    """Deprecated: use ``arm.change_elbow_orientation_by_algorithm``."""
     warnings.warn(
-      "`change_config2` is deprecated, use `arm.change_config2`.", DeprecationWarning, stacklevel=2
+      "`change_config2` is deprecated, use `arm.change_elbow_orientation_by_algorithm`.",
+      DeprecationWarning,
+      stacklevel=2,
     )
-    return await self.arm.change_config2(*args, **kwargs)
+    return await self.arm.change_elbow_orientation_by_algorithm(*args, **kwargs)
 
   async def request_joint_limits(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.request_joint_limits``."""
@@ -1759,18 +1785,18 @@ class PreciseFlex:
 
   @property
   def location_index(self) -> int:
-    """Deprecated: use ``arm.location_index``."""
+    """Deprecated: use ``arm.station_index``."""
     warnings.warn(
-      "`location_index` is deprecated, use `arm.location_index`.", DeprecationWarning, stacklevel=2
+      "`location_index` is deprecated, use `arm.station_index`.", DeprecationWarning, stacklevel=2
     )
-    return self.arm.location_index
+    return self.arm.station_index
 
   @location_index.setter
   def location_index(self, value: int) -> None:
     warnings.warn(
-      "`location_index` is deprecated, use `arm.location_index`.", DeprecationWarning, stacklevel=2
+      "`location_index` is deprecated, use `arm.station_index`.", DeprecationWarning, stacklevel=2
     )
-    self.arm.location_index = value
+    self.arm.station_index = value
 
   @property
   def horizontal_compliance(self) -> bool:
