@@ -204,6 +204,9 @@ class PreciseFlex:
     # mid-record leaves a partial record here, keeping the next read frame-aligned.
     self._vision_image_buf = bytearray()
     self.vision_server_timeout = 5.0
+    # One exchange at a time on each vision server connection, as `_io_lock` on the controller's.
+    self._vision_server_lock = asyncio.Lock()
+    self._vision_image_lock = asyncio.Lock()
     # Nullable vision capability, built at setup when a camera gripper is present; its existence is
     # the capability gate.
     self.vision: Optional[PreciseFlexVision] = None
@@ -358,7 +361,8 @@ class PreciseFlex:
   async def send_command_to_vision_server(self, command: str) -> str:
     """Write one engine command line and return its success value, raising on an error reply.
 
-    The engine's text protocol, beside ``send_command`` for the controller.
+    The engine's text protocol, beside ``send_command`` for the controller. The write and its reply
+    are one lock-held exchange, so concurrent callers cannot read each other's reply.
 
     Args:
       command: the full command line to send (the trailing CRLF is added here).
@@ -372,8 +376,9 @@ class PreciseFlex:
     """
     if self._vision_server_io is None:
       raise RuntimeError("the vision server is not connected")
-    await self._vision_server_io.write(command.encode("utf-8") + b"\r\n")
-    reply = (await self._vision_server_io.readline()).decode("utf-8", "replace").strip()
+    async with self._vision_server_lock:
+      await self._vision_server_io.write(command.encode("utf-8") + b"\r\n")
+      reply = (await self._vision_server_io.readline()).decode("utf-8", "replace").strip()
     return parse_vision_server_reply(reply)
 
   async def request_vision_server_property(self, name: str) -> str:
@@ -411,6 +416,7 @@ class PreciseFlex:
 
     Returns a record already buffered if there is one, otherwise reads until a whole record has
     arrived. Partial bytes from a timed-out read stay buffered, so the next call resumes frame-aligned.
+    One reader at a time, so concurrent callers take whole records in call order.
 
     Args:
       timeout: per-read timeout in seconds; ``vision_server_timeout`` when None.
@@ -426,16 +432,17 @@ class PreciseFlex:
     if self._vision_image_io is None:
       raise RuntimeError("the vision server is not connected")
     buf = self._vision_image_buf
-    while True:
-      record = _drain_named_record(buf)
-      if record is not None:
-        return record
-      chunk = await self._vision_image_io.read(
-        65_536, timeout=self.vision_server_timeout if timeout is None else timeout
-      )
-      if not chunk:
-        return None
-      buf += chunk
+    async with self._vision_image_lock:
+      while True:
+        record = _drain_named_record(buf)
+        if record is not None:
+          return record
+        chunk = await self._vision_image_io.read(
+          65_536, timeout=self.vision_server_timeout if timeout is None else timeout
+        )
+        if not chunk:
+          return None
+        buf += chunk
 
   # -- lifecycle -------------------------------------------------------------
 

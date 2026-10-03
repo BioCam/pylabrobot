@@ -1,3 +1,4 @@
+import asyncio
 import io
 import struct
 import unittest
@@ -146,6 +147,41 @@ class TestDriverVisionServer(unittest.IsolatedAsyncioTestCase):
       "5.3.3.0",
     )
     self.prop.write.assert_awaited_once_with(b"property get system.engineversion\r\n")
+
+  async def test_concurrent_commands_do_not_interleave(self):
+    """Two concurrent commands each keep their write paired with their own reply."""
+    events: list = []
+
+    async def write(data: bytes) -> None:
+      events.append("w")
+      await asyncio.sleep(0)
+
+    async def readline() -> bytes:
+      events.append("r")
+      await asyncio.sleep(0)
+      return b"0\r\n"
+
+    self.prop.write, self.prop.readline = write, readline
+    await asyncio.gather(
+      self.driver.send_command_to_vision_server("A"), self.driver.send_command_to_vision_server("B")
+    )
+    self.assertEqual(events, ["w", "r", "w", "r"])
+
+  async def test_concurrent_record_reads_take_records_in_call_order(self):
+    """Two concurrent readers each take a whole record, the first caller the first record."""
+    first, second = _framed(1), _framed(2)
+    chunks = iter([first[:10], first[10:], second[:10], second[10:]])
+
+    async def read(n: int, timeout: float) -> bytes:
+      await asyncio.sleep(0)
+      return next(chunks)
+
+    self.img.read = read
+    a, b = await asyncio.gather(
+      self.driver.read_next_vision_server_record(), self.driver.read_next_vision_server_record()
+    )
+    assert a is not None and b is not None
+    self.assertEqual((a[0], b[0]), ("Primary Image [1]", "Primary Image [2]"))
 
   async def test_read_next_record_returns_buffered_record(self):
     # The next complete record is framed off the stream by its announced length and returned as-is.
