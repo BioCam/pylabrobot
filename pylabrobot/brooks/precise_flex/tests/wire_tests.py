@@ -1161,14 +1161,6 @@ _CASES: List[_Case] = [
     None,
   ),
   (
-    "request_vision_tool_property",
-    lambda arm: arm.request_vision_tool_property("System", "CameraCount"),
-    [
-      "VToolProperty System CameraCount",
-    ],
-    None,
-  ),
-  (
     "move_to_location_rail_position_without_rail",
     lambda arm: arm.move_to_location(_LOC, direction=0.0, rail_position=300.0),
     [],

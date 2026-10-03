@@ -9,6 +9,7 @@ from pylabrobot.brooks.precise_flex import (
   PreciseFlex,
   PreciseFlexCartesianPose,
 )
+from pylabrobot.brooks.precise_flex.vision_backend import PreciseFlexVisionBackend
 from pylabrobot.events import EventBus, PLREvent, event_context, use_event_bus
 from pylabrobot.resources import Coordinate, Rotation
 
@@ -572,7 +573,7 @@ class TestSendCommandSerialization(unittest.IsolatedAsyncioTestCase):
     arm = _recording_arm(events)
     await asyncio.gather(
       arm.send_command("A"),
-      arm.request_vision_tool_property("led", "Brightness"),
+      PreciseFlexVisionBackend(arm).request_vision_tool_property("led", "Brightness"),
     )
     self.assertEqual([kind for kind, _ in events], ["w", "r", "w", "r"])
 

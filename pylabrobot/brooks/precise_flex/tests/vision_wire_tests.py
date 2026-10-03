@@ -138,7 +138,7 @@ _Case = Tuple[str, Callable[[PreciseFlex], Awaitable[Any]], List[str], Optional[
 _CASES: List[_Case] = [
   (
     "request_vision_tool_property",
-    lambda arm: arm.request_vision_tool_property("System", "CameraCount"),
+    lambda arm: _vision(arm).request_vision_tool_property("System", "CameraCount"),
     [
       "controller: VToolProperty System CameraCount",
     ],

@@ -36,6 +36,7 @@ if TYPE_CHECKING:
 from pylabrobot.resources import Coordinate, Rotation
 
 from .confirmed_firmware_versions import is_confirmed_vision_version
+from .errors import PreciseFlexError
 from .kinematics import PreciseFlexCartesianPose
 
 try:
@@ -343,14 +344,58 @@ class PreciseFlexVisionBackend:
 
   # -- wire primitives -----------------------------------------------------
 
-  # The vision-tool property reads/writes are transport primitives, so they live on the driver, which
-  # holds all three connections, and each call site names which server it reaches. The controller
-  # relay (``self.driver.request_vision_tool_property`` / ``_set_vision_tool_property``, tool+property
-  # split because VToolProperty's wire form is two tokens) is always present; the engine path
+  # The vision-tool property reads/writes come in two forms, one per server. The controller relay
+  # (``request_vision_tool_property`` / ``_set_vision_tool_property`` below, tool+property split
+  # because VToolProperty's wire form is two tokens) is always present; the vision server's
   # (``self.driver.request_vision_server_property`` / ``_set_vision_server_property`` with the dotted
-  # ``<tool>.<property>`` key) needs a connected engine, so its callers check
-  # ``self.driver.vision_server_connected`` first. The orchestrations below compose either. Reads are
-  # public; writes (``_set_*``) are private - reached through these vetted orchestrations.
+  # ``<tool>.<property>`` key) needs a connected server, so its callers check
+  # ``self.driver.vision_server_connected`` first. Reads are public; writes (``_set_*``) are private.
+
+  async def request_vision_tool_property(self, tool: str, property_name: str) -> str:
+    """Read a PreciseVision tool property over the controller (``VToolProperty <tool> <prop>``).
+
+    Named ``vision_`` because this is the general controller where ``tool`` already means the robot's
+    tool frame. The controller relays the read to the vision engine and replies with the BARE value
+    (no ``<code> <data>`` prefix), so it is read raw; a negative reply is a vision error code and
+    raised. The (tool, property) split is needed because VToolProperty's wire form is two tokens;
+    direct to the engine the same read is ``request_vision_server_property("<tool>.<property>")``
+    (dotted; an error reply raises there too).
+
+    Args:
+      tool: the vision tool name (e.g. ``led``, ``acq1``, or ``System`` for server properties).
+      property_name: the tool property name (e.g. ``Bank``, ``Brightness``, ``CameraCount``).
+
+    Returns:
+      The bare property value.
+
+    Raises:
+      PreciseFlexError: on a negative reply (a vision error code).
+    """
+    reply = await self.driver._locked_exchange(f"VToolProperty {tool} {property_name}")
+    if reply.startswith("-") and reply[1:].isdigit():
+      raise PreciseFlexError(int(reply), "")
+    return reply
+
+  async def _set_vision_tool_property(self, tool: str, property_name: str, value: str) -> str:
+    """Write a PreciseVision tool property over the controller (``VToolProperty <tool> <prop> <value>``).
+
+    Private: a write changes device state, so it is reached through this module's vetted
+    orchestrations, not called directly (the ``request_`` read sibling is public). Named ``vision_``
+    because this is the general controller where ``tool`` already means the robot's tool frame. The
+    (tool, property) split is needed because VToolProperty's wire form is two tokens; direct to the
+    engine the same write is ``_set_vision_server_property("<tool>.<property>", value)``. The
+    write only stores the value; run the owning tool/process to apply it. Goes through the normal
+    ``<code> <data>`` reply parser.
+
+    Args:
+      tool: the vision tool name (e.g. ``led``, ``acq1``).
+      property_name: the tool property name (e.g. ``Bank``, ``acquiremode``).
+      value: the value to write; must not contain spaces.
+
+    Returns:
+      The write reply.
+    """
+    return await self.driver.send_command(f"VToolProperty {tool} {property_name} {value}")
 
   async def _run_vision_process(self, name: str) -> str:
     """Run a vision process - the whole assembled tool pipeline (``Vprocess <name>``); no arm motion.
@@ -403,7 +448,7 @@ class PreciseFlexVisionBackend:
     Goes over the controller (``VToolProperty``), so it works without a configured engine; the
     engine-side per-camera detail is in the ``request_camera_*`` reads.
     """
-    return int(await self.driver.request_vision_tool_property("System", "CameraCount"))
+    return int(await self.request_vision_tool_property("System", "CameraCount"))
 
   async def request_vision_version(self) -> str:
     """The PreciseVision engine version (``system.engineversion``)."""
@@ -695,11 +740,11 @@ class PreciseFlexVisionBackend:
       raise ValueError(f"brightness must be 0-100, got {brightness}")
 
     if use_server == "controller":
-      await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Bank", str(led))
-      await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Brightness", str(brightness))
+      await self._set_vision_tool_property(self._LIGHT_TOOL, "Bank", str(led))
+      await self._set_vision_tool_property(self._LIGHT_TOOL, "Brightness", str(brightness))
 
       if delay is not None:
-        await self.driver._set_vision_tool_property(self._LIGHT_TOOL, "Delay", str(delay))
+        await self._set_vision_tool_property(self._LIGHT_TOOL, "Delay", str(delay))
 
       await self._run_vision_process(self._LIGHT_PROCESS)
 
@@ -815,15 +860,15 @@ class PreciseFlexVisionBackend:
     index = self._camera_index(camera)
     process_name = f"Camera{index}"
     acquire_tool = f"acq{index}"
-    await self.driver._set_vision_tool_property(acquire_tool, "acquiremode", "ACQUIRE_AND_SAVE")
+    await self._set_vision_tool_property(acquire_tool, "acquiremode", "ACQUIRE_AND_SAVE")
     if acquire_path is not None:
-      await self.driver._set_vision_tool_property(acquire_tool, "acquirepath", acquire_path)
+      await self._set_vision_tool_property(acquire_tool, "acquirepath", acquire_path)
     if acquire_prefix is not None:
-      await self.driver._set_vision_tool_property(acquire_tool, "acquireprefix", acquire_prefix)
+      await self._set_vision_tool_property(acquire_tool, "acquireprefix", acquire_prefix)
     try:
       return await self._run_vision_process(process_name)
     finally:
-      await self.driver._set_vision_tool_property(acquire_tool, "acquiremode", "NORMAL_ACQUIRE")
+      await self._set_vision_tool_property(acquire_tool, "acquiremode", "NORMAL_ACQUIRE")
 
   # -- barcode reading (BarcodeRead) ---------------------------------------
 

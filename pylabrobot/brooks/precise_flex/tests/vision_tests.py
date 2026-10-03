@@ -73,18 +73,14 @@ class TestVisionModuleDetection(unittest.TestCase):
 
 
 class TestVisionWirePrimitives(unittest.IsolatedAsyncioTestCase):
-  """The vision orchestrations over a mocked driver, asserting which driver primitive each calls.
+  """The vision orchestrations over a mocked driver, asserting the commands each sends through it.
 
-  The controller property reads/writes are now primitives on the driver (tested for their wire bytes
-  in TestControllerVisionPrimitives), so here the driver is mocked and we assert the backend delegates
-  to ``driver.request_vision_tool_property`` / ``driver._set_vision_tool_property`` with the right args.
-  """
+  The VToolProperty relay's own wire bytes are tested in TestControllerVisionPrimitives."""
 
   def setUp(self):
     self.driver = MagicMock()
     self.driver.send_command = AsyncMock(return_value="")
-    self.driver.request_vision_tool_property = AsyncMock(return_value="")
-    self.driver._set_vision_tool_property = AsyncMock(return_value="")
+    self.driver._locked_exchange = AsyncMock(return_value="")
     self.driver.vision_server_connected = False
     self.vision = PreciseFlexVisionBackend(self.driver)
 
@@ -107,10 +103,9 @@ class TestVisionWirePrimitives(unittest.IsolatedAsyncioTestCase):
     """start_led writes Bank then Brightness via the controller primitive, then runs the light process."""
     await self.vision.start_led("bottom", brightness=80)
     self.assertEqual(
-      [c.args for c in self.driver._set_vision_tool_property.await_args_list],
-      [("led", "Bank", "2"), ("led", "Brightness", "80")],
+      [c.args[0] for c in self.driver.send_command.await_args_list],
+      ["VToolProperty led Bank 2", "VToolProperty led Brightness 80", "Vprocess LightControl"],
     )
-    self.driver.send_command.assert_awaited_once_with("Vprocess LightControl")
 
   async def test_start_led_rejects_bad_camera(self):
     with self.assertRaises(ValueError):
@@ -129,8 +124,7 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.driver = MagicMock()
     self.driver.send_command = AsyncMock(return_value="")
-    self.driver.request_vision_tool_property = AsyncMock(return_value="")
-    self.driver._set_vision_tool_property = AsyncMock(return_value="")
+    self.driver._locked_exchange = AsyncMock(return_value="")
     self.driver.vision_server_connected = False
     self.vision = PreciseFlexVisionBackend(self.driver)
 
@@ -138,27 +132,27 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
     # "front" selects the acq1/Camera1 tool+process and toggles ACQUIRE_AND_SAVE around the run.
     await self.vision.save_image("front", acquire_prefix="cap", acquire_path="Images")
     self.assertEqual(
-      [c.args for c in self.driver._set_vision_tool_property.await_args_list],
+      [c.args[0] for c in self.driver.send_command.await_args_list],
       [
-        ("acq1", "acquiremode", "ACQUIRE_AND_SAVE"),
-        ("acq1", "acquirepath", "Images"),
-        ("acq1", "acquireprefix", "cap"),
-        ("acq1", "acquiremode", "NORMAL_ACQUIRE"),  # restored after the run, in the finally
+        "VToolProperty acq1 acquiremode ACQUIRE_AND_SAVE",
+        "VToolProperty acq1 acquirepath Images",
+        "VToolProperty acq1 acquireprefix cap",
+        "Vprocess Camera1",
+        "VToolProperty acq1 acquiremode NORMAL_ACQUIRE",  # restored after the run, in the finally
       ],
     )
-    self.driver.send_command.assert_awaited_once_with("Vprocess Camera1")
 
   async def test_save_image_bottom_selects_acq2_camera2(self):
     # "bottom" routes to the second acquire tool/process (acq2/Camera2).
     await self.vision.save_image("bottom")
     self.assertEqual(
-      [c.args for c in self.driver._set_vision_tool_property.await_args_list],
+      [c.args[0] for c in self.driver.send_command.await_args_list],
       [
-        ("acq2", "acquiremode", "ACQUIRE_AND_SAVE"),
-        ("acq2", "acquiremode", "NORMAL_ACQUIRE"),
+        "VToolProperty acq2 acquiremode ACQUIRE_AND_SAVE",
+        "Vprocess Camera2",
+        "VToolProperty acq2 acquiremode NORMAL_ACQUIRE",
       ],
     )
-    self.driver.send_command.assert_awaited_once_with("Vprocess Camera2")
 
   async def test_save_image_rejects_unknown_camera(self):
     # Only front/bottom (or 1/2) are valid camera selectors.
@@ -175,18 +169,17 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(value, "Code128 ABC123")
 
   async def test_request_camera_count_uses_controller_primitive(self):
-    self.driver.request_vision_tool_property = AsyncMock(return_value="2")
+    self.driver._locked_exchange = AsyncMock(return_value="2")
     self.assertEqual(await self.vision.request_camera_count(), 2)
-    self.driver.request_vision_tool_property.assert_awaited_once_with("System", "CameraCount")
+    self.driver._locked_exchange.assert_awaited_once_with("VToolProperty System CameraCount")
 
   async def test_stop_led_drives_bank_brightness_zero_then_runs_process(self):
     """stop_led is start_led at brightness 0 - same bank/process, brightness forced off."""
     await self.vision.stop_led("bottom")
     self.assertEqual(
-      [c.args for c in self.driver._set_vision_tool_property.await_args_list],
-      [("led", "Bank", "2"), ("led", "Brightness", "0")],
+      [c.args[0] for c in self.driver.send_command.await_args_list],
+      ["VToolProperty led Bank 2", "VToolProperty led Brightness 0", "Vprocess LightControl"],
     )
-    self.driver.send_command.assert_awaited_once_with("Vprocess LightControl")
 
   async def test_locate_target_sends_command_and_maps_pose(self):
     self.driver.send_command = AsyncMock(return_value="100.0 200.0 50.0 30.0 60.0 90.0")
@@ -663,28 +656,26 @@ def _controller_with_io() -> "tuple[PreciseFlex, MagicMock]":
 
 
 class TestControllerVisionPrimitives(unittest.IsolatedAsyncioTestCase):
-  """The controller's VToolProperty relay primitives on PreciseFlex, asserting their wire bytes.
-
-  These cover the read bare-value / negative-raises / 3-token-write behaviour that used to live on the
-  backend's ``vtool_property``; the backend now just delegates to these (see TestVisionWirePrimitives).
-  """
+  """The VToolProperty relay over the controller connection, asserting its wire bytes: the bare-value
+  read, the negative reply that raises, and the 3-token write."""
 
   def setUp(self):
     self.arm, self.io = _controller_with_io()
+    self.vision = PreciseFlexVisionBackend(self.arm)
 
   async def test_set_vision_tool_property_writes_three_token_command(self):
     """A write emits ``VToolProperty <tool> <prop> <value>`` and parses the normal ``0`` reply."""
-    await self.arm._set_vision_tool_property("acq1", "acquiremode", "ACQUIRE_AND_SAVE")
+    await self.vision._set_vision_tool_property("acq1", "acquiremode", "ACQUIRE_AND_SAVE")
     self.io.write.assert_awaited_once_with(b"VToolProperty acq1 acquiremode ACQUIRE_AND_SAVE\n")
 
   async def test_request_vision_tool_property_reads_bare_value(self):
     """A read emits the 2-token form and returns the raw bare reply (no ``<code>`` prefix)."""
     self.io.readline = AsyncMock(return_value=b"2\n")
-    self.assertEqual(await self.arm.request_vision_tool_property("System", "CameraCount"), "2")
+    self.assertEqual(await self.vision.request_vision_tool_property("System", "CameraCount"), "2")
     self.io.write.assert_awaited_once_with(b"VToolProperty System CameraCount\n")
 
   async def test_request_vision_tool_property_raises_on_error_code(self):
     """A bare negative reply is a vision error code, not a value, so it raises."""
     self.io.readline = AsyncMock(return_value=b"-4016\n")
     with self.assertRaises(PreciseFlexError):
-      await self.arm.request_vision_tool_property("System", "Info")
+      await self.vision.request_vision_tool_property("System", "Info")

@@ -438,54 +438,6 @@ class PreciseFlex:
       raise PreciseFlexError(replycode, data)
     return data
 
-  # -- vision tool properties (controller relay) -----------------------------
-
-  async def request_vision_tool_property(self, tool: str, property_name: str) -> str:
-    """Read a PreciseVision tool property over the controller (``VToolProperty <tool> <prop>``).
-
-    Named ``vision_`` because this is the general controller where ``tool`` already means the robot's
-    tool frame. The controller relays the read to the vision engine and replies with the BARE value
-    (no ``<code> <data>`` prefix), so it is read raw; a negative reply is a vision error code and
-    raised. The (tool, property) split is needed because VToolProperty's wire form is two tokens;
-    direct to the engine the same read is ``request_vision_server_property("<tool>.<property>")``
-    (dotted; an error reply raises there too).
-
-    Args:
-      tool: the vision tool name (e.g. ``led``, ``acq1``, or ``System`` for server properties).
-      property_name: the tool property name (e.g. ``Bank``, ``Brightness``, ``CameraCount``).
-
-    Returns:
-      The bare property value.
-
-    Raises:
-      PreciseFlexError: on a negative reply (a vision error code).
-    """
-    reply = await self._locked_exchange(f"VToolProperty {tool} {property_name}")
-    if reply.startswith("-") and reply[1:].isdigit():
-      raise PreciseFlexError(int(reply), "")
-    return reply
-
-  async def _set_vision_tool_property(self, tool: str, property_name: str, value: str) -> str:
-    """Write a PreciseVision tool property over the controller (``VToolProperty <tool> <prop> <value>``).
-
-    Private: a write changes device state, so it is reached through the vision backend's vetted
-    orchestrations, not called directly (the ``request_`` read sibling is public). Named ``vision_``
-    because this is the general controller where ``tool`` already means the robot's tool frame. The
-    (tool, property) split is needed because VToolProperty's wire form is two tokens; direct to the
-    engine the same write is ``_set_vision_server_property("<tool>.<property>", value)``. The
-    write only stores the value; run the owning tool/process to apply it. Goes through the normal
-    ``<code> <data>`` reply parser.
-
-    Args:
-      tool: the vision tool name (e.g. ``led``, ``acq1``).
-      property_name: the tool property name (e.g. ``Bank``, ``acquiremode``).
-      value: the value to write; must not contain spaces.
-
-    Returns:
-      The write reply.
-    """
-    return await self.send_command(f"VToolProperty {tool} {property_name} {value}")
-
   # -- vision server: the second server's two connections, held here ------------------------------
 
   @property
