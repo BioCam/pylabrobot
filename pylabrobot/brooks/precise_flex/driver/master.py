@@ -19,7 +19,7 @@ from typing import (
 )
 
 from pylabrobot.brooks.precise_flex import kinematics
-from pylabrobot.brooks.precise_flex.config import Axis, PreciseFlexConfiguration
+from pylabrobot.brooks.precise_flex.driver.configuration import Axis, PreciseFlexConfiguration
 from pylabrobot.brooks.precise_flex.kinematics import JointState
 from pylabrobot.events import coordinate_reference, emit_event, evented_operation
 from pylabrobot.io.socket import Socket

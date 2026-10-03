@@ -11,8 +11,8 @@ from typing import Dict, Literal
 
 from pylabrobot.brooks.precise_flex.kinematics import Axis, JointState
 
-from . import kinematics
-from .kinematics import WorkEnvelope
+from .. import kinematics
+from ..kinematics import WorkEnvelope
 
 # ---------------------------------------------------------------------------
 # Configuration - resolved once at setup

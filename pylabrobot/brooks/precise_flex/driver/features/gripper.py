@@ -14,7 +14,7 @@ from ...errors import PreciseFlexError
 from ...kinematics import Axis
 
 if TYPE_CHECKING:
-  from ...config import PreciseFlexConfiguration
+  from ..configuration import PreciseFlexConfiguration
   from ..master import PreciseFlex
 
 logger = logging.getLogger(__name__)

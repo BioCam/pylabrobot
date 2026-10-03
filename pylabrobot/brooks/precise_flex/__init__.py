@@ -26,7 +26,7 @@ would get its own sibling package under ``brooks/``, and anything shared would b
 Re-exports the public classes, so ``from pylabrobot.brooks.precise_flex import PreciseFlex`` works.
 """
 
-from pylabrobot.brooks.precise_flex.config import (
+from pylabrobot.brooks.precise_flex.driver.configuration import (
   Axis,
   PreciseFlexConfiguration,
 )
