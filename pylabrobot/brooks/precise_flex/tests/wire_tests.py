@@ -591,7 +591,7 @@ _CASES: List[_Case] = [
   ),
   (
     "zero_torque_on",
-    lambda arm: arm.arm.zero_torque(True, 3),
+    lambda arm: arm.arm.start_zero_torque(3),
     [
       "zeroTorque 1 3",
     ],
@@ -599,7 +599,7 @@ _CASES: List[_Case] = [
   ),
   (
     "zero_torque_off",
-    lambda arm: arm.arm.zero_torque(False),
+    lambda arm: arm.arm.stop_zero_torque(),
     [
       "zeroTorque 0",
     ],
@@ -1583,7 +1583,7 @@ class TestRefusals(unittest.IsolatedAsyncioTestCase):
     fake = _FakeController()
     arm = _make_arm(fake)
     with self.assertRaisesRegex(ValueError, "axis_mask"):
-      await arm.arm.zero_torque(True, 0)
+      await arm.arm.start_zero_torque(0)
     self.assertEqual(fake.sent, [])
 
 
@@ -1672,7 +1672,8 @@ _DEPRECATED_KEYWORDS: List[
   ),
   ("release_brake", lambda a: a.release_brake(2), lambda a: a.arm.release_brake(2)),
   ("set_brake", lambda a: a.set_brake(2), lambda a: a.arm.reengage_brake(2)),
-  ("zero_torque", lambda a: a.zero_torque(True, 3), lambda a: a.arm.zero_torque(True, 3)),
+  ("zero_torque_on", lambda a: a.zero_torque(True, 3), lambda a: a.arm.start_zero_torque(3)),
+  ("zero_torque_off", lambda a: a.zero_torque(False), lambda a: a.arm.stop_zero_torque()),
   (
     "start_freedrive_mode",
     lambda a: a.start_freedrive_mode([1, 2]),

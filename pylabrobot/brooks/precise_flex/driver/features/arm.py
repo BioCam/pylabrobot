@@ -882,24 +882,25 @@ class PreciseFlexArm:
     """
     await self._driver.send_command(f"setBrake {axis}")
 
-  async def zero_torque(self, enable: bool, axis_mask: int = 1) -> None:
-    """Sets or clears zero torque mode for the selected robot.
+  async def start_zero_torque(self, axis_mask: int = 1) -> None:
+    """Place axes of the selected robot in zero torque mode.
 
     Individual axes may be placed into zero torque mode while the remaining axes are servoing.
 
     Args:
-      enable: If True, enable torque mode for axes specified by axis_mask.  If False, disable torque mode for the entire robot.
-      axis_mask: The bit mask specifying the axes to be placed in torque mode when enable is True.  The mask is computed by OR'ing the axis bits: 1 = axis 1, 2 = axis 2, 4 = axis 3, 8 = axis 4, etc.  Ignored when enable is False.
+      axis_mask: The bit mask specifying the axes to be placed in torque mode. The mask is computed
+        by OR'ing the axis bits: 1 = axis 1, 2 = axis 2, 4 = axis 3, 8 = axis 4, etc.
 
     Raises:
-      ValueError: If ``enable`` is True and ``axis_mask`` names no axis.
+      ValueError: If ``axis_mask`` names no axis.
     """
-    if enable:
-      if axis_mask <= 0:
-        raise ValueError(f"axis_mask must be greater than 0, is {axis_mask}")
-      await self._driver.send_command(f"zeroTorque 1 {axis_mask}")
-    else:
-      await self._driver.send_command("zeroTorque 0")
+    if axis_mask <= 0:
+      raise ValueError(f"axis_mask must be greater than 0, is {axis_mask}")
+    await self._driver.send_command(f"zeroTorque 1 {axis_mask}")
+
+  async def stop_zero_torque(self) -> None:
+    """Take the entire robot out of zero torque mode."""
+    await self._driver.send_command("zeroTorque 0")
 
   @evented_operation(
     "precise_flex.start_freedrive",

@@ -1522,12 +1522,17 @@ class PreciseFlex:
     )
     return await self.arm.reengage_brake(*args, **kwargs)
 
-  async def zero_torque(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``arm.zero_torque``."""
+  async def zero_torque(self, enable: bool, axis_mask: int = 1) -> None:
+    """Deprecated: use ``arm.start_zero_torque`` or ``arm.stop_zero_torque``."""
     warnings.warn(
-      "`zero_torque` is deprecated, use `arm.zero_torque`.", DeprecationWarning, stacklevel=2
+      "`zero_torque` is deprecated, use `arm.start_zero_torque` or `arm.stop_zero_torque`.",
+      DeprecationWarning,
+      stacklevel=2,
     )
-    return await self.arm.zero_torque(*args, **kwargs)
+    if enable:
+      await self.arm.start_zero_torque(axis_mask)
+    else:
+      await self.arm.stop_zero_torque()
 
   async def start_freedrive_mode(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.start_freedrive_mode``."""
