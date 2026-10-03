@@ -94,7 +94,7 @@ display resource. Use `coordinate_reference()` for geometric endpoints and targe
 
 Quantitative fields use PLR's [default units](../user_guide/getting-started/units.md). Add a suffix
 only when the value deliberately uses a different representation, such as `speed_rpm` or
-`speed_pct`.
+`speed_percent`.
 
 ### Canonical vocabulary
 
@@ -365,7 +365,7 @@ emit separate resource-transfer operations when it knows the moved PLR resource.
 
 | Operation | Fields |
 | --- | --- |
-| `precise_flex.setup` | `device`, `skip_home` |
+| `precise_flex.setup` | `device`, `skip_home`, `skip_vision` |
 | `precise_flex.stop` | `device` |
 | `precise_flex.power_on` | `device` |
 | `precise_flex.power_off` | `device` |
@@ -380,21 +380,21 @@ emit separate resource-transfer operations when it knows the moved PLR resource.
 
 | Operation | Fields |
 | --- | --- |
-| `precise_flex.move_to_joint_position` | `device`, `target_joint_position`, optional `speed_pct` |
-| `precise_flex.move_to_location` | `device`, `target`, optional `speed_pct` |
-| `precise_flex.move_through_cartesian_poses` | `device`, `waypoint_count`, optional `start_target`, optional `end_target`, optional `speed_pct`, `blend` |
+| `precise_flex.move_to_joint_position` | `device`, `target_joint_position`, optional `speed_percent` |
+| `precise_flex.move_to_location` | `device`, `target`, optional `speed_percent` |
+| `precise_flex.move_through_cartesian_poses` | `device`, `waypoint_count`, optional `start_target`, optional `end_target`, optional `speed_percent`, `blend` |
 | `precise_flex.move_gripper` | `device`, `width`, `force_sensing` |
 | `precise_flex.move_gripper_joint_position` | `device`, `gripper_joint_position`, `force_sensing` |
 | `precise_flex.move_rail` | `device`, `rail_position` |
-| `precise_flex.pick_up_at_joint_position` | `device`, `target_joint_position`, `resource_width`, `finger_speed_pct`, `grasp_force` |
+| `precise_flex.pick_up_at_joint_position` | `device`, `target_joint_position`, `resource_width`, `finger_speed_percent`, `grasp_force` |
 | `precise_flex.drop_at_joint_position` | `device`, `target_joint_position`, `resource_width` |
-| `precise_flex.pick_up_at_location` | `device`, `target`, `resource_width`, `finger_speed_pct`, `grasp_force` |
+| `precise_flex.pick_up_at_location` | `device`, `target`, `resource_width`, `finger_speed_percent`, `grasp_force` |
 | `precise_flex.drop_at_location` | `device`, `target`, `resource_width` |
 
 `target_joint_position` maps axis names to positions. A Cartesian `target` contains a serialized
 `location`, approach `direction`, optional elbow `orientation`, optional `wrist`, and optional
 `rail_position`. Lengths use PLR's default unit, `grasp_force` uses the default force unit, and
-percentage values use the `_pct` suffix.
+percentage values use the `_percent` suffix.
 
 ## Diagnostic transports and firmware
 
