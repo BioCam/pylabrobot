@@ -45,13 +45,13 @@ class TestWaitForEom(unittest.IsolatedAsyncioTestCase):
     )
     d = _make_arm()
     d.send_command = AsyncMock(side_effect=lambda cmd: next(wherej))  # type: ignore[method-assign]
-    await d._wait_for_eom(poll_interval=0)  # no error == returned at the settled sample
+    await d.arm._wait_for_eom(poll_interval=0)  # no error == returned at the settled sample
 
   async def test_returns_immediately_when_already_stationary(self):
     """An idle arm (e.g. halted short of its last target) returns at once, never hangs to reach it."""
     d = _make_arm()
     d.send_command = AsyncMock(return_value="113 81 218 64 70")  # type: ignore[method-assign]  # stable every poll
-    await d._wait_for_eom(poll_interval=0)
+    await d.arm._wait_for_eom(poll_interval=0)
 
   async def test_keyboard_interrupt_halts_and_raises_operation_interrupted(self):
     """A user interrupt mid-wait sends halt on the connection and surfaces OperationInterrupted."""
@@ -66,7 +66,7 @@ class TestWaitForEom(unittest.IsolatedAsyncioTestCase):
     d = _make_arm()
     d.send_command = AsyncMock(side_effect=fake)  # type: ignore[method-assign]
     with self.assertRaises(OperationInterrupted):
-      await d._wait_for_eom(poll_interval=0)
+      await d.arm._wait_for_eom(poll_interval=0)
     self.assertTrue(any(b"halt" in c.args[0] for c in mocked(d.io.write).call_args_list))
 
   async def test_cancelled_error_halts_and_reraises(self):
@@ -82,7 +82,7 @@ class TestWaitForEom(unittest.IsolatedAsyncioTestCase):
     d = _make_arm()
     d.send_command = AsyncMock(side_effect=fake)  # type: ignore[method-assign]
     with self.assertRaises(asyncio.CancelledError):
-      await d._wait_for_eom(poll_interval=0)
+      await d.arm._wait_for_eom(poll_interval=0)
     self.assertTrue(any(b"halt" in c.args[0] for c in mocked(d.io.write).call_args_list))
 
   async def test_timeout_when_never_settles(self):
@@ -91,7 +91,7 @@ class TestWaitForEom(unittest.IsolatedAsyncioTestCase):
     d = _make_arm()
     d.send_command = AsyncMock(side_effect=lambda cmd: f"{next(n)} 0 0 0 0")  # type: ignore[method-assign]  # always changing
     with self.assertRaises(TimeoutError):
-      await d._wait_for_eom(poll_interval=0, timeout=0)
+      await d.arm._wait_for_eom(poll_interval=0, timeout=0)
 
 
 class TestInterruptHelpers(unittest.IsolatedAsyncioTestCase):

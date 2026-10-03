@@ -14,6 +14,7 @@ PreciseFlex
   :recursive:
 
     PreciseFlex
+    PreciseFlexArm
     PreciseFlexGripper
     PreciseFlexRail
     PreciseFlexVision

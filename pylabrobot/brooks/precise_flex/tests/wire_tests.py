@@ -318,7 +318,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_state",
-    lambda arm: arm.request_state(),
+    lambda arm: arm.arm.request_state(),
     [
       "state",
     ],
@@ -893,7 +893,7 @@ _CASES: List[_Case] = [
   ),
   (
     "recover_axes_within_limits",
-    lambda arm: arm.recover_axes_within_limits(),
+    lambda arm: arm.arm.recover_axes_within_limits(),
     [
       "wherej",
       "wherej",
@@ -903,7 +903,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_joint_state",
-    lambda arm: arm.request_joint_state(),
+    lambda arm: arm.arm.request_joint_state(),
     [
       "wherej",
       "wherej",
@@ -913,7 +913,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_to_joint_position",
-    lambda arm: arm.move_to_joint_position(_J),
+    lambda arm: arm.arm.move_to_joint_position(_J),
     [
       "wherej",
       "wherej",
@@ -924,7 +924,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_to_joint_position_speed",
-    lambda arm: arm.move_to_joint_position(_J, speed_pct=30),
+    lambda arm: arm.arm.move_to_joint_position(_J, speed_pct=30),
     [
       "Speed 1 30",
       "wherej",
@@ -936,7 +936,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_gripper_pose",
-    lambda arm: arm.request_gripper_pose(),
+    lambda arm: arm.arm.request_gripper_pose(),
     [
       "wherej",
       "wherej",
@@ -946,7 +946,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_to_location",
-    lambda arm: arm.move_to_location(_LOC, direction=0.0),
+    lambda arm: arm.arm.move_to_location(_LOC, direction=0.0),
     [
       "wherej",
       "wherej",
@@ -960,7 +960,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_to_location_speed",
-    lambda arm: arm.move_to_location(_LOC, direction=30.0, speed_pct=40),
+    lambda arm: arm.arm.move_to_location(_LOC, direction=30.0, speed_pct=40),
     [
       "Speed 1 40",
       "wherej",
@@ -975,7 +975,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_through_cartesian_poses",
-    lambda arm: arm.move_through_cartesian_poses(_POSES),
+    lambda arm: arm.arm.move_through_cartesian_poses(_POSES),
     [
       "wherej",
       "wherej",
@@ -992,7 +992,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_through_cartesian_poses_unblended",
-    lambda arm: arm.move_through_cartesian_poses(_POSES, speed_pct=30, blend=False),
+    lambda arm: arm.arm.move_through_cartesian_poses(_POSES, speed_pct=30, blend=False),
     [
       "Speed 1 30",
       "wherej",
@@ -1007,7 +1007,7 @@ _CASES: List[_Case] = [
   ),
   (
     "dest_c",
-    lambda arm: arm.dest_c(),
+    lambda arm: arm.arm.dest_c(),
     [
       "destC",
     ],
@@ -1015,7 +1015,7 @@ _CASES: List[_Case] = [
   ),
   (
     "dest_j",
-    lambda arm: arm.dest_j(),
+    lambda arm: arm.arm.dest_j(),
     [
       "destJ",
     ],
@@ -1023,7 +1023,7 @@ _CASES: List[_Case] = [
   ),
   (
     "here_j",
-    lambda arm: arm.here_j(2),
+    lambda arm: arm.arm.here_j(2),
     [
       "hereJ 2",
     ],
@@ -1031,7 +1031,7 @@ _CASES: List[_Case] = [
   ),
   (
     "here_c",
-    lambda arm: arm.here_c(2),
+    lambda arm: arm.arm.here_c(2),
     [
       "hereC 2",
     ],
@@ -1162,7 +1162,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_to_location_rail_position_without_rail",
-    lambda arm: arm.move_to_location(_LOC, direction=0.0, rail_position=300.0),
+    lambda arm: arm.arm.move_to_location(_LOC, direction=0.0, rail_position=300.0),
     [],
     RuntimeError,
   ),
@@ -1194,7 +1194,7 @@ _RAIL_CASES: List[_Case] = [
   ),
   (
     "rail_move_to_joint_position",
-    lambda arm: arm.move_to_joint_position(_JR),
+    lambda arm: arm.arm.move_to_joint_position(_JR),
     [
       "wherej",
       "wherej",
@@ -1205,7 +1205,7 @@ _RAIL_CASES: List[_Case] = [
   ),
   (
     "rail_move_to_location",
-    lambda arm: arm.move_to_location(_LOC, direction=0.0, rail_position=300.0),
+    lambda arm: arm.arm.move_to_location(_LOC, direction=0.0, rail_position=300.0),
     [
       "Rail 1 300.0",
       "MoveRail 1 1",
@@ -1232,7 +1232,7 @@ _RAIL_CASES: List[_Case] = [
   ),
   (
     "rail_request_joint_state",
-    lambda arm: arm.request_joint_state(),
+    lambda arm: arm.arm.request_joint_state(),
     [
       "wherej",
       "wherej",
@@ -1439,7 +1439,7 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
     await arm.setup(skip_vision=True)
     fake.sent.clear()
     fake._replies["wherej"] = "0 200 93.5 180 0 100"
-    self.assertEqual(await arm.recover_axes_within_limits(), {Axis.SHOULDER: 92.0})
+    self.assertEqual(await arm.arm.recover_axes_within_limits(), {Axis.SHOULDER: 92.0})
     self.assert_wire(
       fake.sent,
       [
@@ -1489,9 +1489,9 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
 
   async def test_recovery_speed_default_set_on_the_arm(self):
     arm, fake = await self._arm()
-    arm.default_recovery_speed_pct = 10.0
+    arm.arm.default_recovery_speed_pct = 10.0
     fake._replies["wherej"] = "0 200 93.5 180 0 100"
-    await arm.recover_axes_within_limits()
+    await arm.arm.recover_axes_within_limits()
     self.assertIn("Speed 1 10.0", fake.sent)
 
 
@@ -1533,12 +1533,14 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
   async def test_a_joint_move_that_closes_the_gripper_is_refused(self):
     arm, fake = await self._arm()
     with self.assertRaisesRegex(ValueError, "without sensing force"):
-      await arm.move_to_joint_position({Axis.GRIPPER: 90.0})
+      await arm.arm.move_to_joint_position({Axis.GRIPPER: 90.0})
     self.assertFalse(any(c.startswith("moveJ") for c in fake.sent))
 
   async def test_a_joint_move_that_closes_the_gripper_when_asked(self):
     arm, fake = await self._arm()
-    await arm.move_to_joint_position({Axis.GRIPPER: 90.0}, close_gripper_without_force_sensing=True)
+    await arm.arm.move_to_joint_position(
+      {Axis.GRIPPER: 90.0}, close_gripper_without_force_sensing=True
+    )
     self.assertEqual(fake.sent[-1], "moveJ 1 200.0 0.0 180.0 0.0 90.0")
 
   async def test_parking_that_closes_the_gripper_is_refused(self):
@@ -1561,13 +1563,13 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
   async def test_recovery_leaves_an_over_open_gripper(self):
     arm, fake = await self._arm()
     fake._replies["wherej"] = "0 200 0 180 0 136"
-    self.assertEqual(await arm.recover_axes_within_limits(), {})
+    self.assertEqual(await arm.arm.recover_axes_within_limits(), {})
     self.assertFalse(any(c.startswith("MoveOneAxis") for c in fake.sent))
 
   async def test_recovery_opens_an_over_closed_gripper(self):
     arm, fake = await self._arm()
     fake._replies["wherej"] = "0 200 0 180 0 67"
-    self.assertEqual(await arm.recover_axes_within_limits(), {Axis.GRIPPER: 70.0})
+    self.assertEqual(await arm.arm.recover_axes_within_limits(), {Axis.GRIPPER: 70.0})
     self.assertIn("MoveOneAxis 5 70.0 1", fake.sent)
 
 

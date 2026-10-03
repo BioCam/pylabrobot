@@ -93,7 +93,7 @@ class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
   async def test_gripper_event_uses_default_length_unit_field(self):
     arm = _make_arm()
     # The jaws stand closed, so the move opens them.
-    arm.request_joint_state = AsyncMock(return_value={Axis.GRIPPER: 0.0})  # type: ignore[method-assign]
+    arm.arm.request_joint_state = AsyncMock(return_value={Axis.GRIPPER: 0.0})  # type: ignore[method-assign]
     events: list[PLREvent] = []
     event_bus = EventBus()
     event_bus.subscribe(events.append)
@@ -113,7 +113,7 @@ class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
     )
     arm.io.write = AsyncMock()  # type: ignore[method-assign]
     arm.io.readline = AsyncMock(return_value=b"0\n")  # type: ignore[method-assign]
-    arm.request_joint_state = AsyncMock(return_value={Axis.GRIPPER: 0.0})  # type: ignore[method-assign]
+    arm.arm.request_joint_state = AsyncMock(return_value={Axis.GRIPPER: 0.0})  # type: ignore[method-assign]
     events: list[PLREvent] = []
     event_bus = EventBus()
     event_bus.subscribe(events.append)
@@ -154,7 +154,7 @@ class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
 class TestPreciseFlex400OutOfRangeRecovery(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.arm = _make_arm()
-    self.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
+    self.arm.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
     # Minimal stub configuration: only the soft limits the recovery logic reads.
     self.arm._configuration = MagicMock(
       soft_limits={
@@ -192,7 +192,7 @@ class TestPreciseFlex400OutOfRangeRecovery(unittest.IsolatedAsyncioTestCase):
     below-min up), shoulder before elbow per _RECOVERY_ORDER; the wrist is never auto-moved."""
     # wherej (no rail): base shoulder elbow wrist gripper - shoulder/elbow/wrist out of range.
     self._stub_transport("0 93.5 9.0 962.0 0")
-    recovered = await self.arm.recover_axes_within_limits()
+    recovered = await self.arm.arm.recover_axes_within_limits()
     self.assertEqual(recovered, {Axis.SHOULDER: 92.0, Axis.ELBOW: 13.0})  # wrist excluded
     self.assertEqual(
       self._move_one_axis_cmds(), ["MoveOneAxis 2 92.0 1", "MoveOneAxis 3 13.0 1"]
@@ -202,7 +202,7 @@ class TestPreciseFlex400OutOfRangeRecovery(unittest.IsolatedAsyncioTestCase):
     """An axis past its limit by more than max_distance is left in place (no unattended big sweep)."""
     # shoulder 120 deg is 27 past the 93 limit, beyond the 5 cap; elbow/wrist in range.
     self._stub_transport("0 120.0 30.0 0.0 0")
-    recovered = await self.arm.recover_axes_within_limits()
+    recovered = await self.arm.arm.recover_axes_within_limits()
     self.assertEqual(recovered, {})
     self.assertEqual(self._move_one_axis_cmds(), [])
 
@@ -210,7 +210,7 @@ class TestPreciseFlex400OutOfRangeRecovery(unittest.IsolatedAsyncioTestCase):
 class TestPreciseFlexParking(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.arm = _make_arm()
-    self.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
+    self.arm.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
 
   def _full_soft_limits(self) -> MagicMock:
     return MagicMock(
@@ -293,7 +293,7 @@ class TestPreciseFlexParking(unittest.IsolatedAsyncioTestCase):
 class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.arm = _make_arm()
-    self.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
+    self.arm.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
     self.current_joints = {
       Axis.BASE: 100.0,
       Axis.SHOULDER: 0.0,
@@ -308,7 +308,7 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
       orientation="right",
       wrist="ccw",
     )
-    self.arm._request_state = AsyncMock(return_value=(self.current_joints, self.current_pose))  # type: ignore[method-assign]
+    self.arm.arm._request_state = AsyncMock(return_value=(self.current_joints, self.current_pose))  # type: ignore[method-assign]
 
   def _stub_profile_transport(self, profile: str = "1 50 0 100 100 0 0 25 0") -> None:
     async def respond(command: str) -> str:
@@ -354,10 +354,10 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
         {1: 120.0, 2: 11.0, 3: 21.0, 4: 31.0, 6: 123.0},
       ],
     ) as ik:
-      await self.arm.move_through_cartesian_poses(poses)
+      await self.arm.arm.move_through_cartesian_poses(poses)
 
-    mocked(self.arm._request_state).assert_awaited_once()
-    mocked(self.arm._wait_for_eom).assert_awaited_once()
+    mocked(self.arm.arm._request_state).assert_awaited_once()
+    mocked(self.arm.arm._wait_for_eom).assert_awaited_once()
     self.assertEqual(
       self._movej_cmds(),
       [
@@ -382,7 +382,7 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
       "pylabrobot.brooks.precise_flex.driver.master.kinematics.ik",
       return_value={1: 110.0, 2: 10.0, 3: 20.0, 4: 30.0, 6: 123.0},
     ):
-      await self.arm.move_through_cartesian_poses([pose])
+      await self.arm.arm.move_through_cartesian_poses([pose])
 
     self.assertEqual(
       self._profile_cmds(),
@@ -403,32 +403,32 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
       "pylabrobot.brooks.precise_flex.driver.master.kinematics.ik",
       return_value={1: 110.0, 2: 10.0, 3: 20.0, 4: 30.0, 6: 123.0},
     ):
-      await self.arm.move_through_cartesian_poses([pose], blend=False)
+      await self.arm.arm.move_through_cartesian_poses([pose], blend=False)
 
     self.assertEqual(self._profile_cmds(), [])
     self.assertEqual(self._movej_cmds(), ["moveJ 1 110.0 10.0 20.0 30.0 70.0"])
-    mocked(self.arm._wait_for_eom).assert_awaited_once()
+    mocked(self.arm.arm._wait_for_eom).assert_awaited_once()
 
   async def test_move_through_cartesian_poses_blocks_before_motion_on_limit_failure(self):
     pose = PreciseFlexCartesianPose(
       location=Coordinate(200.0, 20.0, 110.0),
       rotation=Rotation(x=-180.0, y=90.0, z=10.0),
     )
-    self.arm._assert_within_soft_limits = MagicMock(side_effect=ValueError("bad target"))  # type: ignore[method-assign]
+    self.arm.arm._assert_within_soft_limits = MagicMock(side_effect=ValueError("bad target"))  # type: ignore[method-assign]
 
     with patch(
       "pylabrobot.brooks.precise_flex.driver.master.kinematics.ik",
       return_value={1: 110.0, 2: 10.0, 3: 20.0, 4: 30.0, 6: 123.0},
     ):
       with self.assertRaisesRegex(ValueError, "bad target"):
-        await self.arm.move_through_cartesian_poses([pose])
+        await self.arm.arm.move_through_cartesian_poses([pose])
 
     self.assertEqual(self._movej_cmds(), [])
     self.assertEqual(self._profile_cmds(), [])
-    mocked(self.arm._wait_for_eom).assert_not_awaited()
+    mocked(self.arm.arm._wait_for_eom).assert_not_awaited()
 
 
-_LOGGER = "pylabrobot.brooks.precise_flex.driver.master"
+_LOGGER = "pylabrobot.brooks.precise_flex.driver.features.arm"
 
 
 class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
@@ -436,7 +436,7 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
 
   def setUp(self):
     self.arm = _make_arm()
-    self.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
+    self.arm.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
     self.arm._configuration = MagicMock(
       soft_limits={
         Axis.SHOULDER: (-93.0, 93.0),
@@ -472,7 +472,7 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
     self.arm._recover_out_of_range = False
     self._stub("0 93.5 90.0 0.0 0")  # base shoulder elbow wrist gripper; shoulder 93.5 > 93
     with self.assertRaises(OutOfRangeOfMotionError) as ctx:
-      await self.arm.move_to_joint_position({Axis.SHOULDER: 0.0})
+      await self.arm.arm.move_to_joint_position({Axis.SHOULDER: 0.0})
     self.assertIn(Axis.SHOULDER, ctx.exception.axes)
     self.assertEqual(self._cmds("MoveOneAxis"), [])
     self.assertEqual(self._cmds("moveJ"), [])
@@ -482,7 +482,7 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
     self.arm._recover_out_of_range = True
     self._stub("0 93.5 90.0 0.0 0", recovered="0 92.0 90.0 0.0 0")
     with self.assertLogs(_LOGGER, level="INFO") as cm:
-      await self.arm.move_to_joint_position({Axis.SHOULDER: 0.0})
+      await self.arm.arm.move_to_joint_position({Axis.SHOULDER: 0.0})
     self.assertEqual(self._cmds("MoveOneAxis"), ["MoveOneAxis 2 92.0 1"])  # shoulder back in range
     self.assertEqual(len(self._cmds("moveJ")), 1)  # move retried and sent
     log = "\n".join(cm.output)
@@ -495,7 +495,7 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
     self._stub("0 120.0 90.0 0.0 0")  # shoulder 27 past the limit, beyond the recovery cap
     with self.assertLogs(_LOGGER, level="ERROR") as cm:
       with self.assertRaises(OutOfRangeOfMotionError):
-        await self.arm.move_to_joint_position({Axis.SHOULDER: 0.0})
+        await self.arm.arm.move_to_joint_position({Axis.SHOULDER: 0.0})
     self.assertEqual(self._cmds("moveJ"), [])  # never moved
     self.assertIn("auto-recovery did not clear", "\n".join(cm.output))  # ERROR before re-raise
 
@@ -503,7 +503,7 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
     """Happy path: the out-of-range check reuses the merge read, so a move issues a single wherej
     before moveJ (no redundant position read)."""
     self._stub("0 0.0 90.0 0.0 0")  # all axes in range
-    await self.arm.move_to_joint_position({Axis.SHOULDER: 10.0})
+    await self.arm.arm.move_to_joint_position({Axis.SHOULDER: 10.0})
     self.assertEqual(self._cmds("wherej"), ["wherej"])  # exactly one position read
     self.assertEqual(len(self._cmds("moveJ")), 1)
 
@@ -520,9 +520,9 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
       Axis.WRIST: 0.0,
       Axis.GRIPPER: 0.0,
     }
-    with patch.object(self.arm, "_cart_to_joints", AsyncMock(return_value=in_range)):
+    with patch.object(self.arm.arm, "_cart_to_joints", AsyncMock(return_value=in_range)):
       with self.assertRaises(OutOfRangeOfMotionError) as ctx:
-        await self.arm.move_to_location(Coordinate(400.0, 0.0, 200.0), 0.0)
+        await self.arm.arm.move_to_location(Coordinate(400.0, 0.0, 200.0), 0.0)
     self.assertIn(Axis.SHOULDER, ctx.exception.axes)
     self.assertEqual(self._cmds("moveJ"), [])
 

@@ -30,6 +30,7 @@ from pylabrobot.brooks.precise_flex.driver.configuration import (
   Axis,
   PreciseFlexConfiguration,
 )
+from pylabrobot.brooks.precise_flex.driver.features.arm import PreciseFlexArm
 from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGripper
 from pylabrobot.brooks.precise_flex.driver.features.rail import PreciseFlexRail
 from pylabrobot.brooks.precise_flex.driver.features.vision import PreciseFlexVision
@@ -56,6 +57,7 @@ __all__ = [
   "MotionProfile",
   "OutOfRangeOfMotionError",
   "PreciseFlex",
+  "PreciseFlexArm",
   "PreciseFlexCartesianPose",
   "PreciseFlexCollisionError",
   "PreciseFlexConfiguration",

@@ -148,7 +148,7 @@ class PreciseFlexGripper:
 
   async def _closes(self, units: float) -> bool:
     """Whether driving the jaws to `units` closes them, against the live gripper axis."""
-    return units < (await self._driver.request_joint_state())[Axis.GRIPPER]
+    return units < (await self._driver.arm.request_joint_state())[Axis.GRIPPER]
 
   async def _move_jaws(self, units: float, force_sensing: Optional[bool]) -> None:
     """The one path that drives the jaws: to `units` on the gripper axis.
