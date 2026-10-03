@@ -3,14 +3,17 @@ import struct
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from pylabrobot.brooks.precise_flex import vision_driver
+from pylabrobot.brooks.precise_flex import PreciseFlex, vision_backend
+from pylabrobot.brooks.precise_flex.driver.master import _drain_named_record, parse_engine_reply
 from pylabrobot.brooks.precise_flex.errors import PreciseFlexError, PreciseFlexVisionError
-from pylabrobot.brooks.precise_flex.vision_driver import (
-  PreciseVisionDriver,
-  _drain_named_record,
-  decode_jpeg,
-  parse_engine_reply,
-)
+from pylabrobot.brooks.precise_flex.vision_backend import decode_jpeg
+
+
+def _arm() -> PreciseFlex:
+  """A driver whose engine connections the test attaches as mocks."""
+  return PreciseFlex(
+    host="127.0.0.1", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=500.0
+  )
 
 
 def _record(name: str, data: bytes) -> bytes:
@@ -34,29 +37,31 @@ class TestEnginePropertyPrimitives(unittest.IsolatedAsyncioTestCase):
     self.prop = MagicMock()
     self.prop.write = AsyncMock()
     self.prop.readline = AsyncMock(return_value=b"0\r\n")
-    self.engine = PreciseVisionDriver("127.0.0.1")
-    self.engine.io_property = self.prop  # type: ignore[assignment]
+    self.engine = _arm()
+    self.engine._vision_engine_io = self.prop  # type: ignore[assignment]
 
   async def test_request_property_builds_get_and_returns_value(self):
     self.prop.readline = AsyncMock(return_value=b"0 5.3.3.0\r\n")
-    self.assertEqual(await self.engine.request_property("system.engineversion"), "5.3.3.0")
+    self.assertEqual(
+      await self.engine.request_vision_engine_property("system.engineversion"), "5.3.3.0"
+    )
     self.prop.write.assert_awaited_once_with(b"property get system.engineversion\r\n")
 
   async def test_request_property_raises_vision_error_with_code_on_negative(self):
     """A negative reply surfaces as a coded PreciseFlexVisionError (a -40xx code), not a silent None."""
     self.prop.readline = AsyncMock(return_value=b"-4017 some error\r\n")
     with self.assertRaises(PreciseFlexVisionError) as ctx:
-      await self.engine.request_property("bogus.name")
+      await self.engine.request_vision_engine_property("bogus.name")
     self.assertEqual(ctx.exception.replycode, -4017)
     self.assertIsInstance(ctx.exception, PreciseFlexError)  # still caught by the base type
 
   async def test_set_property_builds_set(self):
-    await self.engine._set_property("system.runtool", "acq1")
+    await self.engine._set_vision_engine_property("system.runtool", "acq1")
     self.prop.write.assert_awaited_once_with(b"property set system.runtool acq1\r\n")
 
   async def test_set_property_dot_joined_tool_property_writes_one_token_key(self):
     """A tool property is addressed as the dotted ``<tool>.<property>`` key (one token on the wire)."""
-    await self.engine._set_property("acq1.brightness", 4)
+    await self.engine._set_vision_engine_property("acq1.brightness", 4)
     self.prop.write.assert_awaited_once_with(b"property set acq1.brightness 4\r\n")
 
 
@@ -100,24 +105,24 @@ class TestEngineFraming(unittest.TestCase):
 
   def test_decode_jpeg_requires_pillow_and_numpy(self):
     # Without the optional imaging deps the decoder raises a clear install error, not AttributeError.
-    with patch.object(vision_driver, "np", None), patch.object(vision_driver, "PILImage", None):
+    with patch.object(vision_backend, "np", None), patch.object(vision_backend, "PILImage", None):
       with self.assertRaises(ImportError):
         decode_jpeg(b"\xff\xd8\xff\xe0jpeg\xff\xd9")
 
   def test_decode_jpeg_returns_rgb_uint8_array(self):
     # End-to-end decode (skipped when Pillow/numpy absent): a red frame decodes height-first,
     # 3-channel uint8, with the red channel dominant - i.e. RGB order, not BGR.
-    if vision_driver.PILImage is None or vision_driver.np is None:
+    if vision_backend.PILImage is None or vision_backend.np is None:
       self.skipTest("Pillow/numpy not installed")
     buf = io.BytesIO()
-    vision_driver.PILImage.new("RGB", (4, 3), (200, 0, 0)).save(buf, format="JPEG")
+    vision_backend.PILImage.new("RGB", (4, 3), (200, 0, 0)).save(buf, format="JPEG")
     arr = decode_jpeg(buf.getvalue())
     self.assertEqual(arr.shape, (3, 4, 3))  # height x width x channels
-    self.assertEqual(arr.dtype, vision_driver.np.uint8)
+    self.assertEqual(arr.dtype, vision_backend.np.uint8)
     self.assertGreater(arr[..., 0].mean(), arr[..., 2].mean())  # red > blue == RGB ordering
 
 
-class TestPreciseVisionDriver(unittest.IsolatedAsyncioTestCase):
+class TestDriverVisionEngine(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     # Configure the two engine sockets via MagicMock-typed locals, then attach them to the driver
     # (the only type-checker exceptions are the two attribute swaps).
@@ -125,28 +130,33 @@ class TestPreciseVisionDriver(unittest.IsolatedAsyncioTestCase):
     self.prop.write = AsyncMock()
     self.prop.readline = AsyncMock(return_value=b"0\r\n")
     self.img = MagicMock()
-    self.driver = PreciseVisionDriver("127.0.0.1")
-    self.driver.io_property = self.prop  # type: ignore[assignment]
-    self.driver.io_image = self.img  # type: ignore[assignment]
+    self.driver = _arm()
+    self.driver._vision_engine_io = self.prop  # type: ignore[assignment]
+    self.driver._vision_image_io = self.img  # type: ignore[assignment]
 
   async def test_send_command_writes_line_and_parses_value(self):
-    """send_command writes the command line (CRLF) and returns the parsed success value."""
+    """send_command_to_vision_engine writes the command line (CRLF) and returns the parsed success value."""
     self.prop.readline = AsyncMock(return_value=b"0 5.3.3.0\r\n")
-    self.assertEqual(await self.driver.send_command("property get system.engineversion"), "5.3.3.0")
+    self.assertEqual(
+      await self.driver.send_command_to_vision_engine("property get system.engineversion"),
+      "5.3.3.0",
+    )
     self.prop.write.assert_awaited_once_with(b"property get system.engineversion\r\n")
 
   async def test_read_next_record_returns_buffered_record(self):
     # The next complete record is framed off the stream by its announced length and returned as-is.
     jpeg = b"\xff\xd8\xff\xe0jpegbytes\xff\xd9"
     self.img.read = AsyncMock(side_effect=[_framed(1, jpeg), b""])
-    self.assertEqual(await self.driver.read_next_record(), ("Primary Image [1]", jpeg))
+    self.assertEqual(
+      await self.driver.read_next_vision_engine_record(), ("Primary Image [1]", jpeg)
+    )
 
   async def test_read_next_record_drains_buffered_records_in_order(self):
     # One socket read can carry several records; each call returns the next without re-reading.
     two = _framed(2, b"\xff\xd8\xff\xe0a\xff\xd9") + _framed(1, b"\xff\xd8\xff\xe0b\xff\xd9")
     self.img.read = AsyncMock(side_effect=[two, b""])
-    first = await self.driver.read_next_record()
-    second = await self.driver.read_next_record()
+    first = await self.driver.read_next_vision_engine_record()
+    second = await self.driver.read_next_vision_engine_record()
     assert first is not None and second is not None
     self.assertEqual((first[0], second[0]), ("Primary Image [2]", "Primary Image [1]"))
     self.img.read.assert_awaited_once()  # both records came from the one read
@@ -154,7 +164,7 @@ class TestPreciseVisionDriver(unittest.IsolatedAsyncioTestCase):
   async def test_read_next_record_returns_none_on_stream_end(self):
     # An empty read means the stream closed; signal it with None rather than blocking or raising.
     self.img.read = AsyncMock(return_value=b"")
-    self.assertIsNone(await self.driver.read_next_record())
+    self.assertIsNone(await self.driver.read_next_vision_engine_record())
 
   async def test_read_next_record_retains_partial_record_across_timeout(self):
     # A read that times out mid-record leaves the partial bytes buffered, so the next call completes
@@ -162,8 +172,8 @@ class TestPreciseVisionDriver(unittest.IsolatedAsyncioTestCase):
     whole = _framed(1, b"\xff\xd8\xff\xe0data\xff\xd9")
     self.img.read = AsyncMock(side_effect=[whole[:20], TimeoutError, whole[20:]])
     with self.assertRaises(TimeoutError):
-      await self.driver.read_next_record()
-    recovered = await self.driver.read_next_record()
+      await self.driver.read_next_vision_engine_record()
+    recovered = await self.driver.read_next_vision_engine_record()
     assert recovered is not None
     self.assertEqual(recovered[0], "Primary Image [1]")
 
@@ -171,4 +181,4 @@ class TestPreciseVisionDriver(unittest.IsolatedAsyncioTestCase):
     # A read timeout surfaces as TimeoutError for the caller (capture_image) to contextualise.
     self.img.read = AsyncMock(side_effect=TimeoutError)
     with self.assertRaises(TimeoutError):
-      await self.driver.read_next_record()
+      await self.driver.read_next_vision_engine_record()

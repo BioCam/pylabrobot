@@ -15,6 +15,7 @@ from typing import (
   NamedTuple,
   Optional,
   Sequence,
+  Tuple,
 )
 
 from pylabrobot.brooks.precise_flex import kinematics
@@ -48,6 +49,95 @@ logger = logging.getLogger(__name__)
 
 # InRange sentinel that lets the controller blend through waypoints instead of stopping at each one.
 BLEND_IN_RANGE = -1
+
+# The PreciseVision engine, the second server behind a camera-gripper arm: a text property protocol
+# on one port, and the JPEG results it pushes on another.
+ENGINE_PROPERTY_PORT = 1450  # text command/query protocol
+ENGINE_IMAGE_PORT = 1500  # binary stream carrying the pushed "Primary Image [n]" JPEG results
+
+# Result framing on :1500 (confirmed live from the 2026-06-22 capture): the engine pushes a sequence
+# of length-prefixed records, each a fixed 16-byte header then the result name then the data -
+#
+#   01 | name_len (u8) | 00 00 00 | data_len (u32 LE) | 00 00 00 00 00 00 00 | <name> | <data>
+#
+# For a "Primary Image [n]" record the data is the JPEG (FFD8...FFD9) and data_len is its exact byte
+# count (verified to land on the EOI for 52/52 frames). The stream interleaves non-image records too
+# (e.g. "VisionResults[led]" tool results), framed identically. Parsing by the announced data_len -
+# rather than scanning the payload for FFD8/FFD9 - is O(1) per record, demuxes the non-image records,
+# and never inspects the JPEG, so an embedded thumbnail or restart marker cannot mis-frame it. The
+# parser stays aligned by always consuming exactly one whole record; a freshly held stream starts on a
+# record boundary.
+_RECORD_HEADER_LEN = 16
+_MAX_IMAGE_BYTES = (
+  16 * 1024 * 1024
+)  # sanity cap: a record this large signals a desync, not a real frame
+
+
+def parse_engine_reply(reply: str) -> str:
+  """Parse an engine reply line into its success value, raising on a negative (error) reply.
+
+  Mirrors the controller transport (``PreciseFlex._ensure_successful``): a negative
+  reply is a vision error code, surfaced as a ``PreciseFlexError`` whose message looks the code up in
+  the shared error table (the vision ``-40xx`` codes are in it), rather than silently swallowed to
+  ``None``.
+
+  Args:
+    reply: a raw reply line - ``0 <value>`` on success, or a negative code (+ optional message text).
+
+  Returns:
+    The ``<value>`` of a success reply (possibly empty).
+
+  Raises:
+    PreciseFlexError: on a negative (error) reply, carrying the engine's numeric code and message.
+  """
+  code, _, rest = reply.partition(" ")
+  if code == "0":
+    return rest
+  try:
+    replycode = int(code)
+  except ValueError as e:
+    raise PreciseFlexError(-1, f"unparseable engine reply: {reply!r}") from e
+  raise PreciseFlexError(replycode, rest)
+
+
+def _drain_named_record(buf: bytearray) -> Optional[Tuple[str, bytes]]:
+  """Pop the next complete ``(name, data)`` result record from the front of ``buf``, consuming it.
+
+  Reads the engine's fixed 16-byte record header (see the module comment): the name length, the
+  little-endian ``data_len``, then ``name_len`` name bytes and exactly ``data_len`` data bytes. Parsing
+  by the announced length never inspects the payload, so a JPEG's internal markers cannot mis-frame it,
+  and the same path frames the interleaved non-image records. Assumes ``buf`` begins on a record
+  boundary, which a freshly held stream does.
+
+  Args:
+    buf: the held read buffer; a complete record is removed from its front in place.
+
+  Returns:
+    The next ``(name, data)`` record, or ``None`` while the full record has not arrived yet.
+
+  Raises:
+    ValueError: if the header is not a record start (``buf[0] != 0x01``) or declares an implausibly
+      large ``data_len`` - both signal a desynchronised stream, which has no safe silent recovery.
+  """
+  if len(buf) < _RECORD_HEADER_LEN:
+    return None
+  if buf[0] != 0x01:
+    raise ValueError(
+      f"PreciseVision image stream desync: record starts with {buf[0]:#04x}, not 0x01"
+    )
+  name_len = buf[1]
+  data_len = int.from_bytes(buf[5:9], "little")
+  if data_len > _MAX_IMAGE_BYTES:
+    raise ValueError(
+      f"PreciseVision record declares an implausible data length of {data_len} bytes"
+    )
+  end = _RECORD_HEADER_LEN + name_len + data_len
+  if len(buf) < end:
+    return None
+  name = bytes(buf[_RECORD_HEADER_LEN : _RECORD_HEADER_LEN + name_len]).decode("ascii", "replace")
+  data = bytes(buf[_RECORD_HEADER_LEN + name_len : end])
+  del buf[:end]
+  return name, data
 
 
 def _joint_state_reference(position: JointState) -> dict[str, float]:
@@ -223,6 +313,14 @@ class PreciseFlex:
     # (and why it is kept though uncontended today) is in _locked_exchange.
     self._io_lock = asyncio.Lock()
     self._vision_host = vision_host
+    # The PreciseVision engine's two connections, held here beside the controller's; None until
+    # setup opens them, which it does only for a reachable `vision_host`.
+    self._vision_engine_io: Optional[Socket] = None
+    self._vision_image_io: Optional[Socket] = None
+    # The held image stream is read in chunks and a record can span reads, so a read that times out
+    # mid-record leaves a partial record here, keeping the next read frame-aligned.
+    self._vision_image_buf = bytearray()
+    self.vision_engine_timeout = 5.0
     # Nullable vision capability, built at setup when a camera gripper is present; its existence is
     # the capability gate.
     self.vision: Optional["PreciseFlexVisionBackend"] = None
@@ -339,8 +437,8 @@ class PreciseFlex:
     tool frame. The controller relays the read to the vision engine and replies with the BARE value
     (no ``<code> <data>`` prefix), so it is read raw; a negative reply is a vision error code and
     raised. The (tool, property) split is needed because VToolProperty's wire form is two tokens;
-    direct to the engine the same read is ``PreciseVisionDriver.request_property("<tool>.<property>")``
-    (dotted, and ``None`` on error rather than raising).
+    direct to the engine the same read is ``request_vision_engine_property("<tool>.<property>")``
+    (dotted; an error reply raises there too).
 
     Args:
       tool: the vision tool name (e.g. ``led``, ``acq1``, or ``System`` for server properties).
@@ -364,7 +462,7 @@ class PreciseFlex:
     orchestrations, not called directly (the ``request_`` read sibling is public). Named ``vision_``
     because this is the general controller where ``tool`` already means the robot's tool frame. The
     (tool, property) split is needed because VToolProperty's wire form is two tokens; direct to the
-    engine the same write is ``PreciseVisionDriver._set_property("<tool>.<property>", value)``. The
+    engine the same write is ``_set_vision_engine_property("<tool>.<property>", value)``. The
     write only stores the value; run the owning tool/process to apply it. Goes through the normal
     ``<code> <data>`` reply parser.
 
@@ -377,6 +475,124 @@ class PreciseFlex:
       The write reply.
     """
     return await self.send_command(f"VToolProperty {tool} {property_name} {value}")
+
+  # -- vision engine: the second server's two connections, held here ------------------------------
+
+  @property
+  def vision_engine_connected(self) -> bool:
+    """Whether setup opened the PreciseVision engine's connections."""
+    return self._vision_engine_io is not None
+
+  async def _open_vision_engine(self, host: str) -> None:
+    """Open and hold both engine connections (property + image stream)."""
+    engine_io = Socket(
+      human_readable_device_name="PreciseVision engine (property)",
+      host=host,
+      port=ENGINE_PROPERTY_PORT,
+    )
+    image_io = Socket(
+      human_readable_device_name="PreciseVision engine (image)", host=host, port=ENGINE_IMAGE_PORT
+    )
+    await engine_io.setup()
+    await image_io.setup()
+    self._vision_engine_io, self._vision_image_io = engine_io, image_io
+    self._vision_image_buf.clear()  # a fresh stream; drop anything buffered from a previous session
+    logger.info(
+      "[PreciseVision %s] connected: property=%s image=%s",
+      host,
+      ENGINE_PROPERTY_PORT,
+      ENGINE_IMAGE_PORT,
+    )
+
+  async def _close_vision_engine(self) -> None:
+    """Close both engine connections, if they are open."""
+    if self._vision_image_io is not None:
+      await self._vision_image_io.stop()
+    if self._vision_engine_io is not None:
+      await self._vision_engine_io.stop()
+    self._vision_engine_io = self._vision_image_io = None
+
+  async def send_command_to_vision_engine(self, command: str) -> str:
+    """Write one engine command line and return its success value, raising on an error reply.
+
+    The engine's text protocol, beside ``send_command`` for the controller.
+
+    Args:
+      command: the full command line to send (the trailing CRLF is added here).
+
+    Returns:
+      The success value of the reply (possibly empty).
+
+    Raises:
+      RuntimeError: If the engine is not connected.
+      PreciseFlexError: on a negative (error) reply.
+    """
+    if self._vision_engine_io is None:
+      raise RuntimeError("the PreciseVision engine is not connected")
+    await self._vision_engine_io.write(command.encode("utf-8") + b"\r\n")
+    reply = (await self._vision_engine_io.readline()).decode("utf-8", "replace").strip()
+    return parse_engine_reply(reply)
+
+  async def request_vision_engine_property(self, name: str) -> str:
+    """Read a named engine parameter (``property get <name>``); raises on an error reply.
+
+    Args:
+      name: the engine parameter name (e.g. ``system.engineversion``, ``acq1.exposure``). May carry
+        trailing positional args (e.g. ``system.cameraname 1``).
+
+    Returns:
+      The parameter value (possibly empty).
+    """
+    return await self.send_command_to_vision_engine(f"property get {name}")
+
+  async def _set_vision_engine_property(self, name: str, value: object) -> str:
+    """Write a named engine parameter (``property set <name> <value>``); raises on an error reply.
+
+    Private: a write changes device state, so it is reached through the vision capability's vetted
+    orchestrations. The same namespace carries action triggers (``system.runtool``,
+    ``system.cameraacquire``).
+
+    Args:
+      name: the engine parameter name (e.g. ``acq1.exposure``, ``system.runtool``).
+      value: the value to write; stringified onto the command line.
+
+    Returns:
+      The reply value (possibly empty).
+    """
+    return await self.send_command_to_vision_engine(f"property set {name} {value}")
+
+  async def read_next_vision_engine_record(
+    self, timeout: Optional[float] = None
+  ) -> Optional[Tuple[str, bytes]]:
+    """Read the next complete ``(name, data)`` result off the held image stream, or None at its end.
+
+    Returns a record already buffered if there is one, otherwise reads until a whole record has
+    arrived. Partial bytes from a timed-out read stay buffered, so the next call resumes frame-aligned.
+
+    Args:
+      timeout: per-read timeout in seconds; ``vision_engine_timeout`` when None.
+
+    Returns:
+      The next ``(name, data)`` record, or None if the stream closed before a full record.
+
+    Raises:
+      RuntimeError: If the engine is not connected.
+      TimeoutError: if no bytes arrive within ``timeout``.
+      ValueError: if the stream has desynchronised (see ``_drain_named_record``).
+    """
+    if self._vision_image_io is None:
+      raise RuntimeError("the PreciseVision engine is not connected")
+    buf = self._vision_image_buf
+    while True:
+      record = _drain_named_record(buf)
+      if record is not None:
+        return record
+      chunk = await self._vision_image_io.read(
+        65_536, timeout=self.vision_engine_timeout if timeout is None else timeout
+      )
+      if not chunk:
+        return None
+      buf += chunk
 
   # -- lifecycle -------------------------------------------------------------
 
@@ -442,13 +658,10 @@ class PreciseFlex:
       vision_host: address of the PreciseVision engine, or ``None`` for controller-only vision.
     """
     from ..vision_backend import PreciseFlexVisionBackend
-    from ..vision_driver import PreciseVisionDriver
 
-    vision_driver: Optional[PreciseVisionDriver] = None
     if vision_host:
-      vision_driver = PreciseVisionDriver(vision_host)
       try:
-        await vision_driver.setup()
+        await self._open_vision_engine(vision_host)
       except Exception as exc:  # noqa: BLE001 - a missing/unreachable engine just disables image fetch
         logger.warning(
           "[PreciseFlex %s] vision engine at %s unreachable; direct image acquisition disabled: %s",
@@ -456,10 +669,7 @@ class PreciseFlex:
           vision_host,
           exc,
         )
-        vision_driver = None
-    self.vision = PreciseFlexVisionBackend(
-      self, vision_host=vision_host, vision_driver=vision_driver
-    )
+    self.vision = PreciseFlexVisionBackend(self, vision_host=vision_host)
     await self.vision.setup()  # discovers, caches, and logs the capability summary (best-effort)
 
   @evented_operation(
@@ -471,8 +681,7 @@ class PreciseFlex:
     await self.detach()
     await self.power_off_robot()
     await self._exit()
-    if self.vision is not None and self.vision.vision_driver is not None:
-      await self.vision.vision_driver.stop()  # close the held PreciseVision engine connection
+    await self._close_vision_engine()
     await self.io.stop()
     logger.info("[PreciseFlex %s] disconnected: port=%s", self.io._host, self.io._port)
 

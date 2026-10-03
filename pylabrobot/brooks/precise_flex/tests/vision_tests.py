@@ -13,7 +13,6 @@ from pylabrobot.brooks.precise_flex.vision_backend import (
   VisionConfiguration,
   requires_vision_tool,
 )
-from pylabrobot.brooks.precise_flex.vision_driver import PreciseVisionDriver
 
 
 def _make_arm() -> PreciseFlex:
@@ -86,6 +85,7 @@ class TestVisionWirePrimitives(unittest.IsolatedAsyncioTestCase):
     self.driver.send_command = AsyncMock(return_value="")
     self.driver.request_vision_tool_property = AsyncMock(return_value="")
     self.driver._set_vision_tool_property = AsyncMock(return_value="")
+    self.driver.vision_engine_connected = False
     self.vision = PreciseFlexVisionBackend(self.driver)
 
   async def test_run_vision_process_sends_named_process(self):
@@ -119,7 +119,7 @@ class TestVisionWirePrimitives(unittest.IsolatedAsyncioTestCase):
   async def test_start_led_vision_server_without_engine_raises(self):
     """use_server='vision' needs a connected engine; without one it raises rather than relaying."""
     with self.assertRaises(RuntimeError):
-      await self.vision.start_led(use_server="vision")  # this backend has no vision_driver
+      await self.vision.start_led(use_server="vision")  # no engine connected
 
 
 class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
@@ -131,6 +131,7 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
     self.driver.send_command = AsyncMock(return_value="")
     self.driver.request_vision_tool_property = AsyncMock(return_value="")
     self.driver._set_vision_tool_property = AsyncMock(return_value="")
+    self.driver.vision_engine_connected = False
     self.vision = PreciseFlexVisionBackend(self.driver)
 
   async def test_save_image_toggles_acquire_mode_around_process(self):
@@ -226,38 +227,38 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
     # The backend triggers cameraacquire, skips non-image and other-camera records off the engine
     # stream, then decodes the matching frame. "bottom" resolves to engine camera 2.
     jpeg = b"\xff\xd8\xff\xe0frame\xff\xd9"
-    engine = MagicMock()
-    engine._set_property = AsyncMock()
-    engine.read_next_record = AsyncMock(
+    self.driver.vision_engine_connected = True
+    self.driver._set_vision_engine_property = AsyncMock()
+    self.driver.read_next_vision_engine_record = AsyncMock(
       side_effect=[
         ("VisionResults[led]", b"..."),  # non-image record - skipped
         ("Primary Image [1]", b"other"),  # other camera - skipped
         ("Primary Image [2]", jpeg),  # the wanted frame
       ]
     )
-    vision = PreciseFlexVisionBackend(self.driver, vision_driver=engine)
+    vision = PreciseFlexVisionBackend(self.driver)
     with patch(
       "pylabrobot.brooks.precise_flex.vision_backend.decode_jpeg",
       side_effect=lambda d: ("decoded", d),
     ) as dec:
       out = await vision.capture_image("bottom")
-    engine._set_property.assert_awaited_once_with("system.cameraacquire", 2)
+    self.driver._set_vision_engine_property.assert_awaited_once_with("system.cameraacquire", 2)
     dec.assert_called_once_with(jpeg)
     self.assertEqual(out, ("decoded", jpeg))
 
   async def test_capture_image_raises_when_stream_ends_without_frame(self):
     # read_next_record returns None at the stream end before the wanted frame - a clear error, not None.
-    engine = MagicMock()
-    engine._set_property = AsyncMock()
-    engine.read_next_record = AsyncMock(return_value=None)
-    vision = PreciseFlexVisionBackend(self.driver, vision_driver=engine)
+    self.driver.vision_engine_connected = True
+    self.driver._set_vision_engine_property = AsyncMock()
+    self.driver.read_next_vision_engine_record = AsyncMock(return_value=None)
+    vision = PreciseFlexVisionBackend(self.driver)
     with self.assertRaises(RuntimeError):
       await vision.capture_image(1)
 
   async def test_capture_image_raises_without_engine_configured(self):
     # Calling a vision-engine method with no engine wired up is unsupported - raise, don't return None.
     with self.assertRaises(RuntimeError):
-      await self.vision.capture_image(1)  # no vision_driver on self.vision
+      await self.vision.capture_image(1)  # no engine connected
 
 
 class TestVisionSetupGating(unittest.IsolatedAsyncioTestCase):
@@ -319,14 +320,19 @@ class TestVisionSetupGating(unittest.IsolatedAsyncioTestCase):
 
 
 def _backend_with_engine() -> "tuple[PreciseFlexVisionBackend, MagicMock]":
-  """A backend wired to a real PreciseVisionDriver whose property socket is mocked, returning the
-  backend and the socket so tests can assert the :1450 command bytes and stub replies."""
+  """A backend on a real driver whose engine property connection is mocked, returning the backend
+  and the connection so tests can assert the :1450 command bytes and stub replies."""
   prop = MagicMock()
   prop.write = AsyncMock()
   prop.readline = AsyncMock(return_value=b"0\r\n")
-  engine = PreciseVisionDriver("127.0.0.1")
-  engine.io_property = prop  # type: ignore[assignment]
-  return PreciseFlexVisionBackend(MagicMock(), vision_driver=engine), prop
+  arm = PreciseFlex(
+    host="127.0.0.1",
+    gripper_length=162.0,
+    gripper_z_offset=0.0,
+    closed_gripper_position=500.0,
+  )
+  arm._vision_engine_io = prop  # type: ignore[assignment]
+  return PreciseFlexVisionBackend(arm), prop
 
 
 class TestVisionEngineCapabilities(unittest.IsolatedAsyncioTestCase):
@@ -407,7 +413,7 @@ class TestVisionEngineCapabilities(unittest.IsolatedAsyncioTestCase):
 
   async def test_engine_methods_raise_without_engine(self):
     """Engine-dependent methods raise a clear error when no engine was configured."""
-    no_engine = PreciseFlexVisionBackend(MagicMock())
+    no_engine = PreciseFlexVisionBackend(MagicMock(vision_engine_connected=False))
     with self.assertRaises(RuntimeError):
       await no_engine._run_vision_tool("acq1")
 
@@ -458,8 +464,8 @@ class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
   @staticmethod
   def _engine(*, tools, types, props, cameras, palette, projects, active, processes):
     """A MagicMock engine whose ``request_property`` answers the discovery reads from a name->reply map -
-    the boundary discover_configuration now talks to (every read goes through the engine driver's
-    ``request_property``)."""
+    the boundary discover_configuration now talks to (every read goes through the driver's
+    ``request_vision_engine_property``)."""
     replies = {
       "system.listtools": " ".join(tools),
       "system.cameracount": str(cameras),
@@ -498,8 +504,12 @@ class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
 
   async def test_discover_builds_and_caches(self):
     """Discovery populates the typed snapshot (tools with type+props, cameras, palette) and caches it."""
-    vision = PreciseFlexVisionBackend(MagicMock())
-    vision.vision_driver = self._simple_engine()  # type: ignore[assignment]
+    engine = self._simple_engine()
+    vision = PreciseFlexVisionBackend(
+      MagicMock(
+        vision_engine_connected=True, request_vision_engine_property=engine.request_property
+      )
+    )
     config = await vision.discover_configuration()
     self.assertIs(config, vision.configuration)
     self.assertTrue(config.discovered)
@@ -512,15 +522,19 @@ class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
 
   async def test_discover_without_engine_is_undiscovered(self):
     """With no engine configured, discovery returns an empty, undiscovered configuration."""
-    vision = PreciseFlexVisionBackend(MagicMock())  # vision_driver defaults to None
+    vision = PreciseFlexVisionBackend(MagicMock(vision_engine_connected=False))
     config = await vision.discover_configuration()
     self.assertFalse(config.discovered)
     self.assertEqual(config.vision_tools, {})
 
   async def test_to_dict_records_snapshot(self):
     """to_dict serialises the cached configuration for recording."""
-    vision = PreciseFlexVisionBackend(MagicMock())
-    vision.vision_driver = self._simple_engine()  # type: ignore[assignment]
+    engine = self._simple_engine()
+    vision = PreciseFlexVisionBackend(
+      MagicMock(
+        vision_engine_connected=True, request_vision_engine_property=engine.request_property
+      )
+    )
     await vision.discover_configuration()
     snapshot = vision.configuration.to_dict()
     self.assertEqual(snapshot["vision_version"], "5.3.3.0")
@@ -562,8 +576,9 @@ class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
       active="VisionTest",
       processes=["Camera1", "Camera2", "LightControl"],
     )
-    vision = PreciseFlexVisionBackend(MagicMock())
-    vision.vision_driver = e  # type: ignore[assignment]
+    vision = PreciseFlexVisionBackend(
+      MagicMock(vision_engine_connected=True, request_vision_engine_property=e.request_property)
+    )
     cfg = await vision.discover_configuration()
     self.assertEqual(set(cfg.vision_tools), set(real_types))
     self.assertEqual(cfg.vision_tools["aruco1"].type, "FiducialLocator")
