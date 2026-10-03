@@ -36,8 +36,8 @@ if TYPE_CHECKING:
 from pylabrobot.resources import Coordinate, Rotation
 
 from ...confirmed_firmware_versions import is_confirmed_vision_version
-from ...errors import PreciseFlexError
 from ...kinematics import PreciseFlexCartesianPose
+from ..errors import PreciseFlexError
 
 try:
   import numpy as np

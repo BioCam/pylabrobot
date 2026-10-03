@@ -23,7 +23,7 @@ from typing import Awaitable, Callable, Optional
 
 from pylabrobot.io.socket import Socket
 
-from .errors import OperationInterrupted
+from .driver.errors import OperationInterrupted
 
 logger = logging.getLogger(__name__)
 

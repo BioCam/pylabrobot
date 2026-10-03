@@ -4,13 +4,13 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pylabrobot.brooks.precise_flex import PreciseFlex
+from pylabrobot.brooks.precise_flex.driver.errors import PreciseFlexError, PreciseFlexVisionError
 from pylabrobot.brooks.precise_flex.driver.features import vision
 from pylabrobot.brooks.precise_flex.driver.features.vision import decode_jpeg
 from pylabrobot.brooks.precise_flex.driver.master import (
   _drain_named_record,
   parse_vision_server_reply,
 )
-from pylabrobot.brooks.precise_flex.errors import PreciseFlexError, PreciseFlexVisionError
 
 
 def _arm() -> PreciseFlex:

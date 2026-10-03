@@ -1,6 +1,6 @@
 import unittest
 
-from pylabrobot.brooks.precise_flex.errors import (
+from pylabrobot.brooks.precise_flex.driver.errors import (
   PreciseFlexCollisionError,
   PreciseFlexError,
   PreciseFlexVisionError,

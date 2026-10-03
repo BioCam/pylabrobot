@@ -10,8 +10,8 @@ from typing import TYPE_CHECKING, Optional, Tuple
 
 from pylabrobot.events import evented_operation
 
-from ...errors import PreciseFlexError
 from ...kinematics import Axis
+from ..errors import PreciseFlexError
 
 if TYPE_CHECKING:
   from ..configuration import PreciseFlexConfiguration

@@ -29,9 +29,9 @@ from ..confirmed_firmware_versions import (
   suggest_entry,
 )
 from ..data_ids import DataID, PowerState
-from ..errors import PreciseFlexError
 from ..kinematics import ElbowOrientation, PreciseFlexCartesianPose, Wrist
 from ..tcs_modules import missing_required_modules
+from .errors import PreciseFlexError
 from .features.arm import PreciseFlexArm, _cartesian_target_reference, _joint_state_reference
 from .features.gripper import PreciseFlexGripper
 from .features.rail import PreciseFlexRail
@@ -668,7 +668,7 @@ class PreciseFlex:
     """Recover after a collision / fault that stopped the arm and dropped power, leaving it usable.
 
     A collision trips an envelope error (``-3100`` hard / ``-3122`` soft, see
-    :func:`~pylabrobot.brooks.precise_flex.errors.is_collision`); the servo stops the arm itself and
+    :func:`~pylabrobot.brooks.precise_flex.driver.errors.is_collision`); the servo stops the arm itself and
     high power drops. This re-enables power, re-attaches, and re-homes (which only cycles the gripper
     when the other axes are already homed - absolute encoders retain them - so it does not sweep the
     arm), leaving it ready to move. It does **not** drive the arm to any pose; confirm the obstacle is

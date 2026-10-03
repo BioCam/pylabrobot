@@ -15,9 +15,9 @@ from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.rotation import Rotation
 
 from ... import kinematics
-from ...errors import OutOfRangeOfMotionError, PreciseFlexError
 from ...interrupt import halt_and_resync, halt_on_interrupt
 from ...kinematics import Axis, ElbowOrientation, JointState, PreciseFlexCartesianPose, Wrist
+from ..errors import OutOfRangeOfMotionError, PreciseFlexError
 from .rail import PreciseFlexRail
 
 if TYPE_CHECKING:

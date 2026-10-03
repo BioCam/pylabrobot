@@ -3,12 +3,12 @@ import unittest
 from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
-from pylabrobot.brooks.precise_flex.driver.master import PreciseFlex
-from pylabrobot.brooks.precise_flex.errors import (
+from pylabrobot.brooks.precise_flex.driver.errors import (
   OperationInterrupted,
   PreciseFlexError,
   is_collision,
 )
+from pylabrobot.brooks.precise_flex.driver.master import PreciseFlex
 from pylabrobot.brooks.precise_flex.interrupt import halt_and_resync, halt_on_interrupt
 
 
