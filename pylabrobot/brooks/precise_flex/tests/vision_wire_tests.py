@@ -9,7 +9,10 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Type
 from unittest.mock import AsyncMock, patch
 
 from pylabrobot.brooks.precise_flex import PreciseFlex
-from pylabrobot.brooks.precise_flex.vision_backend import PreciseFlexVisionBackend, StereoParameters
+from pylabrobot.brooks.precise_flex.driver.features.vision import (
+  PreciseFlexVision,
+  StereoParameters,
+)
 from pylabrobot.io.socket import Socket
 
 from .wire_tests import _REPLIES
@@ -125,7 +128,7 @@ class _FakeNetwork:
       test.addCleanup(p.stop)
 
 
-def _vision(arm: PreciseFlex) -> PreciseFlexVisionBackend:
+def _vision(arm: PreciseFlex) -> PreciseFlexVision:
   """The vision capability of an arm set up with its engine."""
   assert arm.vision is not None
   return arm.vision

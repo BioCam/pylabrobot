@@ -6,7 +6,6 @@ import logging
 import time
 import warnings
 from typing import (
-  TYPE_CHECKING,
   Callable,
   ClassVar,
   Dict,
@@ -39,9 +38,7 @@ from ..kinematics import ElbowOrientation, PreciseFlexCartesianPose, Wrist
 from ..tcs_modules import missing_required_modules
 from .features.gripper import PreciseFlexGripper
 from .features.rail import PreciseFlexRail
-
-if TYPE_CHECKING:
-  from ..vision_backend import PreciseFlexVisionBackend
+from .features.vision import PreciseFlexVision
 
 logger = logging.getLogger(__name__)
 
@@ -324,7 +321,7 @@ class PreciseFlex:
     self.vision_server_timeout = 5.0
     # Nullable vision capability, built at setup when a camera gripper is present; its existence is
     # the capability gate.
-    self.vision: Optional["PreciseFlexVisionBackend"] = None
+    self.vision: Optional[PreciseFlexVision] = None
     self.profile_index: int = 1
     self.location_index: int = 1
     self.horizontal_compliance: bool = False
@@ -621,8 +618,6 @@ class PreciseFlex:
     Args:
       vision_host: address of the PreciseVision engine, or ``None`` for controller-only vision.
     """
-    from ..vision_backend import PreciseFlexVisionBackend
-
     if vision_host:
       try:
         await self._open_vision_server(vision_host)
@@ -633,7 +628,7 @@ class PreciseFlex:
           vision_host,
           exc,
         )
-    self.vision = PreciseFlexVisionBackend(self, vision_host=vision_host)
+    self.vision = PreciseFlexVision(self, vision_host=vision_host)
     await self.vision.setup()  # discovers, caches, and logs the capability summary (best-effort)
 
   @evented_operation(

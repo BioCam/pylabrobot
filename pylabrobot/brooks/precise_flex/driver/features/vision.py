@@ -31,13 +31,13 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-  from .driver.master import PreciseFlex
+  from ..master import PreciseFlex
 
 from pylabrobot.resources import Coordinate, Rotation
 
-from .confirmed_firmware_versions import is_confirmed_vision_version
-from .errors import PreciseFlexError
-from .kinematics import PreciseFlexCartesianPose
+from ...confirmed_firmware_versions import is_confirmed_vision_version
+from ...errors import PreciseFlexError
+from ...kinematics import PreciseFlexCartesianPose
 
 try:
   import numpy as np
@@ -179,7 +179,7 @@ class VisionConfiguration:
   ``discovered`` is False when no engine was configured (no ``vision_host``), leaving the other
   fields empty. ``tool_types`` is the fixed compiled palette (what the engine can instantiate);
   ``tools`` are the instances in the active project, each with its type and property names. Populated
-  by ``PreciseFlexVisionBackend.discover_configuration`` from the engine ``request_*`` reads.
+  by ``PreciseFlexVision.discover_configuration`` from the engine ``request_*`` reads.
   """
 
   discovered: bool = False
@@ -244,7 +244,7 @@ def requires_vision_tool_type(tool_type: str) -> Callable[[F], F]:
 
   def decorator(func: F) -> F:
     @functools.wraps(func)
-    async def wrapper(self: "PreciseFlexVisionBackend", *args: object, **kwargs: object) -> object:
+    async def wrapper(self: "PreciseFlexVision", *args: object, **kwargs: object) -> object:
       config = self.configuration
       if not config.discovered:  # nothing discovered to gate against yet - let the method run
         return await func(self, *args, **kwargs)
@@ -277,7 +277,7 @@ def requires_vision_tool(name: str, *, tool_type: Optional[str] = None) -> Calla
 
   def decorator(func: F) -> F:
     @functools.wraps(func)
-    async def wrapper(self: "PreciseFlexVisionBackend", *args: object, **kwargs: object) -> object:
+    async def wrapper(self: "PreciseFlexVision", *args: object, **kwargs: object) -> object:
       config = self.configuration
       if not config.discovered:  # nothing discovered to gate against yet - let the method run
         return await func(self, *args, **kwargs)
@@ -297,11 +297,11 @@ def requires_vision_tool(name: str, *, tool_type: Optional[str] = None) -> Calla
   return decorator
 
 
-class PreciseFlexVisionBackend:
+class PreciseFlexVision:
   """IntelliGuide vision capability for a PreciseFlex with a camera gripper.
 
-  Built at setup only when a camera gripper is present, so its existence is the capability gate
-  (no per-method guards). The wire primitives translate GPL vision commands over the driver's
+  Reached as `driver.vision`, built at setup only when the controller has the IntelliGuide module,
+  so its existence is the capability gate (no per-method guards). The wire primitives translate GPL vision commands over the driver's
   transport; the orchestrations compose them. Only ``locate_target`` moves the arm. ``available``
   caches the project enumeration when present (else ``None``).
   """

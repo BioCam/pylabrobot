@@ -3,13 +3,14 @@ import struct
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from pylabrobot.brooks.precise_flex import PreciseFlex, vision_backend
+from pylabrobot.brooks.precise_flex import PreciseFlex
+from pylabrobot.brooks.precise_flex.driver.features import vision
+from pylabrobot.brooks.precise_flex.driver.features.vision import decode_jpeg
 from pylabrobot.brooks.precise_flex.driver.master import (
   _drain_named_record,
   parse_vision_server_reply,
 )
 from pylabrobot.brooks.precise_flex.errors import PreciseFlexError, PreciseFlexVisionError
-from pylabrobot.brooks.precise_flex.vision_backend import decode_jpeg
 
 
 def _arm() -> PreciseFlex:
@@ -108,20 +109,20 @@ class TestEngineFraming(unittest.TestCase):
 
   def test_decode_jpeg_requires_pillow_and_numpy(self):
     # Without the optional imaging deps the decoder raises a clear install error, not AttributeError.
-    with patch.object(vision_backend, "np", None), patch.object(vision_backend, "PILImage", None):
+    with patch.object(vision, "np", None), patch.object(vision, "PILImage", None):
       with self.assertRaises(ImportError):
         decode_jpeg(b"\xff\xd8\xff\xe0jpeg\xff\xd9")
 
   def test_decode_jpeg_returns_rgb_uint8_array(self):
     # End-to-end decode (skipped when Pillow/numpy absent): a red frame decodes height-first,
     # 3-channel uint8, with the red channel dominant - i.e. RGB order, not BGR.
-    if vision_backend.PILImage is None or vision_backend.np is None:
+    if vision.PILImage is None or vision.np is None:
       self.skipTest("Pillow/numpy not installed")
     buf = io.BytesIO()
-    vision_backend.PILImage.new("RGB", (4, 3), (200, 0, 0)).save(buf, format="JPEG")
+    vision.PILImage.new("RGB", (4, 3), (200, 0, 0)).save(buf, format="JPEG")
     arr = decode_jpeg(buf.getvalue())
     self.assertEqual(arr.shape, (3, 4, 3))  # height x width x channels
-    self.assertEqual(arr.dtype, vision_backend.np.uint8)
+    self.assertEqual(arr.dtype, vision.np.uint8)
     self.assertGreater(arr[..., 0].mean(), arr[..., 2].mean())  # red > blue == RGB ordering
 
 

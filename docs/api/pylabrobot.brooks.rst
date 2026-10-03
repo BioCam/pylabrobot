@@ -16,6 +16,7 @@ PreciseFlex
     PreciseFlex
     PreciseFlexGripper
     PreciseFlexRail
+    PreciseFlexVision
     PreciseFlexConfiguration
     PreciseFlexCartesianPose
     WorkEnvelope
