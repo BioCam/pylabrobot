@@ -390,7 +390,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_monitor_speed",
-    lambda arm: arm.request_monitor_speed(),
+    lambda arm: arm.arm.request_monitor_speed(),
     [
       "mspeed",
     ],
@@ -398,7 +398,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_monitor_speed",
-    lambda arm: arm.set_monitor_speed(50),
+    lambda arm: arm.arm.set_monitor_speed(50),
     [
       "mspeed 50",
     ],
@@ -406,7 +406,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_payload",
-    lambda arm: arm.request_payload(),
+    lambda arm: arm.arm.request_payload(),
     [
       "payload",
     ],
@@ -414,7 +414,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_payload",
-    lambda arm: arm.set_payload(25),
+    lambda arm: arm.arm.set_payload(25),
     [
       "payload 25",
     ],
@@ -422,7 +422,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_profile_speed",
-    lambda arm: arm.request_profile_speed(1),
+    lambda arm: arm.arm.request_profile_speed(1),
     [
       "Speed 1",
     ],
@@ -430,7 +430,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_profile_speed",
-    lambda arm: arm.set_profile_speed(1, 40),
+    lambda arm: arm.arm.set_profile_speed(1, 40),
     [
       "Speed 1 40",
     ],
@@ -438,7 +438,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_profile_speed2",
-    lambda arm: arm.request_profile_speed2(1),
+    lambda arm: arm.arm.request_profile_speed2(1),
     [
       "Speed2 1",
     ],
@@ -446,7 +446,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_profile_speed2",
-    lambda arm: arm.set_profile_speed2(1, 30),
+    lambda arm: arm.arm.set_profile_speed2(1, 30),
     [
       "Speed2 1 30",
     ],
@@ -454,7 +454,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_profile_acceleration",
-    lambda arm: arm.request_profile_acceleration(1),
+    lambda arm: arm.arm.request_profile_acceleration(1),
     [
       "Accel 1",
     ],
@@ -462,7 +462,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_profile_acceleration",
-    lambda arm: arm.set_profile_acceleration(1, 60),
+    lambda arm: arm.arm.set_profile_acceleration(1, 60),
     [
       "Accel 1 60",
     ],
@@ -470,7 +470,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_profile_acceleration_ramp",
-    lambda arm: arm.request_profile_acceleration_ramp(1),
+    lambda arm: arm.arm.request_profile_acceleration_ramp(1),
     [
       "AccRamp 1",
     ],
@@ -478,7 +478,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_profile_acceleration_ramp",
-    lambda arm: arm.set_profile_acceleration_ramp(1, 0.2),
+    lambda arm: arm.arm.set_profile_acceleration_ramp(1, 0.2),
     [
       "AccRamp 1 0.2",
     ],
@@ -486,7 +486,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_profile_deceleration",
-    lambda arm: arm.request_profile_deceleration(1),
+    lambda arm: arm.arm.request_profile_deceleration(1),
     [
       "Decel 1",
     ],
@@ -494,7 +494,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_profile_deceleration",
-    lambda arm: arm.set_profile_deceleration(1, 70),
+    lambda arm: arm.arm.set_profile_deceleration(1, 70),
     [
       "Decel 1 70",
     ],
@@ -502,7 +502,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_profile_deceleration_ramp",
-    lambda arm: arm.request_profile_deceleration_ramp(1),
+    lambda arm: arm.arm.request_profile_deceleration_ramp(1),
     [
       "DecRamp 1",
     ],
@@ -510,7 +510,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_profile_deceleration_ramp",
-    lambda arm: arm.set_profile_deceleration_ramp(1, 0.3),
+    lambda arm: arm.arm.set_profile_deceleration_ramp(1, 0.3),
     [
       "DecRamp 1 0.3",
     ],
@@ -518,7 +518,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_profile_in_range",
-    lambda arm: arm.request_profile_in_range(1),
+    lambda arm: arm.arm.request_profile_in_range(1),
     [
       "InRange 1",
     ],
@@ -526,7 +526,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_profile_in_range",
-    lambda arm: arm.set_profile_in_range(1, 10),
+    lambda arm: arm.arm.set_profile_in_range(1, 10),
     [
       "InRange 1 10",
     ],
@@ -534,7 +534,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_profile_straight",
-    lambda arm: arm.request_profile_straight(1),
+    lambda arm: arm.arm.request_profile_straight(1),
     [
       "Straight 1",
     ],
@@ -542,7 +542,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_profile_straight_on",
-    lambda arm: arm.set_profile_straight(1, True),
+    lambda arm: arm.arm.set_profile_straight(1, True),
     [
       "Straight 1 1",
     ],
@@ -550,7 +550,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_profile_straight_off",
-    lambda arm: arm.set_profile_straight(1, False),
+    lambda arm: arm.arm.set_profile_straight(1, False),
     [
       "Straight 1 0",
     ],
@@ -558,7 +558,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_motion_profile_values",
-    lambda arm: arm.request_motion_profile_values(1),
+    lambda arm: arm.arm.request_motion_profile_values(1),
     [
       "Profile 1",
     ],
@@ -566,7 +566,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_motion_profile_values",
-    lambda arm: arm.set_motion_profile_values(1, 40, 30, 60, 70, 0.2, 0.3, 10, True),
+    lambda arm: arm.arm.set_motion_profile_values(1, 40, 30, 60, 70, 0.2, 0.3, 10, True),
     [
       "Profile 1 40 30 60 70 0.2 0.3 10 -1",
     ],
@@ -1589,33 +1589,33 @@ _DEPRECATED_KEYWORDS: List[
 ] = [
   (
     "set_monitor_speed",
-    lambda a: a.set_monitor_speed(speed_pct=50),
-    lambda a: a.set_monitor_speed(50),
+    lambda a: a.arm.set_monitor_speed(speed_pct=50),
+    lambda a: a.arm.set_monitor_speed(50),
   ),
-  ("set_payload", lambda a: a.set_payload(payload_pct=25), lambda a: a.set_payload(25)),
+  ("set_payload", lambda a: a.arm.set_payload(payload_pct=25), lambda a: a.arm.set_payload(25)),
   (
     "set_profile_speed",
-    lambda a: a.set_profile_speed(1, speed_pct=40),
-    lambda a: a.set_profile_speed(1, 40),
+    lambda a: a.arm.set_profile_speed(1, speed_pct=40),
+    lambda a: a.arm.set_profile_speed(1, 40),
   ),
   (
     "set_profile_speed2",
-    lambda a: a.set_profile_speed2(1, speed2_pct=30),
-    lambda a: a.set_profile_speed2(1, 30),
+    lambda a: a.arm.set_profile_speed2(1, speed2_pct=30),
+    lambda a: a.arm.set_profile_speed2(1, 30),
   ),
   (
     "set_profile_acceleration",
-    lambda a: a.set_profile_acceleration(1, acceleration_pct=60),
-    lambda a: a.set_profile_acceleration(1, 60),
+    lambda a: a.arm.set_profile_acceleration(1, acceleration_pct=60),
+    lambda a: a.arm.set_profile_acceleration(1, 60),
   ),
   (
     "set_profile_deceleration",
-    lambda a: a.set_profile_deceleration(1, deceleration_pct=70),
-    lambda a: a.set_profile_deceleration(1, 70),
+    lambda a: a.arm.set_profile_deceleration(1, deceleration_pct=70),
+    lambda a: a.arm.set_profile_deceleration(1, 70),
   ),
   (
     "set_motion_profile_values",
-    lambda a: a.set_motion_profile_values(
+    lambda a: a.arm.set_motion_profile_values(
       1,
       speed_pct=40,
       speed2_pct=30,
@@ -1626,7 +1626,7 @@ _DEPRECATED_KEYWORDS: List[
       in_range=10,
       straight=True,
     ),
-    lambda a: a.set_motion_profile_values(1, 40, 30, 60, 70, 0.2, 0.3, 10, True),
+    lambda a: a.arm.set_motion_profile_values(1, 40, 30, 60, 70, 0.2, 0.3, 10, True),
   ),
   (
     "move_to_joint_position",
@@ -1695,7 +1695,7 @@ class TestDeprecatedPercentKeywords(unittest.IsolatedAsyncioTestCase):
   async def test_a_required_value_given_under_neither_name_raises(self):
     arm = _make_arm(_FakeController())
     with self.assertRaisesRegex(TypeError, "payload_percent"):
-      await arm.set_payload()
+      await arm.arm.set_payload()
 
 
 _MOVED_TO_FEATURES: List[
@@ -1747,6 +1747,104 @@ _MOVED_TO_FEATURES: List[
     lambda a: a.gripper.move_to_jaw_position_firmware_units(90.0, force_sensing=True),
   ),
   ("is_gripper_closed", lambda a: a.is_gripper_closed(), lambda a: a.gripper.sense_fully_closed()),
+  (
+    "request_monitor_speed",
+    lambda a: a.request_monitor_speed(),
+    lambda a: a.arm.request_monitor_speed(),
+  ),
+  ("set_monitor_speed", lambda a: a.set_monitor_speed(50), lambda a: a.arm.set_monitor_speed(50)),
+  ("request_payload", lambda a: a.request_payload(), lambda a: a.arm.request_payload()),
+  ("set_payload", lambda a: a.set_payload(25), lambda a: a.arm.set_payload(25)),
+  (
+    "request_profile_speed",
+    lambda a: a.request_profile_speed(1),
+    lambda a: a.arm.request_profile_speed(1),
+  ),
+  (
+    "set_profile_speed",
+    lambda a: a.set_profile_speed(1, 40),
+    lambda a: a.arm.set_profile_speed(1, 40),
+  ),
+  (
+    "request_profile_speed2",
+    lambda a: a.request_profile_speed2(1),
+    lambda a: a.arm.request_profile_speed2(1),
+  ),
+  (
+    "set_profile_speed2",
+    lambda a: a.set_profile_speed2(1, 30),
+    lambda a: a.arm.set_profile_speed2(1, 30),
+  ),
+  (
+    "request_profile_acceleration",
+    lambda a: a.request_profile_acceleration(1),
+    lambda a: a.arm.request_profile_acceleration(1),
+  ),
+  (
+    "set_profile_acceleration",
+    lambda a: a.set_profile_acceleration(1, 60),
+    lambda a: a.arm.set_profile_acceleration(1, 60),
+  ),
+  (
+    "request_profile_acceleration_ramp",
+    lambda a: a.request_profile_acceleration_ramp(1),
+    lambda a: a.arm.request_profile_acceleration_ramp(1),
+  ),
+  (
+    "set_profile_acceleration_ramp",
+    lambda a: a.set_profile_acceleration_ramp(1, 0.2),
+    lambda a: a.arm.set_profile_acceleration_ramp(1, 0.2),
+  ),
+  (
+    "request_profile_deceleration",
+    lambda a: a.request_profile_deceleration(1),
+    lambda a: a.arm.request_profile_deceleration(1),
+  ),
+  (
+    "set_profile_deceleration",
+    lambda a: a.set_profile_deceleration(1, 70),
+    lambda a: a.arm.set_profile_deceleration(1, 70),
+  ),
+  (
+    "request_profile_deceleration_ramp",
+    lambda a: a.request_profile_deceleration_ramp(1),
+    lambda a: a.arm.request_profile_deceleration_ramp(1),
+  ),
+  (
+    "set_profile_deceleration_ramp",
+    lambda a: a.set_profile_deceleration_ramp(1, 0.3),
+    lambda a: a.arm.set_profile_deceleration_ramp(1, 0.3),
+  ),
+  (
+    "request_profile_in_range",
+    lambda a: a.request_profile_in_range(1),
+    lambda a: a.arm.request_profile_in_range(1),
+  ),
+  (
+    "set_profile_in_range",
+    lambda a: a.set_profile_in_range(1, 10),
+    lambda a: a.arm.set_profile_in_range(1, 10),
+  ),
+  (
+    "request_profile_straight",
+    lambda a: a.request_profile_straight(1),
+    lambda a: a.arm.request_profile_straight(1),
+  ),
+  (
+    "set_profile_straight",
+    lambda a: a.set_profile_straight(1, True),
+    lambda a: a.arm.set_profile_straight(1, True),
+  ),
+  (
+    "request_motion_profile_values",
+    lambda a: a.request_motion_profile_values(1),
+    lambda a: a.arm.request_motion_profile_values(1),
+  ),
+  (
+    "set_motion_profile_values",
+    lambda a: a.set_motion_profile_values(1, 40, 30, 60, 70, 0.2, 0.3, 10, True),
+    lambda a: a.arm.set_motion_profile_values(1, 40, 30, 60, 70, 0.2, 0.3, 10, True),
+  ),
 ]
 
 
@@ -1781,6 +1879,14 @@ class TestDeprecatedDriverMembers(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(got, expected)
     with self.assertWarns(DeprecationWarning), self.assertRaises(RuntimeError):
       await self._sent(lambda a: a.move_rail(250.0))
+
+  def test_profile_index(self):
+    arm = _make_arm(_FakeController())
+    with self.assertWarns(DeprecationWarning):
+      arm.profile_index = 2
+    self.assertEqual(arm.arm.profile_index, 2)
+    with self.assertWarns(DeprecationWarning):
+      self.assertEqual(arm.profile_index, 2)
 
   async def test_gripper_attributes(self):
     arm = _make_arm(_FakeController())

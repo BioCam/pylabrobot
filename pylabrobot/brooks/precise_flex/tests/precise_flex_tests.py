@@ -175,7 +175,7 @@ class TestPreciseFlex400OutOfRangeRecovery(unittest.IsolatedAsyncioTestCase):
       if command == "wherej":
         return wherej
       if command.startswith("Speed "):
-        return f"{self.arm.profile_index} 50.0"
+        return f"{self.arm.arm.profile_index} 50.0"
       return ""
 
     self.arm.send_command = AsyncMock(side_effect=respond)  # type: ignore[method-assign]
@@ -453,7 +453,7 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
       if command == "wherej":
         return recovered if (state["recovered"] and recovered) else out_of_range
       if command.startswith("Speed "):
-        return f"{self.arm.profile_index} 50.0"
+        return f"{self.arm.arm.profile_index} 50.0"
       if command.startswith("MoveOneAxis"):
         state["recovered"] = True
       return ""

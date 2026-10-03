@@ -9,8 +9,8 @@ warnings.warn(
   stacklevel=2,
 )
 
-from pylabrobot.brooks.precise_flex.driver.features.arm import BLEND_IN_RANGE  # noqa: E402, F401
-from pylabrobot.brooks.precise_flex.driver.master import (  # noqa: E402, F401
+from pylabrobot.brooks.precise_flex.driver.features.arm import (  # noqa: E402, F401
+  BLEND_IN_RANGE,
   MotionProfile,
-  PreciseFlex,
 )
+from pylabrobot.brooks.precise_flex.driver.master import PreciseFlex  # noqa: E402, F401
