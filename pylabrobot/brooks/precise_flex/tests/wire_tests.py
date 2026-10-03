@@ -583,7 +583,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_brake",
-    lambda arm: arm.arm.set_brake(2),
+    lambda arm: arm.arm.reengage_brake(2),
     [
       "setBrake 2",
     ],
@@ -914,7 +914,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_to_joint_position",
-    lambda arm: arm.arm.move_to_joint_position(_J),
+    lambda arm: arm.arm.move_to_joint_state(_J),
     [
       "wherej",
       "wherej",
@@ -925,7 +925,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_to_joint_position_speed",
-    lambda arm: arm.arm.move_to_joint_position(_J, speed_percent=30),
+    lambda arm: arm.arm.move_to_joint_state(_J, speed_percent=30),
     [
       "Speed 1 30",
       "wherej",
@@ -1096,7 +1096,7 @@ _CASES: List[_Case] = [
   ),
   (
     "pick_up_at_joint_position",
-    lambda arm: arm.arm.pick_up_at_joint_position(_J, resource_width=85.0),
+    lambda arm: arm.arm.pick_up_at_joint_state(_J, resource_width=85.0),
     [
       "GraspData 85.0 50.0 10.0",
       "locAngles 1 200.0 10.0 170.0 20.0 100.0",
@@ -1107,7 +1107,7 @@ _CASES: List[_Case] = [
   ),
   (
     "drop_at_joint_position",
-    lambda arm: arm.arm.drop_at_joint_position(_J, resource_width=85.0),
+    lambda arm: arm.arm.drop_at_joint_state(_J, resource_width=85.0),
     [
       "locAngles 1 200.0 10.0 170.0 20.0 100.0",
       "StationType 1 1 0 100 0 10",
@@ -1197,7 +1197,7 @@ _RAIL_CASES: List[_Case] = [
   ),
   (
     "rail_move_to_joint_position",
-    lambda arm: arm.arm.move_to_joint_position(_JR),
+    lambda arm: arm.arm.move_to_joint_state(_JR),
     [
       "wherej",
       "wherej",
@@ -1478,7 +1478,7 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
     arm, fake = await self._arm()
     arm.gripper.default_finger_speed_percent = 30.0
     arm.gripper.default_grasp_force = 5.0
-    await arm.arm.pick_up_at_joint_position(_J, resource_width=85.0)
+    await arm.arm.pick_up_at_joint_state(_J, resource_width=85.0)
     self.assertEqual(fake.sent[0], "GraspData 85.0 30.0 5.0")
 
   async def test_grasp_default_set_on_the_class(self):
@@ -1536,12 +1536,12 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
   async def test_a_joint_move_that_closes_the_gripper_is_refused(self):
     arm, fake = await self._arm()
     with self.assertRaisesRegex(ValueError, "without sensing force"):
-      await arm.arm.move_to_joint_position({Axis.GRIPPER: 90.0})
+      await arm.arm.move_to_joint_state({Axis.GRIPPER: 90.0})
     self.assertFalse(any(c.startswith("moveJ") for c in fake.sent))
 
   async def test_a_joint_move_that_closes_the_gripper_when_asked(self):
     arm, fake = await self._arm()
-    await arm.arm.move_to_joint_position(
+    await arm.arm.move_to_joint_state(
       {Axis.GRIPPER: 90.0}, close_gripper_without_force_sensing=True
     )
     self.assertEqual(fake.sent[-1], "moveJ 1 200.0 0.0 180.0 0.0 90.0")
@@ -1633,8 +1633,8 @@ _DEPRECATED_KEYWORDS: List[
   ),
   (
     "move_to_joint_position",
-    lambda a: a.arm.move_to_joint_position(_J, speed_pct=30),
-    lambda a: a.arm.move_to_joint_position(_J, speed_percent=30),
+    lambda a: a.move_to_joint_position(position=_J, speed_pct=30),
+    lambda a: a.arm.move_to_joint_state(_J, speed_percent=30),
   ),
   (
     "move_to_location",
@@ -1653,8 +1653,13 @@ _DEPRECATED_KEYWORDS: List[
   ),
   (
     "pick_up_at_joint_position",
-    lambda a: a.arm.pick_up_at_joint_position(_J, resource_width=85.0, finger_speed_pct=30),
-    lambda a: a.arm.pick_up_at_joint_position(_J, resource_width=85.0, finger_speed_percent=30),
+    lambda a: a.pick_up_at_joint_position(position=_J, resource_width=85.0, finger_speed_pct=30),
+    lambda a: a.arm.pick_up_at_joint_state(_J, resource_width=85.0, finger_speed_percent=30),
+  ),
+  (
+    "drop_at_joint_position",
+    lambda a: a.drop_at_joint_position(position=_J, resource_width=85.0),
+    lambda a: a.arm.drop_at_joint_state(_J, resource_width=85.0),
   ),
   (
     "pick_up_at_location",
@@ -1666,7 +1671,7 @@ _DEPRECATED_KEYWORDS: List[
     ),
   ),
   ("release_brake", lambda a: a.release_brake(2), lambda a: a.arm.release_brake(2)),
-  ("set_brake", lambda a: a.set_brake(2), lambda a: a.arm.set_brake(2)),
+  ("set_brake", lambda a: a.set_brake(2), lambda a: a.arm.reengage_brake(2)),
   ("zero_torque", lambda a: a.zero_torque(True, 3), lambda a: a.arm.zero_torque(True, 3)),
   (
     "start_freedrive_mode",
@@ -1738,12 +1743,12 @@ _DEPRECATED_KEYWORDS: List[
   (
     "pick_up_at_joint_position",
     lambda a: a.pick_up_at_joint_position(_J, resource_width=85.0),
-    lambda a: a.arm.pick_up_at_joint_position(_J, resource_width=85.0),
+    lambda a: a.arm.pick_up_at_joint_state(_J, resource_width=85.0),
   ),
   (
     "drop_at_joint_position",
     lambda a: a.drop_at_joint_position(_J, resource_width=85.0),
-    lambda a: a.arm.drop_at_joint_position(_J, resource_width=85.0),
+    lambda a: a.arm.drop_at_joint_state(_J, resource_width=85.0),
   ),
   (
     "pick_up_at_location",
@@ -1811,7 +1816,7 @@ _MOVED_TO_FEATURES: List[
   (
     "move_to_joint_position",
     lambda a: a.move_to_joint_position(_J, speed_pct=30),
-    lambda a: a.arm.move_to_joint_position(_J, speed_percent=30),
+    lambda a: a.arm.move_to_joint_state(_J, speed_percent=30),
   ),
   (
     "move_to_location",

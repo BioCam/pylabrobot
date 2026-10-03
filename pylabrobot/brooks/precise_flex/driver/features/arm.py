@@ -871,8 +871,8 @@ class PreciseFlexArm:
     """
     await self._driver.send_command(f"releaseBrake {axis}")
 
-  async def set_brake(self, axis: int) -> None:
-    """Set the axis brake.
+  async def reengage_brake(self, axis: int) -> None:
+    """Re-engage the axis brake.
 
     Overrides the normal operation of the brake. It is important not to set a brake on an
     axis that is moving as it may damage the brake or damage the motor.
@@ -1285,7 +1285,7 @@ class PreciseFlexArm:
   ) -> None:
     """The single guarded path to the raw ``_move_j`` primitive: read the live pose, check it and
     the target against the soft limits, send the move, and on out-of-range recover once and retry.
-    Both ``move_to_joint_position`` (a partial spec merged over the live pose) and
+    Both ``move_to_joint_state`` (a partial spec merged over the live pose) and
     ``move_to_location`` (a full pose from IK) funnel through here, so no commanded move reaches
     ``_move_j`` unchecked.
 
@@ -1335,40 +1335,33 @@ class PreciseFlexArm:
 
   @evented_operation(
     "precise_flex.move_to_joint_position",
-    lambda self, position, speed_percent=None, speed_pct=None: {
+    lambda self, joint_state, speed_percent=None: {
       "device": self._driver._controller_reference(),
-      "target_joint_position": _joint_state_reference(position),
-      "speed_percent": speed_percent if speed_pct is None else speed_pct,
+      "target_joint_position": _joint_state_reference(joint_state),
+      "speed_percent": speed_percent,
     },
   )
-  async def move_to_joint_position(
+  async def move_to_joint_state(
     self,
-    position: JointState,
+    joint_state: JointState,
     speed_percent: Optional[float] = None,
     *,
     close_gripper_without_force_sensing: bool = False,
-    speed_pct: Optional[float] = None,
   ) -> None:
-    """Move the arm to the specified joint position. A partial spec is merged over the live pose;
+    """Move the arm to the specified joint state. A partial spec is merged over the live pose;
     the move is guarded against out-of-range axes (see ``_guarded_move_j``).
 
     Args:
-      position: Target joint state. Omitted axes keep their live values.
+      joint_state: Target joint state. Omitted axes keep their live values.
       speed_percent: Movement speed override as a percentage (0-100). If None, uses the current
         speed setting.
       close_gripper_without_force_sensing: allow a gripper axis below the live one. A joint move
         senses no force, so it is refused otherwise.
-      speed_pct: deprecated, use `speed_percent`.
     """
-    if speed_pct is not None:
-      warnings.warn(
-        "`speed_pct` is deprecated, use `speed_percent`.", DeprecationWarning, stacklevel=3
-      )
-      speed_percent = speed_pct
     if speed_percent is not None:
       await self._set_speed(speed_percent)
     await self._guarded_move_j(
-      lambda current: {**current, **position},
+      lambda current: {**current, **joint_state},
       close_gripper_without_force_sensing=close_gripper_without_force_sensing,
     )
 
@@ -1744,52 +1737,36 @@ class PreciseFlexArm:
 
   @evented_operation(
     "precise_flex.pick_up_at_joint_position",
-    lambda self, position, resource_width, finger_speed_percent=None, grasp_force=None, finger_speed_pct=None: {
+    lambda self, joint_state, resource_width, finger_speed_percent=None, grasp_force=None: {
       "device": self._driver._controller_reference(),
-      "target_joint_position": _joint_state_reference(position),
+      "target_joint_position": _joint_state_reference(joint_state),
       "resource_width": float(resource_width),
       "finger_speed_percent": float(
-        next(
-          value
-          for value in (
-            finger_speed_pct,
-            finger_speed_percent,
-            self._driver.gripper.default_finger_speed_percent,
-          )
-          if value is not None
-        )
+        self._driver.gripper.default_finger_speed_percent
+        if finger_speed_percent is None
+        else finger_speed_percent
       ),
       "grasp_force": float(
         self._driver.gripper.default_grasp_force if grasp_force is None else grasp_force
       ),
     },
   )
-  async def pick_up_at_joint_position(
+  async def pick_up_at_joint_state(
     self,
-    position: JointState,
+    joint_state: JointState,
     resource_width: float,
     finger_speed_percent: Optional[float] = None,
     grasp_force: Optional[float] = None,
-    *,
-    finger_speed_pct: Optional[float] = None,
   ) -> None:
-    """Pick up at the specified joint position.
+    """Pick up at the specified joint state.
 
     Args:
-      position: Joint state to pick from.
+      joint_state: Joint state to pick from.
       resource_width: Width of the resource to grasp, in mm.
       finger_speed_percent: Finger closing speed as a percentage (0-100).
         ``default_finger_speed_percent`` when None.
       grasp_force: Grasp force in Newtons. ``default_grasp_force`` when None.
-      finger_speed_pct: deprecated, use `finger_speed_percent`.
     """
-    if finger_speed_pct is not None:
-      warnings.warn(
-        "`finger_speed_pct` is deprecated, use `finger_speed_percent`.",
-        DeprecationWarning,
-        stacklevel=3,
-      )
-      finger_speed_percent = finger_speed_pct
     if finger_speed_percent is None:
       finger_speed_percent = self._driver.gripper.default_finger_speed_percent
     if grasp_force is None:
@@ -1797,7 +1774,7 @@ class PreciseFlexArm:
     logger.info(
       "[PreciseFlex %s] pick_up: joints=%s, resource_width_mm=%s",
       self._driver.io._host,
-      position,
+      joint_state,
       resource_width,
     )
     await self._driver.gripper._set_grasp_data(
@@ -1805,34 +1782,34 @@ class PreciseFlexArm:
       finger_speed_percent=finger_speed_percent,
       grasp_force=grasp_force,
     )
-    await self._pick_plate_j(position)
+    await self._pick_plate_j(joint_state)
 
   @evented_operation(
     "precise_flex.drop_at_joint_position",
-    lambda self, position, resource_width: {
+    lambda self, joint_state, resource_width: {
       "device": self._driver._controller_reference(),
-      "target_joint_position": _joint_state_reference(position),
+      "target_joint_position": _joint_state_reference(joint_state),
       "resource_width": float(resource_width),
     },
   )
-  async def drop_at_joint_position(
+  async def drop_at_joint_state(
     self,
-    position: JointState,
+    joint_state: JointState,
     resource_width: float,
   ) -> None:
-    """Drop at the specified joint position.
+    """Drop at the specified joint state.
 
     Args:
-      position: Joint state to drop at.
+      joint_state: Joint state to drop at.
       resource_width: Width of the held resource, in mm.
     """
     logger.info(
       "[PreciseFlex %s] drop: joints=%s, resource_width_mm=%s",
       self._driver.io._host,
-      position,
+      joint_state,
       resource_width,
     )
-    await self._place_plate_j(position)
+    await self._place_plate_j(joint_state)
 
   @evented_operation(
     "precise_flex.pick_up_at_location",
@@ -2038,8 +2015,8 @@ class PreciseFlexArm:
     unset. No collision checks against 3rd-party obstacles.
     """
     if self.parking_position is not None:
-      await self.move_to_joint_position(
-        position=self._parking_pose_with_default_z(self.parking_position)
+      await self.move_to_joint_state(
+        joint_state=self._parking_pose_with_default_z(self.parking_position)
       )
     else:
       await self._driver.send_command("movetosafe")

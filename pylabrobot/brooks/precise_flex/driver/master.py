@@ -1138,13 +1138,17 @@ class PreciseFlex:
     return await self.arm.request_gripper_pose(*args, **kwargs)
 
   async def move_to_joint_position(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``arm.move_to_joint_position``."""
+    """Deprecated: use ``arm.move_to_joint_state``."""
     warnings.warn(
-      "`move_to_joint_position` is deprecated, use `arm.move_to_joint_position`.",
+      "`move_to_joint_position` is deprecated, use `arm.move_to_joint_state`.",
       DeprecationWarning,
       stacklevel=2,
     )
-    return await self.arm.move_to_joint_position(*args, **kwargs)
+    if "position" in kwargs:
+      kwargs["joint_state"] = kwargs.pop("position")
+    if "speed_pct" in kwargs:
+      kwargs["speed_percent"] = kwargs.pop("speed_pct")
+    return await self.arm.move_to_joint_state(*args, **kwargs)
 
   async def move_to_location(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.move_to_location``."""
@@ -1512,11 +1516,11 @@ class PreciseFlex:
     return await self.arm.release_brake(*args, **kwargs)
 
   async def set_brake(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``arm.set_brake``."""
+    """Deprecated: use ``arm.reengage_brake``."""
     warnings.warn(
-      "`set_brake` is deprecated, use `arm.set_brake`.", DeprecationWarning, stacklevel=2
+      "`set_brake` is deprecated, use `arm.reengage_brake`.", DeprecationWarning, stacklevel=2
     )
-    return await self.arm.set_brake(*args, **kwargs)
+    return await self.arm.reengage_brake(*args, **kwargs)
 
   async def zero_torque(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.zero_torque``."""
@@ -1683,22 +1687,28 @@ class PreciseFlex:
     return await self.arm.request_tool_transformation_values(*args, **kwargs)
 
   async def pick_up_at_joint_position(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``arm.pick_up_at_joint_position``."""
+    """Deprecated: use ``arm.pick_up_at_joint_state``."""
     warnings.warn(
-      "`pick_up_at_joint_position` is deprecated, use `arm.pick_up_at_joint_position`.",
+      "`pick_up_at_joint_position` is deprecated, use `arm.pick_up_at_joint_state`.",
       DeprecationWarning,
       stacklevel=2,
     )
-    return await self.arm.pick_up_at_joint_position(*args, **kwargs)
+    if "position" in kwargs:
+      kwargs["joint_state"] = kwargs.pop("position")
+    if "finger_speed_pct" in kwargs:
+      kwargs["finger_speed_percent"] = kwargs.pop("finger_speed_pct")
+    return await self.arm.pick_up_at_joint_state(*args, **kwargs)
 
   async def drop_at_joint_position(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``arm.drop_at_joint_position``."""
+    """Deprecated: use ``arm.drop_at_joint_state``."""
     warnings.warn(
-      "`drop_at_joint_position` is deprecated, use `arm.drop_at_joint_position`.",
+      "`drop_at_joint_position` is deprecated, use `arm.drop_at_joint_state`.",
       DeprecationWarning,
       stacklevel=2,
     )
-    return await self.arm.drop_at_joint_position(*args, **kwargs)
+    if "position" in kwargs:
+      kwargs["joint_state"] = kwargs.pop("position")
+    return await self.arm.drop_at_joint_state(*args, **kwargs)
 
   async def pick_up_at_location(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.pick_up_at_location``."""

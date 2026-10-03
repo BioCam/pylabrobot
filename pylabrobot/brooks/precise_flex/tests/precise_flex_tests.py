@@ -473,7 +473,7 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
     self.arm._recover_out_of_range = False
     self._stub("0 93.5 90.0 0.0 0")  # base shoulder elbow wrist gripper; shoulder 93.5 > 93
     with self.assertRaises(OutOfRangeOfMotionError) as ctx:
-      await self.arm.arm.move_to_joint_position({Axis.SHOULDER: 0.0})
+      await self.arm.arm.move_to_joint_state({Axis.SHOULDER: 0.0})
     self.assertIn(Axis.SHOULDER, ctx.exception.axes)
     self.assertEqual(self._cmds("MoveOneAxis"), [])
     self.assertEqual(self._cmds("moveJ"), [])
@@ -483,7 +483,7 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
     self.arm._recover_out_of_range = True
     self._stub("0 93.5 90.0 0.0 0", recovered="0 92.0 90.0 0.0 0")
     with self.assertLogs(_LOGGER, level="INFO") as cm:
-      await self.arm.arm.move_to_joint_position({Axis.SHOULDER: 0.0})
+      await self.arm.arm.move_to_joint_state({Axis.SHOULDER: 0.0})
     self.assertEqual(self._cmds("MoveOneAxis"), ["MoveOneAxis 2 92.0 1"])  # shoulder back in range
     self.assertEqual(len(self._cmds("moveJ")), 1)  # move retried and sent
     log = "\n".join(cm.output)
@@ -496,7 +496,7 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
     self._stub("0 120.0 90.0 0.0 0")  # shoulder 27 past the limit, beyond the recovery cap
     with self.assertLogs(_LOGGER, level="ERROR") as cm:
       with self.assertRaises(OutOfRangeOfMotionError):
-        await self.arm.arm.move_to_joint_position({Axis.SHOULDER: 0.0})
+        await self.arm.arm.move_to_joint_state({Axis.SHOULDER: 0.0})
     self.assertEqual(self._cmds("moveJ"), [])  # never moved
     self.assertIn("auto-recovery did not clear", "\n".join(cm.output))  # ERROR before re-raise
 
@@ -504,7 +504,7 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
     """Happy path: the out-of-range check reuses the merge read, so a move issues a single wherej
     before moveJ (no redundant position read)."""
     self._stub("0 0.0 90.0 0.0 0")  # all axes in range
-    await self.arm.arm.move_to_joint_position({Axis.SHOULDER: 10.0})
+    await self.arm.arm.move_to_joint_state({Axis.SHOULDER: 10.0})
     self.assertEqual(self._cmds("wherej"), ["wherej"])  # exactly one position read
     self.assertEqual(len(self._cmds("moveJ")), 1)
 
