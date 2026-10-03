@@ -5,6 +5,7 @@ import dataclasses
 import logging
 import warnings
 from typing import (
+  Any,
   ClassVar,
   Dict,
   List,
@@ -2284,3 +2285,186 @@ class PreciseFlex:
       return position
     _, z_max = self._configuration.z_range
     return {Axis.BASE: 0.75 * z_max, **position}
+
+  # -- deprecated: moved to the arm, gripper and rail ---------------------------------------------
+
+  async def request_joint_position(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_joint_state``."""
+    warnings.warn(
+      "`request_joint_position` is deprecated, use `arm.request_joint_state`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_joint_state(*args, **kwargs)
+
+  async def request_state(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_state``."""
+    warnings.warn(
+      "`request_state` is deprecated, use `arm.request_state`.", DeprecationWarning, stacklevel=2
+    )
+    return await self.arm.request_state(*args, **kwargs)
+
+  async def request_gripper_pose(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_gripper_pose``."""
+    warnings.warn(
+      "`request_gripper_pose` is deprecated, use `arm.request_gripper_pose`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_gripper_pose(*args, **kwargs)
+
+  async def move_to_joint_position(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.move_to_joint_position``."""
+    warnings.warn(
+      "`move_to_joint_position` is deprecated, use `arm.move_to_joint_position`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.move_to_joint_position(*args, **kwargs)
+
+  async def move_to_location(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.move_to_location``."""
+    warnings.warn(
+      "`move_to_location` is deprecated, use `arm.move_to_location`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.move_to_location(*args, **kwargs)
+
+  async def move_through_cartesian_poses(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.move_through_cartesian_poses``."""
+    warnings.warn(
+      "`move_through_cartesian_poses` is deprecated, use `arm.move_through_cartesian_poses`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.move_through_cartesian_poses(*args, **kwargs)
+
+  async def recover_axes_within_limits(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.recover_axes_within_limits``."""
+    warnings.warn(
+      "`recover_axes_within_limits` is deprecated, use `arm.recover_axes_within_limits`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.recover_axes_within_limits(*args, **kwargs)
+
+  async def dest_c(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.dest_c``."""
+    warnings.warn("`dest_c` is deprecated, use `arm.dest_c`.", DeprecationWarning, stacklevel=2)
+    return await self.arm.dest_c(*args, **kwargs)
+
+  async def dest_j(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.dest_j``."""
+    warnings.warn("`dest_j` is deprecated, use `arm.dest_j`.", DeprecationWarning, stacklevel=2)
+    return await self.arm.dest_j(*args, **kwargs)
+
+  async def here_j(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.here_j``."""
+    warnings.warn("`here_j` is deprecated, use `arm.here_j`.", DeprecationWarning, stacklevel=2)
+    return await self.arm.here_j(*args, **kwargs)
+
+  async def here_c(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.here_c``."""
+    warnings.warn("`here_c` is deprecated, use `arm.here_c`.", DeprecationWarning, stacklevel=2)
+    return await self.arm.here_c(*args, **kwargs)
+
+  async def move_gripper(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``gripper.move_to_jaw_position``."""
+    warnings.warn(
+      "`move_gripper` is deprecated, use `gripper.move_to_jaw_position`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.gripper.move_to_jaw_position(*args, **kwargs)
+
+  async def move_gripper_joint_position(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``gripper.move_to_jaw_position_firmware_units``."""
+    warnings.warn(
+      "`move_gripper_joint_position` is deprecated, use `gripper.move_to_jaw_position_firmware_units`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.gripper.move_to_jaw_position_firmware_units(*args, **kwargs)
+
+  async def is_gripper_closed(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``gripper.sense_fully_closed``."""
+    warnings.warn(
+      "`is_gripper_closed` is deprecated, use `gripper.sense_fully_closed`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.gripper.sense_fully_closed(*args, **kwargs)
+
+  async def are_grippers_closed(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``gripper.sense_each_fully_closed``."""
+    warnings.warn(
+      "`are_grippers_closed` is deprecated, use `gripper.sense_each_fully_closed`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.gripper.sense_each_fully_closed(*args, **kwargs)
+
+  async def move_rail(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``rail.move_rail``."""
+    warnings.warn(
+      "`move_rail` is deprecated, use `rail.move_rail`.", DeprecationWarning, stacklevel=2
+    )
+    return await self.arm._require_rail().move_rail(*args, **kwargs)
+
+  @property
+  def min_gripper_width(self) -> float:
+    """Deprecated: use ``gripper.jaw_width_range``."""
+    warnings.warn(
+      "`min_gripper_width` is deprecated, use `gripper.jaw_width_range`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.gripper.jaw_width_range[0]
+
+  @min_gripper_width.setter
+  def min_gripper_width(self, value: float) -> None:
+    warnings.warn(
+      "`min_gripper_width` is deprecated, use `gripper.jaw_width_range`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    self.gripper.jaw_width_range = (value, self.gripper.jaw_width_range[1])
+
+  @property
+  def max_gripper_width(self) -> float:
+    """Deprecated: use ``gripper.jaw_width_range``."""
+    warnings.warn(
+      "`max_gripper_width` is deprecated, use `gripper.jaw_width_range`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.gripper.jaw_width_range[1]
+
+  @max_gripper_width.setter
+  def max_gripper_width(self, value: float) -> None:
+    warnings.warn(
+      "`max_gripper_width` is deprecated, use `gripper.jaw_width_range`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    self.gripper.jaw_width_range = (self.gripper.jaw_width_range[0], value)
+
+  @property
+  def closed_gripper_position(self) -> float:
+    """Deprecated: use ``gripper.closed_gripper_position``."""
+    warnings.warn(
+      "`closed_gripper_position` is deprecated, use `gripper.closed_gripper_position`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.gripper.closed_gripper_position
+
+  @closed_gripper_position.setter
+  def closed_gripper_position(self, value: float) -> None:
+    warnings.warn(
+      "`closed_gripper_position` is deprecated, use `gripper.closed_gripper_position`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    self.gripper.closed_gripper_position = value

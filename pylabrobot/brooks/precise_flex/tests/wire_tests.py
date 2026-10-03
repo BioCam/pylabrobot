@@ -1696,3 +1696,120 @@ class TestDeprecatedPercentKeywords(unittest.IsolatedAsyncioTestCase):
     arm = _make_arm(_FakeController())
     with self.assertRaisesRegex(TypeError, "payload_percent"):
       await arm.set_payload()
+
+
+_MOVED_TO_FEATURES: List[
+  Tuple[str, Callable[[PreciseFlex], Awaitable[Any]], Callable[..., Any]]
+] = [
+  (
+    "request_joint_position",
+    lambda a: a.request_joint_position(),
+    lambda a: a.arm.request_joint_state(),
+  ),
+  ("request_state", lambda a: a.request_state(), lambda a: a.arm.request_state()),
+  (
+    "request_gripper_pose",
+    lambda a: a.request_gripper_pose(),
+    lambda a: a.arm.request_gripper_pose(),
+  ),
+  (
+    "move_to_joint_position",
+    lambda a: a.move_to_joint_position(_J, speed_pct=30),
+    lambda a: a.arm.move_to_joint_position(_J, speed_percent=30),
+  ),
+  (
+    "move_to_location",
+    lambda a: a.move_to_location(_LOC, 0.0),
+    lambda a: a.arm.move_to_location(_LOC, 0.0),
+  ),
+  (
+    "move_through_cartesian_poses",
+    lambda a: a.move_through_cartesian_poses(_POSES),
+    lambda a: a.arm.move_through_cartesian_poses(_POSES),
+  ),
+  (
+    "recover_axes_within_limits",
+    lambda a: a.recover_axes_within_limits(),
+    lambda a: a.arm.recover_axes_within_limits(),
+  ),
+  ("dest_c", lambda a: a.dest_c(), lambda a: a.arm.dest_c()),
+  ("dest_j", lambda a: a.dest_j(), lambda a: a.arm.dest_j()),
+  ("here_j", lambda a: a.here_j(2), lambda a: a.arm.here_j(2)),
+  ("here_c", lambda a: a.here_c(2), lambda a: a.arm.here_c(2)),
+  (
+    "move_gripper",
+    lambda a: a.move_gripper(110.0),
+    lambda a: a.gripper.move_to_jaw_position(110.0),
+  ),
+  (
+    "move_gripper_joint_position",
+    lambda a: a.move_gripper_joint_position(90.0, force_sensing=True),
+    lambda a: a.gripper.move_to_jaw_position_firmware_units(90.0, force_sensing=True),
+  ),
+  ("is_gripper_closed", lambda a: a.is_gripper_closed(), lambda a: a.gripper.sense_fully_closed()),
+]
+
+
+class TestDeprecatedDriverMembers(unittest.IsolatedAsyncioTestCase):
+  """A driver member that moved to a feature still works, warns, and sends what its successor sends."""
+
+  def setUp(self) -> None:
+    sleep = patch("pylabrobot.brooks.precise_flex.driver.master.asyncio.sleep", new=AsyncMock())
+    sleep.start()
+    self.addCleanup(sleep.stop)
+
+  async def _sent(self, call: Callable[[PreciseFlex], Awaitable[Any]], has_rail: bool = False):
+    fake = _FakeController(_RAIL_REPLIES if has_rail else None)
+    arm = _make_arm(fake, has_rail=has_rail)
+    await arm.setup(skip_vision=True)
+    fake.sent.clear()
+    result = await call(arm)
+    return fake.sent, repr(result)  # a pose compares by its fields only through its repr
+
+  async def test_each_moved_method(self):
+    for name, old, new in _MOVED_TO_FEATURES:
+      with self.subTest(name):
+        expected = await self._sent(new)
+        with self.assertWarns(DeprecationWarning):
+          got = await self._sent(old)
+        self.assertEqual(got, expected)
+
+  async def test_move_rail(self):
+    expected = await self._sent(lambda a: _rail(a).move_rail(250.0), has_rail=True)
+    with self.assertWarns(DeprecationWarning):
+      got = await self._sent(lambda a: a.move_rail(250.0), has_rail=True)
+    self.assertEqual(got, expected)
+    with self.assertWarns(DeprecationWarning), self.assertRaises(RuntimeError):
+      await self._sent(lambda a: a.move_rail(250.0))
+
+  async def test_gripper_attributes(self):
+    arm = _make_arm(_FakeController())
+    with self.assertWarns(DeprecationWarning):
+      self.assertEqual(arm.min_gripper_width, arm.gripper.jaw_width_range[0])
+    with self.assertWarns(DeprecationWarning):
+      arm.max_gripper_width = 150.0
+    self.assertEqual(arm.gripper.jaw_width_range, (60.0, 150.0))
+    with self.assertWarns(DeprecationWarning):
+      arm.closed_gripper_position = 90.0
+    self.assertEqual(arm.gripper.closed_gripper_position, 90.0)
+
+  def test_old_module_paths(self):
+    import importlib
+    import sys
+
+    for old, name in (
+      ("pylabrobot.brooks.precise_flex.precise_flex", "PreciseFlex"),
+      ("pylabrobot.brooks.precise_flex.config", "PreciseFlexConfiguration"),
+      ("pylabrobot.brooks.precise_flex.errors", "PreciseFlexError"),
+    ):
+      with self.subTest(old):
+        sys.modules.pop(old, None)
+        with self.assertWarns(DeprecationWarning):
+          module = importlib.import_module(old)
+        self.assertTrue(hasattr(module, name))
+
+  def test_joint_pose(self):
+    from pylabrobot.brooks.precise_flex import kinematics
+
+    with self.assertWarns(DeprecationWarning):
+      self.assertIs(kinematics.JointPose, kinematics.JointState)

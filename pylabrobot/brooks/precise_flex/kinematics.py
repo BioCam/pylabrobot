@@ -15,6 +15,7 @@ Z is decoupled, planar 2R for (x, y), wrist yaw for orientation.
 Sign conventions follow right-hand rule about +Z (CCW positive looking down).
 """
 
+import warnings
 from dataclasses import dataclass
 from enum import IntEnum
 from math import atan2, cos, degrees, hypot, pi, radians, sin
@@ -225,3 +226,11 @@ def ik(pose: PreciseFlexCartesianPose, p: PF400Params) -> JointState:
 def _wrap(a: float) -> float:
   """Wrap angle to (-pi, pi]."""
   return (a + pi) % (2 * pi) - pi
+
+
+def __getattr__(name: str) -> object:
+  """``JointPose``, deprecated: it is ``JointState``."""
+  if name == "JointPose":
+    warnings.warn("`JointPose` is deprecated, use `JointState`.", DeprecationWarning, stacklevel=2)
+    return JointState
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
