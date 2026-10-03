@@ -746,7 +746,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_joint_limits_soft",
-    lambda arm: arm.request_joint_limits(),
+    lambda arm: arm.arm.request_joint_limits(),
     [
       "pd 16078",
       "pd 16077",
@@ -755,7 +755,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_joint_limits_hard",
-    lambda arm: arm.request_joint_limits(hard=True),
+    lambda arm: arm.arm.request_joint_limits(hard=True),
     [
       "pd 16076",
       "pd 16075",
@@ -764,7 +764,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_reference_speed",
-    lambda arm: arm.request_reference_speed(),
+    lambda arm: arm.arm.request_reference_speed(),
     [
       "pd 2700",
     ],
@@ -772,7 +772,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_reference_acceleration",
-    lambda arm: arm.request_reference_acceleration(),
+    lambda arm: arm.arm.request_reference_acceleration(),
     [
       "pd 2702",
     ],
@@ -780,7 +780,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_link_lengths",
-    lambda arm: arm.request_link_lengths(),
+    lambda arm: arm.arm.request_link_lengths(),
     [
       "pd 16050",
     ],
@@ -788,7 +788,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_tool_length",
-    lambda arm: arm.request_tool_length(),
+    lambda arm: arm.arm.request_tool_length(),
     [
       "pd 16051",
     ],
@@ -796,7 +796,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_kinematic_parameters",
-    lambda arm: arm.request_kinematic_parameters(),
+    lambda arm: arm.arm.request_kinematic_parameters(),
     [
       "pd 16050",
       "pd 16051",
@@ -805,7 +805,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_reference_cartesian_speed",
-    lambda arm: arm.request_reference_cartesian_speed(),
+    lambda arm: arm.arm.request_reference_cartesian_speed(),
     [
       "pd 2701",
     ],
@@ -813,7 +813,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_reference_cartesian_acceleration",
-    lambda arm: arm.request_reference_cartesian_acceleration(),
+    lambda arm: arm.arm.request_reference_cartesian_acceleration(),
     [
       "pd 2703",
     ],
@@ -821,7 +821,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_max_speed_percent",
-    lambda arm: arm.request_max_speed_percent(),
+    lambda arm: arm.arm.request_max_speed_percent(),
     [
       "pd 2704",
     ],
@@ -829,7 +829,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_max_acceleration_percent",
-    lambda arm: arm.request_max_acceleration_percent(),
+    lambda arm: arm.arm.request_max_acceleration_percent(),
     [
       "pd 2705",
     ],
@@ -837,7 +837,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_max_deceleration_percent",
-    lambda arm: arm.request_max_deceleration_percent(),
+    lambda arm: arm.arm.request_max_deceleration_percent(),
     [
       "pd 2706",
     ],
@@ -845,7 +845,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_base",
-    lambda arm: arm.request_base(),
+    lambda arm: arm.arm.request_base(),
     [
       "base",
     ],
@@ -853,7 +853,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_base",
-    lambda arm: arm.set_base(1.0, 2.0, 3.0, 4.0),
+    lambda arm: arm.arm.set_base(1.0, 2.0, 3.0, 4.0),
     [
       "base 1.0 2.0 3.0 4.0",
     ],
@@ -861,7 +861,7 @@ _CASES: List[_Case] = [
   ),
   (
     "request_tool_transformation_values",
-    lambda arm: arm.request_tool_transformation_values(),
+    lambda arm: arm.arm.request_tool_transformation_values(),
     [
       "tool",
     ],
@@ -1672,6 +1672,64 @@ _DEPRECATED_KEYWORDS: List[
   ("halt", lambda a: a.halt(), lambda a: a.arm.halt()),
   ("change_config", lambda a: a.change_config(1), lambda a: a.arm.change_config(1)),
   ("change_config2", lambda a: a.change_config2(1), lambda a: a.arm.change_config2(1)),
+  (
+    "request_joint_limits",
+    lambda a: a.request_joint_limits(),
+    lambda a: a.arm.request_joint_limits(),
+  ),
+  (
+    "request_reference_speed",
+    lambda a: a.request_reference_speed(),
+    lambda a: a.arm.request_reference_speed(),
+  ),
+  (
+    "request_reference_acceleration",
+    lambda a: a.request_reference_acceleration(),
+    lambda a: a.arm.request_reference_acceleration(),
+  ),
+  (
+    "request_link_lengths",
+    lambda a: a.request_link_lengths(),
+    lambda a: a.arm.request_link_lengths(),
+  ),
+  ("request_tool_length", lambda a: a.request_tool_length(), lambda a: a.arm.request_tool_length()),
+  (
+    "request_kinematic_parameters",
+    lambda a: a.request_kinematic_parameters(),
+    lambda a: a.arm.request_kinematic_parameters(),
+  ),
+  (
+    "request_reference_cartesian_speed",
+    lambda a: a.request_reference_cartesian_speed(),
+    lambda a: a.arm.request_reference_cartesian_speed(),
+  ),
+  (
+    "request_reference_cartesian_acceleration",
+    lambda a: a.request_reference_cartesian_acceleration(),
+    lambda a: a.arm.request_reference_cartesian_acceleration(),
+  ),
+  (
+    "request_max_speed_percent",
+    lambda a: a.request_max_speed_percent(),
+    lambda a: a.arm.request_max_speed_percent(),
+  ),
+  (
+    "request_max_acceleration_percent",
+    lambda a: a.request_max_acceleration_percent(),
+    lambda a: a.arm.request_max_acceleration_percent(),
+  ),
+  (
+    "request_max_deceleration_percent",
+    lambda a: a.request_max_deceleration_percent(),
+    lambda a: a.arm.request_max_deceleration_percent(),
+  ),
+  ("request_base", lambda a: a.request_base(), lambda a: a.arm.request_base()),
+  ("set_base", lambda a: a.set_base(1, 2, 3, 4), lambda a: a.arm.set_base(1, 2, 3, 4)),
+  (
+    "request_tool_transformation_values",
+    lambda a: a.request_tool_transformation_values(),
+    lambda a: a.arm.request_tool_transformation_values(),
+  ),
 ]
 
 

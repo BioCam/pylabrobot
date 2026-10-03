@@ -16,6 +16,7 @@ from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.rotation import Rotation
 
 from ... import kinematics
+from ...data_ids import DataID, _parse_per_axis, _parse_scalar, _zip_axis_ranges
 from ...interrupt import halt_and_resync, halt_on_interrupt
 from ...kinematics import Axis, ElbowOrientation, JointState, PreciseFlexCartesianPose, Wrist
 from ..errors import OutOfRangeOfMotionError, PreciseFlexError
@@ -922,6 +923,142 @@ class PreciseFlexArm:
   async def halt(self):
     """Stops the current robot immediately but leaves power on."""
     await self._driver.send_command("halt")
+
+  # -- limits and kinematics -----------------------------------------------------------------------
+
+  async def request_joint_limits(self, hard: bool = False) -> Dict[Axis, tuple[float, float]]:
+    """Per-axis travel limits as {Axis: (min, max)}.
+
+    Returns the soft limits by default; pass ``hard=True`` for the hard limits.
+    """
+    min_id = DataID.HARD_LIMIT_MIN if hard else DataID.SOFT_LIMIT_MIN
+    max_id = DataID.HARD_LIMIT_MAX if hard else DataID.SOFT_LIMIT_MAX
+    return _zip_axis_ranges(
+      _parse_per_axis(await self._driver.request_parameter(min_id)),
+      _parse_per_axis(await self._driver.request_parameter(max_id)),
+    )
+
+  async def request_reference_speed(self) -> Dict[Axis, float]:
+    """Per-axis rated speed at 100%; J1/J5 in mm/s, J2-J4 in deg/s."""
+    return _parse_per_axis(await self._driver.request_parameter(DataID.REFERENCE_SPEED))
+
+  async def request_reference_acceleration(self) -> Dict[Axis, float]:
+    """Per-axis rated acceleration at 100%."""
+    return _parse_per_axis(await self._driver.request_parameter(DataID.REFERENCE_ACCEL))
+
+  async def request_link_lengths(self) -> tuple[float, float]:
+    """(l1, l2) SCARA link lengths in mm: shoulder->elbow, elbow->wrist."""
+    per_axis = _parse_per_axis(await self._driver.request_parameter(DataID.LINK_LENGTHS))
+    return per_axis[Axis.SHOULDER], per_axis[Axis.ELBOW]
+
+  async def request_tool_length(self) -> float:
+    """Wrist->TCP distance in mm (z of the tool-offset transform)."""
+    values = [
+      float(v) for v in (await self._driver.request_parameter(DataID.TOOL_OFFSET)).split(",")
+    ]
+    return values[2]
+
+  async def request_kinematic_parameters(self) -> "kinematics.PF400Params":
+    """Build PF400Params from the controller's stored geometry.
+
+    Link lengths and tool length come from the device; gripper_z_offset is not on
+    the controller, so it is carried over from the constructor params.
+    """
+    l1, l2 = await self.request_link_lengths()
+    return dataclasses.replace(
+      self._driver._kinematics_params,
+      l1=l1,
+      l2=l2,
+      gripper_length=await self.request_tool_length(),
+    )
+
+  async def request_reference_cartesian_speed(self) -> float:
+    """Rated Cartesian (translational) speed at 100%, in mm/s."""
+    return _parse_scalar(await self._driver.request_parameter(DataID.REFERENCE_CARTESIAN_SPEED))
+
+  async def request_reference_cartesian_acceleration(self) -> float:
+    """Rated Cartesian (translational) acceleration at 100%, in mm/s^2."""
+    return _parse_scalar(await self._driver.request_parameter(DataID.REFERENCE_CARTESIAN_ACCEL))
+
+  async def request_max_speed_percent(self) -> float:
+    """Global cap on the speed percentage (one value, applies to all joints)."""
+    return _parse_scalar(await self._driver.request_parameter(DataID.MAX_SPEED_PERCENT))
+
+  async def request_max_acceleration_percent(self) -> float:
+    """Global cap on the acceleration percentage (one value, applies to all joints)."""
+    return _parse_scalar(await self._driver.request_parameter(DataID.MAX_ACCEL_PERCENT))
+
+  async def request_max_deceleration_percent(self) -> float:
+    """Global cap on the deceleration percentage (one value, applies to all joints)."""
+    return _parse_scalar(await self._driver.request_parameter(DataID.MAX_DECEL_PERCENT))
+
+  # -- base and tool frames ------------------------------------------------------------------------
+
+  async def request_base(self) -> tuple[float, float, float, float]:
+    """Get the robot base offset.
+
+    Returns:
+      A tuple containing (x_offset, y_offset, z_offset, z_rotation)
+    """
+    data = await self._driver.send_command("base")
+    parts = data.split()
+    if len(parts) != 4:
+      raise PreciseFlexError(-1, "Unexpected response format from base command.")
+    return (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
+
+  async def set_base(
+    self, x_offset: float, y_offset: float, z_offset: float, z_rotation: float
+  ) -> None:
+    """Set the robot base offset.
+
+    Args:
+      x_offset: Base X offset
+      y_offset: Base Y offset
+      z_offset: Base Z offset
+      z_rotation: Base Z rotation
+
+    Note:
+      The robot must be attached to set the base.
+      Setting the base pauses any robot motion in progress.
+    """
+    await self._driver.send_command(f"base {x_offset} {y_offset} {z_offset} {z_rotation}")
+
+  async def request_tool_transformation_values(
+    self,
+  ) -> tuple[float, float, float, float, float, float]:
+    """Get the current tool transformation values.
+
+    Returns:
+      A tuple containing (X, Y, Z, yaw, pitch, roll) for the tool transformation.
+    """
+    data = await self._driver.send_command("tool")
+    if data.startswith("tool: "):
+      data = data[6:]
+    parts = data.split()
+    if len(parts) != 6:
+      raise PreciseFlexError(-1, "Unexpected response format from tool command.")
+    x, y, z, yaw, pitch, roll = self._parse_xyz_response(parts)
+    return (x, y, z, yaw, pitch, roll)
+
+  async def _set_tool_transformation_values(
+    self, x: float, y: float, z: float, yaw: float, pitch: float, roll: float
+  ) -> None:
+    """Set the robot tool transformation (private).
+
+    Private because the client kinematics read the tool once at setup into the frozen configuration;
+    changing it live desyncs `request_gripper_pose` from the controller's `wherec` until the
+    configuration is rebuilt. The robot must be attached to set the tool, and setting it pauses any
+    robot motion in progress.
+
+    Args:
+      x: Tool X coordinate.
+      y: Tool Y coordinate.
+      z: Tool Z coordinate.
+      yaw: Tool yaw rotation.
+      pitch: Tool pitch rotation.
+      roll: Tool roll rotation.
+    """
+    await self._driver.send_command(f"tool {x} {y} {z} {yaw} {pitch} {roll}")
 
   # -- range checks and recovery -------------------------------------------------------------------
 

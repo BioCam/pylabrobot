@@ -1,7 +1,6 @@
 """PreciseFlex driver - owns the socket I/O connection and device lifecycle."""
 
 import asyncio
-import dataclasses
 import logging
 import warnings
 from typing import (
@@ -27,7 +26,7 @@ from ..confirmed_firmware_versions import (
   is_supported_model,
   suggest_entry,
 )
-from ..data_ids import DataID, PowerState
+from ..data_ids import DataID, PowerState, _parse_scalar
 from ..kinematics import ElbowOrientation, PreciseFlexCartesianPose, Wrist
 from ..tcs_modules import missing_required_modules
 from .errors import PreciseFlexError
@@ -129,28 +128,6 @@ def _drain_named_record(buf: bytearray) -> Optional[Tuple[str, bytes]]:
   data = bytes(buf[_RECORD_HEADER_LEN + name_len : end])
   del buf[:end]
   return name, data
-
-
-def _parse_scalar(response: str) -> float:
-  """Parse the first numeric field of a DataID reply.
-
-  Some scalar DataIDs come back zero-padded (e.g. robot type as ``12, 0, 0, ...``)
-  and Cartesian references carry several components; take the leading value.
-  """
-  return float(response.split(",")[0])
-
-
-def _parse_per_axis(response: str) -> Dict[Axis, float]:
-  """Parse a comma-separated per-axis DataID reply into an {Axis: value} map."""
-  values = [float(v) for v in response.split(",")]
-  return {Axis(i + 1): values[i] for i in range(min(len(values), len(Axis)))}
-
-
-def _zip_axis_ranges(
-  low: Dict[Axis, float], high: Dict[Axis, float]
-) -> Dict[Axis, tuple[float, float]]:
-  """Combine min and max per-axis maps into an {Axis: (min, max)} map."""
-  return {axis: (low[axis], high[axis]) for axis in low.keys() & high.keys()}
 
 
 class PreciseFlex:
@@ -932,140 +909,6 @@ class PreciseFlex:
     """
     return await self.send_command("version")
 
-  # -- kinematics & reference limits --------------------------------------------------------
-
-  async def request_joint_limits(self, hard: bool = False) -> Dict[Axis, tuple[float, float]]:
-    """Per-axis travel limits as {Axis: (min, max)}.
-
-    Returns the soft limits by default; pass ``hard=True`` for the hard limits.
-    """
-    min_id = DataID.HARD_LIMIT_MIN if hard else DataID.SOFT_LIMIT_MIN
-    max_id = DataID.HARD_LIMIT_MAX if hard else DataID.SOFT_LIMIT_MAX
-    return _zip_axis_ranges(
-      _parse_per_axis(await self.request_parameter(min_id)),
-      _parse_per_axis(await self.request_parameter(max_id)),
-    )
-
-  async def request_reference_speed(self) -> Dict[Axis, float]:
-    """Per-axis rated speed at 100%; J1/J5 in mm/s, J2-J4 in deg/s."""
-    return _parse_per_axis(await self.request_parameter(DataID.REFERENCE_SPEED))
-
-  async def request_reference_acceleration(self) -> Dict[Axis, float]:
-    """Per-axis rated acceleration at 100%."""
-    return _parse_per_axis(await self.request_parameter(DataID.REFERENCE_ACCEL))
-
-  async def request_link_lengths(self) -> tuple[float, float]:
-    """(l1, l2) SCARA link lengths in mm: shoulder->elbow, elbow->wrist."""
-    per_axis = _parse_per_axis(await self.request_parameter(DataID.LINK_LENGTHS))
-    return per_axis[Axis.SHOULDER], per_axis[Axis.ELBOW]
-
-  async def request_tool_length(self) -> float:
-    """Wrist->TCP distance in mm (z of the tool-offset transform)."""
-    values = [float(v) for v in (await self.request_parameter(DataID.TOOL_OFFSET)).split(",")]
-    return values[2]
-
-  async def request_kinematic_parameters(self) -> "kinematics.PF400Params":
-    """Build PF400Params from the controller's stored geometry.
-
-    Link lengths and tool length come from the device; gripper_z_offset is not on
-    the controller, so it is carried over from the constructor params.
-    """
-    l1, l2 = await self.request_link_lengths()
-    return dataclasses.replace(
-      self._kinematics_params,
-      l1=l1,
-      l2=l2,
-      gripper_length=await self.request_tool_length(),
-    )
-
-  async def request_reference_cartesian_speed(self) -> float:
-    """Rated Cartesian (translational) speed at 100%, in mm/s."""
-    return _parse_scalar(await self.request_parameter(DataID.REFERENCE_CARTESIAN_SPEED))
-
-  async def request_reference_cartesian_acceleration(self) -> float:
-    """Rated Cartesian (translational) acceleration at 100%, in mm/s^2."""
-    return _parse_scalar(await self.request_parameter(DataID.REFERENCE_CARTESIAN_ACCEL))
-
-  async def request_max_speed_percent(self) -> float:
-    """Global cap on the speed percentage (one value, applies to all joints)."""
-    return _parse_scalar(await self.request_parameter(DataID.MAX_SPEED_PERCENT))
-
-  async def request_max_acceleration_percent(self) -> float:
-    """Global cap on the acceleration percentage (one value, applies to all joints)."""
-    return _parse_scalar(await self.request_parameter(DataID.MAX_ACCEL_PERCENT))
-
-  async def request_max_deceleration_percent(self) -> float:
-    """Global cap on the deceleration percentage (one value, applies to all joints)."""
-    return _parse_scalar(await self.request_parameter(DataID.MAX_DECEL_PERCENT))
-
-  # -- tool & base frame --------------------------------------------------------------------
-
-  async def request_base(self) -> tuple[float, float, float, float]:
-    """Get the robot base offset.
-
-    Returns:
-      A tuple containing (x_offset, y_offset, z_offset, z_rotation)
-    """
-    data = await self.send_command("base")
-    parts = data.split()
-    if len(parts) != 4:
-      raise PreciseFlexError(-1, "Unexpected response format from base command.")
-    return (float(parts[0]), float(parts[1]), float(parts[2]), float(parts[3]))
-
-  async def set_base(
-    self, x_offset: float, y_offset: float, z_offset: float, z_rotation: float
-  ) -> None:
-    """Set the robot base offset.
-
-    Args:
-      x_offset: Base X offset
-      y_offset: Base Y offset
-      z_offset: Base Z offset
-      z_rotation: Base Z rotation
-
-    Note:
-      The robot must be attached to set the base.
-      Setting the base pauses any robot motion in progress.
-    """
-    await self.send_command(f"base {x_offset} {y_offset} {z_offset} {z_rotation}")
-
-  async def request_tool_transformation_values(
-    self,
-  ) -> tuple[float, float, float, float, float, float]:
-    """Get the current tool transformation values.
-
-    Returns:
-      A tuple containing (X, Y, Z, yaw, pitch, roll) for the tool transformation.
-    """
-    data = await self.send_command("tool")
-    if data.startswith("tool: "):
-      data = data[6:]
-    parts = data.split()
-    if len(parts) != 6:
-      raise PreciseFlexError(-1, "Unexpected response format from tool command.")
-    x, y, z, yaw, pitch, roll = self.arm._parse_xyz_response(parts)
-    return (x, y, z, yaw, pitch, roll)
-
-  async def _set_tool_transformation_values(
-    self, x: float, y: float, z: float, yaw: float, pitch: float, roll: float
-  ) -> None:
-    """Set the robot tool transformation (private).
-
-    Private because the client kinematics read the tool once at setup into the frozen configuration;
-    changing it live desyncs `request_gripper_pose` from the controller's `wherec` until the
-    configuration is rebuilt. The robot must be attached to set the tool, and setting it pauses any
-    robot motion in progress.
-
-    Args:
-      x: Tool X coordinate.
-      y: Tool Y coordinate.
-      z: Tool Z coordinate.
-      yaw: Tool yaw rotation.
-      pitch: Tool pitch rotation.
-      roll: Tool roll rotation.
-    """
-    await self.send_command(f"tool {x} {y} {z} {yaw} {pitch} {roll}")
-
   # -- robot selection ----------------------------------------------------------------------
 
   async def reset(self, robot_number: int) -> None:
@@ -1121,7 +964,7 @@ class PreciseFlex:
     Link lengths and tool length are read from the controller; per-arm flags are
     derived from the joint set, the axis mask, and the model name.
     """
-    soft_limits = await self.request_joint_limits()
+    soft_limits = await self.arm.request_joint_limits()
     axis_mask = await self.request_axis_mask()
     robot_name = await self.request_robot_name()
     name_tokens = robot_name.split()
@@ -1131,11 +974,11 @@ class PreciseFlex:
 
     # Combine the per-axis 100% references with the global percent caps into the
     # effective per-joint maxima, so consumers get usable limits, not raw factors.
-    reference_speed = await self.request_reference_speed()
-    reference_acceleration = await self.request_reference_acceleration()
-    speed_percent = await self.request_max_speed_percent()
-    acceleration_percent = await self.request_max_acceleration_percent()
-    deceleration_percent = await self.request_max_deceleration_percent()
+    reference_speed = await self.arm.request_reference_speed()
+    reference_acceleration = await self.arm.request_reference_acceleration()
+    speed_percent = await self.arm.request_max_speed_percent()
+    acceleration_percent = await self.arm.request_max_acceleration_percent()
+    deceleration_percent = await self.arm.request_max_deceleration_percent()
 
     # Kinematics: read the link/tool geometry from the controller by default, so
     # the driver is correct for whichever 400 variant is plugged in; fall back to
@@ -1143,7 +986,7 @@ class PreciseFlex:
     kinematics_source: Literal["device", "provided", "default"]
     if self._read_kinematics_from_device:
       try:
-        kinematic_params = await self.request_kinematic_parameters()
+        kinematic_params = await self.arm.request_kinematic_parameters()
         kinematics_source = "device"
       except Exception as exc:
         logger.warning(
@@ -1182,7 +1025,7 @@ class PreciseFlex:
       extra_axes=await self.request_extra_axis_count(),
       axis_mask=axis_mask,
       soft_limits=soft_limits,
-      hard_limits=await self.request_joint_limits(hard=True),
+      hard_limits=await self.arm.request_joint_limits(hard=True),
       max_joint_speed={a: v * speed_percent / 100 for a, v in reference_speed.items()},
       max_joint_acceleration={
         a: v * acceleration_percent / 100 for a, v in reference_acceleration.items()
@@ -1190,8 +1033,10 @@ class PreciseFlex:
       max_joint_deceleration={
         a: v * deceleration_percent / 100 for a, v in reference_acceleration.items()
       },
-      max_cartesian_speed=(await self.request_reference_cartesian_speed()) * speed_percent / 100,
-      max_cartesian_acceleration=(await self.request_reference_cartesian_acceleration())
+      max_cartesian_speed=(await self.arm.request_reference_cartesian_speed())
+      * speed_percent
+      / 100,
+      max_cartesian_acceleration=(await self.arm.request_reference_cartesian_acceleration())
       * acceleration_percent
       / 100,
       power_state=await self.request_system_state(),
@@ -2083,3 +1928,123 @@ class PreciseFlex:
       "`change_config2` is deprecated, use `arm.change_config2`.", DeprecationWarning, stacklevel=2
     )
     return await self.arm.change_config2(*args, **kwargs)
+
+  async def request_joint_limits(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_joint_limits``."""
+    warnings.warn(
+      "`request_joint_limits` is deprecated, use `arm.request_joint_limits`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_joint_limits(*args, **kwargs)
+
+  async def request_reference_speed(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_reference_speed``."""
+    warnings.warn(
+      "`request_reference_speed` is deprecated, use `arm.request_reference_speed`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_reference_speed(*args, **kwargs)
+
+  async def request_reference_acceleration(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_reference_acceleration``."""
+    warnings.warn(
+      "`request_reference_acceleration` is deprecated, use `arm.request_reference_acceleration`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_reference_acceleration(*args, **kwargs)
+
+  async def request_link_lengths(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_link_lengths``."""
+    warnings.warn(
+      "`request_link_lengths` is deprecated, use `arm.request_link_lengths`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_link_lengths(*args, **kwargs)
+
+  async def request_tool_length(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_tool_length``."""
+    warnings.warn(
+      "`request_tool_length` is deprecated, use `arm.request_tool_length`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_tool_length(*args, **kwargs)
+
+  async def request_kinematic_parameters(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_kinematic_parameters``."""
+    warnings.warn(
+      "`request_kinematic_parameters` is deprecated, use `arm.request_kinematic_parameters`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_kinematic_parameters(*args, **kwargs)
+
+  async def request_reference_cartesian_speed(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_reference_cartesian_speed``."""
+    warnings.warn(
+      "`request_reference_cartesian_speed` is deprecated, use `arm.request_reference_cartesian_speed`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_reference_cartesian_speed(*args, **kwargs)
+
+  async def request_reference_cartesian_acceleration(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_reference_cartesian_acceleration``."""
+    warnings.warn(
+      "`request_reference_cartesian_acceleration` is deprecated, use `arm.request_reference_cartesian_acceleration`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_reference_cartesian_acceleration(*args, **kwargs)
+
+  async def request_max_speed_percent(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_max_speed_percent``."""
+    warnings.warn(
+      "`request_max_speed_percent` is deprecated, use `arm.request_max_speed_percent`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_max_speed_percent(*args, **kwargs)
+
+  async def request_max_acceleration_percent(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_max_acceleration_percent``."""
+    warnings.warn(
+      "`request_max_acceleration_percent` is deprecated, use `arm.request_max_acceleration_percent`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_max_acceleration_percent(*args, **kwargs)
+
+  async def request_max_deceleration_percent(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_max_deceleration_percent``."""
+    warnings.warn(
+      "`request_max_deceleration_percent` is deprecated, use `arm.request_max_deceleration_percent`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_max_deceleration_percent(*args, **kwargs)
+
+  async def request_base(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_base``."""
+    warnings.warn(
+      "`request_base` is deprecated, use `arm.request_base`.", DeprecationWarning, stacklevel=2
+    )
+    return await self.arm.request_base(*args, **kwargs)
+
+  async def set_base(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.set_base``."""
+    warnings.warn("`set_base` is deprecated, use `arm.set_base`.", DeprecationWarning, stacklevel=2)
+    return await self.arm.set_base(*args, **kwargs)
+
+  async def request_tool_transformation_values(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.request_tool_transformation_values``."""
+    warnings.warn(
+      "`request_tool_transformation_values` is deprecated, use `arm.request_tool_transformation_values`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.request_tool_transformation_values(*args, **kwargs)
