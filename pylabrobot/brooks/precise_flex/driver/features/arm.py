@@ -284,32 +284,6 @@ class PreciseFlexArm:
     """
     await self._driver.send_command(f"MoveOneAxis {int(axis)} {position} {self.profile_index}")
 
-  async def _move_to_station(self, station_index: int, profile_index: int) -> None:
-    """Move to the station using the specified profile.
-
-    Args:
-      station_index: The station to which the robot moves.
-      profile_index: The profile index for this move.
-
-    Note:
-      Requires that the robot be attached.
-    """
-    await self._driver.send_command(f"move {station_index} {profile_index}")
-
-  async def _move_to_station_approach(self, station_index: int, profile_index: int) -> None:
-    """Approach the station using the specified profile.
-
-    This is similar to `_move_to_station` except that the Z clearance value is included.
-
-    Args:
-      station_index: The station to which the robot moves.
-      profile_index: The profile index for this move.
-
-    Note:
-      Requires that the robot be attached.
-    """
-    await self._driver.send_command(f"moveAppro {station_index} {profile_index}")
-
   async def _set_joint_angles(
     self,
     station_index: int,
