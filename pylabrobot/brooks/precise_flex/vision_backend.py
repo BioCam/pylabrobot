@@ -50,7 +50,9 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-_NO_ENGINE = "no PreciseVision engine configured - pass vision_host at setup to use this method"
+_NO_VISION_SERVER = (
+  "no PreciseVision engine configured - pass vision_host at setup to use this method"
+)
 
 
 def _split_names(value: str) -> List[str]:
@@ -345,9 +347,9 @@ class PreciseFlexVisionBackend:
   # holds all three connections, and each call site names which server it reaches. The controller
   # relay (``self.driver.request_vision_tool_property`` / ``_set_vision_tool_property``, tool+property
   # split because VToolProperty's wire form is two tokens) is always present; the engine path
-  # (``self.driver.request_vision_engine_property`` / ``_set_vision_engine_property`` with the dotted
+  # (``self.driver.request_vision_server_property`` / ``_set_vision_server_property`` with the dotted
   # ``<tool>.<property>`` key) needs a connected engine, so its callers check
-  # ``self.driver.vision_engine_connected`` first. The orchestrations below compose either. Reads are
+  # ``self.driver.vision_server_connected`` first. The orchestrations below compose either. Reads are
   # public; writes (``_set_*``) are private - reached through these vetted orchestrations.
 
   async def _run_vision_process(self, name: str) -> str:
@@ -405,46 +407,46 @@ class PreciseFlexVisionBackend:
 
   async def request_vision_version(self) -> str:
     """The PreciseVision engine version (``system.engineversion``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    return await self.driver.request_vision_engine_property("system.engineversion")
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return await self.driver.request_vision_server_property("system.engineversion")
 
   async def request_is_licensed(self) -> bool:
     """Whether the engine reports a valid license (``system.islicensed``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    return (await self.driver.request_vision_engine_property("system.islicensed")) == "True"
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return (await self.driver.request_vision_server_property("system.islicensed")) == "True"
 
   async def request_projects(self) -> List[str]:
     """List all projects on the engine (``system.listprojects``); the active one is request_project_name."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    return _split_names(await self.driver.request_vision_engine_property("system.listprojects"))
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return _split_names(await self.driver.request_vision_server_property("system.listprojects"))
 
   async def request_project_name(self) -> str:
     """The active project's name (``system.projectname``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    return await self.driver.request_vision_engine_property("system.projectname")
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return await self.driver.request_vision_server_property("system.projectname")
 
   async def request_processes(self) -> List[str]:
     """List all process names in the active project (``system.listprocesses``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    return _split_names(await self.driver.request_vision_engine_property("system.listprocesses"))
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return _split_names(await self.driver.request_vision_server_property("system.listprocesses"))
 
   async def request_vision_tools(self) -> List[str]:
     """List all tool names in the active project (``system.listtools``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    return _split_names(await self.driver.request_vision_engine_property("system.listtools"))
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return _split_names(await self.driver.request_vision_server_property("system.listtools"))
 
   async def enumerate_project(self) -> Dict[str, List[str]]:
     """List the loaded project's processes and tools (``system.listprocesses`` / ``listtools``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    processes = await self.driver.request_vision_engine_property("system.listprocesses")
-    tools = await self.driver.request_vision_engine_property("system.listtools")
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    processes = await self.driver.request_vision_server_property("system.listprocesses")
+    tools = await self.driver.request_vision_server_property("system.listtools")
     return {
       "processes": sorted(_split_names(processes)),
       "vision_tools": sorted(_split_names(tools)),
@@ -457,7 +459,7 @@ class PreciseFlexVisionBackend:
     names, and per-camera info via the engine reads (all read-only). Returns an undiscovered (empty)
     configuration when no engine was configured at setup.
     """
-    if not self.driver.vision_engine_connected:
+    if not self.driver.vision_server_connected:
       self.configuration = VisionConfiguration(discovered=False)
       return self.configuration
     tools: Dict[str, VisionToolInfo] = {}
@@ -467,7 +469,7 @@ class PreciseFlexVisionBackend:
         type=await self.request_vision_tool_type(name),
         properties=await self.request_vision_tool_properties(name),
       )
-    count = await self.driver.request_vision_engine_property("system.cameracount")
+    count = await self.driver.request_vision_server_property("system.cameracount")
     cameras: Dict[int, CameraInfo] = {}
     for cam in range(1, (int(count) if count.isdigit() else 0) + 1):
       cameras[cam] = CameraInfo(
@@ -553,9 +555,9 @@ class PreciseFlexVisionBackend:
     self, camera: Union[Literal["front", "bottom"], int] = "front"
   ) -> str:
     """A camera's friendly name, e.g. ``Cam1`` (``system.cameraname <camera>``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    return await self.driver.request_vision_engine_property(
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return await self.driver.request_vision_server_property(
       f"system.cameraname {self._camera_index(camera)}"
     )
 
@@ -563,9 +565,9 @@ class PreciseFlexVisionBackend:
     self, camera: Union[Literal["front", "bottom"], int] = "front"
   ) -> str:
     """A camera's capture backend, e.g. ``DirectShow`` (``system.cameratype <camera>``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    return await self.driver.request_vision_engine_property(
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return await self.driver.request_vision_server_property(
       f"system.cameratype {self._camera_index(camera)}"
     )
 
@@ -573,9 +575,9 @@ class PreciseFlexVisionBackend:
     self, camera: Union[Literal["front", "bottom"], int] = "front"
   ) -> Optional[int]:
     """A camera's native frame width in px (``system.cameraframewidth <camera>``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    value = await self.driver.request_vision_engine_property(
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    value = await self.driver.request_vision_server_property(
       f"system.cameraframewidth {self._camera_index(camera)}"
     )
     return int(value) if value.isdigit() else None
@@ -584,9 +586,9 @@ class PreciseFlexVisionBackend:
     self, camera: Union[Literal["front", "bottom"], int] = "front"
   ) -> Optional[int]:
     """A camera's native frame height in px (``system.cameraframeheight <camera>``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    value = await self.driver.request_vision_engine_property(
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    value = await self.driver.request_vision_server_property(
       f"system.cameraframeheight {self._camera_index(camera)}"
     )
     return int(value) if value.isdigit() else None
@@ -595,10 +597,10 @@ class PreciseFlexVisionBackend:
     self, camera: Union[Literal["front", "bottom"], int] = "front"
   ) -> List[str]:
     """A camera's supported resolution modes (``system.cameraresolutions <camera>``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
     return _split_names(
-      await self.driver.request_vision_engine_property(
+      await self.driver.request_vision_server_property(
         f"system.cameraresolutions {self._camera_index(camera)}"
       )
     )
@@ -611,37 +613,37 @@ class PreciseFlexVisionBackend:
 
   async def request_vision_tool_property_value(self, tool: str, property_name: str) -> str:
     """Read one tool property value (``property get <tool>.<property>``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    return await self.driver.request_vision_engine_property(f"{tool}.{property_name}")
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return await self.driver.request_vision_server_property(f"{tool}.{property_name}")
 
   async def request_vision_tool_properties(self, tool: str) -> List[str]:
     """List the property names of one tool (``system.toolproperties <tool>``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
     return _split_names(
-      await self.driver.request_vision_engine_property(f"system.toolproperties {tool}")
+      await self.driver.request_vision_server_property(f"system.toolproperties {tool}")
     )
 
   async def request_vision_tool_property_info(self, tool: str, property_name: str) -> str:
     """The type / enum / range metadata for one tool property (``system.toolpropertyinfo``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    return await self.driver.request_vision_engine_property(
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return await self.driver.request_vision_server_property(
       f"system.toolpropertyinfo {tool} {property_name}"
     )
 
   async def request_vision_tool_type(self, tool: str) -> str:
     """The tool's type/class, e.g. ``Acquire`` or ``FiducialLocator`` (``system.tooltype``)."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    return await self.driver.request_vision_engine_property(f"system.tooltype {tool}")
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return await self.driver.request_vision_server_property(f"system.tooltype {tool}")
 
   async def request_vision_tool_types(self) -> List[str]:
     """List all tool types the engine can instantiate (``system.tooltypes``) - the fixed palette."""
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    return _split_names(await self.driver.request_vision_engine_property("system.tooltypes"))
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return _split_names(await self.driver.request_vision_server_property("system.tooltypes"))
 
   async def _run_vision_tool(self, tool: str) -> None:
     """Run a single engine vision tool (``property set system.runtool <tool>``).
@@ -649,9 +651,9 @@ class PreciseFlexVisionBackend:
     Internal apply primitive: for an acquire tool it pushes the tool's stored settings to the camera
     and grabs a frame. A bare property write only stores a value; running the tool applies it.
     """
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
-    await self.driver._set_vision_engine_property("system.runtool", tool)
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    await self.driver._set_vision_server_property("system.runtool", tool)
 
   # -- lighting (LightControl) ---------------------------------------------
 
@@ -702,14 +704,14 @@ class PreciseFlexVisionBackend:
       await self._run_vision_process(self._LIGHT_PROCESS)
 
     elif use_server == "vision":
-      if not self.driver.vision_engine_connected:
-        raise RuntimeError(_NO_ENGINE)
+      if not self.driver.vision_server_connected:
+        raise RuntimeError(_NO_VISION_SERVER)
 
-      await self.driver._set_vision_engine_property(f"{self._LIGHT_TOOL}.bank", led)
-      await self.driver._set_vision_engine_property(f"{self._LIGHT_TOOL}.brightness", brightness)
+      await self.driver._set_vision_server_property(f"{self._LIGHT_TOOL}.bank", led)
+      await self.driver._set_vision_server_property(f"{self._LIGHT_TOOL}.brightness", brightness)
 
       if delay is not None:
-        await self.driver._set_vision_engine_property(f"{self._LIGHT_TOOL}.delay", delay)
+        await self.driver._set_vision_server_property(f"{self._LIGHT_TOOL}.delay", delay)
 
       await self._run_vision_tool(self._LIGHT_TOOL)
 
@@ -744,10 +746,10 @@ class PreciseFlexVisionBackend:
       value: the value to write. The camera may clamp it to its own range, so read it back with
         ``request_vision_tool_property_value`` to confirm the effective value.
     """
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
     acquire_tool = f"acq{self._camera_index(camera)}"
-    await self.driver._set_vision_engine_property(f"{acquire_tool}.{camera_property}", value)
+    await self.driver._set_vision_server_property(f"{acquire_tool}.{camera_property}", value)
     await self._run_vision_tool(acquire_tool)  # a bare write only stores; run the tool to apply
 
   async def capture_image(
@@ -773,17 +775,17 @@ class PreciseFlexVisionBackend:
       TimeoutError: if no frame arrives off the engine image stream before the read times out.
       RuntimeError: if the image stream ends before the requested frame is seen.
     """
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
     index = self._camera_index(camera)
     want = f"Primary Image [{index}]"
-    await self.driver._set_vision_engine_property("system.cameraacquire", index)
+    await self.driver._set_vision_server_property("system.cameraacquire", index)
     while True:
       try:
-        record = await self.driver.read_next_vision_engine_record()
+        record = await self.driver.read_next_vision_server_record()
       except TimeoutError as e:
         raise TimeoutError(
-          f"no '{want}' frame arrived within {self.driver.vision_engine_timeout}s"
+          f"no '{want}' frame arrived within {self.driver.vision_server_timeout}s"
         ) from e
       if record is None:
         raise RuntimeError(f"engine image stream ended without a '{want}' record")
@@ -834,11 +836,11 @@ class PreciseFlexVisionBackend:
     ``["code128", "qrcode"]``. Values are stored and take effect the next time the barcode tool runs
     (``read_barcode``). Pass ``enabled=False`` to turn them off.
     """
-    if not self.driver.vision_engine_connected:
-      raise RuntimeError(_NO_ENGINE)
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
     for symbology in symbologies:
       # Stored only (no run-tool); the next read_barcode run applies them.
-      await self.driver._set_vision_engine_property(f"{tool}.{symbology}", str(enabled).lower())
+      await self.driver._set_vision_server_property(f"{tool}.{symbology}", str(enabled).lower())
 
   @requires_vision_tool_type("BarcodeRead")
   async def read_barcode(
