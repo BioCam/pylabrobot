@@ -28,7 +28,7 @@ class PreciseFlexGripper:
 
   # What the driver sends when a caller leaves the value out. Tune one gripper by assigning on the
   # instance, or every gripper by assigning on the class.
-  default_finger_speed_pct: float = 50.0
+  default_finger_speed_percent: float = 50.0
   default_grasp_force: float = 10.0
 
   # Physical jaw range for the PF400 servoed gripper. Overridden at setup from the
@@ -105,7 +105,7 @@ class PreciseFlexGripper:
     """Get the data to be used for the next force-controlled PickPlate command grip operation.
 
     Returns:
-      A tuple containing (plate_width_mm, finger_speed_pct, grasp_force)
+      A tuple containing (plate_width_mm, finger_speed_percent, grasp_force)
     """
     data = await self._driver.send_command("GraspData")
     parts = data.split()
@@ -114,7 +114,7 @@ class PreciseFlexGripper:
     return (float(parts[0]), float(parts[1]), float(parts[2]))
 
   async def _set_grasp_data(
-    self, plate_width: float, finger_speed_pct: float, grasp_force: float
+    self, plate_width: float, finger_speed_percent: float, grasp_force: float
   ) -> None:
     """Set the data to be used for the next force-controlled PickPlate command grip operation.
 
@@ -122,17 +122,19 @@ class PreciseFlexGripper:
 
     Args:
       plate_width: The plate width in mm.
-      finger_speed_pct: The finger speed during grasp as a percentage (0-100). 100 = full speed.
+      finger_speed_percent: The finger speed during grasp as a percentage (0-100). 100 = full speed.
       grasp_force: The gripper squeezing force, in Newtons.
       A positive value indicates the fingers must close to grasp.
       A negative value indicates the fingers must open to grasp.
 
     Raises:
-      ValueError: If finger_speed_pct is not between 0 and 100.
+      ValueError: If finger_speed_percent is not between 0 and 100.
     """
-    if not 0 <= finger_speed_pct <= 100:
-      raise ValueError(f"finger_speed_pct must be between 0 and 100, got {finger_speed_pct}")
-    await self._driver.send_command(f"GraspData {plate_width} {finger_speed_pct} {grasp_force}")
+    if not 0 <= finger_speed_percent <= 100:
+      raise ValueError(
+        f"finger_speed_percent must be between 0 and 100, got {finger_speed_percent}"
+      )
+    await self._driver.send_command(f"GraspData {plate_width} {finger_speed_percent} {grasp_force}")
 
   # -- conversions: the wire counts in the axis's units, the driver speaks mm ----------------------
 

@@ -8,6 +8,7 @@ import asyncio
 import dataclasses
 import logging
 import time
+import warnings
 from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Sequence
 
 from pylabrobot.events import coordinate_reference, evented_operation
@@ -81,7 +82,7 @@ class PreciseFlexArm:
 
   # What the driver sends when a caller leaves the value out. Tune one arm by assigning on the
   # instance, or every arm by assigning on the class.
-  default_recovery_speed_pct: float = 20.0
+  default_recovery_speed_percent: float = 20.0
 
   def __init__(self, driver: "PreciseFlex") -> None:
     """
@@ -359,7 +360,11 @@ class PreciseFlexArm:
     )
 
   async def recover_axes_within_limits(
-    self, speed_pct: Optional[float] = None, max_distance: Optional[float] = 5.0
+    self,
+    speed_percent: Optional[float] = None,
+    max_distance: Optional[float] = 5.0,
+    *,
+    speed_pct: Optional[float] = None,
   ) -> Dict[Axis, float]:
     """Bring out-of-range axes back inside their soft limits, one axis at a time.
 
@@ -370,12 +375,13 @@ class PreciseFlexArm:
     soft limit, slowly, waiting for each to finish, in :attr:`_RECOVERY_ORDER`.
 
     Args:
-      speed_pct: Profile speed for the recovery moves, in percent; deliberately slow.
-        ``default_recovery_speed_pct`` when None.
+      speed_percent: Profile speed for the recovery moves, in percent; deliberately slow.
+        ``default_recovery_speed_percent`` when None.
       max_distance: only move an axis that is out of range by at most this much (deg
         for the rotary axes, mm for base/gripper). An axis further out is left in place:
         a large unattended single-axis sweep risks a collision, so it is left for the
         caller to recover manually (e.g. by freedriving). Pass None to move regardless.
+      speed_pct: deprecated, use `speed_percent`.
 
     Returns:
       The axes moved, as ``axis -> recovered target``. Empty when nothing recoverable
@@ -383,13 +389,18 @@ class PreciseFlexArm:
       never auto-recovered (see :attr:`_RECOVERY_ORDER`), nor a gripper open past its limit,
       since bringing it in would close it without sensing force.
     """
-    if speed_pct is None:
-      speed_pct = self.default_recovery_speed_pct
+    if speed_pct is not None:
+      warnings.warn(
+        "`speed_pct` is deprecated, use `speed_percent`.", DeprecationWarning, stacklevel=2
+      )
+      speed_percent = speed_pct
+    if speed_percent is None:
+      speed_percent = self.default_recovery_speed_percent
     outside = self._axes_outside_soft_limits(await self.request_joint_state())
     if not outside:
       return {}
     prior_speed = await self._driver._request_speed()
-    await self._driver._set_speed(speed_pct)
+    await self._driver._set_speed(speed_percent)
     recovered: Dict[Axis, float] = {}
     try:
       for axis in self._RECOVERY_ORDER:
@@ -565,31 +576,38 @@ class PreciseFlexArm:
 
   @evented_operation(
     "precise_flex.move_to_joint_position",
-    lambda self, position, speed_pct=None: {
+    lambda self, position, speed_percent=None, speed_pct=None: {
       "device": self._driver._controller_reference(),
       "target_joint_position": _joint_state_reference(position),
-      "speed_pct": speed_pct,
+      "speed_percent": speed_percent if speed_pct is None else speed_pct,
     },
   )
   async def move_to_joint_position(
     self,
     position: JointState,
-    speed_pct: Optional[float] = None,
+    speed_percent: Optional[float] = None,
     *,
     close_gripper_without_force_sensing: bool = False,
+    speed_pct: Optional[float] = None,
   ) -> None:
     """Move the arm to the specified joint position. A partial spec is merged over the live pose;
     the move is guarded against out-of-range axes (see ``_guarded_move_j``).
 
     Args:
       position: Target joint state. Omitted axes keep their live values.
-      speed_pct: Movement speed override as a percentage (0-100). If None, uses the current
+      speed_percent: Movement speed override as a percentage (0-100). If None, uses the current
         speed setting.
       close_gripper_without_force_sensing: allow a gripper axis below the live one. A joint move
         senses no force, so it is refused otherwise.
+      speed_pct: deprecated, use `speed_percent`.
     """
     if speed_pct is not None:
-      await self._driver._set_speed(speed_pct)
+      warnings.warn(
+        "`speed_pct` is deprecated, use `speed_percent`.", DeprecationWarning, stacklevel=3
+      )
+      speed_percent = speed_pct
+    if speed_percent is not None:
+      await self._driver._set_speed(speed_percent)
     await self._guarded_move_j(
       lambda current: {**current, **position},
       close_gripper_without_force_sensing=close_gripper_without_force_sensing,
@@ -614,7 +632,7 @@ class PreciseFlexArm:
 
   @evented_operation(
     "precise_flex.move_to_location",
-    lambda self, location, direction, speed_pct=None, orientation=None, wrist=None, rail_position=None: {
+    lambda self, location, direction, speed_percent=None, orientation=None, wrist=None, rail_position=None, speed_pct=None: {
       "device": self._driver._controller_reference(),
       "target": _cartesian_target_reference(
         location,
@@ -623,17 +641,19 @@ class PreciseFlexArm:
         wrist=wrist,
         rail_position=rail_position,
       ),
-      "speed_pct": speed_pct,
+      "speed_percent": speed_percent if speed_pct is None else speed_pct,
     },
   )
   async def move_to_location(
     self,
     location: Coordinate,
     direction: float,
-    speed_pct: Optional[float] = None,
+    speed_percent: Optional[float] = None,
     orientation: Optional[ElbowOrientation] = None,
     wrist: Optional[Wrist] = None,
     rail_position: Optional[float] = None,
+    *,
+    speed_pct: Optional[float] = None,
   ) -> None:
     """Move the arm to the specified Cartesian location. The IK target is guarded against
     out-of-range axes (see ``_guarded_move_j``).
@@ -641,15 +661,21 @@ class PreciseFlexArm:
     Args:
       location: Target Cartesian location.
       direction: Approach direction, applied as the pose's z rotation in degrees.
-      speed_pct: Movement speed override as a percentage (0-100). If None, uses the current
+      speed_percent: Movement speed override as a percentage (0-100). If None, uses the current
         speed setting.
       orientation: Elbow orientation (``"lefty"`` or ``"righty"``). If None, the robot
         picks the closest configuration.
       wrist: Wrist configuration. If None, the robot picks the closest configuration.
       rail_position: Linear rail position in mm. Required when the arm has a rail.
+      speed_pct: deprecated, use `speed_percent`.
     """
     if speed_pct is not None:
-      await self._driver._set_speed(speed_pct)
+      warnings.warn(
+        "`speed_pct` is deprecated, use `speed_percent`.", DeprecationWarning, stacklevel=3
+      )
+      speed_percent = speed_pct
+    if speed_percent is not None:
+      await self._driver._set_speed(speed_percent)
 
     if rail_position is not None:
       await self._require_rail().move_rail(rail_position)
@@ -708,7 +734,7 @@ class PreciseFlexArm:
 
   @evented_operation(
     "precise_flex.move_through_cartesian_poses",
-    lambda self, poses, speed_pct=None, blend=True: {
+    lambda self, poses, speed_percent=None, blend=True, speed_pct=None: {
       "device": self._driver._controller_reference(),
       "waypoint_count": len(poses),
       "start_target": (
@@ -733,15 +759,17 @@ class PreciseFlexArm:
         if poses
         else None
       ),
-      "speed_pct": speed_pct,
+      "speed_percent": speed_percent if speed_pct is None else speed_pct,
       "blend": blend,
     },
   )
   async def move_through_cartesian_poses(
     self,
     poses: Sequence[PreciseFlexCartesianPose],
-    speed_pct: Optional[float] = None,
+    speed_percent: Optional[float] = None,
     blend: bool = True,
+    *,
+    speed_pct: Optional[float] = None,
   ) -> None:
     """Move through a sequence of Cartesian poses using one planned IK route.
 
@@ -756,16 +784,22 @@ class PreciseFlexArm:
 
     Args:
       poses: Cartesian waypoints to move through, in order.
-      speed_pct: Movement speed override as a percentage (0-100). If None, uses the
+      speed_percent: Movement speed override as a percentage (0-100). If None, uses the
         current speed setting.
       blend: When True, temporarily set the active motion profile's ``InRange`` value to
         ``-1`` so the controller may blend through intermediate waypoints instead of stopping
         at each one. The original profile is restored after the final waypoint is reached.
+      speed_pct: deprecated, use `speed_percent`.
     """
+    if speed_pct is not None:
+      warnings.warn(
+        "`speed_pct` is deprecated, use `speed_percent`.", DeprecationWarning, stacklevel=3
+      )
+      speed_percent = speed_pct
     if not poses:
       return
-    if speed_pct is not None:
-      await self._driver._set_speed(speed_pct)
+    if speed_percent is not None:
+      await self._driver._set_speed(speed_percent)
 
     targets = await self._plan_cartesian_pose_route(poses)
 

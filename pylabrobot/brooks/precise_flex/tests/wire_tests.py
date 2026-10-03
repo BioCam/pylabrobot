@@ -924,7 +924,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_to_joint_position_speed",
-    lambda arm: arm.arm.move_to_joint_position(_J, speed_pct=30),
+    lambda arm: arm.arm.move_to_joint_position(_J, speed_percent=30),
     [
       "Speed 1 30",
       "wherej",
@@ -960,7 +960,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_to_location_speed",
-    lambda arm: arm.arm.move_to_location(_LOC, direction=30.0, speed_pct=40),
+    lambda arm: arm.arm.move_to_location(_LOC, direction=30.0, speed_percent=40),
     [
       "Speed 1 40",
       "wherej",
@@ -992,7 +992,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_through_cartesian_poses_unblended",
-    lambda arm: arm.arm.move_through_cartesian_poses(_POSES, speed_pct=30, blend=False),
+    lambda arm: arm.arm.move_through_cartesian_poses(_POSES, speed_percent=30, blend=False),
     [
       "Speed 1 30",
       "wherej",
@@ -1473,7 +1473,7 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
 
   async def test_grasp_defaults_set_on_the_arm(self):
     arm, fake = await self._arm()
-    arm.gripper.default_finger_speed_pct = 30.0
+    arm.gripper.default_finger_speed_percent = 30.0
     arm.gripper.default_grasp_force = 5.0
     await arm.pick_up_at_joint_position(_J, resource_width=85.0)
     self.assertEqual(fake.sent[0], "GraspData 85.0 30.0 5.0")
@@ -1489,7 +1489,7 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
 
   async def test_recovery_speed_default_set_on_the_arm(self):
     arm, fake = await self._arm()
-    arm.arm.default_recovery_speed_pct = 10.0
+    arm.arm.default_recovery_speed_percent = 10.0
     fake._replies["wherej"] = "0 200 93.5 180 0 100"
     await arm.arm.recover_axes_within_limits()
     self.assertIn("Speed 1 10.0", fake.sent)
@@ -1582,3 +1582,117 @@ class TestRefusals(unittest.IsolatedAsyncioTestCase):
     with self.assertRaisesRegex(ValueError, "axis_mask"):
       await arm.zero_torque(True, 0)
     self.assertEqual(fake.sent, [])
+
+
+_DEPRECATED_KEYWORDS: List[
+  Tuple[str, Callable[[PreciseFlex], Awaitable[Any]], Callable[..., Any]]
+] = [
+  (
+    "set_monitor_speed",
+    lambda a: a.set_monitor_speed(speed_pct=50),
+    lambda a: a.set_monitor_speed(50),
+  ),
+  ("set_payload", lambda a: a.set_payload(payload_pct=25), lambda a: a.set_payload(25)),
+  (
+    "set_profile_speed",
+    lambda a: a.set_profile_speed(1, speed_pct=40),
+    lambda a: a.set_profile_speed(1, 40),
+  ),
+  (
+    "set_profile_speed2",
+    lambda a: a.set_profile_speed2(1, speed2_pct=30),
+    lambda a: a.set_profile_speed2(1, 30),
+  ),
+  (
+    "set_profile_acceleration",
+    lambda a: a.set_profile_acceleration(1, acceleration_pct=60),
+    lambda a: a.set_profile_acceleration(1, 60),
+  ),
+  (
+    "set_profile_deceleration",
+    lambda a: a.set_profile_deceleration(1, deceleration_pct=70),
+    lambda a: a.set_profile_deceleration(1, 70),
+  ),
+  (
+    "set_motion_profile_values",
+    lambda a: a.set_motion_profile_values(
+      1,
+      speed_pct=40,
+      speed2_pct=30,
+      acceleration_pct=60,
+      deceleration_pct=70,
+      acceleration_ramp=0.2,
+      deceleration_ramp=0.3,
+      in_range=10,
+      straight=True,
+    ),
+    lambda a: a.set_motion_profile_values(1, 40, 30, 60, 70, 0.2, 0.3, 10, True),
+  ),
+  (
+    "move_to_joint_position",
+    lambda a: a.arm.move_to_joint_position(_J, speed_pct=30),
+    lambda a: a.arm.move_to_joint_position(_J, speed_percent=30),
+  ),
+  (
+    "move_to_location",
+    lambda a: a.arm.move_to_location(_LOC, direction=0.0, speed_pct=40),
+    lambda a: a.arm.move_to_location(_LOC, direction=0.0, speed_percent=40),
+  ),
+  (
+    "move_through_cartesian_poses",
+    lambda a: a.arm.move_through_cartesian_poses(_POSES, speed_pct=30),
+    lambda a: a.arm.move_through_cartesian_poses(_POSES, speed_percent=30),
+  ),
+  (
+    "recover_axes_within_limits",
+    lambda a: a.arm.recover_axes_within_limits(speed_pct=10),
+    lambda a: a.arm.recover_axes_within_limits(speed_percent=10),
+  ),
+  (
+    "pick_up_at_joint_position",
+    lambda a: a.pick_up_at_joint_position(_J, resource_width=85.0, finger_speed_pct=30),
+    lambda a: a.pick_up_at_joint_position(_J, resource_width=85.0, finger_speed_percent=30),
+  ),
+  (
+    "pick_up_at_location",
+    lambda a: a.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0, finger_speed_pct=30),
+    lambda a: a.pick_up_at_location(
+      _LOC, direction=0.0, resource_width=85.0, finger_speed_percent=30
+    ),
+  ),
+]
+
+
+class TestDeprecatedPercentKeywords(unittest.IsolatedAsyncioTestCase):
+  """A `*_pct` keyword still works, warns, and sends what its `*_percent` successor sends."""
+
+  def setUp(self) -> None:
+    sleep = patch("pylabrobot.brooks.precise_flex.driver.master.asyncio.sleep", new=AsyncMock())
+    sleep.start()
+    self.addCleanup(sleep.stop)
+
+  async def _sent(
+    self, call: Callable[[PreciseFlex], Awaitable[Any]], out_of_range: bool
+  ) -> List[str]:
+    fake = _FakeController({"Speed 1": "0 1 60"})
+    arm = _make_arm(fake)
+    await arm.setup(skip_vision=True)
+    fake.sent.clear()
+    if out_of_range:  # so recovery sets its speed
+      fake._replies["wherej"] = "0 200 93.5 180 0 100"
+    await call(arm)
+    return fake.sent
+
+  async def test_each_deprecated_keyword(self):
+    for name, old, new in _DEPRECATED_KEYWORDS:
+      with self.subTest(name):
+        out_of_range = name == "recover_axes_within_limits"
+        expected = await self._sent(new, out_of_range)
+        with self.assertWarns(DeprecationWarning):
+          sent = await self._sent(old, out_of_range)
+        self.assertEqual(sent, expected)
+
+  async def test_a_required_value_given_under_neither_name_raises(self):
+    arm = _make_arm(_FakeController())
+    with self.assertRaisesRegex(TypeError, "payload_percent"):
+      await arm.set_payload()

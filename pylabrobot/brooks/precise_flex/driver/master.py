@@ -908,18 +908,28 @@ class PreciseFlex:
     response = await self.send_command("mspeed")
     return int(response)
 
-  async def set_monitor_speed(self, speed_pct: int) -> None:
+  async def set_monitor_speed(
+    self, speed_percent: Optional[int] = None, *, speed_pct: Optional[int] = None
+  ) -> None:
     """Set the global system (monitor) speed.
 
     Args:
-      speed_pct: Speed percentage between 0 and 100, where 100 means full speed.
+      speed_percent: Speed percentage between 0 and 100, where 100 means full speed.
+      speed_pct: deprecated, use `speed_percent`.
 
     Raises:
-      ValueError: If speed_pct is not between 0 and 100.
+      ValueError: If speed_percent is not between 0 and 100.
     """
-    if not 0 <= speed_pct <= 100:
-      raise ValueError(f"speed_pct must be between 0 and 100, got {speed_pct}")
-    await self.send_command(f"mspeed {speed_pct}")
+    if speed_pct is not None:
+      warnings.warn(
+        "`speed_pct` is deprecated, use `speed_percent`.", DeprecationWarning, stacklevel=2
+      )
+      speed_percent = speed_pct
+    if speed_percent is None:
+      raise TypeError("set_monitor_speed() missing required argument: 'speed_percent'")
+    if not 0 <= speed_percent <= 100:
+      raise ValueError(f"speed_percent must be between 0 and 100, got {speed_percent}")
+    await self.send_command(f"mspeed {speed_percent}")
 
   async def request_payload(self) -> int:
     """Get the payload percent value for the current robot.
@@ -930,21 +940,31 @@ class PreciseFlex:
     response = await self.send_command("payload")
     return int(response)
 
-  async def set_payload(self, payload_pct: int) -> None:
+  async def set_payload(
+    self, payload_percent: Optional[int] = None, *, payload_pct: Optional[int] = None
+  ) -> None:
     """Set the payload percent of maximum for the currently selected or attached robot.
 
     Args:
-      payload_pct: Payload percentage from 0 to 100 indicating the percent of the maximum payload the robot is carrying.
+      payload_percent: Payload percentage from 0 to 100 indicating the percent of the maximum payload the robot is carrying.
+      payload_pct: deprecated, use `payload_percent`.
 
     Raises:
-      ValueError: If payload_pct is not between 0 and 100.
+      ValueError: If payload_percent is not between 0 and 100.
 
     Note:
       If the robot is moving, waits for the robot to stop before setting a value.
     """
-    if not (0 <= payload_pct <= 100):
+    if payload_pct is not None:
+      warnings.warn(
+        "`payload_pct` is deprecated, use `payload_percent`.", DeprecationWarning, stacklevel=2
+      )
+      payload_percent = payload_pct
+    if payload_percent is None:
+      raise TypeError("set_payload() missing required argument: 'payload_percent'")
+    if not (0 <= payload_percent <= 100):
       raise ValueError("Payload percent must be between 0 and 100")
-    await self.send_command(f"payload {payload_pct}")
+    await self.send_command(f"payload {payload_percent}")
 
   async def request_profile_speed(self, profile_index: int) -> float:
     """Get the speed property of the specified profile.
@@ -959,19 +979,33 @@ class PreciseFlex:
     profile, speed = response.split()
     return float(speed)
 
-  async def set_profile_speed(self, profile_index: int, speed_pct: float) -> None:
+  async def set_profile_speed(
+    self,
+    profile_index: int,
+    speed_percent: Optional[float] = None,
+    *,
+    speed_pct: Optional[float] = None,
+  ) -> None:
     """Set the speed property of the specified profile.
 
     Args:
       profile_index: The profile index to modify.
-      speed_pct: The new speed as a percentage (0-100). 100 = full speed.
+      speed_percent: The new speed as a percentage (0-100). 100 = full speed.
+      speed_pct: deprecated, use `speed_percent`.
 
     Raises:
-      ValueError: If speed_pct is not between 0 and 100.
+      ValueError: If speed_percent is not between 0 and 100.
     """
-    if not 0 <= speed_pct <= 100:
-      raise ValueError(f"speed_pct must be between 0 and 100, got {speed_pct}")
-    await self.send_command(f"Speed {profile_index} {speed_pct}")
+    if speed_pct is not None:
+      warnings.warn(
+        "`speed_pct` is deprecated, use `speed_percent`.", DeprecationWarning, stacklevel=2
+      )
+      speed_percent = speed_pct
+    if speed_percent is None:
+      raise TypeError("set_profile_speed() missing required argument: 'speed_percent'")
+    if not 0 <= speed_percent <= 100:
+      raise ValueError(f"speed_percent must be between 0 and 100, got {speed_percent}")
+    await self.send_command(f"Speed {profile_index} {speed_percent}")
 
   async def request_profile_speed2(self, profile_index: int) -> float:
     """Get the speed2 property of the specified profile.
@@ -986,20 +1020,34 @@ class PreciseFlex:
     profile, speed2 = response.split()
     return float(speed2)
 
-  async def set_profile_speed2(self, profile_index: int, speed2_pct: float) -> None:
+  async def set_profile_speed2(
+    self,
+    profile_index: int,
+    speed2_percent: Optional[float] = None,
+    *,
+    speed2_pct: Optional[float] = None,
+  ) -> None:
     """Set the speed2 property of the specified profile.
 
     Args:
       profile_index: The profile index to modify.
-      speed2_pct: The new speed2 as a percentage (0-100). 100 = full speed.
+      speed2_percent: The new speed2 as a percentage (0-100). 100 = full speed.
         Used for Cartesian moves. Normally set to 0.
+      speed2_pct: deprecated, use `speed2_percent`.
 
     Raises:
-      ValueError: If speed2_pct is not between 0 and 100.
+      ValueError: If speed2_percent is not between 0 and 100.
     """
-    if not 0 <= speed2_pct <= 100:
-      raise ValueError(f"speed2_pct must be between 0 and 100, got {speed2_pct}")
-    await self.send_command(f"Speed2 {profile_index} {speed2_pct}")
+    if speed2_pct is not None:
+      warnings.warn(
+        "`speed2_pct` is deprecated, use `speed2_percent`.", DeprecationWarning, stacklevel=2
+      )
+      speed2_percent = speed2_pct
+    if speed2_percent is None:
+      raise TypeError("set_profile_speed2() missing required argument: 'speed2_percent'")
+    if not 0 <= speed2_percent <= 100:
+      raise ValueError(f"speed2_percent must be between 0 and 100, got {speed2_percent}")
+    await self.send_command(f"Speed2 {profile_index} {speed2_percent}")
 
   async def request_profile_acceleration(self, profile_index: int) -> float:
     """Get the acceleration property of the specified profile.
@@ -1014,19 +1062,39 @@ class PreciseFlex:
     profile, acceleration = response.split()
     return float(acceleration)
 
-  async def set_profile_acceleration(self, profile_index: int, acceleration_pct: float) -> None:
+  async def set_profile_acceleration(
+    self,
+    profile_index: int,
+    acceleration_percent: Optional[float] = None,
+    *,
+    acceleration_pct: Optional[float] = None,
+  ) -> None:
     """Set the acceleration property of the specified profile.
 
     Args:
       profile_index: The profile index to modify.
-      acceleration_pct: The new acceleration as a percentage (0-100). 100 = maximum acceleration.
+      acceleration_percent: The new acceleration as a percentage (0-100). 100 = maximum acceleration.
+      acceleration_pct: deprecated, use `acceleration_percent`.
 
     Raises:
-      ValueError: If acceleration_pct is not between 0 and 100.
+      ValueError: If acceleration_percent is not between 0 and 100.
     """
-    if not 0 <= acceleration_pct <= 100:
-      raise ValueError(f"acceleration_pct must be between 0 and 100, got {acceleration_pct}")
-    await self.send_command(f"Accel {profile_index} {acceleration_pct}")
+    if acceleration_pct is not None:
+      warnings.warn(
+        "`acceleration_pct` is deprecated, use `acceleration_percent`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
+      acceleration_percent = acceleration_pct
+    if acceleration_percent is None:
+      raise TypeError(
+        "set_profile_acceleration() missing required argument: 'acceleration_percent'"
+      )
+    if not 0 <= acceleration_percent <= 100:
+      raise ValueError(
+        f"acceleration_percent must be between 0 and 100, got {acceleration_percent}"
+      )
+    await self.send_command(f"Accel {profile_index} {acceleration_percent}")
 
   async def request_profile_acceleration_ramp(self, profile_index: int) -> float:
     """Get the acceleration ramp property of the specified profile.
@@ -1065,19 +1133,39 @@ class PreciseFlex:
     profile, deceleration = response.split()
     return float(deceleration)
 
-  async def set_profile_deceleration(self, profile_index: int, deceleration_pct: float) -> None:
+  async def set_profile_deceleration(
+    self,
+    profile_index: int,
+    deceleration_percent: Optional[float] = None,
+    *,
+    deceleration_pct: Optional[float] = None,
+  ) -> None:
     """Set the deceleration property of the specified profile.
 
     Args:
       profile_index: The profile index to modify.
-      deceleration_pct: The new deceleration as a percentage (0-100). 100 = maximum deceleration.
+      deceleration_percent: The new deceleration as a percentage (0-100). 100 = maximum deceleration.
+      deceleration_pct: deprecated, use `deceleration_percent`.
 
     Raises:
-      ValueError: If deceleration_pct is not between 0 and 100.
+      ValueError: If deceleration_percent is not between 0 and 100.
     """
-    if not 0 <= deceleration_pct <= 100:
-      raise ValueError(f"deceleration_pct must be between 0 and 100, got {deceleration_pct}")
-    await self.send_command(f"Decel {profile_index} {deceleration_pct}")
+    if deceleration_pct is not None:
+      warnings.warn(
+        "`deceleration_pct` is deprecated, use `deceleration_percent`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
+      deceleration_percent = deceleration_pct
+    if deceleration_percent is None:
+      raise TypeError(
+        "set_profile_deceleration() missing required argument: 'deceleration_percent'"
+      )
+    if not 0 <= deceleration_percent <= 100:
+      raise ValueError(
+        f"deceleration_percent must be between 0 and 100, got {deceleration_percent}"
+      )
+    await self.send_command(f"Decel {profile_index} {deceleration_percent}")
 
   async def request_profile_deceleration_ramp(self, profile_index: int) -> float:
     """Get the deceleration ramp property of the specified profile.
@@ -1195,37 +1283,96 @@ class PreciseFlex:
   async def set_motion_profile_values(
     self,
     profile: int,
-    speed_pct: float,
-    speed2_pct: float,
-    acceleration_pct: float,
-    deceleration_pct: float,
-    acceleration_ramp: float,
-    deceleration_ramp: float,
-    in_range: float,
-    straight: bool,
+    speed_percent: Optional[float] = None,
+    speed2_percent: Optional[float] = None,
+    acceleration_percent: Optional[float] = None,
+    deceleration_percent: Optional[float] = None,
+    acceleration_ramp: Optional[float] = None,
+    deceleration_ramp: Optional[float] = None,
+    in_range: Optional[float] = None,
+    straight: Optional[bool] = None,
+    *,
+    speed_pct: Optional[float] = None,
+    speed2_pct: Optional[float] = None,
+    acceleration_pct: Optional[float] = None,
+    deceleration_pct: Optional[float] = None,
   ):
     """
     Set motion profile values for the specified profile index on the PreciseFlex robot.
 
     Args:
       profile: Profile index to set values for.
-      speed_pct: Percentage of maximum speed (0-100). 100 = full speed.
-      speed2_pct: Secondary speed setting (0-100), typically for Cartesian moves. Normally 0.
-      acceleration_pct: Percentage of maximum acceleration (0-100). 100 = full acceleration.
-      deceleration_pct: Percentage of maximum deceleration (0-100). 100 = full deceleration.
+      speed_percent: Percentage of maximum speed (0-100). 100 = full speed.
+      speed2_percent: Secondary speed setting (0-100), typically for Cartesian moves. Normally 0.
+      acceleration_percent: Percentage of maximum acceleration (0-100). 100 = full acceleration.
+      deceleration_percent: Percentage of maximum deceleration (0-100). 100 = full deceleration.
       acceleration_ramp: Acceleration ramp time in seconds.
       deceleration_ramp: Deceleration ramp time in seconds.
       in_range: InRange value, from -1 to 100. -1 = allow blending, 0 = stop without checking, >0 = enforce position accuracy.
       straight: If True, follow a straight-line path (-1). If False, follow a joint-based path (0).
+      speed_pct: deprecated, use `speed_percent`.
+      speed2_pct: deprecated, use `speed2_percent`.
+      acceleration_pct: deprecated, use `acceleration_percent`.
+      deceleration_pct: deprecated, use `deceleration_percent`.
     """
-    if not 0 <= speed_pct <= 100:
-      raise ValueError(f"speed_pct must be between 0 and 100, got {speed_pct}")
-    if not 0 <= speed2_pct <= 100:
-      raise ValueError(f"speed2_pct must be between 0 and 100, got {speed2_pct}")
-    if not 0 <= acceleration_pct <= 100:
-      raise ValueError(f"acceleration_pct must be between 0 and 100, got {acceleration_pct}")
-    if not 0 <= deceleration_pct <= 100:
-      raise ValueError(f"deceleration_pct must be between 0 and 100, got {deceleration_pct}")
+    if speed_pct is not None:
+      warnings.warn(
+        "`speed_pct` is deprecated, use `speed_percent`.", DeprecationWarning, stacklevel=2
+      )
+      speed_percent = speed_pct
+    if speed2_pct is not None:
+      warnings.warn(
+        "`speed2_pct` is deprecated, use `speed2_percent`.", DeprecationWarning, stacklevel=2
+      )
+      speed2_percent = speed2_pct
+    if acceleration_pct is not None:
+      warnings.warn(
+        "`acceleration_pct` is deprecated, use `acceleration_percent`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
+      acceleration_percent = acceleration_pct
+    if deceleration_pct is not None:
+      warnings.warn(
+        "`deceleration_pct` is deprecated, use `deceleration_percent`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
+      deceleration_percent = deceleration_pct
+    if (
+      speed_percent is None
+      or speed2_percent is None
+      or acceleration_percent is None
+      or deceleration_percent is None
+      or acceleration_ramp is None
+      or deceleration_ramp is None
+      or in_range is None
+      or straight is None
+    ):
+      arguments = {
+        "speed_percent": speed_percent,
+        "speed2_percent": speed2_percent,
+        "acceleration_percent": acceleration_percent,
+        "deceleration_percent": deceleration_percent,
+        "acceleration_ramp": acceleration_ramp,
+        "deceleration_ramp": deceleration_ramp,
+        "in_range": in_range,
+        "straight": straight,
+      }
+      missing = [name for name, value in arguments.items() if value is None]
+      raise TypeError(f"set_motion_profile_values() missing required arguments: {missing}")
+    if not 0 <= speed_percent <= 100:
+      raise ValueError(f"speed_percent must be between 0 and 100, got {speed_percent}")
+    if not 0 <= speed2_percent <= 100:
+      raise ValueError(f"speed2_percent must be between 0 and 100, got {speed2_percent}")
+    if not 0 <= acceleration_percent <= 100:
+      raise ValueError(
+        f"acceleration_percent must be between 0 and 100, got {acceleration_percent}"
+      )
+    if not 0 <= deceleration_percent <= 100:
+      raise ValueError(
+        f"deceleration_percent must be between 0 and 100, got {deceleration_percent}"
+      )
     if acceleration_ramp < 0:
       raise ValueError("acceleration_ramp must be >= 0 (seconds).")
     if deceleration_ramp < 0:
@@ -1234,13 +1381,13 @@ class PreciseFlex:
       raise ValueError("InRange must be between -1 and 100.")
     straight_int = -1 if straight else 0
     await self.send_command(
-      f"Profile {profile} {speed_pct} {speed2_pct} {acceleration_pct} {deceleration_pct} "
+      f"Profile {profile} {speed_percent} {speed2_percent} {acceleration_percent} {deceleration_percent} "
       f"{acceleration_ramp} {deceleration_ramp} {in_range} {straight_int}"
     )
 
-  async def _set_speed(self, speed_pct: float):
+  async def _set_speed(self, speed_percent: float):
     """Set the speed percentage of the arm's movement (0-100)."""
-    await self.set_profile_speed(self.profile_index, speed_pct)
+    await self.set_profile_speed(self.profile_index, speed_percent)
 
   async def _request_speed(self) -> float:
     """Get the current speed percentage of the arm's movement."""
@@ -1639,9 +1786,9 @@ class PreciseFlex:
     # effective per-joint maxima, so consumers get usable limits, not raw factors.
     reference_speed = await self.request_reference_speed()
     reference_acceleration = await self.request_reference_acceleration()
-    speed_pct = await self.request_max_speed_percent()
-    acceleration_pct = await self.request_max_acceleration_percent()
-    deceleration_pct = await self.request_max_deceleration_percent()
+    speed_percent = await self.request_max_speed_percent()
+    acceleration_percent = await self.request_max_acceleration_percent()
+    deceleration_percent = await self.request_max_deceleration_percent()
 
     # Kinematics: read the link/tool geometry from the controller by default, so
     # the driver is correct for whichever 400 variant is plugged in; fall back to
@@ -1689,16 +1836,16 @@ class PreciseFlex:
       axis_mask=axis_mask,
       soft_limits=soft_limits,
       hard_limits=await self.request_joint_limits(hard=True),
-      max_joint_speed={a: v * speed_pct / 100 for a, v in reference_speed.items()},
+      max_joint_speed={a: v * speed_percent / 100 for a, v in reference_speed.items()},
       max_joint_acceleration={
-        a: v * acceleration_pct / 100 for a, v in reference_acceleration.items()
+        a: v * acceleration_percent / 100 for a, v in reference_acceleration.items()
       },
       max_joint_deceleration={
-        a: v * deceleration_pct / 100 for a, v in reference_acceleration.items()
+        a: v * deceleration_percent / 100 for a, v in reference_acceleration.items()
       },
-      max_cartesian_speed=(await self.request_reference_cartesian_speed()) * speed_pct / 100,
+      max_cartesian_speed=(await self.request_reference_cartesian_speed()) * speed_percent / 100,
       max_cartesian_acceleration=(await self.request_reference_cartesian_acceleration())
-      * acceleration_pct
+      * acceleration_percent
       / 100,
       power_state=await self.request_system_state(),
       kinematics=kinematic_params,
@@ -1808,12 +1955,20 @@ class PreciseFlex:
 
   @evented_operation(
     "precise_flex.pick_up_at_joint_position",
-    lambda self, position, resource_width, finger_speed_pct=None, grasp_force=None: {
+    lambda self, position, resource_width, finger_speed_percent=None, grasp_force=None, finger_speed_pct=None: {
       "device": self._controller_reference(),
       "target_joint_position": _joint_state_reference(position),
       "resource_width": float(resource_width),
-      "finger_speed_pct": float(
-        self.gripper.default_finger_speed_pct if finger_speed_pct is None else finger_speed_pct
+      "finger_speed_percent": float(
+        next(
+          value
+          for value in (
+            finger_speed_pct,
+            finger_speed_percent,
+            self.gripper.default_finger_speed_percent,
+          )
+          if value is not None
+        )
       ),
       "grasp_force": float(
         self.gripper.default_grasp_force if grasp_force is None else grasp_force
@@ -1824,20 +1979,30 @@ class PreciseFlex:
     self,
     position: JointState,
     resource_width: float,
-    finger_speed_pct: Optional[float] = None,
+    finger_speed_percent: Optional[float] = None,
     grasp_force: Optional[float] = None,
+    *,
+    finger_speed_pct: Optional[float] = None,
   ) -> None:
     """Pick up at the specified joint position.
 
     Args:
       position: Joint state to pick from.
       resource_width: Width of the resource to grasp, in mm.
-      finger_speed_pct: Finger closing speed as a percentage (0-100).
-        ``default_finger_speed_pct`` when None.
+      finger_speed_percent: Finger closing speed as a percentage (0-100).
+        ``default_finger_speed_percent`` when None.
       grasp_force: Grasp force in Newtons. ``default_grasp_force`` when None.
+      finger_speed_pct: deprecated, use `finger_speed_percent`.
     """
-    if finger_speed_pct is None:
-      finger_speed_pct = self.gripper.default_finger_speed_pct
+    if finger_speed_pct is not None:
+      warnings.warn(
+        "`finger_speed_pct` is deprecated, use `finger_speed_percent`.",
+        DeprecationWarning,
+        stacklevel=3,
+      )
+      finger_speed_percent = finger_speed_pct
+    if finger_speed_percent is None:
+      finger_speed_percent = self.gripper.default_finger_speed_percent
     if grasp_force is None:
       grasp_force = self.gripper.default_grasp_force
     logger.info(
@@ -1848,7 +2013,7 @@ class PreciseFlex:
     )
     await self.gripper._set_grasp_data(
       plate_width=resource_width,
-      finger_speed_pct=finger_speed_pct,
+      finger_speed_percent=finger_speed_percent,
       grasp_force=grasp_force,
     )
     await self._pick_plate_j(position)
@@ -1882,7 +2047,7 @@ class PreciseFlex:
 
   @evented_operation(
     "precise_flex.pick_up_at_location",
-    lambda self, location, direction, resource_width, finger_speed_pct=None, grasp_force=None, orientation=None, wrist=None, rail_position=None: {
+    lambda self, location, direction, resource_width, finger_speed_percent=None, grasp_force=None, orientation=None, wrist=None, rail_position=None, finger_speed_pct=None: {
       "device": self._controller_reference(),
       "target": _cartesian_target_reference(
         location,
@@ -1892,8 +2057,16 @@ class PreciseFlex:
         rail_position=rail_position,
       ),
       "resource_width": float(resource_width),
-      "finger_speed_pct": float(
-        self.gripper.default_finger_speed_pct if finger_speed_pct is None else finger_speed_pct
+      "finger_speed_percent": float(
+        next(
+          value
+          for value in (
+            finger_speed_pct,
+            finger_speed_percent,
+            self.gripper.default_finger_speed_percent,
+          )
+          if value is not None
+        )
       ),
       "grasp_force": float(
         self.gripper.default_grasp_force if grasp_force is None else grasp_force
@@ -1905,11 +2078,13 @@ class PreciseFlex:
     location: Coordinate,
     direction: float,
     resource_width: float,
-    finger_speed_pct: Optional[float] = None,
+    finger_speed_percent: Optional[float] = None,
     grasp_force: Optional[float] = None,
     orientation: Optional[ElbowOrientation] = None,
     wrist: Optional[Wrist] = None,
     rail_position: Optional[float] = None,
+    *,
+    finger_speed_pct: Optional[float] = None,
   ) -> None:
     """Pick up at the specified Cartesian location.
 
@@ -1917,16 +2092,24 @@ class PreciseFlex:
       location: Cartesian location to pick from.
       direction: Approach direction, applied as the pose's z rotation in degrees.
       resource_width: Width of the resource to grasp, in mm.
-      finger_speed_pct: Finger closing speed as a percentage (0-100).
-        ``default_finger_speed_pct`` when None.
+      finger_speed_percent: Finger closing speed as a percentage (0-100).
+        ``default_finger_speed_percent`` when None.
       grasp_force: Grasp force in Newtons. ``default_grasp_force`` when None.
       orientation: Elbow orientation (``"lefty"`` or ``"righty"``). If None, the robot
         picks the closest configuration.
       wrist: Wrist configuration. If None, the robot picks the closest configuration.
       rail_position: Linear rail position in mm. Required when the arm has a rail.
+      finger_speed_pct: deprecated, use `finger_speed_percent`.
     """
-    if finger_speed_pct is None:
-      finger_speed_pct = self.gripper.default_finger_speed_pct
+    if finger_speed_pct is not None:
+      warnings.warn(
+        "`finger_speed_pct` is deprecated, use `finger_speed_percent`.",
+        DeprecationWarning,
+        stacklevel=3,
+      )
+      finger_speed_percent = finger_speed_pct
+    if finger_speed_percent is None:
+      finger_speed_percent = self.gripper.default_finger_speed_percent
     if grasp_force is None:
       grasp_force = self.gripper.default_grasp_force
     logger.info(
@@ -1952,7 +2135,7 @@ class PreciseFlex:
     )
     await self.gripper._set_grasp_data(
       plate_width=resource_width,
-      finger_speed_pct=finger_speed_pct,
+      finger_speed_percent=finger_speed_percent,
       grasp_force=grasp_force,
     )
     await self._pick_plate_c(cartesian_position=coords)
