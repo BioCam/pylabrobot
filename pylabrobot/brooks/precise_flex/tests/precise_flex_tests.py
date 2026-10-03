@@ -7,6 +7,7 @@ from pylabrobot.brooks.precise_flex import (
   Axis,
   OutOfRangeOfMotionError,
   PreciseFlex,
+  PreciseFlexArm,
   PreciseFlexCartesianPose,
 )
 from pylabrobot.brooks.precise_flex.driver.features.vision import PreciseFlexVision
@@ -234,31 +235,31 @@ class TestPreciseFlexParking(unittest.IsolatedAsyncioTestCase):
     """The three parking orientations are planar folds (ELBOW 180) that never pin Z (Axis.BASE), so
     one orientation works on any reach; they differ only in which way the gripper faces."""
     for pose in (
-      PreciseFlex.PARKING_POSITION_BACK,
-      PreciseFlex.PARKING_POSITION_RIGHT,
-      PreciseFlex.PARKING_POSITION_FRONT,
+      PreciseFlexArm.PARKING_POSITION_BACK,
+      PreciseFlexArm.PARKING_POSITION_RIGHT,
+      PreciseFlexArm.PARKING_POSITION_FRONT,
     ):
       self.assertNotIn(Axis.BASE, pose)
       self.assertEqual(pose[Axis.ELBOW], 180.0)
-    self.assertEqual(PreciseFlex.PARKING_POSITION_BACK[Axis.SHOULDER], 90.0)
-    self.assertEqual(PreciseFlex.PARKING_POSITION_FRONT[Axis.SHOULDER], -90.0)
+    self.assertEqual(PreciseFlexArm.PARKING_POSITION_BACK[Axis.SHOULDER], 90.0)
+    self.assertEqual(PreciseFlexArm.PARKING_POSITION_FRONT[Axis.SHOULDER], -90.0)
 
   def test_assignment_rejects_non_axis_keys(self):
     """The validating setter refuses a pose keyed by anything but Axis members."""
     bad_pose: dict = {"base": 100.0}
     with self.assertRaises(ValueError):
-      self.arm.parking_position = bad_pose
+      self.arm.arm.parking_position = bad_pose
 
   def test_assignment_rejects_out_of_limit_value_once_configured(self):
     """Once the soft limits are known, a value outside them is rejected at assignment."""
     self.arm._configuration = MagicMock(soft_limits={Axis.SHOULDER: (-93.0, 93.0)})
     with self.assertRaises(ValueError):
-      self.arm.parking_position = {Axis.SHOULDER: 200.0}
+      self.arm.arm.parking_position = {Axis.SHOULDER: 200.0}
 
   def test_assignment_accepts_named_constant(self):
     """A named constant assigns cleanly and round-trips through the getter."""
-    self.arm.parking_position = PreciseFlex.PARKING_POSITION_FRONT
-    pose = self.arm.parking_position
+    self.arm.arm.parking_position = PreciseFlexArm.PARKING_POSITION_FRONT
+    pose = self.arm.arm.parking_position
     assert pose is not None
     self.assertEqual(pose[Axis.SHOULDER], -90.0)
 
@@ -268,8 +269,8 @@ class TestPreciseFlexParking(unittest.IsolatedAsyncioTestCase):
     # Current pose deliberately differs from the target (base 50 not 300; orientation 10/200/90 not
     # 0/180/180) so the assertion proves park() supplied the fill and orientation, not the live pose.
     self.arm.send_command = AsyncMock(return_value="50 10 200 90 0")  # type: ignore[method-assign]
-    self.arm.parking_position = PreciseFlex.PARKING_POSITION_RIGHT
-    await self.arm.park()
+    self.arm.arm.parking_position = PreciseFlexArm.PARKING_POSITION_RIGHT
+    await self.arm.arm.park()
     # Z filled at 3/4 of 400 = 300; orientation = RIGHT (0/180/180); gripper carried from current.
     self.assertEqual(self._movej_cmds(), ["moveJ 1 300.0 0.0 180.0 180.0 0.0"])
 
@@ -279,13 +280,13 @@ class TestPreciseFlexParking(unittest.IsolatedAsyncioTestCase):
     # base 50 in the current pose so the explicit 123 (neither the 300 fill nor the live 50) proves
     # the supplied base is honored and not Z-filled; elbow/wrist carry from current.
     self.arm.send_command = AsyncMock(return_value="50 10 200 90 0")  # type: ignore[method-assign]
-    self.arm.parking_position = {Axis.BASE: 123.0, Axis.SHOULDER: 0.0}
-    await self.arm.park()
+    self.arm.arm.parking_position = {Axis.BASE: 123.0, Axis.SHOULDER: 0.0}
+    await self.arm.arm.park()
     self.assertEqual(self._movej_cmds(), ["moveJ 1 123.0 0.0 200.0 90.0 0.0"])
 
   async def test_park_without_position_falls_back_to_movetosafe(self):
     """While parking_position is unset (no configuration), park() uses the firmware movetosafe."""
-    await self.arm.park()
+    await self.arm.arm.park()
     mocked(self.arm.send_command).assert_awaited_once_with("movetosafe")
     self.assertEqual(self._movej_cmds(), [])
 

@@ -9,7 +9,7 @@ import dataclasses
 import logging
 import time
 import warnings
-from typing import TYPE_CHECKING, Callable, Dict, List, NamedTuple, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, ClassVar, Dict, List, NamedTuple, Optional, Sequence
 
 from pylabrobot.events import coordinate_reference, evented_operation
 from pylabrobot.resources.coordinate import Coordinate
@@ -99,6 +99,27 @@ class PreciseFlexArm:
   # instance, or every arm by assigning on the class.
   default_recovery_speed_percent: float = 20.0
 
+  # Validated parked orientations: planar folds differing only in which way the arm faces, named for
+  # the direction the gripper points (BACK / RIGHT / FRONT). The Z column (Axis.BASE) is omitted on
+  # purpose - ``park()`` fills it from the discovered travel (3/4 of it) so one orientation works on
+  # any reach; set Axis.BASE yourself to override. The gripper and rail are left untouched so parking
+  # never drops a held plate or assumes a rail. Assign one to ``parking_position`` to change the park.
+  PARKING_POSITION_BACK: ClassVar[JointState] = {
+    Axis.SHOULDER: 90.0,
+    Axis.ELBOW: 180.0,
+    Axis.WRIST: 90.0,
+  }
+  PARKING_POSITION_RIGHT: ClassVar[JointState] = {
+    Axis.SHOULDER: 0.0,
+    Axis.ELBOW: 180.0,
+    Axis.WRIST: 180.0,
+  }
+  PARKING_POSITION_FRONT: ClassVar[JointState] = {
+    Axis.SHOULDER: -90.0,
+    Axis.ELBOW: 180.0,
+    Axis.WRIST: 270.0,
+  }
+
   def __init__(self, driver: "PreciseFlex") -> None:
     """
     Args:
@@ -106,6 +127,9 @@ class PreciseFlexArm:
     """
     self._driver = driver
     self.profile_index: int = 1
+    self.location_index: int = 1
+    self.horizontal_compliance: bool = False
+    self.horizontal_compliance_torque: int = 0
 
   # -- joint state ---------------------------------------------------------------------------------
 
@@ -1681,3 +1705,341 @@ class PreciseFlexArm:
         "gripper.move_to_jaw_position, or pass close_gripper_without_force_sensing=True"
       )
     await self._driver.send_command(f"ChangeConfig2 {grip_mode}")
+
+  # -- pick and place ------------------------------------------------------------------------------
+
+  async def _set_grip_detail(self):
+    """Configure a default vertical station type for pick/place operations."""
+    await self._driver.send_command(f"StationType {self.location_index} 1 0 100 0 10")
+
+  async def _pick_plate_j(self, joint_position: JointState):
+    """Pick a plate from the specified position using joint coordinates."""
+    await self._set_joint_angles(self.location_index, joint_position)
+    await self._set_grip_detail()
+    horizontal_compliance_int = 1 if self.horizontal_compliance else 0
+    ret_code = await self._driver.send_command(
+      f"pickplate {self.location_index} {horizontal_compliance_int} {self.horizontal_compliance_torque}"
+    )
+    if ret_code == "0":
+      raise PreciseFlexError(-1, "the force-controlled gripper detected no plate present.")
+
+  async def _place_plate_j(self, joint_position: JointState):
+    """Place a plate at the specified position using joint coordinates."""
+    await self._set_joint_angles(self.location_index, joint_position)
+    await self._set_grip_detail()
+    horizontal_compliance_int = 1 if self.horizontal_compliance else 0
+    await self._driver.send_command(
+      f"placeplate {self.location_index} {horizontal_compliance_int} {self.horizontal_compliance_torque}"
+    )
+
+  async def _pick_plate_c(self, cartesian_position: PreciseFlexCartesianPose):
+    """Pick a plate at a Cartesian position via IK + joint-space pickplate."""
+    joints = await self._cart_to_joints(cartesian_position)
+    await self._pick_plate_j(joints)
+
+  async def _place_plate_c(self, cartesian_position: PreciseFlexCartesianPose):
+    """Place a plate at a Cartesian position via IK + joint-space placeplate."""
+    joints = await self._cart_to_joints(cartesian_position)
+    await self._place_plate_j(joints)
+
+  @evented_operation(
+    "precise_flex.pick_up_at_joint_position",
+    lambda self, position, resource_width, finger_speed_percent=None, grasp_force=None, finger_speed_pct=None: {
+      "device": self._driver._controller_reference(),
+      "target_joint_position": _joint_state_reference(position),
+      "resource_width": float(resource_width),
+      "finger_speed_percent": float(
+        next(
+          value
+          for value in (
+            finger_speed_pct,
+            finger_speed_percent,
+            self._driver.gripper.default_finger_speed_percent,
+          )
+          if value is not None
+        )
+      ),
+      "grasp_force": float(
+        self._driver.gripper.default_grasp_force if grasp_force is None else grasp_force
+      ),
+    },
+  )
+  async def pick_up_at_joint_position(
+    self,
+    position: JointState,
+    resource_width: float,
+    finger_speed_percent: Optional[float] = None,
+    grasp_force: Optional[float] = None,
+    *,
+    finger_speed_pct: Optional[float] = None,
+  ) -> None:
+    """Pick up at the specified joint position.
+
+    Args:
+      position: Joint state to pick from.
+      resource_width: Width of the resource to grasp, in mm.
+      finger_speed_percent: Finger closing speed as a percentage (0-100).
+        ``default_finger_speed_percent`` when None.
+      grasp_force: Grasp force in Newtons. ``default_grasp_force`` when None.
+      finger_speed_pct: deprecated, use `finger_speed_percent`.
+    """
+    if finger_speed_pct is not None:
+      warnings.warn(
+        "`finger_speed_pct` is deprecated, use `finger_speed_percent`.",
+        DeprecationWarning,
+        stacklevel=3,
+      )
+      finger_speed_percent = finger_speed_pct
+    if finger_speed_percent is None:
+      finger_speed_percent = self._driver.gripper.default_finger_speed_percent
+    if grasp_force is None:
+      grasp_force = self._driver.gripper.default_grasp_force
+    logger.info(
+      "[PreciseFlex %s] pick_up: joints=%s, resource_width_mm=%s",
+      self._driver.io._host,
+      position,
+      resource_width,
+    )
+    await self._driver.gripper._set_grasp_data(
+      plate_width=resource_width,
+      finger_speed_percent=finger_speed_percent,
+      grasp_force=grasp_force,
+    )
+    await self._pick_plate_j(position)
+
+  @evented_operation(
+    "precise_flex.drop_at_joint_position",
+    lambda self, position, resource_width: {
+      "device": self._driver._controller_reference(),
+      "target_joint_position": _joint_state_reference(position),
+      "resource_width": float(resource_width),
+    },
+  )
+  async def drop_at_joint_position(
+    self,
+    position: JointState,
+    resource_width: float,
+  ) -> None:
+    """Drop at the specified joint position.
+
+    Args:
+      position: Joint state to drop at.
+      resource_width: Width of the held resource, in mm.
+    """
+    logger.info(
+      "[PreciseFlex %s] drop: joints=%s, resource_width_mm=%s",
+      self._driver.io._host,
+      position,
+      resource_width,
+    )
+    await self._place_plate_j(position)
+
+  @evented_operation(
+    "precise_flex.pick_up_at_location",
+    lambda self, location, direction, resource_width, finger_speed_percent=None, grasp_force=None, orientation=None, wrist=None, rail_position=None, finger_speed_pct=None: {
+      "device": self._driver._controller_reference(),
+      "target": _cartesian_target_reference(
+        location,
+        direction,
+        orientation=orientation,
+        wrist=wrist,
+        rail_position=rail_position,
+      ),
+      "resource_width": float(resource_width),
+      "finger_speed_percent": float(
+        next(
+          value
+          for value in (
+            finger_speed_pct,
+            finger_speed_percent,
+            self._driver.gripper.default_finger_speed_percent,
+          )
+          if value is not None
+        )
+      ),
+      "grasp_force": float(
+        self._driver.gripper.default_grasp_force if grasp_force is None else grasp_force
+      ),
+    },
+  )
+  async def pick_up_at_location(
+    self,
+    location: Coordinate,
+    direction: float,
+    resource_width: float,
+    finger_speed_percent: Optional[float] = None,
+    grasp_force: Optional[float] = None,
+    orientation: Optional[ElbowOrientation] = None,
+    wrist: Optional[Wrist] = None,
+    rail_position: Optional[float] = None,
+    *,
+    finger_speed_pct: Optional[float] = None,
+  ) -> None:
+    """Pick up at the specified Cartesian location.
+
+    Args:
+      location: Cartesian location to pick from.
+      direction: Approach direction, applied as the pose's z rotation in degrees.
+      resource_width: Width of the resource to grasp, in mm.
+      finger_speed_percent: Finger closing speed as a percentage (0-100).
+        ``default_finger_speed_percent`` when None.
+      grasp_force: Grasp force in Newtons. ``default_grasp_force`` when None.
+      orientation: Elbow orientation (``"lefty"`` or ``"righty"``). If None, the robot
+        picks the closest configuration.
+      wrist: Wrist configuration. If None, the robot picks the closest configuration.
+      rail_position: Linear rail position in mm. Required when the arm has a rail.
+      finger_speed_pct: deprecated, use `finger_speed_percent`.
+    """
+    if finger_speed_pct is not None:
+      warnings.warn(
+        "`finger_speed_pct` is deprecated, use `finger_speed_percent`.",
+        DeprecationWarning,
+        stacklevel=3,
+      )
+      finger_speed_percent = finger_speed_pct
+    if finger_speed_percent is None:
+      finger_speed_percent = self._driver.gripper.default_finger_speed_percent
+    if grasp_force is None:
+      grasp_force = self._driver.gripper.default_grasp_force
+    logger.info(
+      "[PreciseFlex %s] pick_up: x=%s, y=%s, z=%s, direction=%s, resource_width_mm=%s",
+      self._driver.io._host,
+      location.x,
+      location.y,
+      location.z,
+      direction,
+      resource_width,
+    )
+    if rail_position is not None:
+      await self._require_rail().move_rail(rail_position)
+    elif self._driver._has_rail:
+      raise ValueError(
+        "rail_position must be specified for pick_up_at_location when using a rail-equipped arm."
+      )
+    coords = PreciseFlexCartesianPose(
+      location=location,
+      rotation=Rotation(z=direction),
+      orientation=orientation,
+      wrist=wrist,
+    )
+    await self._driver.gripper._set_grasp_data(
+      plate_width=resource_width,
+      finger_speed_percent=finger_speed_percent,
+      grasp_force=grasp_force,
+    )
+    await self._pick_plate_c(cartesian_position=coords)
+
+  @evented_operation(
+    "precise_flex.drop_at_location",
+    lambda self, location, direction, resource_width, orientation=None, wrist=None, rail_position=None: {
+      "device": self._driver._controller_reference(),
+      "target": _cartesian_target_reference(
+        location,
+        direction,
+        orientation=orientation,
+        wrist=wrist,
+        rail_position=rail_position,
+      ),
+      "resource_width": float(resource_width),
+    },
+  )
+  async def drop_at_location(
+    self,
+    location: Coordinate,
+    direction: float,
+    resource_width: float,
+    orientation: Optional[ElbowOrientation] = None,
+    wrist: Optional[Wrist] = None,
+    rail_position: Optional[float] = None,
+  ) -> None:
+    """Drop at the specified Cartesian location.
+
+    Args:
+      location: Cartesian location to drop at.
+      direction: Approach direction, applied as the pose's z rotation in degrees.
+      resource_width: Width of the held resource, in mm.
+      orientation: Elbow orientation (``"lefty"`` or ``"righty"``). If None, the robot
+        picks the closest configuration.
+      wrist: Wrist configuration. If None, the robot picks the closest configuration.
+      rail_position: Linear rail position in mm. Required when the arm has a rail.
+    """
+    logger.info(
+      "[PreciseFlex %s] drop: x=%s, y=%s, z=%s, direction=%s, resource_width_mm=%s",
+      self._driver.io._host,
+      location.x,
+      location.y,
+      location.z,
+      direction,
+      resource_width,
+    )
+    if rail_position is not None:
+      await self._require_rail().move_rail(rail_position)
+    elif self._driver._has_rail:
+      raise ValueError(
+        "rail_position must be specified for drop_at_location when using a rail-equipped arm."
+      )
+    coords = PreciseFlexCartesianPose(
+      location=location,
+      rotation=Rotation(z=direction),
+      orientation=orientation,
+      wrist=wrist,
+    )
+    await self._place_plate_c(cartesian_position=coords)
+
+  # -- parking -------------------------------------------------------------------------------------
+
+  def _validate_parking_position(self, position: JointState) -> None:
+    """Reject anything that is not a JointState of in-range axes (limits checked once known)."""
+    if not isinstance(position, dict) or not position:
+      raise ValueError(f"parking_position must be a non-empty JointState, got {position!r}")
+    for axis, value in position.items():
+      if not isinstance(axis, Axis):
+        raise ValueError(f"parking_position keys must be Axis members, got {axis!r}")
+      if not isinstance(value, (int, float)):
+        raise ValueError(f"parking_position[{axis.name}] must be a number, got {value!r}")
+      if self._driver._configuration is not None:
+        lo, hi = self._driver._configuration.soft_limits[axis]
+        if not lo <= value <= hi:
+          raise ValueError(
+            f"parking_position[{axis.name}]={value} is outside the soft limits [{lo}, {hi}]"
+          )
+
+  def _parking_pose_with_default_z(self, position: JointState) -> JointState:
+    """Fill the Z column (``Axis.BASE``) at 3/4 of the discovered travel when the pose omits it."""
+    if Axis.BASE in position or self._driver._configuration is None:
+      return position
+    _, z_max = self._driver._configuration.z_range
+    return {Axis.BASE: 0.75 * z_max, **position}
+
+  @property
+  def parking_position(self) -> Optional[JointState]:
+    """The pose ``park()`` moves to. Assign one of the ``PARKING_POSITION_BACK/RIGHT/FRONT`` class
+    constants or any JointState; the assignment is validated (keys must be ``Axis`` members, values must
+    be within the soft limits once the configuration is known). None until setup, where it defaults to
+    ``PARKING_POSITION_RIGHT``. A pose that omits ``Axis.BASE`` has its Z filled at park time."""
+    return self._parking_position
+
+  @parking_position.setter
+  def parking_position(self, position: Optional[JointState]) -> None:
+    if position is not None:
+      self._validate_parking_position(position)
+    self._parking_position: Optional[JointState] = dict(position) if position is not None else None
+
+  @evented_operation(
+    "precise_flex.park",
+    lambda self: {"device": self._driver._controller_reference()},
+  )
+  async def park(self) -> None:
+    """Move to ``self.parking_position``; defaults at setup, reassignable at runtime.
+
+    ``parking_position`` is filled at setup with ``PARKING_POSITION_RIGHT`` (a planar fold facing
+    right, Z column at 3/4 of its discovered travel); assign one of the ``PARKING_POSITION_*`` class
+    constants or any JointState to park elsewhere. Falls back to the firmware ``movetosafe`` while it is
+    unset. No collision checks against 3rd-party obstacles.
+    """
+    if self.parking_position is not None:
+      await self.move_to_joint_position(
+        position=self._parking_pose_with_default_z(self.parking_position)
+      )
+    else:
+      await self._driver.send_command("movetosafe")

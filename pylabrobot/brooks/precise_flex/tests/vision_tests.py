@@ -280,7 +280,7 @@ class TestVisionSetupGating(unittest.IsolatedAsyncioTestCase):
     arm._log_configuration_summary = MagicMock()  # type: ignore[method-assign]
     arm._assess_configuration = MagicMock()  # type: ignore[method-assign]
     arm.arm._handle_out_of_range_axes = AsyncMock()  # type: ignore[method-assign]
-    arm.parking_position = arm.PARKING_POSITION_RIGHT
+    arm.arm.parking_position = arm.arm.PARKING_POSITION_RIGHT
     return arm
 
   async def test_vision_connected_when_module_present(self):

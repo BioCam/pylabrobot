@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from pylabrobot.brooks.precise_flex import (
   Axis,
   PreciseFlex,
+  PreciseFlexArm,
   PreciseFlexCartesianPose,
   PreciseFlexGripper,
   PreciseFlexRail,
@@ -1095,7 +1096,7 @@ _CASES: List[_Case] = [
   ),
   (
     "pick_up_at_joint_position",
-    lambda arm: arm.pick_up_at_joint_position(_J, resource_width=85.0),
+    lambda arm: arm.arm.pick_up_at_joint_position(_J, resource_width=85.0),
     [
       "GraspData 85.0 50.0 10.0",
       "locAngles 1 200.0 10.0 170.0 20.0 100.0",
@@ -1106,7 +1107,7 @@ _CASES: List[_Case] = [
   ),
   (
     "drop_at_joint_position",
-    lambda arm: arm.drop_at_joint_position(_J, resource_width=85.0),
+    lambda arm: arm.arm.drop_at_joint_position(_J, resource_width=85.0),
     [
       "locAngles 1 200.0 10.0 170.0 20.0 100.0",
       "StationType 1 1 0 100 0 10",
@@ -1116,7 +1117,7 @@ _CASES: List[_Case] = [
   ),
   (
     "pick_up_at_location",
-    lambda arm: arm.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0),
+    lambda arm: arm.arm.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0),
     [
       "GraspData 85.0 50.0 10.0",
       "wherej",
@@ -1130,7 +1131,7 @@ _CASES: List[_Case] = [
   ),
   (
     "drop_at_location",
-    lambda arm: arm.drop_at_location(_LOC, direction=0.0, resource_width=85.0),
+    lambda arm: arm.arm.drop_at_location(_LOC, direction=0.0, resource_width=85.0),
     [
       "wherej",
       "wherej",
@@ -1143,7 +1144,7 @@ _CASES: List[_Case] = [
   ),
   (
     "park",
-    lambda arm: arm.park(),
+    lambda arm: arm.arm.park(),
     [
       "wherej",
       "wherej",
@@ -1168,7 +1169,7 @@ _CASES: List[_Case] = [
   ),
   (
     "pick_up_at_location_rail_position_without_rail",
-    lambda arm: arm.pick_up_at_location(
+    lambda arm: arm.arm.pick_up_at_location(
       _LOC, direction=0.0, resource_width=85.0, rail_position=300.0
     ),
     [],
@@ -1176,7 +1177,9 @@ _CASES: List[_Case] = [
   ),
   (
     "drop_at_location_rail_position_without_rail",
-    lambda arm: arm.drop_at_location(_LOC, direction=0.0, resource_width=85.0, rail_position=300.0),
+    lambda arm: arm.arm.drop_at_location(
+      _LOC, direction=0.0, resource_width=85.0, rail_position=300.0
+    ),
     [],
     RuntimeError,
   ),
@@ -1242,7 +1245,7 @@ _RAIL_CASES: List[_Case] = [
   ),
   (
     "rail_pick_up_at_location",
-    lambda arm: arm.pick_up_at_location(
+    lambda arm: arm.arm.pick_up_at_location(
       _LOC, direction=0.0, resource_width=85.0, rail_position=300.0
     ),
     [
@@ -1475,7 +1478,7 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
     arm, fake = await self._arm()
     arm.gripper.default_finger_speed_percent = 30.0
     arm.gripper.default_grasp_force = 5.0
-    await arm.pick_up_at_joint_position(_J, resource_width=85.0)
+    await arm.arm.pick_up_at_joint_position(_J, resource_width=85.0)
     self.assertEqual(fake.sent[0], "GraspData 85.0 30.0 5.0")
 
   async def test_grasp_default_set_on_the_class(self):
@@ -1484,7 +1487,7 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
     )
     PreciseFlexGripper.default_grasp_force = 7.0
     arm, fake = await self._arm()
-    await arm.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0)
+    await arm.arm.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0)
     self.assertEqual(fake.sent[0], "GraspData 85.0 50.0 7.0")
 
   async def test_recovery_speed_default_set_on_the_arm(self):
@@ -1545,9 +1548,9 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
 
   async def test_parking_that_closes_the_gripper_is_refused(self):
     arm, fake = await self._arm()
-    arm.parking_position = {**PreciseFlex.PARKING_POSITION_RIGHT, Axis.GRIPPER: 90.0}
+    arm.arm.parking_position = {**PreciseFlexArm.PARKING_POSITION_RIGHT, Axis.GRIPPER: 90.0}
     with self.assertRaisesRegex(ValueError, "without sensing force"):
-      await arm.park()
+      await arm.arm.park()
     self.assertFalse(any(c.startswith("moveJ") for c in fake.sent))
 
   async def test_changing_config_with_the_gripper_closing_is_refused(self):
@@ -1650,13 +1653,15 @@ _DEPRECATED_KEYWORDS: List[
   ),
   (
     "pick_up_at_joint_position",
-    lambda a: a.pick_up_at_joint_position(_J, resource_width=85.0, finger_speed_pct=30),
-    lambda a: a.pick_up_at_joint_position(_J, resource_width=85.0, finger_speed_percent=30),
+    lambda a: a.arm.pick_up_at_joint_position(_J, resource_width=85.0, finger_speed_pct=30),
+    lambda a: a.arm.pick_up_at_joint_position(_J, resource_width=85.0, finger_speed_percent=30),
   ),
   (
     "pick_up_at_location",
-    lambda a: a.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0, finger_speed_pct=30),
-    lambda a: a.pick_up_at_location(
+    lambda a: a.arm.pick_up_at_location(
+      _LOC, direction=0.0, resource_width=85.0, finger_speed_pct=30
+    ),
+    lambda a: a.arm.pick_up_at_location(
       _LOC, direction=0.0, resource_width=85.0, finger_speed_percent=30
     ),
   ),
@@ -1730,6 +1735,27 @@ _DEPRECATED_KEYWORDS: List[
     lambda a: a.request_tool_transformation_values(),
     lambda a: a.arm.request_tool_transformation_values(),
   ),
+  (
+    "pick_up_at_joint_position",
+    lambda a: a.pick_up_at_joint_position(_J, resource_width=85.0),
+    lambda a: a.arm.pick_up_at_joint_position(_J, resource_width=85.0),
+  ),
+  (
+    "drop_at_joint_position",
+    lambda a: a.drop_at_joint_position(_J, resource_width=85.0),
+    lambda a: a.arm.drop_at_joint_position(_J, resource_width=85.0),
+  ),
+  (
+    "pick_up_at_location",
+    lambda a: a.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0),
+    lambda a: a.arm.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0),
+  ),
+  (
+    "drop_at_location",
+    lambda a: a.drop_at_location(_LOC, direction=0.0, resource_width=85.0),
+    lambda a: a.arm.drop_at_location(_LOC, direction=0.0, resource_width=85.0),
+  ),
+  ("park", lambda a: a.park(), lambda a: a.arm.park()),
 ]
 
 
@@ -1949,6 +1975,23 @@ class TestDeprecatedDriverMembers(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(got, expected)
     with self.assertWarns(DeprecationWarning), self.assertRaises(RuntimeError):
       await self._sent(lambda a: a.move_rail(250.0))
+
+  def test_pick_and_parking_attributes(self):
+    arm = _make_arm(_FakeController())
+    for name, value in (
+      ("location_index", 3),
+      ("horizontal_compliance", True),
+      ("horizontal_compliance_torque", 20),
+      ("parking_position", {Axis.SHOULDER: 0.0}),
+    ):
+      with self.subTest(name):
+        with self.assertWarns(DeprecationWarning):
+          setattr(arm, name, value)
+        self.assertEqual(getattr(arm.arm, name), value)
+        with self.assertWarns(DeprecationWarning):
+          self.assertEqual(getattr(arm, name), value)
+    for name in ("PARKING_POSITION_BACK", "PARKING_POSITION_RIGHT", "PARKING_POSITION_FRONT"):
+      self.assertIs(getattr(PreciseFlex, name), getattr(PreciseFlexArm, name))
 
   def test_profile_index(self):
     arm = _make_arm(_FakeController())

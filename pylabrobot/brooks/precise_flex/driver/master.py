@@ -17,8 +17,6 @@ from pylabrobot.brooks.precise_flex.driver.configuration import Axis, PreciseFle
 from pylabrobot.brooks.precise_flex.kinematics import JointState
 from pylabrobot.events import emit_event, evented_operation
 from pylabrobot.io.socket import Socket
-from pylabrobot.resources.coordinate import Coordinate
-from pylabrobot.resources.rotation import Rotation
 
 from ..confirmed_firmware_versions import (
   SUPPORTED_ROBOT_TYPES,
@@ -27,10 +25,9 @@ from ..confirmed_firmware_versions import (
   suggest_entry,
 )
 from ..data_ids import DataID, PowerState, _parse_scalar
-from ..kinematics import ElbowOrientation, PreciseFlexCartesianPose, Wrist
 from ..tcs_modules import missing_required_modules
 from .errors import PreciseFlexError
-from .features.arm import PreciseFlexArm, _cartesian_target_reference, _joint_state_reference
+from .features.arm import PreciseFlexArm
 from .features.gripper import PreciseFlexGripper
 from .features.rail import PreciseFlexRail
 from .features.vision import PreciseFlexVision
@@ -140,27 +137,6 @@ class PreciseFlex:
   https://www2.brooksautomation.com/#Root/Welcome.htm
   """
 
-  # Validated parked orientations: planar folds differing only in which way the arm faces, named for
-  # the direction the gripper points (BACK / RIGHT / FRONT). The Z column (Axis.BASE) is omitted on
-  # purpose - ``park()`` fills it from the discovered travel (3/4 of it) so one orientation works on
-  # any reach; set Axis.BASE yourself to override. The gripper and rail are left untouched so parking
-  # never drops a held plate or assumes a rail. Assign one to ``parking_position`` to change the park.
-  PARKING_POSITION_BACK: ClassVar[JointState] = {
-    Axis.SHOULDER: 90.0,
-    Axis.ELBOW: 180.0,
-    Axis.WRIST: 90.0,
-  }
-  PARKING_POSITION_RIGHT: ClassVar[JointState] = {
-    Axis.SHOULDER: 0.0,
-    Axis.ELBOW: 180.0,
-    Axis.WRIST: 180.0,
-  }
-  PARKING_POSITION_FRONT: ClassVar[JointState] = {
-    Axis.SHOULDER: -90.0,
-    Axis.ELBOW: 180.0,
-    Axis.WRIST: 270.0,
-  }
-
   def __init__(
     self,
     host: str,
@@ -231,9 +207,6 @@ class PreciseFlex:
     # Nullable vision capability, built at setup when a camera gripper is present; its existence is
     # the capability gate.
     self.vision: Optional[PreciseFlexVision] = None
-    self.location_index: int = 1
-    self.horizontal_compliance: bool = False
-    self.horizontal_compliance_torque: int = 0
     self._has_rail = has_rail
     # Built only on an arm that has a rail; discovery decides at setup.
     self.rail: Optional[PreciseFlexRail] = PreciseFlexRail(self) if has_rail else None
@@ -251,7 +224,7 @@ class PreciseFlex:
     self._configuration: Optional[PreciseFlexConfiguration] = None
     # Public and runtime-settable (validated on assignment); setup fills the default RIGHT pose when
     # this is left None.
-    self.parking_position = parking_position
+    self.arm.parking_position = parking_position
     if is_dual_gripper:
       warnings.warn(
         "Dual gripper support is experimental and may not work as expected.", UserWarning
@@ -508,8 +481,8 @@ class PreciseFlex:
       )
       return
     self._adopt_configuration(self._configuration)
-    if self.parking_position is None:
-      self.parking_position = self.PARKING_POSITION_RIGHT
+    if self.arm.parking_position is None:
+      self.arm.parking_position = self.arm.PARKING_POSITION_RIGHT
     self._log_configuration_summary(self._configuration)
     self._assess_configuration(self._configuration)
     await self.arm._handle_out_of_range_axes()
@@ -858,12 +831,6 @@ class PreciseFlex:
 
   # -- motion primitives --------------------------------------------------------------------
 
-  # -- gripper primitives -------------------------------------------------------------------
-
-  async def _set_grip_detail(self):
-    """Configure a default vertical station type for pick/place operations."""
-    await self.send_command(f"StationType {self.location_index} 1 0 100 0 10")
-
   # -- identity & status reads --------------------------------------------------------------
 
   async def request_manufacturer(self) -> str:
@@ -1142,340 +1109,6 @@ class PreciseFlex:
   # -- joint-space motion -------------------------------------------------------------------
 
   # -- cartesian motion ---------------------------------------------------------------------
-
-  # -- pick & place -------------------------------------------------------------------------
-
-  @evented_operation(
-    "precise_flex.pick_up_at_joint_position",
-    lambda self, position, resource_width, finger_speed_percent=None, grasp_force=None, finger_speed_pct=None: {
-      "device": self._controller_reference(),
-      "target_joint_position": _joint_state_reference(position),
-      "resource_width": float(resource_width),
-      "finger_speed_percent": float(
-        next(
-          value
-          for value in (
-            finger_speed_pct,
-            finger_speed_percent,
-            self.gripper.default_finger_speed_percent,
-          )
-          if value is not None
-        )
-      ),
-      "grasp_force": float(
-        self.gripper.default_grasp_force if grasp_force is None else grasp_force
-      ),
-    },
-  )
-  async def pick_up_at_joint_position(
-    self,
-    position: JointState,
-    resource_width: float,
-    finger_speed_percent: Optional[float] = None,
-    grasp_force: Optional[float] = None,
-    *,
-    finger_speed_pct: Optional[float] = None,
-  ) -> None:
-    """Pick up at the specified joint position.
-
-    Args:
-      position: Joint state to pick from.
-      resource_width: Width of the resource to grasp, in mm.
-      finger_speed_percent: Finger closing speed as a percentage (0-100).
-        ``default_finger_speed_percent`` when None.
-      grasp_force: Grasp force in Newtons. ``default_grasp_force`` when None.
-      finger_speed_pct: deprecated, use `finger_speed_percent`.
-    """
-    if finger_speed_pct is not None:
-      warnings.warn(
-        "`finger_speed_pct` is deprecated, use `finger_speed_percent`.",
-        DeprecationWarning,
-        stacklevel=3,
-      )
-      finger_speed_percent = finger_speed_pct
-    if finger_speed_percent is None:
-      finger_speed_percent = self.gripper.default_finger_speed_percent
-    if grasp_force is None:
-      grasp_force = self.gripper.default_grasp_force
-    logger.info(
-      "[PreciseFlex %s] pick_up: joints=%s, resource_width_mm=%s",
-      self.io._host,
-      position,
-      resource_width,
-    )
-    await self.gripper._set_grasp_data(
-      plate_width=resource_width,
-      finger_speed_percent=finger_speed_percent,
-      grasp_force=grasp_force,
-    )
-    await self._pick_plate_j(position)
-
-  @evented_operation(
-    "precise_flex.drop_at_joint_position",
-    lambda self, position, resource_width: {
-      "device": self._controller_reference(),
-      "target_joint_position": _joint_state_reference(position),
-      "resource_width": float(resource_width),
-    },
-  )
-  async def drop_at_joint_position(
-    self,
-    position: JointState,
-    resource_width: float,
-  ) -> None:
-    """Drop at the specified joint position.
-
-    Args:
-      position: Joint state to drop at.
-      resource_width: Width of the held resource, in mm.
-    """
-    logger.info(
-      "[PreciseFlex %s] drop: joints=%s, resource_width_mm=%s",
-      self.io._host,
-      position,
-      resource_width,
-    )
-    await self._place_plate_j(position)
-
-  @evented_operation(
-    "precise_flex.pick_up_at_location",
-    lambda self, location, direction, resource_width, finger_speed_percent=None, grasp_force=None, orientation=None, wrist=None, rail_position=None, finger_speed_pct=None: {
-      "device": self._controller_reference(),
-      "target": _cartesian_target_reference(
-        location,
-        direction,
-        orientation=orientation,
-        wrist=wrist,
-        rail_position=rail_position,
-      ),
-      "resource_width": float(resource_width),
-      "finger_speed_percent": float(
-        next(
-          value
-          for value in (
-            finger_speed_pct,
-            finger_speed_percent,
-            self.gripper.default_finger_speed_percent,
-          )
-          if value is not None
-        )
-      ),
-      "grasp_force": float(
-        self.gripper.default_grasp_force if grasp_force is None else grasp_force
-      ),
-    },
-  )
-  async def pick_up_at_location(
-    self,
-    location: Coordinate,
-    direction: float,
-    resource_width: float,
-    finger_speed_percent: Optional[float] = None,
-    grasp_force: Optional[float] = None,
-    orientation: Optional[ElbowOrientation] = None,
-    wrist: Optional[Wrist] = None,
-    rail_position: Optional[float] = None,
-    *,
-    finger_speed_pct: Optional[float] = None,
-  ) -> None:
-    """Pick up at the specified Cartesian location.
-
-    Args:
-      location: Cartesian location to pick from.
-      direction: Approach direction, applied as the pose's z rotation in degrees.
-      resource_width: Width of the resource to grasp, in mm.
-      finger_speed_percent: Finger closing speed as a percentage (0-100).
-        ``default_finger_speed_percent`` when None.
-      grasp_force: Grasp force in Newtons. ``default_grasp_force`` when None.
-      orientation: Elbow orientation (``"lefty"`` or ``"righty"``). If None, the robot
-        picks the closest configuration.
-      wrist: Wrist configuration. If None, the robot picks the closest configuration.
-      rail_position: Linear rail position in mm. Required when the arm has a rail.
-      finger_speed_pct: deprecated, use `finger_speed_percent`.
-    """
-    if finger_speed_pct is not None:
-      warnings.warn(
-        "`finger_speed_pct` is deprecated, use `finger_speed_percent`.",
-        DeprecationWarning,
-        stacklevel=3,
-      )
-      finger_speed_percent = finger_speed_pct
-    if finger_speed_percent is None:
-      finger_speed_percent = self.gripper.default_finger_speed_percent
-    if grasp_force is None:
-      grasp_force = self.gripper.default_grasp_force
-    logger.info(
-      "[PreciseFlex %s] pick_up: x=%s, y=%s, z=%s, direction=%s, resource_width_mm=%s",
-      self.io._host,
-      location.x,
-      location.y,
-      location.z,
-      direction,
-      resource_width,
-    )
-    if rail_position is not None:
-      await self.arm._require_rail().move_rail(rail_position)
-    elif self._has_rail:
-      raise ValueError(
-        "rail_position must be specified for pick_up_at_location when using a rail-equipped arm."
-      )
-    coords = PreciseFlexCartesianPose(
-      location=location,
-      rotation=Rotation(z=direction),
-      orientation=orientation,
-      wrist=wrist,
-    )
-    await self.gripper._set_grasp_data(
-      plate_width=resource_width,
-      finger_speed_percent=finger_speed_percent,
-      grasp_force=grasp_force,
-    )
-    await self._pick_plate_c(cartesian_position=coords)
-
-  @evented_operation(
-    "precise_flex.drop_at_location",
-    lambda self, location, direction, resource_width, orientation=None, wrist=None, rail_position=None: {
-      "device": self._controller_reference(),
-      "target": _cartesian_target_reference(
-        location,
-        direction,
-        orientation=orientation,
-        wrist=wrist,
-        rail_position=rail_position,
-      ),
-      "resource_width": float(resource_width),
-    },
-  )
-  async def drop_at_location(
-    self,
-    location: Coordinate,
-    direction: float,
-    resource_width: float,
-    orientation: Optional[ElbowOrientation] = None,
-    wrist: Optional[Wrist] = None,
-    rail_position: Optional[float] = None,
-  ) -> None:
-    """Drop at the specified Cartesian location.
-
-    Args:
-      location: Cartesian location to drop at.
-      direction: Approach direction, applied as the pose's z rotation in degrees.
-      resource_width: Width of the held resource, in mm.
-      orientation: Elbow orientation (``"lefty"`` or ``"righty"``). If None, the robot
-        picks the closest configuration.
-      wrist: Wrist configuration. If None, the robot picks the closest configuration.
-      rail_position: Linear rail position in mm. Required when the arm has a rail.
-    """
-    logger.info(
-      "[PreciseFlex %s] drop: x=%s, y=%s, z=%s, direction=%s, resource_width_mm=%s",
-      self.io._host,
-      location.x,
-      location.y,
-      location.z,
-      direction,
-      resource_width,
-    )
-    if rail_position is not None:
-      await self.arm._require_rail().move_rail(rail_position)
-    elif self._has_rail:
-      raise ValueError(
-        "rail_position must be specified for drop_at_location when using a rail-equipped arm."
-      )
-    coords = PreciseFlexCartesianPose(
-      location=location,
-      rotation=Rotation(z=direction),
-      orientation=orientation,
-      wrist=wrist,
-    )
-    await self._place_plate_c(cartesian_position=coords)
-
-  async def _pick_plate_j(self, joint_position: JointState):
-    """Pick a plate from the specified position using joint coordinates."""
-    await self.arm._set_joint_angles(self.location_index, joint_position)
-    await self._set_grip_detail()
-    horizontal_compliance_int = 1 if self.horizontal_compliance else 0
-    ret_code = await self.send_command(
-      f"pickplate {self.location_index} {horizontal_compliance_int} {self.horizontal_compliance_torque}"
-    )
-    if ret_code == "0":
-      raise PreciseFlexError(-1, "the force-controlled gripper detected no plate present.")
-
-  async def _place_plate_j(self, joint_position: JointState):
-    """Place a plate at the specified position using joint coordinates."""
-    await self.arm._set_joint_angles(self.location_index, joint_position)
-    await self._set_grip_detail()
-    horizontal_compliance_int = 1 if self.horizontal_compliance else 0
-    await self.send_command(
-      f"placeplate {self.location_index} {horizontal_compliance_int} {self.horizontal_compliance_torque}"
-    )
-
-  async def _pick_plate_c(self, cartesian_position: PreciseFlexCartesianPose):
-    """Pick a plate at a Cartesian position via IK + joint-space pickplate."""
-    joints = await self.arm._cart_to_joints(cartesian_position)
-    await self._pick_plate_j(joints)
-
-  async def _place_plate_c(self, cartesian_position: PreciseFlexCartesianPose):
-    """Place a plate at a Cartesian position via IK + joint-space placeplate."""
-    joints = await self.arm._cart_to_joints(cartesian_position)
-    await self._place_plate_j(joints)
-
-  # -- parking ------------------------------------------------------------------------------
-
-  @property
-  def parking_position(self) -> Optional[JointState]:
-    """The pose ``park()`` moves to. Assign one of the ``PARKING_POSITION_BACK/RIGHT/FRONT`` class
-    constants or any JointState; the assignment is validated (keys must be ``Axis`` members, values must
-    be within the soft limits once the configuration is known). None until setup, where it defaults to
-    ``PARKING_POSITION_RIGHT``. A pose that omits ``Axis.BASE`` has its Z filled at park time."""
-    return self._parking_position
-
-  @parking_position.setter
-  def parking_position(self, position: Optional[JointState]) -> None:
-    if position is not None:
-      self._validate_parking_position(position)
-    self._parking_position: Optional[JointState] = dict(position) if position is not None else None
-
-  @evented_operation(
-    "precise_flex.park",
-    lambda self: {"device": self._controller_reference()},
-  )
-  async def park(self) -> None:
-    """Move to ``self.parking_position``; defaults at setup, reassignable at runtime.
-
-    ``parking_position`` is filled at setup with ``PARKING_POSITION_RIGHT`` (a planar fold facing
-    right, Z column at 3/4 of its discovered travel); assign one of the ``PARKING_POSITION_*`` class
-    constants or any JointState to park elsewhere. Falls back to the firmware ``movetosafe`` while it is
-    unset. No collision checks against 3rd-party obstacles.
-    """
-    if self.parking_position is not None:
-      await self.arm.move_to_joint_position(
-        position=self._parking_pose_with_default_z(self.parking_position)
-      )
-    else:
-      await self.send_command("movetosafe")
-
-  def _validate_parking_position(self, position: JointState) -> None:
-    """Reject anything that is not a JointState of in-range axes (limits checked once known)."""
-    if not isinstance(position, dict) or not position:
-      raise ValueError(f"parking_position must be a non-empty JointState, got {position!r}")
-    for axis, value in position.items():
-      if not isinstance(axis, Axis):
-        raise ValueError(f"parking_position keys must be Axis members, got {axis!r}")
-      if not isinstance(value, (int, float)):
-        raise ValueError(f"parking_position[{axis.name}] must be a number, got {value!r}")
-      if self._configuration is not None:
-        lo, hi = self._configuration.soft_limits[axis]
-        if not lo <= value <= hi:
-          raise ValueError(
-            f"parking_position[{axis.name}]={value} is outside the soft limits [{lo}, {hi}]"
-          )
-
-  def _parking_pose_with_default_z(self, position: JointState) -> JointState:
-    """Fill the Z column (``Axis.BASE``) at 3/4 of the discovered travel when the pose omits it."""
-    if Axis.BASE in position or self._configuration is None:
-      return position
-    _, z_max = self._configuration.z_range
-    return {Axis.BASE: 0.75 * z_max, **position}
 
   # -- deprecated: moved to the arm, gripper and rail ---------------------------------------------
 
@@ -2048,3 +1681,121 @@ class PreciseFlex:
       stacklevel=2,
     )
     return await self.arm.request_tool_transformation_values(*args, **kwargs)
+
+  async def pick_up_at_joint_position(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.pick_up_at_joint_position``."""
+    warnings.warn(
+      "`pick_up_at_joint_position` is deprecated, use `arm.pick_up_at_joint_position`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.pick_up_at_joint_position(*args, **kwargs)
+
+  async def drop_at_joint_position(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.drop_at_joint_position``."""
+    warnings.warn(
+      "`drop_at_joint_position` is deprecated, use `arm.drop_at_joint_position`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.drop_at_joint_position(*args, **kwargs)
+
+  async def pick_up_at_location(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.pick_up_at_location``."""
+    warnings.warn(
+      "`pick_up_at_location` is deprecated, use `arm.pick_up_at_location`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.pick_up_at_location(*args, **kwargs)
+
+  async def drop_at_location(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.drop_at_location``."""
+    warnings.warn(
+      "`drop_at_location` is deprecated, use `arm.drop_at_location`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.drop_at_location(*args, **kwargs)
+
+  async def park(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.park``."""
+    warnings.warn("`park` is deprecated, use `arm.park`.", DeprecationWarning, stacklevel=2)
+    return await self.arm.park(*args, **kwargs)
+
+  @property
+  def parking_position(self) -> Optional[JointState]:
+    """Deprecated: use ``arm.parking_position``."""
+    warnings.warn(
+      "`parking_position` is deprecated, use `arm.parking_position`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.arm.parking_position
+
+  @parking_position.setter
+  def parking_position(self, value: Optional[JointState]) -> None:
+    warnings.warn(
+      "`parking_position` is deprecated, use `arm.parking_position`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    self.arm.parking_position = value
+
+  @property
+  def location_index(self) -> int:
+    """Deprecated: use ``arm.location_index``."""
+    warnings.warn(
+      "`location_index` is deprecated, use `arm.location_index`.", DeprecationWarning, stacklevel=2
+    )
+    return self.arm.location_index
+
+  @location_index.setter
+  def location_index(self, value: int) -> None:
+    warnings.warn(
+      "`location_index` is deprecated, use `arm.location_index`.", DeprecationWarning, stacklevel=2
+    )
+    self.arm.location_index = value
+
+  @property
+  def horizontal_compliance(self) -> bool:
+    """Deprecated: use ``arm.horizontal_compliance``."""
+    warnings.warn(
+      "`horizontal_compliance` is deprecated, use `arm.horizontal_compliance`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.arm.horizontal_compliance
+
+  @horizontal_compliance.setter
+  def horizontal_compliance(self, value: bool) -> None:
+    warnings.warn(
+      "`horizontal_compliance` is deprecated, use `arm.horizontal_compliance`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    self.arm.horizontal_compliance = value
+
+  @property
+  def horizontal_compliance_torque(self) -> int:
+    """Deprecated: use ``arm.horizontal_compliance_torque``."""
+    warnings.warn(
+      "`horizontal_compliance_torque` is deprecated, use `arm.horizontal_compliance_torque`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.arm.horizontal_compliance_torque
+
+  @horizontal_compliance_torque.setter
+  def horizontal_compliance_torque(self, value: int) -> None:
+    warnings.warn(
+      "`horizontal_compliance_torque` is deprecated, use `arm.horizontal_compliance_torque`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    self.arm.horizontal_compliance_torque = value
+
+  # deprecated: use ``PreciseFlexArm.PARKING_POSITION_*``
+  PARKING_POSITION_BACK: ClassVar[JointState] = PreciseFlexArm.PARKING_POSITION_BACK
+  PARKING_POSITION_RIGHT: ClassVar[JointState] = PreciseFlexArm.PARKING_POSITION_RIGHT
+  PARKING_POSITION_FRONT: ClassVar[JointState] = PreciseFlexArm.PARKING_POSITION_FRONT
