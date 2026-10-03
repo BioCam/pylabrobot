@@ -574,7 +574,7 @@ _CASES: List[_Case] = [
   ),
   (
     "release_brake",
-    lambda arm: arm.release_brake(2),
+    lambda arm: arm.arm.release_brake(2),
     [
       "releaseBrake 2",
     ],
@@ -582,7 +582,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_brake",
-    lambda arm: arm.set_brake(2),
+    lambda arm: arm.arm.set_brake(2),
     [
       "setBrake 2",
     ],
@@ -590,7 +590,7 @@ _CASES: List[_Case] = [
   ),
   (
     "zero_torque_on",
-    lambda arm: arm.zero_torque(True, 3),
+    lambda arm: arm.arm.zero_torque(True, 3),
     [
       "zeroTorque 1 3",
     ],
@@ -598,7 +598,7 @@ _CASES: List[_Case] = [
   ),
   (
     "zero_torque_off",
-    lambda arm: arm.zero_torque(False),
+    lambda arm: arm.arm.zero_torque(False),
     [
       "zeroTorque 0",
     ],
@@ -606,7 +606,7 @@ _CASES: List[_Case] = [
   ),
   (
     "start_freedrive_mode_all",
-    lambda arm: arm.start_freedrive_mode(),
+    lambda arm: arm.arm.start_freedrive_mode(),
     [
       "freemode 1",
       "freemode 2",
@@ -617,7 +617,7 @@ _CASES: List[_Case] = [
   ),
   (
     "start_freedrive_mode_axes",
-    lambda arm: arm.start_freedrive_mode([1, 2]),
+    lambda arm: arm.arm.start_freedrive_mode([1, 2]),
     [
       "freemode 1",
       "freemode 2",
@@ -626,7 +626,7 @@ _CASES: List[_Case] = [
   ),
   (
     "stop_freedrive_mode",
-    lambda arm: arm.stop_freedrive_mode(),
+    lambda arm: arm.arm.stop_freedrive_mode(),
     [
       "freemode -1",
     ],
@@ -634,7 +634,7 @@ _CASES: List[_Case] = [
   ),
   (
     "halt",
-    lambda arm: arm.halt(),
+    lambda arm: arm.arm.halt(),
     [
       "halt",
     ],
@@ -642,7 +642,7 @@ _CASES: List[_Case] = [
   ),
   (
     "change_config",
-    lambda arm: arm.change_config(1),
+    lambda arm: arm.arm.change_config(1),
     [
       "ChangeConfig 1",
     ],
@@ -650,7 +650,7 @@ _CASES: List[_Case] = [
   ),
   (
     "change_config2",
-    lambda arm: arm.change_config2(1),
+    lambda arm: arm.arm.change_config2(1),
     [
       "ChangeConfig2 1",
     ],
@@ -1220,7 +1220,7 @@ _RAIL_CASES: List[_Case] = [
   ),
   (
     "rail_start_freedrive_mode",
-    lambda arm: arm.start_freedrive_mode(),
+    lambda arm: arm.arm.start_freedrive_mode(),
     [
       "freemode 1",
       "freemode 2",
@@ -1552,12 +1552,12 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
 
   async def test_changing_config_with_the_gripper_closing_is_refused(self):
     arm, fake = await self._arm()
-    for change in (arm.change_config, arm.change_config2):
+    for change in (arm.arm.change_config, arm.arm.change_config2):
       with self.subTest(change.__name__), self.assertRaisesRegex(ValueError, "without sensing"):
         await change(2)
     self.assertEqual(fake.sent, [])
-    await arm.change_config(2, close_gripper_without_force_sensing=True)
-    await arm.change_config2(2, close_gripper_without_force_sensing=True)
+    await arm.arm.change_config(2, close_gripper_without_force_sensing=True)
+    await arm.arm.change_config2(2, close_gripper_without_force_sensing=True)
     self.assertEqual(fake.sent, ["ChangeConfig 2", "ChangeConfig2 2"])
 
   async def test_recovery_leaves_an_over_open_gripper(self):
@@ -1580,7 +1580,7 @@ class TestRefusals(unittest.IsolatedAsyncioTestCase):
     fake = _FakeController()
     arm = _make_arm(fake)
     with self.assertRaisesRegex(ValueError, "axis_mask"):
-      await arm.zero_torque(True, 0)
+      await arm.arm.zero_torque(True, 0)
     self.assertEqual(fake.sent, [])
 
 
@@ -1660,6 +1660,18 @@ _DEPRECATED_KEYWORDS: List[
       _LOC, direction=0.0, resource_width=85.0, finger_speed_percent=30
     ),
   ),
+  ("release_brake", lambda a: a.release_brake(2), lambda a: a.arm.release_brake(2)),
+  ("set_brake", lambda a: a.set_brake(2), lambda a: a.arm.set_brake(2)),
+  ("zero_torque", lambda a: a.zero_torque(True, 3), lambda a: a.arm.zero_torque(True, 3)),
+  (
+    "start_freedrive_mode",
+    lambda a: a.start_freedrive_mode([1, 2]),
+    lambda a: a.arm.start_freedrive_mode([1, 2]),
+  ),
+  ("stop_freedrive_mode", lambda a: a.stop_freedrive_mode(), lambda a: a.arm.stop_freedrive_mode()),
+  ("halt", lambda a: a.halt(), lambda a: a.arm.halt()),
+  ("change_config", lambda a: a.change_config(1), lambda a: a.arm.change_config(1)),
+  ("change_config2", lambda a: a.change_config2(1), lambda a: a.arm.change_config2(1)),
 ]
 
 

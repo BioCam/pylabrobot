@@ -272,7 +272,7 @@ class TestVisionSetupGating(unittest.IsolatedAsyncioTestCase):
     arm.power_on_robot = AsyncMock()  # type: ignore[method-assign]
     arm.attach = AsyncMock()  # type: ignore[method-assign]
     arm.home = AsyncMock()  # type: ignore[method-assign]
-    arm.stop_freedrive_mode = AsyncMock()  # type: ignore[method-assign]
+    arm.arm.stop_freedrive_mode = AsyncMock()  # type: ignore[method-assign]
     config = MagicMock()
     config.has_vision_module = has_vision_module
     arm._request_configuration = AsyncMock(return_value=config)  # type: ignore[method-assign]

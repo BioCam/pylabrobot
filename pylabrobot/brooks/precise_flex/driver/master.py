@@ -8,7 +8,6 @@ from typing import (
   Any,
   ClassVar,
   Dict,
-  List,
   Literal,
   Optional,
   Tuple,
@@ -519,7 +518,7 @@ class PreciseFlex:
       await self.home()
     logger.debug("[PreciseFlex %s] connected: port=%s", self.io._host, self.io._port)
 
-    await self.stop_freedrive_mode()
+    await self.arm.stop_freedrive_mode()
     # Resolve the device configuration once and adopt it as the source of truth;
     # without it the class defaults stay in place.
     try:
@@ -882,148 +881,7 @@ class PreciseFlex:
 
   # -- motion primitives --------------------------------------------------------------------
 
-  # -- brakes, torque & freedrive -----------------------------------------------------------
-
-  async def release_brake(self, axis: int) -> None:
-    """Release the axis brake.
-
-    Overrides the normal operation of the brake. It is important that the brake not be set
-    while a motion is being performed. This feature is used to lock an axis to prevent
-    motion or jitter.
-
-    Args:
-      axis: The number of the axis whose brake should be released.
-    """
-    await self.send_command(f"releaseBrake {axis}")
-
-  async def set_brake(self, axis: int) -> None:
-    """Set the axis brake.
-
-    Overrides the normal operation of the brake. It is important not to set a brake on an
-    axis that is moving as it may damage the brake or damage the motor.
-
-    Args:
-      axis: The number of the axis whose brake should be set.
-    """
-    await self.send_command(f"setBrake {axis}")
-
-  async def zero_torque(self, enable: bool, axis_mask: int = 1) -> None:
-    """Sets or clears zero torque mode for the selected robot.
-
-    Individual axes may be placed into zero torque mode while the remaining axes are servoing.
-
-    Args:
-      enable: If True, enable torque mode for axes specified by axis_mask.  If False, disable torque mode for the entire robot.
-      axis_mask: The bit mask specifying the axes to be placed in torque mode when enable is True.  The mask is computed by OR'ing the axis bits: 1 = axis 1, 2 = axis 2, 4 = axis 3, 8 = axis 4, etc.  Ignored when enable is False.
-
-    Raises:
-      ValueError: If ``enable`` is True and ``axis_mask`` names no axis.
-    """
-    if enable:
-      if axis_mask <= 0:
-        raise ValueError(f"axis_mask must be greater than 0, is {axis_mask}")
-      await self.send_command(f"zeroTorque 1 {axis_mask}")
-    else:
-      await self.send_command("zeroTorque 0")
-
-  @evented_operation(
-    "precise_flex.start_freedrive",
-    lambda self, free_axes=None: {
-      "device": self._controller_reference(),
-      "free_axes": [int(axis) for axis in free_axes] if free_axes is not None else None,
-    },
-  )
-  async def start_freedrive_mode(self, free_axes: Optional[List[int]] = None) -> None:
-    """Enter freedrive mode, allowing manual movement of the specified joints.
-
-    The robot must be attached to enter free mode.
-
-    Args:
-      free_axes: List of joint indices to free. Use [0] for all axes.
-    """
-    if free_axes is None:
-      # Default to the positioning axes that exist; include the rail only when
-      # fitted - freemode on an absent axis returns -2800 on a no-rail arm. The
-      # cached configuration is the source of truth for the installed axes; fall
-      # back to the constructor hint before setup has resolved it.
-      has_rail = self._configuration.has_rail if self._configuration is not None else self._has_rail
-      free_axes = [Axis.BASE, Axis.SHOULDER, Axis.ELBOW, Axis.WRIST]
-      if has_rail:
-        free_axes.append(Axis.RAIL)
-    for axis in free_axes:
-      await self.send_command(f"freemode {axis}")
-
-  @evented_operation(
-    "precise_flex.stop_freedrive",
-    lambda self: {"device": self._controller_reference()},
-  )
-  async def stop_freedrive_mode(self) -> None:
-    """Exit freedrive mode for all axes."""
-    await self.send_command("freemode -1")
-
-  @evented_operation(
-    "precise_flex.halt",
-    lambda self: {"device": self._controller_reference()},
-  )
-  async def halt(self):
-    """Stops the current robot immediately but leaves power on."""
-    await self.send_command("halt")
-
   # -- gripper primitives -------------------------------------------------------------------
-
-  async def change_config(
-    self, grip_mode: int = 0, *, close_gripper_without_force_sensing: bool = False
-  ) -> None:
-    """Change Robot configuration from Righty to Lefty or vice versa using customizable locations.
-
-    Uses customizable locations to avoid hitting robot during change.
-    Does not include checks for collision inside work volume of the robot.
-    Can be customized by user for their work cell configuration.
-
-    Args:
-      grip_mode: Gripper control mode.
-      0 = do not change gripper (default)
-      1 = open gripper
-      2 = close gripper, which senses no force; refused unless
-        ``close_gripper_without_force_sensing``.
-      close_gripper_without_force_sensing: allow ``grip_mode=2``.
-
-    Raises:
-      ValueError: If ``grip_mode`` is 2 and closing without force sensing was not allowed.
-    """
-    if grip_mode == 2 and not close_gripper_without_force_sensing:
-      raise ValueError(
-        "grip_mode=2 closes the gripper without sensing force; close it with "
-        "gripper.move_to_jaw_position, or pass close_gripper_without_force_sensing=True"
-      )
-    await self.send_command(f"ChangeConfig {grip_mode}")
-
-  async def change_config2(
-    self, grip_mode: int = 0, *, close_gripper_without_force_sensing: bool = False
-  ) -> None:
-    """Change Robot configuration from Righty to Lefty or vice versa using algorithm.
-
-    Uses an algorithm to avoid hitting robot during change.
-    Does not include checks for collision inside work volume of the robot.
-    Can be customized by user for their work cell configuration.
-
-    Args:
-      grip_mode: Gripper control mode.
-      0 = do not change gripper (default)
-      1 = open gripper
-      2 = close gripper, which senses no force; refused unless
-        ``close_gripper_without_force_sensing``.
-      close_gripper_without_force_sensing: allow ``grip_mode=2``.
-
-    Raises:
-      ValueError: If ``grip_mode`` is 2 and closing without force sensing was not allowed.
-    """
-    if grip_mode == 2 and not close_gripper_without_force_sensing:
-      raise ValueError(
-        "grip_mode=2 closes the gripper without sensing force; close it with "
-        "gripper.move_to_jaw_position, or pass close_gripper_without_force_sensing=True"
-      )
-    await self.send_command(f"ChangeConfig2 {grip_mode}")
 
   async def _set_grip_detail(self):
     """Configure a default vertical station type for pick/place operations."""
@@ -2167,3 +2025,61 @@ class PreciseFlex:
       "`profile_index` is deprecated, use `arm.profile_index`.", DeprecationWarning, stacklevel=2
     )
     self.arm.profile_index = value
+
+  async def release_brake(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.release_brake``."""
+    warnings.warn(
+      "`release_brake` is deprecated, use `arm.release_brake`.", DeprecationWarning, stacklevel=2
+    )
+    return await self.arm.release_brake(*args, **kwargs)
+
+  async def set_brake(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.set_brake``."""
+    warnings.warn(
+      "`set_brake` is deprecated, use `arm.set_brake`.", DeprecationWarning, stacklevel=2
+    )
+    return await self.arm.set_brake(*args, **kwargs)
+
+  async def zero_torque(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.zero_torque``."""
+    warnings.warn(
+      "`zero_torque` is deprecated, use `arm.zero_torque`.", DeprecationWarning, stacklevel=2
+    )
+    return await self.arm.zero_torque(*args, **kwargs)
+
+  async def start_freedrive_mode(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.start_freedrive_mode``."""
+    warnings.warn(
+      "`start_freedrive_mode` is deprecated, use `arm.start_freedrive_mode`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.start_freedrive_mode(*args, **kwargs)
+
+  async def stop_freedrive_mode(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.stop_freedrive_mode``."""
+    warnings.warn(
+      "`stop_freedrive_mode` is deprecated, use `arm.stop_freedrive_mode`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return await self.arm.stop_freedrive_mode(*args, **kwargs)
+
+  async def halt(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.halt``."""
+    warnings.warn("`halt` is deprecated, use `arm.halt`.", DeprecationWarning, stacklevel=2)
+    return await self.arm.halt(*args, **kwargs)
+
+  async def change_config(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.change_config``."""
+    warnings.warn(
+      "`change_config` is deprecated, use `arm.change_config`.", DeprecationWarning, stacklevel=2
+    )
+    return await self.arm.change_config(*args, **kwargs)
+
+  async def change_config2(self, *args: Any, **kwargs: Any) -> Any:
+    """Deprecated: use ``arm.change_config2``."""
+    warnings.warn(
+      "`change_config2` is deprecated, use `arm.change_config2`.", DeprecationWarning, stacklevel=2
+    )
+    return await self.arm.change_config2(*args, **kwargs)
