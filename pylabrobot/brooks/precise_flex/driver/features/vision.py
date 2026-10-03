@@ -433,167 +433,6 @@ class PreciseFlexVision:
     suffix = f" {tool} {index}" if tool is not None else ""
     return (await self.driver.send_command(f"VresultInfoString{suffix}")).strip()
 
-  # -- engine session & discovery ------------------------------------------
-
-  # Engine (the software running on the vision server that performs the computations)
-  # ├─ cameras                ← engine hardware
-  # ├─ tool types (palette)   ← engine capability
-  # └─ Project (active, of N)
-  #    ├─ Processes           ← pipelines
-  #    └─ Tools               ← instances (of the palette types)
-
-  async def request_camera_count(self) -> int:
-    """Number of cameras PreciseVision sees (``System.CameraCount``); read-only, no motion.
-
-    Goes over the controller (``VToolProperty``), so it works without a configured engine; the
-    engine-side per-camera detail is in the ``request_camera_*`` reads.
-    """
-    return int(await self.request_vision_tool_property("System", "CameraCount"))
-
-  async def request_vision_version(self) -> str:
-    """The PreciseVision engine version (``system.engineversion``)."""
-    if not self.driver.vision_server_connected:
-      raise RuntimeError(_NO_VISION_SERVER)
-    return await self.driver.request_vision_server_property("system.engineversion")
-
-  async def request_is_licensed(self) -> bool:
-    """Whether the engine reports a valid license (``system.islicensed``)."""
-    if not self.driver.vision_server_connected:
-      raise RuntimeError(_NO_VISION_SERVER)
-    return (await self.driver.request_vision_server_property("system.islicensed")) == "True"
-
-  async def request_projects(self) -> List[str]:
-    """List all projects on the engine (``system.listprojects``); the active one is request_project_name."""
-    if not self.driver.vision_server_connected:
-      raise RuntimeError(_NO_VISION_SERVER)
-    return _split_names(await self.driver.request_vision_server_property("system.listprojects"))
-
-  async def request_project_name(self) -> str:
-    """The active project's name (``system.projectname``)."""
-    if not self.driver.vision_server_connected:
-      raise RuntimeError(_NO_VISION_SERVER)
-    return await self.driver.request_vision_server_property("system.projectname")
-
-  async def request_processes(self) -> List[str]:
-    """List all process names in the active project (``system.listprocesses``)."""
-    if not self.driver.vision_server_connected:
-      raise RuntimeError(_NO_VISION_SERVER)
-    return _split_names(await self.driver.request_vision_server_property("system.listprocesses"))
-
-  async def request_vision_tools(self) -> List[str]:
-    """List all tool names in the active project (``system.listtools``)."""
-    if not self.driver.vision_server_connected:
-      raise RuntimeError(_NO_VISION_SERVER)
-    return _split_names(await self.driver.request_vision_server_property("system.listtools"))
-
-  async def enumerate_project(self) -> Dict[str, List[str]]:
-    """List the loaded project's processes and tools (``system.listprocesses`` / ``listtools``)."""
-    if not self.driver.vision_server_connected:
-      raise RuntimeError(_NO_VISION_SERVER)
-    processes = await self.driver.request_vision_server_property("system.listprocesses")
-    tools = await self.driver.request_vision_server_property("system.listtools")
-    return {
-      "processes": sorted(_split_names(processes)),
-      "vision_tools": sorted(_split_names(tools)),
-    }
-
-  async def discover_configuration(self) -> VisionConfiguration:
-    """Discover the engine's capabilities once and cache them on ``self.configuration``; no motion.
-
-    Reads the tool-type palette, projects, active project, processes, each tool's type and property
-    names, and per-camera info via the engine reads (all read-only). Returns an undiscovered (empty)
-    configuration when no engine was configured at setup.
-    """
-    if not self.driver.vision_server_connected:
-      self.configuration = VisionConfiguration(discovered=False)
-      return self.configuration
-    tools: Dict[str, VisionToolInfo] = {}
-    for name in await self.request_vision_tools():
-      tools[name] = VisionToolInfo(
-        name=name,
-        type=await self.request_vision_tool_type(name),
-        properties=await self.request_vision_tool_properties(name),
-      )
-    count = await self.driver.request_vision_server_property("system.cameracount")
-    cameras: Dict[int, CameraInfo] = {}
-    for cam in range(1, (int(count) if count.isdigit() else 0) + 1):
-      cameras[cam] = CameraInfo(
-        name=await self.request_camera_name(cam),
-        type=await self.request_camera_type(cam),
-        width=await self.request_camera_width(cam),
-        height=await self.request_camera_height(cam),
-        resolutions=await self.request_camera_resolutions(cam),
-      )
-    self.configuration = VisionConfiguration(
-      discovered=True,
-      vision_version=await self.request_vision_version(),
-      licensed=await self.request_is_licensed(),
-      vision_tool_types=await self.request_vision_tool_types(),
-      projects=await self.request_projects(),
-      active_project=await self.request_project_name(),
-      processes=await self.request_processes(),
-      vision_tools=tools,
-      cameras=cameras,
-    )
-    return self.configuration
-
-  async def setup(self) -> None:
-    """Discover the engine's capabilities, cache them, and log a summary; best-effort, no motion.
-
-    Run once after the capability is built. Discovery failures are swallowed (logged), so a missing
-    or flaky engine never blocks arm bring-up; an unconfirmed engine version is warned about.
-    """
-    host = self.driver.io._host
-    try:
-      config = await self.discover_configuration()
-    except Exception as exc:  # discovery is best-effort and never blocks setup
-      logger.warning("[PreciseFlex %s] vision capability discovery failed: %s", host, exc)
-      return
-    if not config.discovered:
-      return
-    if not is_confirmed_vision_version(config.vision_version):
-      logger.warning(
-        "[PreciseFlex %s] PreciseVision engine %s is not in the confirmed list; please report it if "
-        "the vision capability works so others benefit.",
-        host,
-        config.vision_version,
-      )
-    self._log_configuration_summary(config)
-
-  def _log_configuration_summary(self, config: VisionConfiguration) -> None:
-    """Log the discovered engine configuration as one hierarchical summary (engine > project > tools).
-
-    Args:
-      config: the discovered configuration to log.
-    """
-    tools = ", ".join(f"{n} ({t.type})" for n, t in config.vision_tools.items()) or "none"
-    cameras = (
-      ", ".join(
-        f"{cam}={info.name or '?'} ({info.type}) {info.width}x{info.height}"
-        for cam, info in config.cameras.items()
-      )
-      or "none"
-    )
-    logger.info(
-      "[PreciseFlex %s] Vision: PreciseVision %s (licensed=%s)\n"
-      "  Tool types (%d available): %s\n"
-      "  Cameras: %s\n"
-      "  Project: %r (of %d: %s)\n"
-      "    Processes: %s\n"
-      "    Tools: %s",
-      self.driver.io._host,
-      config.vision_version,
-      config.licensed,
-      len(config.vision_tool_types),
-      ", ".join(config.vision_tool_types) or "none",
-      cameras,
-      config.active_project,
-      len(config.projects),
-      ", ".join(config.projects) or "none",
-      ", ".join(config.processes) or "none",
-      tools,
-    )
-
   # -- camera info ---------------------------------------------------------
 
   async def request_camera_name(
@@ -699,6 +538,167 @@ class PreciseFlexVision:
     if not self.driver.vision_server_connected:
       raise RuntimeError(_NO_VISION_SERVER)
     await self.driver._set_vision_server_property("system.runtool", tool)
+
+  # -- engine session & discovery ------------------------------------------
+
+  # Engine (the software running on the vision server that performs the computations)
+  # ├─ cameras                ← engine hardware
+  # ├─ tool types (palette)   ← engine capability
+  # └─ Project (active, of N)
+  #    ├─ Processes           ← pipelines
+  #    └─ Tools               ← instances (of the palette types)
+
+  async def request_camera_count(self) -> int:
+    """Number of cameras PreciseVision sees (``System.CameraCount``); read-only, no motion.
+
+    Goes over the controller (``VToolProperty``), so it works without a configured engine; the
+    engine-side per-camera detail is in the ``request_camera_*`` reads.
+    """
+    return int(await self.request_vision_tool_property("System", "CameraCount"))
+
+  async def request_vision_version(self) -> str:
+    """The PreciseVision engine version (``system.engineversion``)."""
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return await self.driver.request_vision_server_property("system.engineversion")
+
+  async def request_is_licensed(self) -> bool:
+    """Whether the engine reports a valid license (``system.islicensed``)."""
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return (await self.driver.request_vision_server_property("system.islicensed")) == "True"
+
+  async def request_projects(self) -> List[str]:
+    """List all projects on the engine (``system.listprojects``); the active one is request_project_name."""
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return _split_names(await self.driver.request_vision_server_property("system.listprojects"))
+
+  async def request_project_name(self) -> str:
+    """The active project's name (``system.projectname``)."""
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return await self.driver.request_vision_server_property("system.projectname")
+
+  async def request_processes(self) -> List[str]:
+    """List all process names in the active project (``system.listprocesses``)."""
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return _split_names(await self.driver.request_vision_server_property("system.listprocesses"))
+
+  async def request_vision_tools(self) -> List[str]:
+    """List all tool names in the active project (``system.listtools``)."""
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    return _split_names(await self.driver.request_vision_server_property("system.listtools"))
+
+  async def enumerate_project(self) -> Dict[str, List[str]]:
+    """List the loaded project's processes and tools (``system.listprocesses`` / ``listtools``)."""
+    if not self.driver.vision_server_connected:
+      raise RuntimeError(_NO_VISION_SERVER)
+    processes = await self.driver.request_vision_server_property("system.listprocesses")
+    tools = await self.driver.request_vision_server_property("system.listtools")
+    return {
+      "processes": sorted(_split_names(processes)),
+      "vision_tools": sorted(_split_names(tools)),
+    }
+
+  async def discover_configuration(self) -> VisionConfiguration:
+    """Discover the engine's capabilities once and cache them on ``self.configuration``; no motion.
+
+    Reads the tool-type palette, projects, active project, processes, each tool's type and property
+    names, and per-camera info via the engine reads (all read-only). Returns an undiscovered (empty)
+    configuration when no engine was configured at setup.
+    """
+    if not self.driver.vision_server_connected:
+      self.configuration = VisionConfiguration(discovered=False)
+      return self.configuration
+    tools: Dict[str, VisionToolInfo] = {}
+    for name in await self.request_vision_tools():
+      tools[name] = VisionToolInfo(
+        name=name,
+        type=await self.request_vision_tool_type(name),
+        properties=await self.request_vision_tool_properties(name),
+      )
+    count = await self.driver.request_vision_server_property("system.cameracount")
+    cameras: Dict[int, CameraInfo] = {}
+    for cam in range(1, (int(count) if count.isdigit() else 0) + 1):
+      cameras[cam] = CameraInfo(
+        name=await self.request_camera_name(cam),
+        type=await self.request_camera_type(cam),
+        width=await self.request_camera_width(cam),
+        height=await self.request_camera_height(cam),
+        resolutions=await self.request_camera_resolutions(cam),
+      )
+    self.configuration = VisionConfiguration(
+      discovered=True,
+      vision_version=await self.request_vision_version(),
+      licensed=await self.request_is_licensed(),
+      vision_tool_types=await self.request_vision_tool_types(),
+      projects=await self.request_projects(),
+      active_project=await self.request_project_name(),
+      processes=await self.request_processes(),
+      vision_tools=tools,
+      cameras=cameras,
+    )
+    return self.configuration
+
+  def _log_configuration_summary(self, config: VisionConfiguration) -> None:
+    """Log the discovered engine configuration as one hierarchical summary (engine > project > tools).
+
+    Args:
+      config: the discovered configuration to log.
+    """
+    tools = ", ".join(f"{n} ({t.type})" for n, t in config.vision_tools.items()) or "none"
+    cameras = (
+      ", ".join(
+        f"{cam}={info.name or '?'} ({info.type}) {info.width}x{info.height}"
+        for cam, info in config.cameras.items()
+      )
+      or "none"
+    )
+    logger.info(
+      "[PreciseFlex %s] Vision: PreciseVision %s (licensed=%s)\n"
+      "  Tool types (%d available): %s\n"
+      "  Cameras: %s\n"
+      "  Project: %r (of %d: %s)\n"
+      "    Processes: %s\n"
+      "    Tools: %s",
+      self.driver.io._host,
+      config.vision_version,
+      config.licensed,
+      len(config.vision_tool_types),
+      ", ".join(config.vision_tool_types) or "none",
+      cameras,
+      config.active_project,
+      len(config.projects),
+      ", ".join(config.projects) or "none",
+      ", ".join(config.processes) or "none",
+      tools,
+    )
+
+  async def setup(self) -> None:
+    """Discover the engine's capabilities, cache them, and log a summary; best-effort, no motion.
+
+    Run once after the capability is built. Discovery failures are swallowed (logged), so a missing
+    or flaky engine never blocks arm bring-up; an unconfirmed engine version is warned about.
+    """
+    host = self.driver.io._host
+    try:
+      config = await self.discover_configuration()
+    except Exception as exc:  # discovery is best-effort and never blocks setup
+      logger.warning("[PreciseFlex %s] vision capability discovery failed: %s", host, exc)
+      return
+    if not config.discovered:
+      return
+    if not is_confirmed_vision_version(config.vision_version):
+      logger.warning(
+        "[PreciseFlex %s] PreciseVision engine %s is not in the confirmed list; please report it if "
+        "the vision capability works so others benefit.",
+        host,
+        config.vision_version,
+      )
+    self._log_configuration_summary(config)
 
   # -- lighting (LightControl) ---------------------------------------------
 

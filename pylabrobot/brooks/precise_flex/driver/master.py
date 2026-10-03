@@ -264,6 +264,30 @@ class PreciseFlex:
       await self.io.write(command.encode("utf-8") + b"\n")
       return (await self.io.readline()).decode("utf-8").strip()
 
+  def _ensure_successful(self, reply: str) -> str:
+    """Acceptance gate for the standard ``<code> <data>`` reply: raise on a non-zero code, else return the data.
+
+    Verifies the controller accepted the command - the leading integer reply code is ``0`` - and
+    strips it, returning the rest of the line as the data payload. This is only the success check;
+    interpreting the payload is a separate concern left to the caller.
+
+    Args:
+      reply: one decoded, stripped reply line.
+
+    Returns:
+      The data payload (the line with its leading reply code removed).
+
+    Raises:
+      PreciseFlexError: on an empty reply or a non-zero reply code.
+    """
+    if not reply:
+      raise PreciseFlexError(-1, "Empty reply from device.")
+    code, _, data = reply.partition(" ")
+    replycode = int(code)
+    if replycode != 0:
+      raise PreciseFlexError(replycode, data)
+    return data
+
   async def send_command(self, command: str) -> str:
     """Send a command and return the accepted ``<code> <data>`` payload.
 
@@ -292,30 +316,6 @@ class PreciseFlex:
       raise
     emit_event("precise_flex.firmware_command.completed", **event_data, response=result)
     return result
-
-  def _ensure_successful(self, reply: str) -> str:
-    """Acceptance gate for the standard ``<code> <data>`` reply: raise on a non-zero code, else return the data.
-
-    Verifies the controller accepted the command - the leading integer reply code is ``0`` - and
-    strips it, returning the rest of the line as the data payload. This is only the success check;
-    interpreting the payload is a separate concern left to the caller.
-
-    Args:
-      reply: one decoded, stripped reply line.
-
-    Returns:
-      The data payload (the line with its leading reply code removed).
-
-    Raises:
-      PreciseFlexError: on an empty reply or a non-zero reply code.
-    """
-    if not reply:
-      raise PreciseFlexError(-1, "Empty reply from device.")
-    code, _, data = reply.partition(" ")
-    replycode = int(code)
-    if replycode != 0:
-      raise PreciseFlexError(replycode, data)
-    return data
 
   # -- vision server: the second server's two connections, held here ------------------------------
 
@@ -574,63 +574,6 @@ class PreciseFlex:
     """
     return int(await self.send_command("sysState"))
 
-  @evented_operation(
-    "precise_flex.power_on",
-    lambda self: {"device": self._controller_reference()},
-  )
-  async def power_on_robot(self):
-    """Power on the robot."""
-    error: Optional[PreciseFlexError] = None
-    for _ in range(3):
-      try:
-        await self.set_power(True, self.timeout)
-      except PreciseFlexError as e:
-        logger.warning(f"Error powering on robot, retrying... Attempt {_ + 1}/3. Error: {e}")
-        error = e
-      else:
-        return
-
-    if error:
-      raise error
-    raise RuntimeError("Failed to power on robot after 3 attempts for unknown reasons.")
-
-  @evented_operation(
-    "precise_flex.recover_from_fault",
-    lambda self: {"device": self._controller_reference()},
-  )
-  async def recover_from_fault(self) -> None:
-    """Recover after a collision / fault that stopped the arm and dropped power, leaving it usable.
-
-    A collision trips an envelope error (``-3100`` hard / ``-3122`` soft, see
-    :func:`~pylabrobot.brooks.precise_flex.driver.errors.is_collision`); the servo stops the arm itself and
-    high power drops. This re-enables power, re-attaches, and re-homes (which only cycles the gripper
-    when the other axes are already homed - absolute encoders retain them - so it does not sweep the
-    arm), leaving it ready to move. It does **not** drive the arm to any pose; confirm the obstacle is
-    removed before calling.
-
-    The envelope error auto-clears, so no explicit clear is needed; a latched fatal that blocks
-    power-on is surfaced by ``power_on_robot`` for the operator to reset (DataID 247) or reboot.
-
-    Raises:
-      PreciseFlexError: if a hard E-stop is engaged (release the button first) or power cannot be
-        re-enabled.
-    """
-    if await self.request_system_state() == PowerState.OFF_HARD_ESTOP:
-      raise PreciseFlexError(
-        -1028, "hard E-Stop engaged - release the E-stop button before recovering"
-      )
-    await self.power_on_robot()
-    await self.attach(1)
-    await self.home()
-
-  @evented_operation(
-    "precise_flex.power_off",
-    lambda self: {"device": self._controller_reference()},
-  )
-  async def power_off_robot(self):
-    """Power off the robot."""
-    await self.set_power(False)
-
   async def set_power(self, enable: bool, timeout: int = 0) -> None:
     """Enable or disable robot high power.
 
@@ -703,6 +646,63 @@ class PreciseFlex:
       Requires that robots not be attached.
     """
     await self.send_command("homeAll")
+
+  @evented_operation(
+    "precise_flex.power_on",
+    lambda self: {"device": self._controller_reference()},
+  )
+  async def power_on_robot(self):
+    """Power on the robot."""
+    error: Optional[PreciseFlexError] = None
+    for _ in range(3):
+      try:
+        await self.set_power(True, self.timeout)
+      except PreciseFlexError as e:
+        logger.warning(f"Error powering on robot, retrying... Attempt {_ + 1}/3. Error: {e}")
+        error = e
+      else:
+        return
+
+    if error:
+      raise error
+    raise RuntimeError("Failed to power on robot after 3 attempts for unknown reasons.")
+
+  @evented_operation(
+    "precise_flex.recover_from_fault",
+    lambda self: {"device": self._controller_reference()},
+  )
+  async def recover_from_fault(self) -> None:
+    """Recover after a collision / fault that stopped the arm and dropped power, leaving it usable.
+
+    A collision trips an envelope error (``-3100`` hard / ``-3122`` soft, see
+    :func:`~pylabrobot.brooks.precise_flex.driver.errors.is_collision`); the servo stops the arm itself and
+    high power drops. This re-enables power, re-attaches, and re-homes (which only cycles the gripper
+    when the other axes are already homed - absolute encoders retain them - so it does not sweep the
+    arm), leaving it ready to move. It does **not** drive the arm to any pose; confirm the obstacle is
+    removed before calling.
+
+    The envelope error auto-clears, so no explicit clear is needed; a latched fatal that blocks
+    power-on is surfaced by ``power_on_robot`` for the operator to reset (DataID 247) or reboot.
+
+    Raises:
+      PreciseFlexError: if a hard E-stop is engaged (release the button first) or power cannot be
+        re-enabled.
+    """
+    if await self.request_system_state() == PowerState.OFF_HARD_ESTOP:
+      raise PreciseFlexError(
+        -1028, "hard E-Stop engaged - release the E-stop button before recovering"
+      )
+    await self.power_on_robot()
+    await self.attach(1)
+    await self.home()
+
+  @evented_operation(
+    "precise_flex.power_off",
+    lambda self: {"device": self._controller_reference()},
+  )
+  async def power_off_robot(self):
+    """Power off the robot."""
+    await self.set_power(False)
 
   # -- raw parameters -----------------------------------------------------------------------
 
@@ -828,8 +828,6 @@ class PreciseFlex:
       value: The signal value to set. 0 = off, non-zero = on.
     """
     await self.send_command(f"sig {signal_number} {value}")
-
-  # -- motion primitives --------------------------------------------------------------------
 
   # -- identity & status reads --------------------------------------------------------------
 
@@ -1105,10 +1103,6 @@ class PreciseFlex:
     the controller blocks commanded motion (-1021) and reports unreliable positions.
     """
     return _parse_scalar(await self.request_parameter(DataID.ROBOT_HOMED)) == 1.0
-
-  # -- joint-space motion -------------------------------------------------------------------
-
-  # -- cartesian motion ---------------------------------------------------------------------
 
   # -- deprecated: moved to the arm, gripper and rail ---------------------------------------------
 

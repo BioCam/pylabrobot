@@ -162,6 +162,11 @@ class IKError(ValueError):
   """Target pose is unreachable."""
 
 
+def _wrap(a: float) -> float:
+  """Wrap angle to (-pi, pi]."""
+  return (a + pi) % (2 * pi) - pi
+
+
 def ik(pose: PreciseFlexCartesianPose, p: PF400Params) -> JointState:
   """Inverse kinematics.
 
@@ -221,11 +226,6 @@ def ik(pose: PreciseFlexCartesianPose, p: PF400Params) -> JointState:
     Axis.WRIST: degrees(j4),
     Axis.RAIL: pose.rail_position,
   }
-
-
-def _wrap(a: float) -> float:
-  """Wrap angle to (-pi, pi]."""
-  return (a + pi) % (2 * pi) - pi
 
 
 def __getattr__(name: str) -> object:
