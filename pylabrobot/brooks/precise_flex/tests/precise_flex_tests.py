@@ -47,12 +47,12 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
   async def test_move_gripper_force_sensing_false_opens_with_position(self):
     # 80 mm ⇒ 500 + (80 - 60) = 520 firmware units.
     await self.arm.gripper.move_to_jaw_position(width=80.0, force_sensing=False)
-    self.assertEqual(self._sent_commands(), ["GripOpenPos 520.0", "gripper 1"])
+    self.assertEqual(self._sent_commands(), ["wherej", "wherej", "GripOpenPos 520.0", "gripper 1"])
 
   async def test_move_gripper_force_sensing_true_closes_with_position(self):
     # 60 mm (the closed reference) ⇒ exactly closed_gripper_position.
     await self.arm.gripper.move_to_jaw_position(width=60.0, force_sensing=True)
-    self.assertEqual(self._sent_commands(), ["GripClosePos 500.0", "gripper 2"])
+    self.assertEqual(self._sent_commands(), ["wherej", "wherej", "GripClosePos 500.0", "gripper 2"])
 
   async def test_move_gripper_position_command_precedes_move(self):
     await self.arm.gripper.move_to_jaw_position(width=120.0, force_sensing=False)
@@ -81,7 +81,7 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
     await arm.gripper.move_to_jaw_position(width=80.0, force_sensing=False)
     commands = [c.args[0] for c in mocked(arm.send_command).call_args_list]
     # 80 mm ⇒ 1000 + (80 - 60) = 1020 units.
-    self.assertEqual(commands, ["GripOpenPos 1020.0", "gripper 1"])
+    self.assertEqual(commands, ["wherej", "wherej", "GripOpenPos 1020.0", "gripper 1"])
 
   def test_mm_to_firmware_units_helper(self):
     # Direct check of the linear mapping.

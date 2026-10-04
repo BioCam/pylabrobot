@@ -174,7 +174,9 @@ class PreciseFlexGripper:
       force_sensing: None senses force when the move closes the jaws and not when it opens them.
     """
     if force_sensing is None:
-      force_sensing = await self._closes(units)
+      force_sensing = await self._closes(units)  # reads the joint state once the arm has stopped
+    else:
+      await self._driver.arm._wait_for_eom()
     if force_sensing:
       await self._set_close_position(units)
       await self._driver.send_command("gripper 2")

@@ -1054,6 +1054,8 @@ _CASES: List[_Case] = [
     "move_gripper_close",
     lambda arm: arm.gripper.move_to_jaw_position(90.0, force_sensing=True),
     [
+      "wherej",
+      "wherej",
       "GripClosePos 101.0",
       "gripper 2",
     ],
@@ -1075,6 +1077,8 @@ _CASES: List[_Case] = [
     "move_gripper_joint_position_force",
     lambda arm: arm.gripper.move_to_jaw_position_firmware_units(90.0, force_sensing=True),
     [
+      "wherej",
+      "wherej",
       "GripClosePos 90.0",
       "gripper 2",
     ],
@@ -1190,6 +1194,8 @@ _RAIL_CASES: List[_Case] = [
     "rail_move_rail",
     lambda arm: _rail(arm).move_rail(250.0),
     [
+      "wherej",
+      "wherej",
       "Rail 1 250.0",
       "MoveRail 1 1",
     ],
@@ -1210,6 +1216,8 @@ _RAIL_CASES: List[_Case] = [
     "rail_move_to_location",
     lambda arm: arm.arm.move_to_location(_LOC, direction=0.0, rail_position=300.0),
     [
+      "wherej",
+      "wherej",
       "Rail 1 300.0",
       "MoveRail 1 1",
       "wherej",
@@ -1249,6 +1257,8 @@ _RAIL_CASES: List[_Case] = [
       _LOC, direction=0.0, resource_width=85.0, rail_position=300.0
     ),
     [
+      "wherej",
+      "wherej",
       "Rail 1 300.0",
       "MoveRail 1 1",
       "GraspData 85.0 50.0 10.0",
@@ -1560,7 +1570,23 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
   async def test_closing_without_force_sensing_only_when_asked(self):
     arm, fake = await self._arm()
     await arm.gripper.move_to_jaw_position(70.0, force_sensing=False)
-    self.assertEqual(fake.sent, ["GripOpenPos 81.0", "gripper 1"])
+    self.assertEqual(fake.sent, ["wherej", "wherej", "GripOpenPos 81.0", "gripper 1"])
+
+  async def test_the_gripper_and_the_rail_wait_for_the_arm_to_stop(self):
+    for name, move in (
+      ("jaws", lambda arm: arm.gripper.move_to_jaw_position(70.0, force_sensing=True)),
+      ("jaws, firmware units", lambda arm: arm.gripper.move_to_jaw_position_firmware_units(90.0)),
+      ("rail", lambda arm: _rail(arm).move_rail(250.0)),
+    ):
+      with self.subTest(name):
+        fake = _FakeController(_RAIL_REPLIES)
+        arm = _make_arm(fake, has_rail=True)
+        await arm.setup(skip_vision=True)
+        fake.sent.clear()
+        stopped = AsyncMock(side_effect=lambda: fake.sent.append("<stopped>"))
+        arm.arm._wait_for_eom = stopped  # type: ignore[method-assign]
+        await move(arm)
+        self.assertEqual(fake.sent[0], "<stopped>")
 
   async def test_a_joint_move_that_closes_the_gripper_is_refused(self):
     arm, fake = await self._arm()

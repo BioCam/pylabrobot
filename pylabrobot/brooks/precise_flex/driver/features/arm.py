@@ -253,6 +253,10 @@ class PreciseFlexArm:
     samples, so a user interrupt can stop the move mid-flight via ``halt`` and other controller
     commands (status, vision, barcode) can run during motion.
 
+    That free connection is also the hazard, so every command that starts motion waits here first:
+    the gripper and the rail directly, joint and Cartesian moves through ``request_joint_state``.
+    ``moveJ`` returns once accepted, so without it a grip after an approach closes mid-descent.
+
     Raises:
       TimeoutError: if the arm never settles within ``timeout`` seconds.
       OperationInterrupted: on a user interrupt (the arm is halted and the connection kept).

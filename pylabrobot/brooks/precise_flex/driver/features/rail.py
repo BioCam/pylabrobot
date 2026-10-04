@@ -77,5 +77,6 @@ class PreciseFlexRail:
     Args:
       rail_position: Rail destination in mm.
     """
+    await self._driver.arm._wait_for_eom()
     await self._set_rail_position(self._rail_position_index, rail_position)
     await self._move_rail(station_id=self._rail_position_index)
