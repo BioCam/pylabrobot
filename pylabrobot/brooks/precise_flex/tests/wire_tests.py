@@ -4,6 +4,7 @@ A fake controller answers below `send_command`, from replies a PF400 gave and fi
 the rest. Numbers compare to within 1e-9; everything else must match exactly.
 """
 
+import contextlib
 import math
 import unittest
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Type
@@ -1477,6 +1478,23 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
     with self.assertRaises(TimeoutError):
       await arm.setup(skip_vision=True)
     self.assertIsNone(arm.arm.configuration)
+
+  async def test_at_speed_restores_the_profile_speed(self):
+    arm, fake = await self._run_setup(has_rail=False)
+    for name, fail in (("after the moves", False), ("after a fault", True)):
+      with self.subTest(name):
+        fake.sent.clear()
+        with contextlib.suppress(RuntimeError):
+          async with arm.arm.at_speed(35):
+            await arm.arm.move_to_joint_state(_J)
+            if fail:
+              raise RuntimeError("fault mid-move")
+        speeds = [c for c in fake.sent if c.startswith("Speed")]
+        self.assertEqual(speeds, ["Speed 1", "Speed 1 35", "Speed 1 20.0"])
+    fake.sent.clear()
+    async with arm.arm.at_speed(None):
+      pass
+    self.assertEqual(fake.sent, [])
 
   async def test_only_an_arm_with_a_rail_has_one(self):
     rail_less, _ = await self._run_setup(has_rail=False)

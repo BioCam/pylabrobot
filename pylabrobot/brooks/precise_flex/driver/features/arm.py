@@ -5,12 +5,14 @@ one guarded path, and brings out-of-range axes back inside their soft limits.
 """
 
 import asyncio
+import contextlib
 import dataclasses
 import logging
 import time
 import warnings
 from typing import (
   TYPE_CHECKING,
+  AsyncIterator,
   Callable,
   ClassVar,
   Dict,
@@ -912,6 +914,36 @@ class PreciseFlexArm:
     """Get the current speed percentage of the arm's movement."""
     return await self.request_profile_speed(self.profile_index)
 
+  @contextlib.asynccontextmanager
+  async def at_speed(self, speed_percent: Optional[float]) -> AsyncIterator[None]:
+    """Run the moves inside at their own speed, then put the profile speed back.
+
+    The restore runs in a ``finally``, so a fault mid-move cannot leave the arm slow. None changes
+    nothing, so a caller can pass a speed straight through.
+
+    Args:
+      speed_percent: Movement speed as a percentage (0-100), or None to keep the current one.
+    """
+    if speed_percent is None:
+      yield
+      return
+    prior = await self._request_speed()
+    await self._set_speed(speed_percent)
+    try:
+      yield
+    finally:
+      try:
+        await self._set_speed(prior)
+      except Exception:
+        # Raising here replaces the move's own error, so say plainly what the arm is left at.
+        logger.error(
+          "[PreciseFlex %s] could not restore profile speed to %s; the arm is still at %s",
+          self._driver.io._host,
+          prior,
+          speed_percent,
+        )
+        raise
+
   # -- brakes, torque and freedrive ----------------------------------------------------------------
 
   async def release_brake(self, axis: int) -> None:
@@ -1410,7 +1442,7 @@ class PreciseFlexArm:
     Args:
       joint_state: Target joint state. Omitted axes keep their live values.
       speed_percent: Movement speed override as a percentage (0-100). If None, uses the current
-        speed setting.
+        speed setting. It stays set afterwards; use ``at_speed`` to scope a speed to one move.
       close_gripper_without_force_sensing: allow a gripper axis below the live one. A joint move
         senses no force, so it is refused otherwise.
     """
@@ -1470,7 +1502,7 @@ class PreciseFlexArm:
       location: Target Cartesian location.
       direction: Approach direction, applied as the pose's z rotation in degrees.
       speed_percent: Movement speed override as a percentage (0-100). If None, uses the current
-        speed setting.
+        speed setting. It stays set afterwards; use ``at_speed`` to scope a speed to one move.
       orientation: Elbow orientation (``"lefty"`` or ``"righty"``). If None, the robot
         picks the closest configuration.
       wrist: Wrist configuration. If None, the robot picks the closest configuration.
@@ -1593,7 +1625,7 @@ class PreciseFlexArm:
     Args:
       poses: Cartesian waypoints to move through, in order.
       speed_percent: Movement speed override as a percentage (0-100). If None, uses the
-        current speed setting.
+        current speed setting. It stays set afterwards; use ``at_speed`` to scope a speed.
       blend: When True, temporarily set the active motion profile's ``InRange`` value to
         ``-1`` so the controller may blend through intermediate waypoints instead of stopping
         at each one. The original profile is restored after the final waypoint is reached.
