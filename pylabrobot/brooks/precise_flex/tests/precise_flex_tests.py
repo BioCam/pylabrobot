@@ -152,15 +152,12 @@ class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
     )
 
 
-def _soft_limit_configuration(
-  soft_limits: Dict[Axis, tuple], z_range: Optional[tuple] = None
-) -> MagicMock:
-  """A stub configuration carrying only the arm's soft limits; the gripper is unconstrained."""
-  return MagicMock(
-    arm=MagicMock(soft_limits=soft_limits, z_range=z_range),
-    gripper=MagicMock(soft_limit_range=(float("-inf"), float("inf"))),
-    rail=None,
-  )
+def _stub_soft_limits(
+  driver: PreciseFlex, soft_limits: Dict[Axis, tuple], z_range: Optional[tuple] = None
+) -> None:
+  """Give the arm stub configuration carrying only its soft limits; the gripper is unconstrained."""
+  driver.arm.configuration = MagicMock(soft_limits=soft_limits, z_range=z_range)
+  driver.gripper.configuration = MagicMock(soft_limit_range=(float("-inf"), float("inf")))
 
 
 class TestPreciseFlex400OutOfRangeRecovery(unittest.IsolatedAsyncioTestCase):
@@ -168,12 +165,13 @@ class TestPreciseFlex400OutOfRangeRecovery(unittest.IsolatedAsyncioTestCase):
     self.arm = _make_arm()
     self.arm.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
     # Minimal stub configuration: only the soft limits the recovery logic reads.
-    self.arm._configuration = _soft_limit_configuration(
+    _stub_soft_limits(
+      self.arm,
       {
         Axis.SHOULDER: (-93.0, 93.0),
         Axis.ELBOW: (12.0, 348.0),
         Axis.WRIST: (-960.0, 960.0),
-      }
+      },
     )
 
   def _stub_transport(self, wherej: str) -> None:
@@ -224,8 +222,9 @@ class TestPreciseFlexParking(unittest.IsolatedAsyncioTestCase):
     self.arm = _make_arm()
     self.arm.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
 
-  def _full_soft_limits(self) -> MagicMock:
-    return _soft_limit_configuration(
+  def _full_soft_limits(self) -> None:
+    _stub_soft_limits(
+      self.arm,
       {
         Axis.BASE: (0.0, 400.0),
         Axis.SHOULDER: (-93.0, 93.0),
@@ -263,7 +262,7 @@ class TestPreciseFlexParking(unittest.IsolatedAsyncioTestCase):
 
   def test_assignment_rejects_out_of_limit_value_once_configured(self):
     """Once the soft limits are known, a value outside them is rejected at assignment."""
-    self.arm._configuration = _soft_limit_configuration({Axis.SHOULDER: (-93.0, 93.0)})
+    _stub_soft_limits(self.arm, {Axis.SHOULDER: (-93.0, 93.0)})
     with self.assertRaises(ValueError):
       self.arm.arm.parking_position = {Axis.SHOULDER: 200.0}
 
@@ -276,7 +275,7 @@ class TestPreciseFlexParking(unittest.IsolatedAsyncioTestCase):
 
   async def test_park_fills_z_at_three_quarters_travel_and_keeps_orientation(self):
     """park() fills the omitted Z column at 3/4 of the discovered travel and keeps the orientation."""
-    self.arm._configuration = self._full_soft_limits()
+    self._full_soft_limits()
     # Current pose deliberately differs from the target (base 50 not 300; orientation 10/200/90 not
     # 0/180/180) so the assertion proves park() supplied the fill and orientation, not the live pose.
     self.arm.send_command = AsyncMock(return_value="50 10 200 90 0")  # type: ignore[method-assign]
@@ -287,7 +286,7 @@ class TestPreciseFlexParking(unittest.IsolatedAsyncioTestCase):
 
   async def test_park_respects_an_explicit_base(self):
     """A pose that already sets Axis.BASE is parked as-is (no Z fill)."""
-    self.arm._configuration = self._full_soft_limits()
+    self._full_soft_limits()
     # base 50 in the current pose so the explicit 123 (neither the 300 fill nor the live 50) proves
     # the supplied base is honored and not Z-filled; elbow/wrist carry from current.
     self.arm.send_command = AsyncMock(return_value="50 10 200 90 0")  # type: ignore[method-assign]
@@ -449,12 +448,13 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.arm = _make_arm()
     self.arm.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
-    self.arm._configuration = _soft_limit_configuration(
+    _stub_soft_limits(
+      self.arm,
       {
         Axis.SHOULDER: (-93.0, 93.0),
         Axis.ELBOW: (12.0, 348.0),
         Axis.WRIST: (-960.0, 960.0),
-      }
+      },
     )
 
   def _stub(self, out_of_range: str, recovered: str = "") -> None:

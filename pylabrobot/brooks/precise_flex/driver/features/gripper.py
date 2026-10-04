@@ -15,7 +15,6 @@ from ...kinematics import Axis
 from ..errors import PreciseFlexError
 
 if TYPE_CHECKING:
-  from ..configuration import PreciseFlexConfiguration
   from ..master import PreciseFlex
 
 logger = logging.getLogger(__name__)
@@ -62,17 +61,19 @@ class PreciseFlexGripper:
       is_dual_gripper: whether two grippers are fitted. Discovery overrides it at setup.
     """
     self._driver = driver
+    self.configuration: Optional[PreciseFlexGripperConfiguration] = None
     self.closed_gripper_position = closed_gripper_position
     self._is_dual_gripper = is_dual_gripper
 
   # -- session / discovery -------------------------------------------------------------------------
 
-  def _adopt_configuration(self, config: "PreciseFlexConfiguration") -> None:
+  def _adopt_configuration(self, configuration: PreciseFlexGripperConfiguration) -> None:
     """Take the jaw range from the gripper-axis soft limits, and whether two are fitted."""
-    gmin, gmax = config.gripper.soft_limit_range
+    self.configuration = configuration
+    gmin, gmax = configuration.soft_limit_range
     self._gripper_soft_min, self._gripper_soft_max = gmin, gmax
     self.jaw_width_range = (gmin, gmax)
-    self._is_dual_gripper = config.gripper.is_dual_gripper
+    self._is_dual_gripper = configuration.is_dual_gripper
 
   # -- open and close positions --------------------------------------------------------------------
 

@@ -1061,10 +1061,13 @@ class PreciseFlex:
     device link lengths, and the rail / dual-gripper command paths follow the axes
     the controller actually reports.
     """
-    self.gripper._adopt_configuration(config)
+    self.arm.configuration = config.arm
+    self.gripper._adopt_configuration(config.gripper)
     self._kinematics_params = config.arm.kinematics
     self._has_rail = config.has_rail
     self.rail = (self.rail or PreciseFlexRail(self)) if config.has_rail else None
+    if self.rail is not None:
+      self.rail.configuration = config.rail
 
   def _assess_configuration(self, config: "PreciseFlexConfiguration") -> None:
     """Warn about an unsupported model, a missing TCS module, or an untested combo.

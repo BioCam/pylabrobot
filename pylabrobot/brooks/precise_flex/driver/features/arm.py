@@ -202,6 +202,7 @@ class PreciseFlexArm:
       driver: the driver to send commands through.
     """
     self._driver = driver
+    self.configuration: Optional[PreciseFlexArmConfiguration] = None
     self.profile_index: int = 1
     self.station_index: int = 1
     self.horizontal_compliance: bool = False
@@ -968,17 +969,9 @@ class PreciseFlexArm:
       free_axes: List of joint indices to free. Use [0] for all axes.
     """
     if free_axes is None:
-      # Default to the positioning axes that exist; include the rail only when
-      # fitted - freemode on an absent axis returns -2800 on a no-rail arm. The
-      # cached configuration is the source of truth for the installed axes; fall
-      # back to the constructor hint before setup has resolved it.
-      has_rail = (
-        self._driver._configuration.has_rail
-        if self._driver._configuration is not None
-        else self._driver._has_rail
-      )
+      # The positioning axes that exist: freemode on an absent rail returns -2800.
       free_axes = [Axis.BASE, Axis.SHOULDER, Axis.ELBOW, Axis.WRIST]
-      if has_rail:
+      if self._driver.rail is not None:
         free_axes.append(Axis.RAIL)
     for axis in free_axes:
       await self._driver.send_command(f"freemode {axis}")
@@ -1139,15 +1132,12 @@ class PreciseFlexArm:
 
   def _get_soft_limits(self) -> Dict[Axis, tuple]:
     """Every axis's soft limits - the arm's joints, the gripper and the rail; empty before setup."""
-    configuration = self._driver._configuration
-    if configuration is None:
+    gripper, rail = self._driver.gripper.configuration, self._driver.rail
+    if self.configuration is None or gripper is None:
       return {}
-    soft_limits = {
-      **configuration.arm.soft_limits,
-      Axis.GRIPPER: configuration.gripper.soft_limit_range,
-    }
-    if configuration.rail is not None:
-      soft_limits[Axis.RAIL] = configuration.rail.soft_limit_range
+    soft_limits = {**self.configuration.soft_limits, Axis.GRIPPER: gripper.soft_limit_range}
+    if rail is not None and rail.configuration is not None:
+      soft_limits[Axis.RAIL] = rail.configuration.soft_limit_range
     return soft_limits
 
   # Axes auto-recovered when out of range, in a deliberately safe order: the
@@ -2053,9 +2043,9 @@ class PreciseFlexArm:
 
   def _parking_pose_with_default_z(self, position: JointState) -> JointState:
     """Fill the Z column (``Axis.BASE``) at 3/4 of the discovered travel when the pose omits it."""
-    if Axis.BASE in position or self._driver._configuration is None:
+    if Axis.BASE in position or self.configuration is None:
       return position
-    _, z_max = self._driver._configuration.arm.z_range
+    _, z_max = self.configuration.z_range
     return {Axis.BASE: 0.75 * z_max, **position}
 
   @property

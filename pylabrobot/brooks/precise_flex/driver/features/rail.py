@@ -36,6 +36,7 @@ class PreciseFlexRail:
       driver: the driver to send commands through.
     """
     self._driver = driver
+    self.configuration: Optional[PreciseFlexRailConfiguration] = None
     self._rail_position_index = 1
 
   # -- stations: a rail move goes to a stored station's rail position ------------------------------
