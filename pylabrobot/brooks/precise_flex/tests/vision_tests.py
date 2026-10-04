@@ -7,6 +7,8 @@ from pylabrobot.brooks.precise_flex import (
   PreciseFlexError,
 )
 from pylabrobot.brooks.precise_flex.confirmed_firmware_versions import is_confirmed_vision_version
+from pylabrobot.brooks.precise_flex.driver.features.arm import PreciseFlexArmConfiguration
+from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGripperConfiguration
 from pylabrobot.brooks.precise_flex.driver.features.vision import (
   PreciseFlexVision,
   StereoParameters,
@@ -57,14 +59,22 @@ class TestVisionModuleDetection(unittest.TestCase):
       num_axes=0,
       extra_axes=0,
       axis_mask=0,
-      soft_limits={},
-      hard_limits={},
-      max_joint_speed={},
-      max_joint_acceleration={},
-      max_joint_deceleration={},
-      max_cartesian_speed=0.0,
-      max_cartesian_acceleration=0.0,
-      power_state=0,
+      arm=PreciseFlexArmConfiguration(
+        soft_limits={},
+        hard_limits={},
+        max_joint_speed={},
+        max_joint_acceleration={},
+        max_joint_deceleration={},
+        max_cartesian_speed=0.0,
+        max_cartesian_acceleration=0.0,
+      ),
+      gripper=PreciseFlexGripperConfiguration(
+        soft_limit_range=(0.0, 0.0),
+        hard_limit_range=(0.0, 0.0),
+        max_speed=0.0,
+        max_acceleration=0.0,
+        max_deceleration=0.0,
+      ),
     )
 
   def test_has_vision_module_detects_intelliguide(self):

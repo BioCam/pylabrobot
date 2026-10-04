@@ -1430,6 +1430,35 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
   async def test_rail_arm(self):
     await self._check(_RAIL_CASES, has_rail=True)
 
+  async def test_configuration_flat_names_are_deprecated(self):
+    for has_rail in (False, True):
+      with self.subTest(has_rail=has_rail):
+        arm, _ = await self._run_setup(has_rail=has_rail)
+        config = arm.configuration
+        expected = {
+          "soft_limits": await arm.arm.request_joint_limits(),
+          "hard_limits": await arm.arm.request_joint_limits(hard=True),
+          "max_cartesian_speed": config.arm.max_cartesian_speed,
+          "max_cartesian_acceleration": config.arm.max_cartesian_acceleration,
+          "kinematics": config.arm.kinematics,
+          "kinematics_source": config.arm.kinematics_source,
+          "reach_class": config.arm.reach_class,
+          "z_range": config.arm.z_range,
+          "work_envelope": config.arm.work_envelope,
+          "gripper_width_range": config.gripper.soft_limit_range,
+          "is_dual_gripper": config.gripper.is_dual_gripper,
+          "power_state": await arm.request_system_state(),
+        }
+        for name, value in expected.items():
+          with self.subTest(name), self.assertWarns(DeprecationWarning):
+            self.assertEqual(getattr(config, name), value)
+        for name in ("max_joint_speed", "max_joint_acceleration", "max_joint_deceleration"):
+          with self.subTest(name), self.assertWarns(DeprecationWarning):
+            self.assertEqual(
+              set(getattr(config, name)) - set(config.arm.soft_limits), {Axis.GRIPPER}
+            )
+        self.assertEqual(config.has_rail, has_rail)
+
   async def test_only_an_arm_with_a_rail_has_one(self):
     rail_less, _ = await self._run_setup(has_rail=False)
     self.assertIsNone(rail_less.rail)

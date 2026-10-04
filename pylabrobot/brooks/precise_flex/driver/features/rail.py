@@ -3,12 +3,24 @@
 Reached as `driver.rail`, on an arm that has one; None on one that does not.
 """
 
+import dataclasses
 from typing import TYPE_CHECKING, Optional
 
 from pylabrobot.events import evented_operation
 
 if TYPE_CHECKING:
   from ..master import PreciseFlex
+
+
+@dataclasses.dataclass(frozen=True)
+class PreciseFlexRailConfiguration:
+  """The rail axis's facts, read at setup. A value is None when the controller reports none."""
+
+  soft_limit_range: tuple
+  hard_limit_range: Optional[tuple] = None
+  max_speed: Optional[float] = None
+  max_acceleration: Optional[float] = None
+  max_deceleration: Optional[float] = None
 
 
 class PreciseFlexRail:

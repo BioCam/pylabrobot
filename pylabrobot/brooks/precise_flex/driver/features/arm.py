@@ -9,7 +9,17 @@ import dataclasses
 import logging
 import time
 import warnings
-from typing import TYPE_CHECKING, Callable, ClassVar, Dict, List, NamedTuple, Optional, Sequence
+from typing import (
+  TYPE_CHECKING,
+  Callable,
+  ClassVar,
+  Dict,
+  List,
+  Literal,
+  NamedTuple,
+  Optional,
+  Sequence,
+)
 
 from pylabrobot.events import coordinate_reference, evented_operation
 from pylabrobot.resources.coordinate import Coordinate
@@ -18,7 +28,14 @@ from pylabrobot.resources.rotation import Rotation
 from ... import kinematics
 from ...data_ids import DataID, _parse_per_axis, _parse_scalar, _zip_axis_ranges
 from ...interrupt import halt_and_resync, halt_on_interrupt
-from ...kinematics import Axis, ElbowOrientation, JointState, PreciseFlexCartesianPose, Wrist
+from ...kinematics import (
+  Axis,
+  ElbowOrientation,
+  JointState,
+  PreciseFlexCartesianPose,
+  WorkEnvelope,
+  Wrist,
+)
 from ..errors import OutOfRangeOfMotionError, PreciseFlexError
 from .rail import PreciseFlexRail
 
@@ -72,6 +89,65 @@ def _cartesian_target_reference(
     "wrist": wrist,
     "rail_position": rail_position,
   }
+
+
+@dataclasses.dataclass(frozen=True)
+class PreciseFlexArmConfiguration:
+  """The arm's facts, read at setup: limits and maxima of Z, shoulder, elbow and wrist, and its
+  kinematics."""
+
+  soft_limits: Dict[Axis, tuple]
+  hard_limits: Dict[Axis, tuple]
+  # Effective per-joint maxima (reference x the global percent cap, already applied).
+  max_joint_speed: Dict[Axis, float]
+  max_joint_acceleration: Dict[Axis, float]
+  max_joint_deceleration: Dict[Axis, float]
+  max_cartesian_speed: float
+  max_cartesian_acceleration: float
+  kinematics: "kinematics.PF400Params" = dataclasses.field(default_factory=kinematics.PF400Params)
+  kinematics_source: Literal["device", "provided", "default"] = "default"
+  # "unknown" if the controller-read link lengths match neither known arm; defaults to "extended"
+  # to match the default PF400Params (the extended/XR link lengths)
+  reach_class: Literal["standard", "extended", "unknown"] = "extended"
+
+  @property
+  def z_range(self) -> tuple:
+    return self.soft_limits[Axis.BASE]
+
+  @property
+  def work_envelope(self) -> WorkEnvelope:
+    """Reachable tool-tip annulus, swept from the shoulder/elbow soft limits.
+
+    Sweeps the two planar joints across their soft-limit range (Z held constant -
+    it is an independent axis on a SCARA), takes the base->wrist radius at each
+    sample, and brackets it by +/- the tool length (the wrist can orient the tool
+    radially either way). This respects the joint limits rather than assuming full
+    extension, so the outer radius is the real reach, not l1 + l2 + tool.
+    """
+    wrist_only = dataclasses.replace(self.kinematics, gripper_length=0.0)
+    tool = self.kinematics.gripper_length
+    sh_lo, sh_hi = self.soft_limits[Axis.SHOULDER]
+    el_lo, el_hi = self.soft_limits[Axis.ELBOW]
+    steps = 60
+    outer, inner = 0.0, float("inf")
+    for i in range(steps + 1):
+      shoulder = sh_lo + (sh_hi - sh_lo) * i / steps
+      for j in range(steps + 1):
+        elbow = el_lo + (el_hi - el_lo) * j / steps
+        joints: JointState = {
+          Axis.BASE: 0.0,
+          Axis.SHOULDER: shoulder,
+          Axis.ELBOW: elbow,
+          Axis.WRIST: 0.0,
+          Axis.GRIPPER: 0.0,
+          Axis.RAIL: 0.0,
+        }
+        wrist = kinematics.fk(joints, wrist_only).location
+        radius = (wrist.x * wrist.x + wrist.y * wrist.y) ** 0.5
+        outer = max(outer, radius + tool)
+        inner = min(inner, abs(radius - tool))
+    zmin, zmax = self.z_range
+    return WorkEnvelope(inner=inner, outer=outer, zmin=zmin, zmax=zmax)
 
 
 class MotionProfile(NamedTuple):
@@ -1061,6 +1137,19 @@ class PreciseFlexArm:
 
   # -- range checks and recovery -------------------------------------------------------------------
 
+  def _get_soft_limits(self) -> Dict[Axis, tuple]:
+    """Every axis's soft limits - the arm's joints, the gripper and the rail; empty before setup."""
+    configuration = self._driver._configuration
+    if configuration is None:
+      return {}
+    soft_limits = {
+      **configuration.arm.soft_limits,
+      Axis.GRIPPER: configuration.gripper.soft_limit_range,
+    }
+    if configuration.rail is not None:
+      soft_limits[Axis.RAIL] = configuration.rail.soft_limit_range
+    return soft_limits
+
   # Axes auto-recovered when out of range, in a deliberately safe order: the
   # gripper jaw first (no arm motion), then the Z column (vertical clearance), then
   # the rotary links shoulder -> elbow (smallest swept volume last to first).
@@ -1078,10 +1167,8 @@ class PreciseFlexArm:
     ``joints`` so the comparison stays Axis-typed. Empty until the configuration has
     been discovered.
     """
-    if self._driver._configuration is None:
-      return {}
     outside: Dict[Axis, tuple] = {}
-    for axis, (lo, hi) in self._driver._configuration.soft_limits.items():
+    for axis, (lo, hi) in self._get_soft_limits().items():
       value = joints.get(axis)
       if value is not None and not (lo <= value <= hi):
         outside[axis] = (value, (lo, hi))
@@ -1956,8 +2043,9 @@ class PreciseFlexArm:
         raise ValueError(f"parking_position keys must be Axis members, got {axis!r}")
       if not isinstance(value, (int, float)):
         raise ValueError(f"parking_position[{axis.name}] must be a number, got {value!r}")
-      if self._driver._configuration is not None:
-        lo, hi = self._driver._configuration.soft_limits[axis]
+      soft_limits = self._get_soft_limits()
+      if soft_limits:
+        lo, hi = soft_limits[axis]
         if not lo <= value <= hi:
           raise ValueError(
             f"parking_position[{axis.name}]={value} is outside the soft limits [{lo}, {hi}]"
@@ -1967,7 +2055,7 @@ class PreciseFlexArm:
     """Fill the Z column (``Axis.BASE``) at 3/4 of the discovered travel when the pose omits it."""
     if Axis.BASE in position or self._driver._configuration is None:
       return position
-    _, z_max = self._driver._configuration.z_range
+    _, z_max = self._driver._configuration.arm.z_range
     return {Axis.BASE: 0.75 * z_max, **position}
 
   @property

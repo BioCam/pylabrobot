@@ -5,6 +5,7 @@ through their open and close positions; a force-controlled grasp for `pickplate`
 Every move that closes the jaws senses force unless the caller passes `force_sensing=False`.
 """
 
+import dataclasses
 import logging
 from typing import TYPE_CHECKING, Optional, Tuple
 
@@ -18,6 +19,18 @@ if TYPE_CHECKING:
   from ..master import PreciseFlex
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass(frozen=True)
+class PreciseFlexGripperConfiguration:
+  """The gripper axis's facts, read at setup."""
+
+  soft_limit_range: tuple
+  hard_limit_range: tuple
+  max_speed: float
+  max_acceleration: float
+  max_deceleration: float
+  is_dual_gripper: bool = False
 
 
 class PreciseFlexGripper:
@@ -56,10 +69,10 @@ class PreciseFlexGripper:
 
   def _adopt_configuration(self, config: "PreciseFlexConfiguration") -> None:
     """Take the jaw range from the gripper-axis soft limits, and whether two are fitted."""
-    gmin, gmax = config.gripper_width_range
+    gmin, gmax = config.gripper.soft_limit_range
     self._gripper_soft_min, self._gripper_soft_max = gmin, gmax
     self.jaw_width_range = (gmin, gmax)
-    self._is_dual_gripper = config.is_dual_gripper
+    self._is_dual_gripper = config.gripper.is_dual_gripper
 
   # -- open and close positions --------------------------------------------------------------------
 

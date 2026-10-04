@@ -1,6 +1,6 @@
 import asyncio
 import unittest
-from typing import cast
+from typing import Dict, Optional, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pylabrobot.brooks.precise_flex import (
@@ -152,13 +152,24 @@ class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
     )
 
 
+def _soft_limit_configuration(
+  soft_limits: Dict[Axis, tuple], z_range: Optional[tuple] = None
+) -> MagicMock:
+  """A stub configuration carrying only the arm's soft limits; the gripper is unconstrained."""
+  return MagicMock(
+    arm=MagicMock(soft_limits=soft_limits, z_range=z_range),
+    gripper=MagicMock(soft_limit_range=(float("-inf"), float("inf"))),
+    rail=None,
+  )
+
+
 class TestPreciseFlex400OutOfRangeRecovery(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.arm = _make_arm()
     self.arm.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
     # Minimal stub configuration: only the soft limits the recovery logic reads.
-    self.arm._configuration = MagicMock(
-      soft_limits={
+    self.arm._configuration = _soft_limit_configuration(
+      {
         Axis.SHOULDER: (-93.0, 93.0),
         Axis.ELBOW: (12.0, 348.0),
         Axis.WRIST: (-960.0, 960.0),
@@ -214,14 +225,14 @@ class TestPreciseFlexParking(unittest.IsolatedAsyncioTestCase):
     self.arm.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
 
   def _full_soft_limits(self) -> MagicMock:
-    return MagicMock(
-      z_range=(0.0, 400.0),
-      soft_limits={
+    return _soft_limit_configuration(
+      {
         Axis.BASE: (0.0, 400.0),
         Axis.SHOULDER: (-93.0, 93.0),
         Axis.ELBOW: (12.0, 348.0),
         Axis.WRIST: (-960.0, 960.0),
       },
+      z_range=(0.0, 400.0),
     )
 
   def _movej_cmds(self) -> list[str]:
@@ -252,7 +263,7 @@ class TestPreciseFlexParking(unittest.IsolatedAsyncioTestCase):
 
   def test_assignment_rejects_out_of_limit_value_once_configured(self):
     """Once the soft limits are known, a value outside them is rejected at assignment."""
-    self.arm._configuration = MagicMock(soft_limits={Axis.SHOULDER: (-93.0, 93.0)})
+    self.arm._configuration = _soft_limit_configuration({Axis.SHOULDER: (-93.0, 93.0)})
     with self.assertRaises(ValueError):
       self.arm.arm.parking_position = {Axis.SHOULDER: 200.0}
 
@@ -438,8 +449,8 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
   def setUp(self):
     self.arm = _make_arm()
     self.arm.arm._wait_for_eom = AsyncMock()  # type: ignore[method-assign]
-    self.arm._configuration = MagicMock(
-      soft_limits={
+    self.arm._configuration = _soft_limit_configuration(
+      {
         Axis.SHOULDER: (-93.0, 93.0),
         Axis.ELBOW: (12.0, 348.0),
         Axis.WRIST: (-960.0, 960.0),

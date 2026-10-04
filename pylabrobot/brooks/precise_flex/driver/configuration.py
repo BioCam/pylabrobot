@@ -5,14 +5,17 @@ immutable `PreciseFlexConfiguration` record; the kinematics/flags tier is suppli
 backend holds it as `Optional[PreciseFlexConfiguration]` (None pre-setup).
 """
 
-import dataclasses
+import warnings
 from dataclasses import dataclass
-from typing import Dict, Literal
+from typing import Dict, Optional
 
-from pylabrobot.brooks.precise_flex.kinematics import Axis, JointState
+from pylabrobot.brooks.precise_flex.kinematics import Axis
 
 from .. import kinematics
 from ..kinematics import WorkEnvelope
+from .features.arm import PreciseFlexArmConfiguration
+from .features.gripper import PreciseFlexGripperConfiguration
+from .features.rail import PreciseFlexRailConfiguration
 
 # ---------------------------------------------------------------------------
 # Configuration - resolved once at setup
@@ -44,32 +47,22 @@ class PreciseFlexConfiguration:
   robot_type: int
   tcs_version: str
   modules: tuple
-  # --- axes / limits / motion envelope ---
+  # --- axes ---
   num_axes: int
   extra_axes: int
   axis_mask: int
-  soft_limits: Dict[Axis, tuple]
-  hard_limits: Dict[Axis, tuple]
-  # Effective per-joint maxima (reference x the global percent cap, already applied).
-  max_joint_speed: Dict[Axis, float]
-  max_joint_acceleration: Dict[Axis, float]
-  max_joint_deceleration: Dict[Axis, float]
-  max_cartesian_speed: float
-  max_cartesian_acceleration: float
-  power_state: int
-  # --- supplied / derived ---
-  kinematics: "kinematics.PF400Params" = dataclasses.field(default_factory=kinematics.PF400Params)
-  kinematics_source: Literal["device", "provided", "default"] = "default"
-  has_rail: bool = False
-  is_dual_gripper: bool = False
+  # --- each feature's facts ---
+  arm: PreciseFlexArmConfiguration
+  gripper: PreciseFlexGripperConfiguration
+  rail: Optional[PreciseFlexRailConfiguration] = None
+  # --- derived ---
   is_vision_gripper: bool = False
-  # "unknown" if the controller-read link lengths match neither known arm; defaults to "extended"
-  # to match the default PF400Params (the extended/XR link lengths)
-  reach_class: Literal["standard", "extended", "unknown"] = "extended"
+  # Live state, not a fact; kept for the deprecated `power_state` until it is removed.
+  _power_state: Optional[int] = None
 
   @property
-  def gripper_width_range(self) -> tuple:
-    return self.soft_limits[Axis.GRIPPER]
+  def has_rail(self) -> bool:
+    return self.rail is not None
 
   @property
   def has_vision_module(self) -> bool:
@@ -80,41 +73,164 @@ class PreciseFlexConfiguration:
     """
     return any("intelliguide" in m.lower() for m in self.modules)
 
+  # -- deprecated: moved to the arm, gripper and rail configurations --
+
+  @property
+  def soft_limits(self) -> Dict[Axis, tuple]:
+    """Deprecated: merged from the arm, gripper and rail configurations."""
+    warnings.warn(
+      "`soft_limits` is deprecated, use `arm.soft_limits`, and `soft_limit_range` on "
+      "`gripper` and `rail`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    merged = {**self.arm.soft_limits, Axis.GRIPPER: self.gripper.soft_limit_range}
+    if self.rail is not None:
+      merged[Axis.RAIL] = self.rail.soft_limit_range
+    return merged
+
+  @property
+  def hard_limits(self) -> Dict[Axis, tuple]:
+    """Deprecated: merged from the arm, gripper and rail configurations."""
+    warnings.warn(
+      "`hard_limits` is deprecated, use `arm.hard_limits`, and `hard_limit_range` on "
+      "`gripper` and `rail`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    merged = {**self.arm.hard_limits, Axis.GRIPPER: self.gripper.hard_limit_range}
+    if self.rail is not None and self.rail.hard_limit_range is not None:
+      merged[Axis.RAIL] = self.rail.hard_limit_range
+    return merged
+
+  @property
+  def max_joint_speed(self) -> Dict[Axis, float]:
+    """Deprecated: merged from the arm, gripper and rail configurations."""
+    warnings.warn(
+      "`max_joint_speed` is deprecated, use `arm.max_joint_speed`, and `max_speed` on "
+      "`gripper` and `rail`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    merged = {**self.arm.max_joint_speed, Axis.GRIPPER: self.gripper.max_speed}
+    if self.rail is not None and self.rail.max_speed is not None:
+      merged[Axis.RAIL] = self.rail.max_speed
+    return merged
+
+  @property
+  def max_joint_acceleration(self) -> Dict[Axis, float]:
+    """Deprecated: merged from the arm, gripper and rail configurations."""
+    warnings.warn(
+      "`max_joint_acceleration` is deprecated, use `arm.max_joint_acceleration`, "
+      "and `max_acceleration` on `gripper` and `rail`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    merged = {**self.arm.max_joint_acceleration, Axis.GRIPPER: self.gripper.max_acceleration}
+    if self.rail is not None and self.rail.max_acceleration is not None:
+      merged[Axis.RAIL] = self.rail.max_acceleration
+    return merged
+
+  @property
+  def max_joint_deceleration(self) -> Dict[Axis, float]:
+    """Deprecated: merged from the arm, gripper and rail configurations."""
+    warnings.warn(
+      "`max_joint_deceleration` is deprecated, use `arm.max_joint_deceleration`, "
+      "and `max_deceleration` on `gripper` and `rail`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    merged = {**self.arm.max_joint_deceleration, Axis.GRIPPER: self.gripper.max_deceleration}
+    if self.rail is not None and self.rail.max_deceleration is not None:
+      merged[Axis.RAIL] = self.rail.max_deceleration
+    return merged
+
+  @property
+  def max_cartesian_speed(self) -> float:
+    """Deprecated: use ``arm.max_cartesian_speed``."""
+    warnings.warn(
+      "`max_cartesian_speed` is deprecated, use `arm.max_cartesian_speed`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.arm.max_cartesian_speed
+
+  @property
+  def max_cartesian_acceleration(self) -> float:
+    """Deprecated: use ``arm.max_cartesian_acceleration``."""
+    warnings.warn(
+      "`max_cartesian_acceleration` is deprecated, use `arm.max_cartesian_acceleration`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.arm.max_cartesian_acceleration
+
+  @property
+  def kinematics(self) -> "kinematics.PF400Params":
+    """Deprecated: use ``arm.kinematics``."""
+    warnings.warn(
+      "`kinematics` is deprecated, use `arm.kinematics`.", DeprecationWarning, stacklevel=2
+    )
+    return self.arm.kinematics
+
+  @property
+  def kinematics_source(self) -> str:
+    """Deprecated: use ``arm.kinematics_source``."""
+    warnings.warn(
+      "`kinematics_source` is deprecated, use `arm.kinematics_source`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.arm.kinematics_source
+
+  @property
+  def reach_class(self) -> str:
+    """Deprecated: use ``arm.reach_class``."""
+    warnings.warn(
+      "`reach_class` is deprecated, use `arm.reach_class`.", DeprecationWarning, stacklevel=2
+    )
+    return self.arm.reach_class
+
   @property
   def z_range(self) -> tuple:
-    return self.soft_limits[Axis.BASE]
+    """Deprecated: use ``arm.z_range``."""
+    warnings.warn("`z_range` is deprecated, use `arm.z_range`.", DeprecationWarning, stacklevel=2)
+    return self.arm.z_range
 
   @property
   def work_envelope(self) -> WorkEnvelope:
-    """Reachable tool-tip annulus, swept from the shoulder/elbow soft limits.
+    """Deprecated: use ``arm.work_envelope``."""
+    warnings.warn(
+      "`work_envelope` is deprecated, use `arm.work_envelope`.", DeprecationWarning, stacklevel=2
+    )
+    return self.arm.work_envelope
 
-    Sweeps the two planar joints across their soft-limit range (Z held constant -
-    it is an independent axis on a SCARA), takes the base->wrist radius at each
-    sample, and brackets it by +/- the tool length (the wrist can orient the tool
-    radially either way). This respects the joint limits rather than assuming full
-    extension, so the outer radius is the real reach, not l1 + l2 + tool.
-    """
-    wrist_only = dataclasses.replace(self.kinematics, gripper_length=0.0)
-    tool = self.kinematics.gripper_length
-    sh_lo, sh_hi = self.soft_limits[Axis.SHOULDER]
-    el_lo, el_hi = self.soft_limits[Axis.ELBOW]
-    steps = 60
-    outer, inner = 0.0, float("inf")
-    for i in range(steps + 1):
-      shoulder = sh_lo + (sh_hi - sh_lo) * i / steps
-      for j in range(steps + 1):
-        elbow = el_lo + (el_hi - el_lo) * j / steps
-        joints: JointState = {
-          Axis.BASE: 0.0,
-          Axis.SHOULDER: shoulder,
-          Axis.ELBOW: elbow,
-          Axis.WRIST: 0.0,
-          Axis.GRIPPER: 0.0,
-          Axis.RAIL: 0.0,
-        }
-        wrist = kinematics.fk(joints, wrist_only).location
-        radius = (wrist.x * wrist.x + wrist.y * wrist.y) ** 0.5
-        outer = max(outer, radius + tool)
-        inner = min(inner, abs(radius - tool))
-    zmin, zmax = self.z_range
-    return WorkEnvelope(inner=inner, outer=outer, zmin=zmin, zmax=zmax)
+  @property
+  def gripper_width_range(self) -> tuple:
+    """Deprecated: use ``gripper.soft_limit_range``."""
+    warnings.warn(
+      "`gripper_width_range` is deprecated, use `gripper.soft_limit_range`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.gripper.soft_limit_range
+
+  @property
+  def is_dual_gripper(self) -> bool:
+    """Deprecated: use ``gripper.is_dual_gripper``."""
+    warnings.warn(
+      "`is_dual_gripper` is deprecated, use `gripper.is_dual_gripper`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.gripper.is_dual_gripper
+
+  @property
+  def power_state(self) -> Optional[int]:
+    """Deprecated: use ``PreciseFlex.request_system_state``."""
+    warnings.warn(
+      "`power_state` is deprecated, use `PreciseFlex.request_system_state`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self._power_state

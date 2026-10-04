@@ -27,9 +27,9 @@ from ..confirmed_firmware_versions import (
 from ..data_ids import DataID, PowerState, _parse_scalar
 from ..tcs_modules import missing_required_modules
 from .errors import PreciseFlexError
-from .features.arm import PreciseFlexArm
-from .features.gripper import PreciseFlexGripper
-from .features.rail import PreciseFlexRail
+from .features.arm import PreciseFlexArm, PreciseFlexArmConfiguration
+from .features.gripper import PreciseFlexGripper, PreciseFlexGripperConfiguration
+from .features.rail import PreciseFlexRail, PreciseFlexRailConfiguration
 from .features.vision import PreciseFlexVision
 
 logger = logging.getLogger(__name__)
@@ -983,41 +983,75 @@ class PreciseFlex:
         kinematics.ARM_LINKS_EXTENDED,
       )
 
+    # Read in the order the record used to be built in, so the wire is unchanged.
+    manufacturer = await self.request_manufacturer()
+    controller_model = await self.request_controller_model()
+    hardware_version = await self.request_hardware_version()
+    gpl_version = await self.request_gpl_version()
+    controller_serial = await self.request_controller_serial()
+    robot_type = await self.request_robot_type()
+    num_axes = await self.request_axis_count()
+    extra_axes = await self.request_extra_axis_count()
+    hard_limits = await self.arm.request_joint_limits(hard=True)
+    max_joint_speed = {a: v * speed_percent / 100 for a, v in reference_speed.items()}
+    max_joint_acceleration = {
+      a: v * acceleration_percent / 100 for a, v in reference_acceleration.items()
+    }
+    max_joint_deceleration = {
+      a: v * deceleration_percent / 100 for a, v in reference_acceleration.items()
+    }
+    max_cartesian_speed = (await self.arm.request_reference_cartesian_speed()) * speed_percent / 100
+    max_cartesian_acceleration = (
+      (await self.arm.request_reference_cartesian_acceleration()) * acceleration_percent / 100
+    )
+    power_state = await self.request_system_state()
+
+    arm_axes = (Axis.BASE, Axis.SHOULDER, Axis.ELBOW, Axis.WRIST)
+    rail = None
+    if Axis.RAIL in soft_limits:
+      rail = PreciseFlexRailConfiguration(
+        soft_limit_range=soft_limits[Axis.RAIL],
+        hard_limit_range=hard_limits.get(Axis.RAIL),
+        max_speed=max_joint_speed.get(Axis.RAIL),
+        max_acceleration=max_joint_acceleration.get(Axis.RAIL),
+        max_deceleration=max_joint_deceleration.get(Axis.RAIL),
+      )
     return PreciseFlexConfiguration(
-      manufacturer=await self.request_manufacturer(),
-      controller_model=await self.request_controller_model(),
-      hardware_version=await self.request_hardware_version(),
-      gpl_version=await self.request_gpl_version(),
-      controller_serial=await self.request_controller_serial(),
+      manufacturer=manufacturer,
+      controller_model=controller_model,
+      hardware_version=hardware_version,
+      gpl_version=gpl_version,
+      controller_serial=controller_serial,
       robot_name=robot_name,
-      robot_type=await self.request_robot_type(),
+      robot_type=robot_type,
       tcs_version=tcs_version,
       modules=tuple(modules),
-      num_axes=await self.request_axis_count(),
-      extra_axes=await self.request_extra_axis_count(),
+      num_axes=num_axes,
+      extra_axes=extra_axes,
       axis_mask=axis_mask,
-      soft_limits=soft_limits,
-      hard_limits=await self.arm.request_joint_limits(hard=True),
-      max_joint_speed={a: v * speed_percent / 100 for a, v in reference_speed.items()},
-      max_joint_acceleration={
-        a: v * acceleration_percent / 100 for a, v in reference_acceleration.items()
-      },
-      max_joint_deceleration={
-        a: v * deceleration_percent / 100 for a, v in reference_acceleration.items()
-      },
-      max_cartesian_speed=(await self.arm.request_reference_cartesian_speed())
-      * speed_percent
-      / 100,
-      max_cartesian_acceleration=(await self.arm.request_reference_cartesian_acceleration())
-      * acceleration_percent
-      / 100,
-      power_state=await self.request_system_state(),
-      kinematics=kinematic_params,
-      kinematics_source=kinematics_source,
-      has_rail=Axis.RAIL in soft_limits,
-      is_dual_gripper=bool(axis_mask & 0x80),
+      arm=PreciseFlexArmConfiguration(
+        soft_limits={a: v for a, v in soft_limits.items() if a in arm_axes},
+        hard_limits={a: v for a, v in hard_limits.items() if a in arm_axes},
+        max_joint_speed={a: v for a, v in max_joint_speed.items() if a in arm_axes},
+        max_joint_acceleration={a: v for a, v in max_joint_acceleration.items() if a in arm_axes},
+        max_joint_deceleration={a: v for a, v in max_joint_deceleration.items() if a in arm_axes},
+        max_cartesian_speed=max_cartesian_speed,
+        max_cartesian_acceleration=max_cartesian_acceleration,
+        kinematics=kinematic_params,
+        kinematics_source=kinematics_source,
+        reach_class=reach_class,
+      ),
+      gripper=PreciseFlexGripperConfiguration(
+        soft_limit_range=soft_limits[Axis.GRIPPER],
+        hard_limit_range=hard_limits[Axis.GRIPPER],
+        max_speed=max_joint_speed[Axis.GRIPPER],
+        max_acceleration=max_joint_acceleration[Axis.GRIPPER],
+        max_deceleration=max_joint_deceleration[Axis.GRIPPER],
+        is_dual_gripper=bool(axis_mask & 0x80),
+      ),
+      rail=rail,
       is_vision_gripper=suffix[:1] == "V",
-      reach_class=reach_class,
+      _power_state=power_state,
     )
 
   def _adopt_configuration(self, config: "PreciseFlexConfiguration") -> None:
@@ -1028,7 +1062,7 @@ class PreciseFlex:
     the controller actually reports.
     """
     self.gripper._adopt_configuration(config)
-    self._kinematics_params = config.kinematics
+    self._kinematics_params = config.arm.kinematics
     self._has_rail = config.has_rail
     self.rail = (self.rail or PreciseFlexRail(self)) if config.has_rail else None
 
@@ -1075,7 +1109,7 @@ class PreciseFlex:
     grippers = [
       label
       for present, label in (
-        (config.is_dual_gripper, "dual gripper"),
+        (config.gripper.is_dual_gripper, "dual gripper"),
         (config.is_vision_gripper, "vision gripper"),
       )
       if present
@@ -1095,9 +1129,9 @@ class PreciseFlex:
       config.robot_type,
       axes,
       gripper_note,
-      config.reach_class,
-      config.kinematics.l1,
-      config.kinematics.l2,
+      config.arm.reach_class,
+      config.arm.kinematics.l1,
+      config.arm.kinematics.l2,
       ", ".join(config.modules),
     )
 
