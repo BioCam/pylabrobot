@@ -468,25 +468,46 @@ class PreciseFlex:
       skip_vision: If True, leave ``self.vision`` unset even when a vision module is detected.
         Mirrors STAR's ``skip_*`` setup flags.
     """
+    await self._open_connection()
+    await self.initialize(skip_home=skip_home)
+    configuration = await self.discover()
+    await self.arm._handle_out_of_range_axes()
+    if not skip_vision and configuration.has_vision_module:
+      await self._setup_vision(self._vision_host)
+
+  async def _open_connection(self) -> None:
+    """Open the controller link and set PC response mode. No motion."""
     await self.io.setup()
     await self.set_response_mode("pc")
+    logger.debug("[PreciseFlex %s] connected: port=%s", self.io._host, self.io._port)
+
+  async def initialize(self, skip_home: bool = False) -> None:
+    """Bring the arm to a known state: power on, attach, home, and end any freedrive.
+
+    Args:
+      skip_home: If True, do not home; homing sweeps every axis.
+    """
     await self.power_on_robot()
     await self.attach(1)
     if not skip_home:
       await self.home()
-    logger.debug("[PreciseFlex %s] connected: port=%s", self.io._host, self.io._port)
-
     await self.arm.stop_freedrive_mode()
-    # A failed read ends setup: without it IK solves for another arm and the gripper has no limits.
+
+  async def discover(self) -> "PreciseFlexConfiguration":
+    """Read the controller's configuration and adopt it. No motion.
+
+    Raises if the read fails: without it IK solves for another arm and the gripper has no limits.
+
+    Returns:
+      The configuration, also kept as ``configuration``.
+    """
     self._configuration = await self._request_configuration()
     self._adopt_configuration(self._configuration)
     if self.arm.parking_position is None:
       self.arm.parking_position = self.arm.PARKING_POSITION_RIGHT
     self._log_configuration_summary(self._configuration)
     self._assess_configuration(self._configuration)
-    await self.arm._handle_out_of_range_axes()
-    if not skip_vision and self._configuration.has_vision_module:
-      await self._setup_vision(self._vision_host)
+    return self._configuration
 
   async def _setup_vision(self, vision_host: Optional[str]) -> None:
     """Build the vision capability and connect its PreciseVision engine; best-effort, never raises.
@@ -517,9 +538,13 @@ class PreciseFlex:
     lambda self: {"device": self._controller_reference()},
   )
   async def stop(self):
-    """Stop the PreciseFlex driver."""
+    """Detach and power off the arm, then close every connection."""
     await self.detach()
     await self.power_off_robot()
+    await self._close_connection()
+
+  async def _close_connection(self) -> None:
+    """End the controller session and close the vision server's and the controller's links."""
     await self._exit()
     await self._close_vision_server()
     await self.io.stop()

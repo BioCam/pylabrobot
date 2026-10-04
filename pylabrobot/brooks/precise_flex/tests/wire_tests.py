@@ -1470,6 +1470,21 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(config.has_rail, has_rail)
 
+  async def test_setup_is_open_initialize_discover(self):
+    _, whole = await self._run_setup(has_rail=False)
+    fake = _FakeController()
+    arm = _make_arm(fake)
+    await arm._open_connection()
+    await arm.initialize()
+    opened_and_initialized = len(fake.sent)
+    await arm.discover()
+    discovery = fake.sent[opened_and_initialized:]
+    await arm.arm._handle_out_of_range_axes()
+    self.assertEqual(fake.sent, whole.sent)
+    self.assertTrue(
+      all(c.split()[0] in ("pd", "version", "sysState") for c in discovery), discovery
+    )
+
   async def test_a_failed_configuration_read_ends_setup(self):
     fake = _FakeController()
     arm = _make_arm(fake)
