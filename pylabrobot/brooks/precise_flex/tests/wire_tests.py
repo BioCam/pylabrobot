@@ -1045,7 +1045,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "GripOpenPos 121.0",
+      "GripOpenPos 130.0",
       "gripper 1",
     ],
     None,
@@ -1056,7 +1056,7 @@ _CASES: List[_Case] = [
     [
       "wherej",
       "wherej",
-      "GripClosePos 101.0",
+      "GripClosePos 110.0",
       "gripper 2",
     ],
     None,
@@ -1560,7 +1560,7 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
   async def test_a_jaw_move_that_closes_senses_force(self):
     arm, fake = await self._arm()
     await arm.gripper.move_to_jaw_position(70.0)
-    self.assertEqual(fake.sent[-2:], ["GripClosePos 81.0", "gripper 2"])
+    self.assertEqual(fake.sent[-2:], ["GripClosePos 90.0", "gripper 2"])
 
   async def test_a_jaw_move_in_firmware_units_that_closes_senses_force(self):
     arm, fake = await self._arm()
@@ -1570,7 +1570,18 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
   async def test_closing_without_force_sensing_only_when_asked(self):
     arm, fake = await self._arm()
     await arm.gripper.move_to_jaw_position(70.0, force_sensing=False)
-    self.assertEqual(fake.sent, ["wherej", "wherej", "GripOpenPos 81.0", "gripper 1"])
+    self.assertEqual(fake.sent, ["wherej", "wherej", "GripOpenPos 90.0", "gripper 1"])
+
+  async def test_jaw_widths_stay_in_mm_after_setup(self):
+    arm, _ = await self._arm()
+    # The axis's soft limits (69, 134) through the calibration pair (60 mm at 80 units).
+    self.assertEqual(arm.gripper.jaw_width_range, (49.0, 114.0))
+
+  async def test_a_target_at_the_axis_end_is_held_inside_it(self):
+    arm, fake = await self._arm()
+    await arm.gripper.move_to_jaw_position_firmware_units(135.0, force_sensing=False)
+    await arm.gripper.move_to_jaw_position(114.0, force_sensing=False)  # the advertised maximum
+    self.assertEqual([c for c in fake.sent if c.startswith("Grip")], ["GripOpenPos 133.5"] * 2)
 
   async def test_the_gripper_and_the_rail_wait_for_the_arm_to_stop(self):
     for name, move in (
