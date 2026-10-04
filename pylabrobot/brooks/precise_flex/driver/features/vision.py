@@ -12,6 +12,7 @@ the separate PreciseVision engine protocol rather than the TCS controller, and a
 this module.
 """
 
+import asyncio
 import functools
 import io
 import logging
@@ -824,6 +825,13 @@ class PreciseFlexVision:
       raise RuntimeError(_NO_VISION_SERVER)
     index = self._camera_index(camera)
     want = f"Primary Image [{index}]"
+    # Drop records an earlier tool run left behind; a frame arrives before its trigger's reply, so
+    # nothing older is still in flight once the stream is idle.
+    try:
+      while await asyncio.wait_for(self.driver.read_next_vision_server_record(), 0.05) is not None:
+        pass
+    except asyncio.TimeoutError:
+      pass
     await self.driver._set_vision_server_property("system.cameraacquire", index)
     while True:
       try:

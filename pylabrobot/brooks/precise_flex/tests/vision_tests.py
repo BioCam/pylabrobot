@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -234,6 +235,8 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
     self.driver._set_vision_server_property = AsyncMock()
     self.driver.read_next_vision_server_record = AsyncMock(
       side_effect=[
+        ("Primary Image [2]", b"stale"),  # left on the stream by an earlier run - drained
+        asyncio.TimeoutError(),  # the stream is idle: trigger
         ("VisionResults[led]", b"..."),  # non-image record - skipped
         ("Primary Image [1]", b"other"),  # other camera - skipped
         ("Primary Image [2]", jpeg),  # the wanted frame
@@ -257,6 +260,7 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
     vision = PreciseFlexVision(self.driver)
     with self.assertRaises(RuntimeError):
       await vision.capture_image(1)
+    self.driver._set_vision_server_property.assert_awaited_once_with("system.cameraacquire", 1)
 
   async def test_capture_image_raises_without_engine_configured(self):
     # Calling a vision-engine method with no engine wired up is unsupported - raise, don't return None.

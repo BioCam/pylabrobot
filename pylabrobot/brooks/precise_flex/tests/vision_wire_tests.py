@@ -91,6 +91,8 @@ class _FakeNetwork:
   def __init__(self) -> None:
     self.sent: List[str] = []
     self.image_chunks: List[bytes] = []
+    # Pushed onto the image stream when a camera acquire is triggered, as the engine does.
+    self.frames_on_acquire: List[bytes] = []
     self._pending: Dict[int, List[str]] = {}
 
   def install(self, test: unittest.TestCase) -> None:
@@ -106,6 +108,8 @@ class _FakeNetwork:
       line = data.decode().strip()
       network.sent.append(f"{_LINK[sock._port]}: {line}")
       network._pending.setdefault(sock._port, []).append(line)
+      if "system.cameraacquire" in line:
+        network.image_chunks.extend(network.frames_on_acquire)
 
     async def readline(sock: Socket, timeout: Optional[float] = None) -> bytes:
       line = network._pending[sock._port].pop(0)
@@ -381,6 +385,8 @@ _CASES: List[_Case] = [
     "capture_image",
     lambda arm: _vision(arm).capture_image("front"),
     [
+      "image: <read>",
+      "image: <read>",
       "vision: property set system.cameraacquire 1",
       "image: <read>",
       "image: <read>",
@@ -572,7 +578,8 @@ class TestPreciseFlexVisionWire(unittest.IsolatedAsyncioTestCase):
         arm = await self._arm()
         self.network.sent.clear()
         if name == "capture_image":
-          self.network.image_chunks = [
+          self.network.image_chunks = [_record("Primary Image [1]", b"stale")]  # left by a tool run
+          self.network.frames_on_acquire = [
             _record("VisionResults[led]", b"x"),
             _record("Primary Image [2]", _jpeg()),
             _record("Primary Image [1]", _jpeg()),
