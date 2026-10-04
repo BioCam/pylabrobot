@@ -33,6 +33,8 @@ def _make_arm(closed_gripper_position: float = 500.0) -> PreciseFlex:
     closed_gripper_position=closed_gripper_position,
   )
   arm.send_command = AsyncMock(return_value="")  # type: ignore[method-assign]
+  # Wide gripper limits, as if setup had read them; a gripper move refuses without any.
+  arm.gripper._gripper_soft_min, arm.gripper._gripper_soft_max = 0.0, 10_000.0
   return arm
 
 
@@ -71,6 +73,17 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
     self.assertIn("gripper 2", commands)
     self.assertIn("GripOpenPos 530.0", commands)
     self.assertIn("GripClosePos 530.0", commands)
+
+  async def test_a_gripper_move_before_setup_is_refused(self):
+    arm = _make_arm()
+    arm.gripper._gripper_soft_min = arm.gripper._gripper_soft_max = None
+    for move in (
+      lambda: arm.gripper.move_to_jaw_position(80.0, force_sensing=False),
+      lambda: arm.gripper.move_to_jaw_position_firmware_units(520.0, force_sensing=False),
+    ):
+      with self.assertRaisesRegex(RuntimeError, "run setup"):
+        await move()
+    self.assertEqual([c.args[0] for c in mocked(arm.send_command).call_args_list], [])
 
   async def test_jaw_width_range_advertised(self):
     self.assertEqual(self.arm.gripper.jaw_width_range, (60.0, 145.0))
@@ -114,6 +127,7 @@ class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
     )
     arm.io.write = AsyncMock()  # type: ignore[method-assign]
     arm.io.readline = AsyncMock(return_value=b"0\n")  # type: ignore[method-assign]
+    arm.gripper._gripper_soft_min, arm.gripper._gripper_soft_max = 0.0, 10_000.0
     arm.arm.request_joint_state = AsyncMock(return_value={Axis.GRIPPER: 0.0})  # type: ignore[method-assign]
     events: list[PLREvent] = []
     event_bus = EventBus()

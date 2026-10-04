@@ -458,8 +458,9 @@ class PreciseFlex:
     """Initialize the PreciseFlex driver.
 
     Opens the socket connection, sets response mode to PC, powers on the
-    robot, attaches it, and (optionally) homes it. Configuration discovery then reports the loaded
-    TCS modules; when an IntelliGuide vision module is among them the vision capability is built and
+    robot, attaches it, and (optionally) homes it. Configuration discovery then reads the arm's
+    limits and kinematics, and setup raises if it fails. It also reports the loaded TCS modules;
+    when an IntelliGuide vision module is among them the vision capability is built and
     exposed as ``self.vision``.
 
     Args:
@@ -476,17 +477,8 @@ class PreciseFlex:
     logger.debug("[PreciseFlex %s] connected: port=%s", self.io._host, self.io._port)
 
     await self.arm.stop_freedrive_mode()
-    # Resolve the device configuration once and adopt it as the source of truth;
-    # without it the class defaults stay in place.
-    try:
-      self._configuration = await self._request_configuration()
-    except Exception as exc:  # discovery is best-effort
-      logger.warning(
-        "[PreciseFlex %s] could not read configuration, using defaults: %s",
-        self.io._host,
-        exc,
-      )
-      return
+    # A failed read ends setup: without it IK solves for another arm and the gripper has no limits.
+    self._configuration = await self._request_configuration()
     self._adopt_configuration(self._configuration)
     if self.arm.parking_position is None:
       self.arm.parking_position = self.arm.PARKING_POSITION_RIGHT

@@ -170,12 +170,24 @@ class PreciseFlexGripper:
     """
     return self.closed_gripper_position + (width_mm - self._anchor_width_mm)
 
-  def _hold_within_gripper_limits(self, units: float) -> float:
-    """A gripper target held a little inside the axis's soft limits, once they are known."""
+  def _get_gripper_limits(self) -> Tuple[float, float]:
+    """The gripper axis's soft limits, refusing before setup has read them.
+
+    Raises:
+      RuntimeError: If setup has not read the limits; a target past the axis end strands it.
+    """
     if self._gripper_soft_min is None or self._gripper_soft_max is None:
-      return units
-    low = self._gripper_soft_min + _GRIPPER_LIMIT_HEADROOM
-    high = self._gripper_soft_max - _GRIPPER_LIMIT_HEADROOM
+      raise RuntimeError(
+        "the gripper axis's limits have not been read, so a target cannot be held inside them; "
+        "run setup() before moving the gripper"
+      )
+    return self._gripper_soft_min, self._gripper_soft_max
+
+  def _hold_within_gripper_limits(self, units: float) -> float:
+    """A gripper target held a little inside the axis's soft limits."""
+    soft_min, soft_max = self._get_gripper_limits()
+    low = soft_min + _GRIPPER_LIMIT_HEADROOM
+    high = soft_max - _GRIPPER_LIMIT_HEADROOM
     held = min(max(units, low), high)
     if held != units:
       logger.warning(
@@ -183,8 +195,8 @@ class PreciseFlexGripper:
         self._driver.io._host,
         units,
         held,
-        self._gripper_soft_min,
-        self._gripper_soft_max,
+        soft_min,
+        soft_max,
       )
     return held
 
@@ -249,20 +261,13 @@ class PreciseFlexGripper:
       force_sensing,
     )
     units = self._mm_to_firmware_units(width)
+    soft_min, soft_max = self._get_gripper_limits()
     # An advertised end converts back through a subtract and an add, so allow float dust.
-    if (
-      self._gripper_soft_min is not None
-      and self._gripper_soft_max is not None
-      and not (
-        self._gripper_soft_min - _GRIPPER_UNIT_EPS
-        <= units
-        <= self._gripper_soft_max + _GRIPPER_UNIT_EPS
-      )
-    ):
+    if not (soft_min - _GRIPPER_UNIT_EPS <= units <= soft_max + _GRIPPER_UNIT_EPS):
       raise ValueError(
         f"gripper width {width} mm maps to firmware units {units:.1f}, outside the gripper "
-        f"axis range [{self._gripper_soft_min}, {self._gripper_soft_max}] - check "
-        f"closed_gripper_position (currently {self.closed_gripper_position})."
+        f"axis range [{soft_min}, {soft_max}] - check closed_gripper_position "
+        f"(currently {self.closed_gripper_position})."
       )
     await self._move_jaws(units, force_sensing)
 

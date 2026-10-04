@@ -1469,6 +1469,15 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(config.has_rail, has_rail)
 
+  async def test_a_failed_configuration_read_ends_setup(self):
+    fake = _FakeController()
+    arm = _make_arm(fake)
+    failing_read = AsyncMock(side_effect=TimeoutError("pd 116"))
+    arm._request_configuration = failing_read  # type: ignore[method-assign]
+    with self.assertRaises(TimeoutError):
+      await arm.setup(skip_vision=True)
+    self.assertIsNone(arm.arm.configuration)
+
   async def test_only_an_arm_with_a_rail_has_one(self):
     rail_less, _ = await self._run_setup(has_rail=False)
     self.assertIsNone(rail_less.rail)
