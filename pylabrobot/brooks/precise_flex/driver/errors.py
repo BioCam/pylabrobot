@@ -2071,9 +2071,9 @@ POWER_ERROR_CODES = frozenset(
 # Targets the controller cannot reach.
 REACH_ERROR_CODES = frozenset({-1012, -1013, -1033, -1034, -1035, -1039, -1040, -1056})
 
-# PreciseVision (vision-engine and stereo-locator) errors occupy the -40xx band. Derived from the
-# error table so there is a single source of truth for which codes are vision codes.
-VISION_ERROR_CODES = frozenset(code for code in ERROR_CODES if -4099 <= code <= -4000)
+# PreciseVision (vision-engine and stereo-locator) errors occupy the -40xx band, including codes the
+# table lacks: the arm has replied -4015 and -4030.
+VISION_ERROR_CODES = frozenset(range(-4099, -3999))
 
 
 def _error_class_for_code(replycode: int) -> type:

@@ -48,6 +48,11 @@ class TestErrorClassDispatch(unittest.TestCase):
         self.assertIs(type(err), PreciseFlexCollisionError)
         self.assertIsInstance(err, PreciseFlexServoError)
 
+  def test_vision_codes_the_table_lacks_are_vision_errors(self):
+    for code in (-4015, -4030):  # both replied by the arm, neither in the table
+      with self.subTest(code):
+        self.assertIs(type(PreciseFlexError(code, "")), PreciseFlexVisionError)
+
   def test_unmapped_code_stays_base(self):
     """A code in neither category stays the plain base type."""
     err = PreciseFlexError(-202, "")
