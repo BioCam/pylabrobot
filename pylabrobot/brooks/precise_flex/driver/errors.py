@@ -1982,7 +1982,33 @@ class PreciseFlexError(Exception):
       super().__init__(f"PreciseFlexError {replycode}: {message}")
 
 
-class PreciseFlexCollisionError(PreciseFlexError):
+class PreciseFlexNotReadyError(PreciseFlexError):
+  """The arm is not ready to move: not attached, not homed, power not enabled, or not commutated.
+
+  Run ``initialize()``.
+  """
+
+
+class PreciseFlexPowerError(PreciseFlexError):
+  """Power is off or was cut: an E-stop, a power-off request, overheating or a power-supply fault.
+
+  Clear the cause, then ``recover_from_fault()``.
+  """
+
+
+class PreciseFlexReachError(PreciseFlexError):
+  """The controller cannot reach the target: a joint or motor out of range, overtravel, a position
+  too close or too far, or an invalid Cartesian value. Choose another target.
+  """
+
+
+class PreciseFlexServoError(PreciseFlexError):
+  """A drive fault (the -30xx and -31xx bands): duty cycle exceeded, over-current, an encoder or
+  amplifier fault, and the collision errors. Home, and inspect the hardware.
+  """
+
+
+class PreciseFlexCollisionError(PreciseFlexServoError):
   """A collision / over-drive error (the arm hit something): an envelope error (-3100 / -3122) or a
   torque-saturation error (-3101 / -3105). Lets protocol code catch a crash with
   ``except PreciseFlexCollisionError`` without also matching ordinary command errors.
@@ -2031,6 +2057,20 @@ class OutOfRangeOfMotionError(Exception):
 #   -3105  motor stalled  (torque saturated at the peak rating)
 COLLISION_ERROR_CODES = frozenset({-3100, -3101, -3105, -3122})
 
+# Drive faults: every servo code, the collision codes among them.
+SERVO_ERROR_CODES = frozenset(code for code in ERROR_CODES if -3199 <= code <= -3000)
+
+# The arm is not ready to move; ``initialize()`` brings it up.
+NOT_READY_ERROR_CODES = frozenset({-1007, -1009, -1010, -1021, -1037, -1046, -1059})
+
+# Power off or cut: the -16xx band and the E-stops reported as robot errors.
+POWER_ERROR_CODES = frozenset(
+  {code for code in ERROR_CODES if -1699 <= code <= -1600} | {-1028, -1045, -1060}
+)
+
+# Targets the controller cannot reach.
+REACH_ERROR_CODES = frozenset({-1012, -1013, -1033, -1034, -1035, -1039, -1040, -1056})
+
 # PreciseVision (vision-engine and stereo-locator) errors occupy the -40xx band. Derived from the
 # error table so there is a single source of truth for which codes are vision codes.
 VISION_ERROR_CODES = frozenset(code for code in ERROR_CODES if -4099 <= code <= -4000)
@@ -2044,8 +2084,16 @@ def _error_class_for_code(replycode: int) -> type:
   """
   if replycode in COLLISION_ERROR_CODES:
     return PreciseFlexCollisionError
+  if replycode in SERVO_ERROR_CODES:
+    return PreciseFlexServoError
   if replycode in VISION_ERROR_CODES:
     return PreciseFlexVisionError
+  if replycode in POWER_ERROR_CODES:
+    return PreciseFlexPowerError
+  if replycode in NOT_READY_ERROR_CODES:
+    return PreciseFlexNotReadyError
+  if replycode in REACH_ERROR_CODES:
+    return PreciseFlexReachError
   return PreciseFlexError
 
 

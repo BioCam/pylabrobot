@@ -34,6 +34,10 @@ from pylabrobot.brooks.precise_flex.driver.errors import (
   OutOfRangeOfMotionError,
   PreciseFlexCollisionError,
   PreciseFlexError,
+  PreciseFlexNotReadyError,
+  PreciseFlexPowerError,
+  PreciseFlexReachError,
+  PreciseFlexServoError,
   PreciseFlexVisionError,
 )
 from pylabrobot.brooks.precise_flex.driver.features.arm import MotionProfile, PreciseFlexArm
@@ -60,7 +64,11 @@ __all__ = [
   "PreciseFlexConfiguration",
   "PreciseFlexError",
   "PreciseFlexGripper",
+  "PreciseFlexNotReadyError",
+  "PreciseFlexPowerError",
+  "PreciseFlexReachError",
   "PreciseFlexRail",
+  "PreciseFlexServoError",
   "PreciseFlexVision",
   "PreciseFlexVisionError",
   "WorkEnvelope",
