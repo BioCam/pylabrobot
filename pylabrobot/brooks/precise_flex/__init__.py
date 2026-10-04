@@ -49,6 +49,7 @@ from pylabrobot.brooks.precise_flex.driver.master import PreciseFlex, PreciseFle
 from pylabrobot.brooks.precise_flex.kinematics import (
   ElbowOrientation,
   PreciseFlexCartesianPose,
+  PreciseFlexPose,
   WorkEnvelope,
   Wrist,
 )
@@ -67,6 +68,7 @@ __all__ = [
   "PreciseFlexError",
   "PreciseFlexGripper",
   "PreciseFlexNotReadyError",
+  "PreciseFlexPose",
   "PreciseFlexPowerError",
   "PreciseFlexReachError",
   "PreciseFlexRail",

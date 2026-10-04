@@ -64,6 +64,26 @@ class PreciseFlexCartesianPose(CartesianPose):
 
 
 @dataclass(frozen=True)
+class PreciseFlexPose:
+  """Where every joint of the arm is, and where its gripper is, in the arm's base frame.
+
+  One answer for the whole arm rather than for its end: whether the arm clears something depends
+  on its elbow and wrist as much as on the gripper.
+  """
+
+  shoulder_joint_location: Coordinate
+  """The shoulder axis: on the rail, at the Z drive's height."""
+  elbow_joint_location: Coordinate
+  """Link 1's far end, the joint link 2 turns about."""
+  wrist_joint_location: Coordinate
+  """Link 2's far end, the joint the gripper turns about."""
+  gripper_pose: PreciseFlexCartesianPose
+  """Where the gripper is and which way it faces, as ``fk`` returns it."""
+  joints: JointState
+  """What each drive reported, as ``request_joint_state`` returns it."""
+
+
+@dataclass(frozen=True)
 class WorkEnvelope:
   """Reachable tool-tip envelope: an annulus about the shoulder, over a Z range (mm)."""
 

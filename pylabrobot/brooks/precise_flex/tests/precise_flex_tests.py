@@ -11,6 +11,7 @@ from pylabrobot.brooks.precise_flex import (
   PreciseFlexDriver,
 )
 from pylabrobot.brooks.precise_flex.driver.features.vision import PreciseFlexVision
+from pylabrobot.brooks.precise_flex.kinematics import fk
 from pylabrobot.events import EventBus, PLREvent, event_context, use_event_bus
 from pylabrobot.resources import Coordinate, Rotation
 
@@ -36,6 +37,37 @@ def _make_arm(closed_gripper_position: float = 500.0) -> PreciseFlexDriver:
   # Wide gripper limits, as if setup had read them; a gripper move refuses without any.
   arm.gripper._gripper_soft_min, arm.gripper._gripper_soft_max = 0.0, 10_000.0
   return arm
+
+
+class TestPreciseFlexPose(unittest.IsolatedAsyncioTestCase):
+  """Every joint's location, worked out from a joint state (l1 302, l2 289, gripper 162)."""
+
+  def test_straight_out(self):
+    arm = _make_arm()
+    joints = {Axis.BASE: 100.0, Axis.SHOULDER: 0.0, Axis.ELBOW: 0.0, Axis.WRIST: 0.0}
+    pose = arm.arm._forward_kinematics(joints)
+    self.assertEqual(pose.shoulder_joint_location, Coordinate(0.0, 0.0, 100.0))
+    self.assertEqual(pose.elbow_joint_location, Coordinate(302.0, 0.0, 100.0))
+    self.assertEqual(pose.wrist_joint_location, Coordinate(591.0, 0.0, 100.0))
+    self.assertEqual(pose.gripper_pose.location, Coordinate(753.0, 0.0, 100.0))
+
+  def test_folded_back(self):
+    arm = _make_arm()
+    joints = {Axis.BASE: 50.0, Axis.SHOULDER: 90.0, Axis.ELBOW: 180.0, Axis.WRIST: 0.0}
+    pose = arm.arm._forward_kinematics(joints)
+    for got, want in (
+      (pose.elbow_joint_location, Coordinate(0.0, 302.0, 50.0)),
+      (pose.wrist_joint_location, Coordinate(0.0, 13.0, 50.0)),
+      (pose.gripper_pose.location, Coordinate(0.0, -149.0, 50.0)),
+    ):
+      for a, b in zip((got.x, got.y, got.z), (want.x, want.y, want.z)):
+        self.assertAlmostEqual(a, b, places=9)
+
+  def test_the_gripper_is_fk(self):
+    arm = _make_arm()
+    joints = {Axis.BASE: 20.0, Axis.SHOULDER: 30.0, Axis.ELBOW: 60.0, Axis.WRIST: -45.0}
+    pose = arm.arm._forward_kinematics(joints)
+    self.assertEqual(repr(pose.gripper_pose), repr(fk(joints, arm._kinematics_params)))
 
 
 class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):

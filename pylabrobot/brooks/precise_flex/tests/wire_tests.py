@@ -919,6 +919,17 @@ _CASES: List[_Case] = [
     None,
   ),
   (
+    "request_pose",
+    lambda arm: arm.arm.request_pose(),
+    [
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
+    ],
+    None,
+  ),
+  (
     "move_to_joint_position",
     lambda arm: arm.arm.move_to_joint_state(_J),
     [

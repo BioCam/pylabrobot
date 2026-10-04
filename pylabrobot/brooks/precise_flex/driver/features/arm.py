@@ -8,6 +8,7 @@ import asyncio
 import contextlib
 import dataclasses
 import logging
+import math
 import time
 import warnings
 from typing import (
@@ -35,6 +36,7 @@ from ...kinematics import (
   ElbowOrientation,
   JointState,
   PreciseFlexCartesianPose,
+  PreciseFlexPose,
   WorkEnvelope,
   Wrist,
 )
@@ -1460,6 +1462,34 @@ class PreciseFlexArm:
     """Get the current pose using our kinematics model (no firmware `wherec`)."""
     _, pose = await self._request_state()
     return pose
+
+  def _forward_kinematics(self, joints: JointState) -> PreciseFlexPose:
+    """Where a joint state puts every joint of the arm and its gripper. Nothing is read.
+
+    Args:
+      joints: the joint state, as ``request_joint_state`` returns it.
+    """
+    p = self._driver._kinematics_params
+    link_1 = math.radians(joints[Axis.SHOULDER])
+    link_2 = link_1 + math.radians(joints[Axis.ELBOW])
+    shoulder = Coordinate(x=joints.get(Axis.RAIL, 0.0), y=0.0, z=joints[Axis.BASE])
+    elbow = Coordinate(
+      x=shoulder.x + p.l1 * math.cos(link_1), y=shoulder.y + p.l1 * math.sin(link_1), z=shoulder.z
+    )
+    wrist = Coordinate(
+      x=elbow.x + p.l2 * math.cos(link_2), y=elbow.y + p.l2 * math.sin(link_2), z=shoulder.z
+    )
+    return PreciseFlexPose(
+      shoulder_joint_location=shoulder,
+      elbow_joint_location=elbow,
+      wrist_joint_location=wrist,
+      gripper_pose=kinematics.fk(joints, p),
+      joints=dict(joints),
+    )
+
+  async def request_pose(self) -> PreciseFlexPose:
+    """Where every joint of the arm is, worked out from the joint state; nothing else is asked."""
+    return self._forward_kinematics(await self.request_joint_state())
 
   # -- cartesian motion ----------------------------------------------------------------------------
 
