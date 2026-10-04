@@ -497,6 +497,7 @@ _SETUP: List[str] = [
   "controller: wherej",
   "controller: wherej",
   "controller: wherej",
+  "controller: wherej",
   "vision: <open>",
   "image: <open>",
   "vision: property get system.listtools",

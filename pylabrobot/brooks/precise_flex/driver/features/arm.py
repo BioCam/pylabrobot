@@ -243,11 +243,12 @@ class PreciseFlexArm:
   ) -> None:
     """Wait (non-blocking) until the arm has stopped moving, keeping the connection responsive.
 
-    Polls the live joint position (``wherej``) and returns once it stops changing between samples
-    (every axis moving less than ``settle``) - i.e. end of motion. It returns promptly when the arm
-    is already stationary, including when it was stopped short of its last commanded target (after a
-    halt/interrupt or a hand-move), so it never hangs waiting to reach a target that will not be
-    reached.
+    Polls the live joint position (``wherej``) and returns once three samples in a row agree (every
+    axis moving less than ``settle``) - i.e. end of motion. Two are not enough: right after a
+    ``moveJ`` is accepted the arm creeps under ``settle`` for about 0.1 s (seen in the IO logs).
+    It returns promptly when the arm is already stationary, including when it was stopped short of
+    its last commanded target (after a halt/interrupt or a hand-move), so it never hangs waiting to
+    reach a target that will not be reached.
 
     This deliberately avoids the firmware ``waitForEom``: that command parks the controller's single
     command interpreter and makes it ignore everything else on the connection - including ``halt`` -
@@ -277,11 +278,13 @@ class PreciseFlexArm:
     async with halt_on_interrupt(lambda: halt_and_resync(self._driver.io, b"halt")):
       previous = _floats(await self._driver.send_command("wherej"))
       deadline = time.monotonic() + timeout
+      still = 0
       while True:
         await asyncio.sleep(poll_interval)
         current = _floats(await self._driver.send_command("wherej"))
-        if all(abs(c - p) < settle for c, p in zip(current, previous)):
-          return  # stopped moving
+        still = still + 1 if all(abs(c - p) < settle for c, p in zip(current, previous)) else 0
+        if still == 2:
+          return  # three samples agree: stopped moving
         if time.monotonic() > deadline:
           raise TimeoutError(f"motion did not settle within {timeout:.0f}s (current={current})")
         previous = current

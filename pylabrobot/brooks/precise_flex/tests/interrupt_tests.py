@@ -39,13 +39,20 @@ class TestWaitForEom(unittest.IsolatedAsyncioTestCase):
   """The non-blocking motion-wait: polls wherej and returns once the arm stops moving."""
 
   async def test_returns_when_motion_stops(self):
-    """Returns at the first sample where the position stopped changing between polls."""
-    wherej = iter(
-      ["0 0 0 0 0", "5 5 5 5 5", "9.9 9.9 9.9 9.9 9.9", "10 10 10 10 10", "10 10 10 10 10"]
-    )
+    """Returns once three samples in a row agree."""
+    wherej = iter(["0 0 0 0 0", "5 5 5 5 5", "9.9 9.9 9.9 9.9 9.9"] + ["10 10 10 10 10"] * 3)
     d = _make_arm()
     d.send_command = AsyncMock(side_effect=lambda cmd: next(wherej))  # type: ignore[method-assign]
     await d.arm._wait_for_eom(poll_interval=0)  # no error == returned at the settled sample
+
+  async def test_a_move_creeping_off_does_not_count_as_stopped(self):
+    """Right after moveJ the arm creeps under the settle threshold (as logged), then moves."""
+    replies = ["0 0 180 180 127", "0 -0.006 180 179.986 127", "0 -0.077 180 180.044 127"]
+    replies += ["0 -0.205 180 180.168 127"] + ["0 -1 181 181 127"] * 3
+    d = _make_arm()
+    d.send_command = AsyncMock(side_effect=replies)  # type: ignore[method-assign]
+    await d.arm._wait_for_eom(poll_interval=0)
+    self.assertEqual(mocked(d.send_command).await_count, len(replies))
 
   async def test_returns_immediately_when_already_stationary(self):
     """An idle arm (e.g. halted short of its last target) returns at once, never hangs to reach it."""

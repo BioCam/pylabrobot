@@ -900,6 +900,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -910,6 +911,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -917,6 +919,7 @@ _CASES: List[_Case] = [
     "move_to_joint_position",
     lambda arm: arm.arm.move_to_joint_state(_J),
     [
+      "wherej",
       "wherej",
       "wherej",
       "wherej",
@@ -932,6 +935,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
+      "wherej",
       "moveJ 1 200.0 10.0 170.0 20.0 100.0",
     ],
     None,
@@ -943,6 +947,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -950,6 +955,8 @@ _CASES: List[_Case] = [
     "move_to_location",
     lambda arm: arm.arm.move_to_location(_LOC, direction=0.0),
     [
+      "wherej",
+      "wherej",
       "wherej",
       "wherej",
       "wherej",
@@ -971,6 +978,8 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
+      "wherej",
+      "wherej",
       "moveJ 1 150.0 65.5007745559521 232.2285377690509 92.27068767499696 100.0",
     ],
     None,
@@ -982,10 +991,12 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
+      "wherej",
       "Profile 1",
       "Profile 1 20.0 0.0 100.0 100.0 0.1 0.1 -1 0",
       "moveJ 1 150.0 84.32164182987252 231.74396572121486 43.934392448912625 100.0",
       "moveJ 1 160.0 72.08031179618793 233.35093364951658 64.56875455429554 100.0",
+      "wherej",
       "wherej",
       "wherej",
       "Profile 1 20.0 0.0 100.0 100.0 0.1 0.1 10.0 0",
@@ -1000,8 +1011,10 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
+      "wherej",
       "moveJ 1 150.0 84.32164182987252 231.74396572121486 43.934392448912625 100.0",
       "moveJ 1 160.0 72.08031179618793 233.35093364951658 64.56875455429554 100.0",
+      "wherej",
       "wherej",
       "wherej",
     ],
@@ -1046,6 +1059,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
+      "wherej",
       "GripOpenPos 130.0",
       "gripper 1",
     ],
@@ -1055,6 +1069,7 @@ _CASES: List[_Case] = [
     "move_gripper_close",
     lambda arm: arm.gripper.move_to_jaw_position(90.0, force_sensing=True),
     [
+      "wherej",
       "wherej",
       "wherej",
       "GripClosePos 110.0",
@@ -1069,6 +1084,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
+      "wherej",
       "GripOpenPos 120.0",
       "gripper 1",
     ],
@@ -1078,6 +1094,7 @@ _CASES: List[_Case] = [
     "move_gripper_joint_position_force",
     lambda arm: arm.gripper.move_to_jaw_position_firmware_units(90.0, force_sensing=True),
     [
+      "wherej",
       "wherej",
       "wherej",
       "GripClosePos 90.0",
@@ -1128,6 +1145,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
+      "wherej",
       "locAngles 1 150.0 84.32164182987252 231.74396572121486 43.934392448912625 100.0",
       "StationType 1 1 0 100 0 10",
       "pickplate 1 0 0",
@@ -1141,6 +1159,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
+      "wherej",
       "locAngles 1 150.0 84.32164182987252 231.74396572121486 43.934392448912625 100.0",
       "StationType 1 1 0 100 0 10",
       "placeplate 1 0 0",
@@ -1151,6 +1170,7 @@ _CASES: List[_Case] = [
     "park",
     lambda arm: arm.arm.park(),
     [
+      "wherej",
       "wherej",
       "wherej",
       "wherej",
@@ -1197,6 +1217,7 @@ _RAIL_CASES: List[_Case] = [
     [
       "wherej",
       "wherej",
+      "wherej",
       "Rail 1 250.0",
       "MoveRail 1 1",
     ],
@@ -1206,6 +1227,7 @@ _RAIL_CASES: List[_Case] = [
     "rail_move_to_joint_position",
     lambda arm: arm.arm.move_to_joint_state(_JR),
     [
+      "wherej",
       "wherej",
       "wherej",
       "wherej",
@@ -1219,8 +1241,11 @@ _RAIL_CASES: List[_Case] = [
     [
       "wherej",
       "wherej",
+      "wherej",
       "Rail 1 300.0",
       "MoveRail 1 1",
+      "wherej",
+      "wherej",
       "wherej",
       "wherej",
       "wherej",
@@ -1249,6 +1274,7 @@ _RAIL_CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -1260,9 +1286,11 @@ _RAIL_CASES: List[_Case] = [
     [
       "wherej",
       "wherej",
+      "wherej",
       "Rail 1 300.0",
       "MoveRail 1 1",
       "GraspData 85.0 50.0 10.0",
+      "wherej",
       "wherej",
       "wherej",
       "wherej",
@@ -1309,6 +1337,7 @@ _SETUP = [
   "wherej",
   "wherej",
   "wherej",
+  "wherej",
 ]
 
 _SETUP_SKIP_HOME = [
@@ -1342,6 +1371,7 @@ _SETUP_SKIP_HOME = [
   "pd 2703",
   "sysState",
   "pd 2800",
+  "wherej",
   "wherej",
   "wherej",
   "wherej",
@@ -1379,6 +1409,7 @@ _RAIL_SETUP = [
   "pd 2703",
   "sysState",
   "pd 2800",
+  "wherej",
   "wherej",
   "wherej",
   "wherej",
@@ -1532,9 +1563,11 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
         "wherej",
         "wherej",
         "wherej",
+        "wherej",
         "Speed 1",
         "Speed 1 20.0",
         "MoveOneAxis 2 92.0 1",
+        "wherej",
         "wherej",
         "wherej",
         "Speed 1 60.0",
@@ -1614,7 +1647,7 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
   async def test_closing_without_force_sensing_only_when_asked(self):
     arm, fake = await self._arm()
     await arm.gripper.move_to_jaw_position(70.0, force_sensing=False)
-    self.assertEqual(fake.sent, ["wherej", "wherej", "GripOpenPos 90.0", "gripper 1"])
+    self.assertEqual(fake.sent, ["wherej", "wherej", "wherej", "GripOpenPos 90.0", "gripper 1"])
 
   async def test_jaw_widths_stay_in_mm_after_setup(self):
     arm, _ = await self._arm()
