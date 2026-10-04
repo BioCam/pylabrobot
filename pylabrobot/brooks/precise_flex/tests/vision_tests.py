@@ -3,8 +3,8 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pylabrobot.brooks.precise_flex import (
-  PreciseFlex,
   PreciseFlexConfiguration,
+  PreciseFlexDriver,
   PreciseFlexError,
 )
 from pylabrobot.brooks.precise_flex.confirmed_firmware_versions import is_confirmed_vision_version
@@ -18,9 +18,9 @@ from pylabrobot.brooks.precise_flex.driver.features.vision import (
 )
 
 
-def _make_arm() -> PreciseFlex:
+def _make_arm() -> PreciseFlexDriver:
   """An arm whose transport is stubbed out, so tests assert on the commands it would send."""
-  arm = PreciseFlex(
+  arm = PreciseFlexDriver(
     host="localhost",
     gripper_length=162.0,
     gripper_z_offset=0.0,
@@ -269,12 +269,12 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
 
 
 class TestVisionSetupGating(unittest.IsolatedAsyncioTestCase):
-  """``PreciseFlex.setup`` connects vision iff discovery reported a vision module and skip_vision is
-  not set, exposing the built capability as ``self.vision``."""
+  """``PreciseFlexDriver.setup`` connects vision iff discovery reported a vision server and
+  skip_vision is not set, exposing the built capability as ``self.vision``."""
 
-  def _arm(self, has_vision_server: bool) -> PreciseFlex:
+  def _arm(self, has_vision_server: bool) -> PreciseFlexDriver:
     """An arm whose setup runs only as far as the vision gate, with discovery's answer stubbed in."""
-    arm = PreciseFlex(
+    arm = PreciseFlexDriver(
       host="localhost",
       gripper_length=162.0,
       gripper_z_offset=0.0,
@@ -332,7 +332,7 @@ def _backend_with_engine() -> "tuple[PreciseFlexVision, MagicMock]":
   prop = MagicMock()
   prop.write = AsyncMock()
   prop.readline = AsyncMock(return_value=b"0\r\n")
-  arm = PreciseFlex(
+  arm = PreciseFlexDriver(
     host="127.0.0.1",
     gripper_length=162.0,
     gripper_z_offset=0.0,
@@ -653,13 +653,13 @@ class TestVisionCapabilityGating(unittest.IsolatedAsyncioTestCase):
       await dummy.needs_absent_type()
 
 
-def _controller_with_io() -> "tuple[PreciseFlex, MagicMock]":
+def _controller_with_io() -> "tuple[PreciseFlexDriver, MagicMock]":
   """A real controller client whose socket is mocked, returning it and the socket so tests can
   assert the controller's VToolProperty wire bytes and stub replies."""
   io = MagicMock()
   io.write = AsyncMock()
   io.readline = AsyncMock(return_value=b"0\r\n")
-  arm = PreciseFlex(
+  arm = PreciseFlexDriver(
     host="127.0.0.1",
     gripper_length=162.0,
     gripper_z_offset=0.0,

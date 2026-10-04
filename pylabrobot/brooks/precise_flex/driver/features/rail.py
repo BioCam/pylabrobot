@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Optional
 from pylabrobot.events import evented_operation
 
 if TYPE_CHECKING:
-  from ..master import PreciseFlex
+  from ..master import PreciseFlexDriver
 
 
 @dataclasses.dataclass(frozen=True)
@@ -30,7 +30,7 @@ class PreciseFlexRail:
   stored station: its rail position is set, then the rail moves to it.
   """
 
-  def __init__(self, driver: "PreciseFlex") -> None:
+  def __init__(self, driver: "PreciseFlexDriver") -> None:
     """
     Args:
       driver: the driver to send commands through.

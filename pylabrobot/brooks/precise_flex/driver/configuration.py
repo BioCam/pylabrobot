@@ -70,7 +70,7 @@ class PreciseFlexConfiguration:
 
     The module relays ``VToolProperty``/``StereoParam``/``StereoLocate`` to the server; without it
     those return ``-2805 *Unknown command*``. Read from the module list ``version`` reports; whether
-    the server itself answers is ``PreciseFlex.vision_server_connected``.
+    the server itself answers is ``PreciseFlexDriver.vision_server_connected``.
     """
     return any("intelliguide" in m.lower() for m in self.modules)
 
@@ -228,9 +228,9 @@ class PreciseFlexConfiguration:
 
   @property
   def power_state(self) -> Optional[int]:
-    """Deprecated: use ``PreciseFlex.request_system_state``."""
+    """Deprecated: use ``PreciseFlexDriver.request_system_state``."""
     warnings.warn(
-      "`power_state` is deprecated, use `PreciseFlex.request_system_state`.",
+      "`power_state` is deprecated, use `PreciseFlexDriver.request_system_state`.",
       DeprecationWarning,
       stacklevel=2,
     )

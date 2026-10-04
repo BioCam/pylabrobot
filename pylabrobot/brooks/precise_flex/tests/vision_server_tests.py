@@ -4,7 +4,7 @@ import struct
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from pylabrobot.brooks.precise_flex import PreciseFlex
+from pylabrobot.brooks.precise_flex import PreciseFlexDriver
 from pylabrobot.brooks.precise_flex.driver.errors import PreciseFlexError, PreciseFlexVisionError
 from pylabrobot.brooks.precise_flex.driver.features import vision
 from pylabrobot.brooks.precise_flex.driver.features.vision import decode_jpeg
@@ -14,9 +14,9 @@ from pylabrobot.brooks.precise_flex.driver.master import (
 )
 
 
-def _arm() -> PreciseFlex:
+def _arm() -> PreciseFlexDriver:
   """A driver whose engine connections the test attaches as mocks."""
-  return PreciseFlex(
+  return PreciseFlexDriver(
     host="127.0.0.1", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=500.0
   )
 

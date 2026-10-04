@@ -13,7 +13,7 @@ PreciseFlex
   :nosignatures:
   :recursive:
 
-    PreciseFlex
+    PreciseFlexDriver
     PreciseFlexArm
     PreciseFlexGripper
     PreciseFlexRail

@@ -2,9 +2,9 @@
 
 Folds the GPL vision wire primitives (``VToolProperty``, ``Vprocess``, ``VresultInfoString``,
 ``LightControl``) together with the higher-level orchestrations, over the pure-transport
-``PreciseFlex`` controller client. Intended to be held as the nullable ``PreciseFlex.vision``, built
-at setup only
-when a camera gripper is present - so its existence is the capability gate (no per-method guards).
+``PreciseFlexDriver`` controller client. Held as the nullable ``PreciseFlexDriver.vision``, built at
+setup only when the controller is set up for a vision server - so its existence is the capability
+gate (no per-method guards).
 Only ``locate_target`` moves the arm.
 
 Password-free engine image retrieval (``capture_image``) and vision-project enumeration use
@@ -32,7 +32,7 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-  from ..master import PreciseFlex
+  from ..master import PreciseFlexDriver
 
 from pylabrobot.resources import Coordinate, Rotation
 
@@ -309,7 +309,7 @@ class PreciseFlexVision:
 
   def __init__(
     self,
-    driver: "PreciseFlex",
+    driver: "PreciseFlexDriver",
     available: Optional[Dict[str, List[str]]] = None,
     vision_host: Optional[str] = None,
   ):

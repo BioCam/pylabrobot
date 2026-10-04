@@ -8,7 +8,7 @@ from pylabrobot.brooks.precise_flex.driver.errors import (
   PreciseFlexError,
   is_collision,
 )
-from pylabrobot.brooks.precise_flex.driver.master import PreciseFlex
+from pylabrobot.brooks.precise_flex.driver.master import PreciseFlexDriver
 from pylabrobot.brooks.precise_flex.interrupt import halt_and_resync, halt_on_interrupt
 
 
@@ -21,9 +21,9 @@ def mocked(method: object) -> AsyncMock:
   return cast(AsyncMock, method)
 
 
-def _make_arm() -> PreciseFlex:
+def _make_arm() -> PreciseFlexDriver:
   """An arm whose socket is mocked: writes recorded, reads drain immediately (TimeoutError)."""
-  d = PreciseFlex(
+  d = PreciseFlexDriver(
     host="localhost",
     gripper_length=162.0,
     gripper_z_offset=0.0,

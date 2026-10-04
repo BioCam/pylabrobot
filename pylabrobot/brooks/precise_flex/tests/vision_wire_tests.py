@@ -8,7 +8,7 @@ import unittest
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Type
 from unittest.mock import AsyncMock, patch
 
-from pylabrobot.brooks.precise_flex import PreciseFlex
+from pylabrobot.brooks.precise_flex import PreciseFlexDriver
 from pylabrobot.brooks.precise_flex.driver.features.vision import (
   PreciseFlexVision,
   StereoParameters,
@@ -132,13 +132,15 @@ class _FakeNetwork:
       test.addCleanup(p.stop)
 
 
-def _vision(arm: PreciseFlex) -> PreciseFlexVision:
+def _vision(arm: PreciseFlexDriver) -> PreciseFlexVision:
   """The vision capability of an arm set up with its engine."""
   assert arm.vision is not None
   return arm.vision
 
 
-_Case = Tuple[str, Callable[[PreciseFlex], Awaitable[Any]], List[str], Optional[Type[Exception]]]
+_Case = Tuple[
+  str, Callable[[PreciseFlexDriver], Awaitable[Any]], List[str], Optional[Type[Exception]]
+]
 
 # (name, call, every line sent tagged with its link, exception raised or None), on an arm set up
 # with its vision engine.
@@ -550,8 +552,8 @@ class TestPreciseFlexVisionWire(unittest.IsolatedAsyncioTestCase):
     self.network = _FakeNetwork()
     self.network.install(self)
 
-  async def _arm(self) -> PreciseFlex:
-    arm = PreciseFlex(
+  async def _arm(self) -> PreciseFlexDriver:
+    arm = PreciseFlexDriver(
       host="pf400",
       gripper_length=162.0,
       gripper_z_offset=0.0,

@@ -15,7 +15,7 @@ from ...kinematics import Axis
 from ..errors import PreciseFlexError
 
 if TYPE_CHECKING:
-  from ..master import PreciseFlex
+  from ..master import PreciseFlexDriver
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +55,7 @@ class PreciseFlexGripper:
   _gripper_soft_max: Optional[float] = None
 
   def __init__(
-    self, driver: "PreciseFlex", closed_gripper_position: float, is_dual_gripper: bool = False
+    self, driver: "PreciseFlexDriver", closed_gripper_position: float, is_dual_gripper: bool = False
   ) -> None:
     """
     Args:

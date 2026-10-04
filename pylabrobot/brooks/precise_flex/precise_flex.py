@@ -13,4 +13,7 @@ from pylabrobot.brooks.precise_flex.driver.features.arm import (  # noqa: E402, 
   BLEND_IN_RANGE,
   MotionProfile,
 )
-from pylabrobot.brooks.precise_flex.driver.master import PreciseFlex  # noqa: E402, F401
+from pylabrobot.brooks.precise_flex.driver.master import (  # noqa: E402, F401
+  PreciseFlex,
+  PreciseFlexDriver,
+)

@@ -42,7 +42,7 @@ from ..errors import OutOfRangeOfMotionError, PreciseFlexError
 from .rail import PreciseFlexRail
 
 if TYPE_CHECKING:
-  from ..master import PreciseFlex
+  from ..master import PreciseFlexDriver
 
 logger = logging.getLogger(__name__)
 
@@ -198,7 +198,7 @@ class PreciseFlexArm:
     Axis.WRIST: 270.0,
   }
 
-  def __init__(self, driver: "PreciseFlex") -> None:
+  def __init__(self, driver: "PreciseFlexDriver") -> None:
     """
     Args:
       driver: the driver to send commands through.

@@ -63,7 +63,7 @@ _MAX_IMAGE_BYTES = (
 def parse_vision_server_reply(reply: str) -> str:
   """Parse an engine reply line into its success value, raising on a negative (error) reply.
 
-  Mirrors the controller transport (``PreciseFlex._ensure_successful``): a negative
+  Mirrors the controller transport (``PreciseFlexDriver._ensure_successful``): a negative
   reply is a vision error code, surfaced as a ``PreciseFlexError`` whose message looks the code up in
   the shared error table (the vision ``-40xx`` codes are in it), rather than silently swallowed to
   ``None``.
@@ -127,7 +127,7 @@ def _drain_named_record(buf: bytearray) -> Optional[Tuple[str, bytes]]:
   return name, data
 
 
-class PreciseFlex:
+class PreciseFlexDriver:
   """Driver for PreciseFlex robotic arms.
 
   Owns the Socket I/O connection and device-level operations (power, attach,
@@ -570,7 +570,7 @@ class PreciseFlex:
       Current mode (0 = PC mode, 1 = verbose mode)
     """
     response = await self.send_command("mode")
-    mapping: Dict[int, "PreciseFlex.ResponseMode"] = {0: "pc", 1: "verbose"}
+    mapping: Dict[int, "PreciseFlexDriver.ResponseMode"] = {0: "pc", 1: "verbose"}
     return mapping[int(response)]
 
   async def set_response_mode(self, mode: ResponseMode) -> None:
@@ -1141,7 +1141,7 @@ class PreciseFlex:
       "  Firmware: GPL %s, TCS %s\n"
       "  Configuration: %s, robot_type %s, %s%s\n"
       "  Capabilities: %s reach (l1=%.1f, l2=%.1f mm), modules: %s",
-      config.robot_name or config.controller_model or "PreciseFlex",
+      config.robot_name or config.controller_model or "PreciseFlexDriver",
       io._host,
       io._port,
       config.gpl_version,
@@ -1896,3 +1896,13 @@ class PreciseFlex:
   PARKING_POSITION_BACK: ClassVar[JointState] = PreciseFlexArm.PARKING_POSITION_BACK
   PARKING_POSITION_RIGHT: ClassVar[JointState] = PreciseFlexArm.PARKING_POSITION_RIGHT
   PARKING_POSITION_FRONT: ClassVar[JointState] = PreciseFlexArm.PARKING_POSITION_FRONT
+
+
+class PreciseFlex(PreciseFlexDriver):
+  """Deprecated: use ``PreciseFlexDriver``."""
+
+  def __init__(self, *args: Any, **kwargs: Any) -> None:
+    warnings.warn(
+      "`PreciseFlex` is deprecated, use `PreciseFlexDriver`.", DeprecationWarning, stacklevel=2
+    )
+    super().__init__(*args, **kwargs)

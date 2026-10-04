@@ -6,9 +6,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from pylabrobot.brooks.precise_flex import (
   Axis,
   OutOfRangeOfMotionError,
-  PreciseFlex,
   PreciseFlexArm,
   PreciseFlexCartesianPose,
+  PreciseFlexDriver,
 )
 from pylabrobot.brooks.precise_flex.driver.features.vision import PreciseFlexVision
 from pylabrobot.events import EventBus, PLREvent, event_context, use_event_bus
@@ -24,9 +24,9 @@ def mocked(method: object) -> AsyncMock:
   return cast(AsyncMock, method)
 
 
-def _make_arm(closed_gripper_position: float = 500.0) -> PreciseFlex:
+def _make_arm(closed_gripper_position: float = 500.0) -> PreciseFlexDriver:
   """An arm whose transport is stubbed out, so tests assert on the commands it would send."""
-  arm = PreciseFlex(
+  arm = PreciseFlexDriver(
     host="localhost",
     gripper_length=162.0,
     gripper_z_offset=0.0,
@@ -123,7 +123,7 @@ class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
     self.assertNotIn("width_mm", events[0].data)
 
   async def test_gripper_event_and_nested_firmware_commands_inherit_resource_context(self):
-    arm = PreciseFlex(
+    arm = PreciseFlexDriver(
       host="localhost",
       gripper_length=162.0,
       gripper_z_offset=0.0,
@@ -171,7 +171,7 @@ class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
 
 
 def _stub_soft_limits(
-  driver: PreciseFlex, soft_limits: Dict[Axis, tuple], z_range: Optional[tuple] = None
+  driver: PreciseFlexDriver, soft_limits: Dict[Axis, tuple], z_range: Optional[tuple] = None
 ) -> None:
   """Give the arm stub configuration carrying only its soft limits; the gripper is unconstrained."""
   driver.arm.configuration = MagicMock(soft_limits=soft_limits, z_range=z_range)
@@ -557,14 +557,14 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self._cmds("moveJ"), [])
 
 
-def _recording_arm(events: list) -> PreciseFlex:
+def _recording_arm(events: list) -> PreciseFlexDriver:
   """An arm whose socket records each write/read and yields control between them.
 
   The ``await asyncio.sleep(0)`` after every write hands the event loop to any other ready coroutine,
   so an UNserialized implementation would let a second concurrent command write before the first
   reads - producing ``[w, w, r, r]``. With the per-exchange lock the pairs stay together.
   """
-  arm = PreciseFlex(
+  arm = PreciseFlexDriver(
     host="localhost",
     gripper_length=162.0,
     gripper_z_offset=0.0,

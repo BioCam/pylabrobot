@@ -15,6 +15,7 @@ from pylabrobot.brooks.precise_flex import (
   PreciseFlex,
   PreciseFlexArm,
   PreciseFlexCartesianPose,
+  PreciseFlexDriver,
   PreciseFlexGripper,
   PreciseFlexRail,
 )
@@ -132,9 +133,9 @@ class _FakeController:
     return self._replies.get(command, "0")
 
 
-def _make_arm(fake: _FakeController, has_rail: bool = False) -> PreciseFlex:
+def _make_arm(fake: _FakeController, has_rail: bool = False) -> PreciseFlexDriver:
   """A PF400 whose socket is the fake; the raw `exit` write is recorded too."""
-  arm = PreciseFlex(
+  arm = PreciseFlexDriver(
     host="pf400",
     gripper_length=162.0,
     gripper_z_offset=0.0,
@@ -175,13 +176,15 @@ _POSES = [
 ]
 
 
-def _rail(arm: PreciseFlex) -> PreciseFlexRail:
+def _rail(arm: PreciseFlexDriver) -> PreciseFlexRail:
   """The rail of an arm the test set up with one."""
   assert arm.rail is not None
   return arm.rail
 
 
-_Case = Tuple[str, Callable[[PreciseFlex], Awaitable[Any]], List[str], Optional[Type[Exception]]]
+_Case = Tuple[
+  str, Callable[[PreciseFlexDriver], Awaitable[Any]], List[str], Optional[Type[Exception]]
+]
 
 # (name, call, commands sent, exception raised or None), each on an arm already set up.
 _CASES: List[_Case] = [
@@ -1436,7 +1439,9 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
         else:
           self.assertEqual(g, w, f"{got!r} != {want!r}")
 
-  async def _run_setup(self, has_rail: bool, **kwargs: Any) -> Tuple[PreciseFlex, _FakeController]:
+  async def _run_setup(
+    self, has_rail: bool, **kwargs: Any
+  ) -> Tuple[PreciseFlexDriver, _FakeController]:
     fake = _FakeController(_RAIL_REPLIES if has_rail else None)
     arm = _make_arm(fake, has_rail=has_rail)
     await arm.setup(skip_vision=True, **kwargs)
@@ -1583,7 +1588,7 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
     sleep.start()
     self.addCleanup(sleep.stop)
 
-  async def _arm(self) -> Tuple[PreciseFlex, _FakeController]:
+  async def _arm(self) -> Tuple[PreciseFlexDriver, _FakeController]:
     fake = _FakeController({"Speed 1": "0 1 60"})
     arm = _make_arm(fake)
     await arm.setup(skip_vision=True)
@@ -1626,7 +1631,7 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
     sleep.start()
     self.addCleanup(sleep.stop)
 
-  async def _arm(self) -> Tuple[PreciseFlex, _FakeController]:
+  async def _arm(self) -> Tuple[PreciseFlexDriver, _FakeController]:
     """An arm set up with its jaws at 100 on the gripper axis."""
     fake = _FakeController({"Speed 1": "0 1 60"})
     arm = _make_arm(fake)
@@ -1731,7 +1736,7 @@ class TestRefusals(unittest.IsolatedAsyncioTestCase):
 
 
 _DEPRECATED_KEYWORDS: List[
-  Tuple[str, Callable[[PreciseFlex], Awaitable[Any]], Callable[..., Any]]
+  Tuple[str, Callable[[PreciseFlexDriver], Awaitable[Any]], Callable[..., Any]]
 ] = [
   (
     "set_monitor_speed",
@@ -1941,7 +1946,7 @@ class TestDeprecatedPercentKeywords(unittest.IsolatedAsyncioTestCase):
     self.addCleanup(sleep.stop)
 
   async def _sent(
-    self, call: Callable[[PreciseFlex], Awaitable[Any]], out_of_range: bool
+    self, call: Callable[[PreciseFlexDriver], Awaitable[Any]], out_of_range: bool
   ) -> List[str]:
     fake = _FakeController({"Speed 1": "0 1 60"})
     arm = _make_arm(fake)
@@ -1968,7 +1973,7 @@ class TestDeprecatedPercentKeywords(unittest.IsolatedAsyncioTestCase):
 
 
 _MOVED_TO_FEATURES: List[
-  Tuple[str, Callable[[PreciseFlex], Awaitable[Any]], Callable[..., Any]]
+  Tuple[str, Callable[[PreciseFlexDriver], Awaitable[Any]], Callable[..., Any]]
 ] = [
   (
     "request_joint_position",
@@ -2129,7 +2134,9 @@ class TestDeprecatedDriverMembers(unittest.IsolatedAsyncioTestCase):
     sleep.start()
     self.addCleanup(sleep.stop)
 
-  async def _sent(self, call: Callable[[PreciseFlex], Awaitable[Any]], has_rail: bool = False):
+  async def _sent(
+    self, call: Callable[[PreciseFlexDriver], Awaitable[Any]], has_rail: bool = False
+  ):
     fake = _FakeController(_RAIL_REPLIES if has_rail else None)
     arm = _make_arm(fake, has_rail=has_rail)
     await arm.setup(skip_vision=True)
@@ -2168,7 +2175,14 @@ class TestDeprecatedDriverMembers(unittest.IsolatedAsyncioTestCase):
         with self.assertWarns(DeprecationWarning):
           self.assertEqual(getattr(arm, name), value)
     for name in ("PARKING_POSITION_BACK", "PARKING_POSITION_RIGHT", "PARKING_POSITION_FRONT"):
-      self.assertIs(getattr(PreciseFlex, name), getattr(PreciseFlexArm, name))
+      self.assertIs(getattr(PreciseFlexDriver, name), getattr(PreciseFlexArm, name))
+
+  def test_the_driver_class_was_preciseflex(self):
+    with self.assertWarns(DeprecationWarning):
+      arm = PreciseFlex(
+        host="pf400", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=80.0
+      )
+    self.assertIsInstance(arm, PreciseFlexDriver)
 
   def test_profile_index(self):
     arm = _make_arm(_FakeController())
@@ -2194,7 +2208,7 @@ class TestDeprecatedDriverMembers(unittest.IsolatedAsyncioTestCase):
     import sys
 
     for old, name in (
-      ("pylabrobot.brooks.precise_flex.precise_flex", "PreciseFlex"),
+      ("pylabrobot.brooks.precise_flex.precise_flex", "PreciseFlexDriver"),
       ("pylabrobot.brooks.precise_flex.config", "PreciseFlexConfiguration"),
       ("pylabrobot.brooks.precise_flex.errors", "PreciseFlexError"),
     ):
