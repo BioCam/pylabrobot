@@ -1459,6 +1459,8 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
           "gripper_width_range": config.gripper.soft_limit_range,
           "is_dual_gripper": config.gripper.is_dual_gripper,
           "power_state": await arm.request_system_state(),
+          "has_vision_module": config.has_vision_server,
+          "is_vision_gripper": config.has_vision_gripper,
         }
         for name, value in expected.items():
           with self.subTest(name), self.assertWarns(DeprecationWarning):

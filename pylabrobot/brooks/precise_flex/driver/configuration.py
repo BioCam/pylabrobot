@@ -33,7 +33,7 @@ class PreciseFlexConfiguration:
   via ``request_parameter`` and the ``version`` command). The kinematics/flags
   tier is supplied at construction or derived: link lengths are not on the arm,
   ``has_rail`` comes from the joint set, ``is_dual_gripper`` from the axis_mask
-  ``&H80`` bit, ``is_vision_gripper`` from the model name, and ``reach_class`` from the
+  ``&H80`` bit, ``has_vision_gripper`` from the model name, and ``reach_class`` from the
   controller-read link lengths.
   """
 
@@ -56,7 +56,7 @@ class PreciseFlexConfiguration:
   gripper: PreciseFlexGripperConfiguration
   rail: Optional[PreciseFlexRailConfiguration] = None
   # --- derived ---
-  is_vision_gripper: bool = False
+  has_vision_gripper: bool = False
   # Live state, not a fact; kept for the deprecated `power_state` until it is removed.
   _power_state: Optional[int] = None
 
@@ -65,11 +65,12 @@ class PreciseFlexConfiguration:
     return self.rail is not None
 
   @property
-  def has_vision_module(self) -> bool:
-    """Whether the IntelliGuide vision TCS module is loaded.
+  def has_vision_server(self) -> bool:
+    """Whether the controller is set up for a vision server: its IntelliGuide TCS module is loaded.
 
-    It supplies ``VToolProperty``/``StereoParam``/``StereoLocate``; without it those return
-    ``-2805 *Unknown command*``. Detected from the module list reported by ``version``.
+    The module relays ``VToolProperty``/``StereoParam``/``StereoLocate`` to the server; without it
+    those return ``-2805 *Unknown command*``. Read from the module list ``version`` reports; whether
+    the server itself answers is ``PreciseFlex.vision_server_connected``.
     """
     return any("intelliguide" in m.lower() for m in self.modules)
 
@@ -234,3 +235,23 @@ class PreciseFlexConfiguration:
       stacklevel=2,
     )
     return self._power_state
+
+  @property
+  def has_vision_module(self) -> bool:
+    """Deprecated: use ``has_vision_server``."""
+    warnings.warn(
+      "`has_vision_module` is deprecated, use `has_vision_server`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.has_vision_server
+
+  @property
+  def is_vision_gripper(self) -> bool:
+    """Deprecated: use ``has_vision_gripper``."""
+    warnings.warn(
+      "`is_vision_gripper` is deprecated, use `has_vision_gripper`.",
+      DeprecationWarning,
+      stacklevel=2,
+    )
+    return self.has_vision_gripper

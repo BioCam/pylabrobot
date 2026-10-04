@@ -472,7 +472,7 @@ class PreciseFlex:
     await self.initialize(skip_home=skip_home)
     configuration = await self.discover()
     await self.arm._handle_out_of_range_axes()
-    if not skip_vision and configuration.has_vision_module:
+    if not skip_vision and configuration.has_vision_server:
       await self._setup_vision(self._vision_host)
 
   async def _open_connection(self) -> None:
@@ -512,10 +512,11 @@ class PreciseFlex:
   async def _setup_vision(self, vision_host: Optional[str]) -> None:
     """Build the vision capability and connect its PreciseVision engine; best-effort, never raises.
 
-    Called by ``setup`` once discovery has reported a camera gripper is installed - this class owns
-    the connection, symmetric with how ``stop`` closes it. The controller side of vision always works;
-    a set, reachable ``vision_host`` additionally opens the engine for image fetch and discovery. A
-    missing or unreachable host leaves ``self.vision`` built but engine-less.
+    Called by ``setup`` when the controller is set up for a vision server (``has_vision_server``),
+    whatever gripper is fitted; this class owns the connection, as ``stop`` closes it. The
+    controller side of vision always works; a set, reachable ``vision_host`` additionally opens the
+    engine for image fetch and discovery. A missing or unreachable host leaves ``self.vision`` built
+    but engine-less.
 
     Args:
       vision_host: address of the PreciseVision engine, or ``None`` for controller-only vision.
@@ -1067,7 +1068,7 @@ class PreciseFlex:
         is_dual_gripper=bool(axis_mask & 0x80),
       ),
       rail=rail,
-      is_vision_gripper=suffix[:1] == "V",
+      has_vision_gripper=suffix[:1] == "V",
       _power_state=power_state,
     )
 
@@ -1130,7 +1131,7 @@ class PreciseFlex:
       label
       for present, label in (
         (config.gripper.is_dual_gripper, "dual gripper"),
-        (config.is_vision_gripper, "vision gripper"),
+        (config.has_vision_gripper, "vision gripper"),
       )
       if present
     ]

@@ -42,7 +42,7 @@ class TestVisionSetupHelpers(unittest.IsolatedAsyncioTestCase):
 
 
 class TestVisionModuleDetection(unittest.TestCase):
-  """``configuration.has_vision_module`` keys off the version module list."""
+  """``configuration.has_vision_server`` keys off the version module list."""
 
   @staticmethod
   def _config(modules) -> PreciseFlexConfiguration:
@@ -77,9 +77,9 @@ class TestVisionModuleDetection(unittest.TestCase):
       ),
     )
 
-  def test_has_vision_module_detects_intelliguide(self):
-    self.assertTrue(self._config(["IntelliGuide 1.0 05-22-2024"]).has_vision_module)
-    self.assertFalse(self._config(["PARobot Module 3.0", "SSGrip Module 3.0"]).has_vision_module)
+  def test_has_vision_server_detects_intelliguide(self):
+    self.assertTrue(self._config(["IntelliGuide 1.0 05-22-2024"]).has_vision_server)
+    self.assertFalse(self._config(["PARobot Module 3.0", "SSGrip Module 3.0"]).has_vision_server)
 
 
 class TestVisionWirePrimitives(unittest.IsolatedAsyncioTestCase):
@@ -268,7 +268,7 @@ class TestVisionSetupGating(unittest.IsolatedAsyncioTestCase):
   """``PreciseFlex.setup`` connects vision iff discovery reported a vision module and skip_vision is
   not set, exposing the built capability as ``self.vision``."""
 
-  def _arm(self, has_vision_module: bool) -> PreciseFlex:
+  def _arm(self, has_vision_server: bool) -> PreciseFlex:
     """An arm whose setup runs only as far as the vision gate, with discovery's answer stubbed in."""
     arm = PreciseFlex(
       host="localhost",
@@ -284,7 +284,7 @@ class TestVisionSetupGating(unittest.IsolatedAsyncioTestCase):
     arm.home = AsyncMock()  # type: ignore[method-assign]
     arm.arm.stop_freedrive_mode = AsyncMock()  # type: ignore[method-assign]
     config = MagicMock()
-    config.has_vision_module = has_vision_module
+    config.has_vision_server = has_vision_server
     arm._request_configuration = AsyncMock(return_value=config)  # type: ignore[method-assign]
     arm._adopt_configuration = MagicMock()  # type: ignore[method-assign]
     arm._log_configuration_summary = MagicMock()  # type: ignore[method-assign]
@@ -294,7 +294,7 @@ class TestVisionSetupGating(unittest.IsolatedAsyncioTestCase):
     return arm
 
   async def test_vision_connected_when_module_present(self):
-    arm = self._arm(has_vision_module=True)
+    arm = self._arm(has_vision_server=True)
     built = PreciseFlexVision(arm)  # what _setup_vision would have built
 
     async def fake_setup_vision(host):
@@ -308,14 +308,14 @@ class TestVisionSetupGating(unittest.IsolatedAsyncioTestCase):
     self.assertIs(arm.vision, built)
 
   async def test_vision_skipped_with_skip_vision_flag(self):
-    arm = self._arm(has_vision_module=True)
+    arm = self._arm(has_vision_server=True)
     with patch.object(arm, "_setup_vision", AsyncMock()) as setup_vision:
       await arm.setup(skip_vision=True)
     setup_vision.assert_not_awaited()
     self.assertIsNone(arm.vision)
 
   async def test_no_vision_when_module_absent(self):
-    arm = self._arm(has_vision_module=False)
+    arm = self._arm(has_vision_server=False)
     with patch.object(arm, "_setup_vision", AsyncMock()) as setup_vision:
       await arm.setup()
     setup_vision.assert_not_awaited()
