@@ -16,6 +16,13 @@ when the Z drive is at 0, its lowest point. The manufacturer calls this the Worl
 by taking the reference point out of it, which is what `z_carriage_location` does. Nothing else in
 the model is allowed to guess a position.
 
+## The workspace
+
+An arm has no deck. What stands in a deck's place is its `Workspace`: the ring its tool point can
+reach about the shoulder axis, over the Z travel. It is a resource like any other, located by its
+corner, and the point the controller reports from is its `reference_point`. Its cuboid is only the
+ring's bounding box; `is_reachable` asks the ring.
+
 ## The parts
 
 | Resource | Category | Model | What it is |
