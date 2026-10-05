@@ -258,7 +258,13 @@ class PreciseFlexGripper:
       force_sensing = await self._closes(units)  # reads the joint state once the arm has stopped
     else:
       await self._driver.arm._wait_for_eom()
-    await self._unchecked_fw_move_jaws(units, force_sensing)
+    try:
+      # Where the jaws are going, written as it is sent. The read below has the last word.
+      self.update_width(self._firmware_units_to_mm(units))
+      await self._unchecked_fw_move_jaws(units, force_sensing)
+    finally:
+      # Jaws that sense force stop on what they hold, not at the target: read where they did.
+      await self._driver.arm._request_joint_state_after_move()
 
   @evented_operation(
     "precise_flex.move_gripper",

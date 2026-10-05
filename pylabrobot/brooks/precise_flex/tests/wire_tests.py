@@ -938,6 +938,10 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "moveJ 1 200.0 10.0 170.0 20.0 100.0",
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -951,6 +955,10 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "moveJ 1 200.0 10.0 170.0 20.0 100.0",
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -978,6 +986,10 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "moveJ 1 150.0 84.32164182987252 231.74396572121486 43.934392448912625 100.0",
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -995,6 +1007,10 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "moveJ 1 150.0 65.5007745559521 232.2285377690509 92.27068767499696 100.0",
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -1076,6 +1092,10 @@ _CASES: List[_Case] = [
       "wherej",
       "GripOpenPos 130.0",
       "gripper 1",
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -1088,6 +1108,10 @@ _CASES: List[_Case] = [
       "wherej",
       "GripClosePos 110.0",
       "gripper 2",
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -1101,6 +1125,10 @@ _CASES: List[_Case] = [
       "wherej",
       "GripOpenPos 120.0",
       "gripper 1",
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -1113,6 +1141,10 @@ _CASES: List[_Case] = [
       "wherej",
       "GripClosePos 90.0",
       "gripper 2",
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -1189,6 +1221,10 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "moveJ 1 301.125 0.0 180.0 180.0 100.0",
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -1246,6 +1282,10 @@ _RAIL_CASES: List[_Case] = [
       "wherej",
       "wherej",
       "moveJ 1 200.0 10.0 170.0 20.0 100.0 500.0 ",
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -1648,6 +1688,11 @@ if __name__ == "__main__":
   unittest.main()
 
 
+def _without_reads(sent: List[str]) -> List[str]:
+  """What was sent, less the joint reads a move waits on before and after it."""
+  return [command for command in sent if command != "wherej"]
+
+
 class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
   """No public command closes the jaws without force sensing unless the caller asks for it."""
 
@@ -1667,17 +1712,17 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
   async def test_a_jaw_move_that_closes_senses_force(self):
     arm, fake = await self._arm()
     await arm.gripper.move_to_jaw_position(70.0)
-    self.assertEqual(fake.sent[-2:], ["GripClosePos 90.0", "gripper 2"])
+    self.assertEqual(_without_reads(fake.sent), ["GripClosePos 90.0", "gripper 2"])
 
   async def test_a_jaw_move_in_firmware_units_that_closes_senses_force(self):
     arm, fake = await self._arm()
     await arm.gripper.move_to_jaw_position_firmware_units(90.0)
-    self.assertEqual(fake.sent[-2:], ["GripClosePos 90.0", "gripper 2"])
+    self.assertEqual(_without_reads(fake.sent), ["GripClosePos 90.0", "gripper 2"])
 
   async def test_closing_without_force_sensing_only_when_asked(self):
     arm, fake = await self._arm()
     await arm.gripper.move_to_jaw_position(70.0, force_sensing=False)
-    self.assertEqual(fake.sent, ["wherej", "wherej", "wherej", "GripOpenPos 90.0", "gripper 1"])
+    self.assertEqual(fake.sent[:5], ["wherej", "wherej", "wherej", "GripOpenPos 90.0", "gripper 1"])
 
   async def test_jaw_widths_stay_in_mm_after_setup(self):
     arm, _ = await self._arm()
@@ -1717,7 +1762,7 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
     await arm.arm.move_to_joint_state(
       {Axis.GRIPPER: 90.0}, close_gripper_without_force_sensing=True
     )
-    self.assertEqual(fake.sent[-1], "moveJ 1 200.0 0.0 180.0 0.0 90.0")
+    self.assertEqual(_without_reads(fake.sent), ["moveJ 1 200.0 0.0 180.0 0.0 90.0"])
 
   async def test_parking_that_closes_the_gripper_is_refused(self):
     arm, fake = await self._arm()

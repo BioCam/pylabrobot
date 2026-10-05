@@ -82,14 +82,14 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
     # 80 mm ⇒ 500 + (80 - 60) = 520 firmware units.
     await self.arm.gripper.move_to_jaw_position(width=80.0, force_sensing=False)
     self.assertEqual(
-      self._sent_commands(), ["wherej", "wherej", "wherej", "GripOpenPos 520.0", "gripper 1"]
+      self._sent_commands()[:5], ["wherej", "wherej", "wherej", "GripOpenPos 520.0", "gripper 1"]
     )
 
   async def test_move_gripper_force_sensing_true_closes_with_position(self):
     # 60 mm (the closed reference) ⇒ exactly closed_gripper_position.
     await self.arm.gripper.move_to_jaw_position(width=60.0, force_sensing=True)
     self.assertEqual(
-      self._sent_commands(), ["wherej", "wherej", "wherej", "GripClosePos 500.0", "gripper 2"]
+      self._sent_commands()[:5], ["wherej", "wherej", "wherej", "GripClosePos 500.0", "gripper 2"]
     )
 
   async def test_move_gripper_position_command_precedes_move(self):
@@ -130,7 +130,9 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
     await arm.gripper.move_to_jaw_position(width=80.0, force_sensing=False)
     commands = [c.args[0] for c in mocked(arm.send_command).call_args_list]
     # 80 mm ⇒ 1000 + (80 - 60) = 1020 units.
-    self.assertEqual(commands, ["wherej", "wherej", "wherej", "GripOpenPos 1020.0", "gripper 1"])
+    self.assertEqual(
+      commands[:5], ["wherej", "wherej", "wherej", "GripOpenPos 1020.0", "gripper 1"]
+    )
 
   def test_mm_to_firmware_units_helper(self):
     # Direct check of the linear mapping.
@@ -566,8 +568,9 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
     before moveJ (no redundant position read)."""
     self._stub("0 0.0 90.0 0.0 0")  # all axes in range
     await self.arm.arm.move_to_joint_state({Axis.SHOULDER: 10.0})
-    self.assertEqual(self._cmds("wherej"), ["wherej"])  # exactly one position read
-    self.assertEqual(len(self._cmds("moveJ")), 1)
+    sent = self._cmds("")
+    (move,) = self._cmds("moveJ")
+    self.assertEqual(sent[: sent.index(move)], ["wherej"])  # exactly one position read before it
 
   async def test_move_to_location_is_also_guarded(self):
     """The Cartesian path funnels through the same guard: an out-of-range axis raises and sends no

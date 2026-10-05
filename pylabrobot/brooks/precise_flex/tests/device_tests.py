@@ -1,10 +1,11 @@
 import unittest
-from typing import Tuple, cast
+from typing import List, Tuple, cast
 from unittest.mock import AsyncMock, patch
 
 from pylabrobot.brooks.precise_flex import kinematics
 from pylabrobot.brooks.precise_flex.device import PreciseFlex400, PreciseFlexDevice
 from pylabrobot.brooks.precise_flex.driver.configuration import Axis, PreciseFlexConfiguration
+from pylabrobot.brooks.precise_flex.driver.errors import PreciseFlexError
 from pylabrobot.brooks.precise_flex.driver.features.arm import PreciseFlexArmConfiguration
 from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGripperConfiguration
 from pylabrobot.brooks.precise_flex.driver.master import PreciseFlexDriver
@@ -342,3 +343,77 @@ class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
             lambda _current: self.joints(92.0, 179.48, -184.25, 120.0)
           )
     self.assertEqual([call.args[0] for call in sent.call_args_list], ["wherej"])
+
+
+class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
+  """The target is written to the model as a move is sent; the arm is read once it has stopped."""
+
+  STOOD = "301.1 0.0 180.0 180.0 100.0"
+  TARGET = {Axis.SHOULDER: 30.0}
+
+  def setUp(self):
+    self.device = pf400()
+    self.driver = self.device.driver
+    self.driver._configuration = configuration()
+    self.driver._create_feature_resources()
+    _, self.first, _, self.hand = hung(self.driver)
+    self.seen: List[Tuple[float, float]] = []
+
+  def controller(self, after_the_move: str, refuse: bool = False) -> AsyncMock:
+    """Answers `wherej` with where the arm stood, then with `after_the_move` once a move is sent."""
+    moved: List[str] = []
+
+    async def respond(command: str) -> str:
+      if command == "wherej":
+        return after_the_move if moved else self.STOOD
+      if command.startswith(("moveJ", "gripper")):
+        # What the model says while the move is under way.
+        self.seen.append((self.first.rotation.z, self.hand.jaw_width))
+        moved.append(command)
+        if refuse:
+          raise PreciseFlexError(-1012, "refused")
+      return ""
+
+    return AsyncMock(side_effect=respond)
+
+  async def move(self, sent: AsyncMock, call) -> None:
+    with patch.object(self.driver, "send_command", sent):
+      with patch("pylabrobot.brooks.precise_flex.driver.features.arm.asyncio.sleep", AsyncMock()):
+        await call()
+
+  async def test_the_model_stands_at_the_target_while_the_arm_travels(self):
+    sent = self.controller(after_the_move="301.1 30.0 180.0 180.0 100.0")
+    await self.move(sent, lambda: self.driver.arm.move_to_joint_state(dict(self.TARGET)))
+    self.assertEqual(self.seen, [(30.0, 100.0)])
+    self.assertEqual([call.args[0] for call in sent.call_args_list][-1], "wherej")
+
+  async def test_where_the_arm_stopped_has_the_last_word(self):
+    sent = self.controller(after_the_move="301.1 29.6 180.0 180.0 100.0")
+    await self.move(sent, lambda: self.driver.arm.move_to_joint_state(dict(self.TARGET)))
+    self.assertAlmostEqual(self.first.rotation.z, 29.6)
+
+  async def test_a_refused_move_leaves_the_model_where_the_arm_is_and_keeps_its_error(self):
+    self.driver._recover_out_of_range = False
+    sent = self.controller(after_the_move=self.STOOD, refuse=True)
+    with self.assertRaises(PreciseFlexError) as raised:
+      await self.move(sent, lambda: self.driver.arm.move_to_joint_state(dict(self.TARGET)))
+    self.assertEqual(raised.exception.replycode, -1012)
+    self.assertEqual(self.seen, [(30.0, 100.0)])
+    self.assertAlmostEqual(self.first.rotation.z, 0.0)
+
+  async def test_a_read_that_fails_after_a_refused_move_does_not_replace_its_error(self):
+    self.driver._recover_out_of_range = False
+    sent = self.controller(after_the_move="", refuse=True)
+    with self.assertLogs("pylabrobot.brooks.precise_flex.driver.features.arm", "WARNING") as logs:
+      with self.assertRaises(PreciseFlexError) as raised:
+        await self.move(sent, lambda: self.driver.arm.move_to_joint_state(dict(self.TARGET)))
+    self.assertEqual(raised.exception.replycode, -1012)
+    self.assertIn("its model is stale", "\n".join(logs.output))
+
+  async def test_the_jaws_stand_at_the_target_then_where_they_stopped(self):
+    # Force-sensed jaws stop on what they hold: sent to 80, they stop at 86.2.
+    sent = self.controller(after_the_move="301.1 0.0 180.0 180.0 86.2")
+    self.driver.gripper._gripper_soft_min, self.driver.gripper._gripper_soft_max = 60.0, 145.0
+    await self.move(sent, lambda: self.driver.gripper.move_to_jaw_position(80.0))
+    self.assertEqual(self.seen, [(0.0, 80.0)])
+    self.assertEqual(self.hand.jaw_width, 86.2)

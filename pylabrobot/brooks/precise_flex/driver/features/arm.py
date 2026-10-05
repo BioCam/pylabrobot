@@ -50,7 +50,7 @@ from ...resource_model.pf400_chassis import (
   z_carriage_location,
 )
 from ...resource_model.pf400_end_effector import GRIPPER_BODY_OUTLINE
-from ..errors import OutOfRangeOfMotionError, PreciseFlexError
+from ..errors import OperationInterrupted, OutOfRangeOfMotionError, PreciseFlexError
 from .rail import PreciseFlexRail
 
 if TYPE_CHECKING:
@@ -343,6 +343,22 @@ class PreciseFlexArm:
       self._driver.gripper._firmware_units_to_mm(joints[Axis.GRIPPER])
     )
     return joints
+
+  async def _request_joint_state_after_move(self) -> None:
+    """Wait for the arm to stop and read where it did, on a move's success and its failure alike.
+
+    A failure of its own is logged and swallowed: it must not replace the error that says what went
+    wrong with the move. An interrupt is not a failure, and is passed on.
+    """
+    try:
+      await self.request_joint_state()
+    except OperationInterrupted:
+      raise
+    except Exception:
+      logger.warning(
+        "[PreciseFlex %s] could not read where the arm stopped; its model is stale",
+        self._driver.io._host,
+      )
 
   async def request_state(self) -> str:
     """Return state of motion.
@@ -1529,7 +1545,13 @@ class PreciseFlexArm:
         self._refuse_closing_the_gripper(current, target)
       self._assert_within_soft_limits(current, target)
       self._check_pose_reachable(target)
-      await self._unchecked_fw_move_j(profile_index=self.profile_index, joint_coords=target)
+      try:
+        # Where the move is going, written as it is sent. The read below has the last word.
+        self.update_joint_state(target)
+        await self._unchecked_fw_move_j(profile_index=self.profile_index, joint_coords=target)
+      finally:
+        # `moveJ` returns once accepted: this waits for the arm to stop, then reads where it did.
+        await self._request_joint_state_after_move()
 
     try:
       await attempt()
