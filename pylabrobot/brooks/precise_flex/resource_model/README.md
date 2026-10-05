@@ -47,6 +47,10 @@ The cuboids are therefore the specification for how a model of the whole machine
 per part, each cut at that part's own corner, so a file can be dropped in without an offset and
 without anything else changing.
 
+The five files here are split from a model of the standard-reach arm, each placed by the shoulder
+axis and its joints. The links are lengthened to the extended reach, 302 and 289 mm between the
+joints, by moving the far half of each out. The column is drawn without its inner parts.
+
 A link is as long as the controller reports between its joints, plus the hub past each joint, so
 one factory serves both reaches. Nothing hangs the links on the carriage yet, or turns them.
 
