@@ -1,4 +1,5 @@
 import unittest
+from typing import Tuple, cast
 
 from pylabrobot.brooks.precise_flex import kinematics
 from pylabrobot.brooks.precise_flex.device import PreciseFlex400, PreciseFlexDevice
@@ -10,6 +11,7 @@ from pylabrobot.brooks.precise_flex.resource_model import pf400_chassis
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.end_effector import MechanicalGripper
 from pylabrobot.resources.manipulator import LinkBody
+from pylabrobot.resources.resource import Resource
 
 
 def pf400(z_travel: float = 400.0, **declared) -> PreciseFlexDevice:
@@ -155,6 +157,16 @@ def configuration(links=kinematics.ARM_LINKS_EXTENDED, z_range=(1.5, 401.5)):
   )
 
 
+def hung(driver: PreciseFlexDriver) -> Tuple[Resource, LinkBody, LinkBody, MechanicalGripper]:
+  """The carriage, both links and the gripper the driver hung, which are None before it has."""
+  return (
+    cast(Resource, driver.arm.resource),
+    cast(LinkBody, driver.arm.link_1),
+    cast(LinkBody, driver.arm.link_2),
+    cast(MechanicalGripper, driver.gripper.resource),
+  )
+
+
 class TestTheDriverHangsTheArm(unittest.TestCase):
   """At setup the driver hangs the carriage, the links and the gripper, each by its joint."""
 
@@ -165,27 +177,16 @@ class TestTheDriverHangsTheArm(unittest.TestCase):
     self.driver._create_feature_resources()
 
   def test_the_chain_runs_from_the_column_to_the_gripper(self):
-    carriage = self.device.get_resource("pf400_z_carriage")
+    carriage, first, second, hand = hung(self.driver)
+    self.assertIs(carriage, self.device.get_resource("pf400_z_carriage"))
     self.assertIs(carriage.parent, self.device.get_resource("pf400_z_column"))
-    self.assertIs(self.driver.arm.resource, carriage)
-    first, second, hand = (
-      self.driver.arm.link_1,
-      self.driver.arm.link_2,
-      self.driver.gripper.resource,
-    )
-    self.assertIsInstance(first, LinkBody)
-    self.assertIsInstance(hand, MechanicalGripper)
     self.assertEqual([first.parent, second.parent, hand.parent], [carriage, first, second])
     self.assertEqual((first.length, second.length, hand.tool_center_point.x), (302.0, 289.0, 162.0))
 
   def test_every_joint_lands_on_the_one_before_it(self):
-    first, second, hand = (
-      self.driver.arm.link_1,
-      self.driver.arm.link_2,
-      self.driver.gripper.resource,
-    )
-    shoulder = first.get_location_wrt(self.device) + first.proximal_joint
+    _, first, second, hand = hung(self.driver)
     axis = pf400_chassis.SHOULDER_AXIS
+    shoulder = first.get_location_wrt(self.device) + first.proximal_joint
     self.assertAlmostEqual(shoulder.x, axis.x)
     self.assertAlmostEqual(shoulder.y, axis.y)
     elbow = second.get_location_wrt(self.device) + second.proximal_joint

@@ -21,14 +21,15 @@ class TestPF400Gripper(unittest.TestCase):
 
   def test_the_grip_centre_is_at_the_middle_of_the_fingers_height(self):
     finger = self.gripper.fingers[0]
-    middle = finger.location.z + finger.get_size_z() / 2
+    middle = finger.get_location_wrt(self.gripper).z + finger.get_size_z() / 2
     grip = self.gripper.proximal_joint.z + self.gripper.tool_center_point.z
     self.assertAlmostEqual(middle, grip)
 
   def test_the_fingers_stand_the_jaw_width_apart_about_the_wrist_joint(self):
-    left, right = self.gripper.fingers
-    self.assertAlmostEqual(left.location.y - (right.location.y + right.get_size_y()), 120.0)
-    self.assertAlmostEqual(left.location.y + right.location.y + right.get_size_y(), 2 * 67.0)
+    left, right = (finger.get_location_wrt(self.gripper).y for finger in self.gripper.fingers)
+    thickness = self.gripper.fingers[1].get_size_y()
+    self.assertAlmostEqual(left - (right + thickness), 120.0)
+    self.assertAlmostEqual(left + right + thickness, 2 * 67.0)
 
   def test_the_parts_are_named_for_a_mesh(self):
     self.assertEqual(self.gripper.body.model, "brooks_pf400_gripper_body")
