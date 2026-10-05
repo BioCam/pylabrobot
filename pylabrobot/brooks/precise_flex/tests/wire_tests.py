@@ -35,6 +35,7 @@ _PF400_REPLIES: Dict[str, str] = {
     "0 TCP Command Server 3.0D4, Load-Save Module 3.0B2, PARobot Module 3.0D4, "
     "SSGrip Module 3.0D4, PARobot Auto Center Module 3.0D3, IntelliGuide 1.0"
   ),
+  "VToolProperty System CameraCount": "2",  # the relay answers the bare value
   "pd 2700": "0 500, 360, 720, 720, 400",
   "pd 2702": "0 3500, 600, 920, 4000, 10000",
   "pd 2704": "0 150",
@@ -1367,6 +1368,7 @@ _SETUP = [
   "pd 2003",
   "pd 2002",
   "version",
+  "VToolProperty System CameraCount",
   "pd 2700",
   "pd 2702",
   "pd 2704",
@@ -1404,6 +1406,7 @@ _SETUP_SKIP_HOME = [
   "pd 2003",
   "pd 2002",
   "version",
+  "VToolProperty System CameraCount",
   "pd 2700",
   "pd 2702",
   "pd 2704",
@@ -1442,6 +1445,7 @@ _RAIL_SETUP = [
   "pd 2003",
   "pd 2002",
   "version",
+  "VToolProperty System CameraCount",
   "pd 2700",
   "pd 2702",
   "pd 2704",
@@ -1571,7 +1575,8 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
     await arm.arm._handle_out_of_range_axes()
     self.assertEqual(fake.sent, whole.sent)
     self.assertTrue(
-      all(c.split()[0] in ("pd", "version", "sysState") for c in discovery), discovery
+      all(c.split()[0] in ("pd", "version", "VToolProperty", "sysState") for c in discovery),
+      discovery,
     )
 
   async def test_a_failed_configuration_read_ends_setup(self):

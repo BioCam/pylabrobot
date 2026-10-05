@@ -475,6 +475,7 @@ _SETUP: List[str] = [
   "controller: pd 2003",
   "controller: pd 2002",
   "controller: version",
+  "controller: VToolProperty System CameraCount",
   "controller: pd 2700",
   "controller: pd 2702",
   "controller: pd 2704",

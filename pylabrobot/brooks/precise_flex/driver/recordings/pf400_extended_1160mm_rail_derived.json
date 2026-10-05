@@ -109,6 +109,7 @@
       "max_acceleration": null,
       "max_deceleration": null
     },
+    "camera_count": 2,
     "has_vision_gripper": true
   }
 }

@@ -37,7 +37,7 @@ class PreciseFlexConfiguration:
   via ``request_parameter`` and the ``version`` command). The kinematics/flags
   tier is supplied at construction or derived: link lengths are not on the arm,
   ``has_rail`` comes from the joint set, ``is_dual_gripper`` from the axis_mask
-  ``&H80`` bit, ``has_vision_gripper`` from the model name, and ``reach_class`` from the
+  ``&H80`` bit, ``has_vision_gripper`` from the camera count, and ``reach_class`` from the
   controller-read link lengths.
   """
 
@@ -59,6 +59,9 @@ class PreciseFlexConfiguration:
   arm: PreciseFlexArmConfiguration
   gripper: PreciseFlexGripperConfiguration
   rail: Optional[PreciseFlexRailConfiguration] = None
+  # --- vision ---
+  # How many cameras the controller counts through its vision module; 0 without the module.
+  camera_count: int = 0
   # --- derived ---
   has_vision_gripper: bool = False
   # Live state, not a fact; kept for the deprecated `power_state` until it is removed.
