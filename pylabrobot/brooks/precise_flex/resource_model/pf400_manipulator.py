@@ -8,7 +8,6 @@ link's joints is what the controller reports.
 
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.manipulator import LinkBody
-from pylabrobot.resources.resource import Resource
 
 # Link 1, shoulder to elbow: how wide and how tall it is, and how far its round hub reaches past the
 # joint at each end.
@@ -28,29 +27,18 @@ LINK_1_ABOVE_FLANGE_PLANE = 31.5
 def _link(
   name: str, length: float, size_yz: tuple, hub_proximal: float, hub_distal: float, model: str
 ) -> LinkBody:
-  """A link `length` between its joints, with its body as a child for a mesh to bind to."""
-  size_x = hub_proximal + length + hub_distal
+  """A link `length` between its joints, reaching a hub past each."""
   # The joints lie along the bottom face, centred across the link.
   proximal_joint = Coordinate(hub_proximal, size_yz[0] / 2, 0.0)
-  link = LinkBody(
+  return LinkBody(
     name=name,
-    size_x=size_x,
+    size_x=hub_proximal + length + hub_distal,
     size_y=size_yz[0],
     size_z=size_yz[1],
     proximal_joint=proximal_joint,
     distal_joint=proximal_joint + Coordinate(length, 0.0, 0.0),
     model=model,
   )
-  body = Resource(
-    name=f"{name}_body",
-    size_x=size_x,
-    size_y=size_yz[0],
-    size_z=size_yz[1],
-    category="body",
-    model=f"{model}_body",
-  )
-  link.assign_child_resource(body, location=Coordinate.zero())
-  return link
 
 
 def link_1(name: str, length: float) -> LinkBody:

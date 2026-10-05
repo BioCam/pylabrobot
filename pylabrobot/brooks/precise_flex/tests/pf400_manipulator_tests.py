@@ -27,11 +27,11 @@ class TestPF400Links(unittest.TestCase):
         self.assertEqual(link.proximal_joint, Coordinate(56.0, 56.0, 0.0))
         self.assertEqual(link.distal_joint, Coordinate(56.0 + length, 56.0, 0.0))
 
-  def test_each_link_carries_its_body_for_a_mesh(self):
-    link = pf400_manipulator.link_1("link_1", 302.0)
-    (body,) = link.children
-    self.assertEqual((body.name, body.model), ("link_1_body", "brooks_pf400_link_1_body"))
-    self.assertEqual(body.get_size_x(), link.get_size_x())
+  def test_each_link_is_named_for_its_mesh_and_carries_nothing(self):
+    first = pf400_manipulator.link_1("link_1", 302.0)
+    second = pf400_manipulator.link_2("link_2", 289.0)
+    self.assertEqual((first.model, second.model), ("brooks_pf400_link_1", "brooks_pf400_link_2"))
+    self.assertEqual(first.children + second.children, [])
 
   def test_the_links_and_the_carriage_nest(self):
     link_2_top = pf400_manipulator.LINK_2_SIZE_YZ[1]
