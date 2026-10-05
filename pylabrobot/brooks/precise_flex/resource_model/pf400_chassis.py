@@ -15,36 +15,36 @@ BASE_PLATE_SIZE = (200.8, 235.1, 9.6)
 # the surface the plate stands on. Every position the controller reports is measured from here.
 SHOULDER_AXIS = Coordinate(BASE_PLATE_SIZE[0], BASE_PLATE_SIZE[1] / 2, 62.0)
 
-Z_COLUMN_SIZE_XY = (123.5, 181.0)
+Z_COLUMN_SIZE_XY = (124.5, 181.5)
 # Where the column stands on the plate's top face, centred across it.
 Z_COLUMN_LOCATION = Coordinate(
-  5.0, (BASE_PLATE_SIZE[1] - Z_COLUMN_SIZE_XY[1]) / 2, BASE_PLATE_SIZE[2]
+  8.8, (BASE_PLATE_SIZE[1] - Z_COLUMN_SIZE_XY[1]) / 2, BASE_PLATE_SIZE[2]
 )
-# The column seen from above, in its own frame: rounded at the front and the back, not a box.
+# The column seen from above, in its own frame: rounded at both sides, not a box.
 Z_COLUMN_OUTLINE = (
-  (3.8, 18.0),
-  (39.9, 4.2),
-  (53.0, 1.1),
-  (72.7, -0.2),
-  (92.3, 2.4),
-  (101.9, 5.1),
-  (109.1, 7.9),
-  (127.1, 18.1),
-  (128.3, 90.5),
-  (126.9, 163.2),
-  (109.1, 173.1),
-  (89.7, 179.2),
-  (69.4, 181.3),
-  (49.1, 179.2),
-  (29.7, 173.1),
-  (3.8, 163.0),
+  (0.0, 18.3),
+  (36.1, 4.4),
+  (49.2, 1.4),
+  (68.9, 0.0),
+  (88.5, 2.6),
+  (98.1, 5.3),
+  (105.3, 8.2),
+  (123.3, 18.4),
+  (124.5, 90.7),
+  (123.1, 163.4),
+  (105.3, 173.3),
+  (85.9, 179.5),
+  (65.6, 181.6),
+  (45.3, 179.4),
+  (25.9, 173.3),
+  (0.0, 163.3),
 )
 # How far the column reaches above the flange plane once the carriage is at the top of its travel.
 Z_COLUMN_HEADROOM = 250.0
 
 # The carriage the J1 drive rides up the column: the housing the arm turns in, which is what the
 # drive carries and what is seen of it.
-Z_CARRIAGE_SIZE = (122.8, 110.0, 58.1)
+Z_CARRIAGE_SIZE = (118.0, 110.0, 58.1)
 # Where it rides: at the column's front face, centred across it. Z is whatever the drive reports.
 Z_CARRIAGE_LOCATION_XY = (Z_COLUMN_SIZE_XY[0], (Z_COLUMN_SIZE_XY[1] - Z_CARRIAGE_SIZE[1]) / 2)
 # How far the carriage's underside stands above the flange plane the drive reports: the arm hangs

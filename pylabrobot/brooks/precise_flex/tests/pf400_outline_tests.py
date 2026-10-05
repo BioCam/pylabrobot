@@ -6,9 +6,8 @@ from pylabrobot.brooks.precise_flex.resource_model import pf400_chassis, pf400_e
 Outline = Sequence[Tuple[float, float]]
 
 # Each outline, its part's cuboid, and how far the outline may stand outside that cuboid, in mm.
-# The column's cuboid stands 4.8 mm further back than its mesh does.
 OUTLINES: Tuple[Tuple[str, Outline, Tuple[float, ...], float], ...] = (
-  ("column", pf400_chassis.Z_COLUMN_OUTLINE, pf400_chassis.Z_COLUMN_SIZE_XY, 4.8),
+  ("column", pf400_chassis.Z_COLUMN_OUTLINE, pf400_chassis.Z_COLUMN_SIZE_XY, 0.5),
   ("body", pf400_end_effector.GRIPPER_BODY_OUTLINE, pf400_end_effector.GRIPPER_BODY_SIZE, 0.5),
 )
 

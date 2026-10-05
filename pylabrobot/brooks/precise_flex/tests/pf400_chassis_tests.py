@@ -47,7 +47,7 @@ class TestTheCarriage(unittest.TestCase):
 
   def test_the_drive_reports_the_shoulder_axis_at_the_flange_plane(self):
     reference = pf400_chassis.Z_CARRIAGE_REFERENCE_POINT
-    self.assertEqual(reference, Coordinate(72.3, 55.0, -104.2))
+    self.assertEqual(reference, Coordinate(67.5, 55.0, -104.2))
 
   def test_a_reading_moves_it_by_what_it_read(self):
     stood = pf400_chassis.z_carriage_location(0.0)
