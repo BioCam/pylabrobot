@@ -4,6 +4,7 @@ import tempfile
 import unittest
 
 from pylabrobot.brooks.precise_flex import kinematics
+from pylabrobot.brooks.precise_flex.device import RECORDING_PF400
 from pylabrobot.brooks.precise_flex.driver.configuration import (
   Axis,
   PreciseFlexConfiguration,
@@ -115,5 +116,32 @@ class TestSavedConfiguration(unittest.TestCase):
     driver = PreciseFlexDriver(
       host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
     )
-    with self.assertRaises(RuntimeError):
-      driver.save_configuration("unused.json")
+    with tempfile.TemporaryDirectory() as directory:
+      path = os.path.join(directory, "configuration.json")
+      with self.assertRaises(RuntimeError):
+        driver.save_configuration(path)
+      self.assertFalse(os.path.exists(path))
+
+
+class TestTheRecordedPF400(unittest.TestCase):
+  """The recording shipped with the driver: what one extended-reach PF400 answered."""
+
+  def setUp(self):
+    self.recorded = read_configuration(RECORDING_PF400)
+
+  def test_it_is_the_arm_it_is_named_for(self):
+    self.assertEqual(self.recorded.robot_name, "PreciseFlex 400SX")
+    self.assertEqual(self.recorded.arm.reach_class, "extended")
+    self.assertEqual(self.recorded.arm.z_range, (1.5, 401.5))
+    self.assertEqual(self.recorded.arm.soft_limits[Axis.WRIST], (-960.0, 960.0))
+    self.assertEqual(self.recorded.arm.kinematics.gripper_length, 162.0)
+    self.assertEqual(self.recorded.gripper.soft_limit_range, (69.0, 134.0))
+    self.assertTrue(self.recorded.has_vision_server)
+    self.assertFalse(self.recorded.has_rail)
+
+  def test_it_does_not_say_which_arm_it_was(self):
+    self.assertEqual(self.recorded.controller_serial, "")
+
+  def test_it_is_as_the_driver_writes_it(self):
+    with open(RECORDING_PF400, encoding="utf-8") as f:
+      self.assertEqual(json.load(f), {"device": to_jsonable(self.recorded)})

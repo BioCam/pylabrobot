@@ -5,6 +5,7 @@ off it by the driver at setup, from what the controller reports.
 """
 
 import logging
+import os
 from typing import Literal, Optional, Tuple
 
 from pylabrobot.brooks.precise_flex import kinematics
@@ -26,6 +27,10 @@ from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
 
 logger = logging.getLogger(__name__)
+
+_RECORDINGS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "driver", "recordings")
+# What an extended-reach PreciseFlex 400 with 400 mm of Z travel reported about itself.
+RECORDING_PF400 = os.path.join(_RECORDINGS, "pf400_extended_400mm.json")
 
 
 class PreciseFlexDevice(Resource):
