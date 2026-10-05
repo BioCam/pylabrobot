@@ -32,6 +32,7 @@ ring's bounding box; `is_reachable` asks the ring.
 | `z_carriage` | `z_carriage` | `brooks_pf400_z_carriage` | What the Z drive moves: the housing the arm turns in |
 | `link_1` | `link_body` | `brooks_pf400_link_1` | Shoulder joint to elbow joint |
 | `link_2` | `link_body` | `brooks_pf400_link_2` | Elbow joint to wrist joint, turning underneath link 1 |
+| `gripper` | `mechanical_gripper` | `brooks_pf400_gripper` | Wrist joint to the point the fingers grip at |
 
 `PreciseFlex400` in `device.py` assembles them: the plate is the machine's, and the column is the
 plate's. The carriage is hung on by the driver at setup, because where it stands has to be read
@@ -54,6 +55,9 @@ joints, by moving the far half of each out.
 A link is as long as the controller reports between its joints, plus the hub past each joint, so
 one factory serves both reaches. Nothing hangs the links on the carriage yet, or turns them.
 
+The gripper's mesh is its body and one finger, drawn for both. The blocks the fingers slide on are
+not drawn.
+
 ## Not modelled yet
 
-The gripper and the optional rail.
+The optional rail.
