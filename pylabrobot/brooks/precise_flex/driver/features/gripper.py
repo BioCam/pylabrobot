@@ -244,10 +244,11 @@ class PreciseFlexGripper:
   ):
     """Move the PreciseFlex gripper jaws.
 
-    With force sensing (``gripper 2``) the jaws close under force control: a close to 80 units
-    with nothing held was logged ending near 70.6, so ``width`` is not where they stop. Without it
-    they drive to the open position (``gripper 1``) whichever way that is. A target is held half
-    a unit inside the axis; a target past its end left a bench arm in error -3104 until homed.
+    With force sensing (``gripper 2``) the jaws close under force control to the close position:
+    with nothing held, a close to 75 units settled at 74.8. Without it they drive to the open
+    position (``gripper 1``) whichever way that is. A target is held half a unit inside the axis:
+    the jaws settle up to 0.2 units past a target, and a target past the axis's end left a bench
+    arm in error -3104 until homed.
 
     Args:
       width: the jaw width to move to, in mm.
