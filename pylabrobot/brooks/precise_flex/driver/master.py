@@ -1,6 +1,7 @@
 """PreciseFlex driver - owns the socket I/O connection and device lifecycle."""
 
 import asyncio
+import functools
 import json
 import logging
 import math
@@ -19,6 +20,7 @@ from pylabrobot.brooks.precise_flex import kinematics
 from pylabrobot.brooks.precise_flex.driver.configuration import (
   Axis,
   PreciseFlexConfiguration,
+  read_configuration,
   to_jsonable,
 )
 from pylabrobot.brooks.precise_flex.kinematics import JointState
@@ -51,6 +53,16 @@ from .features.rail import PreciseFlexRail, PreciseFlexRailConfiguration
 from .features.vision import PreciseFlexVision
 
 logger = logging.getLogger(__name__)
+
+# What a declared configuration and the controller's answers have to agree on.
+_DECLARATION_MUST_MATCH = (
+  "robot_type",
+  "has_rail",
+  "gripper.is_dual_gripper",
+  "arm.reach_class",
+  "arm.soft_limits",
+  "gripper.soft_limit_range",
+)
 
 
 # The vision server (Brooks' PreciseVision engine) behind a camera-gripper arm: a text property
@@ -170,6 +182,7 @@ class PreciseFlexDriver:
     parking_position: Optional[JointState] = None,
     vision_host: Optional[str] = None,
     workspace: Optional[Workspace] = None,
+    declared_configuration_json: Optional[str] = None,
   ) -> None:
     """
     Args:
@@ -209,9 +222,18 @@ class PreciseFlexDriver:
         unaffected. Only consulted when setup discovers an IntelliGuide vision module.
       workspace: the workspace to reflect the arm into. Optional: without one the driver still
         drives the arm, and models nothing.
+      declared_configuration_json: path to a JSON file holding a declared configuration, as
+        `save_configuration` writes one. The only way a configuration is read from a file.
+        Discovery cross-checks it against what the controller answers.
     """
     super().__init__()
     self.workspace = workspace
+    self.declared_configuration_json = declared_configuration_json
+    self.declared: Optional[PreciseFlexConfiguration] = (
+      None
+      if declared_configuration_json is None
+      else read_configuration(declared_configuration_json)
+    )
     self.io = Socket(human_readable_device_name="Precise Flex Arm", host=host, port=port)
     self.timeout = timeout
     # Serializes each request->reply exchange over the single shared controller socket; the rationale
@@ -516,15 +538,46 @@ class PreciseFlexDriver:
       await self.home()
     await self.arm.stop_freedrive_mode()
 
+  def _check_declared_against(self, discovered: "PreciseFlexConfiguration") -> None:
+    """Raise if what was declared cannot stand for what the controller answered.
+
+    Only what decides whether the two are the same kind of arm, set up the same way: what is
+    fitted, its reach, and its soft limits. Identity is left out, since a declaration taken off one
+    arm describes another of the same build.
+
+    Args:
+      discovered: what the controller answered.
+
+    Raises:
+      ValueError: If any of those disagree, naming each.
+    """
+    if self.declared is None:
+      return
+    differences = []
+    for name in _DECLARATION_MUST_MATCH:
+      declared, answered = (
+        functools.reduce(getattr, name.split("."), configuration)
+        for configuration in (self.declared, discovered)
+      )
+      if declared != answered:
+        differences.append(f"{name}: declared {declared!r}, controller answers {answered!r}")
+    if differences:
+      raise ValueError(
+        "the declared configuration does not describe this arm:\n  " + "\n  ".join(differences)
+      )
+
   async def discover(self) -> "PreciseFlexConfiguration":
     """Read the controller's configuration and adopt it. No motion.
 
     Raises if the read fails: without it IK solves for another arm and the gripper has no limits.
+    Raises too if a declared configuration does not describe this arm.
 
     Returns:
       The configuration, also kept as ``configuration``.
     """
-    self._configuration = await self._request_configuration()
+    configuration = await self._request_configuration()
+    self._check_declared_against(configuration)
+    self._configuration = configuration
     self._adopt_configuration(self._configuration)
     if self.arm.parking_position is None:
       self.arm.parking_position = self.arm.PARKING_POSITION_RIGHT

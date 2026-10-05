@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import os
 import tempfile
@@ -15,6 +16,11 @@ from pylabrobot.brooks.precise_flex.driver.features.arm import PreciseFlexArmCon
 from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGripperConfiguration
 from pylabrobot.brooks.precise_flex.driver.features.rail import PreciseFlexRailConfiguration
 from pylabrobot.brooks.precise_flex.driver.master import PreciseFlexDriver
+from pylabrobot.brooks.precise_flex.tests.wire_tests import (
+  _RAIL_REPLIES,
+  _FakeController,
+  _make_arm,
+)
 
 
 def configuration(rail=None) -> PreciseFlexConfiguration:
@@ -62,7 +68,7 @@ def configuration(rail=None) -> PreciseFlexConfiguration:
   )
 
 
-class TestSavedConfiguration(unittest.TestCase):
+class TestSavedConfiguration(unittest.IsolatedAsyncioTestCase):
   """A configuration is written to a file and read back as the dataclasses it was."""
 
   def round_trip(self, written: PreciseFlexConfiguration) -> PreciseFlexConfiguration:
@@ -123,7 +129,7 @@ class TestSavedConfiguration(unittest.TestCase):
       self.assertFalse(os.path.exists(path))
 
 
-class TestTheRecordedPF400(unittest.TestCase):
+class TestTheRecordedPF400(unittest.IsolatedAsyncioTestCase):
   """The recording shipped with the driver: what one extended-reach PF400 answered."""
 
   def setUp(self):
@@ -145,3 +151,72 @@ class TestTheRecordedPF400(unittest.TestCase):
   def test_it_is_as_the_driver_writes_it(self):
     with open(RECORDING_PF400, encoding="utf-8") as f:
       self.assertEqual(json.load(f), {"device": to_jsonable(self.recorded)})
+
+
+class TestADeclaredConfigurationIsCrossChecked(unittest.IsolatedAsyncioTestCase):
+  """Discovery refuses a declaration that does not describe the arm that answers."""
+
+  def setUp(self):
+    self.driver = PreciseFlexDriver(
+      host="localhost",
+      gripper_length=162.0,
+      gripper_z_offset=0.0,
+      closed_gripper_position=60.0,
+      declared_configuration_json=RECORDING_PF400,
+    )
+    self.recorded = read_configuration(RECORDING_PF400)
+
+  def test_the_file_is_read_when_the_driver_is_built(self):
+    self.assertEqual(self.driver.declared, self.recorded)
+    self.assertEqual(self.driver.declared_configuration_json, RECORDING_PF400)
+
+  def test_another_arm_of_the_same_build_passes(self):
+    another = dataclasses.replace(
+      self.recorded, controller_serial="another", gpl_version="GPL 5.2", modules=()
+    )
+    self.driver._check_declared_against(another)
+
+  def test_what_differs_is_named(self):
+    standard = dataclasses.replace(self.recorded.arm, reach_class="standard")
+    narrowed = dataclasses.replace(
+      self.recorded.arm, soft_limits={**self.recorded.arm.soft_limits, Axis.SHOULDER: (-90.0, 90.0)}
+    )
+    for answered, named in (
+      (dataclasses.replace(self.recorded, arm=standard), "arm.reach_class: declared 'extended'"),
+      (dataclasses.replace(self.recorded, arm=narrowed), "arm.soft_limits"),
+      (
+        dataclasses.replace(self.recorded, rail=PreciseFlexRailConfiguration((0.0, 1000.0))),
+        "has_rail: declared False, controller answers True",
+      ),
+    ):
+      with self.subTest(named=named), self.assertRaisesRegex(ValueError, named):
+        self.driver._check_declared_against(answered)
+
+  def test_nothing_declared_checks_nothing(self):
+    driver = PreciseFlexDriver(
+      host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
+    )
+    self.assertIsNone(driver.declared)
+    driver._check_declared_against(configuration())
+
+
+class TestDiscoveryAgainstADeclaration(unittest.IsolatedAsyncioTestCase):
+  """What `discover` does with a declaration, against the wire tests' controller."""
+
+  async def test_a_declaration_saved_off_the_same_arm_is_accepted(self):
+    first = _make_arm(_FakeController())
+    await first.discover()
+    with tempfile.TemporaryDirectory() as directory:
+      path = os.path.join(directory, "configuration.json")
+      first.save_configuration(path)
+      second = _make_arm(_FakeController())
+      second.declared = read_configuration(path)
+    self.assertEqual(await second.discover(), first.configuration)
+
+  async def test_a_declaration_for_another_arm_is_refused_and_nothing_is_adopted(self):
+    arm = _make_arm(_FakeController(_RAIL_REPLIES), has_rail=True)
+    arm.declared = read_configuration(RECORDING_PF400)
+    with self.assertRaisesRegex(ValueError, "has_rail: declared False, controller answers True"):
+      await arm.discover()
+    with self.assertRaises(RuntimeError):
+      arm.configuration

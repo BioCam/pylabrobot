@@ -23,7 +23,7 @@ def pf400(z_travel: float = 400.0, **declared) -> PreciseFlexDevice:
   return PreciseFlex400(driver, name="pf400", z_travel=z_travel, **declared)
 
 
-class TestTheDevice(unittest.TestCase):
+class TestTheDevice(unittest.IsolatedAsyncioTestCase):
   """The device carries its workspace and hands it to its driver."""
 
   def setUp(self):
@@ -58,7 +58,7 @@ class TestTheDevice(unittest.TestCase):
     self.assertIsNone(driver.workspace)
 
 
-class TestTheChassisStandsInOneTree(unittest.TestCase):
+class TestTheChassisStandsInOneTree(unittest.IsolatedAsyncioTestCase):
   """The plate is the machine's, and the column is the plate's."""
 
   def setUp(self):
@@ -81,7 +81,7 @@ class TestTheChassisStandsInOneTree(unittest.TestCase):
       self.assertEqual(pf400(z_travel).get_size_z(), height)
 
 
-class TestWhereTheControllerReportsFrom(unittest.TestCase):
+class TestWhereTheControllerReportsFrom(unittest.IsolatedAsyncioTestCase):
   """The shoulder axis stands where it was measured, in the machine's own frame."""
 
   def test_the_axis_stands_at_the_front_of_the_machine(self):
@@ -91,7 +91,7 @@ class TestWhereTheControllerReportsFrom(unittest.TestCase):
     self.assertEqual(axis, Coordinate(device.get_size_x(), device.get_size_y() / 2, 62.0))
 
 
-class TestTheCarriageOnTheMachine(unittest.TestCase):
+class TestTheCarriageOnTheMachine(unittest.IsolatedAsyncioTestCase):
   """A carriage on the column stands where the J1 drive says it is."""
 
   def setUp(self):
@@ -174,7 +174,7 @@ def hung(driver: PreciseFlexDriver) -> Tuple[Resource, LinkBody, LinkBody, Mecha
   )
 
 
-class TestTheDriverHangsTheArm(unittest.TestCase):
+class TestTheDriverHangsTheArm(unittest.IsolatedAsyncioTestCase):
   """At setup the driver hangs the carriage, the links and the gripper, each by its joint."""
 
   def setUp(self):
