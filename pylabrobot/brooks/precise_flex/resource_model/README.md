@@ -64,6 +64,13 @@ setup, each by its joint, and every joint read stands and turns them to what was
 The gripper's mesh is its body and one finger, drawn for both. The blocks the fingers slide on are
 not drawn.
 
+## Outlines
+
+A cuboid says more than a rounded part covers. The column and the gripper's body each carry an
+outline as well: the part seen from above, as the points round it in its own frame. It is the
+convex outline of everything the mesh covers, so it never says less than the part. A finger is a
+bar, and its cuboid is its outline.
+
 ## Not modelled yet
 
 The optional rail.

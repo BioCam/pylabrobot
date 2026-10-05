@@ -20,6 +20,25 @@ Z_COLUMN_SIZE_XY = (123.5, 181.0)
 Z_COLUMN_LOCATION = Coordinate(
   5.0, (BASE_PLATE_SIZE[1] - Z_COLUMN_SIZE_XY[1]) / 2, BASE_PLATE_SIZE[2]
 )
+# The column seen from above, in its own frame: rounded at the front and the back, not a box.
+Z_COLUMN_OUTLINE = (
+  (3.8, 18.0),
+  (39.9, 4.2),
+  (53.0, 1.1),
+  (72.7, -0.2),
+  (92.3, 2.4),
+  (101.9, 5.1),
+  (109.1, 7.9),
+  (127.1, 18.1),
+  (128.3, 90.5),
+  (126.9, 163.2),
+  (109.1, 173.1),
+  (89.7, 179.2),
+  (69.4, 181.3),
+  (49.1, 179.2),
+  (29.7, 173.1),
+  (3.8, 163.0),
+)
 # How far the column reaches above the flange plane once the carriage is at the top of its travel.
 Z_COLUMN_HEADROOM = 250.0
 

@@ -15,6 +15,20 @@ GRIPPER_BODY_SIZE = (127.0, 134.0, 55.4)
 # The wrist joint within the gripper: centred across it, in the flange plane just above its body.
 GRIPPER_JOINT = Coordinate(34.4, GRIPPER_BODY_SIZE[1] / 2, 56.4)
 
+# The body seen from above, in its own frame: it narrows towards the wrist joint.
+GRIPPER_BODY_OUTLINE = (
+  (8.6, 44.1),
+  (13.6, 39.5),
+  (66.3, 0.2),
+  (125.0, 0.1),
+  (126.8, 1.2),
+  (126.8, 133.0),
+  (125.0, 134.1),
+  (64.4, 133.3),
+  (4.2, 83.6),
+  (0.0, 67.1),
+)
+
 GRIPPER_FINGER_SIZE = (107.8, 11.5, 22.6)
 # Where a finger starts along the gripper and how far it hangs below the body. Y is the jaws'.
 GRIPPER_FINGER_LOCATION = Coordinate(93.7, 0.0, -1.2)
