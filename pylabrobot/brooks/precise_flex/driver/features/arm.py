@@ -341,7 +341,7 @@ class PreciseFlexArm:
 
   # -- motion primitives ---------------------------------------------------------------------------
 
-  async def _move_j(self, profile_index: int, joint_coords: JointState) -> None:
+  async def _unchecked_fw_move_j(self, profile_index: int, joint_coords: JointState) -> None:
     """Move the robot using joint coordinates, handling rail configuration. Raw moveJ - the
     out-of-range guard lives in the caller (``_guarded_move_j``), not in this primitive."""
     if self._driver._has_rail:
@@ -363,7 +363,7 @@ class PreciseFlexArm:
       )
     await self._driver.send_command(f"moveJ {profile_index} {angles_str}")
 
-  async def _move_one_axis(self, axis: Axis, position: float) -> None:
+  async def _unchecked_fw_move_one_axis(self, axis: Axis, position: float) -> None:
     """Move a single axis to an absolute position (firmware ``MoveOneAxis``).
 
     Used for recovery: the controller blocks a normal move while an axis is out of
@@ -372,7 +372,7 @@ class PreciseFlexArm:
     """
     await self._driver.send_command(f"MoveOneAxis {int(axis)} {position} {self.profile_index}")
 
-  async def _set_joint_angles(
+  async def _unchecked_fw_set_joint_angles(
     self,
     station_index: int,
     joint_position: JointState,
@@ -974,6 +974,10 @@ class PreciseFlexArm:
     """
     await self._driver.send_command(f"setBrake {axis}")
 
+  async def _unchecked_fw_start_zero_torque(self, axis_mask: int) -> None:
+    """Place the axes of ``axis_mask`` in zero torque mode. Nothing is guarded."""
+    await self._driver.send_command(f"zeroTorque 1 {axis_mask}")
+
   async def start_zero_torque(self, axis_mask: int = 1) -> None:
     """Place axes of the selected robot in zero torque mode.
 
@@ -988,7 +992,7 @@ class PreciseFlexArm:
     """
     if axis_mask <= 0:
       raise ValueError(f"axis_mask must be greater than 0, is {axis_mask}")
-    await self._driver.send_command(f"zeroTorque 1 {axis_mask}")
+    await self._unchecked_fw_start_zero_torque(axis_mask)
 
   async def stop_zero_torque(self) -> None:
     """Take the entire robot out of zero torque mode."""
@@ -1281,7 +1285,7 @@ class PreciseFlexArm:
           hi,
           target,
         )
-        await self._move_one_axis(axis, target)
+        await self._unchecked_fw_move_one_axis(axis, target)
         await self._wait_for_eom()
         recovered[axis] = target
     finally:
@@ -1376,11 +1380,12 @@ class PreciseFlexArm:
     build_target: Callable[[JointState], JointState],
     close_gripper_without_force_sensing: bool = False,
   ) -> None:
-    """The single guarded path to the raw ``_move_j`` primitive: read the live pose, check it and
-    the target against the soft limits, send the move, and on out-of-range recover once and retry.
+    """The single guarded path to the raw ``_unchecked_fw_move_j`` primitive: read the live pose,
+    check it and the target against the soft limits, send the move, and on out-of-range recover
+    once and retry.
     Both ``move_to_joint_state`` (a partial spec merged over the live pose) and
     ``move_to_location`` (a full pose from IK) funnel through here, so no commanded move reaches
-    ``_move_j`` unchecked.
+    ``_unchecked_fw_move_j`` unchecked.
 
     ``build_target`` maps the freshly-read pose to the full target joints - the only part that
     differs between the two callers. It re-runs each attempt, so a recovery move that shifts an
@@ -1389,8 +1394,8 @@ class PreciseFlexArm:
 
     When an axis is out of range the controller blocks the move (-1012). With ``recover_out_of_range``
     set, this drives the offending axes back into range once (``recover_axes_within_limits``) and
-    retries; otherwise the ``OutOfRangeOfMotionError`` propagates. Recovery uses ``_move_one_axis``, a
-    different primitive, so it cannot recurse here.
+    retries; otherwise the ``OutOfRangeOfMotionError`` propagates. Recovery uses
+    ``_unchecked_fw_move_one_axis``, a different primitive, so it cannot recurse here.
     """
 
     async def attempt() -> None:
@@ -1399,7 +1404,7 @@ class PreciseFlexArm:
       if not close_gripper_without_force_sensing:
         self._refuse_closing_the_gripper(current, target)
       self._assert_within_soft_limits(current, target)
-      await self._move_j(profile_index=self.profile_index, joint_coords=target)
+      await self._unchecked_fw_move_j(profile_index=self.profile_index, joint_coords=target)
 
     try:
       await attempt()
@@ -1687,7 +1692,7 @@ class PreciseFlexArm:
 
     try:
       for target in targets:
-        await self._move_j(profile_index=profile_index, joint_coords=target)
+        await self._unchecked_fw_move_j(profile_index=profile_index, joint_coords=target)
     finally:
       # Let queued motion settle before returning or restoring the profile - restoring InRange
       # mid-move would change the in-flight blend.
@@ -1773,6 +1778,10 @@ class PreciseFlexArm:
 
   # -- elbow orientation change --------------------------------------------------------------------
 
+  async def _unchecked_fw_change_elbow_orientation(self, grip_mode: int) -> None:
+    """Change righty to lefty or back through the customizable locations. Nothing is guarded."""
+    await self._driver.send_command(f"ChangeConfig {grip_mode}")
+
   async def change_elbow_orientation(
     self, grip_mode: int = 0, *, close_gripper_without_force_sensing: bool = False
   ) -> None:
@@ -1798,7 +1807,11 @@ class PreciseFlexArm:
         "grip_mode=2 closes the gripper without sensing force; close it with "
         "gripper.move_to_jaw_position, or pass close_gripper_without_force_sensing=True"
       )
-    await self._driver.send_command(f"ChangeConfig {grip_mode}")
+    await self._unchecked_fw_change_elbow_orientation(grip_mode)
+
+  async def _unchecked_fw_change_elbow_orientation_by_algorithm(self, grip_mode: int) -> None:
+    """Change righty to lefty or back by the controller's algorithm. Nothing is guarded."""
+    await self._driver.send_command(f"ChangeConfig2 {grip_mode}")
 
   async def change_elbow_orientation_by_algorithm(
     self, grip_mode: int = 0, *, close_gripper_without_force_sensing: bool = False
@@ -1825,18 +1838,18 @@ class PreciseFlexArm:
         "grip_mode=2 closes the gripper without sensing force; close it with "
         "gripper.move_to_jaw_position, or pass close_gripper_without_force_sensing=True"
       )
-    await self._driver.send_command(f"ChangeConfig2 {grip_mode}")
+    await self._unchecked_fw_change_elbow_orientation_by_algorithm(grip_mode)
 
   # -- pick and place ------------------------------------------------------------------------------
 
-  async def _set_grip_detail(self):
+  async def _unchecked_fw_set_grip_detail(self):
     """Configure a default vertical station type for pick/place operations."""
     await self._driver.send_command(f"StationType {self.station_index} 1 0 100 0 10")
 
   async def _pick_plate_j(self, joint_position: JointState):
     """Pick a plate from the specified position using joint coordinates."""
-    await self._set_joint_angles(self.station_index, joint_position)
-    await self._set_grip_detail()
+    await self._unchecked_fw_set_joint_angles(self.station_index, joint_position)
+    await self._unchecked_fw_set_grip_detail()
     horizontal_compliance_int = 1 if self.horizontal_compliance else 0
     ret_code = await self._driver.send_command(
       f"pickplate {self.station_index} {horizontal_compliance_int} {self.horizontal_compliance_torque}"
@@ -1846,8 +1859,8 @@ class PreciseFlexArm:
 
   async def _place_plate_j(self, joint_position: JointState):
     """Place a plate at the specified position using joint coordinates."""
-    await self._set_joint_angles(self.station_index, joint_position)
-    await self._set_grip_detail()
+    await self._unchecked_fw_set_joint_angles(self.station_index, joint_position)
+    await self._unchecked_fw_set_grip_detail()
     horizontal_compliance_int = 1 if self.horizontal_compliance else 0
     await self._driver.send_command(
       f"placeplate {self.station_index} {horizontal_compliance_int} {self.horizontal_compliance_torque}"
@@ -2131,6 +2144,10 @@ class PreciseFlexArm:
       self._validate_parking_position(position)
     self._parking_position: Optional[JointState] = dict(position) if position is not None else None
 
+  async def _unchecked_fw_park(self) -> None:
+    """Move to the controller's own safe position (``movetosafe``). Nothing is guarded."""
+    await self._driver.send_command("movetosafe")
+
   @evented_operation(
     "precise_flex.park",
     lambda self: {"device": self._driver._controller_reference()},
@@ -2148,4 +2165,4 @@ class PreciseFlexArm:
         joint_state=self._parking_pose_with_default_z(self.parking_position)
       )
     else:
-      await self._driver.send_command("movetosafe")
+      await self._unchecked_fw_park()

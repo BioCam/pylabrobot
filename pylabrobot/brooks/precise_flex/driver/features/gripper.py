@@ -96,7 +96,7 @@ class PreciseFlexGripper:
     data = await self._driver.send_command("GripClosePos")
     return float(data)
 
-  async def _set_close_position(self, close_position: float) -> None:
+  async def _unchecked_fw_set_close_position(self, close_position: float) -> None:
     """Set the gripper close position for the servoed gripper.
 
     The close position may be changed by a force-controlled grip operation.
@@ -115,7 +115,7 @@ class PreciseFlexGripper:
     data = await self._driver.send_command("GripOpenPos")
     return float(data)
 
-  async def _set_open_position(self, open_position: float) -> None:
+  async def _unchecked_fw_set_open_position(self, open_position: float) -> None:
     """Set the gripper open position for the servoed gripper.
 
     Args:
@@ -206,6 +206,15 @@ class PreciseFlexGripper:
     """Whether driving the jaws to `units` closes them, against the live gripper axis."""
     return units < (await self._driver.arm.request_joint_state())[Axis.GRIPPER]
 
+  async def _unchecked_fw_move_jaws(self, units: float, force_sensing: bool) -> None:
+    """Drive the jaws to ``units``, closing under force control or opening. Nothing is guarded."""
+    if force_sensing:
+      await self._unchecked_fw_set_close_position(units)
+      await self._driver.send_command("gripper 2")
+    else:
+      await self._unchecked_fw_set_open_position(units)
+      await self._driver.send_command("gripper 1")
+
   async def _move_jaws(self, units: float, force_sensing: Optional[bool]) -> None:
     """The one path that drives the jaws: to `units` on the gripper axis.
 
@@ -218,12 +227,7 @@ class PreciseFlexGripper:
       force_sensing = await self._closes(units)  # reads the joint state once the arm has stopped
     else:
       await self._driver.arm._wait_for_eom()
-    if force_sensing:
-      await self._set_close_position(units)
-      await self._driver.send_command("gripper 2")
-    else:
-      await self._set_open_position(units)
-      await self._driver.send_command("gripper 1")
+    await self._unchecked_fw_move_jaws(units, force_sensing)
 
   @evented_operation(
     "precise_flex.move_gripper",

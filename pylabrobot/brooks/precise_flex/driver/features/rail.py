@@ -41,7 +41,7 @@ class PreciseFlexRail:
 
   # -- stations: a rail move goes to a stored station's rail position ------------------------------
 
-  async def _set_rail_position(self, station_id: int, rail_position: float) -> None:
+  async def _unchecked_fw_set_rail_position(self, station_id: int, rail_position: float) -> None:
     """Set the rail position for the specified station.
 
     Args:
@@ -50,7 +50,7 @@ class PreciseFlexRail:
     """
     await self._driver.send_command(f"Rail {station_id} {rail_position}")
 
-  async def _move_rail(self, station_id: Optional[int] = None, mode: int = 1) -> None:
+  async def _unchecked_fw_move_rail(self, station_id: Optional[int] = None, mode: int = 1) -> None:
     """Move the rail to the position stored at the specified station.
 
     Args:
@@ -78,5 +78,5 @@ class PreciseFlexRail:
       rail_position: Rail destination in mm.
     """
     await self._driver.arm._wait_for_eom()
-    await self._set_rail_position(self._rail_position_index, rail_position)
-    await self._move_rail(station_id=self._rail_position_index)
+    await self._unchecked_fw_set_rail_position(self._rail_position_index, rail_position)
+    await self._unchecked_fw_move_rail(station_id=self._rail_position_index)
