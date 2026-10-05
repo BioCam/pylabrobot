@@ -220,3 +220,27 @@ class TestDiscoveryAgainstADeclaration(unittest.IsolatedAsyncioTestCase):
       await arm.discover()
     with self.assertRaises(RuntimeError):
       arm.configuration
+
+
+class TestTheDerivedConfiguration(unittest.IsolatedAsyncioTestCase):
+  """The one file that was not read off an arm: the recording, with four values written in."""
+
+  def setUp(self):
+    self.recorded = read_configuration(RECORDING_PF400)
+    self.derived = read_configuration(RECORDING_PF400.replace("400mm", "1160mm_rail_derived"))
+
+  def test_it_is_a_tall_arm_on_a_rail_with_a_vision_gripper(self):
+    self.assertEqual(self.derived.arm.z_range, (1.5, 1161.5))
+    self.assertEqual(self.derived.arm.hard_limits[Axis.BASE], (0.0, 1162.0))
+    self.assertEqual(
+      self.derived.rail, PreciseFlexRailConfiguration(soft_limit_range=(0.0, 2000.0))
+    )
+    self.assertTrue(self.derived.has_vision_gripper)
+
+  def test_everything_else_is_the_recorded_arms(self):
+    recorded, derived = to_jsonable(self.recorded), to_jsonable(self.derived)
+    for where in (recorded, derived):
+      for limits in ("soft_limits", "hard_limits"):
+        del where["arm"][limits]["BASE"]
+      del where["rail"], where["has_vision_gripper"]
+    self.assertEqual(derived, recorded)
