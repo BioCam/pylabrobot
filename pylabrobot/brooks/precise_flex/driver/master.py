@@ -488,7 +488,7 @@ class PreciseFlexDriver:
     await self._open_connection()
     await self.initialize(skip_home=skip_home)
     configuration = await self.discover()
-    self._create_capability_resources()
+    self._create_feature_resources()
     await self.arm._handle_out_of_range_axes()
     if not skip_vision and configuration.has_vision_server:
       await self._setup_vision(self._vision_host)
@@ -527,7 +527,7 @@ class PreciseFlexDriver:
     self._assess_configuration(self._configuration)
     return self._configuration
 
-  def _create_capability_resources(self) -> None:
+  def _create_feature_resources(self) -> None:
     """Hang what the arm carries on the device its workspace belongs to. No motion.
 
     Does nothing for a driver given no workspace. What is already there is reused.

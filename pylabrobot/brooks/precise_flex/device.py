@@ -92,7 +92,7 @@ class PreciseFlexDevice(Resource):
 
   @property
   def vision(self) -> Optional[PreciseFlexVision]:
-    """The vision capability, if setup found one."""
+    """The vision feature, if setup found one."""
     return self.driver.vision
 
   async def setup(self, skip_home: bool = False, skip_vision: bool = False):

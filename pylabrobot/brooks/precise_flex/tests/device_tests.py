@@ -162,7 +162,7 @@ class TestTheDriverHangsTheArm(unittest.TestCase):
     self.device = pf400()
     self.driver = self.device.driver
     self.driver._configuration = configuration()
-    self.driver._create_capability_resources()
+    self.driver._create_feature_resources()
 
   def test_the_chain_runs_from_the_column_to_the_gripper(self):
     carriage = self.device.get_resource("pf400_z_carriage")
@@ -198,7 +198,7 @@ class TestTheDriverHangsTheArm(unittest.TestCase):
 
   def test_a_second_setup_hangs_nothing_twice(self):
     before = len(self.device.get_all_children())
-    self.driver._create_capability_resources()
+    self.driver._create_feature_resources()
     self.assertEqual(len(self.device.get_all_children()), before)
 
   def test_a_workspace_declared_for_another_arm_is_refused(self):
@@ -209,7 +209,7 @@ class TestTheDriverHangsTheArm(unittest.TestCase):
       device = pf400()
       device.driver._configuration = other
       with self.assertRaises(ValueError):
-        device.driver._create_capability_resources()
+        device.driver._create_feature_resources()
       self.assertIsNone(device.driver.arm.resource)
 
   def test_a_driver_without_a_workspace_hangs_nothing(self):
@@ -217,5 +217,5 @@ class TestTheDriverHangsTheArm(unittest.TestCase):
       host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
     )
     driver._configuration = configuration()
-    driver._create_capability_resources()
+    driver._create_feature_resources()
     self.assertIsNone(driver.arm.resource)
