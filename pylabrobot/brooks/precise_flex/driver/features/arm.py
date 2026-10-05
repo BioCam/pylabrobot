@@ -1455,24 +1455,22 @@ class PreciseFlexArm:
       joints=dict(joints),
     )
 
-  def _check_pose_reachable(self, joints: JointState) -> None:
-    """Raise if the gripper would stand in or against the column at this joint state.
+  def _get_column_clearance(self, joints: JointState) -> Optional[Tuple[str, float]]:
+    """Which part of the gripper would stand nearest the column at this joint state, and how near.
 
     Worked out from the joint state and the resource model, seen from above; nothing is read and the
-    model is not moved. The end of the move only: it says nothing of what the arm sweeps through on
-    the way. Skipped when the arm is not modelled - a check that cannot be made must not look like
-    one that passed.
+    model is not moved.
 
     Args:
-      joints: the joint state the arm is being sent to.
+      joints: the joint state to work it out at.
 
-    Raises:
-      ValueError: If the gripper's body or a finger would come within `_COLUMN_CLEARANCE` of the
-        column.
+    Returns:
+      The part's name and its clearance in mm, negative when it overlaps. None when the arm is not
+      modelled.
     """
     gripper = self._driver.gripper.resource
     if self.resource is None or gripper is None:
-      return
+      return None
     pose = self._forward_kinematics(joints)
     # From the shoulder axis, which the rail carries along with the column.
     wrist = pose.wrist_joint_location - pose.shoulder_joint_location
@@ -1507,13 +1505,82 @@ class PreciseFlexArm:
     ):
       y_1, y_2 = joint.y + inner, joint.y + outer
       parts[each.name] = [(start, y_1), (end, y_1), (end, y_2), (start, y_2)]
-    for name, outline in parts.items():
-      clearance = kinematics.compute_outline_clearance(from_shoulder_axis(outline), column_outline)
-      if clearance < _COLUMN_CLEARANCE:
+    return min(
+      (
+        (name, kinematics.compute_outline_clearance(from_shoulder_axis(outline), column_outline))
+        for name, outline in parts.items()
+      ),
+      key=lambda nearest: nearest[1],
+    )
+
+  def _check_pose_reachable(self, joints: JointState) -> None:
+    """Raise if the gripper would stand in or against the column at this joint state.
+
+    One pose only: what the arm sweeps through on the way to it is `_check_path_reachable`. Skipped
+    when the arm is not modelled - a check that cannot be made must not look like one that passed.
+
+    Args:
+      joints: the joint state the arm is being sent to.
+
+    Raises:
+      ValueError: If the gripper's body or a finger would come within `_COLUMN_CLEARANCE` of the
+        column.
+    """
+    nearest = self._get_column_clearance(joints)
+    if nearest is not None and nearest[1] < _COLUMN_CLEARANCE:
+      raise ValueError(
+        f"{nearest[0]} would stand {nearest[1]:.1f} mm from the column, nearer than the "
+        f"{_COLUMN_CLEARANCE} mm kept clear of it"
+      )
+
+  def _check_path_reachable(self, current: JointState, target: JointState) -> None:
+    """Raise if a joint move would carry the gripper in or against the column on its way.
+
+    A joint move turns every joint from where it is to its target together, so the path is taken as
+    the straight line between the two joint states and checked at steps along it. A step is short
+    enough that the gripper moves less than `_COLUMN_CLEARANCE` between two of them. An arm that
+    starts nearer the column than that may move away from it, and no nearer. Skipped when the arm
+    is not modelled.
+
+    Args:
+      current: the joint state the arm stands at.
+      target: the joint state it is being sent to.
+
+    Raises:
+      ValueError: If the gripper's body or a finger would come within `_COLUMN_CLEARANCE` of the
+        column anywhere along the move.
+    """
+    nearest = self._get_column_clearance(current)
+    if nearest is None:
+      return
+    p = self._driver._kinematics_params
+    # How far the far end of a finger can travel: each joint's turn, by its distance from that end.
+    reach = p.gripper_length + p.l2 + p.l1
+    travel = sum(
+      math.radians(abs(target[axis] - current[axis])) * radius
+      for axis, radius in (
+        (Axis.SHOULDER, reach),
+        (Axis.ELBOW, reach - p.l1),
+        (Axis.WRIST, reach - p.l1 - p.l2),
+      )
+    ) + abs(target[Axis.GRIPPER] - current[Axis.GRIPPER])
+    steps = max(1, math.ceil(travel / _COLUMN_CLEARANCE))
+    leaving = nearest[1] < _COLUMN_CLEARANCE
+    for step in range(1, steps + 1):
+      on_the_way = {
+        axis: current[axis] + (target[axis] - current[axis]) * step / steps for axis in target
+      }
+      name, clearance = cast(Tuple[str, float], self._get_column_clearance(on_the_way))
+      if clearance >= _COLUMN_CLEARANCE:
+        leaving = False
+      elif not leaving or clearance < nearest[1]:
         raise ValueError(
-          f"{name} would stand {clearance:.1f} mm from the column, nearer than the "
-          f"{_COLUMN_CLEARANCE} mm kept clear of it"
+          f"on the way, with the shoulder at {on_the_way[Axis.SHOULDER]:.1f}, the elbow at "
+          f"{on_the_way[Axis.ELBOW]:.1f} and the wrist at {on_the_way[Axis.WRIST]:.1f}, {name} "
+          f"would stand {clearance:.1f} mm from the column, nearer than the {_COLUMN_CLEARANCE} mm "
+          f"kept clear of it"
         )
+      nearest = (name, clearance)
 
   async def _guarded_move_j(
     self,
@@ -1544,7 +1611,7 @@ class PreciseFlexArm:
       if not close_gripper_without_force_sensing:
         self._refuse_closing_the_gripper(current, target)
       self._assert_within_soft_limits(current, target)
-      self._check_pose_reachable(target)
+      self._check_path_reachable(current, target)
       try:
         # Where the move is going, written as it is sent. The read below has the last word.
         self.update_joint_state(target)

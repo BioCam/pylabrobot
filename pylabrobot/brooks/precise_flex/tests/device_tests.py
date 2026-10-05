@@ -417,3 +417,66 @@ class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
     await self.move(sent, lambda: self.driver.gripper.move_to_jaw_position(80.0))
     self.assertEqual(self.seen, [(0.0, 80.0)])
     self.assertEqual(self.hand.jaw_width, 86.2)
+
+
+class TestTheGripperIsKeptClearOfTheColumnOnTheWay(unittest.IsolatedAsyncioTestCase):
+  """A joint move is refused for what the gripper sweeps through, not only for where it ends."""
+
+  HOMED = (93.3, 179.4, -215.9, 70.7)
+
+  def setUp(self):
+    self.device = pf400()
+    self.arm = self.device.driver.arm
+    self.device.driver._configuration = configuration()
+    self.device.driver._create_feature_resources()
+
+  @staticmethod
+  def joints(shoulder: float, elbow: float, wrist: float, jaws: float):
+    return {
+      Axis.BASE: 301.1,
+      Axis.SHOULDER: shoulder,
+      Axis.ELBOW: elbow,
+      Axis.WRIST: wrist,
+      Axis.GRIPPER: jaws,
+    }
+
+  def test_a_swing_past_the_column_is_refused_though_it_ends_clear(self):
+    # Turning the wrist away from the column never comes near it.
+    self.arm._check_path_reachable(self.joints(*self.HOMED), self.joints(93.3, 179.4, -250.0, 70.7))
+    # Parking with the wrist at 180 ends clear, and turns the gripper past the column to get there.
+    parked = self.joints(0.0, 180.0, 180.0, 70.7)
+    self.arm._check_pose_reachable(parked)
+    with self.assertRaisesRegex(ValueError, "on the way, with the shoulder at 85.4"):
+      self.arm._check_path_reachable(self.joints(*self.HOMED), parked)
+
+  def test_the_same_park_by_the_shorter_turn_is_allowed(self):
+    self.arm._check_path_reachable(self.joints(*self.HOMED), self.joints(0.0, 180.0, -180.0, 70.7))
+
+  def test_an_arm_that_starts_too_near_may_move_away_and_no_nearer(self):
+    stood = self.joints(92.087, 179.417, -185.505, 70.703)
+    with self.assertRaises(ValueError):
+      self.arm._check_pose_reachable(stood)
+    self.arm._check_path_reachable(stood, self.joints(92.087, 179.417, -200.0, 70.703))
+    with self.assertRaisesRegex(ValueError, "on the way"):
+      self.arm._check_path_reachable(stood, self.joints(92.087, 179.417, -180.0, 70.703))
+
+  def test_a_long_sweep_in_front_of_the_column_is_allowed(self):
+    self.arm._check_path_reachable(
+      self.joints(-90.0, 30.0, 0.0, 120.0), self.joints(90.0, 30.0, 0.0, 120.0)
+    )
+
+  def test_an_arm_that_is_not_modelled_is_not_checked(self):
+    driver = PreciseFlexDriver(
+      host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
+    )
+    driver.arm._check_path_reachable(self.joints(*self.HOMED), self.joints(0.0, 180.0, 180.0, 70.7))
+
+  async def test_a_refused_swing_is_never_sent(self):
+    sent = AsyncMock(return_value="301.1 93.3 179.4 -215.9 70.7")
+    with patch.object(self.device.driver, "send_command", sent):
+      with patch.object(self.arm, "_wait_for_eom", AsyncMock()):
+        with self.assertRaisesRegex(ValueError, "on the way"):
+          await self.arm.move_to_joint_state(
+            {Axis.SHOULDER: 0.0, Axis.ELBOW: 180.0, Axis.WRIST: 180.0}
+          )
+    self.assertEqual([call.args[0] for call in sent.call_args_list], ["wherej"])
