@@ -5,11 +5,14 @@ from pylabrobot.brooks.precise_flex.resource_model.pf400_chassis import (
   z_column,
   z_column_height,
 )
+from pylabrobot.brooks.precise_flex.resource_model.pf400_manipulator import link_1, link_2
 from pylabrobot.brooks.precise_flex.resource_model.workspace import Workspace
 
 __all__ = [
   "Workspace",
   "base_plate",
+  "link_1",
+  "link_2",
   "z_carriage",
   "z_carriage_location",
   "z_column",

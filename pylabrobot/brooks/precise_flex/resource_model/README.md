@@ -30,6 +30,8 @@ ring's bounding box; `is_reachable` asks the ring.
 | `base_plate` | `base_plate` | `brooks_pf400_base_plate` | The plate the machine bolts to |
 | `z_column` | `z_column` | `brooks_pf400_z_column` | The column the carriage rides, as tall as the travel makes it |
 | `z_carriage` | `z_carriage` | `brooks_pf400_z_carriage` | What the Z drive moves: the housing the arm turns in |
+| `link_1` | `link_body` | `brooks_pf400_link_1` | Shoulder joint to elbow joint |
+| `link_2` | `link_body` | `brooks_pf400_link_2` | Elbow joint to wrist joint, turning underneath link 1 |
 
 `PreciseFlex400` in `device.py` assembles them: the plate is the machine's, and the column is the
 plate's. The carriage is hung on by the driver at setup, because where it stands has to be read
@@ -45,7 +47,9 @@ The cuboids are therefore the specification for how a model of the whole machine
 per part, each cut at that part's own corner, so a file can be dropped in without an offset and
 without anything else changing.
 
+A link is as long as the controller reports between its joints, plus the hub past each joint, so
+one factory serves both reaches. Nothing hangs the links on the carriage yet, or turns them.
+
 ## Not modelled yet
 
-The two links, the gripper and the optional rail. Until they are here, the arm reaches past a
-machine that ends at its carriage.
+The gripper and the optional rail.
