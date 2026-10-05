@@ -245,7 +245,7 @@ _CASES: List[_Case] = [
       "sysState",
       "hp 1 20",
       "attach 1",
-      "home",
+      "pd 2800",
     ],
     None,
   ),
@@ -1593,6 +1593,20 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
         "Speed 1 60.0",
       ],
     )
+
+  async def test_recovering_a_homed_arm_does_not_home(self):
+    arm, fake = await self._run_setup(has_rail=False)
+    fake.sent.clear()
+    fake._replies.update({"sysState": "0 21", "pd 2800": "0 1"})
+    await arm.recover_from_fault()
+    self.assert_wire(fake.sent, ["sysState", "hp 1 20", "attach 1", "pd 2800"])
+
+  async def test_recovering_an_arm_that_lost_homing_homes_after_attaching(self):
+    arm, fake = await self._run_setup(has_rail=False)
+    fake.sent.clear()
+    fake._replies.update({"sysState": "0 21", "pd 2800": "0 0"})
+    await arm.recover_from_fault()
+    self.assert_wire(fake.sent, ["sysState", "hp 1 20", "attach 1", "pd 2800", "home"])
 
 
 class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):

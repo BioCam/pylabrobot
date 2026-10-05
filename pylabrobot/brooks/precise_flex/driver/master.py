@@ -693,35 +693,6 @@ class PreciseFlexDriver:
     raise RuntimeError("Failed to power on robot after 3 attempts for unknown reasons.")
 
   @evented_operation(
-    "precise_flex.recover_from_fault",
-    lambda self: {"device": self._controller_reference()},
-  )
-  async def recover_from_fault(self) -> None:
-    """Recover after a collision / fault that stopped the arm and dropped power, leaving it usable.
-
-    A collision trips an envelope error (``-3100`` hard / ``-3122`` soft, see
-    :func:`~pylabrobot.brooks.precise_flex.driver.errors.is_collision`); the servo stops the arm itself and
-    high power drops. This re-enables power, re-attaches, and re-homes (which only cycles the gripper
-    when the other axes are already homed - absolute encoders retain them - so it does not sweep the
-    arm), leaving it ready to move. It does **not** drive the arm to any pose; confirm the obstacle is
-    removed before calling.
-
-    The envelope error auto-clears, so no explicit clear is needed; a latched fatal that blocks
-    power-on is surfaced by ``power_on_robot`` for the operator to reset (DataID 247) or reboot.
-
-    Raises:
-      PreciseFlexError: if a hard E-stop is engaged (release the button first) or power cannot be
-        re-enabled.
-    """
-    if await self.request_system_state() == PowerState.OFF_HARD_ESTOP:
-      raise PreciseFlexError(
-        -1028, "hard E-Stop engaged - release the E-stop button before recovering"
-      )
-    await self.power_on_robot()
-    await self.attach(1)
-    await self.home()
-
-  @evented_operation(
     "precise_flex.power_off",
     lambda self: {"device": self._controller_reference()},
   )
@@ -1165,6 +1136,30 @@ class PreciseFlexDriver:
     the controller blocks commanded motion (-1021) and reports unreliable positions.
     """
     return _parse_scalar(await self.request_parameter(DataID.ROBOT_HOMED)) == 1.0
+
+  @evented_operation(
+    "precise_flex.recover_from_fault",
+    lambda self: {"device": self._controller_reference()},
+  )
+  async def recover_from_fault(self) -> None:
+    """Re-enable power and re-attach after a fault that dropped power; home only if not homed.
+
+    A soft envelope error (``-3122``) leaves the arm homed, so no homing runs; homing sweeps the
+    arm. Does not drive the arm to any pose. Confirm the obstacle is removed first. The envelope
+    error clears itself; a latched fatal that blocks power-on needs a reset (DataID 247) or reboot.
+
+    Raises:
+      PreciseFlexError: if a hard E-stop is engaged (release the button first) or power cannot be
+        re-enabled.
+    """
+    if await self.request_system_state() == PowerState.OFF_HARD_ESTOP:
+      raise PreciseFlexError(
+        -1028, "hard E-Stop engaged - release the E-stop button before recovering"
+      )
+    await self.power_on_robot()
+    await self.attach(1)
+    if not await self._is_robot_homed():
+      await self.home()
 
   # -- deprecated: moved to the arm, gripper and rail ---------------------------------------------
 

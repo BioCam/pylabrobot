@@ -161,7 +161,7 @@ class TestRequestSystemState(unittest.IsolatedAsyncioTestCase):
 
 
 class TestCollisionDetectionAndRecovery(unittest.IsolatedAsyncioTestCase):
-  """Crash interrupts: recognise envelope errors, and recover (re-power + attach + home)."""
+  """Crash interrupts: recognise envelope errors, and recover (re-power, attach, home if lost)."""
 
   def test_is_collision_recognises_collision_codes_only(self):
     """Envelope (-3100/-3122) and torque-saturation (-3101/-3105) errors are collisions; an E-stop,
@@ -174,17 +174,21 @@ class TestCollisionDetectionAndRecovery(unittest.IsolatedAsyncioTestCase):
     )  # no robot attached, not a collision
     self.assertFalse(is_collision(ValueError()))
 
-  async def test_recover_repowers_attaches_and_homes(self):
-    """Recovery from a non-E-stop fault re-enables power, re-attaches, and re-homes."""
-    d = _make_arm()
-    d.request_system_state = AsyncMock(return_value=7)  # type: ignore[method-assign]  # off, waiting for enable (not E-stop)
-    d.power_on_robot = AsyncMock()  # type: ignore[method-assign]
-    d.attach = AsyncMock()  # type: ignore[method-assign]
-    d.home = AsyncMock()  # type: ignore[method-assign]
-    await d.recover_from_fault()
-    d.power_on_robot.assert_awaited_once()
-    d.attach.assert_awaited_once_with(1)
-    d.home.assert_awaited_once()
+  async def test_recover_repowers_attaches_and_homes_only_if_homing_was_lost(self):
+    """Recovery from a non-E-stop fault re-powers and re-attaches; it homes only if needed."""
+    for homed, homes in ((True, 0), (False, 1)):
+      with self.subTest(homed=homed):
+        d = _make_arm()
+        not_estop = AsyncMock(return_value=7)
+        d.request_system_state = not_estop  # type: ignore[method-assign]
+        d.power_on_robot = AsyncMock()  # type: ignore[method-assign]
+        d.attach = AsyncMock()  # type: ignore[method-assign]
+        d.home = AsyncMock()  # type: ignore[method-assign]
+        d._is_robot_homed = AsyncMock(return_value=homed)  # type: ignore[method-assign]
+        await d.recover_from_fault()
+        d.power_on_robot.assert_awaited_once()
+        d.attach.assert_awaited_once_with(1)
+        self.assertEqual(d.home.await_count, homes)
 
   async def test_recover_refuses_while_estop_engaged(self):
     """A hard E-stop blocks recovery (release the button first); power is not touched."""
