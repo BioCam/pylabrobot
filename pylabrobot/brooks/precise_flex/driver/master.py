@@ -25,6 +25,7 @@ from ..confirmed_firmware_versions import (
   suggest_entry,
 )
 from ..data_ids import DataID, PowerState, _parse_scalar
+from ..resource_model.workspace import Workspace
 from ..tcs_modules import missing_required_modules
 from .errors import PreciseFlexError
 from .features.arm import PreciseFlexArm, PreciseFlexArmConfiguration
@@ -151,6 +152,7 @@ class PreciseFlexDriver:
     recover_out_of_range: bool = True,
     parking_position: Optional[JointState] = None,
     vision_host: Optional[str] = None,
+    workspace: Optional[Workspace] = None,
   ) -> None:
     """
     Args:
@@ -188,8 +190,11 @@ class PreciseFlexDriver:
         None leaves the engine unconnected, disabling those; the controller-side execution path
         (running processes/tools, setting properties, lighting, barcodes, stereo locate) is
         unaffected. Only consulted when setup discovers an IntelliGuide vision module.
+      workspace: the workspace to reflect the arm into. Optional: without one the driver still
+        drives the arm, and models nothing.
     """
     super().__init__()
+    self.workspace = workspace
     self.io = Socket(human_readable_device_name="Precise Flex Arm", host=host, port=port)
     self.timeout = timeout
     # Serializes each request->reply exchange over the single shared controller socket; the rationale
