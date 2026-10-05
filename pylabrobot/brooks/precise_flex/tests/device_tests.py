@@ -50,7 +50,7 @@ class TestTheCarriageOnTheMachine(unittest.TestCase):
     self.carriage.location = pf400_chassis.z_carriage_location(z)
     return self.carriage.get_absolute_location() + pf400_chassis.Z_CARRIAGE_REFERENCE_POINT
 
-  def test_homed_the_flange_plane_stands_at_the_shoulder_axis(self):
+  def test_at_zero_the_flange_plane_stands_at_the_shoulder_axis(self):
     self.column.assign_child_resource(self.carriage, location=pf400_chassis.z_carriage_location(0))
     self.assertEqual(self._flange_plane(0.0).z, pf400_chassis.SHOULDER_AXIS.z)
 

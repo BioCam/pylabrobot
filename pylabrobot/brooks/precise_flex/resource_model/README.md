@@ -10,7 +10,8 @@ A resource is a cuboid located by its left front bottom corner, and sizes are in
 built in its own frame, so a part can be placed, drawn or measured without knowing what carries it.
 
 The controller reports from somewhere else: the shoulder axis, at the plane the tool flange lies in
-when the Z drive is homed. `SHOULDER_AXIS` records where that point sits within the base plate, and
+when the Z drive is at 0, its lowest point. The manufacturer calls this the World origin.
+`SHOULDER_AXIS` records where that point sits within the base plate, and
 `Z_CARRIAGE_REFERENCE_POINT` where it sits within the carriage. A reading is turned into a location
 by taking the reference point out of it, which is what `z_carriage_location` does. Nothing else in
 the model is allowed to guess a position.

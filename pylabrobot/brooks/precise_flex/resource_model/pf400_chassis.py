@@ -98,7 +98,7 @@ def z_carriage_location(z: float) -> Coordinate:
   A resource is located by its corner, so the reported point is taken out of the reading.
 
   Args:
-    z: where the drive reports the flange plane is, in mm above the plane it homes to.
+    z: where the drive reports the flange plane is, in mm above where it is with the drive at 0.
 
   Returns:
     The location, on the column.
