@@ -140,7 +140,12 @@ def configuration(links=kinematics.ARM_LINKS_EXTENDED, z_range=(1.5, 401.5)):
     extra_axes=0,
     axis_mask=47,
     arm=PreciseFlexArmConfiguration(
-      soft_limits={Axis.BASE: z_range, Axis.SHOULDER: (-93.0, 93.0), Axis.ELBOW: (12.0, 348.0)},
+      soft_limits={
+        Axis.BASE: z_range,
+        Axis.SHOULDER: (-93.0, 93.0),
+        Axis.ELBOW: (12.0, 348.0),
+        Axis.WRIST: (-970.0, 970.0),
+      },
       hard_limits={},
       max_joint_speed={},
       max_joint_acceleration={},
@@ -480,3 +485,59 @@ class TestTheGripperIsKeptClearOfTheColumnOnTheWay(unittest.IsolatedAsyncioTestC
             {Axis.SHOULDER: 0.0, Axis.ELBOW: 180.0, Axis.WRIST: 180.0}
           )
     self.assertEqual([call.args[0] for call in sent.call_args_list], ["wherej"])
+
+
+class TestParkingTakesAClearTurn(unittest.IsolatedAsyncioTestCase):
+  """A parking pose is a heading: the wrist reaches it by whichever full turn the way is clear."""
+
+  def setUp(self):
+    self.device = pf400()
+    self.driver = self.device.driver
+    self.read = configuration()
+    self.driver._configuration = self.read
+    # As setup adopts them, so the soft limits are known to the arm.
+    self.driver.arm.configuration = self.read.arm
+    self.driver.gripper.configuration = self.read.gripper
+    self.driver._create_feature_resources()
+    self.driver.arm.parking_position = dict(self.driver.arm.PARKING_POSITION_RIGHT)
+
+  async def park(self, stood: str) -> List[str]:
+    sent = AsyncMock(return_value=stood)
+    with patch.object(self.driver, "send_command", sent):
+      with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
+        await self.driver.arm.park()
+    return [call.args[0] for call in sent.call_args_list if call.args[0].startswith("moveJ")]
+
+  async def test_the_pose_as_written_is_taken_when_its_way_is_clear(self):
+    self.assertEqual(
+      await self.park("301.1 92.0 179.4 83.93 70.7"), ["moveJ 1 301.125 0.0 180.0 180.0 70.7"]
+    )
+
+  async def test_a_full_turn_the_other_way_is_taken_when_the_written_one_passes_the_column(self):
+    with self.assertLogs("pylabrobot.brooks.precise_flex.driver.features.arm", "INFO") as logs:
+      moves = await self.park("301.1 92.0 179.4 -215.9 70.7")
+    self.assertEqual(moves, ["moveJ 1 301.125 0.0 180.0 -180.0 70.7"])
+    self.assertIn("parking with the wrist at -180.0, not 180.0", "\n".join(logs.output))
+
+  async def test_a_turn_past_the_wrists_soft_limit_is_not_taken(self):
+    # From -215.9 the clear turn is -180, which this wrist may not reach: nothing is sent.
+    self.read.arm.soft_limits[Axis.WRIST] = (-970.0, -200.0)
+    with self.assertRaisesRegex(ValueError, "WRIST target 180.0 is outside its soft limit"):
+      await self.park("301.1 92.0 179.4 -215.9 70.7")
+
+  async def test_a_pose_no_turn_reaches_clear_is_refused_as_written(self):
+    self.driver.arm.parking_position = {Axis.SHOULDER: 92.0, Axis.ELBOW: 179.4, Axis.WRIST: -150.0}
+    with self.assertRaisesRegex(ValueError, "would stand"):
+      await self.park("301.1 92.0 179.4 -215.9 70.7")
+
+  async def test_an_arm_that_is_not_modelled_parks_as_written(self):
+    driver = PreciseFlexDriver(
+      host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
+    )
+    driver.arm.parking_position = dict(driver.arm.PARKING_POSITION_RIGHT)
+    sent = AsyncMock(return_value="301.1 92.0 179.4 -215.9 70.7")
+    with patch.object(driver, "send_command", sent):
+      with patch.object(driver.arm, "_wait_for_eom", AsyncMock()):
+        await driver.arm.park()
+    moves = [call.args[0] for call in sent.call_args_list if call.args[0].startswith("moveJ")]
+    self.assertEqual(moves, ["moveJ 1 301.1 0.0 180.0 180.0 70.7"])

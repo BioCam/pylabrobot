@@ -2349,10 +2349,36 @@ class PreciseFlexArm:
     right, Z column at 3/4 of its discovered travel); assign one of the ``PARKING_POSITION_*`` class
     constants or any JointState to park elsewhere. Falls back to the firmware ``movetosafe`` while it is
     unset. No collision checks against 3rd-party obstacles.
+
+    A parking pose says which way the gripper faces, and the wrist reaches that every full turn. On
+    an arm that is modelled, a pose whose way there is refused is tried a full turn either side,
+    the shorter turn first; the pose as written is taken whenever its way is clear.
     """
-    if self.parking_position is not None:
-      await self.move_to_joint_state(
-        joint_state=self._parking_pose_with_default_z(self.parking_position)
-      )
-    else:
+    if self.parking_position is None:
       await self._unchecked_fw_park()
+      return
+    pose = self._parking_pose_with_default_z(self.parking_position)
+    if self.resource is not None and Axis.WRIST in pose:
+      current = await self.request_joint_state()
+      low, high = self._get_soft_limits().get(Axis.WRIST, (-math.inf, math.inf))
+      turns = [pose[Axis.WRIST] + 360.0 * turn for turn in range(-3, 4)]
+      # As written first, then the others by how far the wrist would have to turn.
+      turns.sort(key=lambda wrist: (wrist != pose[Axis.WRIST], abs(wrist - current[Axis.WRIST])))
+      for wrist in turns:
+        if not low <= wrist <= high:
+          continue
+        try:
+          self._check_path_reachable(current, {**current, **pose, Axis.WRIST: wrist})
+        except ValueError:
+          continue
+        if wrist != pose[Axis.WRIST]:
+          logger.info(
+            "[PreciseFlex %s] parking with the wrist at %s, not %s: the way to it is clear",
+            self._driver.io._host,
+            wrist,
+            pose[Axis.WRIST],
+          )
+        pose = {**pose, Axis.WRIST: wrist}
+        break
+    # A pose no turn of which is clear is sent as written, and refused there with where it fails.
+    await self.move_to_joint_state(joint_state=pose)
