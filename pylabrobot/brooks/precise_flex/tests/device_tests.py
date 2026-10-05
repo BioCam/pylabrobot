@@ -1,5 +1,6 @@
 import unittest
 from typing import Tuple, cast
+from unittest.mock import AsyncMock, patch
 
 from pylabrobot.brooks.precise_flex import kinematics
 from pylabrobot.brooks.precise_flex.device import PreciseFlex400, PreciseFlexDevice
@@ -220,3 +221,62 @@ class TestTheDriverHangsTheArm(unittest.TestCase):
     driver._configuration = configuration()
     driver._create_feature_resources()
     self.assertIsNone(driver.arm.resource)
+
+
+class TestTheModelFollowsTheJoints(unittest.IsolatedAsyncioTestCase):
+  """A joint state stands the carriage and turns each member about the joint it turns on."""
+
+  REPLY = "301.12 92.0 179.48 -184.25 120.0"
+
+  def setUp(self):
+    self.device = pf400()
+    self.driver = self.device.driver
+    self.driver._configuration = configuration()
+    self.driver._create_feature_resources()
+    self.carriage, self.first, self.second, self.hand = hung(self.driver)
+
+  def test_the_carriage_stands_where_the_z_drive_is(self):
+    self.driver.arm.update_joint_state(
+      {Axis.BASE: 250.0, Axis.SHOULDER: 0.0, Axis.ELBOW: 0.0, Axis.WRIST: 0.0}
+    )
+    self.assertEqual(self.carriage.location, pf400_chassis.z_carriage_location(250.0))
+
+  def test_each_member_turns_to_its_joints_angle(self):
+    self.driver.arm.update_joint_state(
+      {Axis.BASE: 0.0, Axis.SHOULDER: 92.0, Axis.ELBOW: 179.5, Axis.WRIST: -184.25}
+    )
+    self.assertAlmostEqual(self.first.rotation.z, 92.0)
+    self.assertAlmostEqual(self.second.rotation.z, 179.5)
+    self.assertAlmostEqual(self.hand.rotation.z % 360.0, -184.25 % 360.0)
+
+  def test_the_joints_stay_joined_when_the_members_turn(self):
+    joints = {Axis.BASE: 100.0, Axis.SHOULDER: 90.0, Axis.ELBOW: 0.0, Axis.WRIST: 0.0}
+    self.driver.arm.update_joint_state(joints)
+    pose = self.driver.arm._forward_kinematics(joints)
+    # Straight out along +y: the wrist joint is both link lengths from the shoulder axis.
+    self.assertAlmostEqual(pose.wrist_joint_location.y, 591.0)
+    self.assertAlmostEqual(self.second.rotation.z, 0.0)
+
+  def test_the_jaws_follow_a_width_within_their_range_only(self):
+    self.driver.gripper.update_width(100.0)
+    self.assertEqual(self.hand.jaw_width, 100.0)
+    with self.assertLogs("pylabrobot.brooks.precise_flex.driver.features.gripper", "WARNING"):
+      self.driver.gripper.update_width(200.0)
+    self.assertEqual(self.hand.jaw_width, 100.0)
+
+  async def test_a_joint_read_records_what_it_read(self):
+    with patch.object(self.driver, "send_command", AsyncMock(return_value=self.REPLY)):
+      with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
+        await self.driver.arm.request_joint_state()
+    self.assertEqual(self.carriage.location, pf400_chassis.z_carriage_location(301.12))
+    self.assertAlmostEqual(self.first.rotation.z, 92.0)
+    self.assertEqual(self.hand.jaw_width, 120.0)
+
+  async def test_a_driver_without_a_workspace_reads_as_before(self):
+    driver = PreciseFlexDriver(
+      host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
+    )
+    with patch.object(driver, "send_command", AsyncMock(return_value=self.REPLY)):
+      with patch.object(driver.arm, "_wait_for_eom", AsyncMock()):
+        joints = await driver.arm.request_joint_state()
+    self.assertEqual(joints[Axis.SHOULDER], 92.0)

@@ -42,6 +42,7 @@ from ...kinematics import (
   WorkEnvelope,
   Wrist,
 )
+from ...resource_model.pf400_chassis import z_carriage_location
 from ..errors import OutOfRangeOfMotionError, PreciseFlexError
 from .rail import PreciseFlexRail
 
@@ -298,6 +299,24 @@ class PreciseFlexArm:
           raise TimeoutError(f"motion did not settle within {timeout:.0f}s (current={current})")
         previous = current
 
+  def update_joint_state(self, joints: JointState) -> None:
+    """Record where every joint is on the resources that model the arm.
+
+    The carriage is stood where the Z drive is, and each member is turned about the joint it turns
+    on to the angle that joint reports. Does nothing until there are resources to record it on.
+
+    Args:
+      joints: the joint state, as ``request_joint_state`` returns it.
+    """
+    if self.resource is None or self.link_1 is None or self.link_2 is None:
+      return
+    self.resource.location = z_carriage_location(joints[Axis.BASE])
+    self.link_1.rotate_to(z=joints[Axis.SHOULDER], pivot_coordinate=self.link_1.proximal_joint)
+    self.link_2.rotate_to(z=joints[Axis.ELBOW], pivot_coordinate=self.link_2.proximal_joint)
+    gripper = self._driver.gripper.resource
+    if gripper is not None:
+      gripper.rotate_to(z=joints[Axis.WRIST], pivot_coordinate=gripper.proximal_joint)
+
   async def request_joint_state(self) -> JointState:
     """Get the current joint position of the arm."""
     await self._wait_for_eom()
@@ -309,7 +328,12 @@ class PreciseFlexArm:
         break
     else:
       raise PreciseFlexError(-1, "Unexpected response format from wherej command.")
-    return self._parse_angles_response(parts)
+    joints = self._parse_angles_response(parts)
+    self.update_joint_state(joints)
+    self._driver.gripper.update_width(
+      self._driver.gripper._firmware_units_to_mm(joints[Axis.GRIPPER])
+    )
+    return joints
 
   async def request_state(self) -> str:
     """Return state of motion.

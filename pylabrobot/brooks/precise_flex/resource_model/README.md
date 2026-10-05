@@ -59,7 +59,7 @@ joints, by moving the far half of each out.
 
 A link is as long as the controller reports between its joints, plus the hub past each joint, so
 one factory serves both reaches. The driver hangs the carriage, the links and the gripper at
-setup, each by its joint; nothing turns them yet.
+setup, each by its joint, and every joint read stands and turns them to what was read.
 
 The gripper's mesh is its body and one finger, drawn for both. The blocks the fingers slide on are
 not drawn.

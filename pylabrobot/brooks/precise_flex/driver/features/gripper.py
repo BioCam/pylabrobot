@@ -173,6 +173,34 @@ class PreciseFlexGripper:
     """
     return self.closed_gripper_position + (width_mm - self._anchor_width_mm)
 
+  def _firmware_units_to_mm(self, units: float) -> float:
+    """Convert the firmware's native position unit to a jaw width (mm): `_mm_to_firmware_units`
+    the other way."""
+    return self._anchor_width_mm + (units - self.closed_gripper_position)
+
+  def update_width(self, width: float) -> None:
+    """Record how far apart the jaws stand on the resource that models them.
+
+    Does nothing until the gripper is modelled. A width outside what the model says the fingers do
+    is not recorded, and is logged.
+
+    Args:
+      width: how far apart the jaws stand, in mm.
+    """
+    if self.resource is None:
+      return
+    low, high = self.resource.jaw_range
+    if not low <= width <= high:
+      logger.warning(
+        "the gripper reports its jaws %.1f mm apart, outside the %.1f to %.1f mm the model says "
+        "they travel, so the model is left where it is",
+        width,
+        low,
+        high,
+      )
+      return
+    self.resource.jaw_width = width
+
   def _get_gripper_limits(self) -> Tuple[float, float]:
     """The gripper axis's soft limits, refusing before setup has read them.
 
