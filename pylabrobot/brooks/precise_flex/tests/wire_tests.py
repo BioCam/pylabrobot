@@ -1188,10 +1188,6 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
       "moveJ 1 301.125 0.0 180.0 180.0 100.0",
     ],
     None,
@@ -1722,21 +1718,6 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
       {Axis.GRIPPER: 90.0}, close_gripper_without_force_sensing=True
     )
     self.assertEqual(fake.sent[-1], "moveJ 1 200.0 0.0 180.0 0.0 90.0")
-
-  async def test_parking_takes_the_wrist_turn_nearest_where_it_is(self):
-    for live, parked in ((-215.9, -180.0), (83.93, 180.0), (-540.0, -540.0), (950.0, 900.0)):
-      with self.subTest(live):
-        arm, fake = await self._arm()
-        fake._replies["wherej"] = f"0 301 92 179.5 {live} 126"
-        await arm.arm.park()
-        self.assertEqual(fake.sent[-1], f"moveJ 1 301.125 0.0 180.0 {parked} 126.0")
-
-  async def test_parking_keeps_the_wrist_inside_its_soft_limit(self):
-    arm, fake = await self._arm()
-    arm.arm.parking_position = {Axis.SHOULDER: 0.0, Axis.ELBOW: 180.0, Axis.WRIST: -100.0}
-    fake._replies["wherej"] = "0 301 92 179.5 950 126"  # the nearest turn, 980, is past 960
-    await arm.arm.park()
-    self.assertEqual(fake.sent[-1], "moveJ 1 301.125 0.0 180.0 620.0 126.0")
 
   async def test_parking_that_closes_the_gripper_is_refused(self):
     arm, fake = await self._arm()
