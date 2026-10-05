@@ -2159,10 +2159,21 @@ class PreciseFlexArm:
     right, Z column at 3/4 of its discovered travel); assign one of the ``PARKING_POSITION_*`` class
     constants or any JointState to park elsewhere. Falls back to the firmware ``movetosafe`` while it is
     unset. No collision checks against 3rd-party obstacles.
+
+    The wrist goes to the turn of its parking angle nearest where it is: the same orientation recurs
+    every 360 deg, and homing can leave the wrist a full turn from the angle as written.
     """
     if self.parking_position is not None:
-      await self.move_to_joint_state(
-        joint_state=self._parking_pose_with_default_z(self.parking_position)
-      )
+      pose = self._parking_pose_with_default_z(self.parking_position)
+      if Axis.WRIST in pose:
+        live = (await self.request_joint_state())[Axis.WRIST]
+        wrist = pose[Axis.WRIST] + 360.0 * round((live - pose[Axis.WRIST]) / 360.0)
+        low, high = self._get_soft_limits().get(Axis.WRIST, (-math.inf, math.inf))
+        if wrist > high:
+          wrist -= 360.0
+        elif wrist < low:
+          wrist += 360.0
+        pose = {**pose, Axis.WRIST: wrist}
+      await self.move_to_joint_state(joint_state=pose)
     else:
       await self._unchecked_fw_park()
