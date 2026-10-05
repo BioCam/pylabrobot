@@ -1,10 +1,18 @@
 import unittest
-from typing import List, Tuple, cast
+from typing import List, Optional, Tuple, cast
 from unittest.mock import AsyncMock, patch
 
 from pylabrobot.brooks.precise_flex import kinematics
-from pylabrobot.brooks.precise_flex.device import PreciseFlex400, PreciseFlexDevice
-from pylabrobot.brooks.precise_flex.driver.configuration import Axis, PreciseFlexConfiguration
+from pylabrobot.brooks.precise_flex.device import (
+  RECORDING_PF400,
+  PreciseFlex400,
+  PreciseFlexDevice,
+)
+from pylabrobot.brooks.precise_flex.driver.configuration import (
+  Axis,
+  PreciseFlexConfiguration,
+  read_configuration,
+)
 from pylabrobot.brooks.precise_flex.driver.errors import PreciseFlexError
 from pylabrobot.brooks.precise_flex.driver.features.arm import PreciseFlexArmConfiguration
 from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGripperConfiguration
@@ -16,11 +24,23 @@ from pylabrobot.resources.manipulator import LinkBody
 from pylabrobot.resources.resource import Resource
 
 
-def pf400(z_travel: float = 400.0, **declared) -> PreciseFlexDevice:
+def pf400(declared: Optional[str] = None) -> PreciseFlexDevice:
   driver = PreciseFlexDriver(
-    host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
+    host="localhost",
+    gripper_length=162.0,
+    gripper_z_offset=0.0,
+    closed_gripper_position=60.0,
+    declared_configuration_json=declared,
   )
-  return PreciseFlex400(driver, name="pf400", z_travel=z_travel, **declared)
+  return PreciseFlex400(driver, name="pf400")
+
+
+def built() -> PreciseFlexDevice:
+  """A device whose driver has read the stand-in configuration and built the arm from it."""
+  device = pf400()
+  device.driver._configuration = configuration()
+  device.driver._create_feature_resources(device.driver.configuration)
+  return device
 
 
 class TestTheDevice(unittest.IsolatedAsyncioTestCase):
@@ -34,16 +54,17 @@ class TestTheDevice(unittest.IsolatedAsyncioTestCase):
     self.assertIs(self.device.driver.workspace, self.device.workspace)
     self.assertEqual(self.device.workspace.name, "pf400_workspace")
 
-  def test_the_workspace_reports_from_the_shoulder_axis(self):
-    workspace = self.device.workspace
-    origin = workspace.get_absolute_location() + workspace.reference_point
-    self.assertEqual(origin, pf400_chassis.SHOULDER_AXIS)
+  def test_before_a_configuration_only_the_plate_stands(self):
+    self.assertEqual(
+      [r.name for r in self.device.get_all_children()], ["pf400_workspace", "pf400_base_plate"]
+    )
+    self.assertEqual(self.device.workspace.boundary, [])
+    self.assertFalse(self.device.workspace.is_reachable(Coordinate(400.0, 0.0, 200.0)))
+    self.assertIsNone(self.device.arm.resource)
 
-  def test_the_workspace_is_swept_from_what_is_declared(self):
-    self.assertEqual((self.device.workspace.z_min, self.device.workspace.z_max), (0.0, 400.0))
-    ahead = Coordinate(700.0, 0.0, 200.0)
-    self.assertTrue(self.device.workspace.is_reachable(ahead))
-    self.assertFalse(pf400(reach_class="standard").workspace.is_reachable(ahead))
+  def test_its_own_cuboid_is_the_plate_it_stands_on(self):
+    plate = self.device.get_resource("pf400_base_plate")
+    self.assertEqual(self.device.get_size_z(), plate.get_size_z())
 
   def test_it_reaches_the_drivers_features(self):
     self.assertIs(self.device.arm, self.device.driver.arm)
@@ -58,11 +79,47 @@ class TestTheDevice(unittest.IsolatedAsyncioTestCase):
     self.assertIsNone(driver.workspace)
 
 
+class TestBuiltFromADeclaredConfiguration(unittest.IsolatedAsyncioTestCase):
+  """A driver given a declared configuration builds the arm from it at once, before any setup."""
+
+  def test_the_recorded_arm_stands_before_it_is_connected(self):
+    device = pf400(RECORDING_PF400)
+    column = device.get_resource("pf400_z_column")
+    # From the plate's top face: the shoulder axis, the travel, and the headroom above it.
+    self.assertAlmostEqual(column.get_size_z(), 62.0 + 401.5 + 250.0 - 9.6)
+    self.assertEqual((device.workspace.z_min, device.workspace.z_max), (1.5, 401.5))
+    self.assertTrue(device.workspace.is_reachable(Coordinate(700.0, 0.0, 200.0)))
+    _, first, second, hand = hung(device.driver)
+    self.assertEqual((first.length, second.length, hand.tool_center_point.x), (302.0, 289.0, 162.0))
+    self.assertEqual(hand.jaw_range, (69.0, 134.0))
+
+  def test_the_workspace_reports_from_the_shoulder_axis(self):
+    workspace = pf400(RECORDING_PF400).workspace
+    origin = cast(Coordinate, workspace.location) + workspace.reference_point
+    self.assertEqual(
+      (origin.x, origin.y), (pf400_chassis.SHOULDER_AXIS.x, pf400_chassis.SHOULDER_AXIS.y)
+    )
+    # The tool point is at the shoulder axis's height with the Z drive at 0.
+    self.assertEqual(origin.z, pf400_chassis.SHOULDER_AXIS.z)
+
+  def test_a_taller_arm_is_built_taller(self):
+    device = pf400(RECORDING_PF400.replace("400mm", "1160mm_rail_derived"))
+    column = device.get_resource("pf400_z_column")
+    self.assertAlmostEqual(column.get_size_z(), 62.0 + 1161.5 + 250.0 - 9.6)
+    self.assertEqual(device.workspace.z_max, 1161.5)
+
+  def test_setup_builds_nothing_twice(self):
+    device = pf400(RECORDING_PF400)
+    before = [r.name for r in device.get_all_children()]
+    device.driver._create_feature_resources(read_configuration(RECORDING_PF400))
+    self.assertEqual([r.name for r in device.get_all_children()], before)
+
+
 class TestTheChassisStandsInOneTree(unittest.IsolatedAsyncioTestCase):
   """The plate is the machine's, and the column is the plate's."""
 
   def setUp(self):
-    self.device = pf400()
+    self.device = built()
     self.plate = self.device.get_resource("pf400_base_plate")
     self.column = self.plate.children[0]
 
@@ -72,13 +129,6 @@ class TestTheChassisStandsInOneTree(unittest.IsolatedAsyncioTestCase):
   def test_the_column_stands_on_the_plates_top_face(self):
     self.assertEqual(self.column.location, pf400_chassis.Z_COLUMN_LOCATION)
     self.assertEqual(self.column.get_absolute_location().z, self.plate.get_size_z())
-
-  def test_the_machine_is_as_tall_as_it_stands(self):
-    self.assertEqual(self.device.get_size_z(), 712.0)
-
-  def test_a_taller_travel_makes_a_taller_machine(self):
-    for z_travel, height in ((750.0, 1062.0), (1160.0, 1472.0)):
-      self.assertEqual(pf400(z_travel).get_size_z(), height)
 
 
 class TestWhereTheControllerReportsFrom(unittest.IsolatedAsyncioTestCase):
@@ -92,27 +142,24 @@ class TestWhereTheControllerReportsFrom(unittest.IsolatedAsyncioTestCase):
 
 
 class TestTheCarriageOnTheMachine(unittest.IsolatedAsyncioTestCase):
-  """A carriage on the column stands where the J1 drive says it is."""
+  """The carriage on the column stands where the J1 drive says it is."""
 
   def setUp(self):
-    self.device = pf400()
+    self.device = built()
     self.column = self.device.get_resource("pf400_z_column")
-    self.carriage = pf400_chassis.z_carriage(name="pf400_z_carriage")
+    self.carriage = self.device.get_resource("pf400_z_carriage")
 
   def _flange_plane(self, z: float) -> Coordinate:
     self.carriage.location = pf400_chassis.z_carriage_location(z)
     return self.carriage.get_absolute_location() + pf400_chassis.Z_CARRIAGE_REFERENCE_POINT
 
   def test_at_zero_the_flange_plane_stands_at_the_shoulder_axis(self):
-    self.column.assign_child_resource(self.carriage, location=pf400_chassis.z_carriage_location(0))
     self.assertEqual(self._flange_plane(0.0).z, pf400_chassis.SHOULDER_AXIS.z)
 
   def test_the_flange_plane_rises_with_the_reading(self):
-    self.column.assign_child_resource(self.carriage, location=pf400_chassis.z_carriage_location(0))
     self.assertEqual(self._flange_plane(250.0).z, pf400_chassis.SHOULDER_AXIS.z + 250.0)
 
   def test_it_stays_on_the_shoulder_axis_however_high_it_stands(self):
-    self.column.assign_child_resource(self.carriage, location=pf400_chassis.z_carriage_location(0))
     plate = self.device.get_resource("pf400_base_plate")
     axis = plate.get_absolute_location() + pf400_chassis.SHOULDER_AXIS
     for z in (0.0, 175.0, 400.0):
@@ -181,7 +228,7 @@ class TestTheDriverHangsTheArm(unittest.IsolatedAsyncioTestCase):
     self.device = pf400()
     self.driver = self.device.driver
     self.driver._configuration = configuration()
-    self.driver._create_feature_resources()
+    self.driver._create_feature_resources(self.driver.configuration)
 
   def test_the_chain_runs_from_the_column_to_the_gripper(self):
     carriage, first, second, hand = hung(self.driver)
@@ -206,26 +253,15 @@ class TestTheDriverHangsTheArm(unittest.IsolatedAsyncioTestCase):
 
   def test_a_second_setup_hangs_nothing_twice(self):
     before = len(self.device.get_all_children())
-    self.driver._create_feature_resources()
+    self.driver._create_feature_resources(self.driver.configuration)
     self.assertEqual(len(self.device.get_all_children()), before)
-
-  def test_a_workspace_declared_for_another_arm_is_refused(self):
-    for other in (
-      configuration(links=kinematics.ARM_LINKS_STANDARD),
-      configuration(z_range=(0.0, 750.0)),
-    ):
-      device = pf400()
-      device.driver._configuration = other
-      with self.assertRaises(ValueError):
-        device.driver._create_feature_resources()
-      self.assertIsNone(device.driver.arm.resource)
 
   def test_a_driver_without_a_workspace_hangs_nothing(self):
     driver = PreciseFlexDriver(
       host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
     )
     driver._configuration = configuration()
-    driver._create_feature_resources()
+    driver._create_feature_resources(driver.configuration)
     self.assertIsNone(driver.arm.resource)
 
 
@@ -238,7 +274,7 @@ class TestTheModelFollowsTheJoints(unittest.IsolatedAsyncioTestCase):
     self.device = pf400()
     self.driver = self.device.driver
     self.driver._configuration = configuration()
-    self.driver._create_feature_resources()
+    self.driver._create_feature_resources(self.driver.configuration)
     self.carriage, self.first, self.second, self.hand = hung(self.driver)
 
   def test_the_carriage_stands_where_the_z_drive_is(self):
@@ -295,7 +331,7 @@ class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
     self.device = pf400()
     self.driver = self.device.driver
     self.driver._configuration = configuration()
-    self.driver._create_feature_resources()
+    self.driver._create_feature_resources(self.driver.configuration)
 
   @staticmethod
   def joints(shoulder: float, elbow: float, wrist: float, jaws: float):
@@ -360,7 +396,7 @@ class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
     self.device = pf400()
     self.driver = self.device.driver
     self.driver._configuration = configuration()
-    self.driver._create_feature_resources()
+    self.driver._create_feature_resources(self.driver.configuration)
     _, self.first, _, self.hand = hung(self.driver)
     self.seen: List[Tuple[float, float]] = []
 
@@ -433,7 +469,7 @@ class TestTheGripperIsKeptClearOfTheColumnOnTheWay(unittest.IsolatedAsyncioTestC
     self.device = pf400()
     self.arm = self.device.driver.arm
     self.device.driver._configuration = configuration()
-    self.device.driver._create_feature_resources()
+    self.device.driver._create_feature_resources(self.device.driver.configuration)
 
   @staticmethod
   def joints(shoulder: float, elbow: float, wrist: float, jaws: float):
@@ -498,7 +534,7 @@ class TestParkingTakesAClearTurn(unittest.IsolatedAsyncioTestCase):
     # As setup adopts them, so the soft limits are known to the arm.
     self.driver.arm.configuration = self.read.arm
     self.driver.gripper.configuration = self.read.gripper
-    self.driver._create_feature_resources()
+    self.driver._create_feature_resources(self.driver.configuration)
     self.driver.arm.parking_position = dict(self.driver.arm.PARKING_POSITION_RIGHT)
 
   async def park(self, stood: str) -> List[str]:

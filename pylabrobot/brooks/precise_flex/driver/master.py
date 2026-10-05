@@ -4,7 +4,6 @@ import asyncio
 import functools
 import json
 import logging
-import math
 import warnings
 from typing import (
   Any,
@@ -38,9 +37,13 @@ from ..confirmed_firmware_versions import (
 )
 from ..data_ids import DataID, PowerState, _parse_scalar
 from ..resource_model.pf400_chassis import (
+  SHOULDER_AXIS,
   Z_CARRIAGE_REFERENCE_POINT,
+  Z_COLUMN_LOCATION,
   z_carriage,
   z_carriage_location,
+  z_column,
+  z_column_height,
 )
 from ..resource_model.pf400_end_effector import gripper
 from ..resource_model.pf400_manipulator import LINK_1_ABOVE_FLANGE_PLANE, link_1, link_2
@@ -515,7 +518,7 @@ class PreciseFlexDriver:
     await self._open_connection()
     await self.initialize(skip_home=skip_home)
     configuration = await self.discover()
-    self._create_feature_resources()
+    self._create_feature_resources(configuration)
     await self.arm._handle_out_of_range_axes()
     if not skip_vision and configuration.has_vision_server:
       await self._setup_vision(self._vision_host)
@@ -585,48 +588,42 @@ class PreciseFlexDriver:
     self._assess_configuration(self._configuration)
     return self._configuration
 
-  def _create_feature_resources(self) -> None:
-    """Hang what the arm carries on the device its workspace belongs to. No motion.
+  def _create_feature_resources(self, configuration: "PreciseFlexConfiguration") -> None:
+    """Build the arm on the device its workspace belongs to, from a configuration. No motion.
 
-    Does nothing for a driver given no workspace. What is already there is reused.
+    The workspace takes its boundary and Z range; the column is stood on the plate, the carriage
+    hung on it, the links on that and the gripper on link 2, each placed by where its joint has to
+    land. They stand at Z 0 with every joint at 0 until a joint state is read. Does nothing for a
+    driver given no workspace. What is already there is reused.
 
-    Raises:
-      ValueError: If the workspace was declared for another arm than the controller reports.
+    Args:
+      configuration: what the arm reported: the declared one, or the one read at setup.
     """
     if self.workspace is None:
       return
-    c = self.configuration.arm
-    read = kinematics.compute_workspace_boundary(
-      c.kinematics, c.soft_limits[Axis.SHOULDER], c.soft_limits[Axis.ELBOW]
+    device = self.workspace.parent
+    plate = next(
+      (r for r in (device.children if device else []) if r.category == "base_plate"), None
     )
-    reach, declared_reach = (
-      max(math.hypot(x, y) for x, y in boundary) for boundary in (read, self.workspace.boundary)
-    )
-    travel = c.z_range[1] - c.z_range[0]
-    declared_travel = self.workspace.z_max - self.workspace.z_min
-    tolerance = kinematics._LINK_MATCH_TOLERANCE
-    if abs(reach - declared_reach) > tolerance or abs(travel - declared_travel) > tolerance:
-      raise ValueError(
-        f"the workspace was declared for an arm reaching {declared_reach:.1f} mm over "
-        f"{declared_travel:.1f} mm of Z travel; the controller reports {reach:.1f} mm over "
-        f"{travel:.1f} mm"
+    if device is None or plate is None:
+      logger.warning(
+        "the workspace belongs to no device with a base plate, so the arm is not modelled"
       )
-    self._create_arm_resources()
-
-  def _create_arm_resources(self) -> None:
-    """Hang the carriage on the column, the links on it, and the gripper on link 2.
-
-    Each member is placed by where its joint has to land. They stand at Z 0 with every joint at 0
-    until a joint state is read.
-    """
-    device = cast(Workspace, self.workspace).parent
-    column = next(
-      (r for r in (device.get_all_children() if device else []) if r.category == "z_column"), None
-    )
-    if device is None or column is None:
-      logger.warning("the workspace belongs to no device with a column, so the arm is not modelled")
       return
-    c = self.configuration.arm
+    c = configuration.arm
+    self.workspace.update_boundary(
+      kinematics.compute_workspace_boundary(
+        c.kinematics, c.soft_limits[Axis.SHOULDER], c.soft_limits[Axis.ELBOW]
+      ),
+      *c.z_range,
+    )
+    # The controller reports from the shoulder axis, which the workspace states as its own point.
+    on_the_plate = cast(Coordinate, plate.location) + SHOULDER_AXIS
+    self.workspace.location = on_the_plate - self.workspace.reference_point
+    column = next((r for r in plate.children if r.category == "z_column"), None)
+    if column is None:
+      column = z_column(name=f"{device.name}_z_column", height=z_column_height(c.z_range[1]))
+      plate.assign_child_resource(column, location=Z_COLUMN_LOCATION)
     carriage = next((r for r in column.children if r.category == "z_carriage"), None)
     if carriage is None:
       carriage = z_carriage(name=f"{device.name}_z_carriage")
@@ -652,7 +649,11 @@ class PreciseFlexDriver:
       hand = gripper(
         name=f"{device.name}_gripper",
         tool_length=c.kinematics.gripper_length,
-        jaw_range=self.gripper.jaw_width_range,
+        # The axis's soft limits, in mm, as the gripper takes them when it adopts a configuration.
+        jaw_range=(
+          self.gripper._firmware_units_to_mm(configuration.gripper.soft_limit_range[0]),
+          self.gripper._firmware_units_to_mm(configuration.gripper.soft_limit_range[1]),
+        ),
       )
       second.assign_child_resource(
         hand, location=cast(Coordinate, second.distal_joint) - hand.proximal_joint

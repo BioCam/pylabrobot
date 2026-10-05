@@ -1,14 +1,13 @@
 """The PreciseFlex arms as resources: the device, and what it knows about its own workspace.
 
-A frame factory builds the machine. What it carries - the carriage, the arm, the gripper - is hung
-off it by the driver at setup, from what the controller reports.
+A frame factory builds the plate the machine stands on. Everything it carries - the column, the
+carriage, the arm, the gripper - is hung off it by the driver, from a configuration.
 """
 
 import logging
 import os
-from typing import Literal, Optional, Tuple
+from typing import Optional
 
-from pylabrobot.brooks.precise_flex import kinematics
 from pylabrobot.brooks.precise_flex.driver.features.arm import PreciseFlexArm
 from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGripper
 from pylabrobot.brooks.precise_flex.driver.features.rail import PreciseFlexRail
@@ -16,11 +15,7 @@ from pylabrobot.brooks.precise_flex.driver.features.vision import PreciseFlexVis
 from pylabrobot.brooks.precise_flex.driver.master import PreciseFlexDriver
 from pylabrobot.brooks.precise_flex.resource_model.pf400_chassis import (
   BASE_PLATE_SIZE,
-  SHOULDER_AXIS,
-  Z_COLUMN_LOCATION,
   base_plate,
-  z_column,
-  z_column_height,
 )
 from pylabrobot.brooks.precise_flex.resource_model.workspace import Workspace
 from pylabrobot.resources.coordinate import Coordinate
@@ -114,61 +109,32 @@ class PreciseFlexDevice(Resource):
     await self.driver.stop()
 
 
-def PreciseFlex400(
-  driver: PreciseFlexDriver,
-  name: str = "PreciseFlex400",
-  z_travel: float = 400.0,
-  reach_class: Literal["standard", "extended"] = "extended",
-  shoulder_range: Tuple[float, float] = (-93.0, 93.0),
-  elbow_range: Tuple[float, float] = (12.0, 348.0),
-) -> PreciseFlexDevice:
-  """A PreciseFlex 400, as tall as the travel its carriage was built with.
+def PreciseFlex400(driver: PreciseFlexDriver, name: str = "PreciseFlex400") -> PreciseFlexDevice:
+  """A PreciseFlex 400: the plate it stands on, and a workspace for the driver to reflect it into.
 
-  The column stands on the plate, so the plate carries it and the machine is one tree. Where the
-  controller reports from is `pf400_chassis.SHOULDER_AXIS`, within the plate. What is declared
-  here is what the workspace is swept from until the controller has been read.
+  Nothing about the arm is declared here. The column, the workspace's extent, the links and the
+  gripper are built from a configuration: the one the driver was given as
+  `declared_configuration_json`, at once, or else the one the controller answers at setup. Where
+  the controller reports from is `pf400_chassis.SHOULDER_AXIS`, within the plate.
 
   Args:
-    driver: the driver to drive the device through. Its tool length is the workspace's.
+    driver: the driver to drive the device through.
     name: what to call this one.
-    z_travel: how far its carriage travels, in mm.
-    reach_class: which links it was built with.
-    shoulder_range: the shoulder's lowest and highest angle, in degrees.
-    elbow_range: the elbow's lowest and highest angle, in degrees.
 
   Returns:
     The machine.
   """
-  link_1_length, link_2_length = (
-    kinematics.ARM_LINKS_EXTENDED if reach_class == "extended" else kinematics.ARM_LINKS_STANDARD
-  )
-  workspace = Workspace(
-    name=f"{name}_workspace",
-    boundary=kinematics.compute_workspace_boundary(
-      kinematics.PF400Params(
-        l1=link_1_length,
-        l2=link_2_length,
-        gripper_length=driver._kinematics_params.gripper_length,
-      ),
-      shoulder_range=shoulder_range,
-      elbow_range=elbow_range,
-    ),
-    z_min=0.0,
-    z_max=z_travel,
-  )
-  column = z_column(name=f"{name}_z_column", height=z_column_height(z_travel))
   device = PreciseFlexDevice(
-    workspace=workspace,
+    workspace=Workspace(name=f"{name}_workspace"),
     driver=driver,
     name=name,
+    # The device's own cuboid is the plate it stands on; what it carries reaches above that.
     size_x=BASE_PLATE_SIZE[0],
     size_y=BASE_PLATE_SIZE[1],
-    size_z=Z_COLUMN_LOCATION.z + column.get_size_z(),
-    # The controller reports from the shoulder axis, which the workspace states as its own point.
-    workspace_location=SHOULDER_AXIS - workspace.reference_point,
+    size_z=BASE_PLATE_SIZE[2],
     model=PreciseFlex400.__name__,
   )
-  plate = base_plate(name=f"{name}_base_plate")
-  device.assign_child_resource(plate, location=Coordinate.zero())
-  plate.assign_child_resource(column, location=Z_COLUMN_LOCATION)
+  device.assign_child_resource(base_plate(name=f"{name}_base_plate"), location=Coordinate.zero())
+  if driver.declared is not None:
+    driver._create_feature_resources(driver.declared)
   return device

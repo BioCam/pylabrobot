@@ -41,6 +41,23 @@ class TestWorkspace(unittest.TestCase):
     with self.assertRaises(ValueError):
       Workspace("workspace", boundary=BOUNDARY, z_min=1.0, z_max=1.0)
 
+  def test_before_a_boundary_it_has_no_extent_and_nothing_is_reachable(self):
+    unread = Workspace("workspace")
+    self.assertEqual(
+      (unread.get_size_x(), unread.get_size_y(), unread.get_size_z()), (0.0, 0.0, 0.0)
+    )
+    self.assertEqual(unread.reference_point, Coordinate.zero())
+    self.assertFalse(unread.is_reachable(Coordinate(0.0, 0.0, 0.0)))
+    self.assertEqual(Workspace.deserialize(unread.serialize()), unread)
+
+  def test_it_takes_the_boundary_a_configuration_gives(self):
+    unread = Workspace("workspace")
+    unread.update_boundary(BOUNDARY, z_min=1.5, z_max=401.5)
+    self.assertEqual(unread, self.workspace)
+    self.assertEqual(unread.get_absolute_size_z(), 400.0)
+    with self.assertRaises(ValueError):
+      unread.update_boundary(BOUNDARY[:2], z_min=1.5, z_max=401.5)
+
   def test_serialization_round_trips(self):
     again = Workspace.deserialize(self.workspace.serialize())
     self.assertEqual(again, self.workspace)

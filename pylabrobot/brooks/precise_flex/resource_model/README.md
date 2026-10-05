@@ -39,9 +39,10 @@ shoulder.
 | `link_2` | `link_body` | `brooks_pf400_link_2` | Elbow joint to wrist joint, turning underneath link 1 |
 | `gripper` | `mechanical_gripper` | `brooks_pf400_gripper` | Wrist joint to the point the fingers grip at |
 
-`PreciseFlex400` in `device.py` assembles them: the plate is the machine's, and the column is the
-plate's. The carriage is hung on by the driver at setup, because where it stands has to be read
-first.
+`PreciseFlex400` in `device.py` builds only the plate and an empty workspace. The driver builds the
+rest from a configuration: the one declared from a file, at once, or else the one the controller
+answers at setup. So the column is as tall as the configuration's Z travel makes it, the links as
+long as it says, and the workspace reaches as far as its limits allow.
 
 ## Meshes
 
