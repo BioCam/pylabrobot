@@ -18,10 +18,15 @@ the model is allowed to guess a position.
 
 ## The workspace
 
-An arm has no deck. What stands in a deck's place is its `Workspace`: the ring its tool point can
+An arm has no deck. What stands in a deck's place is its `Workspace`: the region its tool point can
 reach about the shoulder axis, over the Z travel. It is a resource like any other, located by its
-corner, and the point the controller reports from is its `reference_point`. Its cuboid is only the
-ring's bounding box; `is_reachable` asks the ring.
+corner, and the point the controller reports from is its `reference_point`.
+
+The region is stated by its `boundary`: how far the tool point reaches at each bearing, which
+`kinematics.compute_workspace_boundary` sweeps from the shoulder's and the elbow's ranges. It is
+not a ring: the arm reaches further ahead than behind. Its cuboid is only the boundary's bounding
+box; `is_reachable` asks the boundary. The boundary does not know the column stands behind the
+shoulder.
 
 ## The parts
 
