@@ -1,9 +1,15 @@
 import unittest
 
+from pylabrobot.brooks.precise_flex import kinematics
 from pylabrobot.brooks.precise_flex.device import PreciseFlex400, PreciseFlexDevice
+from pylabrobot.brooks.precise_flex.driver.configuration import Axis, PreciseFlexConfiguration
+from pylabrobot.brooks.precise_flex.driver.features.arm import PreciseFlexArmConfiguration
+from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGripperConfiguration
 from pylabrobot.brooks.precise_flex.driver.master import PreciseFlexDriver
 from pylabrobot.brooks.precise_flex.resource_model import pf400_chassis
 from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.end_effector import MechanicalGripper
+from pylabrobot.resources.manipulator import LinkBody
 
 
 def pf400(z_travel: float = 400.0, **declared) -> PreciseFlexDevice:
@@ -112,3 +118,104 @@ class TestTheCarriageOnTheMachine(unittest.TestCase):
   def test_the_carriage_stays_within_the_columns_travel(self):
     top = pf400_chassis.z_carriage_location(400.0).z + self.carriage.get_size_z()
     self.assertLessEqual(top, self.column.get_size_z())
+
+
+def configuration(links=kinematics.ARM_LINKS_EXTENDED, z_range=(1.5, 401.5)):
+  """What an extended-reach arm on a 400 mm column reports, as far as the model reads it."""
+  return PreciseFlexConfiguration(
+    manufacturer="",
+    controller_model="",
+    hardware_version="",
+    gpl_version="",
+    controller_serial="",
+    robot_name="PF400",
+    robot_type=12,
+    tcs_version="",
+    modules=(),
+    num_axes=5,
+    extra_axes=0,
+    axis_mask=47,
+    arm=PreciseFlexArmConfiguration(
+      soft_limits={Axis.BASE: z_range, Axis.SHOULDER: (-93.0, 93.0), Axis.ELBOW: (12.0, 348.0)},
+      hard_limits={},
+      max_joint_speed={},
+      max_joint_acceleration={},
+      max_joint_deceleration={},
+      max_cartesian_speed=0.0,
+      max_cartesian_acceleration=0.0,
+      kinematics=kinematics.PF400Params(l1=links[0], l2=links[1], gripper_length=162.0),
+    ),
+    gripper=PreciseFlexGripperConfiguration(
+      soft_limit_range=(60.0, 145.0),
+      hard_limit_range=(0.0, 0.0),
+      max_speed=0.0,
+      max_acceleration=0.0,
+      max_deceleration=0.0,
+    ),
+  )
+
+
+class TestTheDriverHangsTheArm(unittest.TestCase):
+  """At setup the driver hangs the carriage, the links and the gripper, each by its joint."""
+
+  def setUp(self):
+    self.device = pf400()
+    self.driver = self.device.driver
+    self.driver._configuration = configuration()
+    self.driver._create_capability_resources()
+
+  def test_the_chain_runs_from_the_column_to_the_gripper(self):
+    carriage = self.device.get_resource("pf400_z_carriage")
+    self.assertIs(carriage.parent, self.device.get_resource("pf400_z_column"))
+    self.assertIs(self.driver.arm.resource, carriage)
+    first, second, hand = (
+      self.driver.arm.link_1,
+      self.driver.arm.link_2,
+      self.driver.gripper.resource,
+    )
+    self.assertIsInstance(first, LinkBody)
+    self.assertIsInstance(hand, MechanicalGripper)
+    self.assertEqual([first.parent, second.parent, hand.parent], [carriage, first, second])
+    self.assertEqual((first.length, second.length, hand.tool_center_point.x), (302.0, 289.0, 162.0))
+
+  def test_every_joint_lands_on_the_one_before_it(self):
+    first, second, hand = (
+      self.driver.arm.link_1,
+      self.driver.arm.link_2,
+      self.driver.gripper.resource,
+    )
+    shoulder = first.get_location_wrt(self.device) + first.proximal_joint
+    axis = pf400_chassis.SHOULDER_AXIS
+    self.assertAlmostEqual(shoulder.x, axis.x)
+    self.assertAlmostEqual(shoulder.y, axis.y)
+    elbow = second.get_location_wrt(self.device) + second.proximal_joint
+    self.assertAlmostEqual(elbow.x - shoulder.x, 302.0)
+    wrist = hand.get_location_wrt(self.device) + hand.proximal_joint
+    self.assertAlmostEqual(wrist.x - elbow.x, 289.0)
+    # The wrist joint is in the flange plane, which is the shoulder axis's height at Z 0.
+    self.assertAlmostEqual(wrist.z, axis.z)
+    self.assertAlmostEqual(elbow.z, axis.z)
+
+  def test_a_second_setup_hangs_nothing_twice(self):
+    before = len(self.device.get_all_children())
+    self.driver._create_capability_resources()
+    self.assertEqual(len(self.device.get_all_children()), before)
+
+  def test_a_workspace_declared_for_another_arm_is_refused(self):
+    for other in (
+      configuration(links=kinematics.ARM_LINKS_STANDARD),
+      configuration(z_range=(0.0, 750.0)),
+    ):
+      device = pf400()
+      device.driver._configuration = other
+      with self.assertRaises(ValueError):
+        device.driver._create_capability_resources()
+      self.assertIsNone(device.driver.arm.resource)
+
+  def test_a_driver_without_a_workspace_hangs_nothing(self):
+    driver = PreciseFlexDriver(
+      host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
+    )
+    driver._configuration = configuration()
+    driver._create_capability_resources()
+    self.assertIsNone(driver.arm.resource)

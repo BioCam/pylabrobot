@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import math
 import warnings
 from typing import (
   Any,
@@ -10,6 +11,7 @@ from typing import (
   Literal,
   Optional,
   Tuple,
+  cast,
 )
 
 from pylabrobot.brooks.precise_flex import kinematics
@@ -17,6 +19,9 @@ from pylabrobot.brooks.precise_flex.driver.configuration import Axis, PreciseFle
 from pylabrobot.brooks.precise_flex.kinematics import JointState
 from pylabrobot.events import emit_event, evented_operation
 from pylabrobot.io.socket import Socket
+from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.end_effector import MechanicalGripper
+from pylabrobot.resources.manipulator import LinkBody
 
 from ..confirmed_firmware_versions import (
   SUPPORTED_ROBOT_TYPES,
@@ -25,6 +30,13 @@ from ..confirmed_firmware_versions import (
   suggest_entry,
 )
 from ..data_ids import DataID, PowerState, _parse_scalar
+from ..resource_model.pf400_chassis import (
+  Z_CARRIAGE_REFERENCE_POINT,
+  z_carriage,
+  z_carriage_location,
+)
+from ..resource_model.pf400_end_effector import gripper
+from ..resource_model.pf400_manipulator import LINK_1_ABOVE_FLANGE_PLANE, link_1, link_2
 from ..resource_model.workspace import Workspace
 from ..tcs_modules import missing_required_modules
 from .errors import PreciseFlexError
@@ -476,6 +488,7 @@ class PreciseFlexDriver:
     await self._open_connection()
     await self.initialize(skip_home=skip_home)
     configuration = await self.discover()
+    self._create_capability_resources()
     await self.arm._handle_out_of_range_axes()
     if not skip_vision and configuration.has_vision_server:
       await self._setup_vision(self._vision_host)
@@ -513,6 +526,81 @@ class PreciseFlexDriver:
     self._log_configuration_summary(self._configuration)
     self._assess_configuration(self._configuration)
     return self._configuration
+
+  def _create_capability_resources(self) -> None:
+    """Hang what the arm carries on the device its workspace belongs to. No motion.
+
+    Does nothing for a driver given no workspace. What is already there is reused.
+
+    Raises:
+      ValueError: If the workspace was declared for another arm than the controller reports.
+    """
+    if self.workspace is None:
+      return
+    c = self.configuration.arm
+    read = kinematics.compute_workspace_boundary(
+      c.kinematics, c.soft_limits[Axis.SHOULDER], c.soft_limits[Axis.ELBOW]
+    )
+    reach, declared_reach = (
+      max(math.hypot(x, y) for x, y in boundary) for boundary in (read, self.workspace.boundary)
+    )
+    travel = c.z_range[1] - c.z_range[0]
+    declared_travel = self.workspace.z_max - self.workspace.z_min
+    tolerance = kinematics._LINK_MATCH_TOLERANCE
+    if abs(reach - declared_reach) > tolerance or abs(travel - declared_travel) > tolerance:
+      raise ValueError(
+        f"the workspace was declared for an arm reaching {declared_reach:.1f} mm over "
+        f"{declared_travel:.1f} mm of Z travel; the controller reports {reach:.1f} mm over "
+        f"{travel:.1f} mm"
+      )
+    self._create_arm_resources()
+
+  def _create_arm_resources(self) -> None:
+    """Hang the carriage on the column, the links on it, and the gripper on link 2.
+
+    Each member is placed by where its joint has to land. They stand at Z 0 with every joint at 0
+    until a joint state is read.
+    """
+    device = cast(Workspace, self.workspace).parent
+    column = next(
+      (r for r in (device.get_all_children() if device else []) if r.category == "z_column"), None
+    )
+    if device is None or column is None:
+      logger.warning("the workspace belongs to no device with a column, so the arm is not modelled")
+      return
+    c = self.configuration.arm
+    carriage = next((r for r in column.children if r.category == "z_carriage"), None)
+    if carriage is None:
+      carriage = z_carriage(name=f"{device.name}_z_carriage")
+      column.assign_child_resource(carriage, location=z_carriage_location(0.0))
+    first = next((r for r in carriage.children if isinstance(r, LinkBody)), None)
+    if first is None:
+      first = link_1(name=f"{device.name}_link_1", length=c.kinematics.l1)
+      # The reference point is the shoulder axis at the flange plane, which link 1 stands above.
+      above = Coordinate(0.0, 0.0, LINK_1_ABOVE_FLANGE_PLANE)
+      carriage.assign_child_resource(
+        first, location=Z_CARRIAGE_REFERENCE_POINT - first.proximal_joint + above
+      )
+    second = next((r for r in first.children if isinstance(r, LinkBody)), None)
+    if second is None:
+      second = link_2(name=f"{device.name}_link_2", length=c.kinematics.l2)
+      # Link 2's underside lies in the flange plane, that far below link 1's.
+      below = Coordinate(0.0, 0.0, -LINK_1_ABOVE_FLANGE_PLANE)
+      first.assign_child_resource(
+        second, location=cast(Coordinate, first.distal_joint) - second.proximal_joint + below
+      )
+    hand = next((r for r in second.children if isinstance(r, MechanicalGripper)), None)
+    if hand is None:
+      hand = gripper(
+        name=f"{device.name}_gripper",
+        tool_length=c.kinematics.gripper_length,
+        jaw_range=self.gripper.jaw_width_range,
+      )
+      second.assign_child_resource(
+        hand, location=cast(Coordinate, second.distal_joint) - hand.proximal_joint
+      )
+    self.arm.resource, self.arm.link_1, self.arm.link_2 = carriage, first, second
+    self.gripper.resource = hand
 
   async def _setup_vision(self, vision_host: Optional[str]) -> None:
     """Build the vision capability and connect its PreciseVision engine; best-effort, never raises.

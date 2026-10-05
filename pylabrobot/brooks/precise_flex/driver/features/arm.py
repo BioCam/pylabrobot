@@ -26,6 +26,8 @@ from typing import (
 
 from pylabrobot.events import coordinate_reference, evented_operation
 from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.manipulator import LinkBody
+from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.rotation import Rotation
 
 from ... import kinematics
@@ -207,6 +209,11 @@ class PreciseFlexArm:
     """
     self._driver = driver
     self.configuration: Optional[PreciseFlexArmConfiguration] = None
+    # What models the arm: the carriage on the column and the two links. None until setup hangs
+    # them, which it does only for a driver given a workspace.
+    self.resource: Optional[Resource] = None
+    self.link_1: Optional[LinkBody] = None
+    self.link_2: Optional[LinkBody] = None
     self.profile_index: int = 1
     self.station_index: int = 1
     self.horizontal_compliance: bool = False

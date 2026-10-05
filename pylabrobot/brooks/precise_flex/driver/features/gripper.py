@@ -10,6 +10,7 @@ import logging
 from typing import TYPE_CHECKING, Optional, Tuple
 
 from pylabrobot.events import evented_operation
+from pylabrobot.resources.end_effector import MechanicalGripper
 
 from ...kinematics import Axis
 from ..errors import PreciseFlexError
@@ -66,6 +67,8 @@ class PreciseFlexGripper:
     """
     self._driver = driver
     self.configuration: Optional[PreciseFlexGripperConfiguration] = None
+    # What models the gripper. None until setup hangs it, only for a driver given a workspace.
+    self.resource: Optional[MechanicalGripper] = None
     self.closed_gripper_position = closed_gripper_position
     # closed_gripper_position was calibrated against this width, so discovery must not move it.
     self._anchor_width_mm = self.jaw_width_range[0]

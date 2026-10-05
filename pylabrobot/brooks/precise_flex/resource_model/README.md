@@ -58,7 +58,8 @@ axis and its joints. The links are lengthened to the extended reach, 302 and 289
 joints, by moving the far half of each out.
 
 A link is as long as the controller reports between its joints, plus the hub past each joint, so
-one factory serves both reaches. Nothing hangs the links on the carriage yet, or turns them.
+one factory serves both reaches. The driver hangs the carriage, the links and the gripper at
+setup, each by its joint; nothing turns them yet.
 
 The gripper's mesh is its body and one finger, drawn for both. The blocks the fingers slide on are
 not drawn.
