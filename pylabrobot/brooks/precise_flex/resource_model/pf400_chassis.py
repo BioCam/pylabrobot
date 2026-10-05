@@ -25,12 +25,12 @@ Z_COLUMN_HEADROOM = 250.0
 
 # The carriage the J1 drive rides up the column: the housing the arm turns in, which is what the
 # drive carries and what is seen of it.
-Z_CARRIAGE_SIZE = (122.8, 110.0, 56.25)
+Z_CARRIAGE_SIZE = (122.8, 110.0, 58.1)
 # Where it rides: at the column's front face, centred across it. Z is whatever the drive reports.
 Z_CARRIAGE_LOCATION_XY = (Z_COLUMN_SIZE_XY[0], (Z_COLUMN_SIZE_XY[1] - Z_CARRIAGE_SIZE[1]) / 2)
 # How far the carriage's underside stands above the flange plane the drive reports: the arm hangs
-# between the two, so it spans both links and the clearance around them.
-Z_CARRIAGE_ABOVE_FLANGE_PLANE = 118.9
+# between the two. Less than the links stacked, as link 1's hub nests into it.
+Z_CARRIAGE_ABOVE_FLANGE_PLANE = 104.2
 # The point the drive reports, within the carriage: the shoulder axis, at the flange plane below it.
 Z_CARRIAGE_REFERENCE_POINT = Coordinate(
   SHOULDER_AXIS.x - Z_COLUMN_LOCATION.x - Z_CARRIAGE_LOCATION_XY[0],

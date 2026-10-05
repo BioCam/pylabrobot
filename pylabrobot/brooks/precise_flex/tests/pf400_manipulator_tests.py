@@ -33,11 +33,8 @@ class TestPF400Links(unittest.TestCase):
     self.assertEqual((body.name, body.model), ("link_1_body", "brooks_pf400_link_1_body"))
     self.assertEqual(body.get_size_x(), link.get_size_x())
 
-  def test_the_carriage_stands_above_both_links_stacked(self):
-    stacked = (
-      pf400_manipulator.LINK_2_SIZE_YZ[1]
-      + pf400_manipulator.LINK_Z_GAP
-      + pf400_manipulator.LINK_1_SIZE_YZ[1]
-      + pf400_manipulator.LINK_Z_GAP
-    )
-    self.assertAlmostEqual(stacked, pf400_chassis.Z_CARRIAGE_ABOVE_FLANGE_PLANE)
+  def test_the_links_and_the_carriage_nest(self):
+    link_2_top = pf400_manipulator.LINK_2_SIZE_YZ[1]
+    link_1_top = pf400_manipulator.LINK_1_ABOVE_FLANGE_PLANE + pf400_manipulator.LINK_1_SIZE_YZ[1]
+    self.assertAlmostEqual(link_2_top - pf400_manipulator.LINK_1_ABOVE_FLANGE_PLANE, 7.7)
+    self.assertAlmostEqual(link_1_top - pf400_chassis.Z_CARRIAGE_ABOVE_FLANGE_PLANE, 5.0)

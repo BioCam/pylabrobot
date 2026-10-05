@@ -20,8 +20,9 @@ LINK_2_SIZE_YZ = (112.0, 39.2)
 LINK_2_HUB_PROXIMAL = 56.0
 LINK_2_HUB_DISTAL = 36.0
 
-# Link 2 turns underneath link 1, and link 1 underneath the carriage, this far apart.
-LINK_Z_GAP = 1.0
+# How far link 1's underside stands above the flange plane, which link 2's underside lies in.
+# Less than link 2 is tall: at the elbow the two hubs nest.
+LINK_1_ABOVE_FLANGE_PLANE = 31.5
 
 
 def _link(
