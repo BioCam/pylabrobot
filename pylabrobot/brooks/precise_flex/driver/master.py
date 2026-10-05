@@ -1245,8 +1245,9 @@ class PreciseFlexDriver:
     Raises:
       RuntimeError: If nothing has been read off the device yet.
     """
+    saved = self._saved_configuration()  # before the file is opened, so a refusal leaves none
     with open(path, "w", encoding="utf-8") as f:
-      json.dump(self._saved_configuration(), f, indent=indent)
+      json.dump(saved, f, indent=indent)
 
   # -- homing & range recovery --------------------------------------------------------------
 
