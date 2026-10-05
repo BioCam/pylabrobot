@@ -280,3 +280,65 @@ class TestTheModelFollowsTheJoints(unittest.IsolatedAsyncioTestCase):
       with patch.object(driver.arm, "_wait_for_eom", AsyncMock()):
         joints = await driver.arm.request_joint_state()
     self.assertEqual(joints[Axis.SHOULDER], 92.0)
+
+
+class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
+  """A target that would stand the gripper in or against the column is refused before it is sent."""
+
+  def setUp(self):
+    self.device = pf400()
+    self.driver = self.device.driver
+    self.driver._configuration = configuration()
+    self.driver._create_feature_resources()
+
+  @staticmethod
+  def joints(shoulder: float, elbow: float, wrist: float, jaws: float):
+    return {
+      Axis.BASE: 301.1,
+      Axis.SHOULDER: shoulder,
+      Axis.ELBOW: elbow,
+      Axis.WRIST: wrist,
+      Axis.GRIPPER: jaws,
+    }
+
+  def test_the_pose_where_a_finger_touched_the_column_is_refused(self):
+    with self.assertRaisesRegex(ValueError, "pf400_gripper_body would stand 0.5 mm"):
+      self.driver.arm._check_pose_reachable(self.joints(92.0, 179.48, -184.25, 120.0))
+
+  def test_a_finger_alone_is_enough(self):
+    # The same angles pass with the jaws at 70.7 and are refused with them open.
+    self.driver.arm._check_pose_reachable(self.joints(92.0, 179.48, 15.0, 70.7))
+    with self.assertRaisesRegex(ValueError, "pf400_gripper_finger_right would stand 1.8 mm"):
+      self.driver.arm._check_pose_reachable(self.joints(92.0, 179.48, 15.0, 145.0))
+
+  def test_the_poses_the_arm_homes_to_and_parks_at_pass(self):
+    for pose in (
+      self.joints(93.3, 179.4, 83.93, 70.7),
+      self.joints(93.3, 179.4, -215.9, 70.7),
+      self.joints(0.0, 180.0, 180.0, 120.0),
+      self.joints(0.0, 90.0, 0.0, 120.0),
+    ):
+      with self.subTest(pose=pose):
+        self.driver.arm._check_pose_reachable(pose)
+
+  def test_the_model_is_left_where_it_was(self):
+    before = self.device.serialize()
+    with self.assertRaises(ValueError):
+      self.driver.arm._check_pose_reachable(self.joints(92.0, 179.48, -184.25, 120.0))
+    self.assertEqual(self.device.serialize(), before)
+
+  def test_an_arm_that_is_not_modelled_is_not_checked(self):
+    driver = PreciseFlexDriver(
+      host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
+    )
+    driver.arm._check_pose_reachable(self.joints(92.0, 179.48, -184.25, 120.0))
+
+  async def test_a_refused_move_is_never_sent(self):
+    sent = AsyncMock(return_value="301.1 0.0 180.0 180.0 120.0")
+    with patch.object(self.driver, "send_command", sent):
+      with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
+        with self.assertRaises(ValueError):
+          await self.driver.arm._guarded_move_j(
+            lambda _current: self.joints(92.0, 179.48, -184.25, 120.0)
+          )
+    self.assertEqual([call.args[0] for call in sent.call_args_list], ["wherej"])

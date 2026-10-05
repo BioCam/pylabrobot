@@ -22,6 +22,8 @@ from typing import (
   NamedTuple,
   Optional,
   Sequence,
+  Tuple,
+  cast,
 )
 
 from pylabrobot.events import coordinate_reference, evented_operation
@@ -42,7 +44,12 @@ from ...kinematics import (
   WorkEnvelope,
   Wrist,
 )
-from ...resource_model.pf400_chassis import z_carriage_location
+from ...resource_model.pf400_chassis import (
+  Z_CARRIAGE_REFERENCE_POINT,
+  Z_COLUMN_OUTLINE,
+  z_carriage_location,
+)
+from ...resource_model.pf400_end_effector import GRIPPER_BODY_OUTLINE
 from ..errors import OutOfRangeOfMotionError, PreciseFlexError
 from .rail import PreciseFlexRail
 
@@ -53,6 +60,8 @@ logger = logging.getLogger(__name__)
 
 # InRange sentinel that lets the controller blend through waypoints instead of stopping at each one.
 BLEND_IN_RANGE = -1
+# How near the column the gripper may be sent, in mm, seen from above.
+_COLUMN_CLEARANCE = 5.0
 
 
 def _snap_to_current(
@@ -1406,6 +1415,68 @@ class PreciseFlexArm:
         f"pass close_gripper_without_force_sensing=True"
       )
 
+  def _check_pose_reachable(self, joints: JointState) -> None:
+    """Raise if the gripper would stand in or against the column at this joint state.
+
+    Worked out from the joint state and the resource model, seen from above; nothing is read and the
+    model is not moved. The end of the move only: it says nothing of what the arm sweeps through on
+    the way. Skipped when the arm is not modelled - a check that cannot be made must not look like
+    one that passed.
+
+    Args:
+      joints: the joint state the arm is being sent to.
+
+    Raises:
+      ValueError: If the gripper's body or a finger would come within `_COLUMN_CLEARANCE` of the
+        column.
+    """
+    gripper = self._driver.gripper.resource
+    if self.resource is None or gripper is None:
+      return
+    p = self._driver._kinematics_params
+    shoulder = math.radians(joints[Axis.SHOULDER])
+    elbow = shoulder + math.radians(joints[Axis.ELBOW])
+    yaw = elbow + math.radians(joints[Axis.WRIST])
+    wrist_x = p.l1 * math.cos(shoulder) + p.l2 * math.cos(elbow)
+    wrist_y = p.l1 * math.sin(shoulder) + p.l2 * math.sin(elbow)
+    joint = gripper.proximal_joint
+
+    def from_shoulder_axis(points: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
+      """Points in the gripper's own frame, as they would stand about the shoulder axis."""
+      return [
+        (
+          wrist_x + (x - joint.x) * math.cos(yaw) - (y - joint.y) * math.sin(yaw),
+          wrist_y + (x - joint.x) * math.sin(yaw) + (y - joint.y) * math.cos(yaw),
+        )
+        for x, y in points
+      ]
+
+    # The shoulder axis within the column, which the carriage rides and the reference point states.
+    axis = cast(Coordinate, self.resource.location) + Z_CARRIAGE_REFERENCE_POINT
+    column_outline = [(x - axis.x, y - axis.y) for x, y in Z_COLUMN_OUTLINE]
+
+    half_width = self._driver.gripper._firmware_units_to_mm(joints[Axis.GRIPPER]) / 2
+    finger = gripper.fingers[0]
+    start = cast(Coordinate, finger.location).x
+    end = start + finger.get_size_x()
+    parts = {gripper.body.name: list(GRIPPER_BODY_OUTLINE)}
+    for each, (inner, outer) in zip(
+      gripper.fingers,
+      (
+        (half_width, half_width + finger.get_size_y()),
+        (-half_width - finger.get_size_y(), -half_width),
+      ),
+    ):
+      y_1, y_2 = joint.y + inner, joint.y + outer
+      parts[each.name] = [(start, y_1), (end, y_1), (end, y_2), (start, y_2)]
+    for name, outline in parts.items():
+      clearance = kinematics.compute_outline_clearance(from_shoulder_axis(outline), column_outline)
+      if clearance < _COLUMN_CLEARANCE:
+        raise ValueError(
+          f"{name} would stand {clearance:.1f} mm from the column, nearer than the "
+          f"{_COLUMN_CLEARANCE} mm kept clear of it"
+        )
+
   async def _guarded_move_j(
     self,
     build_target: Callable[[JointState], JointState],
@@ -1435,6 +1506,7 @@ class PreciseFlexArm:
       if not close_gripper_without_force_sensing:
         self._refuse_closing_the_gripper(current, target)
       self._assert_within_soft_limits(current, target)
+      self._check_pose_reachable(target)
       await self._unchecked_fw_move_j(profile_index=self.profile_index, joint_coords=target)
 
     try:
