@@ -1857,33 +1857,33 @@ _DEPRECATED_KEYWORDS: List[
 ] = [
   (
     "set_monitor_speed",
-    lambda a: a.arm.set_monitor_speed(speed_pct=50),
+    lambda a: a.set_monitor_speed(speed_pct=50),
     lambda a: a.arm.set_monitor_speed(50),
   ),
-  ("set_payload", lambda a: a.arm.set_payload(payload_pct=25), lambda a: a.arm.set_payload(25)),
+  ("set_payload", lambda a: a.set_payload(payload_pct=25), lambda a: a.arm.set_payload(25)),
   (
     "set_profile_speed",
-    lambda a: a.arm.set_profile_speed(1, speed_pct=40),
+    lambda a: a.set_profile_speed(1, speed_pct=40),
     lambda a: a.arm.set_profile_speed(1, 40),
   ),
   (
     "set_profile_speed2",
-    lambda a: a.arm.set_profile_speed2(1, speed2_pct=30),
+    lambda a: a.set_profile_speed2(1, speed2_pct=30),
     lambda a: a.arm.set_profile_speed2(1, 30),
   ),
   (
     "set_profile_acceleration",
-    lambda a: a.arm.set_profile_acceleration(1, acceleration_pct=60),
+    lambda a: a.set_profile_acceleration(1, acceleration_pct=60),
     lambda a: a.arm.set_profile_acceleration(1, 60),
   ),
   (
     "set_profile_deceleration",
-    lambda a: a.arm.set_profile_deceleration(1, deceleration_pct=70),
+    lambda a: a.set_profile_deceleration(1, deceleration_pct=70),
     lambda a: a.arm.set_profile_deceleration(1, 70),
   ),
   (
     "set_motion_profile_values",
-    lambda a: a.arm.set_motion_profile_values(
+    lambda a: a.set_motion_profile_values(
       1,
       speed_pct=40,
       speed2_pct=30,
@@ -1903,17 +1903,17 @@ _DEPRECATED_KEYWORDS: List[
   ),
   (
     "move_to_location",
-    lambda a: a.arm.move_to_location(_LOC, direction=0.0, speed_pct=40),
+    lambda a: a.move_to_location(_LOC, direction=0.0, speed_pct=40),
     lambda a: a.arm.move_to_location(_LOC, direction=0.0, speed_percent=40),
   ),
   (
     "move_through_cartesian_poses",
-    lambda a: a.arm.move_through_cartesian_poses(_POSES, speed_pct=30),
+    lambda a: a.move_through_cartesian_poses(_POSES, speed_pct=30),
     lambda a: a.arm.move_through_cartesian_poses(_POSES, speed_percent=30),
   ),
   (
     "recover_axes_within_limits",
-    lambda a: a.arm.recover_axes_within_limits(speed_pct=10),
+    lambda a: a.recover_axes_within_limits(speed_pct=10),
     lambda a: a.arm.recover_axes_within_limits(speed_percent=10),
   ),
   (
@@ -1948,9 +1948,7 @@ _DEPRECATED_KEYWORDS: List[
   ),
   (
     "pick_up_at_location",
-    lambda a: a.arm.pick_up_at_location(
-      _LOC, direction=0.0, resource_width=85.0, finger_speed_pct=30
-    ),
+    lambda a: a.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0, finger_speed_pct=30),
     lambda a: a.arm.pick_up_at_location(
       _LOC, direction=0.0, resource_width=85.0, finger_speed_percent=30
     ),
@@ -2082,11 +2080,6 @@ class TestDeprecatedPercentKeywords(unittest.IsolatedAsyncioTestCase):
         with self.assertWarns(DeprecationWarning):
           sent = await self._sent(old, out_of_range)
         self.assertEqual(sent, expected)
-
-  async def test_a_required_value_given_under_neither_name_raises(self):
-    arm = _make_arm(_FakeController())
-    with self.assertRaisesRegex(TypeError, "payload_percent"):
-      await arm.arm.set_payload()
 
 
 _MOVED_TO_FEATURES: List[

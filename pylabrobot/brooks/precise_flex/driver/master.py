@@ -1388,6 +1388,8 @@ class PreciseFlexDriver:
       DeprecationWarning,
       stacklevel=2,
     )
+    if "speed_pct" in kwargs:
+      kwargs["speed_percent"] = kwargs.pop("speed_pct")
     return await self.arm.move_to_location(*args, **kwargs)
 
   async def move_through_cartesian_poses(self, *args: Any, **kwargs: Any) -> Any:
@@ -1397,6 +1399,8 @@ class PreciseFlexDriver:
       DeprecationWarning,
       stacklevel=2,
     )
+    if "speed_pct" in kwargs:
+      kwargs["speed_percent"] = kwargs.pop("speed_pct")
     return await self.arm.move_through_cartesian_poses(*args, **kwargs)
 
   async def recover_axes_within_limits(self, *args: Any, **kwargs: Any) -> Any:
@@ -1406,6 +1410,8 @@ class PreciseFlexDriver:
       DeprecationWarning,
       stacklevel=2,
     )
+    if "speed_pct" in kwargs:
+      kwargs["speed_percent"] = kwargs.pop("speed_pct")
     return await self.arm.recover_axes_within_limits(*args, **kwargs)
 
   async def dest_c(self, *args: Any, **kwargs: Any) -> Any:
@@ -1571,6 +1577,8 @@ class PreciseFlexDriver:
       DeprecationWarning,
       stacklevel=2,
     )
+    if "speed_pct" in kwargs:
+      kwargs["speed_percent"] = kwargs.pop("speed_pct")
     return await self.arm.set_monitor_speed(*args, **kwargs)
 
   async def request_payload(self, *args: Any, **kwargs: Any) -> Any:
@@ -1587,6 +1595,8 @@ class PreciseFlexDriver:
     warnings.warn(
       "`set_payload` is deprecated, use `arm.set_payload`.", DeprecationWarning, stacklevel=2
     )
+    if "payload_pct" in kwargs:
+      kwargs["payload_percent"] = kwargs.pop("payload_pct")
     return await self.arm.set_payload(*args, **kwargs)
 
   async def request_profile_speed(self, *args: Any, **kwargs: Any) -> Any:
@@ -1605,6 +1615,8 @@ class PreciseFlexDriver:
       DeprecationWarning,
       stacklevel=2,
     )
+    if "speed_pct" in kwargs:
+      kwargs["speed_percent"] = kwargs.pop("speed_pct")
     return await self.arm.set_profile_speed(*args, **kwargs)
 
   async def request_profile_speed2(self, *args: Any, **kwargs: Any) -> Any:
@@ -1623,6 +1635,8 @@ class PreciseFlexDriver:
       DeprecationWarning,
       stacklevel=2,
     )
+    if "speed2_pct" in kwargs:
+      kwargs["speed2_percent"] = kwargs.pop("speed2_pct")
     return await self.arm.set_profile_speed2(*args, **kwargs)
 
   async def request_profile_acceleration(self, *args: Any, **kwargs: Any) -> Any:
@@ -1641,6 +1655,8 @@ class PreciseFlexDriver:
       DeprecationWarning,
       stacklevel=2,
     )
+    if "acceleration_pct" in kwargs:
+      kwargs["acceleration_percent"] = kwargs.pop("acceleration_pct")
     return await self.arm.set_profile_acceleration(*args, **kwargs)
 
   async def request_profile_acceleration_ramp(self, *args: Any, **kwargs: Any) -> Any:
@@ -1678,6 +1694,8 @@ class PreciseFlexDriver:
       DeprecationWarning,
       stacklevel=2,
     )
+    if "deceleration_pct" in kwargs:
+      kwargs["deceleration_percent"] = kwargs.pop("deceleration_pct")
     return await self.arm.set_profile_deceleration(*args, **kwargs)
 
   async def request_profile_deceleration_ramp(self, *args: Any, **kwargs: Any) -> Any:
@@ -1751,6 +1769,14 @@ class PreciseFlexDriver:
       DeprecationWarning,
       stacklevel=2,
     )
+    if "speed_pct" in kwargs:
+      kwargs["speed_percent"] = kwargs.pop("speed_pct")
+    if "speed2_pct" in kwargs:
+      kwargs["speed2_percent"] = kwargs.pop("speed2_pct")
+    if "acceleration_pct" in kwargs:
+      kwargs["acceleration_percent"] = kwargs.pop("acceleration_pct")
+    if "deceleration_pct" in kwargs:
+      kwargs["deceleration_percent"] = kwargs.pop("deceleration_pct")
     return await self.arm.set_motion_profile_values(*args, **kwargs)
 
   @property
@@ -1991,6 +2017,8 @@ class PreciseFlexDriver:
       DeprecationWarning,
       stacklevel=2,
     )
+    if "finger_speed_pct" in kwargs:
+      kwargs["finger_speed_percent"] = kwargs.pop("finger_speed_pct")
     return await self.arm.pick_up_at_location(*args, **kwargs)
 
   async def drop_at_location(self, *args: Any, **kwargs: Any) -> Any:
