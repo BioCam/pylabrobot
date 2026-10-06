@@ -1,4 +1,4 @@
-"""The PreciseFlex gripper: the end-effector fitted at the arm's wrist, driven through the controller.
+"""The PreciseFlex gripper: the end-effector at the arm's wrist, driven through the controller.
 
 Reached as `driver.gripper`. The jaws are the controller's gripper axis (`Axis.GRIPPER`), commanded
 through their open and close positions; a force-controlled grasp for `pickplate` is set up here.
@@ -293,9 +293,9 @@ class PreciseFlexGripper:
         gripper axis, and not when it opens them. Pass False only to close without it on purpose.
 
     Not interruptible: the ``gripper`` firmware command blocks the controller's command interpreter
-    until the jaws finish (hardware-verified, like ``waitForEom``), so a user interrupt cannot halt it
-    mid-travel - it is intentionally not wrapped by the motion-wait interrupt guard. The move is short
-    and force-limited, so this is a documented limitation rather than a hazard.
+    until the jaws finish (hardware-verified, like ``waitForEom``), so a user interrupt cannot halt
+    it mid-travel - it is intentionally not wrapped by the motion-wait interrupt guard. The move is
+    short and force-limited, so this is a documented limitation rather than a hazard.
     """
     logger.info(
       "[PreciseFlex %s] move_to_jaw_position: width_mm=%s force_sensing=%s",
@@ -342,7 +342,7 @@ class PreciseFlexGripper:
   # -- sensors -------------------------------------------------------------------------------------
 
   async def sense_fully_closed(self) -> bool:
-    """(Single Gripper Only) Tests if the gripper is fully closed by checking the end-of-travel sensor.
+    """(Single gripper only) Whether the end-of-travel sensor reads the gripper fully closed.
 
     Returns:
       For standard gripper: True if the gripper is within 2mm of fully closed, otherwise False.
@@ -353,7 +353,7 @@ class PreciseFlexGripper:
     return int(response) == -1
 
   async def sense_each_fully_closed(self) -> tuple[bool, bool]:
-    """(Dual Gripper Only) Tests if each gripper is fully closed by checking the end-of-travel sensors."""
+    """(Dual gripper only) Whether each gripper's end-of-travel sensor reads it fully closed."""
     if not self._is_dual_gripper:
       raise ValueError("AreGrippersClosed command is only valid for dual gripper robots.")
     response = await self._driver.send_command("IsFullyClosed")

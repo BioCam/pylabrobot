@@ -61,7 +61,8 @@ def _split_names(value: str) -> List[str]:
   """Split an engine name list on commas and/or whitespace.
 
   Args:
-    value: an engine name list (``listtools`` is space-separated, ``listprocesses`` comma-separated).
+    value: an engine name list (``listtools`` is space-separated, ``listprocesses``
+      comma-separated).
 
   Returns:
     The non-empty names, in order.
@@ -179,8 +180,8 @@ class VisionConfiguration:
 
   ``discovered`` is False when no engine was configured (no ``vision_host``), leaving the other
   fields empty. ``tool_types`` is the fixed compiled palette (what the engine can instantiate);
-  ``tools`` are the instances in the active project, each with its type and property names. Populated
-  by ``PreciseFlexVision.discover_configuration`` from the engine ``request_*`` reads.
+  ``tools`` are the instances in the active project, each with its type and property names.
+  Populated by ``PreciseFlexVision.discover_configuration`` from the engine ``request_*`` reads.
   """
 
   discovered: bool = False
@@ -232,9 +233,9 @@ F = TypeVar("F", bound=Callable[..., Awaitable[object]])
 def requires_vision_tool_type(tool_type: str) -> Callable[[F], F]:
   """Gate a method on the engine providing a compiled tool type (a hard, unfixable requirement).
 
-  When discovery has run (``self.configuration.discovered``) and the type is absent, raise - the type
-  is compiled into the engine and cannot be added by PLR. Before discovery (no engine configured) the
-  gate is a no-op so the method runs, matching the rest of the capability model.
+  When discovery has run (``self.configuration.discovered``) and the type is absent, raise - the
+  type is compiled into the engine and cannot be added by PLR. Before discovery (no engine
+  configured) the gate is a no-op so the method runs, matching the rest of the capability model.
 
   Args:
     tool_type: the compiled tool type the gated method needs (e.g. ``Acquire``, ``LightControl``).
@@ -251,8 +252,8 @@ def requires_vision_tool_type(tool_type: str) -> Callable[[F], F]:
         return await func(self, *args, **kwargs)
       if not config.has_vision_tool_type(tool_type):
         raise RuntimeError(
-          f"{func.__name__} requires the '{tool_type}' vision tool type, which this engine does not "
-          f"provide (available: {', '.join(config.vision_tool_types) or 'none'})"
+          f"{func.__name__} requires the '{tool_type}' vision tool type, which this engine does "
+          f"not provide (available: {', '.join(config.vision_tool_types) or 'none'})"
         )
       return await func(self, *args, **kwargs)
 
@@ -302,9 +303,10 @@ class PreciseFlexVision:
   """IntelliGuide vision capability for a PreciseFlex with a camera gripper.
 
   Reached as `driver.vision`, built at setup only when the controller has the IntelliGuide module,
-  so its existence is the capability gate (no per-method guards). The wire primitives translate GPL vision commands over the driver's
-  transport; the orchestrations compose them. Only ``locate_target`` moves the arm. ``available``
-  caches the project enumeration when present (else ``None``).
+  so its existence is the capability gate (no per-method guards). The wire primitives translate GPL
+  vision commands over the driver's transport; the orchestrations compose them. Only
+  ``locate_target`` moves the arm. ``available`` caches the project enumeration when present (else
+  ``None``).
   """
 
   def __init__(
@@ -348,19 +350,21 @@ class PreciseFlexVision:
   # The vision-tool property reads/writes come in two forms, one per server. The controller relay
   # (``request_vision_tool_property`` / ``_set_vision_tool_property`` below, tool+property split
   # because VToolProperty's wire form is two tokens) is always present; the vision server's
-  # (``self.driver.request_vision_server_property`` / ``_set_vision_server_property`` with the dotted
-  # ``<tool>.<property>`` key) needs a connected server, so its callers check
-  # ``self.driver.vision_server_connected`` first. Reads are public; writes (``_set_*``) are private.
+  # (``self.driver.request_vision_server_property`` / ``_set_vision_server_property`` with the
+  # dotted ``<tool>.<property>`` key) needs a connected server, so its callers check
+  # ``self.driver.vision_server_connected`` first. Reads are public; writes (``_set_*``) are
+  # private.
 
   async def request_vision_tool_property(self, tool: str, property_name: str) -> str:
     """Read a PreciseVision tool property over the controller (``VToolProperty <tool> <prop>``).
 
-    Named ``vision_`` because this is the general controller where ``tool`` already means the robot's
-    tool frame. The controller relays the read to the vision engine and replies with the BARE value
-    (no ``<code> <data>`` prefix), so it is read raw; a negative reply is a vision error code and
-    raised. The (tool, property) split is needed because VToolProperty's wire form is two tokens;
-    direct to the engine the same read is ``request_vision_server_property("<tool>.<property>")``
-    (dotted; an error reply raises there too).
+    Named ``vision_`` because this is the general controller where ``tool`` already means the
+    robot's tool frame. The controller relays the read to the vision engine and replies with the
+    BARE value (no ``<code> <data>`` prefix), so it is read raw; a negative reply is a vision error
+    code and raised. The (tool, property) split is needed because VToolProperty's wire form is two
+    tokens; direct to the engine the same read is
+    ``request_vision_server_property("<tool>.<property>")`` (dotted; an error reply raises there
+    too).
 
     Args:
       tool: the vision tool name (e.g. ``led``, ``acq1``, or ``System`` for server properties).
@@ -378,7 +382,7 @@ class PreciseFlexVision:
     return reply
 
   async def _set_vision_tool_property(self, tool: str, property_name: str, value: str) -> str:
-    """Write a PreciseVision tool property over the controller (``VToolProperty <tool> <prop> <value>``).
+    """Write a PreciseVision tool property over the controller (``VToolProperty``).
 
     Private: a write changes device state, so it is reached through this module's vetted
     orchestrations, not called directly (the ``request_`` read sibling is public). Named ``vision_``
@@ -399,7 +403,7 @@ class PreciseFlexVision:
     return await self.driver.send_command(f"VToolProperty {tool} {property_name} {value}")
 
   async def _run_vision_process(self, name: str) -> str:
-    """Run a vision process - the whole assembled tool pipeline (``Vprocess <name>``); no arm motion.
+    """Run a vision process, the whole assembled tool pipeline (``Vprocess <name>``). No motion.
 
     Controller-side (TCS): runs every tool in the named process in order. To run a single tool over
     the engine instead, use ``_run_vision_tool``.
@@ -570,7 +574,10 @@ class PreciseFlexVision:
     return (await self.driver.request_vision_server_property("system.islicensed")) == "True"
 
   async def request_projects(self) -> List[str]:
-    """List all projects on the engine (``system.listprojects``); the active one is request_project_name."""
+    """List all projects on the engine (``system.listprojects``).
+
+    The active one is ``request_project_name``.
+    """
     if not self.driver.vision_server_connected:
       raise RuntimeError(_NO_VISION_SERVER)
     return _split_names(await self.driver.request_vision_server_property("system.listprojects"))
@@ -645,7 +652,7 @@ class PreciseFlexVision:
     return self.configuration
 
   def _log_configuration_summary(self, config: VisionConfiguration) -> None:
-    """Log the discovered engine configuration as one hierarchical summary (engine > project > tools).
+    """Log the discovered engine configuration as one summary (engine > project > tools).
 
     Args:
       config: the discovered configuration to log.
@@ -660,10 +667,8 @@ class PreciseFlexVision:
     )
     logger.info(
       "[PreciseFlex %s] Vision: PreciseVision %s (licensed=%s)\n"
-      "  Tool types (%d available): %s\n"
-      "  Cameras: %s\n"
-      "  Project: %r (of %d: %s)\n"
-      "    Processes: %s\n"
+      "  Tool types (%d available): %s\n  Cameras: %s\n"
+      "  Project: %r (of %d: %s)\n    Processes: %s\n"
       "    Tools: %s",
       self.driver.io._host,
       config.vision_version,
@@ -694,8 +699,8 @@ class PreciseFlexVision:
       return
     if not is_confirmed_vision_version(config.vision_version):
       logger.warning(
-        "[PreciseFlex %s] PreciseVision engine %s is not in the confirmed list; please report it if "
-        "the vision capability works so others benefit.",
+        "[PreciseFlex %s] PreciseVision engine %s is not in the confirmed list; please report it "
+        "if the vision capability works so others benefit.",
         host,
         config.vision_version,
       )
@@ -787,7 +792,8 @@ class PreciseFlexVision:
     reflects it.
 
     Args:
-      camera: which gripper camera - ``"front"``/``1`` (front-facing) or ``"bottom"``/``2`` (downward).
+      camera: which gripper camera - ``"front"``/``1`` (front-facing) or ``"bottom"``/``2``
+        (downward).
       camera_property: the acquire-tool property name (e.g. ``brightness``, ``exposure``, ``gain``).
       value: the value to write. The camera may clamp it to its own range, so read it back with
         ``request_vision_tool_property_value`` to confirm the effective value.
@@ -812,7 +818,8 @@ class PreciseFlexVision:
     Change one first with ``_set_camera_setting`` (which applies it) for it to show in the frame.
 
     Args:
-      camera: which gripper camera - ``"front"``/``1`` (front-facing) or ``"bottom"``/``2`` (downward).
+      camera: which gripper camera - ``"front"``/``1`` (front-facing) or ``"bottom"``/``2``
+        (downward).
 
     Returns:
       The full-resolution frame as an RGB ``numpy`` array (height x width x 3, ``uint8``).

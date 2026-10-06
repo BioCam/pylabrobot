@@ -19,8 +19,8 @@ To be added here:
 - linear rail
 
 Everything here is PreciseFlex-specific, including the TCS controller protocol (``tcs_modules``),
-``errors``, and the controller DataIDs (``data_ids``) - the PreciseFlex line is the only user of
-the Guidance/TCS controller, so they live with it. A future, genuinely different Brooks device family
+``errors``, and the controller DataIDs (``data_ids``) - the PreciseFlex line is the only user of the
+Guidance/TCS controller, so they live with it. A future, genuinely different Brooks device family
 would get its own sibling package under ``brooks/``, and anything shared would be lifted up then.
 
 Re-exports the public classes, so ``from pylabrobot.brooks.precise_flex import PreciseFlexDriver``

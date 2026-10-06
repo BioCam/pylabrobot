@@ -183,8 +183,8 @@ class MotionProfile(NamedTuple):
 class PreciseFlexArm:
   """The arm of a PreciseFlex: its joints, read and moved through the controller.
 
-  Reached as `driver.arm`. Sends through the driver's `send_command`; every commanded joint move goes
-  through `_guarded_move_j`.
+  Reached as `driver.arm`. Sends through the driver's `send_command`; every commanded joint move
+  goes through `_guarded_move_j`.
   """
 
   # What the driver sends when a caller leaves the value out. Tune one arm by assigning on the
@@ -194,8 +194,9 @@ class PreciseFlexArm:
   # Validated parked orientations: planar folds differing only in which way the arm faces, named for
   # the direction the gripper points (BACK / RIGHT / FRONT). The Z column (Axis.BASE) is omitted on
   # purpose - ``park()`` fills it from the discovered travel (3/4 of it) so one orientation works on
-  # any reach; set Axis.BASE yourself to override. The gripper and rail are left untouched so parking
-  # never drops a held plate or assumes a rail. Assign one to ``parking_position`` to change the park.
+  # any reach; set Axis.BASE yourself to override. The gripper and rail are left untouched so
+  # parking never drops a held plate or assumes a rail. Assign one to ``parking_position`` to change
+  # the park.
   PARKING_POSITION_BACK: ClassVar[JointState] = {
     Axis.SHOULDER: 90.0,
     Axis.ELBOW: 180.0,
@@ -287,13 +288,14 @@ class PreciseFlexArm:
     def _floats(reply: str) -> list[float]:
       return [float(x) for x in reply.split()]
 
-    # On interrupt, `halt` stops the move on the now-free connection and we resync; the connection is
-    # kept open. Hardware-verified: a clean halt keeps power, attach, and the link (only a collision
-    # trips -3122 and drops power, which needs explicit recovery). The halt is deliberately NOT taken
-    # under `_io_lock`: the interrupted poll releases the lock as it unwinds, so today (single task)
-    # there is no contention, and an emergency halt must not wait on another caller's in-flight read.
-    # When concurrent socket users are introduced, the halt should pre-empt them (cancel peers) or
-    # take the lock with a short timeout rather than block on a slow transaction.
+    # On interrupt, `halt` stops the move on the now-free connection and we resync; the connection
+    # is kept open. Hardware-verified: a clean halt keeps power, attach, and the link (only a
+    # collision trips -3122 and drops power, which needs explicit recovery). The halt is
+    # deliberately NOT taken under `_io_lock`: the interrupted poll releases the lock as it unwinds,
+    # so today (single task) there is no contention, and an emergency halt must not wait on another
+    # caller's in-flight read. When concurrent socket users are introduced, the halt should pre-empt
+    # them (cancel peers) or take the lock with a short timeout rather than block on a slow
+    # transaction.
     async with halt_on_interrupt(lambda: halt_and_resync(self._driver.io, b"halt")):
       previous = _floats(await self._driver.send_command("wherej"))
       deadline = time.monotonic() + timeout
@@ -402,19 +404,14 @@ class PreciseFlexArm:
     out-of-range guard lives in the caller (``_guarded_move_j``), not in this primitive."""
     if self._driver._has_rail:
       angles_str = (
-        f"{joint_coords[Axis.BASE]} "
-        f"{joint_coords[Axis.SHOULDER]} "
-        f"{joint_coords[Axis.ELBOW]} "
-        f"{joint_coords[Axis.WRIST]} "
-        f"{joint_coords[Axis.GRIPPER]} "
-        f"{joint_coords[Axis.RAIL]} "
+        f"{joint_coords[Axis.BASE]} {joint_coords[Axis.SHOULDER]} "
+        f"{joint_coords[Axis.ELBOW]} {joint_coords[Axis.WRIST]} "
+        f"{joint_coords[Axis.GRIPPER]} {joint_coords[Axis.RAIL]} "
       )
     else:
       angles_str = (
-        f"{joint_coords[Axis.BASE]} "
-        f"{joint_coords[Axis.SHOULDER]} "
-        f"{joint_coords[Axis.ELBOW]} "
-        f"{joint_coords[Axis.WRIST]} "
+        f"{joint_coords[Axis.BASE]} {joint_coords[Axis.SHOULDER]} "
+        f"{joint_coords[Axis.ELBOW]} {joint_coords[Axis.WRIST]} "
         f"{joint_coords[Axis.GRIPPER]}"
       )
     await self._driver.send_command(f"moveJ {profile_index} {angles_str}")
@@ -436,22 +433,16 @@ class PreciseFlexArm:
     """Set joint angles for a station, handling rail configuration."""
     if self._driver._has_rail:
       await self._driver.send_command(
-        f"locAngles {station_index} "
-        f"{joint_position[Axis.RAIL]} "
-        f"{joint_position[Axis.BASE]} "
-        f"{joint_position[Axis.SHOULDER]} "
-        f"{joint_position[Axis.ELBOW]} "
-        f"{joint_position[Axis.WRIST]} "
+        f"locAngles {station_index} {joint_position[Axis.RAIL]} "
+        f"{joint_position[Axis.BASE]} {joint_position[Axis.SHOULDER]} "
+        f"{joint_position[Axis.ELBOW]} {joint_position[Axis.WRIST]} "
         f"{joint_position[Axis.GRIPPER]}"
       )
     else:
       await self._driver.send_command(
-        f"locAngles {station_index} "
-        f"{joint_position[Axis.BASE]} "
-        f"{joint_position[Axis.SHOULDER]} "
-        f"{joint_position[Axis.ELBOW]} "
-        f"{joint_position[Axis.WRIST]} "
-        f"{joint_position[Axis.GRIPPER]}"
+        f"locAngles {station_index} {joint_position[Axis.BASE]} "
+        f"{joint_position[Axis.SHOULDER]} {joint_position[Axis.ELBOW]} "
+        f"{joint_position[Axis.WRIST]} {joint_position[Axis.GRIPPER]}"
       )
 
   async def _cart_to_joints(self, cart: PreciseFlexCartesianPose) -> JointState:
@@ -528,7 +519,8 @@ class PreciseFlexArm:
     """Set the payload percent of maximum for the currently selected or attached robot.
 
     Args:
-      payload_percent: Payload percentage from 0 to 100 indicating the percent of the maximum payload the robot is carrying.
+      payload_percent: Payload percentage from 0 to 100 indicating the percent of the maximum
+        payload the robot is carrying.
       payload_pct: deprecated, use `payload_percent`.
 
     Raises:
@@ -655,7 +647,8 @@ class PreciseFlexArm:
 
     Args:
       profile_index: The profile index to modify.
-      acceleration_percent: The new acceleration as a percentage (0-100). 100 = maximum acceleration.
+      acceleration_percent: The new acceleration as a percentage (0-100). 100 = maximum
+        acceleration.
       acceleration_pct: deprecated, use `acceleration_percent`.
 
     Raises:
@@ -726,7 +719,8 @@ class PreciseFlexArm:
 
     Args:
       profile_index: The profile index to modify.
-      deceleration_percent: The new deceleration as a percentage (0-100). 100 = maximum deceleration.
+      deceleration_percent: The new deceleration as a percentage (0-100). 100 = maximum
+        deceleration.
       deceleration_pct: deprecated, use `deceleration_percent`.
 
     Raises:
@@ -890,7 +884,8 @@ class PreciseFlexArm:
       deceleration_percent: Percentage of maximum deceleration (0-100). 100 = full deceleration.
       acceleration_ramp: Acceleration ramp time in seconds.
       deceleration_ramp: Deceleration ramp time in seconds.
-      in_range: InRange value, from -1 to 100. -1 = allow blending, 0 = stop without checking, >0 = enforce position accuracy.
+      in_range: InRange value, from -1 to 100. -1 = allow blending, 0 = stop without checking, >0 =
+        enforce position accuracy.
       straight: If True, follow a straight-line path (-1). If False, follow a joint-based path (0).
       speed_pct: deprecated, use `speed_percent`.
       speed2_pct: deprecated, use `speed2_percent`.
@@ -963,8 +958,8 @@ class PreciseFlexArm:
       raise ValueError("InRange must be between -1 and 100.")
     straight_int = -1 if straight else 0
     await self._driver.send_command(
-      f"Profile {profile} {speed_percent} {speed2_percent} {acceleration_percent} {deceleration_percent} "
-      f"{acceleration_ramp} {deceleration_ramp} {in_range} {straight_int}"
+      f"Profile {profile} {speed_percent} {speed2_percent} {acceleration_percent} "
+      f"{deceleration_percent} {acceleration_ramp} {deceleration_ramp} {in_range} {straight_int}"
     )
 
   async def _set_speed(self, speed_percent: float):
@@ -1382,10 +1377,10 @@ class PreciseFlexArm:
       outside = self._axes_outside_soft_limits(await self.request_joint_state())
     if outside:
       raise OutOfRangeOfMotionError(
-        f"axis outside its soft limit after setup: {self._fmt_axes(outside)}. The controller rejects all "
-        f"commanded moves in this state. Recover with recover_axes_within_limits(), or freedrive "
-        f"the axis back into range manually (required for the wrist, or when an axis is far past "
-        f"its limit).",
+        f"axis outside its soft limit after setup: {self._fmt_axes(outside)}. The controller "
+        "rejects all commanded moves in this state. Recover with recover_axes_within_limits(), "
+        "or freedrive the axis back into range manually (required for the wrist, or when an axis "
+        "is far past its limit).",
         axes=outside,
       )
 
@@ -1398,8 +1393,8 @@ class PreciseFlexArm:
       power and drifted past its limit) -> ``OutOfRangeOfMotionError``, which the caller can recover
       and retry. Homing will not fix it (the rotary axes are absolute); call
       ``recover_axes_within_limits()`` to drive it back into range.
-    - an axis whose *target* is out of range is a bad request (freedrive can hand-move an axis past a
-      soft limit, so a taught pose can land outside the commandable envelope) -> ``ValueError``;
+    - an axis whose *target* is out of range is a bad request (freedrive can hand-move an axis past
+      a soft limit, so a taught pose can land outside the commandable envelope) -> ``ValueError``;
       re-teach the pose.
 
     No-op until the configuration is discovered.
@@ -1407,9 +1402,9 @@ class PreciseFlexArm:
     out_of_range = self._axes_outside_soft_limits(current)
     if out_of_range:
       raise OutOfRangeOfMotionError(
-        f"axis out of range: {self._fmt_axes(out_of_range)}. The controller rejects every commanded "
-        f"move while an axis is out of range. Homing will not recover it (the rotary axes are "
-        f"absolute); call recover_axes_within_limits() to drive it back into range.",
+        f"axis out of range: {self._fmt_axes(out_of_range)}. The controller rejects every "
+        "commanded move while an axis is out of range. Homing will not recover it (the rotary "
+        "axes are absolute); call recover_axes_within_limits() to drive it back into range.",
         axes=out_of_range,
       )
     for axis, (value, limit) in self._axes_outside_soft_limits(target).items():
@@ -1427,8 +1422,8 @@ class PreciseFlexArm:
     if target[Axis.GRIPPER] < current[Axis.GRIPPER]:
       raise ValueError(
         f"the joint move would close the gripper from {current[Axis.GRIPPER]} to "
-        f"{target[Axis.GRIPPER]} without sensing force; close it with gripper.move_to_jaw_position, or "
-        f"pass close_gripper_without_force_sensing=True"
+        f"{target[Axis.GRIPPER]} without sensing force; close it with "
+        f"gripper.move_to_jaw_position, or pass close_gripper_without_force_sensing=True"
       )
 
   def _forward_kinematics(self, joints: JointState) -> PreciseFlexPose:
@@ -1599,10 +1594,11 @@ class PreciseFlexArm:
     unspecified axis is reflected in the next merge. A target that closes the gripper is refused
     unless ``close_gripper_without_force_sensing`` is set.
 
-    When an axis is out of range the controller blocks the move (-1012). With ``recover_out_of_range``
-    set, this drives the offending axes back into range once (``recover_axes_within_limits``) and
-    retries; otherwise the ``OutOfRangeOfMotionError`` propagates. Recovery uses
-    ``_unchecked_fw_move_one_axis``, a different primitive, so it cannot recurse here.
+    When an axis is out of range the controller blocks the move (-1012). With
+    ``recover_out_of_range`` set, this drives the offending axes back into range once
+    (``recover_axes_within_limits``) and retries; otherwise the ``OutOfRangeOfMotionError``
+    propagates. Recovery uses ``_unchecked_fw_move_one_axis``, a different primitive, so it cannot
+    recurse here.
     """
 
     async def attempt() -> None:
@@ -2042,7 +2038,8 @@ class PreciseFlexArm:
     await self._unchecked_fw_set_grip_detail()
     horizontal_compliance_int = 1 if self.horizontal_compliance else 0
     ret_code = await self._driver.send_command(
-      f"pickplate {self.station_index} {horizontal_compliance_int} {self.horizontal_compliance_torque}"
+      f"pickplate {self.station_index} {horizontal_compliance_int} "
+      f"{self.horizontal_compliance_torque}"
     )
     if ret_code == "0":
       raise PreciseFlexError(-1, "the force-controlled gripper detected no plate present.")
@@ -2053,7 +2050,8 @@ class PreciseFlexArm:
     await self._unchecked_fw_set_grip_detail()
     horizontal_compliance_int = 1 if self.horizontal_compliance else 0
     await self._driver.send_command(
-      f"placeplate {self.station_index} {horizontal_compliance_int} {self.horizontal_compliance_torque}"
+      f"placeplate {self.station_index} {horizontal_compliance_int} "
+      f"{self.horizontal_compliance_torque}"
     )
 
   async def _pick_plate_c(self, cartesian_position: PreciseFlexCartesianPose):
@@ -2323,9 +2321,10 @@ class PreciseFlexArm:
   @property
   def parking_position(self) -> Optional[JointState]:
     """The pose ``park()`` moves to. Assign one of the ``PARKING_POSITION_BACK/RIGHT/FRONT`` class
-    constants or any JointState; the assignment is validated (keys must be ``Axis`` members, values must
-    be within the soft limits once the configuration is known). None until setup, where it defaults to
-    ``PARKING_POSITION_RIGHT``. A pose that omits ``Axis.BASE`` has its Z filled at park time."""
+    constants or any JointState; the assignment is validated (keys must be ``Axis`` members, values
+    must be within the soft limits once the configuration is known). None until setup, where it
+    defaults to ``PARKING_POSITION_RIGHT``. A pose that omits ``Axis.BASE`` has its Z filled at park
+    time."""
     return self._parking_position
 
   @parking_position.setter
@@ -2347,8 +2346,8 @@ class PreciseFlexArm:
 
     ``parking_position`` is filled at setup with ``PARKING_POSITION_RIGHT`` (a planar fold facing
     right, Z column at 3/4 of its discovered travel); assign one of the ``PARKING_POSITION_*`` class
-    constants or any JointState to park elsewhere. Falls back to the firmware ``movetosafe`` while it is
-    unset. No collision checks against 3rd-party obstacles.
+    constants or any JointState to park elsewhere. Falls back to the firmware ``movetosafe`` while
+    it is unset. No collision checks against 3rd-party obstacles.
 
     A parking pose says which way the gripper faces, and the wrist reaches that every full turn. On
     an arm that is modelled, a pose whose way there is refused is tried a full turn either side,

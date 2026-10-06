@@ -83,13 +83,14 @@ _MAX_IMAGE_BYTES = 16 * 1024 * 1024
 def parse_vision_server_reply(reply: str) -> str:
   """Parse an engine reply line into its success value, raising on a negative (error) reply.
 
-  Mirrors the controller transport (``PreciseFlexDriver._ensure_successful``): a negative
-  reply is a vision error code, surfaced as a ``PreciseFlexError`` whose message looks the code up in
-  the shared error table (the vision ``-40xx`` codes are in it), rather than silently swallowed to
+  Mirrors the controller transport (``PreciseFlexDriver._ensure_successful``): a negative reply is a
+  vision error code, surfaced as a ``PreciseFlexError`` whose message looks the code up in the
+  shared error table (the vision ``-40xx`` codes are in it), rather than silently swallowed to
   ``None``.
 
   Args:
-    reply: a raw reply line - ``0 <value>`` on success, or a negative code (+ optional message text).
+    reply: a raw reply line - ``0 <value>`` on success, or a negative code (+ optional message
+      text).
 
   Returns:
     The ``<value>`` of a success reply (possibly empty).
@@ -193,10 +194,10 @@ class PreciseFlexDriver:
       recover_out_of_range: when True (the default), an out-of-range axis (its current position
         outside its soft limit - a state the controller rejects every commanded move for, -1012) is
         driven back into range once via ``recover_axes_within_limits``, the same way at both moments
-        it matters: at setup, and before a commanded move (which then retries). If it is still out of
-        range after that, ``OutOfRangeOfMotionError`` propagates (no loop). Set False to forbid this
-        autonomous motion - an out-of-range axis then raises instead, carrying recovery instructions.
-        Every recovery is logged.
+        it matters: at setup, and before a commanded move (which then retries). If it is still out
+        of range after that, ``OutOfRangeOfMotionError`` propagates (no loop). Set False to forbid
+        this autonomous motion - an out-of-range axis then raises instead, carrying recovery
+        instructions. Every recovery is logged.
       closed_gripper_position: firmware-unit value (passed to ``GripClosePos`` /
         ``GripOpenPos``) at which the jaws are at the narrow end of
         :attr:`PreciseFlexGripper.jaw_width_range`.
@@ -229,8 +230,8 @@ class PreciseFlexDriver:
     )
     self.io = Socket(human_readable_device_name="Precise Flex Arm", host=host, port=port)
     self.timeout = timeout
-    # Serializes each request->reply exchange over the single shared controller socket; the rationale
-    # (and why it is kept though uncontended today) is in _locked_exchange.
+    # Serializes each request->reply exchange over the single shared controller socket; the
+    # rationale (and why it is kept though uncontended today) is in _locked_exchange.
     self._io_lock = asyncio.Lock()
     self._vision_host = vision_host
     # The vision server's two connections, held here beside the controller's; None until
@@ -258,8 +259,8 @@ class PreciseFlexDriver:
     )
     self._read_kinematics_from_device = read_kinematics_from_device
     self._recover_out_of_range = recover_out_of_range
-    # Device configuration, resolved once at setup; None until then. Set before parking_position so its
-    # validating setter can check assignments against the soft limits once they are known.
+    # Device configuration, resolved once at setup; None until then. Set before parking_position so
+    # its validating setter can check assignments against the soft limits once they are known.
     self._configuration: Optional[PreciseFlexConfiguration] = None
     # Public and runtime-settable (validated on assignment); setup fills the default RIGHT pose when
     # this is left None.
@@ -283,28 +284,30 @@ class PreciseFlexDriver:
   async def _locked_exchange(self, command: str) -> str:
     """Write one command and read its single reply line as one atomic, lock-held exchange.
 
-    Why the lock: the controller exposes a single socket (port 10100 refuses a second connection), so
-    every caller shares it - arm motion and the controller-relayed vision commands (``VToolProperty``,
-    ``Vprocess``, ``StereoLocate``) alike. A request and its reply are correlated only by order on that
-    socket, so if two coroutines' write/read pairs interleave, one reads the other's reply line. This
-    lock makes each write-and-its-reply atomic, so they cannot interleave.
+    Why the lock: the controller exposes a single socket (port 10100 refuses a second connection),
+    so every caller shares it - arm motion and the controller-relayed vision commands
+    (``VToolProperty``, ``Vprocess``, ``StereoLocate``) alike. A request and its reply are
+    correlated only by order on that socket, so if two coroutines' write/read pairs interleave, one
+    reads the other's reply line. This lock makes each write-and-its-reply atomic, so they cannot
+    interleave.
 
     No caller is concurrent today (a single async flow drives the arm), so the lock is currently
     uncontended - it is a forward guard, kept because the failure it prevents is silent
-    reply-misattribution the moment anyone runs e.g. ``asyncio.gather(arm_op, vision_relay_op)``, and an
-    uncontended ``asyncio.Lock`` is near-free. It is held per exchange, not across a whole move-wait, so
-    commands issued while a move polls for end-of-motion still slot in between polls (the move-wait's
-    emergency halt deliberately bypasses this lock - see ``_wait_for_eom``).
+    reply-misattribution the moment anyone runs e.g. ``asyncio.gather(arm_op, vision_relay_op)``,
+    and an uncontended ``asyncio.Lock`` is near-free. It is held per exchange, not across a whole
+    move-wait, so commands issued while a move polls for end-of-motion still slot in between polls
+    (the move-wait's emergency halt deliberately bypasses this lock - see ``_wait_for_eom``).
 
     This is the single choke point both reply grammars share (``send_command`` and the bare
-    ``VToolProperty`` read). The trailing newline is added here; the reply line is decoded and stripped.
+    ``VToolProperty`` read). The trailing newline is added here; the reply line is decoded and
+    stripped.
     """
     async with self._io_lock:
       await self.io.write(command.encode("utf-8") + b"\n")
       return (await self.io.readline()).decode("utf-8").strip()
 
   def _ensure_successful(self, reply: str) -> str:
-    """Acceptance gate for the standard ``<code> <data>`` reply: raise on a non-zero code, else return the data.
+    """Acceptance gate for the standard ``<code> <data>`` reply: raise on a non-zero code.
 
     Verifies the controller accepted the command - the leading integer reply code is ``0`` - and
     strips it, returning the rest of the line as the data payload. This is only the success check;
@@ -331,9 +334,9 @@ class PreciseFlexDriver:
     """Send a command and return the accepted ``<code> <data>`` payload.
 
     Writes the command and reads one reply line (as one locked exchange), then applies the standard
-    acceptance gate (``_ensure_successful``): a non-zero reply code raises, otherwise the data payload
-    is returned. A reply in a different grammar (e.g. PreciseVision's bare ``VToolProperty`` value)
-    goes through the same ``_locked_exchange`` and is parsed by the caller instead.
+    acceptance gate (``_ensure_successful``): a non-zero reply code raises, otherwise the data
+    payload is returned. A reply in a different grammar (e.g. PreciseVision's bare ``VToolProperty``
+    value) goes through the same ``_locked_exchange`` and is parsed by the caller instead.
 
     The exchange is wrapped in the firmware-command events so a command keeps its enclosing
     operation context.
@@ -451,8 +454,8 @@ class PreciseFlexDriver:
     """Read the next complete ``(name, data)`` result off the held image stream, or None at its end.
 
     Returns a record already buffered if there is one, otherwise reads until a whole record has
-    arrived. Partial bytes from a timed-out read stay buffered, so the next call resumes frame-aligned.
-    One reader at a time, so concurrent callers take whole records in call order.
+    arrived. Partial bytes from a timed-out read stay buffered, so the next call resumes
+    frame-aligned. One reader at a time, so concurrent callers take whole records in call order.
 
     Args:
       timeout: per-read timeout in seconds; ``vision_server_timeout`` when None.
@@ -665,7 +668,8 @@ class PreciseFlexDriver:
     if vision_host:
       try:
         await self._open_vision_server(vision_host)
-      except Exception as exc:  # noqa: BLE001 - a missing/unreachable engine just disables image fetch
+      # A missing or unreachable engine just disables image fetch.
+      except Exception as exc:  # noqa: BLE001
         logger.warning(
           "[PreciseFlex %s] vision engine at %s unreachable; direct image acquisition disabled: %s",
           self.io._host,
@@ -772,10 +776,12 @@ class PreciseFlexDriver:
     """Attach or release the robot, or get attachment state.
 
     Args:
-      attach_state: If omitted, returns the attachment state.  0 = release the robot; 1 = attach the robot.
+      attach_state: If omitted, returns the attachment state.  0 = release the robot; 1 = attach the
+        robot.
 
     Returns:
-      If attach_state is omitted, returns 0 if robot is not attached, -1 if attached.  Otherwise returns 0 on success.
+      If attach_state is omitted, returns 0 if robot is not attached, -1 if attached.  Otherwise
+      returns 0 on success.
 
     Note:
       The robot must be attached to allow motion commands.
@@ -1260,8 +1266,7 @@ class PreciseFlexDriver:
     ]
     gripper_note = (", " + ", ".join(grippers)) if grippers else ""
     logger.info(
-      "[%s] Connected on %s:%s\n"
-      "  Firmware: GPL %s, TCS %s\n"
+      "[%s] Connected on %s:%s\n  Firmware: GPL %s, TCS %s\n"
       "  Configuration: %s, robot_type %s, %s%s\n"
       "  Capabilities: %s reach (l1=%.1f, l2=%.1f mm), modules: %s",
       config.robot_name or config.controller_model or "PreciseFlexDriver",
@@ -1462,7 +1467,8 @@ class PreciseFlexDriver:
   async def move_gripper_joint_position(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``gripper.move_to_jaw_position_firmware_units``."""
     warnings.warn(
-      "`move_gripper_joint_position` is deprecated, use `gripper.move_to_jaw_position_firmware_units`.",
+      "`move_gripper_joint_position` is deprecated, use "
+      "`gripper.move_to_jaw_position_firmware_units`.",
       DeprecationWarning,
       stacklevel=2,
     )
@@ -1641,7 +1647,8 @@ class PreciseFlexDriver:
   async def request_profile_acceleration_ramp(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.request_profile_acceleration_ramp``."""
     warnings.warn(
-      "`request_profile_acceleration_ramp` is deprecated, use `arm.request_profile_acceleration_ramp`.",
+      "`request_profile_acceleration_ramp` is deprecated, use "
+      "`arm.request_profile_acceleration_ramp`.",
       DeprecationWarning,
       stacklevel=2,
     )
@@ -1677,7 +1684,8 @@ class PreciseFlexDriver:
   async def request_profile_deceleration_ramp(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.request_profile_deceleration_ramp``."""
     warnings.warn(
-      "`request_profile_deceleration_ramp` is deprecated, use `arm.request_profile_deceleration_ramp`.",
+      "`request_profile_deceleration_ramp` is deprecated, use "
+      "`arm.request_profile_deceleration_ramp`.",
       DeprecationWarning,
       stacklevel=2,
     )
@@ -1885,7 +1893,8 @@ class PreciseFlexDriver:
   async def request_reference_cartesian_speed(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.request_reference_cartesian_speed``."""
     warnings.warn(
-      "`request_reference_cartesian_speed` is deprecated, use `arm.request_reference_cartesian_speed`.",
+      "`request_reference_cartesian_speed` is deprecated, use "
+      "`arm.request_reference_cartesian_speed`.",
       DeprecationWarning,
       stacklevel=2,
     )
@@ -1894,7 +1903,8 @@ class PreciseFlexDriver:
   async def request_reference_cartesian_acceleration(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.request_reference_cartesian_acceleration``."""
     warnings.warn(
-      "`request_reference_cartesian_acceleration` is deprecated, use `arm.request_reference_cartesian_acceleration`.",
+      "`request_reference_cartesian_acceleration` is deprecated, use "
+      "`arm.request_reference_cartesian_acceleration`.",
       DeprecationWarning,
       stacklevel=2,
     )
@@ -1912,7 +1922,8 @@ class PreciseFlexDriver:
   async def request_max_acceleration_percent(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.request_max_acceleration_percent``."""
     warnings.warn(
-      "`request_max_acceleration_percent` is deprecated, use `arm.request_max_acceleration_percent`.",
+      "`request_max_acceleration_percent` is deprecated, use "
+      "`arm.request_max_acceleration_percent`.",
       DeprecationWarning,
       stacklevel=2,
     )
@@ -1921,7 +1932,8 @@ class PreciseFlexDriver:
   async def request_max_deceleration_percent(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.request_max_deceleration_percent``."""
     warnings.warn(
-      "`request_max_deceleration_percent` is deprecated, use `arm.request_max_deceleration_percent`.",
+      "`request_max_deceleration_percent` is deprecated, use "
+      "`arm.request_max_deceleration_percent`.",
       DeprecationWarning,
       stacklevel=2,
     )
@@ -1942,7 +1954,8 @@ class PreciseFlexDriver:
   async def request_tool_transformation_values(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.request_tool_transformation_values``."""
     warnings.warn(
-      "`request_tool_transformation_values` is deprecated, use `arm.request_tool_transformation_values`.",
+      "`request_tool_transformation_values` is deprecated, use "
+      "`arm.request_tool_transformation_values`.",
       DeprecationWarning,
       stacklevel=2,
     )
