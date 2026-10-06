@@ -2,7 +2,6 @@
 configuration, and the resource model it builds from one."""
 
 import asyncio
-import functools
 import json
 import logging
 import warnings
@@ -55,17 +54,6 @@ from .features.rail import PreciseFlexRail, PreciseFlexRailConfiguration
 from .features.vision import PreciseFlexVision
 
 logger = logging.getLogger(__name__)
-
-# What a declared configuration and the controller's answers have to agree on.
-_DECLARATION_MUST_MATCH = (
-  "robot_type",
-  "has_rail",
-  "gripper.is_dual_gripper",
-  "arm.reach_class",
-  "arm.soft_limits",
-  "gripper.soft_limit_range",
-)
-
 
 # The vision server (Brooks' PreciseVision engine) behind a camera-gripper arm: a text property
 # protocol on one port, and the JPEG results it pushes on another.
@@ -543,16 +531,23 @@ class PreciseFlexDriver:
     Raises:
       ValueError: If any of those disagree, naming each.
     """
-    if self.declared is None:
+    declared = self.declared
+    if declared is None:
       return
-    differences = []
-    for name in _DECLARATION_MUST_MATCH:
-      declared, answered = (
-        functools.reduce(getattr, name.split("."), configuration)
-        for configuration in (self.declared, discovered)
-      )
-      if declared != answered:
-        differences.append(f"{name}: declared {declared!r}, controller answers {answered!r}")
+    arm, gripper = declared.arm, declared.gripper
+    must_match = (
+      ("robot_type", declared.robot_type, discovered.robot_type),
+      ("has_rail", declared.has_rail, discovered.has_rail),
+      ("gripper.is_dual_gripper", gripper.is_dual_gripper, discovered.gripper.is_dual_gripper),
+      ("arm.reach_class", arm.reach_class, discovered.arm.reach_class),
+      ("arm.soft_limits", arm.soft_limits, discovered.arm.soft_limits),
+      ("gripper.soft_limit_range", gripper.soft_limit_range, discovered.gripper.soft_limit_range),
+    )
+    differences = [
+      f"{name}: declared {was_declared!r}, controller answers {answered!r}"
+      for name, was_declared, answered in must_match
+      if was_declared != answered
+    ]
     if differences:
       raise ValueError(
         "the declared configuration does not describe this arm:\n  " + "\n  ".join(differences)
