@@ -384,10 +384,7 @@ class PreciseFlexArm:
   ) -> tuple[JointState, PreciseFlexCartesianPose]:
     """Single-query snapshot of joint state and the derived Cartesian pose."""
     joints = await self.request_joint_state()
-    pose = kinematics.fk(joints, self._driver._kinematics_params)
-    # PF400 gripper stays level: pitch=90, roll=-180.
-    pose = dataclasses.replace(pose, rotation=Rotation(x=-180, y=90, z=pose.rotation.yaw))
-    return joints, pose
+    return joints, kinematics.fk(joints, self._driver._kinematics_params)
 
   # -- motion primitives ---------------------------------------------------------------------------
 

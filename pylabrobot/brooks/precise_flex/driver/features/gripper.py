@@ -13,7 +13,6 @@ from pylabrobot.events import evented_operation
 from pylabrobot.resources.end_effector import MechanicalGripper
 
 from ...kinematics import Axis
-from ..errors import PreciseFlexError
 
 if TYPE_CHECKING:
   from ..master import PreciseFlexDriver
@@ -86,15 +85,6 @@ class PreciseFlexGripper:
 
   # -- open and close positions --------------------------------------------------------------------
 
-  async def _request_close_position(self) -> float:
-    """Get the gripper close position for the servoed gripper.
-
-    Returns:
-      float: The current gripper close position.
-    """
-    data = await self._driver.send_command("GripClosePos")
-    return float(data)
-
   async def _unchecked_fw_set_close_position(self, close_position: float) -> None:
     """Set the gripper close position for the servoed gripper.
 
@@ -105,15 +95,6 @@ class PreciseFlexGripper:
     """
     await self._driver.send_command(f"GripClosePos {close_position}")
 
-  async def _request_open_position(self) -> float:
-    """Get the gripper open position for the servoed gripper.
-
-    Returns:
-      float: The current gripper open position.
-    """
-    data = await self._driver.send_command("GripOpenPos")
-    return float(data)
-
   async def _unchecked_fw_set_open_position(self, open_position: float) -> None:
     """Set the gripper open position for the servoed gripper.
 
@@ -123,18 +104,6 @@ class PreciseFlexGripper:
     await self._driver.send_command(f"GripOpenPos {open_position}")
 
   # -- grasp, for the force-controlled pickplate ---------------------------------------------------
-
-  async def _request_grasp_data(self) -> tuple[float, float, float]:
-    """Get the data to be used for the next force-controlled PickPlate command grip operation.
-
-    Returns:
-      A tuple containing (plate_width_mm, finger_speed_percent, grasp_force)
-    """
-    data = await self._driver.send_command("GraspData")
-    parts = data.split()
-    if len(parts) != 3:
-      raise PreciseFlexError(-1, "Unexpected response format from GraspData command.")
-    return (float(parts[0]), float(parts[1]), float(parts[2]))
 
   async def _set_grasp_data(
     self, plate_width: float, finger_speed_percent: float, grasp_force: float
