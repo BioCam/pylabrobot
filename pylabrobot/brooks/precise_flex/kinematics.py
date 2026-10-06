@@ -143,6 +143,26 @@ def _classify_pf400_reach(links: Tuple[float, float]) -> Literal["standard", "ex
 # -- forward kinematics ----------------------------------------------------
 
 
+def compute_elbow_and_wrist(
+  p: PF400Params, shoulder: float, elbow: float
+) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+  """Where the elbow joint and the wrist joint stand, from the shoulder axis, seen from above.
+
+  Args:
+    p: kinematic parameters.
+    shoulder: the shoulder's angle, in radians.
+    elbow: the elbow's angle from link 1, in radians.
+
+  Returns:
+    The elbow joint (x, y) and the wrist joint (x, y), in mm.
+  """
+  elbow_x, elbow_y = p.l1 * cos(shoulder), p.l1 * sin(shoulder)
+  return (
+    (elbow_x, elbow_y),
+    (elbow_x + p.l2 * cos(shoulder + elbow), elbow_y + p.l2 * sin(shoulder + elbow)),
+  )
+
+
 def fk(joints: JointState, p: PF400Params) -> PreciseFlexCartesianPose:
   """Forward kinematics.
 
@@ -160,8 +180,9 @@ def fk(joints: JointState, p: PF400Params) -> PreciseFlexCartesianPose:
   j4 = radians(joints[Axis.WRIST])
   rail_position = joints.get(Axis.RAIL, 0.0)
   yaw = j2 + j3 + j4
-  x = rail_position + p.l1 * cos(j2) + p.l2 * cos(j2 + j3) + p.gripper_length * cos(yaw)
-  y = p.l1 * sin(j2) + p.l2 * sin(j2 + j3) + p.gripper_length * sin(yaw)
+  _, (wrist_x, wrist_y) = compute_elbow_and_wrist(p, j2, j3)
+  x = rail_position + wrist_x + p.gripper_length * cos(yaw)
+  y = wrist_y + p.gripper_length * sin(yaw)
   z = j1 + p.gripper_z_offset
   j3_wrapped = (joints[Axis.ELBOW] + 180) % 360 - 180
   orientation: ElbowOrientation = "right" if j3_wrapped >= 0 else "left"
@@ -204,12 +225,7 @@ def compute_workspace_boundary(
     )
     for j in range(joint_steps + 1):
       elbow = radians(elbow_range[0] + (elbow_range[1] - elbow_range[0]) * j / joint_steps)
-      wrist_points.append(
-        (
-          p.l1 * cos(shoulder) + p.l2 * cos(shoulder + elbow),
-          p.l1 * sin(shoulder) + p.l2 * sin(shoulder + elbow),
-        )
-      )
+      wrist_points.append(compute_elbow_and_wrist(p, shoulder, elbow)[1])
   tool = p.gripper_length
   boundary = []
   for k in range(bearing_steps):

@@ -1427,19 +1427,15 @@ class PreciseFlexArm:
       joints: the joint state, as ``request_joint_state`` returns it.
     """
     p = self._driver._kinematics_params
-    link_1 = math.radians(joints[Axis.SHOULDER])
-    link_2 = link_1 + math.radians(joints[Axis.ELBOW])
+    elbow, wrist = kinematics.compute_elbow_and_wrist(
+      p, math.radians(joints[Axis.SHOULDER]), math.radians(joints[Axis.ELBOW])
+    )
+    # The shoulder axis rides the rail and the Z drive, and the two joints stand from it.
     shoulder = Coordinate(x=joints.get(Axis.RAIL, 0.0), y=0.0, z=joints[Axis.BASE])
-    elbow = Coordinate(
-      x=shoulder.x + p.l1 * math.cos(link_1), y=shoulder.y + p.l1 * math.sin(link_1), z=shoulder.z
-    )
-    wrist = Coordinate(
-      x=elbow.x + p.l2 * math.cos(link_2), y=elbow.y + p.l2 * math.sin(link_2), z=shoulder.z
-    )
     return PreciseFlexPose(
       shoulder_joint_location=shoulder,
-      elbow_joint_location=elbow,
-      wrist_joint_location=wrist,
+      elbow_joint_location=shoulder + Coordinate(x=elbow[0], y=elbow[1], z=0.0),
+      wrist_joint_location=shoulder + Coordinate(x=wrist[0], y=wrist[1], z=0.0),
       gripper_pose=kinematics.fk(joints, p),
       joints=dict(joints),
     )
