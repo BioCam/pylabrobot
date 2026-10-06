@@ -4,8 +4,6 @@ Each part is a cuboid in its own frame, located by its left front bottom corner,
 measured off the manufacturer's model.
 """
 
-from typing import Optional
-
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
 
@@ -91,12 +89,12 @@ def base_plate(name: str = "pf400_base_plate") -> Resource:
   )
 
 
-def z_column(name: str = "pf400_z_column", height: Optional[float] = None) -> Resource:
+def z_column(name: str, height: float) -> Resource:
   """The column the carriage rides.
 
   Args:
     name: what to call this one.
-    height: how tall it is, in mm, as `z_column_height` gives it. Zero until the travel is read.
+    height: how tall it is, in mm, as `z_column_height` gives it.
 
   Returns:
     The column.
@@ -105,7 +103,7 @@ def z_column(name: str = "pf400_z_column", height: Optional[float] = None) -> Re
     name=name,
     size_x=Z_COLUMN_SIZE_XY[0],
     size_y=Z_COLUMN_SIZE_XY[1],
-    size_z=0.0 if height is None else height,
+    size_z=height,
     category="z_column",
     model="brooks_pf400_z_column",
   )

@@ -9,7 +9,8 @@ class TestPF400Gripper(unittest.TestCase):
   """The gripper, reaching as far as the controller reports its tool does."""
 
   def setUp(self):
-    self.gripper = pf400_end_effector.gripper("gripper", 162.0, (60.0, 145.0), jaw_width=120.0)
+    self.gripper = pf400_end_effector.gripper("gripper", 162.0, (60.0, 145.0))
+    self.gripper.jaw_width = 120.0
 
   def test_it_is_sized_to_its_body_and_turns_on_the_wrist_joint(self):
     self.assertIsInstance(self.gripper, MechanicalGripper)

@@ -14,7 +14,6 @@ from pylabrobot.brooks.precise_flex.driver.features.vision import (
   PreciseFlexVision,
   StereoParameters,
   VisionConfiguration,
-  requires_vision_tool,
 )
 
 
@@ -596,7 +595,7 @@ class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
 
 
 class TestVisionCapabilityGating(unittest.IsolatedAsyncioTestCase):
-  """@requires_vision_tool_type / @requires_vision_tool gate methods against the discovered configuration."""
+  """`requires_vision_tool_type` gates a method against the discovered configuration."""
 
   def _backend(self, types):
     driver = MagicMock()
@@ -629,28 +628,6 @@ class TestVisionCapabilityGating(unittest.IsolatedAsyncioTestCase):
     driver.send_command = AsyncMock(return_value="0 1")
     vision = PreciseFlexVision(driver)
     self.assertEqual(await vision.read_barcode("Camera1"), "0 1")  # discovered defaults False
-
-  async def test_requires_vision_tool_distinguishes_provisionable_from_unsupported(self):
-    """A missing instance whose type exists is provisionable; otherwise unsupported."""
-
-    class Dummy:
-      configuration = VisionConfiguration(
-        discovered=True, vision_tool_types=["FiducialLocator"], active_project="P"
-      )
-
-      @requires_vision_tool("aruco9", tool_type="FiducialLocator")
-      async def needs_present_type(self) -> str:
-        return "ran"
-
-      @requires_vision_tool("widget1", tool_type="Widget")
-      async def needs_absent_type(self) -> str:
-        return "ran"
-
-    dummy = Dummy()
-    with self.assertRaisesRegex(RuntimeError, "provision"):
-      await dummy.needs_present_type()
-    with self.assertRaisesRegex(RuntimeError, "not available"):
-      await dummy.needs_absent_type()
 
 
 def _controller_with_io() -> "tuple[PreciseFlexDriver, MagicMock]":

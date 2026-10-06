@@ -262,43 +262,6 @@ def requires_vision_tool_type(tool_type: str) -> Callable[[F], F]:
   return decorator
 
 
-def requires_vision_tool(name: str, *, tool_type: Optional[str] = None) -> Callable[[F], F]:
-  """Gate a method on a tool instance being present in the active project (a soft requirement).
-
-  When discovery has run and the tool is absent, the outcome depends on its type (the third state
-  beyond present/unsupported): if ``tool_type`` is in the engine's palette the gap is provisionable
-  and the error says so; otherwise it is unsupported. Before discovery the gate is a no-op.
-
-  Args:
-    name: the tool instance the gated method needs in the active project (e.g. ``led``, ``aruco1``).
-    tool_type: the tool's compiled type, used to tell a provisionable gap from an unsupported one.
-
-  Raises:
-    RuntimeError: when the decorated method is called after discovery and the tool is absent.
-  """
-
-  def decorator(func: F) -> F:
-    @functools.wraps(func)
-    async def wrapper(self: "PreciseFlexVision", *args: object, **kwargs: object) -> object:
-      config = self.configuration
-      if not config.discovered:  # nothing discovered to gate against yet - let the method run
-        return await func(self, *args, **kwargs)
-      if not config.has_vision_tool(name):
-        if tool_type is not None and config.has_vision_tool_type(tool_type):
-          raise RuntimeError(
-            f"{func.__name__} requires tool '{name}', absent from project "
-            f"{config.active_project!r}, but its type '{tool_type}' is available - provision it or "
-            f"load a project that defines it"
-          )
-        detail = f"; type '{tool_type}' is not available on this engine" if tool_type else ""
-        raise RuntimeError(f"{func.__name__} requires tool '{name}', not present{detail}")
-      return await func(self, *args, **kwargs)
-
-    return cast(F, wrapper)
-
-  return decorator
-
-
 class PreciseFlexVision:
   """IntelliGuide vision capability for a PreciseFlex with a camera gripper.
 

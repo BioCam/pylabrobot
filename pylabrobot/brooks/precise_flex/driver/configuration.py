@@ -241,16 +241,6 @@ class PreciseFlexConfiguration:
     return self._power_state
 
   @property
-  def has_vision_module(self) -> bool:
-    """Deprecated: use ``has_vision_server``."""
-    warnings.warn(
-      "`has_vision_module` is deprecated, use `has_vision_server`.",
-      DeprecationWarning,
-      stacklevel=2,
-    )
-    return self.has_vision_server
-
-  @property
   def is_vision_gripper(self) -> bool:
     """Deprecated: use ``has_vision_gripper``."""
     warnings.warn(

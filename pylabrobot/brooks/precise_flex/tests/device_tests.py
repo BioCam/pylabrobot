@@ -25,6 +25,56 @@ from pylabrobot.resources.manipulator import LinkBody
 from pylabrobot.resources.resource import Resource
 
 
+def configuration(links=kinematics.ARM_LINKS_EXTENDED, z_range=(1.5, 401.5)):
+  """What an extended-reach arm on a 400 mm column reports, as far as the model reads it."""
+  return PreciseFlexConfiguration(
+    manufacturer="",
+    controller_model="",
+    hardware_version="",
+    gpl_version="",
+    controller_serial="",
+    robot_name="PF400",
+    robot_type=12,
+    tcs_version="",
+    modules=(),
+    num_axes=5,
+    extra_axes=0,
+    axis_mask=47,
+    arm=PreciseFlexArmConfiguration(
+      soft_limits={
+        Axis.BASE: z_range,
+        Axis.SHOULDER: (-93.0, 93.0),
+        Axis.ELBOW: (12.0, 348.0),
+        Axis.WRIST: (-970.0, 970.0),
+      },
+      hard_limits={},
+      max_joint_speed={},
+      max_joint_acceleration={},
+      max_joint_deceleration={},
+      max_cartesian_speed=0.0,
+      max_cartesian_acceleration=0.0,
+      kinematics=kinematics.PF400Params(l1=links[0], l2=links[1], gripper_length=162.0),
+    ),
+    gripper=PreciseFlexGripperConfiguration(
+      soft_limit_range=(60.0, 145.0),
+      hard_limit_range=(0.0, 0.0),
+      max_speed=0.0,
+      max_acceleration=0.0,
+      max_deceleration=0.0,
+    ),
+  )
+
+
+def hung(driver: PreciseFlexDriver) -> Tuple[Resource, LinkBody, LinkBody, MechanicalGripper]:
+  """The carriage, both links and the gripper the driver hung, which are None before it has."""
+  return (
+    cast(Resource, driver.arm.resource),
+    cast(LinkBody, driver.arm.link_1),
+    cast(LinkBody, driver.arm.link_2),
+    cast(MechanicalGripper, driver.gripper.resource),
+  )
+
+
 def pf400(declared: Optional[str] = None) -> PreciseFlexDevice:
   driver = PreciseFlexDriver(
     host="localhost",
@@ -170,56 +220,6 @@ class TestTheCarriageOnTheMachine(unittest.IsolatedAsyncioTestCase):
   def test_the_carriage_stays_within_the_columns_travel(self):
     top = pf400_chassis.z_carriage_location(400.0).z + self.carriage.get_size_z()
     self.assertLessEqual(top, self.column.get_size_z())
-
-
-def configuration(links=kinematics.ARM_LINKS_EXTENDED, z_range=(1.5, 401.5)):
-  """What an extended-reach arm on a 400 mm column reports, as far as the model reads it."""
-  return PreciseFlexConfiguration(
-    manufacturer="",
-    controller_model="",
-    hardware_version="",
-    gpl_version="",
-    controller_serial="",
-    robot_name="PF400",
-    robot_type=12,
-    tcs_version="",
-    modules=(),
-    num_axes=5,
-    extra_axes=0,
-    axis_mask=47,
-    arm=PreciseFlexArmConfiguration(
-      soft_limits={
-        Axis.BASE: z_range,
-        Axis.SHOULDER: (-93.0, 93.0),
-        Axis.ELBOW: (12.0, 348.0),
-        Axis.WRIST: (-970.0, 970.0),
-      },
-      hard_limits={},
-      max_joint_speed={},
-      max_joint_acceleration={},
-      max_joint_deceleration={},
-      max_cartesian_speed=0.0,
-      max_cartesian_acceleration=0.0,
-      kinematics=kinematics.PF400Params(l1=links[0], l2=links[1], gripper_length=162.0),
-    ),
-    gripper=PreciseFlexGripperConfiguration(
-      soft_limit_range=(60.0, 145.0),
-      hard_limit_range=(0.0, 0.0),
-      max_speed=0.0,
-      max_acceleration=0.0,
-      max_deceleration=0.0,
-    ),
-  )
-
-
-def hung(driver: PreciseFlexDriver) -> Tuple[Resource, LinkBody, LinkBody, MechanicalGripper]:
-  """The carriage, both links and the gripper the driver hung, which are None before it has."""
-  return (
-    cast(Resource, driver.arm.resource),
-    cast(LinkBody, driver.arm.link_1),
-    cast(LinkBody, driver.arm.link_2),
-    cast(MechanicalGripper, driver.gripper.resource),
-  )
 
 
 class TestTheDriverHangsTheArm(unittest.IsolatedAsyncioTestCase):

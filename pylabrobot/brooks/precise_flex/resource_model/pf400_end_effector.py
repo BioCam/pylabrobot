@@ -6,7 +6,7 @@ is bolted to each. Sizes are measured off the manufacturer's model; how far it r
 its fingers open are what the controller reports.
 """
 
-from typing import Optional, Tuple
+from typing import Tuple
 
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.end_effector import MechanicalGripper
@@ -46,7 +46,6 @@ def gripper(
   name: str,
   tool_length: float,
   jaw_range: Tuple[float, float],
-  jaw_width: Optional[float] = None,
 ) -> MechanicalGripper:
   """The gripper: the wrist joint to the centre the fingers hold a plate at.
 
@@ -54,7 +53,6 @@ def gripper(
     name: what to call this one.
     tool_length: the wrist joint to the grip centre, in mm, as the controller reports it.
     jaw_range: how far apart the fingers stand, closed and open, in mm.
-    jaw_width: how far apart they stand to begin with, in mm. Open, when not given.
 
   Returns:
     The gripper.
@@ -93,6 +91,5 @@ def gripper(
     jaws=jaws,
     jaw_location=GRIPPER_JAW_LOCATION,
     jaw_range=jaw_range,
-    jaw_width=jaw_width,
     model=model,
   )

@@ -20,7 +20,7 @@ class TestTheColumn(unittest.TestCase):
 
   def test_it_stands_on_the_plates_top_face_centred_across_it(self):
     plate = pf400_chassis.base_plate()
-    column = pf400_chassis.z_column()
+    column = pf400_chassis.z_column("column", 700.0)
     location = pf400_chassis.Z_COLUMN_LOCATION
     self.assertEqual(location.z, plate.get_size_z())
     self.assertEqual(2 * location.y + column.get_size_y(), plate.get_size_y())
@@ -28,18 +28,15 @@ class TestTheColumn(unittest.TestCase):
   def test_a_column_reaches_the_height_the_arm_stands(self):
     # Measured from the plate's bottom, which is its own frame's zero.
     for z_travel, height in ((400.0, 712.0), (750.0, 1062.0), (1160.0, 1472.0)):
-      column = pf400_chassis.z_column(height=pf400_chassis.z_column_height(z_travel))
+      column = pf400_chassis.z_column("column", height=pf400_chassis.z_column_height(z_travel))
       self.assertEqual(pf400_chassis.Z_COLUMN_LOCATION.z + column.get_size_z(), height)
-
-  def test_a_column_whose_travel_is_unread_has_no_height(self):
-    self.assertEqual(pf400_chassis.z_column().get_size_z(), 0.0)
 
 
 class TestTheCarriage(unittest.TestCase):
   """What the J1 drive moves, and where a reading puts it."""
 
   def test_it_rides_the_columns_front_face_centred_across_it(self):
-    column = pf400_chassis.z_column()
+    column = pf400_chassis.z_column("column", 700.0)
     carriage = pf400_chassis.z_carriage()
     location = pf400_chassis.z_carriage_location(0.0)
     self.assertEqual(location.x, column.get_size_x())
@@ -59,7 +56,11 @@ class TestEveryPart(unittest.TestCase):
   """Each part is a cuboid that says what it is."""
 
   def test_each_part_names_a_category_and_a_model(self):
-    parts = (pf400_chassis.base_plate(), pf400_chassis.z_column(), pf400_chassis.z_carriage())
+    parts = (
+      pf400_chassis.base_plate(),
+      pf400_chassis.z_column("column", 700.0),
+      pf400_chassis.z_carriage(),
+    )
     self.assertEqual(
       [(part.category, part.model) for part in parts],
       [

@@ -43,7 +43,6 @@ class PreciseFlexDevice(Resource):
     size_x: float,
     size_y: float,
     size_z: float,
-    workspace_location: Optional[Coordinate] = None,
     model: Optional[str] = None,
   ):
     """
@@ -54,7 +53,6 @@ class PreciseFlexDevice(Resource):
       size_x: how wide the device is, in mm.
       size_y: how deep it is, in mm.
       size_z: how tall it is, in mm.
-      workspace_location: where the workspace sits from the device's origin. Defaults to it.
       model: which device this is. Defaults to the class name.
     """
     super().__init__(
@@ -70,10 +68,8 @@ class PreciseFlexDevice(Resource):
     if self.driver.workspace is not None and self.driver.workspace is not workspace:
       logger.warning("the driver was given another workspace; modelling into this device's")
     self.driver.workspace = workspace
-    self.assign_child_resource(
-      workspace,
-      location=workspace_location if workspace_location is not None else Coordinate.zero(),
-    )
+    # Where it sits is set once a configuration gives it an extent.
+    self.assign_child_resource(workspace, location=Coordinate.zero())
 
   @property
   def arm(self) -> PreciseFlexArm:
