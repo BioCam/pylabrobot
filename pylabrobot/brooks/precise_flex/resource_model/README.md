@@ -38,6 +38,8 @@ shoulder.
 | `link_1` | `link_body` | `brooks_pf400_link_1` | Shoulder joint to elbow joint |
 | `link_2` | `link_body` | `brooks_pf400_link_2` | Elbow joint to wrist joint, turning underneath link 1 |
 | `gripper` | `mechanical_gripper` | `brooks_pf400_gripper` | Wrist joint to the point the fingers grip at |
+| `linear_rail` | `linear_rail` | `brooks_pf400_linear_rail_1m`, `_1_5m`, `_2m` | The optional rail, as long as its travel |
+| `linear_rail_carriage` | `linear_rail_carriage` | `brooks_pf400_linear_rail_carriage_0deg`, `_90deg` | What rides the rail, and the arm stands on |
 
 `PreciseFlex400` in `device.py` builds only the plate and an empty workspace. The driver builds the
 rest from a configuration: the one declared from a file, at once, or else the one the controller
@@ -72,6 +74,9 @@ outline as well: the part seen from above, as the points round it in its own fra
 convex outline of everything the mesh covers, so it never says less than the part. A finger is a
 bar, and its cuboid is its outline.
 
-## Not modelled yet
+## Not built yet
 
-The optional rail.
+The rail and its carriage exist as parts, with their meshes, and nothing builds them: an arm on a
+rail is still modelled as standing still. What is missing is known only from an arm on a rail:
+where on the rail its carriage stands when the drive reports 0, and where on the carriage the
+arm's plate is bolted.
