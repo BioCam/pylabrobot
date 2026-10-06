@@ -7,7 +7,7 @@ from pylabrobot.resources.coordinate import Coordinate
 class TestTheShoulderAxis(unittest.TestCase):
   """The point the controller reports from stands within the base plate."""
 
-  def test_the_axis_stands_above_the_plates_front_edge_centred_across_it(self):
+  def test_the_axis_stands_above_the_base_plates_front_edge_centred_across_it(self):
     base_plate = pf400_chassis.base_plate()
     self.assertEqual(
       pf400_chassis.SHOULDER_AXIS,
@@ -18,7 +18,7 @@ class TestTheShoulderAxis(unittest.TestCase):
 class TestTheColumn(unittest.TestCase):
   """The column stands on the base plate and reaches the height the arm stands."""
 
-  def test_it_stands_on_the_plates_top_face_centred_across_it(self):
+  def test_it_stands_on_the_base_plates_top_face_centred_across_it(self):
     base_plate = pf400_chassis.base_plate()
     column = pf400_chassis.z_column("column", 700.0)
     location = pf400_chassis.Z_COLUMN_LOCATION

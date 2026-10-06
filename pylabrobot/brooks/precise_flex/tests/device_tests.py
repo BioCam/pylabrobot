@@ -105,7 +105,7 @@ class TestTheDevice(unittest.IsolatedAsyncioTestCase):
     self.assertIs(self.device.driver.workspace, self.device.workspace)
     self.assertEqual(self.device.workspace.name, "pf400_workspace")
 
-  def test_before_a_configuration_only_the_plate_stands(self):
+  def test_before_a_configuration_only_the_base_plate_stands(self):
     self.assertEqual(
       [r.name for r in self.device.get_all_children()], ["pf400_workspace", "pf400_base_plate"]
     )
@@ -113,7 +113,7 @@ class TestTheDevice(unittest.IsolatedAsyncioTestCase):
     self.assertFalse(self.device.workspace.is_reachable(Coordinate(400.0, 0.0, 200.0)))
     self.assertIsNone(self.device.arm.resource)
 
-  def test_its_own_cuboid_is_the_plate_it_stands_on(self):
+  def test_its_own_cuboid_is_the_base_plate_it_stands_on(self):
     base_plate = self.device.get_resource("pf400_base_plate")
     self.assertEqual(self.device.get_size_z(), base_plate.get_size_z())
 
@@ -167,34 +167,34 @@ class TestBuiltFromADeclaredConfiguration(unittest.IsolatedAsyncioTestCase):
 
 
 class TestTheChassisStandsInOneTree(unittest.IsolatedAsyncioTestCase):
-  """The base plate is the machine's, and the column is the base plate's."""
+  """The base plate is the device's, and the column is the base plate's."""
 
   def setUp(self):
     self.device = built()
     self.base_plate = self.device.get_resource("pf400_base_plate")
     self.column = self.base_plate.children[0]
 
-  def test_the_plate_and_the_column_are_named_after_the_machine(self):
+  def test_the_base_plate_and_the_column_are_named_after_the_device(self):
     self.assertEqual(
       [self.base_plate.name, self.column.name], ["pf400_base_plate", "pf400_z_column"]
     )
 
-  def test_the_column_stands_on_the_plates_top_face(self):
+  def test_the_column_stands_on_the_base_plates_top_face(self):
     self.assertEqual(self.column.location, pf400_chassis.Z_COLUMN_LOCATION)
     self.assertEqual(self.column.get_absolute_location().z, self.base_plate.get_size_z())
 
 
 class TestWhereTheControllerReportsFrom(unittest.IsolatedAsyncioTestCase):
-  """The shoulder axis stands where it was measured, in the machine's own frame."""
+  """The shoulder axis stands where it was measured, in the device's own frame."""
 
-  def test_the_axis_stands_at_the_front_of_the_machine(self):
+  def test_the_axis_stands_at_the_front_of_the_device(self):
     device = pf400()
     base_plate = device.get_resource("pf400_base_plate")
     axis = base_plate.get_absolute_location() + pf400_chassis.SHOULDER_AXIS
     self.assertEqual(axis, Coordinate(device.get_size_x(), device.get_size_y() / 2, 62.0))
 
 
-class TestTheCarriageOnTheMachine(unittest.IsolatedAsyncioTestCase):
+class TestTheCarriageOnTheDevice(unittest.IsolatedAsyncioTestCase):
   """The carriage on the column stands where the J1 drive says it is."""
 
   def setUp(self):

@@ -1,6 +1,6 @@
 """The PreciseFlex arms as resources: the device, and what it knows about its own workspace.
 
-A frame factory builds the base plate the machine stands on. Everything it carries - the column,
+A frame factory builds the base plate the device stands on. Everything it carries - the column,
 the carriage, the arm, the gripper - is hung off it by the driver, from a configuration.
 """
 
@@ -118,7 +118,7 @@ def PreciseFlex400(driver: PreciseFlexDriver, name: str = "PreciseFlex400") -> P
     name: what to call this one.
 
   Returns:
-    The machine.
+    The device.
   """
   device = PreciseFlexDevice(
     workspace=Workspace(name=f"{name}_workspace"),

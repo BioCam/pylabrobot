@@ -194,7 +194,7 @@ class PreciseFlexDriver:
         ``park()`` moves to. Leave None (the default) and setup fills the generic default RIGHT pose
         (planar fold, Z column at 3/4 of the discovered travel); reassign it any time to park
         elsewhere. While unset (no configuration), ``park()`` falls back to ``movetosafe``.
-      vision_host: address of the PreciseVision engine, a separate machine from the controller (its
+      vision_host: address of the PreciseVision engine, a separate computer from the controller (its
         own box with its own IP). Set it to connect to the engine, which powers both image fetch and
         engine-side discovery/introspection (what tool types, tools, processes, and projects exist).
         None leaves the engine unconnected, disabling those; the controller-side execution path

@@ -2,7 +2,7 @@
 
 What the arm is made of, as resources: the base plate it stands on, the column it rides, the
 carriage the Z drive moves up that column, the two links, and the gripper. The model mirrors the
-machine: every position in it comes from what the controller reports. The driver consults it before
+device: every position in it comes from what the controller reports. The driver consults it before
 a joint move, and refuses one that would carry the gripper against the column.
 
 ## The frame
@@ -33,7 +33,7 @@ shoulder.
 
 | Resource | Category | Model | What it is |
 |---|---|---|---|
-| `base_plate` | `base_plate` | `brooks_pf400_base_plate` | The base plate the machine bolts to |
+| `base_plate` | `base_plate` | `brooks_pf400_base_plate` | The base plate the device bolts to |
 | `z_column` | `z_column` | `brooks_pf400_z_column` | The column the carriage rides, as tall as the travel makes it |
 | `z_carriage` | `z_carriage` | `brooks_pf400_z_carriage` | What the Z drive moves: the housing the arm turns in |
 | `link_1` | `link_body` | `brooks_pf400_link_1` | Shoulder joint to elbow joint |
@@ -55,7 +55,7 @@ A part is drawn as its own box until a mesh is named after it. A file called `<m
 anywhere under the package, is found by the viewer and drawn instead - nothing in the code holds a
 path. The file is authored in the part's own frame, in metres, Z up.
 
-The cuboids are therefore the specification for how a model of the whole machine is split: one file
+The cuboids are therefore the specification for how a model of the whole device is split: one file
 per part, each cut at that part's own corner, so a file can be dropped in without an offset and
 without anything else changing.
 
