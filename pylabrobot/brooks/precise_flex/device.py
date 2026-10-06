@@ -1,7 +1,7 @@
 """The PreciseFlex arms as resources: the device, and what it knows about its own workspace.
 
-A frame factory builds the plate the machine stands on. Everything it carries - the column, the
-carriage, the arm, the gripper - is hung off it by the driver, from a configuration.
+A frame factory builds the base plate the machine stands on. Everything it carries - the column,
+the carriage, the arm, the gripper - is hung off it by the driver, from a configuration.
 """
 
 import logging
@@ -106,12 +106,12 @@ class PreciseFlexDevice(Resource):
 
 
 def PreciseFlex400(driver: PreciseFlexDriver, name: str = "PreciseFlex400") -> PreciseFlexDevice:
-  """A PreciseFlex 400: the plate it stands on, and a workspace for the driver to reflect it into.
+  """A PreciseFlex 400: its base plate, and a workspace for the driver to reflect it into.
 
   Nothing about the arm is declared here. The column, the workspace's extent, the links and the
   gripper are built from a configuration: the one the driver was given as
   `declared_configuration_json`, at once, or else the one the controller answers at setup. Where
-  the controller reports from is `pf400_chassis.SHOULDER_AXIS`, within the plate.
+  the controller reports from is `pf400_chassis.SHOULDER_AXIS`, within the base plate.
 
   Args:
     driver: the driver to drive the device through.
@@ -124,7 +124,7 @@ def PreciseFlex400(driver: PreciseFlexDriver, name: str = "PreciseFlex400") -> P
     workspace=Workspace(name=f"{name}_workspace"),
     driver=driver,
     name=name,
-    # The device's own cuboid is the plate it stands on; what it carries reaches above that.
+    # The device's own cuboid is the base plate it stands on; what it carries reaches above that.
     size_x=BASE_PLATE_SIZE[0],
     size_y=BASE_PLATE_SIZE[1],
     size_z=BASE_PLATE_SIZE[2],

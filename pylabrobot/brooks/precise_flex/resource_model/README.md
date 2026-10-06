@@ -1,9 +1,9 @@
 # The PreciseFlex resource model
 
-What the arm is made of, as resources: the plate it stands on, the column it rides, the carriage
-the Z drive moves up that column, the two links, and the gripper. The model mirrors the machine:
-every position in it comes from what the controller reports. The driver consults it before a
-joint move, and refuses one that would carry the gripper against the column.
+What the arm is made of, as resources: the base plate it stands on, the column it rides, the
+carriage the Z drive moves up that column, the two links, and the gripper. The model mirrors the
+machine: every position in it comes from what the controller reports. The driver consults it before
+a joint move, and refuses one that would carry the gripper against the column.
 
 ## The frame
 
@@ -33,7 +33,7 @@ shoulder.
 
 | Resource | Category | Model | What it is |
 |---|---|---|---|
-| `base_plate` | `base_plate` | `brooks_pf400_base_plate` | The plate the machine bolts to |
+| `base_plate` | `base_plate` | `brooks_pf400_base_plate` | The base plate the machine bolts to |
 | `z_column` | `z_column` | `brooks_pf400_z_column` | The column the carriage rides, as tall as the travel makes it |
 | `z_carriage` | `z_carriage` | `brooks_pf400_z_carriage` | What the Z drive moves: the housing the arm turns in |
 | `link_1` | `link_body` | `brooks_pf400_link_1` | Shoulder joint to elbow joint |
@@ -44,8 +44,8 @@ shoulder.
 | `linear_rail` | `linear_rail` | `brooks_pf400_linear_rail_1m`, `_1_5m`, `_2m` | The optional rail, as long as its travel |
 | `linear_rail_carriage` | `linear_rail_carriage` | `brooks_pf400_linear_rail_carriage_0deg`, `_90deg` | What rides the rail, and the arm stands on |
 
-`PreciseFlex400` in `device.py` builds only the plate and an empty workspace. The driver builds the
-rest from a configuration: the one declared from a file, at once, or else the one the controller
+`PreciseFlex400` in `device.py` builds only the base plate and an empty workspace. The driver builds
+the rest from a configuration: the one declared from a file, at once, or else the one the controller
 answers at setup. So the column is as tall as the configuration's Z travel makes it, the links as
 long as it says, and the workspace reaches as far as its limits allow.
 
@@ -82,4 +82,4 @@ the part. A finger is a bar, and its cuboid is its outline.
 The rail and its carriage exist as parts, with their meshes, and nothing builds them: an arm on a
 rail is still modelled as standing still. What is missing is known only from an arm on a rail:
 where on the rail its carriage stands when the drive reports 0, and where on the carriage the
-arm's plate is bolted.
+arm's base plate is bolted.

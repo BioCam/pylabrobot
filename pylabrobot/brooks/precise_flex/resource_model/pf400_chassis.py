@@ -1,4 +1,4 @@
-"""The PreciseFlex 400's chassis: the plate it stands on, the column it rides, the carriage on it.
+"""The PreciseFlex 400's chassis: its base plate, the column it rides, the carriage on it.
 
 Each part is a cuboid in its own frame, located by its left front bottom corner, in mm. Sizes are
 measured off the manufacturer's model.
@@ -10,11 +10,11 @@ from pylabrobot.resources.resource import Resource
 BASE_PLATE_SIZE = (200.8, 235.1, 9.6)
 
 # The J2 shoulder axis within the base plate: at its front face, centred across it, this far above
-# the surface the plate stands on. Every position the controller reports is measured from here.
+# the surface the base plate stands on. Every position the controller reports is measured from here.
 SHOULDER_AXIS = Coordinate(BASE_PLATE_SIZE[0], BASE_PLATE_SIZE[1] / 2, 62.0)
 
 Z_COLUMN_SIZE_XY = (124.5, 181.5)
-# Where the column stands on the plate's top face, centred across it.
+# Where the column stands on the base plate's top face, centred across it.
 Z_COLUMN_LOCATION = Coordinate(
   8.8, (BASE_PLATE_SIZE[1] - Z_COLUMN_SIZE_XY[1]) / 2, BASE_PLATE_SIZE[2]
 )
@@ -59,7 +59,7 @@ Z_CARRIAGE_REFERENCE_POINT = Coordinate(
 def z_column_height(z_travel: float) -> float:
   """How tall the column is on an arm whose Z drive reaches `z_travel` mm.
 
-  Measured from the plate's top face, where the column stands, to its own top.
+  Measured from the base plate's top face, where the column stands, to its own top.
 
   Args:
     z_travel: the highest the Z drive reaches, in mm: the top of its soft limits.
@@ -71,13 +71,13 @@ def z_column_height(z_travel: float) -> float:
 
 
 def base_plate(name: str = "pf400_base_plate") -> Resource:
-  """The plate the arm stands on.
+  """The base plate the arm stands on.
 
   Args:
     name: what to call this one.
 
   Returns:
-    The plate.
+    The base plate.
   """
   return Resource(
     name=name,

@@ -580,10 +580,10 @@ class PreciseFlexDriver:
   def _create_feature_resources(self, configuration: "PreciseFlexConfiguration") -> None:
     """Build the arm on the device its workspace belongs to, from a configuration. No motion.
 
-    The workspace takes its boundary and Z range; the column is stood on the plate, the carriage
-    hung on it, the links on that and the gripper on link 2, each placed by where its joint has to
-    land. They stand at Z 0 with every joint at 0 until a joint state is read. Does nothing for a
-    driver given no workspace. An arm already built keeps its parts.
+    The workspace takes its boundary and Z range; the column is stood on the base plate, the
+    carriage hung on it, the links on that and the gripper on link 2, each placed by where its joint
+    has to land. They stand at Z 0 with every joint at 0 until a joint state is read. Does nothing
+    for a driver given no workspace. An arm already built keeps its parts.
 
     Args:
       configuration: what the arm reported: the declared one, or the one read at setup.
@@ -591,10 +591,10 @@ class PreciseFlexDriver:
     if self.workspace is None:
       return
     device = self.workspace.parent
-    plate = next(
+    base_plate = next(
       (r for r in (device.children if device else []) if r.category == "base_plate"), None
     )
-    if device is None or plate is None:
+    if device is None or base_plate is None:
       logger.warning(
         "the workspace belongs to no device with a base plate, so the arm is not modelled"
       )
@@ -607,12 +607,12 @@ class PreciseFlexDriver:
       *c.z_range,
     )
     # The controller reports from the shoulder axis, which the workspace states as its own point.
-    on_the_plate = cast(Coordinate, plate.location) + SHOULDER_AXIS
-    self.workspace.location = on_the_plate - self.workspace.reference_point
+    on_the_base_plate = cast(Coordinate, base_plate.location) + SHOULDER_AXIS
+    self.workspace.location = on_the_base_plate - self.workspace.reference_point
     if self.arm.resource is not None:
       return
     column = z_column(name=f"{device.name}_z_column", height=z_column_height(c.z_range[1]))
-    plate.assign_child_resource(column, location=Z_COLUMN_LOCATION)
+    base_plate.assign_child_resource(column, location=Z_COLUMN_LOCATION)
     carriage = z_carriage(name=f"{device.name}_z_carriage")
     column.assign_child_resource(carriage, location=z_carriage_location(0.0))
     first = link_1(name=f"{device.name}_link_1", length=c.kinematics.l1)

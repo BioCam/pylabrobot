@@ -44,7 +44,7 @@ def linear_rail(name: str, travel: float) -> Resource:
 
 
 def linear_rail_carriage(name: str, mounting: float) -> Resource:
-  """The carriage that rides the rail, with the plate the arm is mounted on.
+  """The carriage that rides the rail, with the base plate the arm is mounted on.
 
   Args:
     name: what to call this one.

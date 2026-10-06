@@ -5,28 +5,28 @@ from pylabrobot.resources.coordinate import Coordinate
 
 
 class TestTheShoulderAxis(unittest.TestCase):
-  """The point the controller reports from stands within the plate."""
+  """The point the controller reports from stands within the base plate."""
 
   def test_the_axis_stands_above_the_plates_front_edge_centred_across_it(self):
-    plate = pf400_chassis.base_plate()
+    base_plate = pf400_chassis.base_plate()
     self.assertEqual(
       pf400_chassis.SHOULDER_AXIS,
-      Coordinate(plate.get_size_x(), plate.get_size_y() / 2, 62.0),
+      Coordinate(base_plate.get_size_x(), base_plate.get_size_y() / 2, 62.0),
     )
 
 
 class TestTheColumn(unittest.TestCase):
-  """The column stands on the plate and reaches the height the arm stands."""
+  """The column stands on the base plate and reaches the height the arm stands."""
 
   def test_it_stands_on_the_plates_top_face_centred_across_it(self):
-    plate = pf400_chassis.base_plate()
+    base_plate = pf400_chassis.base_plate()
     column = pf400_chassis.z_column("column", 700.0)
     location = pf400_chassis.Z_COLUMN_LOCATION
-    self.assertEqual(location.z, plate.get_size_z())
-    self.assertEqual(2 * location.y + column.get_size_y(), plate.get_size_y())
+    self.assertEqual(location.z, base_plate.get_size_z())
+    self.assertEqual(2 * location.y + column.get_size_y(), base_plate.get_size_y())
 
   def test_a_column_reaches_the_height_the_arm_stands(self):
-    # Measured from the plate's bottom, which is its own frame's zero.
+    # Measured from the base plate's bottom, which is its own frame's zero.
     for z_travel, height in ((400.0, 712.0), (750.0, 1062.0), (1160.0, 1472.0)):
       column = pf400_chassis.z_column("column", height=pf400_chassis.z_column_height(z_travel))
       self.assertEqual(pf400_chassis.Z_COLUMN_LOCATION.z + column.get_size_z(), height)
