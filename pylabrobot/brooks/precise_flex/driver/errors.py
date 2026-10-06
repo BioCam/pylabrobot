@@ -1962,11 +1962,8 @@ Older GPL systems may display the license number shown above in ( ) rather than 
 
 class PreciseFlexError(Exception):
   def __new__(cls, replycode: int, message: str):
-    # Construct the most specific subclass for this code (like STAR's error_code_to_exception), so
-    # callers can catch a category - e.g. `except PreciseFlexCollisionError`. Only refine when
-    # constructed as the base type, so directly constructing a subclass is left untouched. This is a
-    # pure type refinement (no side effects); every existing `raise PreciseFlexError(code, msg)` site
-    # gets the right subclass without changing.
+    # Built as the most specific subclass for its code, so a caller can catch a category.
+    # Only when built as the base type: a subclass built directly is left as it is.
     if cls is PreciseFlexError:
       cls = _error_class_for_code(replycode)
     return super().__new__(cls)
@@ -2047,15 +2044,16 @@ class OutOfRangeOfMotionError(Exception):
 
 # -- collision detection ---------------------------------------------------
 
-# Collision / over-drive errors: the servo trips one of these when an axis is blocked - it hit an
-# obstacle (or is otherwise over-driven) - and the controller stops the arm itself. Two mechanisms:
-# position-tracking (envelope) and torque saturation. Each surfaces as a ``PreciseFlexError`` on the
-# next command:
-#   -3100  hard envelope error  (position tracking; severe, turns power off)
-#   -3122  soft envelope error  (position tracking; leaves power on)
-#   -3101  PID output saturated too long  (torque saturated - over-driven / collided)
-#   -3105  motor stalled  (torque saturated at the peak rating)
-COLLISION_ERROR_CODES = frozenset({-3100, -3101, -3105, -3122})
+# What the servo trips when an axis is blocked or over-driven and the controller stops the arm
+# itself. Each surfaces as a ``PreciseFlexError`` on the next command.
+COLLISION_ERROR_CODES = frozenset(
+  {
+    -3100,  # hard envelope error: position tracking; severe, turns power off
+    -3122,  # soft envelope error: position tracking; leaves power on
+    -3101,  # PID output saturated too long: torque saturated, over-driven or collided
+    -3105,  # motor stalled: torque saturated at the peak rating
+  }
+)
 
 # Drive faults: every servo code, the collision codes among them.
 SERVO_ERROR_CODES = frozenset(code for code in ERROR_CODES if -3199 <= code <= -3000)

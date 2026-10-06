@@ -1098,9 +1098,8 @@ class PreciseFlexDriver:
     acceleration_percent = await self.arm.request_max_acceleration_percent()
     deceleration_percent = await self.arm.request_max_deceleration_percent()
 
-    # Kinematics: read the link/tool geometry from the controller by default, so
-    # the driver is correct for whichever 400 variant is plugged in; fall back to
-    # the constructor params if the read fails or the override is set.
+    # Link and tool lengths are read from the controller, so any 400 variant is right; the
+    # constructor's are used if the read fails or is switched off.
     kinematics_source: Literal["device", "provided", "default"]
     if self._read_kinematics_from_device:
       try:

@@ -307,6 +307,15 @@ class PreciseFlexVision:
   vision commands over the driver's transport; the orchestrations compose them. Only
   ``locate_target`` moves the arm. ``available`` caches the project enumeration when present (else
   ``None``).
+
+  What the engine, the software on the vision server, holds::
+
+    Engine
+    ├─ cameras                  its hardware
+    ├─ tool types               what it can instantiate
+    └─ Project (the active one)
+       ├─ Processes             pipelines
+       └─ Tools                 instances of the tool types
   """
 
   def __init__(
@@ -347,13 +356,8 @@ class PreciseFlexVision:
 
   # -- wire primitives -----------------------------------------------------
 
-  # The vision-tool property reads/writes come in two forms, one per server. The controller relay
-  # (``request_vision_tool_property`` / ``_set_vision_tool_property`` below, tool+property split
-  # because VToolProperty's wire form is two tokens) is always present; the vision server's
-  # (``self.driver.request_vision_server_property`` / ``_set_vision_server_property`` with the
-  # dotted ``<tool>.<property>`` key) needs a connected server, so its callers check
-  # ``self.driver.vision_server_connected`` first. Reads are public; writes (``_set_*``) are
-  # private.
+  # A tool property is read and written two ways: relayed by the controller (below), always there,
+  # or straight to the vision server, which has to be connected. Reads are public; writes private.
 
   async def request_vision_tool_property(self, tool: str, property_name: str) -> str:
     """Read a PreciseVision tool property over the controller (``VToolProperty <tool> <prop>``).
@@ -545,13 +549,6 @@ class PreciseFlexVision:
     await self.driver._set_vision_server_property("system.runtool", tool)
 
   # -- engine session & discovery ------------------------------------------
-
-  # Engine (the software running on the vision server that performs the computations)
-  # ├─ cameras                ← engine hardware
-  # ├─ tool types (palette)   ← engine capability
-  # └─ Project (active, of N)
-  #    ├─ Processes           ← pipelines
-  #    └─ Tools               ← instances (of the palette types)
 
   async def request_camera_count(self) -> int:
     """Number of cameras PreciseVision sees (``System.CameraCount``); read-only, no motion.

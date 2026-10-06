@@ -191,12 +191,8 @@ class PreciseFlexArm:
   # instance, or every arm by assigning on the class.
   default_recovery_speed_percent: float = 20.0
 
-  # Validated parked orientations: planar folds differing only in which way the arm faces, named for
-  # the direction the gripper points (BACK / RIGHT / FRONT). The Z column (Axis.BASE) is omitted on
-  # purpose - ``park()`` fills it from the discovered travel (3/4 of it) so one orientation works on
-  # any reach; set Axis.BASE yourself to override. The gripper and rail are left untouched so
-  # parking never drops a held plate or assumes a rail. Assign one to ``parking_position`` to change
-  # the park.
+  # Parked orientations: planar folds, named for the way the gripper points. Z, gripper and rail are
+  # left out: ``park()`` fills Z from the travel, and a held plate or a rail is not disturbed.
   PARKING_POSITION_BACK: ClassVar[JointState] = {
     Axis.SHOULDER: 90.0,
     Axis.ELBOW: 180.0,
@@ -288,14 +284,8 @@ class PreciseFlexArm:
     def _floats(reply: str) -> list[float]:
       return [float(x) for x in reply.split()]
 
-    # On interrupt, `halt` stops the move on the now-free connection and we resync; the connection
-    # is kept open. Hardware-verified: a clean halt keeps power, attach, and the link (only a
-    # collision trips -3122 and drops power, which needs explicit recovery). The halt is
-    # deliberately NOT taken under `_io_lock`: the interrupted poll releases the lock as it unwinds,
-    # so today (single task) there is no contention, and an emergency halt must not wait on another
-    # caller's in-flight read. When concurrent socket users are introduced, the halt should pre-empt
-    # them (cancel peers) or take the lock with a short timeout rather than block on a slow
-    # transaction.
+    # On interrupt, `halt` stops the move and the link is resynchronised and kept. It is sent
+    # outside `_io_lock`: an emergency halt must not wait on another caller's read.
     async with halt_on_interrupt(lambda: halt_and_resync(self._driver.io, b"halt")):
       previous = _floats(await self._driver.send_command("wherej"))
       deadline = time.monotonic() + timeout
@@ -1236,14 +1226,8 @@ class PreciseFlexArm:
       soft_limits[Axis.RAIL] = rail.configuration.soft_limit_range
     return soft_limits
 
-  # Axes auto-recovered when out of range, in a deliberately safe order: the
-  # gripper jaw first (no arm motion), then the Z column (vertical clearance), then
-  # the rotary links shoulder -> elbow (smallest swept volume last to first).
-  # The wrist is intentionally absent: rotating it back to +/-180 can self-collide, so
-  # it needs the other links first driven to minimal clearance from the origin - a
-  # maneuver not implemented here. The rail (gross lateral travel) is likewise left out.
-  # TODO: clearance-aware wrist recovery (and rail). An out-of-range wrist or rail is
-  # left for the setup post-condition to raise on.
+  # Axes recovered when out of range, safest first: the jaws, the Z column, the shoulder, the elbow.
+  # Not the wrist, which can turn the gripper into the arm, nor the rail: setup raises on those.
   _RECOVERY_ORDER = (Axis.GRIPPER, Axis.BASE, Axis.SHOULDER, Axis.ELBOW)
 
   def _axes_outside_soft_limits(self, joints: JointState) -> Dict[Axis, tuple]:
@@ -1322,9 +1306,8 @@ class PreciseFlexArm:
           continue  # too far out to move unattended; left for the post-condition to raise
         if axis == Axis.GRIPPER and above:
           continue  # bringing it in would close it without force sensing; left for the caller
-        # Land just inside the violated limit, toward the in-range region. Clamp the
-        # 1-unit margin to half the range so the target stays within [lo, hi] even if
-        # the range is narrower than the margin (degenerate, but keeps direction sound).
+        # Land just inside the violated limit. The 1-unit margin is at most half the range, so the
+        # target stays inside a range narrower than the margin.
         margin = min(1.0, (hi - lo) / 2.0)
         target = (hi - margin) if above else (lo + margin)
         logger.warning(
