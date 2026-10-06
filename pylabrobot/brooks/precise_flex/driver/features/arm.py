@@ -1277,6 +1277,9 @@ class PreciseFlexArm:
         caller to recover manually (e.g. by freedriving). Pass None to move regardless.
       speed_pct: deprecated, use `speed_percent`.
 
+    Raises:
+      ValueError: If a recovery move would carry the gripper against the column, on a modelled arm.
+
     Returns:
       The axes moved, as ``axis -> recovered target``. Empty when nothing recoverable
       is out of range or the configuration was not discovered. The wrist and rail are
@@ -1290,7 +1293,8 @@ class PreciseFlexArm:
       speed_percent = speed_pct
     if speed_percent is None:
       speed_percent = self.default_recovery_speed_percent
-    outside = self._axes_outside_soft_limits(await self.request_joint_state())
+    joints = await self.request_joint_state()
+    outside = self._axes_outside_soft_limits(joints)
     if not outside:
       return {}
     prior_speed = await self._request_speed()
@@ -1320,8 +1324,14 @@ class PreciseFlexArm:
           hi,
           target,
         )
-        await self._unchecked_fw_move_one_axis(axis, target)
-        await self._wait_for_eom()
+        recovering = {**joints, axis: target}
+        self._check_path_reachable(joints, recovering)
+        try:
+          self.update_joint_state(recovering)
+          await self._unchecked_fw_move_one_axis(axis, target)
+        finally:
+          await self._request_joint_state_after_move()
+        joints = recovering
         recovered[axis] = target
     finally:
       await self._set_speed(prior_speed)  # don't leave the profile at the slow recovery speed
@@ -1808,6 +1818,7 @@ class PreciseFlexArm:
         target[Axis.RAIL] = cart.rail_position
 
       self._assert_within_soft_limits(prev_joints, target)
+      self._check_path_reachable(prev_joints, target)
       targets.append(target)
       prev_joints = target
       prev_pose = cart
@@ -1894,13 +1905,15 @@ class PreciseFlexArm:
         await self.set_motion_profile_values(*original_profile._replace(in_range=BLEND_IN_RANGE))
 
     try:
+      # Where the route ends, written as it is sent. The read below has the last word.
+      self.update_joint_state(targets[-1])
       for target in targets:
         await self._unchecked_fw_move_j(profile_index=profile_index, joint_coords=target)
     finally:
       # Let queued motion settle before returning or restoring the profile - restoring InRange
-      # mid-move would change the in-flight blend.
+      # mid-move would change the in-flight blend. Then read where the arm stopped.
       try:
-        await self._wait_for_eom()
+        await self._request_joint_state_after_move()
       finally:
         if should_restore_profile and original_profile is not None:
           await self.set_motion_profile_values(*original_profile)
@@ -2050,26 +2063,50 @@ class PreciseFlexArm:
     await self._driver.send_command(f"StationType {self.station_index} 1 0 100 0 10")
 
   async def _pick_plate_j(self, joint_position: JointState):
-    """Pick a plate from the specified position using joint coordinates."""
+    """Pick a plate from the specified position using joint coordinates.
+
+    The controller plans its own approach. The way is checked as the straight joint move to the
+    station, which is all the driver knows of it.
+    """
+    current = await self.request_joint_state()
+    station = {**current, **joint_position}
+    self._check_path_reachable(current, station)
     await self._unchecked_fw_set_joint_angles(self.station_index, joint_position)
     await self._unchecked_fw_set_grip_detail()
     horizontal_compliance_int = 1 if self.horizontal_compliance else 0
-    ret_code = await self._driver.send_command(
-      f"pickplate {self.station_index} {horizontal_compliance_int} "
-      f"{self.horizontal_compliance_torque}"
-    )
+    try:
+      # Where the arm is going, written as it is sent. The read below has the last word.
+      self.update_joint_state(station)
+      ret_code = await self._driver.send_command(
+        f"pickplate {self.station_index} {horizontal_compliance_int} "
+        f"{self.horizontal_compliance_torque}"
+      )
+    finally:
+      await self._request_joint_state_after_move()
     if ret_code == "0":
       raise PreciseFlexError(-1, "the force-controlled gripper detected no plate present.")
 
   async def _place_plate_j(self, joint_position: JointState):
-    """Place a plate at the specified position using joint coordinates."""
+    """Place a plate at the specified position using joint coordinates.
+
+    The controller plans its own approach. The way is checked as the straight joint move to the
+    station, which is all the driver knows of it.
+    """
+    current = await self.request_joint_state()
+    station = {**current, **joint_position}
+    self._check_path_reachable(current, station)
     await self._unchecked_fw_set_joint_angles(self.station_index, joint_position)
     await self._unchecked_fw_set_grip_detail()
     horizontal_compliance_int = 1 if self.horizontal_compliance else 0
-    await self._driver.send_command(
-      f"placeplate {self.station_index} {horizontal_compliance_int} "
-      f"{self.horizontal_compliance_torque}"
-    )
+    try:
+      # Where the arm is going, written as it is sent. The read below has the last word.
+      self.update_joint_state(station)
+      await self._driver.send_command(
+        f"placeplate {self.station_index} {horizontal_compliance_int} "
+        f"{self.horizontal_compliance_torque}"
+      )
+    finally:
+      await self._request_joint_state_after_move()
 
   async def _pick_plate_c(self, cartesian_position: PreciseFlexCartesianPose):
     """Pick a plate at a Cartesian position via IK + joint-space pickplate."""
@@ -2371,7 +2408,11 @@ class PreciseFlexArm:
     the shorter turn first; the pose as written is taken whenever its way is clear.
     """
     if self.parking_position is None:
-      await self._unchecked_fw_park()
+      # Where the controller's own safe position is, the driver does not know: only read it after.
+      try:
+        await self._unchecked_fw_park()
+      finally:
+        await self._request_joint_state_after_move()
       return
     pose = self._parking_pose_with_default_z(self.parking_position)
     if self.resource is not None and Axis.WRIST in pose:

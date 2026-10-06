@@ -349,7 +349,10 @@ class TestPreciseFlexParking(unittest.IsolatedAsyncioTestCase):
   async def test_park_without_position_falls_back_to_movetosafe(self):
     """While parking_position is unset (no configuration), park() uses the firmware movetosafe."""
     await self.arm.arm.park()
-    mocked(self.arm.send_command).assert_awaited_once_with("movetosafe")
+    sent = [call.args[0] for call in mocked(self.arm.send_command).call_args_list]
+    # The one motion command, then the read of where the arm stopped.
+    self.assertEqual([command for command in sent if command != "wherej"], ["movetosafe"])
+    self.assertEqual(sent[0], "movetosafe")
     self.assertEqual(self._movej_cmds(), [])
 
 

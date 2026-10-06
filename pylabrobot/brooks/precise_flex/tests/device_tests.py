@@ -634,3 +634,80 @@ class TestParkingTakesAClearTurn(unittest.IsolatedAsyncioTestCase):
         await driver.arm.park()
     moves = [call.args[0] for call in sent.call_args_list if call.args[0].startswith("moveJ")]
     self.assertEqual(moves, ["moveJ 1 301.1 0.0 180.0 180.0 70.7"])
+
+
+class TestEveryMotionPathIsCheckedAndKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
+  """Recovery, a route of poses, and the controller's own pick and place, on a modelled arm."""
+
+  HOMED = "301.1 92.0 179.4 -215.9 70.7"
+  # A station that stands the gripper against the column, and one well clear of it.
+  AT_THE_COLUMN = {
+    Axis.BASE: 301.1,
+    Axis.SHOULDER: 92.0,
+    Axis.ELBOW: 179.48,
+    Axis.WRIST: -184.25,
+    Axis.GRIPPER: 120.0,
+  }
+  # The parking pose by the short turn of the wrist, which the way from the homed pose is clear to.
+  CLEAR = {
+    Axis.BASE: 301.1,
+    Axis.SHOULDER: 0.0,
+    Axis.ELBOW: 180.0,
+    Axis.WRIST: -180.0,
+    Axis.GRIPPER: 70.7,
+  }
+
+  def setUp(self):
+    self.device = built()
+    self.driver = self.device.driver
+    self.driver.arm.configuration = self.driver.configuration.arm
+    self.driver.gripper.configuration = self.driver.configuration.gripper
+    _, self.first, _, _ = hung(self.driver)
+
+  async def sent_by(self, call, stood: str = HOMED) -> List[str]:
+    sent = AsyncMock(side_effect=lambda command: stood if command == "wherej" else "1")
+    with patch.object(self.driver, "send_command", sent):
+      with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
+        await call()
+    return [call.args[0].split()[0] for call in sent.call_args_list if call.args[0] != "wherej"]
+
+  async def test_a_pick_at_the_column_is_refused_before_the_station_is_written(self):
+    with self.assertRaisesRegex(ValueError, "would stand"):
+      await self.sent_by(lambda: self.driver.arm._pick_plate_j(dict(self.AT_THE_COLUMN)))
+
+  async def test_a_place_at_the_column_is_refused(self):
+    with self.assertRaisesRegex(ValueError, "would stand"):
+      await self.sent_by(lambda: self.driver.arm._place_plate_j(dict(self.AT_THE_COLUMN)))
+
+  async def test_a_pick_clear_of_the_column_is_sent_and_the_model_reads_where_it_stopped(self):
+    sent = await self.sent_by(lambda: self.driver.arm._pick_plate_j(dict(self.CLEAR)))
+    self.assertEqual(sent, ["locAngles", "StationType", "pickplate"])
+    # The stand-in controller still answers the homed pose, so that is where the model ends.
+    self.assertAlmostEqual(self.first.rotation.z, 92.0)
+
+  async def test_a_recovery_move_is_written_to_the_model_and_read_back(self):
+    out_of_range = "301.1 93.3 179.4 -215.9 70.7"
+    seen = []
+
+    async def respond(command: str) -> str:
+      if command.startswith("MoveOneAxis"):
+        seen.append(self.first.rotation.z)
+      return out_of_range if command == "wherej" else "1 50"
+
+    with patch.object(self.driver, "send_command", AsyncMock(side_effect=respond)):
+      with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
+        recovered = await self.driver.arm.recover_axes_within_limits()
+    self.assertEqual(recovered, {Axis.SHOULDER: 92.0})
+    self.assertEqual(seen, [92.0])
+
+  async def test_every_leg_of_a_route_of_poses_is_checked_as_it_is_planned(self):
+    arm = self.driver.arm
+    ahead = arm._forward_kinematics(dict(self.CLEAR)).gripper_pose
+    sent = AsyncMock(side_effect=lambda command: self.HOMED if command == "wherej" else "")
+    with patch.object(self.driver, "send_command", sent):
+      with patch.object(arm, "_wait_for_eom", AsyncMock()):
+        with patch.object(arm, "_check_path_reachable", wraps=arm._check_path_reachable) as checked:
+          targets = await arm._plan_cartesian_pose_route([ahead, ahead])
+    self.assertEqual(checked.call_count, 2)
+    # Each leg from where the one before it ends.
+    self.assertEqual(checked.call_args_list[1].args[0], targets[0])
