@@ -1,7 +1,7 @@
 """The PreciseFlex 400's chassis: the plate it stands on, the column it rides, the carriage on it.
 
 Each part is a cuboid in its own frame, located by its left front bottom corner, in mm. Sizes are
-the extended-reach arm's, measured off the manufacturer's model.
+measured off the manufacturer's model.
 """
 
 from typing import Optional
@@ -59,12 +59,12 @@ Z_CARRIAGE_REFERENCE_POINT = Coordinate(
 
 
 def z_column_height(z_travel: float) -> float:
-  """How tall the column is on an arm whose carriage travels `z_travel` mm.
+  """How tall the column is on an arm whose Z drive reaches `z_travel` mm.
 
   Measured from the plate's top face, where the column stands, to its own top.
 
   Args:
-    z_travel: how far the carriage travels, in mm.
+    z_travel: the highest the Z drive reaches, in mm: the top of its soft limits.
 
   Returns:
     The height, in mm.

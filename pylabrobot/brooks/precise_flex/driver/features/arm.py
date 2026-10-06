@@ -1588,8 +1588,8 @@ class PreciseFlexArm:
     close_gripper_without_force_sensing: bool = False,
   ) -> None:
     """The single guarded path to the raw ``_unchecked_fw_move_j`` primitive: read the live pose,
-    check it and the target against the soft limits, send the move, and on out-of-range recover
-    once and retry.
+    check it and the target against the soft limits, check the way between them against the
+    column, send the move, read where the arm stopped, and on out-of-range recover once and retry.
     Both ``move_to_joint_state`` (a partial spec merged over the live pose) and
     ``move_to_location`` (a full pose from IK) funnel through here, so no commanded move reaches
     ``_unchecked_fw_move_j`` unchecked.

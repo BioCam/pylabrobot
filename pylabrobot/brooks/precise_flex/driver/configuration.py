@@ -1,8 +1,7 @@
-"""Per-arm configuration resolved from the controller during setup.
+"""An arm's configuration: what its controller reports, written to a file and read back from one.
 
-The identity, limit, and envelope fields are read from the controller once at setup into a single
-immutable `PreciseFlexConfiguration` record; the kinematics/flags tier is supplied or derived. The
-backend holds it as `Optional[PreciseFlexConfiguration]` (None pre-setup).
+`PreciseFlexConfiguration` holds the arm's identity and nests each feature's own configuration. The
+driver builds one at setup and holds it, and `None` before.
 """
 
 import dataclasses
@@ -33,12 +32,10 @@ from .features.rail import PreciseFlexRailConfiguration
 class PreciseFlexConfiguration:
   """Device configuration resolved once at setup; immutable afterwards.
 
-  The identity/limit/envelope fields are read from the controller (`pd <DataID>`
-  via ``request_parameter`` and the ``version`` command). The kinematics/flags
-  tier is supplied at construction or derived: link lengths are not on the arm,
-  ``has_rail`` comes from the joint set, ``is_dual_gripper`` from the axis_mask
-  ``&H80`` bit, ``has_vision_gripper`` from the camera count, and ``reach_class`` from the
-  controller-read link lengths.
+  The identity fields are read from the controller (`pd <DataID>` and the ``version`` command);
+  limits, maxima and kinematics are on ``arm``, ``gripper`` and ``rail``. Derived: ``has_rail`` from
+  the joint set, ``is_dual_gripper`` from the axis mask's ``&H80`` bit, ``has_vision_gripper`` from
+  the camera count, and ``reach_class`` from the link lengths the controller reports.
   """
 
   # --- identity / version (DataIDs 100-110, 2002, 116; version command) ---
@@ -264,7 +261,7 @@ class PreciseFlexConfiguration:
     return self.has_vision_gripper
 
 
-# -- reading a configuration back from a file ----------------------------------------------------
+# -- writing a configuration to a file, and reading it back --------------------------------------
 
 
 def to_jsonable(value: Any) -> Any:

@@ -1,4 +1,5 @@
-"""PreciseFlex driver - owns the socket I/O connection and device lifecycle."""
+"""PreciseFlex driver: the controller link and lifecycle, the vision server's links, the
+configuration, and the resource model it builds from one."""
 
 import asyncio
 import functools
@@ -71,26 +72,12 @@ _DECLARATION_MUST_MATCH = (
 # The vision server (Brooks' PreciseVision engine) behind a camera-gripper arm: a text property
 # protocol on one port, and the JPEG results it pushes on another.
 VISION_SERVER_PROPERTY_PORT = 1450  # text command/query protocol
-VISION_SERVER_IMAGE_PORT = (
-  1500  # binary stream carrying the pushed "Primary Image [n]" JPEG results
-)
+# The binary stream carrying the pushed "Primary Image [n]" JPEG results.
+VISION_SERVER_IMAGE_PORT = 1500
 
-# Result framing on :1500 (confirmed live from the 2026-06-22 capture): the engine pushes a sequence
-# of length-prefixed records, each a fixed 16-byte header then the result name then the data -
-#
-#   01 | name_len (u8) | 00 00 00 | data_len (u32 LE) | 00 00 00 00 00 00 00 | <name> | <data>
-#
-# For a "Primary Image [n]" record the data is the JPEG (FFD8...FFD9) and data_len is its exact byte
-# count (verified to land on the EOI for 52/52 frames). The stream interleaves non-image records too
-# (e.g. "VisionResults[led]" tool results), framed identically. Parsing by the announced data_len -
-# rather than scanning the payload for FFD8/FFD9 - is O(1) per record, demuxes the non-image records,
-# and never inspects the JPEG, so an embedded thumbnail or restart marker cannot mis-frame it. The
-# parser stays aligned by always consuming exactly one whole record; a freshly held stream starts on a
-# record boundary.
 _RECORD_HEADER_LEN = 16
-_MAX_IMAGE_BYTES = (
-  16 * 1024 * 1024
-)  # sanity cap: a record this large signals a desync, not a real frame
+# A sanity cap: a record this large signals a desync, not a real frame.
+_MAX_IMAGE_BYTES = 16 * 1024 * 1024
 
 
 def parse_vision_server_reply(reply: str) -> str:
@@ -123,11 +110,15 @@ def parse_vision_server_reply(reply: str) -> str:
 def _drain_named_record(buf: bytearray) -> Optional[Tuple[str, bytes]]:
   """Pop the next complete ``(name, data)`` result record from the front of ``buf``, consuming it.
 
-  Reads the engine's fixed 16-byte record header (see the module comment): the name length, the
-  little-endian ``data_len``, then ``name_len`` name bytes and exactly ``data_len`` data bytes. Parsing
-  by the announced length never inspects the payload, so a JPEG's internal markers cannot mis-frame it,
-  and the same path frames the interleaved non-image records. Assumes ``buf`` begins on a record
-  boundary, which a freshly held stream does.
+  The engine pushes length-prefixed records on its image port, each a fixed 16-byte header, then the
+  result name, then the data::
+
+    01 | name_len (u8) | 00 00 00 | data_len (u32 LE) | 00 00 00 00 00 00 00 | <name> | <data>
+
+  For a "Primary Image [n]" record the data is the JPEG and ``data_len`` its exact byte count.
+  Non-image records, such as a tool's results, are interleaved and framed the same way. Parsing by
+  the announced length never inspects the payload, so a JPEG's internal markers cannot mis-frame
+  it. Assumes ``buf`` begins on a record boundary, which a freshly held stream does.
 
   Args:
     buf: the held read buffer; a complete record is removed from its front in place.
@@ -194,8 +185,7 @@ class PreciseFlexDriver:
         link lengths and tool length are read from the controller at setup and
         this value is only used if that read fails.
       gripper_z_offset: vertical offset in mm from the wrist plate to the tool tip.
-        Depends on the mounted gripper; the concrete Device wrapper supplies a
-        model-appropriate default. Always taken from here (not on the controller).
+        Depends on the mounted gripper. Always taken from here (not on the controller).
       read_kinematics_from_device: when True, read l1/l2 and the tool length from
         the controller at setup and use them for kinematics; the constructor's
         ``gripper_length`` then acts only as a fallback. Set False to force the
@@ -254,8 +244,7 @@ class PreciseFlexDriver:
     # One exchange at a time on each vision server connection, as `_io_lock` on the controller's.
     self._vision_server_lock = asyncio.Lock()
     self._vision_image_lock = asyncio.Lock()
-    # Nullable vision capability, built at setup when a camera gripper is present; its existence is
-    # the capability gate.
+    # The vision feature, built at setup when the controller's vision module is loaded.
     self.vision: Optional[PreciseFlexVision] = None
     self._has_rail = has_rail
     # Built only on an arm that has a rail; discovery decides at setup.
@@ -1134,7 +1123,6 @@ class PreciseFlexDriver:
         kinematics.ARM_LINKS_EXTENDED,
       )
 
-    # Read in the order the record used to be built in, so the wire is unchanged.
     manufacturer = await self.request_manufacturer()
     controller_model = await self.request_controller_model()
     hardware_version = await self.request_hardware_version()
@@ -1250,7 +1238,8 @@ class PreciseFlexDriver:
       logger.info(
         "[PreciseFlex %s] this software stack has not been tested with this driver. "
         "If the arm works correctly, please add the following entry to "
-        "CONFIRMED_FIRMWARE_VERSIONS in pylabrobot/brooks/confirmed_firmware_versions.py "
+        "CONFIRMED_FIRMWARE_VERSIONS in "
+        "pylabrobot/brooks/precise_flex/confirmed_firmware_versions.py "
         "and open a pull request so other users benefit:\n%s",
         host,
         suggest_entry(config.robot_type, config.gpl_version, config.tcs_version, config.modules),
@@ -1416,9 +1405,12 @@ class PreciseFlexDriver:
     return await self.arm.recover_axes_within_limits(*args, **kwargs)
 
   async def dest_c(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``arm.request_gripper_pose``."""
+    """Deprecated: use ``arm.request_destination_joint_state``."""
     warnings.warn(
-      "`dest_c` is deprecated, use `arm.request_gripper_pose`.", DeprecationWarning, stacklevel=2
+      "`dest_c` is deprecated: the controller's own Cartesian destination is no longer public. "
+      "`arm.request_destination_joint_state` gives the destination, in joints.",
+      DeprecationWarning,
+      stacklevel=2,
     )
     if "arg1" in kwargs:
       kwargs["mode"] = kwargs.pop("arg1")
@@ -1449,7 +1441,8 @@ class PreciseFlexDriver:
   async def here_c(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``arm.set_station_to_current_joint_state``."""
     warnings.warn(
-      "`here_c` is deprecated, use `arm.set_station_to_current_joint_state`.",
+      "`here_c` is deprecated: storing a station as the controller's own Cartesian is no longer "
+      "public. `arm.set_station_to_current_joint_state` stores the same position, in joints.",
       DeprecationWarning,
       stacklevel=2,
     )

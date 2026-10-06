@@ -1,8 +1,9 @@
 # The PreciseFlex resource model
 
-What the arm is made of, as resources: the plate it stands on, the column it rides, and the
-carriage the Z drive moves up that column. The model mirrors the machine and never decides for it,
-so every position in it comes from what the controller reports.
+What the arm is made of, as resources: the plate it stands on, the column it rides, the carriage
+the Z drive moves up that column, the two links, and the gripper. The model mirrors the machine:
+every position in it comes from what the controller reports. The driver consults it before a
+joint move, and refuses one that would carry the gripper against the column.
 
 ## The frame
 
@@ -56,9 +57,9 @@ The cuboids are therefore the specification for how a model of the whole machine
 per part, each cut at that part's own corner, so a file can be dropped in without an offset and
 without anything else changing.
 
-The five files here are split from a model of the standard-reach arm, each placed by the shoulder
-axis and its joints. The links are lengthened to the extended reach, 302 and 289 mm between the
-joints, by moving the far half of each out.
+The chassis, link and gripper files are split from a model of the standard-reach arm, each placed
+by the shoulder axis and its joints. The links are lengthened to the extended reach by moving the
+far half of each out.
 
 A link is as long as the controller reports between its joints, plus the hub past each joint, so
 one factory serves both reaches. The driver hangs the carriage, the links and the gripper at
@@ -69,10 +70,10 @@ not drawn.
 
 ## Outlines
 
-A cuboid says more than a rounded part covers. The column and the gripper's body each carry an
-outline as well: the part seen from above, as the points round it in its own frame. It is the
-convex outline of everything the mesh covers, so it never says less than the part. A finger is a
-bar, and its cuboid is its outline.
+A cuboid says more than a rounded part covers. The column and the gripper's body each have an
+outline as well, a constant beside its sizes: the part seen from above, as the points round it in
+its own frame. It is the convex outline of everything the mesh covers, so it never says less than
+the part. A finger is a bar, and its cuboid is its outline.
 
 ## Not built yet
 

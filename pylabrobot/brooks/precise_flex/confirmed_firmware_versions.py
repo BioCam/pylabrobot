@@ -12,7 +12,7 @@ checks the discovered versions here:
   vision) stacks validated against this driver. Each entry is one configuration that was
   actually run end to end, so the same controller stack appears once per validated vision
   version - including ``vision_version=None`` for the controller validated on its own
-  (e.g. before the vision capability existed). ``is_confirmed`` ignores the vision field
+  (no vision server). ``is_confirmed`` ignores the vision field
   (the controller stack stands alone); ``is_confirmed_vision_version`` scans it.
 
 An unlisted version logs a warning asking for a report so it can be added.
@@ -48,7 +48,7 @@ class ConfirmedFirmware:
 
 CONFIRMED_FIRMWARE_VERSIONS = frozenset(
   [
-    # The PF400 controller stack, validated on its own (before the vision capability existed).
+    # The PF400 controller stack, validated on its own, with no vision server.
     ConfirmedFirmware(
       robot_type=12,
       gpl_version="GPL 5.1D4",
