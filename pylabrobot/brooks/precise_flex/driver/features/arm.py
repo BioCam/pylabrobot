@@ -28,6 +28,7 @@ from typing import (
 
 from pylabrobot.events import coordinate_reference, evented_operation
 from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.end_effector import MechanicalGripper
 from pylabrobot.resources.manipulator import LinkBody
 from pylabrobot.resources.resource import Resource
 from pylabrobot.resources.rotation import Rotation
@@ -1433,6 +1434,38 @@ class PreciseFlexArm:
       joints=dict(joints),
     )
 
+  def _get_gripper_outlines(self, jaw_width: float) -> Dict[str, List[Tuple[float, float]]]:
+    """The gripper's body, jaws and fingers seen from above, about its wrist joint.
+
+    Args:
+      jaw_width: how far apart the fingers stand, in mm.
+
+    Returns:
+      Each part's name and the points round it, with the gripper lying along +x.
+    """
+    gripper = cast(MechanicalGripper, self._driver.gripper.resource)
+    joint = gripper.proximal_joint
+    outlines = {gripper.body.name: [(x - joint.x, y - joint.y) for x, y in GRIPPER_BODY_OUTLINE]}
+    for finger, jaw, side in zip(gripper.fingers, gripper.jaws, (1.0, -1.0)):
+      # The finger's facing surface stands half the width from the grip centre, and its jaw stands
+      # where that puts it.
+      bolted, stood = cast(Coordinate, finger.location), cast(Coordinate, jaw.location)
+      facing = side * jaw_width / 2
+      corner = facing if side > 0 else facing - finger.get_size_y()
+      for part, x, y in (
+        (finger, stood.x + bolted.x - joint.x, corner),
+        (jaw, stood.x - joint.x, corner - bolted.y),
+      ):
+        x_2, y_2 = x + part.get_size_x(), y + part.get_size_y()
+        outlines[part.name] = [(x, y), (x_2, y), (x_2, y_2), (x, y_2)]
+    return outlines
+
+  def _get_column_outline(self) -> List[Tuple[float, float]]:
+    """The column seen from above, about the shoulder axis, which it does not turn about."""
+    # The shoulder axis within the column, which the carriage rides and the reference point states.
+    axis = cast(Coordinate, cast(Resource, self.resource).location) + Z_CARRIAGE_REFERENCE_POINT
+    return [(x - axis.x, y - axis.y) for x, y in Z_COLUMN_OUTLINE]
+
   def _get_column_clearance(self, joints: JointState) -> Optional[Tuple[str, float]]:
     """Which part of the gripper would stand nearest the column at this joint state, and how near.
 
@@ -1446,44 +1479,30 @@ class PreciseFlexArm:
       The part's name and its clearance in mm, negative when it overlaps. None when the arm is not
       modelled.
     """
-    gripper = self._driver.gripper.resource
-    if self.resource is None or gripper is None:
+    if self.resource is None or self._driver.gripper.resource is None:
       return None
     pose = self._forward_kinematics(joints)
     # From the shoulder axis, which the rail carries along with the column.
     wrist = pose.wrist_joint_location - pose.shoulder_joint_location
     yaw = math.radians(pose.gripper_pose.rotation.z)
-    joint = gripper.proximal_joint
-
-    def from_shoulder_axis(points: Sequence[Tuple[float, float]]) -> List[Tuple[float, float]]:
-      """Points in the gripper's own frame, as they would stand about the shoulder axis."""
-      return [
-        (
-          wrist.x + (x - joint.x) * math.cos(yaw) - (y - joint.y) * math.sin(yaw),
-          wrist.y + (x - joint.x) * math.sin(yaw) + (y - joint.y) * math.cos(yaw),
-        )
-        for x, y in points
-      ]
-
-    # The shoulder axis within the column, which the carriage rides and the reference point states.
-    axis = cast(Coordinate, self.resource.location) + Z_CARRIAGE_REFERENCE_POINT
-    column_outline = [(x - axis.x, y - axis.y) for x, y in Z_COLUMN_OUTLINE]
-
-    half_width = self._driver.gripper._firmware_units_to_mm(joints[Axis.GRIPPER]) / 2
-    parts = {gripper.body.name: list(GRIPPER_BODY_OUTLINE)}
-    for finger, jaw, side in zip(gripper.fingers, gripper.jaws, (1.0, -1.0)):
-      # The finger's facing surface stands half the width from the grip centre, and its jaw stands
-      # where that puts it: both as a rectangle along the gripper, about the wrist joint's y.
-      bolted, stood = cast(Coordinate, finger.location), cast(Coordinate, jaw.location)
-      facing = joint.y + side * half_width
-      corner = facing if side > 0 else facing - finger.get_size_y()
-      for part, x, y in ((finger, stood.x + bolted.x, corner), (jaw, stood.x, corner - bolted.y)):
-        x_2, y_2 = x + part.get_size_x(), y + part.get_size_y()
-        parts[part.name] = [(x, y), (x_2, y), (x_2, y_2), (x, y_2)]
+    column = self._get_column_outline()
+    jaw_width = self._driver.gripper._firmware_units_to_mm(joints[Axis.GRIPPER])
     return min(
       (
-        (name, kinematics.compute_outline_clearance(from_shoulder_axis(outline), column_outline))
-        for name, outline in parts.items()
+        (
+          name,
+          kinematics.compute_outline_clearance(
+            [
+              (
+                wrist.x + x * math.cos(yaw) - y * math.sin(yaw),
+                wrist.y + x * math.sin(yaw) + y * math.cos(yaw),
+              )
+              for x, y in outline
+            ],
+            column,
+          ),
+        )
+        for name, outline in self._get_gripper_outlines(jaw_width).items()
       ),
       key=lambda nearest: nearest[1],
     )
@@ -1512,10 +1531,11 @@ class PreciseFlexArm:
     """Raise if a joint move would carry the gripper in or against the column on its way.
 
     A joint move turns every joint from where it is to its target together, so the path is taken as
-    the straight line between the two joint states and checked at steps along it. A step is short
-    enough that the gripper moves less than `_COLUMN_CLEARANCE` between two of them. An arm that
-    starts nearer the column than that may move away from it, and no nearer. Skipped when the arm
-    is not modelled.
+    the straight line between the two joint states and checked at steps along it. A step is as
+    long as the clearance in hand allows the gripper to travel, and never shorter than
+    `_COLUMN_CLEARANCE`: far from the column few poses are looked at, near it as many as it takes.
+    An arm that starts nearer the column than that may move away from it, and no nearer. Skipped
+    when the arm is not modelled.
 
     Args:
       current: the joint state the arm stands at.
@@ -1528,34 +1548,51 @@ class PreciseFlexArm:
     nearest = self._get_column_clearance(current)
     if nearest is None:
       return
+    gripper = cast(MechanicalGripper, self._driver.gripper.resource)
+    # How far any point of the gripper stands from the wrist joint, with its jaws wide open.
+    radius = max(
+      math.hypot(x, y)
+      for outline in self._get_gripper_outlines(gripper.jaw_range[1]).values()
+      for x, y in outline
+    )
     p = self._driver._kinematics_params
-    # How far the far end of a finger can travel: each joint's turn, by its distance from that end.
-    reach = p.gripper_length + p.l2 + p.l1
+    # How far a point of the gripper can travel: each joint's turn, by its distance from that point.
     travel = sum(
-      math.radians(abs(target[axis] - current[axis])) * radius
-      for axis, radius in (
-        (Axis.SHOULDER, reach),
-        (Axis.ELBOW, reach - p.l1),
-        (Axis.WRIST, reach - p.l1 - p.l2),
+      math.radians(abs(target[axis] - current[axis])) * reach
+      for axis, reach in (
+        (Axis.SHOULDER, p.l1 + p.l2 + radius),
+        (Axis.ELBOW, p.l2 + radius),
+        (Axis.WRIST, radius),
       )
     ) + abs(target[Axis.GRIPPER] - current[Axis.GRIPPER])
-    steps = max(1, math.ceil(travel / _COLUMN_CLEARANCE))
-    leaving = nearest[1] < _COLUMN_CLEARANCE
-    for step in range(1, steps + 1):
+    column = self._get_column_outline()
+    clearance = nearest[1]
+    leaving = clearance < _COLUMN_CLEARANCE
+    fraction = 0.0
+    while fraction < 1.0:
+      step = max(clearance - _COLUMN_CLEARANCE, _COLUMN_CLEARANCE)
+      fraction = 1.0 if travel == 0.0 else min(1.0, fraction + step / travel)
       on_the_way = {
-        axis: current[axis] + (target[axis] - current[axis]) * step / steps for axis in target
+        axis: current[axis] + (target[axis] - current[axis]) * fraction for axis in target
       }
+      pose = self._forward_kinematics(on_the_way)
+      wrist = pose.wrist_joint_location - pose.shoulder_joint_location
+      # The whole gripper lies within `radius` of the wrist joint: clear by that much, it is clear.
+      spare = kinematics.compute_outline_clearance([(wrist.x, wrist.y)], column) - radius
+      if spare >= _COLUMN_CLEARANCE:
+        clearance, leaving = spare, False
+        continue
+      before = clearance
       name, clearance = cast(Tuple[str, float], self._get_column_clearance(on_the_way))
       if clearance >= _COLUMN_CLEARANCE:
         leaving = False
-      elif not leaving or clearance < nearest[1]:
+      elif not leaving or clearance < before:
         raise ValueError(
           f"on the way, with the shoulder at {on_the_way[Axis.SHOULDER]:.1f}, the elbow at "
           f"{on_the_way[Axis.ELBOW]:.1f} and the wrist at {on_the_way[Axis.WRIST]:.1f}, {name} "
           f"would stand {clearance:.1f} mm from the column, nearer than the {_COLUMN_CLEARANCE} mm "
           f"kept clear of it"
         )
-      nearest = (name, clearance)
 
   async def _guarded_move_j(
     self,

@@ -1,3 +1,4 @@
+import random
 import unittest
 from typing import List, Optional, Tuple, cast
 from unittest.mock import AsyncMock, patch
@@ -488,8 +489,63 @@ class TestTheGripperIsKeptClearOfTheColumnOnTheWay(unittest.IsolatedAsyncioTestC
     # Parking with the wrist at 180 ends clear, and turns the gripper past the column to get there.
     parked = self.joints(0.0, 180.0, 180.0, 70.7)
     self.arm._check_pose_reachable(parked)
-    with self.assertRaisesRegex(ValueError, "on the way, with the shoulder at 85.4"):
+    with self.assertRaisesRegex(ValueError, "on the way, with the shoulder at 8"):
       self.arm._check_path_reachable(self.joints(*self.HOMED), parked)
+
+  def poses_looked_at(self, current, target) -> int:
+    """How many poses a path check places the gripper's outlines at."""
+    with patch.object(
+      self.arm, "_get_column_clearance", wraps=self.arm._get_column_clearance
+    ) as placed:
+      self.arm._check_path_reachable(current, target)
+    return placed.call_count
+
+  def test_far_from_the_column_few_poses_are_looked_at(self):
+    stretched = (self.joints(-90.0, 30.0, 0.0, 120.0), self.joints(90.0, 30.0, 0.0, 120.0))
+    self.assertLessEqual(self.poses_looked_at(*stretched), 2)
+    parking = (self.joints(*self.HOMED), self.joints(0.0, 180.0, -180.0, 70.7))
+    self.assertLess(self.poses_looked_at(*parking), 80)
+
+  def test_the_gripper_reaches_further_from_the_wrist_joint_than_its_tool_length(self):
+    # The outer front corner of a finger, with the jaws at the 145 this stand-in arm opens to.
+    reach = max(
+      (x * x + y * y) ** 0.5
+      for outline in self.arm._get_gripper_outlines(145.0).values()
+      for x, y in outline
+    )
+    self.assertAlmostEqual(reach, 187.0, delta=0.1)
+    self.assertGreater(reach, self.device.driver._kinematics_params.gripper_length)
+
+  def test_what_it_allows_never_touches_and_what_it_refuses_comes_too_near(self):
+    """Against the same moves looked at every 3 mm of travel or less, which is slow and thorough."""
+    generator = random.Random(7)
+
+    def pose():
+      return self.joints(
+        generator.uniform(-93.0, 93.0),
+        generator.uniform(12.0, 348.0),
+        generator.uniform(-360.0, 360.0),
+        generator.uniform(69.0, 134.0),
+      )
+
+    for _ in range(6):
+      current, target = pose(), pose()
+      if cast(Tuple[str, float], self.arm._get_column_clearance(current))[1] < 5.0:
+        continue  # an arm that starts too near is judged by another rule
+      nearest = min(
+        cast(
+          Tuple[str, float],
+          self.arm._get_column_clearance(
+            {axis: current[axis] + (target[axis] - current[axis]) * step / 1500 for axis in target}
+          ),
+        )[1]
+        for step in range(1501)
+      )
+      try:
+        self.arm._check_path_reachable(current, target)
+        self.assertGreater(nearest, 0.0)
+      except ValueError:
+        self.assertLess(nearest, 5.0)
 
   def test_the_same_park_by_the_shorter_turn_is_allowed(self):
     self.arm._check_path_reachable(self.joints(*self.HOMED), self.joints(0.0, 180.0, -180.0, 70.7))
