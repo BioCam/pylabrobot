@@ -27,8 +27,6 @@ from pylabrobot.brooks.precise_flex.kinematics import JointState
 from pylabrobot.events import emit_event, evented_operation
 from pylabrobot.io.socket import Socket
 from pylabrobot.resources.coordinate import Coordinate
-from pylabrobot.resources.end_effector import MechanicalGripper
-from pylabrobot.resources.manipulator import LinkBody
 
 from ..confirmed_firmware_versions import (
   SUPPORTED_ROBOT_TYPES,
@@ -586,7 +584,7 @@ class PreciseFlexDriver:
     The workspace takes its boundary and Z range; the column is stood on the plate, the carriage
     hung on it, the links on that and the gripper on link 2, each placed by where its joint has to
     land. They stand at Z 0 with every joint at 0 until a joint state is read. Does nothing for a
-    driver given no workspace. What is already there is reused.
+    driver given no workspace. An arm already built keeps its parts.
 
     Args:
       configuration: what the arm reported: the declared one, or the one read at setup.
@@ -612,44 +610,36 @@ class PreciseFlexDriver:
     # The controller reports from the shoulder axis, which the workspace states as its own point.
     on_the_plate = cast(Coordinate, plate.location) + SHOULDER_AXIS
     self.workspace.location = on_the_plate - self.workspace.reference_point
-    column = next((r for r in plate.children if r.category == "z_column"), None)
-    if column is None:
-      column = z_column(name=f"{device.name}_z_column", height=z_column_height(c.z_range[1]))
-      plate.assign_child_resource(column, location=Z_COLUMN_LOCATION)
-    carriage = next((r for r in column.children if r.category == "z_carriage"), None)
-    if carriage is None:
-      carriage = z_carriage(name=f"{device.name}_z_carriage")
-      column.assign_child_resource(carriage, location=z_carriage_location(0.0))
-    first = next((r for r in carriage.children if isinstance(r, LinkBody)), None)
-    if first is None:
-      first = link_1(name=f"{device.name}_link_1", length=c.kinematics.l1)
-      # The reference point is the shoulder axis at the flange plane, which link 1 stands above.
-      above = Coordinate(0.0, 0.0, LINK_1_ABOVE_FLANGE_PLANE)
-      carriage.assign_child_resource(
-        first, location=Z_CARRIAGE_REFERENCE_POINT - first.proximal_joint + above
-      )
-    second = next((r for r in first.children if isinstance(r, LinkBody)), None)
-    if second is None:
-      second = link_2(name=f"{device.name}_link_2", length=c.kinematics.l2)
-      # Link 2's underside lies in the flange plane, that far below link 1's.
-      below = Coordinate(0.0, 0.0, -LINK_1_ABOVE_FLANGE_PLANE)
-      first.assign_child_resource(
-        second, location=cast(Coordinate, first.distal_joint) - second.proximal_joint + below
-      )
-    hand = next((r for r in second.children if isinstance(r, MechanicalGripper)), None)
-    if hand is None:
-      hand = gripper(
-        name=f"{device.name}_gripper",
-        tool_length=c.kinematics.gripper_length,
-        # The axis's soft limits, in mm, as the gripper takes them when it adopts a configuration.
-        jaw_range=(
-          self.gripper._firmware_units_to_mm(configuration.gripper.soft_limit_range[0]),
-          self.gripper._firmware_units_to_mm(configuration.gripper.soft_limit_range[1]),
-        ),
-      )
-      second.assign_child_resource(
-        hand, location=cast(Coordinate, second.distal_joint) - hand.proximal_joint
-      )
+    if self.arm.resource is not None:
+      return
+    column = z_column(name=f"{device.name}_z_column", height=z_column_height(c.z_range[1]))
+    plate.assign_child_resource(column, location=Z_COLUMN_LOCATION)
+    carriage = z_carriage(name=f"{device.name}_z_carriage")
+    column.assign_child_resource(carriage, location=z_carriage_location(0.0))
+    first = link_1(name=f"{device.name}_link_1", length=c.kinematics.l1)
+    # The reference point is the shoulder axis at the flange plane, which link 1 stands above.
+    above = Coordinate(0.0, 0.0, LINK_1_ABOVE_FLANGE_PLANE)
+    carriage.assign_child_resource(
+      first, location=Z_CARRIAGE_REFERENCE_POINT - first.proximal_joint + above
+    )
+    second = link_2(name=f"{device.name}_link_2", length=c.kinematics.l2)
+    # Link 2's underside lies in the flange plane, that far below link 1's.
+    below = Coordinate(0.0, 0.0, -LINK_1_ABOVE_FLANGE_PLANE)
+    first.assign_child_resource(
+      second, location=cast(Coordinate, first.distal_joint) - second.proximal_joint + below
+    )
+    hand = gripper(
+      name=f"{device.name}_gripper",
+      tool_length=c.kinematics.gripper_length,
+      # The axis's soft limits, in mm, as the gripper takes them when it adopts a configuration.
+      jaw_range=(
+        self.gripper._firmware_units_to_mm(configuration.gripper.soft_limit_range[0]),
+        self.gripper._firmware_units_to_mm(configuration.gripper.soft_limit_range[1]),
+      ),
+    )
+    second.assign_child_resource(
+      hand, location=cast(Coordinate, second.distal_joint) - hand.proximal_joint
+    )
     self.arm.resource, self.arm.link_1, self.arm.link_2 = carriage, first, second
     self.gripper.resource = hand
 
