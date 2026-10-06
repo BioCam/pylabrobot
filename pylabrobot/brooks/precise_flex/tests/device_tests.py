@@ -456,7 +456,7 @@ class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
   async def test_the_jaws_stand_at_the_target_then_where_they_stopped(self):
     # Force-sensed jaws stop on what they hold: sent to 80, they stop at 86.2.
     sent = self.controller(after_the_move="301.1 0.0 180.0 180.0 86.2")
-    self.driver.gripper._gripper_soft_min, self.driver.gripper._gripper_soft_max = 60.0, 145.0
+    self.driver.gripper.configuration = self.driver.configuration.gripper
     await self.move(sent, lambda: self.driver.gripper.move_to_jaw_position(80.0))
     self.assertEqual(self.seen, [(0.0, 80.0)])
     self.assertEqual(self.hand.jaw_width, 86.2)

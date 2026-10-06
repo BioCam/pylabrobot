@@ -51,9 +51,6 @@ class PreciseFlexGripper:
   # Physical jaw range for the PF400 servoed gripper, in mm. Its narrow end is the calibration
   # anchor for closed_gripper_position; setup converts the axis soft limits into it.
   jaw_width_range: Tuple[float, float] = (60.0, 145.0)
-  # Gripper-axis soft limits (GripOpenPos/GripClosePos units), read at setup; None until then.
-  _gripper_soft_min: Optional[float] = None
-  _gripper_soft_max: Optional[float] = None
 
   def __init__(
     self, driver: "PreciseFlexDriver", closed_gripper_position: float, is_dual_gripper: bool = False
@@ -80,7 +77,6 @@ class PreciseFlexGripper:
     """Take the jaw range from the gripper-axis soft limits, and whether two are fitted."""
     self.configuration = configuration
     gmin, gmax = configuration.soft_limit_range
-    self._gripper_soft_min, self._gripper_soft_max = gmin, gmax
     # The limits are in the axis's units; both ends convert to mm through the calibration anchor.
     self.jaw_width_range = (
       self._anchor_width_mm + (gmin - self.closed_gripper_position),
@@ -207,12 +203,12 @@ class PreciseFlexGripper:
     Raises:
       RuntimeError: If setup has not read the limits; a target past the axis end strands it.
     """
-    if self._gripper_soft_min is None or self._gripper_soft_max is None:
+    if self.configuration is None:
       raise RuntimeError(
         "the gripper axis's limits have not been read, so a target cannot be held inside them; "
         "run setup() before moving the gripper"
       )
-    return self._gripper_soft_min, self._gripper_soft_max
+    return self.configuration.soft_limit_range
 
   def _hold_within_gripper_limits(self, units: float) -> float:
     """A gripper target held a little inside the axis's soft limits."""

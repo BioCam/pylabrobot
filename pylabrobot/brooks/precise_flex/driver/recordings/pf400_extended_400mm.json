@@ -82,8 +82,7 @@
         "gripper_z_offset": 0.0,
         "eps": 1e-06
       },
-      "kinematics_source": "device",
-      "reach_class": "extended"
+      "kinematics_source": "device"
     },
     "gripper": {
       "soft_limit_range": [
@@ -100,7 +99,6 @@
       "is_dual_gripper": false
     },
     "rail": null,
-    "camera_count": 2,
-    "has_vision_gripper": true
+    "camera_count": 2
   }
 }

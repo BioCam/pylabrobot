@@ -53,7 +53,6 @@ def configuration(rail=None) -> PreciseFlexConfiguration:
       max_cartesian_acceleration=2500.0,
       kinematics=kinematics.PF400Params(gripper_length=162.0),
       kinematics_source="device",
-      reach_class="extended",
     ),
     gripper=PreciseFlexGripperConfiguration(
       soft_limit_range=(69.0, 134.0),
@@ -63,7 +62,7 @@ def configuration(rail=None) -> PreciseFlexConfiguration:
       max_deceleration=1000.0,
     ),
     rail=rail,
-    has_vision_gripper=True,
+    camera_count=2,
     _power_state=20,
   )
 
@@ -179,7 +178,8 @@ class TestADeclaredConfigurationIsCrossChecked(unittest.IsolatedAsyncioTestCase)
     self.driver._check_declared_against(another)
 
   def test_what_differs_is_named(self):
-    standard = dataclasses.replace(self.recorded.arm, reach_class="standard")
+    links = dataclasses.replace(self.recorded.arm.kinematics, l1=225.0, l2=210.0)
+    standard = dataclasses.replace(self.recorded.arm, kinematics=links)
     narrowed = dataclasses.replace(
       self.recorded.arm, soft_limits={**self.recorded.arm.soft_limits, Axis.SHOULDER: (-90.0, 90.0)}
     )

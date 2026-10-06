@@ -245,7 +245,6 @@ class PreciseFlexDriver:
     self._vision_image_lock = asyncio.Lock()
     # The vision feature, built at setup when the controller's vision module is loaded.
     self.vision: Optional[PreciseFlexVision] = None
-    self._has_rail = has_rail
     # Built only on an arm that has a rail; discovery decides at setup.
     self.rail: Optional[PreciseFlexRail] = PreciseFlexRail(self) if has_rail else None
     self.arm = PreciseFlexArm(self)
@@ -1049,6 +1048,10 @@ class PreciseFlexDriver:
   # -- configuration discovery & adoption ---------------------------------------------------
 
   @property
+  def _has_rail(self) -> bool:
+    return self.rail is not None
+
+  @property
   def configuration(self) -> "PreciseFlexConfiguration":
     """The device configuration resolved at setup. Raises before setup()."""
     if self._configuration is None:
@@ -1173,7 +1176,6 @@ class PreciseFlexDriver:
         max_cartesian_acceleration=max_cartesian_acceleration,
         kinematics=kinematic_params,
         kinematics_source=kinematics_source,
-        reach_class=reach_class,
       ),
       gripper=PreciseFlexGripperConfiguration(
         soft_limit_range=soft_limits[Axis.GRIPPER],
@@ -1185,7 +1187,6 @@ class PreciseFlexDriver:
       ),
       rail=rail,
       camera_count=camera_count,
-      has_vision_gripper=camera_count > 0,
       _power_state=power_state,
     )
 
@@ -1199,7 +1200,6 @@ class PreciseFlexDriver:
     self.arm.configuration = config.arm
     self.gripper._adopt_configuration(config.gripper)
     self._kinematics_params = config.arm.kinematics
-    self._has_rail = config.has_rail
     self.rail = (self.rail or PreciseFlexRail(self)) if config.has_rail else None
     if self.rail is not None:
       self.rail.configuration = config.rail

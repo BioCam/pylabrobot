@@ -59,14 +59,16 @@ class PreciseFlexConfiguration:
   # --- vision ---
   # How many cameras the controller counts through its vision module; 0 without the module.
   camera_count: int = 0
-  # --- derived ---
-  has_vision_gripper: bool = False
   # Live state, not a fact; kept for the deprecated `power_state` until it is removed.
   _power_state: Optional[int] = None
 
   @property
   def has_rail(self) -> bool:
     return self.rail is not None
+
+  @property
+  def has_vision_gripper(self) -> bool:
+    return self.camera_count > 0
 
   @property
   def has_vision_server(self) -> bool:

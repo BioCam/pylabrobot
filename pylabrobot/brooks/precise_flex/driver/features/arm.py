@@ -122,9 +122,11 @@ class PreciseFlexArmConfiguration:
   max_cartesian_acceleration: float
   kinematics: "kinematics.PF400Params" = dataclasses.field(default_factory=kinematics.PF400Params)
   kinematics_source: Literal["device", "provided", "default"] = "default"
-  # "unknown" if the controller-read link lengths match neither known arm; defaults to "extended"
-  # to match the default PF400Params (the extended/XR link lengths)
-  reach_class: Literal["standard", "extended", "unknown"] = "extended"
+
+  @property
+  def reach_class(self) -> Literal["standard", "extended", "unknown"]:
+    """Which arm the link lengths are; "unknown" if they match neither known arm."""
+    return kinematics._classify_pf400_reach((self.kinematics.l1, self.kinematics.l2))
 
   @property
   def z_range(self) -> tuple:
