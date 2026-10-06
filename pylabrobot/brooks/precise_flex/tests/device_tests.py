@@ -344,13 +344,14 @@ class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
     }
 
   def test_the_pose_where_a_finger_touched_the_column_is_refused(self):
-    with self.assertRaisesRegex(ValueError, "pf400_gripper_body would stand 0.5 mm"):
+    # Open to 120, a jaw reaches out past the gripper's body, and it is the jaw that touches.
+    with self.assertRaisesRegex(ValueError, "pf400_gripper_jaw_left would stand -0.1 mm"):
       self.driver.arm._check_pose_reachable(self.joints(92.0, 179.48, -184.25, 120.0))
 
-  def test_a_finger_alone_is_enough(self):
+  def test_an_open_jaw_alone_is_enough(self):
     # The same angles pass with the jaws at 70.7 and are refused with them open.
     self.driver.arm._check_pose_reachable(self.joints(92.0, 179.48, 15.0, 70.7))
-    with self.assertRaisesRegex(ValueError, "pf400_gripper_finger_right would stand 1.8 mm"):
+    with self.assertRaisesRegex(ValueError, "pf400_gripper_jaw_right would stand 1.8 mm"):
       self.driver.arm._check_pose_reachable(self.joints(92.0, 179.48, 15.0, 145.0))
 
   def test_the_poses_the_arm_homes_to_and_parks_at_pass(self):

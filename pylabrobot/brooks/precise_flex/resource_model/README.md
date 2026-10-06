@@ -39,6 +39,8 @@ shoulder.
 | `link_1` | `link_body` | `brooks_pf400_link_1` | Shoulder joint to elbow joint |
 | `link_2` | `link_body` | `brooks_pf400_link_2` | Elbow joint to wrist joint, turning underneath link 1 |
 | `gripper` | `mechanical_gripper` | `brooks_pf400_gripper` | Wrist joint to the point the fingers grip at |
+| its two jaws | `jaw` | `brooks_pf400_gripper_jaw_left`, `_right` | What the gripper's drive moves |
+| its two fingers | `finger` | `brooks_pf400_gripper_finger_left`, `_right` | Bolted one to each jaw, and changed without it |
 | `linear_rail` | `linear_rail` | `brooks_pf400_linear_rail_1m`, `_1_5m`, `_2m` | The optional rail, as long as its travel |
 | `linear_rail_carriage` | `linear_rail_carriage` | `brooks_pf400_linear_rail_carriage_0deg`, `_90deg` | What rides the rail, and the arm stands on |
 
@@ -65,8 +67,8 @@ A link is as long as the controller reports between its joints, plus the hub pas
 one factory serves both reaches. The driver hangs the carriage, the links and the gripper at
 setup, each by its joint, and every joint read stands and turns them to what was read.
 
-The gripper's mesh is its body and one finger, drawn for both. The blocks the fingers slide on are
-not drawn.
+The gripper is its body, two jaws and two fingers. The two sides are mirror images, so a jaw and a
+finger each have a left and a right mesh. Left is the gripper's +y side.
 
 ## Outlines
 

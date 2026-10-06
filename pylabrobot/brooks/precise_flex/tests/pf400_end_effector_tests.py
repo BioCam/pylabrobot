@@ -31,6 +31,28 @@ class TestPF400Gripper(unittest.TestCase):
     self.assertAlmostEqual(left - (right + thickness), 120.0)
     self.assertAlmostEqual(left + right + thickness, 2 * 67.0)
 
-  def test_the_parts_are_named_for_a_mesh(self):
+  def test_the_drive_moves_two_jaws_and_a_finger_is_bolted_to_each(self):
+    self.assertEqual([jaw.parent for jaw in self.gripper.jaws], [self.gripper] * 2)
+    self.assertEqual([finger.parent for finger in self.gripper.fingers], self.gripper.jaws)
+    self.assertEqual({jaw.category for jaw in self.gripper.jaws}, {"jaw"})
+
+  def test_a_finger_starts_where_its_jaw_does_and_hangs_below_the_body(self):
+    for finger in self.gripper.fingers:
+      here = finger.get_location_wrt(self.gripper)
+      self.assertAlmostEqual(here.x, 93.7)
+      self.assertAlmostEqual(here.z, -1.2)
+
+  def test_a_jaws_outer_end_stands_just_inside_its_fingers_outer_face(self):
+    for jaw, finger, outer in zip(self.gripper.jaws, self.gripper.fingers, (1.0, -1.0)):
+      jaw_y, finger_y = (part.get_location_wrt(self.gripper).y for part in (jaw, finger))
+      jaw_end = jaw_y + jaw.get_size_y() if outer > 0 else jaw_y
+      finger_end = finger_y + finger.get_size_y() if outer > 0 else finger_y
+      self.assertAlmostEqual(outer * (finger_end - jaw_end), 0.5)
+
+  def test_the_parts_are_named_for_a_mesh_each_side_its_own(self):
     self.assertEqual(self.gripper.body.model, "brooks_pf400_gripper_body")
-    self.assertEqual({f.model for f in self.gripper.fingers}, {"brooks_pf400_gripper_finger"})
+    for part, parts in (("jaw", self.gripper.jaws), ("finger", self.gripper.fingers)):
+      self.assertEqual(
+        [each.model for each in parts],
+        [f"brooks_pf400_gripper_{part}_left", f"brooks_pf400_gripper_{part}_right"],
+      )

@@ -1470,19 +1470,16 @@ class PreciseFlexArm:
     column_outline = [(x - axis.x, y - axis.y) for x, y in Z_COLUMN_OUTLINE]
 
     half_width = self._driver.gripper._firmware_units_to_mm(joints[Axis.GRIPPER]) / 2
-    finger = gripper.fingers[0]
-    start = cast(Coordinate, finger.location).x
-    end = start + finger.get_size_x()
     parts = {gripper.body.name: list(GRIPPER_BODY_OUTLINE)}
-    for each, (inner, outer) in zip(
-      gripper.fingers,
-      (
-        (half_width, half_width + finger.get_size_y()),
-        (-half_width - finger.get_size_y(), -half_width),
-      ),
-    ):
-      y_1, y_2 = joint.y + inner, joint.y + outer
-      parts[each.name] = [(start, y_1), (end, y_1), (end, y_2), (start, y_2)]
+    for finger, jaw, side in zip(gripper.fingers, gripper.jaws, (1.0, -1.0)):
+      # The finger's facing surface stands half the width from the grip centre, and its jaw stands
+      # where that puts it: both as a rectangle along the gripper, about the wrist joint's y.
+      bolted, stood = cast(Coordinate, finger.location), cast(Coordinate, jaw.location)
+      facing = joint.y + side * half_width
+      corner = facing if side > 0 else facing - finger.get_size_y()
+      for part, x, y in ((finger, stood.x + bolted.x, corner), (jaw, stood.x, corner - bolted.y)):
+        x_2, y_2 = x + part.get_size_x(), y + part.get_size_y()
+        parts[part.name] = [(x, y), (x_2, y), (x_2, y_2), (x, y_2)]
     return min(
       (
         (name, kinematics.compute_outline_clearance(from_shoulder_axis(outline), column_outline))
@@ -1501,8 +1498,8 @@ class PreciseFlexArm:
       joints: the joint state the arm is being sent to.
 
     Raises:
-      ValueError: If the gripper's body or a finger would come within `_COLUMN_CLEARANCE` of the
-        column.
+      ValueError: If the gripper's body, a jaw or a finger would come within `_COLUMN_CLEARANCE`
+        of the column.
     """
     nearest = self._get_column_clearance(joints)
     if nearest is not None and nearest[1] < _COLUMN_CLEARANCE:
@@ -1525,8 +1522,8 @@ class PreciseFlexArm:
       target: the joint state it is being sent to.
 
     Raises:
-      ValueError: If the gripper's body or a finger would come within `_COLUMN_CLEARANCE` of the
-        column anywhere along the move.
+      ValueError: If the gripper's body, a jaw or a finger would come within `_COLUMN_CLEARANCE`
+        of the column anywhere along the move.
     """
     nearest = self._get_column_clearance(current)
     if nearest is None:
