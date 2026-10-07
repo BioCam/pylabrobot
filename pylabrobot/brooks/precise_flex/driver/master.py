@@ -522,8 +522,9 @@ class PreciseFlexDriver:
     """Raise if what was declared cannot stand for what the controller answered.
 
     Only what decides whether the two are the same kind of arm, set up the same way: what is
-    fitted, its reach, and its soft limits. Identity is left out, since a declaration taken off one
-    arm describes another of the same build.
+    fitted, its link and tool lengths, and its soft limits. The model is built from the declared
+    ones and kept. Identity is left out: a declaration taken off one arm describes another of the
+    same build.
 
     Args:
       discovered: what the controller answered.
@@ -539,7 +540,7 @@ class PreciseFlexDriver:
       ("robot_type", declared.robot_type, discovered.robot_type),
       ("has_rail", declared.has_rail, discovered.has_rail),
       ("gripper.is_dual_gripper", gripper.is_dual_gripper, discovered.gripper.is_dual_gripper),
-      ("arm.reach_class", arm.reach_class, discovered.arm.reach_class),
+      ("arm.kinematics", arm.kinematics, discovered.arm.kinematics),
       ("arm.soft_limits", arm.soft_limits, discovered.arm.soft_limits),
       ("gripper.soft_limit_range", gripper.soft_limit_range, discovered.gripper.soft_limit_range),
     )

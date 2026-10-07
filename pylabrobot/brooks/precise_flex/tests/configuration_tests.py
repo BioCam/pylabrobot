@@ -180,11 +180,14 @@ class TestADeclaredConfigurationIsCrossChecked(unittest.IsolatedAsyncioTestCase)
   def test_what_differs_is_named(self):
     links = dataclasses.replace(self.recorded.arm.kinematics, l1=225.0, l2=210.0)
     standard = dataclasses.replace(self.recorded.arm, kinematics=links)
+    tool = dataclasses.replace(self.recorded.arm.kinematics, gripper_length=170.0)
+    longer_tool = dataclasses.replace(self.recorded.arm, kinematics=tool)
     narrowed = dataclasses.replace(
       self.recorded.arm, soft_limits={**self.recorded.arm.soft_limits, Axis.SHOULDER: (-90.0, 90.0)}
     )
     for answered, named in (
-      (dataclasses.replace(self.recorded, arm=standard), "arm.reach_class: declared 'extended'"),
+      (dataclasses.replace(self.recorded, arm=standard), r"arm.kinematics: declared .*l1=302.0"),
+      (dataclasses.replace(self.recorded, arm=longer_tool), "gripper_length=170.0"),
       (dataclasses.replace(self.recorded, arm=narrowed), "arm.soft_limits"),
       (
         dataclasses.replace(self.recorded, rail=PreciseFlexRailConfiguration((0.0, 1000.0))),
