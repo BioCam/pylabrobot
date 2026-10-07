@@ -731,8 +731,8 @@ class PreciseFlexDriver:
         robot.
 
     Returns:
-      If attach_state is omitted, returns 0 if robot is not attached, -1 if attached.  Otherwise
-      returns 0 on success.
+      If attach_state is omitted, the number of the robot attached (1 on a single-robot
+      controller), or 0 if none is. Otherwise 0 on success.
 
     Note:
       The robot must be attached to allow motion commands.

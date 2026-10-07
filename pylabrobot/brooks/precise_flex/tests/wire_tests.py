@@ -21,7 +21,7 @@ from pylabrobot.brooks.precise_flex import (
 )
 from pylabrobot.resources import Coordinate, Rotation
 
-# Replies a PF400 gave, from IO-level logs of a real arm; its serial and build dates left out.
+# Replies a PF400 gave, from IO-level logs of a real arm; its serial left out.
 _PF400_REPLIES: Dict[str, str] = {
   "mode 0": "0",
   "hp 1 20": "0",
@@ -66,7 +66,7 @@ _PF400_REPLIES: Dict[str, str] = {
   "Speed 1 20": "0",
   "Speed 1 60": "0",
   "GripOpenPos 120.0": "0",
-  "IsFullyClosed": "0 0",
+  "IsFullyClosed": "0 -1",
   "GripClosePos 80.0": "0",
   "gripper 2": "0",
   "attach 0": "0",
@@ -82,44 +82,45 @@ _PF400_REPLIES: Dict[str, str] = {
   "MoveOneAxis 1 2.5 1": "0",
 }
 
+# Likewise the arm's own, read in one sweep as it stood parked with its jaws closed.
 _REPLIES: Dict[str, str] = {
   **_PF400_REPLIES,
-  "wherej": "0 200 0 180 0 100",
-  "wherec": "0 160.054 8.185 269.973 -1.704 90 180 1",
+  "wherej": "0 301.11 0.018 179.925 -180.644 70.685",
+  "wherec": "0 174.988 -1.602 301.11 -0.701 90 180 1",
   "mode": "0 0",
   "hp": "0 1",
-  "state": "0 0",
+  "state": "0 1",
   "nop": "0",
   "mspeed": "0 50",
   "payload": "0 25",
   "base": "0 0 0 0 0",
   "tool": "0 0 0 162 0 0 0",
   "selectRobot": "0 1",
-  "GripOpenPos": "0 120",
-  "GripClosePos": "0 80",
-  "GraspData": "0 0 0 0",
-  "IsFullyClosed": "0 0",
+  "GripOpenPos": "0 100",
+  "GripClosePos": "0 75.5",
+  "GraspData": "0 80 50 10",
+  "IsFullyClosed": "0 -1",
   "sysState": "0 7",
   "pd 2800": "0 1",
-  "attach": "0 -1",
-  "sig 10001": "0 10001 1",
-  "Speed2 1": "0 1 30",
-  "Accel 1": "0 1 60",
-  "AccRamp 1": "0 1 0.2",
-  "Decel 1": "0 1 70",
-  "DecRamp 1": "0 1 0.3",
+  "attach": "0 1",
+  "sig 10001": "0 10001 0",
+  "Speed2 1": "0 1 0",
+  "Accel 1": "0 1 100",
+  "AccRamp 1": "0 1 0.1",
+  "Decel 1": "0 1 100",
+  "DecRamp 1": "0 1 0.1",
   "InRange 1": "0 1 10",
-  "Straight 1": "0 1 True",
+  "Straight 1": "0 1 False",
   "Profile 1": "0 1 50 0 100 100 0.1 0.1 10 0",
-  "destC": "0 159.022 4.427 301.02 -2.985 90 180 1",
-  "destJ": "0 301.02 93.476 179.609 83.929 125.873",
+  "destC": "0 174.988 -1.601 301.11 -0.702 90 180 1",
+  "destJ": "0 301.11 0.018 179.925 -180.644 70.685",
 }
 
 # A rail arm: a sixth axis in the soft limits and the joint readback.
 _RAIL_REPLIES: Dict[str, str] = {
   "pd 16078": "0 1.5, -93, 12, -960, 69, 0",
   "pd 16077": "0 401.5, 93, 348, 960, 134, 1000",
-  "wherej": "0 200 0 180 0 100 500",
+  "wherej": "0 301.11 0.018 179.925 -180.644 70.685 500",
 }
 
 
@@ -987,7 +988,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "moveJ 1 150.0 84.32164182987252 231.74396572121486 43.934392448912625 100.0",
+      "moveJ 1 150.0 -38.74046014630248 128.25603427878514 -89.51557413248264 70.685",
       "wherej",
       "wherej",
       "wherej",
@@ -1008,7 +1009,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "moveJ 1 150.0 65.5007745559521 232.2285377690509 92.27068767499696 100.0",
+      "moveJ 1 150.0 -57.13213751792647 127.7714622309491 -40.63932471302264 70.685",
       "wherej",
       "wherej",
       "wherej",
@@ -1026,8 +1027,8 @@ _CASES: List[_Case] = [
       "wherej",
       "Profile 1",
       "Profile 1 50.0 0.0 100.0 100.0 0.1 0.1 -1 0",
-      "moveJ 1 150.0 84.32164182987252 231.74396572121486 43.934392448912625 100.0",
-      "moveJ 1 160.0 72.08031179618793 233.35093364951658 64.56875455429554 100.0",
+      "moveJ 1 150.0 -38.74046014630248 128.25603427878514 -89.51557413248264 70.685",
+      "moveJ 1 160.0 -49.554898023417685 126.64906635048342 -67.09416832706574 70.685",
       "wherej",
       "wherej",
       "wherej",
@@ -1045,8 +1046,8 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "moveJ 1 150.0 84.32164182987252 231.74396572121486 43.934392448912625 100.0",
-      "moveJ 1 160.0 72.08031179618793 233.35093364951658 64.56875455429554 100.0",
+      "moveJ 1 150.0 -38.74046014630248 128.25603427878514 -89.51557413248264 70.685",
+      "moveJ 1 160.0 -49.554898023417685 126.64906635048342 -67.09416832706574 70.685",
       "wherej",
       "wherej",
       "wherej",
@@ -1216,7 +1217,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "locAngles 1 150.0 84.32164182987252 231.74396572121486 43.934392448912625 100.0",
+      "locAngles 1 150.0 -38.74046014630248 128.25603427878514 -89.51557413248264 70.685",
       "StationType 1 1 0 100 0 10",
       "pickplate 1 0 0",
       "wherej",
@@ -1238,7 +1239,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "locAngles 1 150.0 84.32164182987252 231.74396572121486 43.934392448912625 100.0",
+      "locAngles 1 150.0 -38.74046014630248 128.25603427878514 -89.51557413248264 70.685",
       "StationType 1 1 0 100 0 10",
       "placeplate 1 0 0",
       "wherej",
@@ -1256,7 +1257,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "moveJ 1 301.125 0.0 180.0 180.0 100.0",
+      "moveJ 1 301.125 0.0 180.0 180.0 70.685",
       "wherej",
       "wherej",
       "wherej",
@@ -1388,7 +1389,7 @@ _RAIL_CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "locAngles 1 500.0 150.0 -141.5317256976266 236.60342682930133 264.9282988683253 100.0",
+      "locAngles 1 500.0 150.0 99.75007617280966 123.39657317069872 -223.1466493435084 70.685",
       "StationType 1 1 0 100 0 10",
       "pickplate 1 0 0",
       "wherej",
@@ -1658,7 +1659,7 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
     arm = _make_arm(fake)
     await arm.setup(skip_vision=True)
     fake.sent.clear()
-    fake._replies["wherej"] = "0 200 93.5 180 0 100"
+    fake._replies["wherej"] = "0 301.02 93.476 179.609 83.93 125.867"
     self.assertEqual(await arm.arm.recover_axes_within_limits(), {Axis.SHOULDER: 92.0})
     self.assert_wire(
       fake.sent,
@@ -1727,7 +1728,7 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
   async def test_recovery_speed_default_set_on_the_arm(self):
     arm, fake = await self._arm()
     arm.arm.default_recovery_speed_percent = 10.0
-    fake._replies["wherej"] = "0 200 93.5 180 0 100"
+    fake._replies["wherej"] = "0 301.02 93.476 179.609 83.93 125.867"
     await arm.arm.recover_axes_within_limits()
     self.assertIn("Speed 1 10.0", fake.sent)
 
@@ -1750,8 +1751,10 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
     self.addCleanup(sleep.stop)
 
   async def _arm(self) -> Tuple[PreciseFlexDriver, _FakeController]:
-    """An arm set up with its jaws at 100 on the gripper axis."""
-    fake = _FakeController({"Speed 1": "0 1 60"})
+    """An arm set up as it stood after homing, its jaws open at 125.844 on the gripper axis."""
+    fake = _FakeController(
+      {"Speed 1": "0 1 60", "wherej": "0 301.105 2.235 179.732 -180.776 125.844"}
+    )
     arm = _make_arm(fake)
     await arm.setup(skip_vision=True)
     fake.sent.clear()
@@ -1810,7 +1813,7 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
     await arm.arm.move_to_joint_state(
       {Axis.GRIPPER: 90.0}, close_gripper_without_force_sensing=True
     )
-    self.assertEqual(_without_reads(fake.sent), ["moveJ 1 200.0 0.0 180.0 0.0 90.0"])
+    self.assertEqual(_without_reads(fake.sent), ["moveJ 1 301.105 2.235 179.732 -180.776 90.0"])
 
   async def test_parking_that_closes_the_gripper_is_refused(self):
     arm, fake = await self._arm()
@@ -1831,12 +1834,14 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
 
   async def test_recovery_leaves_an_over_open_gripper(self):
     arm, fake = await self._arm()
+    # Not from a log: the arm has not been read with its jaws past a limit.
     fake._replies["wherej"] = "0 200 0 180 0 136"
     self.assertEqual(await arm.arm.recover_axes_within_limits(), {})
     self.assertFalse(any(c.startswith("MoveOneAxis") for c in fake.sent))
 
   async def test_recovery_opens_an_over_closed_gripper(self):
     arm, fake = await self._arm()
+    # Not from a log either.
     fake._replies["wherej"] = "0 200 0 180 0 67"
     self.assertEqual(await arm.arm.recover_axes_within_limits(), {Axis.GRIPPER: 70.0})
     self.assertIn("MoveOneAxis 5 70.0 1", fake.sent)
@@ -2077,7 +2082,7 @@ class TestDeprecatedPercentKeywords(unittest.IsolatedAsyncioTestCase):
     await arm.setup(skip_vision=True)
     fake.sent.clear()
     if out_of_range:  # so recovery sets its speed
-      fake._replies["wherej"] = "0 200 93.5 180 0 100"
+      fake._replies["wherej"] = "0 301.02 93.476 179.609 83.93 125.867"
     await call(arm)
     return fake.sent
 
