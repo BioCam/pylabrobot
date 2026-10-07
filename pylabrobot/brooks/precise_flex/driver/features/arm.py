@@ -231,31 +231,20 @@ class PreciseFlexArm:
 
   # -- joint state ---------------------------------------------------------------------------------
 
-  def _parse_angles_response(self, parts: List[str]) -> JointState:
-    """Parse angle values from a response string.
+  # The order joint values go over the wire in. An arm with a rail adds the rail's.
+  _WIRE_ORDER = (Axis.BASE, Axis.SHOULDER, Axis.ELBOW, Axis.WRIST, Axis.GRIPPER)
 
-    For self._driver._has_rail=True:  wire order is [base, shoulder, elbow, wrist, gripper, rail]
-    For self._driver._has_rail=False: wire order is [base, shoulder, elbow, wrist, gripper]
+  def _parse_angles_response(self, parts: List[str]) -> JointState:
+    """Parse the joint values of a reply, in `_WIRE_ORDER`, then the rail's on an arm with one.
+
+    A value the reply leaves out reads 0.
     """
     if len(parts) < 3:
       raise PreciseFlexError(-1, "Unexpected response format for angles.")
-    if self._driver._has_rail:
-      return {
-        Axis.RAIL: float(parts[5]) if len(parts) > 5 else 0.0,
-        Axis.BASE: float(parts[0]),
-        Axis.SHOULDER: float(parts[1]),
-        Axis.ELBOW: float(parts[2]),
-        Axis.WRIST: float(parts[3]) if len(parts) > 3 else 0.0,
-        Axis.GRIPPER: float(parts[4]) if len(parts) > 4 else 0.0,
-      }
-    return {
-      Axis.RAIL: 0.0,
-      Axis.BASE: float(parts[0]),
-      Axis.SHOULDER: float(parts[1]),
-      Axis.ELBOW: float(parts[2]) if len(parts) > 2 else 0.0,
-      Axis.WRIST: float(parts[3]) if len(parts) > 3 else 0.0,
-      Axis.GRIPPER: float(parts[4]) if len(parts) > 4 else 0.0,
-    }
+    wire_order = [*self._WIRE_ORDER, Axis.RAIL] if self._driver._has_rail else self._WIRE_ORDER
+    joints = dict.fromkeys([Axis.RAIL, *self._WIRE_ORDER], 0.0)
+    joints.update(zip(wire_order, map(float, parts)))
+    return joints
 
   async def _wait_for_eom(
     self, poll_interval: float = 0.05, settle: float = 0.02, timeout: float = 60.0
@@ -392,18 +381,10 @@ class PreciseFlexArm:
   async def _unchecked_fw_move_j(self, profile_index: int, joint_coords: JointState) -> None:
     """Move the robot using joint coordinates, handling rail configuration. Raw moveJ - the
     out-of-range guard lives in the caller (``_guarded_move_j``), not in this primitive."""
+    angles_str = " ".join(str(joint_coords[axis]) for axis in self._WIRE_ORDER)
     if self._driver._has_rail:
-      angles_str = (
-        f"{joint_coords[Axis.BASE]} {joint_coords[Axis.SHOULDER]} "
-        f"{joint_coords[Axis.ELBOW]} {joint_coords[Axis.WRIST]} "
-        f"{joint_coords[Axis.GRIPPER]} {joint_coords[Axis.RAIL]} "
-      )
-    else:
-      angles_str = (
-        f"{joint_coords[Axis.BASE]} {joint_coords[Axis.SHOULDER]} "
-        f"{joint_coords[Axis.ELBOW]} {joint_coords[Axis.WRIST]} "
-        f"{joint_coords[Axis.GRIPPER]}"
-      )
+      # The rail's value goes last, and the line has always ended with a space after it.
+      angles_str += f" {joint_coords[Axis.RAIL]} "
     await self._driver.send_command(f"moveJ {profile_index} {angles_str}")
 
   async def _unchecked_fw_move_one_axis(self, axis: Axis, position: float) -> None:
@@ -421,19 +402,11 @@ class PreciseFlexArm:
     joint_position: JointState,
   ) -> None:
     """Set joint angles for a station, handling rail configuration."""
+    angles_str = " ".join(str(joint_position[axis]) for axis in self._WIRE_ORDER)
     if self._driver._has_rail:
-      await self._driver.send_command(
-        f"locAngles {station_index} {joint_position[Axis.RAIL]} "
-        f"{joint_position[Axis.BASE]} {joint_position[Axis.SHOULDER]} "
-        f"{joint_position[Axis.ELBOW]} {joint_position[Axis.WRIST]} "
-        f"{joint_position[Axis.GRIPPER]}"
-      )
-    else:
-      await self._driver.send_command(
-        f"locAngles {station_index} {joint_position[Axis.BASE]} "
-        f"{joint_position[Axis.SHOULDER]} {joint_position[Axis.ELBOW]} "
-        f"{joint_position[Axis.WRIST]} {joint_position[Axis.GRIPPER]}"
-      )
+      # Here the rail's value goes first.
+      angles_str = f"{joint_position[Axis.RAIL]} {angles_str}"
+    await self._driver.send_command(f"locAngles {station_index} {angles_str}")
 
   async def _cart_to_joints(self, cart: PreciseFlexCartesianPose) -> JointState:
     """Convert a Cartesian location into a full joint dict using our IK.
