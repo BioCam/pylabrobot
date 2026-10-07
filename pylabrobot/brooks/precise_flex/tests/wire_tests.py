@@ -32,8 +32,9 @@ _PF400_REPLIES: Dict[str, str] = {
   "pd 2003": "0 47",
   "pd 2002": "0 PreciseFlex 400SX",
   "version": (
-    "0 TCP Command Server 3.0D4, Load-Save Module 3.0B2, PARobot Module 3.0D4, "
-    "SSGrip Module 3.0D4, PARobot Auto Center Module 3.0D3, IntelliGuide 1.0"
+    "0 TCP Command Server 3.0D4 10-25-2024, Load-Save Module 3.0B2 12-04-2020, "
+    "PARobot Module 3.0D4 10-25-2024, SSGrip Module 3.0D4 10-25-2024, "
+    "PARobot Auto Center Module 3.0D3 10-23-2024, IntelliGuide 1.0 05-22-2024"
   ),
   "VToolProperty System CameraCount": "2",  # the relay answers the bare value
   "pd 2700": "0 500, 360, 720, 720, 400",
@@ -45,8 +46,8 @@ _PF400_REPLIES: Dict[str, str] = {
   "pd 16051": "0 0, 0, 162, 0, 0, 0",
   "pd 100": "0 Brooks Automation",
   "pd 101": "0 G5400B.2",
-  "pd 102": "0 CPU 10-105.2-25, FPGA 6.1, JMP 0, PWR -1, RMII",
-  "pd 103": "0 GPL 5.1D4, Release, ECM",
+  "pd 102": "0 CPU 10-105.2-25, FPGA 6.1 01-23-2024, JMP 0, PWR -1, RMII",
+  "pd 103": "0 GPL 5.1D4, Apr 25 2025, Release, ECM",
   "pd 110": "0 000000-00000000",
   "pd 116": "0 12, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0",
   "pd 2000": "0 5",
@@ -90,7 +91,7 @@ _REPLIES: Dict[str, str] = {
   "state": "0 0",
   "nop": "0",
   "mspeed": "0 50",
-  "payload": "0 0",
+  "payload": "0 25",
   "base": "0 0 0 0 0",
   "tool": "0 0 0 162 0 0 0",
   "selectRobot": "0 1",
@@ -109,9 +110,9 @@ _REPLIES: Dict[str, str] = {
   "DecRamp 1": "0 1 0.3",
   "InRange 1": "0 1 10",
   "Straight 1": "0 1 True",
-  "Profile 1": "0 1 20 0 100 100 0.1 0.1 10 0",
-  "destC": "0 160.054 8.185 269.973 -1.704 90 180 1",
-  "destJ": "0 200 0 180 0 100",
+  "Profile 1": "0 1 50 0 100 100 0.1 0.1 10 0",
+  "destC": "0 159.022 4.427 301.02 -2.985 90 180 1",
+  "destJ": "0 301.02 93.476 179.609 83.929 125.873",
 }
 
 # A rail arm: a sixth axis in the soft limits and the joint readback.
@@ -1024,14 +1025,14 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "Profile 1",
-      "Profile 1 20.0 0.0 100.0 100.0 0.1 0.1 -1 0",
+      "Profile 1 50.0 0.0 100.0 100.0 0.1 0.1 -1 0",
       "moveJ 1 150.0 84.32164182987252 231.74396572121486 43.934392448912625 100.0",
       "moveJ 1 160.0 72.08031179618793 233.35093364951658 64.56875455429554 100.0",
       "wherej",
       "wherej",
       "wherej",
       "wherej",
-      "Profile 1 20.0 0.0 100.0 100.0 0.1 0.1 10.0 0",
+      "Profile 1 50.0 0.0 100.0 100.0 0.1 0.1 10.0 0",
     ],
     None,
   ),
