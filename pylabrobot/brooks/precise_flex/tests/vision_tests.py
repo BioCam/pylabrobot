@@ -121,11 +121,6 @@ class TestVisionWirePrimitives(unittest.IsolatedAsyncioTestCase):
     with self.assertRaises(ValueError):
       await self.vision.start_led("left")  # type: ignore[arg-type]
 
-  async def test_start_led_vision_server_without_engine_raises(self):
-    """use_server='vision' needs a connected engine; without one it raises rather than relaying."""
-    with self.assertRaises(RuntimeError):
-      await self.vision.start_led(use_server="vision")  # no engine connected
-
 
 class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
   """The vision orchestrations compose the wire primitives over the driver transport. Mocking the
@@ -260,11 +255,6 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
     with self.assertRaises(RuntimeError):
       await vision.capture_image(1)
     self.driver._set_vision_server_property.assert_awaited_once_with("system.cameraacquire", 1)
-
-  async def test_capture_image_raises_without_engine_configured(self):
-    # Calling a vision-engine method with no engine wired up is unsupported - raise, don't return None.
-    with self.assertRaises(RuntimeError):
-      await self.vision.capture_image(1)  # no engine connected
 
 
 class TestVisionSetupGating(unittest.IsolatedAsyncioTestCase):
@@ -419,9 +409,18 @@ class TestVisionEngineCapabilities(unittest.IsolatedAsyncioTestCase):
 
   async def test_engine_methods_raise_without_engine(self):
     """Engine-dependent methods raise a clear error when no engine was configured."""
-    no_engine = PreciseFlexVision(MagicMock(vision_server_connected=False))
-    with self.assertRaises(RuntimeError):
-      await no_engine._run_vision_tool("acq1")
+    driver = PreciseFlexDriver(
+      host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=500.0
+    )
+    no_engine = PreciseFlexVision(driver)
+    for call in (
+      lambda: no_engine._run_vision_tool("acq1"),
+      lambda: no_engine.request_vision_version(),
+      lambda: no_engine.capture_image(1),
+      lambda: no_engine.start_led(use_server="vision"),
+    ):
+      with self.assertRaisesRegex(RuntimeError, "pass vision_host at setup"):
+        await call()
 
 
 # --- Real engine replies captured from our PF400 rig (PreciseVision 5.3.3.0). ------------------

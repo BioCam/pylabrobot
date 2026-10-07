@@ -60,6 +60,9 @@ logger = logging.getLogger(__name__)
 VISION_SERVER_PROPERTY_PORT = 1450  # text command/query protocol
 # The binary stream carrying the pushed "Primary Image [n]" JPEG results.
 VISION_SERVER_IMAGE_PORT = 1500
+_NO_VISION_SERVER = (
+  "no PreciseVision engine configured - pass vision_host at setup to use this method"
+)
 
 _RECORD_HEADER_LEN = 16
 # A sanity cap: a record this large signals a desync, not a real frame.
@@ -399,7 +402,7 @@ class PreciseFlexDriver:
       PreciseFlexError: on a negative (error) reply.
     """
     if self._vision_server_io is None:
-      raise RuntimeError("the vision server is not connected")
+      raise RuntimeError(_NO_VISION_SERVER)
     async with self._vision_server_lock:
       await self._vision_server_io.write(command.encode("utf-8") + b"\r\n")
       reply = (await self._vision_server_io.readline()).decode("utf-8", "replace").strip()
@@ -454,7 +457,7 @@ class PreciseFlexDriver:
       ValueError: if the stream has desynchronised (see ``_drain_named_record``).
     """
     if self._vision_image_io is None:
-      raise RuntimeError("the vision server is not connected")
+      raise RuntimeError(_NO_VISION_SERVER)
     buf = self._vision_image_buf
     async with self._vision_image_lock:
       while True:
