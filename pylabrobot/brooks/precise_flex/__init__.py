@@ -23,10 +23,11 @@ Everything here is PreciseFlex-specific, including the TCS controller protocol (
 Guidance/TCS controller, so they live with it. A future, genuinely different Brooks device family
 would get its own sibling package under ``brooks/``, and anything shared would be lifted up then.
 
-Re-exports the public classes, so ``from pylabrobot.brooks.precise_flex import PreciseFlexDriver``
+Re-exports the public classes, so ``from pylabrobot.brooks.precise_flex import PreciseFlex400``
 works.
 """
 
+from pylabrobot.brooks.precise_flex.device import PreciseFlex400, PreciseFlexDevice
 from pylabrobot.brooks.precise_flex.driver.configuration import (
   Axis,
   PreciseFlexConfiguration,
@@ -60,6 +61,8 @@ __all__ = [
   "MotionProfile",
   "OutOfRangeOfMotionError",
   "PreciseFlex",
+  "PreciseFlex400",
+  "PreciseFlexDevice",
   "PreciseFlexDriver",
   "PreciseFlexArm",
   "PreciseFlexCartesianPose",

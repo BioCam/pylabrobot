@@ -13,6 +13,8 @@ PreciseFlex
   :nosignatures:
   :recursive:
 
+    PreciseFlexDevice
+    PreciseFlex400
     PreciseFlexDriver
     PreciseFlexArm
     PreciseFlexGripper
