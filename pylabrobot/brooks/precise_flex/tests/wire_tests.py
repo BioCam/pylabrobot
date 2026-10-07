@@ -1851,6 +1851,14 @@ class TestRefusals(unittest.IsolatedAsyncioTestCase):
       await arm.arm.start_zero_torque(0)
     self.assertEqual(fake.sent, [])
 
+  async def test_a_parameter_addressed_in_part_is_refused(self):
+    # The controller's `pc` takes 2 or 5 arguments; a unit alone would be written to another one.
+    fake = _FakeController()
+    arm = _make_arm(fake)
+    with self.assertRaisesRegex(ValueError, "together or not at all"):
+      await arm.set_parameter(16050, 5, unit_number=1)
+    self.assertEqual(fake.sent, [])
+
 
 _DEPRECATED_KEYWORDS: List[
   Tuple[str, Callable[[PreciseFlexDriver], Awaitable[Any]], Callable[..., Any]]

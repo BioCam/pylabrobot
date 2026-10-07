@@ -673,7 +673,7 @@ class PreciseFlexVision:
   _LIGHT_TOOL = "led"
   _LIGHT_PROCESS = "LightControl"
 
-  @requires_vision_tool_type(_LIGHT_PROCESS)
+  @requires_vision_tool_type("LightControl")
   async def start_led(
     self,
     camera: Union[Literal["front", "bottom"], int] = "front",

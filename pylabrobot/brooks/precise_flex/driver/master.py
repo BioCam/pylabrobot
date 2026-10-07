@@ -881,11 +881,18 @@ class PreciseFlexDriver:
       sub_unit: Sub-unit, usually 0.
       array_index: Array index.
 
+    Raises:
+      ValueError: If only some of `unit_number`, `sub_unit` and `array_index` are given; ``pc``
+        takes all three or none.
+
     Note:
       Updated values are not saved in flash unless a save-to-flash operation
       is performed (see DataID 901).
     """
-    if unit_number is not None and sub_unit is not None and array_index is not None:
+    given = [argument is not None for argument in (unit_number, sub_unit, array_index)]
+    if any(given) and not all(given):
+      raise ValueError("unit_number, sub_unit and array_index are given together or not at all")
+    if all(given):
       if isinstance(value, str):
         await self.send_command(f'pc {data_id} {unit_number} {sub_unit} {array_index} "{value}"')
       else:
