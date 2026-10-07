@@ -260,9 +260,6 @@ class PreciseFlexVision:
   def _camera_index(camera: Union[Literal["front", "bottom"], int]) -> int:
     """Resolve a gripper-camera selector to its engine camera number: ``front``->1, ``bottom``->2.
 
-    Shared by every camera-addressed method (image capture, acquire settings, lighting) so the
-    ``front``/``bottom`` alias resolves the same way everywhere.
-
     Args:
       camera: the gripper camera - ``"front"``/``1`` or ``"bottom"``/``2``.
 

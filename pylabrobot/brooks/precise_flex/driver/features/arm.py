@@ -712,9 +712,6 @@ class PreciseFlexArm:
       straight_mode: The path type to use.
       True = follow a straight-line path
       False = follow a joint-based path (robot axes move in coordinated manner)
-
-    Raises:
-      ValueError: If straight_mode is not True or False.
     """
     straight_int = 1 if straight_mode else 0
     await self._driver.send_command(f"Straight {profile_index} {straight_int}")

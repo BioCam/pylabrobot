@@ -672,9 +672,10 @@ class PreciseFlexDriver:
     """Set the response mode.
 
     Args:
-      mode: Response mode to set.
-      0 = Select PC mode
-      1 = Select verbose mode
+      mode: ``"pc"`` or ``"verbose"``; sent as 0 or 1.
+
+    Raises:
+      ValueError: If ``mode`` is neither.
 
     Note:
       When using serial communications, the mode change does not take effect
