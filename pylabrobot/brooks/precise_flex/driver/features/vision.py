@@ -190,14 +190,6 @@ class VisionConfiguration:
   vision_tools: Dict[str, VisionToolInfo] = field(default_factory=dict)
   cameras: Dict[int, CameraInfo] = field(default_factory=dict)
 
-  def has_vision_tool(self, name: str) -> bool:
-    """Whether a tool instance is present in the active project.
-
-    Args:
-      name: the tool instance name to look for (e.g. ``acq1``, ``led``).
-    """
-    return name in self.vision_tools
-
   def has_vision_tool_type(self, tool_type: str) -> bool:
     """Whether the engine can instantiate a tool type (it is in the fixed palette).
 
@@ -205,22 +197,6 @@ class VisionConfiguration:
       tool_type: the compiled tool-type name to look for (e.g. ``Acquire``).
     """
     return tool_type in self.vision_tool_types
-
-  def to_dict(self) -> Dict[str, object]:
-    """Return a plain-dict snapshot for recording/serialising the discovered configuration."""
-    return {
-      "discovered": self.discovered,
-      "vision_version": self.vision_version,
-      "licensed": self.licensed,
-      "vision_tool_types": list(self.vision_tool_types),
-      "projects": list(self.projects),
-      "active_project": self.active_project,
-      "processes": list(self.processes),
-      "vision_tools": {
-        n: {"type": t.type, "properties": list(t.properties)} for n, t in self.vision_tools.items()
-      },
-      "cameras": {cam: vars(info) for cam, info in self.cameras.items()},
-    }
 
 
 F = TypeVar("F", bound=Callable[..., Awaitable[object]])
@@ -264,8 +240,7 @@ class PreciseFlexVision:
   Reached as `driver.vision`, built at setup only when the controller has the IntelliGuide module,
   so its existence is the capability gate (no per-method guards). The wire primitives translate GPL
   vision commands over the driver's transport; the orchestrations compose them. Only
-  ``locate_target`` moves the arm. ``available`` caches the project enumeration when present (else
-  ``None``).
+  ``locate_target`` moves the arm.
 
   What the engine, the software on the vision server, holds::
 
@@ -277,15 +252,8 @@ class PreciseFlexVision:
        └─ Tools                 instances of the tool types
   """
 
-  def __init__(
-    self,
-    driver: "PreciseFlexDriver",
-    available: Optional[Dict[str, List[str]]] = None,
-    vision_host: Optional[str] = None,
-  ):
+  def __init__(self, driver: "PreciseFlexDriver"):
     self.driver = driver
-    self.available = available
-    self._vision_host = vision_host
     self.configuration = VisionConfiguration()  # populated by discover_configuration() at setup
 
   @staticmethod

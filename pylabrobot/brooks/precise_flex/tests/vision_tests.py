@@ -519,7 +519,7 @@ class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
     self.assertIs(config, vision.configuration)
     self.assertTrue(config.discovered)
     self.assertEqual(config.vision_version, "5.3.3.0")
-    self.assertTrue(config.has_vision_tool("aruco1"))
+    self.assertIn("aruco1", config.vision_tools)
     self.assertEqual(config.vision_tools["aruco1"].type, "FiducialLocator")
     self.assertEqual(config.vision_tools["acq1"].properties, ["brightness", "hue"])
     self.assertTrue(config.has_vision_tool_type("BarcodeRead"))
@@ -531,21 +531,6 @@ class TestVisionConfigurationDiscovery(unittest.IsolatedAsyncioTestCase):
     config = await vision.discover_configuration()
     self.assertFalse(config.discovered)
     self.assertEqual(config.vision_tools, {})
-
-  async def test_to_dict_records_snapshot(self):
-    """to_dict serialises the cached configuration for recording."""
-    engine = self._simple_engine()
-    vision = PreciseFlexVision(
-      MagicMock(
-        vision_server_connected=True, request_vision_server_property=engine.request_property
-      )
-    )
-    await vision.discover_configuration()
-    snapshot = vision.configuration.to_dict()
-    self.assertEqual(snapshot["vision_version"], "5.3.3.0")
-    vision_tools = snapshot["vision_tools"]
-    assert isinstance(vision_tools, dict)
-    self.assertEqual(vision_tools["aruco1"]["type"], "FiducialLocator")
 
   def test_confirmed_vision_version_record(self):
     """The confirmed-versions record flags validated vs untested engines."""

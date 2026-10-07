@@ -644,7 +644,7 @@ class PreciseFlexDriver:
           vision_host,
           exc,
         )
-    self.vision = PreciseFlexVision(self, vision_host=vision_host)
+    self.vision = PreciseFlexVision(self)
     await self.vision.setup()  # discovers, caches, and logs the capability summary (best-effort)
 
   @evented_operation(
