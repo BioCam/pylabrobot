@@ -69,34 +69,6 @@ _RECORD_HEADER_LEN = 16
 _MAX_IMAGE_BYTES = 16 * 1024 * 1024
 
 
-def parse_vision_server_reply(reply: str) -> str:
-  """Parse an engine reply line into its success value, raising on a negative (error) reply.
-
-  Mirrors the controller transport (``PreciseFlexDriver._ensure_successful``): a negative reply is a
-  vision error code, surfaced as a ``PreciseFlexError`` whose message looks the code up in the
-  shared error table (the vision ``-40xx`` codes are in it), rather than silently swallowed to
-  ``None``.
-
-  Args:
-    reply: a raw reply line - ``0 <value>`` on success, or a negative code (+ optional message
-      text).
-
-  Returns:
-    The ``<value>`` of a success reply (possibly empty).
-
-  Raises:
-    PreciseFlexError: on a negative (error) reply, carrying the engine's numeric code and message.
-  """
-  code, _, rest = reply.partition(" ")
-  if code == "0":
-    return rest
-  try:
-    replycode = int(code)
-  except ValueError as e:
-    raise PreciseFlexError(-1, f"unparseable engine reply: {reply!r}") from e
-  raise PreciseFlexError(replycode, rest)
-
-
 def _drain_named_record(buf: bytearray) -> Optional[Tuple[str, bytes]]:
   """Pop the next complete ``(name, data)`` result record from the front of ``buf``, consuming it.
 
@@ -294,6 +266,18 @@ class PreciseFlexDriver:
       await self.io.write(command.encode("utf-8") + b"\n")
       return (await self.io.readline()).decode("utf-8").strip()
 
+  async def _locked_vision_server_exchange(self, command: str) -> str:
+    """As `_locked_exchange`, on the vision server's property connection. Its lines end CRLF.
+
+    Raises:
+      RuntimeError: If the vision server is not connected.
+    """
+    if self._vision_server_io is None:
+      raise RuntimeError(_NO_VISION_SERVER)
+    async with self._vision_server_lock:
+      await self._vision_server_io.write(command.encode("utf-8") + b"\r\n")
+      return (await self._vision_server_io.readline()).decode("utf-8", "replace").strip()
+
   def _ensure_successful(self, reply: str) -> str:
     """Acceptance gate for the standard ``<code> <data>`` reply: raise on a non-zero code.
 
@@ -318,7 +302,9 @@ class PreciseFlexDriver:
       raise PreciseFlexError(replycode, data)
     return data
 
-  async def send_command(self, command: str) -> str:
+  async def send_command(
+    self, command: str, *, use_server: Literal["controller", "vision"] = "controller"
+  ) -> str:
     """Send a command and return the accepted ``<code> <data>`` payload.
 
     Writes the command and reads one reply line (as one locked exchange), then applies the standard
@@ -328,14 +314,31 @@ class PreciseFlexDriver:
 
     The exchange is wrapped in the firmware-command events so a command keeps its enclosing
     operation context.
+
+    Args:
+      command: the command line, without its line ending.
+      use_server: ``"controller"`` (the default), or ``"vision"`` for the vision server's property
+        connection, which answers in the same grammar.
+
+    Raises:
+      RuntimeError: If ``use_server`` is ``"vision"`` and the vision server is not connected.
+      PreciseFlexError: on an empty reply or a non-zero reply code.
     """
+    device = self._controller_reference()
+    if use_server == "controller":
+      exchange = self._locked_exchange
+    elif use_server == "vision":
+      exchange = self._locked_vision_server_exchange
+      device = {**device, "host": self._vision_host, "port": VISION_SERVER_PROPERTY_PORT}
+    else:
+      raise ValueError(f"use_server has to be either `controller` or `vision`, is {use_server}")
     event_data = {
-      "device": self._controller_reference(),
+      "device": device,
       "command": command,
     }
     emit_event("precise_flex.firmware_command.started", **event_data)
     try:
-      result = self._ensure_successful(await self._locked_exchange(command))
+      result = self._ensure_successful(await exchange(command))
     except BaseException as error:
       emit_event(
         "precise_flex.firmware_command.failed",
@@ -385,29 +388,6 @@ class PreciseFlexDriver:
       await self._vision_server_io.stop()
     self._vision_server_io = self._vision_image_io = None
 
-  async def send_command_to_vision_server(self, command: str) -> str:
-    """Write one engine command line and return its success value, raising on an error reply.
-
-    The engine's text protocol, beside ``send_command`` for the controller. The write and its reply
-    are one lock-held exchange, so concurrent callers cannot read each other's reply.
-
-    Args:
-      command: the full command line to send (the trailing CRLF is added here).
-
-    Returns:
-      The success value of the reply (possibly empty).
-
-    Raises:
-      RuntimeError: If the engine is not connected.
-      PreciseFlexError: on a negative (error) reply.
-    """
-    if self._vision_server_io is None:
-      raise RuntimeError(_NO_VISION_SERVER)
-    async with self._vision_server_lock:
-      await self._vision_server_io.write(command.encode("utf-8") + b"\r\n")
-      reply = (await self._vision_server_io.readline()).decode("utf-8", "replace").strip()
-    return parse_vision_server_reply(reply)
-
   async def request_vision_server_property(self, name: str) -> str:
     """Read a named engine parameter (``property get <name>``); raises on an error reply.
 
@@ -418,7 +398,7 @@ class PreciseFlexDriver:
     Returns:
       The parameter value (possibly empty).
     """
-    return await self.send_command_to_vision_server(f"property get {name}")
+    return await self.send_command(f"property get {name}", use_server="vision")
 
   async def _set_vision_server_property(self, name: str, value: object) -> str:
     """Write a named engine parameter (``property set <name> <value>``); raises on an error reply.
@@ -434,7 +414,7 @@ class PreciseFlexDriver:
     Returns:
       The reply value (possibly empty).
     """
-    return await self.send_command_to_vision_server(f"property set {name} {value}")
+    return await self.send_command(f"property set {name} {value}", use_server="vision")
 
   async def read_next_vision_server_record(
     self, timeout: Optional[float] = None

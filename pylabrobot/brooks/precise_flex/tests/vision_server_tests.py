@@ -8,10 +8,8 @@ from pylabrobot.brooks.precise_flex import PreciseFlexDriver
 from pylabrobot.brooks.precise_flex.driver.errors import PreciseFlexError, PreciseFlexVisionError
 from pylabrobot.brooks.precise_flex.driver.features import vision
 from pylabrobot.brooks.precise_flex.driver.features.vision import decode_jpeg
-from pylabrobot.brooks.precise_flex.driver.master import (
-  _drain_named_record,
-  parse_vision_server_reply,
-)
+from pylabrobot.brooks.precise_flex.driver.master import _drain_named_record
+from pylabrobot.events import EventBus, use_event_bus
 
 
 def _arm() -> PreciseFlexDriver:
@@ -61,7 +59,8 @@ class TestEnginePropertyPrimitives(unittest.IsolatedAsyncioTestCase):
     self.assertIsInstance(ctx.exception, PreciseFlexError)  # still caught by the base type
 
   async def test_set_property_builds_set(self):
-    await self.engine._set_vision_server_property("system.runtool", "acq1")
+    # A bare `0` is success with an empty value.
+    self.assertEqual(await self.engine._set_vision_server_property("system.runtool", "acq1"), "")
     self.prop.write.assert_awaited_once_with(b"property set system.runtool acq1\r\n")
 
   async def test_set_property_dot_joined_tool_property_writes_one_token_key(self):
@@ -71,13 +70,6 @@ class TestEnginePropertyPrimitives(unittest.IsolatedAsyncioTestCase):
 
 
 class TestEngineFraming(unittest.TestCase):
-  def test_parse_vision_server_reply_success_and_error(self):
-    self.assertEqual(parse_vision_server_reply("0 5.3.3.0"), "5.3.3.0")
-    self.assertEqual(parse_vision_server_reply("0"), "")  # success with empty value
-    with self.assertRaises(PreciseFlexError) as ctx:  # negative reply is a coded error, raised
-      parse_vision_server_reply("-4017 some error")
-    self.assertEqual(ctx.exception.replycode, -4017)
-
   def test_drain_named_record_extracts_and_consumes_complete_record(self):
     jpeg = b"\xff\xd8\xff\xe0abc\xff\xd9"
     buf = bytearray(_framed(1, jpeg))
@@ -140,13 +132,31 @@ class TestDriverVisionServer(unittest.IsolatedAsyncioTestCase):
     self.driver._vision_image_io = self.img  # type: ignore[assignment]
 
   async def test_send_command_writes_line_and_parses_value(self):
-    """send_command_to_vision_server writes the command line (CRLF) and returns the parsed success value."""
+    """To the vision server, `send_command` ends the line CRLF and returns the success value."""
     self.prop.readline = AsyncMock(return_value=b"0 5.3.3.0\r\n")
     self.assertEqual(
-      await self.driver.send_command_to_vision_server("property get system.engineversion"),
+      await self.driver.send_command("property get system.engineversion", use_server="vision"),
       "5.3.3.0",
     )
     self.prop.write.assert_awaited_once_with(b"property get system.engineversion\r\n")
+
+  async def test_a_vision_server_command_emits_the_firmware_command_events(self):
+    self.driver._vision_host = "192.168.0.200"
+    events: list = []
+    event_bus = EventBus()
+    event_bus.subscribe(events.append)
+    with use_event_bus(event_bus):
+      await self.driver.send_command("property get system.engineversion", use_server="vision")
+    self.assertEqual(
+      [event.name for event in events],
+      ["precise_flex.firmware_command.started", "precise_flex.firmware_command.completed"],
+    )
+    self.assertEqual(events[0].data["device"]["host"], "192.168.0.200")
+    self.assertEqual(events[0].data["device"]["port"], 1450)
+
+  async def test_a_server_that_is_neither_is_refused(self):
+    with self.assertRaisesRegex(ValueError, "use_server"):
+      await self.driver.send_command("nop", use_server="engine")  # type: ignore[arg-type]
 
   async def test_concurrent_commands_do_not_interleave(self):
     """Two concurrent commands each keep their write paired with their own reply."""
@@ -163,7 +173,8 @@ class TestDriverVisionServer(unittest.IsolatedAsyncioTestCase):
 
     self.prop.write, self.prop.readline = write, readline
     await asyncio.gather(
-      self.driver.send_command_to_vision_server("A"), self.driver.send_command_to_vision_server("B")
+      self.driver.send_command("A", use_server="vision"),
+      self.driver.send_command("B", use_server="vision"),
     )
     self.assertEqual(events, ["w", "r", "w", "r"])
 
