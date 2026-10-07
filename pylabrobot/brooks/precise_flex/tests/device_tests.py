@@ -389,6 +389,29 @@ class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
           )
     self.assertEqual([call.args[0] for call in sent.call_args_list], ["wherej"])
 
+  async def jaws_to(self, width: float, stood: str) -> List[str]:
+    """What is sent for a jaw move to `width`, from where `stood` has the arm."""
+    self.driver.gripper.configuration = self.driver.configuration.gripper
+    sent = AsyncMock(return_value=stood)
+    with patch.object(self.driver, "send_command", sent):
+      with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
+        try:
+          await self.driver.gripper.move_to_jaw_position(width)
+        finally:
+          self.sent = [call.args[0] for call in sent.call_args_list]
+    return self.sent
+
+  async def test_jaws_opened_against_the_column_are_never_sent(self):
+    # Clear of the column by 5.8 mm with the jaws at 70.7; opened, a finger would reach it.
+    with self.assertRaisesRegex(ValueError, "pf400_gripper_finger_right would stand"):
+      await self.jaws_to(134.0, stood="301.1 92.0 179.48 10.0 70.7")
+    self.assertEqual(self.sent, ["wherej"])
+
+  async def test_jaws_closed_next_to_the_column_are_sent(self):
+    # They stand nearer than is kept clear, and closing takes them away from it.
+    sent = await self.jaws_to(70.7, stood="301.1 92.0 179.48 10.0 134.0")
+    self.assertIn("gripper 2", sent)
+
 
 class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
   """The target is written to the model as a move is sent; the arm is read once it has stopped."""

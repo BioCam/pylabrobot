@@ -198,10 +198,6 @@ class PreciseFlexGripper:
 
   # -- jaw motion: closing senses force unless asked not to ----------------------------------------
 
-  async def _closes(self, units: float) -> bool:
-    """Whether driving the jaws to `units` closes them, against the live gripper axis."""
-    return units < (await self._driver.arm.request_joint_state())[Axis.GRIPPER]
-
   async def _unchecked_fw_move_jaws(self, units: float, force_sensing: bool) -> None:
     """Drive the jaws to ``units``, closing under force control or opening. Nothing is guarded."""
     if force_sensing:
@@ -217,12 +213,19 @@ class PreciseFlexGripper:
     Args:
       units: the gripper axis position, in the controller's units.
       force_sensing: None senses force when the move closes the jaws and not when it opens them.
+
+    Raises:
+      ValueError: If opening the jaws would carry one against the column, on a modelled arm.
     """
     units = self._hold_within_gripper_limits(units)
-    if force_sensing is None:
-      force_sensing = await self._closes(units)  # reads the joint state once the arm has stopped
+    arm = self._driver.arm
+    if force_sensing is None or self.resource is not None:
+      current = await arm.request_joint_state()  # once the arm has stopped
+      if force_sensing is None:
+        force_sensing = units < current[Axis.GRIPPER]
+      arm._check_path_reachable(current, {**current, Axis.GRIPPER: units})
     else:
-      await self._driver.arm._wait_for_eom()
+      await arm._wait_for_eom()
     try:
       # Where the jaws are going, written as it is sent. The read below has the last word.
       self.update_width(self._firmware_units_to_mm(units))
