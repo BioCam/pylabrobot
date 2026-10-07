@@ -697,15 +697,22 @@ class TestEveryMotionPathIsCheckedAndKeepsTheModelInStep(unittest.IsolatedAsynci
     return [call.args[0].split()[0] for call in sent.call_args_list if call.args[0] != "wherej"]
 
   async def test_a_pick_at_the_column_is_refused_before_the_station_is_written(self):
+    arm, pick = self.driver.arm, self.driver.arm._unchecked_fw_pick_plate
     with self.assertRaisesRegex(ValueError, "would stand"):
-      await self.sent_by(lambda: self.driver.arm._pick_plate_j(dict(self.AT_THE_COLUMN)))
+      await self.sent_by(lambda: arm._guarded_plate_j(dict(self.AT_THE_COLUMN), pick))
 
-  async def test_a_place_at_the_column_is_refused(self):
+  async def test_a_drop_at_the_column_is_refused(self):
+    arm = self.driver.arm
     with self.assertRaisesRegex(ValueError, "would stand"):
-      await self.sent_by(lambda: self.driver.arm._place_plate_j(dict(self.AT_THE_COLUMN)))
+      await self.sent_by(
+        lambda: arm._guarded_plate_j(dict(self.AT_THE_COLUMN), arm._unchecked_fw_place_plate)
+      )
 
   async def test_a_pick_clear_of_the_column_is_sent_and_the_model_reads_where_it_stopped(self):
-    sent = await self.sent_by(lambda: self.driver.arm._pick_plate_j(dict(self.CLEAR)))
+    arm = self.driver.arm
+    sent = await self.sent_by(
+      lambda: arm._guarded_plate_j(dict(self.CLEAR), arm._unchecked_fw_pick_plate)
+    )
     self.assertEqual(sent, ["locAngles", "StationType", "pickplate"])
     # The stand-in controller still answers the homed pose, so that is where the model ends.
     self.assertAlmostEqual(self.first.rotation.z, 92.0)

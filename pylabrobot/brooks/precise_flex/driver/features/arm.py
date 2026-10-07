@@ -13,6 +13,7 @@ import time
 from typing import (
   TYPE_CHECKING,
   AsyncIterator,
+  Awaitable,
   Callable,
   ClassVar,
   Dict,
@@ -1887,67 +1888,60 @@ class PreciseFlexArm:
       )
     await self._unchecked_fw_change_elbow_orientation_by_algorithm(grip_mode)
 
-  # -- pick and place ------------------------------------------------------------------------------
+  # -- pick up and drop ----------------------------------------------------------------------------
 
   async def _unchecked_fw_set_grip_detail(self):
-    """Configure a default vertical station type for pick/place operations."""
+    """Configure a default vertical station type for pick up and drop operations."""
     await self._driver.send_command(f"StationType {self.station_index} 1 0 100 0 10")
 
-  async def _pick_plate_j(self, joint_position: JointState):
-    """Pick a plate from the specified position using joint coordinates.
+  async def _unchecked_fw_pick_plate(self) -> None:
+    """Send ``pickplate`` for the station. Nothing is guarded.
 
-    The controller plans its own approach. The way is checked as the straight joint move to the
-    station, which is all the driver knows of it.
+    Raises:
+      PreciseFlexError: If the controller answers that the gripper closed on nothing.
     """
-    current = await self.request_joint_state()
-    station = {**current, **joint_position}
-    self._check_path_reachable(current, station)
-    await self._unchecked_fw_set_joint_angles(self.station_index, joint_position)
-    await self._unchecked_fw_set_grip_detail()
     horizontal_compliance_int = 1 if self.horizontal_compliance else 0
-    try:
-      # Where the arm is going, written as it is sent. The read below has the last word.
-      self.update_joint_state(station)
-      ret_code = await self._driver.send_command(
-        f"pickplate {self.station_index} {horizontal_compliance_int} "
-        f"{self.horizontal_compliance_torque}"
-      )
-    finally:
-      await self._request_joint_state_after_move()
+    ret_code = await self._driver.send_command(
+      f"pickplate {self.station_index} {horizontal_compliance_int} "
+      f"{self.horizontal_compliance_torque}"
+    )
     if ret_code == "0":
       raise PreciseFlexError(-1, "the force-controlled gripper detected no plate present.")
 
-  async def _place_plate_j(self, joint_position: JointState):
-    """Place a plate at the specified position using joint coordinates.
+  async def _unchecked_fw_place_plate(self) -> None:
+    """Send ``placeplate`` for the station. Nothing is guarded."""
+    horizontal_compliance_int = 1 if self.horizontal_compliance else 0
+    await self._driver.send_command(
+      f"placeplate {self.station_index} {horizontal_compliance_int} "
+      f"{self.horizontal_compliance_torque}"
+    )
+
+  async def _guarded_plate_j(
+    self, joint_state: JointState, unchecked_fw_plate: Callable[[], Awaitable[None]]
+  ) -> None:
+    """Write the station and run the controller's pick or place at it, checked against the column.
 
     The controller plans its own approach. The way is checked as the straight joint move to the
     station, which is all the driver knows of it.
+
+    Args:
+      joint_state: where the station is.
+      unchecked_fw_plate: `_unchecked_fw_pick_plate` or `_unchecked_fw_place_plate`.
+
+    Raises:
+      ValueError: If the way to the station would carry the gripper against the column.
     """
     current = await self.request_joint_state()
-    station = {**current, **joint_position}
+    station = {**current, **joint_state}
     self._check_path_reachable(current, station)
-    await self._unchecked_fw_set_joint_angles(self.station_index, joint_position)
+    await self._unchecked_fw_set_joint_angles(self.station_index, joint_state)
     await self._unchecked_fw_set_grip_detail()
-    horizontal_compliance_int = 1 if self.horizontal_compliance else 0
     try:
       # Where the arm is going, written as it is sent. The read below has the last word.
       self.update_joint_state(station)
-      await self._driver.send_command(
-        f"placeplate {self.station_index} {horizontal_compliance_int} "
-        f"{self.horizontal_compliance_torque}"
-      )
+      await unchecked_fw_plate()
     finally:
       await self._request_joint_state_after_move()
-
-  async def _pick_plate_c(self, cartesian_position: PreciseFlexCartesianPose):
-    """Pick a plate at a Cartesian position via IK + joint-space pickplate."""
-    joints = await self._cart_to_joints(cartesian_position)
-    await self._pick_plate_j(joints)
-
-  async def _place_plate_c(self, cartesian_position: PreciseFlexCartesianPose):
-    """Place a plate at a Cartesian position via IK + joint-space placeplate."""
-    joints = await self._cart_to_joints(cartesian_position)
-    await self._place_plate_j(joints)
 
   @evented_operation(
     "precise_flex.pick_up_at_joint_position",
@@ -1996,7 +1990,7 @@ class PreciseFlexArm:
       finger_speed_percent=finger_speed_percent,
       grasp_force=grasp_force,
     )
-    await self._pick_plate_j(joint_state)
+    await self._guarded_plate_j(joint_state, self._unchecked_fw_pick_plate)
 
   @evented_operation(
     "precise_flex.drop_at_joint_position",
@@ -2023,7 +2017,7 @@ class PreciseFlexArm:
       joint_state,
       resource_width,
     )
-    await self._place_plate_j(joint_state)
+    await self._guarded_plate_j(joint_state, self._unchecked_fw_place_plate)
 
   @evented_operation(
     "precise_flex.pick_up_at_location",
@@ -2102,7 +2096,8 @@ class PreciseFlexArm:
       finger_speed_percent=finger_speed_percent,
       grasp_force=grasp_force,
     )
-    await self._pick_plate_c(cartesian_position=coords)
+    joint_state = await self._cart_to_joints(coords)
+    await self._guarded_plate_j(joint_state, self._unchecked_fw_pick_plate)
 
   @evented_operation(
     "precise_flex.drop_at_location",
@@ -2159,7 +2154,8 @@ class PreciseFlexArm:
       orientation=orientation,
       wrist=wrist,
     )
-    await self._place_plate_c(cartesian_position=coords)
+    joint_state = await self._cart_to_joints(coords)
+    await self._guarded_plate_j(joint_state, self._unchecked_fw_place_plate)
 
   # -- parking -------------------------------------------------------------------------------------
 
