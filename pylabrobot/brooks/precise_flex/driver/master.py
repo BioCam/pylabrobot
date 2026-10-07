@@ -242,25 +242,12 @@ class PreciseFlexDriver:
     }
 
   async def _locked_exchange(self, command: str) -> str:
-    """Write one command and read its single reply line as one atomic, lock-held exchange.
+    """Write one command and read its one reply line, with the lock held.
 
-    Why the lock: the controller exposes a single socket (port 10100 refuses a second connection),
-    so every caller shares it - arm motion and the controller-relayed vision commands
-    (``VToolProperty``, ``Vprocess``, ``StereoLocate``) alike. A request and its reply are
-    correlated only by order on that socket, so if two coroutines' write/read pairs interleave, one
-    reads the other's reply line. This lock makes each write-and-its-reply atomic, so they cannot
-    interleave.
-
-    No caller is concurrent today (a single async flow drives the arm), so the lock is currently
-    uncontended - it is a forward guard, kept because the failure it prevents is silent
-    reply-misattribution the moment anyone runs e.g. ``asyncio.gather(arm_op, vision_relay_op)``,
-    and an uncontended ``asyncio.Lock`` is near-free. It is held per exchange, not across a whole
-    move-wait, so commands issued while a move polls for end-of-motion still slot in between polls
-    (the move-wait's emergency halt deliberately bypasses this lock - see ``_wait_for_eom``).
-
-    This is the single choke point both reply grammars share (``send_command`` and the bare
-    ``VToolProperty`` read). The trailing newline is added here; the reply line is decoded and
-    stripped.
+    The controller takes one connection (port 10100 refuses a second), and a reply is matched to its
+    command only by order, so two interleaved exchanges would read each other's replies. The lock is
+    held per exchange, not across a move's wait; the interrupt halt bypasses it (see
+    ``_wait_for_eom``). The newline is added here; the reply is decoded and stripped.
     """
     async with self._io_lock:
       await self.io.write(command.encode("utf-8") + b"\n")
@@ -279,17 +266,13 @@ class PreciseFlexDriver:
       return (await self._vision_server_io.readline()).decode("utf-8", "replace").strip()
 
   def _ensure_successful(self, reply: str) -> str:
-    """Acceptance gate for the standard ``<code> <data>`` reply: raise on a non-zero code.
-
-    Verifies the controller accepted the command - the leading integer reply code is ``0`` - and
-    strips it, returning the rest of the line as the data payload. This is only the success check;
-    interpreting the payload is a separate concern left to the caller.
+    """Return the data of a ``<code> <data>`` reply, raising unless the code is 0.
 
     Args:
       reply: one decoded, stripped reply line.
 
     Returns:
-      The data payload (the line with its leading reply code removed).
+      The line with its leading reply code removed.
 
     Raises:
       PreciseFlexError: on an empty reply or a non-zero reply code.
@@ -401,11 +384,10 @@ class PreciseFlexDriver:
     return await self.send_command(f"property get {name}", use_server="vision")
 
   async def _set_vision_server_property(self, name: str, value: object) -> str:
-    """Write a named engine parameter (``property set <name> <value>``); raises on an error reply.
+    """Write a named engine parameter (``property set <name> <value>``).
 
-    Private: a write changes device state, so it is reached through the vision capability's vetted
-    orchestrations. The same namespace carries action triggers (``system.runtool``,
-    ``system.cameraacquire``).
+    Private: a write changes device state. The same namespace carries action triggers
+    (``system.runtool``, ``system.cameraacquire``).
 
     Args:
       name: the engine parameter name (e.g. ``acq1.exposure``, ``system.runtool``).
@@ -893,23 +875,16 @@ class PreciseFlexDriver:
     value,
     robot_number: int = 1,
   ) -> None:
-    """Change one joint's element of a per-axis parameter array (``pc``).
-
-    Per-axis DataIDs (motor current limits, hard-stop homing envelope, joint limits)
-    hold one value per joint; this writes a single joint's element and leaves the rest
-    untouched. ``axis`` is the controller's 1-based array index (``Axis.GRIPPER`` -> 5),
-    cast to int at the wire boundary; reads of the same DataID come back in this order
-    (see ``_parse_per_axis``).
+    """Change one joint's element of a per-axis parameter array (``pc``); the rest are untouched.
 
     Args:
       data_id: the per-axis DataID to change.
-      axis: which joint's element to write.
+      axis: which joint's element to write; sent as the controller's 1-based index (gripper is 5).
       value: the new value for that element.
       robot_number: unit number, the robot (1 - N_ROB).
 
     Note:
-      Volatile until a save-to-flash (DataID 901); a power cycle otherwise restores the
-      flashed value.
+      Volatile until a save-to-flash (DataID 901); a power cycle restores the flashed value.
     """
     await self.set_parameter(
       data_id, value, unit_number=robot_number, sub_unit=0, array_index=int(axis)

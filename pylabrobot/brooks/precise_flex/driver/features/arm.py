@@ -249,24 +249,16 @@ class PreciseFlexArm:
   async def _wait_for_eom(
     self, poll_interval: float = 0.05, settle: float = 0.02, timeout: float = 60.0
   ) -> None:
-    """Wait (non-blocking) until the arm has stopped moving, keeping the connection responsive.
+    """Wait until the arm has stopped moving, leaving the connection free.
 
-    Polls the live joint position (``wherej``) and returns once three samples in a row agree (every
-    axis moving less than ``settle``) - i.e. end of motion. Two are not enough: right after a
-    ``moveJ`` is accepted the arm creeps under ``settle`` for about 0.1 s (seen in the IO logs).
-    It returns promptly when the arm is already stationary, including when it was stopped short of
-    its last commanded target (after a halt/interrupt or a hand-move), so it never hangs waiting to
-    reach a target that will not be reached.
+    Polls ``wherej`` and returns once three samples in a row agree within ``settle``. Two are not
+    enough: after a ``moveJ`` is accepted the arm creeps under ``settle`` for about 0.1 s (IO logs).
+    An arm already stopped, also one stopped short of its target, returns at once.
 
-    This deliberately avoids the firmware ``waitForEom``: that command parks the controller's single
-    command interpreter and makes it ignore everything else on the connection - including ``halt`` -
-    until the move ends (hardware-verified). Polling instead leaves the connection free between
-    samples, so a user interrupt can stop the move mid-flight via ``halt`` and other controller
-    commands (status, vision, barcode) can run during motion.
-
-    That free connection is also the hazard, so every command that starts motion waits here first:
-    the gripper and the rail directly, joint and Cartesian moves through ``request_joint_state``.
-    ``moveJ`` returns once accepted, so without it a grip after an approach closes mid-descent.
+    The firmware's ``waitForEom`` is not used: it makes the controller ignore everything else on the
+    connection, ``halt`` included, until the move ends (hardware-verified). Every command that
+    starts motion waits here first, since ``moveJ`` returns once accepted: without it a grip after
+    an approach closes mid-descent.
 
     Raises:
       TimeoutError: if the arm never settles within ``timeout`` seconds.
@@ -1049,12 +1041,10 @@ class PreciseFlexArm:
   async def _set_tool_transformation_values(
     self, x: float, y: float, z: float, yaw: float, pitch: float, roll: float
   ) -> None:
-    """Set the robot tool transformation (private).
+    """Set the tool transformation. The robot must be attached; motion in progress pauses.
 
-    Private because the client kinematics read the tool once at setup into the frozen configuration;
-    changing it live desyncs `request_gripper_pose` from the controller's `wherec` until the
-    configuration is rebuilt. The robot must be attached to set the tool, and setting it pauses any
-    robot motion in progress.
+    Private: the kinematics read the tool once at setup, so changing it leaves
+    `request_gripper_pose` out of step with the controller until the configuration is read again.
 
     Args:
       x: Tool X coordinate.
@@ -1183,15 +1173,12 @@ class PreciseFlexArm:
   async def _handle_out_of_range_axes(self) -> None:
     """Warn about every out-of-range axis, then correct what is recoverable, or raise.
 
-    An axis out of range (its current position outside its soft limit) makes the arm unusable - the
-    controller rejects every commanded move with -1012. Setup logs the full set first (either way),
-    then, with ``recover_out_of_range`` on (the default), drives each recoverable offender back into
-    range. If recovery is off or leaves any axis out, setup raises with explicit recovery steps
-    rather than leaving a dead arm.
+    While an axis is outside its soft limit the controller rejects every move with -1012. With
+    ``recover_out_of_range`` on (the default) each recoverable axis is driven back; if recovery is
+    off or leaves an axis out, this raises with the steps to recover by hand.
 
-    No-op until the robot is homed: an unhomed incremental axis reads a meaningless ~0
-    (so the check would false-positive), and the controller blocks the recovery move with
-    -1021 anyway. Homing is the prerequisite, so the check waits for it.
+    Does nothing until the robot is homed: an unhomed incremental axis reads about 0, and the
+    controller blocks the recovery move with -1021.
     """
     if not await self._driver._is_robot_homed():
       logger.warning(
@@ -1222,19 +1209,14 @@ class PreciseFlexArm:
       )
 
   def _assert_within_soft_limits(self, current: JointState, target: JointState) -> None:
-    """Guard a commanded move. The controller rejects every move with -1012 while an axis is out of
-    range - whether that is the *current* pose or the commanded *target*. They are distinct failures
-    with distinct types:
+    """Raise if the current pose or the target is outside the soft limits; -1012 on the controller.
 
-    - an axis whose *current* position is out of range is a recoverable arm *state* (e.g. it lost
-      power and drifted past its limit) -> ``OutOfRangeOfMotionError``, which the caller can recover
-      and retry. Homing will not fix it (the rotary axes are absolute); call
-      ``recover_axes_within_limits()`` to drive it back into range.
-    - an axis whose *target* is out of range is a bad request (freedrive can hand-move an axis past
-      a soft limit, so a taught pose can land outside the commandable envelope) -> ``ValueError``;
-      re-teach the pose.
+    Does nothing until the configuration is discovered.
 
-    No-op until the configuration is discovered.
+    Raises:
+      OutOfRangeOfMotionError: If an axis stands out of range now. Homing does not fix it (the
+        rotary axes are absolute); ``recover_axes_within_limits()`` does.
+      ValueError: If the target is out of range, as a pose taught in freedrive can be; re-teach it.
     """
     out_of_range = self._axes_outside_soft_limits(current)
     if out_of_range:
@@ -1448,23 +1430,15 @@ class PreciseFlexArm:
     build_target: Callable[[JointState], JointState],
     close_gripper_without_force_sensing: bool = False,
   ) -> None:
-    """The single guarded path to the raw ``_unchecked_fw_move_j`` primitive: read the live pose,
-    check it and the target against the soft limits, check the way between them against the
-    column, send the move, read where the arm stopped, and on out-of-range recover once and retry.
-    Both ``move_to_joint_state`` (a partial spec merged over the live pose) and
-    ``move_to_location`` (a full pose from IK) funnel through here, so no commanded move reaches
-    ``_unchecked_fw_move_j`` unchecked.
+    """The one path to ``_unchecked_fw_move_j``: read, check, send, read back.
 
-    ``build_target`` maps the freshly-read pose to the full target joints - the only part that
-    differs between the two callers. It re-runs each attempt, so a recovery move that shifts an
-    unspecified axis is reflected in the next merge. A target that closes the gripper is refused
-    unless ``close_gripper_without_force_sensing`` is set.
+    Reads the live pose, checks it and the target against the soft limits and the way between them
+    against the column, sends the move, and reads where the arm stopped. On -1012 with
+    ``recover_out_of_range`` set it recovers the axes once and tries again.
 
-    When an axis is out of range the controller blocks the move (-1012). With
-    ``recover_out_of_range`` set, this drives the offending axes back into range once
-    (``recover_axes_within_limits``) and retries; otherwise the ``OutOfRangeOfMotionError``
-    propagates. Recovery uses ``_unchecked_fw_move_one_axis``, a different primitive, so it cannot
-    recurse here.
+    Args:
+      build_target: maps the pose just read to the full target; run again for the second attempt.
+      close_gripper_without_force_sensing: allow a target that closes the gripper.
     """
 
     async def attempt() -> None:

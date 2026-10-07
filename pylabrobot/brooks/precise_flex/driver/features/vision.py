@@ -289,13 +289,8 @@ class PreciseFlexVision:
   async def request_vision_tool_property(self, tool: str, property_name: str) -> str:
     """Read a PreciseVision tool property over the controller (``VToolProperty <tool> <prop>``).
 
-    Named ``vision_`` because this is the general controller where ``tool`` already means the
-    robot's tool frame. The controller relays the read to the vision engine and replies with the
-    BARE value (no ``<code> <data>`` prefix), so it is read raw; a negative reply is a vision error
-    code and raised. The (tool, property) split is needed because VToolProperty's wire form is two
-    tokens; direct to the engine the same read is
-    ``request_vision_server_property("<tool>.<property>")`` (dotted; an error reply raises there
-    too).
+    The controller relays the read and answers with the bare value, no ``<code> <data>`` prefix.
+    Named ``vision_`` because ``tool`` on the controller already means the robot's tool frame.
 
     Args:
       tool: the vision tool name (e.g. ``led``, ``acq1``, or ``System`` for server properties).
@@ -315,13 +310,8 @@ class PreciseFlexVision:
   async def _set_vision_tool_property(self, tool: str, property_name: str, value: str) -> str:
     """Write a PreciseVision tool property over the controller (``VToolProperty``).
 
-    Private: a write changes device state, so it is reached through this module's vetted
-    orchestrations, not called directly (the ``request_`` read sibling is public). Named ``vision_``
-    because this is the general controller where ``tool`` already means the robot's tool frame. The
-    (tool, property) split is needed because VToolProperty's wire form is two tokens; direct to the
-    engine the same write is ``_set_vision_server_property("<tool>.<property>", value)``. The
-    write only stores the value; run the owning tool/process to apply it. Goes through the normal
-    ``<code> <data>`` reply parser.
+    Private: a write changes device state. It only stores the value; running the owning tool or
+    process applies it.
 
     Args:
       tool: the vision tool name (e.g. ``led``, ``acq1``).
