@@ -408,6 +408,38 @@ class PreciseFlexArm:
       angles_str = f"{joint_position[Axis.RAIL]} {angles_str}"
     await self._driver.send_command(f"locAngles {station_index} {angles_str}")
 
+  def _plan_cartesian_pose(
+    self,
+    pose: PreciseFlexCartesianPose,
+    prev_joints: JointState,
+    prev_pose: PreciseFlexCartesianPose,
+  ) -> Tuple[JointState, PreciseFlexCartesianPose]:
+    """One Cartesian pose as a joint target, from the joints and the pose before it.
+
+    Fields the pose leaves out are taken from the pose before, so IK stays on the same branch. IK
+    solves the arm axes only: the gripper keeps its value, and the rail takes the pose's on an arm
+    with one.
+
+    Returns:
+      The joint target, and the pose with every field filled in.
+    """
+    cart = dataclasses.replace(
+      pose,
+      orientation=prev_pose.orientation if pose.orientation is None else pose.orientation,
+      wrist=prev_pose.wrist if pose.wrist is None else pose.wrist,
+      # PF400 IK expects a shoulder/reference rail position even on rail-less arms.
+      rail_position=prev_pose.rail_position if pose.rail_position is None else pose.rail_position,
+    )
+    ik_joints = _snap_to_current(
+      kinematics.ik(cart, p=self._driver._kinematics_params), prev_joints, cart.wrist
+    )
+    target = dict(prev_joints)
+    for axis in (Axis.BASE, Axis.SHOULDER, Axis.ELBOW, Axis.WRIST):
+      target[axis] = ik_joints[axis]
+    if self._driver._has_rail and cart.rail_position is not None:
+      target[Axis.RAIL] = cart.rail_position
+    return target, cart
+
   async def _cart_to_joints(self, cart: PreciseFlexCartesianPose) -> JointState:
     """Convert a Cartesian location into a full joint dict using our IK.
 
@@ -417,21 +449,7 @@ class PreciseFlexArm:
     callers get a complete joint dict, ready for `_guarded_move_j`.
     """
     joints, current = await self._request_state()
-    cart = dataclasses.replace(
-      cart,
-      orientation=current.orientation if cart.orientation is None else cart.orientation,
-      wrist=current.wrist if cart.wrist is None else cart.wrist,
-      rail_position=current.rail_position if cart.rail_position is None else cart.rail_position,
-    )
-    ik_joints = _snap_to_current(
-      kinematics.ik(cart, p=self._driver._kinematics_params), joints, cart.wrist
-    )
-    # IK only solves the arm axes; gripper and rail keep their current values.
-    for axis in (Axis.BASE, Axis.SHOULDER, Axis.ELBOW, Axis.WRIST):
-      joints[axis] = ik_joints[axis]
-    if cart.rail_position is not None:
-      joints[Axis.RAIL] = cart.rail_position
-    return joints
+    return self._plan_cartesian_pose(cart, joints, current)[0]
 
   # -- speed and motion profiles -------------------------------------------------------------------
 
@@ -1610,26 +1628,7 @@ class PreciseFlexArm:
     prev_joints, prev_pose = await self._request_state()
     targets: List[JointState] = []
     for pose in poses:
-      cart = dataclasses.replace(
-        pose,
-        orientation=prev_pose.orientation if pose.orientation is None else pose.orientation,
-        wrist=prev_pose.wrist if pose.wrist is None else pose.wrist,
-        # PF400 IK expects a shoulder/reference rail position even on rail-less arms.
-        # Mirror _cart_to_joints(): omitted pose fields inherit from the previous pose.
-        rail_position=prev_pose.rail_position if pose.rail_position is None else pose.rail_position,
-      )
-      ik_joints = _snap_to_current(
-        kinematics.ik(cart, p=self._driver._kinematics_params),
-        prev_joints,
-        cart.wrist,
-      )
-      # IK only solves the arm axes; gripper and rail keep the previous values.
-      target = dict(prev_joints)
-      for axis in (Axis.BASE, Axis.SHOULDER, Axis.ELBOW, Axis.WRIST):
-        target[axis] = ik_joints[axis]
-      if self._driver._has_rail and cart.rail_position is not None:
-        target[Axis.RAIL] = cart.rail_position
-
+      target, cart = self._plan_cartesian_pose(pose, prev_joints, prev_pose)
       self._assert_within_soft_limits(prev_joints, target)
       self._check_path_reachable(prev_joints, target)
       targets.append(target)
