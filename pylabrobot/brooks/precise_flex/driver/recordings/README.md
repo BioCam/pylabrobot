@@ -13,9 +13,9 @@ driver.save_configuration("pf400_extended_400mm.json")
 |---|---|
 | PreciseFlex 400, extended reach, 400 mm of Z travel, vision gripper (2 cameras), no rail | `pf400_extended_400mm.json` |
 
-It is every answer one arm gave to the driver's discovery, replayed from two sessions' IO logs
-through `discover` and saved. The one field changed afterwards is `controller_serial`, which is blanked: a
-recording says what kind of arm it is, not which one.
+It is every answer one arm gave to the driver's discovery, saved by the driver at setup on the arm.
+The one field changed afterwards is `controller_serial`, which is blanked: a recording says what
+kind of arm it is, not which one.
 
 ## Derived, not recorded
 
