@@ -83,26 +83,6 @@ class PreciseFlexGripper:
     )
     self._is_dual_gripper = configuration.is_dual_gripper
 
-  # -- open and close positions --------------------------------------------------------------------
-
-  async def _unchecked_fw_set_close_position(self, close_position: float) -> None:
-    """Set the gripper close position for the servoed gripper.
-
-    The close position may be changed by a force-controlled grip operation.
-
-    Args:
-      close_position: The new gripper close position.
-    """
-    await self._driver.send_command(f"GripClosePos {close_position}")
-
-  async def _unchecked_fw_set_open_position(self, open_position: float) -> None:
-    """Set the gripper open position for the servoed gripper.
-
-    Args:
-      open_position: The new gripper open position.
-    """
-    await self._driver.send_command(f"GripOpenPos {open_position}")
-
   # -- grasp, for the force-controlled pickplate ---------------------------------------------------
 
   async def _set_grasp_data(
@@ -199,12 +179,16 @@ class PreciseFlexGripper:
   # -- jaw motion: closing senses force unless asked not to ----------------------------------------
 
   async def _unchecked_fw_move_jaws(self, units: float, force_sensing: bool) -> None:
-    """Drive the jaws to ``units``, closing under force control or opening. Nothing is guarded."""
+    """Drive the jaws to ``units``, closing under force control or opening. Nothing is guarded.
+
+    Sets the close position and closes (``gripper 2``), or sets the open position and opens
+    (``gripper 1``). A force-controlled grip may change the close position.
+    """
     if force_sensing:
-      await self._unchecked_fw_set_close_position(units)
+      await self._driver.send_command(f"GripClosePos {units}")
       await self._driver.send_command("gripper 2")
     else:
-      await self._unchecked_fw_set_open_position(units)
+      await self._driver.send_command(f"GripOpenPos {units}")
       await self._driver.send_command("gripper 1")
 
   async def _move_jaws(self, units: float, force_sensing: Optional[bool]) -> None:
