@@ -1095,8 +1095,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "GripOpenPos 130.0",
-      "gripper 1",
+      "ReleasePlate 130.0 50.0",
       "wherej",
       "wherej",
       "wherej",
@@ -1106,13 +1105,13 @@ _CASES: List[_Case] = [
   ),
   (
     "move_gripper_close",
-    lambda arm: arm.gripper.move_to_jaw_position(90.0, force_sensing=True),
+    lambda arm: arm.gripper.move_to_jaw_position(50.0, force_sensing=True),
     [
       "wherej",
       "wherej",
       "wherej",
-      "GripClosePos 110.0",
-      "gripper 2",
+      "wherej",
+      "GraspPlate 70.0 50.0 10.0",
       "wherej",
       "wherej",
       "wherej",
@@ -1128,8 +1127,7 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "GripOpenPos 120.0",
-      "gripper 1",
+      "ReleasePlate 120.0 50.0",
       "wherej",
       "wherej",
       "wherej",
@@ -1139,13 +1137,13 @@ _CASES: List[_Case] = [
   ),
   (
     "move_gripper_joint_position_force",
-    lambda arm: arm.gripper.move_to_jaw_position_firmware_units(90.0, force_sensing=True),
+    lambda arm: arm.gripper.move_to_jaw_position_firmware_units(70.0, force_sensing=True),
     [
       "wherej",
       "wherej",
       "wherej",
-      "GripClosePos 90.0",
-      "gripper 2",
+      "wherej",
+      "GraspPlate 70.0 50.0 10.0",
       "wherej",
       "wherej",
       "wherej",
@@ -1763,17 +1761,17 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
   async def test_a_jaw_move_that_closes_senses_force(self):
     arm, fake = await self._arm()
     await arm.gripper.move_to_jaw_position(70.0)
-    self.assertEqual(_without_reads(fake.sent), ["GripClosePos 90.0", "gripper 2"])
+    self.assertEqual(_without_reads(fake.sent), ["GraspPlate 90.0 50.0 10.0"])
 
   async def test_a_jaw_move_in_firmware_units_that_closes_senses_force(self):
     arm, fake = await self._arm()
     await arm.gripper.move_to_jaw_position_firmware_units(90.0)
-    self.assertEqual(_without_reads(fake.sent), ["GripClosePos 90.0", "gripper 2"])
+    self.assertEqual(_without_reads(fake.sent), ["GraspPlate 90.0 50.0 10.0"])
 
   async def test_closing_without_force_sensing_only_when_asked(self):
     arm, fake = await self._arm()
     await arm.gripper.move_to_jaw_position(70.0, force_sensing=False)
-    self.assertEqual(fake.sent[:5], ["wherej", "wherej", "wherej", "GripOpenPos 90.0", "gripper 1"])
+    self.assertEqual(_without_reads(fake.sent), ["GripOpenPos 90.0", "gripper 1"])
 
   async def test_jaw_widths_stay_in_mm_after_setup(self):
     arm, _ = await self._arm()
@@ -2141,7 +2139,7 @@ _MOVED_TO_FEATURES: List[
   (
     "move_gripper",
     lambda a: a.move_gripper(110.0),
-    lambda a: a.gripper.move_to_jaw_position(110.0),
+    lambda a: a.gripper.move_to_jaw_position(110.0, force_sensing=False),
   ),
   (
     "move_gripper_joint_position",

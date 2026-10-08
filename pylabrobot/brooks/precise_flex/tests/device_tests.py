@@ -410,7 +410,7 @@ class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
   async def test_jaws_closed_next_to_the_column_are_sent(self):
     # They stand nearer than is kept clear, and closing takes them away from it.
     sent = await self.jaws_to(70.7, stood="301.1 92.0 179.48 10.0 134.0")
-    self.assertIn("gripper 2", sent)
+    self.assertIn("GraspPlate 70.7 50.0 10.0", sent)
 
 
 class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
@@ -434,7 +434,7 @@ class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
     async def respond(command: str) -> str:
       if command == "wherej":
         return after_the_move if moved else self.STOOD
-      if command.startswith(("moveJ", "gripper")):
+      if command.startswith(("moveJ", "gripper", "GraspPlate")):
         # What the model says while the move is under way.
         self.seen.append((self.first.rotation.z, self.hand.jaw_width))
         moved.append(command)

@@ -33,7 +33,11 @@ def _make_arm(closed_gripper_position: float = 500.0) -> PreciseFlexDriver:
     gripper_z_offset=0.0,
     closed_gripper_position=closed_gripper_position,
   )
-  arm.send_command = AsyncMock(return_value="")  # type: ignore[method-assign]
+  # Every command answers nothing, but a joint read: the arm's own, parked with its jaws closed.
+  parked = "301.11 0.018 179.925 -180.644 70.685"
+  arm.send_command = AsyncMock(  # type: ignore[method-assign]
+    side_effect=lambda command: parked if command == "wherej" else ""
+  )
   # Wide gripper limits, as if setup had read them; a gripper move refuses without any.
   arm.gripper.configuration = MagicMock(soft_limit_range=(0.0, 10_000.0))
   return arm
@@ -76,21 +80,24 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
     self.arm = _make_arm(closed_gripper_position=500.0)
 
   def _sent_commands(self) -> list[str]:
-    return [c.args[0] for c in mocked(self.arm.send_command).call_args_list]
+    """What was sent, less the joint reads a move waits on before and after it."""
+    sent = [c.args[0] for c in mocked(self.arm.send_command).call_args_list]
+    return [command for command in sent if command != "wherej"]
 
   async def test_move_gripper_force_sensing_false_opens_with_position(self):
     # 80 mm ⇒ 500 + (80 - 60) = 520 firmware units.
     await self.arm.gripper.move_to_jaw_position(width=80.0, force_sensing=False)
-    self.assertEqual(
-      self._sent_commands()[:5], ["wherej", "wherej", "wherej", "GripOpenPos 520.0", "gripper 1"]
-    )
+    self.assertEqual(self._sent_commands(), ["GripOpenPos 520.0", "gripper 1"])
 
-  async def test_move_gripper_force_sensing_true_closes_with_position(self):
-    # 60 mm (the closed reference) ⇒ exactly closed_gripper_position.
+  async def test_move_gripper_force_sensing_true_closes_with_limited_force(self):
+    # 60 mm (the closed reference) ⇒ exactly closed_gripper_position; the jaws stand wider.
+    self.arm.arm.request_joint_state = AsyncMock(return_value={Axis.GRIPPER: 560.0})  # type: ignore[method-assign]
     await self.arm.gripper.move_to_jaw_position(width=60.0, force_sensing=True)
-    self.assertEqual(
-      self._sent_commands()[:5], ["wherej", "wherej", "wherej", "GripClosePos 500.0", "gripper 2"]
-    )
+    self.assertEqual(self._sent_commands(), ["GraspPlate 500.0 50.0 10.0"])
+
+  async def test_a_move_that_opens_the_jaws_lifts_the_force_limit(self):
+    await self.arm.gripper.move_to_jaw_position(width=80.0)
+    self.assertEqual(self._sent_commands(), ["ReleasePlate 520.0 50.0"])
 
   async def test_move_gripper_position_command_precedes_move(self):
     await self.arm.gripper.move_to_jaw_position(width=120.0, force_sensing=False)
@@ -103,12 +110,11 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
 
   async def test_force_sensing_branches_use_different_firmware_commands(self):
     await self.arm.gripper.move_to_jaw_position(width=90.0, force_sensing=False)
+    self.arm.arm.request_joint_state = AsyncMock(return_value={Axis.GRIPPER: 560.0})  # type: ignore[method-assign]
     await self.arm.gripper.move_to_jaw_position(width=90.0, force_sensing=True)
-    commands = self._sent_commands()
-    self.assertIn("gripper 1", commands)
-    self.assertIn("gripper 2", commands)
-    self.assertIn("GripOpenPos 530.0", commands)
-    self.assertIn("GripClosePos 530.0", commands)
+    self.assertEqual(
+      self._sent_commands(), ["GripOpenPos 530.0", "gripper 1", "GraspPlate 530.0 50.0 10.0"]
+    )
 
   async def test_a_gripper_move_before_setup_is_refused(self):
     arm = _make_arm()
@@ -131,7 +137,7 @@ class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
     commands = [c.args[0] for c in mocked(arm.send_command).call_args_list]
     # 80 mm ⇒ 1000 + (80 - 60) = 1020 units.
     self.assertEqual(
-      commands[:5], ["wherej", "wherej", "wherej", "GripOpenPos 1020.0", "gripper 1"]
+      [command for command in commands if command != "wherej"], ["GripOpenPos 1020.0", "gripper 1"]
     )
 
   def test_mm_to_firmware_units_helper(self):
@@ -194,10 +200,7 @@ class TestPreciseFlexEvents(unittest.IsolatedAsyncioTestCase):
     ]
     self.assertEqual(
       [event.data["command"] for event in firmware_events],
-      [
-        "GripOpenPos 520.0",
-        "gripper 1",
-      ],
+      ["ReleasePlate 520.0 50.0"],
     )
     self.assertTrue(
       all(event.context["resources"] == [{"name": "sample_plate"}] for event in firmware_events)

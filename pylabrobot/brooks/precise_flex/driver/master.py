@@ -159,7 +159,7 @@ class PreciseFlexDriver:
         of range after that, ``OutOfRangeOfMotionError`` propagates (no loop). Set False to forbid
         this autonomous motion - an out-of-range axis then raises instead, carrying recovery
         instructions. Every recovery is logged.
-      closed_gripper_position: firmware-unit value (passed to ``GripClosePos`` /
+      closed_gripper_position: firmware-unit value (passed to ``GraspPlate`` /
         ``GripOpenPos``) at which the jaws are at the narrow end of
         :attr:`PreciseFlexGripper.jaw_width_range`.
         Depends on the mounted gripper. The conversion mm → firmware units is
@@ -1412,16 +1412,16 @@ class PreciseFlexDriver:
       kwargs["station_index"] = kwargs.pop("location_index")
     return await self.arm._unchecked_fw_set_station_to_current_cartesian_location(*args, **kwargs)
 
-  async def move_gripper(self, *args: Any, **kwargs: Any) -> Any:
-    """Deprecated: use ``gripper.move_to_jaw_position``."""
+  async def move_gripper(self, width: float, force_sensing: bool = False) -> Any:
+    """Deprecated: use ``gripper.move_to_jaw_position``, where closing limits force by default."""
     warnings.warn(
       "`move_gripper` is deprecated, use `gripper.move_to_jaw_position`.",
       DeprecationWarning,
       stacklevel=2,
     )
-    return await self.gripper.move_to_jaw_position(*args, **kwargs)
+    return await self.gripper.move_to_jaw_position(width, force_sensing=force_sensing)
 
-  async def move_gripper_joint_position(self, *args: Any, **kwargs: Any) -> Any:
+  async def move_gripper_joint_position(self, position: float, force_sensing: bool = False) -> Any:
     """Deprecated: use ``gripper.move_to_jaw_position_firmware_units``."""
     warnings.warn(
       "`move_gripper_joint_position` is deprecated, use "
@@ -1429,7 +1429,9 @@ class PreciseFlexDriver:
       DeprecationWarning,
       stacklevel=2,
     )
-    return await self.gripper.move_to_jaw_position_firmware_units(*args, **kwargs)
+    return await self.gripper.move_to_jaw_position_firmware_units(
+      position, force_sensing=force_sensing
+    )
 
   async def is_gripper_closed(self, *args: Any, **kwargs: Any) -> Any:
     """Deprecated: use ``gripper.sense_fully_closed``."""
