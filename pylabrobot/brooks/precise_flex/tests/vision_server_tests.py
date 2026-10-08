@@ -52,6 +52,7 @@ class TestEnginePropertyPrimitives(unittest.IsolatedAsyncioTestCase):
 
   async def test_request_property_raises_vision_error_with_code_on_negative(self):
     """A negative reply surfaces as a coded PreciseFlexVisionError (a -40xx code), not a silent None."""
+    # Not from a log: the vision server has not answered an error on this port in any session.
     self.prop.readline = AsyncMock(return_value=b"-4017 some error\r\n")
     with self.assertRaises(PreciseFlexVisionError) as ctx:
       await self.engine.request_vision_server_property("bogus.name")

@@ -47,8 +47,16 @@ class TestWaitForEom(unittest.IsolatedAsyncioTestCase):
 
   async def test_a_move_creeping_off_does_not_count_as_stopped(self):
     """Right after moveJ the arm creeps under the settle threshold (as logged), then moves."""
-    replies = ["0 0 180 180 127", "0 -0.006 180 179.986 127", "0 -0.077 180 180.044 127"]
-    replies += ["0 -0.205 180 180.168 127"] + ["0 -1 181 181 127"] * 3
+    # The arm's first four reads after a logged moveJ, then the three it settled on.
+    replies = [
+      "301.022 33.703 242.82 141.894 74.8",
+      "301.022 33.694 242.807 141.909 74.8",
+      "301.022 33.667 242.74 141.942 74.8",
+      "301.038 33.586 242.595 142.024 74.8",
+      "301.123 0.002 179.998 179.996 74.777",
+      "301.124 0.002 179.999 180 74.777",
+      "301.125 0.001 179.999 180.002 74.777",
+    ]
     d = _make_arm()
     d.send_command = AsyncMock(side_effect=replies)  # type: ignore[method-assign]
     await d.arm._wait_for_eom(poll_interval=0)
@@ -57,7 +65,8 @@ class TestWaitForEom(unittest.IsolatedAsyncioTestCase):
   async def test_returns_immediately_when_already_stationary(self):
     """An idle arm (e.g. halted short of its last target) returns at once, never hangs to reach it."""
     d = _make_arm()
-    d.send_command = AsyncMock(return_value="113 81 218 64 70")  # type: ignore[method-assign]  # stable every poll
+    idle = "269.908 81.507 218.952 113.977 70.685"  # as the arm answered, poll after poll
+    d.send_command = AsyncMock(return_value=idle)  # type: ignore[method-assign]
     await d.arm._wait_for_eom(poll_interval=0)
 
   async def test_keyboard_interrupt_halts_and_raises_operation_interrupted(self):

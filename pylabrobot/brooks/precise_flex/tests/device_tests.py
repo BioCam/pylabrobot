@@ -271,7 +271,8 @@ class TestTheDriverHangsTheArm(unittest.IsolatedAsyncioTestCase):
 class TestTheModelFollowsTheJoints(unittest.IsolatedAsyncioTestCase):
   """A joint state stands the carriage and turns each member about the joint it turns on."""
 
-  REPLY = "301.12 92.0 179.48 -184.25 120.0"
+  # As the arm answered where a finger touched the column.
+  REPLY = "301.124 91.974 179.489 -184.25 119.971"
 
   def setUp(self):
     self.device = pf400()
@@ -313,9 +314,9 @@ class TestTheModelFollowsTheJoints(unittest.IsolatedAsyncioTestCase):
     with patch.object(self.driver, "send_command", AsyncMock(return_value=self.REPLY)):
       with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
         await self.driver.arm.request_joint_state()
-    self.assertEqual(self.carriage.location, pf400_chassis.z_carriage_location(301.12))
-    self.assertAlmostEqual(self.first.rotation.z, 92.0)
-    self.assertEqual(self.hand.jaw_width, 120.0)
+    self.assertEqual(self.carriage.location, pf400_chassis.z_carriage_location(301.124))
+    self.assertAlmostEqual(self.first.rotation.z, 91.974)
+    self.assertEqual(self.hand.jaw_width, 119.971)
 
   async def test_a_driver_without_a_workspace_reads_as_before(self):
     driver = PreciseFlexDriver(
@@ -324,7 +325,7 @@ class TestTheModelFollowsTheJoints(unittest.IsolatedAsyncioTestCase):
     with patch.object(driver, "send_command", AsyncMock(return_value=self.REPLY)):
       with patch.object(driver.arm, "_wait_for_eom", AsyncMock()):
         joints = await driver.arm.request_joint_state()
-    self.assertEqual(joints[Axis.SHOULDER], 92.0)
+    self.assertEqual(joints[Axis.SHOULDER], 91.974)
 
 
 class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
@@ -380,7 +381,7 @@ class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
     driver.arm._check_pose_reachable(self.joints(92.0, 179.48, -184.25, 120.0))
 
   async def test_a_refused_move_is_never_sent(self):
-    sent = AsyncMock(return_value="301.1 0.0 180.0 180.0 120.0")
+    sent = AsyncMock(return_value="301.12 -0.001 180.001 -179.996 70.697")  # parked, as read
     with patch.object(self.driver, "send_command", sent):
       with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
         with self.assertRaises(ValueError):
@@ -402,6 +403,7 @@ class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
     return self.sent
 
   async def test_jaws_opened_against_the_column_are_never_sent(self):
+    # A constructed pose: the arm has not stood this near the column, which the check is for.
     # Clear of the column by 5.8 mm with the jaws at 70.7; opened, a finger would reach it.
     with self.assertRaisesRegex(ValueError, "pf400_gripper_finger_right would stand"):
       await self.jaws_to(134.0, stood="301.1 92.0 179.48 10.0 70.7")
@@ -416,6 +418,7 @@ class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
 class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
   """The target is written to the model as a move is sent; the arm is read once it has stopped."""
 
+  # A constructed pose, not a logged read: parked, with the jaws at 100 so 80 closes them.
   STOOD = "301.1 0.0 180.0 180.0 100.0"
   TARGET = {Axis.SHOULDER: 30.0}
 
@@ -595,7 +598,7 @@ class TestTheGripperIsKeptClearOfTheColumnOnTheWay(unittest.IsolatedAsyncioTestC
     driver.arm._check_path_reachable(self.joints(*self.HOMED), self.joints(0.0, 180.0, 180.0, 70.7))
 
   async def test_a_refused_swing_is_never_sent(self):
-    sent = AsyncMock(return_value="301.1 93.3 179.4 -215.9 70.7")
+    sent = AsyncMock(return_value="301.12 93.25 179.478 -215.9 125.985")  # homed, as read
     with patch.object(self.device.driver, "send_command", sent):
       with patch.object(self.arm, "_wait_for_eom", AsyncMock()):
         with self.assertRaisesRegex(ValueError, "on the way"):
@@ -653,18 +656,19 @@ class TestParkingTakesAClearTurn(unittest.IsolatedAsyncioTestCase):
       host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
     )
     driver.arm.parking_position = dict(driver.arm.PARKING_POSITION_RIGHT)
-    sent = AsyncMock(return_value="301.1 92.0 179.4 -215.9 70.7")
+    sent = AsyncMock(return_value="301.12 92.001 179.477 -215.899 125.967")  # as read
     with patch.object(driver, "send_command", sent):
       with patch.object(driver.arm, "_wait_for_eom", AsyncMock()):
         await driver.arm.park()
     moves = [call.args[0] for call in sent.call_args_list if call.args[0].startswith("moveJ")]
-    self.assertEqual(moves, ["moveJ 1 301.1 0.0 180.0 180.0 70.7"])
+    self.assertEqual(moves, ["moveJ 1 301.12 0.0 180.0 180.0 125.967"])
 
 
 class TestEveryMotionPathIsCheckedAndKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
   """Recovery, a route of poses, and the controller's own pick and place, on a modelled arm."""
 
-  HOMED = "301.1 92.0 179.4 -215.9 70.7"
+  # As the arm answered after homing and its shoulder was brought back inside its limit.
+  HOMED = "301.12 92.001 179.477 -215.899 125.967"
   # A station that stands the gripper against the column, and one well clear of it.
   AT_THE_COLUMN = {
     Axis.BASE: 301.1,
@@ -715,7 +719,7 @@ class TestEveryMotionPathIsCheckedAndKeepsTheModelInStep(unittest.IsolatedAsynci
     )
     self.assertEqual(sent, ["locAngles", "StationType", "pickplate"])
     # The stand-in controller still answers the homed pose, so that is where the model ends.
-    self.assertAlmostEqual(self.first.rotation.z, 92.0)
+    self.assertAlmostEqual(self.first.rotation.z, 92.001)
 
   async def test_a_recovery_move_is_written_to_the_model_and_read_back(self):
     out_of_range = "301.1 93.3 179.4 -215.9 70.7"

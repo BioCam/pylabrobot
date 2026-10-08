@@ -194,13 +194,14 @@ class TestVisionBackendOrchestrations(unittest.IsolatedAsyncioTestCase):
     self.assertEqual((pose.rotation.z, pose.rotation.y, pose.rotation.x), (30.0, 60.0, 90.0))
 
   async def test_request_stereo_parameters_parses_reply(self):
+    # As the arm answered, its stereo locator not yet set up.
     self.driver.send_command = AsyncMock(
-      return_value="aruco_dual default_tool 100.0 1.5 4 10 11 50.0 2.0 200"
+      return_value="unknown_process unknown_tool 150 0.5 4 2 3 63 2 1000 "
     )
     params = await self.vision.request_stereo_parameters(1, 1)
     self.driver.send_command.assert_awaited_once_with("StereoParam 1 1")
     self.assertEqual(
-      (params.process_name, params.aruco1_number, params.wait_msecs), ("aruco_dual", 10, 200)
+      (params.process_name, params.aruco1_number, params.wait_msecs), ("unknown_process", 2, 1000)
     )
 
   async def test_set_stereo_parameters_sends_command(self):
@@ -382,16 +383,32 @@ class TestVisionEngineCapabilities(unittest.IsolatedAsyncioTestCase):
 
   async def test_request_vision_tool_properties_splits_list(self):
     """request_vision_tool_properties parses the engine's name list into a list of strings."""
-    self.prop.readline = AsyncMock(return_value=b"0 brightness hue gain\r\n")
+    # The `led` tool's properties, as the vision server answered.
+    self.prop.readline = AsyncMock(
+      return_value=b"0 brightness delay bank cameranumber name defaultdisplayresults "
+      b"tooldisplayresults\r\n"
+    )
     self.assertEqual(
-      await self.vision.request_vision_tool_properties("acq1"), ["brightness", "hue", "gain"]
+      await self.vision.request_vision_tool_properties("led"),
+      [
+        "brightness",
+        "delay",
+        "bank",
+        "cameranumber",
+        "name",
+        "defaultdisplayresults",
+        "tooldisplayresults",
+      ],
     )
 
   async def test_request_projects_splits_comma_list(self):
     """request_projects parses the comma-separated project list."""
-    self.prop.readline = AsyncMock(return_value=b"0 arucos_cam1,VisionTest,vision_project\r\n")
+    self.prop.readline = AsyncMock(
+      return_value=b"0 arucos_cam1,arucos_cam2,VisionTest,vision_project\r\n"
+    )
     self.assertEqual(
-      await self.vision.request_projects(), ["arucos_cam1", "VisionTest", "vision_project"]
+      await self.vision.request_projects(),
+      ["arucos_cam1", "arucos_cam2", "VisionTest", "vision_project"],
     )
 
   async def test_request_is_licensed_parses_bool(self):
@@ -401,10 +418,15 @@ class TestVisionEngineCapabilities(unittest.IsolatedAsyncioTestCase):
 
   async def test_enumerate_project_splits_both_list_formats(self):
     """enumerate_project parses the space- and comma-separated process/tool lists."""
-    self.prop.readline = AsyncMock(side_effect=[b"0 Camera1, Camera2\r\n", b"0 acq1 acq2 led\r\n"])
+    self.prop.readline = AsyncMock(
+      side_effect=[b"0 Camera1,Camera2,LightControl\r\n", b"0 " + REAL_LISTTOOLS.encode() + b"\r\n"]
+    )
     self.assertEqual(
       await self.vision.enumerate_project(),
-      {"processes": ["Camera1", "Camera2"], "vision_tools": ["acq1", "acq2", "led"]},
+      {
+        "processes": ["Camera1", "Camera2", "LightControl"],
+        "vision_tools": sorted(REAL_LISTTOOLS.split()),
+      },
     )
 
   async def test_engine_methods_raise_without_engine(self):
