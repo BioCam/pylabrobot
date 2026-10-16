@@ -11,14 +11,30 @@ class ChecksumError(FrameError):
   """An FTDI reply frame's checksum does not match its bytes."""
 
 
-# What the first quit code means, for the codes seen in replies from a reader.
+# What the first quit code means, for the codes seen in replies from a reader. 1-3 mean the reader
+# received a malformed frame.
 QUIT_CODE_DESCRIPTIONS: Dict[int, str] = {
+  1: "the reader received a frame with a wrong checksum",
+  2: "the reader received a frame with a wrong end byte",
+  3: "the reader received a frame with a wrong length",
+  55: "the focal height is invalid",
   65: "the kinetic cycle time is too short",
+  102: "no new measurement data is available yet",
   110: "the target temperature is out of range",
+  201: "the reader is not initialized",
   202: "the reader is busy",
   213: "no measurement results are available",
   214: "no test run is active",
+  250: "the motor controller reported a collision",
 }
+
+
+def describe_quit_codes(quit_codes: Tuple[int, int, int, int, int]) -> str:
+  """Format quit codes as `code (description), quit codes q1/q2/q3/q4/q5`."""
+  description = QUIT_CODE_DESCRIPTIONS.get(quit_codes[0], "no description known")
+  return (
+    f"quit code {quit_codes[0]} ({description}), quit codes {'/'.join(str(q) for q in quit_codes)}"
+  )
 
 
 class CommandRefusedError(Exception):
@@ -32,8 +48,4 @@ class CommandRefusedError(Exception):
     """
     self.payload = payload
     self.quit_codes = quit_codes
-    description = QUIT_CODE_DESCRIPTIONS.get(quit_codes[0], "no description known")
-    super().__init__(
-      f"CLARIOstar refused {payload.hex()}: quit code {quit_codes[0]} ({description}), "
-      f"quit codes {'/'.join(str(q) for q in quit_codes)}"
-    )
+    super().__init__(f"CLARIOstar refused {payload.hex()}: {describe_quit_codes(quit_codes)}")

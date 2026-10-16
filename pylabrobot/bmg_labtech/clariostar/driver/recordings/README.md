@@ -12,7 +12,8 @@ or received from a reader; none is written by hand or built from a guess at the 
 
 The second file holds what the first lacks: a status reply with a plate detected, and the vendor
 software's own open-drawer frame. The third holds commands the reader refused, one per quit code
-seen. The fourth holds an open-drawer the reader refused because it was still busy.
+seen. The fourth holds an open-drawer the reader refused because it was still busy, a STATUS refused
+before initialization, and a STATUS carrying a device warning.
 
 ## What is in one
 

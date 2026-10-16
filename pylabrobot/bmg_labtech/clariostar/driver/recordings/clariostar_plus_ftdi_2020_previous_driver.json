@@ -9,6 +9,14 @@
     "refused_open_drawer_busy": {
       "sent": "02000e0c0301000000000000200d",
       "received": "0200180c013507260000ca0000000000000000c00002130d"
+    },
+    "refused_status_not_initialized": {
+      "sent": "0200090c800000970d",
+      "received": "0200180c011500000000c90000000000000000c00001c50d"
+    },
+    "status_warning_motor": {
+      "sent": "0200090c800000970d",
+      "received": "0200180c01a504260000fa0500000000000000c00002b50d"
     }
   }
 }

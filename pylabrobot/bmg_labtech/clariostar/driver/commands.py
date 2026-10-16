@@ -33,16 +33,27 @@ STATUS_FLAGS = [
 ]
 
 
-# A reply to a refused command: type 0x01, this bit in byte 1, and quit codes in bytes 6-10.
+# Reply byte 1 bits that put quit codes in bytes 6-10 of a type 0x01 reply.
 REFUSED_BIT = 1 << 4
+WARNING_BIT = 1 << 7
+
+
+def _quit_codes(reply: bytes, bit: int) -> Optional[Tuple[int, int, int, int, int]]:
+  """Return bytes 6-10 of a type 0x01 reply with `bit` set in byte 1, else None."""
+  if len(reply) < 11 or reply[0] != 0x01 or not reply[1] & bit:
+    return None
+  q1, q2, q3, q4, q5 = reply[6:11]
+  return (q1, q2, q3, q4, q5)
 
 
 def parse_quit_codes(reply: bytes) -> Optional[Tuple[int, int, int, int, int]]:
   """Return the five quit codes of a refused command's reply, or None if it was not refused."""
-  if len(reply) < 11 or reply[0] != 0x01 or not reply[1] & REFUSED_BIT:
-    return None
-  q1, q2, q3, q4, q5 = reply[6:11]
-  return (q1, q2, q3, q4, q5)
+  return _quit_codes(reply, REFUSED_BIT)
+
+
+def parse_warning_codes(reply: bytes) -> Optional[Tuple[int, int, int, int, int]]:
+  """Return the five codes of a device warning, or None if the reply carries none."""
+  return _quit_codes(reply, WARNING_BIT)
 
 
 def parse_temperatures(payload: bytes) -> Dict[str, Optional[float]]:

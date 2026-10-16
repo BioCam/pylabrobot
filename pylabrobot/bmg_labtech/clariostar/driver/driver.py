@@ -7,7 +7,7 @@ framing differs (see ``framing.py``), and it is chosen once, from ``interface``.
 import asyncio
 import logging
 import time
-from typing import Any, Callable, Dict, Literal, Optional, Union, cast
+from typing import Any, Callable, Dict, Literal, Optional, Tuple, Union, cast
 
 from pylabrobot.io.ftdi import FTDI
 from pylabrobot.io.usb import USB
@@ -19,8 +19,9 @@ from .commands import (
   parse_quit_codes,
   parse_status,
   parse_temperatures,
+  parse_warning_codes,
 )
-from .errors import CommandRefusedError, FrameError
+from .errors import CommandRefusedError, FrameError, describe_quit_codes
 from .features.drawer import Drawer
 from .framing import (
   FTDI_CR,
@@ -128,6 +129,7 @@ class CLARIOstarDriver:
         )
     self.io = io
     self._lock = asyncio.Lock()
+    self._last_warning: Optional[Tuple[int, int, int, int, int]] = None
     self.drawer = Drawer(self)
 
   # -- FTDI interface --------------------------------------------------------
@@ -327,6 +329,20 @@ class CLARIOstarDriver:
         await asyncio.sleep(self._RETRY_SETTLE)
     raise AssertionError("unreachable")
 
+  def _check_reply(self, payload: bytes, reply: bytes) -> None:
+    """Raise if the reader refused `payload`; log a device warning once per change of codes.
+
+    Raises:
+      CommandRefusedError: if the reply carries the refused bit.
+    """
+    quit_codes = parse_quit_codes(reply)
+    if quit_codes is not None:
+      raise CommandRefusedError(payload, quit_codes)
+    warning = parse_warning_codes(reply)
+    if warning is not None and warning != self._last_warning:
+      logger.warning("CLARIOstar device warning: %s", describe_quit_codes(warning))
+    self._last_warning = warning
+
   async def _wait_until_ready(
     self,
     timeout: Optional[float],
@@ -342,11 +358,14 @@ class CLARIOstarDriver:
 
     Raises:
       TimeoutError: if the condition does not hold after ``timeout`` seconds.
+      CommandRefusedError: if the reader refuses the status query (e.g. before INIT).
     """
     status_payload = bytes([CommandFamily.STATUS])
     start = time.time()
     while True:
-      status = parse_status(await self._exchange_with_retries(status_payload, retries=5))
+      reply = await self._exchange_with_retries(status_payload, retries=5)
+      self._check_reply(status_payload, reply)
+      status = parse_status(reply)
       if until(status) if until is not None else not status["busy"]:
         return
       if timeout is not None and time.time() - start >= timeout:
@@ -396,9 +415,7 @@ class CLARIOstarDriver:
     if when_idle and command_family != CommandFamily.STATUS:
       await self._wait_until_ready(timeout=self._DEFAULT_WAIT_TIMEOUT, poll_interval=0.1)
     reply = await self._exchange_with_retries(payload, retries)
-    quit_codes = parse_quit_codes(reply)
-    if quit_codes is not None:
-      raise CommandRefusedError(payload, quit_codes)
+    self._check_reply(payload, reply)
 
     if wait:
       await self._wait_until_ready(
@@ -422,13 +439,18 @@ class CLARIOstarDriver:
   async def initialize(self) -> None:
     """Run the hardware initialization (homes the axes, about 13 s) and wait until ready.
 
-    INIT is sent once. A malformed reply does not mean the reader missed the command, and
-    sending it again would restart a homing already under way, so the reply is discarded
-    and status decides when the reader is ready.
+    INIT is sent once, without waiting for the reader to be idle first: it is always allowed, and
+    an uninitialized reader refuses even STATUS (quit code 201). A malformed reply does not mean
+    the reader missed the command, and sending it again would restart a homing already under
+    way, so the reply is discarded and status decides when the reader is ready.
     """
     try:
       await self.send_command(
-        CommandFamily.INITIALIZE, Command.INIT, parameters=b"\x00\x10\x03", retries=1
+        CommandFamily.INITIALIZE,
+        Command.INIT,
+        parameters=b"\x00\x10\x03",
+        retries=1,
+        when_idle=False,
       )
     except FrameError as e:
       logger.warning("CLARIOstar INIT reply malformed (%s); waiting on status instead", e)

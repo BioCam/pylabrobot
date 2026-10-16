@@ -26,6 +26,9 @@ from pylabrobot.io.usb import USB
 
 V1 = load_exchanges("clariostar_plus_ftdi_2020_v1_driver.json")
 REFUSED = load_exchanges("clariostar_plus_ftdi_2020_oem_software_refused.json")
+PREVIOUS = load_exchanges("clariostar_plus_ftdi_2020_previous_driver.json")
+STATUS_NOT_INITIALIZED = PREVIOUS["refused_status_not_initialized"][1]
+STATUS_WARNING = PREVIOUS["status_warning_motor"][1]
 
 STATUS_QUERY_FRAME, STATUS_IDLE = V1["status_idle"]
 STATUS_BUSY = V1["status_busy"][1]
@@ -247,21 +250,58 @@ class RefusedTests(unittest.IsolatedAsyncioTestCase):
     self.assertIn("quit code 213", str(ctx.exception))
 
 
+class StatusRefusalAndWarningTests(unittest.IsolatedAsyncioTestCase):
+  async def test_refused_status_raises(self):
+    io = FakeFTDI()
+    io.replies = [STATUS_NOT_INITIALIZED]
+    with self.assertRaises(CommandRefusedError) as ctx:
+      await make_driver(io).request_status()
+    self.assertEqual(ctx.exception.quit_codes[0], 201)
+    self.assertIn("not initialized", str(ctx.exception))
+
+  async def test_refused_status_while_polling_raises(self):
+    io = FakeFTDI()
+    io.replies = [STATUS_NOT_INITIALIZED]
+    with self.assertRaises(CommandRefusedError):
+      await make_driver(io).request_firmware_info()
+
+  async def test_uninitialized_reader_still_takes_init(self):
+    io = FakeFTDI()
+    io.replies = [INIT_REPLY, STATUS_BUSY, STATUS_IDLE]
+    await make_driver(io).initialize()
+    self.assertEqual(io.written[0], INIT_FRAME)
+
+  async def test_warning_is_logged_once_and_not_raised(self):
+    io = FakeFTDI()
+    io.replies = [STATUS_WARNING, STATUS_WARNING, STATUS_IDLE, FIRMWARE_INFO_REPLY]
+    driver = make_driver(io)
+    with self.assertLogs(driver_module.logger, "WARNING") as logs:
+      await driver.request_firmware_info()
+    warnings = [r for r in logs.output if "device warning" in r]
+    self.assertEqual(len(warnings), 1)
+    self.assertIn("quit code 250", warnings[0])
+
+  def test_line_error_codes_are_named(self):
+    for code in (1, 2, 3):
+      error = CommandRefusedError(b"\x80", (code, 0, 0, 0, 0))
+      self.assertIn("the reader received a frame", str(error))
+
+
 class SetupTests(unittest.IsolatedAsyncioTestCase):
   async def test_setup_always_initializes(self):
     io = FakeFTDI()
-    io.replies = [STATUS_IDLE, INIT_REPLY, STATUS_BUSY, STATUS_IDLE]
+    io.replies = [INIT_REPLY, STATUS_BUSY, STATUS_IDLE]
     driver = make_driver(io)
     driver.check_firmware_compatibility = AsyncMock(return_value="1.35")  # type: ignore
     await driver.setup()
-    self.assertEqual(io.written, [STATUS_QUERY_FRAME, INIT_FRAME] + [STATUS_QUERY_FRAME] * 2)
+    self.assertEqual(io.written, [INIT_FRAME] + [STATUS_QUERY_FRAME] * 2)
     self.assertEqual(io.purges, 1)
 
   async def test_malformed_init_reply_is_not_resent(self):
     io = FakeFTDI()
-    io.replies = [STATUS_IDLE, INIT_REPLY[:100], STATUS_BUSY, STATUS_IDLE]
+    io.replies = [INIT_REPLY[:100], STATUS_BUSY, STATUS_IDLE]
     await make_driver(io).initialize()
-    self.assertEqual(io.written, [STATUS_QUERY_FRAME, INIT_FRAME] + [STATUS_QUERY_FRAME] * 2)
+    self.assertEqual(io.written, [INIT_FRAME] + [STATUS_QUERY_FRAME] * 2)
     self.assertEqual(io.purges, 1)
 
 
