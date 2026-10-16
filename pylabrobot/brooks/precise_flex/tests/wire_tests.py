@@ -1734,10 +1734,6 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
     self.assertIn("Speed 1 10.0", fake.sent)
 
 
-if __name__ == "__main__":
-  unittest.main()
-
-
 def _without_reads(sent: List[str]) -> List[str]:
   """What was sent, less the joint reads a move waits on before and after it."""
   return [command for command in sent if command != "wherej"]
@@ -2348,3 +2344,7 @@ class TestDeprecatedDriverMembers(unittest.IsolatedAsyncioTestCase):
 
     with self.assertWarns(DeprecationWarning):
       self.assertIs(kinematics.JointPose, kinematics.JointState)
+
+
+if __name__ == "__main__":
+  unittest.main()
