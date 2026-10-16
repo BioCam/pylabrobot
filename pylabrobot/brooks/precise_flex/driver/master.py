@@ -444,44 +444,31 @@ class PreciseFlexDriver:
     },
   )
   async def setup(self, skip_home: bool = False, skip_vision: bool = False):
-    """Initialize the PreciseFlex driver.
+    """Bring the arm fully up: ``connect``, ``initialize``, then ``home`` unless skipped.
 
-    Opens the socket connection, sets response mode to PC, powers on the
-    robot, attaches it, and (optionally) homes it. Configuration discovery then reads the arm's
-    limits and kinematics, and setup raises if it fails. It also reports the loaded TCS modules;
-    when an IntelliGuide vision module is among them the vision capability is built and
-    exposed as ``self.vision``.
+    ``initialize`` reads the configuration, and setup raises if that fails. The arm is then
+    modelled, axes outside their limits are dealt with, and, when the controller has an
+    IntelliGuide vision module, the vision feature is built as ``self.vision``.
 
     Args:
       skip_home: If True, skip the homing step during setup.
       skip_vision: If True, leave ``self.vision`` unset even when a vision module is detected.
         Mirrors STAR's ``skip_*`` setup flags.
     """
-    await self._open_connection()
-    await self.initialize(skip_home=skip_home)
-    configuration = await self.discover()
+    await self.connect()
+    configuration = await self.initialize()
+    if not skip_home:
+      await self.home()
     self._create_feature_resources(configuration)
     await self.arm._handle_out_of_range_axes()
     if not skip_vision and configuration.has_vision_server:
       await self._setup_vision(self._vision_host)
 
-  async def _open_connection(self) -> None:
-    """Open the controller link and set PC response mode. No motion."""
+  async def connect(self) -> None:
+    """Open the link and agree the response protocol. Powers nothing, moves nothing."""
     await self.io.setup()
     await self.set_response_mode("pc")
     logger.debug("[PreciseFlex %s] connected: port=%s", self.io._host, self.io._port)
-
-  async def initialize(self, skip_home: bool = False) -> None:
-    """Bring the arm to a known state: power on, attach, home, and end any freedrive.
-
-    Args:
-      skip_home: If True, do not home; homing sweeps every axis.
-    """
-    await self.power_on_robot()
-    await self.attach(1)
-    if not skip_home:
-      await self.home()
-    await self.arm.stop_freedrive_mode()
 
   def _check_declared_against(self, discovered: "PreciseFlexConfiguration") -> None:
     """Raise if what was declared cannot stand for what the controller answered.
@@ -537,6 +524,20 @@ class PreciseFlexDriver:
     self._log_configuration_summary(self._configuration)
     self._assess_configuration(self._configuration)
     return self._configuration
+
+  async def initialize(self) -> "PreciseFlexConfiguration":
+    """Raise high power, take control, end any freedrive, and read the configuration (`discover`).
+
+    Moves nothing. Homing is ``home()``, deliberately separate: it sweeps the arm through its
+    whole envelope, which is not something to do just to bring it up.
+
+    Returns:
+      The configuration ``discover`` read.
+    """
+    await self.power_on_robot()
+    await self.attach(1)
+    await self.arm.stop_freedrive_mode()
+    return await self.discover()
 
   def _create_feature_resources(self, configuration: "PreciseFlexConfiguration") -> None:
     """Build the arm on the device its workspace belongs to, from a configuration. No motion.
@@ -629,22 +630,25 @@ class PreciseFlexDriver:
     self.vision = PreciseFlexVision(self)
     await self.vision.setup()  # discovers, caches, and logs the capability summary (best-effort)
 
+  async def disconnect(self) -> None:
+    """Hand the arm back and close the links. Moves nothing.
+
+    Drops high power as well as releasing the arm, because ``initialize`` raised it.
+    """
+    await self.detach()
+    await self.power_off_robot()
+    await self._exit()
+    await self._close_vision_server()
+    await self.io.stop()
+    logger.info("[PreciseFlex %s] disconnected: port=%s", self.io._host, self.io._port)
+
   @evented_operation(
     "precise_flex.stop",
     lambda self: {"device": self._controller_reference()},
   )
   async def stop(self):
-    """Detach and power off the arm, then close every connection."""
-    await self.detach()
-    await self.power_off_robot()
-    await self._close_connection()
-
-  async def _close_connection(self) -> None:
-    """End the controller session and close the vision server's and the controller's links."""
-    await self._exit()
-    await self._close_vision_server()
-    await self.io.stop()
-    logger.info("[PreciseFlex %s] disconnected: port=%s", self.io._host, self.io._port)
+    """Hand the arm back and close every connection (``disconnect``)."""
+    await self.disconnect()
 
   # -- device-level commands -------------------------------------------------
 

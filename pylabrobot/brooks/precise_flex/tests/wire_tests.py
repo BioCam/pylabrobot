@@ -1403,7 +1403,6 @@ _SETUP = [
   "mode 0",
   "hp 1 20",
   "attach 1",
-  "home",
   "freemode -1",
   "pd 16078",
   "pd 16077",
@@ -1431,6 +1430,7 @@ _SETUP = [
   "pd 2701",
   "pd 2703",
   "sysState",
+  "home",
   "pd 2800",
   "wherej",
   "wherej",
@@ -1480,7 +1480,6 @@ _RAIL_SETUP = [
   "mode 0",
   "hp 1 20",
   "attach 1",
-  "home",
   "freemode -1",
   "pd 16078",
   "pd 16077",
@@ -1508,6 +1507,7 @@ _RAIL_SETUP = [
   "pd 2701",
   "pd 2703",
   "sysState",
+  "home",
   "pd 2800",
   "wherej",
   "wherej",
@@ -1604,15 +1604,18 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(config.has_rail, has_rail)
 
-  async def test_setup_is_open_initialize_discover(self):
+  async def test_setup_is_connect_initialize_home(self):
     _, whole = await self._run_setup(has_rail=False)
     fake = _FakeController()
     arm = _make_arm(fake)
-    await arm._open_connection()
-    await arm.initialize()
-    opened_and_initialized = len(fake.sent)
+    await arm.connect()
+    await arm.power_on_robot()
+    await arm.attach(1)
+    await arm.arm.stop_freedrive_mode()
+    taken_control = len(fake.sent)
     await arm.discover()
-    discovery = fake.sent[opened_and_initialized:]
+    discovery = fake.sent[taken_control:]
+    await arm.home()
     await arm.arm._handle_out_of_range_axes()
     self.assertEqual(fake.sent, whole.sent)
     self.assertTrue(
