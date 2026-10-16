@@ -28,7 +28,6 @@ NO_COMMAND_FAMILIES = frozenset({CommandFamily.STATUS})
 # Status flags checked against replies from a reader: (name, payload byte, bit mask).
 STATUS_FLAGS = [
   ("busy", 1, 1 << 5),
-  ("motors_enabled", 3, 1 << 5),
   ("plate_detected", 3, 1 << 1),
   ("drawer_open", 3, 1 << 0),
 ]

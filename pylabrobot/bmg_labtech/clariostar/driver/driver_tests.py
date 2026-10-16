@@ -112,12 +112,10 @@ class StatusTests(unittest.TestCase):
   def test_flags_from_recorded_replies(self):
     busy = parse_status(ftdi_extract_payload(STATUS_BUSY))
     self.assertTrue(busy["busy"])
-    self.assertTrue(busy["motors_enabled"])
     self.assertFalse(busy["drawer_open"])
 
     idle = parse_status(ftdi_extract_payload(STATUS_IDLE))
     self.assertFalse(idle["busy"])
-    self.assertTrue(idle["motors_enabled"])
 
     plate = parse_status(ftdi_extract_payload(STATUS_PLATE_DETECTED))
     self.assertTrue(plate["plate_detected"])
@@ -145,7 +143,7 @@ class ExchangeTests(unittest.IsolatedAsyncioTestCase):
     io = FakeFTDI()
     io.replies = [b"\x0d\x00" + STATUS_IDLE]
     status = await make_driver(io).request_status()
-    self.assertTrue(status["motors_enabled"])
+    self.assertFalse(status["busy"])
 
   async def test_truncated_reply_is_retried_after_purge(self):
     io = FakeFTDI()
