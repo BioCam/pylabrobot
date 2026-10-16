@@ -1,0 +1,14 @@
+{
+  "device": {
+    "model": "CLARIOstar Plus",
+    "interface": "ftdi",
+    "serial_number": "000-0000",
+    "firmware_version": "1.35"
+  },
+  "exchanges": {
+    "refused_open_drawer_busy": {
+      "sent": "02000e0c0301000000000000200d",
+      "received": "0200180c013507260000ca0000000000000000c00002130d"
+    }
+  }
+}

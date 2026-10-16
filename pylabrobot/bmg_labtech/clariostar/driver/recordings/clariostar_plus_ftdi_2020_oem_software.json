@@ -1,0 +1,17 @@
+{
+  "device": {
+    "model": "CLARIOstar Plus",
+    "interface": "ftdi",
+    "serial_number": "000-0000"
+  },
+  "exchanges": {
+    "status_plate_detected": {
+      "sent": "0200090c800000970d",
+      "received": "0200180c010507260000000000000000e500ece000030a0d"
+    },
+    "open_drawer": {
+      "sent": "02000e0c0301000000000000200d",
+      "received": "0200180c012500040000030000000000000000c00001130d"
+    }
+  }
+}
