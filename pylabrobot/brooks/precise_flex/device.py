@@ -131,6 +131,7 @@ def PreciseFlex400(driver: PreciseFlexDriver, name: str = "PreciseFlex400") -> P
     model=PreciseFlex400.__name__,
   )
   device.assign_child_resource(base_plate(name=f"{name}_base_plate"), location=Coordinate.zero())
-  if driver.declared is not None:
-    driver._create_feature_resources(driver.declared)
+  declared = driver.declared.get("device")
+  if declared is not None:
+    driver._create_feature_resources(declared)
   return device

@@ -15,7 +15,8 @@ driver.save_configuration("pf400_extended_400mm.json")
 
 It is every answer one arm gave to the driver's discovery, saved by the driver at setup on the arm.
 The one field changed afterwards is `controller_serial`, which is blanked: a recording says what
-kind of arm it is, not which one.
+kind of arm it is, not which one. It was saved with each feature nested in the device's section and
+has since been written out again by the driver, each feature beside the device's; no value changed.
 
 ## Derived, not recorded
 

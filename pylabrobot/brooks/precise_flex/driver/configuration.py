@@ -315,15 +315,34 @@ def _restore(hint: Any, value: Any) -> Any:
   return value
 
 
-def read_configuration(path: str) -> PreciseFlexConfiguration:
+# Each feature's configuration, saved beside the device's own under the feature's name.
+DEVICE_FEATURE_CONFIGURATIONS: Dict[str, type] = {
+  "arm": PreciseFlexArmConfiguration,
+  "gripper": PreciseFlexGripperConfiguration,
+  "rail": PreciseFlexRailConfiguration,
+}
+
+
+def read_configuration(path: str) -> Dict[str, Any]:
   """Read a saved configuration back into the dataclasses it was written from.
+
+  Shaped as the device is: the device's own configuration, and each feature's beside it. The
+  device's is returned with each feature's nested in it, as setup builds it.
 
   Args:
     path: a file `PreciseFlexDriver.save_configuration` wrote.
 
   Returns:
-    The configuration, with each feature's own nested in it as setup builds it.
+    `{"device": PreciseFlexConfiguration, <name>: configuration}`. Names this driver does not know
+    are left out.
   """
   with open(path, encoding="utf-8") as f:
     saved = json.load(f)
-  return typing.cast(PreciseFlexConfiguration, _restore(PreciseFlexConfiguration, saved["device"]))
+
+  features = {name: saved[name] for name in DEVICE_FEATURE_CONFIGURATIONS if name in saved}
+  read: Dict[str, Any] = {
+    name: _restore(DEVICE_FEATURE_CONFIGURATIONS[name], value) for name, value in features.items()
+  }
+  if "device" in saved:
+    read["device"] = _restore(PreciseFlexConfiguration, {**saved["device"], **features})
+  return read

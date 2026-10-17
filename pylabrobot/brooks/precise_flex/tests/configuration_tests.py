@@ -75,12 +75,16 @@ class TestSavedConfiguration(unittest.IsolatedAsyncioTestCase):
       host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
     )
     driver._configuration = written
+    driver._adopt_configuration(written)
     with tempfile.TemporaryDirectory() as directory:
       path = os.path.join(directory, "configuration.json")
       driver.save_configuration(path)
       with open(path, encoding="utf-8") as f:
         self.saved = json.load(f)
-      return read_configuration(path)
+      read = read_configuration(path)
+    self.assertEqual(set(read) - {"device"}, set(self.saved) - {"device"})
+    device: PreciseFlexConfiguration = read["device"]
+    return device
 
   def test_it_reads_back_what_was_written(self):
     written = configuration()
@@ -94,7 +98,7 @@ class TestSavedConfiguration(unittest.IsolatedAsyncioTestCase):
   def test_axes_are_written_by_name_and_read_back_as_axes(self):
     read = self.round_trip(configuration())
     self.assertEqual(
-      list(self.saved["device"]["arm"]["soft_limits"]), list("BASE SHOULDER ELBOW WRIST".split())
+      list(self.saved["arm"]["soft_limits"]), list("BASE SHOULDER ELBOW WRIST".split())
     )
     self.assertEqual(read.arm.soft_limits[Axis.SHOULDER], (-93.0, 93.0))
     self.assertIsInstance(read.arm.kinematics, kinematics.PF400Params)
@@ -104,18 +108,31 @@ class TestSavedConfiguration(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(read.rail, PreciseFlexRailConfiguration(soft_limit_range=(0.0, 1000.0)))
     self.assertTrue(read.has_rail)
 
+  def test_each_feature_is_saved_beside_the_device(self):
+    self.round_trip(configuration(rail=PreciseFlexRailConfiguration((0.0, 1000.0))))
+    self.assertEqual(list(self.saved), ["device", "arm", "gripper", "rail"])
+    self.assertNotIn("arm", self.saved["device"])
+
   def test_live_state_is_not_written(self):
     read = self.round_trip(configuration())
     self.assertNotIn("_power_state", self.saved["device"])
     self.assertIsNone(read._power_state)
 
   def test_a_field_this_driver_no_longer_has_is_left_out(self):
-    saved = {"device": {**to_jsonable(configuration()), "dropped_since": 1}}
+    written = to_jsonable(configuration())
+    saved = {
+      "device": {n: v for n, v in written.items() if n not in ("arm", "gripper", "rail")},
+      "arm": {**written["arm"], "dropped_since": 1},
+      "gripper": written["gripper"],
+      "dropped_feature": {},
+    }
     with tempfile.TemporaryDirectory() as directory:
       path = os.path.join(directory, "configuration.json")
       with open(path, "w", encoding="utf-8") as f:
         json.dump(saved, f)
-      self.assertEqual(read_configuration(path).arm, configuration().arm)
+      read = read_configuration(path)
+    self.assertEqual(read["device"].arm, configuration().arm)
+    self.assertNotIn("dropped_feature", read)
 
   def test_nothing_is_saved_before_setup(self):
     driver = PreciseFlexDriver(
@@ -132,7 +149,7 @@ class TestTheRecordedPF400(unittest.IsolatedAsyncioTestCase):
   """The recording shipped with the driver: what one extended-reach PF400 answered."""
 
   def setUp(self):
-    self.recorded = read_configuration(RECORDING_PF400)
+    self.recorded = read_configuration(RECORDING_PF400)["device"]
 
   def test_it_is_the_arm_it_is_named_for(self):
     self.assertEqual(self.recorded.robot_name, "PreciseFlex 400SX")
@@ -150,8 +167,13 @@ class TestTheRecordedPF400(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.recorded.controller_serial, "")
 
   def test_it_is_as_the_driver_writes_it(self):
+    driver = PreciseFlexDriver(
+      host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=80.0
+    )
+    driver._configuration = self.recorded
+    driver._adopt_configuration(self.recorded)
     with open(RECORDING_PF400, encoding="utf-8") as f:
-      self.assertEqual(json.load(f), {"device": to_jsonable(self.recorded)})
+      self.assertEqual(json.load(f), driver._saved_configuration())
 
 
 class TestADeclaredConfigurationIsCrossChecked(unittest.IsolatedAsyncioTestCase):
@@ -165,10 +187,11 @@ class TestADeclaredConfigurationIsCrossChecked(unittest.IsolatedAsyncioTestCase)
       closed_gripper_position=60.0,
       declared_configuration_json=RECORDING_PF400,
     )
-    self.recorded = read_configuration(RECORDING_PF400)
+    self.recorded = read_configuration(RECORDING_PF400)["device"]
 
   def test_the_file_is_read_when_the_driver_is_built(self):
-    self.assertEqual(self.driver.declared, self.recorded)
+    self.assertEqual(self.driver.declared, read_configuration(RECORDING_PF400))
+    self.assertEqual(self.driver.declared["device"], self.recorded)
     self.assertEqual(self.driver.declared_configuration_json, RECORDING_PF400)
 
   def test_another_arm_of_the_same_build_passes(self):
@@ -191,7 +214,7 @@ class TestADeclaredConfigurationIsCrossChecked(unittest.IsolatedAsyncioTestCase)
       (dataclasses.replace(self.recorded, arm=narrowed), "arm.soft_limits"),
       (
         dataclasses.replace(self.recorded, rail=PreciseFlexRailConfiguration((0.0, 1000.0))),
-        "has_rail: declared False, controller answers True",
+        "has_rail: declared False, device answers True",
       ),
     ):
       with self.subTest(named=named), self.assertRaisesRegex(ValueError, named):
@@ -201,7 +224,7 @@ class TestADeclaredConfigurationIsCrossChecked(unittest.IsolatedAsyncioTestCase)
     driver = PreciseFlexDriver(
       host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
     )
-    self.assertIsNone(driver.declared)
+    self.assertEqual(driver.declared, {})
     driver._check_declared_against(configuration())
 
 
@@ -221,7 +244,7 @@ class TestDiscoveryAgainstADeclaration(unittest.IsolatedAsyncioTestCase):
   async def test_a_declaration_for_another_arm_is_refused_and_nothing_is_adopted(self):
     arm = _make_arm(_FakeController(_RAIL_REPLIES), has_rail=True)
     arm.declared = read_configuration(RECORDING_PF400)
-    with self.assertRaisesRegex(ValueError, "has_rail: declared False, controller answers True"):
+    with self.assertRaisesRegex(ValueError, "has_rail: declared False, device answers True"):
       await arm.discover()
     with self.assertRaises(RuntimeError):
       arm.configuration
@@ -231,8 +254,10 @@ class TestTheDerivedConfiguration(unittest.IsolatedAsyncioTestCase):
   """The one file that was not read off an arm: the recording, with three values written in."""
 
   def setUp(self):
-    self.recorded = read_configuration(RECORDING_PF400)
-    self.derived = read_configuration(RECORDING_PF400.replace("400mm", "1160mm_rail_derived"))
+    self.recorded = read_configuration(RECORDING_PF400)["device"]
+    self.derived = read_configuration(RECORDING_PF400.replace("400mm", "1160mm_rail_derived"))[
+      "device"
+    ]
 
   def test_it_is_a_tall_arm_on_a_rail(self):
     self.assertEqual(self.derived.arm.z_range, (1.5, 1161.5))

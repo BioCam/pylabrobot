@@ -18,6 +18,7 @@ from typing import (
 from pylabrobot.brooks.precise_flex import kinematics
 from pylabrobot.brooks.precise_flex.driver.configuration import (
   Axis,
+  DEVICE_FEATURE_CONFIGURATIONS,
   PreciseFlexConfiguration,
   read_configuration,
   to_jsonable,
@@ -179,15 +180,13 @@ class PreciseFlexDriver:
         drives the arm, and models nothing.
       declared_configuration_json: path to a JSON file holding a declared configuration, as
         `save_configuration` writes one. The only way a configuration is read from a file.
-        Discovery cross-checks it against what the controller answers.
+        Discovery cross-checks it against what the device answers.
     """
     super().__init__()
     self.workspace = workspace
     self.declared_configuration_json = declared_configuration_json
-    self.declared: Optional[PreciseFlexConfiguration] = (
-      None
-      if declared_configuration_json is None
-      else read_configuration(declared_configuration_json)
+    self.declared: Dict[str, Any] = (
+      {} if declared_configuration_json is None else read_configuration(declared_configuration_json)
     )
     self.io = Socket(human_readable_device_name="Precise Flex Arm", host=host, port=port)
     self.timeout = timeout
@@ -471,7 +470,7 @@ class PreciseFlexDriver:
     logger.debug("[PreciseFlex %s] connected: port=%s", self.io._host, self.io._port)
 
   def _check_declared_against(self, discovered: "PreciseFlexConfiguration") -> None:
-    """Raise if what was declared cannot stand for what the controller answered.
+    """Raise if what was declared cannot stand for what the device answered.
 
     Only what decides whether the two are the same kind of arm, set up the same way: what is
     fitted, its link and tool lengths, and its soft limits. The model is built from the declared
@@ -479,12 +478,12 @@ class PreciseFlexDriver:
     same build.
 
     Args:
-      discovered: what the controller answered.
+      discovered: what the device answered.
 
     Raises:
       ValueError: If any of those disagree, naming each.
     """
-    declared = self.declared
+    declared = self.declared.get("device")
     if declared is None:
       return
     arm, gripper = declared.arm, declared.gripper
@@ -497,20 +496,20 @@ class PreciseFlexDriver:
       ("gripper.soft_limit_range", gripper.soft_limit_range, discovered.gripper.soft_limit_range),
     )
     differences = [
-      f"{name}: declared {was_declared!r}, controller answers {answered!r}"
+      f"{name}: declared {was_declared!r}, device answers {answered!r}"
       for name, was_declared, answered in must_match
       if was_declared != answered
     ]
     if differences:
       raise ValueError(
-        "the declared configuration does not describe this arm:\n  " + "\n  ".join(differences)
+        "the declared configuration does not describe this device:\n  " + "\n  ".join(differences)
       )
 
   async def discover(self) -> "PreciseFlexConfiguration":
     """Read the controller's configuration and adopt it. No motion.
 
     Raises if the read fails: without it IK solves for another arm and the gripper has no limits.
-    Raises too if a declared configuration does not describe this arm.
+    Raises too if a declared configuration does not describe this device.
 
     Returns:
       The configuration, also kept as ``configuration``.
@@ -1242,12 +1241,24 @@ class PreciseFlexDriver:
   # -- configuration system -----------------------------------------------------------------
 
   def _saved_configuration(self) -> Dict[str, Any]:
-    """What `save_configuration` writes.
+    """Every configuration this device holds, shaped as the device is.
+
+    The device's own configuration, then whatever is fitted to it, each under its feature's name.
+
+    Returns:
+      What `save_configuration` writes.
 
     Raises:
       RuntimeError: If nothing has been read off the device yet.
     """
-    return {"device": to_jsonable(self.configuration)}
+    device = to_jsonable(self.configuration)
+    saved: Dict[str, Any] = {
+      "device": {n: v for n, v in device.items() if n not in DEVICE_FEATURE_CONFIGURATIONS}
+    }
+    for name, feature in (("arm", self.arm), ("gripper", self.gripper), ("rail", self.rail)):
+      if feature is not None and feature.configuration is not None:
+        saved[name] = to_jsonable(feature.configuration)
+    return saved
 
   def save_configuration(self, path: str, indent: Optional[int] = 2) -> None:
     """Write what this device reported to a file, to be declared from later.

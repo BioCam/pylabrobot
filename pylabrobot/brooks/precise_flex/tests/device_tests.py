@@ -162,7 +162,7 @@ class TestBuiltFromADeclaredConfiguration(unittest.IsolatedAsyncioTestCase):
   def test_setup_builds_nothing_twice(self):
     device = pf400(RECORDING_PF400)
     before = [r.name for r in device.get_all_children()]
-    device.driver._create_feature_resources(read_configuration(RECORDING_PF400))
+    device.driver._create_feature_resources(read_configuration(RECORDING_PF400)["device"])
     self.assertEqual([r.name for r in device.get_all_children()], before)
 
 
