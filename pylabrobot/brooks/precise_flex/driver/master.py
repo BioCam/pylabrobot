@@ -17,8 +17,8 @@ from typing import (
 
 from pylabrobot.brooks.precise_flex import kinematics
 from pylabrobot.brooks.precise_flex.driver.configuration import (
-  Axis,
   DEVICE_FEATURE_CONFIGURATIONS,
+  Axis,
   PreciseFlexConfiguration,
   read_configuration,
   to_jsonable,
