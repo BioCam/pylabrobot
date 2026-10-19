@@ -38,7 +38,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# How far below the pick-up window the tools are deposited, in mm: legacy's 235/225 against 215/205.
+# How far below the pick-up window the tools are deposited, in mm.
 _DEPOSIT_BELOW_PICK_UP = 20.0
 # How far below its top a resource may be gripped, in mm: lower, its top presses into the pipetting
 # head the grippers hang from.
@@ -307,7 +307,7 @@ class CoreGrippers:
   ):
     """Send the tool discard as it is given, in tenths of a millimetre. `C0 ZS`.
 
-    Sends no `pa`/`pb`, as legacy: the firmware returns the tools from the channels holding them.
+    Sends no `pa`/`pb`: the firmware returns the tools from the channels holding them.
 
     Args:
       x_position: the holder's x; negative sends `xd1`.
@@ -514,7 +514,7 @@ class CoreGrippers:
     if not tools:
       raise TypeError("the holder carries no CO-RE grip tools to pick up")
 
-    # As legacy: the holder's centre x, its channel y centres, and a 10 mm window below the tops.
+    # The holder's centre x, its channel y centres, and a 10 mm window below the tops.
     deck = self._deck
     loc = holder.get_location_wrt(deck, x="c")
     top = max(tool.get_location_wrt(deck, z="t").z for tool in tools)

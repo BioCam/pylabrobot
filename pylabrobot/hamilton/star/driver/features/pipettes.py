@@ -87,7 +87,7 @@ logger = logging.getLogger(__name__)
 
 ANY_COLUMN = 1e6
 """An X tolerance wider than any deck: X alone never splits a tip command into batches, so spots
-spread across columns go out in one, as legacy sends them."""
+spread across columns go out in one, and the firmware works through the columns itself."""
 
 T = TypeVar("T")
 
@@ -1365,7 +1365,7 @@ class Pipettes:
 
     # Floating point error sometimes puts a reported pair a fraction below its minimum spacing,
     # which the check further down would then refuse. Walk front to back and conform each pair
-    # against what it reported, as legacy does.
+    # against what it reported.
     for channel in range(len(positions) - 2, -1, -1):
       spacing = self._min_spacing_between(channel, channel + 1)
       if positions[channel] - positions[channel + 1] < spacing:
@@ -1444,8 +1444,8 @@ class Pipettes:
 
     The channels not named stay where they are.
 
-    TODO: park the iSWAP first when one is installed. Legacy does, skipping the move when its
-    flag says it is already parked; v1 tracks no such state and has no query for it.
+    TODO: park the iSWAP first when one is installed, skipping the move when it is already
+    parked. This driver tracks no parked state and has no query for it.
 
     Args:
       ys: where to put each named channel, in mm, keyed by channel, 0-indexed from the back.
@@ -1480,8 +1480,8 @@ class Pipettes:
     What a caller reaches for before working a channel by hand, and the device decides where the
     others go.
 
-    TODO: park the iSWAP first when one is installed. Legacy does, skipping the move when its
-    flag says it is already parked; v1 tracks no such state and has no query for it.
+    TODO: park the iSWAP first when one is installed, skipping the move when it is already
+    parked. This driver tracks no parked state and has no query for it.
 
     Args:
       channel: which channel to free, 0-indexed from the back.
@@ -3953,8 +3953,8 @@ class Pipettes:
   ) -> Tuple[List[int], List[int], List[bool]]:
     """Where each channel goes for a tip command, in the form the command carries them.
 
-    As legacy lays them out: one entry per channel up to the last one used, a channel not taking
-    part given zeros, and one trailing unused entry when fewer than every channel is listed.
+    One entry per channel up to the last one used, a channel not taking part given zeros, and one
+    trailing unused entry when fewer than every channel is listed.
 
     Args:
       locations: where each channel goes, on the deck in mm, keyed by channel, ascending.
@@ -3987,8 +3987,8 @@ class Pipettes:
       ys.append(round(centre.y * 10))
       placed[channel] = (centre.x, centre.y)
 
-    # Each pair taking part by itself, as legacy checks them; the firmware arranges the channels
-    # between. Distances in tenths, as the command carries them: 9.0 mm is 9.0 mm, float or not.
+    # Each pair taking part is checked by itself; the firmware arranges the channels between.
+    # Distances in tenths, as the command carries them: 9.0 mm is 9.0 mm, float or not.
     for i, (xi, yi) in placed.items():
       for j, (xj, yj) in placed.items():
         # Channels in different columns are separate moves on the device.
@@ -4235,10 +4235,10 @@ class Pipettes:
     grouped by the model of tip they hold and each group is planned into its own commands. The
     commands go out in ascending X, whichever group they came from, so the arm sweeps once.
 
-    Heights as legacy's `STARBackend.pick_up_tips`: the process begins a collar's height above the
-    highest spot and ends at the spot. Once the device has picked them up, each tip is taken out of
-    its spot and mounted on its channel's shaft. If the command fails, the channels are asked which
-    of them carry a tip, and only those tips move.
+    The process begins a collar's height above the highest spot and ends at the spot. Once the
+    device has picked them up, each tip is taken out of its spot and mounted on its channel's shaft.
+    If the command fails, the channels are asked which of them carry a tip, and only those tips
+    move.
 
     Args:
       tip_spots: where to pick up from, one per channel.
@@ -4252,8 +4252,8 @@ class Pipettes:
         tips allow when None; never below 245.0.
       pickup_method: out of a rack or out of wash liquid. The tip's own when None.
       x_tolerance: how far apart in X two spots may be and still go out in one command, in mm.
-        None lets any two share one, as legacy sends them: the firmware works through the columns
-        itself. Spots in one column too close in Y for their channels are split either way.
+        None lets any two share one: the firmware works through the columns itself. Spots in one
+        column too close in Y for their channels are split either way.
 
     Raises:
       NoTipError: If a spot holds no tip while tip tracking is on.
@@ -4366,10 +4366,10 @@ class Pipettes:
   ) -> Dict[int, bool]:
     """Let each channel's tip go at the place given, in one `C0 TR`, and say which let go.
 
-    Knows nothing of spots: what it is given is where on the deck each channel drops. Heights as
-    legacy's `STARBackend.drop_tips`: `DROP` from the place plus the collar height down by the
-    fitting depth, `PLACE_SHIFT` from 59.9 mm down to 49.9 mm above it. A tip that went is taken
-    off its shaft; where it belongs afterwards is `drop_tips`' to say.
+    Knows nothing of spots: what it is given is where on the deck each channel drops. Heights:
+    `DROP` from the place plus the collar height down by the fitting depth, `PLACE_SHIFT` from
+    59.9 mm down to 49.9 mm above it. A tip that went is taken off its shaft; where it belongs
+    afterwards is `drop_tips`' to say.
 
     Args:
       locations: where each channel drops, on the deck in mm, keyed by channel, ascending.
@@ -4397,7 +4397,7 @@ class Pipettes:
     xs, ys, pattern = self._tip_command_positions(locations)
     target_z = max(location.z for location in locations.values())
     if drop_method == TipDropMethod.PLACE_SHIFT:
-      # Empirical, from legacy: https://github.com/PyLabRobot/pylabrobot/pull/63
+      # Empirical: https://github.com/PyLabRobot/pylabrobot/pull/63
       default_begin, default_end = target_z + 59.9, target_z + 49.9
     else:
       if not all(isinstance(tip, HamiltonTip) for tip in tips):
@@ -4500,9 +4500,8 @@ class Pipettes:
     """Drop each channel's tip into a tip spot, or anywhere on the deck, such as the waste.
 
     Spots are planned into the fewest commands the channels can take at once, as `pick_up_tips`
-    plans them; places given as a coordinate go in one command, as legacy sends a discard. A tip
-    dropped into a spot goes into that spot in the model, one dropped anywhere else belongs to
-    nothing.
+    plans them; places given as a coordinate go in one command. A tip dropped into a spot goes into
+    that spot in the model, one dropped anywhere else belongs to nothing.
 
     The channels may carry tips of different kinds: a `DROP` lowers them all to one height, so the
     channels are grouped by the collar height of the tip they carry and each group is planned into
@@ -4523,7 +4522,7 @@ class Pipettes:
         tips allow when None; never below 245.0.
       minimum_traverse_height_end: where the channels are left, in mm.
       x_tolerance: how far apart in X two spots may be and still go out in one command, in mm.
-        None lets any two share one, as legacy sends them.
+        None lets any two share one.
 
     Raises:
       NoTipError: If a channel carries no tip in the model.
@@ -4613,7 +4612,7 @@ class Pipettes:
           place.assign_tip(tip)
 
   async def return_tips(self, use_channels: Optional[List[int]] = None, **kwargs) -> None:
-    """Put each channel's tip back in the tip spot it was picked up from, as legacy does.
+    """Put each channel's tip back in the tip spot it was picked up from.
 
     The spot is found from the tip itself: a spot names the tips it makes after itself.
 
@@ -4652,7 +4651,7 @@ class Pipettes:
     offsets: Optional[List[Coordinate]] = None,
     **kwargs,
   ) -> None:
-    """Discard each channel's tip into the deck's waste, spread across it as legacy spreads them.
+    """Discard each channel's tip into the deck's waste, the channels spread tightly across it.
 
     Args:
       use_channels: which channels. Every channel the model has a tip on, when None.
@@ -4761,7 +4760,7 @@ class Pipettes:
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_end: Optional[float] = None,
   ) -> Dict[str, bool]:
-    """Find which spots hold a tip by picking each up and putting it back, as legacy's.
+    """Find which spots hold a tip by picking each up and putting it back.
 
     After a pick-up that fails, a channel that answers `08/75` found no tip; any other error is
     raised, and so is a channel still sensing a tip at the end. The tips taken go back into their
@@ -5558,9 +5557,8 @@ class Pipettes:
     """Aspirate at each place given, the channels together, in one `C0 AS`.
 
     Positions and heights on the deck in mm, volumes in uL, speeds in mm/s or uL/s, times in s.
-    Arguments in the order the aspiration runs. No model update: `aspirate` does that. Fields
-    legacy never varied (aspiration type, TADM, recording, second-section search) go as it sent
-    them.
+    Arguments in the order the aspiration runs. No model update: `aspirate` does that. Not exposed,
+    and sent fixed: aspiration type 0, TADM and recording off, no second-section aspiration.
 
     Args:
       use_channels: which channels, 0-indexed from the back, ascending. Every list below is one
@@ -6120,7 +6118,7 @@ class Pipettes:
     if deck is None:
       raise RuntimeError("containers are placed from the deck; this driver was given none")
     n = len(containers)
-    # As legacy travels: at the default height, not Z safety, unless told otherwise.
+    # Travel at the default height, not Z safety, unless told otherwise.
     default = self.default_minimum_traverse_height
     start = default if minimum_traverse_height_start is None else minimum_traverse_height_start
     during = default if minimum_traverse_height_during is None else minimum_traverse_height_during
@@ -6169,7 +6167,7 @@ class Pipettes:
     mixes = per_container("pre_mixes", pre_mixes, n) or [None] * n
 
     def by_class(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:
-      """What is given, else what the liquid classes say, else nothing: legacy's own defaults."""
+      """What is given, else what the liquid classes say, else None: the command's own defaults."""
       return from_class(name, given, n, classes, ASPIRATE_CLASS_ATTRIBUTES)
 
     per_container_settings = {
@@ -6531,7 +6529,7 @@ class Pipettes:
 
     Positions and heights on the deck in mm, volumes in uL, speeds in mm/s or uL/s, times in s.
     Arguments in the order the dispense runs. No model update: `dispense` does that. TADM and
-    recording go as legacy sent them, off.
+    recording are sent off.
 
     Args:
       use_channels: which channels, 0-indexed from the back, ascending. Every list below is one
@@ -6650,7 +6648,7 @@ class Pipettes:
       )
     mix_volume = [m.volume if m is not None else 0.0 for m in mixes]
     mix_count = [m.repetitions if m is not None else 0 for m in mixes]
-    # Idle without a mix; 1.0, as legacy's dispense sends it, so the commands match.
+    # Idle without a mix, so any value does; 1.0 keeps the command fixed.
     mix_speed = [m.flow_rate if m is not None else 1.0 for m in mixes]
     mix_following = [(m.surface_following_distance or 0.0) if m is not None else 0.0 for m in mixes]
 
@@ -6943,7 +6941,7 @@ class Pipettes:
     if deck is None:
       raise RuntimeError("containers are placed from the deck; this driver was given none")
     n = len(containers)
-    # As legacy travels: at the default height, not Z safety, unless told otherwise.
+    # Travel at the default height, not Z safety, unless told otherwise.
     default = self.default_minimum_traverse_height
     start = default if minimum_traverse_height_start is None else minimum_traverse_height_start
     during = default if minimum_traverse_height_during is None else minimum_traverse_height_during
@@ -6998,7 +6996,7 @@ class Pipettes:
     mixes = per_container("post_mixes", post_mixes, n) or [None] * n
 
     def by_class(name: str, given: Optional[Sequence[Any]]) -> Optional[List[Any]]:
-      """What is given, else what the liquid classes say, else nothing: legacy's own defaults."""
+      """What is given, else what the liquid classes say, else None: the command's own defaults."""
       return from_class(name, given, n, classes, DISPENSE_CLASS_ATTRIBUTES)
 
     per_container_settings = {

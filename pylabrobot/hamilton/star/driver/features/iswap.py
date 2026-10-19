@@ -285,10 +285,9 @@ class iSWAPGripperPositions:
 class iSWAPConfiguration:
   """Device parameters for the installed iSWAP.
 
-  Ported from the legacy `iSWAPInformation`. Two kinds of value: per-device calibration read from
-  the device at setup - link lengths, calibrated stops, offsets - which is None until read; and
-  device facts of the 4th-generation iSWAP, the only generation supported, which are defaulted.
-  Neither changes at runtime.
+  Two kinds of value: per-device calibration read from the device at setup - link lengths,
+  calibrated stops, offsets - which is None until read; and device facts of the 4th-generation
+  iSWAP, the only generation supported, which are defaulted. Neither changes at runtime.
   """
 
   module: str = "R0"
@@ -719,8 +718,8 @@ class iSWAP:
   default_minimum_traverse_height: float = 284.0
   """How high the arm lifts to before it travels, in mm, when a caller names no height.
 
-  What legacy sends. Parking drives the arm down to its nest, so this is what holds it clear of the
-  deck until it is home."""
+  Parking drives the arm down to its nest, so this is what holds it clear of the deck until it is
+  home."""
 
   def __init__(self, driver: "STARDriver", configuration: Optional[iSWAPConfiguration] = None):
     """
@@ -1457,8 +1456,8 @@ class iSWAP:
   async def elbow_request_z_position(self) -> float:
     """Read where the elbow's lowest point is along Z.
 
-    The drive reports two counters, the firmware's and the hardware's. The hardware counter is
-    the one read, as legacy reads it.
+    The drive reports two counters, the firmware's and the hardware's. The hardware counter is the
+    one read.
 
     Returns:
       The elbow's bottom Z in mm.
@@ -1774,7 +1773,7 @@ class iSWAP:
     increments = c.wrist_deg_to_increments(wrist_deg)
     # A stop's own angle converts back to the increment this arm stores for it, so a named
     # direction off a named elbow stop lands there without being pushed. What is left is rounding:
-    # an angle a hair off a stop takes the stop, which is the tolerance legacy used.
+    # an angle within one increment of a stop takes the stop.
     for stored, _ in (
       (c.wrist_drive_predefined_increments.right, -135.0),
       (c.wrist_drive_predefined_increments.straight, -45.0),

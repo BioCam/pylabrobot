@@ -74,8 +74,7 @@ SIDE_PANEL_ORIGIN_YZ = (52.8, 180.5)
 # file was drawn rather than how the devices differ. This is the median, and the STARlet's, which
 # is the frame the rest of this is measured against.
 SIDE_PANEL_X = 5.0
-# What it used to be, before there was a part to measure: an unsourced 245.0 that only widened the
-# device. Kept as a name because the tests measure the housing against it.
+# Kept as a name because the tests measure the housing against it.
 EXTENSION_HOUSING_SIZE_X = EXTENSION_HOUSING_SIZE[0]
 MANUAL_SIZE_Y = 785.8
 SIZE_Z = 903.0
@@ -103,11 +102,7 @@ AUTOLOAD_TRAY_PROUD_Y = 221.2
 #
 # The duct and the deck's own front edge, 181.3 mm behind the front face, read the same in the CAD
 # master and in the manufacturer's chassis models, and the same on all three frames - so STAR and
-# STARlet share this figure rather than differing as they used to.
-#
-# What this replaces: 116.0 on a STAR and 106.0 on a STARlet, derived as `795 - 119 - 560` and
-# `790 - 124 - 560` from depths that have since been measured. Those drove every carrier 21.2 mm
-# and 11.2 mm respectively into the duct.
+# STARlet share this figure.
 DECK_ORIGIN_Y = 97.8
 
 # How far right the deck sits from where a 2021 STAR was measured. Two parts the manufacturer draws
@@ -126,8 +121,7 @@ DECK_ORIGIN_X_CORRECTION = 6.215
 #      origin is 100 mm below the surface. The surface itself is measured on the manufacturer's
 #      models: the deck plate is 2.5 mm thick, its underside on the platform's top plate, and its
 #      TOP - which is what a carrier rests on - is 180.5 mm above the device's base. The same
-#      on all three frames. What this replaces is an unsourced 78.5, which put the work surface at
-#      178.5 and so seated every carrier 2.0 mm inside the plate it stands on.
+#      on all three frames.
 STAR_DECK_LOCATION = Coordinate(110.0 + DECK_ORIGIN_X_CORRECTION, DECK_ORIGIN_Y, 80.5)
 # The STARlet's x is not measured: its chassis leaves the same 119 mm beyond its deck as the STAR's
 # does, so it takes the same value until someone measures one.

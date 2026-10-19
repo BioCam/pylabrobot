@@ -28,7 +28,7 @@ ScannerRotation = Literal["vertical", "horizontal", "undefined"]
 # Which way a 2D reader looks. A 1D scanner has no such setting.
 ScanDirection = Literal["vertical", "horizontal", "omnidirectional", "vertical and horizontal"]
 
-# The mask each symbology holds. `ANY 1D` is legacy's wildcard, the seven the master names.
+# The mask each symbology holds. `ANY 1D` is the wildcard: the seven the master names.
 SYMBOLOGY_MASKS_1D: Dict[Barcode1DSymbology, int] = {
   "ISBT Standard": 0x01,
   "Code 128 (Subset B and C)": 0x02,
@@ -1630,7 +1630,7 @@ class Autoload:
       raise ValueError(f"no carrier at track {track}; is it on the right loading tray position?")
 
     # The command that reads the carrier's barcode is also the one that pulls it in off the tray,
-    # so it runs either way, as in legacy; the flag only decides whether the barcode is returned.
+    # so it runs either way; the flag only decides whether the barcode is returned.
     carrier_barcode = await self.load_carrier_from_tray_and_scan_carrier_barcode(track)
     if not carrier_barcode_reading:
       carrier_barcode = None

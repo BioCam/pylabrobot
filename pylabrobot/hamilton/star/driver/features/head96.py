@@ -57,9 +57,9 @@ InstrumentType = Literal["legacy", "FM-STAR"]
 class Head96Configuration(HeadConfiguration):
   """Device facts for the installed 96-head.
 
-  Ported from the legacy `Head96Information`. What this head adds to `HeadConfiguration` is what
-  it reports about itself beyond the shared flags, and the firmware generation that resolves its
-  drive windows: the encodings shifted at 2013, and a head reports which side of that it is on.
+  What this head adds to `HeadConfiguration` is what it reports about itself beyond the shared
+  flags, and the firmware generation that resolves its drive windows: the encodings shifted at 2013,
+  and a head reports which side of that it is on.
   """
 
   module: str = "H0"
@@ -544,7 +544,7 @@ class Head96(Head):
     channel: str = "A1",
     tip_spot: str = "A1",
   ) -> None:
-    """Pick up tips from a rack on the head, as legacy's `pick_up_tips96`. `C0 EP`.
+    """Pick up tips from a rack onto the head. `C0 EP`.
 
     Head channel `channel` goes to the centre of spot `tip_spot`, at the spot's Z. Once the device
     has picked them up, each channel over a spot holding a tip has that tip on its shaft; a
@@ -652,7 +652,7 @@ class Head96(Head):
     channel: str = "A1",
     tip_spot: str = "A1",
   ) -> None:
-    """Drop the head's tips into a tip rack or anywhere else, as legacy's `drop_tips96`. `C0 ER`.
+    """Drop the head's tips into a tip rack or anywhere else. `C0 ER`.
 
     Into a tip rack, head channel `channel` goes to the centre of spot `tip_spot`, at the spot's
     Z, and each channel's tip goes into the spot under it. That needs tip tracking, so a tip on a

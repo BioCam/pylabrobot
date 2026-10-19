@@ -255,11 +255,10 @@ class STARDriver:
       # 2. Bring the device to a known state. The autoload homes alongside it: it is its own
       #    unit, and the device procedure holds every drive but its. Phase 3 reads its state
       #    again, so a device that does home it there loses nothing but the overlap.
-      #    It runs alone. The autoload used to be brought up alongside it, to save the time the
-      #    procedure takes, and that put a C0 command and an I0 command in flight together: on
-      #    2026-09-04 the autoload answered one with the id of its own previous command, and the
-      #    caller waited for a reply that had already arrived. Legacy runs the procedure by itself
-      #    and gathers the modules afterwards; so does this.
+      #    It runs alone, and the modules are gathered afterwards. Bringing the autoload up
+      #    alongside it puts a C0 command and an I0 command in flight together, and on 2026-09-04
+      #    the autoload answered one with the id of its own previous command, leaving the caller
+      #    waiting for a reply that had already arrived.
       logger.debug("[PHASE 2] Device initialization")
       autoload = self.autoload if not skip_autoload else None
       already_initialized = await self.request_initialization_status()
@@ -1384,9 +1383,9 @@ class STARDriver:
   ):
     """Initialize everything one arm carries, one after another.
 
-    The channels, the iSWAP and the 96-head share the arm's X drive. Initializing one while
-    another is moving is refused, so they go in the order the legacy routine uses. Two arms have
-    two drives, and a device with both initializes them alongside each other.
+    The channels, the iSWAP and the 96-head share the arm's X drive. Initializing one while another
+    is moving is refused, so they go one after another. Two arms have two drives, and a device with
+    both initializes them alongside each other.
 
     Args:
       arm: the arm whose features to initialize.
