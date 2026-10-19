@@ -63,6 +63,12 @@ The chassis, link and gripper files are split from a model of the standard-reach
 by the shoulder axis and its joints. The links are lengthened to the extended reach by moving the
 far half of each out.
 
+The base plate and the column are the outer parts only, cut from Brooks' IGES model
+(`Assy_Main_ProdC_Precise_400_ShellEXT_PF400_101216.IGS`): the bare plate, and the
+extrusion, top plate and front cover, with the connector panel that shows in the column's side.
+What stands inside the column - the rest of the electronics bracket and the upper Z idler - is
+left out.
+
 A link is as long as the controller reports between its joints, plus the hub past each joint, so
 one factory serves both reaches. The driver hangs the carriage, the links and the gripper at
 setup, each by its joint, and every joint read stands and turns them to what was read.
