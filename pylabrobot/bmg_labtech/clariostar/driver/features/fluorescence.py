@@ -956,6 +956,22 @@ class Fluorescence(Measurement):
 
   # -- detecting -----------------------------------------------------------------------------------
 
+  def _check_filter_detection_available(self) -> None:
+    """Raise unless the reader reports what filter detection scans with.
+
+    Raises:
+      RuntimeError: if the reader reports no spectrometer (absorbance), or no extended-red
+        photomultiplier for the emission scans, whose limits are verified only with one.
+    """
+    device = self._driver.configuration
+    if device.spectrometer is False or device.absorbance_available is False:
+      raise RuntimeError("the reader reports no spectrometer, which filter detection scans with")
+    if device.extended_red_photomultiplier_tube is False:
+      raise RuntimeError(
+        "the reader reports no extended-red photomultiplier; the emission scans' limits are only "
+        "verified with one"
+      )
+
   async def _detect_filter(self, slide: str, slot: int) -> bytes:
     """Scan one filter position (`24`) and return its FILTER_RESULT reply.
 
@@ -1034,14 +1050,7 @@ class Fluorescence(Measurement):
         `_EMISSION_FILTER_SCAN_TIMEOUT` for emission).
       ValueError: if a FILTER_RESULT is not one of its position.
     """
-    device = self._driver.configuration
-    if device.spectrometer is False or device.absorbance_available is False:
-      raise RuntimeError("the reader reports no spectrometer, which filter detection scans with")
-    if device.extended_red_photomultiplier_tube is False:
-      raise RuntimeError(
-        "the reader reports no extended-red photomultiplier; the emission scans' limits are only "
-        "verified with one"
-      )
+    self._check_filter_detection_available()
     excitation_slide = ExcitationFilterSlide(self.configuration.excitation_filter_slots)
     dichroic_slide = DichroicFilterSlide(self.configuration.dichroic_filter_slots)
     emission_slide = EmissionFilterSlide(self.configuration.emission_filter_slots)
@@ -1213,6 +1222,31 @@ class Fluorescence(Measurement):
 
   # -- measuring -----------------------------------------------------------------------------------
 
+  def _get_z_profile_parameters(
+    self,
+    fluorescence_channel: FluorescenceChannel,
+    well: Well,
+    gain_target_percent: Optional[float],
+    maximum_focal_height: float,
+    timeout: Optional[float],
+  ) -> Tuple[Plate, FluorescenceChannel, bytes]:
+    """The plate, the filled fluorescence channel and the `09` parameters, every argument checked.
+
+    Raises:
+      RuntimeError: if no plate is in the plate holder.
+      ValueError: if an argument is out of range (`_check_z_profile_arguments`), or `well` is not
+        on the plate.
+    """
+    filled = self._get_filled_fluorescence_channel(fluorescence_channel)
+    self._check_z_profile_arguments(
+      filled, maximum_focal_height, gain_target_percent, timeout=timeout
+    )
+    plate, _ = self._get_plate_and_wells(MeasurementSettings(), None, [well])
+    parameters = self._compute_z_profile_parameters(
+      plate, well, filled, maximum_focal_height, gain_target_percent
+    )
+    return plate, filled, parameters
+
   async def _run_z_profile(self, parameters: bytes, timeout: float) -> bytes:
     """Send a z-scan (`09`) and return its FOCUS_RESULT reply.
 
@@ -1288,13 +1322,8 @@ class Fluorescence(Measurement):
         the well is not on the plate, or the reply is not a z-profile.
       TimeoutError: if the z-scan takes longer than `timeout` seconds.
     """
-    filled = self._get_filled_fluorescence_channel(fluorescence_channel)
-    self._check_z_profile_arguments(
-      filled, maximum_focal_height, gain_target_percent, timeout=timeout
-    )
-    plate, _ = self._get_plate_and_wells(MeasurementSettings(), None, [well])
-    parameters = self._compute_z_profile_parameters(
-      plate, well, filled, maximum_focal_height, gain_target_percent
+    plate, filled, parameters = self._get_z_profile_parameters(
+      fluorescence_channel, well, gain_target_percent, maximum_focal_height, timeout
     )
     logger.info(
       "z-profile: %s on %s of %s, gain target %s %%",
@@ -1469,6 +1498,61 @@ class Fluorescence(Measurement):
 
   # -- measuring -----------------------------------------------------------------------------------
 
+  def _get_run_parameters(
+    self,
+    fluorescence_channels: Sequence[FluorescenceChannel],
+    gains: Sequence[int],
+    focal_height: Optional[float],
+    measurement: MeasurementSettings,
+    shake: Optional[ShakeSettings],
+    wells: Optional[List[Well]],
+    *,
+    timeout: Optional[float],
+    optic_position: OpticPosition,
+    flying_mode: bool,
+    enhanced_dynamic_range: bool,
+  ) -> Tuple[Plate, List[Well], bytes]:
+    """The plate, the wells and the RUN parameters of a read, every argument checked.
+
+    Raises:
+      RuntimeError: if no plate is in the plate holder.
+      ValueError: if an argument is out of range (`_check_arguments`), a matrix scan has several
+        wells, or the settings cannot read the wells of the plate (`_get_plate_and_wells`).
+    """
+    self._check_arguments(
+      fluorescence_channels,
+      gains,
+      focal_height,
+      measurement,
+      timeout=timeout,
+      optic_position=optic_position,
+      flying_mode=flying_mode,
+      enhanced_dynamic_range=enhanced_dynamic_range,
+    )
+    plate, measured = self._get_plate_and_wells(measurement, shake, wells)
+    if focal_height is None:
+      focal_height = self._get_default_focal_height(measured)
+    if measurement.well_scan == "matrix" and len(measured) > 1:
+      # No fluorescence matrix of several wells is verified: its reply layout is unknown.
+      raise ValueError(f"a fluorescence matrix scan reads one well, got {len(measured)}")
+    parameters = self._compute_run_parameters(
+      plate,
+      measured,
+      measurement,
+      shake,
+      focal_height=focal_height,
+      kind=self._DISCRETE,
+      count=len(fluorescence_channels),
+      encoded_fluorescence_channels=[
+        self._encode_fluorescence_channel(fluorescence_channel, gain)
+        for fluorescence_channel, gain in zip(fluorescence_channels, gains)
+      ],
+      optics=self._OPTIC_POSITIONS[optic_position],
+      flying_mode=flying_mode,
+      enhanced_dynamic_range=enhanced_dynamic_range,
+    )
+    return plate, measured, parameters
+
   def _get_fluorescence_channels_and_gains(
     self,
     fluorescence_channels: Union[FluorescenceChannel, Sequence[FluorescenceChannel]],
@@ -1579,35 +1663,15 @@ class Fluorescence(Measurement):
     if optic_position is None:
       optic_position = self._default_optic_position
     filled, gains = self._get_fluorescence_channels_and_gains(fluorescence_channels, gain)
-    self._check_arguments(
+    plate, wells, parameters = self._get_run_parameters(
       filled,
       gains,
       focal_height,
       measurement,
+      shake_settings,
+      wells,
       timeout=timeout,
       optic_position=optic_position,
-      flying_mode=flying_mode,
-      enhanced_dynamic_range=enhanced_dynamic_range,
-    )
-    plate, wells = self._get_plate_and_wells(measurement, shake_settings, wells)
-    if focal_height is None:
-      focal_height = self._get_default_focal_height(wells)
-    if measurement.well_scan == "matrix" and len(wells) > 1:
-      # No fluorescence matrix of several wells is verified: its reply layout is unknown.
-      raise ValueError(f"a fluorescence matrix scan reads one well, got {len(wells)}")
-    parameters = self._compute_run_parameters(
-      plate,
-      wells,
-      measurement,
-      shake_settings,
-      focal_height=focal_height,
-      kind=self._DISCRETE,
-      count=len(filled),
-      encoded_fluorescence_channels=[
-        self._encode_fluorescence_channel(fluorescence_channel, gain)
-        for fluorescence_channel, gain in zip(filled, gains)
-      ],
-      optics=self._OPTIC_POSITIONS[optic_position],
       flying_mode=flying_mode,
       enhanced_dynamic_range=enhanced_dynamic_range,
     )
@@ -1809,6 +1873,81 @@ class Fluorescence(Measurement):
 
   # -- measuring -----------------------------------------------------------------------------------
 
+  def _get_fixed_fluorescence_channel(
+    self,
+    excitation_wavelength: Optional[float],
+    excitation_bandwidth: Optional[float],
+    emission_wavelength: Optional[float],
+    emission_bandwidth: Optional[float],
+  ) -> FluorescenceChannel:
+    """A spectrum's fixed light path, its bandwidths filled; the scanned side has no wavelength."""
+    return self._get_filled_fluorescence_channel(
+      FluorescenceChannel(
+        excitation_wavelength=excitation_wavelength,
+        excitation_bandwidth=excitation_bandwidth,
+        emission_wavelength=emission_wavelength,
+        emission_bandwidth=emission_bandwidth,
+      )
+    )
+
+  def _get_spectrum_run_parameters(
+    self,
+    scan: Scan,
+    start_wavelength: int,
+    end_wavelength: int,
+    step_size: int,
+    fixed: FluorescenceChannel,
+    gain: int,
+    focal_height: Optional[float],
+    measurement: MeasurementSettings,
+    shake: Optional[ShakeSettings],
+    wells: Optional[List[Well]],
+    *,
+    timeout: Optional[float],
+  ) -> Tuple[Plate, List[Well], bytes]:
+    """The plate, the wells and the RUN parameters of a spectrum, every argument checked.
+
+    Raises:
+      RuntimeError: if no plate is in the plate holder.
+      ValueError: if an argument is out of range (`_check_spectrum_arguments`), or the settings
+        cannot read the wells of the plate (`_get_plate_and_wells`).
+    """
+    self._check_spectrum_arguments(
+      scan,
+      start_wavelength,
+      end_wavelength,
+      step_size,
+      fixed,
+      gain,
+      focal_height,
+      measurement,
+      timeout=timeout,
+    )
+    plate, measured = self._get_plate_and_wells(measurement, shake, wells)
+    if focal_height is None:
+      focal_height = self._get_default_focal_height(measured)
+    start = self._get_scanned_fluorescence_channel(fixed, scan, start_wavelength)
+    end = self._get_scanned_fluorescence_channel(fixed, scan, end_wavelength)
+    # The scanned monochromator's selector 02, the fixed one's 03, emission then excitation.
+    scanned = self._WAVELENGTH_SELECTORS["scanned_monochromator"]
+    fixed_selector = self._WAVELENGTH_SELECTORS["fixed_monochromator"]
+    selectors = (fixed_selector, scanned) if scan == "excitation" else (scanned, fixed_selector)
+    parameters = self._compute_run_parameters(
+      plate,
+      measured,
+      measurement,
+      shake,
+      focal_height=focal_height,
+      kind=self._SPECTRUM,
+      count=end_wavelength - start_wavelength + 1,
+      encoded_fluorescence_channels=[
+        self._encode_fluorescence_channel(start, gain, selectors),
+        self._encode_fluorescence_channel(end, gain, selectors),
+      ],
+      scan_byte=self._SPECTRUM_SCAN_BYTE,
+    )
+    return plate, measured, parameters
+
   async def measure_spectrum(
     self,
     *,
@@ -1870,15 +2009,10 @@ class Fluorescence(Measurement):
       FrameError: if a data page arrives short on the second read too.
     """
     measurement = MeasurementSettings() if measurement_settings is None else measurement_settings
-    fixed = self._get_filled_fluorescence_channel(
-      FluorescenceChannel(
-        excitation_wavelength=excitation_wavelength,
-        excitation_bandwidth=excitation_bandwidth,
-        emission_wavelength=emission_wavelength,
-        emission_bandwidth=emission_bandwidth,
-      )
+    fixed = self._get_fixed_fluorescence_channel(
+      excitation_wavelength, excitation_bandwidth, emission_wavelength, emission_bandwidth
     )
-    self._check_spectrum_arguments(
+    plate, wells, parameters = self._get_spectrum_run_parameters(
       scan,
       start_wavelength,
       end_wavelength,
@@ -1887,32 +2021,12 @@ class Fluorescence(Measurement):
       gain,
       focal_height,
       measurement,
+      shake_settings,
+      wells,
       timeout=timeout,
     )
-    plate, wells = self._get_plate_and_wells(measurement, shake_settings, wells)
-    if focal_height is None:
-      focal_height = self._get_default_focal_height(wells)
     start = self._get_scanned_fluorescence_channel(fixed, scan, start_wavelength)
-    end = self._get_scanned_fluorescence_channel(fixed, scan, end_wavelength)
     wavelengths = list(range(start_wavelength, end_wavelength + 1))
-    # The scanned monochromator's selector 02, the fixed one's 03, emission then excitation.
-    scanned = self._WAVELENGTH_SELECTORS["scanned_monochromator"]
-    fixed_selector = self._WAVELENGTH_SELECTORS["fixed_monochromator"]
-    selectors = (fixed_selector, scanned) if scan == "excitation" else (scanned, fixed_selector)
-    parameters = self._compute_run_parameters(
-      plate,
-      wells,
-      measurement,
-      shake_settings,
-      focal_height=focal_height,
-      kind=self._SPECTRUM,
-      count=len(wavelengths),
-      encoded_fluorescence_channels=[
-        self._encode_fluorescence_channel(start, gain, selectors),
-        self._encode_fluorescence_channel(end, gain, selectors),
-      ],
-      scan_byte=self._SPECTRUM_SCAN_BYTE,
-    )
     timeout = self.default_read_timeout if timeout is None else timeout
     if measurement.well_scan != "point":
       self._warn_untested(f"a fluorescence spectrum with {measurement.well_scan} averaging")
