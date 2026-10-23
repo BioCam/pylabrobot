@@ -64,6 +64,7 @@ machine-agnostic-features/event-bus
 machine-agnostic-features/writing-robot-agnostic-protocols
 machine-agnostic-features/tip-spot-generators
 machine-agnostic-features/logging-and-validation/logging-and-validation
+machine-agnostic-features/measurement-results
 machine-agnostic-features/error-handling-general
 machine-agnostic-features/sila-discovery
 machine-agnostic-features/manual-operator
