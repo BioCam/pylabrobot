@@ -24,6 +24,7 @@ from pylabrobot.bmg_labtech.clariostar.driver.master_tests import (
   make_driver,
   parse_status,
 )
+from pylabrobot.lib.fluorescence import FluorescenceChannel
 from pylabrobot.resources import Coordinate, Plate
 from pylabrobot.resources.biorad.plates import biorad_96_wellplate_200uL_Vb
 from pylabrobot.resources.corning.plates import cor_96_wellplate_2mL_Vb
@@ -174,6 +175,17 @@ class SimulatorTests(unittest.IsolatedAsyncioTestCase):
     self.assertTrue(await driver.request_absorbance_available())
     self.assertEqual(await driver.request_fluorescence_channels(), 1)
     self.assertFalse(await driver.request_well_1536_plates_supported())
+
+  async def test_a_simulated_read_carries_its_focal_height_and_optic_position(self):
+    await self.reader.drawer.open()
+    self.reader.plate_holder.assign_child_resource(make_plate("plate"))
+    await self.reader.drawer.close()
+    fluorescence, luminescence = self.reader.fluorescence, self.reader.luminescence
+    assert fluorescence is not None and luminescence is not None
+    channel = FluorescenceChannel(excitation_wavelength=485, emission_wavelength=528)
+    result = await fluorescence.measure(channel, gain=1000, focal_height=8.0)
+    self.assertEqual((result.focal_height, result.optic_position), (8.0, "top"))
+    self.assertEqual((await luminescence.measure(focal_height=8.0)).focal_height, 8.0)
 
   async def test_nothing_reaches_a_wire(self):
     driver = self.reader.driver

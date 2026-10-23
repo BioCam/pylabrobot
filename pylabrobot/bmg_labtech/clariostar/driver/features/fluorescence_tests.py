@@ -644,6 +644,7 @@ class SessionTests(unittest.IsolatedAsyncioTestCase):
     )
     self.assertEqual(io.written[1], bytes.fromhex(session["fluorescence_column_1_run"]))
     self.assertEqual(list(result.data.values()), [68.0, 62.0, 72.0, 64.0, 67.0, 69.0, 67.0, 68.0])
+    self.assertEqual((result.focal_height, result.optic_position), (8.5, "top"))
 
 
 class DefaultFocalHeightTests(unittest.IsolatedAsyncioTestCase):
@@ -669,6 +670,17 @@ class DefaultFocalHeightTests(unittest.IsolatedAsyncioTestCase):
             cor_96_wellplate_360uL_Fb("plate"), None, focal_height=focal_height
           ),
         )
+
+  async def test_the_result_carries_the_focal_height_read_at(self):
+    session = load_session_replies()
+    io = FakeFTDI()
+    io.replies = [STATUS_IDLE, RUN_REPLY, STATUS_MEASURING, STATUS_MEASURED]
+    io.replies.append(bytes.fromhex(session["fluorescence_column_1_reply"]))
+    plate = cor_96_wellplate_360uL_Fb("plate")
+    result = await make_fluorescence(io, plate).measure(
+      BASELINE, wells=plate.get_items("A1:H1"), gain=1000
+    )
+    self.assertEqual(result.focal_height, 6.2)  # a quarter up the well, as the RUN sent
 
   async def test_the_percent_is_checked_when_set(self):
     feature = make_fluorescence(FakeFTDI(), cor_96_wellplate_360uL_Fb("plate"))
@@ -1812,6 +1824,7 @@ class GridTests(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(payloads.count(bytes.fromhex("05020000000000")), 2)
     self.assertEqual(payloads[-1], bytes.fromhex("05040000000000"))
     self.assertEqual([result.well for result in results], ["A1", "H12"])
+    self.assertEqual([result.temperature for result in results], [None, None])
     first, last = results
     assert first.center is not None and last.center is not None
     self.assertAlmostEqual(first.center.x, 14.45)
