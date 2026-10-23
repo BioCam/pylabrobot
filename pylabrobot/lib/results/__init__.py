@@ -1,1 +1,1 @@
-"""Plate-reader results as tidy tables: one row per observed value, every setting a column."""
+"""Plate-reader results as tidy tables, and written to a directory as the reader delivers them."""

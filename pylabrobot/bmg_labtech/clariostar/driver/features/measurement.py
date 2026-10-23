@@ -6,13 +6,33 @@ mode's own. The reply data comes back row by row over the measured wells.
 """
 
 import asyncio
+import contextlib
 import logging
 import math
 import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import TYPE_CHECKING, Dict, List, Literal, Optional, Sequence, Set, Tuple
+from typing import (
+  TYPE_CHECKING,
+  Any,
+  Callable,
+  Dict,
+  Iterator,
+  List,
+  Literal,
+  Optional,
+  Sequence,
+  Set,
+  Tuple,
+)
 
+from pylabrobot.lib.results.directory import (
+  append_reply,
+  append_results,
+  check_directory,
+  start_writing,
+  stop_writing,
+)
 from pylabrobot.resources import Plate, Well
 
 from ..errors import CommandRefusedError, FrameError
@@ -280,6 +300,13 @@ class Measurement:
     self.configuration = configuration
     self._default_read_timeout = 600.0  # 200 flashes on 96 wells take 223 s
     self._warned_untested: Set[str] = set()
+    self._default_results_directory: Optional[str] = None
+    # The directory the running measurement writes to, the next read's number, and the first
+    # read and the pages so far of the run on the reader.
+    self._results_directory: Optional[str] = None
+    self._next_read = 0
+    self._run_first_read = 0
+    self._run_pages = 0
 
   # -- defaults and warnings -----------------------------------------------------------------------
 
@@ -293,6 +320,18 @@ class Measurement:
     if not value > 0:
       raise ValueError(f"default_read_timeout must be positive, got {value}")
     self._default_read_timeout = value
+
+  @property
+  def default_results_directory(self) -> Optional[str]:
+    """The directory a measurement given none writes its results to; None writes none."""
+    return self._default_results_directory
+
+  @default_results_directory.setter
+  def default_results_directory(self, value: Optional[str]) -> None:
+    """Set the default, creating it if missing; raising if it cannot be created or written."""
+    if value is not None:
+      check_directory(value)
+    self._default_results_directory = value
 
   def _warn_untested(self, what: str) -> None:
     """Warn once per reader that `what` has not run on hardware with this driver."""
@@ -314,6 +353,97 @@ class Measurement:
         len(counts),
         ceiling,
       )
+
+  # -- results directory ---------------------------------------------------------------------------
+
+  @contextlib.contextmanager
+  def _writing_results(self, results_directory: Optional[str]) -> Iterator[None]:
+    """Write the measurement's replies and rows to `results_directory` while in this context.
+
+    `default_results_directory` when None; neither writes nothing. The lock is released on leaving.
+
+    Raises:
+      ValueError, RuntimeError, OSError: as `start_writing`, before the measurement starts.
+    """
+    if results_directory is None:
+      results_directory = self._default_results_directory
+    if results_directory is None:
+      yield
+      return
+    configuration = self._driver.configuration
+    device = {
+      "model": configuration.model,
+      "serial_number": configuration.serial_number,
+      "firmware_version": configuration.firmware_version,
+    }
+    path, self._next_read = start_writing(results_directory, device=device)
+    self._results_directory = path
+    try:
+      yield
+    finally:
+      self._results_directory = None
+      stop_writing(path)
+
+  def _start_run(self) -> None:
+    """Number the data replies of a run on the reader from its first read, page 1."""
+    self._run_first_read = self._next_read
+    self._run_pages = 0
+
+  def _append_reply(self, reply: bytes) -> None:
+    """Append a data reply to the results directory, if one is written."""
+    if self._results_directory is not None:
+      self._run_pages += 1
+      append_reply(
+        self._results_directory, read=self._run_first_read, page=self._run_pages, reply=reply
+      )
+
+  def _end_read(self) -> None:
+    """End the next read: later rows take the one after it (a spectrum written page by page)."""
+    self._next_read += 1
+
+  def _end_failed_run(self) -> None:
+    """End the next read if the failed run appended replies to it: a run measured again takes
+    the read after."""
+    if self._run_pages:
+      self._end_read()
+
+  def _append_results(
+    self,
+    results: Sequence[Any],
+    *,
+    plate: Optional[Plate] = None,
+    ceiling: Optional[float] = None,
+    ends_reads: bool = True,
+  ) -> None:
+    """Append the rows of `results` to the results directory, if one is written.
+
+    Args:
+      results, plate, ceiling: as `get_table`; the rows are numbered from the next read.
+      ends_reads: each result ends a read; False for part of the next read (`_end_read` ends it).
+    """
+    if self._results_directory is not None:
+      append_results(
+        self._results_directory, results, plate=plate, first_read=self._next_read, ceiling=ceiling
+      )
+    if ends_reads:
+      self._next_read += len(results)
+
+  def _write_results(
+    self,
+    results_directory: Optional[str],
+    results: Sequence[Any],
+    *,
+    plate: Optional[Plate] = None,
+    ceiling: Optional[float] = None,
+  ) -> None:
+    """Append the rows of `results` to `results_directory` at once: a simulated read's.
+
+    Args:
+      results_directory: as `_writing_results`.
+      results, plate, ceiling: as `_append_results`.
+    """
+    with self._writing_results(results_directory):
+      self._append_results(results, plate=plate, ceiling=ceiling)
 
   # -- checks of the detector's modes, fluorescence and luminescence -------------------------------
 
@@ -613,16 +743,20 @@ class Measurement:
   async def _request_page(self, retries: int) -> bytes:
     """Request one data page (`05 02 00 00 00 00 00`) while the reader may still be busy.
 
+    The page is appended to the results directory, if one is written.
+
     Args:
       retries: attempts on a missing or malformed reply (`send_command`).
     """
-    return await self._driver.send_command(
+    reply = await self._driver.send_command(
       self._driver.CommandFamily.REQUEST,
       self._driver.Command.DATA,
       parameters=bytes(5),
       when_idle=False,
       retries=retries,
     )
+    self._append_reply(reply)
+    return reply
 
   async def _request_data(self, values: Optional[int]) -> List[bytes]:
     """The data replies of a finished read: one, or with `values`, pages until that many values
@@ -678,6 +812,7 @@ class Measurement:
     values: Optional[int] = None,
     *,
     progressive_pages: Optional[int] = None,
+    on_page: Optional[Callable[[bytes], None]] = None,
   ) -> Tuple[List[bytes], datetime]:
     """Send RUN and return the data replies, and when they were read.
 
@@ -693,12 +828,14 @@ class Measurement:
       values: the values the read returns, for data that comes in pages; None for one reply.
       progressive_pages: the pages of data that comes a page at a time during the run; None
         otherwise.
+      on_page: called with each page of such data as it arrives; it must not raise.
 
     Raises:
       TimeoutError: if the run takes longer than `timeout` seconds.
       RuntimeError: if the run ends without reporting its data ready, or before all its pages.
       ValueError: if a data page holds no values.
     """
+    self._start_run()
     await self._unchecked_fw_run(parameters)
     replies: Optional[List[bytes]] = None
     pages: List[bytes] = []
@@ -717,6 +854,8 @@ class Measurement:
           if ready and len(pages) < progressive_pages:
             pages.append(await self._request_page(retries=1))
             read_at = datetime.now()
+            if on_page is not None:
+              on_page(pages[-1])
           if len(pages) == progressive_pages:
             replies = pages
           elif not busy and not ready:

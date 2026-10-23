@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import (
   TYPE_CHECKING,
+  Callable,
   Dict,
   List,
   Literal,
@@ -1450,11 +1451,13 @@ class Fluorescence(Measurement):
     return side, int.from_bytes(reply[9:11], "big") / 1000
 
   @classmethod
-  def _decode_grid(cls, reply: bytes, side: int) -> Tuple[Tuple[int, int], List[List[int]]]:
-    """A grid's well and counts, from its data reply.
+  def _decode_grid(cls, reply: bytes, side: int) -> Tuple[Tuple[int, int], List[List[int]], int]:
+    """A grid's well, counts and ceiling, from its data reply (a spectrum page's layout,
+    `_SPECTRUM_LAYOUT`).
 
-    Bytes 7-8 the points, 23-24 and 25-26 the well's column and row (from 1, u16 BE), then the
-    counts, u32 BE from byte 34, `side` to a row.
+    Bytes 7-8 the points, 11-14 the ceiling a saturated count reads (260,000 on hardware), 23-24
+    and 25-26 the well's column and row (from 1, u16 BE), then the counts, u32 BE from byte 34,
+    `side` to a row.
 
     Raises:
       ValueError: if the reply does not hold `side` squared counts.
@@ -1465,7 +1468,8 @@ class Fluorescence(Measurement):
       raise ValueError(f"grid reply does not hold {points} counts, got {len(reply)} bytes")
     counts = [int.from_bytes(reply[i : i + 4], "big") for i in range(start, start + 4 * points, 4)]
     well = (int.from_bytes(reply[23:25], "big"), int.from_bytes(reply[25:27], "big"))
-    return well, [counts[row : row + side] for row in range(0, points, side)]
+    grid = [counts[row : row + side] for row in range(0, points, side)]
+    return well, grid, int.from_bytes(reply[11:15], "big")
 
   @staticmethod
   def _decode_grid_centers(
@@ -1489,13 +1493,20 @@ class Fluorescence(Measurement):
   # -- measuring -----------------------------------------------------------------------------------
 
   async def _run_grid(
-    self, parameters: bytes, timeout: float
+    self,
+    parameters: bytes,
+    timeout: float,
+    on_page: Optional[Callable[[int, float, bytes], None]] = None,
   ) -> Tuple[int, float, List[bytes], bytes]:
     """Send a scan (`07`), collect its grids and the centres the reader found.
 
     PLATE_MAP_CONFIG right after the scan; then status until the reader is idle, a grid
     (`05 02`) each time status byte 2 bit 0 is set; once idle, PLATE_MAP_XY. Any failure, a
     timeout or a cancelled call stops it (`0b 00`) first.
+
+    Args:
+      on_page: called with the grid side, the point spacing and each grid reply as it arrives;
+        it must not raise.
 
     Returns:
       the grid side, the point spacing in mm, the grid replies and the PLATE_MAP_XY reply.
@@ -1504,6 +1515,7 @@ class Fluorescence(Measurement):
       TimeoutError: if the scan takes longer than `timeout` seconds.
     """
     driver = self._driver
+    self._start_run()
     await driver.send_command(driver.CommandFamily.PLATE_MAP_SCAN, parameters=parameters)
     start = time.monotonic()
     grids: List[bytes] = []
@@ -1520,6 +1532,8 @@ class Fluorescence(Measurement):
         status = await driver.send_command(driver.CommandFamily.STATUS, retries=5)
         if len(status) > 2 and status[2] & self._DATA_READY:
           grids.append(await self._request_page(retries=1))
+          if on_page is not None:
+            on_page(side, spacing, grids[-1])
           continue
         if not driver._parse_status(status).busy:
           break
@@ -1546,19 +1560,43 @@ class Fluorescence(Measurement):
     """Run one scan of one or two `positions` and return a grid for each, in order.
 
     A grid that repeats the well before it is dropped: the reader may send a one-point scan's
-    point twice.
+    point twice. Each grid's rows are appended to the results directory as it arrives.
 
     Raises:
       RuntimeError: if the scan returns another number of grids than `positions`.
     """
     start_timestamp = datetime.now()
+    written: List[Tuple[int, int]] = []  # the wells of the grids appended
+
+    def append_grid(side: int, spacing: float, reply: bytes) -> None:
+      try:
+        well, counts, ceiling = self._decode_grid(reply, side)
+      except ValueError:  # decoded again once the scan has ended, which raises it
+        return
+      if (written and well == written[-1]) or len(written) == len(positions):
+        return
+      index = len(written)
+      written.append(well)
+      grid = CLARIOstarFluorescenceGridResult(
+        position=positions[index],
+        well=wells[index],
+        center=None,
+        spacing=spacing,
+        counts=counts,
+        focal_height=focal_height,
+        gain=gain,
+        start_timestamp=start_timestamp,
+        end_timestamp=datetime.now(),
+      )
+      self._append_results([grid], ceiling=ceiling)
+
     side, spacing, replies, centers_reply = await self._run_grid(
-      parameters, self.default_read_timeout if timeout is None else timeout
+      parameters, self.default_read_timeout if timeout is None else timeout, append_grid
     )
     grids: List[List[List[int]]] = []
     previous: Optional[Tuple[int, int]] = None
     for reply in replies:
-      well, counts = self._decode_grid(reply, side)
+      well, counts, _ = self._decode_grid(reply, side)
       if well != previous:
         grids.append(counts)
       previous = well
@@ -1590,6 +1628,7 @@ class Fluorescence(Measurement):
     focal_height: float,
     optic_position: Optional[OpticPosition] = None,
     timeout: Optional[float] = None,
+    results_directory: Optional[str] = None,
   ) -> List[CLARIOstarFluorescenceGridResult]:
     """Measure the signal over a grid of points around each of one or two `positions`.
 
@@ -1605,14 +1644,18 @@ class Fluorescence(Measurement):
       focal_height: mm, in 0.1 mm steps within `configuration.focal_height_range`.
       optic_position: "top" or "bottom"; `default_optic_position` when None.
       timeout: seconds the scan may take; `default_read_timeout` when None.
+      results_directory: the directory each grid reply and its rows are appended to as they
+        arrive (`pylabrobot.lib.results.directory`); None for `default_results_directory`.
 
     Returns:
       a grid for each point, in order.
 
     Raises:
-      ValueError: if an argument is out of range, or a reply is not what the scan sends.
+      ValueError: if an argument is out of range, a reply is not what the scan sends, or the
+        results directory cannot be created or written.
       TimeoutError: if the scan takes longer than `timeout` seconds.
-      RuntimeError: if the scan returns another number of grids than points.
+      RuntimeError: if the scan returns another number of grids than points, or the results
+        directory is written by another process or failed an earlier write.
     """
     filled = self._get_filled_fluorescence_channel(fluorescence_channel)
     optic = self.default_optic_position if optic_position is None else optic_position
@@ -1631,9 +1674,10 @@ class Fluorescence(Measurement):
     geometry = self._encode_grid_geometry(self._PLATE_HOLDER_SIZE, positions)
     parameters = self._compute_grid_parameters(geometry, filled, optic, focal_height, gain)
     logger.info("grid: %s at %s", self._describe_fluorescence_channel(filled), positions)
-    return await self._get_grids(
-      parameters, positions, [None] * len(positions), size_y, focal_height, gain, timeout
-    )
+    with self._writing_results(results_directory):
+      return await self._get_grids(
+        parameters, positions, [None] * len(positions), size_y, focal_height, gain, timeout
+      )
 
   async def measure_well_centers(
     self,
@@ -1645,6 +1689,7 @@ class Fluorescence(Measurement):
     gain_target_percent: float = _GRID_GAIN_TARGET_PERCENT,
     optic_position: Optional[OpticPosition] = None,
     timeout: Optional[float] = None,
+    results_directory: Optional[str] = None,
   ) -> List[CLARIOstarFluorescenceGridResult]:
     """Measure where the signal of each of `wells` is centred, from a grid of points around it.
 
@@ -1664,15 +1709,19 @@ class Fluorescence(Measurement):
       gain_target_percent: the z-scan's gain target when it fits the gain, above 0 up to 100.
       optic_position: "top" or "bottom"; `default_optic_position` when None.
       timeout: seconds each scan (and the z-scan) may take; `default_read_timeout` when None.
+      results_directory: the directory each grid reply and its rows are appended to as they
+        arrive, not the z-scan's (`pylabrobot.lib.results.directory`); None for
+        `default_results_directory`.
 
     Returns:
       a grid for each well, in order, its centre and `center` relative to the plate.
 
     Raises:
-      RuntimeError: if no plate is in the plate holder, the z-scan fits no gain, or a scan returns
-        another number of grids than wells.
-      ValueError: if an argument is out of range, a well is not on the plate, or a reply is not
-        what the scan sends.
+      RuntimeError: if no plate is in the plate holder, the z-scan fits no gain, a scan returns
+        another number of grids than wells, or the results directory is written by another
+        process or failed an earlier write.
+      ValueError: if an argument is out of range, a well is not on the plate, a reply is not
+        what the scan sends, or the results directory cannot be created or written.
       TimeoutError: if a scan takes longer than `timeout` seconds.
     """
     filled = self._get_filled_fluorescence_channel(fluorescence_channel)
@@ -1704,28 +1753,29 @@ class Fluorescence(Measurement):
       gain = z_profile.gain if gain is None else gain
     if gain is None:
       raise RuntimeError("the z-scan fitted no gain")
-    results: List[CLARIOstarFluorescenceGridResult] = []
-    for i in range(0, len(targets), 2):
-      pair = targets[i : i + 2]
-      centres = [well.location + well.center() for well in pair if well.location is not None]
-      if len(centres) != len(pair):
-        raise ValueError(f"every well needs a location on {plate.name}")
-      if pair == [items[0], items[-1]]:
-        geometry = self._encode_plate_geometry(plate)
-      else:
-        self._warn_untested("a grid of wells other than the first and last")
-        geometry = self._encode_grid_geometry((plate.get_size_x(), plate.get_size_y()), centres)
-      parameters = self._compute_grid_parameters(geometry, filled, optic, focal_height, gain)
-      identifiers: List[Optional[str]] = [plate.get_child_identifier(well) for well in pair]
-      logger.info(
-        "well centres: %s at %s of %s",
-        self._describe_fluorescence_channel(filled),
-        ", ".join(str(identifier) for identifier in identifiers),
-        plate.name,
-      )
-      results += await self._get_grids(
-        parameters, centres, identifiers, plate.get_size_y(), focal_height, gain, timeout
-      )
+    with self._writing_results(results_directory):
+      results: List[CLARIOstarFluorescenceGridResult] = []
+      for i in range(0, len(targets), 2):
+        pair = targets[i : i + 2]
+        centres = [well.location + well.center() for well in pair if well.location is not None]
+        if len(centres) != len(pair):
+          raise ValueError(f"every well needs a location on {plate.name}")
+        if pair == [items[0], items[-1]]:
+          geometry = self._encode_plate_geometry(plate)
+        else:
+          self._warn_untested("a grid of wells other than the first and last")
+          geometry = self._encode_grid_geometry((plate.get_size_x(), plate.get_size_y()), centres)
+        parameters = self._compute_grid_parameters(geometry, filled, optic, focal_height, gain)
+        identifiers: List[Optional[str]] = [plate.get_child_identifier(well) for well in pair]
+        logger.info(
+          "well centres: %s at %s of %s",
+          self._describe_fluorescence_channel(filled),
+          ", ".join(str(identifier) for identifier in identifiers),
+          plate.name,
+        )
+        results += await self._get_grids(
+          parameters, centres, identifiers, plate.get_size_y(), focal_height, gain, timeout
+        )
     return results
 
   # ----------------------------------------
@@ -1979,6 +2029,7 @@ class Fluorescence(Measurement):
     measurement_settings: Optional[MeasurementSettings] = ...,
     shake_settings: Optional[ShakeSettings] = ...,
     timeout: Optional[float] = ...,
+    results_directory: Optional[str] = ...,
   ) -> CLARIOstarFluorescenceResult: ...
 
   @overload
@@ -1995,6 +2046,7 @@ class Fluorescence(Measurement):
     measurement_settings: Optional[MeasurementSettings] = ...,
     shake_settings: Optional[ShakeSettings] = ...,
     timeout: Optional[float] = ...,
+    results_directory: Optional[str] = ...,
   ) -> List[CLARIOstarFluorescenceResult]: ...
 
   async def measure(
@@ -2010,6 +2062,7 @@ class Fluorescence(Measurement):
     measurement_settings: Optional[MeasurementSettings] = None,
     shake_settings: Optional[ShakeSettings] = None,
     timeout: Optional[float] = None,
+    results_directory: Optional[str] = None,
   ) -> Union[CLARIOstarFluorescenceResult, List[CLARIOstarFluorescenceResult]]:
     """Measure the plate through one fluorescence channel, or several in one pass.
 
@@ -2039,6 +2092,8 @@ class Fluorescence(Measurement):
       measurement_settings: how to read, without a pause; None reads with the defaults.
       shake_settings: shake the plate before the read; None does not shake.
       timeout: seconds the run may take; `default_read_timeout` when None.
+      results_directory: the directory the data reply and the rows are appended to as they
+        arrive (`pylabrobot.lib.results.directory`); None for `default_results_directory`.
 
     Returns:
       the counts of the measured wells, with the optics, gain, focal height and optic position they
@@ -2046,10 +2101,12 @@ class Fluorescence(Measurement):
       in the order given.
 
     Raises:
-      RuntimeError: if no plate is in the plate holder, or the run ends without its data.
+      RuntimeError: if no plate is in the plate holder, the run ends without its data, or the
+        results directory is written by another process or failed an earlier write.
       ValueError: if an argument is out of range (`_check_arguments`), a filter's slot or name has
         no slide or is not on it (`_get_filter`), a matrix scan has several wells, the settings
-        cannot read the wells of the plate, or the reply is not this read's (`_decode_data_reply`).
+        cannot read the wells of the plate, the reply is not this read's (`_decode_data_reply`),
+        or the results directory cannot be created or written.
       TimeoutError: if the run takes longer than `timeout` seconds.
     """
     measurement = MeasurementSettings() if measurement_settings is None else measurement_settings
@@ -2083,29 +2140,36 @@ class Fluorescence(Measurement):
       measurement.well_scan,
       optic_position,
     )
-    start_timestamp = datetime.now()
-    replies, end_timestamp = await self._run_measurement(parameters, timeout)
-    identifiers = _get_measured_identifiers(plate, wells)
-    counts, ceiling, temperature = self._decode_data_reply(
-      replies[0], len(filled), len(identifiers)
-    )
-    self._warn_saturated(
-      "fluorescence",
-      [value for fluorescence_channel in counts for well in fluorescence_channel for value in well],
-      ceiling,
-    )
-    results = self._get_results(
-      filled,
-      gains,
-      counts,
-      identifiers,
-      matrix=measurement.well_scan == "matrix",
-      temperature=temperature,
-      start_timestamp=start_timestamp,
-      end_timestamp=end_timestamp,
-      focal_height=focal_height,
-      optic_position=optic_position,
-    )
+    with self._writing_results(results_directory):
+      start_timestamp = datetime.now()
+      replies, end_timestamp = await self._run_measurement(parameters, timeout)
+      identifiers = _get_measured_identifiers(plate, wells)
+      counts, ceiling, temperature = self._decode_data_reply(
+        replies[0], len(filled), len(identifiers)
+      )
+      self._warn_saturated(
+        "fluorescence",
+        [
+          value
+          for fluorescence_channel in counts
+          for well in fluorescence_channel
+          for value in well
+        ],
+        ceiling,
+      )
+      results = self._get_results(
+        filled,
+        gains,
+        counts,
+        identifiers,
+        matrix=measurement.well_scan == "matrix",
+        temperature=temperature,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+        focal_height=focal_height,
+        optic_position=optic_position,
+      )
+      self._append_results(results, plate=plate, ceiling=ceiling)
     return results[0] if isinstance(fluorescence_channels, FluorescenceChannel) else results
 
   # ----------------------------------------
@@ -2202,46 +2266,64 @@ class Fluorescence(Measurement):
 
   # -- decoding and results ------------------------------------------------------------------------
 
+  def _decode_spectrum_page(
+    self, page: bytes, number: int, plate: Plate, identifiers: List[str], wavelengths: int
+  ) -> Tuple[str, List[int], int, Optional[float]]:
+    """Page `number`'s well, its counts by wavelength, the ceiling and the temperature.
+
+    One page per well: the wavelengths at bytes 7-8 and 16-17, the ceiling at 11-14, one well at
+    18-19, its column and row (from 1) at 23-24 and 25-26, the temperature at 32-33, u32 BE counts
+    from byte 34. A page's well is its column and row, not its place in the order.
+
+    Raises:
+      ValueError: if the page is not a page of this read, or of a well not in `identifiers`.
+    """
+    items = plate.get_all_items()
+    rows, columns = plate.num_items_y, plate.num_items_x
+    if (
+      len(page) < 34 + 4 * wavelengths
+      or page[6] != self._SPECTRUM_LAYOUT
+      or int.from_bytes(page[7:9], "big") != wavelengths
+      or int.from_bytes(page[16:18], "big") != wavelengths
+      or int.from_bytes(page[18:20], "big") != 1
+    ):
+      raise ValueError(f"fluorescence spectrum page {number} is not a page of this read")
+    column = int.from_bytes(page[23:25], "big")
+    row = int.from_bytes(page[25:27], "big")
+    if not (1 <= column <= columns and 1 <= row <= rows):
+      raise ValueError(f"fluorescence spectrum page {number} is of column {column}, row {row}")
+    identifier = plate.get_child_identifier(items[(column - 1) * rows + row - 1])
+    if identifier not in identifiers:
+      raise ValueError(f"fluorescence spectrum page {number} is of {identifier}, not expected")
+    counts = [int.from_bytes(page[34 + 4 * i : 38 + 4 * i], "big") for i in range(wavelengths)]
+    raw_temperature = int.from_bytes(page[32:34], "big")
+    temperature = raw_temperature / 10 if raw_temperature else None
+    return identifier, counts, int.from_bytes(page[11:15], "big"), temperature
+
   def _decode_spectrum_pages(
     self, pages: List[bytes], plate: Plate, identifiers: List[str], wavelengths: int
   ) -> Tuple[Dict[str, List[int]], int, Optional[float]]:
     """Each well's counts by wavelength (in `identifiers`' order), the ceiling, the temperature.
 
-    One page per well: the wavelengths at bytes 7-8 and 16-17, one well at 18-19, its column and
-    row (from 1) at 23-24 and 25-26, the temperature at 32-33, u32 BE counts from byte 34. A
-    page's well is its column and row, not its place in the order.
+    Each page as `_decode_spectrum_page`; the ceiling and the temperature are the first page's.
 
     Raises:
       ValueError: if a page is not a page of this read, or a well's page is missing or repeated.
     """
-    items = plate.get_all_items()
-    rows, columns = plate.num_items_y, plate.num_items_x
     spectra: Dict[str, List[int]] = {}
     for number, page in enumerate(pages, 1):
-      if (
-        len(page) < 34 + 4 * wavelengths
-        or page[6] != self._SPECTRUM_LAYOUT
-        or int.from_bytes(page[7:9], "big") != wavelengths
-        or int.from_bytes(page[16:18], "big") != wavelengths
-        or int.from_bytes(page[18:20], "big") != 1
-      ):
-        raise ValueError(f"fluorescence spectrum page {number} is not a page of this read")
-      column = int.from_bytes(page[23:25], "big")
-      row = int.from_bytes(page[25:27], "big")
-      if not (1 <= column <= columns and 1 <= row <= rows):
-        raise ValueError(f"fluorescence spectrum page {number} is of column {column}, row {row}")
-      identifier = plate.get_child_identifier(items[(column - 1) * rows + row - 1])
-      if identifier not in identifiers or identifier in spectra:
+      identifier, counts, _, _ = self._decode_spectrum_page(
+        page, number, plate, identifiers, wavelengths
+      )
+      if identifier in spectra:
         raise ValueError(f"fluorescence spectrum page {number} is of {identifier}, not expected")
-      spectra[identifier] = [
-        int.from_bytes(page[34 + 4 * i : 38 + 4 * i], "big") for i in range(wavelengths)
-      ]
+      spectra[identifier] = counts
     missing = [identifier for identifier in identifiers if identifier not in spectra]
     if missing:
       raise ValueError(f"fluorescence spectrum has no page for {missing}")
-    raw_temperature = int.from_bytes(pages[0][32:34], "big")
-    temperature = raw_temperature / 10 if raw_temperature else None
-    ceiling = int.from_bytes(pages[0][11:15], "big")
+    _, _, ceiling, temperature = self._decode_spectrum_page(
+      pages[0], 1, plate, identifiers, wavelengths
+    )
     return {identifier: spectra[identifier] for identifier in identifiers}, ceiling, temperature
 
   def _get_spectrum_result(
@@ -2287,6 +2369,7 @@ class Fluorescence(Measurement):
     measurement_settings: Optional[MeasurementSettings] = None,
     shake_settings: Optional[ShakeSettings] = None,
     timeout: Optional[float] = None,
+    results_directory: Optional[str] = None,
   ) -> CLARIOstarFluorescenceSpectrumResult:
     """Measure a fluorescence spectrum: excitation or emission scanned, the other fixed.
 
@@ -2318,15 +2401,19 @@ class Fluorescence(Measurement):
       shake_settings: shake the plate before the read; None does not shake.
       timeout: seconds the run may take; `default_read_timeout` when None, too short for a full
         plate of a long spectrum (14 s per well at 221 wavelengths).
+      results_directory: the directory each data page and its well's rows are appended to as
+        they arrive (`pylabrobot.lib.results.directory`); None for `default_results_directory`.
 
     Returns:
       each measured well's counts by the scanned wavelength, with the fixed one's optics and the
       gain.
 
     Raises:
-      RuntimeError: if no plate is in the plate holder, or the run ends without all its data.
+      RuntimeError: if no plate is in the plate holder, the run ends without all its data, or the
+        results directory is written by another process or failed an earlier write.
       ValueError: if an argument is out of range (`_check_spectrum_arguments`), the settings
-        cannot read the wells of the plate, or the data pages are not this read's.
+        cannot read the wells of the plate, the data pages are not this read's, or the results
+        directory cannot be created or written.
       TimeoutError: if the run takes longer than `timeout` seconds.
       FrameError: if a data page arrives short on the second read too.
     """
@@ -2389,17 +2476,42 @@ class Fluorescence(Measurement):
       plate.name,
       measurement.well_scan,
     )
-    try:
-      start_timestamp = datetime.now()
-      pages, end_timestamp = await self._run_measurement(
-        parameters, timeout, progressive_pages=len(identifiers)
+    pages_appended: List[str] = []  # the wells of the pages appended
+
+    def append_page(page: bytes) -> None:
+      try:
+        identifier, counts, ceiling, temperature = self._decode_spectrum_page(
+          page, len(pages_appended) + 1, plate, identifiers, len(wavelengths)
+        )
+      except ValueError:  # decoded again once all pages are in, which raises it
+        return
+      pages_appended.append(identifier)
+      spectrum = self._get_spectrum_result(
+        fixed,
+        gain,
+        wavelengths,
+        {identifier: counts},
+        temperature=temperature,
+        start_timestamp=start_timestamp,
+        end_timestamp=datetime.now(),
       )
-    except FrameError as error:  # a page arrived short; the reader cannot send it again
-      logger.warning("fluorescence spectrum: %s; measuring the plate again", error)
-      start_timestamp = datetime.now()
-      pages, end_timestamp = await self._run_measurement(
-        parameters, timeout, progressive_pages=len(identifiers)
-      )
+      self._append_results([spectrum], plate=plate, ceiling=ceiling, ends_reads=False)
+
+    with self._writing_results(results_directory):
+      try:
+        start_timestamp = datetime.now()
+        pages, end_timestamp = await self._run_measurement(
+          parameters, timeout, progressive_pages=len(identifiers), on_page=append_page
+        )
+      except FrameError as error:  # a page arrived short; the reader cannot send it again
+        logger.warning("fluorescence spectrum: %s; measuring the plate again", error)
+        self._end_failed_run()
+        pages_appended.clear()
+        start_timestamp = datetime.now()
+        pages, end_timestamp = await self._run_measurement(
+          parameters, timeout, progressive_pages=len(identifiers), on_page=append_page
+        )
+      self._end_read()
     spectra, ceiling, temperature = self._decode_spectrum_pages(
       pages, plate, identifiers, len(wavelengths)
     )

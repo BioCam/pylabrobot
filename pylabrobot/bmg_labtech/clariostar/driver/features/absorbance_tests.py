@@ -6,6 +6,7 @@ import gzip
 import json
 import math
 import os
+import tempfile
 import unittest
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -37,6 +38,7 @@ from pylabrobot.bmg_labtech.clariostar.driver.master_tests import (
 )
 from pylabrobot.bmg_labtech.clariostar.driver.simulator import CLARIOstarSimulationAbsorbance
 from pylabrobot.lib.absorbance.results import AbsorbanceResult
+from pylabrobot.lib.results import directory as directory_module
 from pylabrobot.resources import Plate, Well, cor_96_wellplate_360uL_Fb, create_ordered_items_2d
 from pylabrobot.resources.biorad.plates import biorad_96_wellplate_200uL_Vb
 
@@ -1158,6 +1160,70 @@ class SimulatedDataTests(unittest.IsolatedAsyncioTestCase):
     ):
       with self.assertRaises(ValueError):
         await measure_with(self.absorbance, wavelengths, simulated_data=simulated_data)
+
+
+def read_jsonl(directory: str, name: str) -> List[Dict[str, Any]]:
+  """The JSON objects of file `name` in `directory`."""
+  with open(os.path.join(directory, name), encoding="utf-8") as f:
+    return [json.loads(line) for line in f.read().splitlines()]
+
+
+class ResultsDirectoryTests(unittest.IsolatedAsyncioTestCase):
+  def setUp(self):
+    temporary = tempfile.TemporaryDirectory()
+    self.addCleanup(temporary.cleanup)
+    self.addCleanup(directory_module.wait_for_fsync)  # before the files go
+    self.directory = os.path.join(temporary.name, "run")
+
+  async def read_column_1(self, **arguments):
+    io = FakeFTDI()
+    io.replies = [STATUS_IDLE, RUN_REPLY, STATUS_MEASURING, STATUS_MEASURED, COLUMN_1_DATA_REPLY]
+    plate = ground_truth_96_well_plate()
+    absorbance = make_absorbance(io, plate)
+    return absorbance, await absorbance.measure(
+      wells=plate.get_items("A1:H1"), wavelengths=[600], **arguments
+    )
+
+  async def test_a_read_appends_its_reply_and_rows(self):
+    _, results = await self.read_column_1(results_directory=self.directory)
+    await self.read_column_1(results_directory=self.directory)
+    rows = read_jsonl(self.directory, "rows.jsonl")
+    self.assertEqual([row["read"] for row in rows], [0] * 8 + [1] * 8)
+    self.assertEqual([row["value"] for row in rows[:8]], list(results[0].data.values()))
+    replies = read_jsonl(self.directory, "replies.jsonl")
+    self.assertEqual([(reply["read"], reply["page"]) for reply in replies], [(0, 1), (1, 1)])
+    self.assertEqual(replies[0]["reply"], ftdi_extract_payload(COLUMN_1_DATA_REPLY).hex())
+    self.assertEqual(len(read_jsonl(self.directory, "manifest.jsonl")), 2)
+
+  async def test_the_default_is_checked_when_set_and_written_to(self):
+    absorbance = make_absorbance(FakeFTDI())
+    blocker = self.directory + ".file"
+    with open(blocker, "w", encoding="utf-8"):
+      pass
+    with self.assertRaises(ValueError):
+      absorbance.default_results_directory = os.path.join(blocker, "run")
+    self.assertIsNone(absorbance.default_results_directory)
+    absorbance.default_results_directory = self.directory
+    self.assertTrue(os.path.isdir(self.directory))
+    absorbance, _ = await self.read_column_1()
+    self.assertFalse(os.path.exists(os.path.join(self.directory, "rows.jsonl")))
+
+  async def test_a_failed_write_still_returns_the_result_and_is_raised_by_the_next_read(self):
+    real_append = directory_module._append
+
+    def append(directory: str, name: str, data: bytes) -> None:
+      if name == directory_module.ROWS:
+        raise OSError(28, "No space left on device")
+      real_append(directory, name, data)
+
+    with (
+      patch.object(directory_module, "_append", append),
+      self.assertLogs(directory_module.logger, "ERROR"),
+    ):
+      _, results = await self.read_column_1(results_directory=self.directory)
+    self.assertEqual(list(results[0].data), COLUMN_1)
+    with self.assertRaisesRegex(RuntimeError, "not all written"):
+      await self.read_column_1(results_directory=self.directory)
 
 
 if __name__ == "__main__":

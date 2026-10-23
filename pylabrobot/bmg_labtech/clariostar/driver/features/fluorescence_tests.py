@@ -8,6 +8,7 @@ import functools
 import gzip
 import json
 import os
+import tempfile
 import unittest
 from dataclasses import replace
 from datetime import datetime
@@ -55,6 +56,7 @@ from pylabrobot.lib.optics.holders import (
   EmissionFilterSlide,
   ExcitationFilterSlide,
 )
+from pylabrobot.lib.results import directory as directory_module
 from pylabrobot.resources import (
   Coordinate,
   Plate,
@@ -1922,6 +1924,66 @@ class GridTests(unittest.IsolatedAsyncioTestCase):
       with self.subTest(arguments=arguments), self.assertRaises(ValueError):
         await feature.measure_well_centers(GRID_CHANNEL, **arguments)
     self.assertEqual(io.written, [])
+
+
+def read_jsonl(directory: str, name: str) -> List[Dict[str, Any]]:
+  """The JSON objects of file `name` in `directory`."""
+  with open(os.path.join(directory, name), encoding="utf-8") as f:
+    return [json.loads(line) for line in f.read().splitlines()]
+
+
+class ResultsDirectoryTests(unittest.IsolatedAsyncioTestCase):
+  def setUp(self):
+    temporary = tempfile.TemporaryDirectory()
+    self.addCleanup(temporary.cleanup)
+    self.addCleanup(directory_module.wait_for_fsync)  # before the files go
+    self.directory = temporary.name
+
+  async def test_each_grid_is_appended_as_it_arrives(self):
+    appended: List[int] = []
+    real_append = fluorescence.Fluorescence._append_results
+
+    def counting_append(feature, results, **arguments):
+      appended.append(len(feature._driver.io.written))  # how far the scan was
+      real_append(feature, results, **arguments)
+
+    with patch.object(fluorescence.Fluorescence, "_append_results", counting_append):
+      io, _, results = await scan_ground_truth(
+        focal_height=15.0, gain=2239, results_directory=self.directory
+      )
+    self.assertEqual(len(appended), 2)
+    self.assertLess(appended[0], appended[1])
+    self.assertLess(appended[1], len(io.written))  # before PLATE_MAP_XY
+    rows = read_jsonl(self.directory, "rows.jsonl")
+    self.assertEqual([rows[0]["read"], rows[961]["read"], len(rows)], [0, 1, 2 * 961])
+    self.assertEqual(rows[0]["value"], results[0].counts[0][0])
+    self.assertTrue(any(row["saturated"] for row in rows))
+    replies = read_jsonl(self.directory, "replies.jsonl")
+    self.assertEqual([(reply["read"], reply["page"]) for reply in replies], [(0, 1), (0, 2)])
+
+  async def test_a_spectrum_is_appended_page_by_page_as_one_read(self):
+    for _ in range(2):
+      io = FakeFTDI(chunk=4096)
+      io.replies = spectrum_replies("excitation_spectrum")
+      plate = fluorescence_plate()
+      await make_fluorescence(io, plate).measure_spectrum(
+        wells=[plate.get_well(well) for well in SPECTRUM_WELLS],
+        results_directory=self.directory,
+        **{"gain": 1000, "focal_height": GROUND_TRUTH_FOCAL_HEIGHT, **EXCITATION_SPECTRUM},
+      )
+    rows = read_jsonl(self.directory, "rows.jsonl")
+    self.assertEqual(len(rows), 2 * 4 * 221)
+    self.assertEqual({row["read"] for row in rows[: 4 * 221]}, {0})
+    self.assertEqual({row["read"] for row in rows[4 * 221 :]}, {1})
+    self.assertEqual([row["well"] for row in rows[::221]][:4], SPECTRUM_WELLS)
+    replies = read_jsonl(self.directory, "replies.jsonl")
+    self.assertEqual([reply["page"] for reply in replies], [1, 2, 3, 4] * 2)
+
+  async def test_a_read_carries_its_focal_height_and_optic_position(self):
+    _, result = await read(FakeFTDI(), TEMPERATURE_37_DATA_REPLY, results_directory=self.directory)
+    self.assertEqual((result.focal_height, result.optic_position), (8.5, "top"))
+    rows = read_jsonl(self.directory, "rows.jsonl")
+    self.assertEqual({(row["focal_height"], row["optic_position"]) for row in rows}, {(8.5, "top")})
 
 
 if __name__ == "__main__":

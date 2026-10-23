@@ -6,6 +6,9 @@ What every mode shares (plate block, scan and settling bytes, shaking, the run a
 tested with absorbance and fluorescence; only luminescence's own fields and reply are here.
 """
 
+import json
+import os
+import tempfile
 import unittest
 from typing import Any, Dict, List
 
@@ -32,6 +35,7 @@ from pylabrobot.bmg_labtech.clariostar.driver.master_tests import (
   make_driver,
 )
 from pylabrobot.bmg_labtech.clariostar.driver.simulator import CLARIOstarSimulationLuminescence
+from pylabrobot.lib.results.directory import wait_for_fsync
 from pylabrobot.resources import Plate, cor_96_wellplate_360uL_Fb
 
 # The ground truth: every well, 580-80 nm, gain 3500, focal height 8.5 mm, settling 0.0 s,
@@ -268,3 +272,17 @@ class SimulatedLuminescenceTests(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(replayed.data, {f"{row}1": earlier.data[f"{row}1"] for row in "ABCDEFGH"})
     with self.assertRaises(ValueError):  # another emission band
       await self.luminescence.measure(emission_wavelength=560, simulated_data=earlier)
+
+
+class ResultsDirectoryTests(unittest.IsolatedAsyncioTestCase):
+  async def test_a_read_appends_its_rows_with_its_settings(self):
+    with tempfile.TemporaryDirectory() as directory:
+      result = await read(FakeFTDI(), results_directory=directory)
+      wait_for_fsync()  # before the files go
+      with open(os.path.join(directory, "rows.jsonl"), encoding="utf-8") as f:
+        rows = [json.loads(line) for line in f]
+    self.assertEqual(len(rows), 96)
+    self.assertEqual([row["value"] for row in rows], list(result.data.values()))
+    self.assertEqual({(row["gain"], row["focal_height"]) for row in rows}, {(3500, 8.5)})
+    self.assertFalse(any(row["saturated"] for row in rows))
+    self.assertEqual(result.focal_height, 8.5)

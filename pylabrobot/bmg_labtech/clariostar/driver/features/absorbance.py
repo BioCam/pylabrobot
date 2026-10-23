@@ -341,6 +341,7 @@ class Absorbance(Measurement):
     shake_settings: Optional[ShakeSettings] = None,
     report: Report = "optical_density",
     timeout: Optional[float] = None,
+    results_directory: Optional[str] = None,
   ) -> List[AbsorbanceResult]:
     """Measure the plate in the plate holder at every wavelength, each well read once for all.
 
@@ -355,14 +356,17 @@ class Absorbance(Measurement):
       report: what the results hold: optical density, or the raw sample counts with the reference
         counts and calibration pairs that compute it (`CLARIOstarAbsorbanceResult`).
       timeout: seconds the run may take; `default_read_timeout` when None.
+      results_directory: the directory the data reply and the rows are appended to as they
+        arrive (`pylabrobot.lib.results.directory`); None for `default_results_directory`.
 
     Returns:
       one result per wavelength, in the order given.
 
     Raises:
-      RuntimeError: if no plate is in the plate holder, or the run ends without its data.
-      ValueError: if the wavelengths or report are out of range, or the settings cannot read the
-        wells of the plate.
+      RuntimeError: if no plate is in the plate holder, the run ends without its data, or the
+        results directory is written by another process or failed an earlier write.
+      ValueError: if the wavelengths or report are out of range, the settings cannot read the
+        wells of the plate, or the results directory cannot be created or written.
       TimeoutError: if the run takes longer than `timeout` seconds.
     """
     measurement = MeasurementSettings() if measurement_settings is None else measurement_settings
@@ -379,43 +383,47 @@ class Absorbance(Measurement):
       measurement.well_scan,
       report,
     )
-    start_timestamp = datetime.now()
-    replies, end_timestamp = await self._run_measurement(parameters, timeout)
-    reply = replies[0]
-    wavelengths = list(wavelengths)
-    samples, references, calibrations, reference_pair = self._decode_data_reply(reply, wavelengths)
-    readings = _compute_readings(samples, references, calibrations, reference_pair, report)
-    # Reply bytes 34-35: the temperature in 0.1 C; 0 when the temperature controller is not
-    # monitoring.
-    raw_temperature = int.from_bytes(reply[34:36], "big")
-    temperature = raw_temperature / 10 if raw_temperature else None
-    results: List[AbsorbanceResult] = []
-    for wavelength, values, calibration in zip(wavelengths, readings, calibrations):
-      data = _get_readings_by_well(plate, wells, values)
-      if report == "raw":
-        reference_counts = _get_readings_by_well(plate, wells, [float(v) for v in references])
-        results.append(
-          CLARIOstarAbsorbanceResult(
-            data=data,
-            wavelength=wavelength,
-            temperature=temperature,
-            start_timestamp=start_timestamp,
-            end_timestamp=end_timestamp,
-            references=reference_counts,
-            calibration=calibration,
-            reference_calibration=reference_pair,
+    with self._writing_results(results_directory):
+      start_timestamp = datetime.now()
+      replies, end_timestamp = await self._run_measurement(parameters, timeout)
+      reply = replies[0]
+      wavelengths = list(wavelengths)
+      samples, references, calibrations, reference_pair = self._decode_data_reply(
+        reply, wavelengths
+      )
+      readings = _compute_readings(samples, references, calibrations, reference_pair, report)
+      # Reply bytes 34-35: the temperature in 0.1 C; 0 when the temperature controller is not
+      # monitoring.
+      raw_temperature = int.from_bytes(reply[34:36], "big")
+      temperature = raw_temperature / 10 if raw_temperature else None
+      results: List[AbsorbanceResult] = []
+      for wavelength, values, calibration in zip(wavelengths, readings, calibrations):
+        data = _get_readings_by_well(plate, wells, values)
+        if report == "raw":
+          reference_counts = _get_readings_by_well(plate, wells, [float(v) for v in references])
+          results.append(
+            CLARIOstarAbsorbanceResult(
+              data=data,
+              wavelength=wavelength,
+              temperature=temperature,
+              start_timestamp=start_timestamp,
+              end_timestamp=end_timestamp,
+              references=reference_counts,
+              calibration=calibration,
+              reference_calibration=reference_pair,
+            )
           )
-        )
-      else:
-        results.append(
-          AbsorbanceResult(
-            data=data,
-            wavelength=wavelength,
-            temperature=temperature,
-            start_timestamp=start_timestamp,
-            end_timestamp=end_timestamp,
+        else:
+          results.append(
+            AbsorbanceResult(
+              data=data,
+              wavelength=wavelength,
+              temperature=temperature,
+              start_timestamp=start_timestamp,
+              end_timestamp=end_timestamp,
+            )
           )
-        )
+      self._append_results(results, plate=plate)
     return results
 
   # ----------------------------------------
@@ -520,6 +528,7 @@ class Absorbance(Measurement):
     shake_settings: Optional[ShakeSettings] = None,
     report: Report = "optical_density",
     timeout: Optional[float] = None,
+    results_directory: Optional[str] = None,
   ) -> AbsorbanceSpectrumResult:
     """Measure the absorbance spectrum of the plate in the plate holder, every wavelength in one
     pass.
@@ -540,14 +549,18 @@ class Absorbance(Measurement):
       report: optical density, or the raw sample counts with the reference counts and calibration
         pairs that compute it (`CLARIOstarAbsorbanceSpectrumResult`).
       timeout: seconds the run may take; `default_read_timeout` when None.
+      results_directory: the directory the data pages, as they arrive, and the rows, once all are
+        in, are appended to (`pylabrobot.lib.results.directory`); None for
+        `default_results_directory`.
 
     Returns:
       each measured well's spectrum, keyed by well identifier.
 
     Raises:
-      RuntimeError: if no plate is in the plate holder, or the run ends without its data.
+      RuntimeError: if no plate is in the plate holder, the run ends without its data, or the
+        results directory is written by another process or failed an earlier write.
       ValueError: if an argument is out of range, the settings cannot read the wells of the plate,
-        or the data pages are not this read's.
+        the data pages are not this read's, or the results directory cannot be created or written.
       TimeoutError: if the run takes longer than `timeout` seconds.
       FrameError: if a data page arrives short on the second read too.
     """
@@ -577,39 +590,46 @@ class Absorbance(Measurement):
       report,
     )
     values = (len(wavelengths) + 3) * (measured + 2)
-    try:
-      start_timestamp = datetime.now()
-      pages, end_timestamp = await self._run_measurement(parameters, timeout, values)
-    except FrameError as error:  # a page arrived short; the reader cannot send it again
-      logger.warning("absorbance spectrum: %s; measuring the plate again", error)
-      start_timestamp = datetime.now()
-      pages, end_timestamp = await self._run_measurement(parameters, timeout, values)
-    samples, references, calibrations, reference_pair = self._decode_spectrum_pages(
-      pages, len(wavelengths)
-    )
-    readings = _compute_readings(samples, references, calibrations, reference_pair, report)
-    # Page bytes 34-35: the temperature in 0.1 C; 0 when the temperature controller is not
-    # monitoring.
-    raw_temperature = int.from_bytes(pages[0][34:36], "big")
-    temperature = raw_temperature / 10 if raw_temperature else None
-    identifiers = _get_measured_identifiers(plate, wells)
-    data: Dict[str, Dict[int, float]] = {identifier: {} for identifier in identifiers}
-    for wavelength, wavelength_readings in zip(wavelengths, readings):  # row by row over the wells
-      for identifier, value in zip(identifiers, wavelength_readings):
-        data[identifier][wavelength] = value
-    if report == "raw":
-      return CLARIOstarAbsorbanceSpectrumResult(
-        data=data,
-        temperature=temperature,
-        start_timestamp=start_timestamp,
-        end_timestamp=end_timestamp,
-        references=_get_readings_by_well(plate, wells, [float(v) for v in references]),
-        calibration=dict(zip(wavelengths, calibrations)),
-        reference_calibration=reference_pair,
+    with self._writing_results(results_directory):
+      try:
+        start_timestamp = datetime.now()
+        pages, end_timestamp = await self._run_measurement(parameters, timeout, values)
+      except FrameError as error:  # a page arrived short; the reader cannot send it again
+        logger.warning("absorbance spectrum: %s; measuring the plate again", error)
+        self._end_failed_run()
+        start_timestamp = datetime.now()
+        pages, end_timestamp = await self._run_measurement(parameters, timeout, values)
+      samples, references, calibrations, reference_pair = self._decode_spectrum_pages(
+        pages, len(wavelengths)
       )
-    return AbsorbanceSpectrumResult(
-      data=data,
-      temperature=temperature,
-      start_timestamp=start_timestamp,
-      end_timestamp=end_timestamp,
-    )
+      readings = _compute_readings(samples, references, calibrations, reference_pair, report)
+      # Page bytes 34-35: the temperature in 0.1 C; 0 when the temperature controller is not
+      # monitoring.
+      raw_temperature = int.from_bytes(pages[0][34:36], "big")
+      temperature = raw_temperature / 10 if raw_temperature else None
+      identifiers = _get_measured_identifiers(plate, wells)
+      data: Dict[str, Dict[int, float]] = {identifier: {} for identifier in identifiers}
+      # Row by row over the wells.
+      for wavelength, wavelength_readings in zip(wavelengths, readings):
+        for identifier, value in zip(identifiers, wavelength_readings):
+          data[identifier][wavelength] = value
+      result: AbsorbanceSpectrumResult
+      if report == "raw":
+        result = CLARIOstarAbsorbanceSpectrumResult(
+          data=data,
+          temperature=temperature,
+          start_timestamp=start_timestamp,
+          end_timestamp=end_timestamp,
+          references=_get_readings_by_well(plate, wells, [float(v) for v in references]),
+          calibration=dict(zip(wavelengths, calibrations)),
+          reference_calibration=reference_pair,
+        )
+      else:
+        result = AbsorbanceSpectrumResult(
+          data=data,
+          temperature=temperature,
+          start_timestamp=start_timestamp,
+          end_timestamp=end_timestamp,
+        )
+      self._append_results([result], plate=plate)
+    return result
