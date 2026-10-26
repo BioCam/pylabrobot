@@ -25,9 +25,9 @@ class TestTheColumn(unittest.TestCase):
     self.assertEqual(location.z, base_plate.get_size_z())
     self.assertEqual(2 * location.y + column.get_size_y(), base_plate.get_size_y())
 
-  def test_a_column_reaches_the_height_the_arm_stands(self):
+  def test_a_column_reaches_the_datasheets_robot_height(self):
     # Measured from the base plate's bottom, which is its own frame's zero.
-    for z_travel, height in ((400.0, 712.0), (750.0, 1062.0), (1160.0, 1472.0)):
+    for z_travel, height in ((400.0, 679.0), (401.5, 679.0), (750.0, 1029.0), (1161.5, 1439.0)):
       column = pf400_chassis.z_column("column", height=pf400_chassis.z_column_height(z_travel))
       self.assertEqual(pf400_chassis.Z_COLUMN_LOCATION.z + column.get_size_z(), height)
 

@@ -139,8 +139,8 @@ class TestBuiltFromADeclaredConfiguration(unittest.IsolatedAsyncioTestCase):
   def test_the_recorded_arm_stands_before_it_is_connected(self):
     device = pf400(RECORDING_PF400)
     column = device.get_resource("pf400_z_column")
-    # From the base plate's top face: the shoulder axis, the travel, and the headroom above it.
-    self.assertAlmostEqual(column.get_size_z(), 62.0 + 401.5 + 250.0 - 9.6)
+    # From the base plate's top face: the datasheet's 679 mm robot height for 400 mm of travel.
+    self.assertAlmostEqual(column.get_size_z(), 679.0 - 9.6)
     self.assertEqual((device.workspace.z_min, device.workspace.z_max), (1.5, 401.5))
     self.assertTrue(device.workspace.is_reachable(Coordinate(700.0, 0.0, 200.0)))
     _, first, second, hand = hung(device.driver)
@@ -159,7 +159,8 @@ class TestBuiltFromADeclaredConfiguration(unittest.IsolatedAsyncioTestCase):
   def test_a_taller_arm_is_built_taller(self):
     device = pf400(RECORDING_PF400.replace("400mm", "1160mm_rail_derived"))
     column = device.get_resource("pf400_z_column")
-    self.assertAlmostEqual(column.get_size_z(), 62.0 + 1161.5 + 250.0 - 9.6)
+    # From the base plate's top face: the datasheet's 1439 mm robot height for 1160 mm of travel.
+    self.assertAlmostEqual(column.get_size_z(), 1439.0 - 9.6)
     self.assertEqual(device.workspace.z_max, 1161.5)
 
   def test_setup_builds_nothing_twice(self):

@@ -37,8 +37,8 @@ Z_COLUMN_OUTLINE = (
   (25.9, 173.3),
   (0.0, 163.3),
 )
-# How far the column reaches above the flange plane once the carriage is at the top of its travel.
-Z_COLUMN_HEADROOM = 250.0
+# The datasheet's robot height, from the floor to the column's top, for each Z travel it is sold with.
+ROBOT_HEIGHTS = {400.0: 679.0, 750.0: 1029.0, 1160.0: 1439.0}
 
 # The carriage the J1 drive rides up the column: the housing the arm turns in, which is what the
 # drive carries and what is seen of it.
@@ -59,7 +59,8 @@ Z_CARRIAGE_REFERENCE_POINT = Coordinate(
 def z_column_height(z_travel: float) -> float:
   """How tall the column is on an arm whose Z drive reaches `z_travel` mm.
 
-  Measured from the base plate's top face, where the column stands, to its own top.
+  Measured from the base plate's top face, where the column stands, to its own top. The column is
+  the one sold for the nearest Z travel, as an arm's soft limits stand a little past it.
 
   Args:
     z_travel: the highest the Z drive reaches, in mm: the top of its soft limits.
@@ -67,7 +68,8 @@ def z_column_height(z_travel: float) -> float:
   Returns:
     The height, in mm.
   """
-  return SHOULDER_AXIS.z + z_travel + Z_COLUMN_HEADROOM - Z_COLUMN_LOCATION.z
+  sold = min(ROBOT_HEIGHTS, key=lambda travel: abs(travel - z_travel))
+  return ROBOT_HEIGHTS[sold] - Z_COLUMN_LOCATION.z
 
 
 def base_plate(name: str = "pf400_base_plate") -> Resource:
