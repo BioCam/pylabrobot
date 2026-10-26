@@ -7,7 +7,7 @@ measured off the manufacturer's model.
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
 
-BASE_PLATE_SIZE = (200.8, 235.1, 9.6)
+BASE_PLATE_SIZE = (201.0, 235.0, 9.6)
 
 # The J2 shoulder axis within the base plate: at its front face, centred across it, this far above
 # the surface the base plate stands on. Every position the controller reports is measured from here.
@@ -16,7 +16,7 @@ SHOULDER_AXIS = Coordinate(BASE_PLATE_SIZE[0], BASE_PLATE_SIZE[1] / 2, 62.0)
 Z_COLUMN_SIZE_XY = (124.5, 181.5)
 # Where the column stands on the base plate's top face, centred across it.
 Z_COLUMN_LOCATION = Coordinate(
-  8.8, (BASE_PLATE_SIZE[1] - Z_COLUMN_SIZE_XY[1]) / 2, BASE_PLATE_SIZE[2]
+  9.0, (BASE_PLATE_SIZE[1] - Z_COLUMN_SIZE_XY[1]) / 2, BASE_PLATE_SIZE[2]
 )
 # The column seen from above, in its own frame: rounded at both sides, not a box.
 Z_COLUMN_OUTLINE = (
