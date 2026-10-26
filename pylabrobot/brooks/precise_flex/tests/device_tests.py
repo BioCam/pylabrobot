@@ -1,3 +1,4 @@
+import dataclasses
 import random
 import unittest
 from typing import List, Optional, Tuple, cast
@@ -62,6 +63,8 @@ def configuration(links=kinematics.ARM_LINKS_EXTENDED, z_range=(1.5, 401.5)):
       max_acceleration=0.0,
       max_deceleration=0.0,
     ),
+    # The arm the tests stand in for has the v23 gripper, with its two cameras.
+    camera_count=2,
   )
 
 
@@ -253,6 +256,13 @@ class TestTheDriverHangsTheArm(unittest.IsolatedAsyncioTestCase):
     # The wrist joint is in the flange plane, which is the shoulder axis's height at Z 0.
     self.assertAlmostEqual(wrist.z, axis.z)
     self.assertAlmostEqual(elbow.z, axis.z)
+
+  def test_the_gripper_has_the_body_its_cameras_say(self):
+    self.assertEqual(hung(self.driver)[3].body.model, "brooks_pf400_gripper_body_v23")
+    without = pf400().driver
+    without._configuration = dataclasses.replace(configuration(), camera_count=0)
+    without._create_feature_resources(without.configuration)
+    self.assertEqual(hung(without)[3].body.model, "brooks_pf400_gripper_body_s23")
 
   def test_a_second_setup_hangs_nothing_twice(self):
     before = len(self.device.get_all_children())

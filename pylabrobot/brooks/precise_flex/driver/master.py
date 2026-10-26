@@ -591,6 +591,7 @@ class PreciseFlexDriver:
     hand = gripper(
       name=f"{device.name}_gripper",
       tool_length=c.kinematics.gripper_length,
+      intelliguide="v23" if configuration.has_vision_gripper else "s23",
       # The axis's soft limits, in mm, as the gripper takes them when it adopts a configuration.
       jaw_range=(
         self.gripper._firmware_units_to_mm(configuration.gripper.soft_limit_range[0]),

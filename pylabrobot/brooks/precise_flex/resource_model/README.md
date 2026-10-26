@@ -39,6 +39,7 @@ shoulder.
 | `link_1` | `link_body` | `brooks_pf400_link_1` | Shoulder joint to elbow joint |
 | `link_2` | `link_body` | `brooks_pf400_link_2` | Elbow joint to wrist joint, turning underneath link 1 |
 | `gripper` | `mechanical_gripper` | `brooks_pf400_gripper` | Wrist joint to the point the fingers grip at |
+| its body | `body` | `brooks_pf400_gripper_body_s23`, `_v23` | The IntelliGuide s23's, or the v23's with cameras |
 | its two jaws | `jaw` | `brooks_pf400_gripper_jaw_left`, `_right` | What the gripper's drive moves |
 | its two fingers | `finger` | `brooks_pf400_gripper_finger_left`, `_right` | Bolted one to each jaw, and changed without it |
 | `linear_rail` | `linear_rail` | `brooks_pf400_linear_rail_1m`, `_1_5m`, `_2m` | The optional rail, as long as its travel |
@@ -73,8 +74,11 @@ A link is as long as the controller reports between its joints, plus the hub pas
 one factory serves both reaches. The driver hangs the carriage, the links and the gripper at
 setup, each by its joint, and every joint read stands and turns them to what was read.
 
-The gripper is its body, two jaws and two fingers. The two sides are mirror images, so a jaw and a
-finger each have a left and a right mesh. Left is the gripper's +y side.
+The gripper is its body, two jaws and two fingers. The body is the one Brooks fits: the
+IntelliGuide s23, cut from the IGES model's gripper frame and cover, or the v23, which carries the
+cameras, chosen by whether the controller counts any. Both take the same jaws and fingers. The two
+sides are mirror images, so a jaw and a finger each have a left and a right mesh. Left is the
+gripper's +y side.
 
 ## Outlines
 

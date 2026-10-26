@@ -1273,7 +1273,9 @@ class PreciseFlexArm:
     """
     gripper = cast(MechanicalGripper, self._driver.gripper.resource)
     joint = gripper.proximal_joint
-    outlines = {gripper.body.name: [(x - joint.x, y - joint.y) for x, y in GRIPPER_BODY_OUTLINE]}
+    # The body's model ends in the name of the gripper it belongs to.
+    outline = GRIPPER_BODY_OUTLINE[cast(str, gripper.body.model).rsplit("_", 1)[1]]
+    outlines = {gripper.body.name: [(x - joint.x, y - joint.y) for x, y in outline]}
     for finger, jaw, side in zip(gripper.fingers, gripper.jaws, (1.0, -1.0)):
       # The finger's facing surface stands half the width from the grip centre, and its jaw stands
       # where that puts it.

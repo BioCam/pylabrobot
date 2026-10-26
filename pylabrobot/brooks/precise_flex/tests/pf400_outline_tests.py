@@ -8,7 +8,15 @@ Outline = Sequence[Tuple[float, float]]
 # Each outline, its part's cuboid, and how far the outline may stand outside that cuboid, in mm.
 OUTLINES: Tuple[Tuple[str, Outline, Tuple[float, ...], float], ...] = (
   ("column", pf400_chassis.Z_COLUMN_OUTLINE, pf400_chassis.Z_COLUMN_SIZE_XY, 0.5),
-  ("body", pf400_end_effector.GRIPPER_BODY_OUTLINE, pf400_end_effector.GRIPPER_BODY_SIZE, 0.5),
+  *(
+    (
+      f"body {intelliguide}",
+      pf400_end_effector.GRIPPER_BODY_OUTLINE[intelliguide],
+      pf400_end_effector.GRIPPER_BODY_SIZE[intelliguide],
+      0.5,
+    )
+    for intelliguide in ("s23", "v23")
+  ),
 )
 
 
