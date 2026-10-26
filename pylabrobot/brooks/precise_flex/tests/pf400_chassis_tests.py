@@ -31,6 +31,11 @@ class TestTheColumn(unittest.TestCase):
       column = pf400_chassis.z_column("column", height=pf400_chassis.z_column_height(z_travel))
       self.assertEqual(pf400_chassis.Z_COLUMN_LOCATION.z + column.get_size_z(), height)
 
+  def test_each_column_sold_has_its_own_mesh(self):
+    for z_travel, model in ((401.5, "400mm"), (750.0, "750mm"), (1161.5, "1160mm")):
+      column = pf400_chassis.z_column("column", pf400_chassis.z_column_height(z_travel))
+      self.assertEqual(column.model, f"brooks_pf400_z_column_{model}")
+
 
 class TestTheCarriage(unittest.TestCase):
   """What the J1 drive moves, and where a reading puts it."""
@@ -65,7 +70,7 @@ class TestEveryPart(unittest.TestCase):
       [(part.category, part.model) for part in parts],
       [
         ("base_plate", "brooks_pf400_base_plate"),
-        ("z_column", "brooks_pf400_z_column"),
+        ("z_column", "brooks_pf400_z_column_400mm"),
         ("z_carriage", "brooks_pf400_z_carriage"),
       ],
     )

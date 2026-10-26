@@ -34,7 +34,7 @@ shoulder.
 | Resource | Category | Model | What it is |
 |---|---|---|---|
 | `base_plate` | `base_plate` | `brooks_pf400_base_plate` | The base plate the device bolts to |
-| `z_column` | `z_column` | `brooks_pf400_z_column` | The column the carriage rides, as tall as the travel makes it |
+| `z_column` | `z_column` | `brooks_pf400_z_column_400mm`, `_750mm`, `_1160mm` | The column the carriage rides, the one sold for the Z travel |
 | `z_carriage` | `z_carriage` | `brooks_pf400_z_carriage` | What the Z drive moves: the housing the arm turns in |
 | `link_1` | `link_body` | `brooks_pf400_link_1` | Shoulder joint to elbow joint |
 | `link_2` | `link_body` | `brooks_pf400_link_2` | Elbow joint to wrist joint, turning underneath link 1 |

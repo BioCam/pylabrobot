@@ -92,7 +92,7 @@ def base_plate(name: str = "pf400_base_plate") -> Resource:
 
 
 def z_column(name: str, height: float) -> Resource:
-  """The column the carriage rides.
+  """The column the carriage rides, drawn as the one sold nearest its height.
 
   Args:
     name: what to call this one.
@@ -101,13 +101,16 @@ def z_column(name: str, height: float) -> Resource:
   Returns:
     The column.
   """
+  sold = min(
+    ROBOT_HEIGHTS, key=lambda travel: abs(ROBOT_HEIGHTS[travel] - Z_COLUMN_LOCATION.z - height)
+  )
   return Resource(
     name=name,
     size_x=Z_COLUMN_SIZE_XY[0],
     size_y=Z_COLUMN_SIZE_XY[1],
     size_z=height,
     category="z_column",
-    model="brooks_pf400_z_column",
+    model=f"brooks_pf400_z_column_{sold:.0f}mm",
   )
 
 
