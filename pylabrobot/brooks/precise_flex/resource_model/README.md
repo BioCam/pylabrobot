@@ -60,19 +60,29 @@ The cuboids are therefore the specification for how a model of the whole device 
 per part, each cut at that part's own corner, so a file can be dropped in without an offset and
 without anything else changing.
 
-The chassis, link and gripper files are split from a model of the standard-reach arm, each placed
-by the shoulder axis and its joints. The links are lengthened to the extended reach by moving the
-far half of each out.
+Each file comes from Brooks: the datasheet (612736, Robot Mounting) where it gives a dimension, and
+otherwise the IGES models of the standard-reach (PF400S) and extended-reach (PF400SX) arms. What no
+one can see is left out, and the rest is simplified only where the eye cannot tell.
 
-The base plate and the column are the outer parts only, cut from Brooks' IGES model
-(`Assy_Main_ProdC_Precise_400_ShellEXT_PF400_101216.IGS`): the bare plate, and the
-extrusion, top plate and front cover, with the connector panel that shows in the column's side.
-What stands inside the column - the rest of the electronics bracket and the upper Z idler - is
-left out.
+- The base plate is the datasheet's: 201 x 235, with the holes that show from above (the M10
+  leveling and the counterbored mounting holes). Thickness, radii and hole sizes are the CAD's.
+- The column is the CAD's extrusion, top plate and front cover. Black strips seal its two front
+  slots, which the CAD leaves open. Its connector panel keeps the Ethernet socket, the power
+  switch and the power inlet. The 750 and 1160 mm columns extend the 400 mm one in z above the
+  panel, to the datasheet's robot heights.
+- The carriage is the housing the arm turns in, at the CAD's dimensions: its lid, blue bumper,
+  screw heads and the bracket under it. The block inside the column is left out.
+- The links are the PF400SX's, 302 and 289 between their hub centres. A standard-reach arm is
+  drawn with them as well, its cuboids shorter than its meshes.
+- The s23 gripper body is cut from the CAD's gripper frame and cover. The v23 body, the jaws and
+  the fingers come from an earlier model of the arm.
 
-A link is as long as the controller reports between its joints, plus the hub past each joint, so
-one factory serves both reaches. The driver hangs the carriage, the links and the gripper at
-setup, each by its joint, and every joint read stands and turns them to what was read.
+Colours are the IGES's. White parts next to each other alternate between two shades, so each stands
+apart from its neighbour.
+
+A link is as long as the controller reports between its joints, plus the hub past each joint. The
+driver hangs the carriage, the links and the gripper at setup, each by its joint, and every joint
+read stands and turns them to what was read.
 
 The gripper is its body, two jaws and two fingers. The body is the one Brooks fits: the
 IntelliGuide s23, cut from the IGES model's gripper frame and cover, or the v23, which carries the
