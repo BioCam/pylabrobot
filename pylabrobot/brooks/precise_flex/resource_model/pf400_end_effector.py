@@ -16,7 +16,7 @@ from pylabrobot.resources.resource import Resource
 # cameras.
 GRIPPER_BODY_SIZE = {"s23": (115.5, 134.0, 36.5), "v23": (127.0, 134.0, 55.4)}
 # The wrist joint within the gripper: centred across it, in the flange plane just above its body.
-GRIPPER_JOINT = {"s23": Coordinate(35.0, 67.0, 37.5), "v23": Coordinate(34.4, 67.0, 56.4)}
+GRIPPER_JOINT = {"s23": Coordinate(35.0, 67.0, 37.5), "v23": Coordinate(35.0, 67.0, 56.4)}
 
 # The body seen from above, in its own frame: it narrows towards the wrist joint.
 GRIPPER_BODY_OUTLINE = {
@@ -33,29 +33,31 @@ GRIPPER_BODY_OUTLINE = {
     (-0.3, 67.5),
   ),
   "v23": (
-    (8.6, 44.1),
-    (13.6, 39.5),
-    (66.3, 0.2),
-    (125.0, 0.1),
-    (126.8, 1.2),
-    (126.8, 133.0),
-    (125.0, 134.1),
-    (64.4, 133.3),
-    (4.2, 83.6),
-    (0.0, 67.1),
+    (1.3, 57.2),
+    (3.3, 51.8),
+    (8.5, 43.2),
+    (65.4, 0.0),
+    (127.0, 0.0),
+    (127.0, 134.0),
+    (65.4, 134.0),
+    (6.7, 89.5),
+    (0.3, 75.1),
+    (-0.2, 63.9),
   ),
 }
 
 GRIPPER_JAW_SIZE = (22.0, 43.2, 37.2)
 # Where a jaw starts along the gripper and above its underside. Across it is wherever the drive is.
-GRIPPER_JAW_LOCATION = {"s23": Coordinate(92.0, 0.0, -3.2), "v23": Coordinate(92.0, 0.0, 15.7)}
+# Its box is the thicker jaw's; the thinner one ends at the same front and bottom.
+GRIPPER_JAW_LOCATION = {"s23": Coordinate(91.6, 0.0, -3.2), "v23": Coordinate(91.6, 0.0, 15.7)}
 
-GRIPPER_FINGER_SIZE = (107.8, 11.5, 22.6)
+# Each gripper's own fingers: the s23's, and the v23's plate fingers.
+GRIPPER_FINGER_SIZE = {"s23": (107.8, 11.5, 22.6), "v23": (120.3, 11.5, 33.1)}
 # Where the first finger is bolted on its jaw: its rear set into the jaw's outer end, from below.
-GRIPPER_FINGER_LOCATION = Coordinate(1.7, 32.2, -16.9)
+GRIPPER_FINGER_LOCATION = {"s23": Coordinate(2.1, 32.2, -16.9), "v23": Coordinate(2.0, 32.2, -27.1)}
 
 # How far below the flange plane the fingers grip: at the middle of their height.
-GRIPPER_TOOL_CENTER_POINT_Z = -46.3
+GRIPPER_TOOL_CENTER_POINT_Z = {"s23": -46.3, "v23": -51.25}
 
 
 def gripper(
@@ -78,7 +80,7 @@ def gripper(
   """
   model = "brooks_pf400_gripper"
   size = GRIPPER_BODY_SIZE[intelliguide]
-  # The two sides are mirror images, so each has its own mesh.
+  # The two sides are mirror images, so each has its own mesh; each gripper has its own fingers.
   jaws, fingers = (
     tuple(
       Resource(
@@ -87,16 +89,19 @@ def gripper(
         size_y=size[1],
         size_z=size[2],
         category=part,
-        model=f"{model}_{part}_{side}",
+        model=f"{model}_{part}{kind}_{side}",
       )
       for side in ("left", "right")
     )
-    for part, size in (("jaw", GRIPPER_JAW_SIZE), ("finger", GRIPPER_FINGER_SIZE))
+    for part, size, kind in (
+      ("jaw", GRIPPER_JAW_SIZE, ""),
+      ("finger", GRIPPER_FINGER_SIZE[intelliguide], f"_{intelliguide}"),
+    )
   )
   return MechanicalGripper(
     name=name,
     proximal_joint=GRIPPER_JOINT[intelliguide],
-    tool_center_point=Coordinate(tool_length, 0.0, GRIPPER_TOOL_CENTER_POINT_Z),
+    tool_center_point=Coordinate(tool_length, 0.0, GRIPPER_TOOL_CENTER_POINT_Z[intelliguide]),
     body=Resource(
       name=f"{name}_body",
       size_x=size[0],
@@ -107,7 +112,7 @@ def gripper(
     ),
     body_location=Coordinate.zero(),
     fingers=fingers,
-    finger_location=GRIPPER_FINGER_LOCATION,
+    finger_location=GRIPPER_FINGER_LOCATION[intelliguide],
     jaws=jaws,
     jaw_location=GRIPPER_JAW_LOCATION[intelliguide],
     jaw_range=jaw_range,

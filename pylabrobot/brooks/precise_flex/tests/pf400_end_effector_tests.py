@@ -15,16 +15,21 @@ class TestPF400Gripper(unittest.TestCase):
   def test_it_is_sized_to_its_body_and_turns_on_the_wrist_joint(self):
     self.assertIsInstance(self.gripper, MechanicalGripper)
     self.assertEqual(self.gripper.get_size_x(), 127.0)
-    self.assertEqual(self.gripper.proximal_joint, Coordinate(34.4, 67.0, 56.4))
+    self.assertEqual(self.gripper.proximal_joint, Coordinate(35.0, 67.0, 56.4))
 
-  def test_the_fingers_hang_as_far_below_the_wrist_joint_on_either_body(self):
+  def test_the_jaws_stand_as_far_from_the_wrist_joint_on_either_body(self):
     others = pf400_end_effector.gripper("other", 162.0, (60.0, 145.0), intelliguide="s23")
-    for finger, other in zip(self.gripper.fingers, others.fingers):
-      below = self.gripper.proximal_joint.z - finger.get_location_wrt(self.gripper).z
-      self.assertAlmostEqual(others.proximal_joint.z - other.get_location_wrt(others).z, below)
+    for jaw, other in zip(self.gripper.jaws, others.jaws):
+      here, there = jaw.get_location_wrt(self.gripper), other.get_location_wrt(others)
+      self.assertAlmostEqual(
+        self.gripper.proximal_joint.x - here.x, others.proximal_joint.x - there.x
+      )
+      self.assertAlmostEqual(
+        self.gripper.proximal_joint.z - here.z, others.proximal_joint.z - there.z
+      )
 
   def test_it_grips_its_tool_length_out_and_below_the_flange_plane(self):
-    self.assertEqual(self.gripper.tool_center_point, Coordinate(162.0, 0.0, -46.3))
+    self.assertEqual(self.gripper.tool_center_point, Coordinate(162.0, 0.0, -51.25))
 
   def test_the_grip_centre_is_at_the_middle_of_the_fingers_height(self):
     finger = self.gripper.fingers[0]
@@ -46,8 +51,8 @@ class TestPF400Gripper(unittest.TestCase):
   def test_a_finger_starts_where_its_jaw_does_and_hangs_below_the_body(self):
     for finger in self.gripper.fingers:
       here = finger.get_location_wrt(self.gripper)
-      self.assertAlmostEqual(here.x, 93.7)
-      self.assertAlmostEqual(here.z, -1.2)
+      self.assertAlmostEqual(here.x, 93.6)
+      self.assertAlmostEqual(here.z, -11.4)
 
   def test_a_jaws_outer_end_stands_just_inside_its_fingers_outer_face(self):
     for jaw, finger, outer in zip(self.gripper.jaws, self.gripper.fingers, (1.0, -1.0)):
@@ -58,7 +63,7 @@ class TestPF400Gripper(unittest.TestCase):
 
   def test_the_parts_are_named_for_a_mesh_each_side_its_own(self):
     self.assertEqual(self.gripper.body.model, "brooks_pf400_gripper_body_v23")
-    for part, parts in (("jaw", self.gripper.jaws), ("finger", self.gripper.fingers)):
+    for part, parts in (("jaw", self.gripper.jaws), ("finger_v23", self.gripper.fingers)):
       self.assertEqual(
         [each.model for each in parts],
         [f"brooks_pf400_gripper_{part}_left", f"brooks_pf400_gripper_{part}_right"],
@@ -66,7 +71,7 @@ class TestPF400Gripper(unittest.TestCase):
 
 
 class TestPF400GripperS23(unittest.TestCase):
-  """The gripper without cameras: a lower body, the same jaws and fingers."""
+  """The gripper without cameras: a lower body and its own fingers, the same jaws."""
 
   def setUp(self):
     self.gripper = pf400_end_effector.gripper("gripper", 162.0, (60.0, 145.0), intelliguide="s23")
@@ -79,3 +84,11 @@ class TestPF400GripperS23(unittest.TestCase):
   def test_its_jaws_stand_below_its_bodys_underside(self):
     for jaw in self.gripper.jaws:
       self.assertAlmostEqual(jaw.get_location_wrt(self.gripper).z, -3.2)
+
+  def test_its_fingers_are_its_own(self):
+    self.assertEqual(self.gripper.fingers[0].get_size_x(), 107.8)
+    self.assertAlmostEqual(self.gripper.fingers[0].get_location_wrt(self.gripper).x, 93.7)
+    self.assertEqual(
+      [finger.model for finger in self.gripper.fingers],
+      ["brooks_pf400_gripper_finger_s23_left", "brooks_pf400_gripper_finger_s23_right"],
+    )

@@ -41,7 +41,7 @@ shoulder.
 | `gripper` | `mechanical_gripper` | `brooks_pf400_gripper` | Wrist joint to the point the fingers grip at |
 | its body | `body` | `brooks_pf400_gripper_body_s23`, `_v23` | The IntelliGuide s23's, or the v23's with cameras |
 | its two jaws | `jaw` | `brooks_pf400_gripper_jaw_left`, `_right` | What the gripper's drive moves |
-| its two fingers | `finger` | `brooks_pf400_gripper_finger_left`, `_right` | Bolted one to each jaw, and changed without it |
+| its two fingers | `finger` | `brooks_pf400_gripper_finger_s23_left`, `_right`; `_v23_` likewise | Each gripper's own, bolted one to each jaw |
 | `linear_rail` | `linear_rail` | `brooks_pf400_linear_rail_1m`, `_1_5m`, `_2m` | The optional rail, as long as its travel |
 | `linear_rail_carriage` | `linear_rail_carriage` | `brooks_pf400_linear_rail_carriage_0deg`, `_90deg` | What rides the rail, and the arm stands on |
 
@@ -75,7 +75,8 @@ one can see is left out, and the rest is simplified only where the eye cannot te
 - The links are the PF400SX's, 302 and 289 between their hub centres. A standard-reach arm is
   drawn with them as well, its cuboids shorter than its meshes.
 - The s23 gripper body is cut from the CAD's gripper frame and cover. The v23 body, the jaws and
-  the fingers come from an earlier model of the arm.
+  the v23's plate fingers are Brooks' IntelliGuide v23 STEP models; each plate finger stands where
+  its two screws meet its jaw's tapped holes. The s23's fingers come from an earlier model.
 
 Colours are the IGES's. White parts next to each other alternate between two shades, so each stands
 apart from its neighbour.
@@ -84,9 +85,9 @@ A link is as long as the controller reports between its joints, plus the hub pas
 driver hangs the carriage, the links and the gripper at setup, each by its joint, and every joint
 read stands and turns them to what was read.
 
-The gripper is its body, two jaws and two fingers. The body is the one Brooks fits: the
-IntelliGuide s23, cut from the IGES model's gripper frame and cover, or the v23, which carries the
-cameras, chosen by whether the controller counts any. Both take the same jaws and fingers. The two
+The gripper is its body, two jaws and two fingers. The body is the one Brooks fits: the IntelliGuide
+s23, cut from the IGES model's gripper frame and cover, or the v23, which carries the cameras,
+chosen by whether the controller counts any. Both take the same jaws, each its own fingers. The two
 sides are mirror images, so a jaw and a finger each have a left and a right mesh. Left is the
 gripper's +y side.
 
