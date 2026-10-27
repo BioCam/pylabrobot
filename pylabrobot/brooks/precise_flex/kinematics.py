@@ -16,7 +16,7 @@ Sign conventions follow right-hand rule about +Z (CCW positive looking down).
 """
 
 import warnings
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 from enum import IntEnum
 from math import atan2, cos, degrees, hypot, pi, radians, sin, sqrt
 from typing import Dict, List, Literal, Optional, Sequence, Tuple
@@ -196,6 +196,10 @@ def fk(joints: JointState, p: PF400Params) -> PreciseFlexCartesianPose:
   )
 
 
+# Boundaries already swept, per argument set: every arm built from one configuration shares one.
+_WORKSPACE_BOUNDARIES: Dict[tuple, List[Tuple[float, float]]] = {}
+
+
 def compute_workspace_boundary(
   p: PF400Params,
   shoulder_range: Tuple[float, float],
@@ -218,6 +222,9 @@ def compute_workspace_boundary(
   Returns:
     The boundary's points (x, y) from the shoulder axis, in mm, in order round it.
   """
+  key = (astuple(p), tuple(shoulder_range), tuple(elbow_range), joint_steps, bearing_steps)
+  if key in _WORKSPACE_BOUNDARIES:
+    return list(_WORKSPACE_BOUNDARIES[key])
   wrist_points = []
   for i in range(joint_steps + 1):
     shoulder = radians(
@@ -239,7 +246,8 @@ def compute_workspace_boundary(
       if abs(aside) <= tool:
         reach = max(reach, along + sqrt(tool * tool - aside * aside))
     boundary.append((reach * ahead_x, reach * ahead_y))
-  return boundary
+  _WORKSPACE_BOUNDARIES[key] = boundary
+  return list(boundary)
 
 
 def compute_outline_clearance(
