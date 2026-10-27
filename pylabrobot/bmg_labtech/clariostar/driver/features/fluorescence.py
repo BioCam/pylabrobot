@@ -43,6 +43,7 @@ from .measurement import (
   MeasurementConfiguration,
   MeasurementSettings,
   ShakeSettings,
+  _enforce_one_measurement_at_a_time,
   _get_measured_identifiers,
 )
 
@@ -1260,6 +1261,7 @@ class Fluorescence(Measurement):
 
   # -- measuring -----------------------------------------------------------------------------------
 
+  @_enforce_one_measurement_at_a_time
   async def _run_z_profile(self, parameters: bytes, timeout: float) -> bytes:
     """Send a z-scan (`09`) and return its FOCUS_RESULT reply.
 
@@ -1503,6 +1505,7 @@ class Fluorescence(Measurement):
 
   # -- measuring -----------------------------------------------------------------------------------
 
+  @_enforce_one_measurement_at_a_time
   async def _run_grid(
     self, parameters: bytes, timeout: float
   ) -> Tuple[int, float, List[bytes], bytes]:
@@ -1997,6 +2000,7 @@ class Fluorescence(Measurement):
     enhanced_dynamic_range: bool = ...,
     measurement_settings: Optional[MeasurementSettings] = ...,
     shake_settings: Optional[ShakeSettings] = ...,
+    simulated_data: Optional[Sequence[FluorescenceResult]] = ...,
     timeout: Optional[float] = ...,
     results_directory: Optional[str] = ...,
   ) -> CLARIOstarFluorescenceResult: ...
@@ -2014,6 +2018,7 @@ class Fluorescence(Measurement):
     enhanced_dynamic_range: bool = ...,
     measurement_settings: Optional[MeasurementSettings] = ...,
     shake_settings: Optional[ShakeSettings] = ...,
+    simulated_data: Optional[Sequence[FluorescenceResult]] = ...,
     timeout: Optional[float] = ...,
     results_directory: Optional[str] = ...,
   ) -> List[CLARIOstarFluorescenceResult]: ...
@@ -2030,6 +2035,7 @@ class Fluorescence(Measurement):
     enhanced_dynamic_range: bool = False,
     measurement_settings: Optional[MeasurementSettings] = None,
     shake_settings: Optional[ShakeSettings] = None,
+    simulated_data: Optional[Sequence[FluorescenceResult]] = None,
     timeout: Optional[float] = None,
     results_directory: Optional[str] = None,
   ) -> Union[CLARIOstarFluorescenceResult, List[CLARIOstarFluorescenceResult]]:
@@ -2060,6 +2066,8 @@ class Fluorescence(Measurement):
         than a normal read's and not comparable with them.
       measurement_settings: how to read, without a pause; None reads with the defaults.
       shake_settings: shake the plate before the read; None does not shake.
+      simulated_data: what each measured well reads on the simulated reader (`simulator`); a
+        real reader measures the plate and ignores it, so one call serves both.
       timeout: seconds the run may take; `default_read_timeout` when None.
       results_directory: the directory the read's rows are appended to once it is complete
         (`pylabrobot.lib.results.directory`); None writes none.
