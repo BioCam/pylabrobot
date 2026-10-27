@@ -36,8 +36,8 @@ shoulder.
 | `base_plate` | `base_plate` | `brooks_pf400_base_plate` | The base plate the device bolts to |
 | `z_column` | `z_column` | `brooks_pf400_z_column_400mm`, `_750mm`, `_1160mm` | The column the carriage rides, the one sold for the Z travel |
 | `z_carriage` | `z_carriage` | `brooks_pf400_z_carriage` | What the Z drive moves: the housing the arm turns in |
-| `link_1` | `link_body` | `brooks_pf400_link_1` | Shoulder joint to elbow joint |
-| `link_2` | `link_body` | `brooks_pf400_link_2` | Elbow joint to wrist joint, turning underneath link 1 |
+| `link_1` | `link_body` | `brooks_pf400_link_1_standard`, `_extended` | Shoulder joint to elbow joint |
+| `link_2` | `link_body` | `brooks_pf400_link_2_standard`, `_extended` | Elbow joint to wrist joint, turning underneath link 1 |
 | `gripper` | `mechanical_gripper` | `brooks_pf400_gripper` | Wrist joint to the point the fingers grip at |
 | its body | `body` | `brooks_pf400_gripper_body_s23`, `_v23` | The IntelliGuide s23's, or the v23's with cameras |
 | its two jaws | `jaw` | `brooks_pf400_gripper_jaw_left`, `_right` | What the gripper's drive moves |
@@ -72,8 +72,8 @@ one can see is left out, and the rest is simplified only where the eye cannot te
   panel, to the datasheet's robot heights.
 - The carriage is the housing the arm turns in, at the CAD's dimensions: its lid, blue bumper,
   screw heads and the bracket under it. The block inside the column is left out.
-- The links are the PF400SX's, 302 and 289 between their hub centres. A standard-reach arm is
-  drawn with them as well, its cuboids shorter than its meshes.
+- The links are the PF400S's (225 and 210 between their hub centres) or the PF400SX's (302 and
+  289), each link drawn as the reach its length is nearest.
 - The s23 gripper body is cut from the CAD's gripper frame and cover. The v23 body, the jaws and
   the v23's plate fingers are Brooks' IntelliGuide v23 STEP models; each plate finger stands where
   its two screws meet its jaw's tapped holes. The s23's fingers come from an earlier model.

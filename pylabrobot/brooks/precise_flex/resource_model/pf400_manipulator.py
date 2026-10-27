@@ -6,6 +6,7 @@ measured off the manufacturer's model, and are the same on both reaches; the len
 link's joints is what the controller reports.
 """
 
+from pylabrobot.brooks.precise_flex.kinematics import ARM_LINKS_EXTENDED, ARM_LINKS_STANDARD
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.manipulator import LinkBody
 
@@ -22,6 +23,12 @@ LINK_2_HUB_DISTAL = 36.0
 # How far link 1's underside stands above the flange plane, which link 2's underside lies in.
 # Less than link 2 is tall: at the elbow the two hubs nest.
 LINK_1_ABOVE_FLANGE_PLANE = 31.5
+
+
+def _reach(link: int, length: float) -> str:
+  """The reach whose link `link` (0 or 1) is nearest `length`: "standard" or "extended"."""
+  reaches = {"standard": ARM_LINKS_STANDARD[link], "extended": ARM_LINKS_EXTENDED[link]}
+  return min(reaches, key=lambda reach: abs(reaches[reach] - length))
 
 
 def _link(
@@ -42,7 +49,7 @@ def _link(
 
 
 def link_1(name: str, length: float) -> LinkBody:
-  """The first link: the shoulder joint to the elbow joint.
+  """The first link: the shoulder joint to the elbow joint, drawn as the nearest reach's.
 
   Args:
     name: what to call this one.
@@ -51,13 +58,12 @@ def link_1(name: str, length: float) -> LinkBody:
   Returns:
     The link.
   """
-  return _link(
-    name, length, LINK_1_SIZE_YZ, LINK_1_HUB_OVERHANG, LINK_1_HUB_OVERHANG, "brooks_pf400_link_1"
-  )
+  model = f"brooks_pf400_link_1_{_reach(0, length)}"
+  return _link(name, length, LINK_1_SIZE_YZ, LINK_1_HUB_OVERHANG, LINK_1_HUB_OVERHANG, model)
 
 
 def link_2(name: str, length: float) -> LinkBody:
-  """The second link: the elbow joint to the wrist joint.
+  """The second link: the elbow joint to the wrist joint, drawn as the nearest reach's.
 
   Args:
     name: what to call this one.
@@ -66,6 +72,5 @@ def link_2(name: str, length: float) -> LinkBody:
   Returns:
     The link.
   """
-  return _link(
-    name, length, LINK_2_SIZE_YZ, LINK_2_HUB_PROXIMAL, LINK_2_HUB_DISTAL, "brooks_pf400_link_2"
-  )
+  model = f"brooks_pf400_link_2_{_reach(1, length)}"
+  return _link(name, length, LINK_2_SIZE_YZ, LINK_2_HUB_PROXIMAL, LINK_2_HUB_DISTAL, model)

@@ -27,11 +27,19 @@ class TestPF400Links(unittest.TestCase):
         self.assertEqual(link.proximal_joint, Coordinate(56.0, 56.0, 0.0))
         self.assertEqual(link.distal_joint, Coordinate(56.0 + length, 56.0, 0.0))
 
-  def test_each_link_is_named_for_its_mesh_and_carries_nothing(self):
-    first = pf400_manipulator.link_1("link_1", 302.0)
-    second = pf400_manipulator.link_2("link_2", 289.0)
-    self.assertEqual((first.model, second.model), ("brooks_pf400_link_1", "brooks_pf400_link_2"))
-    self.assertEqual(first.children + second.children, [])
+  def test_each_link_is_named_for_its_reachs_mesh_and_carries_nothing(self):
+    # The nearest reach's mesh: an odd length is drawn as the reach it is closer to.
+    for l1, l2, reach in (
+      (302.0, 289.0, "extended"),
+      (225.0, 210.0, "standard"),
+      (250.0, 240.0, "standard"),
+    ):
+      with self.subTest(reach=reach, l1=l1):
+        first = pf400_manipulator.link_1("link_1", l1)
+        second = pf400_manipulator.link_2("link_2", l2)
+        models = (f"brooks_pf400_link_1_{reach}", f"brooks_pf400_link_2_{reach}")
+        self.assertEqual((first.model, second.model), models)
+        self.assertEqual(first.children + second.children, [])
 
   def test_the_links_and_the_carriage_nest(self):
     link_2_top = pf400_manipulator.LINK_2_SIZE_YZ[1]
