@@ -54,10 +54,10 @@ GRIPPER_JAW_LOCATION = {"s23": Coordinate(91.6, 0.0, -3.2), "v23": Coordinate(91
 # Each gripper's own fingers: the s23's, and the v23's plate fingers.
 GRIPPER_FINGER_SIZE = {"s23": (107.8, 11.5, 22.6), "v23": (120.3, 11.5, 33.1)}
 # Where the first finger is bolted on its jaw: its rear set into the jaw's outer end, from below.
-GRIPPER_FINGER_LOCATION = {"s23": Coordinate(2.1, 32.2, -16.9), "v23": Coordinate(2.0, 32.2, -27.1)}
+GRIPPER_FINGER_LOCATION = {"s23": Coordinate(2.0, 32.2, -16.6), "v23": Coordinate(2.0, 32.2, -27.1)}
 
 # How far below the flange plane the fingers grip: at the middle of their height.
-GRIPPER_TOOL_CENTER_POINT_Z = {"s23": -46.3, "v23": -51.25}
+GRIPPER_TOOL_CENTER_POINT_Z = {"s23": -46.0, "v23": -51.25}
 
 
 def gripper(

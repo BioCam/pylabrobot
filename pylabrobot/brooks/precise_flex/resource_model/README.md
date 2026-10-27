@@ -75,8 +75,8 @@ one can see is left out, and the rest is simplified only where the eye cannot te
 - The links are the PF400S's (225 and 210 between their hub centres) or the PF400SX's (302 and
   289), each link drawn as the reach its length is nearest.
 - The s23 gripper body is cut from the CAD's gripper frame and cover. The v23 body, the jaws and
-  the v23's plate fingers are Brooks' IntelliGuide v23 STEP models; each plate finger stands where
-  its two screws meet its jaw's tapped holes. The s23's fingers come from an earlier model.
+  both grippers' fingers are Brooks' IntelliGuide STEP models; each finger stands where its two
+  screws meet its jaw's tapped holes.
 
 Colours are the IGES's. White parts next to each other alternate between two shades, so each stands
 apart from its neighbour.

@@ -87,7 +87,8 @@ class TestPF400GripperS23(unittest.TestCase):
 
   def test_its_fingers_are_its_own(self):
     self.assertEqual(self.gripper.fingers[0].get_size_x(), 107.8)
-    self.assertAlmostEqual(self.gripper.fingers[0].get_location_wrt(self.gripper).x, 93.7)
+    self.assertAlmostEqual(self.gripper.fingers[0].get_location_wrt(self.gripper).x, 93.6)
+    self.assertEqual(self.gripper.tool_center_point.z, -46.0)
     self.assertEqual(
       [finger.model for finger in self.gripper.fingers],
       ["brooks_pf400_gripper_finger_s23_left", "brooks_pf400_gripper_finger_s23_right"],
