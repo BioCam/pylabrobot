@@ -3,7 +3,7 @@
 import unittest
 from typing import cast
 
-from pylabrobot.brooks.precise_flex import Axis, PreciseFlex400
+from pylabrobot.brooks.precise_flex import PreciseFlex400, PreciseFlexAxis
 from pylabrobot.resources.end_effector import MechanicalGripper
 
 
@@ -21,12 +21,12 @@ class TestASimulatedArm(unittest.IsolatedAsyncioTestCase):
     joints = await self.driver.arm.request_joint_state()
     parked = self.driver.arm.PARKING_POSITION_RIGHT
     self.assertEqual({axis: joints[axis] for axis in parked}, parked)
-    self.assertEqual(joints[Axis.BASE], 0.75 * 401.5)
+    self.assertEqual(joints[PreciseFlexAxis.BASE], 0.75 * 401.5)
     self.assertEqual(self.hand.jaw_width, 134.0)
 
   async def test_a_joint_move_moves_the_model(self):
-    await self.driver.arm.move_to_joint_state({Axis.WRIST: 170.0})
-    self.assertEqual((await self.driver.arm.request_joint_state())[Axis.WRIST], 170.0)
+    await self.driver.arm.move_to_joint_state({PreciseFlexAxis.WRIST: 170.0})
+    self.assertEqual((await self.driver.arm.request_joint_state())[PreciseFlexAxis.WRIST], 170.0)
     self.assertAlmostEqual(self.hand.rotation.z, 170.0)
 
   async def test_a_jaw_move_moves_the_jaws(self):

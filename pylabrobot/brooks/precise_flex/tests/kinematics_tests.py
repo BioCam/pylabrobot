@@ -63,10 +63,10 @@ class TestElbowAndWrist(unittest.TestCase):
   def test_the_gripper_pose_is_the_wrist_joint_and_the_tool_beyond_it(self):
     p = kinematics.PF400Params(gripper_length=162.0)
     joints = {
-      kinematics.Axis.BASE: 100.0,
-      kinematics.Axis.SHOULDER: 30.0,
-      kinematics.Axis.ELBOW: 70.0,
-      kinematics.Axis.WRIST: -40.0,
+      kinematics.PreciseFlexAxis.BASE: 100.0,
+      kinematics.PreciseFlexAxis.SHOULDER: 30.0,
+      kinematics.PreciseFlexAxis.ELBOW: 70.0,
+      kinematics.PreciseFlexAxis.WRIST: -40.0,
     }
     _, wrist = kinematics.compute_elbow_and_wrist(p, math.radians(30.0), math.radians(70.0))
     pose = kinematics.fk(joints, p)

@@ -10,7 +10,10 @@ from pylabrobot.brooks.precise_flex.device import (
   PreciseFlex400,
   PreciseFlexDevice,
 )
-from pylabrobot.brooks.precise_flex.driver.configuration import Axis, PreciseFlexConfiguration
+from pylabrobot.brooks.precise_flex.driver.configuration import (
+  PreciseFlexAxis,
+  PreciseFlexConfiguration,
+)
 from pylabrobot.brooks.precise_flex.driver.errors import PreciseFlexError
 from pylabrobot.brooks.precise_flex.driver.features.arm import PreciseFlexArmConfiguration
 from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGripperConfiguration
@@ -39,10 +42,10 @@ def configuration(links=kinematics.ARM_LINKS_EXTENDED, z_range=(1.5, 401.5)):
     axis_mask=47,
     arm=PreciseFlexArmConfiguration(
       soft_limits={
-        Axis.BASE: z_range,
-        Axis.SHOULDER: (-93.0, 93.0),
-        Axis.ELBOW: (12.0, 348.0),
-        Axis.WRIST: (-970.0, 970.0),
+        PreciseFlexAxis.BASE: z_range,
+        PreciseFlexAxis.SHOULDER: (-93.0, 93.0),
+        PreciseFlexAxis.ELBOW: (12.0, 348.0),
+        PreciseFlexAxis.WRIST: (-970.0, 970.0),
       },
       hard_limits={},
       max_joint_speed={},
@@ -307,20 +310,35 @@ class TestTheModelFollowsTheJoints(unittest.IsolatedAsyncioTestCase):
 
   def test_the_carriage_stands_where_the_z_drive_is(self):
     self.driver.arm.update_joint_state(
-      {Axis.BASE: 250.0, Axis.SHOULDER: 0.0, Axis.ELBOW: 0.0, Axis.WRIST: 0.0}
+      {
+        PreciseFlexAxis.BASE: 250.0,
+        PreciseFlexAxis.SHOULDER: 0.0,
+        PreciseFlexAxis.ELBOW: 0.0,
+        PreciseFlexAxis.WRIST: 0.0,
+      }
     )
     self.assertEqual(self.carriage.location, pf400_chassis.z_carriage_location(250.0))
 
   def test_each_member_turns_to_its_joints_angle(self):
     self.driver.arm.update_joint_state(
-      {Axis.BASE: 0.0, Axis.SHOULDER: 92.0, Axis.ELBOW: 179.5, Axis.WRIST: -184.25}
+      {
+        PreciseFlexAxis.BASE: 0.0,
+        PreciseFlexAxis.SHOULDER: 92.0,
+        PreciseFlexAxis.ELBOW: 179.5,
+        PreciseFlexAxis.WRIST: -184.25,
+      }
     )
     self.assertAlmostEqual(self.first.rotation.z, 92.0)
     self.assertAlmostEqual(self.second.rotation.z, 179.5)
     self.assertAlmostEqual(self.hand.rotation.z % 360.0, -184.25 % 360.0)
 
   def test_the_joints_stay_joined_when_the_members_turn(self):
-    joints = {Axis.BASE: 100.0, Axis.SHOULDER: 90.0, Axis.ELBOW: 0.0, Axis.WRIST: 0.0}
+    joints = {
+      PreciseFlexAxis.BASE: 100.0,
+      PreciseFlexAxis.SHOULDER: 90.0,
+      PreciseFlexAxis.ELBOW: 0.0,
+      PreciseFlexAxis.WRIST: 0.0,
+    }
     self.driver.arm.update_joint_state(joints)
     pose = self.driver.arm._forward_kinematics(joints)
     # Straight out along +y: the wrist joint is both link lengths from the shoulder axis.
@@ -349,7 +367,7 @@ class TestTheModelFollowsTheJoints(unittest.IsolatedAsyncioTestCase):
     with patch.object(driver, "send_command", AsyncMock(return_value=self.REPLY)):
       with patch.object(driver.arm, "_wait_for_eom", AsyncMock()):
         joints = await driver.arm.request_joint_state()
-    self.assertEqual(joints[Axis.SHOULDER], 91.974)
+    self.assertEqual(joints[PreciseFlexAxis.SHOULDER], 91.974)
 
 
 class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
@@ -364,11 +382,11 @@ class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
   @staticmethod
   def joints(shoulder: float, elbow: float, wrist: float, jaws: float):
     return {
-      Axis.BASE: 301.1,
-      Axis.SHOULDER: shoulder,
-      Axis.ELBOW: elbow,
-      Axis.WRIST: wrist,
-      Axis.GRIPPER: jaws,
+      PreciseFlexAxis.BASE: 301.1,
+      PreciseFlexAxis.SHOULDER: shoulder,
+      PreciseFlexAxis.ELBOW: elbow,
+      PreciseFlexAxis.WRIST: wrist,
+      PreciseFlexAxis.GRIPPER: jaws,
     }
 
   def test_the_pose_where_a_finger_touched_the_column_is_refused(self):
@@ -444,7 +462,7 @@ class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
 
   # A constructed pose, not a logged read: parked, with the jaws at 100 so 80 closes them.
   STOOD = "301.1 0.0 180.0 180.0 100.0"
-  TARGET = {Axis.SHOULDER: 30.0}
+  TARGET = {PreciseFlexAxis.SHOULDER: 30.0}
 
   def setUp(self):
     self.device = pf400()
@@ -528,11 +546,11 @@ class TestTheGripperIsKeptClearOfTheColumnOnTheWay(unittest.IsolatedAsyncioTestC
   @staticmethod
   def joints(shoulder: float, elbow: float, wrist: float, jaws: float):
     return {
-      Axis.BASE: 301.1,
-      Axis.SHOULDER: shoulder,
-      Axis.ELBOW: elbow,
-      Axis.WRIST: wrist,
-      Axis.GRIPPER: jaws,
+      PreciseFlexAxis.BASE: 301.1,
+      PreciseFlexAxis.SHOULDER: shoulder,
+      PreciseFlexAxis.ELBOW: elbow,
+      PreciseFlexAxis.WRIST: wrist,
+      PreciseFlexAxis.GRIPPER: jaws,
     }
 
   def test_a_swing_past_the_column_is_refused_though_it_ends_clear(self):
@@ -627,7 +645,11 @@ class TestTheGripperIsKeptClearOfTheColumnOnTheWay(unittest.IsolatedAsyncioTestC
       with patch.object(self.arm, "_wait_for_eom", AsyncMock()):
         with self.assertRaisesRegex(ValueError, "on the way"):
           await self.arm.move_to_joint_state(
-            {Axis.SHOULDER: 0.0, Axis.ELBOW: 180.0, Axis.WRIST: 180.0}
+            {
+              PreciseFlexAxis.SHOULDER: 0.0,
+              PreciseFlexAxis.ELBOW: 180.0,
+              PreciseFlexAxis.WRIST: 180.0,
+            }
           )
     self.assertEqual([call.args[0] for call in sent.call_args_list], ["wherej"])
 
@@ -666,12 +688,16 @@ class TestParkingTakesAClearTurn(unittest.IsolatedAsyncioTestCase):
 
   async def test_a_turn_past_the_wrists_soft_limit_is_not_taken(self):
     # From -215.9 the clear turn is -180, which this wrist may not reach: nothing is sent.
-    self.read.arm.soft_limits[Axis.WRIST] = (-970.0, -200.0)
+    self.read.arm.soft_limits[PreciseFlexAxis.WRIST] = (-970.0, -200.0)
     with self.assertRaisesRegex(ValueError, "WRIST target 180.0 is outside its soft limit"):
       await self.park("301.1 92.0 179.4 -215.9 70.7")
 
   async def test_a_pose_no_turn_reaches_clear_is_refused_as_written(self):
-    self.driver.arm.parking_position = {Axis.SHOULDER: 92.0, Axis.ELBOW: 179.4, Axis.WRIST: -150.0}
+    self.driver.arm.parking_position = {
+      PreciseFlexAxis.SHOULDER: 92.0,
+      PreciseFlexAxis.ELBOW: 179.4,
+      PreciseFlexAxis.WRIST: -150.0,
+    }
     with self.assertRaisesRegex(ValueError, "would stand"):
       await self.park("301.1 92.0 179.4 -215.9 70.7")
 
@@ -695,19 +721,19 @@ class TestEveryMotionPathIsCheckedAndKeepsTheModelInStep(unittest.IsolatedAsynci
   HOMED = "301.12 92.001 179.477 -215.899 125.967"
   # A station that stands the gripper against the column, and one well clear of it.
   AT_THE_COLUMN = {
-    Axis.BASE: 301.1,
-    Axis.SHOULDER: 92.0,
-    Axis.ELBOW: 179.48,
-    Axis.WRIST: -184.25,
-    Axis.GRIPPER: 120.0,
+    PreciseFlexAxis.BASE: 301.1,
+    PreciseFlexAxis.SHOULDER: 92.0,
+    PreciseFlexAxis.ELBOW: 179.48,
+    PreciseFlexAxis.WRIST: -184.25,
+    PreciseFlexAxis.GRIPPER: 120.0,
   }
   # The parking pose by the short turn of the wrist, which the way from the homed pose is clear to.
   CLEAR = {
-    Axis.BASE: 301.1,
-    Axis.SHOULDER: 0.0,
-    Axis.ELBOW: 180.0,
-    Axis.WRIST: -180.0,
-    Axis.GRIPPER: 70.7,
+    PreciseFlexAxis.BASE: 301.1,
+    PreciseFlexAxis.SHOULDER: 0.0,
+    PreciseFlexAxis.ELBOW: 180.0,
+    PreciseFlexAxis.WRIST: -180.0,
+    PreciseFlexAxis.GRIPPER: 70.7,
   }
 
   def setUp(self):
@@ -757,7 +783,7 @@ class TestEveryMotionPathIsCheckedAndKeepsTheModelInStep(unittest.IsolatedAsynci
     with patch.object(self.driver, "send_command", AsyncMock(side_effect=respond)):
       with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
         recovered = await self.driver.arm.recover_axes_within_limits()
-    self.assertEqual(recovered, {Axis.SHOULDER: 92.0})
+    self.assertEqual(recovered, {PreciseFlexAxis.SHOULDER: 92.0})
     self.assertEqual(seen, [92.0])
 
   async def test_every_leg_of_a_route_of_poses_is_checked_as_it_is_planned(self):

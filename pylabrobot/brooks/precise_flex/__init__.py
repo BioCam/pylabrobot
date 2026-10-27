@@ -27,11 +27,10 @@ Re-exports the public classes, so ``from pylabrobot.brooks.precise_flex import P
 works.
 """
 
+import warnings
+
 from pylabrobot.brooks.precise_flex.device import PreciseFlex400, PreciseFlexDevice
-from pylabrobot.brooks.precise_flex.driver.configuration import (
-  Axis,
-  PreciseFlexConfiguration,
-)
+from pylabrobot.brooks.precise_flex.driver.configuration import PreciseFlexConfiguration
 from pylabrobot.brooks.precise_flex.driver.errors import (
   OutOfRangeOfMotionError,
   PreciseFlexCollisionError,
@@ -50,6 +49,7 @@ from pylabrobot.brooks.precise_flex.driver.master import PreciseFlex, PreciseFle
 from pylabrobot.brooks.precise_flex.driver.simulator import PreciseFlexSimulationDriver
 from pylabrobot.brooks.precise_flex.kinematics import (
   ElbowOrientation,
+  PreciseFlexAxis,
   PreciseFlexCartesianPose,
   PreciseFlexPose,
   WorkEnvelope,
@@ -57,7 +57,6 @@ from pylabrobot.brooks.precise_flex.kinematics import (
 )
 
 __all__ = [
-  "Axis",
   "ElbowOrientation",
   "MotionProfile",
   "OutOfRangeOfMotionError",
@@ -66,6 +65,7 @@ __all__ = [
   "PreciseFlexDevice",
   "PreciseFlexDriver",
   "PreciseFlexArm",
+  "PreciseFlexAxis",
   "PreciseFlexCartesianPose",
   "PreciseFlexCollisionError",
   "PreciseFlexConfiguration",
@@ -83,3 +83,11 @@ __all__ = [
   "WorkEnvelope",
   "Wrist",
 ]
+
+
+def __getattr__(name: str) -> object:
+  """``Axis``, deprecated: it is ``PreciseFlexAxis``."""
+  if name == "Axis":
+    warnings.warn("`Axis` is deprecated, use `PreciseFlexAxis`.", DeprecationWarning, stacklevel=2)
+    return PreciseFlexAxis
+  raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

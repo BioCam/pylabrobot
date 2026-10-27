@@ -19,7 +19,7 @@ from pylabrobot.brooks.precise_flex.driver.configuration import (
 from pylabrobot.brooks.precise_flex.driver.features.arm import PreciseFlexArm
 from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGripper
 from pylabrobot.brooks.precise_flex.driver.master import PreciseFlexDriver
-from pylabrobot.brooks.precise_flex.kinematics import Axis, JointState
+from pylabrobot.brooks.precise_flex.kinematics import JointState, PreciseFlexAxis
 from pylabrobot.brooks.precise_flex.resource_model.workspace import Workspace
 
 logger = logging.getLogger(__name__)
@@ -41,13 +41,13 @@ class _SimulatedArm(PreciseFlexArm):
     joints = dict(self.simulated_joint_state)
     self.update_joint_state(joints)
     gripper = self._driver.gripper
-    gripper.update_width(gripper._firmware_units_to_mm(joints[Axis.GRIPPER]))
+    gripper.update_width(gripper._firmware_units_to_mm(joints[PreciseFlexAxis.GRIPPER]))
     return joints
 
   async def _unchecked_fw_move_j(self, profile_index: int, joint_coords: JointState) -> None:
     self.simulated_joint_state.update(joint_coords)
 
-  async def _unchecked_fw_move_one_axis(self, axis: Axis, position: float) -> None:
+  async def _unchecked_fw_move_one_axis(self, axis: PreciseFlexAxis, position: float) -> None:
     self.simulated_joint_state[axis] = position
 
   async def _set_speed(self, speed_percent: float) -> None:
@@ -71,7 +71,7 @@ class _SimulatedGripper(PreciseFlexGripper):
     self._arm = arm
 
   def _hold(self, units: float) -> None:
-    self._arm.simulated_joint_state[Axis.GRIPPER] = units
+    self._arm.simulated_joint_state[PreciseFlexAxis.GRIPPER] = units
 
   async def _unchecked_fw_move_jaws(self, units: float) -> None:
     self._hold(units)
@@ -163,9 +163,9 @@ class PreciseFlexSimulationDriver(PreciseFlexDriver):
     if not arm.simulated_joint_state:
       parked = arm._parking_pose_with_default_z(arm.parking_position or {})
       arm.simulated_joint_state = {
-        **dict.fromkeys([Axis.RAIL, *PreciseFlexArm._WIRE_ORDER], 0.0),
+        **dict.fromkeys([PreciseFlexAxis.RAIL, *PreciseFlexArm._WIRE_ORDER], 0.0),
         **parked,
-        Axis.GRIPPER: configuration.gripper.soft_limit_range[1],
+        PreciseFlexAxis.GRIPPER: configuration.gripper.soft_limit_range[1],
       }
     return configuration
 

@@ -11,9 +11,9 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Type
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from pylabrobot.brooks.precise_flex import (
-  Axis,
   PreciseFlex,
   PreciseFlexArm,
+  PreciseFlexAxis,
   PreciseFlexCartesianPose,
   PreciseFlexDriver,
   PreciseFlexGripper,
@@ -165,13 +165,13 @@ def _is_number(token: str) -> bool:
 
 
 _J = {
-  Axis.BASE: 200.0,
-  Axis.SHOULDER: 10.0,
-  Axis.ELBOW: 170.0,
-  Axis.WRIST: 20.0,
-  Axis.GRIPPER: 100.0,
+  PreciseFlexAxis.BASE: 200.0,
+  PreciseFlexAxis.SHOULDER: 10.0,
+  PreciseFlexAxis.ELBOW: 170.0,
+  PreciseFlexAxis.WRIST: 20.0,
+  PreciseFlexAxis.GRIPPER: 100.0,
 }
-_JR = {**_J, Axis.RAIL: 500.0}
+_JR = {**_J, PreciseFlexAxis.RAIL: 500.0}
 # The tool point: the v23's fingers grip 51.25 mm below the flange plane, so Z stands that higher.
 _LOC = Coordinate(x=400.0, y=100.0, z=150.0)
 _POSES = [
@@ -367,7 +367,7 @@ _CASES: List[_Case] = [
   ),
   (
     "set_axis_parameter",
-    lambda arm: arm.set_axis_parameter(2700, Axis.SHOULDER, 300),
+    lambda arm: arm.set_axis_parameter(2700, PreciseFlexAxis.SHOULDER, 300),
     [
       "pc 2700 1 0 2 300",
     ],
@@ -1601,7 +1601,7 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
         for name in ("max_joint_speed", "max_joint_acceleration", "max_joint_deceleration"):
           with self.subTest(name), self.assertWarns(DeprecationWarning):
             self.assertEqual(
-              set(getattr(config, name)) - set(config.arm.soft_limits), {Axis.GRIPPER}
+              set(getattr(config, name)) - set(config.arm.soft_limits), {PreciseFlexAxis.GRIPPER}
             )
         self.assertEqual(config.has_rail, has_rail)
 
@@ -1662,7 +1662,7 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
     await arm.setup(skip_vision=True)
     fake.sent.clear()
     fake._replies["wherej"] = "0 301.02 93.476 179.609 83.93 125.867"
-    self.assertEqual(await arm.arm.recover_axes_within_limits(), {Axis.SHOULDER: 92.0})
+    self.assertEqual(await arm.arm.recover_axes_within_limits(), {PreciseFlexAxis.SHOULDER: 92.0})
     self.assert_wire(
       fake.sent,
       [
@@ -1803,19 +1803,22 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
   async def test_a_joint_move_that_closes_the_gripper_is_refused(self):
     arm, fake = await self._arm()
     with self.assertRaisesRegex(ValueError, "without sensing force"):
-      await arm.arm.move_to_joint_state({Axis.GRIPPER: 90.0})
+      await arm.arm.move_to_joint_state({PreciseFlexAxis.GRIPPER: 90.0})
     self.assertFalse(any(c.startswith("moveJ") for c in fake.sent))
 
   async def test_a_joint_move_that_closes_the_gripper_when_asked(self):
     arm, fake = await self._arm()
     await arm.arm.move_to_joint_state(
-      {Axis.GRIPPER: 90.0}, close_gripper_without_force_sensing=True
+      {PreciseFlexAxis.GRIPPER: 90.0}, close_gripper_without_force_sensing=True
     )
     self.assertEqual(_without_reads(fake.sent), ["moveJ 1 301.105 2.235 179.732 -180.776 90.0"])
 
   async def test_parking_that_closes_the_gripper_is_refused(self):
     arm, fake = await self._arm()
-    arm.arm.parking_position = {**PreciseFlexArm.PARKING_POSITION_RIGHT, Axis.GRIPPER: 90.0}
+    arm.arm.parking_position = {
+      **PreciseFlexArm.PARKING_POSITION_RIGHT,
+      PreciseFlexAxis.GRIPPER: 90.0,
+    }
     with self.assertRaisesRegex(ValueError, "without sensing force"):
       await arm.arm.park()
     self.assertFalse(any(c.startswith("moveJ") for c in fake.sent))
@@ -1841,7 +1844,7 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
     arm, fake = await self._arm()
     # Not from a log either.
     fake._replies["wherej"] = "0 200 0 180 0 67"
-    self.assertEqual(await arm.arm.recover_axes_within_limits(), {Axis.GRIPPER: 70.0})
+    self.assertEqual(await arm.arm.recover_axes_within_limits(), {PreciseFlexAxis.GRIPPER: 70.0})
     self.assertIn("MoveOneAxis 5 70.0 1", fake.sent)
 
 
@@ -2288,7 +2291,7 @@ class TestDeprecatedDriverMembers(unittest.IsolatedAsyncioTestCase):
       ("location_index", "station_index", 3),
       ("horizontal_compliance", "horizontal_compliance", True),
       ("horizontal_compliance_torque", "horizontal_compliance_torque", 20),
-      ("parking_position", "parking_position", {Axis.SHOULDER: 0.0}),
+      ("parking_position", "parking_position", {PreciseFlexAxis.SHOULDER: 0.0}),
     ):
       with self.subTest(name):
         with self.assertWarns(DeprecationWarning):
@@ -2345,6 +2348,14 @@ class TestDeprecatedDriverMembers(unittest.IsolatedAsyncioTestCase):
 
     with self.assertWarns(DeprecationWarning):
       self.assertIs(kinematics.JointPose, kinematics.JointState)
+
+  def test_axis(self):
+    from pylabrobot.brooks import precise_flex
+    from pylabrobot.brooks.precise_flex import kinematics
+
+    for module in (precise_flex, kinematics):
+      with self.subTest(module.__name__), self.assertWarns(DeprecationWarning):
+        self.assertIs(module.Axis, kinematics.PreciseFlexAxis)
 
 
 if __name__ == "__main__":

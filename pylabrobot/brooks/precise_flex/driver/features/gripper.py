@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING, Optional, Tuple
 from pylabrobot.events import evented_operation
 from pylabrobot.resources.end_effector import MechanicalGripper
 
-from ...kinematics import Axis
+from ...kinematics import PreciseFlexAxis
 
 if TYPE_CHECKING:
   from ..master import PreciseFlexDriver
@@ -213,14 +213,14 @@ class PreciseFlexGripper:
     units = self._hold_within_gripper_limits(units)
     arm = self._driver.arm
     current = await arm.request_joint_state()  # once the arm has stopped
-    arm._check_path_reachable(current, {**current, Axis.GRIPPER: units})
+    arm._check_path_reachable(current, {**current, PreciseFlexAxis.GRIPPER: units})
     speed_percent = self.default_finger_speed_percent
     try:
       # Where the jaws are going, written as it is sent. The read below has the last word.
       self.update_width(self._firmware_units_to_mm(units))
       if force_sensing is False:
         await self._unchecked_fw_move_jaws(units)
-      elif units < current[Axis.GRIPPER]:
+      elif units < current[PreciseFlexAxis.GRIPPER]:
         await self._unchecked_fw_grasp_plate(units, speed_percent, self.default_grasp_force)
       else:
         await self._unchecked_fw_release_plate(units, speed_percent)
