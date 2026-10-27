@@ -40,14 +40,14 @@ Z_COLUMN_OUTLINE = (
 # The datasheet's robot height, from the floor to the column's top, for each Z travel it is sold with.
 ROBOT_HEIGHTS = {400.0: 679.0, 750.0: 1029.0, 1160.0: 1439.0}
 
-# The carriage the J1 drive rides up the column: the housing the arm turns in, which is what the
-# drive carries and what is seen of it.
-Z_CARRIAGE_SIZE = (118.0, 110.0, 58.1)
+# The carriage the J1 drive rides up the column: the housing the arm turns in and the bracket under
+# it against the column, which is what the drive carries and what is seen of it.
+Z_CARRIAGE_SIZE = (122.5, 110.0, 73.5)
 # Where it rides: at the column's front face, centred across it. Z is whatever the drive reports.
 Z_CARRIAGE_LOCATION_XY = (Z_COLUMN_SIZE_XY[0], (Z_COLUMN_SIZE_XY[1] - Z_CARRIAGE_SIZE[1]) / 2)
-# How far the carriage's underside stands above the flange plane the drive reports: the arm hangs
-# between the two. Less than the links stacked, as link 1's hub nests into it.
-Z_CARRIAGE_ABOVE_FLANGE_PLANE = 104.2
+# How far the carriage's underside, its bracket's, stands above the flange plane the drive reports.
+# The housing starts 17.0 higher, just above link 1.
+Z_CARRIAGE_ABOVE_FLANGE_PLANE = 88.8
 # The point the drive reports, within the carriage: the shoulder axis, at the flange plane below it.
 Z_CARRIAGE_REFERENCE_POINT = Coordinate(
   SHOULDER_AXIS.x - Z_COLUMN_LOCATION.x - Z_CARRIAGE_LOCATION_XY[0],
