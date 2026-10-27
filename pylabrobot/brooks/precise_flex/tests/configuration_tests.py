@@ -209,8 +209,14 @@ class TestADeclaredConfigurationIsCrossChecked(unittest.IsolatedAsyncioTestCase)
       self.recorded.arm, soft_limits={**self.recorded.arm.soft_limits, Axis.SHOULDER: (-90.0, 90.0)}
     )
     for answered, named in (
-      (dataclasses.replace(self.recorded, arm=standard), r"arm.kinematics: declared .*l1=302.0"),
-      (dataclasses.replace(self.recorded, arm=longer_tool), "gripper_length=170.0"),
+      (
+        dataclasses.replace(self.recorded, arm=standard),
+        r"arm.kinematics \(l1, l2, gripper_length\): declared \(302.0",
+      ),
+      (
+        dataclasses.replace(self.recorded, arm=longer_tool),
+        r"device answers \(302.0, 289.0, 170.0\)",
+      ),
       (dataclasses.replace(self.recorded, arm=narrowed), "arm.soft_limits"),
       (
         dataclasses.replace(self.recorded, rail=PreciseFlexRailConfiguration((0.0, 1000.0))),

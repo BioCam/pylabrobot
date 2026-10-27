@@ -2,6 +2,7 @@
 configuration, and the resource model it builds from one."""
 
 import asyncio
+import dataclasses
 import json
 import logging
 import warnings
@@ -44,7 +45,7 @@ from ..resource_model.pf400_chassis import (
   z_column,
   z_column_height,
 )
-from ..resource_model.pf400_end_effector import gripper
+from ..resource_model.pf400_end_effector import GRIPPER_TOOL_CENTER_POINT_Z, gripper
 from ..resource_model.pf400_manipulator import LINK_1_ABOVE_FLANGE_PLANE, link_1, link_2
 from ..resource_model.workspace import Workspace
 from ..tcs_modules import missing_required_modules
@@ -147,8 +148,9 @@ class PreciseFlexDriver:
         override; when ``read_kinematics_from_device`` is True (the default) the
         link lengths and tool length are read from the controller at setup and
         this value is only used if that read fails.
-      gripper_z_offset: vertical offset in mm from the wrist plate to the tool tip.
-        Depends on the mounted gripper. Always taken from here (not on the controller).
+      gripper_z_offset: vertical offset in mm from the wrist plate to the tool tip. A fallback, as
+        ``gripper_length`` is: with ``read_kinematics_from_device`` it is where the fitted
+        gripper's fingers grip, below the flange plane.
       read_kinematics_from_device: when True, read l1/l2 and the tool length from
         the controller at setup and use them for kinematics; the constructor's
         ``gripper_length`` then acts only as a fallback. Set False to force the
@@ -473,9 +475,9 @@ class PreciseFlexDriver:
     """Raise if what was declared cannot stand for what the device answered.
 
     Only what decides whether the two are the same kind of arm, set up the same way: what is
-    fitted, its link and tool lengths, and its soft limits. The model is built from the declared
-    ones and kept. Identity is left out: a declaration taken off one arm describes another of the
-    same build.
+    fitted, the gripper among it, its link and tool lengths, and its soft limits. The model is built
+    from the declared ones and kept. Identity is left out: a declaration taken off one arm describes
+    another of the same build.
 
     Args:
       discovered: what the device answered.
@@ -487,11 +489,17 @@ class PreciseFlexDriver:
     if declared is None:
       return
     arm, gripper = declared.arm, declared.gripper
+
+    def lengths(arm: PreciseFlexArmConfiguration) -> tuple:
+      return (arm.kinematics.l1, arm.kinematics.l2, arm.kinematics.gripper_length)
+
     must_match = (
       ("robot_type", declared.robot_type, discovered.robot_type),
       ("has_rail", declared.has_rail, discovered.has_rail),
       ("gripper.is_dual_gripper", gripper.is_dual_gripper, discovered.gripper.is_dual_gripper),
-      ("arm.kinematics", arm.kinematics, discovered.arm.kinematics),
+      # The gripper decides where the tool point stands below the flange plane.
+      ("has_vision_gripper", declared.has_vision_gripper, discovered.has_vision_gripper),
+      ("arm.kinematics (l1, l2, gripper_length)", lengths(arm), lengths(discovered.arm)),
       ("arm.soft_limits", arm.soft_limits, discovered.arm.soft_limits),
       ("gripper.soft_limit_range", gripper.soft_limit_range, discovered.gripper.soft_limit_range),
     )
@@ -515,6 +523,16 @@ class PreciseFlexDriver:
       The configuration, also kept as ``configuration``.
     """
     configuration = await self._request_configuration()
+    if configuration.arm.kinematics_source == "device":
+      # The tool point is where the fitted gripper's fingers grip, below the flange plane.
+      tool_point_z = GRIPPER_TOOL_CENTER_POINT_Z[
+        "v23" if configuration.has_vision_gripper else "s23"
+      ]
+      arm = configuration.arm
+      kinematics_params = dataclasses.replace(arm.kinematics, gripper_z_offset=tool_point_z)
+      configuration = dataclasses.replace(
+        configuration, arm=dataclasses.replace(arm, kinematics=kinematics_params)
+      )
     self._check_declared_against(configuration)
     self._configuration = configuration
     self._adopt_configuration(self._configuration)
