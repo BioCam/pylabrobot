@@ -11,7 +11,7 @@ class TestTheShoulderAxis(unittest.TestCase):
     base_plate = pf400_chassis.base_plate()
     self.assertEqual(
       pf400_chassis.SHOULDER_AXIS,
-      Coordinate(base_plate.get_size_x(), base_plate.get_size_y() / 2, 62.0),
+      Coordinate(base_plate.get_size_x(), base_plate.get_size_y() / 2, 77.57),
     )
 
 

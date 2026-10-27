@@ -211,7 +211,7 @@ class TestWhereTheControllerReportsFrom(unittest.IsolatedAsyncioTestCase):
     device = pf400()
     base_plate = device.get_resource("pf400_base_plate")
     axis = base_plate.get_absolute_location() + pf400_chassis.SHOULDER_AXIS
-    self.assertEqual(axis, Coordinate(device.get_size_x(), device.get_size_y() / 2, 62.0))
+    self.assertEqual(axis, Coordinate(device.get_size_x(), device.get_size_y() / 2, 77.57))
 
 
 class TestTheCarriageOnTheDevice(unittest.IsolatedAsyncioTestCase):
