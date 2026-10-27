@@ -11,6 +11,7 @@ import {
   BULLSEYE_WRT,
   MOVING_PARTS,
   PICKABLE_PARTS,
+  SEE_THROUGH_PARTS,
 } from "./constants.js";
 import { initCoords } from "./coords.js";
 import { input } from "./dom.js";
@@ -207,11 +208,15 @@ export function pick(event) {
   raycaster.setFromCamera(pointer, camera);
   // A mesh that is culled or hidden is not drawn, so it is not under the pointer either.
   const candidates = meshes.filter((m) => m.mesh.visible).map((m) => m.mesh);
-  const hits = raycaster.intersectObjects(candidates, false).filter((hit) => {
+  const reached = raycaster.intersectObjects(candidates, false).filter((hit) => {
     const instances = hit.object.userData.instances;
     if (!instances || hit.instanceId === undefined) return false;
     return !throughWindow(instances[hit.instanceId], hit.point);
   });
+  const solid = reached.filter(
+    (hit) => !SEE_THROUGH_PARTS.has(modelOf(hit.object.userData.instances[hit.instanceId]).category),
+  );
+  const hits = solid.length > 0 ? solid : reached;
   for (const hit of hits) {
     const instances = hit.object.userData.instances;
     if (instances && hit.instanceId !== undefined) {
