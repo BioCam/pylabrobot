@@ -10,11 +10,7 @@ from pylabrobot.brooks.precise_flex.device import (
   PreciseFlex400,
   PreciseFlexDevice,
 )
-from pylabrobot.brooks.precise_flex.driver.configuration import (
-  Axis,
-  PreciseFlexConfiguration,
-  read_configuration,
-)
+from pylabrobot.brooks.precise_flex.driver.configuration import Axis, PreciseFlexConfiguration
 from pylabrobot.brooks.precise_flex.driver.errors import PreciseFlexError
 from pylabrobot.brooks.precise_flex.driver.features.arm import PreciseFlexArmConfiguration
 from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGripperConfiguration
@@ -86,7 +82,7 @@ def pf400(declared: Optional[str] = None) -> PreciseFlexDevice:
     closed_gripper_position=60.0,
     declared_configuration_json=declared,
   )
-  return PreciseFlex400(driver, name="pf400")
+  return PreciseFlex400(driver=driver, name="pf400")
 
 
 def built() -> PreciseFlexDevice:
@@ -133,11 +129,20 @@ class TestTheDevice(unittest.IsolatedAsyncioTestCase):
     self.assertIsNone(driver.workspace)
 
 
-class TestBuiltFromADeclaredConfiguration(unittest.IsolatedAsyncioTestCase):
-  """A driver given a declared configuration builds the arm from it at once, before any setup."""
+def simulated(declared: str = RECORDING_PF400) -> PreciseFlexDevice:
+  return PreciseFlex400(simulation=True, declared_configuration_json=declared, name="pf400")
 
-  def test_the_recorded_arm_stands_before_it_is_connected(self):
-    device = pf400(RECORDING_PF400)
+
+class TestBuiltAtSetupFromADeclaredConfiguration(unittest.IsolatedAsyncioTestCase):
+  """A simulated arm answers as its declared configuration, and setup builds the arm from it."""
+
+  def test_before_setup_only_the_base_plate_stands(self):
+    names = [r.name for r in simulated().get_all_children()]
+    self.assertEqual(names, ["pf400_workspace", "pf400_base_plate"])
+
+  async def test_the_recorded_arm_stands_after_setup(self):
+    device = simulated()
+    await device.setup()
     column = device.get_resource("pf400_z_column")
     # From the base plate's top face: the datasheet's 679 mm robot height for 400 mm of travel.
     self.assertAlmostEqual(column.get_size_z(), 679.0 - 9.6)
@@ -147,8 +152,10 @@ class TestBuiltFromADeclaredConfiguration(unittest.IsolatedAsyncioTestCase):
     self.assertEqual((first.length, second.length, hand.tool_center_point.x), (302.0, 289.0, 162.0))
     self.assertEqual(hand.jaw_range, (69.0, 134.0))
 
-  def test_the_workspace_reports_from_the_shoulder_axis(self):
-    workspace = pf400(RECORDING_PF400).workspace
+  async def test_the_workspace_reports_from_the_shoulder_axis(self):
+    device = simulated()
+    await device.setup()
+    workspace = device.workspace
     origin = cast(Coordinate, workspace.location) + workspace.reference_point
     self.assertEqual(
       (origin.x, origin.y), (pf400_chassis.SHOULDER_AXIS.x, pf400_chassis.SHOULDER_AXIS.y)
@@ -156,18 +163,24 @@ class TestBuiltFromADeclaredConfiguration(unittest.IsolatedAsyncioTestCase):
     # The tool point is at the shoulder axis's height with the Z drive at 0.
     self.assertEqual(origin.z, pf400_chassis.SHOULDER_AXIS.z)
 
-  def test_a_taller_arm_is_built_taller(self):
-    device = pf400(RECORDING_PF400.replace("400mm", "1160mm_rail_derived"))
+  async def test_a_taller_arm_is_built_taller(self):
+    device = simulated(RECORDING_PF400.replace("400mm", "1160mm_rail_derived"))
+    await device.setup()
     column = device.get_resource("pf400_z_column")
     # From the base plate's top face: the datasheet's 1439 mm robot height for 1160 mm of travel.
     self.assertAlmostEqual(column.get_size_z(), 1439.0 - 9.6)
     self.assertEqual(device.workspace.z_max, 1161.5)
 
-  def test_setup_builds_nothing_twice(self):
-    device = pf400(RECORDING_PF400)
+  async def test_setup_builds_nothing_twice(self):
+    device = simulated()
+    await device.setup()
     before = [r.name for r in device.get_all_children()]
-    device.driver._create_feature_resources(read_configuration(RECORDING_PF400)["device"])
+    await device.setup()
     self.assertEqual([r.name for r in device.get_all_children()], before)
+
+  def test_without_a_driver_or_simulation_there_is_nothing_to_drive(self):
+    with self.assertRaises(ValueError):
+      PreciseFlex400()
 
 
 class TestTheChassisStandsInOneTree(unittest.IsolatedAsyncioTestCase):

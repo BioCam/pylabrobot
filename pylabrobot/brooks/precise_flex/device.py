@@ -13,6 +13,7 @@ from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGr
 from pylabrobot.brooks.precise_flex.driver.features.rail import PreciseFlexRail
 from pylabrobot.brooks.precise_flex.driver.features.vision import PreciseFlexVision
 from pylabrobot.brooks.precise_flex.driver.master import PreciseFlexDriver
+from pylabrobot.brooks.precise_flex.driver.simulator import PreciseFlexSimulationDriver
 from pylabrobot.brooks.precise_flex.resource_model.pf400_chassis import (
   BASE_PLATE_SIZE,
   base_plate,
@@ -105,21 +106,44 @@ class PreciseFlexDevice(Resource):
     await self.driver.stop()
 
 
-def PreciseFlex400(driver: PreciseFlexDriver, name: str = "PreciseFlex400") -> PreciseFlexDevice:
+def PreciseFlex400(
+  simulation: bool = False,
+  declared_configuration_json: Optional[str] = None,
+  driver: Optional[PreciseFlexDriver] = None,
+  name: str = "PreciseFlex400",
+) -> PreciseFlexDevice:
   """A PreciseFlex 400: its base plate, and a workspace for the driver to reflect it into.
 
   Nothing about the arm is declared here. The column, the workspace's extent, the links and the
-  gripper are built from a configuration: the one the driver was given as
-  `declared_configuration_json`, at once, or else the one the controller answers at setup. Where
-  the controller reports from is `pf400_chassis.SHOULDER_AXIS`, within the base plate.
+  gripper are built at setup, from the configuration the controller answers - a simulated one
+  answers as its declared configuration. Where the controller reports from is
+  `pf400_chassis.SHOULDER_AXIS`, within the base plate.
 
   Args:
+    simulation: whether to build a simulated arm, which answers without being connected.
+      Superseded by `driver`, which says exactly what to drive.
+    declared_configuration_json: path to a declared configuration, for the simulated arm this
+      builds. Defaults to `RECORDING_PF400`. A driver given outright brings its own.
     driver: the driver to drive the device through.
     name: what to call this one.
 
   Returns:
     The device.
+
+  Raises:
+    ValueError: If neither a driver nor simulation is given, since there is then nothing to drive.
   """
+  if driver is None:
+    if not simulation:
+      raise ValueError("pass a driver, or `simulation=True` to build a simulated one")
+    driver = PreciseFlexSimulationDriver(
+      declared_configuration_json=declared_configuration_json or RECORDING_PF400
+    )
+  else:
+    if simulation:
+      logger.warning("both a driver and simulation given; driving the driver")
+    if declared_configuration_json is not None:
+      logger.warning("a driver was given, so it brings its own declared configuration")
   device = PreciseFlexDevice(
     workspace=Workspace(name=f"{name}_workspace"),
     driver=driver,
@@ -131,7 +155,4 @@ def PreciseFlex400(driver: PreciseFlexDriver, name: str = "PreciseFlex400") -> P
     model=PreciseFlex400.__name__,
   )
   device.assign_child_resource(base_plate(name=f"{name}_base_plate"), location=Coordinate.zero())
-  declared = driver.declared.get("device")
-  if declared is not None:
-    driver._create_feature_resources(declared)
   return device

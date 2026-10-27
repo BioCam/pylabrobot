@@ -47,6 +47,7 @@ from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGr
 from pylabrobot.brooks.precise_flex.driver.features.rail import PreciseFlexRail
 from pylabrobot.brooks.precise_flex.driver.features.vision import PreciseFlexVision
 from pylabrobot.brooks.precise_flex.driver.master import PreciseFlex, PreciseFlexDriver
+from pylabrobot.brooks.precise_flex.driver.simulator import PreciseFlexSimulationDriver
 from pylabrobot.brooks.precise_flex.kinematics import (
   ElbowOrientation,
   PreciseFlexCartesianPose,
@@ -76,6 +77,7 @@ __all__ = [
   "PreciseFlexReachError",
   "PreciseFlexRail",
   "PreciseFlexServoError",
+  "PreciseFlexSimulationDriver",
   "PreciseFlexVision",
   "PreciseFlexVisionError",
   "WorkEnvelope",

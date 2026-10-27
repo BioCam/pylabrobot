@@ -46,8 +46,8 @@ shoulder.
 | `linear_rail_carriage` | `linear_rail_carriage` | `brooks_pf400_linear_rail_carriage_0deg`, `_90deg` | What rides the rail, and the arm stands on |
 
 `PreciseFlex400` in `device.py` builds only the base plate and an empty workspace. The driver builds
-the rest from a configuration: the one declared from a file, at once, or else the one the controller
-answers at setup. So the column is as tall as the configuration's Z travel makes it, the links as
+the rest at setup, from the configuration the controller answers; a simulated arm answers as its
+declared configuration. So the column is as tall as the configuration's Z travel makes it, the links as
 long as it says, and the workspace reaches as far as its limits allow.
 
 ## Meshes
