@@ -74,9 +74,8 @@ one can see is left out, and the rest is simplified only where the eye cannot te
   screw heads and the bracket under it. The block inside the column is left out.
 - The links are the PF400S's (225 and 210 between their hub centres) or the PF400SX's (302 and
   289), each link drawn as the reach its length is nearest.
-- The s23 gripper body is cut from the CAD's gripper frame and cover. The v23 body, the jaws and
-  both grippers' fingers are Brooks' IntelliGuide STEP models; each finger stands where its two
-  screws meet its jaw's tapped holes.
+- Both gripper bodies, the jaws and both grippers' fingers are Brooks' IntelliGuide STEP models;
+  each finger stands where its two screws meet its jaw's tapped holes.
 
 Colours are the IGES's. White parts next to each other alternate between two shades, so each stands
 apart from its neighbour.
@@ -86,10 +85,9 @@ driver hangs the carriage, the links and the gripper at setup, each by its joint
 read stands and turns them to what was read.
 
 The gripper is its body, two jaws and two fingers. The body is the one Brooks fits: the IntelliGuide
-s23, cut from the IGES model's gripper frame and cover, or the v23, which carries the cameras,
-chosen by whether the controller counts any. Both take the same jaws, each its own fingers. The two
-sides are mirror images, so a jaw and a finger each have a left and a right mesh. Left is the
-gripper's +y side.
+s23, or the v23, which carries the cameras, chosen by whether the controller counts any. Both take
+the same jaws, each its own fingers. The two sides are mirror images, so a jaw and a finger each
+have a left and a right mesh. Left is the gripper's +y side.
 
 ## Outlines
 
