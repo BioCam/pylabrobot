@@ -12,7 +12,7 @@ from pylabrobot.resources.manipulator import LinkBody
 
 # Link 1, shoulder to elbow: how wide and how tall it is, and how far its round hub reaches past the
 # joint at each end.
-LINK_1_SIZE_YZ = (114.0, 77.7)
+LINK_1_SIZE_YZ = (114.0, 73.4)
 LINK_1_HUB_OVERHANG = 57.0
 
 # Link 2, elbow to wrist: a full hub at the elbow and a smaller one at the wrist.

@@ -14,7 +14,7 @@ class TestPF400Links(unittest.TestCase):
         link = pf400_manipulator.link_1("link_1", length)
         self.assertIsInstance(link, LinkBody)
         self.assertEqual(link.get_size_x(), size_x)
-        self.assertEqual((link.get_size_y(), link.get_size_z()), (114.0, 77.7))
+        self.assertEqual((link.get_size_y(), link.get_size_z()), (114.0, 73.4))
         self.assertEqual(link.proximal_joint, Coordinate(57.0, 57.0, 0.0))
         self.assertEqual(link.length, length)
 
@@ -45,4 +45,5 @@ class TestPF400Links(unittest.TestCase):
     link_2_top = pf400_manipulator.LINK_2_SIZE_YZ[1]
     link_1_top = pf400_manipulator.LINK_1_ABOVE_FLANGE_PLANE + pf400_manipulator.LINK_1_SIZE_YZ[1]
     self.assertAlmostEqual(link_2_top - pf400_manipulator.LINK_1_ABOVE_FLANGE_PLANE, 7.7)
-    self.assertAlmostEqual(link_1_top - pf400_chassis.Z_CARRIAGE_ABOVE_FLANGE_PLANE, 5.0)
+    # Link 1 rises past the carriage's bracket to 0.9 under its housing, 17.0 above the bracket.
+    self.assertAlmostEqual(link_1_top - pf400_chassis.Z_CARRIAGE_ABOVE_FLANGE_PLANE, 16.1)
