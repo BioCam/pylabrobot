@@ -77,8 +77,8 @@ one can see is left out, and the rest is simplified only where the eye cannot te
 - Both gripper bodies, the jaws and both grippers' fingers are Brooks' IntelliGuide STEP models;
   each finger stands where its two screws meet its jaw's tapped holes.
 
-Colours are the IGES's. White parts next to each other alternate between two shades, so each stands
-apart from its neighbour.
+White parts next to each other alternate between two shades, so each stands apart from its
+neighbour.
 
 A link is as long as the controller reports between its joints, plus the hub past each joint. The
 driver hangs the carriage, the links and the gripper at setup, each by its joint, and every joint
