@@ -329,6 +329,19 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
     """Where the viewer draws a resource, read off the scene it holds."""
     return float(await browser.evaluate(f"window.plrViewer.worldOf({name!r})[0]"))
 
+  async def test_a_click_passes_through_a_workspace_to_what_stands_in_it(self):
+    """An arm's workspace is a see-through box with no children; it took every click inside it."""
+    workspace = Resource(name="workspace", size_x=400, size_y=300, size_z=300, category="workspace")
+    self.facility.assign_child_resource(workspace, location=Coordinate(50, 50, 0))
+    async with Browser() as browser:
+      await self.page(browser, ready="workspace")
+      await browser.evaluate("window.plrViewer.focus('rider', 'top')")
+      centre = (
+        "(() => { const r = document.querySelector('canvas').getBoundingClientRect();"
+        " return window.plrViewer.pickAt(r.left + r.width / 2, r.top + r.height / 2); })()"
+      )
+      self.assertEqual(await browser.evaluate(centre), "rider")
+
   async def test_a_scene_from_another_protocol_is_named_not_drawn(self):
     """The page is fetched fresh on every load while the Python serving it is as old as its
     process, and a page reading a scene from an older server misread it in silence: positions

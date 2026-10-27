@@ -68,6 +68,10 @@ export const NO_REFERENCE_MARK = new Set(["pipette_channel", "n_channel_pipette"
 // stays out: it spans the deck, and would take every click meant for the labware beneath it.
 export const PICKABLE_PARTS = new Set(["pipette_channel"]);
 
+// Parts a click passes through to what stands in them: an arm's workspace has no children, so it
+// would otherwise take every click as a leaf. One is taken only when the ray meets nothing else.
+export const SEE_THROUGH_PARTS = new Set(["workspace"]);
+
 // Structure, reference and content, in that order of prominence. With the fills gone, outlines
 // carry the information about what is on the deck, so they are the darkest thing; rails, bands and
 // grid are references and recede; only live contents are saturated.
