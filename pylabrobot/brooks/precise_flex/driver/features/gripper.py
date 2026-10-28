@@ -1,18 +1,18 @@
 """The PreciseFlex gripper: the end-effector at the arm's wrist, driven through the controller.
 
-Reached as `driver.gripper`. The jaws are the controller's gripper axis (`Axis.GRIPPER`), commanded
+Reached as `driver.gripper`. The jaws are the controller's gripper axis (`PreciseFlexAxis.GRIPPER`), commanded
 and the force-controlled grasp for `pickplate` is set up here. Every move that closes the jaws
 limits its force (``GraspPlate``) unless the caller passes `force_sensing=False`.
 """
 
 import dataclasses
 import logging
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
 
 from pylabrobot.events import evented_operation
 from pylabrobot.resources.end_effector import MechanicalGripper
 
-from ...kinematics import PreciseFlexAxis
+from ...kinematics import JointState, PreciseFlexAxis
 
 if TYPE_CHECKING:
   from ..master import PreciseFlexDriver
@@ -211,22 +211,29 @@ class PreciseFlexGripper:
       ValueError: If opening the jaws would carry one against the column, on a modelled arm.
     """
     units = self._hold_within_gripper_limits(units)
-    arm = self._driver.arm
-    current = await arm.request_joint_state()  # once the arm has stopped
-    arm._check_path_reachable(current, {**current, PreciseFlexAxis.GRIPPER: units})
     speed_percent = self.default_finger_speed_percent
-    try:
-      # Where the jaws are going, written as it is sent. The read below has the last word.
-      self.update_width(self._firmware_units_to_mm(units))
+    closing = False
+
+    def build_targets(current: JointState) -> List[JointState]:
+      nonlocal closing
+      closing = units < current[PreciseFlexAxis.GRIPPER]
+      return [{**current, PreciseFlexAxis.GRIPPER: units}]
+
+    async def unchecked_fw_move(_targets: Sequence[JointState]) -> None:
       if force_sensing is False:
         await self._unchecked_fw_move_jaws(units)
-      elif units < current[PreciseFlexAxis.GRIPPER]:
+      elif closing:
         await self._unchecked_fw_grasp_plate(units, speed_percent, self.default_grasp_force)
       else:
         await self._unchecked_fw_release_plate(units, speed_percent)
-    finally:
-      # Jaws that sense force stop on what they hold, not at the target: read where they did.
-      await self._driver.arm._request_joint_state_after_move()
+
+    # Held within the gripper's limits above; another axis out of range does not stop the jaws.
+    await self._driver.arm._guarded_move(
+      build_targets,
+      unchecked_fw_move,
+      check_soft_limits=False,
+      retry_out_of_range=False,
+    )
 
   @evented_operation(
     "precise_flex.move_gripper",

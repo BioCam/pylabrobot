@@ -10,8 +10,10 @@ from typing import (
   Any,
   ClassVar,
   Dict,
+  List,
   Literal,
   Optional,
+  Sequence,
   Tuple,
   cast,
 )
@@ -766,12 +768,32 @@ class PreciseFlexDriver:
   async def home(self) -> None:
     """Home the robot associated with this thread.
 
+    Only the jaws move: the other joints read their position. The jaws open to their stop and back
+    off, so on a modelled arm their whole range is first checked against the column.
+
     Note:
       Requires power to be enabled.
       Requires robot to be attached.
       Waits until the homing is complete.
     """
-    await self.send_command("home")
+    gripper = self.gripper.configuration
+
+    def build_targets(current: JointState) -> List[JointState]:
+      if gripper is None:
+        return []
+      # An arm not yet homed reads its jaws where they may not be: their whole range is swept.
+      low, high = gripper.hard_limit_range
+      return [{**current, PreciseFlexAxis.GRIPPER: low}, {**current, PreciseFlexAxis.GRIPPER: high}]
+
+    async def unchecked_fw_move(_targets: Sequence[JointState]) -> None:
+      await self.send_command("home")
+
+    await self.arm._guarded_move(
+      build_targets,
+      unchecked_fw_move,
+      check_soft_limits=False,
+      retry_out_of_range=False,
+    )
 
   async def home_all(self) -> None:
     """Home all robots.

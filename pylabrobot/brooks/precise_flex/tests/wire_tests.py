@@ -313,7 +313,15 @@ _CASES: List[_Case] = [
     "home",
     lambda arm: arm.home(),
     [
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
       "home",
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
     ],
     None,
   ),
@@ -985,10 +993,6 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
       "moveJ 1 201.25 -38.74046014630248 128.25603427878514 -89.51557413248264 70.685",
       "wherej",
       "wherej",
@@ -1002,10 +1006,6 @@ _CASES: List[_Case] = [
     lambda arm: arm.arm.move_to_location(_LOC, direction=30.0, speed_percent=40),
     [
       "Speed 1 40",
-      "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
       "wherej",
       "wherej",
       "wherej",
@@ -1212,10 +1212,6 @@ _CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
       "locAngles 1 201.25 -38.74046014630248 128.25603427878514 -89.51557413248264 70.685",
       "StationType 1 1 0 100 0 10",
       "pickplate 1 0 0",
@@ -1230,10 +1226,6 @@ _CASES: List[_Case] = [
     "drop_at_location",
     lambda arm: arm.arm.drop_at_location(_LOC, direction=0.0, resource_width=85.0),
     [
-      "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
       "wherej",
       "wherej",
       "wherej",
@@ -1338,10 +1330,6 @@ _RAIL_CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
     ],
     ValueError,
   ),
@@ -1369,6 +1357,7 @@ _RAIL_CASES: List[_Case] = [
     None,
   ),
   (
+    # The station is past the shoulder's soft limit: refused before anything is sent.
     "rail_pick_up_at_location",
     lambda arm: arm.arm.pick_up_at_location(
       _LOC, direction=0.0, resource_width=85.0, rail_position=300.0
@@ -1384,19 +1373,8 @@ _RAIL_CASES: List[_Case] = [
       "wherej",
       "wherej",
       "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
-      "locAngles 1 500.0 201.25 99.75007617280966 123.39657317069872 -223.1466493435084 70.685",
-      "StationType 1 1 0 100 0 10",
-      "pickplate 1 0 0",
-      "wherej",
-      "wherej",
-      "wherej",
-      "wherej",
     ],
-    None,
+    ValueError,
   ),
 ]
 
@@ -1431,7 +1409,15 @@ _SETUP = [
   "pd 2701",
   "pd 2703",
   "sysState",
+  "wherej",
+  "wherej",
+  "wherej",
+  "wherej",
   "home",
+  "wherej",
+  "wherej",
+  "wherej",
+  "wherej",
   "pd 2800",
   "wherej",
   "wherej",
@@ -1508,7 +1494,15 @@ _RAIL_SETUP = [
   "pd 2701",
   "pd 2703",
   "sysState",
+  "wherej",
+  "wherej",
+  "wherej",
+  "wherej",
   "home",
+  "wherej",
+  "wherej",
+  "wherej",
+  "wherej",
   "pd 2800",
   "wherej",
   "wherej",
@@ -1672,6 +1666,11 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
         "wherej",
         "Speed 1",
         "Speed 1 20.0",
+        # Each axis is moved from where it was just read.
+        "wherej",
+        "wherej",
+        "wherej",
+        "wherej",
         "MoveOneAxis 2 92.0 1",
         "wherej",
         "wherej",
@@ -1693,7 +1692,10 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
     fake.sent.clear()
     fake._replies.update({"sysState": "0 21", "pd 2800": "0 0"})
     await arm.recover_from_fault()
-    self.assert_wire(fake.sent, ["sysState", "hp 1 20", "attach 1", "pd 2800", "home"])
+    self.assert_wire(
+      fake.sent,
+      ["sysState", "hp 1 20", "attach 1", "pd 2800"] + ["wherej"] * 4 + ["home"] + ["wherej"] * 4,
+    )
 
 
 class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):

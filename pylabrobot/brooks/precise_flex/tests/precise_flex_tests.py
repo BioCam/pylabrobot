@@ -396,12 +396,22 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
       orientation="right",
       wrist="ccw",
     )
-    self.arm.arm._request_state = AsyncMock(return_value=(self.current_joints, self.current_pose))  # type: ignore[method-assign]
+    self.arm.arm.request_joint_state = AsyncMock(return_value=self.current_joints)  # type: ignore[method-assign]
+    # The route plans from the pose the joint state read gives.
+    fk = patch(
+      "pylabrobot.brooks.precise_flex.driver.features.arm.kinematics.fk",
+      return_value=self.current_pose,
+    )
+    fk.start()
+    self.addCleanup(fk.stop)
 
   def _stub_profile_transport(self, profile: str = "1 50 0 100 100 0 0 25 0") -> None:
     async def respond(command: str) -> str:
       if command == "Profile 1":
         return profile
+      if command == "wherej":
+        # Where the route's read-back finds the arm: where it started.
+        return "100.0 0.0 180.0 180.0 70.0"
       return ""
 
     self.arm.send_command = AsyncMock(side_effect=respond)  # type: ignore[method-assign]
@@ -421,8 +431,8 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
     ]
 
   async def test_move_through_cartesian_poses_plans_from_one_state_snapshot(self):
-    """A smooth route snapshots state once, fills omitted pose fields from the planned pose,
-    queues all joint moves, then waits once at the end."""
+    """A smooth route reads the joint state once, fills omitted pose fields from the planned pose,
+    queues all joint moves, then reads once more where the arm stopped."""
     self._stub_profile_transport()
     poses = [
       PreciseFlexCartesianPose(
@@ -444,8 +454,7 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
     ) as ik:
       await self.arm.arm.move_through_cartesian_poses(poses)
 
-    mocked(self.arm.arm._request_state).assert_awaited_once()
-    mocked(self.arm.arm._wait_for_eom).assert_awaited_once()
+    self.assertEqual(mocked(self.arm.arm.request_joint_state).await_count, 2)
     self.assertEqual(
       self._movej_cmds(),
       [
@@ -495,7 +504,7 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
 
     self.assertEqual(self._profile_cmds(), [])
     self.assertEqual(self._movej_cmds(), ["moveJ 1 110.0 10.0 20.0 30.0 70.0"])
-    mocked(self.arm.arm._wait_for_eom).assert_awaited_once()
+    self.assertEqual(mocked(self.arm.arm.request_joint_state).await_count, 2)
 
   async def test_move_through_cartesian_poses_blocks_before_motion_on_limit_failure(self):
     pose = PreciseFlexCartesianPose(
@@ -513,7 +522,8 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
 
     self.assertEqual(self._movej_cmds(), [])
     self.assertEqual(self._profile_cmds(), [])
-    mocked(self.arm.arm._wait_for_eom).assert_not_awaited()
+    # Read once to plan from, and not again: nothing was sent.
+    mocked(self.arm.arm.request_joint_state).assert_awaited_once()
 
 
 _LOGGER = "pylabrobot.brooks.precise_flex.driver.features.arm"
@@ -610,7 +620,7 @@ class TestPreciseFlex400AutoRecoverOnMove(unittest.IsolatedAsyncioTestCase):
       PreciseFlexAxis.WRIST: 0.0,
       PreciseFlexAxis.GRIPPER: 0.0,
     }
-    with patch.object(self.arm.arm, "_cart_to_joints", AsyncMock(return_value=in_range)):
+    with patch.object(self.arm.arm, "_cart_to_joints", MagicMock(return_value=in_range)):
       with self.assertRaises(OutOfRangeOfMotionError) as ctx:
         await self.arm.arm.move_to_location(Coordinate(400.0, 0.0, 200.0), 0.0)
     self.assertIn(PreciseFlexAxis.SHOULDER, ctx.exception.axes)

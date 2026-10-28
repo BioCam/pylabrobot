@@ -1,7 +1,7 @@
 import dataclasses
 import random
 import unittest
-from typing import List, Optional, Tuple, cast
+from typing import List, Optional, Tuple, Union, cast
 from unittest.mock import AsyncMock, patch
 
 from pylabrobot.brooks.precise_flex import kinematics
@@ -341,6 +341,11 @@ class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
     with self.assertRaisesRegex(ValueError, "pf400_gripper_jaw_right would stand 1.5 mm"):
       self.driver.arm._check_pose_reachable(self.joints(92.0, 179.48, 15.0, 145.0))
 
+  def test_a_pose_where_only_link_2_comes_too_near_is_refused(self):
+    # Folded back over link 1, the wrist hub stands 4.1 mm off; the gripper 5.1 mm.
+    with self.assertRaisesRegex(ValueError, "pf400_link_2 would stand 4.1 mm"):
+      self.driver.arm._check_pose_reachable(self.joints(39.0, 159.0, 180.0, 70.7))
+
   def test_the_poses_the_arm_homes_to_and_parks_at_pass(self):
     for pose in (
       self.joints(93.3, 179.4, 83.93, 70.7),
@@ -368,19 +373,22 @@ class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
     with patch.object(self.driver, "send_command", sent):
       with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
         with self.assertRaises(ValueError):
-          await self.driver.arm._guarded_move_j(
-            lambda _current: self.joints(92.0, 179.48, -184.25, 120.0)
+          await self.driver.arm._guarded_move(
+            lambda _current: [self.joints(92.0, 179.48, -184.25, 120.0)],
+            lambda targets: self.driver.arm._unchecked_fw_move_j(1, targets[0]),
           )
     self.assertEqual([call.args[0] for call in sent.call_args_list], ["wherej"])
 
-  async def jaws_to(self, width: float, stood: str) -> List[str]:
+  async def jaws_to(
+    self, width: float, stood: str, force_sensing: Optional[bool] = None
+  ) -> List[str]:
     """What is sent for a jaw move to `width`, from where `stood` has the arm."""
     self.driver.gripper.configuration = self.driver.configuration.gripper
     sent = AsyncMock(return_value=stood)
     with patch.object(self.driver, "send_command", sent):
       with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
         try:
-          await self.driver.gripper.move_to_jaw_position(width)
+          await self.driver.gripper.move_to_jaw_position(width, force_sensing)
         finally:
           self.sent = [call.args[0] for call in sent.call_args_list]
     return self.sent
@@ -394,12 +402,12 @@ class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
 
   async def test_jaws_closed_next_to_the_column_are_sent(self):
     # They stand nearer than is kept clear, and closing takes them away from it.
-    sent = await self.jaws_to(70.7, stood="301.1 92.0 179.48 10.0 134.0")
+    sent = await self.jaws_to(70.7, stood="301.1 92.0 179.48 10.0 134.0", force_sensing=True)
     self.assertIn("GraspPlate 70.7 50.0 10.0", sent)
 
 
 class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
-  """The target is written to the model as a move is sent; the arm is read once it has stopped."""
+  """The model stands where the arm was last read: before a move, and once it has stopped."""
 
   # A constructed pose, not a logged read: parked, with the jaws at 100 so 80 closes them.
   STOOD = "301.1 0.0 180.0 180.0 100.0"
@@ -413,13 +421,17 @@ class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
     _, self.first, _, self.hand = hung(self.driver)
     self.seen: List[Tuple[float, float]] = []
 
-  def controller(self, after_the_move: str, refuse: bool = False) -> AsyncMock:
+  def controller(self, after_the_move: Union[str, Exception], refuse: bool = False) -> AsyncMock:
     """Answers `wherej` with where the arm stood, then with `after_the_move` once a move is sent."""
     moved: List[str] = []
 
     async def respond(command: str) -> str:
       if command == "wherej":
-        return after_the_move if moved else self.STOOD
+        if not moved:
+          return self.STOOD
+        if isinstance(after_the_move, Exception):
+          raise after_the_move
+        return after_the_move
       if command.startswith(("moveJ", "gripper", "GraspPlate")):
         # What the model says while the move is under way.
         self.seen.append((self.first.rotation.z, self.hand.jaw_width))
@@ -435,10 +447,10 @@ class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
       with patch("pylabrobot.brooks.precise_flex.driver.features.arm.asyncio.sleep", AsyncMock()):
         await call()
 
-  async def test_the_model_stands_at_the_target_while_the_arm_travels(self):
+  async def test_the_model_stands_where_the_arm_was_read_while_it_travels(self):
     sent = self.controller(after_the_move="301.1 30.0 180.0 180.0 100.0")
     await self.move(sent, lambda: self.driver.arm.move_to_joint_state(dict(self.TARGET)))
-    self.assertEqual(self.seen, [(30.0, 100.0)])
+    self.assertEqual(self.seen, [(0.0, 100.0)])
     self.assertEqual([call.args[0] for call in sent.call_args_list][-1], "wherej")
 
   async def test_where_the_arm_stopped_has_the_last_word(self):
@@ -452,7 +464,6 @@ class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
     with self.assertRaises(PreciseFlexError) as raised:
       await self.move(sent, lambda: self.driver.arm.move_to_joint_state(dict(self.TARGET)))
     self.assertEqual(raised.exception.replycode, -1012)
-    self.assertEqual(self.seen, [(30.0, 100.0)])
     self.assertAlmostEqual(self.first.rotation.z, 0.0)
 
   async def test_a_read_that_fails_after_a_refused_move_does_not_replace_its_error(self):
@@ -464,12 +475,19 @@ class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(raised.exception.replycode, -1012)
     self.assertIn("its model is stale", "\n".join(logs.output))
 
-  async def test_the_jaws_stand_at_the_target_then_where_they_stopped(self):
+  async def test_a_fault_during_an_accepted_move_is_raised_by_the_read_after_it(self):
+    # `moveJ` is answered once accepted; a stall on the way is the reply to the next `wherej`.
+    sent = self.controller(after_the_move=PreciseFlexError(-3105, "Motor stalled"))
+    with self.assertRaises(PreciseFlexError) as raised:
+      await self.move(sent, lambda: self.driver.arm.move_to_joint_state(dict(self.TARGET)))
+    self.assertEqual(raised.exception.replycode, -3105)
+
+  async def test_the_jaws_stand_where_they_were_read_then_where_they_stopped(self):
     # Force-sensed jaws stop on what they hold: sent to 80, they stop at 86.2.
     sent = self.controller(after_the_move="301.1 0.0 180.0 180.0 86.2")
     self.driver.gripper.configuration = self.driver.configuration.gripper
     await self.move(sent, lambda: self.driver.gripper.move_to_jaw_position(80.0))
-    self.assertEqual(self.seen, [(0.0, 80.0)])
+    self.assertEqual(self.seen, [(0.0, 100.0)])
     self.assertEqual(self.hand.jaw_width, 86.2)
 
 
@@ -558,6 +576,19 @@ class TestTheGripperIsKeptClearOfTheColumnOnTheWay(unittest.IsolatedAsyncioTestC
       except ValueError:
         self.assertLess(nearest, 5.0)
 
+  def test_an_elbow_swing_that_sweeps_link_2_past_the_column_is_refused(self):
+    # Both ends stand far from the column; folding through 180 brings link 2 within 4.6 mm.
+    start, end = self.joints(-30.0, 40.0, 180.0, 70.7), self.joints(-40.0, 280.0, 180.0, 70.7)
+    self.arm._check_pose_reachable(start)
+    self.arm._check_pose_reachable(end)
+    with self.assertRaisesRegex(ValueError, "on the way, .*pf400_link_2 would stand 4.6 mm"):
+      self.arm._check_path_reachable(start, end)
+
+  def test_an_elbow_swing_that_stops_short_of_folding_is_allowed(self):
+    self.arm._check_path_reachable(
+      self.joints(-30.0, 40.0, 180.0, 70.7), self.joints(-40.0, 140.0, 180.0, 70.7)
+    )
+
   def test_the_same_park_by_the_shorter_turn_is_allowed(self):
     self.arm._check_path_reachable(self.joints(*self.HOMED), self.joints(0.0, 180.0, -180.0, 70.7))
 
@@ -593,6 +624,54 @@ class TestTheGripperIsKeptClearOfTheColumnOnTheWay(unittest.IsolatedAsyncioTestC
             }
           )
     self.assertEqual([call.args[0] for call in sent.call_args_list], ["wherej"])
+
+
+class TestTheGripperIsKeptClearOfTheBasePlate(unittest.IsolatedAsyncioTestCase):
+  """The base plate is only a few mm thick: the gripper reaches it only when low and over it."""
+
+  # Clear of the column, with a finger over the base plate in front of it.
+  OVER_THE_PLATE = (35.0, 120.0, 135.0, 70.7)
+
+  def setUp(self):
+    self.device = pf400()
+    self.arm = self.device.driver.arm
+    self.device.driver._configuration = configuration()
+    self.device.driver._create_feature_resources(self.device.driver.configuration)
+
+  @staticmethod
+  def joints(z: float, shoulder: float, elbow: float, wrist: float, jaws: float):
+    return {
+      PreciseFlexAxis.BASE: z,
+      PreciseFlexAxis.SHOULDER: shoulder,
+      PreciseFlexAxis.ELBOW: elbow,
+      PreciseFlexAxis.WRIST: wrist,
+      PreciseFlexAxis.GRIPPER: jaws,
+    }
+
+  def test_the_pose_is_clear_of_the_column(self):
+    nearest = self.arm._get_column_clearance(self.joints(1.5, *self.OVER_THE_PLATE))
+    self.assertGreater(cast(Tuple[str, float], nearest)[1], 50.0)
+
+  def test_a_low_pose_over_the_plate_is_refused(self):
+    with self.assertRaisesRegex(ValueError, "finger_right would stand 1.7 mm from the base plate"):
+      self.arm._check_pose_reachable(self.joints(1.5, *self.OVER_THE_PLATE))
+
+  def test_the_same_pose_high_enough_passes(self):
+    self.arm._check_pose_reachable(self.joints(10.0, *self.OVER_THE_PLATE))
+
+  def test_as_low_away_from_the_plate_passes(self):
+    self.arm._check_pose_reachable(self.joints(1.5, 0.0, 90.0, 0.0, 70.7))
+
+  def test_a_descent_over_the_plate_is_refused_on_the_way(self):
+    with self.assertRaisesRegex(ValueError, "on the way.*from the base plate"):
+      self.arm._check_path_reachable(
+        self.joints(50.0, *self.OVER_THE_PLATE), self.joints(1.5, *self.OVER_THE_PLATE)
+      )
+
+  def test_a_descent_that_stops_high_enough_passes(self):
+    self.arm._check_path_reachable(
+      self.joints(50.0, *self.OVER_THE_PLATE), self.joints(10.0, *self.OVER_THE_PLATE)
+    )
 
 
 class TestParkingTakesAClearTurn(unittest.IsolatedAsyncioTestCase):
@@ -694,25 +773,31 @@ class TestEveryMotionPathIsCheckedAndKeepsTheModelInStep(unittest.IsolatedAsynci
   async def test_a_pick_at_the_column_is_refused_before_the_station_is_written(self):
     arm, pick = self.driver.arm, self.driver.arm._unchecked_fw_pick_plate
     with self.assertRaisesRegex(ValueError, "would stand"):
-      await self.sent_by(lambda: arm._guarded_plate_j(dict(self.AT_THE_COLUMN), pick))
+      await self.sent_by(
+        lambda: arm._guarded_plate_j(lambda current: {**current, **self.AT_THE_COLUMN}, pick)
+      )
 
   async def test_a_drop_at_the_column_is_refused(self):
     arm = self.driver.arm
     with self.assertRaisesRegex(ValueError, "would stand"):
       await self.sent_by(
-        lambda: arm._guarded_plate_j(dict(self.AT_THE_COLUMN), arm._unchecked_fw_place_plate)
+        lambda: arm._guarded_plate_j(
+          lambda current: {**current, **self.AT_THE_COLUMN}, arm._unchecked_fw_place_plate
+        )
       )
 
   async def test_a_pick_clear_of_the_column_is_sent_and_the_model_reads_where_it_stopped(self):
     arm = self.driver.arm
     sent = await self.sent_by(
-      lambda: arm._guarded_plate_j(dict(self.CLEAR), arm._unchecked_fw_pick_plate)
+      lambda: arm._guarded_plate_j(
+        lambda current: {**current, **self.CLEAR}, arm._unchecked_fw_pick_plate
+      )
     )
     self.assertEqual(sent, ["locAngles", "StationType", "pickplate"])
     # The stand-in controller still answers the homed pose, so that is where the model ends.
     self.assertAlmostEqual(self.first.rotation.z, 92.001)
 
-  async def test_a_recovery_move_is_written_to_the_model_and_read_back(self):
+  async def test_a_recovery_move_is_checked_from_where_the_arm_was_read(self):
     out_of_range = "301.1 93.3 179.4 -215.9 70.7"
     seen = []
 
@@ -721,20 +806,23 @@ class TestEveryMotionPathIsCheckedAndKeepsTheModelInStep(unittest.IsolatedAsynci
         seen.append(self.first.rotation.z)
       return out_of_range if command == "wherej" else "1 50"
 
+    arm = self.driver.arm
     with patch.object(self.driver, "send_command", AsyncMock(side_effect=respond)):
-      with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
-        recovered = await self.driver.arm.recover_axes_within_limits()
+      with patch.object(arm, "_wait_for_eom", AsyncMock()):
+        with patch.object(arm, "_check_path_reachable", wraps=arm._check_path_reachable) as checked:
+          recovered = await arm.recover_axes_within_limits()
     self.assertEqual(recovered, {PreciseFlexAxis.SHOULDER: 92.0})
-    self.assertEqual(seen, [92.0])
+    self.assertEqual(seen, [93.3])
+    self.assertEqual(checked.call_args.args[0][PreciseFlexAxis.SHOULDER], 93.3)
 
-  async def test_every_leg_of_a_route_of_poses_is_checked_as_it_is_planned(self):
+  async def test_every_leg_of_a_route_of_poses_is_checked(self):
     arm = self.driver.arm
     ahead = arm._forward_kinematics(dict(self.CLEAR)).gripper_pose
     sent = AsyncMock(side_effect=lambda command: self.HOMED if command == "wherej" else "")
     with patch.object(self.driver, "send_command", sent):
       with patch.object(arm, "_wait_for_eom", AsyncMock()):
         with patch.object(arm, "_check_path_reachable", wraps=arm._check_path_reachable) as checked:
-          targets = await arm._plan_cartesian_pose_route([ahead, ahead])
+          await arm.move_through_cartesian_poses([ahead, ahead], blend=False)
     self.assertEqual(checked.call_count, 2)
     # Each leg from where the one before it ends.
-    self.assertEqual(checked.call_args_list[1].args[0], targets[0])
+    self.assertEqual(checked.call_args_list[1].args[0], checked.call_args_list[0].args[1])
