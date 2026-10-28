@@ -1,8 +1,82 @@
 import unittest
 
-from pylabrobot.brooks.precise_flex.resource_model import pf400_chassis, pf400_manipulator
+from pylabrobot.brooks.precise_flex.resource_model import pf400_manipulator
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.manipulator import LinkBody
+
+
+class TestTheShoulderAxis(unittest.TestCase):
+  """The point the controller reports from stands within the base plate."""
+
+  def test_the_axis_stands_above_the_base_plates_front_edge_centred_across_it(self):
+    base_plate = pf400_manipulator.base_plate()
+    self.assertEqual(
+      pf400_manipulator.SHOULDER_AXIS,
+      Coordinate(base_plate.get_size_x(), base_plate.get_size_y() / 2, 77.57),
+    )
+
+
+class TestTheColumn(unittest.TestCase):
+  """The column stands on the base plate and reaches the height the arm stands."""
+
+  def test_it_stands_on_the_base_plates_top_face_centred_across_it(self):
+    base_plate = pf400_manipulator.base_plate()
+    column = pf400_manipulator.z_column("column", 700.0)
+    location = pf400_manipulator.Z_COLUMN_LOCATION
+    self.assertEqual(location.z, base_plate.get_size_z())
+    self.assertEqual(2 * location.y + column.get_size_y(), base_plate.get_size_y())
+
+  def test_a_column_reaches_the_datasheets_robot_height(self):
+    # Measured from the base plate's bottom, which is its own frame's zero.
+    for z_travel, height in ((400.0, 679.0), (401.5, 679.0), (750.0, 1029.0), (1161.5, 1439.0)):
+      column = pf400_manipulator.z_column(
+        "column", height=pf400_manipulator.z_column_height(z_travel)
+      )
+      self.assertEqual(pf400_manipulator.Z_COLUMN_LOCATION.z + column.get_size_z(), height)
+
+  def test_each_column_sold_has_its_own_mesh(self):
+    for z_travel, model in ((401.5, "400mm"), (750.0, "750mm"), (1161.5, "1160mm")):
+      column = pf400_manipulator.z_column("column", pf400_manipulator.z_column_height(z_travel))
+      self.assertEqual(column.model, f"brooks_pf400_z_column_{model}")
+
+
+class TestTheCarriage(unittest.TestCase):
+  """What the J1 drive moves, and where a reading puts it."""
+
+  def test_it_rides_the_columns_front_face_centred_across_it(self):
+    column = pf400_manipulator.z_column("column", 700.0)
+    carriage = pf400_manipulator.z_carriage()
+    location = pf400_manipulator.z_carriage_location(0.0)
+    self.assertEqual(location.x, column.get_size_x())
+    self.assertEqual(2 * location.y + carriage.get_size_y(), column.get_size_y())
+
+  def test_the_drive_reports_the_shoulder_axis_at_the_flange_plane(self):
+    reference = pf400_manipulator.Z_CARRIAGE_REFERENCE_POINT
+    self.assertEqual(reference, Coordinate(67.5, 55.0, -88.8))
+
+  def test_a_reading_moves_it_by_what_it_read(self):
+    stood = pf400_manipulator.z_carriage_location(0.0)
+    raised = pf400_manipulator.z_carriage_location(250.0)
+    self.assertEqual(raised - stood, Coordinate(0.0, 0.0, 250.0))
+
+
+class TestEveryPart(unittest.TestCase):
+  """Each part is a cuboid that says what it is."""
+
+  def test_each_part_names_a_category_and_a_model(self):
+    parts = (
+      pf400_manipulator.base_plate(),
+      pf400_manipulator.z_column("column", 700.0),
+      pf400_manipulator.z_carriage(),
+    )
+    self.assertEqual(
+      [(part.category, part.model) for part in parts],
+      [
+        ("base_plate", "brooks_pf400_base_plate"),
+        ("z_column", "brooks_pf400_z_column_400mm"),
+        ("z_carriage", "brooks_pf400_z_carriage"),
+      ],
+    )
 
 
 class TestPF400Links(unittest.TestCase):
@@ -46,4 +120,4 @@ class TestPF400Links(unittest.TestCase):
     link_1_top = pf400_manipulator.LINK_1_ABOVE_FLANGE_PLANE + pf400_manipulator.LINK_1_SIZE_YZ[1]
     self.assertAlmostEqual(link_2_top - pf400_manipulator.LINK_1_ABOVE_FLANGE_PLANE, 7.7)
     # Link 1 rises past the carriage's bracket to 0.9 under its housing, 17.0 above the bracket.
-    self.assertAlmostEqual(link_1_top - pf400_chassis.Z_CARRIAGE_ABOVE_FLANGE_PLANE, 16.1)
+    self.assertAlmostEqual(link_1_top - pf400_manipulator.Z_CARRIAGE_ABOVE_FLANGE_PLANE, 16.1)

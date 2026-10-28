@@ -1,4 +1,4 @@
-"""The PreciseFlex arms as resources: the device, and what it knows about its own workspace.
+"""The PreciseFlex arms as resources: the device, and the base plate the driver builds it on.
 
 A frame factory builds the base plate the device stands on. Everything it carries - the column,
 the carriage, the arm, the gripper - is hung off it by the driver, from a configuration.
@@ -14,11 +14,10 @@ from pylabrobot.brooks.precise_flex.driver.features.rail import PreciseFlexRail
 from pylabrobot.brooks.precise_flex.driver.features.vision import PreciseFlexVision
 from pylabrobot.brooks.precise_flex.driver.master import PreciseFlexDriver
 from pylabrobot.brooks.precise_flex.driver.simulator import PreciseFlexSimulationDriver
-from pylabrobot.brooks.precise_flex.resource_model.pf400_chassis import (
+from pylabrobot.brooks.precise_flex.resource_model.pf400_manipulator import (
   BASE_PLATE_SIZE,
   base_plate,
 )
-from pylabrobot.brooks.precise_flex.resource_model.workspace import Workspace
 from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.resource import Resource
 
@@ -32,13 +31,13 @@ RECORDING_PF400 = os.path.join(_RECORDINGS, "pf400_extended_400mm.json")
 class PreciseFlexDevice(Resource):
   """The complete modelling and control interface for a PreciseFlex arm.
 
-  The device is itself a resource and its workspace is its child: one tree, rooted here.
+  The device is itself a resource and its base plate is its child: one tree, rooted here.
   `device.driver` speaks to the arm in its own terms and stays reachable.
   """
 
   def __init__(
     self,
-    workspace: Workspace,
+    base_plate: Resource,
     driver: PreciseFlexDriver,
     name: str,
     size_x: float,
@@ -48,7 +47,8 @@ class PreciseFlexDevice(Resource):
   ):
     """
     Args:
-      workspace: the workspace this device reaches. It becomes a child of the device.
+      base_plate: what the device stands on, and the driver builds the arm on. It becomes a
+        child of the device.
       driver: the driver to drive the device through.
       name: what to call this device in the resource tree.
       size_x: how wide the device is, in mm.
@@ -64,13 +64,12 @@ class PreciseFlexDevice(Resource):
       category="device",
       model=model if model is not None else self.__class__.__name__,
     )
-    self.workspace = workspace
+    self.base_plate = base_plate
     self.driver = driver
-    if self.driver.workspace is not None and self.driver.workspace is not workspace:
-      logger.warning("the driver was given another workspace; modelling into this device's")
-    self.driver.workspace = workspace
-    # Where it sits is set once a configuration gives it an extent.
-    self.assign_child_resource(workspace, location=Coordinate.zero())
+    if self.driver.base_plate is not None and self.driver.base_plate is not base_plate:
+      logger.warning("the driver was given another base plate; modelling onto this device's")
+    self.driver.base_plate = base_plate
+    self.assign_child_resource(base_plate, location=Coordinate.zero())
 
   @property
   def arm(self) -> PreciseFlexArm:
@@ -112,12 +111,12 @@ def PreciseFlex400(
   driver: Optional[PreciseFlexDriver] = None,
   name: str = "PreciseFlex400",
 ) -> PreciseFlexDevice:
-  """A PreciseFlex 400: its base plate, and a workspace for the driver to reflect it into.
+  """A PreciseFlex 400: its base plate, for the driver to build the arm on.
 
-  Nothing about the arm is declared here. The column, the workspace's extent, the links and the
-  gripper are built at setup, from the configuration the controller answers - a simulated one
+  Nothing about the arm is declared here. The column, the carriage, the links and the gripper are
+  built at setup, from the configuration the controller answers - a simulated one
   answers as its declared configuration. Where the controller reports from is
-  `pf400_chassis.SHOULDER_AXIS`, within the base plate.
+  `pf400_manipulator.SHOULDER_AXIS`, within the base plate.
 
   Args:
     simulation: whether to build a simulated arm, which answers without being connected.
@@ -145,7 +144,7 @@ def PreciseFlex400(
     if declared_configuration_json is not None:
       logger.warning("a driver was given, so it brings its own declared configuration")
   device = PreciseFlexDevice(
-    workspace=Workspace(name=f"{name}_workspace"),
+    base_plate=base_plate(name=f"{name}_base_plate"),
     driver=driver,
     name=name,
     # The device's own cuboid is the base plate it stands on; what it carries reaches above that.
@@ -154,5 +153,4 @@ def PreciseFlex400(
     size_z=BASE_PLATE_SIZE[2],
     model=PreciseFlex400.__name__,
   )
-  device.assign_child_resource(base_plate(name=f"{name}_base_plate"), location=Coordinate.zero())
   return device

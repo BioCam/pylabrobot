@@ -63,7 +63,7 @@ class PreciseFlexGripper:
     """
     self._driver = driver
     self.configuration: Optional[PreciseFlexGripperConfiguration] = None
-    # What models the gripper. None until setup hangs it, only for a driver given a workspace.
+    # What models the gripper. None until setup hangs it, only for a driver given a base plate.
     self.resource: Optional[MechanicalGripper] = None
     self.closed_gripper_position = closed_gripper_position
     # closed_gripper_position was calibrated against this width, so discovery must not move it.
@@ -124,10 +124,10 @@ class PreciseFlexGripper:
     return self._anchor_width_mm + (units - self.closed_gripper_position)
 
   def update_width(self, width: float) -> None:
-    """Record how far apart the jaws stand on the resource that models them.
+    """Stand the jaws on the resource that models them `width` apart.
 
     Does nothing until the gripper is modelled. A width outside what the model says the fingers do
-    is not recorded, and is logged.
+    is left unset, and is logged.
 
     Args:
       width: how far apart the jaws stand, in mm.

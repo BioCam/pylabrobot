@@ -28,6 +28,7 @@ from pylabrobot.brooks.precise_flex.kinematics import JointState
 from pylabrobot.events import emit_event, evented_operation
 from pylabrobot.io.socket import Socket
 from pylabrobot.resources.coordinate import Coordinate
+from pylabrobot.resources.resource import Resource
 
 from ..confirmed_firmware_versions import (
   SUPPORTED_ROBOT_TYPES,
@@ -36,18 +37,18 @@ from ..confirmed_firmware_versions import (
   suggest_entry,
 )
 from ..data_ids import DataID, PowerState, _parse_scalar
-from ..resource_model.pf400_chassis import (
-  SHOULDER_AXIS,
+from ..resource_model.pf400_end_effector import GRIPPER_TOOL_CENTER_POINT_Z, gripper
+from ..resource_model.pf400_manipulator import (
+  LINK_1_ABOVE_FLANGE_PLANE,
   Z_CARRIAGE_REFERENCE_POINT,
   Z_COLUMN_LOCATION,
+  link_1,
+  link_2,
   z_carriage,
   z_carriage_location,
   z_column,
   z_column_height,
 )
-from ..resource_model.pf400_end_effector import GRIPPER_TOOL_CENTER_POINT_Z, gripper
-from ..resource_model.pf400_manipulator import LINK_1_ABOVE_FLANGE_PLANE, link_1, link_2
-from ..resource_model.workspace import Workspace
 from ..tcs_modules import missing_required_modules
 from .errors import PreciseFlexError
 from .features.arm import PreciseFlexArm, PreciseFlexArmConfiguration
@@ -139,7 +140,7 @@ class PreciseFlexDriver:
     recover_out_of_range: bool = True,
     parking_position: Optional[JointState] = None,
     vision_host: Optional[str] = None,
-    workspace: Optional[Workspace] = None,
+    base_plate: Optional[Resource] = None,
     declared_configuration_json: Optional[str] = None,
   ) -> None:
     """
@@ -178,14 +179,16 @@ class PreciseFlexDriver:
         None leaves the engine unconnected, disabling those; the controller-side execution path
         (running processes/tools, setting properties, lighting, barcodes, stereo locate) is
         unaffected. Only consulted when setup discovers an IntelliGuide vision module.
-      workspace: the workspace to reflect the arm into. Optional: without one the driver still
+      base_plate: the base plate to build the arm on. Optional: without one the driver still
         drives the arm, and models nothing.
       declared_configuration_json: path to a JSON file holding a declared configuration, as
         `save_configuration` writes one. The only way a configuration is read from a file.
         Discovery cross-checks it against what the device answers.
     """
     super().__init__()
-    self.workspace = workspace
+    self.base_plate = base_plate
+    # What was declared this device is, read once here: the one place a configuration comes off a
+    # file. Empty when nothing was declared.
     self.declared_configuration_json = declared_configuration_json
     self.declared: Dict[str, Any] = (
       {} if declared_configuration_json is None else read_configuration(declared_configuration_json)
@@ -557,39 +560,26 @@ class PreciseFlexDriver:
     return await self.discover()
 
   def _create_feature_resources(self, configuration: "PreciseFlexConfiguration") -> None:
-    """Build the arm on the device its workspace belongs to, from a configuration. No motion.
+    """Build the arm on its base plate, from a configuration. No motion.
 
-    The workspace takes its boundary and Z range; the column is stood on the base plate, the
-    carriage hung on it, the links on that and the gripper on link 2, each placed by where its joint
-    has to land. They stand at Z 0 with every joint at 0 until a joint state is read. Does nothing
-    for a driver given no workspace. An arm already built keeps its parts.
+    The column is stood on the base plate, the carriage hung on it, the links on that and the
+    gripper on link 2, each placed by where its joint has to land. They stand at Z 0 with every
+    joint at 0 until a joint state is read. Does nothing for a driver given no base plate. An arm
+    already built keeps its parts.
 
     Args:
       configuration: what the arm reported: the declared one, or the one read at setup.
     """
-    if self.workspace is None:
+    base_plate = self.base_plate
+    if base_plate is None:
       return
-    device = self.workspace.parent
-    base_plate = next(
-      (r for r in (device.children if device else []) if r.category == "base_plate"), None
-    )
-    if device is None or base_plate is None:
-      logger.warning(
-        "the workspace belongs to no device with a base plate, so the arm is not modelled"
-      )
+    device = base_plate.parent
+    if device is None:
+      logger.warning("the base plate belongs to no device, so the arm is not modelled")
       return
-    c = configuration.arm
-    self.workspace.update_boundary(
-      kinematics.compute_workspace_boundary(
-        c.kinematics, c.soft_limits[PreciseFlexAxis.SHOULDER], c.soft_limits[PreciseFlexAxis.ELBOW]
-      ),
-      *c.z_range,
-    )
-    # The controller reports from the shoulder axis, which the workspace states as its own point.
-    on_the_base_plate = cast(Coordinate, base_plate.location) + SHOULDER_AXIS
-    self.workspace.location = on_the_base_plate - self.workspace.reference_point
     if self.arm.resource is not None:
       return
+    c = configuration.arm
     column = z_column(name=f"{device.name}_z_column", height=z_column_height(c.z_range[1]))
     base_plate.assign_child_resource(column, location=Z_COLUMN_LOCATION)
     carriage = z_carriage(name=f"{device.name}_z_carriage")

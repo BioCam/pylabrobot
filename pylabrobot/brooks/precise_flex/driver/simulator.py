@@ -20,7 +20,7 @@ from pylabrobot.brooks.precise_flex.driver.features.arm import PreciseFlexArm
 from pylabrobot.brooks.precise_flex.driver.features.gripper import PreciseFlexGripper
 from pylabrobot.brooks.precise_flex.driver.master import PreciseFlexDriver
 from pylabrobot.brooks.precise_flex.kinematics import JointState, PreciseFlexAxis
-from pylabrobot.brooks.precise_flex.resource_model.workspace import Workspace
+from pylabrobot.resources.resource import Resource
 
 logger = logging.getLogger(__name__)
 
@@ -89,13 +89,13 @@ class PreciseFlexSimulationDriver(PreciseFlexDriver):
   def __init__(
     self,
     declared_configuration_json: str,
-    workspace: Optional[Workspace] = None,
+    base_plate: Optional[Resource] = None,
   ) -> None:
     """
     Args:
       declared_configuration_json: path to a declared configuration, which this arm then answers
         as. Its kinematics give the tool length and offset.
-      workspace: the workspace to reflect the arm into, as the real driver takes it.
+      base_plate: the base plate to build the arm on, as the real driver takes it.
 
     Raises:
       ValueError: If the file declares no device configuration.
@@ -113,7 +113,7 @@ class PreciseFlexSimulationDriver(PreciseFlexDriver):
       gripper_length=configuration.arm.kinematics.gripper_length,
       gripper_z_offset=configuration.arm.kinematics.gripper_z_offset,
       closed_gripper_position=closed,
-      workspace=workspace,
+      base_plate=base_plate,
       declared_configuration_json=declared_configuration_json,
     )
     self.simulated_configuration: PreciseFlexConfiguration = configuration

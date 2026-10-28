@@ -45,12 +45,12 @@ from ...kinematics import (
   WorkEnvelope,
   Wrist,
 )
-from ...resource_model.pf400_chassis import (
+from ...resource_model.pf400_end_effector import GRIPPER_BODY_OUTLINE
+from ...resource_model.pf400_manipulator import (
   Z_CARRIAGE_REFERENCE_POINT,
   Z_COLUMN_OUTLINE,
   z_carriage_location,
 )
-from ...resource_model.pf400_end_effector import GRIPPER_BODY_OUTLINE
 from ..errors import OperationInterrupted, OutOfRangeOfMotionError, PreciseFlexError
 from .rail import PreciseFlexRail
 
@@ -220,7 +220,7 @@ class PreciseFlexArm:
     self._driver = driver
     self.configuration: Optional[PreciseFlexArmConfiguration] = None
     # What models the arm: the carriage on the column and the two links. None until setup hangs
-    # them, which it does only for a driver given a workspace.
+    # them, which it does only for a driver given a base plate.
     self.resource: Optional[Resource] = None
     self.link_1: Optional[LinkBody] = None
     self.link_2: Optional[LinkBody] = None
@@ -293,10 +293,10 @@ class PreciseFlexArm:
         previous = current
 
   def update_joint_state(self, joints: JointState) -> None:
-    """Record where every joint is on the resources that model the arm.
+    """Stand the resources that model the arm where every joint is.
 
     The carriage is stood where the Z drive is, and each member is turned about the joint it turns
-    on to the angle that joint reports. Does nothing until there are resources to record it on.
+    on to the angle that joint reports. Does nothing until the arm is modelled.
 
     Args:
       joints: the joint state, as ``request_joint_state`` returns it.

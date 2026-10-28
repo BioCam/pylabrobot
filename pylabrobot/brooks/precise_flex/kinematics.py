@@ -16,10 +16,10 @@ Sign conventions follow right-hand rule about +Z (CCW positive looking down).
 """
 
 import warnings
-from dataclasses import astuple, dataclass
+from dataclasses import dataclass
 from enum import IntEnum
-from math import atan2, cos, degrees, hypot, pi, radians, sin, sqrt
-from typing import Dict, List, Literal, Optional, Sequence, Tuple
+from math import atan2, cos, degrees, hypot, pi, radians, sin
+from typing import Dict, Literal, Optional, Sequence, Tuple
 
 from pylabrobot.resources import Coordinate, Rotation
 
@@ -194,60 +194,6 @@ def fk(joints: JointState, p: PF400Params) -> PreciseFlexCartesianPose:
     wrist=wrist,
     rail_position=rail_position,
   )
-
-
-# Boundaries already swept, per argument set: every arm built from one configuration shares one.
-_WORKSPACE_BOUNDARIES: Dict[tuple, List[Tuple[float, float]]] = {}
-
-
-def compute_workspace_boundary(
-  p: PF400Params,
-  shoulder_range: Tuple[float, float],
-  elbow_range: Tuple[float, float],
-  joint_steps: int = 60,
-  bearing_steps: int = 120,
-) -> List[Tuple[float, float]]:
-  """How far the tool point reaches at each bearing about the shoulder axis.
-
-  Sweeps the shoulder and the elbow over their ranges; the wrist is taken to turn the tool any way.
-  Sampled, so it lies just inside the true boundary.
-
-  Args:
-    p: kinematic parameters.
-    shoulder_range: the shoulder's lowest and highest angle, in degrees.
-    elbow_range: the elbow's lowest and highest angle, in degrees.
-    joint_steps: how many steps each joint's range is swept in.
-    bearing_steps: how many bearings the boundary is stated at.
-
-  Returns:
-    The boundary's points (x, y) from the shoulder axis, in mm, in order round it.
-  """
-  key = (astuple(p), tuple(shoulder_range), tuple(elbow_range), joint_steps, bearing_steps)
-  if key in _WORKSPACE_BOUNDARIES:
-    return list(_WORKSPACE_BOUNDARIES[key])
-  wrist_points = []
-  for i in range(joint_steps + 1):
-    shoulder = radians(
-      shoulder_range[0] + (shoulder_range[1] - shoulder_range[0]) * i / joint_steps
-    )
-    for j in range(joint_steps + 1):
-      elbow = radians(elbow_range[0] + (elbow_range[1] - elbow_range[0]) * j / joint_steps)
-      wrist_points.append(compute_elbow_and_wrist(p, shoulder, elbow)[1])
-  tool = p.gripper_length
-  boundary = []
-  for k in range(bearing_steps):
-    bearing = -pi + 2 * pi * k / bearing_steps
-    ahead_x, ahead_y = cos(bearing), sin(bearing)
-    reach = 0.0
-    for x, y in wrist_points:
-      along = x * ahead_x + y * ahead_y
-      # The tool point lies on a circle about the wrist joint; this is where the bearing leaves it.
-      aside = x * ahead_y - y * ahead_x
-      if abs(aside) <= tool:
-        reach = max(reach, along + sqrt(tool * tool - aside * aside))
-    boundary.append((reach * ahead_x, reach * ahead_y))
-  _WORKSPACE_BOUNDARIES[key] = boundary
-  return list(boundary)
 
 
 def compute_outline_clearance(

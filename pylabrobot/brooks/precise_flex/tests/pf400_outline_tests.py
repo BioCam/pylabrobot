@@ -1,13 +1,13 @@
 import unittest
 from typing import Sequence, Tuple
 
-from pylabrobot.brooks.precise_flex.resource_model import pf400_chassis, pf400_end_effector
+from pylabrobot.brooks.precise_flex.resource_model import pf400_end_effector, pf400_manipulator
 
 Outline = Sequence[Tuple[float, float]]
 
 # Each outline, its part's cuboid, and how far the outline may stand outside that cuboid, in mm.
 OUTLINES: Tuple[Tuple[str, Outline, Tuple[float, ...], float], ...] = (
-  ("column", pf400_chassis.Z_COLUMN_OUTLINE, pf400_chassis.Z_COLUMN_SIZE_XY, 0.5),
+  ("column", pf400_manipulator.Z_COLUMN_OUTLINE, pf400_manipulator.Z_COLUMN_SIZE_XY, 0.5),
   *(
     (
       f"body {intelliguide}",
