@@ -81,6 +81,7 @@ def gripper(
   model = "brooks_pf400_gripper"
   size = GRIPPER_BODY_SIZE[intelliguide]
   # The two sides are mirror images, so each has its own mesh; each gripper has its own fingers.
+  # Left is the gripper's +y side.
   jaws, fingers = (
     tuple(
       Resource(
