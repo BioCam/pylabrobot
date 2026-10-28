@@ -824,5 +824,5 @@ class TestEveryMotionPathIsCheckedAndKeepsTheModelInStep(unittest.IsolatedAsynci
         with patch.object(arm, "_check_path_reachable", wraps=arm._check_path_reachable) as checked:
           await arm.move_through_cartesian_poses([ahead, ahead], blend=False)
     self.assertEqual(checked.call_count, 2)
-    # Each leg from where the one before it ends.
+    # Each move from where the one before it ends.
     self.assertEqual(checked.call_args_list[1].args[0], checked.call_args_list[0].args[1])
