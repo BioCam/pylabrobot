@@ -7,8 +7,8 @@ setup only when the controller is set up for a vision server - so its existence 
 gate (no per-method guards).
 Only ``locate_target`` moves the arm.
 
-Password-free engine image retrieval (``capture_image``) and vision-project enumeration use
-the separate PreciseVision engine protocol rather than the TCS controller, and are added on top of
+Password-free vision server image retrieval (``capture_image``) and vision-project enumeration use
+the separate vision server protocol rather than the TCS controller, and are added on top of
 this module.
 """
 
@@ -54,10 +54,10 @@ logger = logging.getLogger(__name__)
 
 
 def _split_names(value: str) -> List[str]:
-  """Split an engine name list on commas and/or whitespace.
+  """Split a vision server name list on commas and/or whitespace.
 
   Args:
-    value: an engine name list (``listtools`` is space-separated, ``listprocesses``
+    value: a vision server name list (``listtools`` is space-separated, ``listprocesses``
       comma-separated).
 
   Returns:
@@ -67,7 +67,7 @@ def _split_names(value: str) -> List[str]:
 
 
 def decode_jpeg(jpeg: bytes) -> "np.ndarray":
-  """Decode an engine JPEG frame to an RGB ``numpy`` array (height x width x 3, ``uint8``).
+  """Decode a vision server JPEG frame to an RGB ``numpy`` array (height x width x 3, ``uint8``).
 
   Args:
     jpeg: the raw JPEG bytes of one frame (``FFD8…FFD9``).
@@ -152,7 +152,7 @@ class StereoParameters:
 
 @dataclass
 class CameraInfo:
-  """Discovered facts about one engine camera."""
+  """Discovered facts about one vision server camera."""
 
   name: Optional[str] = None
   type: Optional[str] = None
@@ -172,12 +172,13 @@ class VisionToolInfo:
 
 @dataclass
 class VisionConfiguration:
-  """A snapshot of the PreciseVision engine's capabilities, discovered once at setup and cached.
+  """A snapshot of the vision server's capabilities, discovered once at setup and cached.
 
-  ``discovered`` is False when no engine was configured (no ``vision_host``), leaving the other
-  fields empty. ``tool_types`` is the fixed compiled palette (what the engine can instantiate);
-  ``tools`` are the instances in the active project, each with its type and property names.
-  Populated by ``PreciseFlexVision.discover_configuration`` from the engine ``request_*`` reads.
+  ``discovered`` is False when no vision server was configured (no ``vision_host``), leaving the
+  other fields empty. ``tool_types`` is the fixed compiled palette (what the vision server can
+  instantiate); ``tools`` are the instances in the active project, each with its type and property
+  names. Populated by ``PreciseFlexVision.discover_configuration`` from the vision server
+  ``request_*`` reads.
   """
 
   discovered: bool = False
@@ -191,7 +192,7 @@ class VisionConfiguration:
   cameras: Dict[int, CameraInfo] = field(default_factory=dict)
 
   def has_vision_tool_type(self, tool_type: str) -> bool:
-    """Whether the engine can instantiate a tool type (it is in the fixed palette).
+    """Whether the vision server can instantiate a tool type (it is in the fixed palette).
 
     Args:
       tool_type: the compiled tool-type name to look for (e.g. ``Acquire``).
@@ -203,11 +204,12 @@ F = TypeVar("F", bound=Callable[..., Awaitable[object]])
 
 
 def requires_vision_tool_type(tool_type: str) -> Callable[[F], F]:
-  """Gate a method on the engine providing a compiled tool type (a hard, unfixable requirement).
+  """Gate a method on the vision server providing a compiled tool type (a hard requirement).
 
   When discovery has run (``self.configuration.discovered``) and the type is absent, raise - the
-  type is compiled into the engine and cannot be added by PLR. Before discovery (no engine
-  configured) the gate is a no-op so the method runs, matching the rest of the capability model.
+  type is compiled into the vision server and cannot be added by PLR. Before discovery (no vision
+  server configured) the gate is a no-op so the method runs, matching the rest of the capability
+  model.
 
   Args:
     tool_type: the compiled tool type the gated method needs (e.g. ``Acquire``, ``LightControl``).
@@ -224,8 +226,8 @@ def requires_vision_tool_type(tool_type: str) -> Callable[[F], F]:
         return await func(self, *args, **kwargs)
       if not config.has_vision_tool_type(tool_type):
         raise RuntimeError(
-          f"{func.__name__} requires the '{tool_type}' vision tool type, which this engine does "
-          f"not provide (available: {', '.join(config.vision_tool_types) or 'none'})"
+          f"{func.__name__} requires the '{tool_type}' vision tool type, which this vision "
+          f"server does not provide (available: {', '.join(config.vision_tool_types) or 'none'})"
         )
       return await func(self, *args, **kwargs)
 
@@ -242,9 +244,9 @@ class PreciseFlexVision:
   vision commands over the driver's transport; the orchestrations compose them. Only
   ``locate_target`` moves the arm.
 
-  What the engine, the software on the vision server, holds::
+  What the vision server holds::
 
-    Engine
+    Vision server
     ├─ cameras                  its hardware
     ├─ tool types               what it can instantiate
     └─ Project (the active one)
@@ -258,13 +260,13 @@ class PreciseFlexVision:
 
   @staticmethod
   def _camera_index(camera: Union[Literal["front", "bottom"], int]) -> int:
-    """Resolve a gripper-camera selector to its engine camera number: ``front``->1, ``bottom``->2.
+    """Resolve a gripper-camera selector to its camera number: ``front``->1, ``bottom``->2.
 
     Args:
       camera: the gripper camera - ``"front"``/``1`` or ``"bottom"``/``2``.
 
     Returns:
-      The engine camera number (1 or 2).
+      The vision server camera number (1 or 2).
 
     Raises:
       ValueError: if ``camera`` is not one of ``"front"``/``"bottom"``/``1``/``2``.
@@ -273,10 +275,6 @@ class PreciseFlexVision:
     if index is None:
       raise ValueError(f"camera must be 'front'/1 or 'bottom'/2, got {camera!r}")
     return index
-
-  # ========================================================================
-  # LOW-LEVEL ACCESS
-  # ========================================================================
 
   # -- wire primitives -----------------------------------------------------
 
@@ -324,7 +322,7 @@ class PreciseFlexVision:
     """Run a vision process, the whole assembled tool pipeline (``Vprocess <name>``). No motion.
 
     Controller-side (TCS): runs every tool in the named process in order. To run a single tool over
-    the engine instead, use ``_run_vision_tool``.
+    the vision server instead, use ``_run_vision_tool``.
 
     Args:
       name: the process name in the active vision project (e.g. ``Camera1``, ``LightControl``).
@@ -337,7 +335,7 @@ class PreciseFlexVision:
   async def _vresult_info_string(
     self, tool: Optional[str] = None, index: Optional[int] = None
   ) -> str:
-    """``VresultInfoString`` - a result's text result (e.g. a decoded barcode), or the last result.
+    """``VresultInfoString`` - a result's text (e.g. a decoded barcode), or the last result's.
 
     The wire pads the value with a leading space, which is stripped.
 
@@ -402,10 +400,6 @@ class PreciseFlexVision:
       )
     )
 
-  # ========================================================================
-  # VISION TOOLS
-  # ========================================================================
-
   # -- tool properties -----------------------------------------------------
 
   async def request_vision_tool_property_value(self, tool: str, property_name: str) -> str:
@@ -429,37 +423,37 @@ class PreciseFlexVision:
     return await self.driver.request_vision_server_property(f"system.tooltype {tool}")
 
   async def request_vision_tool_types(self) -> List[str]:
-    """List all tool types the engine can instantiate (``system.tooltypes``) - the fixed palette."""
+    """List the tool types the vision server can instantiate (``system.tooltypes``)."""
     return _split_names(await self.driver.request_vision_server_property("system.tooltypes"))
 
   async def _run_vision_tool(self, tool: str) -> None:
-    """Run a single engine vision tool (``property set system.runtool <tool>``).
+    """Run a single vision tool (``property set system.runtool <tool>``).
 
     Internal apply primitive: for an acquire tool it pushes the tool's stored settings to the camera
     and grabs a frame. A bare property write only stores a value; running the tool applies it.
     """
     await self.driver._set_vision_server_property("system.runtool", tool)
 
-  # -- engine session & discovery ------------------------------------------
+  # -- vision server session & discovery -----------------------------------
 
   async def request_camera_count(self) -> int:
     """Number of cameras PreciseVision sees (``System.CameraCount``); read-only, no motion.
 
-    Goes over the controller (``VToolProperty``), so it works without a configured engine; the
-    engine-side per-camera detail is in the ``request_camera_*`` reads.
+    Goes over the controller (``VToolProperty``), so it works without a configured vision server;
+    the per-camera detail from the vision server is in the ``request_camera_*`` reads.
     """
     return int(await self.request_vision_tool_property("System", "CameraCount"))
 
   async def request_vision_version(self) -> str:
-    """The PreciseVision engine version (``system.engineversion``)."""
+    """The vision server's version (``system.engineversion``)."""
     return await self.driver.request_vision_server_property("system.engineversion")
 
   async def request_is_licensed(self) -> bool:
-    """Whether the engine reports a valid license (``system.islicensed``)."""
+    """Whether the vision server reports a valid license (``system.islicensed``)."""
     return (await self.driver.request_vision_server_property("system.islicensed")) == "True"
 
   async def request_projects(self) -> List[str]:
-    """List all projects on the engine (``system.listprojects``).
+    """List all projects on the vision server (``system.listprojects``).
 
     The active one is ``request_project_name``.
     """
@@ -487,11 +481,11 @@ class PreciseFlexVision:
     }
 
   async def discover_configuration(self) -> VisionConfiguration:
-    """Discover the engine's capabilities once and cache them on ``self.configuration``; no motion.
+    """Discover the vision server's capabilities into ``self.configuration``; no motion.
 
     Reads the tool-type palette, projects, active project, processes, each tool's type and property
-    names, and per-camera info via the engine reads (all read-only). Returns an undiscovered (empty)
-    configuration when no engine was configured at setup.
+    names, and per-camera info via the vision server reads (all read-only). Returns an undiscovered
+    (empty) configuration when no vision server was configured at setup.
     """
     if not self.driver.vision_server_connected:
       self.configuration = VisionConfiguration(discovered=False)
@@ -527,7 +521,7 @@ class PreciseFlexVision:
     return self.configuration
 
   def _log_configuration_summary(self, config: VisionConfiguration) -> None:
-    """Log the discovered engine configuration as one summary (engine > project > tools).
+    """Log the discovered vision configuration as one summary (vision server > project > tools).
 
     Args:
       config: the discovered configuration to log.
@@ -559,10 +553,11 @@ class PreciseFlexVision:
     )
 
   async def setup(self) -> None:
-    """Discover the engine's capabilities, cache them, and log a summary; best-effort, no motion.
+    """Discover the vision server's capabilities, cache and log them; best-effort, no motion.
 
     Run once after the capability is built. Discovery failures are swallowed (logged), so a missing
-    or flaky engine never blocks arm bring-up; an unconfirmed engine version is warned about.
+    or flaky vision server never blocks arm bring-up; an unconfirmed vision server version is warned
+    about.
     """
     host = self.driver.io._host
     try:
@@ -574,7 +569,7 @@ class PreciseFlexVision:
       return
     if not is_confirmed_vision_version(config.vision_version):
       logger.warning(
-        "[PreciseFlex %s] PreciseVision engine %s is not in the confirmed list; please report it "
+        "[PreciseFlex %s] vision server %s is not in the confirmed list; please report it "
         "if the vision capability works so others benefit.",
         host,
         config.vision_version,
@@ -608,13 +603,13 @@ class PreciseFlexVision:
       delay: optional light time delay in milliseconds.
       use_server: which server carries out the change. ``"controller"`` (the default) relays
         ``VToolProperty`` writes and applies them with ``Vprocess`` through the arm controller.
-        ``"vision"`` writes the ``led`` tool properties straight to the PreciseVision engine and
-        applies them with ``system.runtool``; it needs a connected engine (``vision_host``).
+        ``"vision"`` writes the ``led`` tool properties straight to the vision server and
+        applies them with ``system.runtool``; it needs a connected vision server (``vision_host``).
     """
     led = self._camera_index(camera)  # LED 1 = front-facing, 2 = bottom-facing
     if self.configuration.discovered and led not in self.configuration.cameras:
       raise RuntimeError(
-        f"camera {camera!r} (engine camera {led}) is not among the discovered "
+        f"camera {camera!r} (vision server camera {led}) is not among the discovered "
         f"cameras {sorted(self.configuration.cameras)}"
       )
     if not 0 <= brightness <= 100:
@@ -677,12 +672,12 @@ class PreciseFlexVision:
   async def capture_image(
     self, camera: Union[Literal["front", "bottom"], int] = "front"
   ) -> "np.ndarray":
-    """Fetch one frame for ``camera`` directly off the PreciseVision engine as an array, no motion.
+    """Fetch one frame for ``camera`` directly off the vision server as an array, no motion.
 
-    Triggers a frame with ``system.cameraacquire`` and reads records off the engine's image stream
-    until the matching ``Primary Image [n]`` arrives, discarding non-image and other-camera records,
-    then decodes its JPEG to an RGB array. Requires a configured engine (raises if none was set up).
-    For a saved file on the engine host instead, use ``save_image``.
+    Triggers a frame with ``system.cameraacquire`` and reads results off the vision server's image
+    stream until the matching ``Primary Image [n]`` arrives, discarding non-image and other-camera
+    results, then decodes its JPEG to an RGB array. Requires a configured vision server (raises if
+    none was set up). For a saved file on the vision server host instead, use ``save_image``.
 
     This grabs the camera's current hardware state; it does NOT apply pending acquire-tool settings.
     Change one first with ``_set_camera_setting`` (which applies it) for it to show in the frame.
@@ -695,29 +690,30 @@ class PreciseFlexVision:
       The full-resolution frame as an RGB ``numpy`` array (height x width x 3, ``uint8``).
 
     Raises:
-      TimeoutError: if no frame arrives off the engine image stream before the read times out.
+      TimeoutError: if no frame arrives off the vision server image stream before the read times
+        out.
       RuntimeError: if the image stream ends before the requested frame is seen.
     """
     index = self._camera_index(camera)
     want = f"Primary Image [{index}]"
-    # Drop records an earlier tool run left behind; a frame arrives before its trigger's reply, so
+    # Drop results an earlier tool run left behind; a frame arrives before its trigger's reply, so
     # nothing older is still in flight once the stream is idle.
     try:
-      while await asyncio.wait_for(self.driver.read_next_vision_server_record(), 0.05) is not None:
+      while await asyncio.wait_for(self.driver.read_next_vision_server_result(), 0.05) is not None:
         pass
     except asyncio.TimeoutError:
       pass
     await self.driver._set_vision_server_property("system.cameraacquire", index)
     while True:
       try:
-        record = await self.driver.read_next_vision_server_record()
+        result = await self.driver.read_next_vision_server_result()
       except TimeoutError as e:
         raise TimeoutError(
           f"no '{want}' frame arrived within {self.driver.vision_server_timeout}s"
         ) from e
-      if record is None:
-        raise RuntimeError(f"engine image stream ended without a '{want}' record")
-      name, data = record
+      if result is None:
+        raise RuntimeError(f"vision server image stream ended without a '{want}' result")
+      name, data = result
       if name == want:
         return decode_jpeg(data)
 
@@ -730,7 +726,7 @@ class PreciseFlexVision:
   ) -> str:
     """Acquire and save a frame via the acquire tool's ACQUIRE_AND_SAVE mode; no arm motion.
 
-    The file is written on the vision-engine host; retrieve it over a separate transport. Returns
+    The file is written on the vision server host; retrieve it over a separate transport. Returns
     the ``Vprocess`` reply.
 
     Args:
@@ -738,7 +734,7 @@ class PreciseFlexVision:
         (downward). Selects the acquire tool (``acq<n>``) and the process that runs it
         (``Camera<n>``); the camera itself is fixed by that tool's CameraNumber.
       acquire_prefix: optional filename prefix for the saved frame.
-      acquire_path: optional directory on the engine host to write the frame to.
+      acquire_path: optional directory on the vision server host to write the frame to.
     """
     index = self._camera_index(camera)
     process_name = f"Camera{index}"

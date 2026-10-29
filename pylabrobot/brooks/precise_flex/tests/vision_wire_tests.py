@@ -1,17 +1,20 @@
-"""What every vision method sends, on the controller and on both PreciseVision engine connections.
+"""What every vision method sends and returns, on the controller and both vision server connections.
 
-A fake network answers at the socket, by port, so the test holds whichever class owns a connection:
-the controller on :10100, the engine's property protocol on :1450 and its image stream on :1500.
+A fake network answers at the socket, by port: the controller on :10100, the vision server's
+property protocol on :1450 and its image stream on :1500. Every reply is one the arm gave.
 """
 
+import io
 import unittest
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple, Type
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 from unittest.mock import AsyncMock, patch
 
 from pylabrobot.brooks.precise_flex import PreciseFlexDriver
+from pylabrobot.brooks.precise_flex.driver.errors import PreciseFlexVisionError
 from pylabrobot.brooks.precise_flex.driver.features.vision import (
   PreciseFlexVision,
   StereoParameters,
+  VisionConfiguration,
 )
 from pylabrobot.io.socket import Socket
 
@@ -22,83 +25,117 @@ try:
 except ImportError:
   _PILImage = None  # type: ignore[assignment]
 
-_CONTROLLER_PORT, _ENGINE_PORT, _IMAGE_PORT = 10100, 1450, 1500
-_LINK = {_CONTROLLER_PORT: "controller", _ENGINE_PORT: "vision", _IMAGE_PORT: "image"}
+_CONTROLLER_PORT, _VISION_SERVER_PORT, _IMAGE_PORT = 10100, 1450, 1500
+_LINK = {_CONTROLLER_PORT: "controller", _VISION_SERVER_PORT: "vision", _IMAGE_PORT: "image"}
 
-# Controller replies for the vision relay; VToolProperty reads answer the bare value.
+_STEREO_PARAMETERS = "unknown_process unknown_tool 150 0.5 4 2 3 63 2 1000 "
 _CONTROLLER_REPLIES: Dict[str, str] = {
   **_REPLIES,
-  "VToolProperty System CameraCount": "2",
-  "VresultInfoString barcode_read1 1": "0 Code128 HELLO",
-  "StereoParam 1 1": "0 Locate locator 150 0.5 4 2 3 63 2 1000",
-  "StereoLocate 1 1": "0 400 100 150 10 90 180",
+  "StereoParam 1 1": f"0 {_STEREO_PARAMETERS}",
+  "StereoLocate 1 1": "-4030",
+  "VToolProperty System Info": "-4016",
+  "Vprocess Camera1": "-4012 0",  # the arm's answer to a process that failed (`Vprocess snap`)
 }
 
-_ENGINE_REPLIES: Dict[str, str] = {
-  "property get system.engineversion": "0 4.1.0",
-  "property get system.islicensed": "0 True",
-  "property get system.listprojects": "0 ProjA,ProjB",
-  "property get system.projectname": "0 ProjA",
-  "property get system.listprocesses": "0 Camera1,Camera2,LightControl,Barcode,Locate",
-  "property get system.listtools": "0 acq1 acq2 led barcode_read1 locator",
-  "property get system.tooltypes": "0 Acquire BarcodeRead LightControl FiducialLocator",
-  "property get system.tooltype acq1": "0 Acquire",
-  "property get system.tooltype acq2": "0 Acquire",
-  "property get system.tooltype led": "0 LightControl",
-  "property get system.tooltype barcode_read1": "0 BarcodeRead",
-  "property get system.tooltype locator": "0 FiducialLocator",
-  "property get system.toolproperties acq1": "0 exposure gain",
-  "property get system.toolproperties acq2": "0 exposure gain",
-  "property get system.toolproperties led": "0 bank brightness delay",
-  "property get system.toolproperties barcode_read1": "0 code128 qrcode",
-  "property get system.toolproperties locator": "0 marker",
+_ACQUIRE_PROPERTIES = (
+  "acquiremode activelayer monochromedisplay acquirepath acquireprefix acquiremaxsaveimages "
+  "acquireextension jpegquality backlightcompensation brightness contrast hue saturation "
+  "sharpness gamma whitebalance gain exposure cameranumber name defaultdisplayresults "
+  "tooldisplayresults"
+)
+_ARUCO_PROPERTIES = (
+  "width height relativetoolname adaptivethreshold cornerrefinement cornerrefinementwindowsize "
+  "cornerrefinementmaxiterations cornerrefinementminaccuracy dictionaryconfiguration "
+  "calculateintensity showresults resultdisplaycolor resultdisplayscale cameranumber name xpos "
+  "ypos defaultdisplayresults tooldisplayresults"
+)
+_BARCODE_PROPERTIES = (
+  "width height relativetoolname showresults resultdisplaycolor showbarcodetext resultfontsize "
+  "findall codabar code39 code93 code128 datamatrix pdf417 ean8 ean13 itf maxicode aztec qrcode "
+  "rss14 upca upce upceanextensions imb pharmacode cameranumber name xpos ypos "
+  "defaultdisplayresults tooldisplayresults"
+)
+_LED_PROPERTIES = "brightness delay bank cameranumber name defaultdisplayresults tooldisplayresults"
+_SHARPNESS_PROPERTIES = (
+  "width height relativetoolname upperthreshold lowerthreshold showresults resultdisplaycolor "
+  "resultdisplayscale cameranumber name xpos ypos defaultdisplayresults tooldisplayresults"
+)
+# The tools of the arm's active project, in the order it listed them: name -> (type, properties).
+_TOOLS: Dict[str, Tuple[str, str]] = {
+  "acq1": ("Acquire", _ACQUIRE_PROPERTIES),
+  "acq2": ("Acquire", _ACQUIRE_PROPERTIES),
+  "aruco1": ("FiducialLocator", _ARUCO_PROPERTIES),
+  "aruco2": ("FiducialLocator", _ARUCO_PROPERTIES),
+  "barcode_read1": ("BarcodeRead", _BARCODE_PROPERTIES),
+  "barcode_read2": ("BarcodeRead", _BARCODE_PROPERTIES),
+  "led": ("LightControl", _LED_PROPERTIES),
+  "sharpness_detector1": ("SharpnessDetector", _SHARPNESS_PROPERTIES),
+  "sharpness_detector2": ("SharpnessDetector", _SHARPNESS_PROPERTIES),
+}
+_TOOL_TYPES = (
+  "ObjectFinder Classifier BarcodeRead Acquire ArcFitter ClearGrip ComputedLine "
+  "ComputeIntersection ComputePointOnLine EdgeFinder SharpnessDetector FindBlob FindMid FixedFrame "
+  "ImageProcess FiducialLocator LightControl LineFitter PixelWindow PixelWindowColor PointFinder "
+  "SensorWindow"
+)
+_RESOLUTIONS = (
+  "160x120 320x240 640x480 800x600 1024x768 1280x720 1280x960 1600x1200 1920x1080 2048x1536 "
+  "2592x1944"
+)
+_PROJECTS = "arucos_cam1,arucos_cam2,VisionTest,vision_project"
+_PROCESSES = "Camera1,Camera2,LightControl"
+_VISION_SERVER_REPLIES: Dict[str, str] = {
+  "property get system.listtools": "0 " + " ".join(_TOOLS),
+  **{f"property get system.tooltype {t}": f"0 {kind}" for t, (kind, _) in _TOOLS.items()},
+  **{f"property get system.toolproperties {t}": f"0 {p}" for t, (_, p) in _TOOLS.items()},
   "property get system.cameracount": "0 2",
-  "property get system.cameraname 1": "0 Front",
-  "property get system.cameraname 2": "0 Bottom",
-  "property get system.cameratype 1": "0 DirectShow",
-  "property get system.cameratype 2": "0 DirectShow",
-  "property get system.cameraframewidth 1": "0 1280",
-  "property get system.cameraframewidth 2": "0 1280",
-  "property get system.cameraframeheight 1": "0 960",
-  "property get system.cameraframeheight 2": "0 960",
-  "property get system.cameraresolutions 1": "0 640x480,1280x960",
-  "property get system.cameraresolutions 2": "0 640x480,1280x960",
-  "property get acq1.exposure": "0 20",
-  "property get system.toolpropertyinfo acq1 exposure": "0 int 0 100",
+  **{f"property get system.cameraname {c}": f"0 Cam{c}" for c in (1, 2)},
+  **{f"property get system.cameratype {c}": "0 DirectShow" for c in (1, 2)},
+  **{f"property get system.cameraframewidth {c}": "0 2592" for c in (1, 2)},
+  **{f"property get system.cameraframeheight {c}": "0 1944" for c in (1, 2)},
+  **{f"property get system.cameraresolutions {c}": f"0 {_RESOLUTIONS}" for c in (1, 2)},
+  "property get system.engineversion": "0 5.3.3.0",
+  "property get system.islicensed": "0 True",
+  "property get system.tooltypes": f"0 {_TOOL_TYPES}",
+  "property get system.listprojects": f"0 {_PROJECTS}",
+  "property get system.projectname": "0 VisionTest",
+  "property get system.listprocesses": f"0 {_PROCESSES}",
 }
 
 
-def _record(name: str, data: bytes) -> bytes:
-  """One result record as the engine frames it on :1500."""
+def _result(name: str, data: bytes) -> bytes:
+  """One result as the vision server frames it on :1500."""
   name_bytes = name.encode("ascii")
   header = bytes([0x01, len(name_bytes), 0, 0, 0]) + len(data).to_bytes(4, "little") + bytes(7)
   return header + name_bytes + data
 
 
-def _jpeg() -> bytes:
-  """A 2x2 JPEG frame."""
-  import io
-
+def _jpeg(colour: Tuple[int, int, int]) -> bytes:
+  """A 2x2 JPEG frame of one colour."""
   assert _PILImage is not None
   out = io.BytesIO()
-  _PILImage.new("RGB", (2, 2), (10, 20, 30)).save(out, format="JPEG")
+  _PILImage.new("RGB", (2, 2), colour).save(out, format="JPEG")
   return out.getvalue()
 
 
 class _FakeNetwork:
-  """Answers every socket by port and records each line written, tagged with its link."""
+  """Answers every socket by port and logs each line written, tagged with its link."""
 
   def __init__(self) -> None:
     self.sent: List[str] = []
     self.image_chunks: List[bytes] = []
-    # Pushed onto the image stream when a camera acquire is triggered, as the engine does.
+    # Pushed onto the image stream when a camera acquire is triggered, as the vision server does.
     self.frames_on_acquire: List[bytes] = []
+    self.controller_replies = dict(_CONTROLLER_REPLIES)
+    self.unreachable: List[int] = []
     self._pending: Dict[int, List[str]] = {}
 
   def install(self, test: unittest.TestCase) -> None:
     network = self
 
     async def setup(sock: Socket) -> None:
+      if sock._port in network.unreachable:
+        raise ConnectionRefusedError(sock._port)
       network.sent.append(f"{_LINK[sock._port]}: <open>")
 
     async def stop(sock: Socket) -> None:
@@ -113,7 +150,8 @@ class _FakeNetwork:
 
     async def readline(sock: Socket, timeout: Optional[float] = None) -> bytes:
       line = network._pending[sock._port].pop(0)
-      replies = _ENGINE_REPLIES if sock._port == _ENGINE_PORT else _CONTROLLER_REPLIES
+      vision = sock._port == _VISION_SERVER_PORT
+      replies = _VISION_SERVER_REPLIES if vision else network.controller_replies
       return (replies.get(line, "0") + "\r\n").encode()
 
     async def read(sock: Socket, num_bytes: int = 128, timeout: Optional[float] = None) -> bytes:
@@ -133,213 +171,147 @@ class _FakeNetwork:
 
 
 def _vision(arm: PreciseFlexDriver) -> PreciseFlexVision:
-  """The vision capability of an arm set up with its engine."""
+  """The vision feature of an arm set up with its vision server."""
   assert arm.vision is not None
   return arm.vision
 
 
-_Case = Tuple[
-  str, Callable[[PreciseFlexDriver], Awaitable[Any]], List[str], Optional[Type[Exception]]
-]
+class _Unchecked:
+  """What a call returns, where no reply the arm gave stands behind it."""
 
-# (name, call, every line sent tagged with its link, exception raised or None), on an arm set up
-# with its vision engine.
+
+_UNCHECKED = _Unchecked()
+
+_Case = Tuple[str, Callable[[PreciseFlexDriver], Awaitable[Any]], List[str], Any]
+
+# (name, call, every line sent tagged with its link, the value returned or the exception raised),
+# on an arm set up with its vision server.
 _CASES: List[_Case] = [
   (
     "request_vision_tool_property",
     lambda arm: _vision(arm).request_vision_tool_property("System", "CameraCount"),
-    [
-      "controller: VToolProperty System CameraCount",
-    ],
-    None,
+    ["controller: VToolProperty System CameraCount"],
+    "2",
+  ),
+  (
+    "request_vision_tool_property, an unknown property",
+    lambda arm: _vision(arm).request_vision_tool_property("System", "Info"),
+    ["controller: VToolProperty System Info"],
+    PreciseFlexVisionError,
   ),
   (
     "request_camera_count",
     lambda arm: _vision(arm).request_camera_count(),
-    [
-      "controller: VToolProperty System CameraCount",
-    ],
-    None,
+    ["controller: VToolProperty System CameraCount"],
+    2,
   ),
   (
     "request_vision_version",
     lambda arm: _vision(arm).request_vision_version(),
-    [
-      "vision: property get system.engineversion",
-    ],
-    None,
+    ["vision: property get system.engineversion"],
+    "5.3.3.0",
   ),
   (
     "request_is_licensed",
     lambda arm: _vision(arm).request_is_licensed(),
-    [
-      "vision: property get system.islicensed",
-    ],
-    None,
+    ["vision: property get system.islicensed"],
+    True,
   ),
   (
     "request_projects",
     lambda arm: _vision(arm).request_projects(),
-    [
-      "vision: property get system.listprojects",
-    ],
-    None,
+    ["vision: property get system.listprojects"],
+    _PROJECTS.split(","),
   ),
   (
     "request_project_name",
     lambda arm: _vision(arm).request_project_name(),
-    [
-      "vision: property get system.projectname",
-    ],
-    None,
+    ["vision: property get system.projectname"],
+    "VisionTest",
   ),
   (
     "request_processes",
     lambda arm: _vision(arm).request_processes(),
-    [
-      "vision: property get system.listprocesses",
-    ],
-    None,
+    ["vision: property get system.listprocesses"],
+    _PROCESSES.split(","),
   ),
   (
     "request_vision_tools",
     lambda arm: _vision(arm).request_vision_tools(),
-    [
-      "vision: property get system.listtools",
-    ],
-    None,
+    ["vision: property get system.listtools"],
+    list(_TOOLS),
   ),
   (
     "enumerate_project",
     lambda arm: _vision(arm).enumerate_project(),
-    [
-      "vision: property get system.listprocesses",
-      "vision: property get system.listtools",
-    ],
-    None,
-  ),
-  (
-    "discover_configuration",
-    lambda arm: _vision(arm).discover_configuration(),
-    [
-      "vision: property get system.listtools",
-      "vision: property get system.tooltype acq1",
-      "vision: property get system.toolproperties acq1",
-      "vision: property get system.tooltype acq2",
-      "vision: property get system.toolproperties acq2",
-      "vision: property get system.tooltype led",
-      "vision: property get system.toolproperties led",
-      "vision: property get system.tooltype barcode_read1",
-      "vision: property get system.toolproperties barcode_read1",
-      "vision: property get system.tooltype locator",
-      "vision: property get system.toolproperties locator",
-      "vision: property get system.cameracount",
-      "vision: property get system.cameraname 1",
-      "vision: property get system.cameratype 1",
-      "vision: property get system.cameraframewidth 1",
-      "vision: property get system.cameraframeheight 1",
-      "vision: property get system.cameraresolutions 1",
-      "vision: property get system.cameraname 2",
-      "vision: property get system.cameratype 2",
-      "vision: property get system.cameraframewidth 2",
-      "vision: property get system.cameraframeheight 2",
-      "vision: property get system.cameraresolutions 2",
-      "vision: property get system.engineversion",
-      "vision: property get system.islicensed",
-      "vision: property get system.tooltypes",
-      "vision: property get system.listprojects",
-      "vision: property get system.projectname",
-      "vision: property get system.listprocesses",
-    ],
-    None,
+    ["vision: property get system.listprocesses", "vision: property get system.listtools"],
+    {"processes": sorted(_PROCESSES.split(",")), "vision_tools": sorted(_TOOLS)},
   ),
   (
     "request_camera_name_front",
     lambda arm: _vision(arm).request_camera_name(),
-    [
-      "vision: property get system.cameraname 1",
-    ],
-    None,
+    ["vision: property get system.cameraname 1"],
+    "Cam1",
   ),
   (
     "request_camera_name_bottom",
     lambda arm: _vision(arm).request_camera_name("bottom"),
-    [
-      "vision: property get system.cameraname 2",
-    ],
-    None,
+    ["vision: property get system.cameraname 2"],
+    "Cam2",
   ),
   (
     "request_camera_type",
     lambda arm: _vision(arm).request_camera_type(),
-    [
-      "vision: property get system.cameratype 1",
-    ],
-    None,
+    ["vision: property get system.cameratype 1"],
+    "DirectShow",
   ),
   (
     "request_camera_width",
     lambda arm: _vision(arm).request_camera_width(),
-    [
-      "vision: property get system.cameraframewidth 1",
-    ],
-    None,
+    ["vision: property get system.cameraframewidth 1"],
+    2592,
   ),
   (
     "request_camera_height",
     lambda arm: _vision(arm).request_camera_height(),
-    [
-      "vision: property get system.cameraframeheight 1",
-    ],
-    None,
+    ["vision: property get system.cameraframeheight 1"],
+    1944,
   ),
   (
     "request_camera_resolutions",
     lambda arm: _vision(arm).request_camera_resolutions(),
-    [
-      "vision: property get system.cameraresolutions 1",
-    ],
-    None,
+    ["vision: property get system.cameraresolutions 1"],
+    _RESOLUTIONS.split(),
   ),
   (
     "request_vision_tool_property_value",
     lambda arm: _vision(arm).request_vision_tool_property_value("acq1", "exposure"),
-    [
-      "vision: property get acq1.exposure",
-    ],
-    None,
+    ["vision: property get acq1.exposure"],
+    _UNCHECKED,
   ),
   (
     "request_vision_tool_properties",
-    lambda arm: _vision(arm).request_vision_tool_properties("acq1"),
-    [
-      "vision: property get system.toolproperties acq1",
-    ],
-    None,
+    lambda arm: _vision(arm).request_vision_tool_properties("led"),
+    ["vision: property get system.toolproperties led"],
+    _LED_PROPERTIES.split(),
   ),
   (
     "request_vision_tool_property_info",
     lambda arm: _vision(arm).request_vision_tool_property_info("acq1", "exposure"),
-    [
-      "vision: property get system.toolpropertyinfo acq1 exposure",
-    ],
-    None,
+    ["vision: property get system.toolpropertyinfo acq1 exposure"],
+    _UNCHECKED,
   ),
   (
     "request_vision_tool_type",
     lambda arm: _vision(arm).request_vision_tool_type("acq1"),
-    [
-      "vision: property get system.tooltype acq1",
-    ],
-    None,
+    ["vision: property get system.tooltype acq1"],
+    "Acquire",
   ),
   (
     "request_vision_tool_types",
     lambda arm: _vision(arm).request_vision_tool_types(),
-    [
-      "vision: property get system.tooltypes",
-    ],
-    None,
+    ["vision: property get system.tooltypes"],
+    _TOOL_TYPES.split(),
   ),
   (
     "start_led_controller",
@@ -364,6 +336,12 @@ _CASES: List[_Case] = [
     None,
   ),
   (
+    "start_led, an unknown camera",
+    lambda arm: _vision(arm).start_led("left"),  # type: ignore[arg-type]
+    [],
+    ValueError,
+  ),
+  (
     "stop_led_controller",
     lambda arm: _vision(arm).stop_led(),
     [
@@ -384,17 +362,10 @@ _CASES: List[_Case] = [
     None,
   ),
   (
-    "capture_image",
+    "capture_image, the stream ends",
     lambda arm: _vision(arm).capture_image("front"),
-    [
-      "image: <read>",
-      "image: <read>",
-      "vision: property set system.cameraacquire 1",
-      "image: <read>",
-      "image: <read>",
-      "image: <read>",
-    ],
-    None,
+    ["image: <read>", "vision: property set system.cameraacquire 1", "image: <read>"],
+    RuntimeError,
   ),
   (
     "save_image",
@@ -406,15 +377,28 @@ _CASES: List[_Case] = [
       "controller: Vprocess Camera2",
       "controller: VToolProperty acq2 acquiremode NORMAL_ACQUIRE",
     ],
-    None,
+    _UNCHECKED,
+  ),
+  (
+    "save_image, the process fails",
+    lambda arm: _vision(arm).save_image("front"),
+    [
+      "controller: VToolProperty acq1 acquiremode ACQUIRE_AND_SAVE",
+      "controller: Vprocess Camera1",
+      "controller: VToolProperty acq1 acquiremode NORMAL_ACQUIRE",
+    ],
+    PreciseFlexVisionError,
+  ),
+  (
+    "save_image, an unknown camera",
+    lambda arm: _vision(arm).save_image("sideways"),  # type: ignore[arg-type]
+    [],
+    ValueError,
   ),
   (
     "set_camera_setting",
     lambda arm: _vision(arm)._set_camera_setting("front", "exposure", 30),
-    [
-      "vision: property set acq1.exposure 30",
-      "vision: property set system.runtool acq1",
-    ],
+    ["vision: property set acq1.exposure 30", "vision: property set system.runtool acq1"],
     None,
   ),
   (
@@ -429,41 +413,57 @@ _CASES: List[_Case] = [
   (
     "read_barcode",
     lambda arm: _vision(arm).read_barcode("Barcode"),
-    [
-      "controller: Vprocess Barcode",
-      "controller: VresultInfoString barcode_read1 1",
-    ],
-    None,
+    ["controller: Vprocess Barcode", "controller: VresultInfoString barcode_read1 1"],
+    _UNCHECKED,
   ),
   (
     "request_stereo_parameters",
     lambda arm: _vision(arm).request_stereo_parameters(),
-    [
-      "controller: StereoParam 1 1",
-    ],
-    None,
+    ["controller: StereoParam 1 1"],
+    StereoParameters("unknown_process", "unknown_tool", 150.0, 0.5, 4, 2, 3, 63.0, 2.0, 1000),
   ),
   (
     "set_stereo_parameters",
-    lambda arm: _vision(arm).set_stereo_parameters(
-      StereoParameters.from_reply("Locate locator 150 0.5 4 2 3 63 2 1000")
-    ),
-    [
-      "controller: StereoParam 1 1 Locate locator 150.0 0.5 4 2 3 63.0 2.0 1000",
-    ],
+    lambda arm: _vision(arm).set_stereo_parameters(StereoParameters.from_reply(_STEREO_PARAMETERS)),
+    ["controller: StereoParam 1 1 unknown_process unknown_tool 150.0 0.5 4 2 3 63.0 2.0 1000"],
     None,
   ),
   (
-    "locate_target",
+    "locate_target, nothing located",
     lambda arm: _vision(arm).locate_target(),
-    [
-      "controller: StereoLocate 1 1",
-    ],
-    None,
+    ["controller: StereoLocate 1 1"],
+    PreciseFlexVisionError,
   ),
 ]
 
-_SETUP: List[str] = [
+_DISCOVERY: List[str] = [
+  "vision: property get system.listtools",
+  *(
+    f"vision: property get system.{read} {t}"
+    for t in _TOOLS
+    for read in ("tooltype", "toolproperties")
+  ),
+  "vision: property get system.cameracount",
+  *(
+    f"vision: property get system.{read} {c}"
+    for c in (1, 2)
+    for read in (
+      "cameraname",
+      "cameratype",
+      "cameraframewidth",
+      "cameraframeheight",
+      "cameraresolutions",
+    )
+  ),
+  "vision: property get system.engineversion",
+  "vision: property get system.islicensed",
+  "vision: property get system.tooltypes",
+  "vision: property get system.listprojects",
+  "vision: property get system.projectname",
+  "vision: property get system.listprocesses",
+]
+
+_SETUP_WITHOUT_VISION: List[str] = [
   "controller: <open>",
   "controller: mode 0",
   "controller: hp 1 20",
@@ -509,37 +509,9 @@ _SETUP: List[str] = [
   "controller: wherej",
   "controller: wherej",
   "controller: wherej",
-  "vision: <open>",
-  "image: <open>",
-  "vision: property get system.listtools",
-  "vision: property get system.tooltype acq1",
-  "vision: property get system.toolproperties acq1",
-  "vision: property get system.tooltype acq2",
-  "vision: property get system.toolproperties acq2",
-  "vision: property get system.tooltype led",
-  "vision: property get system.toolproperties led",
-  "vision: property get system.tooltype barcode_read1",
-  "vision: property get system.toolproperties barcode_read1",
-  "vision: property get system.tooltype locator",
-  "vision: property get system.toolproperties locator",
-  "vision: property get system.cameracount",
-  "vision: property get system.cameraname 1",
-  "vision: property get system.cameratype 1",
-  "vision: property get system.cameraframewidth 1",
-  "vision: property get system.cameraframeheight 1",
-  "vision: property get system.cameraresolutions 1",
-  "vision: property get system.cameraname 2",
-  "vision: property get system.cameratype 2",
-  "vision: property get system.cameraframewidth 2",
-  "vision: property get system.cameraframeheight 2",
-  "vision: property get system.cameraresolutions 2",
-  "vision: property get system.engineversion",
-  "vision: property get system.islicensed",
-  "vision: property get system.tooltypes",
-  "vision: property get system.listprojects",
-  "vision: property get system.projectname",
-  "vision: property get system.listprocesses",
 ]
+
+_SETUP: List[str] = _SETUP_WITHOUT_VISION + ["vision: <open>", "image: <open>"] + _DISCOVERY
 
 _STOP: List[str] = [
   "controller: attach 0",
@@ -555,52 +527,138 @@ class TestPreciseFlexVisionWire(unittest.IsolatedAsyncioTestCase):
   """Each vision method sends exactly what it sends today, on the link it sends it on."""
 
   def setUp(self) -> None:
-    sleep = patch("pylabrobot.brooks.precise_flex.driver.master.asyncio.sleep", new=AsyncMock())
+    sleep = patch(
+      "pylabrobot.brooks.precise_flex.driver.features.arm.asyncio.sleep", new=AsyncMock()
+    )
     sleep.start()
     self.addCleanup(sleep.stop)
     self.network = _FakeNetwork()
     self.network.install(self)
 
-  async def _arm(self) -> PreciseFlexDriver:
+  async def _arm(self, vision_host: Optional[str] = "vision-server", **kwargs) -> PreciseFlexDriver:
     arm = PreciseFlexDriver(
       host="pf400",
       gripper_length=162.0,
       gripper_z_offset=0.0,
       closed_gripper_position=80.0,
-      vision_host="engine",
+      vision_host=vision_host,
     )
-    await arm.setup()
+    await arm.setup(**kwargs)
     return arm
 
   async def test_setup_with_vision(self):
-    await self._arm()
+    arm = await self._arm()
     self.assertEqual(self.network.sent, _SETUP)
+    config = _vision(arm).configuration
+    self.assertEqual(
+      {name: tool.type for name, tool in config.vision_tools.items()},
+      {name: kind for name, (kind, _) in _TOOLS.items()},
+    )
+    self.assertEqual(
+      [(camera.name, camera.width, camera.height) for camera in config.cameras.values()],
+      [("Cam1", 2592, 1944), ("Cam2", 2592, 1944)],
+    )
+    self.assertEqual(
+      (
+        config.vision_version,
+        config.licensed,
+        config.active_project,
+        len(config.vision_tool_types),
+      ),
+      ("5.3.3.0", True, "VisionTest", 22),
+    )
 
-  async def test_stop_closes_the_engine(self):
+  async def test_setup_without_the_vision_server(self):
+    without_module = _REPLIES["version"].split(", IntelliGuide")[0]
+    for name, kwargs, vision_built in (
+      ("skip_vision", {"skip_vision": True}, False),
+      ("no IntelliGuide module", {}, False),
+      ("vision server unreachable", {}, True),
+      ("no vision_host", {"vision_host": None}, True),
+    ):
+      with self.subTest(name):
+        self.network.sent.clear()
+        self.network.controller_replies = dict(_CONTROLLER_REPLIES)
+        self.network.unreachable = []
+        if name == "no IntelliGuide module":
+          self.network.controller_replies["version"] = without_module
+        if name == "vision server unreachable":
+          self.network.unreachable = [_VISION_SERVER_PORT]
+        arm = await self._arm(**kwargs)
+        self.assertEqual([c for c in self.network.sent if not c.startswith("controller")], [])
+        self.assertEqual(arm.vision is not None, vision_built)
+        if arm.vision is not None:
+          self.assertFalse(arm.vision.configuration.discovered)
+
+  async def test_without_a_vision_server_its_methods_raise(self):
+    arm = await self._arm(vision_host=None)
+    self.network.sent.clear()
+    for call in (
+      lambda: _vision(arm).request_vision_version(),
+      lambda: _vision(arm).capture_image(1),
+      lambda: _vision(arm).start_led(use_server="vision"),
+    ):
+      with self.assertRaisesRegex(RuntimeError, "pass vision_host at setup"):
+        await call()
+    self.assertEqual(self.network.sent, [])
+
+  async def test_stop_closes_the_vision_server(self):
     arm = await self._arm()
     self.network.sent.clear()
     await arm.stop()
     self.assertEqual(self.network.sent, _STOP)
 
-  async def test_every_vision_method(self):
-    for name, call, expected, error in _CASES:
+  async def test_a_method_needs_its_tool_type(self):
+    for name, configuration, sent in (
+      ("discovered without it", VisionConfiguration(discovered=True), []),
+      ("not discovered", VisionConfiguration(), ["controller: Vprocess Barcode"]),
+    ):
       with self.subTest(name):
-        if name == "capture_image" and _PILImage is None:
-          continue
+        arm = await self._arm()
+        _vision(arm).configuration = configuration
+        self.network.sent.clear()
+        if sent:
+          await _vision(arm).read_barcode("Barcode")
+        else:
+          with self.assertRaisesRegex(RuntimeError, "'BarcodeRead' vision tool type"):
+            await _vision(arm).read_barcode("Barcode")
+        self.assertEqual(self.network.sent[:1], sent)
+
+  @unittest.skipIf(_PILImage is None, "Pillow is not installed")
+  async def test_capture_image_returns_the_wanted_frame(self):
+    arm = await self._arm()
+    self.network.sent.clear()
+    self.network.image_chunks = [_result("Primary Image [1]", b"stale")]  # left by a tool run
+    self.network.frames_on_acquire = [
+      _result("Primary Image [2]", _jpeg((0, 0, 200))),
+      _result("Primary Image [1]", _jpeg((200, 0, 0))),
+    ]
+    frame = await _vision(arm).capture_image("front")
+    self.assertEqual(frame.shape, (2, 2, 3))  # height x width x RGB
+    self.assertGreater(frame[..., 0].mean(), frame[..., 2].mean())  # camera 1's red frame
+    self.assertEqual(
+      self.network.sent,
+      [
+        "image: <read>",
+        "image: <read>",
+        "vision: property set system.cameraacquire 1",
+        "image: <read>",
+        "image: <read>",
+      ],
+    )
+
+  async def test_every_vision_method(self):
+    for name, call, expected, outcome in _CASES:
+      with self.subTest(name):
         arm = await self._arm()
         self.network.sent.clear()
-        if name == "capture_image":
-          self.network.image_chunks = [_record("Primary Image [1]", b"stale")]  # left by a tool run
-          self.network.frames_on_acquire = [
-            _record("VisionResults[led]", b"x"),
-            _record("Primary Image [2]", _jpeg()),
-            _record("Primary Image [1]", _jpeg()),
-          ]
-        if error is None:
-          await call(arm)
-        else:
-          with self.assertRaises(error):
+        if isinstance(outcome, type) and issubclass(outcome, Exception):
+          with self.assertRaises(outcome):
             await call(arm)
+        else:
+          returned = await call(arm)
+          if outcome is not _UNCHECKED:
+            self.assertEqual(returned, outcome)
         self.assertEqual(self.network.sent, expected)
 
 

@@ -2013,7 +2013,7 @@ class PreciseFlexCollisionError(PreciseFlexServoError):
 
 
 class PreciseFlexVisionError(PreciseFlexError):
-  """A PreciseVision error (the -40xx band): a vision-engine or stereo-locate failure - e.g. a tool
+  """A PreciseVision error (the -40xx band): a vision server or stereo-locate failure - e.g. a tool
   property rejected, a process failed, or an ArUco target not found. Lets vision code catch a vision
   failure with ``except PreciseFlexVisionError`` without also matching motion / controller errors.
   """
@@ -2069,7 +2069,7 @@ POWER_ERROR_CODES = frozenset(
 # Targets the controller cannot reach.
 REACH_ERROR_CODES = frozenset({-1012, -1013, -1033, -1034, -1035, -1039, -1040, -1056})
 
-# PreciseVision (vision-engine and stereo-locator) errors occupy the -40xx band, including codes the
+# PreciseVision (vision server and stereo-locator) errors occupy the -40xx band, including codes the
 # table lacks: the arm has replied -4015 and -4030.
 VISION_ERROR_CODES = frozenset(range(-4099, -3999))
 

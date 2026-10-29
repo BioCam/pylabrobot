@@ -60,60 +60,60 @@ from .features.vision import PreciseFlexVision
 
 logger = logging.getLogger(__name__)
 
-# The vision server (Brooks' PreciseVision engine) behind a camera-gripper arm: a text property
+# Brooks' PreciseVision server behind a camera-gripper arm: a text property
 # protocol on one port, and the JPEG results it pushes on another.
 VISION_SERVER_PROPERTY_PORT = 1450  # text command/query protocol
 # The binary stream carrying the pushed "Primary Image [n]" JPEG results.
 VISION_SERVER_IMAGE_PORT = 1500
-_NO_VISION_SERVER = (
-  "no PreciseVision engine configured - pass vision_host at setup to use this method"
-)
+_NO_VISION_SERVER = "no vision server configured - pass vision_host at setup to use this method"
 
-_RECORD_HEADER_LEN = 16
-# A sanity cap: a record this large signals a desync, not a real frame.
+_RESULT_HEADER_LENGTH = 16
+# A sanity cap: a result this large signals a desync, not a real frame.
 _MAX_IMAGE_BYTES = 16 * 1024 * 1024
 
 
-def _drain_named_record(buf: bytearray) -> Optional[Tuple[str, bytes]]:
-  """Pop the next complete ``(name, data)`` result record from the front of ``buf``, consuming it.
+def _drain_named_result(buf: bytearray) -> Optional[Tuple[str, bytes]]:
+  """Pop the next complete ``(name, data)`` result from the front of ``buf``, consuming it.
 
-  The engine pushes length-prefixed records on its image port, each a fixed 16-byte header, then the
-  result name, then the data::
+  The vision server pushes length-prefixed results on its image port, each a fixed 16-byte header,
+  then the result name, then the data::
 
     01 | name_len (u8) | 00 00 00 | data_len (u32 LE) | 00 00 00 00 00 00 00 | <name> | <data>
 
-  For a "Primary Image [n]" record the data is the JPEG and ``data_len`` its exact byte count.
-  Non-image records, such as a tool's results, are interleaved and framed the same way. Parsing by
+  For a "Primary Image [n]" result the data is the JPEG and ``data_len`` its exact byte count.
+  Non-image results, such as a tool's results, are interleaved and framed the same way. Parsing by
   the announced length never inspects the payload, so a JPEG's internal markers cannot mis-frame
-  it. Assumes ``buf`` begins on a record boundary, which a freshly held stream does.
+  it. Assumes ``buf`` begins on a result boundary, which a freshly held stream does.
 
   Args:
-    buf: the held read buffer; a complete record is removed from its front in place.
+    buf: the held read buffer; a complete result is removed from its front in place.
 
   Returns:
-    The next ``(name, data)`` record, or ``None`` while the full record has not arrived yet.
+    The next ``(name, data)`` result, or ``None`` while the full result has not arrived yet.
 
   Raises:
-    ValueError: if the header is not a record start (``buf[0] != 0x01``) or declares an implausibly
+    ValueError: if the header is not a result start (``buf[0] != 0x01``) or declares an implausibly
       large ``data_len`` - both signal a desynchronised stream, which has no safe silent recovery.
   """
-  if len(buf) < _RECORD_HEADER_LEN:
+  if len(buf) < _RESULT_HEADER_LENGTH:
     return None
   if buf[0] != 0x01:
     raise ValueError(
-      f"PreciseVision image stream desync: record starts with {buf[0]:#04x}, not 0x01"
+      f"PreciseVision image stream desync: result starts with {buf[0]:#04x}, not 0x01"
     )
   name_len = buf[1]
   data_len = int.from_bytes(buf[5:9], "little")
   if data_len > _MAX_IMAGE_BYTES:
     raise ValueError(
-      f"PreciseVision record declares an implausible data length of {data_len} bytes"
+      f"PreciseVision result declares an implausible data length of {data_len} bytes"
     )
-  end = _RECORD_HEADER_LEN + name_len + data_len
+  end = _RESULT_HEADER_LENGTH + name_len + data_len
   if len(buf) < end:
     return None
-  name = bytes(buf[_RECORD_HEADER_LEN : _RECORD_HEADER_LEN + name_len]).decode("ascii", "replace")
-  data = bytes(buf[_RECORD_HEADER_LEN + name_len : end])
+  name = bytes(buf[_RESULT_HEADER_LENGTH : _RESULT_HEADER_LENGTH + name_len]).decode(
+    "ascii", "replace"
+  )
+  data = bytes(buf[_RESULT_HEADER_LENGTH + name_len : end])
   del buf[:end]
   return name, data
 
@@ -174,12 +174,12 @@ class PreciseFlexDriver:
         ``park()`` moves to. Leave None (the default) and setup fills the generic default RIGHT pose
         (planar fold, Z column at 3/4 of the discovered travel); reassign it any time to park
         elsewhere. While unset (no configuration), ``park()`` falls back to ``movetosafe``.
-      vision_host: address of the PreciseVision engine, a separate computer from the controller (its
-        own box with its own IP). Set it to connect to the engine, which powers both image fetch and
-        engine-side discovery/introspection (what tool types, tools, processes, and projects exist).
-        None leaves the engine unconnected, disabling those; the controller-side execution path
-        (running processes/tools, setting properties, lighting, barcodes, stereo locate) is
-        unaffected. Only consulted when setup discovers an IntelliGuide vision module.
+      vision_host: address of the vision server, a separate computer from the controller (its
+        own box with its own IP). Set it to connect to the vision server, which powers both image
+        fetch and discovery on the vision server (what tool types, tools, processes, and projects
+        exist). None leaves the vision server unconnected, disabling those; the controller-side
+        execution path (running processes/tools, setting properties, lighting, barcodes, stereo
+        locate) is unaffected. Only consulted when setup discovers an IntelliGuide vision module.
       base_plate: the base plate to build the arm on. Optional: without one the driver still
         drives the arm, and models nothing.
       declared_configuration_json: path to a JSON file holding a declared configuration, as
@@ -204,8 +204,8 @@ class PreciseFlexDriver:
     # setup opens them, which it does only for a reachable `vision_host`.
     self._vision_server_io: Optional[Socket] = None
     self._vision_image_io: Optional[Socket] = None
-    # The held image stream is read in chunks and a record can span reads, so a read that times out
-    # mid-record leaves a partial record here, keeping the next read frame-aligned.
+    # The held image stream is read in chunks and a result can span reads, so a read that times out
+    # mid-result leaves a partial result here, keeping the next read frame-aligned.
     self._vision_image_buf = bytearray()
     self.vision_server_timeout = 5.0
     # One exchange at a time on each vision server connection, as `_io_lock` on the controller's.
@@ -342,18 +342,18 @@ class PreciseFlexDriver:
 
   @property
   def vision_server_connected(self) -> bool:
-    """Whether setup opened the PreciseVision engine's connections."""
+    """Whether setup opened the vision server's connections."""
     return self._vision_server_io is not None
 
   async def _open_vision_server(self, host: str) -> None:
-    """Open and hold both engine connections (property + image stream)."""
+    """Open and hold both vision server connections (property + image stream)."""
     server_io = Socket(
-      human_readable_device_name="PreciseVision engine (property)",
+      human_readable_device_name="vision server (property)",
       host=host,
       port=VISION_SERVER_PROPERTY_PORT,
     )
     image_io = Socket(
-      human_readable_device_name="PreciseVision engine (image)",
+      human_readable_device_name="vision server (image)",
       host=host,
       port=VISION_SERVER_IMAGE_PORT,
     )
@@ -369,7 +369,7 @@ class PreciseFlexDriver:
     )
 
   async def _close_vision_server(self) -> None:
-    """Close both engine connections, if they are open."""
+    """Close both vision server connections, if they are open."""
     if self._vision_image_io is not None:
       await self._vision_image_io.stop()
     if self._vision_server_io is not None:
@@ -377,11 +377,11 @@ class PreciseFlexDriver:
     self._vision_server_io = self._vision_image_io = None
 
   async def request_vision_server_property(self, name: str) -> str:
-    """Read a named engine parameter (``property get <name>``); raises on an error reply.
+    """Read a named vision server parameter (``property get <name>``); raises on an error reply.
 
     Args:
-      name: the engine parameter name (e.g. ``system.engineversion``, ``acq1.exposure``). May carry
-        trailing positional args (e.g. ``system.cameraname 1``).
+      name: the vision server parameter name (e.g. ``system.engineversion``, ``acq1.exposure``).
+        May carry trailing positional args (e.g. ``system.cameraname 1``).
 
     Returns:
       The parameter value (possibly empty).
@@ -389,13 +389,13 @@ class PreciseFlexDriver:
     return await self.send_command(f"property get {name}", use_server="vision")
 
   async def _set_vision_server_property(self, name: str, value: object) -> str:
-    """Write a named engine parameter (``property set <name> <value>``).
+    """Write a named vision server parameter (``property set <name> <value>``).
 
     Private: a write changes device state. The same namespace carries action triggers
     (``system.runtool``, ``system.cameraacquire``).
 
     Args:
-      name: the engine parameter name (e.g. ``acq1.exposure``, ``system.runtool``).
+      name: the vision server parameter name (e.g. ``acq1.exposure``, ``system.runtool``).
       value: the value to write; stringified onto the command line.
 
     Returns:
@@ -403,34 +403,34 @@ class PreciseFlexDriver:
     """
     return await self.send_command(f"property set {name} {value}", use_server="vision")
 
-  async def read_next_vision_server_record(
+  async def read_next_vision_server_result(
     self, timeout: Optional[float] = None
   ) -> Optional[Tuple[str, bytes]]:
     """Read the next complete ``(name, data)`` result off the held image stream, or None at its end.
 
-    Returns a record already buffered if there is one, otherwise reads until a whole record has
+    Returns a result already buffered if there is one, otherwise reads until a whole result has
     arrived. Partial bytes from a timed-out read stay buffered, so the next call resumes
-    frame-aligned. One reader at a time, so concurrent callers take whole records in call order.
+    frame-aligned. One reader at a time, so concurrent callers take whole results in call order.
 
     Args:
       timeout: per-read timeout in seconds; ``vision_server_timeout`` when None.
 
     Returns:
-      The next ``(name, data)`` record, or None if the stream closed before a full record.
+      The next ``(name, data)`` result, or None if the stream closed before a full result.
 
     Raises:
-      RuntimeError: If the engine is not connected.
+      RuntimeError: If the vision server is not connected.
       TimeoutError: if no bytes arrive within ``timeout``.
-      ValueError: if the stream has desynchronised (see ``_drain_named_record``).
+      ValueError: if the stream has desynchronised (see ``_drain_named_result``).
     """
     if self._vision_image_io is None:
       raise RuntimeError(_NO_VISION_SERVER)
     buf = self._vision_image_buf
     async with self._vision_image_lock:
       while True:
-        record = _drain_named_record(buf)
-        if record is not None:
-          return record
+        result = _drain_named_result(buf)
+        if result is not None:
+          return result
         chunk = await self._vision_image_io.read(
           65_536, timeout=self.vision_server_timeout if timeout is None else timeout
         )
@@ -615,24 +615,24 @@ class PreciseFlexDriver:
     self.gripper.resource = hand
 
   async def _setup_vision(self, vision_host: Optional[str]) -> None:
-    """Build the vision capability and connect its PreciseVision engine; best-effort, never raises.
+    """Build the vision capability and connect its vision server; best-effort, never raises.
 
     Called by ``setup`` when the controller is set up for a vision server (``has_vision_server``),
     whatever gripper is fitted; this class owns the connection, as ``stop`` closes it. The
     controller side of vision always works; a set, reachable ``vision_host`` additionally opens the
-    engine for image fetch and discovery. A missing or unreachable host leaves ``self.vision`` built
-    but engine-less.
+    vision server for image fetch and discovery. A missing or unreachable host leaves
+    ``self.vision`` built with no vision server.
 
     Args:
-      vision_host: address of the PreciseVision engine, or ``None`` for controller-only vision.
+      vision_host: address of the vision server, or ``None`` for controller-only vision.
     """
     if vision_host:
       try:
         await self._open_vision_server(vision_host)
-      # A missing or unreachable engine just disables image fetch.
+      # A missing or unreachable vision server just disables image fetch.
       except Exception as exc:  # noqa: BLE001
         logger.warning(
-          "[PreciseFlex %s] vision engine at %s unreachable; direct image acquisition disabled: %s",
+          "[PreciseFlex %s] vision server at %s unreachable; direct image acquisition disabled: %s",
           self.io._host,
           vision_host,
           exc,
