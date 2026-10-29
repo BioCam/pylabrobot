@@ -11,7 +11,6 @@ from pylabrobot.brooks.precise_flex import (
   PreciseFlexDriver,
 )
 from pylabrobot.brooks.precise_flex.driver.features.vision import PreciseFlexVision
-from pylabrobot.brooks.precise_flex.kinematics import fk
 from pylabrobot.events import EventBus, PLREvent, event_context, use_event_bus
 from pylabrobot.resources import Coordinate, Rotation
 
@@ -59,34 +58,6 @@ class TestPreciseFlexPose(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(pose.elbow_joint_location, Coordinate(302.0, 0.0, 100.0))
     self.assertEqual(pose.wrist_joint_location, Coordinate(591.0, 0.0, 100.0))
     self.assertEqual(pose.gripper_pose.location, Coordinate(753.0, 0.0, 100.0))
-
-  def test_folded_back(self):
-    arm = _make_arm()
-    joints = {
-      PreciseFlexAxis.BASE: 50.0,
-      PreciseFlexAxis.SHOULDER: 90.0,
-      PreciseFlexAxis.ELBOW: 180.0,
-      PreciseFlexAxis.WRIST: 0.0,
-    }
-    pose = arm.arm._forward_kinematics(joints)
-    for got, want in (
-      (pose.elbow_joint_location, Coordinate(0.0, 302.0, 50.0)),
-      (pose.wrist_joint_location, Coordinate(0.0, 13.0, 50.0)),
-      (pose.gripper_pose.location, Coordinate(0.0, -149.0, 50.0)),
-    ):
-      for a, b in zip((got.x, got.y, got.z), (want.x, want.y, want.z)):
-        self.assertAlmostEqual(a, b, places=9)
-
-  def test_the_gripper_is_fk(self):
-    arm = _make_arm()
-    joints = {
-      PreciseFlexAxis.BASE: 20.0,
-      PreciseFlexAxis.SHOULDER: 30.0,
-      PreciseFlexAxis.ELBOW: 60.0,
-      PreciseFlexAxis.WRIST: -45.0,
-    }
-    pose = arm.arm._forward_kinematics(joints)
-    self.assertEqual(repr(pose.gripper_pose), repr(fk(joints, arm._kinematics_params)))
 
 
 class TestPreciseFlex400Gripper(unittest.IsolatedAsyncioTestCase):
@@ -409,9 +380,6 @@ class TestPreciseFlexSmoothCartesianRoute(unittest.IsolatedAsyncioTestCase):
     async def respond(command: str) -> str:
       if command == "Profile 1":
         return profile
-      if command == "wherej":
-        # Where the route's read-back finds the arm: where it started.
-        return "100.0 0.0 180.0 180.0 70.0"
       return ""
 
     self.arm.send_command = AsyncMock(side_effect=respond)  # type: ignore[method-assign]

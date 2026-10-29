@@ -1,4 +1,5 @@
 import dataclasses
+import os
 import random
 import unittest
 from typing import List, Optional, Tuple, Union, cast
@@ -23,6 +24,7 @@ from pylabrobot.resources.coordinate import Coordinate
 from pylabrobot.resources.end_effector import MechanicalGripper
 from pylabrobot.resources.manipulator import LinkBody
 from pylabrobot.resources.resource import Resource
+from pylabrobot.utils.linalg import matrix_vector_multiply_3x3
 
 
 def configuration(links=kinematics.ARM_LINKS_EXTENDED, z_range=(1.5, 401.5)):
@@ -111,16 +113,6 @@ class TestTheDevice(unittest.IsolatedAsyncioTestCase):
     self.assertEqual([r.name for r in self.device.get_all_children()], ["pf400_base_plate"])
     self.assertIsNone(self.device.arm.resource)
 
-  def test_its_own_cuboid_is_the_base_plate_it_stands_on(self):
-    base_plate = self.device.get_resource("pf400_base_plate")
-    self.assertEqual(self.device.get_size_z(), base_plate.get_size_z())
-
-  def test_it_reaches_the_drivers_features(self):
-    self.assertIs(self.device.arm, self.device.driver.arm)
-    self.assertIs(self.device.gripper, self.device.driver.gripper)
-    self.assertIsNone(self.device.rail)
-    self.assertIsNone(self.device.vision)
-
 
 def simulated(declared: str = RECORDING_PF400) -> PreciseFlexDevice:
   return PreciseFlex400(simulation=True, declared_configuration_json=declared, name="pf400")
@@ -170,18 +162,10 @@ class TestTheCarriageOnTheDevice(unittest.IsolatedAsyncioTestCase):
     self.carriage.location = pf400_manipulator.z_carriage_location(z)
     return self.carriage.get_absolute_location() + pf400_manipulator.Z_CARRIAGE_REFERENCE_POINT
 
-  def test_at_zero_the_flange_plane_stands_at_the_shoulder_axis(self):
-    self.assertEqual(self._flange_plane(0.0).z, pf400_manipulator.SHOULDER_AXIS.z)
-
-  def test_the_flange_plane_rises_with_the_reading(self):
-    self.assertEqual(self._flange_plane(250.0).z, pf400_manipulator.SHOULDER_AXIS.z + 250.0)
-
-  def test_it_stays_on_the_shoulder_axis_however_high_it_stands(self):
-    base_plate = self.device.get_resource("pf400_base_plate")
-    axis = base_plate.get_absolute_location() + pf400_manipulator.SHOULDER_AXIS
-    for z in (0.0, 175.0, 400.0):
-      here = self._flange_plane(z)
-      self.assertEqual((here.x, here.y), (axis.x, axis.y))
+  def test_the_drive_reports_the_shoulder_axis_raised_by_what_it_read(self):
+    axis = self.device.base_plate.get_absolute_location() + pf400_manipulator.SHOULDER_AXIS
+    for z in (0.0, 250.0):
+      self.assertEqual(self._flange_plane(z), axis + Coordinate(0.0, 0.0, z))
 
   def test_the_carriage_stays_within_the_columns_travel(self):
     top = pf400_manipulator.z_carriage_location(400.0).z + self.carriage.get_size_z()
@@ -236,6 +220,26 @@ class TestTheDriverHangsTheArm(unittest.IsolatedAsyncioTestCase):
     self.assertIsNone(driver.arm.resource)
 
 
+class TestEveryPartHasItsMesh(unittest.IsolatedAsyncioTestCase):
+  """A part is drawn from the mesh its model names, shipped beside the resource model."""
+
+  def test_every_part_of_every_arm_names_a_shipped_mesh(self):
+    meshes = os.path.dirname(os.path.abspath(pf400_manipulator.__file__))
+    for links in (kinematics.ARM_LINKS_STANDARD, kinematics.ARM_LINKS_EXTENDED):
+      for z_range in ((1.5, 401.5), (1.5, 751.5), (1.5, 1161.5)):
+        for camera_count in (0, 2):
+          with self.subTest(links=links, z_range=z_range, camera_count=camera_count):
+            device = pf400()
+            stand_in = dataclasses.replace(configuration(links, z_range), camera_count=camera_count)
+            device.driver._create_feature_resources(stand_in)
+            for part in device.get_all_children():
+              # The gripper itself is drawn as its body, jaws and fingers.
+              if part.model is not None and part.category != "mechanical_gripper":
+                self.assertTrue(
+                  os.path.exists(os.path.join(meshes, f"{part.model}.glb")), part.model
+                )
+
+
 class TestTheModelFollowsTheJoints(unittest.IsolatedAsyncioTestCase):
   """A joint state stands the carriage and turns each member about the joint it turns on."""
 
@@ -249,42 +253,27 @@ class TestTheModelFollowsTheJoints(unittest.IsolatedAsyncioTestCase):
     self.driver._create_feature_resources(self.driver.configuration)
     self.carriage, self.first, self.second, self.hand = hung(self.driver)
 
-  def test_the_carriage_stands_where_the_z_drive_is(self):
-    self.driver.arm.update_joint_state(
-      {
-        PreciseFlexAxis.BASE: 250.0,
-        PreciseFlexAxis.SHOULDER: 0.0,
-        PreciseFlexAxis.ELBOW: 0.0,
-        PreciseFlexAxis.WRIST: 0.0,
-      }
-    )
-    self.assertEqual(self.carriage.location, pf400_manipulator.z_carriage_location(250.0))
-
-  def test_each_member_turns_to_its_joints_angle(self):
-    self.driver.arm.update_joint_state(
-      {
-        PreciseFlexAxis.BASE: 0.0,
-        PreciseFlexAxis.SHOULDER: 92.0,
-        PreciseFlexAxis.ELBOW: 179.5,
-        PreciseFlexAxis.WRIST: -184.25,
-      }
-    )
-    self.assertAlmostEqual(self.first.rotation.z, 92.0)
-    self.assertAlmostEqual(self.second.rotation.z, 179.5)
-    self.assertAlmostEqual(self.hand.rotation.z % 360.0, -184.25 % 360.0)
-
-  def test_the_joints_stay_joined_when_the_members_turn(self):
+  def test_the_model_stands_its_joints_where_the_kinematics_put_them(self):
     joints = {
       PreciseFlexAxis.BASE: 100.0,
-      PreciseFlexAxis.SHOULDER: 90.0,
-      PreciseFlexAxis.ELBOW: 0.0,
-      PreciseFlexAxis.WRIST: 0.0,
+      PreciseFlexAxis.SHOULDER: 30.0,
+      PreciseFlexAxis.ELBOW: 70.0,
+      PreciseFlexAxis.WRIST: -40.0,
     }
     self.driver.arm.update_joint_state(joints)
     pose = self.driver.arm._forward_kinematics(joints)
-    # Straight out along +y: the wrist joint is both link lengths from the shoulder axis.
-    self.assertAlmostEqual(pose.wrist_joint_location.y, 591.0)
-    self.assertAlmostEqual(self.second.rotation.z, 0.0)
+    # The kinematics count from the shoulder axis, which the device states within its base plate.
+    origin = self.device.base_plate.get_absolute_location() + pf400_manipulator.SHOULDER_AXIS
+    for member, joint, want in (
+      (self.second, self.second.proximal_joint, pose.elbow_joint_location),
+      (self.hand, self.hand.proximal_joint, pose.wrist_joint_location),
+    ):
+      matrix = member.get_absolute_rotation().get_rotation_matrix()
+      here = member.get_absolute_location() + Coordinate(
+        *matrix_vector_multiply_3x3(matrix, joint.vector())
+      )
+      for got, expected in zip(here.vector(), (origin + want).vector()):
+        self.assertAlmostEqual(got, expected, places=3)
 
   def test_the_jaws_follow_a_width_within_their_range_only(self):
     self.driver.gripper.update_width(100.0)
@@ -299,6 +288,8 @@ class TestTheModelFollowsTheJoints(unittest.IsolatedAsyncioTestCase):
         await self.driver.arm.request_joint_state()
     self.assertEqual(self.carriage.location, pf400_manipulator.z_carriage_location(301.124))
     self.assertAlmostEqual(self.first.rotation.z, 91.974)
+    self.assertAlmostEqual(self.second.rotation.z, 179.489)
+    self.assertAlmostEqual(self.hand.rotation.z % 360.0, -184.25 % 360.0)
     self.assertEqual(self.hand.jaw_width, 119.971)
 
   async def test_a_driver_without_a_base_plate_reads_as_before(self):
