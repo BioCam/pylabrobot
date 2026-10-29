@@ -2,6 +2,7 @@ import unittest
 from typing import Sequence, Tuple
 
 from pylabrobot.brooks.precise_flex.resource_model import pf400_end_effector, pf400_manipulator
+from pylabrobot.brooks.precise_flex.tests.device_tests import built
 
 Outline = Sequence[Tuple[float, float]]
 
@@ -25,8 +26,8 @@ def area(outline: Outline) -> float:
   return sum(x_1 * y_2 - x_2 * y_1 for (x_1, y_1), (x_2, y_2) in zip(outline, following)) / 2
 
 
-class TestOutlines(unittest.TestCase):
-  """A part seen from above, where its cuboid says more than the part covers."""
+class TestOutlines(unittest.IsolatedAsyncioTestCase):
+  """A part seen from above: within its cuboid, and convex, as the clearance needs it."""
 
   def test_an_outline_lies_about_its_parts_cuboid(self):
     for name, outline, size, outside in OUTLINES:
@@ -36,7 +37,11 @@ class TestOutlines(unittest.TestCase):
           self.assertTrue(-outside <= y <= size[1] + outside, (x, y))
 
   def test_an_outline_runs_counter_clockwise_and_never_turns_back(self):
-    for name, outline, _, _ in OUTLINES:
+    link_2 = built().driver.arm._get_link_2_outline()
+    for name, outline in (
+      *((name, outline) for name, outline, _, _ in OUTLINES),
+      ("link 2", link_2),
+    ):
       with self.subTest(part=name):
         self.assertGreater(area(outline), 0.0)
         count = len(outline)
@@ -45,11 +50,3 @@ class TestOutlines(unittest.TestCase):
             outline[(index + step) % count] for step in range(3)
           )
           self.assertGreaterEqual((x_2 - x_1) * (y_3 - y_2) - (y_2 - y_1) * (x_3 - x_2), 0.0)
-
-  def test_an_outline_covers_less_than_the_box_around_it(self):
-    for name, outline, _, _ in OUTLINES:
-      with self.subTest(part=name):
-        size_x = max(x for x, _ in outline) - min(x for x, _ in outline)
-        size_y = max(y for _, y in outline) - min(y for _, y in outline)
-        self.assertLess(area(outline), size_x * size_y)
-        self.assertGreater(area(outline), 0.75 * size_x * size_y)

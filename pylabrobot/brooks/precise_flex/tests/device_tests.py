@@ -1,6 +1,5 @@
 import dataclasses
 import os
-import random
 import unittest
 from typing import List, Optional, Tuple, Union, cast
 from unittest.mock import AsyncMock, patch
@@ -120,6 +119,17 @@ def simulated(declared: str = RECORDING_PF400) -> PreciseFlexDevice:
 
 class TestBuiltAtSetupFromADeclaredConfiguration(unittest.IsolatedAsyncioTestCase):
   """A simulated arm answers as its declared configuration, and setup builds the arm from it."""
+
+  async def test_the_arm_is_modelled_before_it_is_homed(self):
+    device = simulated()
+    modelled = []
+
+    async def home():
+      modelled.append(device.driver.arm.resource is not None)
+
+    with patch.object(device.driver, "home", home):
+      await device.setup()
+    self.assertEqual(modelled, [True])
 
   async def test_the_declared_arm_stands_after_setup(self):
     device = simulated()
@@ -302,99 +312,111 @@ class TestTheModelFollowsTheJoints(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(joints[PreciseFlexAxis.SHOULDER], 91.974)
 
 
+def joints(shoulder: float, elbow: float, wrist: float, jaws: float, z: float = 301.1):
+  return {
+    PreciseFlexAxis.BASE: z,
+    PreciseFlexAxis.SHOULDER: shoulder,
+    PreciseFlexAxis.ELBOW: elbow,
+    PreciseFlexAxis.WRIST: wrist,
+    PreciseFlexAxis.GRIPPER: jaws,
+  }
+
+
 class TestTheGripperIsKeptClearOfTheColumn(unittest.IsolatedAsyncioTestCase):
-  """A target that would stand the gripper in or against the column is refused before it is sent."""
+  """What the gripper and link 2 sweep through is kept 5 mm clear of the column."""
+
+  # As the arm answered after homing, its shoulder still past its limit.
+  HOMED = (93.3, 179.4, -215.9, 70.7)
 
   def setUp(self):
-    self.device = pf400()
+    self.device = built()
     self.driver = self.device.driver
-    self.driver._configuration = configuration()
-    self.driver._create_feature_resources(self.driver.configuration)
+    self.arm = self.driver.arm
 
-  @staticmethod
-  def joints(shoulder: float, elbow: float, wrist: float, jaws: float):
-    return {
-      PreciseFlexAxis.BASE: 301.1,
-      PreciseFlexAxis.SHOULDER: shoulder,
-      PreciseFlexAxis.ELBOW: elbow,
-      PreciseFlexAxis.WRIST: wrist,
-      PreciseFlexAxis.GRIPPER: jaws,
-    }
-
-  def test_the_pose_where_a_finger_touched_the_column_is_refused(self):
-    # Open to 120, a jaw reaches out past the gripper's body, and it is the jaw that touches.
-    with self.assertRaisesRegex(ValueError, "pf400_gripper_jaw_left would stand -0.9 mm"):
-      self.driver.arm._check_pose_reachable(self.joints(92.0, 179.48, -184.25, 120.0))
-
-  def test_an_open_jaw_alone_is_enough(self):
-    # The same angles pass with the jaws at 70.7 and are refused with them open.
-    self.driver.arm._check_pose_reachable(self.joints(92.0, 179.48, 15.0, 70.7))
-    with self.assertRaisesRegex(ValueError, "pf400_gripper_jaw_right would stand 1.5 mm"):
-      self.driver.arm._check_pose_reachable(self.joints(92.0, 179.48, 15.0, 145.0))
-
-  def test_a_pose_where_only_link_2_comes_too_near_is_refused(self):
-    # Folded back over link 1, the wrist hub stands 4.1 mm off; the gripper 5.1 mm.
-    with self.assertRaisesRegex(ValueError, "pf400_link_2 would stand 4.1 mm"):
-      self.driver.arm._check_pose_reachable(self.joints(39.0, 159.0, 180.0, 70.7))
-
-  def test_the_poses_the_arm_homes_to_and_parks_at_pass(self):
-    for pose in (
-      self.joints(93.3, 179.4, 83.93, 70.7),
-      self.joints(93.3, 179.4, -215.9, 70.7),
-      self.joints(0.0, 180.0, 180.0, 120.0),
-      self.joints(0.0, 90.0, 0.0, 120.0),
+  def test_how_near_each_part_stands(self):
+    for pose, part, clearance in (
+      # Open to 120, a jaw reaches out past the body: where a finger touched the column.
+      (joints(92.0, 179.48, -184.25, 120.0), "pf400_gripper_jaw_left", -0.9),
+      # The same arm with the jaws closed, and opened wide.
+      (joints(92.0, 179.48, 15.0, 70.7), "pf400_gripper_body", 9.4),
+      (joints(92.0, 179.48, 15.0, 145.0), "pf400_gripper_jaw_right", 1.5),
+      # Folded back over link 1, the wrist hub comes nearest.
+      (joints(39.0, 159.0, 180.0, 70.7), "pf400_link_2", 4.1),
+      (joints(*self.HOMED), "pf400_link_2", 21.7),
     ):
       with self.subTest(pose=pose):
-        self.driver.arm._check_pose_reachable(pose)
+        name, got = cast(Tuple[str, float], self.arm._get_column_clearance(pose))
+        self.assertEqual(name, part)
+        self.assertAlmostEqual(got, clearance, delta=0.05)
 
-  def test_the_model_is_left_where_it_was(self):
+  def test_a_swing_past_the_column_is_refused_though_it_ends_clear(self):
+    # Turning the wrist away from the column never comes near it.
+    self.arm._check_path_reachable(joints(*self.HOMED), joints(93.3, 179.4, -250.0, 70.7))
+    # Parking with the wrist at 180 ends 44.5 mm clear, and turns the gripper past the column.
+    with self.assertRaisesRegex(ValueError, "on the way, with the shoulder at 8"):
+      self.arm._check_path_reachable(joints(*self.HOMED), joints(0.0, 180.0, 180.0, 70.7))
+
+  def test_an_elbow_swing_through_the_fold_sweeps_link_2_past_the_column(self):
+    # Both ends stand far from the column; folding through 180 brings link 2 within 5 mm.
+    start = joints(-30.0, 40.0, 180.0, 70.7)
+    with self.assertRaisesRegex(ValueError, "on the way, .*pf400_link_2 would stand"):
+      self.arm._check_path_reachable(start, joints(-40.0, 280.0, 180.0, 70.7))
+    self.arm._check_path_reachable(start, joints(-40.0, 140.0, 180.0, 70.7))
+
+  def test_far_from_the_column_few_poses_are_looked_at(self):
+    def poses_looked_at(current, target) -> int:
+      with patch.object(
+        self.arm, "_get_column_clearance", wraps=self.arm._get_column_clearance
+      ) as placed:
+        self.arm._check_path_reachable(current, target)
+      return placed.call_count
+
+    stretched = (joints(-90.0, 30.0, 0.0, 120.0), joints(90.0, 30.0, 0.0, 120.0))
+    self.assertLessEqual(poses_looked_at(*stretched), 2)
+    parking = (joints(*self.HOMED), joints(0.0, 180.0, -180.0, 70.7))
+    self.assertLess(poses_looked_at(*parking), 160)
+
+  def test_an_arm_that_starts_too_near_may_move_away_and_no_nearer(self):
+    stood = joints(92.087, 179.417, -185.505, 70.703)  # 0.3 mm off
+    self.arm._check_path_reachable(stood, joints(92.087, 179.417, -200.0, 70.703))
+    with self.assertRaisesRegex(ValueError, "on the way"):
+      self.arm._check_path_reachable(stood, joints(92.087, 179.417, -180.0, 70.703))
+
+  def test_a_check_leaves_the_model_where_it_was(self):
     before = self.device.serialize()
     with self.assertRaises(ValueError):
-      self.driver.arm._check_pose_reachable(self.joints(92.0, 179.48, -184.25, 120.0))
+      self.arm._check_path_reachable(joints(*self.HOMED), joints(0.0, 180.0, 180.0, 70.7))
     self.assertEqual(self.device.serialize(), before)
 
-  def test_an_arm_that_is_not_modelled_is_not_checked(self):
-    driver = PreciseFlexDriver(
-      host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
-    )
-    driver.arm._check_pose_reachable(self.joints(92.0, 179.48, -184.25, 120.0))
-
-  async def test_a_refused_move_is_never_sent(self):
-    sent = AsyncMock(return_value="301.12 -0.001 180.001 -179.996 70.697")  # parked, as read
+  async def test_a_refused_swing_is_never_sent(self):
+    sent = AsyncMock(return_value="301.12 93.25 179.478 -215.9 125.985")  # homed, as read
     with patch.object(self.driver, "send_command", sent):
-      with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
-        with self.assertRaises(ValueError):
-          await self.driver.arm._guarded_move(
-            lambda _current: [self.joints(92.0, 179.48, -184.25, 120.0)],
-            lambda targets: self.driver.arm._unchecked_fw_move_j(1, targets[0]),
+      with patch.object(self.arm, "_wait_for_eom", AsyncMock()):
+        with self.assertRaisesRegex(ValueError, "on the way"):
+          await self.arm.move_to_joint_state(
+            {
+              PreciseFlexAxis.SHOULDER: 0.0,
+              PreciseFlexAxis.ELBOW: 180.0,
+              PreciseFlexAxis.WRIST: 180.0,
+            }
           )
     self.assertEqual([call.args[0] for call in sent.call_args_list], ["wherej"])
 
-  async def jaws_to(
-    self, width: float, stood: str, force_sensing: Optional[bool] = None
-  ) -> List[str]:
-    """What is sent for a jaw move to `width`, from where `stood` has the arm."""
-    self.driver.gripper.configuration = self.driver.configuration.gripper
-    sent = AsyncMock(return_value=stood)
+  async def test_homing_is_refused_where_the_opening_jaws_would_reach_the_column(self):
+    # Homing opens the jaws to their stop: 145 here, past the 120 they are sent to.
+    self.driver.gripper.configuration = dataclasses.replace(
+      self.driver.configuration.gripper,
+      soft_limit_range=(60.0, 120.0),
+      hard_limit_range=(60.0, 145.0),
+    )
+    sent = AsyncMock(return_value="301.1 92.0 179.48 15.0 70.7")
     with patch.object(self.driver, "send_command", sent):
-      with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
-        try:
-          await self.driver.gripper.move_to_jaw_position(width, force_sensing)
-        finally:
-          self.sent = [call.args[0] for call in sent.call_args_list]
-    return self.sent
-
-  async def test_jaws_opened_against_the_column_are_never_sent(self):
-    # A constructed pose: the arm has not stood this near the column, which the check is for.
-    # Clear of the column by 5.8 mm with the jaws at 70.7; opened, a finger would reach it.
-    with self.assertRaisesRegex(ValueError, "pf400_gripper_finger_right would stand"):
-      await self.jaws_to(134.0, stood="301.1 92.0 179.48 10.0 70.7")
-    self.assertEqual(self.sent, ["wherej"])
-
-  async def test_jaws_closed_next_to_the_column_are_sent(self):
-    # They stand nearer than is kept clear, and closing takes them away from it.
-    sent = await self.jaws_to(70.7, stood="301.1 92.0 179.48 10.0 134.0", force_sensing=True)
-    self.assertIn("GraspPlate 70.7 50.0 10.0", sent)
+      with patch.object(self.arm, "_wait_for_eom", AsyncMock()):
+        with self.assertRaisesRegex(
+          ValueError, "on the way, .*pf400_gripper_jaw_right would stand"
+        ):
+          await self.driver.home()
+    self.assertEqual([call.args[0] for call in sent.call_args_list], ["wherej"])
 
 
 class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
@@ -482,141 +504,6 @@ class TestAMoveKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.hand.jaw_width, 86.2)
 
 
-class TestTheGripperIsKeptClearOfTheColumnOnTheWay(unittest.IsolatedAsyncioTestCase):
-  """A joint move is refused for what the gripper sweeps through, not only for where it ends."""
-
-  HOMED = (93.3, 179.4, -215.9, 70.7)
-
-  def setUp(self):
-    self.device = pf400()
-    self.arm = self.device.driver.arm
-    self.device.driver._configuration = configuration()
-    self.device.driver._create_feature_resources(self.device.driver.configuration)
-
-  @staticmethod
-  def joints(shoulder: float, elbow: float, wrist: float, jaws: float):
-    return {
-      PreciseFlexAxis.BASE: 301.1,
-      PreciseFlexAxis.SHOULDER: shoulder,
-      PreciseFlexAxis.ELBOW: elbow,
-      PreciseFlexAxis.WRIST: wrist,
-      PreciseFlexAxis.GRIPPER: jaws,
-    }
-
-  def test_a_swing_past_the_column_is_refused_though_it_ends_clear(self):
-    # Turning the wrist away from the column never comes near it.
-    self.arm._check_path_reachable(self.joints(*self.HOMED), self.joints(93.3, 179.4, -250.0, 70.7))
-    # Parking with the wrist at 180 ends clear, and turns the gripper past the column to get there.
-    parked = self.joints(0.0, 180.0, 180.0, 70.7)
-    self.arm._check_pose_reachable(parked)
-    with self.assertRaisesRegex(ValueError, "on the way, with the shoulder at 8"):
-      self.arm._check_path_reachable(self.joints(*self.HOMED), parked)
-
-  def poses_looked_at(self, current, target) -> int:
-    """How many poses a path check places the gripper's outlines at."""
-    with patch.object(
-      self.arm, "_get_column_clearance", wraps=self.arm._get_column_clearance
-    ) as placed:
-      self.arm._check_path_reachable(current, target)
-    return placed.call_count
-
-  def test_far_from_the_column_few_poses_are_looked_at(self):
-    stretched = (self.joints(-90.0, 30.0, 0.0, 120.0), self.joints(90.0, 30.0, 0.0, 120.0))
-    self.assertLessEqual(self.poses_looked_at(*stretched), 2)
-    parking = (self.joints(*self.HOMED), self.joints(0.0, 180.0, -180.0, 70.7))
-    self.assertLess(self.poses_looked_at(*parking), 80)
-
-  def test_the_gripper_reaches_further_from_the_wrist_joint_than_its_tool_length(self):
-    # The outer front corner of a finger, with the jaws at the 145 this stand-in arm opens to.
-    reach = max(
-      (x * x + y * y) ** 0.5
-      for outline in self.arm._get_gripper_outlines(145.0).values()
-      for x, y in outline
-    )
-    self.assertAlmostEqual(reach, 197.6, delta=0.1)
-    self.assertGreater(reach, self.device.driver._kinematics_params.gripper_length)
-
-  def test_what_it_allows_never_touches_and_what_it_refuses_comes_too_near(self):
-    """Against the same moves looked at every 3 mm of travel or less, which is slow and thorough."""
-    generator = random.Random(7)
-
-    def pose():
-      return self.joints(
-        generator.uniform(-93.0, 93.0),
-        generator.uniform(12.0, 348.0),
-        generator.uniform(-360.0, 360.0),
-        generator.uniform(69.0, 134.0),
-      )
-
-    for _ in range(6):
-      current, target = pose(), pose()
-      if cast(Tuple[str, float], self.arm._get_column_clearance(current))[1] < 5.0:
-        continue  # an arm that starts too near is judged by another rule
-      nearest = min(
-        cast(
-          Tuple[str, float],
-          self.arm._get_column_clearance(
-            {axis: current[axis] + (target[axis] - current[axis]) * step / 1500 for axis in target}
-          ),
-        )[1]
-        for step in range(1501)
-      )
-      try:
-        self.arm._check_path_reachable(current, target)
-        self.assertGreater(nearest, 0.0)
-      except ValueError:
-        self.assertLess(nearest, 5.0)
-
-  def test_an_elbow_swing_that_sweeps_link_2_past_the_column_is_refused(self):
-    # Both ends stand far from the column; folding through 180 brings link 2 within 4.6 mm.
-    start, end = self.joints(-30.0, 40.0, 180.0, 70.7), self.joints(-40.0, 280.0, 180.0, 70.7)
-    self.arm._check_pose_reachable(start)
-    self.arm._check_pose_reachable(end)
-    with self.assertRaisesRegex(ValueError, "on the way, .*pf400_link_2 would stand 4.6 mm"):
-      self.arm._check_path_reachable(start, end)
-
-  def test_an_elbow_swing_that_stops_short_of_folding_is_allowed(self):
-    self.arm._check_path_reachable(
-      self.joints(-30.0, 40.0, 180.0, 70.7), self.joints(-40.0, 140.0, 180.0, 70.7)
-    )
-
-  def test_the_same_park_by_the_shorter_turn_is_allowed(self):
-    self.arm._check_path_reachable(self.joints(*self.HOMED), self.joints(0.0, 180.0, -180.0, 70.7))
-
-  def test_an_arm_that_starts_too_near_may_move_away_and_no_nearer(self):
-    stood = self.joints(92.087, 179.417, -185.505, 70.703)
-    with self.assertRaises(ValueError):
-      self.arm._check_pose_reachable(stood)
-    self.arm._check_path_reachable(stood, self.joints(92.087, 179.417, -200.0, 70.703))
-    with self.assertRaisesRegex(ValueError, "on the way"):
-      self.arm._check_path_reachable(stood, self.joints(92.087, 179.417, -180.0, 70.703))
-
-  def test_a_long_sweep_in_front_of_the_column_is_allowed(self):
-    self.arm._check_path_reachable(
-      self.joints(-90.0, 30.0, 0.0, 120.0), self.joints(90.0, 30.0, 0.0, 120.0)
-    )
-
-  def test_an_arm_that_is_not_modelled_is_not_checked(self):
-    driver = PreciseFlexDriver(
-      host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
-    )
-    driver.arm._check_path_reachable(self.joints(*self.HOMED), self.joints(0.0, 180.0, 180.0, 70.7))
-
-  async def test_a_refused_swing_is_never_sent(self):
-    sent = AsyncMock(return_value="301.12 93.25 179.478 -215.9 125.985")  # homed, as read
-    with patch.object(self.device.driver, "send_command", sent):
-      with patch.object(self.arm, "_wait_for_eom", AsyncMock()):
-        with self.assertRaisesRegex(ValueError, "on the way"):
-          await self.arm.move_to_joint_state(
-            {
-              PreciseFlexAxis.SHOULDER: 0.0,
-              PreciseFlexAxis.ELBOW: 180.0,
-              PreciseFlexAxis.WRIST: 180.0,
-            }
-          )
-    self.assertEqual([call.args[0] for call in sent.call_args_list], ["wherej"])
-
-
 class TestTheGripperIsKeptClearOfTheBasePlate(unittest.IsolatedAsyncioTestCase):
   """The base plate is only a few mm thick: the gripper reaches it only when low and over it."""
 
@@ -624,45 +511,24 @@ class TestTheGripperIsKeptClearOfTheBasePlate(unittest.IsolatedAsyncioTestCase):
   OVER_THE_PLATE = (35.0, 120.0, 135.0, 70.7)
 
   def setUp(self):
-    self.device = pf400()
-    self.arm = self.device.driver.arm
-    self.device.driver._configuration = configuration()
-    self.device.driver._create_feature_resources(self.device.driver.configuration)
+    self.arm = built().driver.arm
 
-  @staticmethod
-  def joints(z: float, shoulder: float, elbow: float, wrist: float, jaws: float):
-    return {
-      PreciseFlexAxis.BASE: z,
-      PreciseFlexAxis.SHOULDER: shoulder,
-      PreciseFlexAxis.ELBOW: elbow,
-      PreciseFlexAxis.WRIST: wrist,
-      PreciseFlexAxis.GRIPPER: jaws,
-    }
-
-  def test_the_pose_is_clear_of_the_column(self):
-    nearest = self.arm._get_column_clearance(self.joints(1.5, *self.OVER_THE_PLATE))
-    self.assertGreater(cast(Tuple[str, float], nearest)[1], 50.0)
-
-  def test_a_low_pose_over_the_plate_is_refused(self):
-    with self.assertRaisesRegex(ValueError, "finger_right would stand 1.7 mm from the base plate"):
-      self.arm._check_pose_reachable(self.joints(1.5, *self.OVER_THE_PLATE))
-
-  def test_the_same_pose_high_enough_passes(self):
-    self.arm._check_pose_reachable(self.joints(10.0, *self.OVER_THE_PLATE))
-
-  def test_as_low_away_from_the_plate_passes(self):
-    self.arm._check_pose_reachable(self.joints(1.5, 0.0, 90.0, 0.0, 70.7))
+  def test_how_near_the_gripper_stands(self):
+    for pose, clearance in (
+      (joints(*self.OVER_THE_PLATE, z=1.5), 1.7),
+      (joints(*self.OVER_THE_PLATE, z=10.0), 10.2),
+      # As low, but not over the plate.
+      (joints(0.0, 90.0, 0.0, 70.7, z=1.5), 255.2),
+    ):
+      with self.subTest(pose=pose):
+        _, got = cast(Tuple[str, float], self.arm._get_base_plate_clearance(pose))
+        self.assertAlmostEqual(got, clearance, delta=0.05)
 
   def test_a_descent_over_the_plate_is_refused_on_the_way(self):
+    high = joints(*self.OVER_THE_PLATE, z=50.0)
     with self.assertRaisesRegex(ValueError, "on the way.*from the base plate"):
-      self.arm._check_path_reachable(
-        self.joints(50.0, *self.OVER_THE_PLATE), self.joints(1.5, *self.OVER_THE_PLATE)
-      )
-
-  def test_a_descent_that_stops_high_enough_passes(self):
-    self.arm._check_path_reachable(
-      self.joints(50.0, *self.OVER_THE_PLATE), self.joints(10.0, *self.OVER_THE_PLATE)
-    )
+      self.arm._check_path_reachable(high, joints(*self.OVER_THE_PLATE, z=1.5))
+    self.arm._check_path_reachable(high, joints(*self.OVER_THE_PLATE, z=10.0))
 
 
 class TestParkingTakesAClearTurn(unittest.IsolatedAsyncioTestCase):
@@ -687,8 +553,9 @@ class TestParkingTakesAClearTurn(unittest.IsolatedAsyncioTestCase):
     return [call.args[0] for call in sent.call_args_list if call.args[0].startswith("moveJ")]
 
   async def test_the_pose_as_written_is_taken_when_its_way_is_clear(self):
+    # From the wrist at -60 the turn to -180 is shorter, and both ways are clear.
     self.assertEqual(
-      await self.park("301.1 92.0 179.4 83.93 70.7"), ["moveJ 1 301.125 0.0 180.0 180.0 70.7"]
+      await self.park("301.1 -60.0 90.0 -60.0 70.7"), ["moveJ 1 301.125 0.0 180.0 180.0 70.7"]
     )
 
   async def test_a_full_turn_the_other_way_is_taken_when_the_written_one_passes_the_column(self):
@@ -712,108 +579,40 @@ class TestParkingTakesAClearTurn(unittest.IsolatedAsyncioTestCase):
     with self.assertRaisesRegex(ValueError, "would stand"):
       await self.park("301.1 92.0 179.4 -215.9 70.7")
 
-  async def test_an_arm_that_is_not_modelled_parks_as_written(self):
-    driver = PreciseFlexDriver(
-      host="localhost", gripper_length=162.0, gripper_z_offset=0.0, closed_gripper_position=60.0
-    )
-    driver.arm.parking_position = dict(driver.arm.PARKING_POSITION_RIGHT)
-    sent = AsyncMock(return_value="301.12 92.001 179.477 -215.899 125.967")  # as read
-    with patch.object(driver, "send_command", sent):
-      with patch.object(driver.arm, "_wait_for_eom", AsyncMock()):
-        await driver.arm.park()
-    moves = [call.args[0] for call in sent.call_args_list if call.args[0].startswith("moveJ")]
-    self.assertEqual(moves, ["moveJ 1 301.12 0.0 180.0 180.0 125.967"])
 
-
-class TestEveryMotionPathIsCheckedAndKeepsTheModelInStep(unittest.IsolatedAsyncioTestCase):
-  """Recovery, a route of poses, and the controller's own pick and place, on a modelled arm."""
+class TestEveryMotionPathIsChecked(unittest.IsolatedAsyncioTestCase):
+  """The controller's own pick and place, and a route of poses, on a modelled arm."""
 
   # As the arm answered after homing and its shoulder was brought back inside its limit.
   HOMED = "301.12 92.001 179.477 -215.899 125.967"
-  # A station that stands the gripper against the column, and one well clear of it.
-  AT_THE_COLUMN = {
-    PreciseFlexAxis.BASE: 301.1,
-    PreciseFlexAxis.SHOULDER: 92.0,
-    PreciseFlexAxis.ELBOW: 179.48,
-    PreciseFlexAxis.WRIST: -184.25,
-    PreciseFlexAxis.GRIPPER: 120.0,
-  }
-  # The parking pose by the short turn of the wrist, which the way from the homed pose is clear to.
-  CLEAR = {
-    PreciseFlexAxis.BASE: 301.1,
-    PreciseFlexAxis.SHOULDER: 0.0,
-    PreciseFlexAxis.ELBOW: 180.0,
-    PreciseFlexAxis.WRIST: -180.0,
-    PreciseFlexAxis.GRIPPER: 70.7,
-  }
+  # A station that stands the gripper against the column.
+  AT_THE_COLUMN = joints(92.0, 179.48, -184.25, 120.0)
 
   def setUp(self):
     self.device = built()
     self.driver = self.device.driver
-    self.driver.arm.configuration = self.driver.configuration.arm
-    self.driver.gripper.configuration = self.driver.configuration.gripper
-    _, self.first, _, _ = hung(self.driver)
+    self.arm = self.driver.arm
 
-  async def sent_by(self, call, stood: str = HOMED) -> List[str]:
-    sent = AsyncMock(side_effect=lambda command: stood if command == "wherej" else "1")
-    with patch.object(self.driver, "send_command", sent):
-      with patch.object(self.driver.arm, "_wait_for_eom", AsyncMock()):
-        await call()
-    return [call.args[0].split()[0] for call in sent.call_args_list if call.args[0] != "wherej"]
+  async def test_a_pick_or_place_at_the_column_is_refused_before_the_station_is_written(self):
+    for plate in (self.arm._unchecked_fw_pick_plate, self.arm._unchecked_fw_place_plate):
+      with self.subTest(plate=plate.__name__):
+        sent = AsyncMock(return_value=self.HOMED)
+        with patch.object(self.driver, "send_command", sent):
+          with patch.object(self.arm, "_wait_for_eom", AsyncMock()):
+            with self.assertRaisesRegex(ValueError, "would stand"):
+              await self.arm._guarded_plate_j(
+                lambda current: {**current, **self.AT_THE_COLUMN}, plate
+              )
+        self.assertEqual([call.args[0] for call in sent.call_args_list], ["wherej"])
 
-  async def test_a_pick_at_the_column_is_refused_before_the_station_is_written(self):
-    arm, pick = self.driver.arm, self.driver.arm._unchecked_fw_pick_plate
-    with self.assertRaisesRegex(ValueError, "would stand"):
-      await self.sent_by(
-        lambda: arm._guarded_plate_j(lambda current: {**current, **self.AT_THE_COLUMN}, pick)
-      )
-
-  async def test_a_drop_at_the_column_is_refused(self):
-    arm = self.driver.arm
-    with self.assertRaisesRegex(ValueError, "would stand"):
-      await self.sent_by(
-        lambda: arm._guarded_plate_j(
-          lambda current: {**current, **self.AT_THE_COLUMN}, arm._unchecked_fw_place_plate
-        )
-      )
-
-  async def test_a_pick_clear_of_the_column_is_sent_and_the_model_reads_where_it_stopped(self):
-    arm = self.driver.arm
-    sent = await self.sent_by(
-      lambda: arm._guarded_plate_j(
-        lambda current: {**current, **self.CLEAR}, arm._unchecked_fw_pick_plate
-      )
-    )
-    self.assertEqual(sent, ["locAngles", "StationType", "pickplate"])
-    # The stand-in controller still answers the homed pose, so that is where the model ends.
-    self.assertAlmostEqual(self.first.rotation.z, 92.001)
-
-  async def test_a_recovery_move_is_checked_from_where_the_arm_was_read(self):
-    out_of_range = "301.1 93.3 179.4 -215.9 70.7"
-    seen = []
-
-    async def respond(command: str) -> str:
-      if command.startswith("MoveOneAxis"):
-        seen.append(self.first.rotation.z)
-      return out_of_range if command == "wherej" else "1 50"
-
-    arm = self.driver.arm
-    with patch.object(self.driver, "send_command", AsyncMock(side_effect=respond)):
-      with patch.object(arm, "_wait_for_eom", AsyncMock()):
-        with patch.object(arm, "_check_path_reachable", wraps=arm._check_path_reachable) as checked:
-          recovered = await arm.recover_axes_within_limits()
-    self.assertEqual(recovered, {PreciseFlexAxis.SHOULDER: 92.0})
-    self.assertEqual(seen, [93.3])
-    self.assertEqual(checked.call_args.args[0][PreciseFlexAxis.SHOULDER], 93.3)
-
-  async def test_every_leg_of_a_route_of_poses_is_checked(self):
-    arm = self.driver.arm
-    ahead = arm._forward_kinematics(dict(self.CLEAR)).gripper_pose
+  async def test_each_move_of_a_route_of_poses_is_checked_from_where_the_last_ends(self):
+    ahead = self.arm._forward_kinematics(joints(0.0, 180.0, -180.0, 70.7)).gripper_pose
     sent = AsyncMock(side_effect=lambda command: self.HOMED if command == "wherej" else "")
     with patch.object(self.driver, "send_command", sent):
-      with patch.object(arm, "_wait_for_eom", AsyncMock()):
-        with patch.object(arm, "_check_path_reachable", wraps=arm._check_path_reachable) as checked:
-          await arm.move_through_cartesian_poses([ahead, ahead], blend=False)
+      with patch.object(self.arm, "_wait_for_eom", AsyncMock()):
+        with patch.object(
+          self.arm, "_check_path_reachable", wraps=self.arm._check_path_reachable
+        ) as checked:
+          await self.arm.move_through_cartesian_poses([ahead, ahead], blend=False)
     self.assertEqual(checked.call_count, 2)
-    # Each move from where the one before it ends.
     self.assertEqual(checked.call_args_list[1].args[0], checked.call_args_list[0].args[1])

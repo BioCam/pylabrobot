@@ -208,7 +208,8 @@ class PreciseFlexGripper:
         its force, and one that opens them lifts that limit.
 
     Raises:
-      ValueError: If opening the jaws would carry one against the column, on a modelled arm.
+      ValueError: If opening the jaws would carry one into the column or the base plate, on a
+        modelled arm.
     """
     units = self._hold_within_gripper_limits(units)
     speed_percent = self.default_finger_speed_percent

@@ -17,29 +17,24 @@ class TestClassifyPF400Reach(unittest.TestCase):
 class TestOutlineClearance(unittest.TestCase):
   """How far apart two convex outlines stand, and how deep they overlap."""
 
-  SQUARE = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
+  def test_apart_overlapping_and_never_more_than_the_true_distance(self):
+    square = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]
 
-  def moved(self, x: float, y: float):
-    return [(point_x + x, point_y + y) for point_x, point_y in self.SQUARE]
+    def moved(x: float, y: float):
+      return [(point_x + x, point_y + y) for point_x, point_y in square]
 
-  def test_apart_is_the_gap_between_them(self):
-    self.assertAlmostEqual(
-      kinematics.compute_outline_clearance(self.SQUARE, self.moved(13.0, 0.0)), 3.0
-    )
-    self.assertAlmostEqual(
-      kinematics.compute_outline_clearance(self.moved(0.0, -17.0), self.SQUARE), 7.0
-    )
-
-  def test_overlapping_is_negative_by_how_deep(self):
-    self.assertAlmostEqual(
-      kinematics.compute_outline_clearance(self.SQUARE, self.moved(8.0, 1.0)), -2.0
-    )
-
-  def test_it_is_never_more_than_the_true_distance(self):
-    # Corner to corner the squares are 5 mm apart; the widest gap an edge leaves is 4 mm.
-    self.assertAlmostEqual(
-      kinematics.compute_outline_clearance(self.SQUARE, self.moved(14.0, 13.0)), 4.0
-    )
+    # A diamond's tip at the square's face: only the square's edge sees the 5 mm gap.
+    diamond = [(20.0, 0.0), (25.0, 5.0), (20.0, 10.0), (15.0, 5.0)]
+    for outline, other, clearance in (
+      (square, moved(13.0, 0.0), 3.0),
+      (moved(0.0, -17.0), square, 7.0),
+      (square, moved(8.0, 1.0), -2.0),
+      # Corner to corner they are 5 mm apart; the widest gap an edge leaves is 4 mm.
+      (square, moved(14.0, 13.0), 4.0),
+      (diamond, square, 5.0),
+    ):
+      with self.subTest(other=other):
+        self.assertAlmostEqual(kinematics.compute_outline_clearance(outline, other), clearance)
 
 
 class TestElbowAndWrist(unittest.TestCase):

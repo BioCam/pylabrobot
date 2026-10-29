@@ -453,8 +453,9 @@ class PreciseFlexDriver:
     """Bring the arm fully up: ``connect``, ``initialize``, then ``home`` unless skipped.
 
     ``initialize`` reads the configuration, and setup raises if that fails. The arm is then
-    modelled, axes outside their limits are dealt with, and, when the controller has an
-    IntelliGuide vision module, the vision feature is built as ``self.vision``.
+    modelled, before homing so the jaws' opening is checked, axes outside their limits are dealt
+    with, and, when the controller has an IntelliGuide vision module, the vision feature is built
+    as ``self.vision``.
 
     Args:
       skip_home: If True, skip the homing step during setup.
@@ -463,9 +464,9 @@ class PreciseFlexDriver:
     """
     await self.connect()
     configuration = await self.initialize()
+    self._create_feature_resources(configuration)
     if not skip_home:
       await self.home()
-    self._create_feature_resources(configuration)
     await self.arm._handle_out_of_range_axes()
     if not skip_vision and configuration.has_vision_server:
       await self._setup_vision(self._vision_host)
@@ -769,7 +770,8 @@ class PreciseFlexDriver:
     """Home the robot associated with this thread.
 
     Only the jaws move: the other joints read their position. The jaws open to their stop and back
-    off, so on a modelled arm their whole range is first checked against the column.
+    off, so on a modelled arm their opening to the hard limit is first checked against the column
+    and the base plate. Closing never carries a finger outward.
 
     Note:
       Requires power to be enabled.
@@ -781,9 +783,7 @@ class PreciseFlexDriver:
     def build_targets(current: JointState) -> List[JointState]:
       if gripper is None:
         return []
-      # An arm not yet homed reads its jaws where they may not be: their whole range is swept.
-      low, high = gripper.hard_limit_range
-      return [{**current, PreciseFlexAxis.GRIPPER: low}, {**current, PreciseFlexAxis.GRIPPER: high}]
+      return [{**current, PreciseFlexAxis.GRIPPER: gripper.hard_limit_range[1]}]
 
     async def unchecked_fw_move(_targets: Sequence[JointState]) -> None:
       await self.send_command("home")
