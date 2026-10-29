@@ -1856,22 +1856,6 @@ class Pipettes:
 
   # -- x and y together ----------------------------------------------------------------------------
 
-  def _get_channels_below_safe_z(self) -> List[int]:
-    """The channels the model does not have at Z safety, so a raise there would move them.
-
-    A channel the model knows nothing about counts as below, so the raise runs.
-
-    Returns:
-      The channels, 0-indexed from the back.
-    """
-    top = self.configuration.z_range[1]
-    below = []
-    for channel in range(self.num_channels):
-      point = self.get_reference_point_location(channel)
-      if point is None or point.z < top - 0.1:
-        below.append(channel)
-    return below
-
   async def _traverse_raise_targets(self, height: float) -> Dict[int, float]:
     """The stop disc target of every channel whose lowest point is below `height`, checked.
 
@@ -3455,8 +3439,8 @@ class Pipettes:
   ) -> List[T]:
     """Take the channels to each batch in turn and run `func` there; Z safety on any failure.
 
-    Between batches: up to `minimum_traverse_height_during`, or Z safety when None and the model
-    has a channel below it; then `X0 XP` and `C0 JY` to the batch.
+    Between batches: up to `minimum_traverse_height_during`, or Z safety when None, whatever the
+    model has; then `X0 XP` and `C0 JY` to the batch.
 
     Args:
       func: what to do at a batch. It moves nothing in X or Y.
@@ -3472,8 +3456,9 @@ class Pipettes:
       for index, batch in enumerate(batches):
         if index > 0:
           if minimum_traverse_height_during is None:
-            if self._get_channels_below_safe_z():
-              await self.move_to_safe_z()
+            # Always, as legacy does: a liquid search records nothing, so the model can have the
+            # channels up while they still stand in the container they searched.
+            await self.move_to_safe_z()
           else:
             raises = await self._traverse_raise_targets(minimum_traverse_height_during)
             if raises:
@@ -3593,7 +3578,8 @@ class Pipettes:
     """Search for the liquid in every container of one batch, the channels together, n times.
 
     From `z_start` to `search_limit_below_cavity_bottom` under the cavity bottom, on the stop disc.
-    One `C0 RL` per round; None where a channel found nothing.
+    One `C0 RL` per round; None where a channel found nothing. Each channel is then modelled where
+    its search left it: its stop disc an overhang above the surface found, or at its window's end.
 
     Args:
       batch: the channels and which container each has, by job index.
@@ -3633,15 +3619,20 @@ class Pipettes:
         return_exceptions=True,
       )
       heights = await self.request_last_lld_z_positions()
-      for (channel, job, _, _), result in zip(searches, results):
+      for (channel, job, end, _), result in zip(searches, results):
         if isinstance(result, STARFirmwareError) and self._found_nothing(
           result, self.channel_id(channel)
         ):
           found[job].append(None)
+          stopped = end
         elif isinstance(result, BaseException):
           raise result
         else:
           found[job].append(heights[channel])
+          stopped = heights[channel] + overhangs[channel]
+        # No post-detection move, so the stop disc stays where the search left it: the model has
+        # it there, not still up at the start.
+        self.update_location_by_reference_point(channel, z=round(stopped, 2))
     return found
 
   async def probe_liquid_heights(
@@ -7037,7 +7028,9 @@ class Pipettes:
         air[channel] + pushed[job] + (blow_out_air[job] if dispensing_modes[job] in (1, 3) else 0.0)
       )
       air[channel] = transport_air[job]
-      if dispensing_modes[job] != 4 and standing[channel] - travels[job] < -0.05:
+      # A piston is kept to 0.1 uL and a travel to 0.01 uL, so 0.05 uL between them is rounding
+      # alone: compared in hundredths, so float noise at that edge refuses nothing.
+      if dispensing_modes[job] != 4 and round(travels[job] - standing[channel], 2) > 0.05:
         raise ValueError(
           f"channel {channel}'s piston holds {standing[channel]:.1f} uL of travel for the "
           f"{travels[job]:.1f} uL it is to push out into {containers[job].name}"

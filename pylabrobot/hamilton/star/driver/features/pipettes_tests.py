@@ -1264,12 +1264,27 @@ class TestLiquidHeightProbing(unittest.IsolatedAsyncioTestCase):
     self.assertEqual(self.safe_z.await_count, 2, "up before the first batch and at the end")
 
   async def test_two_columns_are_two_batches_with_safe_z_between(self):
-    # A search leaves its channel down; the stubbed link records nothing, so the model is told.
-    self.pipettes._get_channels_below_safe_z = unittest.mock.Mock(return_value=[0])  # type: ignore[method-assign]
+    # A search leaves its channel down and, as with the real driver, nothing records it: the model
+    # still has the channel up, and the lift before the next column must not trust it.
+    order: List[str] = []
+    self.safe_z.side_effect = lambda *args, **kwargs: order.append("safe_z")
+    self.xy.side_effect = lambda *args, **kwargs: order.append("xy")
     await self.pipettes.probe_liquid_heights(self._wells("A1", "A2"))
-    self.assertEqual(self.xy.await_count, 2)
     self.assertEqual([c[:4] for c in self.sent], ["P1ZL", "C0RL", "P2ZL", "C0RL"])
-    self.assertEqual(self.safe_z.await_count, 3, "before, between, and at the end")
+    self.assertEqual(order, ["safe_z", "xy", "safe_z", "xy", "safe_z"], "up before each column")
+
+  async def test_a_search_leaves_the_model_where_the_channels_stopped(self):
+    # From what the device answered, with no read: the surface found plus the overhang, or the
+    # window's end for a channel that found nothing. Not still up at the start of the search.
+    self.fail_with["P2"] = ["P2ZLid0001er70"]
+    wells = self._wells("A1", "B1")
+    await self.pipettes.probe_liquid_heights(wells)
+    overhang = 334.7 - 282.8
+    found, nothing = (self.pipettes.get_reference_point_location(ch) for ch in (0, 1))
+    assert found is not None and nothing is not None
+    self.assertAlmostEqual(found.z, 150.0 + overhang)
+    bottom = wells[1].get_location_wrt(self.deck, "c", "c", "cavity_bottom").z
+    self.assertAlmostEqual(nothing.z, bottom - 1.0 + overhang, places=1)
 
   async def test_a_traverse_height_raises_the_low_channels_instead_of_safe_z(self):
     self.pipettes._traverse_raise_targets = unittest.mock.AsyncMock(  # type: ignore[method-assign]
@@ -4593,3 +4608,62 @@ class TestDispenseInSimulation(_SimulatedPlateWithWater):
     self.assertEqual([w.tracker.volume for w in self.wells[2:4]], [100.0, 0.0])
     tips = [self.pipettes.get_mounted_tip(channel) for channel in (0, 1)]
     self.assertEqual([tip.tracker.volume for tip in tips if tip is not None], [0.0, 20.0])
+
+
+class TestJetDispenseOfWhatTheAspirateDrew(unittest.IsolatedAsyncioTestCase):
+  """1000 uL filter tips over a 2 mL plate: a jet dispense pushes what the same class drew."""
+
+  async def asyncSetUp(self):
+    from pylabrobot.resources import set_tip_tracking, set_volume_tracking
+    from pylabrobot.resources.corning.plates import cor_96_wellplate_2mL_Vb
+    from pylabrobot.resources.hamilton import (
+      PLT_CAR_L5AC_A00,
+      TIP_CAR_480_A00,
+      hamilton_96_tiprack_1000uL_filter,
+    )
+
+    set_tip_tracking(True)
+    set_volume_tracking(True)
+    self.addCleanup(set_tip_tracking, False)
+    self.addCleanup(set_volume_tracking, False)
+    self.deck = STARDeck()
+    tips = TIP_CAR_480_A00(name="tips")
+    tips[1] = self.rack = hamilton_96_tiprack_1000uL_filter(name="rack")
+    self.deck.assign_child_resource(tips, track=22)
+    plates = PLT_CAR_L5AC_A00(name="plates")
+    plates[0] = self.plate = cor_96_wellplate_2mL_Vb(name="plate")
+    self.deck.assign_child_resource(plates, track=30)
+    self.driver = STARSimulationDriver(deck=self.deck, declared_configuration_json=RECORDING_STAR)
+    await self.driver.setup()
+    assert self.driver.pipettes is not None
+    self.pipettes = self.driver.pipettes
+    self.source, self.target = self.plate.get_well("A1"), self.plate.get_well("B1")
+    self.source.tracker.set_volume(1500.0)
+    await self.pipettes.pick_up_tips([self.rack.get_item("A1")])
+
+  async def asyncTearDown(self):
+    await self.driver.stop()
+
+  async def test_321_uL_of_water_drawn_is_dispensed(self):
+    # The class corrects 321 uL to 337.449 uL: kept as 337.4 once drawn, pushed as 337.45. The
+    # 0.05 uL between them is rounding alone, and the dispense goes ahead.
+    from pylabrobot.hamilton.star.liquid_classes import get_star_liquid_class
+    from pylabrobot.resources.liquid import Liquid
+
+    tip = self.pipettes.get_mounted_tip(0)
+    assert tip is not None
+    water = get_star_liquid_class(
+      tip_volume=tip.maximal_volume,
+      is_core=False,
+      is_tip=True,
+      has_filter=tip.has_filter,
+      liquid=Liquid.WATER,
+      jet=True,
+      blow_out=False,
+    )
+    assert water is not None
+    await self.pipettes.aspirate([self.source], volumes=[321.0], hamilton_liquid_classes=[water])
+    await self.pipettes.dispense(
+      [self.target], volumes=[321.0], hamilton_liquid_classes=[water], jet=[True]
+    )
+    self.assertAlmostEqual(self.target.tracker.get_used_volume(), 321.0)
