@@ -65,10 +65,9 @@ _PF400_REPLIES: Dict[str, str] = {
   "freemode 4": "0",
   "Speed 1 20": "0",
   "Speed 1 60": "0",
-  "GripOpenPos 120.0": "0",
   "IsFullyClosed": "0 -1",
-  "GripClosePos 80.0": "0",
-  "gripper 2": "0",
+  # Something held, as a grasp answered on the arm.
+  "GraspPlate 70.0 50.0 10.0": "0 -1",
   "attach 0": "0",
   "hp 0": "0",
   "Speed 1": "0 1 20",
@@ -1106,7 +1105,7 @@ _CASES: List[_Case] = [
   ),
   (
     "move_gripper_close",
-    lambda arm: arm.gripper.move_to_jaw_position(50.0, force_sensing=True),
+    lambda arm: arm.gripper.move_to_jaw_position(50.0),
     [
       "wherej",
       "wherej",
@@ -1153,6 +1152,22 @@ _CASES: List[_Case] = [
     None,
   ),
   (
+    "move_gripper_position",
+    lambda arm: arm.gripper.move_to_jaw_position(50.0, force_sensing=False),
+    [
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
+      "MoveOneAxis 5 70.0 1",
+      "wherej",
+      "wherej",
+      "wherej",
+      "wherej",
+    ],
+    None,
+  ),
+  (
     "sense_fully_closed",
     lambda arm: arm.gripper.sense_fully_closed(),
     [
@@ -1170,7 +1185,7 @@ _CASES: List[_Case] = [
     "pick_up_at_joint_position",
     lambda arm: arm.arm.pick_up_at_joint_state(_J, resource_width=85.0),
     [
-      "GraspData 85.0 50.0 10.0",
+      "GraspData 105.0 50.0 10.0",
       "wherej",
       "wherej",
       "wherej",
@@ -1207,7 +1222,7 @@ _CASES: List[_Case] = [
     "pick_up_at_location",
     lambda arm: arm.arm.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0),
     [
-      "GraspData 85.0 50.0 10.0",
+      "GraspData 105.0 50.0 10.0",
       "wherej",
       "wherej",
       "wherej",
@@ -1368,7 +1383,7 @@ _RAIL_CASES: List[_Case] = [
       "wherej",
       "Rail 1 300.0",
       "MoveRail 1 1",
-      "GraspData 85.0 50.0 10.0",
+      "GraspData 105.0 50.0 10.0",
       "wherej",
       "wherej",
       "wherej",
@@ -1718,7 +1733,7 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
     arm.gripper.default_finger_speed_percent = 30.0
     arm.gripper.default_grasp_force = 5.0
     await arm.arm.pick_up_at_joint_state(_J, resource_width=85.0)
-    self.assertEqual(fake.sent[0], "GraspData 85.0 30.0 5.0")
+    self.assertEqual(fake.sent[0], "GraspData 105.0 30.0 5.0")
 
   async def test_grasp_default_set_on_the_class(self):
     self.addCleanup(
@@ -1727,7 +1742,7 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
     PreciseFlexGripper.default_grasp_force = 7.0
     arm, fake = await self._arm()
     await arm.arm.pick_up_at_location(_LOC, direction=0.0, resource_width=85.0)
-    self.assertEqual(fake.sent[0], "GraspData 85.0 50.0 7.0")
+    self.assertEqual(fake.sent[0], "GraspData 105.0 50.0 7.0")
 
   async def test_recovery_speed_default_set_on_the_arm(self):
     arm, fake = await self._arm()
@@ -1737,54 +1752,103 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
     self.assertIn("Speed 1 10.0", fake.sent)
 
 
-def _without_reads(sent: List[str]) -> List[str]:
-  """What was sent, less the joint reads a move waits on before and after it."""
-  return [command for command in sent if command != "wherej"]
+async def _arm_after_homing() -> Tuple[PreciseFlexDriver, _FakeController]:
+  """An arm set up as it stood after homing, its jaws open at 125.844 on the gripper axis."""
+  fake = _FakeController(
+    {"Speed 1": "0 1 60", "wherej": "0 301.105 2.235 179.732 -180.776 125.844"}
+  )
+  arm = _make_arm(fake)
+  await arm.setup(skip_vision=True)
+  fake.sent.clear()
+  return arm, fake
 
 
-class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
-  """No public command closes the jaws without force sensing unless the caller asks for it."""
+class TestGripperTargetsStayInsideTheirLimits(unittest.IsolatedAsyncioTestCase):
+  """Jaw widths stay in mm, and a target is held inside the gripper axis."""
 
   def setUp(self) -> None:
     sleep = patch("pylabrobot.brooks.precise_flex.driver.master.asyncio.sleep", new=AsyncMock())
     sleep.start()
     self.addCleanup(sleep.stop)
 
-  async def _arm(self) -> Tuple[PreciseFlexDriver, _FakeController]:
-    """An arm set up as it stood after homing, its jaws open at 125.844 on the gripper axis."""
-    fake = _FakeController(
-      {"Speed 1": "0 1 60", "wherej": "0 301.105 2.235 179.732 -180.776 125.844"}
-    )
-    arm = _make_arm(fake)
-    await arm.setup(skip_vision=True)
-    fake.sent.clear()
-    return arm, fake
-
-  async def test_a_jaw_move_that_closes_senses_force(self):
-    arm, fake = await self._arm()
-    await arm.gripper.move_to_jaw_position(70.0)
-    self.assertEqual(_without_reads(fake.sent), ["GraspPlate 90.0 50.0 10.0"])
-
-  async def test_a_jaw_move_in_firmware_units_that_closes_senses_force(self):
-    arm, fake = await self._arm()
-    await arm.gripper.move_to_jaw_position_firmware_units(90.0)
-    self.assertEqual(_without_reads(fake.sent), ["GraspPlate 90.0 50.0 10.0"])
-
-  async def test_closing_without_force_sensing_only_when_asked(self):
-    arm, fake = await self._arm()
-    await arm.gripper.move_to_jaw_position(70.0, force_sensing=False)
-    self.assertEqual(_without_reads(fake.sent), ["GripOpenPos 90.0", "gripper 1"])
-
   async def test_jaw_widths_stay_in_mm_after_setup(self):
-    arm, _ = await self._arm()
+    arm, _ = await _arm_after_homing()
     # The axis's soft limits (69, 134) through the calibration pair (60 mm at 80 units).
     self.assertEqual(arm.gripper.jaw_width_range, (49.0, 114.0))
 
   async def test_a_target_at_the_axis_end_is_held_inside_it(self):
-    arm, fake = await self._arm()
+    arm, fake = await _arm_after_homing()
     await arm.gripper.move_to_jaw_position_firmware_units(135.0, force_sensing=False)
     await arm.gripper.move_to_jaw_position(114.0, force_sensing=False)  # the advertised maximum
-    self.assertEqual([c for c in fake.sent if c.startswith("Grip")], ["GripOpenPos 133.5"] * 2)
+    moves = [c for c in fake.sent if c.startswith("MoveOneAxis 5")]
+    self.assertEqual(moves, ["MoveOneAxis 5 133.5 1"] * 2)
+
+
+class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
+  """Only the jaws' own moves close them, limiting the force; anything else closing them is asked."""
+
+  setUp = TestGripperTargetsStayInsideTheirLimits.setUp
+
+  async def test_a_close_without_force_sensing_is_refused_unless_asked(self):
+    def park_closing(arm: PreciseFlexDriver, asked: bool):
+      arm.arm.parking_position = {
+        **PreciseFlexArm.PARKING_POSITION_RIGHT,
+        PreciseFlexAxis.GRIPPER: 90.0,
+      }
+      return arm.arm.park(close_gripper_without_force_sensing=asked)
+
+    def park_unset(arm: PreciseFlexDriver, asked: bool):
+      arm.arm.parking_position = None
+      return arm.arm.park(close_gripper_without_force_sensing=asked)
+
+    for name, call, sent in (
+      (
+        "joint move",
+        lambda arm, asked: arm.arm.move_to_joint_state(
+          {PreciseFlexAxis.GRIPPER: 90.0}, close_gripper_without_force_sensing=asked
+        ),
+        "moveJ 1 301.105 2.235 179.732 -180.776 90.0",
+      ),
+      ("park", park_closing, "moveJ 1 301.125 0.0 180.0 180.0 90.0"),
+      ("park, no parking position", park_unset, "movetosafe"),
+      (
+        "elbow change",
+        lambda arm, asked: arm.arm.change_elbow_orientation(
+          2, close_gripper_without_force_sensing=asked
+        ),
+        "ChangeConfig 2",
+      ),
+      (
+        "elbow change by algorithm",
+        lambda arm, asked: arm.arm.change_elbow_orientation_by_algorithm(
+          2, close_gripper_without_force_sensing=asked
+        ),
+        "ChangeConfig2 2",
+      ),
+    ):
+      with self.subTest(name):
+        arm, fake = await _arm_after_homing()
+        with self.assertRaisesRegex(ValueError, "without sensing force"):
+          await call(arm, False)
+        self.assertEqual([c for c in fake.sent if c != "wherej"], [])
+        await call(arm, True)
+        self.assertEqual([c for c in fake.sent if c != "wherej"], [sent])
+
+  async def test_recovery_leaves_an_over_open_gripper(self):
+    arm, fake = await _arm_after_homing()
+    # A constructed reading: the jaws open past the axis's 134.
+    fake._replies["wherej"] = "0 301.105 2.235 179.732 -180.776 136.0"
+    self.assertEqual(await arm.arm.recover_axes_within_limits(), {})
+    self.assertEqual([c for c in fake.sent if c.startswith("MoveOneAxis")], [])
+
+
+class TestMotionSettlesBeforeTheNextCommand(unittest.IsolatedAsyncioTestCase):
+  """The gripper and the rail wait for the arm to stop before they move."""
+
+  def setUp(self) -> None:
+    sleep = patch("pylabrobot.brooks.precise_flex.driver.master.asyncio.sleep", new=AsyncMock())
+    sleep.start()
+    self.addCleanup(sleep.stop)
 
   async def test_the_gripper_and_the_rail_wait_for_the_arm_to_stop(self):
     for name, move in (
@@ -1801,53 +1865,6 @@ class TestClosingTheGripperSensesForce(unittest.IsolatedAsyncioTestCase):
         arm.arm._wait_for_eom = stopped  # type: ignore[method-assign]
         await move(arm)
         self.assertEqual(fake.sent[0], "<stopped>")
-
-  async def test_a_joint_move_that_closes_the_gripper_is_refused(self):
-    arm, fake = await self._arm()
-    with self.assertRaisesRegex(ValueError, "without sensing force"):
-      await arm.arm.move_to_joint_state({PreciseFlexAxis.GRIPPER: 90.0})
-    self.assertFalse(any(c.startswith("moveJ") for c in fake.sent))
-
-  async def test_a_joint_move_that_closes_the_gripper_when_asked(self):
-    arm, fake = await self._arm()
-    await arm.arm.move_to_joint_state(
-      {PreciseFlexAxis.GRIPPER: 90.0}, close_gripper_without_force_sensing=True
-    )
-    self.assertEqual(_without_reads(fake.sent), ["moveJ 1 301.105 2.235 179.732 -180.776 90.0"])
-
-  async def test_parking_that_closes_the_gripper_is_refused(self):
-    arm, fake = await self._arm()
-    arm.arm.parking_position = {
-      **PreciseFlexArm.PARKING_POSITION_RIGHT,
-      PreciseFlexAxis.GRIPPER: 90.0,
-    }
-    with self.assertRaisesRegex(ValueError, "without sensing force"):
-      await arm.arm.park()
-    self.assertFalse(any(c.startswith("moveJ") for c in fake.sent))
-
-  async def test_changing_config_with_the_gripper_closing_is_refused(self):
-    arm, fake = await self._arm()
-    for change in (arm.arm.change_elbow_orientation, arm.arm.change_elbow_orientation_by_algorithm):
-      with self.subTest(change.__name__), self.assertRaisesRegex(ValueError, "without sensing"):
-        await change(2)
-    self.assertEqual(fake.sent, [])
-    await arm.arm.change_elbow_orientation(2, close_gripper_without_force_sensing=True)
-    await arm.arm.change_elbow_orientation_by_algorithm(2, close_gripper_without_force_sensing=True)
-    self.assertEqual(fake.sent, ["ChangeConfig 2", "ChangeConfig2 2"])
-
-  async def test_recovery_leaves_an_over_open_gripper(self):
-    arm, fake = await self._arm()
-    # Not from a log: the arm has not been read with its jaws past a limit.
-    fake._replies["wherej"] = "0 200 0 180 0 136"
-    self.assertEqual(await arm.arm.recover_axes_within_limits(), {})
-    self.assertFalse(any(c.startswith("MoveOneAxis") for c in fake.sent))
-
-  async def test_recovery_opens_an_over_closed_gripper(self):
-    arm, fake = await self._arm()
-    # Not from a log either.
-    fake._replies["wherej"] = "0 200 0 180 0 67"
-    self.assertEqual(await arm.arm.recover_axes_within_limits(), {PreciseFlexAxis.GRIPPER: 70.0})
-    self.assertIn("MoveOneAxis 5 70.0 1", fake.sent)
 
 
 class TestRefusals(unittest.IsolatedAsyncioTestCase):
@@ -2144,7 +2161,7 @@ _MOVED_TO_FEATURES: List[
   (
     "move_gripper",
     lambda a: a.move_gripper(110.0),
-    lambda a: a.gripper.move_to_jaw_position(110.0, force_sensing=False),
+    lambda a: a.gripper.move_to_jaw_position(110.0),
   ),
   (
     "move_gripper_joint_position",

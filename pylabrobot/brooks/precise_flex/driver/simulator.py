@@ -70,17 +70,14 @@ class _SimulatedGripper(PreciseFlexGripper):
     super().__init__(driver, **kwargs)
     self._arm = arm
 
-  def _hold(self, units: float) -> None:
+  async def _unchecked_fw_grasp_plate(
+    self, units: float, speed_percent: float, force: float
+  ) -> bool:
     self._arm.simulated_joint_state[PreciseFlexAxis.GRIPPER] = units
-
-  async def _unchecked_fw_move_jaws(self, units: float) -> None:
-    self._hold(units)
-
-  async def _unchecked_fw_grasp_plate(self, units: float, speed_percent: float, force: float):
-    self._hold(units)
+    return False  # a simulated gripper holds nothing
 
   async def _unchecked_fw_release_plate(self, units: float, speed_percent: float) -> None:
-    self._hold(units)
+    self._arm.simulated_joint_state[PreciseFlexAxis.GRIPPER] = units
 
 
 class PreciseFlexSimulationDriver(PreciseFlexDriver):
