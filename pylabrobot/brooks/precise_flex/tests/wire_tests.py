@@ -1551,7 +1551,7 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
   ) -> Tuple[PreciseFlexDriver, _FakeController]:
     fake = _FakeController(_RAIL_REPLIES if has_rail else None)
     arm = _make_arm(fake, has_rail=has_rail)
-    await arm.setup(skip_vision=True, **kwargs)
+    await arm.setup(skip_vision_setup=True, **kwargs)
     return arm, fake
 
   async def test_setup(self):
@@ -1639,7 +1639,7 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
     failing_read = AsyncMock(side_effect=TimeoutError("pd 116"))
     arm._request_configuration = failing_read  # type: ignore[method-assign]
     with self.assertRaises(TimeoutError):
-      await arm.setup(skip_vision=True)
+      await arm.setup(skip_vision_setup=True)
     self.assertIsNone(arm.arm.configuration)
 
   async def test_at_speed_restores_the_profile_speed(self):
@@ -1668,7 +1668,7 @@ class TestPreciseFlexWire(unittest.IsolatedAsyncioTestCase):
   async def test_recovering_an_axis_out_of_range(self):
     fake = _FakeController({"Speed 1": "0 1 60"})
     arm = _make_arm(fake)
-    await arm.setup(skip_vision=True)
+    await arm.setup(skip_vision_setup=True)
     fake.sent.clear()
     fake._replies["wherej"] = "0 301.02 93.476 179.609 83.93 125.867"
     self.assertEqual(await arm.arm.recover_axes_within_limits(), {PreciseFlexAxis.SHOULDER: 92.0})
@@ -1724,7 +1724,7 @@ class TestPreciseFlexDefaults(unittest.IsolatedAsyncioTestCase):
   async def _arm(self) -> Tuple[PreciseFlexDriver, _FakeController]:
     fake = _FakeController({"Speed 1": "0 1 60"})
     arm = _make_arm(fake)
-    await arm.setup(skip_vision=True)
+    await arm.setup(skip_vision_setup=True)
     fake.sent.clear()
     return arm, fake
 
@@ -1758,7 +1758,7 @@ async def _arm_after_homing() -> Tuple[PreciseFlexDriver, _FakeController]:
     {"Speed 1": "0 1 60", "wherej": "0 301.105 2.235 179.732 -180.776 125.844"}
   )
   arm = _make_arm(fake)
-  await arm.setup(skip_vision=True)
+  await arm.setup(skip_vision_setup=True)
   fake.sent.clear()
   return arm, fake
 
@@ -1875,7 +1875,7 @@ class TestMotionSettlesBeforeTheNextCommand(unittest.IsolatedAsyncioTestCase):
       with self.subTest(name):
         fake = _FakeController(_RAIL_REPLIES)
         arm = _make_arm(fake, has_rail=True)
-        await arm.setup(skip_vision=True)
+        await arm.setup(skip_vision_setup=True)
         fake.sent.clear()
         stopped = AsyncMock(side_effect=lambda: fake.sent.append("<stopped>"))
         arm.arm._wait_for_eom = stopped  # type: ignore[method-assign]
@@ -2115,7 +2115,7 @@ class TestDeprecatedPercentKeywords(unittest.IsolatedAsyncioTestCase):
   ) -> List[str]:
     fake = _FakeController({"Speed 1": "0 1 60"})
     arm = _make_arm(fake)
-    await arm.setup(skip_vision=True)
+    await arm.setup(skip_vision_setup=True)
     fake.sent.clear()
     if out_of_range:  # so recovery sets its speed
       fake._replies["wherej"] = "0 301.02 93.476 179.609 83.93 125.867"
@@ -2299,7 +2299,7 @@ class TestDeprecatedDriverMembers(unittest.IsolatedAsyncioTestCase):
   ):
     fake = _FakeController(_RAIL_REPLIES if has_rail else None)
     arm = _make_arm(fake, has_rail=has_rail)
-    await arm.setup(skip_vision=True)
+    await arm.setup(skip_vision_setup=True)
     fake.sent.clear()
     result = await call(arm)
     return fake.sent, repr(result)  # a pose compares by its fields only through its repr
