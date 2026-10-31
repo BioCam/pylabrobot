@@ -13,6 +13,7 @@ from pylabrobot.bmg_labtech.protocol.framing import (
   USB_SINGLE,
   usb_wrap_payload,
 )
+from pylabrobot.bmg_labtech.vantastar.driver.configuration import VANTAstarConfiguration
 from pylabrobot.bmg_labtech.vantastar.driver.configuration_tests import HARDWARE_INFO
 from pylabrobot.bmg_labtech.vantastar.driver.errors import CommandRefusedError, DeviceError
 from pylabrobot.bmg_labtech.vantastar.driver.framing import DEVICE_ID, HOST_ACKNOWLEDGEMENT
@@ -778,6 +779,34 @@ class FlowTests(unittest.IsolatedAsyncioTestCase):
     await driver.initialize()
     self.assertEqual(commands(driver)[:2], [bytes([0x80]), INIT])
     self.assertEqual(driver.discover().serial_number, "0421-000446")
+
+  async def test_setup_summary(self):
+    """Setup logs the reader's serial number, firmware version and firmware package, and nothing
+    the firmware reports that has not been verified."""
+    replies = deque([STATUS_IDLE, HARDWARE_INFO, STATUS_INIT_RUNNING, STATUS_IDLE])
+    driver = make_driver(lambda p: replies.popleft())
+    self.assertEqual(driver.format_setup_summary(), "[VANTAstar] not discovered yet")
+    with self.assertLogs("pylabrobot.bmg_labtech.vantastar.driver.master", "INFO") as logs:
+      await driver.setup()
+    summary = driver.format_setup_summary()
+    self.assertIn(summary, "\n".join(logs.output))
+    self.assertEqual(
+      summary.splitlines(),
+      [
+        "[VANTAstar] Connected on FakeUSB (serial 0421-000446)",
+        "  Serial number: 0421-000446",
+        "  Firmware: 1.12 (package 11)",
+      ],
+    )
+
+  def test_setup_summary_leaves_out_what_was_not_reported(self):
+    """A reader that reported no serial number or package gets the link and the firmware only."""
+    driver = make_driver(lambda p: b"")
+    driver.configuration = VANTAstarConfiguration(firmware_version=1110)
+    self.assertEqual(
+      driver.format_setup_summary().splitlines(),
+      ["[VANTAstar] Connected on FakeUSB (serial 0421-000446)", "  Firmware: 1.11"],
+    )
 
   async def test_shake_moves_the_plate_in_when_the_motors_are_off(self):
     """Shaking with the motors off moves the plate in first, then shakes."""

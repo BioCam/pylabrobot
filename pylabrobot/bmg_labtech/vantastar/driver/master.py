@@ -1462,11 +1462,37 @@ class VANTAstarDriver:
 
   # -- lifecycle ------------------------------------------------------------
 
-  def format_setup_summary(self) -> str:
-    """One line describing the reader that was found."""
+  def _describe_link(self) -> str:
+    """How this reader is reached: the transport, its vendor and product id, and its serial number
+    when one was given (as the CLARIOstar driver describes its link)."""
     fields: Dict[str, Any] = self.io.serialize()
-    serial = fields.get("serial_number", "unknown")
-    return f"[{self.name}] Connected on USB 0x0483:0xA29A (serial {serial})"
+    link = type(self.io).__name__
+    vendor, product = fields.get("id_vendor"), fields.get("id_product")
+    if vendor is not None and product is not None:
+      link += f" {vendor:#06x}:{product:#06x}"
+    serial = fields.get("serial_number")
+    return link + (f" (serial {serial})" if serial else "")
+
+  def format_setup_summary(self) -> str:
+    """One block describing the reader that was found, laid out as the CLARIOstar's.
+
+    Lists only what the firmware reports and what has been checked against the reader: its serial
+    number, its firmware version and its firmware package (Voyager's "FWP"), from module 2 of the
+    INIT reply.  The other fields of module 2 and the other modules are not listed: their meaning
+    has not been verified on the VANTAstar.
+
+    Returns:
+      A multi-line summary, or a note that setup has not run.
+    """
+    c = self.configuration
+    if c.firmware_version is None:
+      return f"[{self.name}] not discovered yet"
+    package = f" (package {c.firmware_package})" if c.firmware_package is not None else ""
+    lines = [f"[{self.name}] Connected on {self._describe_link()}"]
+    if c.serial_number is not None:
+      lines.append(f"  Serial number: {c.serial_number}")
+    lines.append(f"  Firmware: {c.firmware_version / 1000:.2f}{package}")
+    return "\n".join(lines)
 
   async def setup(self) -> None:
     """Connect, initialize the reader (about 10 s), and read its configuration."""
