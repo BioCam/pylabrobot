@@ -38,6 +38,9 @@ from pylabrobot.hamilton.prep.driver.simulator import (
 )
 from pylabrobot.hamilton.star.driver.features.pipettes import Pipettes as STARPipettes
 from pylabrobot.hamilton.star.liquid_classes.mapping import (
+  StandardVolume_Water_DispenseSurface_Part as _WATER_300,
+)
+from pylabrobot.hamilton.star.liquid_classes.mapping import (
   StandardVolumeFilter_Water_DispenseJet_Empty as _WATER_50,
 )
 from pylabrobot.hamilton.star.liquid_classes.mapping import get_star_liquid_class
@@ -383,6 +386,7 @@ def test_aspirate_immerses_the_tip_below_the_surface_given_or_found():
   _run(_t())
 
 
+@pytest.mark.filterwarnings("ignore:`volumes` without:DeprecationWarning")
 def test_aspirate_takes_volumes_by_a_liquid_class_or_piston_volumes_as_given():
   """One of volumes and piston_volumes; a tip without a class is refused before anything moves."""
 
@@ -417,7 +421,8 @@ def test_aspirate_takes_volumes_by_a_liquid_class_or_piston_volumes_as_given():
 
 @pytest.mark.parametrize("rack", [hamilton_96_tiprack_300uL_NTR, hamilton_96_tiprack_1000uL])
 def test_aspirate_and_dispense_take_the_tips_water_class(rack):
-  """`volumes` without a class: the tip's water class, jet and blow_out False, as the STAR's."""
+  """`volumes` without a class, deprecated: the tip's water class, jet and blow_out False, as the
+  STAR's."""
 
   async def _t():
     deck = PrepDeck()
@@ -435,9 +440,10 @@ def test_aspirate_and_dispense_take_the_tips_water_class(rack):
     assert water is not None
     volumes = [20.0, 100.0]
     sent = _record(p)
-    await p.pipettes.aspirate(
-      plate["A1:B1"], volumes=volumes, use_channels=[0, 1], liquid_heights=[3.0, 3.0]
-    )
+    with pytest.warns(DeprecationWarning):
+      await p.pipettes.aspirate(
+        plate["A1:B1"], volumes=volumes, use_channels=[0, 1], liquid_heights=[3.0, 3.0]
+      )
     (command,) = [c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)]
     by_channel = {p.pipettes.channel_of(int(e.channel)): e for e in command.aspirate_parameters}
     for channel, volume in zip((0, 1), volumes):
@@ -454,7 +460,8 @@ def test_aspirate_and_dispense_take_the_tips_water_class(rack):
       assert entry.aspirate.blowout_volume == pytest.approx(water.aspiration_blow_out_volume)
       assert entry.aspirate.prewet_volume == pytest.approx(water.aspiration_over_aspirate_volume)
     sent.clear()
-    await p.pipettes.dispense(plate["C1:D1"], volumes=volumes, use_channels=[0, 1])
+    with pytest.warns(DeprecationWarning):
+      await p.pipettes.dispense(plate["C1:D1"], volumes=volumes, use_channels=[0, 1])
     (command,) = [c for c in sent if hasattr(c, "dispense_parameters")]
     by_channel = {p.pipettes.channel_of(int(e.channel)): e for e in command.dispense_parameters}
     for channel, volume in zip((0, 1), volumes):
@@ -473,7 +480,8 @@ def test_aspirate_and_dispense_take_the_tips_water_class(rack):
 
 
 def test_a_driver_given_its_own_table_looks_up_there_once_per_container():
-  """`liquid_class_lookup` replaces the STAR's table: its keys, one call per container."""
+  """`liquid_class_lookup` replaces the STAR's table: its keys, one call per container, for
+  `volumes` without a class, which is deprecated; `jet` still keys it."""
   fake = HamiltonLiquidClass(
     curve={0.0: 0.0, 100.0: 150.0},
     aspiration_flow_rate=11.0,
@@ -509,13 +517,15 @@ def test_a_driver_given_its_own_table_looks_up_there_once_per_container():
     assert p.pipettes is not None
     await p.pipettes.pick_up_tips([tip_rack.get_item("A1"), tip_rack.get_item("B1")], [0, 1])
     sent = _record(p)
-    await p.pipettes.aspirate(
-      plate["A1:B1"],
-      volumes=[20.0, 40.0],
-      use_channels=[0, 1],
-      liquid_heights=[3.0, 3.0],
-      jet=[True, False],
-    )
+    with pytest.warns(DeprecationWarning) as caught:
+      await p.pipettes.aspirate(
+        plate["A1:B1"],
+        volumes=[20.0, 40.0],
+        use_channels=[0, 1],
+        liquid_heights=[3.0, 3.0],
+        jet=[True, False],
+      )
+    assert [str(w.message).split(" ")[0] for w in caught] == ["`jet`", "`volumes`"]
     assert [(k["tip_volume"], k["jet"], k["blow_out"], k["liquid"]) for k in calls] == [
       (400.0, True, False, Liquid.WATER),
       (400.0, False, False, Liquid.WATER),
@@ -528,8 +538,11 @@ def test_a_driver_given_its_own_table_looks_up_there_once_per_container():
     assert entry.aspirate.prewet_volume == pytest.approx(2.5)
     assert entry.aspirate.blowout_volume == pytest.approx(1.5)
     calls.clear()
-    await p.pipettes.dispense(plate["C1:D1"], volumes=[20.0, 40.0], use_channels=[0, 1])
-    assert len(calls) == 2
+    with pytest.warns(DeprecationWarning):
+      await p.pipettes.dispense(
+        plate["C1:D1"], volumes=[20.0, 40.0], use_channels=[0, 1], jet=[True, False]
+      )
+    assert [k["jet"] for k in calls] == [True, False]
     (command,) = [c for c in sent if hasattr(c, "dispense_parameters")]
     entry = next(
       e for e in command.dispense_parameters if p.pipettes.channel_of(int(e.channel)) == 0
@@ -557,13 +570,17 @@ def test_the_trackers_book_the_liquid_not_the_corrected_piston_volume():
       assert p.pipettes is not None
       await p.pipettes.pick_up_tips([tip_rack.get_item("A1")], [0])
       sent = _record(p)
-      await p.pipettes.aspirate([plate.get_item("A1")], volumes=[20.0], use_channels=[0])
+      await p.pipettes.aspirate(
+        [plate.get_item("A1")], [20.0], use_channels=[0], hamilton_liquid_classes=[_WATER_300]
+      )
       (command,) = [c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)]
       assert command.aspirate_parameters[0].common.liquid_volume > 20.5
       tip = p.pipettes.get_mounted_tip(0)
       assert tip is not None and tip.tracker.get_used_volume() == pytest.approx(20.0)
       assert plate.get_item("A1").tracker.get_used_volume() == pytest.approx(180.0)
-      await p.pipettes.dispense([plate.get_item("B1")], volumes=[20.0], use_channels=[0])
+      await p.pipettes.dispense(
+        [plate.get_item("B1")], [20.0], use_channels=[0], hamilton_liquid_classes=[_WATER_300]
+      )
       assert tip.tracker.get_used_volume() == pytest.approx(0.0)
       assert plate.get_item("B1").tracker.get_used_volume() == pytest.approx(20.0)
       await p.stop()
@@ -575,7 +592,8 @@ def test_the_trackers_book_the_liquid_not_the_corrected_piston_volume():
 
 def test_a_50_uL_tip_has_a_class_only_with_blow_out():
   """The STAR's table has 50 uL water classes only with blow-out: without, refused before sending,
-  the refusal naming blow_out=True; with it, `Tip_50ul_Water_DispenseSurface_Empty`."""
+  the refusal naming a blow-out class; with the deprecated `blow_out`,
+  `Tip_50ul_Water_DispenseSurface_Empty`."""
   from pylabrobot.hamilton.star.liquid_classes.mapping import (
     Tip_50ul_Water_DispenseSurface_Empty as water,
   )
@@ -589,29 +607,33 @@ def test_a_50_uL_tip_has_a_class_only_with_blow_out():
     assert p.pipettes is not None
     await p.pipettes.pick_up_tips([tip_rack.get_item("A1"), tip_rack.get_item("B1")], [0, 1])
     sent = _record(p)
-    refusal = "no liquid class is known for channel 0's tip.*blow_out=True, which has one"
-    with pytest.raises(ValueError, match=refusal):
+    refusal = "no liquid class is known for channel 0's tip.*this tip has one with blow_out=True"
+    with pytest.warns(DeprecationWarning), pytest.raises(ValueError, match=refusal):
       await p.pipettes.aspirate(
         plate["A1:B1"], volumes=[10.0, 10.0], use_channels=[0, 1], liquid_heights=[3.0, 3.0]
       )
-    with pytest.raises(ValueError, match=refusal):
+    with pytest.warns(DeprecationWarning), pytest.raises(ValueError, match=refusal):
       await p.pipettes.dispense(plate["A1:B1"], volumes=[10.0, 10.0], use_channels=[0, 1])
     assert not [c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)]
     assert not [c for c in sent if hasattr(c, "dispense_parameters")]
-    await p.pipettes.aspirate(
-      plate["A1:B1"],
-      volumes=[50.0, 10.0],
-      use_channels=[0, 1],
-      liquid_heights=[3.0, 3.0],
-      blow_out=[True, True],
-    )
+    with pytest.warns(DeprecationWarning) as caught:
+      await p.pipettes.aspirate(
+        plate["A1:B1"],
+        volumes=[50.0, 10.0],
+        use_channels=[0, 1],
+        liquid_heights=[3.0, 3.0],
+        blow_out=[True, True],
+      )
+    assert [str(w.message).split(" ")[0] for w in caught] == ["`blow_out`", "`volumes`"]
     (command,) = [c for c in sent if isinstance(c, _ASPIRATE_COMMANDS)]
     by_channel = {p.pipettes.channel_of(int(e.channel)): e for e in command.aspirate_parameters}
     assert by_channel[0].common.liquid_volume == pytest.approx(54.2)
     assert by_channel[0].aspirate.blowout_volume == pytest.approx(water.aspiration_blow_out_volume)
-    await p.pipettes.dispense(
-      plate["C1:D1"], volumes=[50.0, 10.0], use_channels=[0, 1], blow_out=[True, True]
-    )
+    with pytest.warns(DeprecationWarning) as caught:
+      await p.pipettes.dispense(
+        plate["C1:D1"], volumes=[50.0, 10.0], use_channels=[0, 1], blow_out=[True, True]
+      )
+    assert [str(w.message).split(" ")[0] for w in caught] == ["`blow_out`", "`volumes`"]
     (command,) = [c for c in sent if hasattr(c, "dispense_parameters")]
     by_channel = {p.pipettes.channel_of(int(e.channel)): e for e in command.dispense_parameters}
     assert by_channel[0].common.liquid_volume == pytest.approx(54.2)
@@ -3505,7 +3527,12 @@ _ASPIRATE_SEGMENTS = [
 # name: (tip volume, where, use_channels, keyword arguments)
 _GOLDEN_ASPIRATE_CALLS: Dict[str, Tuple[int, str, Optional[List[int]], Dict[str, Any]]] = {
   "piston volumes, heights": (300, "A1:B1", [0, 1], _ASPIRATE_TWO),
-  "class volumes, tracked heights": (300, "A1:B1", [0, 1], {"volumes": [20.0, 30.0]}),
+  "class volumes, tracked heights": (
+    300,
+    "A1:B1",
+    [0, 1],
+    {"volumes": [20.0, 30.0], "hamilton_liquid_classes": [_WATER_300] * 2},
+  ),
   "50 uL tips, classes given": (
     50,
     "A1:B1",
@@ -3522,13 +3549,21 @@ _GOLDEN_ASPIRATE_CALLS: Dict[str, Tuple[int, str, Optional[List[int]], Dict[str,
     300,
     "A1:B1",
     [0, 1],
-    {"volumes": [10.0, 10.0], "lld_mode": Pipettes.LLDMode.CAPACITIVE},
+    {
+      "volumes": [10.0, 10.0],
+      "hamilton_liquid_classes": [_WATER_300] * 2,
+      "lld_mode": Pipettes.LLDMode.CAPACITIVE,
+    },
   ),
   "capacitive LLD, one per container": (
     300,
     "A1:B1",
     [0, 1],
-    {"volumes": [10.0, 10.0], "lld_mode": [Pipettes.LLDMode.CAPACITIVE] * 2},
+    {
+      "volumes": [10.0, 10.0],
+      "hamilton_liquid_classes": [_WATER_300] * 2,
+      "lld_mode": [Pipettes.LLDMode.CAPACITIVE] * 2,
+    },
   ),
   "capacitive LLD, v1, sensitivity, immersion": (
     300,
@@ -3536,6 +3571,7 @@ _GOLDEN_ASPIRATE_CALLS: Dict[str, Tuple[int, str, Optional[List[int]], Dict[str,
     [0, 1],
     {
       "volumes": [10.0, 10.0],
+      "hamilton_liquid_classes": [_WATER_300] * 2,
       "lld_mode": Pipettes.LLDMode.CAPACITIVE,
       "command_version": "v1",
       "clld_sensitivity": 2,
@@ -3585,6 +3621,7 @@ _GOLDEN_ASPIRATE_CALLS: Dict[str, Tuple[int, str, Optional[List[int]], Dict[str,
     [0, 1],
     {
       "volumes": [20.0, 20.0],
+      "hamilton_liquid_classes": [_WATER_300] * 2,
       "liquid_heights": [3.0, 4.0],
       "flow_rates": [50.0, None],
       "settling_times": [0.5, 0.5],
@@ -3860,6 +3897,7 @@ def test_aspirate_runs_one_command_per_x_and_books_each_batch_on_its_own():
   _run(_t())
 
 
+@pytest.mark.filterwarnings("ignore:`volumes` without:DeprecationWarning")
 def test_aspirate_refuses_what_the_model_decides_before_any_command():
   """Each refusal the model can decide is raised with no command sent, not a tip sense or a move."""
 
@@ -4365,9 +4403,6 @@ _SEGMENTS = [
   [],
 ]
 _WATER_JET = get_star_liquid_class(1000, False, True, False, Liquid.WATER, True, True)
-_WATER_300 = get_star_liquid_class(
-  hamilton_tip_300uL("t").maximal_volume, False, True, False, Liquid.WATER, False, False
-)
 _TWO = [10.0, 20.0]
 # A well of the golden plate; its cavity bottom is 7.03 mm above the deck
 _PLATE_WELL = cor_96_wellplate_360uL_Fb(name="plate")["A1"][0]
@@ -4556,7 +4591,8 @@ _GOLDEN_DISPENSE_CALLS: Dict[
 async def _capture_dispense(name: str) -> List[str]:
   """Each dispense frame a golden call sends: its read timeout, then its bytes as hex.
 
-  The frame is built with source 2.1.65535 and sequence 0.
+  The frame is built with source 2.1.65535 and sequence 0. Volumes go with the 300 uL tip's water
+  class.
   """
   tip_volume, where, vols, use_channels, kwargs = _GOLDEN_DISPENSE_CALLS[name]
   deck = PrepDeck()
@@ -4585,7 +4621,11 @@ async def _capture_dispense(name: str) -> List[str]:
 
   session.exchange = record  # type: ignore[method-assign]
   await p.pipettes.dispense(
-    containers=containers, volumes=vols, use_channels=use_channels, **kwargs
+    containers=containers,
+    volumes=vols,
+    use_channels=use_channels,
+    hamilton_liquid_classes=None if vols is None else [_WATER_300] * len(vols),
+    **kwargs,
   )
   await p.stop()
   return frames
@@ -5206,6 +5246,7 @@ def test_dispense_runs_one_command_per_x_and_books_each_batch_on_its_own():
   _run(_t())
 
 
+@pytest.mark.filterwarnings("ignore:`volumes` without:DeprecationWarning")
 def test_dispense_refuses_before_booking_or_sending():
   """No class for volumes, a flow rate of 0, blow-out air and unverified slots refused; no move."""
 

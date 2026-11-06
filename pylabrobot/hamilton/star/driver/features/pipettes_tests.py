@@ -1916,7 +1916,7 @@ class TestEachTipsWaterClass(unittest.IsolatedAsyncioTestCase):
     driver, plate, sent = await self._channels_carrying(hamilton_96_tiprack_50uL)
     assert driver.pipettes is not None
     wells = [plate.get_well("A1"), plate.get_well("B1")]
-    refusal = r"no liquid class is known for channel 0's tip.*blow_out=True, which has one"
+    refusal = r"no liquid class is known for channel 0's tip.*this tip has one with blow_out=True"
     with self.assertWarns(DeprecationWarning), self.assertRaisesRegex(ValueError, refusal):
       await driver.pipettes.aspirate(wells, [10.0, 10.0], liquid_heights=[3.0, 3.0])
     with self.assertWarns(DeprecationWarning), self.assertRaisesRegex(ValueError, refusal):

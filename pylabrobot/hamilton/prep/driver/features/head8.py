@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import math
 import struct as _struct
+import warnings
 from typing import (
   TYPE_CHECKING,
   List,
@@ -1373,7 +1374,7 @@ class Head8:
       containers: per probe.
       volume: the liquid per probe, in uL; the piston volume with `disable_volume_correction`.
       hamilton_liquid_classes: one for all, or one per probe; looked up per probe's tip, water,
-        `jet` and `blow_out` when None.
+        `jet` and `blow_out` when None, which is deprecated.
       jet: for the lookup.
       blow_out: for the lookup.
       disable_volume_correction: send `volume` as given, with no class.
@@ -1442,11 +1443,11 @@ class Head8:
     hamilton_liquid_classes: Optional[
       Union[HamiltonLiquidClass, List[Optional[HamiltonLiquidClass]]]
     ] = None,
-    jet: bool = False,
-    blow_out: bool = False,
     disable_volume_correction: bool = False,
     read_timeout: Optional[float] = None,
     command_version: Optional[Literal["v1", "v2"]] = None,
+    jet: Optional[bool] = None,
+    blow_out: Optional[bool] = None,
   ) -> None:
     """Aspirate the same volume on every channel from one trough or eight wells.
 
@@ -1464,7 +1465,19 @@ class Head8:
       lld_mode: CAPACITIVE under `auto_surface_following` when None.
       container_segments: cross-sections sent as given. None builds them from the container
         profile and `surface_following_distance`, or as it is under `auto_surface_following`.
+      jet: deprecated, give `hamilton_liquid_classes`.
+      blow_out: deprecated, give `hamilton_liquid_classes`.
     """
+    if jet is not None:
+      warnings.warn(
+        "`jet` is deprecated, give `hamilton_liquid_classes`.", DeprecationWarning, stacklevel=2
+      )
+    if blow_out is not None:
+      warnings.warn(
+        "`blow_out` is deprecated, give `hamilton_liquid_classes`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
     del offset  # geometry uses container absolute locations
     use_channels = list(use_channels) if use_channels is not None else list(range(NUM_PROBES))
     self._require_all_channels(use_channels, "aspirate")
@@ -1487,12 +1500,20 @@ class Head8:
     )
 
     wg = _absolute_z_from_well(targets.ref_resource, self._require_deck(), liquid_height)
+    if hamilton_liquid_classes is None and not disable_volume_correction:
+      warnings.warn(
+        "`volume` without `hamilton_liquid_classes` is deprecated, give "
+        "`hamilton_liquid_classes`, e.g. from `get_star_liquid_class`, or "
+        "`disable_volume_correction`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
     liquid, corrected, hlc = self._get_volume_and_class(
       targets.volume_containers,
       float(volume),
       hamilton_liquid_classes,
-      jet,
-      blow_out,
+      bool(jet),
+      bool(blow_out),
       disable_volume_correction,
     )
     resolved_z_fluid = z_fluid if z_fluid is not None else wg.liquid_surface
@@ -1661,11 +1682,11 @@ class Head8:
     hamilton_liquid_classes: Optional[
       Union[HamiltonLiquidClass, List[Optional[HamiltonLiquidClass]]]
     ] = None,
-    jet: bool = False,
-    blow_out: bool = False,
     disable_volume_correction: bool = False,
     read_timeout: Optional[float] = None,
     command_version: Optional[Literal["v1", "v2"]] = None,
+    jet: Optional[bool] = None,
+    blow_out: Optional[bool] = None,
   ) -> None:
     """Dispense the same volume on every channel into one trough or eight wells.
 
@@ -1680,7 +1701,19 @@ class Head8:
       lld_mode: CAPACITIVE under `auto_surface_following` when None.
       container_segments: cross-sections sent as given. None builds them from the container
         profile and `surface_following_distance`, or as it is under `auto_surface_following`.
+      jet: deprecated, give `hamilton_liquid_classes`.
+      blow_out: deprecated, give `hamilton_liquid_classes`.
     """
+    if jet is not None:
+      warnings.warn(
+        "`jet` is deprecated, give `hamilton_liquid_classes`.", DeprecationWarning, stacklevel=2
+      )
+    if blow_out is not None:
+      warnings.warn(
+        "`blow_out` is deprecated, give `hamilton_liquid_classes`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
     del offset
     del blow_out_air_volume  # dispense blowout not on Prep dispense wire path today
     use_channels = list(use_channels) if use_channels is not None else list(range(NUM_PROBES))
@@ -1699,12 +1732,20 @@ class Head8:
     )
 
     wg = _absolute_z_from_well(targets.ref_resource, self._require_deck(), liquid_height)
+    if hamilton_liquid_classes is None and not disable_volume_correction:
+      warnings.warn(
+        "`volume` without `hamilton_liquid_classes` is deprecated, give "
+        "`hamilton_liquid_classes`, e.g. from `get_star_liquid_class`, or "
+        "`disable_volume_correction`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
     liquid, corrected, hlc = self._get_volume_and_class(
       targets.volume_containers,
       float(volume),
       hamilton_liquid_classes,
-      jet,
-      blow_out,
+      bool(jet),
+      bool(blow_out),
       disable_volume_correction,
     )
     resolved_z_fluid = z_fluid if z_fluid is not None else wg.liquid_surface

@@ -136,8 +136,8 @@ def get_volumes_and_classes(
           f"no liquid class is known for channel {channel_of[job]}'s tip on "
           f"{containers[job].name}: {tip.maximal_volume} uL, "
           f"{'with' if tip.has_filter else 'without'} filter, water, jet={jets[job]}, "
-          f"blow_out={blow_outs[job]}. Give hamilton_liquid_classes, "
-          f"{'blow_out=True, which has one, ' if other else ''}or piston_volumes"
+          f"blow_out={blow_outs[job]}. Give hamilton_liquid_classes"
+          f"{' (this tip has one with blow_out=True)' if other else ''} or piston_volumes"
         )
       classes.append(found)
   piston = [round(hlc.compute_corrected_volume(v), 2) for hlc, v in zip(classes, liquid)]

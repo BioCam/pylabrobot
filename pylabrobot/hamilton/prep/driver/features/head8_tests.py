@@ -963,9 +963,11 @@ def test_head8_auto_surface_following_refused_beside_a_distance_or_without_a_sur
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.filterwarnings("ignore:`volume` without:DeprecationWarning")
 def test_head8_takes_the_tips_class_and_refuses_what_one_piston_cannot_do():
   """Per probe through the resolver, as `Pipettes`: a missing class, 8 different ones and a class
-  beside `disable_volume_correction` are refused before sending; the class corrects the piston."""
+  beside `disable_volume_correction` are refused before sending; the class corrects the piston.
+  The lookup, keyed by the deprecated `blow_out`, warns."""
   from pylabrobot.hamilton.star.liquid_classes.mapping import (
     StandardVolume_Water_DispenseSurface_Part,
     Tip_50ul_Water_DispenseSurface_Empty,
@@ -983,7 +985,7 @@ def test_head8_takes_the_tips_class_and_refuses_what_one_piston_cannot_do():
     water = Tip_50ul_Water_DispenseSurface_Empty
     other = StandardVolume_Water_DispenseSurface_Part
     for kwargs, refusal in (
-      ({}, "no liquid class is known for channel 0's tip.*blow_out=True, which has one"),
+      ({}, "no liquid class is known for channel 0's tip.*this tip has one with blow_out=True"),
       ({"hamilton_liquid_classes": [water] * 7 + [other]}, "give one liquid class for all"),
       ({"hamilton_liquid_classes": [water] * 7}, "a single HLC or length-8 list"),
       ({"hamilton_liquid_classes": water, "disable_volume_correction": True}, "as given"),
@@ -995,8 +997,10 @@ def test_head8_takes_the_tips_class_and_refuses_what_one_piston_cannot_do():
     try:
       for well in wells:
         well.tracker.set_volume(100.0)
-      await p.head8.aspirate(containers=wells, volume=50, blow_out=True)
-      await p.head8.dispense(containers=dst_plate.column(0), volume=50, blow_out=True)
+      for call, containers in ((p.head8.aspirate, wells), (p.head8.dispense, dst_plate.column(0))):
+        with pytest.warns(DeprecationWarning) as caught:
+          await call(containers=containers, volume=50, blow_out=True)
+        assert [str(w.message).split(" ")[0] for w in caught] == ["`blow_out`", "`volume`"]
     finally:
       set_volume_tracking(False)
     (aspirate,) = [c for c in captured if hasattr(c, "aspirate_parameters")]
@@ -1066,6 +1070,7 @@ def test_the_head_pushes_the_channels_forward_to_its_clearance():
 @pytest.mark.parametrize("version", ["v1", "v2"])
 @pytest.mark.parametrize("repetitions", [1, 5])
 @pytest.mark.parametrize("fail_mix", [False, True])
+@pytest.mark.filterwarnings("error:`volume` without:DeprecationWarning")
 def test_head8_mix_cycles_and_volume_tracking(version, repetitions, fail_mix):
   async def _run():
     deck, rack, plate, _ = _make_deck()
@@ -1185,7 +1190,9 @@ def test_head8_pre_mix_timeout_and_transient_volume_validation(read_timeout):
       p.send_command = recording  # type: ignore[method-assign]
       spec = Mix(volume=20, repetitions=10, flow_rate=5)
       with pytest.raises(TooLittleLiquidError, match="too little liquid"):
-        await p.head8.aspirate(containers=wells, volume=5, pre_mix=spec)
+        await p.head8.aspirate(
+          containers=wells, volume=5, pre_mix=spec, disable_volume_correction=True
+        )
       assert captured == []
       for well in wells:
         well.tracker.set_volume(100)
