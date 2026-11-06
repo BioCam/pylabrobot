@@ -1208,9 +1208,13 @@ class TestDispensingDriveUnits(unittest.IsolatedAsyncioTestCase):
 
 
 class TestHead96AspirateDispense(unittest.IsolatedAsyncioTestCase):
-  """`aspirate` and `dispense` over a plate and a one-well trough, the raw commands recorded."""
+  """`aspirate` and `dispense` over a plate and a one-well trough, the raw commands recorded.
+  `water` is the tips' water class."""
 
   async def asyncSetUp(self):
+    from pylabrobot.hamilton.star.liquid_classes.mapping import (
+      StandardVolumeFilter_96COREHead_Water_DispenseSurface_Part,
+    )
     from pylabrobot.resources import set_tip_tracking, set_volume_tracking
     from pylabrobot.resources.agenbio.plates import agenbio_1_troughplate_190mL_Fl
     from pylabrobot.resources.corning.plates import cor_96_wellplate_360uL_Fb
@@ -1235,6 +1239,7 @@ class TestHead96AspirateDispense(unittest.IsolatedAsyncioTestCase):
     plate_car[3] = trough_plate = agenbio_1_troughplate_190mL_Fl(name="trough")
     self.deck.assign_child_resource(plate_car, track=7)
     self.trough = trough_plate.get_item(0)
+    self.water = StandardVolumeFilter_96COREHead_Water_DispenseSurface_Part
     await self.head.pick_up_tips(tip_rack)
     # Where the piston stands is read, never moved: the simulator leaves it where it started.
     await self.head.dispensing_drive_request_uL_position()
@@ -1272,7 +1277,7 @@ class TestHead96AspirateDispense(unittest.IsolatedAsyncioTestCase):
     return {well.tracker.get_used_volume() for well in self.plate.get_all_items()}
 
   async def test_off_over_a_plate_draws_at_the_cavity_bottom_and_books_each_well(self):
-    await self.head.aspirate(self.plate, 50.0)
+    await self.head.aspirate(self.plate, 50.0, hamilton_liquid_class=self.water)
     self.assertEqual(
       self.sent,
       [
@@ -1508,6 +1513,25 @@ class TestHead96AspirateDispense(unittest.IsolatedAsyncioTestCase):
     await self.head.dispense(self.plate, 20.0, hamilton_liquid_class=looked_up, jet=True)
     self.assertEqual(self.sent[-1][1]["dispensing_mode"], 1)
 
+  async def test_jet_blow_out_and_a_volume_without_a_class_warn_and_send_what_a_class_does(self):
+    from pylabrobot.hamilton.star.liquid_classes.mapping import (
+      StandardVolumeFilter_96COREHead_Water_DispenseJet_Empty as jet,
+    )
+
+    await self.head.aspirate(self.plate, 50.0, hamilton_liquid_class=jet)
+    with self.assertWarns(DeprecationWarning) as caught:
+      await self.head.aspirate(self.plate, 50.0, jet=True, blow_out=True)
+    deprecated = [str(warning.message).split(" ")[0] for warning in caught.warnings]
+    self.assertEqual(deprecated, ["`jet`", "`blow_out`", "`volume`"])
+    await self.head.dispense(self.plate, 50.0, hamilton_liquid_class=jet, jet=True)
+    with self.assertWarns(DeprecationWarning) as caught:
+      await self.head.dispense(self.plate, 50.0, jet=True, blow_out=True)
+    deprecated = [str(warning.message).split(" ")[0] for warning in caught.warnings]
+    self.assertEqual(deprecated, ["`blow_out`", "`volume`"])
+    self.assertEqual([command for command, _ in self.sent], ["EA", "EA", "ED", "ED"])
+    self.assertEqual(self.sent[0], self.sent[1])
+    self.assertEqual(self.sent[2], self.sent[3])
+
   async def test_no_liquid_under_capacitive_raises_and_the_head_goes_up(self):
     with self.assertRaises(RuntimeError):
       await self.head.aspirate(self.trough, piston_volume=20.0, lld_mode=LLDMode.CAPACITIVE)
@@ -1534,17 +1558,29 @@ class TestHead96AspirateDispense(unittest.IsolatedAsyncioTestCase):
   async def test_refusals_send_nothing_and_move_nothing(self):
     z = await self.head.request_z_position()
     refusals = {
-      "pressure": lambda: self.head.aspirate(self.plate, 5.0, lld_mode=LLDMode.PRESSURE),
+      "pressure": lambda: self.head.aspirate(
+        self.plate, 5.0, lld_mode=LLDMode.PRESSURE, hamilton_liquid_class=self.water
+      ),
       "both volumes": lambda: self.head.aspirate(self.plate, 5.0, piston_volume=5.0),
       "a height under cLLD": lambda: self.head.aspirate(
-        self.plate, 5.0, liquid_height=2.0, lld_mode=LLDMode.CAPACITIVE
+        self.plate,
+        5.0,
+        liquid_height=2.0,
+        lld_mode=LLDMode.CAPACITIVE,
+        hamilton_liquid_class=self.water,
       ),
-      "eight wells": lambda: self.head.aspirate(self.plate.get_all_items()[:8], 5.0),
-      "one well of many": lambda: self.head.aspirate(self.plate.get_item("B1"), 5.0),
+      "eight wells": lambda: self.head.aspirate(
+        self.plate.get_all_items()[:8], 5.0, hamilton_liquid_class=self.water
+      ),
+      "one well of many": lambda: self.head.aspirate(
+        self.plate.get_item("B1"), 5.0, hamilton_liquid_class=self.water
+      ),
       "a fast flow": lambda: self.head.aspirate(self.plate, piston_volume=5.0, flow_rate=900.0),
       "past the piston": lambda: self.head.aspirate(self.plate, piston_volume=5_000.0),
       "an empty piston": lambda: self.head.dispense(self.plate, piston_volume=5.0),
-      "z touch": lambda: self.head.dispense(self.plate, 5.0, lld_mode=LLDMode.ZTOUCH),
+      "z touch": lambda: self.head.dispense(
+        self.plate, 5.0, lld_mode=LLDMode.ZTOUCH, hamilton_liquid_class=self.water
+      ),
     }
     for name, refused in refusals.items():
       with self.subTest(name):

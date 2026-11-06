@@ -1479,7 +1479,8 @@ class Head96(Head):
       tip: the head's tip, for the lookup.
       volume: liquid per channel, corrected by a class; or None.
       piston_volume: piston travel per channel, as given; or None.
-      hamilton_liquid_class: looked up for the tip, water, `jet` and `blow_out` when None.
+      hamilton_liquid_class: looked up for the tip, water, `jet` and `blow_out` when None, which is
+        deprecated.
       jet: for the lookup.
       blow_out: for the lookup.
       how_moved: "drawn" or "pushed out", for the refusals.
@@ -2004,8 +2005,6 @@ class Head96(Head):
     flow_rate: Optional[float] = None,
     *,
     hamilton_liquid_class: Optional[HamiltonLiquidClass] = None,
-    jet: bool = False,
-    blow_out: bool = False,
     piston_volume: Optional[float] = None,
     lld_sensor: Literal["A1 or B2", "G11 or H12", "any", "all"] = "any",
     search_speed: float = 10.0,
@@ -2027,6 +2026,8 @@ class Head96(Head):
     limit_curve_index: Optional[int] = None,
     minimum_traverse_height_start: Optional[float] = None,
     minimum_traverse_height_end: Optional[float] = None,
+    jet: Optional[bool] = None,
+    blow_out: Optional[bool] = None,
   ) -> None:
     """Draw liquid with the whole head, in one `C0 EA`.
 
@@ -2047,9 +2048,8 @@ class Head96(Head):
       lld_mode: OFF, or CAPACITIVE to find the surface first; the head has no other. OFF when
         None; CAPACITIVE under `auto_surface_following`.
       flow_rate: in uL/s. The class's, else 100.0, when None.
-      hamilton_liquid_class: looked up for the tip, water, `jet` and `blow_out` when None.
-      jet: whether the later dispense is a jet, for the lookup.
-      blow_out: whether the later dispense blows out, for the lookup.
+      hamilton_liquid_class: looked up for the tip, water, `jet` and `blow_out` when None, which is
+        deprecated.
       piston_volume: what the piston draws per channel, in uL, as given.
       lld_sensor: which cLLD sensors trigger, under CAPACITIVE.
       search_speed: of the driver's own search, in mm/s.
@@ -2077,6 +2077,8 @@ class Head96(Head):
         `configuration.traversal_z_position` when None; safe Z under CAPACITIVE.
       minimum_traverse_height_end: where the tips are left, in mm.
         `configuration.traversal_z_position` when None.
+      jet: deprecated, give `hamilton_liquid_class`.
+      blow_out: deprecated, give `hamilton_liquid_class`.
 
     Raises:
       ValueError: An argument out of range, both or neither of `volume` and `piston_volume`, a
@@ -2087,6 +2089,14 @@ class Head96(Head):
         functions under CAPACITIVE or auto surface following, or no liquid found.
       TypeError: A tip that is not a Hamilton tip.
     """
+    if jet is not None:
+      warnings.warn(
+        "`jet` is deprecated, give `hamilton_liquid_class`.", DeprecationWarning, stacklevel=2
+      )
+    if blow_out is not None:
+      warnings.warn(
+        "`blow_out` is deprecated, give `hamilton_liquid_class`.", DeprecationWarning, stacklevel=2
+      )
     lld_mode = self._get_lld_mode(
       lld_mode, auto_surface_following, surface_following_distance, liquid_height
     )
@@ -2110,8 +2120,15 @@ class Head96(Head):
       )
     tips = self._get_mounted_tips()
     tip = next(t for t in tips if t is not None)
+    if volume is not None and piston_volume is None and hamilton_liquid_class is None:
+      warnings.warn(
+        "`volume` without `hamilton_liquid_class` is deprecated, give `hamilton_liquid_class`, "
+        "e.g. from `get_star_liquid_class`, or `piston_volume`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
     liquid, drawn, hlc = self._get_liquid_and_piston_volume(
-      tip, volume, piston_volume, hamilton_liquid_class, jet, blow_out, "drawn"
+      tip, volume, piston_volume, hamilton_liquid_class, bool(jet), bool(blow_out), "drawn"
     )
 
     def by_class(name: str, given: Optional[float]) -> Optional[float]:
@@ -2638,7 +2655,8 @@ class Head96(Head):
       lld_mode: OFF, or CAPACITIVE to find the surface first; the head has no other. OFF when
         None; CAPACITIVE under `auto_surface_following`.
       flow_rate: in uL/s. The class's, else 120.0, when None.
-      hamilton_liquid_class: looked up for the tip, water, `jet` and `blow_out` when None.
+      hamilton_liquid_class: looked up for the tip, water, `jet` and `blow_out` when None, which is
+        deprecated.
       jet: a jet from above the liquid, rather than at the surface.
       empty: the tips are emptied where they stand; the model books what they hold.
       piston_volume: what the piston pushes out per channel, in uL, as given.
@@ -2718,6 +2736,13 @@ class Head96(Head):
       )
     tips = self._get_mounted_tips()
     tip = next(t for t in tips if t is not None)
+    if volume is not None and piston_volume is None and hamilton_liquid_class is None:
+      warnings.warn(
+        "`volume` without `hamilton_liquid_class` is deprecated, give `hamilton_liquid_class`, "
+        "e.g. from `get_star_liquid_class`, or `piston_volume`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
     asked, pushed, hlc = self._get_liquid_and_piston_volume(
       tip, volume, piston_volume, hamilton_liquid_class, jet, bool(blow_out), "pushed out"
     )

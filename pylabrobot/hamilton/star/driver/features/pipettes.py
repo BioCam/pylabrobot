@@ -6132,8 +6132,6 @@ class Pipettes:
     flow_rates: Optional[Sequence[float]] = None,
     *,
     hamilton_liquid_classes: Optional[Sequence[HamiltonLiquidClass]] = None,
-    jet: Optional[Sequence[bool]] = None,
-    blow_out: Optional[Sequence[bool]] = None,
     piston_volumes: Optional[Sequence[float]] = None,
     search_speed: float = 10.0,
     approach_speed: float = 125.0,
@@ -6158,6 +6156,8 @@ class Pipettes:
     minimum_traverse_height_end: Optional[float] = None,
     x_grouping_tolerance: Optional[float] = None,
     resource_offsets: Optional[List[Coordinate]] = None,
+    jet: Optional[Sequence[bool]] = None,
+    blow_out: Optional[Sequence[bool]] = None,
   ) -> None:
     """Draw liquid from each container with a channel's tip.
 
@@ -6193,9 +6193,7 @@ class Pipettes:
         `auto_surface_following`.
       flow_rates: in uL/s. The class's, else 100.0, when None.
       hamilton_liquid_classes: one per container. Looked up for the channel's tip, water, `jet`
-        and `blow_out` when None.
-      jet: whether the later dispense is a jet, for the lookup. False when None.
-      blow_out: whether the later dispense blows out, for the lookup. False when None.
+        and `blow_out` when None, which is deprecated.
       piston_volumes: what each piston draws, in uL, as given. One of this and `volumes`.
       search_speed: of the driver's own search, liquid or floor, and of the immersion after it, in
         mm/s.
@@ -6238,6 +6236,8 @@ class Pipettes:
       x_grouping_tolerance: X distance within which containers share a batch, in mm.
         `default_x_grouping_tolerance` when None.
       resource_offsets: deprecated, use `offsets`.
+      jet: deprecated, give `hamilton_liquid_classes`.
+      blow_out: deprecated, give `hamilton_liquid_classes`.
 
     Raises:
       ValueError: An argument out of range, lists that do not match, both or neither of `volumes`
@@ -6258,6 +6258,16 @@ class Pipettes:
       )
       if offsets is None:
         offsets = resource_offsets
+    if jet is not None:
+      warnings.warn(
+        "`jet` is deprecated, give `hamilton_liquid_classes`.", DeprecationWarning, stacklevel=2
+      )
+    if blow_out is not None:
+      warnings.warn(
+        "`blow_out` is deprecated, give `hamilton_liquid_classes`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
     deck = self._driver.deck
     if deck is None:
       raise RuntimeError("containers are placed from the deck; this driver was given none")
@@ -6284,6 +6294,13 @@ class Pipettes:
       job for job in range(n) if modes[job] in (self.LLDMode.CAPACITIVE, self.LLDMode.PRESSURE)
     ]
     check_volume_arguments(volumes, piston_volumes, hamilton_liquid_classes, "drawn")
+    if volumes is not None and hamilton_liquid_classes is None:
+      warnings.warn(
+        "`volumes` without `hamilton_liquid_classes` is deprecated, give "
+        "`hamilton_liquid_classes`, e.g. from `get_star_liquid_class`, or `piston_volumes`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
 
     channel_of = self._get_channel_of_each_container(n, use_channels)
     presence, tips = await self._check_channels_before_pipetting(
@@ -7037,7 +7054,7 @@ class Pipettes:
         CAPACITIVE under `auto_surface_following`.
       flow_rates: in uL/s. The class's, else 120.0, when None.
       hamilton_liquid_classes: one per container. Looked up for the channel's tip, water, `jets`
-        and `blow_out` when None.
+        and `blow_out` when None, which is deprecated.
       jets: whether each dispense is a jet from above the liquid. False when None: at the surface.
       empty: whether the tip is emptied where it stands, air and all; the model then books what
         the tip holds. False when None.
@@ -7150,6 +7167,13 @@ class Pipettes:
     touched = [job for job in range(n) if modes[job] == self.LLDMode.ZTOUCH]
     searched = [job for job in range(n) if modes[job] == self.LLDMode.CAPACITIVE]
     check_volume_arguments(volumes, piston_volumes, hamilton_liquid_classes, "pushed out")
+    if volumes is not None and hamilton_liquid_classes is None:
+      warnings.warn(
+        "`volumes` without `hamilton_liquid_classes` is deprecated, give "
+        "`hamilton_liquid_classes`, e.g. from `get_star_liquid_class`, or `piston_volumes`.",
+        DeprecationWarning,
+        stacklevel=2,
+      )
 
     channel_of = self._get_channel_of_each_container(n, use_channels)
     presence, tips = await self._check_channels_before_pipetting(channel_of, touched, "a dispense")
