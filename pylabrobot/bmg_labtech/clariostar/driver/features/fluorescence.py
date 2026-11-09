@@ -1061,6 +1061,10 @@ class Fluorescence(Measurement):
 
   async def detect_all_filters(
     self,
+    *,
+    simulated_data: Optional[
+      Tuple[ExcitationFilterSlide, DichroicFilterSlide, EmissionFilterSlide]
+    ] = None,
   ) -> Tuple[ExcitationFilterSlide, DichroicFilterSlide, EmissionFilterSlide]:
     """Detect the filters in every position.
 
@@ -1070,6 +1074,10 @@ class Fluorescence(Measurement):
       position holds none.
     - The slides replace `excitation_filter_slide`, `dichroic_filter_slide` and
       `emission_filter_slide` once every position is scanned.
+
+    Args:
+      simulated_data: the slides the simulated reader (`simulator`) holds; a real reader scans
+        its slides and ignores it, so one call serves both.
 
     Returns:
       the excitation, dichroic and emission filter slides.
@@ -1319,6 +1327,7 @@ class Fluorescence(Measurement):
     gain_target_percent: Optional[float] = None,
     maximum_focal_height: Optional[float] = None,
     optic_position: Optional[OpticPosition] = None,
+    simulated_data: Optional[CLARIOstarZProfileResult] = None,
     timeout: Optional[float] = None,
   ) -> CLARIOstarZProfileResult:
     """Measure the z-profile of `well` and, with a target, fit the gain at its peak.
@@ -1339,6 +1348,8 @@ class Fluorescence(Measurement):
         `configuration.focal_height_range`; None for 15 mm from the top. The bottom optic's
         range is not known, so give it for the bottom.
       optic_position: "top" or "bottom"; `default_optic_position` when None.
+      simulated_data: the well's z-profile on the simulated reader (`simulator`); a real reader
+        scans the well and ignores it, so one call serves both.
       timeout: seconds the z-scan may take; `default_read_timeout` when None.
 
     Returns:
@@ -2338,6 +2349,7 @@ class Fluorescence(Measurement):
     focal_height: Optional[float] = None,
     measurement_settings: Optional[MeasurementSettings] = None,
     shake_settings: Optional[ShakeSettings] = None,
+    simulated_data: Optional[FluorescenceSpectrumResult] = None,
     timeout: Optional[float] = None,
     results_directory: Optional[str] = None,
   ) -> CLARIOstarFluorescenceSpectrumResult:
@@ -2369,6 +2381,8 @@ class Fluorescence(Measurement):
       measurement_settings: how to read, without a pause, a matrix or another corner, reading
         direction or bidirectional setting; None reads with the defaults.
       shake_settings: shake the plate before the read; None does not shake.
+      simulated_data: what each measured well reads on the simulated reader (`simulator`); a
+        real reader measures the plate and ignores it, so one call serves both.
       timeout: seconds the run may take; `default_read_timeout` when None, too short for a full
         plate of a long spectrum (14 s per well at 221 wavelengths).
       results_directory: the directory the read's rows are appended to once it is complete

@@ -3,9 +3,9 @@
 import logging
 import os
 import random
+from dataclasses import replace
 from datetime import datetime
 from typing import (
-  Any,
   Callable,
   Dict,
   List,
@@ -22,7 +22,7 @@ from pylabrobot.io.ftdi import FTDI
 from pylabrobot.io.usb import USB
 from pylabrobot.lib.absorbance.results import AbsorbanceResult, AbsorbanceSpectrumResult
 from pylabrobot.lib.fluorescence.channels import FluorescenceChannel
-from pylabrobot.lib.fluorescence.results import FluorescenceResult
+from pylabrobot.lib.fluorescence.results import FluorescenceResult, FluorescenceSpectrumResult
 from pylabrobot.lib.luminescence.results import LuminescenceResult
 from pylabrobot.lib.optics.holders import (
   DichroicFilterSlide,
@@ -46,6 +46,7 @@ from .features.fluorescence import (
   CLARIOstarZProfileResult,
   Fluorescence,
   OpticPosition,
+  Scan,
 )
 from .features.luminescence import CLARIOstarLuminescenceResult, Luminescence
 from .features.measurement import (
@@ -398,8 +399,8 @@ class CLARIOstarSimulationAbsorbance(Absorbance):
 class CLARIOstarSimulationFluorescence(Fluorescence):
   """Fluorescence on a simulated reader: each read is checked and encoded, nothing is sent.
 
-  Every well reads random counts within the detector's range, or its counts in `simulated_data`.
-  Spectra, filter detection and z-profiles are not simulated yet.
+  Every well reads random counts within the detector's range, or its counts in `simulated_data`;
+  filter detection finds empty slides unless given some; a z-profile needs `simulated_data`.
   """
 
   def _get_simulated_counts(
@@ -567,20 +568,230 @@ class CLARIOstarSimulationFluorescence(Fluorescence):
     return results[0] if isinstance(fluorescence_channels, FluorescenceChannel) else results
 
   async def measure_spectrum(
-    self, *args: Any, **kwargs: Any
+    self,
+    *,
+    scan: Scan,
+    start_wavelength: int,
+    end_wavelength: int,
+    excitation_wavelength: Optional[float] = None,
+    excitation_bandwidth: Optional[float] = None,
+    emission_wavelength: Optional[float] = None,
+    emission_bandwidth: Optional[float] = None,
+    gain: int,
+    wells: Optional[List[Well]] = None,
+    step_size: int = 1,
+    focal_height: Optional[float] = None,
+    measurement_settings: Optional[MeasurementSettings] = None,
+    shake_settings: Optional[ShakeSettings] = None,
+    simulated_data: Optional[FluorescenceSpectrumResult] = None,
+    timeout: Optional[float] = None,
+    results_directory: Optional[str] = None,
   ) -> CLARIOstarFluorescenceSpectrumResult:
-    """Raise: a fluorescence spectrum is not simulated yet."""
-    raise NotImplementedError("a fluorescence spectrum is not simulated yet")
+    """Check and encode the spectrum; every measured well reads random counts at every
+    wavelength.
+
+    Args:
+      scan, start_wavelength, end_wavelength, excitation_wavelength, excitation_bandwidth,
+        emission_wavelength, emission_bandwidth, gain, wells, step_size, focal_height,
+        measurement_settings, shake_settings, timeout, results_directory: as
+        `Fluorescence.measure_spectrum`.
+      simulated_data: a spectrum an earlier `measure_spectrum` returned, on a reader or in
+        simulation; each measured well reads its spectrum there instead of random counts.
+
+    Raises:
+      RuntimeError: if no plate is in the plate holder or the drawer is open.
+      ValueError: as `Fluorescence.measure_spectrum` for the arguments, or if `simulated_data`
+        has no full spectrum for a measured well.
+    """
+    measurement = MeasurementSettings() if measurement_settings is None else measurement_settings
+    fixed = self._get_filled_fluorescence_channel(
+      FluorescenceChannel(
+        excitation_wavelength=excitation_wavelength,
+        excitation_bandwidth=excitation_bandwidth,
+        emission_wavelength=emission_wavelength,
+        emission_bandwidth=emission_bandwidth,
+      )
+    )
+    self._check_spectrum_arguments(
+      scan,
+      start_wavelength,
+      end_wavelength,
+      step_size,
+      fixed,
+      gain,
+      focal_height,
+      measurement,
+      timeout=timeout,
+    )
+    plate, wells = self._get_plate_and_wells(measurement, shake_settings, wells)
+    if focal_height is None:
+      focal_height = self._get_default_focal_height(wells)
+    start = self._get_scanned_fluorescence_channel(fixed, scan, start_wavelength)
+    end = self._get_scanned_fluorescence_channel(fixed, scan, end_wavelength)
+    wavelengths = list(range(start_wavelength, end_wavelength + 1))
+    scanned = self._WAVELENGTH_SELECTORS["scanned_monochromator"]
+    fixed_selector = self._WAVELENGTH_SELECTORS["fixed_monochromator"]
+    selectors = (fixed_selector, scanned) if scan == "excitation" else (scanned, fixed_selector)
+    self._compute_run_parameters(
+      plate,
+      wells,
+      measurement,
+      shake_settings,
+      focal_height=focal_height,
+      kind=self._SPECTRUM,
+      count=len(wavelengths),
+      encoded_fluorescence_channels=[
+        self._encode_fluorescence_channel(start, gain, selectors),
+        self._encode_fluorescence_channel(end, gain, selectors),
+      ],
+      scan_byte=self._SPECTRUM_SCAN_BYTE,
+    )
+    identifiers = _get_measured_identifiers(plate, wells)
+    logger.info(
+      "fluorescence spectrum: %s %d to %d nm, %d of %d wells of %s",
+      scan,
+      start_wavelength,
+      end_wavelength,
+      len(identifiers),
+      plate.num_items,
+      plate.name,
+    )
+    if simulated_data is not None:
+      missing = [
+        identifier
+        for identifier in identifiers
+        if any(
+          wavelength not in simulated_data.data.get(identifier, {}) for wavelength in wavelengths
+        )
+      ]
+      if missing:
+        raise ValueError(f"simulated_data has no full spectrum for {missing}")
+    status = await self._driver.request_status()
+    self._check_drawer_in(status)
+    timestamp = datetime.now()
+    if simulated_data is None:
+      logger.debug("%s read: simulation: random counts", SIMULATED_LINK)
+      spectra = {
+        identifier: [random.randint(0, _FLUORESCENCE_CEILING) for _ in wavelengths]
+        for identifier in identifiers
+      }
+    else:
+      logger.debug("%s read: simulation: simulated_data", SIMULATED_LINK)
+      spectra = {
+        identifier: [
+          round(simulated_data.data[identifier][wavelength]) for wavelength in wavelengths
+        ]
+        for identifier in identifiers
+      }
+    result = self._get_spectrum_result(
+      fixed,
+      gain,
+      wavelengths,
+      spectra,
+      temperature=status.temperature_bottom,
+      start_timestamp=timestamp,
+      end_timestamp=timestamp,
+    )
+    await self._append_results(self._check_results_directory(results_directory), [result])
+    return result
 
   async def detect_all_filters(
-    self, *args: Any, **kwargs: Any
+    self,
+    *,
+    simulated_data: Optional[
+      Tuple[ExcitationFilterSlide, DichroicFilterSlide, EmissionFilterSlide]
+    ] = None,
   ) -> Tuple[ExcitationFilterSlide, DichroicFilterSlide, EmissionFilterSlide]:
-    """Raise: filter detection is not simulated yet."""
-    raise NotImplementedError("filter detection is not simulated yet")
+    """Check the reader can detect filters; its slides are empty, or `simulated_data`'s.
 
-  async def measure_z_profile(self, *args: Any, **kwargs: Any) -> CLARIOstarZProfileResult:
-    """Raise: a z-profile is not simulated yet."""
-    raise NotImplementedError("a z-profile is not simulated yet")
+    The slides are kept as `Fluorescence.detect_all_filters` keeps them.
+
+    Args:
+      simulated_data: the slides an earlier `detect_all_filters` returned, on a reader or in
+        simulation.
+
+    Raises:
+      RuntimeError: as `Fluorescence.detect_all_filters` for a reader without what it scans with.
+      ValueError: if a slide of `simulated_data` has another number of positions than the
+        configuration.
+    """
+    device = self._driver.configuration
+    if device.spectrometer is False or device.absorbance_available is False:
+      raise RuntimeError("the reader reports no spectrometer, which filter detection scans with")
+    if device.extended_red_photomultiplier_tube is False:
+      raise RuntimeError(
+        "the reader reports no extended-red photomultiplier; the emission scans' limits are only "
+        "verified with one"
+      )
+    slots = (
+      self.configuration.excitation_filter_slots,
+      self.configuration.dichroic_filter_slots,
+      self.configuration.emission_filter_slots,
+    )
+    if simulated_data is None:
+      slides = (
+        ExcitationFilterSlide(slots[0]),
+        DichroicFilterSlide(slots[1]),
+        EmissionFilterSlide(slots[2]),
+      )
+    else:
+      given = tuple(slide.maximum_slots for slide in simulated_data)
+      if given != slots:
+        raise ValueError(f"simulated_data's slides have {given} positions, the reader {slots}")
+      slides = simulated_data
+    logger.debug("%s filter detection: simulation", SIMULATED_LINK)
+    self.excitation_filter_slide, self.dichroic_filter_slide, self.emission_filter_slide = slides
+    return slides
+
+  async def measure_z_profile(
+    self,
+    fluorescence_channel: FluorescenceChannel,
+    *,
+    well: Well,
+    gain_target_percent: Optional[float] = None,
+    maximum_focal_height: Optional[float] = None,
+    optic_position: Optional[OpticPosition] = None,
+    simulated_data: Optional[CLARIOstarZProfileResult] = None,
+    timeout: Optional[float] = None,
+  ) -> CLARIOstarZProfileResult:
+    """Check and encode the z-scan; its profile is `simulated_data`'s, with new timestamps.
+
+    No profile is invented: where the signal peaks depends on the sample and the optics.
+
+    Args:
+      fluorescence_channel, well, gain_target_percent, maximum_focal_height, optic_position,
+        timeout: as `Fluorescence.measure_z_profile`.
+      simulated_data: a z-profile an earlier `measure_z_profile` returned of the same well, on a
+        reader or in simulation.
+
+    Raises:
+      RuntimeError: if no plate is in the plate holder or the drawer is open.
+      ValueError: as `Fluorescence.measure_z_profile` for the arguments, or if `simulated_data`
+        is of another well.
+      NotImplementedError: without `simulated_data`.
+    """
+    optic = self.default_optic_position if optic_position is None else optic_position
+    if maximum_focal_height is None:
+      if optic == "bottom":
+        raise ValueError("give maximum_focal_height for the bottom optic")
+      maximum_focal_height = 15.0
+    filled = self._get_filled_fluorescence_channel(fluorescence_channel)
+    self._check_z_profile_arguments(
+      filled, maximum_focal_height, gain_target_percent, optic, timeout=timeout
+    )
+    plate, _ = self._get_plate_and_wells(MeasurementSettings(), None, [well])
+    self._compute_z_profile_parameters(
+      plate, well, filled, maximum_focal_height, gain_target_percent, optic
+    )
+    if simulated_data is None:
+      raise NotImplementedError("a z-profile is not simulated; give simulated_data")
+    identifier = plate.get_child_identifier(well)
+    if simulated_data.well != identifier:
+      raise ValueError(f"simulated_data is of well {simulated_data.well}, measuring {identifier}")
+    self._check_drawer_in(await self._driver.request_status())
+    logger.debug("%s z-profile: simulation: simulated_data", SIMULATED_LINK)
+    timestamp = datetime.now()
+    return replace(simulated_data, start_timestamp=timestamp, end_timestamp=timestamp)
 
 
 class CLARIOstarSimulationLuminescence(Luminescence):

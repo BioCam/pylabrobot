@@ -1745,20 +1745,63 @@ class SimulatedFluorescenceTests(unittest.IsolatedAsyncioTestCase):
     with self.assertRaises(ValueError):  # another fluorescence channel's result
       await self.fluorescence.measure(other, gain=1000, simulated_data=[earlier])
 
-  async def test_spectra_filter_detection_and_z_profiles_are_not_simulated_yet(self):
-    for call in (
-      self.fluorescence.measure_spectrum(
-        scan="emission",
-        start_wavelength=510,
-        end_wavelength=600,
-        excitation_wavelength=485,
-        gain=1000,
-      ),
-      self.fluorescence.detect_all_filters(),
-      self.fluorescence.measure_z_profile(BASELINE, well=self.plate.get_well("A1")),
-    ):
-      with self.assertRaises(NotImplementedError):
-        await call
+  async def test_a_spectrum_is_checked_and_returned_again(self):
+    spectrum = await self.fluorescence.measure_spectrum(
+      **EMISSION_SPECTRUM, gain=1000, wells=self.column_1
+    )
+    self.assertEqual(list(spectrum.data["A1"]), list(range(500, 601)))
+    self.assertEqual((spectrum.excitation_wavelength, spectrum.emission_wavelength), (400, None))
+    replayed = await self.fluorescence.measure_spectrum(
+      **EMISSION_SPECTRUM, gain=1000, wells=self.column_1, simulated_data=spectrum
+    )
+    self.assertEqual(replayed.data, spectrum.data)
+    with self.assertRaises(ValueError):  # the spectrum does not reach 601 nm
+      await self.fluorescence.measure_spectrum(
+        **dict(EMISSION_SPECTRUM, end_wavelength=601), gain=1000, simulated_data=spectrum
+      )
+
+  async def test_filter_detection_keeps_its_slides(self):
+    empty = await self.fluorescence.detect_all_filters()
+    self.assertEqual([slide.maximum_slots for slide in empty], [4, 3, 4])
+    excitation = ExcitationFilterSlide(4)
+    excitation.register(EX_TR)
+    dichroic = DichroicFilterSlide(3)
+    dichroic.register(LP_TR)
+    emission = EmissionFilterSlide(4)
+    emission.register(EM_615_18)
+    await self.fluorescence.detect_all_filters(simulated_data=(excitation, dichroic, emission))
+    self.assertIs(self.fluorescence.excitation_filter_slide, excitation)
+    by_slot = FluorescenceChannel(excitation_filter=1, dichroic_filter=1, emission_filter=1)
+    result = await self.fluorescence.measure(by_slot, gain=1000)
+    self.assertEqual(result.emission_wavelength, EM_615_18.center_wavelength)
+    with self.assertRaises(ValueError):  # three emission positions, the reader four
+      await self.fluorescence.detect_all_filters(
+        simulated_data=(excitation, dichroic, EmissionFilterSlide(3))
+      )
+
+  async def test_a_z_profile_is_only_returned_again(self):
+    well = self.plate.get_well("A1")
+    with self.assertRaises(NotImplementedError):
+      await self.fluorescence.measure_z_profile(BASELINE, well=well)
+    earlier = CLARIOstarZProfileResult(
+      well="A1",
+      gain=None,
+      z_profile=[(15.0, 100), (8.4, 900), (0.7, 50)],
+      average_signal=880,
+      peak_counts=None,
+      peak_detector_percent=None,
+      peak_focal_height=8.4,
+      temperature=None,
+      start_timestamp=datetime(2000, 1, 1),
+      end_timestamp=datetime(2000, 1, 1),
+    )
+    profile = await self.fluorescence.measure_z_profile(BASELINE, well=well, simulated_data=earlier)
+    self.assertEqual((profile.z_profile, profile.peak_focal_height), (earlier.z_profile, 8.4))
+    self.assertGreater(profile.start_timestamp, earlier.start_timestamp)
+    with self.assertRaises(ValueError):  # another well's
+      await self.fluorescence.measure_z_profile(
+        BASELINE, well=self.plate.get_well("B1"), simulated_data=earlier
+      )
 
 
 def load_grid_ground_truth() -> Dict[str, Any]:
