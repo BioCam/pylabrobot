@@ -6,6 +6,7 @@ import gzip
 import json
 import math
 import os
+import tempfile
 import unittest
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -13,7 +14,6 @@ from unittest.mock import patch
 
 from pylabrobot.bmg_labtech.clariostar.device import CLARIOstarPlus
 from pylabrobot.bmg_labtech.clariostar.driver.configuration_tests import decoded
-from pylabrobot.bmg_labtech.clariostar.driver.errors import FrameError
 from pylabrobot.bmg_labtech.clariostar.driver.features import measurement as measurement_module
 from pylabrobot.bmg_labtech.clariostar.driver.features.absorbance import (
   Absorbance,
@@ -23,12 +23,14 @@ from pylabrobot.bmg_labtech.clariostar.driver.features.absorbance import (
   _compute_readings,
 )
 from pylabrobot.bmg_labtech.clariostar.driver.features.drawer_tests import make_plate_holder
+from pylabrobot.bmg_labtech.clariostar.driver.features.fluorescence import Fluorescence
 from pylabrobot.bmg_labtech.clariostar.driver.features.measurement import (
   MeasurementSettings,
   ShakeSettings,
 )
-from pylabrobot.bmg_labtech.clariostar.driver.framing import ftdi_extract_payload
 from pylabrobot.bmg_labtech.clariostar.driver.master_tests import (
+  STATUS_BUSY,
+  STATUS_DRAWER_OPEN,
   STATUS_IDLE,
   STATUS_QUERY_FRAME,
   FakeFTDI,
@@ -36,7 +38,12 @@ from pylabrobot.bmg_labtech.clariostar.driver.master_tests import (
   make_driver,
 )
 from pylabrobot.bmg_labtech.clariostar.driver.simulator import CLARIOstarSimulationAbsorbance
+from pylabrobot.bmg_labtech.protocol.errors import FrameError
+from pylabrobot.bmg_labtech.protocol.framing import ftdi_extract_payload
 from pylabrobot.lib.absorbance.results import AbsorbanceResult
+from pylabrobot.lib.fluorescence import FluorescenceChannel
+from pylabrobot.lib.results import directory as directory_module
+from pylabrobot.lib.results.reading import load_rows
 from pylabrobot.resources import Plate, Well, cor_96_wellplate_360uL_Fb, create_ordered_items_2d
 from pylabrobot.resources.biorad.plates import biorad_96_wellplate_200uL_Vb
 
@@ -682,6 +689,25 @@ class ReadTests(unittest.IsolatedAsyncioTestCase):
     self.assertEqual((result.wavelength, result.temperature), (600, None))
     self.assertEqual(list(result.data), COLUMN_1)
 
+  async def test_a_real_reader_ignores_simulated_data(self):
+    io = FakeFTDI()
+    io.replies = [STATUS_IDLE, RUN_REPLY, STATUS_MEASURING, STATUS_MEASURED, COLUMN_1_DATA_REPLY]
+    plate = ground_truth_96_well_plate()
+    column_1 = plate.get_items("A1:H1")
+    given = AbsorbanceResult(
+      data={identifier: 9.0 for identifier in COLUMN_1},
+      wavelength=600,
+      temperature=None,
+      start_timestamp=datetime.now(),
+      end_timestamp=datetime.now(),
+    )
+    (result,) = await measure_with(
+      make_absorbance(io, plate), [600], wells=column_1, simulated_data=[given]
+    )
+    self.assertEqual(io.written[2:], [STATUS_QUERY_FRAME, STATUS_QUERY_FRAME, DATA_FRAME])
+    self.assertEqual(list(result.data), COLUMN_1)
+    self.assertNotIn(9.0, result.data.values())  # the plate's densities, not the given ones
+
   async def test_the_first_poll_waits_after_the_run(self):
     # As the reader answered: a poll sent right after the RUN's reply went unanswered.
     io = FakeFTDI()
@@ -729,6 +755,31 @@ class ReadTests(unittest.IsolatedAsyncioTestCase):
       await task
     self.assertIn(STOP_FRAME, io.written)
     self.assertEqual(io._pending, b"")  # no reply left for the next command to read
+
+  async def test_a_second_measurement_on_the_reader_is_refused_before_anything_is_sent(self):
+    io = YieldingFTDI()
+    absorbance = make_absorbance(io, ground_truth_96_well_plate())
+    fluorescence = Fluorescence(absorbance._driver)
+    first = asyncio.create_task(absorbance.measure(wavelengths=[600], timeout=10))
+    while not io.running:
+      await asyncio.sleep(0)
+    written = len(io.written)
+    second = {
+      "absorbance": lambda: absorbance.measure(wavelengths=[600]),
+      "fluorescence": lambda: fluorescence.measure(
+        FluorescenceChannel(excitation_wavelength=485, emission_wavelength=528),
+        gain=1000,
+        focal_height=8.5,
+      ),
+    }
+    for name, read in second.items():
+      with self.subTest(name), self.assertRaisesRegex(RuntimeError, "already running"):
+        await read()
+    self.assertEqual(len(io.written), written)  # nothing sent
+    first.cancel()
+    with self.assertRaises(asyncio.CancelledError):
+      await first
+    self.assertFalse(absorbance._driver._measuring)
 
   async def test_out_of_range_reads_send_nothing(self):
     io = FakeFTDI()
@@ -1158,6 +1209,56 @@ class SimulatedDataTests(unittest.IsolatedAsyncioTestCase):
     ):
       with self.assertRaises(ValueError):
         await measure_with(self.absorbance, wavelengths, simulated_data=simulated_data)
+
+
+class ResultsDirectoryTests(unittest.IsolatedAsyncioTestCase):
+  def setUp(self):
+    temporary = tempfile.TemporaryDirectory()
+    self.addCleanup(temporary.cleanup)
+    self.directory = os.path.join(temporary.name, "run")
+
+  async def read_column_1(self, **arguments):
+    io = FakeFTDI()
+    io.replies = [STATUS_IDLE, RUN_REPLY, STATUS_MEASURING, STATUS_MEASURED, COLUMN_1_DATA_REPLY]
+    plate = ground_truth_96_well_plate()
+    return await make_absorbance(io, plate).measure(
+      wells=plate.get_items("A1:H1"), wavelengths=[600], **arguments
+    )
+
+  async def test_a_read_appends_its_rows(self):
+    results = await self.read_column_1(results_directory=self.directory)
+    await self.read_column_1(results_directory=self.directory)
+    rows = load_rows(self.directory)
+    self.assertEqual([row["read"] for row in rows], [0] * 8 + [1] * 8)
+    self.assertEqual([row["value"] for row in rows[:8]], list(results[0].data.values()))
+
+  async def test_a_failed_write_still_returns_the_result_and_is_raised_by_the_next_read(self):
+    with (
+      patch.object(directory_module.os, "fsync", side_effect=OSError(28, "No space left")),
+      self.assertLogs(directory_module.logger, "ERROR"),
+    ):
+      results = await self.read_column_1(results_directory=self.directory)
+    self.assertEqual(list(results[0].data), COLUMN_1)
+    with self.assertRaisesRegex(RuntimeError, "not all written"):
+      await self.read_column_1(results_directory=self.directory)
+
+
+class DrawerOpenTests(unittest.IsolatedAsyncioTestCase):
+  async def test_a_read_with_the_drawer_out_is_refused_before_the_run(self):
+    io = FakeFTDI()
+    io.replies = [STATUS_DRAWER_OPEN]
+    with self.assertRaisesRegex(RuntimeError, "the drawer is open"):
+      await make_absorbance(io, ground_truth_96_well_plate()).measure(wavelengths=[600])
+    self.assertEqual(io.written, [STATUS_QUERY_FRAME])
+
+  async def test_the_drawer_is_read_from_the_idle_status_the_run_waits_for(self):
+    io = FakeFTDI()
+    io.replies = [STATUS_BUSY, STATUS_DRAWER_OPEN]
+    absorbance = make_absorbance(io, ground_truth_96_well_plate())
+    absorbance._driver.default_poll_interval = 0
+    with self.assertRaisesRegex(RuntimeError, "the drawer is open"):
+      await absorbance.measure(wavelengths=[600])
+    self.assertEqual(io.written, [STATUS_QUERY_FRAME, STATUS_QUERY_FRAME])
 
 
 if __name__ == "__main__":

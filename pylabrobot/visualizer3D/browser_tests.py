@@ -61,13 +61,18 @@ PLATFORM_FLAGS = (
   else ["--use-angle=swiftshader", "--no-sandbox", "--disable-dev-shm-usage"]
 )
 FS_PORT, WS_PORT = free_ports(2)
+# Seconds a browser has to come up: a test's, and the module's first, which on a fresh runner also
+# loads Chrome, its fonts and its software renderer from cold (up to tens of seconds).
+ATTACH_TIMEOUT = 30.0
+FIRST_ATTACH_TIMEOUT = 120.0
 
 
 class Browser:
   """Headless Chrome, driven over the devtools protocol. Enough of it to load a page and ask it
   questions. Each one has a devtools port of its own: the last may still be letting go of its."""
 
-  def __init__(self) -> None:
+  def __init__(self, attach_timeout: float = ATTACH_TIMEOUT) -> None:
+    self._attach_timeout = attach_timeout
     self._profile = tempfile.mkdtemp()
     self._stderr = tempfile.TemporaryFile(mode="w+b")
     self._chrome: Optional[subprocess.Popen] = None
@@ -92,7 +97,7 @@ class Browser:
     )
     # A browser nobody attached to would outlive the test, so a failed attach lets go of it.
     try:
-      deadline = time.monotonic() + 30
+      deadline = time.monotonic() + self._attach_timeout
       while True:
         try:
           with open(os.path.join(self._profile, "DevToolsActivePort")) as active_port:
@@ -208,6 +213,17 @@ class Browser:
         "awaitPromise": True,
       },
     )
+
+
+async def _warm_up() -> None:
+  async with Browser(attach_timeout=FIRST_ATTACH_TIMEOUT):
+    pass
+
+
+def setUpModule() -> None:
+  """Start and close one browser before any test, so a cold start is not one test's to pay."""
+  if CHROME:
+    asyncio.run(_warm_up())
 
 
 def _png_luminance(png: bytes) -> List[List[int]]:
@@ -359,6 +375,36 @@ class BrowserTests(unittest.IsolatedAsyncioTestCase):
       # The rider never moved in the model: it follows because its parent's world transform was
       # worked out again. Forgetting that is what left a 96-head standing still while its arm swept.
       self.assertEqual(await self.world_x(browser, "rider"), 720)
+
+  async def test_a_link_stays_on_its_joint_while_it_glides(self):
+    """With glide on, a location eased while its rotation jumped, so a link turned about its joint
+    left the joint mid-glide. The rider turns 90 degrees about a point 20 mm along its own x."""
+    async with Browser() as browser:
+      await self.page(browser)
+      # The glide is stepped from here: a software renderer draws too few frames to catch it.
+      await browser.evaluate("import('./live.js').then((live) => { window.live = live; })")
+      await browser.settle("window.live !== undefined", 10)
+      await browser.evaluate("window.live.setGlideSeconds(1000)")
+      # The carrier stands at 100, 100 and the rider at 20, 20 on it: the joint is at 140, 120.
+      joint, end = (140.0, 120.0), (140.0, 100.0)
+      self.rider.rotate_to(z=90, pivot_coordinate=Coordinate(20, 0, 0))
+      await browser.settle("window.live.glides.size > 0", 10)
+      drawn = await browser.evaluate(
+        "Array.from({ length: 11 }, () => {"
+        " const at = window.plrViewer.worldOf('rider').slice(0, 2);"
+        " window.live.updateGlides(100); return at; })"
+      )
+      self.assertAlmostEqual(
+        drawn[-1][0], end[0], delta=1e-3, msg="did not end where the tree says"
+      )
+      self.assertAlmostEqual(
+        drawn[-1][1], end[1], delta=1e-3, msg="did not end where the tree says"
+      )
+      between = [(x, y) for x, y in drawn if 120.5 < x < end[0] - 0.5]
+      self.assertGreater(len(between), 3, "never drawn between the two ends: it did not glide")
+      for x, y in drawn:
+        off = ((x - joint[0]) ** 2 + (y - joint[1]) ** 2) ** 0.5
+        self.assertAlmostEqual(off, 20, delta=0.2, msg=f"{x:.1f}, {y:.1f} left the joint")
 
   async def test_a_quality_level_changes_the_pixel_ratio_and_the_lighting(self):
     """The page steps quality down on its own when frames are slow; the levels are driven here.

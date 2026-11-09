@@ -14,6 +14,7 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import (
   TYPE_CHECKING,
+  Any,
   Dict,
   List,
   Literal,
@@ -24,6 +25,7 @@ from typing import (
   overload,
 )
 
+from pylabrobot.bmg_labtech.protocol.errors import FrameError
 from pylabrobot.lib.fluorescence.channels import FluorescenceChannel
 from pylabrobot.lib.fluorescence.results import FluorescenceResult, FluorescenceSpectrumResult
 from pylabrobot.lib.optics.filters import DichroicFilter, OpticalFilter
@@ -34,14 +36,14 @@ from pylabrobot.lib.optics.holders import (
   F,
   FilterSlide,
 )
-from pylabrobot.resources import Plate, Well
+from pylabrobot.resources import Coordinate, Plate, Well
 
-from ..errors import FrameError
 from .measurement import (
   Measurement,
   MeasurementConfiguration,
   MeasurementSettings,
   ShakeSettings,
+  _enforce_one_measurement_at_a_time,
   _get_measured_identifiers,
 )
 
@@ -69,10 +71,24 @@ class CLARIOstarFluorescenceResult(FluorescenceResult):
     matrix_points: a matrix scan's counts, every measured point of each well in the order the
       reader sends them, keyed as ``data``; None for any other well scan. ``data`` then holds
       the plain mean of each well's points.
+    focal_height: mm above the plate's base; None if not known.
+    optic_position: the optic read from, "top" or "bottom"; None if not known.
   """
 
   gain: int
   matrix_points: Optional[Dict[str, List[float]]] = None
+  focal_height: Optional[float] = None
+  optic_position: Optional[OpticPosition] = None
+
+  def _get_base_row(self, read: int, **columns: Any) -> Dict[str, Any]:
+    """The columns every row shares, with the gain, focal height and optic position."""
+    return super()._get_base_row(
+      read,
+      gain=self.gain,
+      focal_height=self.focal_height,
+      optic_position=self.optic_position,
+      **columns,
+    )
 
 
 @dataclass(frozen=True)
@@ -108,6 +124,36 @@ class CLARIOstarZProfileResult:
   end_timestamp: datetime
 
 
+@dataclass(frozen=True)
+class CLARIOstarFluorescenceGridResult:
+  """One grid: the counts over a square grid of points around `position`.
+
+  Attributes:
+    position: the grid's centre, x and y in mm (z 0): on the plate for a well, on the plate holder
+      for a given point, both from their left-front corner.
+    well: the identifier of the well at `position` (``"A1"``); None for a given point.
+    center: where the reader found the signal's centre, in the frame of `position`; None if it
+      found none.
+    spacing: mm between neighbouring points of the grid.
+    counts: the grid's counts, rows of points in the order the reader sends them; which way the
+      rows and columns run is not verified.
+    focal_height: the focal height the grid was read at, mm.
+    gain: the detector gain it was read at.
+    start_timestamp: when the scan started.
+    end_timestamp: when its last grid and the centres were in.
+  """
+
+  position: Coordinate
+  well: Optional[str]
+  center: Optional[Coordinate]
+  spacing: float
+  counts: List[List[int]]
+  focal_height: float
+  gain: int
+  start_timestamp: datetime
+  end_timestamp: datetime
+
+
 @dataclass
 class CLARIOstarFluorescenceSpectrumResult(FluorescenceSpectrumResult):
   """A CLARIOstar fluorescence spectrum, with the detector gain it was read with.
@@ -117,6 +163,10 @@ class CLARIOstarFluorescenceSpectrumResult(FluorescenceSpectrumResult):
   """
 
   gain: int
+
+  def _get_base_row(self, read: int, **columns: Any) -> Dict[str, Any]:
+    """The columns every row shares, with the gain."""
+    return super()._get_base_row(read, gain=self.gain, **columns)
 
 
 @dataclass
@@ -816,9 +866,7 @@ class Fluorescence(Measurement):
     )
     return f"{excitation} -> {emission}" + ("" if gain is None else f", gain {gain}")
 
-  def _get_result_optics(
-    self, fluorescence_channel: FluorescenceChannel
-  ) -> Dict[str, Optional[float]]:
+  def _get_result_optics(self, fluorescence_channel: FluorescenceChannel) -> Dict[str, Any]:
     """A fluorescence channel's optics as a result's keyword arguments.
 
     Excitation's and emission's filter passband, or monochromator wavelength and the bandwidth the
@@ -826,7 +874,7 @@ class Fluorescence(Measurement):
     """
     excitation_filter = self._get_resolved_filter(fluorescence_channel.excitation_filter)
     emission_filter = self._get_resolved_filter(fluorescence_channel.emission_filter)
-    optics: Dict[str, Optional[float]] = {}
+    optics: Dict[str, Any] = {}
     if excitation_filter is not None:
       optics["excitation_wavelength"] = excitation_filter.center_wavelength
       optics["excitation_bandwidth"] = excitation_filter.bandwidth
@@ -956,22 +1004,6 @@ class Fluorescence(Measurement):
 
   # -- detecting -----------------------------------------------------------------------------------
 
-  def _check_filter_detection_available(self) -> None:
-    """Raise unless the reader reports what filter detection scans with.
-
-    Raises:
-      RuntimeError: if the reader reports no spectrometer (absorbance), or no extended-red
-        photomultiplier for the emission scans, whose limits are verified only with one.
-    """
-    device = self._driver.configuration
-    if device.spectrometer is False or device.absorbance_available is False:
-      raise RuntimeError("the reader reports no spectrometer, which filter detection scans with")
-    if device.extended_red_photomultiplier_tube is False:
-      raise RuntimeError(
-        "the reader reports no extended-red photomultiplier; the emission scans' limits are only "
-        "verified with one"
-      )
-
   async def _detect_filter(self, slide: str, slot: int) -> bytes:
     """Scan one filter position (`24`) and return its FILTER_RESULT reply.
 
@@ -1050,7 +1082,14 @@ class Fluorescence(Measurement):
         `_EMISSION_FILTER_SCAN_TIMEOUT` for emission).
       ValueError: if a FILTER_RESULT is not one of its position.
     """
-    self._check_filter_detection_available()
+    device = self._driver.configuration
+    if device.spectrometer is False or device.absorbance_available is False:
+      raise RuntimeError("the reader reports no spectrometer, which filter detection scans with")
+    if device.extended_red_photomultiplier_tube is False:
+      raise RuntimeError(
+        "the reader reports no extended-red photomultiplier; the emission scans' limits are only "
+        "verified with one"
+      )
     excitation_slide = ExcitationFilterSlide(self.configuration.excitation_filter_slots)
     dichroic_slide = DichroicFilterSlide(self.configuration.dichroic_filter_slots)
     emission_slide = EmissionFilterSlide(self.configuration.emission_filter_slots)
@@ -1085,7 +1124,8 @@ class Fluorescence(Measurement):
   # Z-profiles
   # ----------------------------------------
 
-  # The gain definition bytes of `09`, the z-scan.
+  # The gain definition bytes of `09`, the z-scan; the first takes the optic's bit
+  # (`_OPTIC_POSITIONS`).
   _Z_PROFILE_GAIN_DEFINITION = bytes([0x04, 0x08])
   # The step between focal heights, in 0.01 mm: the only one verified.
   _Z_PROFILE_RESOLUTION = 10
@@ -1101,16 +1141,18 @@ class Fluorescence(Measurement):
     fluorescence_channel: FluorescenceChannel,
     maximum_focal_height: float,
     gain_target_percent: Optional[float],
+    optic_position: str,
     *,
     timeout: Optional[float] = None,
   ) -> None:
-    """Raise if the fluorescence channel, maximum focal height, target or timeout is out of range.
+    """Raise if the fluorescence channel, maximum focal height, target, optic or timeout is out of
+    range.
 
     Raises:
       ValueError: listing every violation: the fluorescence channel's
         (`_check_fluorescence_channel`), a maximum focal height not in 0.1 mm steps above 0 within
-        `focal_height_range` (the reader refuses 0), a target not above 0 up to 100 %, a timeout
-        not positive.
+        `focal_height_range` (the reader refuses 0), a target not above 0 up to 100 %, the optic's
+        (`_check_optic_position`), a timeout not positive.
     """
     errors = self._check_fluorescence_channel(fluorescence_channel)
     lowest, highest = self.configuration.focal_height_range
@@ -1125,6 +1167,7 @@ class Fluorescence(Measurement):
       )
     if gain_target_percent is not None and not 0 < gain_target_percent <= 100:
       errors.append(f"gain_target_percent must be above 0 up to 100, got {gain_target_percent}")
+    errors += self._check_optic_position(optic_position)
     if timeout is not None and not timeout > 0:
       errors.append(f"timeout must be positive, got {timeout}")
     if errors:
@@ -1139,12 +1182,13 @@ class Fluorescence(Measurement):
     fluorescence_channel: FluorescenceChannel,
     maximum_focal_height: float,
     gain_target_percent: Optional[float],
+    optic_position: str,
   ) -> bytes:
     """`09`'s 42 parameter bytes.
 
-    The plate's geometry, the well's column and row (from 1), the gain definition, the resolution,
-    `maximum_focal_height`, the target in 0.01 % (0 without), then the optics:
-    `_Z_PROFILE_OPTICS_HEADER` and a RUN fluorescence channel's bytes without its gain and
+    The plate's geometry, the well's column and row (from 1), the gain definition with the optic's
+    bit, the resolution, `maximum_focal_height`, the target in 0.01 % (0 without), then the
+    optics: `_Z_PROFILE_OPTICS_HEADER` and a RUN fluorescence channel's bytes without its gain and
     closing `00` (`_encode_optics`).
     """
     index = next(i for i, item in enumerate(plate.get_all_items()) if item is well)
@@ -1157,7 +1201,8 @@ class Fluorescence(Measurement):
     return (
       self._encode_plate_geometry(plate)
       + bytes([index // rows + 1, index % rows + 1])
-      + self._Z_PROFILE_GAIN_DEFINITION
+      + bytes([self._Z_PROFILE_GAIN_DEFINITION[0] | self._OPTIC_POSITIONS[optic_position]])
+      + self._Z_PROFILE_GAIN_DEFINITION[1:]
       + self._Z_PROFILE_RESOLUTION.to_bytes(2, "big")
       + round(maximum_focal_height * 100).to_bytes(2, "big")
       + target.to_bytes(2, "big")
@@ -1222,31 +1267,7 @@ class Fluorescence(Measurement):
 
   # -- measuring -----------------------------------------------------------------------------------
 
-  def _get_z_profile_parameters(
-    self,
-    fluorescence_channel: FluorescenceChannel,
-    well: Well,
-    gain_target_percent: Optional[float],
-    maximum_focal_height: float,
-    timeout: Optional[float],
-  ) -> Tuple[Plate, FluorescenceChannel, bytes]:
-    """The plate, the filled fluorescence channel and the `09` parameters, every argument checked.
-
-    Raises:
-      RuntimeError: if no plate is in the plate holder.
-      ValueError: if an argument is out of range (`_check_z_profile_arguments`), or `well` is not
-        on the plate.
-    """
-    filled = self._get_filled_fluorescence_channel(fluorescence_channel)
-    self._check_z_profile_arguments(
-      filled, maximum_focal_height, gain_target_percent, timeout=timeout
-    )
-    plate, _ = self._get_plate_and_wells(MeasurementSettings(), None, [well])
-    parameters = self._compute_z_profile_parameters(
-      plate, well, filled, maximum_focal_height, gain_target_percent
-    )
-    return plate, filled, parameters
-
+  @_enforce_one_measurement_at_a_time
   async def _run_z_profile(self, parameters: bytes, timeout: float) -> bytes:
     """Send a z-scan (`09`) and return its FOCUS_RESULT reply.
 
@@ -1256,10 +1277,14 @@ class Fluorescence(Measurement):
 
     Raises:
       TimeoutError: if the z-scan takes longer than `timeout` seconds.
-      RuntimeError: if it ends without reporting its result ready.
+      RuntimeError: if the drawer is open (nothing is sent), or the z-scan ends without reporting
+        its result ready.
     """
     driver = self._driver
-    await driver.send_command(driver.CommandFamily.FOCUS_WELL, parameters=parameters)
+    await self._wait_until_idle_with_drawer_in()
+    await driver.send_command(
+      driver.CommandFamily.FOCUS_WELL, parameters=parameters, when_idle=False
+    )
     start = time.monotonic()
     stage: Optional[int] = None
     try:
@@ -1292,10 +1317,11 @@ class Fluorescence(Measurement):
     *,
     well: Well,
     gain_target_percent: Optional[float] = None,
-    maximum_focal_height: float = 15.0,
+    maximum_focal_height: Optional[float] = None,
+    optic_position: Optional[OpticPosition] = None,
     timeout: Optional[float] = None,
   ) -> CLARIOstarZProfileResult:
-    """Measure the z-profile of `well` from the top and, with a target, fit the gain at its peak.
+    """Measure the z-profile of `well` and, with a target, fit the gain at its peak.
 
     - The reader reads the well from `maximum_focal_height` down in 0.1 mm steps to a lowest
       height it chooses (0.7 mm and -0.6 mm on hardware), and computes the peak (about 8 s).
@@ -1310,26 +1336,40 @@ class Fluorescence(Measurement):
       well: the well to scan, on the plate in the plate holder.
       gain_target_percent: above 0 up to 100; None measures the z-profile only.
       maximum_focal_height: the height the scan starts at, mm above 0 in 0.1 mm steps within
-        `configuration.focal_height_range`.
+        `configuration.focal_height_range`; None for 15 mm from the top. The bottom optic's
+        range is not known, so give it for the bottom.
+      optic_position: "top" or "bottom"; `default_optic_position` when None.
       timeout: seconds the z-scan may take; `default_read_timeout` when None.
 
     Returns:
       the z-profile, its peak, and the gain with a target.
 
     Raises:
-      RuntimeError: if no plate is in the plate holder, or the z-scan ends without a result.
+      RuntimeError: if no plate is in the plate holder, the drawer is open, or the z-scan ends
+        without a result.
       ValueError: if an argument is out of range (`_check_z_profile_arguments`, `_get_filter`),
         the well is not on the plate, or the reply is not a z-profile.
       TimeoutError: if the z-scan takes longer than `timeout` seconds.
     """
-    plate, filled, parameters = self._get_z_profile_parameters(
-      fluorescence_channel, well, gain_target_percent, maximum_focal_height, timeout
+    optic = self.default_optic_position if optic_position is None else optic_position
+    if maximum_focal_height is None:
+      if optic == "bottom":
+        raise ValueError("give maximum_focal_height for the bottom optic")
+      maximum_focal_height = 15.0
+    filled = self._get_filled_fluorescence_channel(fluorescence_channel)
+    self._check_z_profile_arguments(
+      filled, maximum_focal_height, gain_target_percent, optic, timeout=timeout
+    )
+    plate, _ = self._get_plate_and_wells(MeasurementSettings(), None, [well])
+    parameters = self._compute_z_profile_parameters(
+      plate, well, filled, maximum_focal_height, gain_target_percent, optic
     )
     logger.info(
-      "z-profile: %s on %s of %s, gain target %s %%",
+      "z-profile: %s on %s of %s from the %s, gain target %s %%",
       self._describe_fluorescence_channel(filled),
       plate.get_child_identifier(well),
       plate.name,
+      optic,
       gain_target_percent,
     )
     start_timestamp = datetime.now()
@@ -1339,6 +1379,392 @@ class Fluorescence(Measurement):
     return self._decode_z_profile_result(
       reply, plate, start_timestamp=start_timestamp, end_timestamp=datetime.now()
     )
+
+  # ----------------------------------------
+  # Grids
+  # ----------------------------------------
+
+  # `07`'s first byte: the scan of a geometry's first and last well, the only one verified.
+  _GRID_SCAN = 0x02
+  # The detection byte: top or bottom optic; its high nibble, the corner mode, stays 0.
+  _GRID_DETECTION: Dict[str, int] = {"top": 0x00, "bottom": 0x01}
+  # The gain target of the z-scan before a scan, in percent: 50 before every scan on hardware.
+  _GRID_GAIN_TARGET_PERCENT = 50.0
+  # A grid reply's counts, u32 BE from this byte.
+  _GRID_COUNTS_START = 34
+  # The plate holder's footprint given points are placed on, mm (the SLAS plate footprint).
+  _PLATE_HOLDER_SIZE = (127.76, 85.48)
+
+  # -- checks --------------------------------------------------------------------------------------
+
+  def _check_grid(
+    self,
+    fluorescence_channel: FluorescenceChannel,
+    optic_position: str,
+    gain: Optional[int],
+    focal_height: Optional[float],
+    timeout: Optional[float],
+  ) -> List[str]:
+    """The violations of a scan's fluorescence channel, optic position, gain, focal height and
+    timeout; a gain or focal height None is not checked."""
+    errors = self._check_fluorescence_channel(fluorescence_channel)
+    errors += self._check_optic_position(optic_position)
+    if gain is not None:
+      errors += self._check_gain(gain, self.configuration.gain_range)
+    if focal_height is not None:
+      errors += self._check_focal_height(focal_height, self.configuration.focal_height_range)
+    if timeout is not None and not timeout > 0:
+      errors.append(f"timeout must be positive, got {timeout}")
+    return errors
+
+  # -- `07` parameters -----------------------------------------------------------------------------
+
+  @staticmethod
+  def _encode_grid_geometry(size: Tuple[float, float], points: Sequence[Coordinate]) -> bytes:
+    """A made-up plate's 14 bytes around one or two points, as `_encode_plate_geometry`.
+
+    Its first well at the first point and its last at the second (or the first again), with 2
+    columns and 1 row (1 and 1 for one point); Y measured from the back edge.
+    """
+    first = points[0]
+    last = points[-1]
+    values = (size[0], size[1], first.x, size[1] - first.y, last.x, size[1] - last.y)
+    block = b"".join(round(value * 100).to_bytes(2, "big") for value in values)
+    return block + (bytes([2, 1]) if len(points) == 2 else bytes([1, 1]))
+
+  def _compute_grid_parameters(
+    self,
+    geometry: bytes,
+    fluorescence_channel: FluorescenceChannel,
+    optic_position: str,
+    focal_height: float,
+    gain: int,
+  ) -> bytes:
+    """`07`'s 40 parameter bytes.
+
+    `02`, the 14-byte geometry, the detection byte, `_Z_PROFILE_OPTICS_HEADER`, the optics
+    (`_encode_optics`), the focal height in 0.01 mm and the gain (u16 BE), then `00 00` (the
+    wavelength of an absorbance scan).
+    """
+    optics = self._encode_optics(
+      *self._compute_optics(fluorescence_channel),
+      *self._compute_wavelength_selectors(fluorescence_channel),
+    )
+    return (
+      bytes([self._GRID_SCAN])
+      + geometry
+      + bytes([self._GRID_DETECTION[optic_position]])
+      + self._Z_PROFILE_OPTICS_HEADER
+      + optics
+      + round(focal_height * 100).to_bytes(2, "big")
+      + gain.to_bytes(2, "big")
+      + bytes(2)
+    )
+
+  # -- decoding ------------------------------------------------------------------------------------
+
+  @staticmethod
+  def _decode_grid_layout(reply: bytes) -> Tuple[int, float]:
+    """A scan's grid side and point spacing in mm, from its PLATE_MAP_CONFIG (`05 0d`) reply.
+
+    Byte 6 the side, 7-8 the points (side squared), 9-10 the spacing in um, 11-12 the length of a
+    mask of the points used (0: every point).
+
+    Raises:
+      ValueError: if the reply is cut short, or its points or mask are not a full square grid.
+    """
+    if len(reply) < 13:
+      raise ValueError(f"PLATE_MAP_CONFIG reply too short, got {len(reply)} bytes")
+    side = reply[6]
+    points = int.from_bytes(reply[7:9], "big")
+    if points != side * side or int.from_bytes(reply[11:13], "big"):
+      raise ValueError(f"PLATE_MAP_CONFIG reply is not a full grid: side {side}, {points} points")
+    return side, int.from_bytes(reply[9:11], "big") / 1000
+
+  @classmethod
+  def _decode_grid(cls, reply: bytes, side: int) -> Tuple[Tuple[int, int], List[List[int]]]:
+    """A grid's well and counts, from its data reply.
+
+    Bytes 7-8 the points, 23-24 and 25-26 the well's column and row (from 1, u16 BE), then the
+    counts, u32 BE from byte 34, `side` to a row.
+
+    Raises:
+      ValueError: if the reply does not hold `side` squared counts.
+    """
+    points = side * side
+    start = cls._GRID_COUNTS_START
+    if len(reply) < start + 4 * points or int.from_bytes(reply[7:9], "big") != points:
+      raise ValueError(f"grid reply does not hold {points} counts, got {len(reply)} bytes")
+    counts = [int.from_bytes(reply[i : i + 4], "big") for i in range(start, start + 4 * points, 4)]
+    well = (int.from_bytes(reply[23:25], "big"), int.from_bytes(reply[25:27], "big"))
+    return well, [counts[row : row + side] for row in range(0, points, side)]
+
+  @staticmethod
+  def _decode_grid_centers(
+    reply: bytes, size_y: float
+  ) -> Tuple[Optional[Coordinate], Optional[Coordinate]]:
+    """The first and last well's centres the reader found, from its PLATE_MAP_XY (`05 04`) reply.
+
+    X1, Y1, Xn, Yn at bytes 8-15, u16 BE in 0.01 mm, Y from the back edge of a plate `size_y` mm
+    deep; returned from the front edge. All zero: the reader found none.
+
+    Raises:
+      ValueError: if the reply is cut short.
+    """
+    if len(reply) < 16:
+      raise ValueError(f"PLATE_MAP_XY reply too short, got {len(reply)} bytes")
+    x1, y1, x2, y2 = (int.from_bytes(reply[i : i + 2], "big") / 100 for i in range(8, 16, 2))
+    if not any((x1, y1, x2, y2)):
+      return None, None
+    return Coordinate(x1, size_y - y1, 0), Coordinate(x2, size_y - y2, 0)
+
+  # -- measuring -----------------------------------------------------------------------------------
+
+  @_enforce_one_measurement_at_a_time
+  async def _run_grid(
+    self, parameters: bytes, timeout: float
+  ) -> Tuple[int, float, List[bytes], bytes]:
+    """Send a scan (`07`), collect its grids and the centres the reader found.
+
+    PLATE_MAP_CONFIG right after the scan; then status until the reader is idle, a grid
+    (`05 02`) each time status byte 2 bit 0 is set; once idle, PLATE_MAP_XY. Any failure, a
+    timeout or a cancelled call stops it (`0b 00`) first.
+
+    Returns:
+      the grid side, the point spacing in mm, the grid replies and the PLATE_MAP_XY reply.
+
+    Raises:
+      TimeoutError: if the scan takes longer than `timeout` seconds.
+      RuntimeError: if the drawer is open; nothing is sent.
+    """
+    driver = self._driver
+    await self._wait_until_idle_with_drawer_in()
+    await driver.send_command(
+      driver.CommandFamily.PLATE_MAP_SCAN, parameters=parameters, when_idle=False
+    )
+    start = time.monotonic()
+    grids: List[bytes] = []
+    try:
+      layout = await driver.send_command(
+        driver.CommandFamily.REQUEST,
+        driver.Command.PLATE_MAP_CONFIG,
+        parameters=bytes(5),
+        when_idle=False,
+      )
+      side, spacing = self._decode_grid_layout(layout)
+      while True:
+        await asyncio.sleep(driver.default_poll_interval)
+        status = await driver.send_command(driver.CommandFamily.STATUS, retries=5)
+        if len(status) > 2 and status[2] & self._DATA_READY:
+          grids.append(await self._request_page(retries=1))
+          continue
+        if not driver._parse_status(status).busy:
+          break
+        if time.monotonic() - start >= timeout:
+          raise TimeoutError(f"the scan took longer than {timeout} s")
+      centers = await driver.send_command(
+        driver.CommandFamily.REQUEST, driver.Command.PLATE_MAP_XY, parameters=bytes(5)
+      )
+    except BaseException:
+      await self._drain_and_stop("scan")
+      raise
+    return side, spacing, grids, centers
+
+  async def _get_grids(
+    self,
+    parameters: bytes,
+    positions: Sequence[Coordinate],
+    wells: Sequence[Optional[str]],
+    size_y: float,
+    focal_height: float,
+    gain: int,
+    timeout: Optional[float],
+  ) -> List[CLARIOstarFluorescenceGridResult]:
+    """Run one scan of one or two `positions` and return a grid for each, in order.
+
+    A grid that repeats the well before it is dropped: the reader may send a one-point scan's
+    point twice.
+
+    Raises:
+      RuntimeError: if the scan returns another number of grids than `positions`.
+    """
+    start_timestamp = datetime.now()
+    side, spacing, replies, centers_reply = await self._run_grid(
+      parameters, self.default_read_timeout if timeout is None else timeout
+    )
+    grids: List[List[List[int]]] = []
+    previous: Optional[Tuple[int, int]] = None
+    for reply in replies:
+      well, counts = self._decode_grid(reply, side)
+      if well != previous:
+        grids.append(counts)
+      previous = well
+    if len(grids) != len(positions):
+      raise RuntimeError(f"the scan returned {len(grids)} grids for {len(positions)} points")
+    centers = self._decode_grid_centers(centers_reply, size_y)
+    end_timestamp = datetime.now()
+    return [
+      CLARIOstarFluorescenceGridResult(
+        position=position,
+        well=well,
+        center=center,
+        spacing=spacing,
+        counts=counts,
+        focal_height=focal_height,
+        gain=gain,
+        start_timestamp=start_timestamp,
+        end_timestamp=end_timestamp,
+      )
+      for position, well, center, counts in zip(positions, wells, centers, grids)
+    ]
+
+  async def measure_grid(
+    self,
+    fluorescence_channel: FluorescenceChannel,
+    *,
+    positions: Sequence[Coordinate],
+    gain: int,
+    focal_height: float,
+    optic_position: Optional[OpticPosition] = None,
+    timeout: Optional[float] = None,
+  ) -> List[CLARIOstarFluorescenceGridResult]:
+    """Measure the signal over a grid of points around each of one or two `positions`.
+
+    - The reader reads a 31 x 31 grid around each point, at one focal height and gain, and finds
+      the signal's centre (about 50-80 s a point).
+    - The points need not be wells: any point the optic reaches on the plate holder.
+    - Cancelling the call stops it on the reader.
+
+    Args:
+      fluorescence_channel: the optics, as for `measure` (`_check_fluorescence_channel`).
+      positions: one or two points, x and y in mm on the plate holder from its left-front corner.
+      gain: the detector gain, within `configuration.gain_range`.
+      focal_height: mm, in 0.1 mm steps within `configuration.focal_height_range`.
+      optic_position: "top" or "bottom"; `default_optic_position` when None.
+      timeout: seconds the scan may take; `default_read_timeout` when None.
+
+    Returns:
+      a grid for each point, in order.
+
+    Raises:
+      ValueError: if an argument is out of range, or a reply is not what the scan sends.
+      TimeoutError: if the scan takes longer than `timeout` seconds.
+      RuntimeError: if the drawer is open, or the scan returns another number of grids than points.
+    """
+    filled = self._get_filled_fluorescence_channel(fluorescence_channel)
+    optic = self.default_optic_position if optic_position is None else optic_position
+    errors = self._check_grid(filled, optic, gain, focal_height, timeout)
+    size_x, size_y = self._PLATE_HOLDER_SIZE
+    if not 1 <= len(positions) <= 2:
+      errors.append(f"positions must hold one or two points, got {len(positions)}")
+    for point in positions:
+      if not (0 <= point.x <= size_x and 0 <= point.y <= size_y):
+        errors.append(
+          f"positions must lie on the plate holder (0-{size_x}, 0-{size_y}), got {point}"
+        )
+    if errors:
+      raise ValueError("; ".join(errors))
+    self._warn_untested("a grid at given positions")
+    geometry = self._encode_grid_geometry(self._PLATE_HOLDER_SIZE, positions)
+    parameters = self._compute_grid_parameters(geometry, filled, optic, focal_height, gain)
+    logger.info("grid: %s at %s", self._describe_fluorescence_channel(filled), positions)
+    return await self._get_grids(
+      parameters, positions, [None] * len(positions), size_y, focal_height, gain, timeout
+    )
+
+  async def measure_well_centers(
+    self,
+    fluorescence_channel: FluorescenceChannel,
+    *,
+    wells: Optional[Sequence[Well]] = None,
+    gain: Optional[int] = None,
+    focal_height: Optional[float] = None,
+    gain_target_percent: float = _GRID_GAIN_TARGET_PERCENT,
+    optic_position: Optional[OpticPosition] = None,
+    timeout: Optional[float] = None,
+  ) -> List[CLARIOstarFluorescenceGridResult]:
+    """Measure where the signal of each of `wells` is centred, from a grid of points around it.
+
+    - Without `focal_height`, a z-scan of the first well (`measure_z_profile`) gives the focal
+      height, and the gain too unless `gain` is given; every well is then read at both.
+    - The wells are scanned two at a time (about 50-80 s a well). The plate's first and last well
+      together are the scan the reader is verified with; other wells are untested.
+    - Cancelling the call stops it on the reader.
+
+    Args:
+      fluorescence_channel: the optics, as for `measure` (`_check_fluorescence_channel`).
+      wells: wells of the plate in the plate holder, any number; None for its first and last well.
+      gain: the detector gain, within `configuration.gain_range`; None for the z-scan's, which
+        needs `focal_height` None.
+      focal_height: mm, in 0.1 mm steps within `configuration.focal_height_range`; None for the
+        z-scan's peak, from the top optic only.
+      gain_target_percent: the z-scan's gain target when it fits the gain, above 0 up to 100.
+      optic_position: "top" or "bottom"; `default_optic_position` when None.
+      timeout: seconds each scan (and the z-scan) may take; `default_read_timeout` when None.
+
+    Returns:
+      a grid for each well, in order, its centre and `center` relative to the plate.
+
+    Raises:
+      RuntimeError: if no plate is in the plate holder, the drawer is open, the z-scan fits no gain,
+        or a scan returns another number of grids than wells.
+      ValueError: if an argument is out of range, a well is not on the plate, or a reply is not
+        what the scan sends.
+      TimeoutError: if a scan takes longer than `timeout` seconds.
+    """
+    filled = self._get_filled_fluorescence_channel(fluorescence_channel)
+    optic = self.default_optic_position if optic_position is None else optic_position
+    errors = self._check_grid(filled, optic, gain, focal_height, timeout)
+    if focal_height is not None and gain is None:
+      errors.append("give a gain with focal_height, or leave both to the z-scan")
+    if focal_height is None and optic != "top":
+      errors.append("the z-scan reads from the top: give focal_height for the bottom optic")
+    if not 0 < gain_target_percent <= 100:
+      errors.append(f"gain_target_percent must be above 0 up to 100, got {gain_target_percent}")
+    if wells is not None and len(wells) == 0:
+      errors.append("wells must hold at least one well")
+    if errors:
+      raise ValueError("; ".join(errors))
+    plate, _ = self._get_plate_and_wells(
+      MeasurementSettings(), None, None if wells is None else list(wells)
+    )
+    items = plate.get_all_items()
+    targets = [items[0], items[-1]] if wells is None else list(wells)
+    if focal_height is None:
+      z_profile = await self.measure_z_profile(
+        filled,
+        well=targets[0],
+        gain_target_percent=gain_target_percent if gain is None else None,
+        optic_position=optic,
+        timeout=timeout,
+      )
+      focal_height = z_profile.peak_focal_height
+      gain = z_profile.gain if gain is None else gain
+    if gain is None:
+      raise RuntimeError("the z-scan fitted no gain")
+    results: List[CLARIOstarFluorescenceGridResult] = []
+    for i in range(0, len(targets), 2):
+      pair = targets[i : i + 2]
+      centres = [well.location + well.center() for well in pair if well.location is not None]
+      if len(centres) != len(pair):
+        raise ValueError(f"every well needs a location on {plate.name}")
+      if pair == [items[0], items[-1]]:
+        geometry = self._encode_plate_geometry(plate)
+      else:
+        self._warn_untested("a grid of wells other than the first and last")
+        geometry = self._encode_grid_geometry((plate.get_size_x(), plate.get_size_y()), centres)
+      parameters = self._compute_grid_parameters(geometry, filled, optic, focal_height, gain)
+      identifiers: List[Optional[str]] = [plate.get_child_identifier(well) for well in pair]
+      logger.info(
+        "well centres: %s at %s of %s",
+        self._describe_fluorescence_channel(filled),
+        ", ".join(str(identifier) for identifier in identifiers),
+        plate.name,
+      )
+      results += await self._get_grids(
+        parameters, centres, identifiers, plate.get_size_y(), focal_height, gain, timeout
+      )
+    return results
 
   # ----------------------------------------
   # Discrete reads
@@ -1473,6 +1899,8 @@ class Fluorescence(Measurement):
     temperature: Optional[float],
     start_timestamp: datetime,
     end_timestamp: datetime,
+    focal_height: Optional[float] = None,
+    optic_position: Optional[OpticPosition] = None,
   ) -> List[CLARIOstarFluorescenceResult]:
     """One result per fluorescence channel: each well's mean, and with `matrix` its points."""
     results = []
@@ -1492,6 +1920,8 @@ class Fluorescence(Measurement):
           start_timestamp=start_timestamp,
           end_timestamp=end_timestamp,
           matrix_points=points if matrix else None,
+          focal_height=focal_height,
+          optic_position=optic_position,
         )
       )
     return results
@@ -1586,7 +2016,9 @@ class Fluorescence(Measurement):
     enhanced_dynamic_range: bool = ...,
     measurement_settings: Optional[MeasurementSettings] = ...,
     shake_settings: Optional[ShakeSettings] = ...,
+    simulated_data: Optional[Sequence[FluorescenceResult]] = ...,
     timeout: Optional[float] = ...,
+    results_directory: Optional[str] = ...,
   ) -> CLARIOstarFluorescenceResult: ...
 
   @overload
@@ -1602,7 +2034,9 @@ class Fluorescence(Measurement):
     enhanced_dynamic_range: bool = ...,
     measurement_settings: Optional[MeasurementSettings] = ...,
     shake_settings: Optional[ShakeSettings] = ...,
+    simulated_data: Optional[Sequence[FluorescenceResult]] = ...,
     timeout: Optional[float] = ...,
+    results_directory: Optional[str] = ...,
   ) -> List[CLARIOstarFluorescenceResult]: ...
 
   async def measure(
@@ -1617,7 +2051,9 @@ class Fluorescence(Measurement):
     enhanced_dynamic_range: bool = False,
     measurement_settings: Optional[MeasurementSettings] = None,
     shake_settings: Optional[ShakeSettings] = None,
+    simulated_data: Optional[Sequence[FluorescenceResult]] = None,
     timeout: Optional[float] = None,
+    results_directory: Optional[str] = None,
   ) -> Union[CLARIOstarFluorescenceResult, List[CLARIOstarFluorescenceResult]]:
     """Measure the plate through one fluorescence channel, or several in one pass.
 
@@ -1646,17 +2082,24 @@ class Fluorescence(Measurement):
         than a normal read's and not comparable with them.
       measurement_settings: how to read, without a pause; None reads with the defaults.
       shake_settings: shake the plate before the read; None does not shake.
+      simulated_data: what each measured well reads on the simulated reader (`simulator`); a
+        real reader measures the plate and ignores it, so one call serves both.
       timeout: seconds the run may take; `default_read_timeout` when None.
+      results_directory: the directory the read's rows are appended to once it is complete
+        (`pylabrobot.lib.results.directory`); None writes none.
 
     Returns:
-      the counts of the measured wells, with the optics and the gain they were read with; for a
-      sequence of fluorescence channels, one result per fluorescence channel in the order given.
+      the counts of the measured wells, with the optics, gain, focal height and optic position they
+      were read with; for a sequence of fluorescence channels, one result per fluorescence channel
+      in the order given.
 
     Raises:
-      RuntimeError: if no plate is in the plate holder, or the run ends without its data.
+      RuntimeError: if no plate is in the plate holder, the drawer is open, the run ends without its
+        data, or the last write to the results directory failed.
       ValueError: if an argument is out of range (`_check_arguments`), a filter's slot or name has
         no slide or is not on it (`_get_filter`), a matrix scan has several wells, the settings
-        cannot read the wells of the plate, or the reply is not this read's (`_decode_data_reply`).
+        cannot read the wells of the plate, the reply is not this read's (`_decode_data_reply`),
+        or the results directory cannot be created or written.
       TimeoutError: if the run takes longer than `timeout` seconds.
     """
     measurement = MeasurementSettings() if measurement_settings is None else measurement_settings
@@ -1676,6 +2119,8 @@ class Fluorescence(Measurement):
       enhanced_dynamic_range=enhanced_dynamic_range,
     )
     timeout = self.default_read_timeout if timeout is None else timeout
+    if focal_height is None:
+      focal_height = self._get_default_focal_height(wells)
     logger.info(
       "fluorescence: %s, %d of %d wells of %s, %s scan, %s optic",
       "; ".join(
@@ -1688,6 +2133,7 @@ class Fluorescence(Measurement):
       measurement.well_scan,
       optic_position,
     )
+    results_directory = self._check_results_directory(results_directory)
     start_timestamp = datetime.now()
     replies, end_timestamp = await self._run_measurement(parameters, timeout)
     identifiers = _get_measured_identifiers(plate, wells)
@@ -1708,7 +2154,10 @@ class Fluorescence(Measurement):
       temperature=temperature,
       start_timestamp=start_timestamp,
       end_timestamp=end_timestamp,
+      focal_height=focal_height,
+      optic_position=optic_position,
     )
+    await self._append_results(results_directory, results)
     return results[0] if isinstance(fluorescence_channels, FluorescenceChannel) else results
 
   # ----------------------------------------
@@ -1873,81 +2322,6 @@ class Fluorescence(Measurement):
 
   # -- measuring -----------------------------------------------------------------------------------
 
-  def _get_fixed_fluorescence_channel(
-    self,
-    excitation_wavelength: Optional[float],
-    excitation_bandwidth: Optional[float],
-    emission_wavelength: Optional[float],
-    emission_bandwidth: Optional[float],
-  ) -> FluorescenceChannel:
-    """A spectrum's fixed light path, its bandwidths filled; the scanned side has no wavelength."""
-    return self._get_filled_fluorescence_channel(
-      FluorescenceChannel(
-        excitation_wavelength=excitation_wavelength,
-        excitation_bandwidth=excitation_bandwidth,
-        emission_wavelength=emission_wavelength,
-        emission_bandwidth=emission_bandwidth,
-      )
-    )
-
-  def _get_spectrum_run_parameters(
-    self,
-    scan: Scan,
-    start_wavelength: int,
-    end_wavelength: int,
-    step_size: int,
-    fixed: FluorescenceChannel,
-    gain: int,
-    focal_height: Optional[float],
-    measurement: MeasurementSettings,
-    shake: Optional[ShakeSettings],
-    wells: Optional[List[Well]],
-    *,
-    timeout: Optional[float],
-  ) -> Tuple[Plate, List[Well], bytes]:
-    """The plate, the wells and the RUN parameters of a spectrum, every argument checked.
-
-    Raises:
-      RuntimeError: if no plate is in the plate holder.
-      ValueError: if an argument is out of range (`_check_spectrum_arguments`), or the settings
-        cannot read the wells of the plate (`_get_plate_and_wells`).
-    """
-    self._check_spectrum_arguments(
-      scan,
-      start_wavelength,
-      end_wavelength,
-      step_size,
-      fixed,
-      gain,
-      focal_height,
-      measurement,
-      timeout=timeout,
-    )
-    plate, measured = self._get_plate_and_wells(measurement, shake, wells)
-    if focal_height is None:
-      focal_height = self._get_default_focal_height(measured)
-    start = self._get_scanned_fluorescence_channel(fixed, scan, start_wavelength)
-    end = self._get_scanned_fluorescence_channel(fixed, scan, end_wavelength)
-    # The scanned monochromator's selector 02, the fixed one's 03, emission then excitation.
-    scanned = self._WAVELENGTH_SELECTORS["scanned_monochromator"]
-    fixed_selector = self._WAVELENGTH_SELECTORS["fixed_monochromator"]
-    selectors = (fixed_selector, scanned) if scan == "excitation" else (scanned, fixed_selector)
-    parameters = self._compute_run_parameters(
-      plate,
-      measured,
-      measurement,
-      shake,
-      focal_height=focal_height,
-      kind=self._SPECTRUM,
-      count=end_wavelength - start_wavelength + 1,
-      encoded_fluorescence_channels=[
-        self._encode_fluorescence_channel(start, gain, selectors),
-        self._encode_fluorescence_channel(end, gain, selectors),
-      ],
-      scan_byte=self._SPECTRUM_SCAN_BYTE,
-    )
-    return plate, measured, parameters
-
   async def measure_spectrum(
     self,
     *,
@@ -1965,6 +2339,7 @@ class Fluorescence(Measurement):
     measurement_settings: Optional[MeasurementSettings] = None,
     shake_settings: Optional[ShakeSettings] = None,
     timeout: Optional[float] = None,
+    results_directory: Optional[str] = None,
   ) -> CLARIOstarFluorescenceSpectrumResult:
     """Measure a fluorescence spectrum: excitation or emission scanned, the other fixed.
 
@@ -1996,23 +2371,32 @@ class Fluorescence(Measurement):
       shake_settings: shake the plate before the read; None does not shake.
       timeout: seconds the run may take; `default_read_timeout` when None, too short for a full
         plate of a long spectrum (14 s per well at 221 wavelengths).
+      results_directory: the directory the read's rows are appended to once it is complete
+        (`pylabrobot.lib.results.directory`); None writes none.
 
     Returns:
       each measured well's counts by the scanned wavelength, with the fixed one's optics and the
       gain.
 
     Raises:
-      RuntimeError: if no plate is in the plate holder, or the run ends without all its data.
+      RuntimeError: if no plate is in the plate holder, the drawer is open, the run ends without all
+        its data, or the last write to the results directory failed.
       ValueError: if an argument is out of range (`_check_spectrum_arguments`), the settings
-        cannot read the wells of the plate, or the data pages are not this read's.
+        cannot read the wells of the plate, the data pages are not this read's, or the results
+        directory cannot be created or written.
       TimeoutError: if the run takes longer than `timeout` seconds.
       FrameError: if a data page arrives short on the second read too.
     """
     measurement = MeasurementSettings() if measurement_settings is None else measurement_settings
-    fixed = self._get_fixed_fluorescence_channel(
-      excitation_wavelength, excitation_bandwidth, emission_wavelength, emission_bandwidth
+    fixed = self._get_filled_fluorescence_channel(
+      FluorescenceChannel(
+        excitation_wavelength=excitation_wavelength,
+        excitation_bandwidth=excitation_bandwidth,
+        emission_wavelength=emission_wavelength,
+        emission_bandwidth=emission_bandwidth,
+      )
     )
-    plate, wells, parameters = self._get_spectrum_run_parameters(
+    self._check_spectrum_arguments(
       scan,
       start_wavelength,
       end_wavelength,
@@ -2021,12 +2405,32 @@ class Fluorescence(Measurement):
       gain,
       focal_height,
       measurement,
-      shake_settings,
-      wells,
       timeout=timeout,
     )
+    plate, wells = self._get_plate_and_wells(measurement, shake_settings, wells)
+    if focal_height is None:
+      focal_height = self._get_default_focal_height(wells)
     start = self._get_scanned_fluorescence_channel(fixed, scan, start_wavelength)
+    end = self._get_scanned_fluorescence_channel(fixed, scan, end_wavelength)
     wavelengths = list(range(start_wavelength, end_wavelength + 1))
+    # The scanned monochromator's selector 02, the fixed one's 03, emission then excitation.
+    scanned = self._WAVELENGTH_SELECTORS["scanned_monochromator"]
+    fixed_selector = self._WAVELENGTH_SELECTORS["fixed_monochromator"]
+    selectors = (fixed_selector, scanned) if scan == "excitation" else (scanned, fixed_selector)
+    parameters = self._compute_run_parameters(
+      plate,
+      wells,
+      measurement,
+      shake_settings,
+      focal_height=focal_height,
+      kind=self._SPECTRUM,
+      count=len(wavelengths),
+      encoded_fluorescence_channels=[
+        self._encode_fluorescence_channel(start, gain, selectors),
+        self._encode_fluorescence_channel(end, gain, selectors),
+      ],
+      scan_byte=self._SPECTRUM_SCAN_BYTE,
+    )
     timeout = self.default_read_timeout if timeout is None else timeout
     if measurement.well_scan != "point":
       self._warn_untested(f"a fluorescence spectrum with {measurement.well_scan} averaging")
@@ -2042,6 +2446,7 @@ class Fluorescence(Measurement):
       plate.name,
       measurement.well_scan,
     )
+    results_directory = self._check_results_directory(results_directory)
     try:
       start_timestamp = datetime.now()
       pages, end_timestamp = await self._run_measurement(
@@ -2059,7 +2464,7 @@ class Fluorescence(Measurement):
     self._warn_saturated(
       "fluorescence", [value for spectrum in spectra.values() for value in spectrum], ceiling
     )
-    return self._get_spectrum_result(
+    result = self._get_spectrum_result(
       fixed,
       gain,
       wavelengths,
@@ -2068,3 +2473,5 @@ class Fluorescence(Measurement):
       start_timestamp=start_timestamp,
       end_timestamp=end_timestamp,
     )
+    await self._append_results(results_directory, [result])
+    return result

@@ -9,7 +9,7 @@ are fixed.
 import logging
 from dataclasses import dataclass, replace
 from datetime import datetime
-from typing import TYPE_CHECKING, List, Optional, Sequence, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Sequence, Tuple
 
 from pylabrobot.lib.luminescence.results import LuminescenceResult
 from pylabrobot.resources import Plate, Well
@@ -38,13 +38,19 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class CLARIOstarLuminescenceResult(LuminescenceResult):
-  """A CLARIOstar luminescence result, with the detector gain it was read with.
+  """A CLARIOstar luminescence result, with the detector gain and focal height it was read with.
 
   Attributes:
     gain: the detector gain, within `LuminescenceConfiguration.gain_range`.
+    focal_height: mm above the plate's base; None if not known.
   """
 
   gain: int
+  focal_height: Optional[float] = None
+
+  def _get_base_row(self, read: int, **columns: Any) -> Dict[str, Any]:
+    """The columns every row shares, with the gain and focal height."""
+    return super()._get_base_row(read, gain=self.gain, focal_height=self.focal_height, **columns)
 
 
 @dataclass
@@ -329,7 +335,9 @@ class Luminescence(Measurement):
     measurement_interval: float = 0.8,
     measurement_settings: Optional[MeasurementSettings] = None,
     shake_settings: Optional[ShakeSettings] = None,
+    simulated_data: Optional[LuminescenceResult] = None,
     timeout: Optional[float] = None,
+    results_directory: Optional[str] = None,
   ) -> CLARIOstarLuminescenceResult:
     """Measure the plate's luminescence through the emission monochromator.
 
@@ -353,16 +361,23 @@ class Luminescence(Measurement):
       measurement_settings: how to read: a point read without a pause; its flashes do not apply.
         None reads with the defaults but no settling time.
       shake_settings: shake the plate before the read; None does not shake.
+      simulated_data: what each measured well reads on the simulated reader (`simulator`); a
+        real reader measures the plate and ignores it, so one call serves both.
       timeout: seconds the run may take; `default_read_timeout` when None. The defaults read a
         96-well plate in about 105 s.
+      results_directory: the directory the read's rows are appended to once it is complete
+        (`pylabrobot.lib.results.directory`); None writes none.
 
     Returns:
-      the counts of the measured wells, with the emission band and the gain they were read with.
+      the counts of the measured wells, with the emission band, the gain and the focal height they
+      were read with.
 
     Raises:
-      RuntimeError: if no plate is in the plate holder, or the run ends without its data.
+      RuntimeError: if no plate is in the plate holder, the drawer is open, the run ends without its
+        data, or the last write to the results directory failed.
       ValueError: if an argument is out of range (`_check_arguments`), the settings cannot read
-        the wells of the plate, or the reply is not this read's (`_decode_data_reply`).
+        the wells of the plate, the reply is not this read's (`_decode_data_reply`), or the results
+        directory cannot be created or written.
       TimeoutError: if the run takes longer than `timeout` seconds.
     """
     measurement = (
@@ -383,6 +398,8 @@ class Luminescence(Measurement):
       timeout=timeout,
     )
     timeout = self.default_read_timeout if timeout is None else timeout
+    if focal_height is None:
+      focal_height = self._get_default_focal_height(wells)
     # TODO(device): no luminescent sample has been read yet, only an empty plate.
     self._warn_untested("luminescence")
     logger.info(
@@ -395,17 +412,21 @@ class Luminescence(Measurement):
       plate.num_items,
       plate.name,
     )
+    results_directory = self._check_results_directory(results_directory)
     start_timestamp = datetime.now()
     replies, end_timestamp = await self._run_measurement(parameters, timeout)
     identifiers = _get_measured_identifiers(plate, wells)
     counts, ceiling, temperature = self._decode_data_reply(replies[0], len(identifiers))
     self._warn_saturated("luminescence", counts, ceiling)
-    return CLARIOstarLuminescenceResult(
+    result = CLARIOstarLuminescenceResult(
       data=_get_readings_by_well(plate, wells, [float(count) for count in counts]),
       emission_wavelength=emission_wavelength,
       emission_bandwidth=emission_bandwidth,
       gain=gain,
+      focal_height=focal_height,
       temperature=temperature,
       start_timestamp=start_timestamp,
       end_timestamp=end_timestamp,
     )
+    await self._append_results(results_directory, [result])
+    return result

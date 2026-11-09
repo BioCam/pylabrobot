@@ -12,7 +12,7 @@ import unittest
 from dataclasses import replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from pylabrobot.bmg_labtech.clariostar.device import CLARIOstarPlus
 from pylabrobot.bmg_labtech.clariostar.driver.configuration_tests import decoded
@@ -38,14 +38,17 @@ from pylabrobot.bmg_labtech.clariostar.driver.features.measurement import (
   MeasurementSettings,
   ShakeSettings,
 )
-from pylabrobot.bmg_labtech.clariostar.driver.framing import ftdi_extract_payload
+from pylabrobot.bmg_labtech.clariostar.driver.framing import FTDI_HEADER
 from pylabrobot.bmg_labtech.clariostar.driver.master_tests import (
+  STATUS_DRAWER_OPEN,
   STATUS_IDLE,
+  STATUS_QUERY_FRAME,
   FakeFTDI,
   load_session_replies,
   make_driver,
 )
 from pylabrobot.bmg_labtech.clariostar.driver.simulator import CLARIOstarSimulationFluorescence
+from pylabrobot.bmg_labtech.protocol.framing import ftdi_extract_payload, ftdi_wrap_payload
 from pylabrobot.lib.fluorescence.channels import FluorescenceChannel
 from pylabrobot.lib.fluorescence.results import FluorescenceSpectrumResult
 from pylabrobot.lib.optics.filters import DichroicFilter, OpticalFilter
@@ -54,7 +57,13 @@ from pylabrobot.lib.optics.holders import (
   EmissionFilterSlide,
   ExcitationFilterSlide,
 )
-from pylabrobot.resources import Plate, Well, cor_96_wellplate_360uL_Fb, create_ordered_items_2d
+from pylabrobot.resources import (
+  Coordinate,
+  Plate,
+  Well,
+  cor_96_wellplate_360uL_Fb,
+  create_ordered_items_2d,
+)
 
 # The default read: 485/15 to 528/20 nm, gain 1000, 8.5 mm, 10 flashes.
 BASELINE_RUN_FRAME = bytes.fromhex(
@@ -662,6 +671,17 @@ class DefaultFocalHeightTests(unittest.IsolatedAsyncioTestCase):
             cor_96_wellplate_360uL_Fb("plate"), None, focal_height=focal_height
           ),
         )
+
+  async def test_the_result_carries_the_focal_height_read_at(self):
+    session = load_session_replies()
+    io = FakeFTDI()
+    io.replies = [STATUS_IDLE, RUN_REPLY, STATUS_MEASURING, STATUS_MEASURED]
+    io.replies.append(bytes.fromhex(session["fluorescence_column_1_reply"]))
+    plate = cor_96_wellplate_360uL_Fb("plate")
+    result = await make_fluorescence(io, plate).measure(
+      BASELINE, wells=plate.get_items("A1:H1"), gain=1000
+    )
+    self.assertEqual(result.focal_height, 6.2)  # a quarter up the well, as the RUN sent
 
   async def test_the_percent_is_checked_when_set(self):
     feature = make_fluorescence(FakeFTDI(), cor_96_wellplate_360uL_Fb("plate"))
@@ -1572,6 +1592,19 @@ class ZProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ftdi_extract_payload(io.written[-1]), bytes.fromhex("05050000000000"))
         self.assertEqual(io.replies, [])
 
+  async def test_a_bottom_z_scan_sets_the_optic_bit(self):
+    """The bottom optic's z-scan differs from the top's only in the optic's bit, `04` -> `44`."""
+    top, _, _ = await run_z_profile("z_profile_without_target", "A1", maximum_focal_height=9.0)
+    bottom, _, _ = await run_z_profile(
+      "z_profile_without_target", "A1", maximum_focal_height=9.0, optic_position="bottom"
+    )
+    top_request = ftdi_extract_payload(top.written[1])
+    bottom_request = ftdi_extract_payload(bottom.written[1])
+    differences = [i for i, (a, b) in enumerate(zip(top_request, bottom_request)) if a != b]
+    self.assertEqual(len(top_request), len(bottom_request))
+    self.assertEqual(len(differences), 1)
+    self.assertEqual((top_request[differences[0]], bottom_request[differences[0]]), (0x04, 0x44))
+
   def test_a_height_below_0_is_decoded(self):
     """Not a reader's reply: the brightest-well search's result, last point and peak -0.60 mm."""
     reply = bytearray(
@@ -1625,6 +1658,8 @@ class ZProfileTests(unittest.IsolatedAsyncioTestCase):
       (BASELINE, dict(gain_target_percent=0)),
       (BASELINE, dict(gain_target_percent=101)),
       (BASELINE, dict(timeout=0)),
+      (BASELINE, dict(optic_position="bottom")),  # no maximum_focal_height
+      (BASELINE, dict(optic_position="side", maximum_focal_height=8.0)),
       (replace(BASELINE, excitation_wavelength=None), {}),
       (
         FluorescenceChannel(excitation_filter=1, dichroic_filter=1, emission_wavelength=528),
@@ -1710,63 +1745,217 @@ class SimulatedFluorescenceTests(unittest.IsolatedAsyncioTestCase):
     with self.assertRaises(ValueError):  # another fluorescence channel's result
       await self.fluorescence.measure(other, gain=1000, simulated_data=[earlier])
 
-  async def test_a_spectrum_is_checked_and_returned_again(self):
-    spectrum = await self.fluorescence.measure_spectrum(
-      **EMISSION_SPECTRUM, gain=1000, wells=self.column_1
-    )
-    self.assertEqual(list(spectrum.data["A1"]), list(range(500, 601)))
-    self.assertEqual((spectrum.excitation_wavelength, spectrum.emission_wavelength), (400, None))
-    replayed = await self.fluorescence.measure_spectrum(
-      **EMISSION_SPECTRUM, gain=1000, wells=self.column_1, simulated_data=spectrum
-    )
-    self.assertEqual(replayed.data, spectrum.data)
-    with self.assertRaises(ValueError):  # the spectrum does not reach 601 nm
-      await self.fluorescence.measure_spectrum(
-        **dict(EMISSION_SPECTRUM, end_wavelength=601), gain=1000, simulated_data=spectrum
-      )
+  async def test_spectra_filter_detection_and_z_profiles_are_not_simulated_yet(self):
+    for call in (
+      self.fluorescence.measure_spectrum(
+        scan="emission",
+        start_wavelength=510,
+        end_wavelength=600,
+        excitation_wavelength=485,
+        gain=1000,
+      ),
+      self.fluorescence.detect_all_filters(),
+      self.fluorescence.measure_z_profile(BASELINE, well=self.plate.get_well("A1")),
+    ):
+      with self.assertRaises(NotImplementedError):
+        await call
 
-  async def test_filter_detection_keeps_its_slides(self):
-    empty = await self.fluorescence.detect_all_filters()
-    self.assertEqual([slide.maximum_slots for slide in empty], [4, 3, 4])
-    excitation = ExcitationFilterSlide(4)
-    excitation.register(EX_TR)
-    dichroic = DichroicFilterSlide(3)
-    dichroic.register(LP_TR)
-    emission = EmissionFilterSlide(4)
-    emission.register(EM_615_18)
-    await self.fluorescence.detect_all_filters(simulated_data=(excitation, dichroic, emission))
-    self.assertIs(self.fluorescence.excitation_filter_slide, excitation)
-    by_slot = FluorescenceChannel(excitation_filter=1, dichroic_filter=1, emission_filter=1)
-    result = await self.fluorescence.measure(by_slot, gain=1000)
-    self.assertEqual(result.emission_wavelength, EM_615_18.center_wavelength)
-    with self.assertRaises(ValueError):  # three emission positions, the reader four
-      await self.fluorescence.detect_all_filters(
-        simulated_data=(excitation, dichroic, EmissionFilterSlide(3))
-      )
 
-  async def test_a_z_profile_is_only_returned_again(self):
-    well = self.plate.get_well("A1")
-    with self.assertRaises(NotImplementedError):
-      await self.fluorescence.measure_z_profile(BASELINE, well=well)
-    earlier = CLARIOstarZProfileResult(
+def load_grid_ground_truth() -> Dict[str, Any]:
+  """The reader's scan of a 96-well plate's A1 and H12 from the top: its frame (`07`) and the
+  replies the driver reads, as hex: the status before it, the reply to it, PLATE_MAP_CONFIG, the
+  statuses and the two grids, PLATE_MAP_XY."""
+  path = os.path.join(os.path.dirname(__file__), "test_data", "grid_ground_truth.json.gz")
+  with gzip.open(path, "rt") as f:
+    return dict(json.load(f))
+
+
+def grid_plate() -> Plate:
+  """The scanned plate's geometry: 127.76 x 85.48 mm, A1 centre 14.30 / 11.20 mm, H12 centre
+  113.46 / 74.28 mm (from the back edge), 6.86 mm wells."""
+  return Plate(
+    "scanned",
+    size_x=127.76,
+    size_y=85.48,
+    size_z=14.2,
+    ordered_items=create_ordered_items_2d(
+      Well,
+      num_items_x=12,
+      num_items_y=8,
+      dx=14.30 - 6.86 / 2,
+      dy=11.20 - 6.86 / 2,
+      dz=1.0,
+      item_dx=(113.46 - 14.30) / 11,
+      item_dy=(74.28 - 11.20) / 7,
+      size_x=6.86,
+      size_y=6.86,
+      size_z=10.67,
+    ),
+  )
+
+
+# The scan's optics: 488 nm excitation and 535 nm emission, split at 507.5 nm.
+GRID_CHANNEL = FluorescenceChannel(
+  excitation_wavelength=488,
+  excitation_bandwidth=14,
+  emission_wavelength=535,
+  emission_bandwidth=30,
+  dichroic_split_wavelength=507.5,
+)
+
+
+def with_nominal_scan_edges(ground_truth: bytes) -> bytes:
+  """`ground_truth`'s frame with 488/14 and 535/30 nm at their nominal edges.
+
+  The ground truth has each band narrower (13.6 nm of 14, 29.4 nm of 30); the optics start at
+  payload byte 21.
+  """
+  payload = bytearray(ftdi_extract_payload(ground_truth))
+  for offset, edges in ((21, _compute_band_edges(488, 14)), (27, _compute_band_edges(535, 30))):
+    for index, value in enumerate(edges):
+      payload[offset + 2 * index : offset + 2 * index + 2] = value.to_bytes(2, "big")
+  return ftdi_wrap_payload(bytes(payload), header=FTDI_HEADER)
+
+
+async def scan_ground_truth(**arguments):
+  """The ground truth's scan of A1 and H12 answered by its replies; the io and the result."""
+  ground_truth = load_grid_ground_truth()["corner_scan_96_top"]
+  io = FakeFTDI(chunk=4096)
+  io.replies = [bytes.fromhex(reply) for reply in ground_truth["replies"]]
+  feature = make_fluorescence(io, grid_plate())
+  feature._driver.default_poll_interval = 0
+  results = await feature.measure_well_centers(GRID_CHANNEL, **arguments)
+  return io, ground_truth, results
+
+
+class GridTests(unittest.IsolatedAsyncioTestCase):
+  async def test_a_scan_of_the_first_and_last_well_is_sent_and_decoded_as_the_ground_truth(self):
+    io, ground_truth, results = await scan_ground_truth(focal_height=15.0, gain=2239)
+    payloads = [ftdi_extract_payload(frame) for frame in io.written]
+    self.assertEqual(
+      io.written[:2],
+      [STATUS_QUERY_FRAME, with_nominal_scan_edges(bytes.fromhex(ground_truth["frame"]))],
+    )
+    self.assertEqual(payloads[2], bytes.fromhex("050d0000000000"))
+    self.assertEqual(payloads.count(bytes.fromhex("05020000000000")), 2)
+    self.assertEqual(payloads[-1], bytes.fromhex("05040000000000"))
+    self.assertEqual([result.well for result in results], ["A1", "H12"])
+    first, last = results
+    assert first.center is not None and last.center is not None
+    self.assertAlmostEqual(first.center.x, 14.45)
+    self.assertAlmostEqual(first.center.y, 85.48 - 11.35)
+    self.assertAlmostEqual(last.center.x, 113.33)
+    self.assertAlmostEqual(last.center.y, 85.48 - 74.00)
+    self.assertEqual((first.spacing, first.focal_height, first.gain), (0.33, 15.0, 2239))
+    for result in results:
+      self.assertEqual([len(row) for row in result.counts], [31] * 31)
+      # Read from byte 34, every count is within the detector's 260,000.
+      self.assertLessEqual(max(max(row) for row in result.counts), 260_000)
+    grid = bytes.fromhex(ground_truth["replies"][5])
+    self.assertEqual(first.counts[0][0], int.from_bytes(ftdi_extract_payload(grid)[34:38], "big"))
+
+  async def test_given_points_make_up_a_plate_around_them(self):
+    feature = make_fluorescence(FakeFTDI())
+    two = feature._encode_grid_geometry(
+      (127.76, 85.48), [Coordinate(20, 30, 0), Coordinate(50, 60, 0)]
+    )
+    self.assertEqual(two.hex(), "31e8216407d015ac138809f40201")
+    one = feature._encode_grid_geometry((127.76, 85.48), [Coordinate(20, 30, 0)])
+    self.assertEqual(one[4:12], two[4:8] * 2)
+    self.assertEqual(one[12:], bytes([1, 1]))
+
+  async def test_given_points_are_checked_and_warned_untested(self):
+    feature = make_fluorescence(FakeFTDI())
+    for positions in ([], [Coordinate(1, 1, 0)] * 3, [Coordinate(200, 10, 0)]):
+      with self.assertRaises(ValueError):
+        await feature.measure_grid(GRID_CHANNEL, positions=positions, gain=2239, focal_height=15.0)
+    with (
+      patch.object(feature, "_get_grids", AsyncMock(return_value=[])),
+      self.assertLogs(measurement_module.logger, "WARNING") as logs,
+    ):
+      await feature.measure_grid(
+        GRID_CHANNEL, positions=[Coordinate(20, 30, 0)], gain=2239, focal_height=15.0
+      )
+    self.assertIn("has not been tested on hardware", logs.output[0])
+
+  async def test_a_z_scan_runs_only_without_a_focal_height(self):
+    plate = grid_plate()
+    feature = make_fluorescence(FakeFTDI(), plate)
+    z_profile = CLARIOstarZProfileResult(
       well="A1",
-      gain=None,
-      z_profile=[(15.0, 100), (8.4, 900), (0.7, 50)],
-      average_signal=880,
+      gain=2239,
+      z_profile=[],
+      average_signal=0,
       peak_counts=None,
       peak_detector_percent=None,
-      peak_focal_height=8.4,
+      peak_focal_height=14.9,
       temperature=None,
-      start_timestamp=datetime(2000, 1, 1),
-      end_timestamp=datetime(2000, 1, 1),
+      start_timestamp=datetime.now(),
+      end_timestamp=datetime.now(),
     )
-    profile = await self.fluorescence.measure_z_profile(BASELINE, well=well, simulated_data=earlier)
-    self.assertEqual((profile.z_profile, profile.peak_focal_height), (earlier.z_profile, 8.4))
-    self.assertGreater(profile.start_timestamp, earlier.start_timestamp)
-    with self.assertRaises(ValueError):  # another well's
-      await self.fluorescence.measure_z_profile(
-        BASELINE, well=self.plate.get_well("B1"), simulated_data=earlier
-      )
+    with (
+      patch.object(feature, "measure_z_profile", AsyncMock(return_value=z_profile)) as z_scan,
+      patch.object(feature, "_get_grids", AsyncMock(return_value=[])) as scan,
+    ):
+      await feature.measure_well_centers(GRID_CHANNEL)
+      self.assertIs(z_scan.call_args.kwargs["well"], plate.get_well("A1"))
+      self.assertEqual(z_scan.call_args.kwargs["gain_target_percent"], 50.0)
+      self.assertEqual(scan.call_args.args[4:6], (14.9, 2239))
+      await feature.measure_well_centers(GRID_CHANNEL, gain=1000)
+      self.assertIsNone(z_scan.call_args.kwargs["gain_target_percent"])
+      self.assertEqual(scan.call_args.args[4:6], (14.9, 1000))
+      await feature.measure_well_centers(GRID_CHANNEL, focal_height=10.0, gain=1000)
+      self.assertEqual(z_scan.call_count, 2)
+      self.assertEqual(scan.call_args.args[4:6], (10.0, 1000))
+
+  async def test_wells_are_scanned_two_at_a_time(self):
+    plate = grid_plate()
+    feature = make_fluorescence(FakeFTDI(), plate)
+    wells = [plate.get_well(name) for name in ("B2", "G11", "D6")]
+    with (
+      patch.object(feature, "_get_grids", AsyncMock(return_value=[])) as scan,
+      self.assertLogs(measurement_module.logger, "WARNING"),
+    ):
+      await feature.measure_well_centers(GRID_CHANNEL, wells=wells, focal_height=15.0, gain=2239)
+    self.assertEqual([call.args[2] for call in scan.call_args_list], [["B2", "G11"], ["D6"]])
+    first_pair, last = (call.args[0] for call in scan.call_args_list)
+    self.assertEqual((first_pair[13], first_pair[14]), (2, 1))
+    self.assertEqual((last[13], last[14]), (1, 1))
+
+  async def test_invalid_arguments_send_nothing(self):
+    io = FakeFTDI()
+    feature = make_fluorescence(io, grid_plate())
+    cases: List[Dict[str, Any]] = [
+      dict(focal_height=15.0),  # no gain
+      dict(optic_position="bottom"),  # the z-scan reads from the top
+      dict(gain=5000, focal_height=15.0),
+      dict(gain=2239, focal_height=30.0),
+      dict(gain_target_percent=0),
+      dict(wells=[]),
+    ]
+    for arguments in cases:
+      with self.subTest(arguments=arguments), self.assertRaises(ValueError):
+        await feature.measure_well_centers(GRID_CHANNEL, **arguments)
+    self.assertEqual(io.written, [])
+
+
+class DrawerOpenTests(unittest.IsolatedAsyncioTestCase):
+  async def test_a_z_scan_and_a_grid_scan_with_the_drawer_out_are_refused(self):
+    plate, grid = fluorescence_plate(), grid_plate()
+    calls = {
+      "z-scan": lambda feature: feature.measure_z_profile(BASELINE, well=plate.get_well("A1")),
+      "grid scan": lambda feature: feature.measure_well_centers(
+        GRID_CHANNEL, focal_height=15.0, gain=2239
+      ),
+    }
+    for name, call in calls.items():
+      with self.subTest(name):
+        io = FakeFTDI()
+        io.replies = [STATUS_DRAWER_OPEN]
+        feature = make_fluorescence(io, grid if name == "grid scan" else plate)
+        with self.assertRaisesRegex(RuntimeError, "the drawer is open"):
+          await call(feature)
+        self.assertEqual(io.written, [STATUS_QUERY_FRAME])
 
 
 if __name__ == "__main__":
