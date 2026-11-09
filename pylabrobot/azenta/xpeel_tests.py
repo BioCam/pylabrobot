@@ -1,22 +1,68 @@
 import os
-
-import pytest
+import unittest
+from typing import Tuple
+from unittest.mock import AsyncMock
 
 from pylabrobot.azenta.xpeel import HAS_SERIAL, XPeel
 from pylabrobot.resources import Coordinate, cor_96_wellplate_360uL_Fb
 
-pytestmark = pytest.mark.skipif(not HAS_SERIAL, reason="pyserial is not installed")
 
-
-def test_models_are_shipped():
+def _xpeel(*lines: bytes) -> Tuple[XPeel, AsyncMock]:
+  """An XPeel and its serial port, which answers with `lines`, one per readline."""
   xpeel = XPeel(port="/dev/null")
-  model_dir = os.path.join(os.path.dirname(__file__), "resource_model")
-  for resource in (xpeel, xpeel.plate_carrier):
-    assert os.path.isfile(os.path.join(model_dir, f"{resource.model}.glb"))
+  io = AsyncMock()
+  io.readline = AsyncMock(side_effect=list(lines))
+  xpeel.io = io
+  return xpeel, io
 
 
-def test_plate_seats_on_the_carrier():
-  xpeel = XPeel(port="/dev/null")
-  plate = cor_96_wellplate_360uL_Fb(name="plate")
-  xpeel.plate_carrier.assign_child_resource(plate)
-  assert plate.get_location_wrt(xpeel) == Coordinate(31.07, 36.11, 136.65)
+@unittest.skipUnless(HAS_SERIAL, "pyserial is not installed")
+class TestXPeelResourceModel(unittest.TestCase):
+  def test_models_are_shipped(self) -> None:
+    xpeel = XPeel(port="/dev/null")
+    model_dir = os.path.join(os.path.dirname(__file__), "resource_model")
+    for resource in (xpeel, xpeel.plate_carrier):
+      self.assertTrue(os.path.isfile(os.path.join(model_dir, f"{resource.model}.glb")))
+
+  def test_plate_seats_on_the_carrier(self) -> None:
+    xpeel = XPeel(port="/dev/null")
+    plate = cor_96_wellplate_360uL_Fb(name="plate")
+    xpeel.plate_carrier.assign_child_resource(plate)
+    self.assertEqual(plate.get_location_wrt(xpeel), Coordinate(31.07, 36.11, 136.65))
+
+
+@unittest.skipUnless(HAS_SERIAL, "pyserial is not installed")
+class TestXPeelRequestStatus(unittest.IsolatedAsyncioTestCase):
+  async def test_returns_the_three_error_codes(self) -> None:
+    xpeel, io = _xpeel(b"*ready:00,00,00\r\n")
+
+    self.assertEqual(await xpeel.request_status(), (0, 0, 0))
+    io.write.assert_awaited_once_with(b"*stat\r\n")
+
+  async def test_returns_nonzero_error_codes(self) -> None:
+    xpeel, _ = _xpeel(b"*ready:07,20,00\r\n")
+
+    self.assertEqual(await xpeel.request_status(), (7, 20, 0))
+
+
+@unittest.skipUnless(HAS_SERIAL, "pyserial is not installed")
+class TestXPeelPeel(unittest.IsolatedAsyncioTestCase):
+  async def test_sends_the_adhere_time_as_a_code(self) -> None:
+    for adhere_time, code in ((2.5, 1), (5.0, 2), (7.5, 3), (10.0, 4)):
+      with self.subTest(adhere_time=adhere_time):
+        xpeel, io = _xpeel(b"*ack\r\n", b"*ready:00,00,00\r\n")
+
+        await xpeel.peel(begin_location=0, fast=False, adhere_time=adhere_time)
+
+        io.write.assert_awaited_once_with(f"*xpeel:4{code}\r\n".encode("ascii"))
+
+  async def test_rejects_an_unsupported_adhere_time(self) -> None:
+    xpeel, io = _xpeel()
+
+    with self.assertRaises(ValueError):
+      await xpeel.peel(adhere_time=3.0)
+    io.write.assert_not_awaited()
+
+
+if __name__ == "__main__":
+  unittest.main()
