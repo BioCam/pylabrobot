@@ -5,6 +5,7 @@ import json
 import os
 from typing import Any, Dict, Literal, Optional, Tuple
 
+from .features.pump import PressureController
 from .framing import ABSOLUTE_POSITION_SENSOR_BOARD
 
 
@@ -17,18 +18,24 @@ class DeviceConfiguration:
     firmware_versions: each board's firmware version, by board; None for a board that did not
       answer.
     motor_limits: each motor's (lower, upper) limit, by motor, in the device's units.
+    feedback_sensor_parameters: each pressure controller's feedback sensor (scale, offset), by
+      controller name (``PRESSURE_CONTROLLERS``), not by its index as the motors are; as the
+      pressure board holds them, empty without one. Not a fitted field.
   """
 
   generation: Optional[Literal["v3", "v4"]] = None
   firmware_versions: Dict[int, Optional[str]] = dataclasses.field(default_factory=dict)
   motor_limits: Dict[int, Tuple[float, float]] = dataclasses.field(default_factory=dict)
+  feedback_sensor_parameters: Dict[PressureController, Tuple[float, float]] = dataclasses.field(
+    default_factory=dict
+  )
 
 
 # One real unit of each generation: its device block and its unit blocks.
 RECORDING_MANTIS_V3 = os.path.join(os.path.dirname(__file__), "recordings", "mantis_v3.json")
 RECORDING_MANTIS_V4 = os.path.join(os.path.dirname(__file__), "recordings", "mantis_v4.json")
 # The blocks a unit's own values fill: from its vendor folder, its declared file or a recording.
-UNIT_BLOCKS = ("plate_clamp", "rfid")
+UNIT_BLOCKS = ("plate_clamp", "rfid", "led_bar")
 
 # What is fitted: compared between a declared configuration and the device at setup. Firmware is
 # not, so a configuration taken off one device still describes another of its build.
@@ -62,6 +69,10 @@ def configuration_from_json(fields: Dict[str, Any]) -> DeviceConfiguration:
     motor_limits={
       int(motor): (float(lower), float(upper))
       for motor, (lower, upper) in fields.get("motor_limits", {}).items()
+    },
+    feedback_sensor_parameters={
+      controller: (float(scale), float(offset))
+      for controller, (scale, offset) in fields.get("feedback_sensor_parameters", {}).items()
     },
   )
 
