@@ -1541,9 +1541,6 @@ class Pipettes:
 
     The channels not named stay where they are.
 
-    TODO: park the iSWAP first when one is installed. Legacy does, skipping the move when its
-    flag says it is already parked; v1 tracks no such state and has no query for it.
-
     Args:
       ys: where to put each named channel, in mm, keyed by channel, 0-indexed from the back.
       make_space: whether the channels not named may be moved, so that every pair meets its
@@ -1554,8 +1551,10 @@ class Pipettes:
       acceleration_level: every channel's level for this move only, 1 (gentlest) to 4; the default
         level when None.
     """
+    planned_ys = await self._plan_y_positions(ys, make_space)
+    await self._require_iswap_parked()
     return await self._move_to_planned_y_positions(
-      await self._plan_y_positions(ys, make_space),
+      planned_ys,
       speed=speed,
       acceleration_level=acceleration_level,
     )
@@ -2028,6 +2027,7 @@ class Pipettes:
     self._check_reachable("x", x)
     planned_ys = await self._plan_y_positions(ys, make_space)
     raises = await self._traverse_raise_targets(height) if height > 0 else {}
+    await self._require_iswap_parked()
 
     if raises:
       await self.move_stop_disc_to_z_positions(raises)
@@ -4559,6 +4559,7 @@ class Pipettes:
       ]
     planned.sort(key=lambda p: (p[0].x_position, min(p[1][i] for i in p[0].indices)))
 
+    await self._require_iswap_parked()
     for batch, group in planned:
       indices = [group[index] for index in batch.indices]
       spots = [tip_spots[index] for index in indices]
@@ -4845,6 +4846,7 @@ class Pipettes:
     else:
       groups = [(list(range(len(destinations))), use_channels)]
 
+    await self._require_iswap_parked()
     for indices, channels_in_group in groups:
       # Held now, because the command takes each tip off its shaft: what is put into the spot is
       # the tip the channel came with.
@@ -6576,6 +6578,7 @@ class Pipettes:
     )
     tracking = does_volume_tracking()
     following = per_container("surface_following_distances", surface_following_distances, n)
+    await self._require_iswap_parked()
     _, overhangs, batches = await self._prepare_batched(
       deck,
       containers,
@@ -7441,6 +7444,7 @@ class Pipettes:
     )
     tracking = does_volume_tracking()
     following = per_container("surface_following_distances", surface_following_distances, n)
+    await self._require_iswap_parked()
     _, overhangs, batches = await self._prepare_batched(
       deck,
       containers,

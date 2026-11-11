@@ -526,7 +526,8 @@ class TestDriveParametersAtSetup(unittest.IsolatedAsyncioTestCase):
 
 
 class TestRequireISWAPParked(unittest.IsolatedAsyncioTestCase):
-  """The CoRe gripper commands refuse unless the iSWAP is parked; the check only reads."""
+  """Channel moves, pipetting and the CoRe gripper commands refuse unless the iSWAP is parked;
+  the check only reads."""
 
   async def asyncSetUp(self):
     self.pipettes = await simulated_channels()
@@ -553,6 +554,19 @@ class TestRequireISWAPParked(unittest.IsolatedAsyncioTestCase):
     iswap.request_is_parked = not_parked  # type: ignore[method-assign]
     with self.assertRaises(RuntimeError):
       await self.pipettes._require_iswap_parked()
+
+  async def test_not_parked_stops_a_y_move_before_it_is_sent(self):
+    iswap = self.pipettes.arm.iswap
+    assert iswap is not None
+
+    async def not_parked(*args: Any, **kwargs: Any) -> bool:
+      return False
+
+    iswap.request_is_parked = not_parked  # type: ignore[method-assign]
+    y = (await self.pipettes.request_y_positions())[0]
+    with self.assertRaises(RuntimeError):
+      await self.pipettes.move_to_y_positions(ys={0: y + 1.0})
+    self.assertNotIn("C0JY", self.sent)
 
   async def test_no_iswap_sends_nothing(self):
     self.pipettes.arm.iswap = None
