@@ -45,6 +45,7 @@ from pylabrobot.formulatrix.mantis.driver.features.led_bar_tests import (
 )
 from pylabrobot.formulatrix.mantis.driver.framing import parse_frame
 from pylabrobot.formulatrix.mantis.driver.master_tests import (
+  PUMP_HALT,
   RECORDED_MOTOR_ERROR_EVENTS,
   DriverTestCase,
   FakeLink,
@@ -550,8 +551,7 @@ class StopTests(ArmTestCase):
       + [(0, 68, bytes.fromhex(CLOSE_QUEUED_MOVES[item])) for item in (13, 14, 15)]
       + [(0, 61, b""), (0, 62, b""), (0, 68, bytes.fromhex(CLOSE_QUEUED_MOVES[16]))],
     )
-    self.assertEqual(sent[19][:2], (12, 33))
-    self.assertEqual(sent[-2:], TURN_OFF)
+    self.assertEqual(sent[19:], PUMP_HALT + [(12, 33, b"")] + TURN_OFF)
     self.assertFalse(driver.arm.is_initialized)
 
   async def test_a_head_away_from_idle_is_not_parked_and_the_clamp_is_still_released(self):
@@ -578,9 +578,9 @@ class StopTests(ArmTestCase):
     ) as logs:
       await driver.stop()
     self.assertTrue(any("the arm was not parked" in line for line in logs.output))
-    commands = [command for _, command, _ in self.sent(link)]
-    self.assertNotIn(30, commands)
-    self.assertNotIn(68, commands)
+    commands = [(board, command) for board, command, _ in self.sent(link)]
+    self.assertNotIn((11, 30), commands)
+    self.assertNotIn((0, 68), commands)
 
   async def test_an_arm_not_brought_up_is_halted_but_not_parked(self):
     link = self.close_link()
