@@ -10,8 +10,10 @@ last section lists what is open and where the code does not follow a rule yet.
 device.py                    MantisDevice, a Resource, and the Mantis() factory. setup() / stop(),
                              the driver, the parts.
 driver/master.py             MantisDriver. Owns the link, the reader, reply matching, events,
-                             discovery and the saved configuration; reads the motors; shows
-                             setup and stop on the LED bar.
+                             the sequencer, discovery and the saved configuration; reads the
+                             motors; shows setup and stop on the LED bar.
+driver/events.py             The events the device sends unasked: their codes, what each carries
+                             and how it is logged.
 driver/simulator.py          MantisSimulationDriver, MantisSimulationPlateClamp,
                              MantisSimulationPump, MantisSimulationRfid, MantisSimulationLedBar.
                              Answer from the declared configuration; nothing reaches a wire.
@@ -99,15 +101,30 @@ which follows the software's chip catalogue, not the unit. A dispense takes one 
 explicit arguments win. No lookup by viscosity: the bands leave gaps (5.5 cP is in none).
 
 **M5. One command in flight; replies match on packet number and board.** The reader runs from
-setup to stop. A frame with a code from 0x0200 is an event: it goes to every waiter registered for
-its board and code (`_expect_event`, before the command that causes it is sent, then
-`_wait_for_event`), and is logged either way. A reply nobody is waiting for is logged and dropped.
+setup to stop. A frame with a code from 0x0200 is an event: it is logged by its content
+(`describe_event`; a code not decoded, such as 0x7FFF, by its number) and goes to every waiter
+registered for its board and code whose `match` accepts its payload (`_expect_event`, before the
+command that causes it is sent, then `_wait_for_event`). A motor-error event fails every waiter for
+a motion event (`MOTION_EVENTS`) at once with `MantisMotionError`. An event whose payload does not
+match its layout is dropped before any waiter sees it. A reply nobody is waiting for is logged and
+dropped.
 A size field no frame can have (`MAXIMUM_FRAME_SIZE`) drops one byte at a time until a frame
 starts. A read that times out is resent with the same packet number, up to `attempts`. A command
 that writes or moves is sent once (`attempts=1`), never resent. A failed read ends the reader: the
 command in flight and every event waiter fail with it, and every later command, including one
 already waiting for the lock, raises until setup runs again. `stop` fails the command in flight and
 every event waiter.
+
+**M5a. The sequencer plays queued items; a queue write is checked by its reply.** Clear (61),
+start (62), stop (63) and abort (64) are `_unchecked_fw_*` calls, sent once, returning the reply's
+word. `_queue_ppi_write` numbers each item from 1 to `LAST_QUEUE_ITEM` per opening of the link and
+sends it once (`_unchecked_fw_queue_write_ppi`, command 65). A reply of -1 free slots means the
+queue was full and the item not queued: it is sent again under the next item, for at most
+`default_queue_full_timeout`; a non-zero error word raises `InvalidQueueItemError`.
+`_wait_for_queue_item` waits for the item's progress event with nothing left queued; the reader
+keeps the last such item, so a report that came with the reply is not missed.
+Every progress event from board 0 sets `_sequence_progress`, the item played last, which the LED
+bar's dispense progress follows; opening the link clears it.
 
 **M6. The wire speaks the device's units; reads return them.** (STAR P4.) Every read returns what
 the device sent, decoded but not converted, until the feature that owns it knows the conversion.
@@ -170,7 +187,9 @@ subclass that overrides its `_unchecked_fw_*` calls and reads with state above t
 `MantisSimulationPlateClamp` reads 0 until a command sets clamping done or unclamping done;
 `MantisSimulationRfid` reads every slot empty; `MantisSimulationPump` reads off, every line at 0,
 with the declared calibration; `MantisSimulationLedBar` takes every command and waits no hold. The motors read idle at 0, as after power-on; a motor read the
-configuration does not hold is not simulated.
+configuration does not hold is not simulated. The sequencer, on the driver, holds
+`SEQUENCER_QUEUE_SIZE` items, stopped and empty after setup, and once started plays each item at
+once; stop and abort keep what is queued.
 
 **M16. Locking is by subsystem.** (STAR P11.) One lock serializes the link today. When features
 add commands that the device runs together, each subsystem gets its own lock, taken in declaration
@@ -248,3 +267,20 @@ colour took a release from 0.21 s to 0.34 s on the recorded v4.
 22. **The dispense progress has no caller yet.** `_show_fill`, `_follow_fill` and
     `_show_dispense_done` wait for the dispense; `_follow_fill` reads `_sequence_progress`, which
     the sequencer sets.
+23. **What stop (63) and abort (64) do to queued items is not known.** Each answered 0 and was
+    followed by a sequence-stopped event; whether the items still queued are kept is not seen, so
+    the simulation keeps them. Neither has been sent by this driver.
+24. **The queue depth is 200 on a started sequencer only.** Every progress event's queued and free
+    counts add to 200; an un-started queue has not been filled to its -1.
+25. **Queue writes are sent once.** Whether the device runs a write twice when it is resent with
+    the same packet number is not known, so none is resent; a lost reply raises.
+26. **A queue item's duration is passed in the device's time steps.** Three holds of 500 queued
+    together on the v4 were reported played 0.5 s apart, so a step looks like 1 ms; no hold has
+    been timed on its own.
+27. **A clear answered 8 once,** right after Z homed; every other clear and start answered 0.
+    What the word means is not known; it is returned, not checked.
+28. **`InvalidQueueItemError` is untested.** No queue reply seen has a non-zero error word.
+29. **A motor error is not kept for a later wait.** One that comes after an item is queued but
+    before `_wait_for_queue_item` begins leaves that wait to time out; the sequencer stops, so the
+    item is never reported played.
+30. **A sequence-stopped event's second word is 0 in every one seen**; what it counts is not known.
