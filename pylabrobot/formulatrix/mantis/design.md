@@ -8,15 +8,19 @@ last section lists what is open and where the code does not follow a rule yet.
 
 ```
 device.py                    MantisDevice, a Resource, and the Mantis() factory. setup() / stop(),
-                             the driver, the parts.
+                             the driver, the parts; places the arm's links from a pose read.
 driver/master.py             MantisDriver. Owns the link, the reader, reply matching, events,
                              the sequencer, discovery and the saved configuration; reads the
-                             motors; shows setup and stop on the LED bar.
+                             motors; halts the device at stop; shows setup and stop on the LED
+                             bar.
+driver/arm_kinematics.py     The arm's geometry and units: device units, inverse and forward
+                             kinematics, the absolute encoder's correction. Pure maths.
 driver/events.py             The events the device sends unasked: their codes, what each carries
                              and how it is logged.
-driver/simulator.py          MantisSimulationDriver, MantisSimulationPlateClamp,
-                             MantisSimulationPump, MantisSimulationRfid, MantisSimulationLedBar.
-                             Answer from the declared configuration; nothing reaches a wire.
+driver/simulator.py          MantisSimulationDriver, MantisSimulationArm,
+                             MantisSimulationPlateClamp, MantisSimulationPump, MantisSimulationRfid,
+                             MantisSimulationLedBar. Answer from the declared configuration;
+                             nothing reaches a wire.
 driver/framing.py            The frame: header, check word, splitting, payload strings, boards.
 driver/errors.py             MantisError and one error per kind; what the device's codes mean.
 driver/configuration.py      DeviceConfiguration: what the device answered about itself.
@@ -24,7 +28,7 @@ driver/oem_config.py         The unit's own values, read from its vendor
                              .config files, into a declared configuration.
 driver/confirmed_firmware_versions.py
                              The firmware sets confirmed on a device, per generation.
-driver/features/             One class per thing the device is fitted with: PlateClamp, Pump,
+driver/features/             One class per thing the device is fitted with: Arm, PlateClamp, Pump,
                              Rfid, LedBar.
 driver/recordings/           One real Mantis of each generation: its configuration and unit values.
 resource_model/              The parts the device is modelled as, their files and manifest.
@@ -49,10 +53,10 @@ is the exception: `discover` builds it when it answers its ping on interface A, 
 opening of the link.
 Each feature is an `Optional` attribute of the driver, `None` until `_discover_features` builds
 it: `plate_clamp` is built only when board 12 answered discovery, so a v3 without it has none;
-`pump` only when board 10 answered. `led_bar` is gated by the generation: built only on a v4 whose
-board 12 answered, never on a v3, whose install sets no LED count. A difference between v3 and v4
-is expressed there, by which feature is built, never by a branch on the generation inside a
-command.
+`pump` only when board 10 answered; `arm` only when board 11 answered (a v4). `led_bar` is gated
+by the generation: built only on a v4 whose board 12 answered, never on a v3, whose install sets
+no LED count. A difference between v3 and v4 is expressed there, by which feature is built, never
+by a branch on the generation inside a command.
 
 **M4. A configuration holds facts only, and is data.** (STAR P3, P13.) `DeviceConfiguration` holds
 what the device answered: generation, firmware versions, motor limits, and the pressure board's
@@ -74,7 +78,14 @@ warning, less accurate on this unit. `save_configuration` saves the unit's block
 recording's, so after one setup with the folder the saved file alone carries them. A block is
 loaded only where its source applies: `plate_clamp.levels` for a clamp driven as a DC motor,
 `rfid.slot_to_antenna` where `RFID.config` exists, `led_bar.number_of_leds` where `Device.config`
-sets `NumberOfLed`.
+sets `NumberOfLed`, `arm` where the unit declares the arms' absolute encoder references (a v4), its
+encoder correction from the `Data` folder.
+
+**M4d. Motion calibration never comes from a recording.** A block that calibrates motion
+(`MOTION_CALIBRATION_BLOCKS`: `arm`) comes from the unit's folder or its declared file only; no
+recording holds one. Without it, nothing that needs it is sent: `Arm.initialize` refuses, and so
+does `setup` unless `skip_arm=True`. Factory files (encoder corrections, taught sequences) are
+never committed; tests use synthetic tables.
 
 Which vendor values are the unit's own, from a v3 and a v4 install side by side:
 
@@ -122,14 +133,18 @@ sends it once (`_unchecked_fw_queue_write_ppi`, command 65). A reply of -1 free 
 queue was full and the item not queued: it is sent again under the next item, for at most
 `default_queue_full_timeout`; a non-zero error word raises `InvalidQueueItemError`.
 `_wait_for_queue_item` waits for the item's progress event with nothing left queued; the reader
-keeps the last such item, so a report that came with the reply is not missed.
+keeps the last such item, so a report that came with the reply is not missed. A move of all three
+motors is queued the same way (`_unchecked_fw_queue_move_item`, command 68, `_queue_move_item`);
+a motor sent all zeros does not move.
 Every progress event from board 0 sets `_sequence_progress`, the item played last, which the LED
 bar's dispense progress follows; opening the link clears it.
 
 **M6. The wire speaks the device's units; reads return them.** (STAR P4.) Every read returns what
 the device sent, decoded but not converted, until the feature that owns it knows the conversion.
 A feature then converts in one place, on its configuration, and speaks PyLabRobot's units. No unit
-suffix on names in default units.
+suffix on names in default units. The arm converts in `arm_kinematics`: 200 device units per motor
+revolution, degrees on the arms and mm on Z (down from its flag), each rate rounded up half a step
+as on the wire.
 
 **M7. A range is checked before anything is sent.** (STAR P5.) A read accepts only the indices
 seen on a device (`MOTORS`, `ABSOLUTE_ENCODER_MOTORS`, the boards, `PRESSURE_CONTROLLERS`);
@@ -139,6 +154,11 @@ seen on a device (`MOTORS`, `ABSOLUTE_ENCODER_MOTORS`, the boards, `PRESSURE_CON
 P9.) The raw call is `_unchecked_fw_*` and sends once; the public method checks its arguments, then
 confirms what the device reports. `lock` checks the level against the declared levels, calls
 `_unchecked_fw_do_plate_clamping` and reads the clamp state until it reports clamping done.
+`Arm.initialize` matches the recorded v4 startup command for command: energise the arms, declare
+them three times where their absolute encoders read, set their following error, clear Z, declare,
+move to idle, home Z (waiting for its home-done event), twice declare and move to idle, home Z. A
+move reads each motor's status until none moves; a fault bit raises `MantisMotionError`. Idle is
+`POST_HOMING_POSITION` (the same on every unit seen) less the unit's offsets.
 
 **M9. Names say what kind of thing they are.** (STAR P10.)
 
@@ -155,12 +175,15 @@ confirms what the device reports. `lock` checks the level against the declared l
 Commands, boards and fields are named for what they do; no vendor class, method or opcode names.
 
 **M10. What is acquired is released on every path.** A feature that turns on or holds anything
-(pump, pressure controllers, clamp, a chip) turns it off or releases it in a `finally`, each step
-in its own `try`, and the first fault is the one raised. `stop` fails what waits on the link,
-shows stop on the LED bar, releases each built feature, turns the LED bar off, then closes the
-link. A `lock` that does not report clamping
-done releases the clamp before raising, and `stop` releases a clamp that does not read released.
-Failure behaviour is designed before coverage.
+(pump, pressure controllers, clamp, a chip) turns it off or releases it in a `finally`, each step in
+its own `try`, and the first fault is the one raised. `stop` fails what waits on the link and shows
+stop on the LED bar; on a v4 it aborts the sequencer, stops each motor at its default deceleration
+and parks an arm brought up (queued, as in the recorded close: Z up, the arms, both, then Z down to
+`SHUTDOWN_Z` at idle); then it releases each built feature, turns the LED bar off and closes the
+link. A `lock` that does not report clamping done releases the clamp before raising, and `stop`
+releases a clamp that does not read released. A failed `Arm.initialize` unpowers the arm motors
+again, and a failed setup's `stop` does not park them. Failure behaviour is designed before
+coverage.
 
 **M11. Firmware is confirmed, never gated.** A version set outside `CONFIRMED_FIRMWARE_VERSIONS`
 warns once at setup; nothing refuses. A set goes in once it has been seen on a device.
@@ -181,15 +204,18 @@ serials or dates; a constant is referenced by name, not repeated.
 
 **M15. The simulator answers from the declared configuration; nothing reaches a wire.** (CLARIOstar
 simulator.) `MantisSimulationDriver` builds no link and `_send_command` raises. Setup takes the
-configuration from the file's `device` block, and the reads answer from it; a board it leaves
-`None` does not answer, and the device name is not simulated. Each feature has a simulation
-subclass that overrides its `_unchecked_fw_*` calls and reads with state above the wire:
+configuration from the file's `device` block, and the reads answer from it; a board it leaves `None`
+does not answer, and the device name is not simulated. Each feature has a simulation subclass that
+overrides its `_unchecked_fw_*` calls and reads with state above the wire:
 `MantisSimulationPlateClamp` reads 0 until a command sets clamping done or unclamping done;
 `MantisSimulationRfid` reads every slot empty; `MantisSimulationPump` reads off, every line at 0,
-with the declared calibration; `MantisSimulationLedBar` takes every command and waits no hold. The motors read idle at 0, as after power-on; a motor read the
-configuration does not hold is not simulated. The sequencer, on the driver, holds
+with the declared calibration; `MantisSimulationLedBar` takes every command and waits no hold.
+`MantisSimulationArm` stands at idle with its absolute encoders reading there, so it needs no
+encoder correction; its offsets are the declared ones, else 0. Each command moves it at once, and
+the motor reads answer from it; without it the motors read idle at 0, as after power-on. A motor
+read the configuration does not hold is not simulated. The sequencer, on the driver, holds
 `SEQUENCER_QUEUE_SIZE` items, stopped and empty after setup, and once started plays each item at
-once; stop and abort keep what is queued.
+once, a queued move moving the simulated arm; stop and abort keep what is queued.
 
 **M16. Locking is by subsystem.** (STAR P11.) One lock serializes the link today. When features
 add commands that the device runs together, each subsystem gets its own lock, taken in declaration
@@ -201,16 +227,18 @@ master's links. Interface B carries the command frames; interface A, the RFID re
 
 **M18. The resource model mirrors the device; it never decides for it.** (STAR P12.) `MantisDevice`
 builds the parts and holds the driver; a feature reaches the parts through the device, and moves
-keep them in step. A driver with no resource tree still drives.
+keep them in step. A driver with no resource tree still drives. The Z column carries the arm's
+four links (`LinkBody`), turned to the joint angles setup reads after the bring-up.
 
 **M19. The LED bar shows what the device does, never at the cost of it.** An action runs inside
-`_show_action`: the bar shows its colour (`LED_STATUS_COLORS`), the enclosing action's when it
-ends, the idle animation when none is left, and red after one that failed. Setup shows blue, then
-green for `SETUP_DONE_HOLD`, then idle; `stop` shows dim white, then turns the bar off. An LED bar
-fault only warns: it never fails or masks the action. `show_actions=False` shows no action, only
-the idle animation from setup on. A colour change costs about 0.1 s of link time (two commands),
-so an action that is quick on its own shows none: the plate clamp's lock and unlock, where a
-colour took a release from 0.21 s to 0.34 s on the recorded v4.
+`_show_action`: the bar shows its colour (`LED_STATUS_COLORS`), the enclosing action's when it ends,
+the idle animation when none is left, and red after one that failed. Setup shows blue, the arm's
+bring-up with it, then green for `SETUP_DONE_HOLD`, then idle; `stop` shows dim white before it
+halts the arm, then turns the bar off. The arm's moves show no colour of their own. An LED bar fault
+only warns: it never fails or masks the action. `show_actions=False` shows no action, only the idle
+animation from setup on. A colour change costs about 0.1 s of link time (two commands), so an action
+that is quick on its own shows none: the plate clamp's lock and unlock, where a colour took a
+release from 0.21 s to 0.34 s on the recorded v4.
 
 ## Open, and where this is not consistent yet
 
@@ -220,9 +248,11 @@ colour took a release from 0.21 s to 0.34 s on the recorded v4.
 3. **Three link values are ours, not the vendor's.** The latency timer (2 ms), the read poll
    (10 ms) and the reply timeout (5 s). A frame whose reserved word is not zero is logged, not
    refused.
-4. **The arm and Z column are not modelled yet.** They come with the arm feature, placed from a
-   pose read from the device; which motor drives which link is not measured. Until then the motor
-   reads sit on the driver and return the device's units.
+4. **The arm model is partial.** The links are drawn as boxes: the manufacturer's link models are
+   compressed in a form not converted yet. The Z column is drawn with Z at 0: how far it travels
+   with Z is not measured. Which side of the device motor 0's links sit on is taken from the name
+   of a link length in the unit's files, not seen on a device. The motor reads stay on the driver
+   in the device's units; the arm converts them.
 5. **Whether motor limits differ between devices of one generation** is unknown; one v4 has been
    read.
 6. **The plate clamp and the RFID reader have run on one v4 only,** on macOS and on Windows. No v3
@@ -284,3 +314,21 @@ colour took a release from 0.21 s to 0.34 s on the recorded v4.
     before `_wait_for_queue_item` begins leaves that wait to time out; the sequencer stops, so the
     item is never reported played.
 30. **A sequence-stopped event's second word is 0 in every one seen**; what it counts is not known.
+31. **The arm's bring-up and stop have not run through this driver.** Their commands and order
+    match the recorded v4 startup and close; a device run settles the rest. Before it parks, stop
+    waits for the motors to stop, refuses on a fault and reads where the head is from the absolute
+    encoders; no fault is cleared, so whether a stopped motor plays a queued move is not seen.
+32. **The arm is moved to idle only from near idle.** Without the unit's zones, setup and stop move
+    to idle only with the head within `FRONT_ZONE_X_RANGE` (the Front zone's x bounds, the same on
+    every unit seen); elsewhere they refuse. That admits the strip below the Front zone (y under
+    31 mm), where a recorded startup began (y about 28 mm): that startup moved X, Y and Z at once
+    from there; this driver raises Z first, as from the Front zone. The zones' routes lift this.
+33. **The absolute encoder's wrap and the forward kinematics' choice are not observed.** A motor's
+    position is taken one span lower above 100 (motor 0) or 120 (motor 1) device units, and of the
+    two solutions the head's is the one of greater y; no reading near a wrap has been seen.
+34. **A slip before Z homes refuses.** If an arm reads a following error just before Z homes,
+    setup raises instead of homing; no recording shows what should follow.
+35. **Unpowering the arm (command 19, open loop) is unrecorded.** A failed bring-up sends it; its
+    reply has not been seen.
+36. **The encoder correction files are found two levels above `oem_config_directory`.** That
+    argument still names `Data/Device/Configs`; the corrections sit in `Data/System`.
