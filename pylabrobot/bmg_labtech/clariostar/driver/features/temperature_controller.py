@@ -49,9 +49,11 @@ class TemperatureController:
 
   async def _unchecked_fw_set(self, value: int) -> None:
     """Send TEMPERATURE_CONTROLLER with a setpoint in 0.1 C, or `_OFF` / `_MONITOR`."""
-    await self._driver.send_command(
-      self._driver.CommandFamily.TEMPERATURE_CONTROLLER, parameters=value.to_bytes(2, "big")
+    family = self._driver.CommandFamily.TEMPERATURE_CONTROLLER
+    parameters = self._driver._get_command_parameters(
+      command_family=family, parameters=value.to_bytes(2, "big")
     )
+    await self._driver.send_command(family, parameters=parameters)
 
   async def _start_monitoring_if_off(self, status: "CLARIOstarStatus") -> None:
     """Start the sensors if `status` has them off and no target is set: monitoring replaces a
@@ -118,8 +120,11 @@ class TemperatureController:
       timeout: seconds to wait for the sensors to report; `default_sensor_timeout` when None.
 
     Raises:
+      NotImplementedError: if this firmware's status temperatures are not known yet (2.x).
       TimeoutError: if the sensors do not report within `timeout`.
     """
+    if self._driver._status_temperature_indices is None:
+      raise NotImplementedError("this firmware's status temperatures are not known yet")
     timeout = self.default_sensor_timeout if timeout is None else timeout
     status = await self._driver.request_status()
     await self._start_monitoring_if_off(status)

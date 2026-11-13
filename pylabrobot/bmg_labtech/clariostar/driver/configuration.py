@@ -11,8 +11,11 @@ logger = logging.getLogger(__name__)
 INIT_REPLY_TYPE = 0x13
 
 # The firmware whose replies are decoded, as (lowest, highest) firmware number x 1000: the 1.x line.
-# Older firmware is untested; 2.x (the line with native USB) lays its replies out unseen.
+# Older firmware is untested; 2.x (the line with native USB) is `FIRMWARE_2_RANGE`.
 DECODED_FIRMWARE = (1300, 1999)
+
+# The 2.x firmware whose replies are read, as `DECODED_FIRMWARE`: only 2.11 has answered.
+FIRMWARE_2_RANGE = (2110, 2110)
 
 _BARCODE_READER_TYPES = {0: "SE 923", 1: "CSE 600", 2: "SE 955", 3: "SE 965"}
 BARCODE_READER_POSITIONS = ("front", "right", "optional 1", "optional 2")
@@ -21,6 +24,7 @@ BARCODE_READER_POSITIONS = ("front", "right", "optional 1", "optional 2")
 # The INIT reply's blocks by id, named after the module each describes.
 _BLOCK_NAMES = {
   0x01: "main board",
+  0x02: "main board",
   0x09: "detectors",
   0x0E: "temperature controller",
   0x0F: "pumps",
@@ -183,7 +187,10 @@ class DeviceConfiguration:
     """The temperature controller and its channels, from block `0E`."""
     temperature_controller = _block(blocks, 0x0E, 1)[0]
     self.temperature_controller = _bit(temperature_controller, 0)
-    self.temperature_controller_channels = (temperature_controller & 0x70) >> 4
+    # 2.x reads 0 channels beside a controller: not trusted, left unknown.
+    firmware_2 = (self.firmware_version or "").startswith("2.")
+    channels = None if firmware_2 else (temperature_controller & 0x70) >> 4
+    self.temperature_controller_channels = channels
 
   def _update_from_pumps(self, blocks: Dict[int, bytes]) -> None:
     """The injector pumps 1-3 and their types, from block `0F`."""
@@ -216,18 +223,23 @@ class DeviceConfiguration:
     Each block is decoded on its own: one missing or shorter than its fields leaves them None
     and logs a warning; the others are filled.
 
+    The main board is block `01` (1.x), or the first 5 bytes of block `02` (2.x) without one.
+
     Raises:
       ValueError: if the payload is not a whole INIT reply, or comes from firmware outside
-        `DECODED_FIRMWARE`; the main board fields are filled either way.
+        `DECODED_FIRMWARE` (block `01`) or `FIRMWARE_2_RANGE` (block `02`); the main board
+        fields are filled either way.
     """
     blocks = dict(_blocks(payload))
-    main_board = _block(blocks, 0x01, 5)
+    main_board_id = 0x01 if 0x01 in blocks or 0x02 not in blocks else 0x02
+    main_board = _block(blocks=blocks, block_id=main_board_id, length=5)
     firmware = int.from_bytes(main_board[0:2], "big")
     self.firmware_version = f"{firmware / 1000:.2f}"
     self.firmware_build = main_board[2]
     self.mainboard_revision = main_board[4]
     self.model = "CLARIOstarPlus" if main_board[4] >= 2 else "CLARIOstar"
-    if not DECODED_FIRMWARE[0] <= firmware <= DECODED_FIRMWARE[1]:
+    lowest, highest = DECODED_FIRMWARE if main_board_id == 0x01 else FIRMWARE_2_RANGE
+    if not lowest <= firmware <= highest:
       raise ValueError(f"INIT reply of firmware {self.firmware_version} is not decoded here")
     for update in (
       self._update_from_detectors,

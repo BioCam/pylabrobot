@@ -9,23 +9,34 @@ if TYPE_CHECKING:
 REFUSED_BIT = 1 << 4
 WARNING_BIT = 1 << 7
 
+# Firmware 2.x puts one more byte before them: quit codes in bytes 7-11.
+QUIT_CODES_OFFSET = 6
+QUIT_CODES_OFFSET_FIRMWARE_2 = 7
 
-def _quit_codes(reply: bytes, bit: int) -> Optional[Tuple[int, int, int, int, int]]:
-  """Return bytes 6-10 of a type 0x01 reply with `bit` set in byte 1, else None."""
-  if len(reply) < 11 or reply[0] != 0x01 or not reply[1] & bit:
+
+def _quit_codes(
+  reply: bytes, bit: int, offset: int = QUIT_CODES_OFFSET
+) -> Optional[Tuple[int, int, int, int, int]]:
+  """Return the five bytes from `offset` of a type 0x01 reply with `bit` set in byte 1, else
+  None."""
+  if len(reply) < offset + 5 or reply[0] != 0x01 or not reply[1] & bit:
     return None
-  q1, q2, q3, q4, q5 = reply[6:11]
+  q1, q2, q3, q4, q5 = reply[offset : offset + 5]
   return (q1, q2, q3, q4, q5)
 
 
-def parse_quit_codes(reply: bytes) -> Optional[Tuple[int, int, int, int, int]]:
+def parse_quit_codes(
+  reply: bytes, offset: int = QUIT_CODES_OFFSET
+) -> Optional[Tuple[int, int, int, int, int]]:
   """Return the five quit codes of a refused command's reply, or None if it was not refused."""
-  return _quit_codes(reply, REFUSED_BIT)
+  return _quit_codes(reply=reply, bit=REFUSED_BIT, offset=offset)
 
 
-def parse_warning_codes(reply: bytes) -> Optional[Tuple[int, int, int, int, int]]:
+def parse_warning_codes(
+  reply: bytes, offset: int = QUIT_CODES_OFFSET
+) -> Optional[Tuple[int, int, int, int, int]]:
   """Return the five codes of a device warning, or None if the reply carries none."""
-  return _quit_codes(reply, WARNING_BIT)
+  return _quit_codes(reply=reply, bit=WARNING_BIT, offset=offset)
 
 
 # What the first quit code means, for the codes seen in replies from a reader, and 242 and 243 not

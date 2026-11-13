@@ -19,6 +19,7 @@ of the same build.
 | file | reader |
 |---|---|
 | `clariostar_plus_1_35_temperature_controller.json` | CLARIOstar Plus, firmware 1.35. Decoded from the INIT and stored-parameters replies of one reader; the default for a simulated `CLARIOstarPlus`. |
+| `clariostar_plus_2_11_temperature_controller_1536.json` | CLARIOstar Plus, firmware 2.11, native USB. Read from the INIT and stored-parameters replies of one reader; the temperature controller's channels are not read on 2.x. |
 
 ## What is not in one
 

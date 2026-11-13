@@ -9,7 +9,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Literal, Optional, Tuple, Union, cast
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple, Union, cast
 
 from pylabrobot.bmg_labtech.protocol.errors import FrameError
 from pylabrobot.bmg_labtech.protocol.framing import (
@@ -30,6 +30,7 @@ from pylabrobot.io.usb import USB
 from .configuration import (
   BARCODE_READER_POSITIONS,
   DECODED_FIRMWARE,
+  FIRMWARE_2_RANGE,
   FITTED_FIELDS,
   DeviceConfiguration,
   configuration_to_json,
@@ -37,6 +38,8 @@ from .configuration import (
 )
 from .confirmed_firmware_versions import CONFIRMED_FIRMWARE_VERSIONS
 from .errors import (
+  QUIT_CODES_OFFSET,
+  QUIT_CODES_OFFSET_FIRMWARE_2,
   CommandRefusedError,
   describe_quit_codes,
   parse_quit_codes,
@@ -51,6 +54,7 @@ from .framing import FTDI_HEADER, USB_HOST_ACK
 from .parameter_table import (
   PARAMETER_TABLE,
   REPLY_OFFSET,
+  REPLY_OFFSET_FIRMWARE_2,
   SERIAL_NUMBER_ADDRESSES,
   SIGNED_PARAMETERS,
 )
@@ -199,6 +203,23 @@ class CLARIOstarDriver:
       configuration_callback=_configure_usb_device,
     )
 
+  def _apply_firmware_generation(self) -> None:
+    """Set what differs between firmware lines, from the INIT reply's firmware; 1.x until known.
+
+    Every value is set either way, so a driver set up again against another reader keeps none.
+    """
+    firmware_2 = (self.configuration.firmware_version or "").startswith("2.")
+    self._reply_offset = REPLY_OFFSET_FIRMWARE_2 if firmware_2 else REPLY_OFFSET
+    self._quit_codes_offset = QUIT_CODES_OFFSET_FIRMWARE_2 if firmware_2 else QUIT_CODES_OFFSET
+    self._parameter_padding: Dict[int, int] = (
+      {self.CommandFamily.REQUEST: 1, self.CommandFamily.TEMPERATURE_CONTROLLER: 2}
+      if firmware_2
+      else {}
+    )
+    self._running_family_index = 7 if firmware_2 else 6
+    # 2.x places its status temperatures elsewhere, not yet known.
+    self._status_temperature_indices: Optional[Tuple[int, int]] = None if firmware_2 else (11, 13)
+
   def __init__(
     self,
     use_io: Optional[Literal["ftdi", "usb"]] = None,
@@ -248,6 +269,7 @@ class CLARIOstarDriver:
     # (`_enforce_one_measurement_at_a_time`).
     self._measuring = False
     self._last_warning: Optional[Tuple[int, int, int, int, int]] = None
+    self._apply_firmware_generation()
     # Built on first use over the current io (`_ftdi`).
     self._ftdi_interface: Optional[BMGFTDIInterface] = None
     self.drawer = Drawer(self)
@@ -397,31 +419,33 @@ class CLARIOstarDriver:
     Raises:
       CommandRefusedError: if the reply carries the refused bit.
     """
-    quit_codes = parse_quit_codes(reply)
+    quit_codes = parse_quit_codes(reply=reply, offset=self._quit_codes_offset)
     if quit_codes is not None:
       raise CommandRefusedError(payload, quit_codes)
-    warning = parse_warning_codes(reply)
+    warning = parse_warning_codes(reply=reply, offset=self._quit_codes_offset)
     if warning is not None and warning != self._last_warning:
       logger.warning("device warning: %s", describe_quit_codes(warning))
     self._last_warning = warning
 
   @classmethod
-  def _parse_status(cls, payload: bytes) -> CLARIOstarStatus:
+  def _parse_status(
+    cls, payload: bytes, temperature_indices: Optional[Tuple[int, int]] = (11, 13)
+  ) -> CLARIOstarStatus:
     """Parse a STATUS payload into its flags and temperatures.
 
-    Bytes 11-12 are the bottom heating plate and 13-14 the top, u16 BE in 0.1 C; 0 parses as None.
+    Temperatures are u16 BE in 0.1 C, the bottom heating plate at the first of
+    `temperature_indices` and the top at the second; 0 parses as None, and so do both without them.
     """
     flags = {
       name: index < len(payload) and bool(payload[index] & mask)
       for name, index, mask in cls._STATUS_FLAGS
     }
-    temperatures = []
-    for offset in (11, 13):
+    temperatures: List[Optional[float]] = []
+    for offset in temperature_indices or ():
       raw = int.from_bytes(payload[offset : offset + 2], "big") if len(payload) >= offset + 2 else 0
       temperatures.append(raw / 10 if raw else None)
-    return CLARIOstarStatus(
-      **flags, temperature_bottom=temperatures[0], temperature_top=temperatures[1]
-    )
+    bottom, top = temperatures or [None, None]
+    return CLARIOstarStatus(**flags, temperature_bottom=bottom, temperature_top=top)
 
   async def _wait_until_ready(
     self,
@@ -445,7 +469,9 @@ class CLARIOstarDriver:
     while True:
       reply = await self._exchange_with_retries(status_payload, retries=5)
       self._check_reply(status_payload, reply)
-      status = self._parse_status(reply)
+      status = self._parse_status(
+        payload=reply, temperature_indices=self._status_temperature_indices
+      )
       if until(status) if until is not None else not status.busy:
         return
       if timeout is not None and time.time() - start >= timeout:
@@ -511,7 +537,8 @@ class CLARIOstarDriver:
 
   async def request_status(self, retries: int = 5) -> CLARIOstarStatus:
     """Request the status flags and the heating plate temperatures (see ``CLARIOstarStatus``)."""
-    return self._parse_status(await self.send_command(self.CommandFamily.STATUS, retries=retries))
+    payload = await self.send_command(self.CommandFamily.STATUS, retries=retries)
+    return self._parse_status(payload=payload, temperature_indices=self._status_temperature_indices)
 
   async def request_is_ready(self) -> bool:
     """Request whether the reader is idle, not busy."""
@@ -541,9 +568,14 @@ class CLARIOstarDriver:
         self.configuration.update_from_init_reply(reply)
       except ValueError as e:
         logger.warning("INIT reply not decoded (%s); configuration not read", e)
+    self._apply_firmware_generation()
     await self._wait_until_ready(
       timeout=self.default_read_timeout, poll_interval=self.default_poll_interval
     )
+
+  def _get_command_parameters(self, command_family: int, parameters: bytes) -> bytes:
+    """`parameters` with the zero bytes the firmware line adds for `command_family`."""
+    return parameters + bytes(self._parameter_padding.get(command_family, 0))
 
   async def _request_parameters_reply(self) -> bytes:
     """Request the reader's stored parameters (REQUEST `07`) and return the whole reply.
@@ -551,39 +583,50 @@ class CLARIOstarDriver:
     Raises:
       ValueError: if the reply is not a whole stored parameters reply.
     """
-    payload = await self.send_command(
-      self.CommandFamily.REQUEST, self.Command.PARAMETERS, parameters=b"\x00\x00\x00\x00\x00"
+    parameters = self._get_command_parameters(
+      command_family=self.CommandFamily.REQUEST, parameters=b"\x00\x00\x00\x00\x00"
     )
-    if not payload or payload[0] != self.Command.PARAMETERS or len(payload) < 260:
+    payload = await self.send_command(
+      self.CommandFamily.REQUEST, self.Command.PARAMETERS, parameters=parameters
+    )
+    minimum = 260 - REPLY_OFFSET + self._reply_offset
+    if not payload or payload[0] != self.Command.PARAMETERS or len(payload) < minimum:
       raise ValueError(f"not a whole stored parameters reply: {len(payload)} bytes")
     return payload
 
   @staticmethod
-  def _decode_parameters(payload: bytes) -> Dict[str, int]:
+  def _decode_parameters(payload: bytes, offset: int = REPLY_OFFSET) -> Dict[str, int]:
     """A stored parameters reply's values, by key (see ``PARAMETER_TABLE``).
 
+    Args:
+      payload: the stored parameters reply.
+      offset: where the table starts: ``REPLY_OFFSET``, or ``REPLY_OFFSET_FIRMWARE_2`` on 2.x.
+
     Raises:
-      ValueError: if the reply comes from firmware outside ``DECODED_FIRMWARE``.
+      ValueError: if the reply comes from firmware outside ``DECODED_FIRMWARE`` (1.x offset) or
+        ``FIRMWARE_2_RANGE`` (2.x offset).
     """
     parameters = {
       name: int.from_bytes(
-        payload[address + REPLY_OFFSET : address + REPLY_OFFSET + size],
+        payload[address + offset : address + offset + size],
         "little",
         signed=name in SIGNED_PARAMETERS,
       )
       for name, address, size in PARAMETER_TABLE
     }
-    if not DECODED_FIRMWARE[0] <= parameters["firmware_version"] <= DECODED_FIRMWARE[1]:
+    lowest, highest = DECODED_FIRMWARE if offset == REPLY_OFFSET else FIRMWARE_2_RANGE
+    if not lowest <= parameters["firmware_version"] <= highest:
       raise ValueError(
         f"stored parameters of firmware {parameters['firmware_version']} are not decoded"
       )
     return parameters
 
   @staticmethod
-  def _decode_serial_number(payload: bytes) -> str:
-    """A stored parameters reply's serial number, "NNN-NNNN" (``SERIAL_NUMBER_ADDRESSES``)."""
+  def _decode_serial_number(payload: bytes, offset: int = REPLY_OFFSET) -> str:
+    """A stored parameters reply's serial number, "NNN-NNNN" (``SERIAL_NUMBER_ADDRESSES``), its
+    table from `offset`."""
     first, second = (
-      int.from_bytes(payload[address + REPLY_OFFSET : address + REPLY_OFFSET + 2], "little")
+      int.from_bytes(payload[address + offset : address + offset + 2], "little")
       for address in SERIAL_NUMBER_ADDRESSES
     )
     return f"{first:03d}-{second:04d}"
@@ -606,7 +649,9 @@ class CLARIOstarDriver:
       ValueError: if the reply is not a whole stored parameters reply, or comes from firmware
         outside ``DECODED_FIRMWARE``.
     """
-    return self._decode_parameters(await self._request_parameters_reply())
+    return self._decode_parameters(
+      payload=await self._request_parameters_reply(), offset=self._reply_offset
+    )
 
   async def request_fluorescence_channels(self) -> int:
     """Request the number of fluorescence measurement channels."""
@@ -651,15 +696,31 @@ class CLARIOstarDriver:
     return (await self.request_parameters())["well_1536_measurements_enabled"] != 0
 
   @staticmethod
-  def _decode_firmware_build_date(payload: bytes) -> str:
-    """A firmware info reply's compile date ("Nov 20 2020" at bytes 8-19), as "YYYY-MM-DD".
+  def _decode_firmware_build_date(payload: bytes, firmware_version: Optional[str] = None) -> str:
+    """A firmware info reply's compile date, as "YYYY-MM-DD".
+
+    From byte 6, 23-byte entries `[version u16 BE][date "Mon dd yyyy" 00][time "hh:mm:ss" 00]`:
+    one on 1.x, two on 2.x.
+
+    Args:
+      payload: the firmware info reply.
+      firmware_version: the reader's firmware; on 2.x ("2.11") its entry dates it, else the first.
 
     Raises:
       ValueError: if the payload is not a firmware info reply, or its date is not one.
     """
     if not payload or payload[0] != 0x0A or len(payload) < 20:
       raise ValueError(f"not a firmware info reply: {payload[:1].hex()}, {len(payload)} bytes")
-    text = payload[8:20].split(b"\x00")[0].decode("ascii", errors="replace")
+    entry = 6
+    if firmware_version is not None and firmware_version.startswith("2."):
+      firmware = round(float(firmware_version) * 1000)
+      entries = range(6, len(payload) - 13, 23)
+      matches = [o for o in entries if int.from_bytes(payload[o : o + 2], "big") == firmware]
+      if matches:
+        entry = matches[0]
+      else:
+        logger.warning("firmware info has no entry of firmware %s; first entry", firmware_version)
+    text = payload[entry + 2 : entry + 14].split(b"\x00")[0].decode("ascii", errors="replace")
     try:
       month, day, year = text.split()
       return f"{int(year):04d}-{_MONTHS.index(month) + 1:02d}-{int(day):02d}"
@@ -672,10 +733,15 @@ class CLARIOstarDriver:
     Raises:
       ValueError: if the reply is not a firmware info reply with a date.
     """
-    payload = await self.send_command(
-      self.CommandFamily.REQUEST, self.Command.FIRMWARE_INFO, parameters=b"\x00" * 5
+    parameters = self._get_command_parameters(
+      command_family=self.CommandFamily.REQUEST, parameters=b"\x00" * 5
     )
-    return self._decode_firmware_build_date(payload)
+    payload = await self.send_command(
+      self.CommandFamily.REQUEST, self.Command.FIRMWARE_INFO, parameters=parameters
+    )
+    return self._decode_firmware_build_date(
+      payload=payload, firmware_version=self.configuration.firmware_version
+    )
 
   async def _set_parameter(self, name: str, value: int) -> None:
     """Write one of the reader's stored parameters (see ``PARAMETER_TABLE``).
@@ -732,13 +798,15 @@ class CLARIOstarDriver:
     # The stored parameters first, right after INIT.
     try:
       payload = await self._request_parameters_reply()
-      parameters = self._decode_parameters(payload)
+      parameters = self._decode_parameters(payload=payload, offset=self._reply_offset)
     except ValueError as e:
       logger.warning("stored parameters not decoded (%s)", e)
     else:
       versions["stored parameters"] = f"{parameters['firmware_version'] / 1000:.2f}"
       self.configuration.update_from_parameters(parameters)
-      self.configuration.serial_number = self._decode_serial_number(payload)
+      self.configuration.serial_number = self._decode_serial_number(
+        payload=payload, offset=self._reply_offset
+      )
       opened_by = self._get_link_serial_number()
       if opened_by is not None and opened_by != self.configuration.serial_number:
         logger.warning(
@@ -965,12 +1033,14 @@ class CLARIOstarDriver:
   async def _stop_run(self) -> None:
     """Stop a measurement still running on the reader; warn about anything else still running.
 
-    While busy, STATUS reply byte 6 is the family of the command running (`04` for a RUN).
+    While busy, STATUS reply byte 6 (7 on firmware 2.x) is the family of the command running (`04`
+    for a RUN).
     """
     payload = await self.send_command(self.CommandFamily.STATUS, retries=5)
-    if not self._parse_status(payload).busy:
+    if not self._parse_status(payload=payload).busy:
       return
-    if len(payload) > 6 and payload[6] == self.CommandFamily.RUN:
+    running = self._running_family_index
+    if len(payload) > running and payload[running] == self.CommandFamily.RUN:
       logger.warning("a measurement is still running; stopping it")
       await self.send_command(self.CommandFamily.STOP, parameters=b"\x00", when_idle=False)
     else:
@@ -993,7 +1063,10 @@ class CLARIOstarDriver:
     if temperature_controller is not None:
       try:
         status = await self.request_status()
-        sensors_on = status.temperature_bottom is not None
+        # Without known temperature positions (2.x) the sensors may be on unseen: switch them off.
+        sensors_on = (
+          status.temperature_bottom is not None or self._status_temperature_indices is None
+        )
         if sensors_on or temperature_controller.target_temperature is not None:
           await temperature_controller.stop_monitoring()
       except (CommandRefusedError, FrameError, TimeoutError):

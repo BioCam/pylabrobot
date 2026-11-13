@@ -10,6 +10,10 @@ from typing import Tuple
 # A parameter at address n is reply byte n + 7; values are little endian.
 REPLY_OFFSET = 7
 
+# 2.x firmware: reply byte n + 11. Checked only for the firmware, the serial and the fitted options;
+# two position fields read 65376 and 65386, so the rest of the table is unverified on 2.x.
+REPLY_OFFSET_FIRMWARE_2 = 11
+
 # The serial number "NNN-NNNN": the project number (u16 at 154), then the reader's number (156).
 SERIAL_NUMBER_ADDRESSES = (154, 156)
 

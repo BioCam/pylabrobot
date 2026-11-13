@@ -12,8 +12,13 @@ from pylabrobot.bmg_labtech.clariostar.driver import master as master_module
 from pylabrobot.bmg_labtech.clariostar.driver.configuration import (
   DeviceConfiguration,
   _parse_monochromator_slides,
+  compute_recording_name,
+  configuration_to_json,
+  read_configuration,
 )
+from pylabrobot.bmg_labtech.clariostar.driver.errors import CommandRefusedError
 from pylabrobot.bmg_labtech.clariostar.driver.framing import FTDI_HEADER
+from pylabrobot.bmg_labtech.clariostar.driver.master import CLARIOstarDriver
 from pylabrobot.bmg_labtech.clariostar.driver.master_tests import (
   FIRMWARE_INFO_REPLY,
   INIT_REPLY,
@@ -27,12 +32,74 @@ from pylabrobot.bmg_labtech.clariostar.driver.master_tests import (
 from pylabrobot.bmg_labtech.clariostar.driver.parameter_table import (
   PARAMETER_TABLE,
   REPLY_OFFSET,
+  REPLY_OFFSET_FIRMWARE_2,
   SERIAL_NUMBER_ADDRESSES,
   SIGNED_PARAMETERS,
 )
 from pylabrobot.bmg_labtech.protocol.framing import ftdi_extract_payload, ftdi_wrap_payload
 
 INIT_PAYLOAD = ftdi_extract_payload(INIT_REPLY)
+
+# A CLARIOstar Plus on firmware 2.11: INIT, stored parameters and firmware info payloads. Serials
+# zeroed: the text in block 02, the last 4 bytes of blocks 20 and 2E, parameter bytes 165-168.
+INIT_PAYLOAD_2_11 = bytes.fromhex(
+  "13250024000002001f083e000102010100d8000010303030302d303030303030000200090027425f0900010d0d0002"
+  "08000e0004850202010f0002000011000300000012000200001f000b01012e0a98041a008d00032000080bf4700100"
+  "0000002e00097f0be04001000000002f01e945585f53503a313d6f70656e2c323d46696c74657220312c333d46696c"
+  "74657220322c4c565f52616e67653a383530302e2e32303235300d0a45585f4c503a313d6f70656e2c323d46696c74"
+  "657220312c333d46696c74657220322c4c565f52616e67653a383530302e2e32303235300d0a4253503a313d6f7065"
+  "6e2c323d46696c74657220312c333d46696c74657220322c343d46696c74657220332c4c565f52616e67653a313032"
+  "35302e2e32323235300d0a454d5f53503a313d6f70656e2c323d46696c74657220312c333d46696c74657220322c4c"
+  "565f52616e67653a383530302e2e32303235300d0a454d5f4c503a313d6f70656e2c323d46696c74657220312c333d"
+  "46696c74657220322c4c565f52616e67653a383530302e2e32303235300d0a454d5f534c49543a313d6f70656e2c32"
+  "3d536c697420302e382c333d536c697420312e322c343d536c697420322e302c353d536c697420332e302c373d4650"
+  "207061722c383d4650207065722c363d4c554d206c656e73650d0a45585f534c49543a313d6f70656e2c323d536c69"
+  "7420302e362c333d536c697420312e302c343d536c697420312e362c353d536c697420322e332c383d465020537464"
+  "72642c373d46502055562c393d4142532c363d462d436865636b0d0a000f0102030405060731000700000000000000"
+  "3d00030107d05400050104560000"
+)
+PARAMETERS_PAYLOAD_2_11 = bytes.fromhex(
+  "07050024000000000004200100000a0101010100000100000000000f00000000000000000003040000010000010200"
+  "0000000000000000003200006affc40900008c006f0000000000000000006b00660000000000000065000001dc0500"
+  "01000000000000e5012703ba04080760092709ac0d0000000000000000000000000000000000000000000000000100"
+  "000001010000000000000101010000000000000017028e06000000003e08e5010c00560c00000000a40058ff7e0336"
+  "0660ff6211fe0b62115c1b17028d065dff8e0665042703e114ba04080791009001463228460a0046071e0000000000"
+  "000000001d03bb0628002c01900146001e00000000002709ac0d600900000000000000000000000009000000000000"
+  "00000000000000000000000000000000000000000000005f4227000000434c4152494f7374617220506c7573000000"
+  "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  "000000000000000000000000000000000000000000000000000000000000000000000068f60600d0010000f0000000"
+  "1f0100000e8a00000a0000000a0000000a0000000a0000000000000000000000000000000000000000000000000000"
+  "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  "312d00000000000000000000000000000000000000002d000000000000000000000000000000000000000000000000"
+  "00000000000000002d0000000000000000000000000000000000000000312d00000000000000000000000000000000"
+  "000000002d00000000000000000000000000000000000000000000000000000000000000002d000000000000000000"
+  "0000000000000000000000312d00000000000000000000000000000000000000002d00000000000000000000000000"
+  "000000000000000000000000000000000000002d0000000000000000000000000000000000000000312d0000000000"
+  "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  "002d000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+  "000000000000000000000000000000000000000000000000000000000000000000"
+)
+FIRMWARE_INFO_PAYLOAD_2_11 = bytes.fromhex(
+  "0a0500240000041a53657020313120323032340031343a31393a333700083e4d617920203920323032350031303a34"
+  "393a3135007365766572616c20736d616c6c20627567666978657320726567617264696e67206761696e2061646a75"
+  "73746d656e742070726f636564757265733b2062756766697820726567617264696e67205859206f66667365742073"
+  "63616e20696e20666c79696e67206d6f64653b2062756766697820726567617264696e672063616c63756c6174696f"
+  "6e206f66206368726f6d6174696320737769746368696e672074696d653b000001"
+)
+# Replies of the same reader to STATUS, to REQUEST `07` with 5 parameter bytes (refused, wrong
+# length) and to TEMPERATURE_CONTROLLER `06 00 01 00 00` (accepted).
+STATUS_IDLE_2_11 = bytes.fromhex("0105002400000500000000000007000000000000000000")
+STATUS_PLATE_2_11 = bytes.fromhex("0105002600000500000000000007000000000000000000")
+STATUS_BUSY_2_11 = bytes.fromhex("0125002600000524000000000007000000000000000000")
+REFUSED_REQUEST_2_11 = bytes.fromhex("0115002400000503000700080007000000000000000000")
+MONITORING_STARTED_2_11 = bytes.fromhex("0105002400000500000000000007000000000000000000")
+RECORDING_2_11 = os.path.join(
+  os.path.dirname(__file__), "recordings", "clariostar_plus_2_11_temperature_controller_1536.json"
+)
 
 
 def decoded() -> DeviceConfiguration:
@@ -232,6 +299,184 @@ class ParametersTests(unittest.IsolatedAsyncioTestCase):
     io.replies = [STATUS_IDLE, FIRMWARE_INFO_REPLY]
     with self.assertRaises(ValueError):
       await make_driver(io).request_parameters()
+
+
+def read_2_11() -> DeviceConfiguration:
+  """The configuration setup reads from the 2.11 reader's INIT and stored parameters replies."""
+  configuration = DeviceConfiguration()
+  configuration.update_from_init_reply(payload=INIT_PAYLOAD_2_11)
+  configuration.update_from_parameters(
+    parameters=CLARIOstarDriver._decode_parameters(
+      payload=PARAMETERS_PAYLOAD_2_11, offset=REPLY_OFFSET_FIRMWARE_2
+    )
+  )
+  return configuration
+
+
+def frame(payload: bytes) -> bytes:
+  return ftdi_wrap_payload(payload=payload, header=FTDI_HEADER)
+
+
+class Firmware211Tests(unittest.TestCase):
+  def test_main_board_comes_from_block_02(self):
+    configuration = DeviceConfiguration()
+    with patch.object(configuration_module.logger, "warning") as warning:
+      configuration.update_from_init_reply(payload=INIT_PAYLOAD_2_11)
+    warning.assert_not_called()
+    self.assertEqual(
+      (
+        configuration.model,
+        configuration.mainboard_revision,
+        configuration.firmware_version,
+        configuration.firmware_build,
+      ),
+      ("CLARIOstarPlus", 2, "2.11", 0),
+    )
+    self.assertTrue(configuration.dual_photomultiplier_tubes)
+    self.assertEqual(configuration.excitation_slide_positions, 4)
+    self.assertTrue(configuration.temperature_controller)
+    self.assertIsNone(configuration.temperature_controller_channels)
+    self.assertEqual(configuration.pumps, (None, None, None))
+    self.assertEqual(configuration.monochromator_slides, decoded().monochromator_slides)
+
+  def test_stored_parameters_start_four_bytes_later(self):
+    parameters = CLARIOstarDriver._decode_parameters(
+      payload=PARAMETERS_PAYLOAD_2_11, offset=REPLY_OFFSET_FIRMWARE_2
+    )
+    self.assertEqual(parameters["firmware_version"], 2110)
+    self.assertEqual(parameters["well_1536_measurements_enabled"], 1)
+    serial_number = CLARIOstarDriver._decode_serial_number(
+      payload=PARAMETERS_PAYLOAD_2_11, offset=REPLY_OFFSET_FIRMWARE_2
+    )
+    self.assertEqual(serial_number, "000-0000")
+    with self.assertRaises(ValueError):  # at the 1.x offset the firmware reads 0
+      CLARIOstarDriver._decode_parameters(payload=PARAMETERS_PAYLOAD_2_11)
+
+  def test_build_date_is_the_firmware_entry(self):
+    decode = CLARIOstarDriver._decode_firmware_build_date
+    self.assertEqual(
+      decode(payload=FIRMWARE_INFO_PAYLOAD_2_11, firmware_version="2.11"), "2025-05-09"
+    )
+    with self.assertLogs(master_module.logger, "WARNING"):
+      decode(payload=FIRMWARE_INFO_PAYLOAD_2_11, firmware_version="2.12")
+    firmware_info_1_35 = ftdi_extract_payload(FIRMWARE_INFO_REPLY)
+    self.assertEqual(
+      decode(payload=firmware_info_1_35, firmware_version="1.35"),
+      decode(payload=firmware_info_1_35),
+    )
+
+  def test_recording_is_what_setup_reads(self):
+    configuration = read_2_11()
+    self.assertEqual(
+      compute_recording_name(configuration=configuration), os.path.basename(RECORDING_2_11)
+    )
+    saved = read_configuration(path=RECORDING_2_11)["device"]
+    self.assertEqual(saved, configuration_to_json(configuration=configuration))
+
+  def test_status_flags_and_no_temperatures(self):
+    idle, plate, busy = (
+      CLARIOstarDriver._parse_status(payload=payload, temperature_indices=None)
+      for payload in (STATUS_IDLE_2_11, STATUS_PLATE_2_11, STATUS_BUSY_2_11)
+    )
+    self.assertEqual((idle.busy, idle.plate_detected, idle.motors_enabled), (False, False, True))
+    self.assertEqual((plate.plate_detected, plate.drawer_open), (True, False))
+    self.assertTrue(busy.busy)
+    self.assertEqual((idle.temperature_bottom, idle.temperature_top), (None, None))
+
+
+# The driver's asyncio.Lock needs an event loop on Python 3.9: build drivers inside one.
+class Firmware211CommandTests(unittest.IsolatedAsyncioTestCase):
+  async def make_2_11_driver(self, replies: List[bytes]) -> Tuple[CLARIOstarDriver, FakeFTDI]:
+    """A driver that read the 2.11 INIT reply through `initialize`, then answers `replies`."""
+    io = FakeFTDI()
+    io.replies = [frame(payload=reply) for reply in [INIT_PAYLOAD_2_11, STATUS_IDLE_2_11, *replies]]
+    driver = make_driver(io)
+    await driver.initialize()
+    io.written.clear()
+    return driver, io
+
+  async def test_firmware_generation_follows_the_init_reply(self):
+    driver, io = await self.make_2_11_driver([])
+    self.assertEqual(
+      (
+        driver._reply_offset,
+        driver._quit_codes_offset,
+        driver._parameter_padding,
+        driver._running_family_index,
+        driver._status_temperature_indices,
+      ),
+      (
+        11,
+        7,
+        {driver.CommandFamily.REQUEST: 1, driver.CommandFamily.TEMPERATURE_CONTROLLER: 2},
+        7,
+        None,
+      ),
+    )
+    io.replies = [INIT_REPLY, STATUS_IDLE]
+    await driver.initialize()  # the 1.35 reader's reply sets every value back
+    self.assertEqual(
+      (
+        driver._reply_offset,
+        driver._quit_codes_offset,
+        driver._parameter_padding,
+        driver._running_family_index,
+        driver._status_temperature_indices,
+      ),
+      (7, 6, {}, 6, (11, 13)),
+    )
+
+  async def test_discover_requests_with_six_parameter_bytes(self):
+    driver, io = await self.make_2_11_driver(
+      [
+        STATUS_IDLE_2_11,
+        PARAMETERS_PAYLOAD_2_11,
+        STATUS_IDLE_2_11,
+        FIRMWARE_INFO_PAYLOAD_2_11,
+      ]
+    )
+    await driver.discover()
+    sent = [ftdi_extract_payload(written) for written in io.written]
+    self.assertEqual(sent[1], bytes.fromhex("0507000000000000"))
+    self.assertEqual(sent[3], bytes.fromhex("0509000000000000"))
+    self.assertEqual(driver.configuration.firmware_build_date, "2025-05-09")
+    self.assertTrue(driver.configuration.well_1536_plates_supported)
+
+  async def test_monitoring_starts_with_five_bytes(self):
+    driver, io = await self.make_2_11_driver(
+      [STATUS_IDLE_2_11, STATUS_IDLE_2_11, MONITORING_STARTED_2_11]
+    )
+    driver._discover_features()
+    assert driver.temperature_controller is not None
+    await driver.temperature_controller.start_monitoring()
+    self.assertEqual(ftdi_extract_payload(io.written[-1]), bytes.fromhex("0600010000"))
+
+  async def test_stop_switches_the_sensors_off(self):
+    # The accepted reply is the reader's to `06 00 01 00 00`; none to `06 00 00 00 00` exists yet.
+    driver, io = await self.make_2_11_driver(
+      [STATUS_IDLE_2_11, STATUS_IDLE_2_11, STATUS_IDLE_2_11, MONITORING_STARTED_2_11]
+      + [STATUS_IDLE_2_11]
+    )
+    driver._discover_features()
+    await driver._shut_down(accept_plate_left_in_device=True)
+    sent = [ftdi_extract_payload(written) for written in io.written]
+    self.assertIn(bytes.fromhex("0600000000"), sent)
+
+  async def test_temperatures_are_refused_until_known(self):
+    driver, io = await self.make_2_11_driver([])
+    driver._discover_features()
+    assert driver.temperature_controller is not None
+    with self.assertRaises(NotImplementedError):
+      await driver.temperature_controller.measure_temperature()
+    self.assertEqual(io.written, [])
+
+  async def test_refusal_codes_start_one_byte_later(self):
+    driver, _ = await self.make_2_11_driver([STATUS_IDLE_2_11, REFUSED_REQUEST_2_11])
+    with self.assertRaises(CommandRefusedError) as refused:
+      await driver.send_command(
+        driver.CommandFamily.REQUEST, driver.Command.PARAMETERS, parameters=bytes(5), retries=1
+      )
+    self.assertEqual(refused.exception.quit_codes, (3, 0, 7, 0, 8))
 
 
 # The driver's asyncio.Lock needs an event loop on Python 3.9: build drivers inside one.
