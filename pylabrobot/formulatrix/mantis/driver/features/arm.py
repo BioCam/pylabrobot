@@ -54,7 +54,7 @@ from ..oem_config import (
   WASTE_APPROACH_PATH,
   ZONES,
 )
-from ..sequence_files import Waypoint
+from ..sequence_files import RouteLine
 from ..stage_transform import compute_arm_frame_position
 
 if TYPE_CHECKING:
@@ -76,8 +76,8 @@ MOTOR_FOLLOWING_ERROR = 128 | 256
 POST_HOMING_POSITION = (15.0, 31.177)
 # The Front zone's routes to safe XY and to idle, the same on every unit seen: the head is moved
 # along them from near idle when the unit's zones are not given.
-FRONT_SAFE_XY_ROUTE: List[Waypoint] = [(*POST_HOMING_POSITION, None)]
-FRONT_IDLE_ROUTE: List[Waypoint] = [
+FRONT_SAFE_XY_ROUTE: List[RouteLine] = [(*POST_HOMING_POSITION, None)]
+FRONT_IDLE_ROUTE: List[RouteLine] = [
   (None, None, 0.0),
   (*POST_HOMING_POSITION, None),
   (*POST_HOMING_POSITION, 0.0),
@@ -120,7 +120,7 @@ DECK_FIT_SPACING = 5.0
 # How far outside the plate holder, mm, a point read back through the inverted stage transform may
 # land and still count as on it: rounding only.
 HOLDER_EDGE_TOLERANCE = 1e-6
-# PyLabRobot design choice: how close, mm, the head must stand to a waypoint below the safe height on
+# PyLabRobot design choice: how close, mm, the head must stand to a route line below the safe height on
 # an approach path, in x, y and Z, to count as on that path.
 APPROACH_PATH_TOLERANCE = 0.5
 
@@ -146,11 +146,11 @@ class MantisArmConfiguration:
   """Each arm motor's (ideal, measured) correction rows, measured ascending."""
   zone_rectangles: Optional[Dict[str, Tuple[float, float, float, float]]] = None
   """Each zone's (minimum x, maximum x, minimum y, maximum y) in the arm frame, mm, by name."""
-  safe_xy_routes: Optional[Dict[str, List[Waypoint]]] = None
+  safe_xy_routes: Optional[Dict[str, List[RouteLine]]] = None
   """Each zone's route to its safe XY, the arms only, by name; Unknown included."""
-  idle_routes: Optional[Dict[str, List[Waypoint]]] = None
+  idle_routes: Optional[Dict[str, List[RouteLine]]] = None
   """Each zone's route to idle, by name; Unknown included."""
-  approach_paths: Optional[Dict[str, List[Waypoint]]] = None
+  approach_paths: Optional[Dict[str, List[RouteLine]]] = None
   """The vendor's path from idle to each place it serves, by name: ``"waste"``, ``"wash_1"``,
   ``"wash_2"``; arm frame, Z mm down from its flag, an axis left out held."""
   stage_origin: Optional[Tuple[float, float, float]] = None
@@ -988,14 +988,14 @@ class Arm:
       await self._log_where_it_stopped()
       raise
 
-  def _get_waypoint_targets(self, *, waypoint: Waypoint) -> Dict[int, float]:
-    """The motors a waypoint moves and their targets, in device units, each within its limits.
+  def _get_route_line_targets(self, *, route_line: RouteLine) -> Dict[int, float]:
+    """The motors a route line moves and their targets, in device units, each within its limits.
 
     Raises:
       MantisKinematicsError: if its (x, y) is out of the arm's reach.
       ValueError: if a target is outside its motor's limits.
     """
-    x, y, z = waypoint
+    x, y, z = route_line
     targets = self._get_arm_targets(x=x, y=y) if x is not None and y is not None else {}
     if z is not None:
       targets[Z_MOTOR] = compute_device_position(motor=Z_MOTOR, position=z)
@@ -1003,20 +1003,20 @@ class Arm:
       self._check_reachable(motor=motor, position=position)
     return targets
 
-  def _get_route_targets(self, *, route: List[Waypoint]) -> List[Dict[int, float]]:
-    """Each waypoint's targets, as ``_get_waypoint_targets``, all checked before anything moves.
+  def _get_route_targets(self, *, route: List[RouteLine]) -> List[Dict[int, float]]:
+    """Each route line's targets, as ``_get_route_line_targets``, all checked before anything moves.
 
     Raises:
-      MantisKinematicsError, ValueError: as ``_get_waypoint_targets``.
+      MantisKinematicsError, ValueError: as ``_get_route_line_targets``.
     """
-    return [self._get_waypoint_targets(waypoint=waypoint) for waypoint in route]
+    return [self._get_route_line_targets(route_line=route_line) for route_line in route]
 
   async def _move_along_route(self, *, steps: List[Dict[int, float]]) -> None:
     """Move to each step's targets in turn at the route profile, each motor on its own (command
     22), as in the recorded recoveries.
 
     Args:
-      steps: each waypoint's targets, from ``_get_route_targets``.
+      steps: each route line's targets, from ``_get_route_targets``.
     """
     profiles = self._get_route_profiles()
     for targets in steps:
@@ -1117,7 +1117,7 @@ class Arm:
         return zone
     return UNKNOWN_ZONE
 
-  def _get_routes(self, *, joint_state: JointState) -> Tuple[List[Waypoint], List[Waypoint]]:
+  def _get_routes(self, *, joint_state: JointState) -> Tuple[List[RouteLine], List[RouteLine]]:
     """The routes to safe XY and to idle from where the arm motors' angles put the head.
 
     The zone's own; without the unit's zones, the Front zone's, from near idle only.
@@ -1344,7 +1344,7 @@ class Arm:
       minimum_traverse_height=minimum_traverse_height, points=points
     )
 
-  def _get_approach_path_states(self, *, path: List[Waypoint]) -> List[Tuple[float, float, float]]:
+  def _get_approach_path_states(self, *, path: List[RouteLine]) -> List[Tuple[float, float, float]]:
     """Where each line of an approach path leaves the head: arm-frame x and y, mm, and Z, mm down
     from its flag; an axis a line leaves out kept from the line before, from idle with Z at its
     flag."""
@@ -1372,14 +1372,7 @@ class Arm:
     place: Optional[Tuple[str, int]] = None
     for name, path in (self.configuration.approach_paths or {}).items():
       states = self._get_approach_path_states(path=path)
-      at_safe_height = [
-        index
-        for index, (_, _, line_z) in enumerate(states)
-        if line_z <= APPROACH_PATH_TOLERANCE - SAFE_HEIGHT
-      ]
-      if not at_safe_height:
-        continue
-      for index in range(at_safe_height[-1] + 1, len(states)):
+      for index in range(self._get_descent_start(path=path), len(states)):
         line_x, line_y, line_z = states[index]
         near = (
           math.hypot(x - line_x, y - line_y) <= APPROACH_PATH_TOLERANCE
@@ -1389,8 +1382,19 @@ class Arm:
           place = (name, index)
     return place
 
+  def _get_descent_start(self, *, path: List[RouteLine]) -> int:
+    """The first line of an approach path's descended part: after its last line at the safe
+    height; the path's length if it never reaches the safe height."""
+    states = self._get_approach_path_states(path=path)
+    at_safe_height = [
+      index
+      for index, (_, _, line_z) in enumerate(states)
+      if line_z <= APPROACH_PATH_TOLERANCE - SAFE_HEIGHT
+    ]
+    return at_safe_height[-1] + 1 if at_safe_height else len(states)
+
   @staticmethod
-  def _get_shared_length(*, first: List[Waypoint], second: List[Waypoint]) -> int:
+  def _get_shared_length(*, first: List[RouteLine], second: List[RouteLine]) -> int:
     """How many lines two approach paths share from their start."""
     count = 0
     for line, other in zip(first, second):
@@ -1400,9 +1404,9 @@ class Arm:
     return count
 
   async def _leave_approach_path(self, *, name: str, index: int, until: int) -> None:
-    """Move the head back along an approach path from the line it stands at to an earlier line,
-    one queued move per step, at the route profile, as the vendor leaves the waste: where a line
-    moves the arms and Z, the arms first at the height the head stands, then Z.
+    """Move the head back along an approach path from the line it stands at to an earlier line:
+    the path's lines played backwards, one queued move each at the route profile, as the vendor
+    leaves the waste and the washes; a line naming the arms and Z moves both in one item.
 
     Args:
       name: the approach path's name.
@@ -1410,15 +1414,8 @@ class Arm:
       until: the line to stop at, 0 the path's start.
     """
     assert self.configuration.approach_paths is not None
-    states = self._get_approach_path_states(path=self.configuration.approach_paths[name])
-    x, y, z = states[index]
-    steps: List[Waypoint] = []
-    for target_x, target_y, target_z in reversed(states[until:index]):
-      if (target_x, target_y) != (x, y):
-        steps.append((target_x, target_y, None))
-      if target_z != z:
-        steps.append((None, None, target_z))
-      x, y, z = target_x, target_y, target_z
+    path = self.configuration.approach_paths[name]
+    steps = [line for line in reversed(path[until:index]) if line != (None, None, None)]
     profiles = self._get_route_profiles()
     await self._play_queued_moves(
       moves=[
@@ -1760,10 +1757,12 @@ class Arm:
   async def _move_along_approach_path(self, *, name: str) -> None:
     """Move the head to the end of an approach path, from wherever it stands.
 
-    On that path, onward from where it stands. On another, back along it to the last line the two
-    share, the arms first at depth, then along this one from there: from one wash position to the
-    other the head stays in the wash. In the open, to idle first as ``park`` takes it, then along
-    the path from its start. Where the head stands is read from the motors, never remembered.
+    On that path, onward from where it stands. On a neighbouring path, one that shares this one's
+    descent (the two washes), back to its safe-Z line (its last line but one), then across to this
+    one's and down, as the vendor moves between the washes. On another path, back along it to the
+    last line the two share, then along this one from there. In the open, to idle first as ``park``
+    takes it, then along the path from its start. Where the head stands is read from the motors,
+    never remembered.
 
     Raises:
       MantisConfigurationError: without the path; nothing moves.
@@ -1784,9 +1783,16 @@ class Arm:
     if place is not None and place[0] == name:
       start = place[1] + 1
     elif place is not None:
-      shared = self._get_shared_length(first=paths[place[0]], second=path)
-      await self._leave_approach_path(name=place[0], index=place[1], until=max(shared - 1, 0))
-      start = shared
+      other_name, index = place
+      other = paths[other_name]
+      shared = self._get_shared_length(first=other, second=path)
+      safe_z_line = len(other) - 2
+      if shared >= self._get_descent_start(path=other) and index >= safe_z_line >= 0:
+        await self._leave_approach_path(name=other_name, index=index, until=safe_z_line)
+        start = max(len(path) - 2, 0)
+      else:
+        await self._leave_approach_path(name=other_name, index=index, until=max(shared - 1, 0))
+        start = shared
     else:
       if not await self.request_is_parked():
         await self.park()
@@ -1838,9 +1844,9 @@ class Arm:
       ValueError: if a target is outside its motor's limits; nothing moves.
       MantisTimeoutError: if a motor still moves, or a queued move is not reported played, in time.
     """
-    idle_targets = self._get_waypoint_targets(waypoint=(*POST_HOMING_POSITION, None))
-    z_up = self._get_waypoint_targets(waypoint=(None, None, 0.0))
-    z_down = self._get_waypoint_targets(waypoint=(None, None, SHUTDOWN_Z))
+    idle_targets = self._get_route_line_targets(route_line=(*POST_HOMING_POSITION, None))
+    z_up = self._get_route_line_targets(route_line=(None, None, 0.0))
+    z_down = self._get_route_line_targets(route_line=(None, None, SHUTDOWN_Z))
     await self._wait_for_motors_idle(timeout=MOVE_TIMEOUT)
     await self._leave_approach_path_if_on_one(joint_state=await self.request_joint_state())
     try:

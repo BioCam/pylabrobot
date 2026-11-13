@@ -323,12 +323,14 @@ class SimulatedRouteTests(unittest.IsolatedAsyncioTestCase):
     # From the waste: out along its path to its start, then in along the wash's.
     await self.arm.move_to_wash(position=1)
     await self.assert_at_end_of(path=SYNTHETIC_WASH_ROUTE)
-    # From one wash to the other: back only to the last line the two paths share.
+    # From one wash to the other, as the vendor moves between them: up to wash 1's safe Z (its last
+    # line but one), across to wash 2's safe-Z line, then down; the head stays in the wash.
     with mock.patch.object(
       self.arm, "_leave_approach_path", wraps=self.arm._leave_approach_path
     ) as leave:
       await self.arm.move_to_wash(position=2)
-    leave.assert_awaited_once_with(name="wash_1", index=len(SYNTHETIC_WASH_ROUTE) - 1, until=3)
+    last = len(SYNTHETIC_WASH_ROUTE) - 1
+    leave.assert_awaited_once_with(name="wash_1", index=last, until=last - 1)
     await self.assert_at_end_of(path=SYNTHETIC_WASH_2_ROUTE)
     await self.arm.park()
     self.assertTrue(await self.arm.request_is_parked())

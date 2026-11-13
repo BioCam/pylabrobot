@@ -73,7 +73,7 @@ from .oem_config import (
   ZONES,
   _load_unit_configuration,
 )
-from .sequence_files import Waypoint
+from .sequence_files import RouteLine
 
 logger = logging.getLogger(__name__)
 
@@ -892,10 +892,10 @@ class MantisDriver:
 
     Raises:
       MantisConfigurationError: if a block is malformed: a zone missing, a rectangle not four
-        numbers, a waypoint not three numbers or None, or a route to safe XY that moves Z.
+        numbers, a route line not three numbers or None, or a route to safe XY that moves Z.
     """
 
-    def to_route(lines: Any) -> List[Waypoint]:
+    def to_route(lines: Any) -> List[RouteLine]:
       route = []
       for line in lines:
         x, y, z = (None if value is None else float(value) for value in line)

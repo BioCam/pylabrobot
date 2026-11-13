@@ -181,12 +181,17 @@ SYNTHETIC_WASH_ROUTE: List[List[Optional[float]]] = [
   [None, None, -1.57],
   [60.0, 40.0, -1.57],
   [85.0, 0.0, -1.57],
+  [None, None, 30.0],
   [None, None, 40.0],
+  [75.0, -50.0, 40.0],
   [75.0, -50.0, 45.0],
 ]
+# The other wash: the same path to 30 mm down, then its own safe Z, safe-Z line and bottom.
 SYNTHETIC_WASH_2_ROUTE: List[List[Optional[float]]] = [
   *SYNTHETIC_WASH_ROUTE[:4],
-  [90.0, -50.0, 45.0],
+  [None, None, 40.5],
+  [90.0, -50.0, 40.5],
+  [90.0, -50.0, 45.5],
 ]
 SYNTHETIC_APPROACH_PATHS_BLOCK = {
   "waste": SYNTHETIC_WASTE_ROUTE,
@@ -198,9 +203,9 @@ SYNTHETIC_APPROACH_PATHS_BLOCK = {
 def get_route_text(*, route: List[List[Optional[float]]]) -> str:
   """A route as a sequence file writes it."""
   lines = []
-  for waypoint in route:
+  for route_line in route:
     axes = "".join(
-      f"{axis} {value:.3f} " for axis, value in zip("XYZ", waypoint) if value is not None
+      f"{axis} {value:.3f} " for axis, value in zip("XYZ", route_line) if value is not None
     )
     lines.append(f"MoveSequenceItem %00 True {axes} 0\r\n")
   return "".join(lines)

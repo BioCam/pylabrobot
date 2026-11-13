@@ -233,11 +233,13 @@ route to idle.
 line as in the recorded move to the waste, from wherever the head stands, which is read from the
 motors, never remembered. A head on a path's descended part (after its last line at the safe
 height, within `APPROACH_PATH_TOLERANCE` of a line) is on that path. On the target's path it goes
-on from there; on another it goes back to the last line the two share, then forward: from one wash
-position to the other it stays in the wash, as the vendor's two paths share all but their ends. In
-the open it is parked first. Going back along a path, a line that moves the arms and Z moves the
-arms first at the depth the head stands, then Z, as the vendor leaves the waste. Every other move,
-and `park`, from a pose on a path first goes back along it to its start.
+on from there. On a neighbouring path, one sharing the target's descent (the two washes), it goes
+back to that path's safe-Z line (its last line but one), then to the target's and down, as the
+vendor moves between the washes. On another it goes back to the last line the two share, then
+forward. In the open it is parked first. Going back, a path's lines play backwards, one queued
+item each, as the vendor leaves the waste and the washes; a line naming the arms and Z moves both
+in one item. Every other move, and `park`, from a pose on a path first goes back along it to its
+start.
 
 **M9. Names say what kind of thing they are.** (STAR P10.)
 
@@ -478,7 +480,8 @@ where a colour took a release from 0.21 s to 0.34 s on the recorded v4.
     move's reply; it took a far faster arm command than the vendor's, which then failed on its
     following error. Speeds in mm/s are scaled from the vendor's profile only when given, untested
     on a device.
-50. **The way out along an approach path is the path backwards,** as the cb protocol library
-    driver plays it, with the recorded split at depth for the waste; a wash position's way out, and
-    the move from one wash position to the other, are not recorded. A head stopped between two
-    lines of a path is not placed on it: it is in the open, and rises straight up.
+50. **The way out along an approach path is the path backwards, line for line,** as the vendor
+    plays it leaving a wash (`260727_pickop_wash_routine_drop_shutdown`, items 11452-11462), and the
+    move between the washes is the vendor's, safe Z to safe Z (items 3660-3666 and 7557-7563). A head
+    stopped between two lines of a path is not placed on it: it is in the open, and rises straight
+    up.

@@ -1,6 +1,6 @@
 """A unit's sequence files (``.seq.txt``): one item per line, its class name first.
 
-Only what moves the arm is read here: each ``MoveSequenceItem`` line becomes a waypoint, the axes
+Only what moves the arm is read here: each ``MoveSequenceItem`` line becomes a route line, the axes
 it names in mm in the files' frame (the arm frame; Z down from its home flag), the others None.
 """
 
@@ -8,15 +8,16 @@ from typing import List, Optional, Tuple
 
 from .errors import MantisConfigurationError
 
-# One move line: x, y and z, each None where the line does not name it.
-Waypoint = Tuple[Optional[float], Optional[float], Optional[float]]
+# One line of a route file: x, y and z, each None where the line does not name it, so that axis
+# holds; not a pose, which names every axis.
+RouteLine = Tuple[Optional[float], Optional[float], Optional[float]]
 MOVE_ITEM = "MoveSequenceItem"
 # A line that only shows a message; it moves nothing.
 REMARK_ITEM = "RemarkSequenceItem"
 AXES = ("x", "y", "z")
 
 
-def _parse_move_line(*, path: str, number: int, tokens: List[str]) -> Waypoint:
+def _parse_move_line(*, path: str, number: int, tokens: List[str]) -> RouteLine:
   """One move line's axes, from the tokens after its class name.
 
   A line holds its message, its wait flag, then the axes it moves, each with its value, and a
@@ -57,8 +58,8 @@ def _parse_move_line(*, path: str, number: int, tokens: List[str]) -> Waypoint:
   return (axes.get("x"), axes.get("y"), axes.get("z"))
 
 
-def parse_move_sequence(*, path: str) -> List[Waypoint]:
-  """The waypoints of a sequence file that moves the arm, one per move line, in order.
+def parse_move_sequence(*, path: str) -> List[RouteLine]:
+  """The route lines of a sequence file that moves the arm, one per move line, in order.
 
   Remark lines and blank lines are skipped; a line that names no axis moves nothing and is kept.
 
@@ -69,7 +70,7 @@ def parse_move_sequence(*, path: str) -> List[Waypoint]:
     MantisConfigurationError: if a line is neither a move nor a remark, or a move line is not
       supported (``_parse_move_line``).
   """
-  waypoints: List[Waypoint] = []
+  route_lines: List[RouteLine] = []
   # utf-8-sig drops a byte-order mark at the start; one within the file is dropped per line.
   with open(path, encoding="utf-8-sig") as f:
     for number, line in enumerate(f, start=1):
@@ -80,5 +81,5 @@ def parse_move_sequence(*, path: str) -> List[Waypoint]:
         raise MantisConfigurationError(
           f"{path}, line {number}: {tokens[0]} does not belong in a sequence that moves the arm"
         )
-      waypoints.append(_parse_move_line(path=path, number=number, tokens=tokens[1:]))
-  return waypoints
+      route_lines.append(_parse_move_line(path=path, number=number, tokens=tokens[1:]))
+  return route_lines

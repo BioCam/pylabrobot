@@ -947,7 +947,7 @@ class ZoneTests(ArmTestCase):
         angles = compute_joint_angles(x=x, y=y)
         joint_state = {motor: angles[motor] - SYNTHETIC_OFFSETS[motor] for motor in (0, 1)}
         _, route = arm._get_routes(joint_state=joint_state)
-        self.assertEqual(route, [tuple(waypoint) for waypoint in SYNTHETIC_IDLE_ROUTES[zone]])
+        self.assertEqual(route, [tuple(route_line) for route_line in SYNTHETIC_IDLE_ROUTES[zone]])
     self.assertEqual(arm._get_zone(x=15.0, y=20.0), "Unknown")
 
 
@@ -1486,16 +1486,18 @@ class ApproachPathTests(ArmTestCase):
       await driver.arm.move_to_wash(position=3)
     self.assertEqual(self.sent(link), [])
 
-  async def test_leaving_the_waste_goes_back_along_its_path_arms_first_at_depth(self):
-    # From the waste's last line back to its start: a line that moves the arms and Z moves the
-    # arms first, at the depth the head stands, then Z, as the vendor leaves the waste.
+  async def test_leaving_the_waste_plays_its_path_backwards(self):
+    # From the waste's last line back to its start, line by line as the vendor leaves the waste and
+    # the washes: a line naming the arms and Z moves both in one item; a line naming nothing is
+    # skipped.
     way_out = [
+      (-60.0, 10.0, 30.0),
       (None, None, 30.0),
-      (-50.0, 20.0, None),
+      (-50.0, 20.0, -1.57),
+      (None, None, -1.57),
+      (15.0, 30.0, -1.57),
       (None, None, -1.57),
       (15.0, 30.0, None),
-      (None, None, 0.0),
-      (15.0, 31.177, None),
     ]
     first_item = 16 - len(way_out) + 1
     expected = []
@@ -1534,12 +1536,12 @@ class ApproachPathTests(ArmTestCase):
       angles = compute_joint_angles(x=x, y=y)
       return {0: angles[0], 1: angles[1], 2: z}
 
-    # At the waste's bottom, at its last line; at idle, or level with a waypoint above the safe
+    # At the waste's bottom, at its last line; at idle, or level with a route line above the safe
     # height, in the open.
     self.assertEqual(arm._get_place(joint_state=joints_at(-60.0, 10.0, 35.0)), ("waste", 8))
     self.assertIsNone(arm._get_place(joint_state=joints_at(15.0, 31.177, 0.0)))
     self.assertIsNone(arm._get_place(joint_state=joints_at(-50.0, 20.0, -1.57)))
-    # Off a waypoint by more than the tolerance, in the open too.
+    # Off a route line by more than the tolerance, in the open too.
     self.assertIsNone(arm._get_place(joint_state=joints_at(-60.0, 11.0, 35.0)))
 
 

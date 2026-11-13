@@ -10,7 +10,7 @@ import xml.etree.ElementTree as ElementTree
 from typing import Any, Dict, List, Optional
 
 from .errors import MantisConfigurationError
-from .sequence_files import Waypoint, parse_move_sequence
+from .sequence_files import RouteLine, parse_move_sequence
 
 # Where a v4 install keeps each arm motor's absolute encoder correction, from its ``Data`` folder.
 ENCODER_CORRECTION_DIRECTORY = os.path.join("System", "Encoder Correction", "Sampling File")
@@ -210,17 +210,17 @@ def _parse_correction_table(*, path: str) -> List[List[float]]:
 
 
 def _parse_route(*, path: str) -> List[List[Optional[float]]]:
-  """A route's waypoints, as a declared configuration holds them.
+  """A route's lines, as a declared configuration holds them.
 
   Raises:
     MantisConfigurationError: if the file is missing, malformed or moves nothing.
   """
   if not os.path.isfile(path):
     raise MantisConfigurationError(f"a route is missing: {path}")
-  route: List[Waypoint] = parse_move_sequence(path=path)
-  if all(waypoint == (None, None, None) for waypoint in route):
+  route: List[RouteLine] = parse_move_sequence(path=path)
+  if all(route_line == (None, None, None) for route_line in route):
     raise MantisConfigurationError(f"{path} moves nothing")
-  return [list(waypoint) for waypoint in route]
+  return [list(route_line) for route_line in route]
 
 
 def _load_zones(*, path: str, sequence_directory: str) -> Dict[str, Any]:
