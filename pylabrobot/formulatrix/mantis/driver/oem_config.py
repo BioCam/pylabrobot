@@ -27,6 +27,8 @@ WASH_STATION_FILE = "MoveToWashStation{station}.seq.txt"
 WASH_STATIONS = (1, 2)
 # Where an install keeps the plate holder's origin, from its ``Data/Device`` folder.
 SBS_ADAPTER_FILE = os.path.join("Adapters", "SBS Adapter.ad.txt")
+# The stage tuning file in the unit's configuration folder: its ReferenceHeight.
+STAGE_TUNING_FILE = "StageTuning.config"
 # The only arm type on every unit seen; how the stage is framed for another is unknown.
 STANDARD_ARM_TYPE = "Standard"
 
@@ -138,13 +140,19 @@ def _parse_transformation_matrix(*, path: str, text: str) -> List[List[float]]:
   return [[float(value) for value in row] for row in matrix]
 
 
-def _load_stage(*, path: str, values: Dict[str, str], adapter_path: str) -> Dict[str, Any]:
-  """The ``stage`` block: the plate holder's origin and ``Device.config``'s stage transform.
+def _load_stage(
+  *, path: str, values: Dict[str, str], adapter_path: str, stage_tuning_path: str
+) -> Dict[str, Any]:
+  """The ``stage`` block: the plate holder's origin, ``Device.config``'s stage transform and
+  ``StageTuning.config``'s reference height.
 
   Raises:
-    MantisConfigurationError: if a key or the adapter file is missing or malformed, or the arm
-      type is not ``STANDARD_ARM_TYPE``.
+    MantisConfigurationError: if a key, the adapter file or the stage tuning file is missing or
+      malformed, or the arm type is not ``STANDARD_ARM_TYPE``.
   """
+  if not os.path.isfile(stage_tuning_path):
+    raise MantisConfigurationError(f"{stage_tuning_path} is missing: the stage's reference height")
+  stage_tuning = _parse_config_entries(path=stage_tuning_path)
   arm_type = _get_setting(path=path, settings=values, key="ArmType")
   if arm_type != STANDARD_ARM_TYPE:
     raise MantisConfigurationError(
@@ -168,6 +176,11 @@ def _load_stage(*, path: str, values: Dict[str, str], adapter_path: str) -> Dict
       text=_get_setting(path=path, settings=values, key="ArmTypeRotationDegree"),
     ),
     "arm_type_translation": get_vector(key="ArmTypeTranslation"),
+    "reference_height": _get_number(
+      path=stage_tuning_path,
+      key="ReferenceHeight",
+      text=_get_setting(path=stage_tuning_path, settings=stage_tuning, key="ReferenceHeight"),
+    ),
   }
 
 
@@ -364,6 +377,7 @@ def _load_unit_configuration(*, oem_config_directory: str) -> Dict[str, Any]:
       adapter_path=os.path.join(
         os.path.dirname(os.path.normpath(oem_config_directory)), SBS_ADAPTER_FILE
       ),
+      stage_tuning_path=os.path.join(oem_config_directory, STAGE_TUNING_FILE),
     )
 
   robot_arm_config = os.path.join(oem_config_directory, "RobotArm.config")

@@ -1,7 +1,8 @@
 """A simulated Mantis: the driver with no device behind it, answering from its configuration."""
 
+import dataclasses
 import logging
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from pylabrobot.io.ftdi import FTDI
 
@@ -14,14 +15,13 @@ from .configuration import (
   read_configuration,
 )
 from .errors import MantisConfigurationError, MantisTimeoutError
-from .features.arm import ARM_MOTORS, MOTOR_HOMED, Z_MOTOR, Arm
+from .features.arm import ARM_MOTORS, MOTOR_HOMED, Z_MOTOR, Arm, MantisArmConfiguration
 from .features.led_bar import LedBar
 from .features.plate_clamp import CLAMPING_DONE, UNCLAMPING_DONE, PlateClamp
 from .features.pump import PressureController, Pump
 from .features.rfid import Rfid
 from .framing import ABSOLUTE_POSITION_SENSOR_BOARD, LC3_BOARD, MOTION_BOARD, PRESSURE_BOARD
 from .master import ABSOLUTE_ENCODER_MOTORS, MOTORS, SEQUENCER_QUEUE_SIZE, MantisDriver
-from .sequence_files import Waypoint
 
 logger = logging.getLogger(__name__)
 
@@ -140,60 +140,17 @@ class MantisSimulationArm(Arm):
   power-on. Without a declared ``arm`` block its offsets are 0.
   """
 
-  def __init__(
-    self,
-    *,
-    driver: "MantisSimulationDriver",
-    offsets: Optional[Dict[int, float]],
-    homing_position_a: Optional[Dict[int, float]],
-    encoder_correction: Optional[Dict[int, List[Tuple[float, float]]]],
-    zone_rectangles: Optional[Dict[str, Tuple[float, float, float, float]]] = None,
-    safe_xy_routes: Optional[Dict[str, List[Waypoint]]] = None,
-    idle_routes: Optional[Dict[str, List[Waypoint]]] = None,
-    waste_station_route: Optional[List[Waypoint]] = None,
-    wash_station_routes: Optional[Dict[int, List[Waypoint]]] = None,
-    stage_origin: Optional[Tuple[float, float, float]] = None,
-    stage_transformation_matrix: Optional[Sequence[Sequence[float]]] = None,
-    stage_offset_x: Optional[Tuple[float, float, float]] = None,
-    stage_offset_y: Optional[Tuple[float, float, float]] = None,
-    arm_type_rotation_degree: Optional[float] = None,
-    arm_type_translation: Optional[Tuple[float, float, float]] = None,
-  ):
+  def __init__(self, *, driver: "MantisSimulationDriver", configuration: MantisArmConfiguration):
     """
     Args:
       driver: the simulated driver.
-      offsets: each arm motor's offset, as for ``Arm``; None takes 0.
-      homing_position_a: as for ``Arm``; unused.
-      encoder_correction: as for ``Arm``; unused.
-      zone_rectangles: as for ``Arm``.
-      safe_xy_routes: as for ``Arm``.
-      idle_routes: as for ``Arm``.
-      waste_station_route: as for ``Arm``.
-      wash_station_routes: as for ``Arm``.
-      stage_origin: as for ``Arm``.
-      stage_transformation_matrix: as for ``Arm``.
-      stage_offset_x: as for ``Arm``.
-      stage_offset_y: as for ``Arm``.
-      arm_type_rotation_degree: as for ``Arm``.
-      arm_type_translation: as for ``Arm``.
+      configuration: as for ``Arm``; without offsets each takes 0.
     """
-    super().__init__(
-      driver=driver,
-      offsets=offsets if offsets is not None else {motor: 0.0 for motor in ARM_MOTORS},
-      homing_position_a=homing_position_a,
-      encoder_correction=encoder_correction,
-      zone_rectangles=zone_rectangles,
-      safe_xy_routes=safe_xy_routes,
-      idle_routes=idle_routes,
-      waste_station_route=waste_station_route,
-      wash_station_routes=wash_station_routes,
-      stage_origin=stage_origin,
-      stage_transformation_matrix=stage_transformation_matrix,
-      stage_offset_x=stage_offset_x,
-      stage_offset_y=stage_offset_y,
-      arm_type_rotation_degree=arm_type_rotation_degree,
-      arm_type_translation=arm_type_translation,
-    )
+    if configuration.offsets is None:
+      configuration = dataclasses.replace(
+        configuration, offsets={motor: 0.0 for motor in ARM_MOTORS}
+      )
+    super().__init__(driver=driver, configuration=configuration)
     self._positions: Dict[int, float] = {0: 0.0, 1: 0.0, Z_MOTOR: 0.0}
     self._absolute_positions: Dict[int, float] = self._get_idle_targets()
     self._z_homed = False
@@ -310,6 +267,7 @@ class MantisSimulationDriver(MantisDriver):
       show_actions=show_actions,
     )
     self._queued_items: List[int] = []
+    self._simulated_motor_limits: Dict[int, Tuple[float, float]] = {}
     self._queued_moves: Dict[int, List[Tuple[float, float, float]]] = {}
     self._sequencer_started = False
 
@@ -356,9 +314,9 @@ class MantisSimulationDriver(MantisDriver):
     raise NotImplementedError(f"{self.name}: the device name is not simulated")
 
   async def request_motor_limits(self, *, motor: int) -> Tuple[float, float]:
-    """A motor's declared (lower, upper) limit."""
+    """A motor's (lower, upper) limit as its generation's recording holds it."""
     self._check_index(name="motor", value=motor, allowed=MOTORS)
-    return self.configuration.motor_limits[motor]
+    return self._simulated_motor_limits[motor]
 
   async def request_motor_currents(self, *, motor: int) -> Tuple[float, float, float]:
     """Raise: the currents are not part of the configuration."""
@@ -474,15 +432,25 @@ class MantisSimulationDriver(MantisDriver):
     values, _ = self._load_unit_values(generation=generation)
     configuration = configuration_from_json(fields=values["device"])
     configuration.generation = generation
+    recording = RECORDING_MANTIS_V4 if generation == "v4" else RECORDING_MANTIS_V3
+    self._simulated_motor_limits = {
+      int(motor): (float(lower), float(upper))
+      for motor, (lower, upper) in read_configuration(path=recording)["device"]
+      .get("motor_limits", {})
+      .items()
+    }
     return configuration
 
-  def _discover_features(self) -> None:
+  def _discover_features(self, *, motor_limits: Dict[int, Tuple[float, float]]) -> None:
     """Build the features as a device would, simulated, and the RFID reader.
+
+    Args:
+      motor_limits: as for ``MantisDriver``.
 
     Raises:
       MantisConfigurationError: if a declared block is malformed.
     """
-    super()._discover_features()
+    super()._discover_features(motor_limits=motor_limits)
     if self.plate_clamp is not None and not isinstance(
       self.plate_clamp, MantisSimulationPlateClamp
     ):
@@ -496,23 +464,7 @@ class MantisSimulationDriver(MantisDriver):
         show_actions=self.led_bar.show_actions,
       )
     if self.arm is not None and not isinstance(self.arm, MantisSimulationArm):
-      self.arm = MantisSimulationArm(
-        driver=self,
-        offsets=self.arm.offsets,
-        homing_position_a=self.arm.homing_position_a,
-        encoder_correction=self.arm.encoder_correction,
-        zone_rectangles=self.arm.zone_rectangles,
-        safe_xy_routes=self.arm.safe_xy_routes,
-        idle_routes=self.arm.idle_routes,
-        waste_station_route=self.arm.waste_station_route,
-        wash_station_routes=self.arm.wash_station_routes,
-        stage_origin=self.arm.stage_origin,
-        stage_transformation_matrix=self.arm.stage_transformation_matrix,
-        stage_offset_x=self.arm.stage_offset_x,
-        stage_offset_y=self.arm.stage_offset_y,
-        arm_type_rotation_degree=self.arm.arm_type_rotation_degree,
-        arm_type_translation=self.arm.arm_type_translation,
-      )
+      self.arm = MantisSimulationArm(driver=self, configuration=self.arm.configuration)
     if self.rfid is None:
       rfid_block = self._unit_blocks.get("rfid")
       slot_to_antenna: Optional[Dict[int, int]] = None

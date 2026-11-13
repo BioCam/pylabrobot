@@ -49,7 +49,7 @@ from ..events import HOME_DONE_EVENT, decode_home_done
 from ..framing import MOTION_BOARD
 from ..oem_config import UNKNOWN_ZONE, WASH_STATIONS, ZONES
 from ..sequence_files import Waypoint
-from ..stage_transform import REFERENCE_HEIGHT, compute_arm_frame_position
+from ..stage_transform import compute_arm_frame_position
 
 if TYPE_CHECKING:
   from ..master import MantisDriver
@@ -89,12 +89,12 @@ SHUTDOWN_Z = 20.0
 # rising edge in the negative direction.
 Z_HOMING_SPEED = 15.0
 Z_HOMING_ACCELERATION = 400.0
-# The Z speeds (mm/s) and accelerations (mm/s²) of the recorded moves; the device has dropped a Z
-# move outside them without an error, so none is sent.
-Z_SPEED_RANGE = (20.0, 55.0)
+# PyLabRobot's allow-list for Z, mm/s and mm/s²: the recorded moves' range (the jog's 1 to 20 mm/s
+# at 500 mm/s², the routes' 55 mm/s at 200 mm/s²); other values have not run on a device.
+Z_SPEED_RANGE = (1.0, 55.0)
 Z_ACCELERATION_RANGE = (200.0, 500.0)
-# The speeds and accelerations of every recorded recovery, close and station route: the arms in
-# degrees/s and degrees/s², Z in mm/s and mm/s². Routes keep it.
+# The vendor's motor profile, in every recorded recovery, close, route and queued move: the arms in
+# degrees/s and degrees/s², Z in mm/s and mm/s². Routes keep it; the arms take it by default.
 ROUTE_ARM_SPEED = 10000.0
 ROUTE_ARM_ACCELERATION = 1500.0
 ROUTE_Z_SPEED = 55.0
@@ -106,12 +106,58 @@ Z_TRAVERSE_TOLERANCE = 0.1
 MOTOR_STATUS_POLL_INTERVAL = 0.02
 MOVE_TIMEOUT = 30.0
 HOME_TIMEOUT = 30.0
+# The vendor's safe height, mm above Z's flag: the routes' Z -1.570.
+SAFE_HEIGHT = 1.57
 # PyLabRobot design choice: the plate holder is sampled every 5 mm to fit the deck frame to the arm
 # frame.
 DECK_FIT_SPACING = 5.0
+# How far outside the plate holder, mm, a point read back through the inverted stage transform may
+# land and still count as on it: rounding only.
+HOLDER_EDGE_TOLERANCE = 1e-6
 
 JointState = Dict[int, float]
 """Where each motor is, by motor: 0 and 1 in degrees, 2 (Z) in mm down from its flag."""
+
+
+@dataclasses.dataclass(frozen=True)
+class MantisArmConfiguration:
+  """The arm's facts, read at setup, and the unit's calibration, from its folder or declared file.
+
+  Each calibration value is None without its block (``arm``, ``zones``, ``stations``, ``stage``).
+  """
+
+  motor_limits: Dict[int, Tuple[float, float]] = dataclasses.field(default_factory=dict)
+  """Each motor's (lower, upper) position limit, by motor, in device units, as read at setup."""
+  offsets: Optional[Dict[int, float]] = None
+  """Each arm motor's offset, degrees, added to its angle for the geometry's own."""
+  homing_position_a: Optional[Dict[int, float]] = None
+  """Each arm motor's encoder reference, in the absolute encoder's units."""
+  encoder_correction: Optional[Dict[int, List[Tuple[float, float]]]] = None
+  """Each arm motor's (ideal, measured) correction rows, measured ascending."""
+  zone_rectangles: Optional[Dict[str, Tuple[float, float, float, float]]] = None
+  """Each zone's (minimum x, maximum x, minimum y, maximum y) in the arm frame, mm, by name."""
+  safe_xy_routes: Optional[Dict[str, List[Waypoint]]] = None
+  """Each zone's route to its safe XY, the arms only, by name; Unknown included."""
+  idle_routes: Optional[Dict[str, List[Waypoint]]] = None
+  """Each zone's route to idle, by name; Unknown included."""
+  waste_station_route: Optional[List[Waypoint]] = None
+  """The route from idle to the waste station."""
+  wash_station_routes: Optional[Dict[int, List[Waypoint]]] = None
+  """The route from idle to each wash station, by number."""
+  stage_origin: Optional[Tuple[float, float, float]] = None
+  """The plate holder's origin, (x, y, z), mm."""
+  stage_transformation_matrix: Optional[Sequence[Sequence[float]]] = None
+  """The stage's projective matrix, 3 by 3."""
+  stage_offset_x: Optional[Tuple[float, float, float]] = None
+  """The stage's x offset, (x, y, z); its z tilts the stage."""
+  stage_offset_y: Optional[Tuple[float, float, float]] = None
+  """The stage's y offset, (x, y, z); its z tilts the stage."""
+  arm_type_rotation_degree: Optional[float] = None
+  """The arm type's rotation, degrees."""
+  arm_type_translation: Optional[Tuple[float, float, float]] = None
+  """The arm type's translation, (x, y, z), mm."""
+  stage_reference_height: Optional[float] = None
+  """The wellplate frame's z origin above the plate holder, mm (``StageTuning.config``)."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -141,78 +187,37 @@ class Arm:
   encoder correction. Without it nothing is sent and ``initialize`` refuses; it never falls back to
   another unit's values. The ``zones`` and ``stations`` blocks give the routes; without them the
   head is moved to idle only from near it, and the stations refuse. Without the ``stage`` block the
-  deck-frame moves and ``request_pose`` refuse. Routes (bring-up, park, the stations, stop) move at the ``ROUTE_*``
-  profile; the ``default_*`` speeds are for the other moves.
+  deck-frame moves and ``request_pose`` refuse. Routes (bring-up, park, the stations, stop) move at the
+  ``ROUTE_*`` profile; the other moves take the arms at it unless an xy speed is given.
 
-  The public moves take the nozzle in the deck frame, mm. A traverse height is mm above Z's home
-  flag, up positive; a joint state holds Z as the motor does, mm down from its flag.
+  The public moves take the nozzle in the deck frame, mm, and its speed in mm/s; a joint state
+  holds each motor as it reads, Z in mm down from its flag.
 
   After each move, and where a failed one stopped, the measured pose goes to ``_pose_observer`` if
   one is set: the two links' angles and Z's height, as keywords ``theta_1``, ``theta_2`` and ``z``.
   """
 
-  # Where the ``default_*`` properties start: the route profile, and the safe height, mm above Z's
-  # home flag (the safe height, Z -1.570 down).
-  _default_arm_speed: float = ROUTE_ARM_SPEED
-  _default_arm_acceleration: float = ROUTE_ARM_ACCELERATION
+  # Where the ``default_*`` properties start: the arms at the vendor's motor profile (None), Z at
+  # the route profile, and the vendor's safe height (None).
+  _default_xy_speed: Optional[float] = None
+  _default_xy_acceleration: Optional[float] = None
   _default_z_speed: float = ROUTE_Z_SPEED
   _default_z_acceleration: float = ROUTE_Z_ACCELERATION
-  _default_minimum_traverse_height: float = 1.57
+  _default_minimum_traverse_height: Optional[float] = None
 
-  def __init__(
-    self,
-    *,
-    driver: "MantisDriver",
-    offsets: Optional[Dict[int, float]],
-    homing_position_a: Optional[Dict[int, float]],
-    encoder_correction: Optional[Dict[int, List[Tuple[float, float]]]],
-    zone_rectangles: Optional[Dict[str, Tuple[float, float, float, float]]] = None,
-    safe_xy_routes: Optional[Dict[str, List[Waypoint]]] = None,
-    idle_routes: Optional[Dict[str, List[Waypoint]]] = None,
-    waste_station_route: Optional[List[Waypoint]] = None,
-    wash_station_routes: Optional[Dict[int, List[Waypoint]]] = None,
-    stage_origin: Optional[Tuple[float, float, float]] = None,
-    stage_transformation_matrix: Optional[Sequence[Sequence[float]]] = None,
-    stage_offset_x: Optional[Tuple[float, float, float]] = None,
-    stage_offset_y: Optional[Tuple[float, float, float]] = None,
-    arm_type_rotation_degree: Optional[float] = None,
-    arm_type_translation: Optional[Tuple[float, float, float]] = None,
-  ):
+  def __init__(self, *, driver: "MantisDriver", configuration: MantisArmConfiguration):
     """
     Args:
       driver: the driver it sends through.
-      offsets: each arm motor's offset, degrees, added to its angle for the geometry's own.
-      homing_position_a: each arm motor's encoder reference, in the absolute encoder's units.
-      encoder_correction: each arm motor's (ideal, measured) correction rows, measured ascending.
-      zone_rectangles: each zone's (minimum x, maximum x, minimum y, maximum y), mm, by name.
-      safe_xy_routes: each zone's route to its safe XY, the arms only, by name; Unknown included.
-      idle_routes: each zone's route to idle, by name; Unknown included.
-      waste_station_route: the route from idle to the waste station.
-      wash_station_routes: the route from idle to each wash station, by number.
-      stage_origin: the plate holder's origin, (x, y, z), mm.
-      stage_transformation_matrix: the stage's projective matrix, 3 by 3.
-      stage_offset_x: the stage's x offset, (x, y, z); its z tilts the stage.
-      stage_offset_y: the stage's y offset, (x, y, z); its z tilts the stage.
-      arm_type_rotation_degree: the arm type's rotation, degrees.
-      arm_type_translation: the arm type's translation, (x, y, z), mm.
+      configuration: the arm's facts and the unit's calibration, as discovery reads them.
     """
     self._driver = driver
-    self.offsets = offsets
-    self.homing_position_a = homing_position_a
-    self.encoder_correction = encoder_correction
-    self.zone_rectangles = zone_rectangles
-    self.safe_xy_routes = safe_xy_routes
-    self.idle_routes = idle_routes
-    self.waste_station_route = waste_station_route
-    self.wash_station_routes = wash_station_routes
-    self.stage_origin = stage_origin
-    self.stage_transformation_matrix = stage_transformation_matrix
-    self.stage_offset_x = stage_offset_x
-    self.stage_offset_y = stage_offset_y
-    self.arm_type_rotation_degree = arm_type_rotation_degree
-    self.arm_type_translation = arm_type_translation
+    self.configuration = configuration
     self._initialized = False
     self._pose_observer: Optional[Callable[..., None]] = None
+    self._deck_to_arm_transform: Optional[Tuple[float, float, float]] = None
+    # The route of the station the head stands in, until it leaves.
+    self._station_route: Optional[List[Waypoint]] = None
 
   @property
   def is_initialized(self) -> bool:
@@ -221,9 +226,10 @@ class Arm:
 
   @staticmethod
   def _check_positive(*, name: str, value: float) -> None:
-    """Raise ``ValueError`` unless ``value`` is above 0: the device reports no range of its own."""
-    if not value > 0:
-      raise ValueError(f"{name} must be above 0, got {value}")
+    """Raise ``ValueError`` unless ``value`` is finite and above 0: the device reports no range of
+    its own."""
+    if not (math.isfinite(value) and value > 0):
+      raise ValueError(f"{name} must be finite and above 0, got {value}")
 
   @staticmethod
   def _check_within(*, name: str, value: float, allowed: Tuple[float, float]) -> None:
@@ -233,24 +239,27 @@ class Arm:
       raise ValueError(f"{name} must be from {low} to {high}, got {value}")
 
   @property
-  def default_arm_speed(self) -> float:
-    """Each arm motor's speed for a move, in degrees/s."""
-    return self._default_arm_speed
+  def default_xy_speed(self) -> Optional[float]:
+    """The nozzle's speed across the deck for a move, mm/s; None takes the vendor's motor profile."""
+    return self._default_xy_speed
 
-  @default_arm_speed.setter
-  def default_arm_speed(self, value: float) -> None:
-    self._check_positive(name="default_arm_speed", value=value)
-    self._default_arm_speed = value
+  @default_xy_speed.setter
+  def default_xy_speed(self, value: Optional[float]) -> None:
+    if value is not None:
+      self._check_positive(name="default_xy_speed", value=value)
+    self._default_xy_speed = value
 
   @property
-  def default_arm_acceleration(self) -> float:
-    """Each arm motor's acceleration for a move, and its deceleration at a stop, in degrees/s²."""
-    return self._default_arm_acceleration
+  def default_xy_acceleration(self) -> Optional[float]:
+    """The nozzle's acceleration across the deck for a move, mm/s²; None takes the vendor's motor
+    profile."""
+    return self._default_xy_acceleration
 
-  @default_arm_acceleration.setter
-  def default_arm_acceleration(self, value: float) -> None:
-    self._check_positive(name="default_arm_acceleration", value=value)
-    self._default_arm_acceleration = value
+  @default_xy_acceleration.setter
+  def default_xy_acceleration(self, value: Optional[float]) -> None:
+    if value is not None:
+      self._check_positive(name="default_xy_acceleration", value=value)
+    self._default_xy_acceleration = value
 
   @property
   def default_z_speed(self) -> float:
@@ -284,7 +293,7 @@ class Arm:
     Raises:
       MantisConfigurationError: if the motor's limits were not read.
     """
-    limits = self._driver.configuration.motor_limits.get(motor)
+    limits = self.configuration.motor_limits.get(motor)
     if limits is None:
       raise MantisConfigurationError(f"{self._driver.name}: motor {motor}'s limits are not read")
     lower, upper = limits
@@ -295,20 +304,22 @@ class Arm:
       )
 
   @property
-  def default_minimum_traverse_height(self) -> float:
-    """The height the head rises to before it travels, in mm above Z's home flag."""
+  def default_minimum_traverse_height(self) -> Optional[float]:
+    """The nozzle's height above the deck it rises to before it travels, mm; None takes the
+    vendor's safe height, ``SAFE_HEIGHT`` above Z's flag."""
     return self._default_minimum_traverse_height
 
   @default_minimum_traverse_height.setter
-  def default_minimum_traverse_height(self, value: float) -> None:
-    if Z_MOTOR in self._driver.configuration.motor_limits:
-      self._check_reachable(motor=Z_MOTOR, position=self._get_z_device_position(z=value))
+  def default_minimum_traverse_height(self, value: Optional[float]) -> None:
+    if value is not None and not math.isfinite(value):
+      raise ValueError(f"default_minimum_traverse_height must be finite, got {value}")
     self._default_minimum_traverse_height = value
 
   def _get_profile(
     self, *, motor: int, speed: Optional[float] = None, acceleration: Optional[float] = None
   ) -> Tuple[float, float]:
-    """A motor's (speed, acceleration) in device units; each None takes its default.
+    """A motor's (speed, acceleration) in device units: an arm motor's in degrees/s and degrees/s²,
+    each None the vendor's; Z's in mm/s and mm/s², each None its default.
 
     Raises:
       ValueError: if an arm's is not above 0, or Z's is outside ``Z_SPEED_RANGE`` or
@@ -320,8 +331,8 @@ class Arm:
       self._check_within(name="Z speed", value=speed, allowed=Z_SPEED_RANGE)
       self._check_within(name="Z acceleration", value=acceleration, allowed=Z_ACCELERATION_RANGE)
     else:
-      speed = self.default_arm_speed if speed is None else speed
-      acceleration = self.default_arm_acceleration if acceleration is None else acceleration
+      speed = ROUTE_ARM_SPEED if speed is None else speed
+      acceleration = ROUTE_ARM_ACCELERATION if acceleration is None else acceleration
       self._check_positive(name="arm speed", value=speed)
       self._check_positive(name="arm acceleration", value=acceleration)
     return (
@@ -357,15 +368,18 @@ class Arm:
     )
 
   def _get_device_acceleration(self, *, motor: int) -> float:
-    """A motor's default acceleration, in device units; a stop decelerates at it."""
-    acceleration = (
-      self.default_z_acceleration if motor == Z_MOTOR else self.default_arm_acceleration
-    )
+    """A motor's acceleration where no move gives one, in device units: the vendor's on the arms,
+    ``default_z_acceleration`` on Z; a stop outside a move decelerates at it."""
+    acceleration = self.default_z_acceleration if motor == Z_MOTOR else ROUTE_ARM_ACCELERATION
     return compute_device_rate(motor=motor, rate=acceleration)
 
   def _check_calibrated(self) -> None:
     """Raise ``MantisConfigurationError`` unless the unit's ``arm`` block was given."""
-    if self.offsets is None or self.homing_position_a is None or self.encoder_correction is None:
+    if (
+      self.configuration.offsets is None
+      or self.configuration.homing_position_a is None
+      or self.configuration.encoder_correction is None
+    ):
       raise MantisConfigurationError(
         f"{self._driver.name}: no arm calibration for this unit; give its configuration folder "
         "(oem_config_directory) or a configuration saved with it, or set up with skip_arm=True"
@@ -471,13 +485,16 @@ class Arm:
       MantisConfigurationError: without the unit's ``arm`` block; nothing is sent.
     """
     self._check_calibrated()
-    assert self.encoder_correction is not None and self.homing_position_a is not None
+    assert (
+      self.configuration.encoder_correction is not None
+      and self.configuration.homing_position_a is not None
+    )
     reading = await self._driver.request_absolute_encoder_position(motor=motor)
     return compute_absolute_device_position(
       motor=motor,
       reading=reading,
-      correction=self.encoder_correction[motor],
-      homing_position_a=self.homing_position_a[motor],
+      correction=self.configuration.encoder_correction[motor],
+      homing_position_a=self.configuration.homing_position_a[motor],
     )
 
   async def request_absolute_joint_state(self) -> JointState:
@@ -531,8 +548,11 @@ class Arm:
       MantisConfigurationError: without the unit's ``arm`` block.
     """
     self._check_calibrated()
-    assert self.offsets is not None
-    return (joint_state[0] + self.offsets[0], joint_state[1] + self.offsets[1])
+    assert self.configuration.offsets is not None
+    return (
+      joint_state[0] + self.configuration.offsets[0],
+      joint_state[1] + self.configuration.offsets[1],
+    )
 
   def _get_head_position(self, *, joint_state: JointState) -> Tuple[float, float]:
     """Where the head is in the arm frame, mm, for the arm motors' angles in degrees.
@@ -553,10 +573,12 @@ class Arm:
       MantisKinematicsError: if (x, y) is out of the arm's reach.
     """
     self._check_calibrated()
-    assert self.offsets is not None
+    assert self.configuration.offsets is not None
     angles = compute_joint_angles(x=x, y=y)
     return {
-      motor: compute_device_position(motor=motor, position=angles[motor] - self.offsets[motor])
+      motor: compute_device_position(
+        motor=motor, position=angles[motor] - self.configuration.offsets[motor]
+      )
       for motor in ARM_MOTORS
     }
 
@@ -574,12 +596,13 @@ class Arm:
     if any(
       value is None
       for value in (
-        self.stage_origin,
-        self.stage_transformation_matrix,
-        self.stage_offset_x,
-        self.stage_offset_y,
-        self.arm_type_rotation_degree,
-        self.arm_type_translation,
+        self.configuration.stage_origin,
+        self.configuration.stage_transformation_matrix,
+        self.configuration.stage_offset_x,
+        self.configuration.stage_offset_y,
+        self.configuration.arm_type_rotation_degree,
+        self.configuration.arm_type_translation,
+        self.configuration.stage_reference_height,
       )
     ):
       raise MantisConfigurationError(
@@ -594,24 +617,33 @@ class Arm:
     Args:
       x: right of the plate holder's back-left corner, mm.
       y: in front of the plate holder's back-left corner, mm.
-      z: down from ``REFERENCE_HEIGHT`` above the plate holder, mm.
+      z: down from the stage's reference height above the plate holder, mm.
 
     Raises:
       MantisConfigurationError: without the unit's ``stage`` block.
       MantisKinematicsError: if the stage transform maps the point to infinity.
     """
     self._check_stage()
-    assert self.stage_origin is not None and self.stage_transformation_matrix is not None
-    assert self.stage_offset_x is not None and self.stage_offset_y is not None
-    assert self.arm_type_rotation_degree is not None and self.arm_type_translation is not None
+    assert (
+      self.configuration.stage_origin is not None
+      and self.configuration.stage_transformation_matrix is not None
+    )
+    assert (
+      self.configuration.stage_offset_x is not None
+      and self.configuration.stage_offset_y is not None
+    )
+    assert (
+      self.configuration.arm_type_rotation_degree is not None
+      and self.configuration.arm_type_translation is not None
+    )
     return compute_arm_frame_position(
       position=(x, y, z),
-      origin=self.stage_origin,
-      transformation_matrix=self.stage_transformation_matrix,
-      offset_x=self.stage_offset_x,
-      offset_y=self.stage_offset_y,
-      arm_type_rotation_degree=self.arm_type_rotation_degree,
-      arm_type_translation=self.arm_type_translation,
+      origin=self.configuration.stage_origin,
+      transformation_matrix=self.configuration.stage_transformation_matrix,
+      offset_x=self.configuration.stage_offset_x,
+      offset_y=self.configuration.stage_offset_y,
+      arm_type_rotation_degree=self.configuration.arm_type_rotation_degree,
+      arm_type_translation=self.configuration.arm_type_translation,
     )
 
   def _get_deck_to_arm_transform(self) -> Tuple[float, float, float]:
@@ -621,13 +653,22 @@ class Arm:
     The resource model places the arm by its base from the manufacturer's model; units differ from
     it by millimetres, so each unit's placement is fitted from its own calibration.
 
+    Fitted once: the configuration does not change.
+
     Raises:
       MantisConfigurationError: without the unit's ``stage`` block.
     """
+    if self._deck_to_arm_transform is not None:
+      return self._deck_to_arm_transform
+
+    def get_samples(size: float) -> List[float]:
+      # Every DECK_FIT_SPACING from 0, and the far edge.
+      count = math.ceil(size / DECK_FIT_SPACING)
+      return [min(index * DECK_FIT_SPACING, size) for index in range(count + 1)]
+
     pairs = []
-    for column in range(int(PLATE_HOLDER_SIZE_X // DECK_FIT_SPACING) + 1):
-      for row in range(int(PLATE_HOLDER_SIZE_Y // DECK_FIT_SPACING) + 1):
-        x, y = column * DECK_FIT_SPACING, row * DECK_FIT_SPACING
+    for x in get_samples(PLATE_HOLDER_SIZE_X):
+      for y in get_samples(PLATE_HOLDER_SIZE_Y):
         model = (
           PLATE_HOLDER_LOCATION.x + x - ARM_BASE_X,
           ARM_BASE_Y - (PLATE_HOLDER_LOCATION.y + PLATE_HOLDER_SIZE_Y - y),
@@ -645,11 +686,12 @@ class Arm:
       cross += mx * uy - my * ux
       dot += mx * ux + my * uy
     turn = math.atan2(cross, dot)
-    return (
+    self._deck_to_arm_transform = (
       turn,
       unit_x - (math.cos(turn) * model_x - math.sin(turn) * model_y),
       unit_y - (math.sin(turn) * model_x + math.cos(turn) * model_y),
     )
+    return self._deck_to_arm_transform
 
   def _get_arm_frame_xy(self, *, x: float, y: float) -> Tuple[float, float]:
     """A deck-frame (x, y), mm, in the arm frame: by the stage transform over the plate holder, by
@@ -671,12 +713,41 @@ class Arm:
     )
 
   def _get_deck_frame_xy(self, *, x: float, y: float) -> Tuple[float, float]:
-    """An arm-frame (x, y), mm, in the deck frame, by the fitted transform; over the plate holder
-    within the stage transform's projective part.
+    """An arm-frame (x, y), mm, in the deck frame: the stage transform inverted where it lands on
+    the plate holder, so a move there reads back where it was sent; the fitted transform elsewhere.
 
     Raises:
       MantisConfigurationError: without the unit's ``stage`` block.
     """
+    self._check_stage()
+    assert self.configuration.stage_origin is not None
+    assert self.configuration.stage_transformation_matrix is not None
+    assert self.configuration.arm_type_rotation_degree is not None
+    assert self.configuration.arm_type_translation is not None
+    (a, b, c), (d, e, f), (g, h, i) = self.configuration.stage_transformation_matrix
+    determinant = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g)
+    if determinant != 0:
+      # The matrix's inverse, up to scale (its adjugate), maps the arm frame back onto the stage.
+      stage_x = (e * i - f * h) * x + (c * h - b * i) * y + (b * f - c * e)
+      stage_y = (f * g - d * i) * x + (a * i - c * g) * y + (c * d - a * f)
+      scale = (d * h - e * g) * x + (b * g - a * h) * y + (a * e - b * d)
+      if scale != 0:
+        framed_x = stage_x / scale - self.configuration.stage_origin[0]
+        framed_y = stage_y / scale - self.configuration.stage_origin[1]
+        framed_x -= self.configuration.arm_type_translation[0]
+        framed_y -= self.configuration.arm_type_translation[1]
+        angle = math.radians(self.configuration.arm_type_rotation_degree)
+        holder_x = math.cos(angle) * framed_x + math.sin(angle) * framed_y
+        holder_y = -math.sin(angle) * framed_x + math.cos(angle) * framed_y
+        # Within rounding of the holder, as the stage transform was sent there.
+        if (
+          -HOLDER_EDGE_TOLERANCE <= holder_x <= PLATE_HOLDER_SIZE_X + HOLDER_EDGE_TOLERANCE
+          and -HOLDER_EDGE_TOLERANCE <= holder_y <= PLATE_HOLDER_SIZE_Y + HOLDER_EDGE_TOLERANCE
+        ):
+          return (
+            PLATE_HOLDER_LOCATION.x + holder_x,
+            PLATE_HOLDER_LOCATION.y + PLATE_HOLDER_SIZE_Y - holder_y,
+          )
     turn, shift_x, shift_y = self._get_deck_to_arm_transform()
     x, y = x - shift_x, y - shift_y
     model_x = math.cos(turn) * x + math.sin(turn) * y
@@ -695,16 +766,21 @@ class Arm:
     Raises:
       MantisConfigurationError: without the unit's ``stage`` block.
     """
+    self._check_stage()
+    assert self.configuration.stage_reference_height is not None
     _, _, z_joint_position = self._get_stage_position(
       x=x - PLATE_HOLDER_LOCATION.x,
       y=PLATE_HOLDER_LOCATION.y + PLATE_HOLDER_SIZE_Y - y,
-      z=REFERENCE_HEIGHT - (z - PLATE_HOLDER_LOCATION.z),
+      z=self.configuration.stage_reference_height - (z - PLATE_HOLDER_LOCATION.z),
     )
     return z_joint_position
 
   async def request_pose(self) -> MantisPose:
     """Where every joint of the arm is and where the nozzle is, in the deck frame, worked out from
     the joint state; nothing moves.
+
+    The nozzle is that of a fitted chip, where the stage transform puts it; the links' heights are
+    the resource model's, for drawing. The elbows are placed by the fitted transform, approximate.
 
     Raises:
       MantisConfigurationError: without the unit's ``arm`` or ``stage`` block; nothing is sent.
@@ -714,7 +790,8 @@ class Arm:
     self._check_stage()
     joints = await self.request_joint_state()
     theta_1, theta_2 = self._get_link_angles(joint_state=joints)
-    # The links' height above the deck, as the resource model draws them: at idle Z at ARM_Z.
+    # The links' height for drawing only, as the resource model places them: ARM_Z at Z's flag is
+    # assumed, not measured; no clearance is judged from it.
     link_z = ARM_Z - SIZE_Z - joints[Z_MOTOR]
     right_elbow, left_elbow = compute_elbow_positions(theta_1=theta_1, theta_2=theta_2)
     head = compute_head_position(theta_1=theta_1, theta_2=theta_2)
@@ -799,14 +876,26 @@ class Arm:
       return
     self._notify_pose(joint_state=measured)
 
-  async def _stop_motors(self, *, motors: Tuple[int, ...]) -> bool:
-    """Stop each motor at its default deceleration (command 24), each in its own try; a failure is
-    logged. Return whether every stop was answered."""
+  async def _stop_motors(
+    self, *, motors: Tuple[int, ...], decelerations: Optional[Dict[int, float]] = None
+  ) -> bool:
+    """Stop each motor (command 24), each in its own try; a failure is logged. Return whether every
+    stop was answered.
+
+    Args:
+      motors: the motors to stop.
+      decelerations: each motor's, in device units, as the vendor stops a move at its own
+        acceleration; a motor without one takes ``_get_device_acceleration``.
+    """
     stopped = True
     for motor in motors:
+      deceleration = (decelerations or {}).get(motor)
       try:
         await self._unchecked_fw_stop(
-          motor=motor, deceleration=self._get_device_acceleration(motor=motor)
+          motor=motor,
+          deceleration=(
+            self._get_device_acceleration(motor=motor) if deceleration is None else deceleration
+          ),
         )
       except Exception:
         logger.warning("[%s] could not stop motor %d", self._driver.name, motor, exc_info=True)
@@ -884,7 +973,10 @@ class Arm:
         self._check_status(motor=motor, status=status)
       await self._wait_for_motors_idle(timeout=MOVE_TIMEOUT)
     except BaseException:
-      await self._stop_motors(motors=tuple(sent))
+      await self._stop_motors(
+        motors=tuple(sent),
+        decelerations={motor: acceleration for motor, (_, acceleration) in profiles.items()},
+      )
       await self._log_where_it_stopped()
       raise
 
@@ -1009,10 +1101,10 @@ class Arm:
     Raises:
       MantisConfigurationError: without the unit's ``zones`` block.
     """
-    if self.zone_rectangles is None:
+    if self.configuration.zone_rectangles is None:
       raise MantisConfigurationError(f"{self._driver.name}: no zones for this unit")
     for zone in ZONES:
-      minimum_x, maximum_x, minimum_y, maximum_y = self.zone_rectangles[zone]
+      minimum_x, maximum_x, minimum_y, maximum_y = self.configuration.zone_rectangles[zone]
       if minimum_x <= x <= maximum_x and minimum_y <= y <= maximum_y:
         return zone
     return UNKNOWN_ZONE
@@ -1028,7 +1120,11 @@ class Arm:
     Raises:
       MantisMotionError: if where the head is is not known, or without zones it is not near idle.
     """
-    if self.zone_rectangles is None or self.safe_xy_routes is None or self.idle_routes is None:
+    if (
+      self.configuration.zone_rectangles is None
+      or self.configuration.safe_xy_routes is None
+      or self.configuration.idle_routes is None
+    ):
       self._check_near_idle(joint_state=joint_state)
       return FRONT_SAFE_XY_ROUTE, FRONT_IDLE_ROUTE
     try:
@@ -1039,7 +1135,7 @@ class Arm:
     logger.info(
       "[%s] the head is at (%.3f, %.3f) mm, in the %s zone", self._driver.name, x, y, zone
     )
-    return self.safe_xy_routes[zone], self.idle_routes[zone]
+    return self.configuration.safe_xy_routes[zone], self.configuration.idle_routes[zone]
 
   async def _home_z(self) -> None:
     """Home Z on its flag, as recorded: check no motor slipped, clear Z's faults, search, wait.
@@ -1126,6 +1222,7 @@ class Arm:
     """
     self._check_calibrated()
     self._initialized = False
+    self._station_route = None
     try:
       for motor in ARM_MOTORS:
         await self._unchecked_fw_set_motor_open_loop(motor=motor, open_loop=False)
@@ -1156,6 +1253,7 @@ class Arm:
     self._check_calibrated()
     self._check_initialized()
     self._initialized = False
+    self._station_route = None
     try:
       for motor in (*ARM_MOTORS, Z_MOTOR):
         await self._unchecked_fw_stop(
@@ -1171,38 +1269,128 @@ class Arm:
     await self._report_pose()
 
   async def _rise_to_traverse_height(
-    self, *, minimum_traverse_height: float, profiles: Dict[int, Tuple[float, float]]
+    self, *, z_joint_position: float, profiles: Dict[int, Tuple[float, float]]
   ) -> None:
-    """Rise Z to the traverse height if its encoder reads it below it, then read Z back at or
-    above it by its encoder (command 84), never the demand position.
+    """Rise Z to the traverse height if its encoder reads it below it (command 22), then read Z
+    back at or above it by its encoder (command 84), never the demand position.
 
     Args:
-      minimum_traverse_height: in mm above Z's home flag, within Z's limits.
+      z_joint_position: the traverse height as Z's position, mm down from its flag, within limits.
       profiles: each motor's (speed, acceleration) in device units, by motor.
 
     Raises:
       MantisMotionError: if Z answers the move with an error code, faults, or reads more than
         ``Z_TRAVERSE_TOLERANCE`` below the height after it.
     """
-    traverse = self._get_z_device_position(z=minimum_traverse_height)
+    traverse = compute_device_position(motor=Z_MOTOR, position=z_joint_position)
     measured = await self._request_measured_position(motor=Z_MOTOR)
     if compute_device_position(motor=Z_MOTOR, position=measured) <= traverse:
       return
     await self._move_motors(targets={Z_MOTOR: traverse}, profiles=profiles)
-    z = 0.0 - await self._request_measured_position(motor=Z_MOTOR)  # 0.0, never -0.0
-    if z < minimum_traverse_height - Z_TRAVERSE_TOLERANCE:
+    measured = await self._request_measured_position(motor=Z_MOTOR)
+    if measured > z_joint_position + Z_TRAVERSE_TOLERANCE:
       raise MantisMotionError(
-        f"{self._driver.name}: Z reads {z:.3f} mm by its encoder after rising to "
-        f"{minimum_traverse_height} mm; the arms are not moved",
+        f"{self._driver.name}: Z reads {measured:.3f} mm down by its encoder after rising to "
+        f"{z_joint_position:.3f} mm down; the arms are not moved",
         motor=Z_MOTOR,
       )
 
-  async def _move_to_joint_state(
+  def _get_traverse_z_joint_position(
+    self, *, minimum_traverse_height: Optional[float], points: Sequence[Tuple[float, float]]
+  ) -> float:
+    """Z's position, mm down from its flag, for the traverse height over every deck-frame point,
+    the highest the stage's tilt asks for; checked against Z's limits.
+
+    Args:
+      minimum_traverse_height: the nozzle's height above the deck, mm; None takes
+        ``default_minimum_traverse_height``, and with that None the vendor's ``SAFE_HEIGHT``.
+      points: the deck-frame (x, y) the head travels between.
+
+    Raises:
+      MantisConfigurationError: for a height in the deck frame without the unit's ``stage`` block.
+      ValueError: if the height is outside Z's limits.
+    """
+    if minimum_traverse_height is None:
+      minimum_traverse_height = self.default_minimum_traverse_height
+    if minimum_traverse_height is None:
+      z_joint_position = 0.0 - SAFE_HEIGHT
+    else:
+      z_joint_position = min(
+        self._get_z_joint_position(x=x, y=y, z=minimum_traverse_height) for x, y in points
+      )
+    self._check_reachable(
+      motor=Z_MOTOR, position=compute_device_position(motor=Z_MOTOR, position=z_joint_position)
+    )
+    return z_joint_position
+
+  async def _get_park_traverse_z_joint_position(
+    self, *, minimum_traverse_height: Optional[float] = None
+  ) -> float:
+    """Z's position, mm down from its flag, for the traverse height where the head stands, as
+    ``_get_traverse_z_joint_position``; the head read only for a height in the deck frame."""
+    if minimum_traverse_height is None:
+      minimum_traverse_height = self.default_minimum_traverse_height
+    points: List[Tuple[float, float]] = []
+    if minimum_traverse_height is not None:
+      head_x, head_y = self._get_head_position(joint_state=await self.request_joint_state())
+      points = [self._get_deck_frame_xy(x=head_x, y=head_y)]
+    return self._get_traverse_z_joint_position(
+      minimum_traverse_height=minimum_traverse_height, points=points
+    )
+
+  def _check_not_in_station(self) -> None:
+    """Raise ``MantisMotionError`` while the head stands in a station: it leaves only by park()."""
+    if self._station_route is not None:
+      raise MantisMotionError(
+        f"{self._driver.name}: the head stands in a station; park() takes it out the way it came"
+      )
+
+  def _get_arm_profiles(
+    self,
+    *,
+    start: Optional[JointState],
+    target: JointState,
+    xy_speed: Optional[float],
+    xy_acceleration: Optional[float],
+  ) -> Dict[int, Tuple[float, float]]:
+    """Each arm motor's (speed, acceleration) in device units for a move of the nozzle.
+
+    Without an xy speed or acceleration, given or default, the vendor's motor profile. Given, each
+    motor's is scaled by its turn over the nozzle's straight-line distance, so the motors start and
+    end together and the move takes as long as a straight one would; the nozzle's path is not
+    straight.
+
+    Args:
+      start: where the arms stand; None only without an xy speed or acceleration.
+      target: the arms' targets, degrees.
+      xy_speed: mm/s; None takes ``default_xy_speed``.
+      xy_acceleration: mm/s²; None takes ``default_xy_acceleration``.
+    """
+    speed = self.default_xy_speed if xy_speed is None else xy_speed
+    acceleration = self.default_xy_acceleration if xy_acceleration is None else xy_acceleration
+    rates = {motor: (ROUTE_ARM_SPEED, ROUTE_ARM_ACCELERATION) for motor in ARM_MOTORS}
+    if (speed is not None or acceleration is not None) and start is not None:
+      start_x, start_y = self._get_head_position(joint_state=start)
+      target_x, target_y = self._get_head_position(joint_state={**start, **target})
+      distance = math.hypot(target_x - start_x, target_y - start_y)
+      for motor in ARM_MOTORS:
+        turn = abs(target.get(motor, start[motor]) - start[motor])
+        if distance > 0 and turn > 0:
+          rates[motor] = (
+            ROUTE_ARM_SPEED if speed is None else speed * turn / distance,
+            ROUTE_ARM_ACCELERATION if acceleration is None else acceleration * turn / distance,
+          )
+    return {
+      motor: self._get_profile(motor=motor, speed=motor_speed, acceleration=motor_acceleration)
+      for motor, (motor_speed, motor_acceleration) in rates.items()
+    }
+
+  async def move_to_joint_state(
     self,
     *,
     joint_state: JointState,
-    arm_speed: Optional[float] = None,
-    arm_acceleration: Optional[float] = None,
+    xy_speed: Optional[float] = None,
+    xy_acceleration: Optional[float] = None,
     z_speed: Optional[float] = None,
     z_acceleration: Optional[float] = None,
   ) -> None:
@@ -1212,35 +1400,56 @@ class Arm:
 
     Args:
       joint_state: each motor's target, by motor, as ``request_joint_state`` reads them.
-      arm_speed: in degrees/s; None takes ``default_arm_speed``.
-      arm_acceleration: in degrees/s²; None takes ``default_arm_acceleration``.
-      z_speed: in mm/s; None takes ``default_z_speed``.
-      z_acceleration: in mm/s²; None takes ``default_z_acceleration``.
+      xy_speed: the nozzle's, mm/s; None takes ``default_xy_speed``.
+      xy_acceleration: the nozzle's, mm/s²; None takes ``default_xy_acceleration``.
+      z_speed: mm/s; None takes ``default_z_speed``.
+      z_acceleration: mm/s²; None takes ``default_z_acceleration``.
 
     Raises:
-      MantisMotionError: if the arm is not brought up, or a motor faults.
+      MantisMotionError: if the arm is not brought up, the head stands in a station, or a motor
+        faults.
       MantisKinematicsError: if the links cannot meet at the arm motors' targets.
       ValueError: if a motor is unknown, a target outside its limits, or a speed or acceleration
         out of range.
     """
     self._check_initialized()
+    self._check_not_in_station()
     unknown = set(joint_state) - {*ARM_MOTORS, Z_MOTOR}
     if unknown:
       raise ValueError(f"the motors are {(*ARM_MOTORS, Z_MOTOR)}, got {sorted(unknown)}")
-    profiles = self._get_profiles(
-      arm_speed=arm_speed,
-      arm_acceleration=arm_acceleration,
-      z_speed=z_speed,
-      z_acceleration=z_acceleration,
-    )
+    z_profile = self._get_profile(motor=Z_MOTOR, speed=z_speed, acceleration=z_acceleration)
+    for name, value in (("xy_speed", xy_speed), ("xy_acceleration", xy_acceleration)):
+      if value is not None:
+        self._check_positive(name=name, value=value)
     targets = {
       motor: compute_device_position(motor=motor, position=value)
       for motor, value in joint_state.items()
     }
     for motor, target in targets.items():
       self._check_reachable(motor=motor, position=target)
-    if any(motor in joint_state for motor in ARM_MOTORS):
-      self._get_head_position(joint_state={**await self.request_joint_state(), **joint_state})
+    profiles = {
+      **{motor: self._get_profile(motor=motor) for motor in ARM_MOTORS},
+      Z_MOTOR: z_profile,
+    }
+    named = [motor for motor in ARM_MOTORS if motor in joint_state]
+    if named:
+      in_mm = any(
+        value is not None
+        for value in (
+          xy_speed,
+          xy_acceleration,
+          self.default_xy_speed,
+          self.default_xy_acceleration,
+        )
+      )
+      # The current pose is read only where the move needs it: one arm motor, or a speed in mm.
+      start = await self.request_joint_state() if len(named) < 2 or in_mm else None
+      self._get_head_position(joint_state={**(start or {}), **joint_state})
+      profiles.update(
+        self._get_arm_profiles(
+          start=start, target=joint_state, xy_speed=xy_speed, xy_acceleration=xy_acceleration
+        )
+      )
     await self._play_queued_moves(moves=[self._get_queued_move(targets=targets, profiles=profiles)])
     await self._report_pose()
 
@@ -1260,26 +1469,28 @@ class Arm:
     Args:
       x: right of the deck's front-left corner, mm.
       y: behind the deck's front-left corner, mm.
-      speed: each arm motor's, in degrees/s; None takes ``default_arm_speed``.
-      acceleration: each arm motor's, in degrees/s²; None takes ``default_arm_acceleration``.
+      speed: the nozzle's, mm/s; None takes ``default_xy_speed``.
+      acceleration: the nozzle's, mm/s²; None takes ``default_xy_acceleration``.
 
     Raises:
       MantisConfigurationError: without the unit's ``arm`` or ``stage`` block; nothing is sent.
-      MantisMotionError: if the arm is not brought up, or a motor faults.
+      MantisMotionError: if the arm is not brought up, the head stands in a station, or a motor
+        faults.
       MantisKinematicsError: if (x, y) is out of the arm's reach.
       ValueError: if a target is outside its motor's limits, or a speed or acceleration out of
         range.
     """
     self._check_initialized()
+    self._check_not_in_station()
     arm_x, arm_y = self._get_arm_frame_xy(x=x, y=y)
     targets = self._get_arm_targets(x=arm_x, y=arm_y)
-    await self._move_to_joint_state(
+    await self.move_to_joint_state(
       joint_state={
         motor: compute_position(motor=motor, device_position=target)
         for motor, target in targets.items()
       },
-      arm_speed=speed,
-      arm_acceleration=acceleration,
+      xy_speed=speed,
+      xy_acceleration=acceleration,
     )
 
   async def move_to_z_position(
@@ -1295,60 +1506,166 @@ class Arm:
 
     Raises:
       MantisConfigurationError: without the unit's ``arm`` or ``stage`` block; nothing is sent.
-      MantisMotionError: if the arm is not brought up, or Z faults.
+      MantisMotionError: if the arm is not brought up, the head stands in a station, or Z faults.
       MantisKinematicsError: if the links cannot meet at the angles read.
       ValueError: if the target is outside Z's limits, or a speed or acceleration out of range.
     """
     self._check_initialized()
+    self._check_not_in_station()
     self._check_stage()
     self._get_profile(motor=Z_MOTOR, speed=speed, acceleration=acceleration)
     joint_state = await self.request_joint_state()
     head_x, head_y = self._get_head_position(joint_state=joint_state)
     x, y = self._get_deck_frame_xy(x=head_x, y=head_y)
-    await self._move_to_joint_state(
+    await self.move_to_joint_state(
       joint_state={Z_MOTOR: self._get_z_joint_position(x=x, y=y, z=z)},
       z_speed=speed,
       z_acceleration=acceleration,
     )
 
-  async def _route_to_idle(self, *, minimum_traverse_height: float) -> None:
+  async def move_to_location(
+    self,
+    *,
+    location: Coordinate,
+    minimum_traverse_height: Optional[float] = None,
+    xy_speed: Optional[float] = None,
+    xy_acceleration: Optional[float] = None,
+    z_speed: Optional[float] = None,
+    z_acceleration: Optional[float] = None,
+  ) -> None:
+    """Move the nozzle to a deck-frame location: rise to the traverse height if below it, move
+    across with Z held, then move Z to the location's height.
+
+    Every target is checked before anything moves, and Z is read back at the traverse height by
+    its encoder before the arms move. The arms move in one joint move: nothing here avoids the
+    chip racks.
+
+    Args:
+      location: the nozzle's x, y and height above the deck, mm.
+      minimum_traverse_height: the nozzle's height above the deck to travel at or above, mm, over
+        both ends; None takes ``default_minimum_traverse_height``.
+      xy_speed: the nozzle's, mm/s; None takes ``default_xy_speed``.
+      xy_acceleration: the nozzle's, mm/s²; None takes ``default_xy_acceleration``.
+      z_speed: mm/s; None takes ``default_z_speed``.
+      z_acceleration: mm/s²; None takes ``default_z_acceleration``.
+
+    Raises:
+      MantisConfigurationError: without the unit's ``arm`` or ``stage`` block; nothing is sent.
+      MantisMotionError: if the arm is not brought up, the head stands in a station, a motor
+        faults, or Z does not read at the traverse height after rising to it.
+      MantisKinematicsError: if the location is out of the arm's reach.
+      ValueError: if a target is outside its motor's limits, or a speed or acceleration out of
+        range.
+    """
+    self._check_initialized()
+    self._check_not_in_station()
+    self._check_stage()
+    z_profile = self._get_profile(motor=Z_MOTOR, speed=z_speed, acceleration=z_acceleration)
+    for name, value in (("xy_speed", xy_speed), ("xy_acceleration", xy_acceleration)):
+      if value is not None:
+        self._check_positive(name=name, value=value)
+    arm_x, arm_y = self._get_arm_frame_xy(x=location.x, y=location.y)
+    arm_targets = self._get_arm_targets(x=arm_x, y=arm_y)
+    z_target = self._get_z_joint_position(x=location.x, y=location.y, z=location.z)
+    for motor, target in (
+      *arm_targets.items(),
+      (Z_MOTOR, compute_device_position(motor=Z_MOTOR, position=z_target)),
+    ):
+      self._check_reachable(motor=motor, position=target)
+    start = await self.request_joint_state()
+    head_x, head_y = self._get_head_position(joint_state=start)
+    traverse = self._get_traverse_z_joint_position(
+      minimum_traverse_height=minimum_traverse_height,
+      points=[self._get_deck_frame_xy(x=head_x, y=head_y), (location.x, location.y)],
+    )
+    await self._rise_to_traverse_height(z_joint_position=traverse, profiles={Z_MOTOR: z_profile})
+    arm_joint_state = {
+      motor: compute_position(motor=motor, device_position=target)
+      for motor, target in arm_targets.items()
+    }
+    arm_profiles = self._get_arm_profiles(
+      start=start, target=arm_joint_state, xy_speed=xy_speed, xy_acceleration=xy_acceleration
+    )
+    z_device_target = compute_device_position(motor=Z_MOTOR, position=z_target)
+    await self._play_queued_moves(
+      moves=[self._get_queued_move(targets=arm_targets, profiles=arm_profiles)]
+    )
+    await self._play_queued_moves(
+      moves=[
+        self._get_queued_move(targets={Z_MOTOR: z_device_target}, profiles={Z_MOTOR: z_profile})
+      ]
+    )
+    await self._report_pose()
+
+  async def _route_to_idle(self, *, z_joint_position: float) -> None:
     """Rise to the traverse height if below it, then move along the route to idle from where the
     absolute encoders put the head, at the route profile.
+
+    Args:
+      z_joint_position: the traverse height as Z's position, mm down from its flag.
 
     Raises:
       MantisMotionError: if a motor faults, Z does not read at the traverse height after rising,
         where the head is is not known, or without the unit's zones it is not near idle.
-      ValueError: if the traverse height is outside Z's limits.
     """
-    traverse = self._get_z_device_position(z=minimum_traverse_height)
-    self._check_reachable(motor=Z_MOTOR, position=traverse)
     await self._wait_for_motors_idle(timeout=MOVE_TIMEOUT)
     _, idle_route = self._get_routes(joint_state=await self.request_absolute_joint_state())
     steps = self._get_route_targets(route=idle_route)
     await self._rise_to_traverse_height(
-      minimum_traverse_height=minimum_traverse_height, profiles=self._get_route_profiles()
+      z_joint_position=z_joint_position, profiles=self._get_route_profiles()
     )
     await self._move_along_route(steps=steps)
 
+  async def _leave_station(self) -> None:
+    """Take the head out of the station it stands in along its route played backwards, one queued
+    move per line, as the vendor leaves: a line that moves the arms and Z moves the arms first, at
+    the height the head stands, then Z.
+
+    Raises:
+      MantisMotionError: if a motor faults.
+    """
+    route = self._station_route
+    if route is None:
+      return
+    steps: List[Waypoint] = []
+    for x, y, z in reversed(route[:-1]):
+      if x is not None and y is not None:
+        steps.append((x, y, None))
+      if z is not None:
+        steps.append((None, None, z))
+    profiles = self._get_route_profiles()
+    await self._play_queued_moves(
+      moves=[
+        self._get_queued_move(targets=targets, profiles=profiles)
+        for targets in self._get_route_targets(route=steps)
+        if targets
+      ]
+    )
+    self._station_route = None
+
   async def park(self, *, minimum_traverse_height: Optional[float] = None) -> None:
-    """Move the head to idle along its zone's route, from any zone.
+    """Move the head to idle along its zone's route, from any zone; from a station, first out of
+    it the way it came.
 
     The head first rises to the traverse height if it is below it. Without the unit's zones it is
     parked from near idle only.
 
     Args:
-      minimum_traverse_height: in mm above Z's home flag; None takes
+      minimum_traverse_height: the nozzle's height above the deck, mm; None takes
         ``default_minimum_traverse_height``.
 
     Raises:
+      MantisConfigurationError: for a height in the deck frame without the unit's ``stage`` block.
       MantisMotionError: if the arm is not brought up, a motor faults, Z does not read at the
         traverse height after rising, or without the unit's zones the head is not near idle.
       ValueError: if the traverse height is outside Z's limits.
     """
     self._check_initialized()
-    if minimum_traverse_height is None:
-      minimum_traverse_height = self.default_minimum_traverse_height
-    await self._route_to_idle(minimum_traverse_height=minimum_traverse_height)
+    await self._leave_station()
+    traverse = await self._get_park_traverse_z_joint_position(
+      minimum_traverse_height=minimum_traverse_height
+    )
+    await self._route_to_idle(z_joint_position=traverse)
     await self._report_pose()
 
   async def _move_to_station(self, *, name: str, route: Optional[List[Waypoint]]) -> None:
@@ -1356,9 +1673,11 @@ class Arm:
 
     Raises:
       MantisConfigurationError: without the route.
-      MantisMotionError: if the arm is not brought up or not parked, or a motor faults.
+      MantisMotionError: if the arm is not brought up, not parked or in a station, or a motor
+        faults.
     """
     self._check_initialized()
+    self._check_not_in_station()
     if route is None:
       raise MantisConfigurationError(
         f"{self._driver.name}: no route to the {name} for this unit; give its configuration folder "
@@ -1373,6 +1692,7 @@ class Arm:
       raise MantisMotionError(
         f"{self._driver.name}: the route to the {name} starts at idle; park() first"
       )
+    self._station_route = route  # a move that fails part way leaves along it too
     await self._play_queued_moves(moves=moves)
     await self._report_pose()
 
@@ -1383,7 +1703,7 @@ class Arm:
       MantisConfigurationError: without the unit's route; nothing moves.
       MantisMotionError: if the arm is not brought up or the head not at idle, or a motor faults.
     """
-    await self._move_to_station(name="waste station", route=self.waste_station_route)
+    await self._move_to_station(name="waste station", route=self.configuration.waste_station_route)
 
   async def move_to_wash_station(self, *, station: int) -> None:
     """Move the head from idle into a wash station along the unit's route.
@@ -1398,7 +1718,7 @@ class Arm:
     """
     if station not in WASH_STATIONS:
       raise ValueError(f"station must be one of {WASH_STATIONS}, got {station}")
-    routes = self.wash_station_routes or {}
+    routes = self.configuration.wash_station_routes or {}
     await self._move_to_station(name=f"wash station {station}", route=routes.get(station))
 
   async def _park(self) -> None:
@@ -1420,12 +1740,13 @@ class Arm:
     z_up = self._get_waypoint_targets(waypoint=(None, None, 0.0))
     z_down = self._get_waypoint_targets(waypoint=(None, None, SHUTDOWN_Z))
     await self._wait_for_motors_idle(timeout=MOVE_TIMEOUT)
+    await self._leave_station()
     try:
       self._check_near_idle(joint_state=await self.request_absolute_joint_state())
     except MantisMotionError:
-      if self.zone_rectangles is None:
+      if self.configuration.zone_rectangles is None:
         raise
-      await self._route_to_idle(minimum_traverse_height=self.default_minimum_traverse_height)
+      await self._route_to_idle(z_joint_position=await self._get_park_traverse_z_joint_position())
     profiles = self._get_route_profiles()
     await self._move_motors(targets=z_up, profiles=profiles)
     z = await self._request_measured_position(motor=Z_MOTOR)

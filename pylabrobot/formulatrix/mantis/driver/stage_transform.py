@@ -1,8 +1,8 @@
 """The stage transform: where a point on the wellplate is in the arm frame. Pure maths.
 
 The wellplate frame's origin is the wellplate's back-left corner, the plate holder's datum, with
-x to the right, y to the front and z down from ``REFERENCE_HEIGHT`` above the wellplate's base, in
-mm. A point is turned and moved by the arm type, moved by the stage origin, its x and y mapped by
+x to the right, y to the front and z down from the unit's reference height above the wellplate's
+base, in mm. A point is turned and moved by the arm type, moved by the stage origin, its x and y mapped by
 the projective transformation matrix and its z tilted; never through a fitted homography.
 """
 
@@ -10,10 +10,6 @@ import math
 from typing import Sequence, Tuple
 
 from .errors import MantisKinematicsError
-
-# The reference height, mm, the same on every unit seen: the wellplate frame's z origin above the
-# wellplate's base.
-REFERENCE_HEIGHT = 9.665
 
 
 def compute_arm_frame_position(

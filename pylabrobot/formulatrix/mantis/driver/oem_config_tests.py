@@ -78,6 +78,7 @@ SYNTHETIC_STAGE_BLOCK: Dict[str, Any] = {
   "offset_y": [0.0, 0.0, 0.0025],
   "arm_type_rotation_degree": 0.0,
   "arm_type_translation": [0.0, 0.0, 0.0],
+  "reference_height": 9.665,
 }
 # The synthetic stage in the layout of a v4 install's Device.config and SBS Adapter.ad.txt.
 SYNTHETIC_STAGE_DEVICE_CONFIG_LINES = (
@@ -422,13 +423,27 @@ class RouteBlockTests(unittest.TestCase):
       self.load(zones={**SYNTHETIC_ZONES_BLOCK, "rectangles": rectangles})
 
 
-def write_stage_install(*, directory: str, device_lines: str, adapter: Optional[str]) -> str:
-  """Lay out an install's Device.config and SBS Adapter.ad.txt; return its Device/Configs."""
-  configs_directory = write_install(
-    directory=directory,
-    configs={"Device.config": V4_DEVICE_CONFIG.replace(TAIL, device_lines + TAIL)},
-    corrections={},
-  )
+# A unit's StageTuning.config, in the layout of a v4 install.
+SYNTHETIC_STAGE_TUNING = (
+  '<?xml version="1.0" encoding="utf-8"?>\r\n<configuration>\r\n  <appSettings>\r\n'
+  '    <add key="ReferenceHeight" value="9.665"/>\r\n    <add key="PitchHeight" value="2.5"/>\r\n'
+  "  </appSettings>\r\n</configuration>\r\n"
+)
+
+
+def write_stage_install(
+  *,
+  directory: str,
+  device_lines: str,
+  adapter: Optional[str],
+  stage_tuning: Optional[str] = SYNTHETIC_STAGE_TUNING,
+) -> str:
+  """Lay out an install's Device.config, StageTuning.config and SBS Adapter.ad.txt; return its
+  Device/Configs."""
+  configs = {"Device.config": V4_DEVICE_CONFIG.replace(TAIL, device_lines + TAIL)}
+  if stage_tuning is not None:
+    configs["StageTuning.config"] = stage_tuning
+  configs_directory = write_install(directory=directory, configs=configs, corrections={})
   if adapter is not None:
     adapter_path = os.path.join(os.path.dirname(configs_directory), SBS_ADAPTER_FILE)
     os.makedirs(os.path.dirname(adapter_path))
@@ -439,12 +454,16 @@ def write_stage_install(*, directory: str, device_lines: str, adapter: Optional[
 
 class StageBlockTests(unittest.TestCase):
   def load(
-    self, *, device_lines=SYNTHETIC_STAGE_DEVICE_CONFIG_LINES, adapter=SYNTHETIC_SBS_ADAPTER
+    self,
+    *,
+    device_lines=SYNTHETIC_STAGE_DEVICE_CONFIG_LINES,
+    adapter=SYNTHETIC_SBS_ADAPTER,
+    stage_tuning=SYNTHETIC_STAGE_TUNING,
   ):
     with tempfile.TemporaryDirectory() as directory:
       return _load_unit_configuration(
         oem_config_directory=write_stage_install(
-          directory=directory, device_lines=device_lines, adapter=adapter
+          directory=directory, device_lines=device_lines, adapter=adapter, stage_tuning=stage_tuning
         )
       )
 
@@ -458,6 +477,11 @@ class StageBlockTests(unittest.TestCase):
   def test_a_missing_or_malformed_part_refuses(self):
     cases: List[Tuple[Dict[str, Any], str]] = [
       ({"adapter": None}, "the plate holder's origin is missing"),
+      ({"stage_tuning": None}, "StageTuning.config is missing: the stage's reference height"),
+      (
+        {"stage_tuning": SYNTHETIC_STAGE_TUNING.replace("ReferenceHeight", "Other")},
+        "has no ReferenceHeight",
+      ),
       ({"adapter": SYNTHETIC_SBS_ADAPTER + "X 1 Y 2 Z 3\r\n"}, "one origin expected, found 2"),
       ({"adapter": "[ Version: 2 ]\r\nX 1 Y 2 Z 3\r\n"}, "version 2; only version 1 is known"),
       ({"adapter": "Origin 1 2 3\r\n"}, "is not 'X <x> Y <y> Z <z>'"),

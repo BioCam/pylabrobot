@@ -63,8 +63,8 @@ no LED count. A difference between v3 and v4 is expressed there, by which featur
 by a branch on the generation inside a command.
 
 **M4. A configuration holds facts only, and is data.** (STAR P3, P13.) `DeviceConfiguration` holds
-what the device answered: generation, firmware versions, motor limits, and the pressure board's
-sensor calibration (`feedback_sensor_parameters`), read at setup and never written.
+what the device answered: generation, firmware versions and the pressure board's sensor
+calibration (`feedback_sensor_parameters`), read at setup and never written.
 `save_configuration` writes it; `declared_configuration_json` reads one back and setup refuses if
 the device disagrees on a fitted field (`FITTED_FIELDS`). The calibration is neither saved nor
 declared: the bottle and chip sensors' offsets are re-zeroed on the device between sessions, so
@@ -72,8 +72,10 @@ they are read at every setup. A declared file that holds one, saved by an earlie
 it is ignored. A simulated pump answers the generation's recording's.
 Each feature gets its own configuration when it is added, holding its own facts; the device
 configuration does not grow per feature, the calibration excepted, as discovery reads it with the
-firmware versions. Motor limits are compared as a build fact: every v4 is taken to share them until
-a second device shows otherwise.
+firmware versions. The arm's is `MantisArmConfiguration` on `arm.configuration`, as the PF400's
+`PreciseFlexArmConfiguration`: the motor limits, read for it at setup, and the unit's `arm`, `zones`,
+`stations` and `stage` blocks. The motor limits are read at every setup and checked against every
+target, so they are not compared with a declared file; only the generation is fitted.
 
 **M4a. A unit's own values come from its folder or its declared file, else its generation's
 recording.** What is set per unit and cannot be read off the device sits in the unit's vendor
@@ -167,15 +169,17 @@ the device sent, decoded but not converted, until the feature that owns it knows
 A feature then converts in one place, on its configuration, and speaks PyLabRobot's units. No unit
 suffix on names in default units. The arm converts in `arm_kinematics`: 200 device units per motor
 revolution, degrees on the arms and mm on Z (down from its flag), each rate rounded up half a step
-as on the wire. A joint state keeps the motor's sign (Z down from its flag); a traverse height is mm
-above Z's home flag, up positive, converted inside. The routes keep the frame their files write:
-the arm frame, Z down from its flag. The public moves take the nozzle in the deck frame. Over the
-plate holder a point goes through the stage transform (`stage_transform`) in full: y flipped to run
-from the holder's back edge, the height taken below `REFERENCE_HEIGHT`, the arm type, the holder's
-origin, the projective matrix on x and y and the tilt on z. Elsewhere x and y go through the arm
-frame fitted to the stage over the holder (`_get_deck_to_arm_transform`): one turn and shift, as the
-resource model places the arm by the manufacturer's model and each unit's differs by millimetres.
-A height is always the stage's, its tilt extended past the holder.
+as on the wire. A joint state keeps the motor's sign (Z down from its flag). The routes keep the
+frame their files write: the arm frame, Z down from its flag. Every public position and height is
+the nozzle's in the deck frame, every public speed the nozzle's in mm/s and mm/s²; degrees/s stay
+inside, on the wire. Over the plate holder a point goes through the stage transform
+(`stage_transform`) in full: y flipped to run from the holder's back edge, the height taken below
+the unit's `ReferenceHeight` (`StageTuning.config`), the arm type, the holder's origin, the
+projective matrix on x and y and the tilt on z; a point read back is the matrix inverted, so it
+reads where it was sent. Elsewhere x and y go through the arm frame fitted once to the stage over
+the holder, its edges included (`_get_deck_to_arm_transform`): one turn and shift, as the resource
+model places the arm by the manufacturer's model and each unit's differs by millimetres. A height is
+always the stage's, its tilt extended past the holder.
 
 **M7. A range is checked before anything is sent.** (STAR P5.) A read accepts only the indices
 seen on a device (`MOTORS`, `ABSOLUTE_ENCODER_MOTORS`, the boards, `PRESSURE_CONTROLLERS`);
@@ -195,23 +199,35 @@ recovers the same way, as in a recorded recovery after a motor error. A route mo
 line names on its own (command 22), as in the recorded recoveries; every target is checked first. A
 command 22 answers a motor error code, and one not 0 raises `MantisMotionError` before the next
 move is sent. A move reads each motor's status until none moves; a fault bit raises
-`MantisMotionError`. Routes move at the `ROUTE_*` profile, the only one they were recorded at; the
-`default_*` speeds are for the other moves. Idle is
+`MantisMotionError`. Routes move at the `ROUTE_*` profile, the only one queued moves were recorded
+at; the other moves take the arms at it too unless an xy speed is given. A move that fails stops
+each motor at that move's own acceleration, as the vendor's jog does. Idle is
 `POST_HOMING_POSITION` (the same on every unit seen) less the unit's offsets; a route line's
 (x, y) goes through the same inverse kinematics, so a line at (15, 31.180) is sent as such.
 
-The moves are built bottom up. `_move_to_joint_state` moves the motors a joint state names in one
+The moves are built bottom up. `move_to_joint_state` moves the motors a joint state names in one
 queued move (command 68), the others held, the sequencer cleared and started before it and the item
-waited for. `move_to_xy_position` takes the nozzle to a deck-frame (x, y) through the inverse
-kinematics, Z held; `move_to_z_position` takes it to a height above the deck where it stands, the
-arms held. Both build on `_move_to_joint_state` and check every target against the motor limits
-read, and Z's speed and acceleration against `Z_SPEED_RANGE` and `Z_ACCELERATION_RANGE`, before
-anything is sent. Neither rises nor models the chip racks: a dispense moves between wells below the
-traverse height, so staying clear is the caller's. `park` rises to `minimum_traverse_height` only if
-Z's encoder reads it below (command 22), reads Z back by its encoder (command 84, within
-`Z_TRAVERSE_TOLERANCE`) or raises, then follows the zone's route to idle. A station's route is
-queued line for line, as in the recorded move to the waste station, and starts only from idle
-(`request_is_parked`, Z read by its encoder).
+waited for; it reads the pose first only where it must (one arm motor named, or a speed in mm/s).
+`move_to_xy_position` takes the nozzle to a deck-frame (x, y) through the inverse kinematics, Z
+held; `move_to_z_position` takes it to a height above the deck where it stands, the arms held. Both
+build on `move_to_joint_state`. Neither rises nor models the chip racks: a dispense moves between
+wells below the traverse height, so staying clear is the caller's. `move_to_location` is the
+guarded one: it rises to the traverse height over both ends if Z's encoder reads it below (command
+22), reads Z back by its encoder (command 84, within `Z_TRAVERSE_TOLERANCE`) or raises, moves across
+with Z held, then moves Z. Every move checks every target against the motor limits read, and Z's
+speed and acceleration against `Z_SPEED_RANGE` and `Z_ACCELERATION_RANGE`, before anything is sent.
+
+An xy speed in mm/s turns into each arm motor's by its turn over the nozzle's straight-line
+distance, acceleration likewise: the motors start and end together, the move takes as long as a
+straight one would, and the nozzle's path is not straight. Without one, given or
+`default_xy_speed`/`default_xy_acceleration`, the arms take the vendor's motor profile, so the
+bytes match the recordings. `park` rises and reads Z back the same way, at
+`default_minimum_traverse_height` (a nozzle height; None is the vendor's `SAFE_HEIGHT` above Z's
+flag), then follows the zone's route to idle. A station's route is queued line for line, as in the
+recorded move to the waste station, and starts only from idle (`request_is_parked`, Z read by its
+encoder). The head leaves a station only by `park`, along the route backwards, a line that moves the
+arms and Z moving the arms first at the depth it stands, as the vendor leaves the waste station;
+every other move refuses while it stands there.
 
 **M9. Names say what kind of thing they are.** (STAR P10.)
 
@@ -406,11 +422,13 @@ where a colour took a release from 0.21 s to 0.34 s on the recorded v4.
     recorded: the recorded routes move X and Y at the height the head is at, and the recorded
     station routes start with the arms' move to the ready position. Both are this driver's
     guards, as STAR's park lifts before it travels.
-36. **Z's speed and acceleration ranges are those of the recorded moves, not the device's.** 1 and
-    5 mm/s have been seen accepted; only a move above the range has been seen dropped.
-37. **`recover_from_fault` stops each motor at its default deceleration.** In a recorded recovery
-    each was stopped at the acceleration of its last move; the order of stops, clears and
-    declarations is the recorded one.
+36. **Z's speed and acceleration ranges are those of the recorded moves, not the device's.** The
+    jog's 1 to 20 mm/s at 500 mm/s² and the routes' 55 mm/s at 200 mm/s² were accepted; the
+    firmware refuses a speed or acceleration it will not take in the move's reply (5 or 6). Queued
+    moves have been recorded at 55 mm/s and 200 mm/s² only.
+37. **`recover_from_fault` stops each motor at the vendor's acceleration.** In a recorded recovery
+    each was stopped at the acceleration of its last move, which is the vendor's there; the order of
+    stops, clears and declarations is the recorded one.
 38. **The waste station's route is the generation's own file.** Every unit seen has both
     `MoveToWasteStation` and `MoveToWasteStation_Adapter`, two different routes: a unit with zones
     (a v4) reads the first, which a v4 played on the wire; one without them (a v3) reads the
@@ -434,11 +452,21 @@ where a colour took a release from 0.21 s to 0.34 s on the recorded v4.
     wellplate there, with A1 at the back left: y runs from the holder's back edge.
 45. **The stage maps the nozzle of a fitted chip.** It is the unit's calibration, made with a chip;
     whether every chip's nozzle stands alike, and where the head stands without one, is not
-    measured. A height starts `REFERENCE_HEIGHT` above the plate holder, at the stage origin's z.
+    measured. A height starts the unit's `ReferenceHeight` above the plate holder, at the stage
+    origin's z; the gap it gives has not been gauged with a chip seated, so absolute heights are
+    unverified. The tilt is validated over the holder only.
 46. **Off the plate holder, x and y are the fit's.** On the unit it was checked on, the fit leaves
     under 0.2 mm over the holder and predicts its chip pick-ups to about 0.3 mm; another unit's
     stage left 0.5 mm. At the holder's edge the two can differ by that much.
 47. **The stage's x and y offsets keep their x and y, unused.** Only their z tilts the stage;
     the recorded x and y were reproduced without them.
 48. **The deck-frame moves are joint moves:** nothing models the chip racks, so they run only
-    with the path clear.
+    with the path clear. With an xy speed the nozzle's path bows away from the straight line, by
+    tens of mm on long moves near the edge of reach.
+49. **No arm speed or acceleration limit is known.** The firmware refuses an illegal one in the
+    move's reply; it took a far faster arm command than the vendor's, which then failed on its
+    following error. Speeds in mm/s are scaled from the vendor's profile only when given, untested
+    on a device.
+50. **The way out of a station is the route backwards,** as the cb protocol library driver plays it,
+    with the recorded split at depth for the waste station; a wash station's way out is not
+    recorded.

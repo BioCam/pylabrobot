@@ -19,6 +19,7 @@ from pylabrobot.formulatrix.mantis.driver import master as master_module
 from pylabrobot.formulatrix.mantis.driver.arm_kinematics import (
   compute_absolute_device_position,
   compute_device_position,
+  compute_device_rate,
   compute_joint_angles,
   compute_position,
 )
@@ -29,8 +30,11 @@ from pylabrobot.formulatrix.mantis.driver.errors import (
   MantisTimeoutError,
 )
 from pylabrobot.formulatrix.mantis.driver.features import arm as arm_module
-from pylabrobot.formulatrix.mantis.driver.features.arm import POST_HOMING_POSITION, Arm
-from pylabrobot.formulatrix.mantis.driver.stage_transform import REFERENCE_HEIGHT
+from pylabrobot.formulatrix.mantis.driver.features.arm import (
+  POST_HOMING_POSITION,
+  Arm,
+  MantisArmConfiguration,
+)
 from pylabrobot.formulatrix.mantis.driver.features.led_bar_tests import (
   BLUE,
   GREEN,
@@ -50,10 +54,6 @@ from pylabrobot.formulatrix.mantis.driver.master_tests import (
   FakeLink,
   make_answers,
 )
-from pylabrobot.formulatrix.mantis.resource_model import (
-  PLATE_HOLDER_LOCATION,
-  PLATE_HOLDER_SIZE_Y,
-)
 from pylabrobot.formulatrix.mantis.driver.oem_config_tests import (
   SYNTHETIC_IDLE_ROUTES,
   SYNTHETIC_SAFE_XY,
@@ -62,6 +62,11 @@ from pylabrobot.formulatrix.mantis.driver.oem_config_tests import (
   SYNTHETIC_WASTE_ROUTE,
   SYNTHETIC_ZONES_BLOCK,
 )
+from pylabrobot.formulatrix.mantis.resource_model import (
+  PLATE_HOLDER_LOCATION,
+  PLATE_HOLDER_SIZE_Y,
+)
+from pylabrobot.resources import Coordinate
 
 with open(RECORDING_MANTIS_V4, encoding="utf-8") as f:
   RECORDING = json.load(f)
@@ -237,6 +242,10 @@ def get_expected_startup() -> List[str]:
       sent = f"0:{command}:{struct.pack('<hd', motor, declared[motor]).hex()}"
     expected.append(sent)
   return expected
+
+
+# The synthetic stage's reference height, mm.
+REFERENCE_HEIGHT = SYNTHETIC_STAGE_BLOCK["reference_height"]
 
 
 class ArmLink(FakeLink):
@@ -472,9 +481,11 @@ class IdleTargetTests(unittest.TestCase):
       with self.subTest(offsets=offsets):
         arm = Arm(
           driver=mock.Mock(),
-          offsets=offsets,
-          homing_position_a=SYNTHETIC_HOMING_POSITION_A,
-          encoder_correction={0: [], 1: []},
+          configuration=MantisArmConfiguration(
+            offsets=offsets,
+            homing_position_a=SYNTHETIC_HOMING_POSITION_A,
+            encoder_correction={0: [], 1: []},
+          ),
         )
         for motor, target in arm._get_idle_targets().items():
           expected = IDLE_ANGLES[motor] - offsets[motor]
@@ -483,27 +494,33 @@ class IdleTargetTests(unittest.TestCase):
   def test_the_implied_offsets_give_the_recorded_idle_targets(self):
     arm = Arm(
       driver=mock.Mock(),
-      offsets=SYNTHETIC_OFFSETS,
-      homing_position_a=SYNTHETIC_HOMING_POSITION_A,
-      encoder_correction={0: [], 1: []},
+      configuration=MantisArmConfiguration(
+        offsets=SYNTHETIC_OFFSETS,
+        homing_position_a=SYNTHETIC_HOMING_POSITION_A,
+        encoder_correction={0: [], 1: []},
+      ),
     )
     targets = arm._get_idle_targets()
     self.assertAlmostEqual(targets[0], RECORDED_IDLE_TARGETS[0], places=12)
     self.assertEqual(targets[1], RECORDED_IDLE_TARGETS[1])
 
   def test_without_the_arm_block_there_are_no_idle_targets(self):
-    arm = Arm(driver=mock.Mock(), offsets=None, homing_position_a=None, encoder_correction=None)
+    arm = Arm(driver=mock.Mock(), configuration=MantisArmConfiguration())
     with self.assertRaises(MantisConfigurationError):
       arm._get_idle_targets()
 
 
 class DefaultTests(unittest.TestCase):
   def test_defaults_are_checked_when_assigned(self):
-    arm = Arm(driver=mock.Mock(), offsets=None, homing_position_a=None, encoder_correction=None)
-    for name in ("default_arm_speed", "default_arm_acceleration", "default_z_speed"):
+    arm = Arm(driver=mock.Mock(), configuration=MantisArmConfiguration())
+    for name in ("default_xy_speed", "default_xy_acceleration", "default_z_speed"):
       with self.subTest(name=name):
         with self.assertRaises(ValueError):
           setattr(arm, name, 0.0)
+    # The xy defaults are mm/s and mm/s², None the vendor's motor profile.
+    arm.default_xy_speed = 100.0
+    arm.default_xy_speed = None
+    self.assertIsNone(arm.default_xy_speed)
     # Z's speed and acceleration stay within the recorded moves'.
     for name, value in (("default_z_speed", 56.0), ("default_z_acceleration", 100.0)):
       with self.subTest(name=name):
@@ -705,13 +722,13 @@ class DiscoveryTests(ArmTestCase):
     with mock.patch.object(master_module, "RECORDING_MANTIS_V4", path):
       driver = await self.set_up_driver(link=FakeLink(answers=make_answers()))
     assert driver.arm is not None
-    self.assertIsNone(driver.arm.encoder_correction)
+    self.assertIsNone(driver.arm.configuration.encoder_correction)
     self.assertEqual(driver._unit_blocks["rfid"], RECORDING["rfid"])
 
   async def test_a_declared_arm_block_is_read_and_saved(self):
     link = FakeLink(answers=make_answers())
     driver = await self.set_up_arm(link=link)
-    self.assertEqual(driver.arm.homing_position_a, SYNTHETIC_HOMING_POSITION_A)
+    self.assertEqual(driver.arm.configuration.homing_position_a, SYNTHETIC_HOMING_POSITION_A)
     with tempfile.TemporaryDirectory() as directory:
       path = os.path.join(directory, "saved.json")
       driver.save_configuration(path=path)
@@ -735,6 +752,8 @@ class DiscoveryTests(ArmTestCase):
 # acceleration, then Z's, in device units.
 RECORDED_MOVE_REPLY = "0000"
 ARM_PROFILE = bytes.fromhex("b4a291808fb3b540814e1be8b40a8a40")
+# The same, as numbers: each arm motor's speed and acceleration in device units.
+ARM_PROFILE_SPEED, ARM_PROFILE_ACCELERATION = struct.unpack("<dd", ARM_PROFILE)
 Z_PROFILE = bytes.fromhex("4cd431fab7eaa040bb34be4f05c2be40")
 # A Mantis v4's own move to its waste station, queued: its first three items, a line naming no axis,
 # the ready position with Z held, and Z alone to the safe height.
@@ -957,10 +976,8 @@ class MoveTests(ArmTestCase):
     driver = await self.set_up_moves(link=link)
     driver._next_item = 15
     await driver.arm.move_to_xy_position(x=DECK_POINT[0], y=DECK_POINT[1])
-    self.assertEqual(
-      tokens(self.sent(link)),
-      ["0:27:0000", "0:27:0100", "0:27:0200", "0:61:", "0:62:", f"0:68:{queued.hex()}"],
-    )
+    # Both arm motors named, at the vendor's profile: nothing is read first.
+    self.assertEqual(tokens(self.sent(link)), ["0:61:", "0:62:", f"0:68:{queued.hex()}"])
 
   async def test_move_to_z_position_moves_z_alone_to_the_height_above_the_deck(self):
     target = compute_device_position(motor=2, position=REFERENCE_HEIGHT_Z)
@@ -980,18 +997,18 @@ class MoveTests(ArmTestCase):
     link = RouteLink(answers=make_answers())
     driver = await self.set_up_moves(link=link)
     arm = driver.arm
-    with self.assertRaisesRegex(ValueError, "Z speed must be from 20.0 to 55.0"):
+    with self.assertRaisesRegex(ValueError, "Z speed must be from 1.0 to 55.0"):
       await arm.move_to_z_position(z=REFERENCE_HEIGHT, speed=60.0)
     with self.assertRaisesRegex(ValueError, "Z acceleration must be from 200.0 to 500.0"):
       await arm.move_to_z_position(z=REFERENCE_HEIGHT, acceleration=1000.0)
-    with self.assertRaisesRegex(ValueError, "arm acceleration must be above 0"):
+    with self.assertRaisesRegex(ValueError, "acceleration must be finite and above 0"):
       await arm.move_to_xy_position(x=DECK_POINT[0], y=DECK_POINT[1], acceleration=0.0)
     with self.assertRaises(MantisKinematicsError):
       await arm.move_to_xy_position(x=500.0, y=500.0)
     with self.assertRaisesRegex(ValueError, "the motors are"):
-      await arm._move_to_joint_state(joint_state={3: 0.0})
+      await arm.move_to_joint_state(joint_state={3: 0.0})
     with self.assertRaisesRegex(ValueError, "outside its limits"):
-      await arm._move_to_joint_state(joint_state={0: 8000.0})
+      await arm.move_to_joint_state(joint_state={0: 8000.0})
     self.assertEqual(self.sent(link), [])
 
   async def test_a_height_outside_zs_limits_moves_nothing(self):
@@ -1032,7 +1049,7 @@ class MoveTests(ArmTestCase):
     )
     driver = await self.set_up_moves(link=link)
     driver._next_item = 15
-    await driver.arm._move_to_joint_state(joint_state={2: 0.0})
+    await driver.arm.move_to_joint_state(joint_state={2: 0.0})
     self.assertEqual(tokens(self.sent(link)), ["0:61:", "0:62:", f"0:68:{queued.hex()}"])
 
   async def test_a_queued_move_not_played_in_time_aborts_the_sequencer(self):
@@ -1040,25 +1057,54 @@ class MoveTests(ArmTestCase):
     driver = await self.set_up_moves(link=link)
     with mock.patch.object(arm_module, "MOVE_TIMEOUT", 0.05):
       with self.assertRaises(MantisTimeoutError):
-        await driver.arm._move_to_joint_state(joint_state={2: 0.0})
+        await driver.arm.move_to_joint_state(joint_state={2: 0.0})
     commands = [command for _, command, _ in self.sent(link)]
     self.assertEqual(commands[:4], [61, 62, 68, 64])
     self.assertEqual(commands[4:], [84, 84, 84])  # where the motors stopped, logged
+
+  async def test_move_to_location_rises_moves_across_then_lowers(self):
+    arms = get_queued_move(item=15, targets=DECK_POINT_ARM_TARGETS)
+    z = get_queued_move(
+      item=16, targets={2: compute_device_position(motor=2, position=REFERENCE_HEIGHT_Z)}
+    )
+    link = RouteLink(
+      answers=make_answers(),
+      encoders={2: Z_RISING_ENCODER_REPLIES},
+      events={
+        (0, 68, arms): [bytes.fromhex(CLOSE_ITEM_PLAYED[15])],
+        (0, 68, z): [bytes.fromhex(CLOSE_ITEM_PLAYED[16])],
+      },
+    )
+    driver = await self.set_up_moves(link=link)
+    driver._next_item = 15
+    # The traverse height at Z's flag, where its encoder is recorded.
+    driver.arm._get_traverse_z_joint_position = (  # type: ignore[method-assign]
+      lambda **_: 0.0
+    )
+    await driver.arm.move_to_location(location=Coordinate(*DECK_POINT, REFERENCE_HEIGHT))
+    self.assertEqual(
+      tokens(self.sent(link)),
+      ["0:27:0000", "0:27:0100", "0:27:0200", "0:84:0200", f"0:22:{Z_UP_MOVE.hex()}"]
+      + ["0:84:0200", "0:61:", "0:62:", f"0:68:{arms.hex()}", "0:61:", "0:62:", f"0:68:{z.hex()}"],
+    )
 
 
 def make_staged_arm(*, stage: Dict, **kwargs) -> Arm:
   """An arm with a mocked driver and a stage block, as a driver builds it."""
   return Arm(
     driver=mock.Mock(),
-    offsets=kwargs.get("offsets"),
-    homing_position_a=kwargs.get("homing_position_a"),
-    encoder_correction=kwargs.get("encoder_correction"),
-    stage_origin=tuple(stage["origin"]),
-    stage_transformation_matrix=stage["transformation_matrix"],
-    stage_offset_x=tuple(stage["offset_x"]),
-    stage_offset_y=tuple(stage["offset_y"]),
-    arm_type_rotation_degree=stage["arm_type_rotation_degree"],
-    arm_type_translation=tuple(stage["arm_type_translation"]),
+    configuration=MantisArmConfiguration(
+      offsets=kwargs.get("offsets"),
+      homing_position_a=kwargs.get("homing_position_a"),
+      encoder_correction=kwargs.get("encoder_correction"),
+      stage_origin=tuple(stage["origin"]),
+      stage_transformation_matrix=stage["transformation_matrix"],
+      stage_offset_x=tuple(stage["offset_x"]),
+      stage_offset_y=tuple(stage["offset_y"]),
+      arm_type_rotation_degree=stage["arm_type_rotation_degree"],
+      arm_type_translation=tuple(stage["arm_type_translation"]),
+      stage_reference_height=stage["reference_height"],
+    ),
   )
 
 
@@ -1090,6 +1136,49 @@ class DeckFrameTests(unittest.IsolatedAsyncioTestCase):
         deck_x, deck_y = arm._get_deck_frame_xy(x=arm_x, y=arm_y)
         self.assertAlmostEqual(deck_x, x, places=9)
         self.assertAlmostEqual(deck_y, y, places=9)
+
+  def test_over_the_plate_holder_a_point_reads_back_where_it_was_sent(self):
+    # The projective stage is inverted exactly there, not through the fit.
+    arm = make_staged_arm(stage=SYNTHETIC_STAGE_BLOCK)
+    for holder_x, holder_y in ((0.0, 0.0), (14.3, 11.28), (127.0, 85.0), (64.0, 40.0)):
+      x = PLATE_HOLDER_LOCATION.x + holder_x
+      y = PLATE_HOLDER_LOCATION.y + PLATE_HOLDER_SIZE_Y - holder_y
+      with self.subTest(x=x, y=y):
+        arm_x, arm_y = arm._get_arm_frame_xy(x=x, y=y)
+        deck_x, deck_y = arm._get_deck_frame_xy(x=arm_x, y=arm_y)
+        self.assertAlmostEqual(deck_x, x, places=9)
+        self.assertAlmostEqual(deck_y, y, places=9)
+
+  def test_an_xy_speed_scales_each_motor_by_its_turn(self):
+    # 100 mm/s and 500 mm/s² over the straight line: each motor at its turn over the distance, so
+    # both end together; the motor that does not turn keeps the vendor's profile.
+    arm = Arm(
+      driver=mock.Mock(),
+      configuration=MantisArmConfiguration(
+        offsets={0: 0.0, 1: 0.0},
+        homing_position_a=SYNTHETIC_HOMING_POSITION_A,
+        encoder_correction={0: [], 1: []},
+      ),
+    )
+    start_angles = compute_joint_angles(x=15.0, y=31.177)
+    target_angles = compute_joint_angles(x=-20.0, y=70.0)
+    start = {0: start_angles[0], 1: start_angles[1], 2: 0.0}
+    target = {0: target_angles[0], 1: target_angles[1]}
+    distance = math.hypot(-20.0 - 15.0, 70.0 - 31.177)
+    profiles = arm._get_arm_profiles(
+      start=start, target=target, xy_speed=100.0, xy_acceleration=500.0
+    )
+    for motor in (0, 1):
+      turn = abs(target[motor] - start[motor])
+      with self.subTest(motor=motor):
+        expected = (
+          compute_device_rate(motor=motor, rate=100.0 * turn / distance),
+          compute_device_rate(motor=motor, rate=500.0 * turn / distance),
+        )
+        for value, expected_value in zip(profiles[motor], expected):
+          self.assertAlmostEqual(value, expected_value, places=9)
+    vendor = arm._get_arm_profiles(start=None, target=target, xy_speed=None, xy_acceleration=None)
+    self.assertEqual(vendor[0], (ARM_PROFILE_SPEED, ARM_PROFILE_ACCELERATION))
 
   def test_over_the_plate_holder_the_stage_transform_places_the_nozzle(self):
     # The holder's back-left corner is the wellplate frame's origin.
@@ -1170,7 +1259,7 @@ class PoseTests(ArmTestCase):
   async def test_a_move_passes_on_the_pose_its_encoders_read_after_it(self):
     link = self.make_z_up_link()
     driver = await self.set_up_pose(link=link)
-    await driver.arm._move_to_joint_state(joint_state={2: 0.0})
+    await driver.arm.move_to_joint_state(joint_state={2: 0.0})
     sent = [command for command in self.sent(link) if command[1] != 20]
     self.assertEqual(sent[3:], [(0, 84, struct.pack("<h", motor)) for motor in (0, 1, 2)])
     pose = driver.arm._pose_observer.call_args.kwargs
@@ -1199,7 +1288,7 @@ class PoseTests(ArmTestCase):
     with self.assertLogs(
       "pylabrobot.formulatrix.mantis.driver.features.arm", level="WARNING"
     ) as logs:
-      await driver.arm._move_to_joint_state(joint_state={2: 0.0})
+      await driver.arm.move_to_joint_state(joint_state={2: 0.0})
     self.assertTrue(any("pose was not passed on" in line for line in logs.output))
 
 
@@ -1211,7 +1300,11 @@ class ParkTests(ArmTestCase):
     driver = await self.set_up_arm(link=link, arm_block=get_away_arm_block(), **blocks)
     driver.arm._initialized = True
     if traverse_at_flag:
-      driver.arm.default_minimum_traverse_height = 0.0
+      # The traverse height at Z's flag, where its encoder is recorded; the deck frame's conversion
+      # is tested on its own.
+      driver.arm._get_traverse_z_joint_position = (  # type: ignore[method-assign]
+        lambda **_: 0.0
+      )
     return driver
 
   async def test_park_follows_the_zones_route_to_idle(self):
@@ -1247,7 +1340,7 @@ class ParkTests(ArmTestCase):
   async def test_routes_keep_the_recorded_profile_whatever_the_defaults(self):
     link = RouteLink(answers=make_answers(), encoders={2: Z_UP_ENCODER_REPLY})
     driver = await self.set_up_park(link=link)
-    driver.arm.default_arm_speed = 5000.0
+    driver.arm.default_xy_speed = 100.0
     driver.arm.default_z_speed = 30.0
     await driver.arm.park()
     moves = [payload for _, command, payload in self.sent(link) if command == 22]
@@ -1349,6 +1442,55 @@ class StationTests(ArmTestCase):
       await driver.arm.move_to_wash_station(station=3)
     self.assertEqual(self.sent(link), [])
 
+  async def test_park_from_the_waste_station_leaves_the_way_it_came(self):
+    # The route backwards from its last line; a line moving the arms and Z moves the arms first,
+    # at the depth the head stands, then Z, as the vendor leaves the waste station.
+    way_out = [
+      (-60.0, 10.0, None),
+      (None, None, 30.0),
+      (None, None, 30.0),
+      (-50.0, 20.0, None),
+      (None, None, -1.57),
+      (None, None, -1.57),
+      (15.0, 30.0, None),
+      (None, None, -1.57),
+      (None, None, -1.57),
+      (15.0, 30.0, None),
+    ]
+    first_item = 16 - len(way_out) + 1
+    expected = []
+    for item, (x, y, z) in enumerate(way_out, start=first_item):
+      targets = get_arm_positions(x=x, y=y) if x is not None and y is not None else {}
+      if z is not None:
+        targets[2] = compute_device_position(motor=2, position=z)
+      expected.append(get_queued_move(item=item, targets=targets))
+    link = RouteLink(
+      answers=make_answers(), events={(0, 68, expected[-1]): [bytes.fromhex(CLOSE_ITEM_PLAYED[16])]}
+    )
+    driver = await self.set_up_stations(link=link)
+    driver.arm._station_route = [tuple(line) for line in SYNTHETIC_WASTE_ROUTE]
+    driver._next_item = first_item
+    await driver.arm._leave_station()
+    self.assertEqual(
+      [payload for _, command, payload in self.sent(link) if command == 68], expected
+    )
+    self.assertIsNone(driver.arm._station_route)
+
+  async def test_in_a_station_the_head_leaves_only_by_park(self):
+    link = RouteLink(answers=make_answers())
+    driver = await self.set_up_stations(link=link, stage=TRANSLATED_STAGE_BLOCK)
+    driver.arm._station_route = [tuple(line) for line in SYNTHETIC_WASTE_ROUTE]
+    for move in (
+      lambda: driver.arm.move_to_xy_position(x=DECK_POINT[0], y=DECK_POINT[1]),
+      lambda: driver.arm.move_to_z_position(z=REFERENCE_HEIGHT),
+      lambda: driver.arm.move_to_joint_state(joint_state={2: 0.0}),
+      lambda: driver.arm.move_to_location(location=Coordinate(*DECK_POINT, REFERENCE_HEIGHT)),
+      lambda: driver.arm.move_to_wash_station(station=1),
+    ):
+      with self.assertRaisesRegex(MantisMotionError, "stands in a station; park"):
+        await move()
+    self.assertEqual(self.sent(link), [])
+
 
 class StageDiscoveryTests(ArmTestCase):
   async def test_the_stage_block_is_never_taken_from_a_recording(self):
@@ -1358,14 +1500,16 @@ class StageDiscoveryTests(ArmTestCase):
     with mock.patch.object(master_module, "RECORDING_MANTIS_V4", path):
       driver = await self.set_up_driver(link=FakeLink(answers=make_answers()))
     assert driver.arm is not None
-    self.assertIsNone(driver.arm.stage_origin)
+    self.assertIsNone(driver.arm.configuration.stage_origin)
 
   async def test_a_declared_stage_block_is_read_and_saved(self):
     driver = await self.set_up_arm(
       link=FakeLink(answers=make_answers()), stage=SYNTHETIC_STAGE_BLOCK
     )
-    self.assertEqual(driver.arm.stage_origin, (-50.0, 40.0, 51.0))
-    self.assertEqual(driver.arm.stage_transformation_matrix[2], (-2e-05, -3e-05, 1.004))
+    self.assertEqual(driver.arm.configuration.stage_origin, (-50.0, 40.0, 51.0))
+    self.assertEqual(
+      driver.arm.configuration.stage_transformation_matrix[2], (-2e-05, -3e-05, 1.004)
+    )
     path = os.path.join(self.directory, "saved.json")
     driver.save_configuration(path=path)
     with open(path, encoding="utf-8") as f:
@@ -1394,7 +1538,7 @@ class RouteDiscoveryTests(ArmTestCase):
     with mock.patch.object(master_module, "RECORDING_MANTIS_V4", path):
       driver = await self.set_up_driver(link=FakeLink(answers=make_answers()))
     assert driver.arm is not None
-    self.assertIsNone(driver.arm.zone_rectangles)
+    self.assertIsNone(driver.arm.configuration.zone_rectangles)
 
   async def test_declared_routes_are_read_and_saved(self):
     driver = await self.set_up_arm(
@@ -1402,7 +1546,7 @@ class RouteDiscoveryTests(ArmTestCase):
       zones=SYNTHETIC_ZONES_BLOCK,
       stations=SYNTHETIC_STATIONS_BLOCK,
     )
-    self.assertEqual(driver.arm.wash_station_routes[1][0], (None, None, -1.57))
+    self.assertEqual(driver.arm.configuration.wash_station_routes[1][0], (None, None, -1.57))
     path = os.path.join(self.directory, "saved.json")
     driver.save_configuration(path=path)
     with open(path, encoding="utf-8") as f:

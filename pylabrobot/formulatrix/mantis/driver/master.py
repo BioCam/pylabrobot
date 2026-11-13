@@ -49,7 +49,7 @@ from .events import (
   decode_sequence_progress,
   describe_event,
 )
-from .features.arm import Arm
+from .features.arm import Arm, MantisArmConfiguration
 from .features.led_bar import LedBar
 from .features.plate_clamp import UNCLAMPING_DONE, PlateClamp
 from .features.pump import Pump
@@ -811,7 +811,7 @@ class MantisDriver:
   # -- discovery and setup --------------------------------------------------
 
   async def _request_configuration(self) -> DeviceConfiguration:
-    """Read the firmware versions and the motor limits off the device.
+    """Read the firmware versions off the device.
 
     Only the motion board must answer. Each other board gets one attempt; one that times out,
     refuses or answers a malformed version is absent, not a fault.
@@ -829,7 +829,6 @@ class MantisDriver:
     return DeviceConfiguration(
       generation=compute_generation(firmware_versions=firmware_versions),
       firmware_versions=firmware_versions,
-      motor_limits={motor: await self.request_motor_limits(motor=motor) for motor in MOTORS},
     )
 
   def _get_arm_calibration(self) -> Dict[str, Any]:
@@ -934,6 +933,7 @@ class MantisDriver:
           "stage_offset_y",
           "arm_type_rotation_degree",
           "arm_type_translation",
+          "stage_reference_height",
         )
       )
     vector_fields = ("origin", "offset_x", "offset_y", "arm_type_translation")
@@ -941,6 +941,7 @@ class MantisDriver:
       vectors = {field: tuple(float(value) for value in block[field]) for field in vector_fields}
       matrix = tuple(tuple(float(value) for value in row) for row in block["transformation_matrix"])
       rotation = float(block["arm_type_rotation_degree"])
+      reference_height = float(block["reference_height"])
     except (KeyError, TypeError, ValueError) as error:
       raise MantisConfigurationError(f"malformed stage block: {error!r}") from error
     if any(len(vector) != 3 for vector in vectors.values()):
@@ -954,12 +955,16 @@ class MantisDriver:
       "stage_offset_y": vectors["offset_y"],
       "arm_type_rotation_degree": rotation,
       "arm_type_translation": vectors["arm_type_translation"],
+      "stage_reference_height": reference_height,
     }
 
-  def _discover_features(self) -> None:
+  def _discover_features(self, *, motor_limits: Dict[int, Tuple[float, float]]) -> None:
     """Build the features the configuration says are fitted, with the unit's values.
 
     A feature already built is kept.
+
+    Args:
+      motor_limits: each motor's (lower, upper) limit, by motor, read for the arm.
 
     Raises:
       MantisConfigurationError: if the ``plate_clamp``, ``led_bar``, ``arm``, ``zones``,
@@ -1001,9 +1006,12 @@ class MantisDriver:
     if sensor_board is not None and self.arm is None:
       self.arm = Arm(
         driver=self,
-        **self._get_arm_calibration(),
-        **self._get_route_blocks(),
-        **self._get_stage_calibration(),
+        configuration=MantisArmConfiguration(
+          motor_limits=motor_limits,
+          **self._get_arm_calibration(),
+          **self._get_route_blocks(),
+          **self._get_stage_calibration(),
+        ),
       )
 
   def _show_action(
@@ -1126,7 +1134,13 @@ class MantisDriver:
     self._unit_blocks_from_recording = {
       block for block in UNIT_BLOCKS if taken.get(block) in recordings
     }
-    self._discover_features()
+    motor_limits: Dict[int, Tuple[float, float]] = {}
+    if (
+      self.configuration.firmware_versions.get(ABSOLUTE_POSITION_SENSOR_BOARD) is not None
+      and self.arm is None
+    ):
+      motor_limits = {motor: await self.request_motor_limits(motor=motor) for motor in MOTORS}
+    self._discover_features(motor_limits=motor_limits)
     if self.pump is not None:
       # Nothing uses the calibration yet: a board 10 that does not answer it does not fail setup.
       try:

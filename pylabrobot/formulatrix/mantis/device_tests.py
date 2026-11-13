@@ -38,7 +38,7 @@ class ArmModelTests(unittest.IsolatedAsyncioTestCase):
     assert column is not None
     # The simulated arm has no offsets: its joint state is the links' own angles.
     theta_1, theta_2 = compute_joint_angles(x=15.0, y=60.0)
-    await device.arm._move_to_joint_state(joint_state={0: theta_1, 1: theta_2, 2: 10.0})
+    await device.arm.move_to_joint_state(joint_state={0: theta_1, 1: theta_2, 2: 10.0})
     self.assertAlmostEqual(device.z_column.get_absolute_location().z, column.z - 10.0)
     idle, posed = Mantis(simulation=True), Mantis(simulation=True)
     posed._update_arm_model(theta_1=theta_1, theta_2=theta_2, z=-10.0)

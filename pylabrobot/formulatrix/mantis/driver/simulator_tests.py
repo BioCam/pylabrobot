@@ -29,7 +29,6 @@ from pylabrobot.formulatrix.mantis.driver.simulator import (
   MantisSimulationLedBar,
 )
 from pylabrobot.formulatrix.mantis.driver.stage_transform import (
-  REFERENCE_HEIGHT,
   compute_arm_frame_position,
 )
 from pylabrobot.resources.corning import cor_96_wellplate_360uL_Fb
@@ -40,6 +39,10 @@ async def request_head_position(*, arm) -> Tuple[float, float, float]:
   joint_state = await arm.request_joint_state()
   x, y = arm._get_head_position(joint_state=joint_state)
   return x, y, 0.0 - joint_state[2]
+
+
+# The synthetic stage's reference height, mm.
+REFERENCE_HEIGHT = SYNTHETIC_STAGE_BLOCK["reference_height"]
 
 
 class SimulationTests(unittest.IsolatedAsyncioTestCase):
@@ -293,7 +296,7 @@ class SimulatedRouteTests(unittest.IsolatedAsyncioTestCase):
 
   async def test_a_move_off_the_plate_holder_and_back_to_idle(self):
     await self.move_head_to(x=-57.0, y=0.0)
-    await self.arm._move_to_joint_state(joint_state={2: 10.0})
+    await self.arm.move_to_joint_state(joint_state={2: 10.0})
     await self.assert_head_at(x=-57.0, y=0.0, z=-10.0)
     self.assertFalse(await self.arm.request_is_parked())
     await self.arm.park()
@@ -303,7 +306,7 @@ class SimulatedRouteTests(unittest.IsolatedAsyncioTestCase):
   async def test_z_and_joint_moves(self):
     await self.arm.move_to_z_position(z=50.0)
     self.assertAlmostEqual((await self.arm.request_pose()).nozzle_location.z, 50.0, places=6)
-    await self.arm._move_to_joint_state(joint_state={2: 5.0})
+    await self.arm.move_to_joint_state(joint_state={2: 5.0})
     self.assertEqual((await self.arm.request_joint_state())[2], 5.0)
 
   async def test_the_waste_station_is_reached_from_idle_only(self):
@@ -331,7 +334,7 @@ class SimulatedRouteTests(unittest.IsolatedAsyncioTestCase):
 
   async def test_recover_from_fault_brings_the_head_back_to_idle(self):
     await self.move_head_to(x=80.0, y=-40.0)
-    await self.arm._move_to_joint_state(joint_state={2: 5.0})
+    await self.arm.move_to_joint_state(joint_state={2: 5.0})
     await self.arm.recover_from_fault()
     self.assertTrue(self.arm.is_initialized)
     await self.assert_head_at(x=15.0, y=31.177, z=0.0)
