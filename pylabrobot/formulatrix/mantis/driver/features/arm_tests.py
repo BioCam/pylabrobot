@@ -6,6 +6,7 @@ offsets declared are the ones the recorded idle targets imply, so the moves are 
 """
 
 import json
+import math
 import os
 import struct
 import tempfile
@@ -29,6 +30,7 @@ from pylabrobot.formulatrix.mantis.driver.errors import (
 )
 from pylabrobot.formulatrix.mantis.driver.features import arm as arm_module
 from pylabrobot.formulatrix.mantis.driver.features.arm import POST_HOMING_POSITION, Arm
+from pylabrobot.formulatrix.mantis.driver.stage_transform import REFERENCE_HEIGHT
 from pylabrobot.formulatrix.mantis.driver.features.led_bar_tests import (
   BLUE,
   GREEN,
@@ -48,14 +50,18 @@ from pylabrobot.formulatrix.mantis.driver.master_tests import (
   FakeLink,
   make_answers,
 )
+from pylabrobot.formulatrix.mantis.resource_model import (
+  PLATE_HOLDER_LOCATION,
+  PLATE_HOLDER_SIZE_Y,
+)
 from pylabrobot.formulatrix.mantis.driver.oem_config_tests import (
   SYNTHETIC_IDLE_ROUTES,
   SYNTHETIC_SAFE_XY,
+  SYNTHETIC_STAGE_BLOCK,
   SYNTHETIC_STATIONS_BLOCK,
   SYNTHETIC_WASTE_ROUTE,
   SYNTHETIC_ZONES_BLOCK,
 )
-from pylabrobot.resources import Coordinate
 
 with open(RECORDING_MANTIS_V4, encoding="utf-8") as f:
   RECORDING = json.load(f)
@@ -389,11 +395,11 @@ class InitializeTests(ArmTestCase):
   async def test_reads_convert_to_degrees_and_mm(self):
     link = ArmLink(answers=make_answers())
     driver = await self.set_up_arm(link=link)
-    joint_position = await driver.arm.request_joint_position()
-    self.assertAlmostEqual(joint_position[0], -0.585047 * 1.8, places=5)
-    self.assertAlmostEqual(joint_position[1], 1.76374 * 1.8, places=4)
-    self.assertEqual(joint_position[2], 0.0)
-    absolute = await driver.arm.request_absolute_joint_position()
+    joint_state = await driver.arm.request_joint_state()
+    self.assertAlmostEqual(joint_state[0], -0.585047 * 1.8, places=5)
+    self.assertAlmostEqual(joint_state[1], 1.76374 * 1.8, places=4)
+    self.assertEqual(joint_state[2], 0.0)
+    absolute = await driver.arm.request_absolute_joint_state()
     self.assertEqual(sorted(absolute), [0, 1])
 
 
@@ -911,145 +917,112 @@ class ZoneTests(ArmTestCase):
         if zone in ("Front", "Unknown"):
           continue
         angles = compute_joint_angles(x=x, y=y)
-        joint_position = {motor: angles[motor] - SYNTHETIC_OFFSETS[motor] for motor in (0, 1)}
-        _, route = arm._get_routes(joint_position=joint_position)
+        joint_state = {motor: angles[motor] - SYNTHETIC_OFFSETS[motor] for motor in (0, 1)}
+        _, route = arm._get_routes(joint_state=joint_state)
         self.assertEqual(route, [tuple(waypoint) for waypoint in SYNTHETIC_IDLE_ROUTES[zone]])
     self.assertEqual(arm._get_zone(x=15.0, y=20.0), "Unknown")
 
 
+# A stage that only moves the wellplate frame by its origin, so where a point lands is worked by hand.
+TRANSLATED_STAGE_BLOCK = {
+  **SYNTHETIC_STAGE_BLOCK,
+  "transformation_matrix": [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+  "offset_x": [0.0, 0.0, 0.0],
+  "offset_y": [0.0, 0.0, 0.0],
+}
+# A deck point over the plate holder, 14.3 mm right of and 11.28 mm in front of its back-left
+# corner, and where the translated stage puts it in the arm frame.
+DECK_POINT = (
+  PLATE_HOLDER_LOCATION.x + 14.3,
+  PLATE_HOLDER_LOCATION.y + PLATE_HOLDER_SIZE_Y - 11.28,
+)
+ARM_POINT = (14.3 - 50.0, 11.28 + 40.0)
+# The arm motors' targets for DECK_POINT, and Z's position (mm down) for the nozzle at the
+# reference height above the deck: the translated stage's origin z.
+DECK_POINT_ARM_TARGETS = get_arm_positions(x=ARM_POINT[0], y=ARM_POINT[1])
+REFERENCE_HEIGHT_Z = 51.0
+
+
 class MoveTests(ArmTestCase):
   async def set_up_moves(self, *, link: FakeLink, **blocks):
-    driver = await self.set_up_arm(link=link, **blocks)
+    driver = await self.set_up_arm(link=link, **{"stage": TRANSLATED_STAGE_BLOCK, **blocks})
     driver.arm._initialized = True
     return driver
 
-  async def test_move_z_sends_one_move_as_recorded(self):
-    link = RouteLink(answers=make_answers())
+  async def test_move_to_xy_position_moves_the_arms_in_one_queued_move_z_held(self):
+    queued = get_queued_move(item=15, targets=DECK_POINT_ARM_TARGETS)
+    link = RouteLink(
+      answers=make_answers(), events={(0, 68, queued): [bytes.fromhex(CLOSE_ITEM_PLAYED[15])]}
+    )
     driver = await self.set_up_moves(link=link)
-    await driver.arm.move_z(0.0)
-    await driver.arm.move_z(1.57)
-    sent = self.sent(link)
+    driver._next_item = 15
+    await driver.arm.move_to_xy_position(x=DECK_POINT[0], y=DECK_POINT[1])
     self.assertEqual(
-      tokens(sent, without=()),
-      [
-        "0:22:020000000000000000004cd431fab7eaa040bb34be4f05c2be40",
-        "0:20:0200",
-        "0:20:0000",
-        "0:20:0100",
-        "0:20:0200",
-        "0:22:0200" + bytes.fromhex(RECORDED_WASTE_SAFE_HEIGHT)[-24:].hex(),
-        "0:20:0200",
-        "0:20:0000",
-        "0:20:0100",
-        "0:20:0200",
-      ],
+      tokens(self.sent(link)),
+      ["0:27:0000", "0:27:0100", "0:27:0200", "0:61:", "0:62:", f"0:68:{queued.hex()}"],
+    )
+
+  async def test_move_to_z_position_moves_z_alone_to_the_height_above_the_deck(self):
+    target = compute_device_position(motor=2, position=REFERENCE_HEIGHT_Z)
+    queued = get_queued_move(item=15, targets={2: target})
+    link = RouteLink(
+      answers=make_answers(), events={(0, 68, queued): [bytes.fromhex(CLOSE_ITEM_PLAYED[15])]}
+    )
+    driver = await self.set_up_moves(link=link)
+    driver._next_item = 15
+    await driver.arm.move_to_z_position(z=REFERENCE_HEIGHT)
+    self.assertEqual(
+      tokens(self.sent(link)),
+      ["0:27:0000", "0:27:0100", "0:27:0200", "0:61:", "0:62:", f"0:68:{queued.hex()}"],
     )
 
   async def test_moves_out_of_range_are_refused_before_anything_is_sent(self):
     link = RouteLink(answers=make_answers())
     driver = await self.set_up_moves(link=link)
     arm = driver.arm
-    with self.assertRaisesRegex(ValueError, "outside its limits"):
-      await arm.move_z(10.0)  # above Z's upper limit, 4.064 mm above its flag
     with self.assertRaisesRegex(ValueError, "Z speed must be from 20.0 to 55.0"):
-      await arm.move_z(0.0, speed=60.0)
+      await arm.move_to_z_position(z=REFERENCE_HEIGHT, speed=60.0)
     with self.assertRaisesRegex(ValueError, "Z acceleration must be from 200.0 to 500.0"):
-      await arm.move_to_location(Coordinate(15.0, 31.177, 0.0), z_acceleration=1000.0)
+      await arm.move_to_z_position(z=REFERENCE_HEIGHT, acceleration=1000.0)
+    with self.assertRaisesRegex(ValueError, "arm acceleration must be above 0"):
+      await arm.move_to_xy_position(x=DECK_POINT[0], y=DECK_POINT[1], acceleration=0.0)
     with self.assertRaises(MantisKinematicsError):
-      await arm.move_to_location(Coordinate(0.0, 200.0, 0.0))
-    with self.assertRaisesRegex(ValueError, "outside its limits"):
-      await arm.move_through_waypoints([Coordinate(15.0, 31.177, 0.0), Coordinate(15, 31, -60)])
+      await arm.move_to_xy_position(x=500.0, y=500.0)
     with self.assertRaisesRegex(ValueError, "the motors are"):
-      await arm.move_to_joint_position({3: 0.0})
+      await arm._move_to_joint_state(joint_state={3: 0.0})
     with self.assertRaisesRegex(ValueError, "outside its limits"):
-      await arm.move_to_joint_position({0: 8000.0})
+      await arm._move_to_joint_state(joint_state={0: 8000.0})
     self.assertEqual(self.sent(link), [])
+
+  async def test_a_height_outside_zs_limits_moves_nothing(self):
+    link = RouteLink(answers=make_answers())
+    driver = await self.set_up_moves(link=link)
+    with self.assertRaisesRegex(ValueError, "outside its limits"):
+      await driver.arm.move_to_z_position(z=-100.0)
+    self.assertEqual(tokens(self.sent(link)), ["0:27:0000", "0:27:0100", "0:27:0200"])
 
   async def test_moves_refuse_an_arm_not_brought_up(self):
     link = RouteLink(answers=make_answers())
-    driver = await self.set_up_arm(link=link)
+    driver = await self.set_up_arm(link=link, stage=TRANSLATED_STAGE_BLOCK)
     with self.assertRaisesRegex(MantisMotionError, "not brought up"):
-      await driver.arm.move_z(0.0)
+      await driver.arm.move_to_xy_position(x=DECK_POINT[0], y=DECK_POINT[1])
+    with self.assertRaisesRegex(MantisMotionError, "not brought up"):
+      await driver.arm.move_to_z_position(z=REFERENCE_HEIGHT)
     with self.assertRaisesRegex(MantisMotionError, "not brought up"):
       await driver.arm.park()
     self.assertEqual(self.sent(link), [])
 
-  async def test_move_to_location_rises_moves_the_arms_queued_then_lowers(self):
-    idle = bytes.fromhex(CLOSE_QUEUED_MOVES[14])  # the arms to idle, Z held
-    queued = struct.pack("<h", 15) + idle[2:]
-    link = RouteLink(
-      answers=make_answers(),
-      events={(0, 68, queued): [bytes.fromhex(CLOSE_ITEM_PLAYED[15])]},
-      encoders={2: Z_RISING_ENCODER_REPLIES},
-    )
-    driver = await self.set_up_moves(link=link)
-    driver._next_item = 15
-    await driver.arm.move_to_location(
-      Coordinate(*POST_HOMING_POSITION, 0.0), minimum_traverse_height=0.0
-    )
-    self.assertEqual(
-      tokens(self.sent(link)),
-      [
-        "0:84:0200",
-        f"0:22:{Z_UP_MOVE.hex()}",
-        "0:84:0200",  # Z read back by its encoder at the traverse height before the arms move
-        "0:61:",
-        "0:62:",
-        f"0:68:{queued.hex()}",
-        f"0:22:{Z_UP_MOVE.hex()}",
-      ],
-    )
-
-  async def test_a_rise_that_does_not_reach_the_traverse_height_stops_before_the_arms(self):
-    # Z's encoder reads at its flag after the rise as before it, as if the move were dropped.
-    link = RouteLink(answers=make_answers(), encoders={2: Z_UP_ENCODER_REPLY})
-    driver = await self.set_up_moves(link=link)
-    with self.assertRaisesRegex(
-      MantisMotionError, "Z reads 0.006 mm by its encoder after rising to 1.57 mm"
-    ):
-      await driver.arm.move_to_location(Coordinate(*POST_HOMING_POSITION, 0.0))
-    sent = [command for command in self.sent(link) if command[1] != 20]
-    self.assertEqual(
-      sent,
-      [(0, 84, b"\x02\x00")]
-      + [(0, 22, b"\x02\x00" + bytes.fromhex(RECORDED_WASTE_SAFE_HEIGHT)[-24:])]
-      + [(0, 84, b"\x02\x00")],
-    )
-
-  async def test_move_to_location_at_the_traverse_height_does_not_rise(self):
-    idle = bytes.fromhex(CLOSE_QUEUED_MOVES[14])
-    queued = struct.pack("<h", 15) + idle[2:]
-    link = RouteLink(
-      answers=make_answers(),
-      events={(0, 68, queued): [bytes.fromhex(CLOSE_ITEM_PLAYED[15])]},
-      encoders={2: Z_UP_ENCODER_REPLY},  # Z at the traverse height, its flag
-    )
-    driver = await self.set_up_moves(link=link)
-    driver._next_item = 15
-    await driver.arm.move_to_location(
-      Coordinate(*POST_HOMING_POSITION, 0.0), minimum_traverse_height=0.0
-    )
-    self.assertEqual(
-      [command for _, command, _ in self.sent(link) if command != 20][:3], [84, 61, 62]
-    )
-
-  async def test_waypoints_are_queued_together_and_the_last_waited_for(self):
-    link = RouteLink(
-      answers=make_answers(),
-      events={
-        (0, 68, bytes.fromhex(CLOSE_QUEUED_MOVES[16])): [bytes.fromhex(CLOSE_ITEM_PLAYED[16])]
-      },
-    )
-    driver = await self.set_up_moves(link=link)
-    driver._next_item = 15
-    # Idle at Z 0, then idle at Z 20 mm down: the last two moves of the recorded close.
-    await driver.arm.move_through_waypoints(
-      [Coordinate(*POST_HOMING_POSITION, 0.0), Coordinate(*POST_HOMING_POSITION, -20.0)]
-    )
-    self.assertEqual(
-      tokens(self.sent(link)),
-      ["0:61:", "0:62:"] + [f"0:68:{CLOSE_QUEUED_MOVES[item]}" for item in (15, 16)],
-    )
+  async def test_without_the_stage_block_the_deck_frame_moves_send_nothing(self):
+    link = RouteLink(answers=make_answers())
+    driver = await self.set_up_arm(link=link)
+    driver.arm._initialized = True
+    with self.assertRaisesRegex(MantisConfigurationError, "no stage transform"):
+      await driver.arm.move_to_xy_position(x=DECK_POINT[0], y=DECK_POINT[1])
+    with self.assertRaisesRegex(MantisConfigurationError, "no stage transform"):
+      await driver.arm.move_to_z_position(z=REFERENCE_HEIGHT)
+    with self.assertRaisesRegex(MantisConfigurationError, "no stage transform"):
+      await driver.arm.request_pose()
+    self.assertEqual(self.sent(link), [])
 
   async def test_a_joint_move_holds_the_motors_it_does_not_name(self):
     held_z_up = bytes.fromhex(CLOSE_QUEUED_MOVES[13])  # the arms held, Z to 0
@@ -1059,7 +1032,7 @@ class MoveTests(ArmTestCase):
     )
     driver = await self.set_up_moves(link=link)
     driver._next_item = 15
-    await driver.arm.move_to_joint_position({2: 0.0})
+    await driver.arm._move_to_joint_state(joint_state={2: 0.0})
     self.assertEqual(tokens(self.sent(link)), ["0:61:", "0:62:", f"0:68:{queued.hex()}"])
 
   async def test_a_queued_move_not_played_in_time_aborts_the_sequencer(self):
@@ -1067,10 +1040,107 @@ class MoveTests(ArmTestCase):
     driver = await self.set_up_moves(link=link)
     with mock.patch.object(arm_module, "MOVE_TIMEOUT", 0.05):
       with self.assertRaises(MantisTimeoutError):
-        await driver.arm.move_through_waypoints([Coordinate(*POST_HOMING_POSITION, 0.0)])
+        await driver.arm._move_to_joint_state(joint_state={2: 0.0})
     commands = [command for _, command, _ in self.sent(link)]
     self.assertEqual(commands[:4], [61, 62, 68, 64])
     self.assertEqual(commands[4:], [84, 84, 84])  # where the motors stopped, logged
+
+
+def make_staged_arm(*, stage: Dict, **kwargs) -> Arm:
+  """An arm with a mocked driver and a stage block, as a driver builds it."""
+  return Arm(
+    driver=mock.Mock(),
+    offsets=kwargs.get("offsets"),
+    homing_position_a=kwargs.get("homing_position_a"),
+    encoder_correction=kwargs.get("encoder_correction"),
+    stage_origin=tuple(stage["origin"]),
+    stage_transformation_matrix=stage["transformation_matrix"],
+    stage_offset_x=tuple(stage["offset_x"]),
+    stage_offset_y=tuple(stage["offset_y"]),
+    arm_type_rotation_degree=stage["arm_type_rotation_degree"],
+    arm_type_translation=tuple(stage["arm_type_translation"]),
+  )
+
+
+class DeckFrameTests(unittest.IsolatedAsyncioTestCase):
+  def test_off_the_plate_holder_a_rigid_stage_is_fitted_exactly(self):
+    # A rigid stage turns and moves the wellplate frame; the resource model only moves it, so the
+    # fit is that turn, and a point anywhere on the deck lands where the stage would put it.
+    stage = {
+      **TRANSLATED_STAGE_BLOCK,
+      "arm_type_rotation_degree": 1.5,
+      "arm_type_translation": [2.0, -3.0, 0.0],
+    }
+    arm = make_staged_arm(stage=stage)
+    turn, _, _ = arm._get_deck_to_arm_transform()
+    self.assertAlmostEqual(math.degrees(turn), 1.5, places=9)
+    angle = math.radians(1.5)
+    for x, y in ((0.0, 0.0), (180.0, 150.0), (-40.0, 120.0)):
+      with self.subTest(x=x, y=y):
+        # The point in the wellplate frame, then turned and moved as the stage does.
+        holder_x = x - PLATE_HOLDER_LOCATION.x
+        holder_y = PLATE_HOLDER_LOCATION.y + PLATE_HOLDER_SIZE_Y - y
+        expected = (
+          holder_x * math.cos(angle) - holder_y * math.sin(angle) + 2.0 - 50.0,
+          holder_x * math.sin(angle) + holder_y * math.cos(angle) - 3.0 + 40.0,
+        )
+        arm_x, arm_y = arm._get_arm_frame_xy(x=x, y=y)
+        self.assertAlmostEqual(arm_x, expected[0], places=9)
+        self.assertAlmostEqual(arm_y, expected[1], places=9)
+        deck_x, deck_y = arm._get_deck_frame_xy(x=arm_x, y=arm_y)
+        self.assertAlmostEqual(deck_x, x, places=9)
+        self.assertAlmostEqual(deck_y, y, places=9)
+
+  def test_over_the_plate_holder_the_stage_transform_places_the_nozzle(self):
+    # The holder's back-left corner is the wellplate frame's origin.
+    arm = make_staged_arm(stage=SYNTHETIC_STAGE_BLOCK)
+    corner = arm._get_arm_frame_xy(
+      x=PLATE_HOLDER_LOCATION.x, y=PLATE_HOLDER_LOCATION.y + PLATE_HOLDER_SIZE_Y
+    )
+    self.assertAlmostEqual(
+      corner[0], (-50.0 * 1.001 + 40.0 * 0.001 - 0.08) / (-50.0 * -2e-05 + 40.0 * -3e-05 + 1.004)
+    )
+    self.assertAlmostEqual(
+      corner[1], (-50.0 * -0.004 + 40.0 * 0.9995 + 0.09) / (-50.0 * -2e-05 + 40.0 * -3e-05 + 1.004)
+    )
+
+  def test_a_height_above_the_deck_takes_the_reference_height_and_the_tilt(self):
+    # 10 mm right of and 20 mm in front of the holder's back-left corner, 5 mm above the deck:
+    # 51 + (9.665 - 5) - 0.0015 * 10 + 0.0025 * 20 = 55.7 mm down.
+    arm = make_staged_arm(stage=SYNTHETIC_STAGE_BLOCK)
+    z = arm._get_z_joint_position(
+      x=PLATE_HOLDER_LOCATION.x + 10.0,
+      y=PLATE_HOLDER_LOCATION.y + PLATE_HOLDER_SIZE_Y - 20.0,
+      z=5.0,
+    )
+    self.assertAlmostEqual(z, 55.7)
+
+  async def test_request_pose_places_the_nozzle_in_the_deck_frame(self):
+    arm = make_staged_arm(
+      stage=TRANSLATED_STAGE_BLOCK,
+      offsets=SYNTHETIC_OFFSETS,
+      homing_position_a=SYNTHETIC_HOMING_POSITION_A,
+      encoder_correction={motor: SYNTHETIC_CORRECTION for motor in (0, 1)},
+    )
+    joints = {
+      **{motor: IDLE_ANGLES[motor] - SYNTHETIC_OFFSETS[motor] for motor in (0, 1)},
+      2: 10.0,
+    }
+    with mock.patch.object(arm, "request_joint_state", mock.AsyncMock(return_value=joints)):
+      pose = await arm.request_pose()
+    # The translated stage puts the wellplate frame's origin at (-50, 40) in the arm frame.
+    x, y = POST_HOMING_POSITION
+    self.assertAlmostEqual(pose.nozzle_location.x, PLATE_HOLDER_LOCATION.x + x + 50.0)
+    self.assertAlmostEqual(
+      pose.nozzle_location.y, PLATE_HOLDER_LOCATION.y + PLATE_HOLDER_SIZE_Y - (y - 40.0)
+    )
+    # Z 10 mm down from its flag: 51 + 9.665 - 10 above the deck.
+    self.assertAlmostEqual(pose.nozzle_location.z, 50.665)
+    self.assertEqual(
+      (pose.head_joint_location.x, pose.head_joint_location.y),
+      (pose.nozzle_location.x, pose.nozzle_location.y),
+    )
+    self.assertEqual(pose.joints, joints)
 
 
 # Each arm motor's encoder (command 84) as it stands at the recorded idle targets, in device units.
@@ -1084,16 +1154,25 @@ class PoseTests(ArmTestCase):
     driver = await self.set_up_arm(link=link)
     driver.arm._initialized = True
     driver.arm._pose_observer = mock.Mock()
+    driver._next_item = 15
     return driver
 
-  async def test_a_move_passes_on_the_pose_its_encoders_read_after_it(self):
-    link = RouteLink(
-      answers=make_answers(), encoders={**IDLE_ENCODER_REPLIES, 2: Z_DOWN_ENCODER_REPLY}
+  @staticmethod
+  def make_z_up_link() -> RouteLink:
+    """A link that plays Z's queued move to its flag, the arms held, as item 15."""
+    queued = struct.pack("<h", 15) + bytes.fromhex(CLOSE_QUEUED_MOVES[13])[2:]
+    return RouteLink(
+      answers=make_answers(),
+      events={(0, 68, queued): [bytes.fromhex(CLOSE_ITEM_PLAYED[15])]},
+      encoders={**IDLE_ENCODER_REPLIES, 2: Z_DOWN_ENCODER_REPLY},
     )
+
+  async def test_a_move_passes_on_the_pose_its_encoders_read_after_it(self):
+    link = self.make_z_up_link()
     driver = await self.set_up_pose(link=link)
-    await driver.arm.move_z(0.0)
+    await driver.arm._move_to_joint_state(joint_state={2: 0.0})
     sent = [command for command in self.sent(link) if command[1] != 20]
-    self.assertEqual(sent[1:], [(0, 84, struct.pack("<h", motor)) for motor in (0, 1, 2)])
+    self.assertEqual(sent[3:], [(0, 84, struct.pack("<h", motor)) for motor in (0, 1, 2)])
     pose = driver.arm._pose_observer.call_args.kwargs
     self.assertAlmostEqual(pose["theta_1"], IDLE_ANGLES[0])
     self.assertAlmostEqual(pose["theta_2"], IDLE_ANGLES[1])
@@ -1114,15 +1193,13 @@ class PoseTests(ArmTestCase):
     driver.arm._pose_observer.assert_called_once()
 
   async def test_a_failed_model_update_only_warns(self):
-    link = RouteLink(
-      answers=make_answers(), encoders={**IDLE_ENCODER_REPLIES, 2: Z_DOWN_ENCODER_REPLY}
-    )
+    link = self.make_z_up_link()
     driver = await self.set_up_pose(link=link)
     driver.arm._pose_observer.side_effect = RuntimeError("model")
     with self.assertLogs(
       "pylabrobot.formulatrix.mantis.driver.features.arm", level="WARNING"
     ) as logs:
-      await driver.arm.move_z(0.0)
+      await driver.arm._move_to_joint_state(joint_state={2: 0.0})
     self.assertTrue(any("pose was not passed on" in line for line in logs.output))
 
 
@@ -1271,6 +1348,42 @@ class StationTests(ArmTestCase):
     with self.assertRaisesRegex(ValueError, "station must be one of"):
       await driver.arm.move_to_wash_station(station=3)
     self.assertEqual(self.sent(link), [])
+
+
+class StageDiscoveryTests(ArmTestCase):
+  async def test_the_stage_block_is_never_taken_from_a_recording(self):
+    path = os.path.join(self.directory, "recording.json")
+    with open(path, "w", encoding="utf-8") as f:
+      json.dump({**RECORDING, "stage": SYNTHETIC_STAGE_BLOCK}, f)
+    with mock.patch.object(master_module, "RECORDING_MANTIS_V4", path):
+      driver = await self.set_up_driver(link=FakeLink(answers=make_answers()))
+    assert driver.arm is not None
+    self.assertIsNone(driver.arm.stage_origin)
+
+  async def test_a_declared_stage_block_is_read_and_saved(self):
+    driver = await self.set_up_arm(
+      link=FakeLink(answers=make_answers()), stage=SYNTHETIC_STAGE_BLOCK
+    )
+    self.assertEqual(driver.arm.stage_origin, (-50.0, 40.0, 51.0))
+    self.assertEqual(driver.arm.stage_transformation_matrix[2], (-2e-05, -3e-05, 1.004))
+    path = os.path.join(self.directory, "saved.json")
+    driver.save_configuration(path=path)
+    with open(path, encoding="utf-8") as f:
+      self.assertEqual(json.load(f)["stage"], SYNTHETIC_STAGE_BLOCK)
+
+  async def test_a_malformed_stage_block_refuses_setup(self):
+    for block in (
+      {**SYNTHETIC_STAGE_BLOCK, "origin": [1.0, 2.0]},
+      {**SYNTHETIC_STAGE_BLOCK, "transformation_matrix": [[1.0, 0.0, 0.0]]},
+      {key: value for key, value in SYNTHETIC_STAGE_BLOCK.items() if key != "offset_y"},
+    ):
+      with self.subTest(block=sorted(block)):
+        driver = self.make_driver(
+          link=FakeLink(answers=make_answers()),
+          declared_configuration_json=self.declare(arm_block=SYNTHETIC_ARM_BLOCK, stage=block),
+        )
+        with self.assertRaises(MantisConfigurationError):
+          await driver.setup(skip_arm=True)
 
 
 class RouteDiscoveryTests(ArmTestCase):

@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from typing import Tuple
 
 from pylabrobot.formulatrix.mantis import Mantis
 from pylabrobot.formulatrix.mantis.device import RECORDING_MANTIS_V4
@@ -18,6 +19,7 @@ from pylabrobot.formulatrix.mantis.driver.errors import (
 from pylabrobot.formulatrix.mantis.driver.features.arm import SHUTDOWN_Z
 from pylabrobot.formulatrix.mantis.driver.master import SEQUENCER_QUEUE_SIZE
 from pylabrobot.formulatrix.mantis.driver.oem_config_tests import (
+  SYNTHETIC_STAGE_BLOCK,
   SYNTHETIC_STATIONS_BLOCK,
   SYNTHETIC_WASTE_ROUTE,
   SYNTHETIC_ZONES_BLOCK,
@@ -26,7 +28,18 @@ from pylabrobot.formulatrix.mantis.driver.simulator import (
   MantisSimulationArm,
   MantisSimulationLedBar,
 )
-from pylabrobot.resources import Coordinate
+from pylabrobot.formulatrix.mantis.driver.stage_transform import (
+  REFERENCE_HEIGHT,
+  compute_arm_frame_position,
+)
+from pylabrobot.resources.corning import cor_96_wellplate_360uL_Fb
+
+
+async def request_head_position(*, arm) -> Tuple[float, float, float]:
+  """Where the head is: x and y in the arm frame, mm, and Z's height above its flag, mm."""
+  joint_state = await arm.request_joint_state()
+  x, y = arm._get_head_position(joint_state=joint_state)
+  return x, y, 0.0 - joint_state[2]
 
 
 class SimulationTests(unittest.IsolatedAsyncioTestCase):
@@ -102,12 +115,12 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
   async def test_the_head_stands_at_idle_without_offsets(self):
     arm = self.mantis.arm
     assert arm is not None
-    head = await arm.request_head_position()
-    self.assertAlmostEqual(head.x, 15.0, places=9)
-    self.assertAlmostEqual(head.y, 31.177, places=9)
-    joint_position = await arm.request_joint_position()
+    head_x, head_y, _ = await request_head_position(arm=arm)
+    self.assertAlmostEqual(head_x, 15.0, places=9)
+    self.assertAlmostEqual(head_y, 31.177, places=9)
+    joint_state = await arm.request_joint_state()
     self.assertEqual(
-      await arm.request_absolute_joint_position(), {0: joint_position[0], 1: joint_position[1]}
+      await arm.request_absolute_joint_state(), {0: joint_state[0], 1: joint_state[1]}
     )
 
   async def test_stop_parks_and_lowers_z(self):
@@ -134,7 +147,7 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
 
   async def test_the_long_links_meet_at_the_head(self):
     assert self.mantis.arm is not None
-    head = await self.mantis.arm.request_head_position()
+    head_x, head_y, _ = await request_head_position(arm=self.mantis.arm)
     for name in ("right_long_arm", "left_long_arm"):
       with self.subTest(name=name):
         link = self.mantis.arm_links[name]
@@ -145,8 +158,8 @@ class SimulationTests(unittest.IsolatedAsyncioTestCase):
         end_x = corner.x + sum(matrix[0][k] * joint[k] for k in range(3))
         end_y = corner.y + sum(matrix[1][k] * joint[k] for k in range(3))
         # The arm frame is the device frame moved to the right motor's axis and mirrored in y.
-        self.assertAlmostEqual(end_x, 72.549 + head.x, places=2)
-        self.assertAlmostEqual(end_y, 142.594 - head.y, places=2)
+        self.assertAlmostEqual(end_x, 72.549 + head_x, places=2)
+        self.assertAlmostEqual(end_y, 142.594 - head_y, places=2)
 
   async def test_pump_reads_off_with_the_recorded_calibration(self):
     pump = self.mantis.pump
@@ -252,7 +265,13 @@ class SimulatedRouteTests(unittest.IsolatedAsyncioTestCase):
     path = os.path.join(directory.name, "declared.json")
     with open(path, "w", encoding="utf-8") as f:
       json.dump(
-        {**recording, "zones": SYNTHETIC_ZONES_BLOCK, "stations": SYNTHETIC_STATIONS_BLOCK}, f
+        {
+          **recording,
+          "zones": SYNTHETIC_ZONES_BLOCK,
+          "stations": SYNTHETIC_STATIONS_BLOCK,
+          "stage": SYNTHETIC_STAGE_BLOCK,
+        },
+        f,
       )
     self.mantis = Mantis(simulation=True, declared_configuration_json=path)
     await self.mantis.setup()
@@ -262,28 +281,30 @@ class SimulatedRouteTests(unittest.IsolatedAsyncioTestCase):
     self.arm = arm
 
   async def assert_head_at(self, *, x: float, y: float, z: float):
-    head = await self.arm.request_head_position()
-    for name, value, expected in (("x", head.x, x), ("y", head.y, y), ("z", head.z, z)):
+    head = await request_head_position(arm=self.arm)
+    for name, value, expected in zip("xyz", head, (x, y, z)):
       with self.subTest(axis=name):
         self.assertAlmostEqual(value, expected, places=6)
 
-  async def test_a_move_to_a_location_and_back_to_idle(self):
-    await self.arm.move_to_location(Coordinate(-57.0, 0.0, -10.0))
+  async def move_head_to(self, *, x: float, y: float) -> None:
+    """Move the head to (x, y) in the arm frame, off the plate holder, through the deck frame."""
+    deck_x, deck_y = self.arm._get_deck_frame_xy(x=x, y=y)
+    await self.arm.move_to_xy_position(x=deck_x, y=deck_y)
+
+  async def test_a_move_off_the_plate_holder_and_back_to_idle(self):
+    await self.move_head_to(x=-57.0, y=0.0)
+    await self.arm._move_to_joint_state(joint_state={2: 10.0})
     await self.assert_head_at(x=-57.0, y=0.0, z=-10.0)
     self.assertFalse(await self.arm.request_is_parked())
     await self.arm.park()
     await self.assert_head_at(x=15.0, y=31.177, z=0.0)
     self.assertTrue(await self.arm.request_is_parked())
 
-  async def test_z_waypoints_and_joint_moves(self):
-    await self.arm.move_z(1.57)
-    await self.assert_head_at(x=15.0, y=31.177, z=1.57)
-    await self.arm.move_through_waypoints(
-      [Coordinate(60.0, 70.0, 0.0), Coordinate(-35.0, 70.0, 1.0)]
-    )
-    await self.assert_head_at(x=-35.0, y=70.0, z=1.0)
-    await self.arm.move_to_joint_position({2: 5.0})
-    self.assertEqual((await self.arm.request_joint_position())[2], 5.0)
+  async def test_z_and_joint_moves(self):
+    await self.arm.move_to_z_position(z=50.0)
+    self.assertAlmostEqual((await self.arm.request_pose()).nozzle_location.z, 50.0, places=6)
+    await self.arm._move_to_joint_state(joint_state={2: 5.0})
+    self.assertEqual((await self.arm.request_joint_state())[2], 5.0)
 
   async def test_the_waste_station_is_reached_from_idle_only(self):
     await self.arm.move_to_waste_station()
@@ -309,10 +330,54 @@ class SimulatedRouteTests(unittest.IsolatedAsyncioTestCase):
     await self.mantis.setup()
 
   async def test_recover_from_fault_brings_the_head_back_to_idle(self):
-    await self.arm.move_to_location(Coordinate(80.0, -40.0, -5.0))
+    await self.move_head_to(x=80.0, y=-40.0)
+    await self.arm._move_to_joint_state(joint_state={2: 5.0})
     await self.arm.recover_from_fault()
     self.assertTrue(self.arm.is_initialized)
     await self.assert_head_at(x=15.0, y=31.177, z=0.0)
+
+
+class SimulatedWellplateTests(unittest.IsolatedAsyncioTestCase):
+  """A simulated Mantis declaring synthetic zones and stage, a wellplate in its plate holder."""
+
+  async def asyncSetUp(self):
+    with open(RECORDING_MANTIS_V4, encoding="utf-8") as f:
+      recording = json.load(f)
+    directory = tempfile.TemporaryDirectory()
+    self.addCleanup(directory.cleanup)
+    path = os.path.join(directory.name, "declared.json")
+    with open(path, "w", encoding="utf-8") as f:
+      json.dump({**recording, "zones": SYNTHETIC_ZONES_BLOCK, "stage": SYNTHETIC_STAGE_BLOCK}, f)
+    self.mantis = Mantis(simulation=True, declared_configuration_json=path)
+    await self.mantis.setup()
+    self.addAsyncCleanup(self.mantis.stop)
+    self.wellplate = cor_96_wellplate_360uL_Fb(name="wellplate")
+    self.mantis.plate_holder.assign_child_resource(self.wellplate)
+
+  async def test_the_nozzle_goes_over_each_corner_well(self):
+    arm = self.mantis.arm
+    assert arm is not None
+    # Each well's centre from the wellplate's back-left corner, mm; 12.5 mm above its 14.2 mm frame.
+    for name, x, y in (("A1", 14.3, 11.28), ("A12", 113.3, 11.28), ("H1", 14.3, 74.28)):
+      with self.subTest(well=name):
+        center = self.wellplate.get_item(name).get_location_wrt(self.mantis.deck, x="c", y="c")
+        await arm.move_to_xy_position(x=center.x, y=center.y)
+        await arm.move_to_z_position(z=26.7)
+        arm_x, arm_y, z = compute_arm_frame_position(
+          position=(x, y, REFERENCE_HEIGHT - 26.7),
+          origin=(-50.0, 40.0, 51.0),
+          transformation_matrix=SYNTHETIC_STAGE_BLOCK["transformation_matrix"],
+          offset_x=(0.0, 0.0, -0.0015),
+          offset_y=(0.0, 0.0, 0.0025),
+          arm_type_rotation_degree=0.0,
+          arm_type_translation=(0.0, 0.0, 0.0),
+        )
+        head_x, head_y, head_z = await request_head_position(arm=arm)
+        self.assertAlmostEqual(head_x, arm_x, places=3)
+        self.assertAlmostEqual(head_y, arm_y, places=3)
+        self.assertAlmostEqual(head_z, -z, places=3)
+    await arm.park()
+    self.assertTrue(await arm.request_is_parked())
 
 
 if __name__ == "__main__":

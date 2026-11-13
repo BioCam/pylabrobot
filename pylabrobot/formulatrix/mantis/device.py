@@ -23,17 +23,21 @@ from .driver.features.pump import Pump
 from .driver.features.rfid import Rfid
 from .driver.master import MantisDriver
 from .driver.simulator import MantisSimulationDriver
-from .resource_model import MANIFEST, arm_link, chip_rack, z_column
-
-# The main box's size, in mm, from the manufacturer's model: up to the top plate's surface.
-SIZE_X, SIZE_Y, SIZE_Z = MANIFEST["size"]
-# The plate holder on the deck: an SBS footprint pushed into the back-left of the pin nest, in mm.
-PLATE_HOLDER_LOCATION = Coordinate(23.62, 15.02, 0.0)
-PLATE_HOLDER_SIZE_X, PLATE_HOLDER_SIZE_Y = 127.76, 85.48
-# Where the right motor turns, x and y in the device frame, and the arm's height, in mm; the arm
-# frame is the device frame moved there and mirrored in y.
-ARM_BASE_X, ARM_BASE_Y = MANIFEST["joints"]["base_right"]
-ARM_Z = MANIFEST["joints"]["arm_z"]
+from .resource_model import (
+  ARM_BASE_X,
+  ARM_BASE_Y,
+  ARM_Z,
+  MANIFEST,
+  PLATE_HOLDER_LOCATION,
+  PLATE_HOLDER_SIZE_X,
+  PLATE_HOLDER_SIZE_Y,
+  SIZE_X,
+  SIZE_Y,
+  SIZE_Z,
+  arm_link,
+  chip_rack,
+  z_column,
+)
 
 
 class MantisDevice(Resource):

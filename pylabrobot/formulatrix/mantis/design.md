@@ -15,6 +15,8 @@ driver/master.py             MantisDriver. Owns the link, the reader, reply matc
                              bar.
 driver/arm_kinematics.py     The arm's geometry and units: device units, inverse and forward
                              kinematics, the absolute encoder's correction. Pure maths.
+driver/stage_transform.py    The stage transform: where a point on the wellplate is in the arm
+                             frame. Pure maths.
 driver/events.py             The events the device sends unasked: their codes, what each carries
                              and how it is logged.
 driver/simulator.py          MantisSimulationDriver, MantisSimulationArm,
@@ -87,13 +89,16 @@ folder the saved file alone carries them. A block is loaded only where its sourc
 exists, `led_bar.number_of_leds` where `Device.config` sets `NumberOfLed`, `arm` where the unit
 declares the arms' absolute encoder references (a v4), its encoder correction from the `Data`
 folder; `zones` where the unit declares its zones (a v4), with each zone's routes, and `stations`,
-the routes to the waste and wash stations, from `System/Sequences/Common`.
+the routes to the waste and wash stations, from `System/Sequences/Common`; `stage` where the unit
+declares its stage transform, with its tilt and arm type and the plate holder's origin from the
+`Data` folder.
 
 **M4d. Motion calibration never comes from a recording.** A block that calibrates motion
-(`MOTION_CALIBRATION_BLOCKS`: `arm`, `zones`, `stations`) comes from the unit's folder or its
-declared file only; no recording holds one. Without it, nothing that needs it is sent: without `arm`
-`Arm.initialize` refuses, and so does `setup` unless `skip_arm=True`; without `zones` the head is
-moved to idle from near idle only; without `stations` a move to a station refuses. A route file is
+(`MOTION_CALIBRATION_BLOCKS`: `arm`, `zones`, `stations`, `stage`) comes from the unit's folder or
+its declared file only; no recording holds one. Without it, nothing that needs it is sent: without
+`arm` `Arm.initialize` refuses, and so does `setup` unless `skip_arm=True`; without `zones` the head
+is moved to idle from near idle only; without `stations` a move to a station refuses; without
+`stage` a move to a wellplate refuses. An arm type other than `Standard` is refused. A route file is
 read whole and refused on any line it does not understand, never skipped. Factory files (encoder
 corrections, taught sequences) are never committed; tests use synthetic tables.
 
@@ -162,9 +167,15 @@ the device sent, decoded but not converted, until the feature that owns it knows
 A feature then converts in one place, on its configuration, and speaks PyLabRobot's units. No unit
 suffix on names in default units. The arm converts in `arm_kinematics`: 200 device units per motor
 revolution, degrees on the arms and mm on Z (down from its flag), each rate rounded up half a step
-as on the wire. A joint position keeps the motor's sign (Z down from its flag); a Cartesian height,
-a location's `z` or a traverse height, is mm above Z's home flag, up positive, converted inside. The
-routes keep the frame their files write: the arm frame, Z down from its flag.
+as on the wire. A joint state keeps the motor's sign (Z down from its flag); a traverse height is mm
+above Z's home flag, up positive, converted inside. The routes keep the frame their files write:
+the arm frame, Z down from its flag. The public moves take the nozzle in the deck frame. Over the
+plate holder a point goes through the stage transform (`stage_transform`) in full: y flipped to run
+from the holder's back edge, the height taken below `REFERENCE_HEIGHT`, the arm type, the holder's
+origin, the projective matrix on x and y and the tilt on z. Elsewhere x and y go through the arm
+frame fitted to the stage over the holder (`_get_deck_to_arm_transform`): one turn and shift, as the
+resource model places the arm by the manufacturer's model and each unit's differs by millimetres.
+A height is always the stage's, its tilt extended past the holder.
 
 **M7. A range is checked before anything is sent.** (STAR P5.) A read accepts only the indices
 seen on a device (`MOTORS`, `ABSOLUTE_ENCODER_MOTORS`, the boards, `PRESSURE_CONTROLLERS`);
@@ -189,22 +200,24 @@ move is sent. A move reads each motor's status until none moves; a fault bit rai
 `POST_HOMING_POSITION` (the same on every unit seen) less the unit's offsets; a route line's
 (x, y) goes through the same inverse kinematics, so a line at (15, 31.180) is sent as such.
 
-The arm's own moves check every target against the motor limits read, and Z's speed and acceleration
-against `Z_SPEED_RANGE` and `Z_ACCELERATION_RANGE`, before anything is sent. `move_z` is one command
-22; `move_to_joint_position` and `move_through_waypoints` are queued moves (command 68), a motor not
-named held, the sequencer cleared and started before them and the last waited for;
-`move_to_location` rises to `minimum_traverse_height` only if its encoder reads it below (command
-22), reads Z back at it by its encoder (command 84, within `Z_TRAVERSE_TOLERANCE`) or raises, moves
-the arms with Z held (queued), then lowers Z (command 22). `park` rises and reads Z back the same
-way, then follows the zone's route to idle. Neither models the chip racks: the arms' move is one
-joint move. A station's route is queued line for line, as in the recorded move to the waste station,
-and starts only from idle (`request_is_parked`, Z read by its encoder).
+The moves are built bottom up. `_move_to_joint_state` moves the motors a joint state names in one
+queued move (command 68), the others held, the sequencer cleared and started before it and the item
+waited for. `move_to_xy_position` takes the nozzle to a deck-frame (x, y) through the inverse
+kinematics, Z held; `move_to_z_position` takes it to a height above the deck where it stands, the
+arms held. Both build on `_move_to_joint_state` and check every target against the motor limits
+read, and Z's speed and acceleration against `Z_SPEED_RANGE` and `Z_ACCELERATION_RANGE`, before
+anything is sent. Neither rises nor models the chip racks: a dispense moves between wells below the
+traverse height, so staying clear is the caller's. `park` rises to `minimum_traverse_height` only if
+Z's encoder reads it below (command 22), reads Z back by its encoder (command 84, within
+`Z_TRAVERSE_TOLERANCE`) or raises, then follows the zone's route to idle. A station's route is
+queued line for line, as in the recorded move to the waste station, and starts only from idle
+(`request_is_parked`, Z read by its encoder).
 
 **M9. Names say what kind of thing they are.** (STAR P10.)
 
 | what it touches | prefix | here |
 |---|---|---|
-| the device, doing work | `move_` | `arm.move_z`, `arm.move_to_location` |
+| the device, doing work | `move_` | `arm.move_to_xy_position`, `arm.move_to_z_position` |
 | the device, a process left running | `start_`, `stop_` | |
 | the device's sensors | `measure_`, `sense_` | `pump.measure_pressure` |
 | the device's memory, reading | `request_` | `request_motor_limits`, `request_motor_status` |
@@ -254,12 +267,12 @@ above the wire: `MantisSimulationPlateClamp` reads 0 until a command sets clampi
 unclamping done; `MantisSimulationRfid` reads every slot empty; `MantisSimulationPump` reads off,
 every line at 0, with the recorded calibration; `MantisSimulationLedBar` takes every command and
 waits no hold. `MantisSimulationArm` stands at idle with its absolute encoders reading there, so it
-needs no encoder correction; its offsets are the declared ones, else 0, and its zones and stations
-the declared ones, else none. Each command moves it at once, and the motor reads answer from it;
-without it the motors read idle at 0, as after power-on. A motor read the configuration does not
-hold is not simulated. The sequencer, on the driver, holds
-`SEQUENCER_QUEUE_SIZE` items, stopped and empty after setup, and once started plays each item at
-once, a queued move moving the simulated arm; stop and abort keep what is queued.
+needs no encoder correction; its offsets are the declared ones, else 0, and its zones, stations and
+stage the declared ones, else none. Each command moves it at once, and the motor reads answer from
+it; without it the motors read idle at 0, as after power-on. A motor read the configuration does
+not hold is not simulated. The sequencer, on the driver, holds `SEQUENCER_QUEUE_SIZE` items,
+stopped and empty after setup, and once started plays each item at once, a queued move moving the
+simulated arm; stop and abort keep what is queued.
 
 **M16. Locking is by subsystem.** (STAR P11.) One lock serializes the link today. When features
 add commands that the device runs together, each subsystem gets its own lock, taken in declaration
@@ -380,8 +393,8 @@ where a colour took a release from 0.21 s to 0.34 s on the recorded v4.
 31. **Unpowering the arm (command 19, open loop) is unrecorded.** A failed bring-up sends it; its
     reply has not been seen.
 32. **The encoder correction files and the sequences are found two levels above
-    `oem_config_directory`.** That argument still names `Data/Device/Configs`; they sit in
-    `Data/System`.
+    `oem_config_directory`, the plate holder's origin one level above.** That argument still names
+    `Data/Device/Configs`; they sit in `Data/System` and `Data/Device/Adapters`.
 33. **Zones that share an edge are tried in `ZONES` order.** A head on an edge goes to the first
     zone listed that holds it, in the order the unit lists its zones; the tie-break is not
     known.
@@ -403,8 +416,8 @@ where a colour took a release from 0.21 s to 0.34 s on the recorded v4.
     (a v4) reads the first, which a v4 played on the wire; one without them (a v3) reads the
     second, not seen played, and a v3 builds no arm. The wash routes are
     `MoveToWashStation1` and `2`; their `Lc3` variants are not read.
-39. **Moves do not turn the resource model's links.** `MantisDevice` places them from a read after
-    setup only.
+39. **The resource model draws the arm where the manufacturer's model places it,** not where the
+    fit puts it: on the unit the fit was checked on, about 2 mm off.
 40. **`request_is_parked`'s tolerance, 0.5 degrees and 0.5 mm, is ours.** In the recordings the
     declared arms read up to about 0.1 degrees from their idle target after a move there.
 41. **A command 22 answering a motor error code is untested.** Every reply seen is 0; no test
@@ -412,3 +425,20 @@ where a colour took a release from 0.21 s to 0.34 s on the recorded v4.
 42. **The read-back after a rise is Z's encoder (command 84), not the demand position.** It
     catches a rise the device refused, dropped or stalled, within `Z_TRAVERSE_TOLERANCE`; Z's
     encoder has been read at rest only, never right after a move.
+43. **The stage transform has not commanded a move through this driver.** The same chain
+    reproduces, to 1 µm, the recorded head positions over the 96 wells of recorded dispenses on a
+    v4; that check needs the unit's own matrix and origin, so it is kept outside this repository
+    and the tests here are synthetic. Whether the nozzle stands over each well is for a device run
+    to show.
+44. **The holder's back-left corner is the wellplate frame's origin,** as the clamp pushes a
+    wellplate there, with A1 at the back left: y runs from the holder's back edge.
+45. **The stage maps the nozzle of a fitted chip.** It is the unit's calibration, made with a chip;
+    whether every chip's nozzle stands alike, and where the head stands without one, is not
+    measured. A height starts `REFERENCE_HEIGHT` above the plate holder, at the stage origin's z.
+46. **Off the plate holder, x and y are the fit's.** On the unit it was checked on, the fit leaves
+    under 0.2 mm over the holder and predicts its chip pick-ups to about 0.3 mm; another unit's
+    stage left 0.5 mm. At the holder's edge the two can differ by that much.
+47. **The stage's x and y offsets keep their x and y, unused.** Only their z tilts the stage;
+    the recorded x and y were reproduced without them.
+48. **The deck-frame moves are joint moves:** nothing models the chip racks, so they run only
+    with the path clear.
