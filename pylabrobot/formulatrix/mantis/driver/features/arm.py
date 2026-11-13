@@ -305,8 +305,9 @@ class Arm:
 
   @property
   def default_minimum_traverse_height(self) -> Optional[float]:
-    """The nozzle's height above the deck it rises to before it travels, mm; None takes the
-    vendor's safe height, ``SAFE_HEIGHT`` above Z's flag."""
+    """The nozzle's height above the deck it rises to before it moves across, mm, where a move's
+    ``minimum_traverse_height_start`` is None; None takes the vendor's safe height, ``SAFE_HEIGHT``
+    above Z's flag."""
     return self._default_minimum_traverse_height
 
   @default_minimum_traverse_height.setter
@@ -1389,25 +1390,33 @@ class Arm:
     self,
     *,
     joint_state: JointState,
+    minimum_traverse_height_start: Optional[float] = None,
     xy_speed: Optional[float] = None,
     xy_acceleration: Optional[float] = None,
     z_speed: Optional[float] = None,
     z_acceleration: Optional[float] = None,
   ) -> None:
-    """Move the motors named together in one queued move (command 68); the others hold.
+    """Move the motors named to a joint state, queued (command 68); the others hold.
 
-    The arms move in one joint move, not along a route: nothing here avoids the chip racks.
+    A move of an arm motor is guarded, as v1 STAR's moves across the deck: Z rises first to the
+    traverse height if its encoder reads it below it, and is read back there, then the arms move
+    with Z held, then Z moves if named. A move of Z alone is one queued move. The arms move in one
+    joint move, not along a route: nothing here avoids the chip racks.
 
     Args:
       joint_state: each motor's target, by motor, as ``request_joint_state`` reads them.
+      minimum_traverse_height_start: the nozzle's height above the deck to rise to before the arms
+        move, mm, over where it starts and ends; ``default_minimum_traverse_height`` when None.
       xy_speed: the nozzle's, mm/s; None takes ``default_xy_speed``.
       xy_acceleration: the nozzle's, mm/s²; None takes ``default_xy_acceleration``.
       z_speed: mm/s; None takes ``default_z_speed``.
       z_acceleration: mm/s²; None takes ``default_z_acceleration``.
 
     Raises:
-      MantisMotionError: if the arm is not brought up, the head stands in a station, or a motor
-        faults.
+      MantisConfigurationError: for a traverse height in the deck frame without the unit's
+        ``stage`` block; nothing is sent.
+      MantisMotionError: if the arm is not brought up, the head stands in a station, a motor
+        faults, or Z does not read at the traverse height after rising to it.
       MantisKinematicsError: if the links cannot meet at the arm motors' targets.
       ValueError: if a motor is unknown, a target outside its limits, or a speed or acceleration
         out of range.
@@ -1427,30 +1436,37 @@ class Arm:
     }
     for motor, target in targets.items():
       self._check_reachable(motor=motor, position=target)
-    profiles = {
-      **{motor: self._get_profile(motor=motor) for motor in ARM_MOTORS},
-      Z_MOTOR: z_profile,
-    }
-    named = [motor for motor in ARM_MOTORS if motor in joint_state]
-    if named:
-      in_mm = any(
-        value is not None
-        for value in (
-          xy_speed,
-          xy_acceleration,
-          self.default_xy_speed,
-          self.default_xy_acceleration,
-        )
+    arm_targets = {motor: target for motor, target in targets.items() if motor in ARM_MOTORS}
+    if not arm_targets:
+      await self._play_queued_moves(
+        moves=[self._get_queued_move(targets=targets, profiles={Z_MOTOR: z_profile})]
       )
-      # The current pose is read only where the move needs it: one arm motor, or a speed in mm.
-      start = await self.request_joint_state() if len(named) < 2 or in_mm else None
-      self._get_head_position(joint_state={**(start or {}), **joint_state})
-      profiles.update(
-        self._get_arm_profiles(
-          start=start, target=joint_state, xy_speed=xy_speed, xy_acceleration=xy_acceleration
-        )
+      await self._report_pose()
+      return
+    start = await self.request_joint_state()
+    end = {**start, **joint_state}
+    self._get_head_position(joint_state=end)
+    if minimum_traverse_height_start is None:
+      minimum_traverse_height_start = self.default_minimum_traverse_height
+    points: List[Tuple[float, float]] = []
+    if minimum_traverse_height_start is not None:
+      for pose in (start, end):
+        head_x, head_y = self._get_head_position(joint_state=pose)
+        points.append(self._get_deck_frame_xy(x=head_x, y=head_y))
+    traverse = self._get_traverse_z_joint_position(
+      minimum_traverse_height=minimum_traverse_height_start, points=points
+    )
+    arm_profiles = self._get_arm_profiles(
+      start=start, target=joint_state, xy_speed=xy_speed, xy_acceleration=xy_acceleration
+    )
+    await self._rise_to_traverse_height(z_joint_position=traverse, profiles={Z_MOTOR: z_profile})
+    moves = [self._get_queued_move(targets=arm_targets, profiles=arm_profiles)]
+    if Z_MOTOR in targets:
+      moves.append(
+        self._get_queued_move(targets={Z_MOTOR: targets[Z_MOTOR]}, profiles={Z_MOTOR: z_profile})
       )
-    await self._play_queued_moves(moves=[self._get_queued_move(targets=targets, profiles=profiles)])
+    for move in moves:
+      await self._play_queued_moves(moves=[move])
     await self._report_pose()
 
   async def move_to_xy_position(
@@ -1458,24 +1474,27 @@ class Arm:
     *,
     x: float,
     y: float,
+    minimum_traverse_height_start: Optional[float] = None,
     speed: Optional[float] = None,
     acceleration: Optional[float] = None,
   ) -> None:
-    """Move the nozzle to (x, y) in the deck frame; Z holds. Planar: nothing rises or avoids the
-    chip racks.
+    """Move the nozzle across to (x, y) in the deck frame, guarded: Z rises first to the traverse
+    height if it is below it, then the arms move with Z held. Nothing avoids the chip racks.
 
     Over the plate holder the unit's stage transform places it; elsewhere the arm frame fitted to it.
 
     Args:
       x: right of the deck's front-left corner, mm.
       y: behind the deck's front-left corner, mm.
+      minimum_traverse_height_start: the nozzle's height above the deck to rise to first, mm;
+        ``default_minimum_traverse_height`` when None.
       speed: the nozzle's, mm/s; None takes ``default_xy_speed``.
       acceleration: the nozzle's, mm/s²; None takes ``default_xy_acceleration``.
 
     Raises:
       MantisConfigurationError: without the unit's ``arm`` or ``stage`` block; nothing is sent.
-      MantisMotionError: if the arm is not brought up, the head stands in a station, or a motor
-        faults.
+      MantisMotionError: if the arm is not brought up, the head stands in a station, a motor
+        faults, or Z does not read at the traverse height after rising to it.
       MantisKinematicsError: if (x, y) is out of the arm's reach.
       ValueError: if a target is outside its motor's limits, or a speed or acceleration out of
         range.
@@ -1489,6 +1508,7 @@ class Arm:
         motor: compute_position(motor=motor, device_position=target)
         for motor, target in targets.items()
       },
+      minimum_traverse_height_start=minimum_traverse_height_start,
       xy_speed=speed,
       xy_acceleration=acceleration,
     )
@@ -1527,7 +1547,7 @@ class Arm:
     self,
     *,
     location: Coordinate,
-    minimum_traverse_height: Optional[float] = None,
+    minimum_traverse_height_start: Optional[float] = None,
     xy_speed: Optional[float] = None,
     xy_acceleration: Optional[float] = None,
     z_speed: Optional[float] = None,
@@ -1542,8 +1562,8 @@ class Arm:
 
     Args:
       location: the nozzle's x, y and height above the deck, mm.
-      minimum_traverse_height: the nozzle's height above the deck to travel at or above, mm, over
-        both ends; None takes ``default_minimum_traverse_height``.
+      minimum_traverse_height_start: the nozzle's height above the deck to rise to first, mm, over
+        both ends; ``default_minimum_traverse_height`` when None.
       xy_speed: the nozzle's, mm/s; None takes ``default_xy_speed``.
       xy_acceleration: the nozzle's, mm/s²; None takes ``default_xy_acceleration``.
       z_speed: mm/s; None takes ``default_z_speed``.
@@ -1575,7 +1595,7 @@ class Arm:
     start = await self.request_joint_state()
     head_x, head_y = self._get_head_position(joint_state=start)
     traverse = self._get_traverse_z_joint_position(
-      minimum_traverse_height=minimum_traverse_height,
+      minimum_traverse_height=minimum_traverse_height_start,
       points=[self._get_deck_frame_xy(x=head_x, y=head_y), (location.x, location.y)],
     )
     await self._rise_to_traverse_height(z_joint_position=traverse, profiles={Z_MOTOR: z_profile})
@@ -1643,7 +1663,7 @@ class Arm:
     )
     self._station_route = None
 
-  async def park(self, *, minimum_traverse_height: Optional[float] = None) -> None:
+  async def park(self, *, minimum_traverse_height_start: Optional[float] = None) -> None:
     """Move the head to idle along its zone's route, from any zone; from a station, first out of
     it the way it came.
 
@@ -1651,8 +1671,8 @@ class Arm:
     parked from near idle only.
 
     Args:
-      minimum_traverse_height: the nozzle's height above the deck, mm; None takes
-        ``default_minimum_traverse_height``.
+      minimum_traverse_height_start: the nozzle's height above the deck to rise to first, mm;
+        ``default_minimum_traverse_height`` when None.
 
     Raises:
       MantisConfigurationError: for a height in the deck frame without the unit's ``stage`` block.
@@ -1663,7 +1683,7 @@ class Arm:
     self._check_initialized()
     await self._leave_station()
     traverse = await self._get_park_traverse_z_joint_position(
-      minimum_traverse_height=minimum_traverse_height
+      minimum_traverse_height=minimum_traverse_height_start
     )
     await self._route_to_idle(z_joint_position=traverse)
     await self._report_pose()

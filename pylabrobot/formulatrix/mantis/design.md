@@ -205,25 +205,27 @@ each motor at that move's own acceleration, as the vendor's jog does. Idle is
 `POST_HOMING_POSITION` (the same on every unit seen) less the unit's offsets; a route line's
 (x, y) goes through the same inverse kinematics, so a line at (15, 31.180) is sent as such.
 
-The moves are built bottom up. `move_to_joint_state` moves the motors a joint state names in one
-queued move (command 68), the others held, the sequencer cleared and started before it and the item
-waited for; it reads the pose first only where it must (one arm motor named, or a speed in mm/s).
-`move_to_xy_position` takes the nozzle to a deck-frame (x, y) through the inverse kinematics, Z
-held; `move_to_z_position` takes it to a height above the deck where it stands, the arms held. Both
-build on `move_to_joint_state`. Neither rises nor models the chip racks: a dispense moves between
-wells below the traverse height, so staying clear is the caller's. `move_to_location` is the
-guarded one: it rises to the traverse height over both ends if Z's encoder reads it below (command
-22), reads Z back by its encoder (command 84, within `Z_TRAVERSE_TOLERANCE`) or raises, moves across
-with Z held, then moves Z. Every move checks every target against the motor limits read, and Z's
-speed and acceleration against `Z_SPEED_RANGE` and `Z_ACCELERATION_RANGE`, before anything is sent.
+The moves are built bottom up. `move_to_joint_state` moves the motors a joint state names, queued
+(command 68), the sequencer cleared and started before each item and the item waited for. A move of
+Z alone is one item. A move of an arm motor is guarded, as v1 STAR's moves across the deck
+(`move_to_xy_positions`): Z rises first to `minimum_traverse_height_start` (the nozzle's height above
+the deck over where it starts and ends; `default_minimum_traverse_height` when None, and with that
+None the vendor's `SAFE_HEIGHT` above Z's flag) if its encoder reads it below, by command 22, and is
+read back by its encoder (command 84, within `Z_TRAVERSE_TOLERANCE`) or it raises; then the arms move
+with Z held; then Z, if named. `move_to_xy_position` takes the nozzle to a deck-frame (x, y) through
+the inverse kinematics on it; `move_to_location` adds Z's move to the location's height;
+`move_to_z_position` moves Z alone where the nozzle stands. Every public move that moves the arms is
+guarded; a dispense, which moves between wells at well height as the vendor does, queues its moves
+privately. Every move checks every target against the motor limits read, and Z's speed and
+acceleration against `Z_SPEED_RANGE` and `Z_ACCELERATION_RANGE`, before anything is sent. Nothing
+models the chip racks.
 
 An xy speed in mm/s turns into each arm motor's by its turn over the nozzle's straight-line
 distance, acceleration likewise: the motors start and end together, the move takes as long as a
 straight one would, and the nozzle's path is not straight. Without one, given or
 `default_xy_speed`/`default_xy_acceleration`, the arms take the vendor's motor profile, so the
-bytes match the recordings. `park` rises and reads Z back the same way, at
-`default_minimum_traverse_height` (a nozzle height; None is the vendor's `SAFE_HEIGHT` above Z's
-flag), then follows the zone's route to idle. A station's route is queued line for line, as in the
+bytes match the recordings. `park` rises and reads Z back the same way, then follows the zone's
+route to idle. A station's route is queued line for line, as in the
 recorded move to the waste station, and starts only from idle (`request_is_parked`, Z read by its
 encoder). The head leaves a station only by `park`, along the route backwards, a line that moves the
 arms and Z moving the arms first at the depth it stands, as the vendor leaves the waste station;

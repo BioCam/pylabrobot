@@ -968,16 +968,55 @@ class MoveTests(ArmTestCase):
     driver.arm._initialized = True
     return driver
 
+  def set_traverse_at_flag(self, *, driver) -> None:
+    """The traverse height at Z's flag, where its encoder is recorded; the deck frame's conversion
+    is tested on its own."""
+    driver.arm._get_traverse_z_joint_position = (  # type: ignore[method-assign]
+      lambda **_: 0.0
+    )
+
   async def test_move_to_xy_position_moves_the_arms_in_one_queued_move_z_held(self):
     queued = get_queued_move(item=15, targets=DECK_POINT_ARM_TARGETS)
     link = RouteLink(
-      answers=make_answers(), events={(0, 68, queued): [bytes.fromhex(CLOSE_ITEM_PLAYED[15])]}
+      answers=make_answers(),
+      encoders={2: Z_UP_ENCODER_REPLY},
+      events={(0, 68, queued): [bytes.fromhex(CLOSE_ITEM_PLAYED[15])]},
     )
     driver = await self.set_up_moves(link=link)
     driver._next_item = 15
+    self.set_traverse_at_flag(driver=driver)
     await driver.arm.move_to_xy_position(x=DECK_POINT[0], y=DECK_POINT[1])
-    # Both arm motors named, at the vendor's profile: nothing is read first.
-    self.assertEqual(tokens(self.sent(link)), ["0:61:", "0:62:", f"0:68:{queued.hex()}"])
+    # Where it stands, then Z by its encoder at the traverse height already: no rise.
+    self.assertEqual(
+      tokens(self.sent(link)),
+      [
+        "0:27:0000",
+        "0:27:0100",
+        "0:27:0200",
+        "0:84:0200",
+        "0:61:",
+        "0:62:",
+        f"0:68:{queued.hex()}",
+      ],
+    )
+
+  async def test_a_move_across_from_below_the_traverse_height_rises_first(self):
+    queued = get_queued_move(item=15, targets=DECK_POINT_ARM_TARGETS)
+    link = RouteLink(
+      answers=make_answers(),
+      encoders={2: Z_RISING_ENCODER_REPLIES},
+      events={(0, 68, queued): [bytes.fromhex(CLOSE_ITEM_PLAYED[15])]},
+    )
+    driver = await self.set_up_moves(link=link)
+    driver._next_item = 15
+    self.set_traverse_at_flag(driver=driver)
+    await driver.arm.move_to_xy_position(x=DECK_POINT[0], y=DECK_POINT[1])
+    # Z read down, up alone to the traverse height and read back there before the arms move.
+    self.assertEqual(
+      tokens(self.sent(link)),
+      ["0:27:0000", "0:27:0100", "0:27:0200", "0:84:0200", f"0:22:{Z_UP_MOVE.hex()}"]
+      + ["0:84:0200", "0:61:", "0:62:", f"0:68:{queued.hex()}"],
+    )
 
   async def test_move_to_z_position_moves_z_alone_to_the_height_above_the_deck(self):
     target = compute_device_position(motor=2, position=REFERENCE_HEIGHT_Z)
@@ -1077,10 +1116,7 @@ class MoveTests(ArmTestCase):
     )
     driver = await self.set_up_moves(link=link)
     driver._next_item = 15
-    # The traverse height at Z's flag, where its encoder is recorded.
-    driver.arm._get_traverse_z_joint_position = (  # type: ignore[method-assign]
-      lambda **_: 0.0
-    )
+    self.set_traverse_at_flag(driver=driver)
     await driver.arm.move_to_location(location=Coordinate(*DECK_POINT, REFERENCE_HEIGHT))
     self.assertEqual(
       tokens(self.sent(link)),
