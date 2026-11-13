@@ -215,13 +215,15 @@ class MantisDevice(Resource):
     """The arm and Z, once setup found board 11 (a v4); None before or without it."""
     return self.driver.arm
 
-  async def setup(self, *, skip_arm: bool = False) -> None:
-    """Connect, read the device's configuration and check it, then bring the arm and Z up.
+  async def setup(self, *, skip_arm: bool = False, skip_self_test: bool = False) -> None:
+    """Connect, read the device's configuration and check it, then bring the arm and Z up, zero
+    the pressure sensors and run the pump's connect self-test.
 
     Args:
       skip_arm: do not bring the arm up; nothing moves.
+      skip_self_test: skip the connect self-test, on a reconnect after one since power-on.
     """
-    await self.driver.setup(skip_arm=skip_arm)
+    await self.driver.setup(skip_arm=skip_arm, skip_self_test=skip_self_test)
     arm = self.driver.arm
     if arm is not None:
       # Every move from here on passes where it ended to the model; the bring-up's is read here.
@@ -230,7 +232,8 @@ class MantisDevice(Resource):
         await arm._report_pose()
 
   async def stop(self) -> None:
-    """Stop the motors, park an arm brought up, release the clamp and disconnect."""
+    """Stop the motors, park an arm brought up, turn the pump off and vent, release the clamp and
+    disconnect."""
     await self.driver.stop()
 
 
